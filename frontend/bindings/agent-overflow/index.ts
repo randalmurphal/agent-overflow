@@ -56,6 +56,8 @@ export {
     ThreadLiveState,
     UpdateAvailability,
     WorkflowArtifact,
+    WorkflowDefinitionCatalog,
+    WorkflowDefinitionInput,
     WorkflowDefinitionListing,
     WorkflowDefinitionPhase,
     WorkflowDispositionReceipt,

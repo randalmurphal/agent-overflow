@@ -49,7 +49,7 @@ disposition, digest, created_at, started_at, ended_at`
 const workItemSummaryColumns = `id, project_id, goal, workflow_id, workflow_scope,
 '', state, reason, sort_position, '', step_mode, worktree_path,
 branch, base_branch, '', source, source_ref, triage_thread_id,
-'', '', created_at, started_at, ended_at`
+disposition, '', created_at, started_at, ended_at`
 
 func jsonText(value json.RawMessage) string {
 	if len(value) == 0 {

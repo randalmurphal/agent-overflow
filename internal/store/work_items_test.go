@@ -155,6 +155,8 @@ func TestWorkItemSummaryAndNextSortPosition(t *testing.T) {
 	s := newTestStore(t)
 	first := testWorkItem("first", "project-a", "queued", 4, 1)
 	first.Snapshot = json.RawMessage(`{"workflow":{"prompt":"large"}}`)
+	first.Digest = json.RawMessage(`{"whatHappened":"heavy detail"}`)
+	first.Disposition = json.RawMessage(`{"action":"merged","policy":"manual","at":2}`)
 	if err := s.CreateWorkItem(first); err != nil {
 		t.Fatalf("create first: %v", err)
 	}
@@ -170,8 +172,11 @@ func TestWorkItemSummaryAndNextSortPosition(t *testing.T) {
 	if len(summaries) != 2 || summaries[0].ID != "first" || summaries[1].ID != "second" {
 		t.Fatalf("summary order = %#v", summaries)
 	}
-	if len(summaries[0].Snapshot) != 0 || len(summaries[0].Seeds) != 0 || len(summaries[0].Budget) != 0 {
+	if len(summaries[0].Snapshot) != 0 || len(summaries[0].Seeds) != 0 || len(summaries[0].Budget) != 0 || len(summaries[0].Digest) != 0 {
 		t.Fatalf("summary includes heavy payloads: %#v", summaries[0])
+	}
+	if string(summaries[0].Disposition) != string(first.Disposition) {
+		t.Fatalf("summary disposition = %s, want %s", summaries[0].Disposition, first.Disposition)
 	}
 	if summaries[0].Goal != first.Goal || summaries[0].State != first.State {
 		t.Fatalf("summary lost list fields: %#v", summaries[0])

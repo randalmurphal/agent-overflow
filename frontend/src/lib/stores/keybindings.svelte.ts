@@ -47,9 +47,33 @@ let rules: KeybindingRule[] = $state([]);
 let resolved: ResolvedKeybinding[] = $state([]);
 let issues: KeybindingIssue[] = $state([]);
 let loaded = $state(false);
+const runtimeDefaults = new Map<string, KeybindingRule[]>();
+
+function compileEffectiveRules(): void {
+  const overriddenDefaults = new Set(rules.flatMap((rule) => rule.defaultId ? [rule.defaultId] : []));
+  const defaults = Array.from(runtimeDefaults.values()).flat()
+    .filter((rule) => !rule.defaultId || !overriddenDefaults.has(rule.defaultId));
+  const compiled = compileAll([...defaults, ...rules]);
+  resolved = compiled.resolved;
+  issues = compiled.issues;
+}
+
+export function registerRuntimeKeybindingDefaults(owner: string, defaults: readonly KeybindingRule[]): () => void {
+  runtimeDefaults.set(owner, defaults.slice());
+  compileEffectiveRules();
+  return () => {
+    runtimeDefaults.delete(owner);
+    compileEffectiveRules();
+  };
+}
 
 export function getKeybindingRules(): KeybindingRule[] {
-  return rules;
+  const overriddenDefaults = new Set(rules.flatMap((rule) => rule.defaultId ? [rule.defaultId] : []));
+  return [
+    ...Array.from(runtimeDefaults.values()).flat()
+      .filter((rule) => !rule.defaultId || !overriddenDefaults.has(rule.defaultId)),
+    ...rules,
+  ];
 }
 
 export function getResolvedKeybindings(): ResolvedKeybinding[] {
@@ -106,9 +130,7 @@ export async function loadKeybindings(): Promise<void> {
   try {
     const raw = (await GetKeybindings()) as KeybindingRule[] | null;
     rules = Array.isArray(raw) ? raw : [];
-    const compiled = compileAll(rules);
-    resolved = compiled.resolved;
-    issues = compiled.issues;
+    compileEffectiveRules();
     loaded = true;
   } catch (err) {
     console.error('Failed to load keybindings:', err);
@@ -151,9 +173,7 @@ export async function resetKeybindingsToDefaults(): Promise<void> {
 /** Test / SSR helper — seeds the store without a backend round-trip. */
 export function setKeybindingsForTest(input: KeybindingRule[]): void {
   rules = input.slice();
-  const compiled = compileAll(rules);
-  resolved = compiled.resolved;
-  issues = compiled.issues;
+  compileEffectiveRules();
   loaded = true;
 }
 
@@ -162,6 +182,7 @@ export function resetKeybindingsStore(): void {
   resolved = [];
   issues = [];
   loaded = false;
+  runtimeDefaults.clear();
 }
 
 /**

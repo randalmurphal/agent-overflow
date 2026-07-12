@@ -304,6 +304,27 @@ export {
   DownloadUpdate,
   RestartToUpdate,
 
+  // Workflows
+  WorkflowAnswerQuestion,
+  WorkflowCancelItem,
+  WorkflowCreateItemPR,
+  WorkflowDiscardItem,
+  WorkflowEnqueueItem,
+  WorkflowGetItem,
+  WorkflowGetJobNotes,
+  WorkflowListDefinitions,
+  WorkflowListItemCosts,
+  WorkflowListItems,
+  WorkflowMergeItem,
+  WorkflowOpenStudioThread,
+  WorkflowOpenTriageAgent,
+  WorkflowOpenTriageThread,
+  WorkflowRemoveQueuedItem,
+  WorkflowReorderQueue,
+  WorkflowResolveGate,
+  WorkflowResumeItem,
+  WorkflowSetJobNotes,
+
   // Build-time stamped binary version (Settings footer).
   Version,
 } from '../../../bindings/agent-overflow/app.js';

@@ -400,6 +400,7 @@ type WorkflowItemDetail struct {
 	Item      store.WorkItem        `json:"item"`
 	Phases    []store.WorkItemPhase `json:"phases"`
 	Artifacts []WorkflowArtifact    `json:"artifacts"`
+	Usage     store.WorkItemUsage   `json:"usage"`
 }
 
 func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetail, error) {
@@ -418,5 +419,9 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetail, error) {
 	if err != nil {
 		return WorkflowItemDetail{}, err
 	}
-	return WorkflowItemDetail{Item: item, Phases: phases, Artifacts: artifacts}, nil
+	usage, err := a.store.QueryWorkItemUsage(itemID)
+	if err != nil {
+		return WorkflowItemDetail{}, err
+	}
+	return WorkflowItemDetail{Item: item, Phases: phases, Artifacts: artifacts, Usage: usage}, nil
 }

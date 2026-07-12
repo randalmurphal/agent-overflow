@@ -1556,6 +1556,55 @@ export class WorkItemPhase {
     }
 }
 
+/**
+ * WorkItemUsage is the persisted token and wire-cost total for one workflow
+ * run. Token components remain separate so callers can explain the aggregate.
+ */
+export class WorkItemUsage {
+    "inputTokens": number;
+    "outputTokens": number;
+    "cacheReadInputTokens": number;
+    "cacheCreationInputTokens": number;
+    "reasoningOutputTokens": number;
+    "totalTokens": number;
+    "costUsd": number;
+
+    /** Creates a new WorkItemUsage instance. */
+    constructor($$source: Partial<WorkItemUsage> = {}) {
+        if (!("inputTokens" in $$source)) {
+            this["inputTokens"] = 0;
+        }
+        if (!("outputTokens" in $$source)) {
+            this["outputTokens"] = 0;
+        }
+        if (!("cacheReadInputTokens" in $$source)) {
+            this["cacheReadInputTokens"] = 0;
+        }
+        if (!("cacheCreationInputTokens" in $$source)) {
+            this["cacheCreationInputTokens"] = 0;
+        }
+        if (!("reasoningOutputTokens" in $$source)) {
+            this["reasoningOutputTokens"] = 0;
+        }
+        if (!("totalTokens" in $$source)) {
+            this["totalTokens"] = 0;
+        }
+        if (!("costUsd" in $$source)) {
+            this["costUsd"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkItemUsage instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkItemUsage {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkItemUsage($$parsedSource as Partial<WorkItemUsage>);
+    }
+}
+
 // Private type creation functions
 const $$createType0 = DiffReviewPRContextEntry.createFrom;
 const $$createType1 = $Create.Array($$createType0);

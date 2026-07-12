@@ -29,6 +29,7 @@ import {
 import { appStorageGet, hydrateAppStorage, resetAppStorageForTest } from './appStorage';
 import { installPaneMocks, makeItem } from '../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getWorkflowStack, resetWorkflowsPane } from './workflowsPane.svelte';
 
 const LEGACY_KEY = 'agentOverflowPaneLayout';
 
@@ -72,6 +73,7 @@ function makeSavedLayout(
     | { paneId: string; threadId: string; widthPx: number }
     | { paneId: string; kind: 'thread'; threadId: string; widthPx: number }
     | { paneId: string; kind: 'plan' | 'design-preview' | 'review'; sourcePaneId: string; widthPx: number }
+    | { paneId: string; kind: 'workflows'; workflowState: unknown; widthPx: number }
   >,
   focusedPaneId: string | null,
 ): PaneLayoutPersistedSettings {
@@ -118,6 +120,7 @@ describe('pane layout persistence', () => {
     resetPanesForTest();
     resetCompanionPanesForTest();
     resetPaneLayoutForTest();
+    resetWorkflowsPane();
     installPaneLayoutPersistence();
     await installUIStateMock();
   });
@@ -202,6 +205,31 @@ describe('pane layout persistence', () => {
       kind: 'review',
       sourcePaneId: 'left',
     });
+  });
+
+  it('round-trips the singleton workflows pane and navigation snapshot', async () => {
+    setPaneLayoutItemsForTest([
+      { id: 'workflows', paneId: 'workflows', kind: 'workflows', widthPx: 740 },
+    ]);
+    focusPane('workflows');
+
+    persistPaneLayout();
+    await waitForPaneLayoutPersistenceForTest();
+    setPaneLayoutItemsForTest([]);
+
+    await loadPersistedPaneLayout([]);
+
+    expect(getPaneLayoutItems()).toEqual([
+      { id: 'workflows', paneId: 'workflows', kind: 'workflows', widthPx: 740 },
+    ]);
+    expect(getFocusedPaneId()).toBe('workflows');
+    expect(getWorkflowStack()).toEqual([{ kind: 'overview' }]);
+    expect(persistedPaneLayout()).toEqual(makeSavedLayout([
+      {
+        paneId: 'workflows', kind: 'workflows', widthPx: 740,
+        workflowState: { stack: [{ kind: 'overview' }], projectFilter: null },
+      },
+    ], 'workflows'));
   });
 
   it('snapshots a focused take-control pane as its source thread pane', async () => {

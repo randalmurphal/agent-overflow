@@ -348,6 +348,36 @@ func TestQueryWorkItemUsage(t *testing.T) {
 	}
 }
 
+func TestQueryWorkItemCostsGroupsByProjectAndItem(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AppendUsage([]UsageLedgerRow{
+		{CreatedAt: 1, ProjectID: "project-a", WorkItemID: "item-1", ThreadID: "t1", Provider: "claude", Model: "m", CostUSD: 0.25},
+		{CreatedAt: 2, ProjectID: "project-a", WorkItemID: "item-1", ThreadID: "t2", Provider: "claude", Model: "m", CostUSD: 0.75},
+		{CreatedAt: 3, ProjectID: "project-a", WorkItemID: "item-2", ThreadID: "t3", Provider: "claude", Model: "m", CostUSD: 2},
+		{CreatedAt: 4, ProjectID: "project-b", WorkItemID: "item-1", ThreadID: "t4", Provider: "claude", Model: "m", CostUSD: 10},
+		{CreatedAt: 5, ProjectID: "project-a", WorkItemID: "", ThreadID: "t5", Provider: "claude", Model: "m", CostUSD: 20},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	costs, err := s.QueryWorkItemCosts("project-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(costs) != 2 || costs["item-1"] != 1 || costs["item-2"] != 2 {
+		t.Fatalf("costs = %#v", costs)
+	}
+	empty, err := s.QueryWorkItemCosts("missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("missing project costs = %#v", empty)
+	}
+	if _, err := s.QueryWorkItemCosts(""); err == nil {
+		t.Fatal("empty project id must be rejected")
+	}
+}
+
 func TestQueryWorkItemUsageDetail(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.AppendUsage([]UsageLedgerRow{

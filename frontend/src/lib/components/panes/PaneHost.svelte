@@ -15,6 +15,7 @@
   import PaneDivider from './PaneDivider.svelte';
   import { measurePane } from './measurePane';
   import { createPaneThreadDrag } from './usePaneThreadDrag.svelte';
+  import WorkflowsPane from '../workflows/WorkflowsPane.svelte';
 
   interface Props {
     children?: Snippet;
@@ -323,7 +324,23 @@
     </section>
   {:else}
     {#each layoutItems as item, index (item.id)}
-      {#if isCompanionKind(item.kind)}
+      {#if item.kind === 'workflows'}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <section
+          use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
+          style={paneSectionStyle(item.widthPx)}
+          class="flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70"
+          data-pane-id={item.paneId}
+          data-pane-kind={item.kind}
+          data-pane-min-width={minPaneWidth}
+          data-pane-width={item.widthPx}
+          data-pane-focused={focusedPaneId === item.paneId}
+          onpointerdown={() => handlePanePointerDown(item.paneId)}
+          onfocusin={() => handlePaneFocusIn(item.paneId)}
+        >
+          <WorkflowsPane paneId={item.paneId} />
+        </section>
+      {:else if isCompanionKind(item.kind)}
         <!-- Companion panes (plan/design-preview/review panels + the
              take-control PTY mirror) are not ThreadPanes: no thread-drop
              wiring, and they hold their own logical focus — pane-scoped

@@ -41,9 +41,10 @@ export type ProjectSortMode = "lastActivity" | "createdAt" | "manual";
 
 export interface PaneLayoutPersistedPane {
   paneId: string;
-  kind: "thread" | "plan" | "design-preview" | "review";
+  kind: "thread" | "plan" | "design-preview" | "review" | "workflows";
   threadId?: string;
   sourcePaneId?: string;
+  workflowState?: unknown;
   widthPx: number;
 }
 
@@ -181,6 +182,11 @@ export interface Settings {
    * state.
    */
   usagePeriod: string;
+
+  /** Whether the workflow drain may start new queued runs. */
+  workflowQueueActive: boolean;
+  /** Global workflow phase concurrency, bounded by the backend to 1..32. */
+  workflowConcurrency: number;
 }
 
 export interface NetworkPersistedSettings {

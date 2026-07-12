@@ -96,6 +96,10 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:turn_completed')).toBe(1);
     expect(wailsListenerCount('provider:subagent_notification')).toBe(1);
     expect(wailsListenerCount('thread:updated')).toBe(1);
+    expect(wailsListenerCount('workflow:item-state')).toBe(1);
+    expect(wailsListenerCount('workflow:queue-state')).toBe(1);
+    expect(wailsListenerCount('workflow:phase-state')).toBe(1);
+    expect(wailsListenerCount('workflow:error')).toBe(1);
 
     cleanup();
 
@@ -108,6 +112,10 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:turn_completed')).toBe(0);
     expect(wailsListenerCount('provider:subagent_notification')).toBe(0);
     expect(wailsListenerCount('thread:updated')).toBe(0);
+    expect(wailsListenerCount('workflow:item-state')).toBe(0);
+    expect(wailsListenerCount('workflow:queue-state')).toBe(0);
+    expect(wailsListenerCount('workflow:phase-state')).toBe(0);
+    expect(wailsListenerCount('workflow:error')).toBe(0);
 
     cleanup = setupEventListeners();
   });

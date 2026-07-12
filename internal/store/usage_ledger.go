@@ -128,6 +128,39 @@ func (s *Store) QueryWorkItemUsage(workItemID string) (WorkItemUsage, error) {
 	return usage, nil
 }
 
+// QueryWorkItemCosts returns the wire-reported cost total for every workflow
+// item in a project. The grouped query keeps overview loads constant-time in
+// query count instead of issuing one aggregate per visible run.
+func (s *Store) QueryWorkItemCosts(projectID string) (map[string]float64, error) {
+	if projectID == "" {
+		return nil, fmt.Errorf("store: query work item costs: empty project id")
+	}
+	rows, err := s.db.Query(
+		`SELECT work_item_id, SUM(cost_usd)
+		 FROM usage_ledger
+		 WHERE project_id = ? AND work_item_id != ''
+		 GROUP BY work_item_id`, projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query work item costs for project %s: %w", projectID, err)
+	}
+	defer rows.Close()
+
+	costs := make(map[string]float64)
+	for rows.Next() {
+		var itemID string
+		var cost float64
+		if err := rows.Scan(&itemID, &cost); err != nil {
+			return nil, fmt.Errorf("store: query work item costs for project %s: scan: %w", projectID, err)
+		}
+		costs[itemID] = cost
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: query work item costs for project %s: iterate: %w", projectID, err)
+	}
+	return costs, nil
+}
+
 // QueryWorkItemUsageDetail groups one work item's ledger rows by model and
 // cost source. Callers use the cost_source='none' groups for query-time USD
 // estimation while QueryWorkItemUsage remains the authoritative token and

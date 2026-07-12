@@ -67,10 +67,14 @@ func TestWorkflowListDefinitionsIncludesValidationAndPredictedPosition(t *testin
 		t.Fatal(err)
 	}
 
-	listings, err := app.WorkflowListDefinitions(projectRow.ID)
+	catalog, err := app.WorkflowListDefinitions(projectRow.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if catalog.BaseBranch != "main" || catalog.PredictedQueuePosition != 2 {
+		t.Fatalf("catalog metadata = %+v", catalog)
+	}
+	listings := catalog.Workflows
 	if len(listings) != 2 {
 		t.Fatalf("listings = %+v", listings)
 	}
@@ -79,12 +83,56 @@ func TestWorkflowListDefinitionsIncludesValidationAndPredictedPosition(t *testin
 		byID[listing.ID] = listing
 	}
 	valid := byID["valid"]
-	if !valid.Valid || !valid.AllBindingsAvailable || valid.PhaseCount != 1 || len(valid.Phases) != 1 || valid.Phases[0].Provider != "codex" || valid.PredictedQueuePosition != 2 {
+	if !valid.Valid || !valid.AllBindingsAvailable || valid.PhaseCount != 1 || len(valid.Phases) != 1 || valid.Phases[0].Provider != "codex" {
 		t.Fatalf("valid listing = %+v", valid)
+	}
+	if len(valid.Inputs) != 3 || valid.Inputs[0].Name != "approved" || valid.Inputs[0].Type != "boolean" || !valid.Inputs[0].Required ||
+		valid.Inputs[1].Name != "mode" || valid.Inputs[1].Type != "string" || len(valid.Inputs[1].Enum) != 2 || valid.Inputs[1].Required ||
+		valid.Inputs[2].Name != "source" || valid.Inputs[2].Format != "path" || !valid.Inputs[2].Required {
+		t.Fatalf("valid inputs = %+v", valid.Inputs)
 	}
 	invalid := byID["invalid"]
 	if invalid.Valid || invalid.AllBindingsAvailable || !strings.Contains(invalid.FirstValidationError, "not bindable") {
 		t.Fatalf("invalid listing = %+v", invalid)
+	}
+}
+
+func TestWorkflowItemDetailAndListCostsIncludeUsage(t *testing.T) {
+	app := newTestAppWithStore(t)
+	item := store.WorkItem{
+		ID: "usage-item", ProjectID: defaultTestProjectID, Goal: "measure", WorkflowID: "wf",
+		WorkflowScope: "shared", State: string(engine.StateDone), Source: "manual", CreatedAt: 1,
+		Disposition: json.RawMessage(`{"action":"merged","policy":"manual","at":2}`),
+		Digest:      json.RawMessage(`{"whatHappened":"detail only","whatItNeeds":"nothing"}`),
+	}
+	if err := app.store.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.AppendUsage([]store.UsageLedgerRow{
+		{CreatedAt: 2, ProjectID: defaultTestProjectID, WorkItemID: item.ID, ThreadID: "phase", Provider: "claude", Model: "m", InputTokens: 8, OutputTokens: 5, CostUSD: 1.25},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := app.WorkflowGetItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Usage.TotalTokens != 13 || detail.Usage.CostUSD != 1.25 {
+		t.Fatalf("detail usage = %+v", detail.Usage)
+	}
+	costs, err := app.WorkflowListItemCosts(defaultTestProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(costs) != 1 || costs[item.ID] != 1.25 {
+		t.Fatalf("costs = %#v", costs)
+	}
+	summaries, err := app.WorkflowListItems(defaultTestProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || string(summaries[0].Disposition) != string(item.Disposition) || len(summaries[0].Digest) != 0 {
+		t.Fatalf("summaries = %#v", summaries)
 	}
 }
 
@@ -138,6 +186,19 @@ func writeWorkflowListingFixtures(t *testing.T, configRoot, slug string) {
 	valid := `id: valid
 name: Valid workflow
 default_step_mode: true
+inputs:
+  approved:
+    schema:
+      type: boolean
+  mode:
+    optional: true
+    schema:
+      type: string
+      enum: [fast, thorough]
+  source:
+    schema:
+      type: string
+      format: path
 phases:
   - id: work
     driver: agent

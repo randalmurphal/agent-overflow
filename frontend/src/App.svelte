@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { ensureMainPane, getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
+  import { ensureMainPane, getFocusedPaneId, getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
   import {
     OPEN_SETTINGS_EVENT,
     OPEN_SHIP_CHANGES_EVENT,
@@ -130,6 +130,7 @@
         isCheatSheetOpen() ||
         isMessageSearchOpen() ||
         isThreadPickerOpen(),
+      workflowsFocus: getFocusedPaneId() === 'workflows',
     });
   }
 

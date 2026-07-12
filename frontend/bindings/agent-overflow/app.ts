@@ -2959,8 +2959,17 @@ export function WorkflowGetJobNotes(automationID: string): $CancellablePromise<s
  * WorkflowListDefinitions returns resolved project/shared definitions with the
  * existing dry-run validator's first finding and binding cross-check.
  */
-export function WorkflowListDefinitions(projectID: string): $CancellablePromise<$models.WorkflowDefinitionListing[]> {
+export function WorkflowListDefinitions(projectID: string): $CancellablePromise<$models.WorkflowDefinitionCatalog> {
     return $Call.ByID(2064216126, projectID).then(($result: any) => {
+        return $$createType103($result);
+    });
+}
+
+/**
+ * WorkflowListItemCosts returns grouped per-run costs for overview rows.
+ */
+export function WorkflowListItemCosts(projectID: string): $CancellablePromise<{ [_ in string]?: number }> {
+    return $Call.ByID(1544440599, projectID).then(($result: any) => {
         return $$createType104($result);
     });
 }
@@ -2978,6 +2987,17 @@ export function WorkflowListItems(projectID: string): $CancellablePromise<store$
 export function WorkflowMergeItem(itemID: string): $CancellablePromise<$models.WorkflowDispositionReceipt> {
     return $Call.ByID(3006532931, itemID).then(($result: any) => {
         return $$createType100($result);
+    });
+}
+
+/**
+ * WorkflowOpenStudioThread opens or returns the project/workflow-specific
+ * studio shell. Studio tooling and kickoff prompts land in M4; this RPC only
+ * creates the correctly scoped thread and title.
+ */
+export function WorkflowOpenStudioThread(projectID: string, workflowID: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(304020682, projectID, workflowID).then(($result: any) => {
+        return $$createType1($result);
     });
 }
 
@@ -3156,6 +3176,6 @@ const $$createType99 = $models.MCPAuthInitResult.createFrom;
 const $$createType100 = $models.WorkflowDispositionReceipt.createFrom;
 const $$createType101 = store$0.WorkItem.createFrom;
 const $$createType102 = $models.WorkflowItemDetail.createFrom;
-const $$createType103 = $models.WorkflowDefinitionListing.createFrom;
-const $$createType104 = $Create.Array($$createType103);
+const $$createType103 = $models.WorkflowDefinitionCatalog.createFrom;
+const $$createType104 = $Create.Map($Create.Any, $Create.Any);
 const $$createType105 = $Create.Array($$createType101);

@@ -155,6 +155,27 @@ export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
 export const Version = dispatch('Version');
 
+// Workflow surface.
+export const WorkflowAnswerQuestion = dispatch('WorkflowAnswerQuestion');
+export const WorkflowCancelItem = dispatch('WorkflowCancelItem');
+export const WorkflowCreateItemPR = dispatch('WorkflowCreateItemPR');
+export const WorkflowDiscardItem = dispatch('WorkflowDiscardItem');
+export const WorkflowEnqueueItem = dispatch('WorkflowEnqueueItem');
+export const WorkflowGetItem = dispatch('WorkflowGetItem');
+export const WorkflowGetJobNotes = dispatch('WorkflowGetJobNotes');
+export const WorkflowListDefinitions = dispatch('WorkflowListDefinitions');
+export const WorkflowListItemCosts = dispatch('WorkflowListItemCosts');
+export const WorkflowListItems = dispatch('WorkflowListItems');
+export const WorkflowMergeItem = dispatch('WorkflowMergeItem');
+export const WorkflowOpenStudioThread = dispatch('WorkflowOpenStudioThread');
+export const WorkflowOpenTriageAgent = dispatch('WorkflowOpenTriageAgent');
+export const WorkflowOpenTriageThread = dispatch('WorkflowOpenTriageThread');
+export const WorkflowRemoveQueuedItem = dispatch('WorkflowRemoveQueuedItem');
+export const WorkflowReorderQueue = dispatch('WorkflowReorderQueue');
+export const WorkflowResolveGate = dispatch('WorkflowResolveGate');
+export const WorkflowResumeItem = dispatch('WorkflowResumeItem');
+export const WorkflowSetJobNotes = dispatch('WorkflowSetJobNotes');
+
 // Per-provider/model context window + auto-compact thresholds.
 // GetContextSettings hydrates the form; the two updates persist either
 // the model default (UpdateContextSettingsProfile) or a thread-scoped

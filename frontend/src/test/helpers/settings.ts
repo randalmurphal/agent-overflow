@@ -36,6 +36,8 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     gitlabSelfHostedHosts: [],
     projectSortMode: 'lastActivity',
     usagePeriod: 'month',
+    workflowQueueActive: true,
+    workflowConcurrency: 2,
     ...overrides,
   };
 }

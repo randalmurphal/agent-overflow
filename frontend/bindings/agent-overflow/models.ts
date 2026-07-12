@@ -29,6 +29,9 @@ import * as terminal$0 from "./internal/terminal/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as workspacefiles$0 from "./internal/workspacefiles/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as json$0 from "../encoding/json/models.js";
 
 /**
  * AttachmentThumbnail is the wire shape returned by GetAttachmentThumbnail.
@@ -1951,17 +1954,87 @@ export class WorkflowArtifact {
     }
 }
 
+export class WorkflowDefinitionCatalog {
+    "baseBranch": string;
+    "predictedQueuePosition": number;
+    "workflows": WorkflowDefinitionListing[];
+
+    /** Creates a new WorkflowDefinitionCatalog instance. */
+    constructor($$source: Partial<WorkflowDefinitionCatalog> = {}) {
+        if (!("baseBranch" in $$source)) {
+            this["baseBranch"] = "";
+        }
+        if (!("predictedQueuePosition" in $$source)) {
+            this["predictedQueuePosition"] = 0;
+        }
+        if (!("workflows" in $$source)) {
+            this["workflows"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowDefinitionCatalog instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowDefinitionCatalog {
+        const $$createField2_0 = $$createType33;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("workflows" in $$parsedSource) {
+            $$parsedSource["workflows"] = $$createField2_0($$parsedSource["workflows"]);
+        }
+        return new WorkflowDefinitionCatalog($$parsedSource as Partial<WorkflowDefinitionCatalog>);
+    }
+}
+
+export class WorkflowDefinitionInput {
+    "name": string;
+    "type": string;
+    "required": boolean;
+    "enum"?: any[];
+    "format"?: string;
+    "default"?: json$0.RawMessage;
+    "multiline"?: boolean;
+
+    /** Creates a new WorkflowDefinitionInput instance. */
+    constructor($$source: Partial<WorkflowDefinitionInput> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("type" in $$source)) {
+            this["type"] = "";
+        }
+        if (!("required" in $$source)) {
+            this["required"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowDefinitionInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowDefinitionInput {
+        const $$createField3_0 = $$createType34;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("enum" in $$parsedSource) {
+            $$parsedSource["enum"] = $$createField3_0($$parsedSource["enum"]);
+        }
+        return new WorkflowDefinitionInput($$parsedSource as Partial<WorkflowDefinitionInput>);
+    }
+}
+
 export class WorkflowDefinitionListing {
     "id": string;
     "name": string;
     "scope": string;
     "phaseCount": number;
     "phases": WorkflowDefinitionPhase[];
+    "inputs": WorkflowDefinitionInput[];
     "defaultStepMode": boolean;
     "valid": boolean;
     "firstValidationError"?: string;
     "allBindingsAvailable": boolean;
-    "predictedQueuePosition": number;
 
     /** Creates a new WorkflowDefinitionListing instance. */
     constructor($$source: Partial<WorkflowDefinitionListing> = {}) {
@@ -1980,6 +2053,9 @@ export class WorkflowDefinitionListing {
         if (!("phases" in $$source)) {
             this["phases"] = [];
         }
+        if (!("inputs" in $$source)) {
+            this["inputs"] = [];
+        }
         if (!("defaultStepMode" in $$source)) {
             this["defaultStepMode"] = false;
         }
@@ -1989,9 +2065,6 @@ export class WorkflowDefinitionListing {
         if (!("allBindingsAvailable" in $$source)) {
             this["allBindingsAvailable"] = false;
         }
-        if (!("predictedQueuePosition" in $$source)) {
-            this["predictedQueuePosition"] = 0;
-        }
 
         Object.assign(this, $$source);
     }
@@ -2000,10 +2073,14 @@ export class WorkflowDefinitionListing {
      * Creates a new WorkflowDefinitionListing instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionListing {
-        const $$createField4_0 = $$createType33;
+        const $$createField4_0 = $$createType36;
+        const $$createField5_0 = $$createType38;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField4_0($$parsedSource["phases"]);
+        }
+        if ("inputs" in $$parsedSource) {
+            $$parsedSource["inputs"] = $$createField5_0($$parsedSource["inputs"]);
         }
         return new WorkflowDefinitionListing($$parsedSource as Partial<WorkflowDefinitionListing>);
     }
@@ -2068,6 +2145,7 @@ export class WorkflowItemDetail {
     "item": store$0.WorkItem;
     "phases": store$0.WorkItemPhase[];
     "artifacts": WorkflowArtifact[];
+    "usage": store$0.WorkItemUsage;
 
     /** Creates a new WorkflowItemDetail instance. */
     constructor($$source: Partial<WorkflowItemDetail> = {}) {
@@ -2080,6 +2158,9 @@ export class WorkflowItemDetail {
         if (!("artifacts" in $$source)) {
             this["artifacts"] = [];
         }
+        if (!("usage" in $$source)) {
+            this["usage"] = (new store$0.WorkItemUsage());
+        }
 
         Object.assign(this, $$source);
     }
@@ -2088,9 +2169,10 @@ export class WorkflowItemDetail {
      * Creates a new WorkflowItemDetail instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowItemDetail {
-        const $$createField0_0 = $$createType34;
-        const $$createField1_0 = $$createType36;
-        const $$createField2_0 = $$createType38;
+        const $$createField0_0 = $$createType39;
+        const $$createField1_0 = $$createType41;
+        const $$createField2_0 = $$createType43;
+        const $$createField3_0 = $$createType44;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
@@ -2100,6 +2182,9 @@ export class WorkflowItemDetail {
         }
         if ("artifacts" in $$parsedSource) {
             $$parsedSource["artifacts"] = $$createField2_0($$parsedSource["artifacts"]);
+        }
+        if ("usage" in $$parsedSource) {
+            $$parsedSource["usage"] = $$createField3_0($$parsedSource["usage"]);
         }
         return new WorkflowItemDetail($$parsedSource as Partial<WorkflowItemDetail>);
     }
@@ -2132,7 +2217,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType40;
+        const $$createField0_0 = $$createType46;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -2264,12 +2349,18 @@ const $$createType28 = $Create.Array($$createType27);
 const $$createType29 = provider$0.PendingInteractiveRequests.createFrom;
 const $$createType30 = LiveStateTodo.createFrom;
 const $$createType31 = $Create.Nullable($$createType30);
-const $$createType32 = WorkflowDefinitionPhase.createFrom;
+const $$createType32 = WorkflowDefinitionListing.createFrom;
 const $$createType33 = $Create.Array($$createType32);
-const $$createType34 = store$0.WorkItem.createFrom;
-const $$createType35 = store$0.WorkItemPhase.createFrom;
+const $$createType34 = $Create.Array($Create.Any);
+const $$createType35 = WorkflowDefinitionPhase.createFrom;
 const $$createType36 = $Create.Array($$createType35);
-const $$createType37 = WorkflowArtifact.createFrom;
+const $$createType37 = WorkflowDefinitionInput.createFrom;
 const $$createType38 = $Create.Array($$createType37);
-const $$createType39 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType40 = $Create.Array($$createType39);
+const $$createType39 = store$0.WorkItem.createFrom;
+const $$createType40 = store$0.WorkItemPhase.createFrom;
+const $$createType41 = $Create.Array($$createType40);
+const $$createType42 = WorkflowArtifact.createFrom;
+const $$createType43 = $Create.Array($$createType42);
+const $$createType44 = store$0.WorkItemUsage.createFrom;
+const $$createType45 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType46 = $Create.Array($$createType45);

@@ -51,6 +51,8 @@ const DEFAULT_SETTINGS: Settings = {
   gitlabSelfHostedHosts: [],
   projectSortMode: "lastActivity",
   usagePeriod: "month",
+  workflowQueueActive: true,
+  workflowConcurrency: 2,
 };
 
 function defaultSettings(): Settings {
