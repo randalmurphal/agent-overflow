@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-overflow.dev/schemas/workflow.schema.json",
+  "title": "Agent Overflow Workflow",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "phases"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+    "name": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "inputs": {"$ref": "#/$defs/variables"},
+    "outputs": {"type": "object", "additionalProperties": {"$ref": "#/$defs/workflowOutput"}},
+    "phases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/phase"}},
+    "default_step_mode": {"type": "boolean"},
+    "cleanup": {"enum": ["manual", "auto"]}
+  },
+  "$defs": {
+    "variables": {"type": "object", "additionalProperties": {"$ref": "#/$defs/variable"}},
+    "variable": {
+      "type": "object", "additionalProperties": false, "required": ["schema"],
+      "properties": {"schema": {"$ref": "#/$defs/jsonSchema"}, "optional": {"type": "boolean"}}
+    },
+    "jsonSchema": {
+      "type": "object", "additionalProperties": false, "required": ["type"],
+      "properties": {
+        "type": {"enum": ["string", "number", "boolean", "array", "object"]},
+        "enum": {"type": "array"}, "format": {"type": "string"}, "description": {"type": "string"},
+        "items": {"$ref": "#/$defs/jsonSchema"},
+        "properties": {"type": "object", "additionalProperties": {"$ref": "#/$defs/jsonSchema"}},
+        "required": {"type": "array", "items": {"type": "string"}},
+        "additionalProperties": {"type": "boolean"},
+        "minimum": {"type": "number"}, "maximum": {"type": "number"},
+        "minLength": {"type": "integer", "minimum": 0}, "maxLength": {"type": "integer", "minimum": 0},
+        "minItems": {"type": "integer", "minimum": 0}, "maxItems": {"type": "integer", "minimum": 0}
+      }
+    },
+    "workflowOutput": {
+      "type": "object", "additionalProperties": false, "required": ["from"],
+      "properties": {"from": {"type": "string"}, "artifact": {"type": "boolean"}}
+    },
+    "phase": {
+      "type": "object", "additionalProperties": false, "required": ["id", "driver", "gate"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9-]+$"}, "name": {"type": "string"},
+        "driver": {"enum": ["agent", "tool"]}, "shape": {"enum": ["single", "fan-out"]},
+        "provider": {"type": "string"}, "model": {"type": "string"}, "prompt": {"type": "string"},
+        "inputs": {"$ref": "#/$defs/variables"}, "outputs": {"$ref": "#/$defs/variables"},
+        "check": {"type": "string"}, "command": {"type": "string"},
+        "resources": {"type": "array", "items": {"type": "string"}},
+        "commands": {"type": "array", "items": {"type": "string"}},
+        "capabilities": {"type": "array", "items": {"type": "string"}},
+        "mcp": {"type": "array", "items": {"type": "string"}},
+        "access": {"enum": ["read-only", "write"]},
+        "fan_out": {"type": "array", "items": {"$ref": "#/$defs/unit"}},
+        "join": {"$ref": "#/$defs/unit"}, "gate": {"$ref": "#/$defs/gate"}
+      }
+    },
+    "unit": {
+      "type": "object", "additionalProperties": false, "required": ["id"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9-]+$"}, "provider": {"type": "string"}, "model": {"type": "string"},
+        "prompt": {"type": "string"}, "command": {"type": "string"}, "access": {"enum": ["read-only", "write"]}
+      }
+    },
+    "gate": {
+      "type": "object", "additionalProperties": false, "required": ["routes"],
+      "properties": {"routes": {"type": "array", "items": {"$ref": "#/$defs/route"}}}
+    },
+    "route": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "when": {"$ref": "#/$defs/predicate"}, "to": {"type": "string"}, "loop": {"type": "string"},
+        "max": {"type": "integer", "minimum": 1}, "feedback": {"type": "array", "items": {"type": "string"}},
+        "park": {"type": "string"}, "human": {"$ref": "#/$defs/human"}
+      }
+    },
+    "human": {
+      "type": "object", "additionalProperties": false, "required": ["approve", "reject"],
+      "properties": {"approve": {"type": "string", "minLength": 1}, "reject": {"$ref": "#/$defs/loopTarget"}}
+    },
+    "loopTarget": {
+      "type": "object", "additionalProperties": false, "required": ["loop", "max"],
+      "properties": {
+        "loop": {"type": "string"}, "max": {"type": "integer", "minimum": 1},
+        "feedback": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "comparison": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "value"],
+      "properties": {"ref": {"type": "string"}, "value": {}}
+    },
+    "membership": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "values"],
+      "properties": {"ref": {"type": "string"}, "values": {"type": "array", "minItems": 1}}
+    },
+    "predicate": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "eq": {"$ref": "#/$defs/comparison"}, "neq": {"$ref": "#/$defs/comparison"},
+        "gt": {"$ref": "#/$defs/comparison"}, "gte": {"$ref": "#/$defs/comparison"},
+        "lt": {"$ref": "#/$defs/comparison"}, "lte": {"$ref": "#/$defs/comparison"},
+        "in": {"$ref": "#/$defs/membership"}, "exists": {"type": "string"},
+        "all": {"type": "array", "items": {"$ref": "#/$defs/predicate"}},
+        "any": {"type": "array", "items": {"$ref": "#/$defs/predicate"}},
+        "not": {"$ref": "#/$defs/predicate"}
+      }
+    }
+  }
+}

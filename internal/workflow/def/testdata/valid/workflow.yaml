@@ -1,0 +1,81 @@
+# yaml-language-server: $schema=../../workflow.schema.json
+id: build-review
+name: Build and review
+description: A validator fixture.
+inputs:
+  goal:
+    schema:
+      type: string
+  context:
+    schema:
+      type: object
+      properties:
+        ticket:
+          type: string
+      required: []
+    optional: true
+outputs:
+  changed:
+    from: implement.changed
+phases:
+  - id: plan
+    driver: agent
+    provider: codex
+    model: test-model
+    prompt: plan.md
+    inputs:
+      goal:
+        schema:
+          type: string
+    outputs:
+      approach:
+        schema:
+          type: string
+    gate:
+      routes:
+        - to: implement
+  - id: implement
+    driver: agent
+    provider: codex
+    model: test-model
+    prompt: implement.md
+    access: write
+    inputs:
+      plan.approach:
+        schema:
+          type: string
+    outputs:
+      changed:
+        schema:
+          type: boolean
+    resources: [builder]
+    commands: [report]
+    gate:
+      routes:
+        - to: review
+  - id: review
+    driver: tool
+    check: test
+    inputs:
+      implement.changed:
+        schema:
+          type: boolean
+    outputs:
+      ok:
+        schema:
+          type: boolean
+      notes:
+        schema:
+          type: string
+        optional: true
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: review.ok
+              value: true
+          to: done
+        - loop: implement
+          max: 2
+          feedback: [review.notes]
+cleanup: manual

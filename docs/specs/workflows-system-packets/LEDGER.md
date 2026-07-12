@@ -11,7 +11,9 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P0.2 project slugs + config dirs | `m0/p02-project-slugs` | `~/repos/ao-lanes/p02` | gpt-5.6-sol / high | `019f5436-71b2-7c21-becc-69506f21bc46` | **merged** |
 | P0.3 OS notifications | `m0/p03-os-notifications` | `~/repos/ao-lanes/p03` | gpt-5.6-sol / high | `019f5437-1334-7ad1-9d71-4b04bb7b8439` | PARKED (valid BLOCKED) |
 | P0.4 docs hygiene | `m0/p04-docs-hygiene` | `~/repos/ao-lanes/p04` | gpt-5.6-sol / high | `019f5434-5f98-7ba2-9bea-3b89c2d30656` | **merged** |
-| P1.1 `internal/workflow/def` | `m1/p11-workflow-def` | `~/repos/ao-lanes/p11` | gpt-5.6-sol / high | _pending_ | authored |
+| P1.1 `internal/workflow/def` | `m1/p11-workflow-def` | `~/repos/ao-lanes/p11` | gpt-5.6-sol / high | `019f545e-ab3a-78f2-a7bc-66e4f65a8164` | **merged** |
+| P1.2 `internal/workflow/profile` | `m1/p12-profile` | `~/repos/ao-lanes/p12` | gpt-5.6-sol / high | _pending_ | authored |
+| P1.3 `ao` CLI skeleton | `m1/p13-ao-cli` | `~/repos/ao-lanes/p13` | gpt-5.6-sol / high | _pending_ | authored |
 
 ## Events
 
@@ -73,6 +75,26 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   under a session → fresh, not resume; it had produced only BLOCKED.md).
   Observed debt (not fixed now): root-package -race runtime >10min deserves
   a test-speed pass someday.
+- **Gate fix verified on main (`bc1d28b9`):** full `make test-race` green;
+  root package 679s under two-codex-lane load (would have failed the old
+  600s budget; 1800s has ~2.6x headroom), triage 374s.
+- **P1.1 reviewed + merged.** 2795-line def package, scope exact. Claude
+  audit highlights: D2a envelope generator byte-deterministic (sorted
+  required + Go map-key marshal order); ValidateEnvelope enforces strict
+  three-shape mutual exclusion + all-findings-sorted feedback errors + size
+  cap with write-to-a-file guidance; "ancestor" formalized as DOMINANCE on
+  the loop-free forward graph (statically sound choice — loop targets are
+  guaranteed executed on every path; consistent with D2/D5 producer rules);
+  unbounded forward cycles rejected (bounded loop routes only); first-match
+  route-order dead-route detection; optionality propagates through dotted
+  paths via required-field absence; interpolation provably inert
+  (ReplaceAllStringFunc, no rescan) with `(not provided)`; prompt files
+  template-validated against declared inputs with symlink-confined paths;
+  BindingsUnchecked is a distinct visible status. Assumptions all
+  reasonable (per-phase inputs redeclare consumer schema; 1MiB/4MiB read
+  caps; scheduler blocks live outside the workflow doc per spec §11;
+  sub-workflows post-v1). Claude re-ran go-build + focused -race + full
+  go-test independently: green.
 - **P0.2 flagged an internal packet contradiction** (standing rules ban all
   git ops; a gate asked for `git diff --stat` output) — resolved
   conservatively, no git run. Future packets: standing rules should permit
