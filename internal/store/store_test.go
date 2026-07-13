@@ -1,38 +1,101 @@
 package store
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 )
 
-// defaultTestProjectID is the project id lazily created by newTestStore
-// so that legacy tests that call makeThread() without supplying a
-// ProjectID still satisfy the threads.project_id FK.
+// defaultTestProjectID is seeded once in the migrated template so legacy
+// tests that call makeThread() without supplying a ProjectID still satisfy
+// the threads.project_id FK.
 const defaultTestProjectID = "default-test-project"
+
+var testStoreTemplatePath string
+
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "agent-overflow-store-template-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create store test template directory: %v\n", err)
+		os.Exit(1)
+	}
+	testStoreTemplatePath = filepath.Join(dir, "template.sqlite")
+	template, err := New(testStoreTemplatePath)
+	if err == nil {
+		err = template.CreateProject(Project{
+			ID: defaultTestProjectID, Path: "/tmp/test", Name: "Default Test Project",
+			CreatedAt: 1, UpdatedAt: 1,
+		})
+	}
+	if err == nil {
+		_, err = template.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	}
+	if template != nil {
+		err = errors.Join(err, template.Close())
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "build store test template: %v\n", err)
+		if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "remove failed store test template: %v\n", cleanupErr)
+		}
+		os.Exit(1)
+	}
+
+	code := m.Run()
+	if err := os.RemoveAll(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "remove store test template: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := New(":memory:")
+	clonePath := filepath.Join(t.TempDir(), "store.sqlite")
+	if err := copyTestStoreTemplate(clonePath); err != nil {
+		t.Fatalf("clone store template: %v", err)
+	}
+	s, err := New(clonePath)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
-
-	// Seed a default project so any thread built via makeThread() has a
-	// valid FK target without the test having to create a project itself.
-	now := time.Now().UnixMilli()
-	if err := s.CreateProject(Project{
-		ID:        defaultTestProjectID,
-		Path:      "/tmp/test",
-		Name:      "Default Test Project",
-		CreatedAt: now,
-		UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("seed default test project: %v", err)
-	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close test store: %v", err)
+		}
+	})
 	return s
+}
+
+func copyTestStoreTemplate(destination string) error {
+	source, err := os.Open(testStoreTemplatePath)
+	if err != nil {
+		return fmt.Errorf("open template: %w", err)
+	}
+	clone, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return errors.Join(fmt.Errorf("create clone: %w", err), source.Close())
+	}
+	_, copyErr := io.Copy(clone, source)
+	sourceCloseErr := source.Close()
+	cloneCloseErr := clone.Close()
+	if copyErr != nil {
+		copyErr = fmt.Errorf("copy template: %w", copyErr)
+	}
+	if sourceCloseErr != nil {
+		sourceCloseErr = fmt.Errorf("close template: %w", sourceCloseErr)
+	}
+	if cloneCloseErr != nil {
+		cloneCloseErr = fmt.Errorf("close clone: %w", cloneCloseErr)
+	}
+	return errors.Join(copyErr, sourceCloseErr, cloneCloseErr)
 }
 
 func makeThread(id, provider string) Thread {

@@ -35,12 +35,27 @@ type WorkItem struct {
 	EndedAt        int64           `json:"endedAt,omitempty"`
 }
 
-// WorkItemListFilter narrows ListWorkItems by optional project and states.
-// An empty ProjectID matches every project.
-type WorkItemListFilter struct {
-	ProjectID string   `json:"projectId"`
-	States    []string `json:"states,omitempty"`
+// WorkItemAttentionContext is the narrow item/phase projection used while an
+// attention transition is synchronously preparing its digest. It deliberately
+// excludes the frozen workflow snapshot and phase fields the digest does not
+// consume.
+type WorkItemAttentionContext struct {
+	Item           WorkItem
+	PhaseID        string
+	OutputEnvelope json.RawMessage
+	Check          string
 }
+
+// WorkItemListFilter narrows ListWorkItems by optional project and states.
+// An empty ProjectID matches every project. UnresolvedOnly excludes cancelled
+// items and every item with a disposition receipt, regardless of state.
+type WorkItemListFilter struct {
+	ProjectID      string   `json:"projectId"`
+	States         []string `json:"states,omitempty"`
+	UnresolvedOnly bool     `json:"unresolvedOnly,omitempty"`
+}
+
+const unresolvedWorkItemsPredicate = `disposition = '' AND state IN ('queued','running','needs-human','done','failed')`
 
 const workItemColumns = `id, project_id, goal, workflow_id, workflow_scope,
 snapshot, state, reason, sort_position, seeds, step_mode, worktree_path,
@@ -108,6 +123,42 @@ func (s *Store) GetWorkItem(id string) (WorkItem, error) {
 	return item, nil
 }
 
+// GetWorkItemAttentionContext loads only the fields needed for an attention
+// digest and notification. SQLite extracts the current phase's check binding
+// from the snapshot so the multi-megabyte snapshot never crosses into Go on
+// the engine owner's synchronous event path.
+func (s *Store) GetWorkItemAttentionContext(id string) (WorkItemAttentionContext, error) {
+	const query = `SELECT
+		w.id, w.project_id, w.goal, w.state, w.reason, w.worktree_path, w.digest,
+		COALESCE(p.phase_id, ''), COALESCE(p.output_envelope, ''),
+		COALESCE((
+			SELECT json_extract(phase.value, '$.check')
+			FROM json_each(NULLIF(w.snapshot, ''), '$.workflow.phases') AS phase
+			WHERE json_extract(phase.value, '$.id') = p.phase_id
+			LIMIT 1
+		), '')
+	FROM work_items AS w
+	LEFT JOIN work_item_phases AS p ON p.rowid = (
+		SELECT latest.rowid FROM work_item_phases AS latest
+		WHERE latest.item_id = w.id
+		ORDER BY latest.started_at DESC, latest.phase_id DESC, latest.attempt DESC
+		LIMIT 1
+	)
+	WHERE w.id = ?`
+	var context WorkItemAttentionContext
+	var digest, output string
+	if err := s.db.QueryRow(query, id).Scan(
+		&context.Item.ID, &context.Item.ProjectID, &context.Item.Goal,
+		&context.Item.State, &context.Item.Reason, &context.Item.WorktreePath,
+		&digest, &context.PhaseID, &output, &context.Check,
+	); err != nil {
+		return WorkItemAttentionContext{}, fmt.Errorf("store: get work item attention context %s: %w", id, err)
+	}
+	context.Item.Digest = json.RawMessage(digest)
+	context.OutputEnvelope = json.RawMessage(output)
+	return context, nil
+}
+
 // GetWorkItemByPhaseThread resolves the workflow item that owns a phase
 // thread. A phase thread may be reused by later attempts, so the newest phase
 // row is only the lookup anchor; ownership remains item-scoped.
@@ -142,7 +193,7 @@ func (s *Store) ListWorkItemSummaries(filter WorkItemListFilter) ([]WorkItem, er
 
 func (s *Store) listWorkItems(filter WorkItemListFilter, columns string) ([]WorkItem, error) {
 	query := `SELECT ` + columns + ` FROM work_items`
-	conditions := make([]string, 0, 2)
+	conditions := make([]string, 0, 3)
 	args := make([]any, 0, 1+len(filter.States))
 	if filter.ProjectID != "" {
 		conditions = append(conditions, `project_id = ?`)
@@ -153,6 +204,9 @@ func (s *Store) listWorkItems(filter WorkItemListFilter, columns string) ([]Work
 		for _, state := range filter.States {
 			args = append(args, state)
 		}
+	}
+	if filter.UnresolvedOnly {
+		conditions = append(conditions, unresolvedWorkItemsPredicate)
 	}
 	if len(conditions) > 0 {
 		query += ` WHERE ` + strings.Join(conditions, ` AND `)

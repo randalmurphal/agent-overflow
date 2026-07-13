@@ -73,7 +73,9 @@ func (e *Engine) transition(item *runtimeItem, to State, reason Reason) error {
 	item.item.State = string(to)
 	item.item.Reason = string(reason)
 	item.item.EndedAt = endedAt
-	e.emitter.Emit("workflow:item-state", StateEvent{ItemID: item.item.ID, From: from, To: to, Reason: reason})
+	e.emitter.Emit("workflow:item-state", StateEvent{
+		ItemID: item.item.ID, ProjectID: item.item.ProjectID, From: from, To: to, Reason: reason,
+	})
 	if to != StateRunning && to != StateQueued {
 		delete(e.items, item.item.ID)
 	}
@@ -183,7 +185,7 @@ func (e *Engine) completeDone(item *runtimeItem, envelope json.RawMessage) error
 			fmt.Errorf("phase %q is absent from item %q snapshot", item.phaseID, item.item.ID),
 		)
 	}
-	counts, countErr := loopCounts(phases)
+	counts, countErr := loopCounts(item.item.ID, phases)
 	if countErr != nil {
 		return errors.Join(e.teardown(item, teardownRequest{output: envelope, phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}), countErr)
 	}

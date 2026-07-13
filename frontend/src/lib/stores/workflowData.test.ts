@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { WorkItem, WorkflowDefinitionCatalog, WorkflowResolvedReceipt } from '../types/workflow';
 import {
   mergeWorkflowProjectLoads,
+  isWorkflowParked,
+  isWorkflowResolved,
   isWorkflowSidebarRun,
   loadWorkflowSidebar,
   nextWorkflowSweepIndex,
@@ -29,7 +31,7 @@ describe('workflow data reducers', () => {
   it('patches item state from events without mutating other rows', () => {
     const rows = [item('a', 'running', 1), item('b', 'queued', 2)];
     const patched = patchWorkflowItems(rows, {
-      itemId: 'a', from: 'running', to: 'needs-human', reason: 'gate',
+      itemId: 'a', projectId: 'p', from: 'running', to: 'needs-human', reason: 'gate',
     });
     expect(patched[0]).toMatchObject({ state: 'needs-human', reason: 'gate' });
     expect(patched[1]).toBe(rows[1]);
@@ -49,6 +51,17 @@ describe('workflow data reducers', () => {
     expect(sweep.map((entry) => entry.id)).toEqual(['old', 'done', 'new']);
     expect(nextWorkflowSweepIndex(sweep, 0, -1, receipts, true)).toBe(2);
     expect(nextWorkflowSweepIndex(sweep, 0, 1, receipts, true)).toBe(2);
+  });
+
+  it('resolves any disposition-bearing run out of the parked and sweep sets', () => {
+    const discardedFailed = item('discarded-failed', 'failed', 40, '{"action":"discarded","policy":"manual","at":1}');
+    expect(isWorkflowParked(discardedFailed)).toBe(false);
+    expect(isWorkflowParked(item('failed', 'failed', 41))).toBe(true);
+    expect(isWorkflowResolved(discardedFailed)).toBe(true);
+    expect(isWorkflowResolved(item('cancelled', 'cancelled', 42))).toBe(true);
+    expect(isWorkflowResolved(item('done', 'done', 43))).toBe(false);
+    const sweep = workflowSweepItems([discardedFailed, item('failed', 'failed', 41)], new Map());
+    expect(sweep.map((entry) => entry.id)).toEqual(['failed']);
   });
 
   it('loads all items once and fetches definitions for every known project', async () => {
@@ -80,12 +93,14 @@ describe('workflow data reducers', () => {
       { ...item('running', 'running', 5), projectId: 'p' },
       { ...item('done', 'done', 6), projectId: 'p' },
       { ...item('resolved', 'done', 7, '{"action":"merged","policy":"manual","at":1}'), projectId: 'p' },
-      { ...item('cancelled', 'cancelled', 8), projectId: 'p' },
+      { ...item('resolved-failure', 'failed', 8, '{"action":"discarded","policy":"manual","at":1}'), projectId: 'p' },
+      { ...item('cancelled', 'cancelled', 9), projectId: 'p' },
     ];
     expect(workflowSidebarRuns(rows, 'p').map((entry) => entry.id)).toEqual([
       'old-attention', 'new-attention', 'failed', 'running', 'queued', 'done',
     ]);
     expect(isWorkflowSidebarRun(rows[6])).toBe(false);
     expect(isWorkflowSidebarRun(rows[7])).toBe(false);
+    expect(isWorkflowSidebarRun(rows[8])).toBe(false);
   });
 });

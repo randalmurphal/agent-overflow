@@ -20,9 +20,11 @@ describe('<WorkflowsFooter>', () => {
       project: { id: 'p', name: 'Project', path: '/tmp/p', sortPosition: 0, createdAt: 1, updatedAt: 1, archived: false },
       threadCount: 0, lastActive: 0,
     }]);
-    setBindingMock('WorkflowListItems', async () => [{
+    setBindingMock('WorkflowListUnresolvedItems', async () => [{
       id: 'run', projectId: 'p', workflowId: 'wf', goal: 'Run', state: 'failed', sortPosition: 1, createdAt: 1,
     }]);
+    setBindingMock('WorkflowListItems', async () => []);
+    setBindingMock('WorkflowListItemCosts', async () => ({}));
     setBindingMock('WorkflowListDefinitions', async () => ({ baseBranch: 'main', predictedQueuePosition: 1, workflows: [] }));
   });
 
@@ -37,7 +39,7 @@ describe('<WorkflowsFooter>', () => {
   });
 
   it('always renders without a badge when quiet', async () => {
-    setBindingMock('WorkflowListItems', async () => []);
+    setBindingMock('WorkflowListUnresolvedItems', async () => []);
     const view = render(WorkflowsFooter);
     await refreshProjects();
     await waitFor(() => expect(view.getByTestId('workflows-footer')).toBeInTheDocument());

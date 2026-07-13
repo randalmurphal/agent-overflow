@@ -166,6 +166,7 @@ export const WorkflowGetJobNotes = dispatch('WorkflowGetJobNotes');
 export const WorkflowListDefinitions = dispatch('WorkflowListDefinitions');
 export const WorkflowListItemCosts = dispatch('WorkflowListItemCosts');
 export const WorkflowListItems = dispatch('WorkflowListItems');
+export const WorkflowListUnresolvedItems = dispatch('WorkflowListUnresolvedItems');
 export const WorkflowMergeItem = dispatch('WorkflowMergeItem');
 export const WorkflowOpenStudioThread = dispatch('WorkflowOpenStudioThread');
 export const WorkflowOpenTriageAgent = dispatch('WorkflowOpenTriageAgent');

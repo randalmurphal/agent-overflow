@@ -12,17 +12,18 @@ export interface WorkflowPhase {
   attempt: number;
   threadId?: string;
   outputEnvelope?: unknown;
-  gateTrace?: unknown;
   status: string;
 }
 
 export interface WorkflowDetail {
   item: WorkflowItem;
+  checkPhaseIds: string[];
   phases: WorkflowPhase[];
 }
 
 export interface WorkflowStateEvent {
   itemId: string;
+  projectId: string;
   from: string;
   to: string;
   reason?: string;

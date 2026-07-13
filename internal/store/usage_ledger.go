@@ -131,16 +131,16 @@ func (s *Store) QueryWorkItemUsage(workItemID string) (WorkItemUsage, error) {
 // QueryWorkItemCosts returns the wire-reported cost total for every workflow
 // item in a project. The grouped query keeps overview loads constant-time in
 // query count instead of issuing one aggregate per visible run.
+const queryWorkItemCostsSQL = `SELECT work_item_id, SUM(cost_usd)
+	 FROM usage_ledger
+	 WHERE project_id = ? AND work_item_id <> ''
+	 GROUP BY work_item_id`
+
 func (s *Store) QueryWorkItemCosts(projectID string) (map[string]float64, error) {
 	if projectID == "" {
 		return nil, fmt.Errorf("store: query work item costs: empty project id")
 	}
-	rows, err := s.db.Query(
-		`SELECT work_item_id, SUM(cost_usd)
-		 FROM usage_ledger
-		 WHERE project_id = ? AND work_item_id != ''
-		 GROUP BY work_item_id`, projectID,
-	)
+	rows, err := s.db.Query(queryWorkItemCostsSQL, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("store: query work item costs for project %s: %w", projectID, err)
 	}

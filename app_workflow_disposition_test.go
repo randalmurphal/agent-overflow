@@ -178,7 +178,7 @@ func TestWorkflowAutoMergeHonorsCleanupAutoAfterReceipt(t *testing.T) {
 	}
 
 	workflowEmitter{app: app, emit: func(string, any) {}}.Emit(
-		"workflow:item-state", engine.StateEvent{ItemID: item.ID, From: engine.StateRunning, To: engine.StateDone},
+		"workflow:item-state", engine.StateEvent{ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateDone},
 	)
 	app.workflowAutoDispositionWG.Wait()
 	stored, err := app.store.GetWorkItem(item.ID)
@@ -405,7 +405,7 @@ func TestWorkflowCreateItemPRPushesAndPersistsReference(t *testing.T) {
 	}
 	testutil.RunGit(t, repo, "config", "url."+remote+".insteadOf", remoteURL)
 	workflowEmitter{app: app, emit: func(string, any) {}}.Emit(
-		"workflow:item-state", engine.StateEvent{ItemID: autoItem.ID, From: engine.StateRunning, To: engine.StateDone},
+		"workflow:item-state", engine.StateEvent{ItemID: autoItem.ID, ProjectID: autoItem.ProjectID, From: engine.StateRunning, To: engine.StateDone},
 	)
 	app.workflowAutoDispositionWG.Wait()
 	autoStored, err := app.store.GetWorkItem(autoItem.ID)

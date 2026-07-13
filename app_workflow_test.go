@@ -55,8 +55,12 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(detail.Phases) != 2 || detail.Phases[0].PhaseID != "prepare" || detail.Phases[0].Status != "completed" ||
-		len(detail.Phases[0].GateTrace) == 0 || detail.Phases[1].PhaseID != "finish" || detail.Phases[1].Status != "parked" {
+		detail.Phases[1].PhaseID != "finish" || detail.Phases[1].Status != "parked" {
 		t.Fatalf("gate phase detail = %+v", detail)
+	}
+	persistedGatePhases, err := app.store.ListWorkItemPhases(item.ID)
+	if err != nil || len(persistedGatePhases) != 2 || len(persistedGatePhases[0].GateTrace) == 0 {
+		t.Fatalf("persisted gate phase trace = %+v, %v", persistedGatePhases, err)
 	}
 	questionDetail, err := app.WorkflowGetItem(item.ID)
 	if err != nil {
@@ -89,10 +93,18 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 		completed.Phases[2].ThreadID != questionThreadID || completed.Phases[2].Status != "completed" {
 		t.Fatalf("completed phase detail = %+v", completed)
 	}
-	if strings.Contains(string(completed.Item.Snapshot), "prepare.md") || !strings.Contains(string(completed.Item.Snapshot), "Prepare the goal") {
-		t.Fatalf("snapshot did not freeze inlined prompt bodies: %s", completed.Item.Snapshot)
+	persistedItem, err := app.store.GetWorkItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, phase := range completed.Phases {
+	if strings.Contains(string(persistedItem.Snapshot), "prepare.md") || !strings.Contains(string(persistedItem.Snapshot), "Prepare the goal") {
+		t.Fatalf("snapshot did not freeze inlined prompt bodies: %s", persistedItem.Snapshot)
+	}
+	persistedPhases, err := app.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range persistedPhases {
 		if !filepath.IsAbs(phase.NarrativePath) || !strings.Contains(phase.NarrativePath, filepath.Join("workflow-runs", item.ID)) {
 			t.Fatalf("phase narrative path = %q", phase.NarrativePath)
 		}

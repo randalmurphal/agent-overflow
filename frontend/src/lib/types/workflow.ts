@@ -3,13 +3,16 @@ import type {
   WorkflowDefinitionCatalog,
   WorkflowDefinitionInput,
   WorkflowDefinitionListing,
-  WorkflowItemDetail,
+  WorkflowItemDetailView,
+  WorkflowItemPhaseView,
 } from '../../../bindings/agent-overflow/models';
 import type {
   WorkItem,
-  WorkItemPhase,
   WorkItemUsage,
 } from '../../../bindings/agent-overflow/internal/store/models';
+
+export type WorkflowItemDetail = WorkflowItemDetailView;
+export type WorkItemPhase = WorkflowItemPhaseView;
 
 export type WorkflowRunState = 'queued' | 'running' | 'needs-human' | 'done' | 'failed' | 'cancelled';
 export type WorkflowRunReason =
@@ -29,6 +32,7 @@ export type WorkflowRunReason =
 
 export interface WorkflowItemStateEvent {
   itemId: string;
+  projectId: string;
   from: WorkflowRunState;
   to: WorkflowRunState;
   reason?: WorkflowRunReason;
@@ -119,13 +123,11 @@ export interface WorkflowDefinitionView {
 
 export type {
   WorkItem,
-  WorkItemPhase,
   WorkItemUsage,
   WorkflowArtifact,
   WorkflowDefinitionCatalog,
   WorkflowDefinitionInput,
   WorkflowDefinitionListing,
-  WorkflowItemDetail,
 };
 
 function parseJSONRecord(value: unknown): Record<string, unknown> | null {

@@ -1886,6 +1886,10 @@ describe('setupEventListeners', () => {
       id: 'run', projectId: 'workflow-project', workflowId: 'wf', workflowScope: 'shared',
       goal: 'Run', state, reason: '', sortPosition: 1, stepMode: false, source: 'manual', createdAt: 1,
     } as WorkItem]);
+    setBindingMock('WorkflowListUnresolvedItems', async () => [{
+      id: 'run', projectId: 'workflow-project', workflowId: 'wf', workflowScope: 'shared',
+      goal: 'Run', state, reason: '', sortPosition: 1, stepMode: false, source: 'manual', createdAt: 1,
+    } as WorkItem]);
     setBindingMock('WorkflowListItemCosts', async () => ({}));
     setBindingMock('WorkflowListDefinitions', async () => ({
       baseBranch: 'main', predictedQueuePosition: 1, workflows: [],

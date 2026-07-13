@@ -292,8 +292,8 @@ func TestFSMTransitionsPersistBeforeEmitting(t *testing.T) {
 	}
 	requireItemState(t, h.store, item.ID, StateDone, "")
 	want := []StateEvent{
-		{ItemID: item.ID, From: StateQueued, To: StateRunning},
-		{ItemID: item.ID, From: StateRunning, To: StateDone},
+		{ItemID: item.ID, ProjectID: item.ProjectID, From: StateQueued, To: StateRunning},
+		{ItemID: item.ID, ProjectID: item.ProjectID, From: StateRunning, To: StateDone},
 	}
 	if got := h.emitter.stateEvents(item.ID); !reflect.DeepEqual(got, want) {
 		t.Fatalf("state events = %+v, want %+v", got, want)

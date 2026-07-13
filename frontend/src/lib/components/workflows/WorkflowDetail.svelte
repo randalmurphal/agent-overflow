@@ -19,15 +19,15 @@
   import WorkflowJobNotes from './WorkflowJobNotes.svelte';
   import { isViewOnlySession } from '../../transport/runMode';
   import { workflowActionConfirmationKey } from '../../stores/workflowActions';
-  import { isWorkflowParked } from '../../stores/workflowData';
+  import { isWorkflowResolved } from '../../stores/workflowData';
   import { getWorkflowSidebarPhaseProgress } from '../../stores/workflowsSidebar.svelte';
 
   interface Props { level: Extract<WorkflowPaneLevel, { kind: 'workflow' }> }
   let { level }: Props = $props();
   let allItems = $derived(getWorkflowItems());
   let items = $derived(allItems.filter((item) => item.projectId === level.projectId && item.workflowId === level.workflowId));
-  let live = $derived(items.filter((item) => item.state !== 'cancelled' && (item.state !== 'done' || isWorkflowParked(item))));
-  let history = $derived(items.filter((item) => item.state === 'cancelled' || (item.state === 'done' && !isWorkflowParked(item))).sort((a, b) => (b.endedAt || b.createdAt) - (a.endedAt || a.createdAt)));
+  let live = $derived(items.filter((item) => !isWorkflowResolved(item)));
+  let history = $derived(items.filter(isWorkflowResolved).sort((a, b) => (b.endedAt || b.createdAt) - (a.endedAt || a.createdAt)));
   let costs = $derived(getWorkflowCosts());
   let definition = $derived(getWorkflowDefinitions().find((entry) => entry.projectId === level.projectId && entry.definition.id === level.workflowId));
   let project = $derived(getProjects().find((entry) => entry.project.id === level.projectId)?.project);

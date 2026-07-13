@@ -6,7 +6,7 @@ import type {
 } from '../types/workflow';
 import { SvelteMap } from 'svelte/reactivity';
 import { userFacingError } from '../utils/userFacingError';
-import { WorkflowListDefinitions, WorkflowListItems } from './bindings';
+import { WorkflowListDefinitions, WorkflowListUnresolvedItems } from './bindings';
 import { getProjects } from './projects.svelte';
 import { addToast } from './toast.svelte';
 import {
@@ -31,6 +31,7 @@ let error: string | null = $state(null);
 let initializePromise: Promise<void> | null = null;
 let refreshInFlight = false;
 let refreshQueued = false;
+let refreshDefinitionsQueued = false;
 let refreshAfterInitialize = false;
 let pendingItemEvents: WorkflowItemStateEvent[] = [];
 let itemEventsDuringFetch: WorkflowItemStateEvent[] | null = null;
@@ -95,18 +96,23 @@ export function getWorkflowSidebarPhaseProgress(item: WorkItem): WorkflowSidebar
   return { current: index + 1, total: definition.phaseCount, phaseId: event.phaseId };
 }
 
-async function fetchSidebarData(): Promise<void> {
+async function fetchSidebarData(includeDefinitions: boolean): Promise<void> {
   const capturedEvents: WorkflowItemStateEvent[] = [];
   itemEventsDuringFetch = capturedEvents;
   try {
-    const loaded = await loadWorkflowSidebar(getProjects().map((entry) => entry.project.id), {
-      listItems: async (projectId) => WorkflowListItems(projectId) as unknown as Promise<WorkItem[]>,
-      listDefinitions: WorkflowListDefinitions,
-    });
-    items = loaded.items.filter(isWorkflowSidebarRun);
+    if (includeDefinitions) {
+      const loaded = await loadWorkflowSidebar(getProjects().map((entry) => entry.project.id), {
+        listItems: async (projectId) => WorkflowListUnresolvedItems(projectId) as unknown as Promise<WorkItem[]>,
+        listDefinitions: WorkflowListDefinitions,
+      });
+      items = loaded.items.filter(isWorkflowSidebarRun);
+      definitions = loaded.definitions;
+    } else {
+      items = (await WorkflowListUnresolvedItems('') as unknown as WorkItem[])
+        .filter(isWorkflowSidebarRun);
+    }
     for (const event of capturedEvents) items = patchWorkflowItems(items, event);
     items = items.filter(isWorkflowSidebarRun);
-    definitions = loaded.definitions;
 
     const runningIds = new Set(items.filter((item) => item.state === 'running').map((item) => item.id));
     for (const itemId of phaseEvents.keys()) {
@@ -124,7 +130,7 @@ export function initializeWorkflowsSidebar(): Promise<void> {
   error = null;
   initializePromise = (async () => {
     try {
-      await fetchSidebarData();
+      await fetchSidebarData(true);
       const needsRefresh = pendingItemEvents.length > 0 || refreshAfterInitialize;
       for (const event of pendingItemEvents) items = patchWorkflowItems(items, event);
       items = items.filter(isWorkflowSidebarRun);
@@ -143,7 +149,8 @@ export function initializeWorkflowsSidebar(): Promise<void> {
   return initializePromise;
 }
 
-function scheduleSidebarRefresh(): void {
+function scheduleSidebarRefresh(includeDefinitions = false): void {
+  if (includeDefinitions) refreshDefinitionsQueued = true;
   if (!initialized) {
     if (loading) refreshAfterInitialize = true;
     else void initializeWorkflowsSidebar();
@@ -157,8 +164,10 @@ function scheduleSidebarRefresh(): void {
   void (async () => {
     do {
       refreshQueued = false;
+      const refreshDefinitions = refreshDefinitionsQueued;
+      refreshDefinitionsQueued = false;
       try {
-        await fetchSidebarData();
+        await fetchSidebarData(refreshDefinitions);
         error = null;
       } catch (cause) {
         error = userFacingError(cause, 'Could not refresh workflow sidebar.');
@@ -171,8 +180,8 @@ function scheduleSidebarRefresh(): void {
   });
 }
 
-export function refreshWorkflowsSidebar(): void {
-  scheduleSidebarRefresh();
+export function refreshWorkflowsSidebar(includeDefinitions = false): void {
+  scheduleSidebarRefresh(includeDefinitions);
 }
 
 export function applyWorkflowSidebarItemState(event: WorkflowItemStateEvent): void {
@@ -206,6 +215,7 @@ export function resetWorkflowsSidebarForTest(): void {
   initializePromise = null;
   refreshInFlight = false;
   refreshQueued = false;
+  refreshDefinitionsQueued = false;
   refreshAfterInitialize = false;
   pendingItemEvents = [];
   itemEventsDuringFetch = null;

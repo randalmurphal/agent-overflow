@@ -54,7 +54,8 @@ func (e *Engine) removeQueued(itemID string) error {
 	item.item.EndedAt = endedAt
 	delete(e.items, itemID)
 	e.emitter.Emit("workflow:item-state", StateEvent{
-		ItemID: itemID, From: StateQueued, To: StateCancelled, Reason: ReasonInterrupted,
+		ItemID: itemID, ProjectID: item.item.ProjectID,
+		From: StateQueued, To: StateCancelled, Reason: ReasonInterrupted,
 	})
 	return nil
 }
@@ -72,7 +73,8 @@ func (e *Engine) parkDisposition(itemID string) error {
 		return fmt.Errorf("park disposition item %q: %w", itemID, err)
 	}
 	e.emitter.Emit("workflow:item-state", StateEvent{
-		ItemID: itemID, From: StateDone, To: StateNeedsHuman, Reason: ReasonDisposition,
+		ItemID: itemID, ProjectID: item.ProjectID,
+		From: StateDone, To: StateNeedsHuman, Reason: ReasonDisposition,
 	})
 	return nil
 }
@@ -126,7 +128,9 @@ func (e *Engine) reenqueueFailed(itemID string) error {
 	runtime.item.SortPosition = position
 	e.items[itemID] = runtime
 	e.insertQueued(runtime)
-	e.emitter.Emit("workflow:item-state", StateEvent{ItemID: itemID, From: StateFailed, To: StateQueued})
+	e.emitter.Emit("workflow:item-state", StateEvent{
+		ItemID: itemID, ProjectID: stored.ProjectID, From: StateFailed, To: StateQueued,
+	})
 	return e.schedule()
 }
 
@@ -145,7 +149,7 @@ func (e *Engine) resolveDisposition(itemID string) error {
 		return fmt.Errorf("resolve disposition item %q: %w", itemID, err)
 	}
 	e.emitter.Emit("workflow:item-state", StateEvent{
-		ItemID: itemID, From: StateNeedsHuman, To: StateDone,
+		ItemID: itemID, ProjectID: item.ProjectID, From: StateNeedsHuman, To: StateDone,
 	})
 	return nil
 }

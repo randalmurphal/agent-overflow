@@ -1510,53 +1510,6 @@ export class WorkItem {
 }
 
 /**
- * WorkItemPhase is one attempt of a workflow phase.
- */
-export class WorkItemPhase {
-    "itemId": string;
-    "phaseId": string;
-    "attempt": number;
-    "threadId"?: string;
-    "inputEnvelope"?: json$0.RawMessage;
-    "outputEnvelope"?: json$0.RawMessage;
-    "gateTrace"?: json$0.RawMessage;
-    "intervention"?: json$0.RawMessage;
-    "narrativePath"?: string;
-    "status": string;
-    "startedAt": number;
-    "endedAt"?: number;
-
-    /** Creates a new WorkItemPhase instance. */
-    constructor($$source: Partial<WorkItemPhase> = {}) {
-        if (!("itemId" in $$source)) {
-            this["itemId"] = "";
-        }
-        if (!("phaseId" in $$source)) {
-            this["phaseId"] = "";
-        }
-        if (!("attempt" in $$source)) {
-            this["attempt"] = 0;
-        }
-        if (!("status" in $$source)) {
-            this["status"] = "";
-        }
-        if (!("startedAt" in $$source)) {
-            this["startedAt"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new WorkItemPhase instance from a string or object.
-     */
-    static createFrom($$source: any = {}): WorkItemPhase {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new WorkItemPhase($$parsedSource as Partial<WorkItemPhase>);
-    }
-}
-
-/**
  * WorkItemUsage is the persisted token and wire-cost total for one workflow
  * run. Token components remain separate so callers can explain the aggregate.
  */

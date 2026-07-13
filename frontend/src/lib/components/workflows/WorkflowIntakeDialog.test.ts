@@ -28,6 +28,7 @@ describe('WorkflowIntakeDialog', () => {
     resetWorkflowsSidebarForTest();
     addProjectLocal(project);
     setBindingMock('WorkflowListItems', async () => []);
+    setBindingMock('WorkflowListUnresolvedItems', async () => []);
     setBindingMock('WorkflowListItemCosts', async () => ({}));
     setBindingMock('WorkflowListDefinitions', async () => ({
       baseBranch: 'main', predictedQueuePosition: 3,
@@ -137,6 +138,7 @@ describe('WorkflowIntakeDialog', () => {
   it('refreshes the independent sidebar after enqueue while the queue is paused', async () => {
     let listedItems: WorkItem[] = [];
     setBindingMock('WorkflowListItems', async () => listedItems);
+    setBindingMock('WorkflowListUnresolvedItems', async () => listedItems);
     activateWorkflowsPane();
     await loadWorkflowOverview();
     await initializeWorkflowsSidebar();

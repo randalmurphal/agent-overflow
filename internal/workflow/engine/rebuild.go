@@ -20,13 +20,24 @@ func (e *Engine) rebuild() error {
 	projectIDs := make(map[string]struct{}, len(projects))
 	for _, project := range projects {
 		projectIDs[project.ID] = struct{}{}
-		items, err := e.store.ListWorkItems(store.WorkItemListFilter{
-			ProjectID: project.ID,
-			States:    []string{string(StateQueued), string(StateRunning), string(StateNeedsHuman)},
-		})
-		if err != nil {
-			return fmt.Errorf("rebuild workflow engine: list project %q items: %w", project.ID, err)
+	}
+	activeItems, err := e.store.ListWorkItems(store.WorkItemListFilter{
+		States: []string{string(StateQueued), string(StateRunning), string(StateNeedsHuman)},
+	})
+	if err != nil {
+		return fmt.Errorf("rebuild workflow engine: list active items: %w", err)
+	}
+	itemsByProject := make(map[string][]store.WorkItem, len(projects))
+	orphanItems := make([]store.WorkItem, 0)
+	for _, item := range activeItems {
+		if _, exists := projectIDs[item.ProjectID]; !exists {
+			orphanItems = append(orphanItems, item)
+			continue
 		}
+		itemsByProject[item.ProjectID] = append(itemsByProject[item.ProjectID], item)
+	}
+	for _, project := range projects {
+		items := itemsByProject[project.ID]
 		for _, storedItem := range items {
 			e.observeItemTimestamps(storedItem)
 			if State(storedItem.State) == StateNeedsHuman {
@@ -86,22 +97,14 @@ func (e *Engine) rebuild() error {
 			}
 		}
 	}
-	activeItems, err := e.store.ListWorkItems(store.WorkItemListFilter{
-		States: []string{string(StateQueued), string(StateRunning), string(StateNeedsHuman)},
-	})
-	if err != nil {
-		return fmt.Errorf("rebuild workflow engine: list active items: %w", err)
-	}
-	for _, item := range activeItems {
-		if _, exists := projectIDs[item.ProjectID]; exists {
-			continue
-		}
+	for _, item := range orphanItems {
 		endedAt := e.timestamp()
 		if err := e.store.UpdateWorkItemState(item.ID, string(StateCancelled), string(ReasonInterrupted), endedAt); err != nil {
 			return fmt.Errorf("rebuild workflow engine: cancel orphan item %q: %w", item.ID, err)
 		}
 		e.emitter.Emit("workflow:item-state", StateEvent{
-			ItemID: item.ID, From: State(item.State), To: StateCancelled, Reason: ReasonInterrupted,
+			ItemID: item.ID, ProjectID: item.ProjectID,
+			From: State(item.State), To: StateCancelled, Reason: ReasonInterrupted,
 		})
 		log.Printf("workflow rebuild: cancelled orphan item %s for missing project %s", item.ID, item.ProjectID)
 	}

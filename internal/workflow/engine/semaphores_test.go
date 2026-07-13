@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"agent-overflow/internal/workflow/def"
@@ -77,6 +78,35 @@ func TestSemaphoreReleaseWhenRunnerStartFailsAfterAcquisition(t *testing.T) {
 	starts := h.runner.started()
 	if len(starts) != 2 || starts[1].Key.ItemID != "waiter" {
 		t.Fatalf("start failure leaked resource: %+v", starts)
+	}
+}
+
+func TestSemaphoreReleaseStartsWaiterWithManyNonWaitingItems(t *testing.T) {
+	workflow := onePhaseWorkflow("resource", []string{"stack"}, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: true, GlobalConcurrency: 2}, map[string]def.Workflow{"resource": workflow}, []string{"project"}, nil)
+	h.profiles.setCapacity("project", "stack", 1)
+	if err := h.engine.Enqueue(testItem("holder", "project", "resource", 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Enqueue(testItem("waiter", "project", "resource", 1)); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 256; index++ {
+		item := testItem(fmt.Sprintf("backlog-%03d", index), "project", "resource", index+2)
+		if err := h.engine.Enqueue(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(h.engine.waiting) != 1 || h.engine.waiting[0].item.ID != "waiter" {
+		t.Fatalf("waiting set = %+v", h.engine.waiting)
+	}
+	h.runner.complete(t, "holder", Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	if len(starts) < 2 || starts[1].Key.ItemID != "waiter" {
+		t.Fatalf("waiter was not started on release: %+v", starts)
 	}
 }
 

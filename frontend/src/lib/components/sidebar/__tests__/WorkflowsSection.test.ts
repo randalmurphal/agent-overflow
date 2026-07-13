@@ -26,12 +26,13 @@ describe('<WorkflowsSection>', () => {
     resetPaneLayoutForTest();
     resetPanesForTest();
     vi.spyOn(Date, 'now').mockReturnValue(120_000);
-    setBindingMock('WorkflowListItems', async () => [
+    setBindingMock('WorkflowListUnresolvedItems', async () => [
       { id: 'needs', projectId: 'p', workflowId: 'wf', goal: 'Needs review', state: 'needs-human', reason: 'gate', sortPosition: 1, createdAt: 1, endedAt: 1 },
       { id: 'running', projectId: 'p', workflowId: 'wf', goal: 'Build it', state: 'running', sortPosition: 2, createdAt: 1, startedAt: 60_000 },
       { id: 'done', projectId: 'p', workflowId: 'wf', goal: 'Dispose it', state: 'done', sortPosition: 3, createdAt: 1 },
       { id: 'resolved', projectId: 'p', workflowId: 'wf', goal: 'Landed', state: 'done', disposition: '{"action":"merged","policy":"manual","at":1}', sortPosition: 4, createdAt: 1 },
     ]);
+    setBindingMock('WorkflowListItems', async () => []);
     setBindingMock('WorkflowListDefinitions', async () => catalog());
     setBindingMock('WorkflowListItemCosts', async () => ({}));
     setBindingMock('WorkflowGetItem', async (itemId: string) => ({
@@ -70,7 +71,7 @@ describe('<WorkflowsSection>', () => {
 
   it('is hidden when the project has no known workflows or runs', async () => {
     resetWorkflowsSidebarForTest();
-    setBindingMock('WorkflowListItems', async () => []);
+    setBindingMock('WorkflowListUnresolvedItems', async () => []);
     await initializeWorkflowsSidebar();
     const { queryByTestId } = render(WorkflowsSection, { props: { projectId: 'p' } });
     expect(queryByTestId('workflows-section')).toBeNull();

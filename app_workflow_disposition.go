@@ -208,7 +208,8 @@ func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispo
 		})
 	}
 	a.emit("workflow:item-state", engine.StateEvent{
-		ItemID: item.ID, From: engine.State(item.State), To: engine.State(item.State),
+		ItemID: item.ID, ProjectID: item.ProjectID,
+		From: engine.State(item.State), To: engine.State(item.State),
 	})
 	return receipt, nil
 }

@@ -147,8 +147,12 @@ cleanup: manual
 		t.Fatal(err)
 	}
 	if done.Item.State != string(engine.StateDone) || len(done.Phases) != 1 ||
-		len(done.Phases[0].OutputEnvelope) == 0 || len(done.Phases[0].GateTrace) == 0 {
+		len(done.Phases[0].OutputEnvelope) == 0 {
 		t.Fatalf("production-driven done item = %+v", done)
+	}
+	persistedPhases, err := app.store.ListWorkItemPhases(projectResult.WorkItemIDs[2])
+	if err != nil || len(persistedPhases) != 1 || len(persistedPhases[0].GateTrace) == 0 {
+		t.Fatalf("production-driven persisted phase trace = %+v, %v", persistedPhases, err)
 	}
 	for _, itemID := range projectResult.WorkItemIDs[:2] {
 		item, err := app.store.GetWorkItem(itemID)

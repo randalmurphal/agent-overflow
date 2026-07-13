@@ -75,6 +75,7 @@ let runRefreshQueued = false;
 let refreshGeneration = 0;
 let overviewRefreshInFlight = false;
 let overviewRefreshQueued = false;
+const overviewRefreshProjectIds = new Set<string>();
 let overviewLoadCount = 0;
 let overviewDetailRefreshItemId: string | null = null;
 const overviewItemEventCaptures = new Set<WorkflowItemStateEvent[]>();
@@ -132,6 +133,7 @@ export function deactivateWorkflowsPane(): void {
   runRefreshQueued = false;
   overviewRefreshInFlight = false;
   overviewRefreshQueued = false;
+  overviewRefreshProjectIds.clear();
   overviewLoadCount = 0;
   overviewDetailRefreshItemId = null;
   overviewItemEventCaptures.clear();
@@ -307,8 +309,59 @@ export async function loadWorkflowOverview(): Promise<void> {
   }
 }
 
-function scheduleOverviewRefresh(detailItemId: string | null = null): void {
+async function refreshWorkflowProjects(projectIds: readonly string[]): Promise<void> {
+  const selected = new Set(selectedProjectIds());
+  const affected = [...new Set(projectIds.filter((projectId) => selected.has(projectId)))];
+  if (affected.length === 0) return;
+  const generation = refreshGeneration;
+  const version = ++requestVersion;
+  const capturedEvents: WorkflowItemStateEvent[] = [];
+  overviewItemEventCaptures.add(capturedEvents);
+  overviewLoadCount += 1;
+  loading = true;
+  error = null;
+  try {
+    const loads = await Promise.all(affected.map(async (projectId) => {
+      const [projectItems, projectCosts] = await Promise.all([
+        WorkflowListItems(projectId) as unknown as Promise<WorkItem[]>,
+        WorkflowListItemCosts(projectId),
+      ]);
+      return { projectId, items: projectItems, costs: projectCosts };
+    }));
+    if (version !== requestVersion) return;
+    const affectedSet = new Set(affected);
+    const replacedItemIds = new Set(
+      items.filter((item) => affectedSet.has(item.projectId)).map((item) => item.id),
+    );
+    items = [
+      ...items.filter((item) => !affectedSet.has(item.projectId)),
+      ...loads.flatMap((load) => load.items),
+    ].sort((left, right) => left.sortPosition - right.sortPosition || left.createdAt - right.createdAt);
+    for (const event of capturedEvents) items = patchWorkflowItems(items, event);
+    const nextCosts = { ...costs };
+    for (const itemId of replacedItemIds) delete nextCosts[itemId];
+    for (const load of loads) {
+      for (const [itemId, cost] of Object.entries(load.costs)) {
+        if (typeof cost === 'number' && Number.isFinite(cost)) nextCosts[itemId] = cost;
+      }
+    }
+    costs = nextCosts;
+  } catch (cause) {
+    if (version !== requestVersion) return;
+    error = userFacingError(cause, 'Could not refresh workflows.');
+    addToast('error', 'Could not refresh workflows');
+  } finally {
+    overviewItemEventCaptures.delete(capturedEvents);
+    if (generation === refreshGeneration) {
+      overviewLoadCount -= 1;
+      if (version === requestVersion) loading = false;
+    }
+  }
+}
+
+function scheduleOverviewRefresh(projectId: string | null = null, detailItemId: string | null = null): void {
   if (!paneActive) return;
+  if (projectId) overviewRefreshProjectIds.add(projectId);
   if (detailItemId && detail?.item.id === detailItemId) overviewDetailRefreshItemId = detailItemId;
   if (overviewRefreshInFlight || overviewLoadCount > 0) {
     overviewRefreshQueued = true;
@@ -319,19 +372,21 @@ function scheduleOverviewRefresh(detailItemId: string | null = null): void {
   void (async () => {
     do {
       overviewRefreshQueued = false;
+      const projectIds = [...overviewRefreshProjectIds];
+      overviewRefreshProjectIds.clear();
       const itemId = overviewDetailRefreshItemId;
       overviewDetailRefreshItemId = null;
-      await loadWorkflowOverview();
+      await refreshWorkflowProjects(projectIds);
       if (generation !== refreshGeneration) return;
       if (itemId && paneActive && detail?.item.id === itemId) {
         await loadRun(itemId, false);
         if (diffRequestedItemId === itemId) await loadWorkflowDiff();
       }
-    } while (overviewRefreshQueued && paneActive && generation === refreshGeneration);
+    } while ((overviewRefreshQueued || overviewRefreshProjectIds.size > 0) && paneActive && generation === refreshGeneration);
   })().finally(() => {
     if (generation !== refreshGeneration) return;
     overviewRefreshInFlight = false;
-    if (overviewRefreshQueued && paneActive) scheduleOverviewRefresh();
+    if ((overviewRefreshQueued || overviewRefreshProjectIds.size > 0) && paneActive) scheduleOverviewRefresh();
     else if (runRefreshQueued && paneActive && detail) scheduleRunRefresh(detail.item.id);
   });
 }
@@ -440,9 +495,16 @@ export function applyWorkflowItemState(event: WorkflowItemStateEvent): void {
   for (const capture of overviewItemEventCaptures) capture.push(event);
   items = patchWorkflowItems(items, event);
   if (detail?.item.id === event.itemId) {
-    detail = { ...detail, item: { ...detail.item, state: event.to, reason: event.reason ?? '' } as WorkItem };
+    detail = { ...detail, item: { ...detail.item, state: event.to, reason: event.reason ?? '' } };
   }
-  scheduleOverviewRefresh(event.itemId);
+  scheduleOverviewRefresh(event.projectId, event.itemId);
+}
+
+export async function reloadWorkflowsPaneAfterGap(): Promise<void> {
+  if (!paneActive) return;
+  await loadWorkflowOverview();
+  const level = getWorkflowCurrentLevel();
+  if (level.kind === 'run') await loadRun(level.itemId, false);
 }
 
 export function applyWorkflowPhaseState(event: WorkflowPhaseStateEvent): void {
@@ -638,6 +700,7 @@ export function resetWorkflowsPane(): void {
   runRefreshQueued = false;
   overviewRefreshInFlight = false;
   overviewRefreshQueued = false;
+  overviewRefreshProjectIds.clear();
   overviewLoadCount = 0;
   overviewDetailRefreshItemId = null;
   overviewItemEventCaptures.clear();

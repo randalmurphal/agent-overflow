@@ -65,7 +65,8 @@ func TestWorkflowStateEmitterPersistsTemplateAndSendsTypedNotifications(t *testi
 	}
 	emitter := workflowEmitter{app: app, emit: func(string, any) {}}
 	emitter.Emit("workflow:item-state", engine.StateEvent{
-		ItemID: item.ID, From: engine.StateRunning, To: engine.StateNeedsHuman, Reason: engine.ReasonQuestion,
+		ItemID: item.ID, ProjectID: item.ProjectID,
+		From: engine.StateRunning, To: engine.StateNeedsHuman, Reason: engine.ReasonQuestion,
 	})
 
 	for range 2 {
@@ -114,7 +115,7 @@ func TestDoneAwaitingDispositionOnlyRidesDrainSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	workflowEmitter{app: app, emit: func(string, any) {}}.Emit(
-		"workflow:item-state", engine.StateEvent{ItemID: item.ID, From: engine.StateRunning, To: engine.StateDone},
+		"workflow:item-state", engine.StateEvent{ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateDone},
 	)
 	select {
 	case <-sender.wake:
@@ -152,7 +153,8 @@ func TestPausedQueueSummarizesAfterRunningWorkSettles(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.afterWorkflowStateEvent(engine.StateEvent{
-		ItemID: failed.ID, From: engine.StateRunning, To: engine.StateFailed, Reason: engine.ReasonAgentError,
+		ItemID: failed.ID, ProjectID: failed.ProjectID,
+		From: engine.StateRunning, To: engine.StateFailed, Reason: engine.ReasonAgentError,
 	})
 	for range 2 {
 		select {
@@ -176,14 +178,13 @@ func TestPausedQueueSummarizesAfterRunningWorkSettles(t *testing.T) {
 func TestWorkflowTemplateDigestUsesCheckAndStuckInputs(t *testing.T) {
 	failed := workflowTemplateDigest(store.WorkItem{
 		State: string(engine.StateFailed), Reason: string(engine.ReasonCheckFailedGenuine),
-		Snapshot: json.RawMessage(`{"workflow":{"phases":[{"id":"verify","check":"go-test"}]}}`),
-	}, []store.WorkItemPhase{{PhaseID: "verify"}})
+	}, "verify", nil, "go-test")
 	if failed.WhatItNeeds != "Investigate the failed checks: go-test." {
 		t.Fatalf("failed digest = %+v", failed)
 	}
 	stuck := workflowTemplateDigest(store.WorkItem{
 		State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonStuck),
-	}, []store.WorkItemPhase{{PhaseID: "build", OutputEnvelope: json.RawMessage(`{"reason":"registry unavailable"}`)}})
+	}, "build", json.RawMessage(`{"reason":"registry unavailable"}`), "")
 	if stuck.WhatHappened != "The run is stuck in build: registry unavailable." {
 		t.Fatalf("stuck digest = %+v", stuck)
 	}
@@ -222,7 +223,8 @@ func TestWorkflowDigestAsyncUpgradePersistsAndReemits(t *testing.T) {
 	}
 	workflowEmitter{app: app, emit: app.emitWithReplay()}.Emit(
 		"workflow:item-state", engine.StateEvent{
-			ItemID: item.ID, From: engine.StateRunning, To: engine.StateNeedsHuman, Reason: engine.ReasonGate,
+			ItemID: item.ID, ProjectID: item.ProjectID,
+			From: engine.StateRunning, To: engine.StateNeedsHuman, Reason: engine.ReasonGate,
 		},
 	)
 	select {
@@ -285,7 +287,7 @@ func TestWorkflowDigestAsyncFailureAndStaleResultKeepTemplate(t *testing.T) {
 				t.Fatal(err)
 			}
 			workflowEmitter{app: app, emit: app.emitWithReplay()}.Emit(
-				"workflow:item-state", engine.StateEvent{ItemID: item.ID, From: engine.StateRunning, To: engine.StateNeedsHuman, Reason: engine.ReasonGate},
+				"workflow:item-state", engine.StateEvent{ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateNeedsHuman, Reason: engine.ReasonGate},
 			)
 			select {
 			case <-called:

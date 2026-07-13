@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import type { WorkItem } from '../types/workflow';
 import {
   applyWorkflowSidebarItemState,
@@ -40,7 +40,7 @@ describe('workflows sidebar store', () => {
   beforeEach(() => {
     resetProjectsForTest();
     resetWorkflowsSidebarForTest();
-    setBindingMock('WorkflowListItems', async () => [
+    setBindingMock('WorkflowListUnresolvedItems', async () => [
       run('attention', 'p1', 'needs-human'),
       run('failed', 'p1', 'failed'),
       run('resolved', 'p2', 'done', '{"action":"merged","policy":"manual","at":1}'),
@@ -83,38 +83,40 @@ describe('workflows sidebar store', () => {
 
   it('patches event state immediately', async () => {
     await initializeWorkflowsSidebar();
-    applyWorkflowSidebarItemState({ itemId: 'attention', from: 'needs-human', to: 'running' });
+    applyWorkflowSidebarItemState({ itemId: 'attention', projectId: 'p1', from: 'needs-human', to: 'running' });
     expect(getProjectWorkflowAttentionCount('p1')).toBe(1);
     expect(getProjectWorkflowRuns('p1').find((item) => item.id === 'attention')?.state).toBe('running');
   });
 
   it('refreshes summary fields omitted by a known item-state transition', async () => {
-    setBindingMock('WorkflowListItems', async () => [run('known', 'p1', 'queued')]);
+    setBindingMock('WorkflowListUnresolvedItems', async () => [run('known', 'p1', 'queued')]);
     await initializeWorkflowsSidebar();
-    setBindingMock('WorkflowListItems', async () => [{
+    const definitions = getBindingMock('WorkflowListDefinitions');
+    setBindingMock('WorkflowListUnresolvedItems', async () => [{
       ...run('known', 'p1', 'running'),
       startedAt: 42,
       worktreePath: '/tmp/worktree',
       baseBranch: 'main',
     }]);
 
-    applyWorkflowSidebarItemState({ itemId: 'known', from: 'queued', to: 'running' });
+    applyWorkflowSidebarItemState({ itemId: 'known', projectId: 'p1', from: 'queued', to: 'running' });
     expect(getProjectWorkflowRuns('p1')[0]?.state).toBe('running');
     await vi.waitFor(() => expect(getProjectWorkflowRuns('p1')[0]).toMatchObject({
       startedAt: 42,
       worktreePath: '/tmp/worktree',
       baseBranch: 'main',
     }));
+    expect(definitions).toHaveBeenCalledTimes(1);
   });
 
   it('does not let an in-flight refresh overwrite a newer item event', async () => {
     await initializeWorkflowsSidebar();
     let release!: (items: WorkItem[]) => void;
-    setBindingMock('WorkflowListItems', () => new Promise<WorkItem[]>((resolve) => { release = resolve; }));
+    setBindingMock('WorkflowListUnresolvedItems', () => new Promise<WorkItem[]>((resolve) => { release = resolve; }));
 
     applyWorkflowSidebarQueueState();
     await vi.waitFor(() => expect(release).toBeTypeOf('function'));
-    applyWorkflowSidebarItemState({ itemId: 'attention', from: 'needs-human', to: 'running' });
+    applyWorkflowSidebarItemState({ itemId: 'attention', projectId: 'p1', from: 'needs-human', to: 'running' });
     release([
       run('attention', 'p1', 'needs-human'),
       run('failed', 'p1', 'failed'),
@@ -126,11 +128,11 @@ describe('workflows sidebar store', () => {
   });
 
   it('recovers from a transient boot fetch failure when refresh is requested', async () => {
-    setBindingMock('WorkflowListItems', async () => { throw new Error('transport unavailable'); });
+    setBindingMock('WorkflowListUnresolvedItems', async () => { throw new Error('transport unavailable'); });
     await initializeWorkflowsSidebar();
     expect(isWorkflowSidebarInitialized()).toBe(false);
 
-    setBindingMock('WorkflowListItems', async () => [run('recovered', 'p1', 'running')]);
+    setBindingMock('WorkflowListUnresolvedItems', async () => [run('recovered', 'p1', 'running')]);
     refreshWorkflowsSidebar();
     await vi.waitFor(() => expect(isWorkflowSidebarInitialized()).toBe(true));
     expect(getProjectWorkflowRuns('p1').map((item) => item.id)).toEqual(['recovered']);
@@ -139,7 +141,7 @@ describe('workflows sidebar store', () => {
   it('replays a queue refresh requested during the initial fetch', async () => {
     let releaseInitial!: (items: WorkItem[]) => void;
     let calls = 0;
-    setBindingMock('WorkflowListItems', () => {
+    setBindingMock('WorkflowListUnresolvedItems', () => {
       calls += 1;
       if (calls === 1) return new Promise<WorkItem[]>((resolve) => { releaseInitial = resolve; });
       return Promise.resolve([

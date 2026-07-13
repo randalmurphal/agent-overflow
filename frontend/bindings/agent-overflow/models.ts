@@ -2143,16 +2143,20 @@ export class WorkflowDispositionReceipt {
     }
 }
 
-export class WorkflowItemDetail {
-    "item": store$0.WorkItem;
-    "phases": store$0.WorkItemPhase[];
+export class WorkflowItemDetailView {
+    "item": WorkflowItemView;
+    "checkPhaseIds": string[];
+    "phases": WorkflowItemPhaseView[];
     "artifacts": WorkflowArtifact[];
     "usage": store$0.WorkItemUsage;
 
-    /** Creates a new WorkflowItemDetail instance. */
-    constructor($$source: Partial<WorkflowItemDetail> = {}) {
+    /** Creates a new WorkflowItemDetailView instance. */
+    constructor($$source: Partial<WorkflowItemDetailView> = {}) {
         if (!("item" in $$source)) {
-            this["item"] = (new store$0.WorkItem());
+            this["item"] = (new WorkflowItemView());
+        }
+        if (!("checkPhaseIds" in $$source)) {
+            this["checkPhaseIds"] = [];
         }
         if (!("phases" in $$source)) {
             this["phases"] = [];
@@ -2168,27 +2172,150 @@ export class WorkflowItemDetail {
     }
 
     /**
-     * Creates a new WorkflowItemDetail instance from a string or object.
+     * Creates a new WorkflowItemDetailView instance from a string or object.
      */
-    static createFrom($$source: any = {}): WorkflowItemDetail {
+    static createFrom($$source: any = {}): WorkflowItemDetailView {
         const $$createField0_0 = $$createType39;
-        const $$createField1_0 = $$createType41;
-        const $$createField2_0 = $$createType43;
-        const $$createField3_0 = $$createType44;
+        const $$createField1_0 = $$createType4;
+        const $$createField2_0 = $$createType41;
+        const $$createField3_0 = $$createType43;
+        const $$createField4_0 = $$createType44;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
         }
+        if ("checkPhaseIds" in $$parsedSource) {
+            $$parsedSource["checkPhaseIds"] = $$createField1_0($$parsedSource["checkPhaseIds"]);
+        }
         if ("phases" in $$parsedSource) {
-            $$parsedSource["phases"] = $$createField1_0($$parsedSource["phases"]);
+            $$parsedSource["phases"] = $$createField2_0($$parsedSource["phases"]);
         }
         if ("artifacts" in $$parsedSource) {
-            $$parsedSource["artifacts"] = $$createField2_0($$parsedSource["artifacts"]);
+            $$parsedSource["artifacts"] = $$createField3_0($$parsedSource["artifacts"]);
         }
         if ("usage" in $$parsedSource) {
-            $$parsedSource["usage"] = $$createField3_0($$parsedSource["usage"]);
+            $$parsedSource["usage"] = $$createField4_0($$parsedSource["usage"]);
         }
-        return new WorkflowItemDetail($$parsedSource as Partial<WorkflowItemDetail>);
+        return new WorkflowItemDetailView($$parsedSource as Partial<WorkflowItemDetailView>);
+    }
+}
+
+/**
+ * WorkflowItemPhaseView is the timeline projection used by run detail. Input
+ * context, gate traces, interventions, and narrative paths remain durable in
+ * SQLite but load only through backend diagnostics, not the ordinary UI path.
+ */
+export class WorkflowItemPhaseView {
+    "itemId": string;
+    "phaseId": string;
+    "attempt": number;
+    "threadId"?: string;
+    "outputEnvelope"?: json$0.RawMessage;
+    "status": string;
+    "startedAt": number;
+    "endedAt"?: number;
+
+    /** Creates a new WorkflowItemPhaseView instance. */
+    constructor($$source: Partial<WorkflowItemPhaseView> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("phaseId" in $$source)) {
+            this["phaseId"] = "";
+        }
+        if (!("attempt" in $$source)) {
+            this["attempt"] = 0;
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("startedAt" in $$source)) {
+            this["startedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowItemPhaseView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowItemPhaseView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowItemPhaseView($$parsedSource as Partial<WorkflowItemPhaseView>);
+    }
+}
+
+/**
+ * WorkflowItemView is the run-record portion of the detail response. It keeps
+ * every item field except the frozen definition snapshot, which is an engine
+ * recovery payload rather than frontend state.
+ */
+export class WorkflowItemView {
+    "id": string;
+    "projectId": string;
+    "goal": string;
+    "workflowId": string;
+    "workflowScope": string;
+    "state": string;
+    "reason"?: string;
+    "sortPosition": number;
+    "seeds"?: json$0.RawMessage;
+    "stepMode": boolean;
+    "worktreePath"?: string;
+    "branch"?: string;
+    "baseBranch"?: string;
+    "budget"?: json$0.RawMessage;
+    "source": string;
+    "sourceRef"?: string;
+    "triageThreadId"?: string;
+    "disposition"?: json$0.RawMessage;
+    "digest"?: json$0.RawMessage;
+    "createdAt": number;
+    "startedAt"?: number;
+    "endedAt"?: number;
+
+    /** Creates a new WorkflowItemView instance. */
+    constructor($$source: Partial<WorkflowItemView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+        if (!("goal" in $$source)) {
+            this["goal"] = "";
+        }
+        if (!("workflowId" in $$source)) {
+            this["workflowId"] = "";
+        }
+        if (!("workflowScope" in $$source)) {
+            this["workflowScope"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("sortPosition" in $$source)) {
+            this["sortPosition"] = 0;
+        }
+        if (!("stepMode" in $$source)) {
+            this["stepMode"] = false;
+        }
+        if (!("source" in $$source)) {
+            this["source"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowItemView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowItemView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowItemView($$parsedSource as Partial<WorkflowItemView>);
     }
 }
 
@@ -2358,8 +2485,8 @@ const $$createType35 = WorkflowDefinitionPhase.createFrom;
 const $$createType36 = $Create.Array($$createType35);
 const $$createType37 = WorkflowDefinitionInput.createFrom;
 const $$createType38 = $Create.Array($$createType37);
-const $$createType39 = store$0.WorkItem.createFrom;
-const $$createType40 = store$0.WorkItemPhase.createFrom;
+const $$createType39 = WorkflowItemView.createFrom;
+const $$createType40 = WorkflowItemPhaseView.createFrom;
 const $$createType41 = $Create.Array($$createType40);
 const $$createType42 = WorkflowArtifact.createFrom;
 const $$createType43 = $Create.Array($$createType42);

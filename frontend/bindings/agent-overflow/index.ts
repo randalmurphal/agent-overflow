@@ -61,7 +61,9 @@ export {
     WorkflowDefinitionListing,
     WorkflowDefinitionPhase,
     WorkflowDispositionReceipt,
-    WorkflowItemDetail,
+    WorkflowItemDetailView,
+    WorkflowItemPhaseView,
+    WorkflowItemView,
     WorkspaceFileSearchResult,
     WorktreeListItem,
     WorktreeStatus

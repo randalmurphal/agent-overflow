@@ -237,7 +237,7 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}), err)
 	}
 	if !acquired {
-		item.waiting = true
+		e.addWaiting(item)
 		return nil
 	}
 	item.acquired = canonicalResources(phase.Resources)

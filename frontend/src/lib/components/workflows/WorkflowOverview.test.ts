@@ -48,6 +48,7 @@ describe('WorkflowOverview queue controls', () => {
     addProjectLocal(project);
     for (const toast of getToasts()) removeToast(toast.id);
     setBindingMock('WorkflowListItems', async () => [queued]);
+    setBindingMock('WorkflowListUnresolvedItems', async () => [queued]);
     setBindingMock('WorkflowListItemCosts', async () => ({ queued: 0.25 }));
     setBindingMock('WorkflowListDefinitions', async () => ({
       baseBranch: 'main', predictedQueuePosition: 1,
@@ -95,6 +96,7 @@ describe('WorkflowOverview queue controls', () => {
     const second = { ...queued, id: 'second', goal: 'Second', sortPosition: 1 } as WorkItem;
     let listed = [queued, second];
     setBindingMock('WorkflowListItems', async () => listed);
+    setBindingMock('WorkflowListUnresolvedItems', async () => listed);
     setBindingMock('WorkflowReorderQueue', async (_projectId: string, ids: string[]) => {
       listed = ids.map((id, index) => ({ ...listed.find((item) => item.id === id)!, sortPosition: index }));
     });

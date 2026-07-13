@@ -51,21 +51,14 @@ func (a *App) prepareWorkflowEngineEvent(name string, payload any) {
 	if !ok || event.From == event.To || event.To != engine.StateNeedsHuman && event.To != engine.StateFailed {
 		return
 	}
-	item, err := a.store.GetWorkItem(event.ItemID)
+	context, err := a.store.GetWorkItemAttentionContext(event.ItemID)
 	if err != nil {
-		log.Printf("workflow digest %s: load item: %v", event.ItemID, err)
+		log.Printf("workflow digest %s: load attention context: %v", event.ItemID, err)
 		return
 	}
-	latest, found, err := a.store.GetLatestWorkItemPhase(event.ItemID)
-	if err != nil {
-		log.Printf("workflow digest %s: load latest phase: %v", event.ItemID, err)
-		return
-	}
-	var phases []store.WorkItemPhase
-	if found {
-		phases = []store.WorkItemPhase{latest}
-	}
-	digest := workflowTemplateDigest(item, phases)
+	digest := workflowTemplateDigest(
+		context.Item, context.PhaseID, context.OutputEnvelope, context.Check,
+	)
 	encoded, err := json.Marshal(digest)
 	if err != nil {
 		log.Printf("workflow digest %s: encode template: %v", event.ItemID, err)
@@ -77,8 +70,13 @@ func (a *App) prepareWorkflowEngineEvent(name string, payload any) {
 	}
 }
 
-func workflowTemplateDigest(item store.WorkItem, phases []store.WorkItemPhase) WorkflowDigest {
-	ctx := workflowDigestInputs(item, phases)
+func workflowTemplateDigest(
+	item store.WorkItem,
+	phaseID string,
+	outputEnvelope json.RawMessage,
+	check string,
+) WorkflowDigest {
+	ctx := workflowDigestInputs(phaseID, outputEnvelope, check)
 	phase := ctx.Phase
 	if phase == "" {
 		phase = "the current phase"
@@ -141,16 +139,14 @@ func workflowTemplateDigest(item store.WorkItem, phases []store.WorkItemPhase) W
 	return digest
 }
 
-func workflowDigestInputs(item store.WorkItem, phases []store.WorkItemPhase) workflowDigestContext {
-	ctx := workflowDigestContext{}
-	if len(phases) > 0 {
-		current := phases[len(phases)-1]
-		ctx.Phase = strings.TrimSpace(current.PhaseID)
+func workflowDigestInputs(phaseID string, outputEnvelope json.RawMessage, check string) workflowDigestContext {
+	ctx := workflowDigestContext{Phase: strings.TrimSpace(phaseID)}
+	if len(outputEnvelope) > 0 {
 		var envelope struct {
 			Question *string `json:"question"`
 			Reason   *string `json:"reason"`
 		}
-		if json.Unmarshal(current.OutputEnvelope, &envelope) == nil {
+		if json.Unmarshal(outputEnvelope, &envelope) == nil {
 			if envelope.Question != nil {
 				ctx.Question = strings.TrimSpace(*envelope.Question)
 			}
@@ -159,13 +155,8 @@ func workflowDigestInputs(item store.WorkItem, phases []store.WorkItemPhase) wor
 			}
 		}
 	}
-	var snapshot engine.Snapshot
-	if json.Unmarshal(item.Snapshot, &snapshot) == nil {
-		for _, phase := range snapshot.Workflow.Phases {
-			if phase.ID == ctx.Phase && phase.Check != "" {
-				ctx.Checks = append(ctx.Checks, phase.Check)
-			}
-		}
+	if check = strings.TrimSpace(check); check != "" {
+		ctx.Checks = []string{check}
 	}
 	return ctx
 }
@@ -224,7 +215,8 @@ func (a *App) upgradeWorkflowDigest(item store.WorkItem, template WorkflowDigest
 		return
 	}
 	a.emit("workflow:item-state", engine.StateEvent{
-		ItemID: item.ID, From: engine.State(item.State), To: engine.State(item.State), Reason: engine.Reason(item.Reason),
+		ItemID: item.ID, ProjectID: item.ProjectID,
+		From: engine.State(item.State), To: engine.State(item.State), Reason: engine.Reason(item.Reason),
 	})
 }
 

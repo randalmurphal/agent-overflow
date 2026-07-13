@@ -83,14 +83,20 @@ export function patchWorkflowItems(items: WorkItem[], event: WorkflowItemStateEv
     : item);
 }
 
+// A disposition receipt is the resolution record for any state — the
+// frontend mirror of the store's unresolved predicate. Cancellation
+// resolves without a receipt.
+export function isWorkflowResolved(item: WorkItem): boolean {
+  return item.state === 'cancelled' || parseWorkflowDisposition(item.disposition) !== null;
+}
+
 export function isWorkflowParked(item: WorkItem): boolean {
-  return item.state === 'needs-human'
-    || item.state === 'failed'
-    || (item.state === 'done' && parseWorkflowDisposition(item.disposition) === null);
+  if (isWorkflowResolved(item)) return false;
+  return item.state === 'needs-human' || item.state === 'failed' || item.state === 'done';
 }
 
 export function isWorkflowSidebarRun(item: WorkItem): boolean {
-  return item.state !== 'cancelled' && (item.state !== 'done' || isWorkflowParked(item));
+  return !isWorkflowResolved(item);
 }
 
 function sidebarStateRank(item: WorkItem): number {

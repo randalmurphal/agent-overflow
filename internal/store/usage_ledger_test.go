@@ -378,6 +378,12 @@ func TestQueryWorkItemCostsGroupsByProjectAndItem(t *testing.T) {
 	}
 }
 
+func TestQueryWorkItemCostsUsesProjectWorkItemIndex(t *testing.T) {
+	s := newTestStore(t)
+	assertPlanUses(t, s.db, "idx_usage_ledger_project_work_item",
+		"EXPLAIN QUERY PLAN "+queryWorkItemCostsSQL, "project-a")
+}
+
 func TestQueryWorkItemUsageDetail(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.AppendUsage([]UsageLedgerRow{

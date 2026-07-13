@@ -2942,7 +2942,7 @@ export function WorkflowEnqueueItem(projectID: string, workflowID: string, workf
     });
 }
 
-export function WorkflowGetItem(itemID: string): $CancellablePromise<$models.WorkflowItemDetail> {
+export function WorkflowGetItem(itemID: string): $CancellablePromise<$models.WorkflowItemDetailView> {
     return $Call.ByID(70120675, itemID).then(($result: any) => {
         return $$createType102($result);
     });
@@ -2976,6 +2976,17 @@ export function WorkflowListItemCosts(projectID: string): $CancellablePromise<{ 
 
 export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3037887964, projectID).then(($result: any) => {
+        return $$createType105($result);
+    });
+}
+
+/**
+ * WorkflowListUnresolvedItems returns summary rows for active runs and
+ * terminal runs that still need a disposition. An empty project ID is
+ * app-wide, matching WorkflowListItems.
+ */
+export function WorkflowListUnresolvedItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
+    return $Call.ByID(3613211765, projectID).then(($result: any) => {
         return $$createType105($result);
     });
 }
@@ -3183,7 +3194,7 @@ const $$createType98 = $models.PRUpdateSubscriptionResult.createFrom;
 const $$createType99 = $models.MCPAuthInitResult.createFrom;
 const $$createType100 = $models.WorkflowDispositionReceipt.createFrom;
 const $$createType101 = store$0.WorkItem.createFrom;
-const $$createType102 = $models.WorkflowItemDetail.createFrom;
+const $$createType102 = $models.WorkflowItemDetailView.createFrom;
 const $$createType103 = $models.WorkflowDefinitionCatalog.createFrom;
 const $$createType104 = $Create.Map($Create.Any, $Create.Any);
 const $$createType105 = $Create.Array($$createType101);

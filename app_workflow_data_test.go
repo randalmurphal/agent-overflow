@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 )
 
@@ -99,11 +100,19 @@ func TestWorkflowListDefinitionsIncludesValidationAndPredictedPosition(t *testin
 
 func TestWorkflowItemDetailAndListCostsIncludeUsage(t *testing.T) {
 	app := newTestAppWithStore(t)
+	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{Phases: []def.Phase{
+		{ID: "verify", Driver: def.DriverTool, Check: "go-test"},
+		{ID: "build", Driver: def.DriverAgent},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	item := store.WorkItem{
 		ID: "usage-item", ProjectID: defaultTestProjectID, Goal: "measure", WorkflowID: "wf",
 		WorkflowScope: "shared", State: string(engine.StateDone), Source: "manual", CreatedAt: 1,
 		Disposition: json.RawMessage(`{"action":"merged","policy":"manual","at":2}`),
 		Digest:      json.RawMessage(`{"whatHappened":"detail only","whatItNeeds":"nothing"}`),
+		Snapshot:    snapshot,
 	}
 	if err := app.store.CreateWorkItem(item); err != nil {
 		t.Fatal(err)
@@ -113,12 +122,38 @@ func TestWorkflowItemDetailAndListCostsIncludeUsage(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := app.store.CreateWorkItemPhase(store.WorkItemPhase{
+		ItemID: item.ID, PhaseID: "verify", Attempt: 1, ThreadID: "phase",
+		InputEnvelope:  json.RawMessage(`{"input":true}`),
+		OutputEnvelope: json.RawMessage(`{"status":"done","outputs":{"ok":true}}`),
+		GateTrace:      json.RawMessage(`{"trace":true}`),
+		Intervention:   json.RawMessage(`{"kind":"manual"}`), NarrativePath: "/tmp/narrative",
+		Status: "completed", StartedAt: 1, EndedAt: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	detail, err := app.WorkflowGetItem(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if detail.Usage.TotalTokens != 13 || detail.Usage.CostUSD != 1.25 {
 		t.Fatalf("detail usage = %+v", detail.Usage)
+	}
+	if len(detail.CheckPhaseIDs) != 1 || detail.CheckPhaseIDs[0] != "verify" ||
+		len(detail.Phases) != 1 || len(detail.Phases[0].OutputEnvelope) == 0 {
+		t.Fatalf("detail view = %+v", detail)
+	}
+	wire, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, omitted := range []string{"snapshot", "inputEnvelope", "gateTrace", "intervention", "narrativePath"} {
+		if strings.Contains(string(wire), `"`+omitted+`"`) {
+			t.Fatalf("detail wire includes omitted field %q: %s", omitted, wire)
+		}
+	}
+	if !strings.Contains(string(wire), `"outputEnvelope"`) {
+		t.Fatalf("detail wire omitted output envelope: %s", wire)
 	}
 	costs, err := app.WorkflowListItemCosts(defaultTestProjectID)
 	if err != nil {

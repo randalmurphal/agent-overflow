@@ -51,6 +51,24 @@ func TestWorkItemPhaseAttemptsAndEffects(t *testing.T) {
 		phases[2].ThreadID != "workflow-thread" || phases[2].NarrativePath != "/runs/review/narrative.md" {
 		t.Fatalf("phase list = %#v", phases)
 	}
+	contexts, err := s.ListWorkItemPhaseContexts("item")
+	if err != nil {
+		t.Fatalf("list phase contexts: %v", err)
+	}
+	if len(contexts) != 3 || contexts[0].PhaseID != "build" || contexts[0].Attempt != 1 ||
+		contexts[1].Status != "completed" || string(contexts[1].OutputEnvelope) != string(output) ||
+		string(contexts[1].GateTrace) != string(trace) || string(contexts[1].Intervention) != string(intervention) {
+		t.Fatalf("phase contexts = %#v", contexts)
+	}
+	timeline, err := s.ListWorkItemPhaseTimeline("item")
+	if err != nil {
+		t.Fatalf("list phase timeline: %v", err)
+	}
+	if len(timeline) != 3 || timeline[0].PhaseID != "build" || timeline[0].Attempt != 1 ||
+		timeline[1].ThreadID != "thread-live" || string(timeline[1].OutputEnvelope) != string(output) ||
+		timeline[1].Status != "completed" || timeline[1].StartedAt != 20 || timeline[1].EndedAt != 25 {
+		t.Fatalf("phase timeline = %#v", timeline)
+	}
 
 	effect := WorkItemEffect{ItemID: "item", PhaseID: "build", Tool: "report", PayloadHash: "sha256", Payload: json.RawMessage(`{"issue":1}`), CreatedAt: 50}
 	if err := s.RecordWorkItemEffect(effect); err != nil {

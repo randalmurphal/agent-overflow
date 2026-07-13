@@ -315,6 +315,7 @@ export {
   WorkflowListDefinitions,
   WorkflowListItemCosts,
   WorkflowListItems,
+  WorkflowListUnresolvedItems,
   WorkflowMergeItem,
   WorkflowOpenStudioThread,
   WorkflowOpenTriageAgent,

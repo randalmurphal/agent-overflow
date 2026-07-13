@@ -1093,6 +1093,13 @@ CHECK(digest = '' OR json_valid(digest));
 CREATE INDEX idx_work_items_state_sort
   ON work_items(state, sort_position, created_at, id);`,
 	},
+	{
+		Version: 27,
+		Name:    "usage_ledger_project_work_item",
+		SQL: `CREATE INDEX idx_usage_ledger_project_work_item
+  ON usage_ledger(project_id, work_item_id)
+  WHERE work_item_id <> '';`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

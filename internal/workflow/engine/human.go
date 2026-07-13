@@ -69,7 +69,8 @@ func (e *Engine) takeOver(itemID string) error {
 	item.item.Reason = string(ReasonTakenOver)
 	item.item.EndedAt = endedAt
 	e.emitter.Emit("workflow:item-state", StateEvent{
-		ItemID: itemID, From: StateNeedsHuman, To: StateNeedsHuman, Reason: ReasonTakenOver,
+		ItemID: itemID, ProjectID: item.item.ProjectID,
+		From: StateNeedsHuman, To: StateNeedsHuman, Reason: ReasonTakenOver,
 	})
 	return nil
 }
@@ -233,7 +234,11 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 	if choice == HumanReject {
 		reject := route.Human.Reject
 		edge := def.GateEdgeKey(phase.ID, trace.Decision.RouteIndex)
-		counts, err := loopCounts(phases)
+		phaseContexts, err := e.store.ListWorkItemPhaseContexts(itemID)
+		if err != nil {
+			return err
+		}
+		counts, err := loopCounts(itemID, phaseContexts)
 		if err != nil {
 			return err
 		}

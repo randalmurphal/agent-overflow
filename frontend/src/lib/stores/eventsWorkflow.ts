@@ -20,7 +20,7 @@ const MAX_ERROR_DEDUPE_KEYS = 100;
 const shownErrors = new Set<string>();
 
 export function applyWorkflowItemStateEvent(event: WorkflowItemStateEvent): void {
-  if (!event?.itemId || !event.to) return;
+  if (!event?.itemId || !event.projectId || !event.to) return;
   applyWorkflowItemState(event);
   applyWorkflowSidebarItemState(event);
 }

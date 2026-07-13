@@ -23,6 +23,32 @@ type WorkItemPhase struct {
 	EndedAt        int64           `json:"endedAt,omitempty"`
 }
 
+// WorkItemPhaseContext is the narrow phase-history projection used to rebuild
+// variables, attempts, and loop counts. It omits cumulative input envelopes,
+// thread IDs, narrative paths, and timestamps.
+type WorkItemPhaseContext struct {
+	PhaseID        string
+	Attempt        int
+	Status         string
+	OutputEnvelope json.RawMessage
+	GateTrace      json.RawMessage
+	Intervention   json.RawMessage
+}
+
+// WorkItemPhaseTimeline is the narrow phase projection served to workflow
+// detail views. Cumulative inputs and backend-only diagnostics never cross the
+// SQLite boundary on that read path.
+type WorkItemPhaseTimeline struct {
+	ItemID         string
+	PhaseID        string
+	Attempt        int
+	ThreadID       string
+	OutputEnvelope json.RawMessage
+	Status         string
+	StartedAt      int64
+	EndedAt        int64
+}
+
 const workItemPhaseColumns = `item_id, phase_id, attempt, thread_id,
 input_envelope, output_envelope, gate_trace, intervention, narrative_path,
 status, started_at, ended_at`
@@ -108,6 +134,67 @@ func (s *Store) ListWorkItemPhases(itemID string) ([]WorkItemPhase, error) {
 		return nil, fmt.Errorf("store: list work item phases %s: iterate: %w", itemID, err)
 	}
 	return phases, nil
+}
+
+func (s *Store) ListWorkItemPhaseTimeline(itemID string) ([]WorkItemPhaseTimeline, error) {
+	rows, err := s.db.Query(
+		`SELECT item_id, phase_id, attempt, thread_id, output_envelope,
+		 status, started_at, ended_at
+		 FROM work_item_phases
+		 WHERE item_id = ? ORDER BY started_at ASC, phase_id ASC, attempt ASC`, itemID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list work item phase timeline %s: %w", itemID, err)
+	}
+	defer rows.Close()
+	timeline := make([]WorkItemPhaseTimeline, 0)
+	for rows.Next() {
+		var phase WorkItemPhaseTimeline
+		var output string
+		if err := rows.Scan(
+			&phase.ItemID, &phase.PhaseID, &phase.Attempt, &phase.ThreadID,
+			&output, &phase.Status, &phase.StartedAt, &phase.EndedAt,
+		); err != nil {
+			return nil, fmt.Errorf("store: list work item phase timeline %s: scan: %w", itemID, err)
+		}
+		phase.OutputEnvelope = json.RawMessage(output)
+		timeline = append(timeline, phase)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list work item phase timeline %s: iterate: %w", itemID, err)
+	}
+	return timeline, nil
+}
+
+func (s *Store) ListWorkItemPhaseContexts(itemID string) ([]WorkItemPhaseContext, error) {
+	rows, err := s.db.Query(
+		`SELECT phase_id, attempt, status, output_envelope, gate_trace, intervention
+		 FROM work_item_phases
+		 WHERE item_id = ? ORDER BY started_at ASC, phase_id ASC, attempt ASC`, itemID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list work item phase contexts %s: %w", itemID, err)
+	}
+	defer rows.Close()
+	contexts := make([]WorkItemPhaseContext, 0)
+	for rows.Next() {
+		var context WorkItemPhaseContext
+		var output, gateTrace, intervention string
+		if err := rows.Scan(
+			&context.PhaseID, &context.Attempt, &context.Status,
+			&output, &gateTrace, &intervention,
+		); err != nil {
+			return nil, fmt.Errorf("store: list work item phase contexts %s: scan: %w", itemID, err)
+		}
+		context.OutputEnvelope = json.RawMessage(output)
+		context.GateTrace = json.RawMessage(gateTrace)
+		context.Intervention = json.RawMessage(intervention)
+		contexts = append(contexts, context)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list work item phase contexts %s: iterate: %w", itemID, err)
+	}
+	return contexts, nil
 }
 
 // GetLatestWorkItemPhase returns only the newest attempt for attention-state

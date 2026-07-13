@@ -56,16 +56,6 @@
     return `${Math.round(hours / 24)}d`;
   }
 
-  function checkPhaseIds(snapshot: unknown): Set<string> {
-    try {
-      const parsed = (typeof snapshot === 'string' ? JSON.parse(snapshot) : snapshot) as { workflow?: { phases?: Array<{ id?: unknown; driver?: unknown; check?: unknown }> } } | null;
-      const checks = parsed?.workflow?.phases?.filter((phase) => phase.driver === 'tool' && typeof phase.check === 'string') ?? [];
-      return new Set(checks.flatMap((phase) => typeof phase.id === 'string' ? [phase.id] : []));
-    } catch {
-      return new Set();
-    }
-  }
-
   async function openPhase(phase: WorkItemPhase): Promise<void> {
     if (!phase.threadId) return;
     try {
@@ -124,7 +114,7 @@
   {@const signal = workflowRunSignal(item.state, item.reason)}
   {@const digest = parseWorkflowDigest(item.digest)}
   {@const question = envelopeQuestion() || digest?.whatItNeeds || ''}
-  {@const checks = checkPhaseIds(item.snapshot)}
+  {@const checks = new Set(detail.checkPhaseIds ?? [])}
   <div class="flex min-h-full flex-col" data-testid="wf-run-detail">
     <div class="flex-1 space-y-5 p-4">
       <section class="space-y-1" data-testid="wf-run-header">

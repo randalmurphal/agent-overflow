@@ -410,32 +410,128 @@ func (a *App) WorkflowListItems(projectID string) ([]store.WorkItem, error) {
 	return a.store.ListWorkItemSummaries(store.WorkItemListFilter{ProjectID: projectID})
 }
 
-type WorkflowItemDetail struct {
-	Item      store.WorkItem        `json:"item"`
-	Phases    []store.WorkItemPhase `json:"phases"`
-	Artifacts []WorkflowArtifact    `json:"artifacts"`
-	Usage     store.WorkItemUsage   `json:"usage"`
+// WorkflowListUnresolvedItems returns summary rows for active runs and
+// terminal runs that still need a disposition. An empty project ID is
+// app-wide, matching WorkflowListItems.
+func (a *App) WorkflowListUnresolvedItems(projectID string) ([]store.WorkItem, error) {
+	if a.store == nil {
+		return nil, fmt.Errorf("workflow store unavailable")
+	}
+	return a.store.ListWorkItemSummaries(store.WorkItemListFilter{
+		ProjectID: projectID, UnresolvedOnly: true,
+	})
 }
 
-func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetail, error) {
+// WorkflowItemView is the run-record portion of the detail response. It keeps
+// every item field except the frozen definition snapshot, which is an engine
+// recovery payload rather than frontend state.
+type WorkflowItemView struct {
+	ID             string          `json:"id"`
+	ProjectID      string          `json:"projectId"`
+	Goal           string          `json:"goal"`
+	WorkflowID     string          `json:"workflowId"`
+	WorkflowScope  string          `json:"workflowScope"`
+	State          string          `json:"state"`
+	Reason         string          `json:"reason,omitempty"`
+	SortPosition   int             `json:"sortPosition"`
+	Seeds          json.RawMessage `json:"seeds,omitempty"`
+	StepMode       bool            `json:"stepMode"`
+	WorktreePath   string          `json:"worktreePath,omitempty"`
+	Branch         string          `json:"branch,omitempty"`
+	BaseBranch     string          `json:"baseBranch,omitempty"`
+	Budget         json.RawMessage `json:"budget,omitempty"`
+	Source         string          `json:"source"`
+	SourceRef      string          `json:"sourceRef,omitempty"`
+	TriageThreadID string          `json:"triageThreadId,omitempty"`
+	Disposition    json.RawMessage `json:"disposition,omitempty"`
+	Digest         json.RawMessage `json:"digest,omitempty"`
+	CreatedAt      int64           `json:"createdAt"`
+	StartedAt      int64           `json:"startedAt,omitempty"`
+	EndedAt        int64           `json:"endedAt,omitempty"`
+}
+
+// WorkflowItemPhaseView is the timeline projection used by run detail. Input
+// context, gate traces, interventions, and narrative paths remain durable in
+// SQLite but load only through backend diagnostics, not the ordinary UI path.
+type WorkflowItemPhaseView struct {
+	ItemID         string          `json:"itemId"`
+	PhaseID        string          `json:"phaseId"`
+	Attempt        int             `json:"attempt"`
+	ThreadID       string          `json:"threadId,omitempty"`
+	OutputEnvelope json.RawMessage `json:"outputEnvelope,omitempty"`
+	Status         string          `json:"status"`
+	StartedAt      int64           `json:"startedAt"`
+	EndedAt        int64           `json:"endedAt,omitempty"`
+}
+
+type WorkflowItemDetailView struct {
+	Item          WorkflowItemView        `json:"item"`
+	CheckPhaseIDs []string                `json:"checkPhaseIds"`
+	Phases        []WorkflowItemPhaseView `json:"phases"`
+	Artifacts     []WorkflowArtifact      `json:"artifacts"`
+	Usage         store.WorkItemUsage     `json:"usage"`
+}
+
+func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 	if a.store == nil {
-		return WorkflowItemDetail{}, fmt.Errorf("workflow store unavailable")
+		return WorkflowItemDetailView{}, fmt.Errorf("workflow store unavailable")
 	}
 	item, err := a.store.GetWorkItem(itemID)
 	if err != nil {
-		return WorkflowItemDetail{}, err
+		return WorkflowItemDetailView{}, err
 	}
-	phases, err := a.store.ListWorkItemPhases(itemID)
+	phases, err := a.store.ListWorkItemPhaseTimeline(itemID)
 	if err != nil {
-		return WorkflowItemDetail{}, err
+		return WorkflowItemDetailView{}, err
 	}
 	artifacts, err := listWorkflowArtifacts(a.workflowDataRoot(), itemID)
 	if err != nil {
-		return WorkflowItemDetail{}, err
+		return WorkflowItemDetailView{}, err
 	}
 	usage, err := a.store.QueryWorkItemUsage(itemID)
 	if err != nil {
-		return WorkflowItemDetail{}, err
+		return WorkflowItemDetailView{}, err
 	}
-	return WorkflowItemDetail{Item: item, Phases: phases, Artifacts: artifacts, Usage: usage}, nil
+	checkPhaseIDs, err := workflowCheckPhaseIDs(item.Snapshot)
+	if err != nil {
+		return WorkflowItemDetailView{}, fmt.Errorf("workflow item %s snapshot: %w", itemID, err)
+	}
+	phaseViews := make([]WorkflowItemPhaseView, 0, len(phases))
+	for _, phase := range phases {
+		phaseViews = append(phaseViews, WorkflowItemPhaseView{
+			ItemID: phase.ItemID, PhaseID: phase.PhaseID, Attempt: phase.Attempt,
+			ThreadID: phase.ThreadID, OutputEnvelope: phase.OutputEnvelope,
+			Status: phase.Status, StartedAt: phase.StartedAt, EndedAt: phase.EndedAt,
+		})
+	}
+	return WorkflowItemDetailView{
+		Item: WorkflowItemView{
+			ID: item.ID, ProjectID: item.ProjectID, Goal: item.Goal,
+			WorkflowID: item.WorkflowID, WorkflowScope: item.WorkflowScope,
+			State: item.State, Reason: item.Reason, SortPosition: item.SortPosition,
+			Seeds: item.Seeds, StepMode: item.StepMode, WorktreePath: item.WorktreePath,
+			Branch: item.Branch, BaseBranch: item.BaseBranch, Budget: item.Budget,
+			Source: item.Source, SourceRef: item.SourceRef, TriageThreadID: item.TriageThreadID,
+			Disposition: item.Disposition, Digest: item.Digest, CreatedAt: item.CreatedAt,
+			StartedAt: item.StartedAt, EndedAt: item.EndedAt,
+		},
+		CheckPhaseIDs: checkPhaseIDs, Phases: phaseViews, Artifacts: artifacts, Usage: usage,
+	}, nil
+}
+
+func workflowCheckPhaseIDs(payload json.RawMessage) ([]string, error) {
+	ids := make([]string, 0)
+	if len(payload) == 0 {
+		return ids, nil
+	}
+	var snapshot engine.Snapshot
+	if err := json.Unmarshal(payload, &snapshot); err != nil {
+		return nil, err
+	}
+	for _, phase := range snapshot.Workflow.Phases {
+		if phase.Driver == def.DriverTool && phase.Check != "" {
+			ids = append(ids, phase.ID)
+		}
+	}
+	return ids, nil
 }

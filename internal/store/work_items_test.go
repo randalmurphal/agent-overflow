@@ -146,6 +146,41 @@ func TestWorkItemTriageAssociationAndPhaseThreadLookup(t *testing.T) {
 	}
 }
 
+func TestGetWorkItemAttentionContextOmitsSnapshotAndPhaseDiagnostics(t *testing.T) {
+	s := newTestStore(t)
+	item := testWorkItem("attention", "project-a", "needs-human", 0, 1)
+	item.Goal = "Review checks"
+	item.Reason = "gate"
+	item.WorktreePath = "/tmp/worktree"
+	item.Digest = json.RawMessage(`{"whatHappened":"paused","whatItNeeds":"review"}`)
+	item.Snapshot = json.RawMessage(`{"workflow":{"phases":[{"id":"verify","driver":"tool","check":"go-test","prompt":"large payload"}]}}`)
+	if err := s.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateWorkItemPhase(WorkItemPhase{
+		ItemID: item.ID, PhaseID: "verify", Attempt: 1, Status: "parked",
+		InputEnvelope:  json.RawMessage(`{"large":"input"}`),
+		OutputEnvelope: json.RawMessage(`{"status":"question","question":"Continue?"}`),
+		GateTrace:      json.RawMessage(`{"large":"trace"}`), NarrativePath: "/tmp/path",
+		StartedAt: 2, EndedAt: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	context, err := s.GetWorkItemAttentionContext(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if context.Item.ID != item.ID || context.Item.ProjectID != item.ProjectID ||
+		context.Item.Goal != item.Goal || context.Item.Reason != item.Reason ||
+		context.Item.WorktreePath != item.WorktreePath || context.PhaseID != "verify" ||
+		context.Check != "go-test" || string(context.OutputEnvelope) != `{"status":"question","question":"Continue?"}` {
+		t.Fatalf("attention context = %+v", context)
+	}
+	if len(context.Item.Snapshot) != 0 || len(context.Item.Seeds) != 0 || len(context.Item.Budget) != 0 {
+		t.Fatalf("attention context hydrated heavy item fields: %+v", context.Item)
+	}
+}
+
 func TestUpdateWorkItemWorkspace(t *testing.T) {
 	s := newTestStore(t)
 	item := testWorkItem("workspace", "project-a", "running", 0, 1)
@@ -211,6 +246,53 @@ func TestWorkItemSummaryAndNextSortPosition(t *testing.T) {
 	if emptyPosition != 0 {
 		t.Fatalf("empty next sort position = %d, want 0", emptyPosition)
 	}
+}
+
+func TestListWorkItemsUnresolvedExcludesDisposedRegardlessOfState(t *testing.T) {
+	s := newTestStore(t)
+	receipt := json.RawMessage(`{"action":"discarded","policy":"manual","at":10}`)
+	items := []WorkItem{
+		testWorkItem("queued", "project-a", "queued", 0, 1),
+		testWorkItem("running", "project-a", "running", 1, 2),
+		testWorkItem("needs-human", "project-a", "needs-human", 2, 3),
+		testWorkItem("done", "project-a", "done", 3, 4),
+		testWorkItem("failed", "project-a", "failed", 4, 5),
+		testWorkItem("cancelled", "project-a", "cancelled", 5, 6),
+		testWorkItem("other-project", "project-b", "failed", 6, 7),
+	}
+	items[4].Disposition = receipt
+	for _, item := range items {
+		if err := s.CreateWorkItem(item); err != nil {
+			t.Fatalf("create %s: %v", item.ID, err)
+		}
+	}
+
+	got, err := s.ListWorkItemSummaries(WorkItemListFilter{
+		ProjectID: "project-a", UnresolvedOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("list unresolved: %v", err)
+	}
+	want := []string{"queued", "running", "needs-human", "done"}
+	if len(got) != len(want) {
+		t.Fatalf("unresolved = %#v, want ids %v", got, want)
+	}
+	for index, id := range want {
+		if got[index].ID != id {
+			t.Fatalf("unresolved[%d] = %q, want %q", index, got[index].ID, id)
+		}
+	}
+}
+
+func TestListWorkItemsUnresolvedUsesStateIndexes(t *testing.T) {
+	s := newTestStore(t)
+	selectSQL := `EXPLAIN QUERY PLAN SELECT ` + workItemSummaryColumns + ` FROM work_items WHERE `
+	orderSQL := ` ORDER BY sort_position ASC, created_at ASC`
+	assertPlanUses(t, s.db, "idx_work_items_state_sort",
+		selectSQL+unresolvedWorkItemsPredicate+orderSQL)
+	assertPlanUses(t, s.db, "idx_work_items_project_sort",
+		selectSQL+`project_id = ? AND `+unresolvedWorkItemsPredicate+orderSQL,
+		"project-a")
 }
 
 func TestReorderQueuedWorkItemsIsAtomic(t *testing.T) {

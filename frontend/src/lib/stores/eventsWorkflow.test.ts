@@ -20,7 +20,7 @@ describe('workflow event fan-out', () => {
     resetWorkflowsPane();
     resetWorkflowsSidebarForTest();
     resetBindingMocks();
-    setBindingMock('WorkflowListItems', async () => [{
+    setBindingMock('WorkflowListUnresolvedItems', async () => [{
       id: 'run', projectId: 'p', workflowId: 'wf', state: 'running', createdAt: 1, sortPosition: 1,
     }]);
     setBindingMock('WorkflowListDefinitions', async () => ({
@@ -34,12 +34,12 @@ describe('workflow event fan-out', () => {
     await initializeWorkflowsSidebar();
     applyWorkflowQueueStateEvent({ active: false, globalConcurrency: 3, startsRemaining: 2 });
     expect(getWorkflowQueueState()).toEqual({ active: false, globalConcurrency: 3, startsRemaining: 2 });
-    await vi.waitFor(() => expect(getBindingMock('WorkflowListItems')).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(getBindingMock('WorkflowListUnresolvedItems')).toHaveBeenCalledTimes(2));
   });
 
   it('fans item state into the always-on sidebar store', async () => {
     await initializeWorkflowsSidebar();
-    applyWorkflowItemStateEvent({ itemId: 'run', from: 'running', to: 'needs-human', reason: 'gate' });
+    applyWorkflowItemStateEvent({ itemId: 'run', projectId: 'p', from: 'running', to: 'needs-human', reason: 'gate' });
     expect(getProjectWorkflowAttentionCount('p')).toBe(1);
   });
 

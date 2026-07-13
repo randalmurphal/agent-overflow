@@ -15,7 +15,7 @@ type controlEnvelope struct {
 	Outputs map[string]any `json:"outputs"`
 }
 
-func (e *Engine) variableContext(item *runtimeItem, current json.RawMessage) (map[string]any, []store.WorkItemPhase, error) {
+func (e *Engine) variableContext(item *runtimeItem, current json.RawMessage) (map[string]any, []store.WorkItemPhaseContext, error) {
 	vars := make(map[string]any)
 	if len(item.item.Seeds) > 0 {
 		if len(item.item.Seeds) > MaxSeedBytes {
@@ -28,11 +28,11 @@ func (e *Engine) variableContext(item *runtimeItem, current json.RawMessage) (ma
 			return nil, nil, fmt.Errorf("decode item %q seeds: expected an object", item.item.ID)
 		}
 	}
-	phases, err := e.store.ListWorkItemPhases(item.item.ID)
+	phases, err := e.store.ListWorkItemPhaseContexts(item.item.ID)
 	if err != nil {
 		return nil, nil, err
 	}
-	latest := make(map[string]store.WorkItemPhase)
+	latest := make(map[string]store.WorkItemPhaseContext)
 	for _, phase := range phases {
 		if phase.Status != "completed" || len(phase.OutputEnvelope) == 0 {
 			continue
@@ -86,7 +86,7 @@ func decodeJSON(payload []byte, target any) error {
 	return nil
 }
 
-func loopCounts(phases []store.WorkItemPhase) (map[string]int, error) {
+func loopCounts(itemID string, phases []store.WorkItemPhaseContext) (map[string]int, error) {
 	counts := make(map[string]int)
 	for _, phase := range phases {
 		if len(phase.Intervention) > 0 {
@@ -100,7 +100,7 @@ func loopCounts(phases []store.WorkItemPhase) (map[string]int, error) {
 		}
 		var trace def.GateTrace
 		if err := decodeJSON(phase.GateTrace, &trace); err != nil {
-			return nil, fmt.Errorf("decode gate trace for %s/%s/%d: %w", phase.ItemID, phase.PhaseID, phase.Attempt, err)
+			return nil, fmt.Errorf("decode gate trace for %s/%s/%d: %w", itemID, phase.PhaseID, phase.Attempt, err)
 		}
 		if trace.Decision.Kind == def.DecisionLoop && trace.Decision.LoopEdge != "" {
 			counts[trace.Decision.LoopEdge]++
@@ -109,7 +109,7 @@ func loopCounts(phases []store.WorkItemPhase) (map[string]int, error) {
 	return counts, nil
 }
 
-func nextAttempt(phases []store.WorkItemPhase, phaseID string) int {
+func nextAttempt(phases []store.WorkItemPhaseContext, phaseID string) int {
 	next := 1
 	for _, phase := range phases {
 		if phase.PhaseID == phaseID && phase.Attempt >= next {

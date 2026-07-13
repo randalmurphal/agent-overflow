@@ -57,6 +57,7 @@ describe('<WorkflowRunDetail>', () => {
         { phaseId: 'plan', attempt: 1, status: 'completed', threadId: 'old', startedAt: 1, endedAt: 2 },
         { phaseId: 'build', attempt: 1, status: 'completed', threadId: 'newest', startedAt: 2, endedAt: 3 },
       ],
+      checkPhaseIds: ['build'],
       artifacts: [],
       usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
     }));
@@ -79,6 +80,12 @@ describe('<WorkflowRunDetail>', () => {
     expect(openReviewCompanion).toHaveBeenCalledWith('workflows', 'newest', {
       scope: 'branch', baseBranch: 'main', workspacePath: '/tmp/run',
     });
+  });
+
+  it('renders checks from the server-projected check phase ids', async () => {
+    const view = render(WorkflowRunDetail, { level });
+    expect(await view.findByTestId('wf-checks')).toHaveTextContent('build');
+    expect(view.getByTestId('wf-checks')).not.toHaveTextContent('plan');
   });
 
   it('renders local diff affordances disabled remotely', async () => {

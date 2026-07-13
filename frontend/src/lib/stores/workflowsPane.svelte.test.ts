@@ -9,7 +9,9 @@ import {
   consumeWorkflowEscape,
   activateWorkflowsPane,
   beginWorkflowSweep,
+  getWorkflowCosts,
   getWorkflowCurrentLevel,
+  getWorkflowDefinitions,
   getWorkflowDetail,
   getWorkflowItems,
   getWorkflowProjectFilter,
@@ -158,7 +160,7 @@ describe('workflows pane store', () => {
     activateWorkflowsPane();
     const loading = loadWorkflowOverview();
     await vi.waitFor(() => expect(release).toBeTypeOf('function'));
-    applyWorkflowItemState({ itemId: 'run', from: 'needs-human', to: 'running' });
+    applyWorkflowItemState({ itemId: 'run', projectId: 'p', from: 'needs-human', to: 'running' });
     release([parked('run', 'needs-human', 1)]);
     await loading;
     expect(getWorkflowItems()[0]).toMatchObject({ id: 'run', state: 'running', reason: '' });
@@ -204,9 +206,40 @@ describe('workflows pane store', () => {
       disposition: '{"action":"merged","policy":"manual","at":2}',
     } as WorkItem;
 
-    applyWorkflowItemState({ itemId: 'run', from: 'needs-human', to: 'done' });
+    applyWorkflowItemState({ itemId: 'run', projectId: 'p', from: 'needs-human', to: 'done' });
     await vi.waitFor(() => expect(getWorkflowItems()[0]?.disposition).toContain('merged'));
     await vi.waitFor(() => expect(getWorkflowDetail()?.item.disposition).toContain('merged'));
+  });
+
+  it('refreshes only the affected project items and costs after an item event', async () => {
+    addProjectLocal(project('other'));
+    let pItem = parked('p-run', 'needs-human', 1);
+    const otherItem = { ...parked('other-run', 'failed', 2), projectId: 'other' } as WorkItem;
+    setBindingMock('WorkflowListItems', async (projectId: string) => (
+      projectId === 'p' ? [pItem] : [otherItem]
+    ));
+    setBindingMock('WorkflowListItemCosts', async (projectId: string) => (
+      projectId === 'p' ? { 'p-run': pItem.state === 'running' ? 2 : 1 } : { 'other-run': 3 }
+    ));
+
+    activateWorkflowsPane();
+    await loadWorkflowOverview();
+    expect(getWorkflowDefinitions()).toHaveLength(2);
+    getBindingMock('WorkflowListItems')!.mockClear();
+    getBindingMock('WorkflowListItemCosts')!.mockClear();
+    getBindingMock('WorkflowListDefinitions')!.mockClear();
+
+    pItem = { ...pItem, state: 'running', reason: '' } as WorkItem;
+    applyWorkflowItemState({
+      itemId: 'p-run', projectId: 'p', from: 'needs-human', to: 'running',
+    });
+
+    await vi.waitFor(() => expect(getWorkflowCosts()['p-run']).toBe(2));
+    expect(getBindingMock('WorkflowListItems')!.mock.calls).toEqual([['p']]);
+    expect(getBindingMock('WorkflowListItemCosts')!.mock.calls).toEqual([['p']]);
+    expect(getBindingMock('WorkflowListDefinitions')).not.toHaveBeenCalled();
+    expect(getWorkflowItems().map((item) => item.id).sort()).toEqual(['other-run', 'p-run']);
+    expect(getWorkflowDefinitions()).toHaveLength(2);
   });
 
   it('keeps the overview filter while loading a deep-linked workflow outside it', async () => {
@@ -297,7 +330,7 @@ describe('workflows pane store', () => {
     await loadWorkflowOverview();
     beginWorkflowSweep('second');
     rows = [parked('first', 'needs-human', 1)];
-    applyWorkflowItemState({ itemId: 'first', from: 'needs-human', to: 'needs-human', reason: 'gate' });
+    applyWorkflowItemState({ itemId: 'first', projectId: 'p', from: 'needs-human', to: 'needs-human', reason: 'gate' });
     await vi.waitFor(() => expect(getWorkflowItems()).toHaveLength(1));
     expect(getWorkflowSweep().index).toBe(0);
   });

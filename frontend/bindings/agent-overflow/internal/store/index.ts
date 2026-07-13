@@ -30,6 +30,5 @@ export {
     UsageBucket,
     UsageQuery,
     WorkItem,
-    WorkItemPhase,
     WorkItemUsage
 } from "./models.js";

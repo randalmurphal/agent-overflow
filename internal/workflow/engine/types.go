@@ -166,10 +166,11 @@ type Snapshot struct {
 }
 
 type StateEvent struct {
-	ItemID string `json:"itemId"`
-	From   State  `json:"from"`
-	To     State  `json:"to"`
-	Reason Reason `json:"reason,omitempty"`
+	ItemID    string `json:"itemId"`
+	ProjectID string `json:"projectId"`
+	From      State  `json:"from"`
+	To        State  `json:"to"`
+	Reason    Reason `json:"reason,omitempty"`
 }
 
 type QueueEvent struct {
@@ -207,6 +208,7 @@ type persistence interface {
 	CreateWorkItemPhase(store.WorkItemPhase) error
 	CompleteWorkItemPhase(string, string, int, json.RawMessage, json.RawMessage, string, int64) error
 	ListWorkItemPhases(string) ([]store.WorkItemPhase, error)
+	ListWorkItemPhaseContexts(string) ([]store.WorkItemPhaseContext, error)
 	UpdateWorkItemPhaseIntervention(string, string, int, json.RawMessage) error
 	ListProjects() ([]store.Project, error)
 }

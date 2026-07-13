@@ -64,30 +64,47 @@ func (e *Engine) releaseResources(item *runtimeItem) error {
 		}
 	}
 	item.acquired = nil
-	item.waiting = false
+	e.removeWaiting(item)
 	return errors.Join(errs...)
 }
 
-func (e *Engine) startWaiting() error {
-	waiting := make([]*runtimeItem, 0)
-	for _, item := range e.items {
-		if item.waiting && State(item.item.State) == StateRunning {
-			waiting = append(waiting, item)
-		}
+func (e *Engine) addWaiting(item *runtimeItem) {
+	if _, exists := e.waitingByID[item.item.ID]; exists {
+		item.waiting = true
+		return
 	}
-	sort.Slice(waiting, func(i, j int) bool {
-		left, right := waiting[i].item, waiting[j].item
-		if left.SortPosition != right.SortPosition {
-			return left.SortPosition < right.SortPosition
-		}
-		if left.CreatedAt != right.CreatedAt {
-			return left.CreatedAt < right.CreatedAt
-		}
-		return left.ID < right.ID
+	index := sort.Search(len(e.waiting), func(index int) bool {
+		return !queueLess(e.waiting[index].item, item.item)
 	})
+	e.waiting = append(e.waiting, nil)
+	copy(e.waiting[index+1:], e.waiting[index:])
+	e.waiting[index] = item
+	e.waitingByID[item.item.ID] = struct{}{}
+	item.waiting = true
+}
 
+func (e *Engine) removeWaiting(item *runtimeItem) {
+	if _, exists := e.waitingByID[item.item.ID]; !exists {
+		item.waiting = false
+		return
+	}
+	delete(e.waitingByID, item.item.ID)
+	for index, waiting := range e.waiting {
+		if waiting != item {
+			continue
+		}
+		copy(e.waiting[index:], e.waiting[index+1:])
+		e.waiting[len(e.waiting)-1] = nil
+		e.waiting = e.waiting[:len(e.waiting)-1]
+		break
+	}
+	item.waiting = false
+}
+
+func (e *Engine) startWaiting() error {
 	var errs []error
-	for _, item := range waiting {
+	for index := 0; index < len(e.waiting); {
+		item := e.waiting[index]
 		phase, ok := findPhase(item.workflow, item.phaseID)
 		if !ok {
 			err := errors.Join(
@@ -106,10 +123,11 @@ func (e *Engine) startWaiting() error {
 			continue
 		}
 		if !acquired {
+			index++
 			continue
 		}
 		item.acquired = canonicalResources(phase.Resources)
-		item.waiting = false
+		e.removeWaiting(item)
 		halted, err := e.enforceBudget(item)
 		if halted {
 			if err != nil {

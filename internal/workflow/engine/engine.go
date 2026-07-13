@@ -58,6 +58,8 @@ type Engine struct {
 	items           map[string]*runtimeItem
 	queued          []*runtimeItem
 	queueHead       int
+	waiting         []*runtimeItem
+	waitingByID     map[string]struct{}
 	pendingHuman    []string
 	holders         map[resourceKey]int
 	activeSlots     int
@@ -80,6 +82,7 @@ func New(store persistence, runner Runner, emitter Emitter, definitions Definiti
 		profiles: profiles, spend: spend, config: config, now: time.Now,
 		commands: make(chan any, commandBuffer), done: make(chan struct{}),
 		items: make(map[string]*runtimeItem), holders: make(map[resourceKey]int),
+		waitingByID:     make(map[string]struct{}),
 		inflightStarts:  make(map[*runnerStartFuture]struct{}),
 		startsRemaining: -1,
 	}, nil

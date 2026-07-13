@@ -70,7 +70,7 @@ cleanup: manual
   for (const phase of detail.phases) {
     expect(phase.status).toBe('completed');
     expect(phase.outputEnvelope).toBeTruthy();
-    expect(phase.gateTrace).toBeTruthy();
+    expect(phase).not.toHaveProperty('gateTrace');
   }
 });
 
@@ -182,7 +182,8 @@ cleanup: manual
   );
   const detail = await harness.rpc<WorkflowDetail>('WorkflowGetItem', item.id);
   expect(detail.phases).toHaveLength(2);
-  expect(detail.phases[1].gateTrace).toBeTruthy();
+  expect(detail.phases[1].status).toBe('completed');
+  expect(detail.phases[1]).not.toHaveProperty('gateTrace');
 });
 
 test('workflow question answer continues on the same mock session', async ({ harness }) => {

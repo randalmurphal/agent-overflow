@@ -278,6 +278,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowListDefinitions", ID: 2064216126},              // main.App.WorkflowListDefinitions
 	{Name: "WorkflowListItemCosts", ID: 1544440599},                // main.App.WorkflowListItemCosts
 	{Name: "WorkflowListItems", ID: 3037887964},                    // main.App.WorkflowListItems
+	{Name: "WorkflowListUnresolvedItems", ID: 3613211765},          // main.App.WorkflowListUnresolvedItems
 	{Name: "WorkflowMergeItem", ID: 3006532931},                    // main.App.WorkflowMergeItem
 	{Name: "WorkflowOpenStudioThread", ID: 304020682},              // main.App.WorkflowOpenStudioThread
 	{Name: "WorkflowOpenTriageAgent", ID: 1552981489},              // main.App.WorkflowOpenTriageAgent

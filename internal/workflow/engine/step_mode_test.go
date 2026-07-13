@@ -30,9 +30,9 @@ func TestLoopCountsIgnoreGateAttemptAbandonedByTakeover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	counts, err := loopCounts([]store.WorkItemPhase{
-		{ItemID: "item", PhaseID: "review", Attempt: 1, GateTrace: trace, Status: "completed"},
-		{ItemID: "item", PhaseID: "review", Attempt: 2, GateTrace: trace, Intervention: intervention, Status: "parked"},
+	counts, err := loopCounts("item", []store.WorkItemPhaseContext{
+		{PhaseID: "review", Attempt: 1, GateTrace: trace, Status: "completed"},
+		{PhaseID: "review", Attempt: 2, GateTrace: trace, Intervention: intervention, Status: "parked"},
 	})
 	if err != nil {
 		t.Fatal(err)

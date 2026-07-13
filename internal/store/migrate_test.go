@@ -34,7 +34,15 @@ func openSQLiteDB(t *testing.T) *sql.DB {
 // --- Schema smoke ---
 
 func TestMigrationFreshDB(t *testing.T) {
-	s := newTestStore(t)
+	s, err := New(filepath.Join(t.TempDir(), "fresh.sqlite"))
+	if err != nil {
+		t.Fatalf("create fresh store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close fresh store: %v", err)
+		}
+	})
 
 	tables := []string{
 		"migration_versions", "threads", "items", "payloads", "payload_chunks",

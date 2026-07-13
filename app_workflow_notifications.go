@@ -35,27 +35,21 @@ func (a *App) afterWorkflowEngineEvent(name string, payload any) {
 }
 
 func (a *App) afterWorkflowStateEvent(event engine.StateEvent) {
-	item, err := a.store.GetWorkItem(event.ItemID)
-	if err != nil {
-		log.Printf("workflow notification %s: load item: %v", event.ItemID, err)
-		return
-	}
-
 	if event.To == engine.StateNeedsHuman || event.To == engine.StateFailed {
+		context, err := a.store.GetWorkItemAttentionContext(event.ItemID)
+		if err != nil {
+			log.Printf("workflow notification %s: load attention context: %v", event.ItemID, err)
+			return
+		}
+		item := context.Item
 		var digest WorkflowDigest
 		upgrade := true
 		if err := json.Unmarshal(item.Digest, &digest); err != nil {
 			log.Printf("workflow notification %s: decode template digest: %v", event.ItemID, err)
 			upgrade = false
-			latest, found, phasesErr := a.store.GetLatestWorkItemPhase(event.ItemID)
-			if phasesErr != nil {
-				log.Printf("workflow notification %s: load latest phase for template fallback: %v", event.ItemID, phasesErr)
-			}
-			var phases []store.WorkItemPhase
-			if found {
-				phases = []store.WorkItemPhase{latest}
-			}
-			digest = workflowTemplateDigest(item, phases)
+			digest = workflowTemplateDigest(
+				item, context.PhaseID, context.OutputEnvelope, context.Check,
+			)
 		}
 		go a.sendWorkflowItemNotification(item, digest)
 		// Model upgrades are useful only when a transport-backed app can
@@ -66,11 +60,11 @@ func (a *App) afterWorkflowStateEvent(event engine.StateEvent) {
 		}
 	}
 	if event.To == engine.StateDone {
-		a.queueAutoDisposition(item.ID)
+		a.queueAutoDisposition(event.ItemID)
 		return
 	}
 
-	a.recordWorkflowNotificationOutcome(item.ProjectID, event.To)
+	a.recordWorkflowNotificationOutcome(event.ProjectID, event.To)
 	if event.To == engine.StateCancelled || event.To == engine.StateNeedsHuman || event.To == engine.StateFailed {
 		a.flushWorkflowDrainSummariesIfIdle()
 	}
