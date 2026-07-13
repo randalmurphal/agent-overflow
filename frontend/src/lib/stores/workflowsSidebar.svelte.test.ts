@@ -15,6 +15,7 @@ import {
   refreshWorkflowsSidebar,
   resetWorkflowsSidebarForTest,
 } from './workflowsSidebar.svelte';
+import { addProjectLocal, resetProjectsForTest } from './projects.svelte';
 
 function run(id: string, projectId: string, state: string, disposition = ''): WorkItem {
   return {
@@ -37,6 +38,7 @@ function catalog() {
 
 describe('workflows sidebar store', () => {
   beforeEach(() => {
+    resetProjectsForTest();
     resetWorkflowsSidebarForTest();
     setBindingMock('WorkflowListItems', async () => [
       run('attention', 'p1', 'needs-human'),
@@ -47,6 +49,7 @@ describe('workflows sidebar store', () => {
   });
 
   afterEach(() => {
+    resetProjectsForTest();
     resetBindingMocks();
     vi.restoreAllMocks();
   });
@@ -58,6 +61,16 @@ describe('workflows sidebar store', () => {
     expect(getProjectWorkflowDefinitions('p1')).toHaveLength(1);
     expect(getProjectWorkflowAttentionCount('p1')).toBe(2);
     expect(getGlobalWorkflowAttentionCount()).toBe(2);
+  });
+
+  it('loads definitions for a known project with no runs', async () => {
+    addProjectLocal({
+      id: 'runless', name: 'Runless', path: '/tmp/runless', sortPosition: 0,
+      createdAt: 1, updatedAt: 1, archived: false,
+    });
+    await initializeWorkflowsSidebar();
+    expect(getProjectWorkflowRuns('runless')).toEqual([]);
+    expect(getProjectWorkflowDefinitions('runless')).toHaveLength(1);
   });
 
   it('resolves phase progress only after a phase event this session', async () => {

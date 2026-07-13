@@ -51,7 +51,7 @@ describe('workflow data reducers', () => {
     expect(nextWorkflowSweepIndex(sweep, 0, 1, receipts, true)).toBe(2);
   });
 
-  it('loads all items once and fetches definitions only for projects with runs', async () => {
+  it('loads all items once and fetches definitions for every known project', async () => {
     const listItems = async () => [
       { ...item('a', 'running', 1), projectId: 'p1' },
       { ...item('b', 'queued', 2), projectId: 'p2' },
@@ -59,15 +59,16 @@ describe('workflow data reducers', () => {
       { ...item('cancelled', 'cancelled', 4), projectId: 'p4' },
     ];
     const definitionCalls: string[] = [];
-    const loaded = await loadWorkflowSidebar({
+    const loaded = await loadWorkflowSidebar(['p1', 'p2', 'p5'], {
       listItems,
       listDefinitions: async (projectId) => {
         definitionCalls.push(projectId);
         return { workflows: [{ id: `${projectId}-wf` }] } as WorkflowDefinitionCatalog;
       },
     });
-    expect(definitionCalls.sort()).toEqual(['p1', 'p2']);
+    expect(definitionCalls.sort()).toEqual(['p1', 'p2', 'p5']);
     expect(loaded.items.map((entry) => entry.id)).toEqual(['a', 'b']);
+    expect(loaded.definitions.map((entry) => entry.projectId).sort()).toEqual(['p1', 'p2', 'p5']);
   });
 
   it('keeps only live and awaiting-disposition sidebar runs in signal order', () => {

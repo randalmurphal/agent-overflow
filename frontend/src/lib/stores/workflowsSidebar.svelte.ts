@@ -7,6 +7,7 @@ import type {
 import { SvelteMap } from 'svelte/reactivity';
 import { userFacingError } from '../utils/userFacingError';
 import { WorkflowListDefinitions, WorkflowListItems } from './bindings';
+import { getProjects } from './projects.svelte';
 import { addToast } from './toast.svelte';
 import {
   isWorkflowSidebarRun,
@@ -98,7 +99,7 @@ async function fetchSidebarData(): Promise<void> {
   const capturedEvents: WorkflowItemStateEvent[] = [];
   itemEventsDuringFetch = capturedEvents;
   try {
-    const loaded = await loadWorkflowSidebar({
+    const loaded = await loadWorkflowSidebar(getProjects().map((entry) => entry.project.id), {
       listItems: async (projectId) => WorkflowListItems(projectId) as unknown as Promise<WorkItem[]>,
       listDefinitions: WorkflowListDefinitions,
     });

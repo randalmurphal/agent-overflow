@@ -2,15 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { addProjectLocal, resetProjectsForTest } from './projects.svelte';
 import { getPaneLayoutItems, resetPaneLayoutForTest } from './paneLayout.svelte';
 import { resetPanesForTest } from './panes.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import type { Project } from '../types/models';
 import {
+  applyWorkflowItemState,
   consumeWorkflowEscape,
   activateWorkflowsPane,
   beginWorkflowSweep,
   getWorkflowCurrentLevel,
+  getWorkflowDetail,
+  getWorkflowItems,
+  getWorkflowProjectFilter,
+  getWorkflowSweep,
   getWorkflowStack,
   loadWorkflowOverview,
+  loadWorkflowCurrentLevel,
   openWorkflowIntake,
   openWorkflowsPane,
   parsePersistedWorkflowsPaneState,
@@ -19,14 +25,16 @@ import {
   resetWorkflowsPane,
   restoreWorkflowsPaneState,
   setWorkflowArmedAction,
+  setWorkflowProjectFilter,
   setWorkflowsPanePersistenceHandler,
+  stepWorkflowSweep,
   workflowAllClearSummary,
 } from './workflowsPane.svelte';
 import type { WorkItem } from '../types/workflow';
 
-function project(): Project {
+function project(id = 'p'): Project {
   return {
-    id: 'p', name: 'Project', path: '/tmp/p', sortPosition: 0,
+    id, name: `Project ${id}`, path: `/tmp/${id}`, sortPosition: 0,
     createdAt: 1, updatedAt: 1, archived: false,
   };
 }
@@ -101,6 +109,18 @@ describe('workflows pane store', () => {
     expect(getWorkflowStack()).toEqual([{ kind: 'overview' }]);
   });
 
+  it('truncates a restored workflow when its target disappeared', async () => {
+    setBindingMock('WorkflowListDefinitions', async () => { throw new Error('rpc: no rows in result set'); });
+    await restoreWorkflowsPaneState({
+      projectFilter: null,
+      stack: [
+        { kind: 'overview' },
+        { kind: 'workflow', projectId: 'p', workflowId: 'missing', label: 'Missing' },
+      ],
+    });
+    expect(getWorkflowStack()).toEqual([{ kind: 'overview' }]);
+  });
+
   it('rejects malformed persisted stacks', () => {
     expect(parsePersistedWorkflowsPaneState({ stack: [{ kind: 'run' }] })).toBeNull();
     expect(parsePersistedWorkflowsPaneState({
@@ -127,6 +147,106 @@ describe('workflows pane store', () => {
     expect(persist).toHaveBeenCalledTimes(2);
   });
 
+  it('replays item events captured during an overview fetch', async () => {
+    let release!: (items: WorkItem[]) => void;
+    let calls = 0;
+    setBindingMock('WorkflowListItems', () => {
+      calls += 1;
+      if (calls === 1) return new Promise<WorkItem[]>((resolve) => { release = resolve; });
+      return Promise.resolve([parked('run', 'needs-human', 1)]).then((rows) => rows.map((row) => ({ ...row, state: 'running', reason: '' }) as WorkItem));
+    });
+    activateWorkflowsPane();
+    const loading = loadWorkflowOverview();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    applyWorkflowItemState({ itemId: 'run', from: 'needs-human', to: 'running' });
+    release([parked('run', 'needs-human', 1)]);
+    await loading;
+    expect(getWorkflowItems()[0]).toMatchObject({ id: 'run', state: 'running', reason: '' });
+  });
+
+  it('isolates a new refresh generation from an abandoned overview fetch', async () => {
+    let release!: (items: WorkItem[]) => void;
+    setBindingMock('WorkflowListItems', () => new Promise<WorkItem[]>((resolve) => { release = resolve; }));
+    activateWorkflowsPane();
+    const abandoned = loadWorkflowOverview();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+
+    resetWorkflowsPane();
+    setBindingMock('WorkflowListItems', async () => [parked('current', 'failed', 1)]);
+    activateWorkflowsPane();
+    await loadWorkflowOverview();
+    expect(getWorkflowItems().map((item) => item.id)).toEqual(['current']);
+
+    release([parked('stale', 'failed', 1)]);
+    await abandoned;
+    expect(getWorkflowItems().map((item) => item.id)).toEqual(['current']);
+  });
+
+  it('authoritatively refreshes disposition fields after an item event', async () => {
+    let authoritative = parked('run', 'needs-human', 1);
+    setBindingMock('WorkflowListItems', async () => [authoritative]);
+    setBindingMock('WorkflowGetItem', async () => ({
+      item: authoritative,
+      phases: [], artifacts: [], usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
+    }));
+    activateWorkflowsPane();
+    await loadWorkflowOverview();
+    pushWorkflowLevel({ kind: 'workflow', projectId: 'p', workflowId: 'wf', label: 'Workflow' });
+    pushWorkflowLevel({
+      kind: 'run', projectId: 'p', workflowId: 'wf', workflowLabel: 'Workflow',
+      itemId: 'run', label: 'run', sweep: false,
+    });
+    await vi.waitFor(() => expect(getWorkflowDetail()?.item.id).toBe('run'));
+    authoritative = {
+      ...authoritative,
+      state: 'done',
+      reason: '',
+      disposition: '{"action":"merged","policy":"manual","at":2}',
+    } as WorkItem;
+
+    applyWorkflowItemState({ itemId: 'run', from: 'needs-human', to: 'done' });
+    await vi.waitFor(() => expect(getWorkflowItems()[0]?.disposition).toContain('merged'));
+    await vi.waitFor(() => expect(getWorkflowDetail()?.item.disposition).toContain('merged'));
+  });
+
+  it('keeps the overview filter while loading a deep-linked workflow outside it', async () => {
+    addProjectLocal(project('other'));
+    setBindingMock('WorkflowListItems', async (projectId: string) => [
+      { ...parked(`${projectId}-run`, 'failed', 1), projectId },
+    ]);
+    activateWorkflowsPane();
+    setWorkflowProjectFilter('p');
+    await vi.waitFor(() => expect(getWorkflowItems().map((item) => item.id)).toEqual(['p-run']));
+
+    openWorkflowsPane({ kind: 'workflow', projectId: 'other', workflowId: 'wf', label: 'Other workflow' });
+    await vi.waitFor(() => expect(getWorkflowItems().map((item) => item.id).sort()).toEqual(['other-run', 'p-run']));
+    expect(getWorkflowProjectFilter()).toBe('p');
+    expect(getWorkflowCurrentLevel()).toMatchObject({ kind: 'workflow', projectId: 'other' });
+  });
+
+  it('abandons stale run loading when the current level changes during an await', async () => {
+    let release!: (items: WorkItem[]) => void;
+    let calls = 0;
+    setBindingMock('WorkflowListItems', () => {
+      calls += 1;
+      if (calls === 1) return new Promise<WorkItem[]>((resolve) => { release = resolve; });
+      return Promise.resolve([]);
+    });
+    pushWorkflowLevel({ kind: 'workflow', projectId: 'p', workflowId: 'wf', label: 'Workflow' });
+    pushWorkflowLevel({
+      kind: 'run', projectId: 'p', workflowId: 'wf', workflowLabel: 'Workflow',
+      itemId: 'run', label: 'run', sweep: false,
+    });
+    activateWorkflowsPane();
+    const loading = loadWorkflowCurrentLevel();
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    expect(consumeWorkflowEscape()).toBe(true);
+    release([]);
+    await loading;
+    expect(getBindingMock('WorkflowGetItem')).not.toHaveBeenCalled();
+    expect(getWorkflowCurrentLevel().kind).toBe('workflow');
+  });
+
   it('auto-advances a sweep after 650ms and ends with the session summary', async () => {
     vi.useFakeTimers();
     setBindingMock('WorkflowListItems', async () => [parked('first', 'needs-human', 1), parked('second', 'failed', 2)]);
@@ -149,5 +269,55 @@ describe('workflows pane store', () => {
     expect(workflowAllClearSummary()).toEqual({
       count: 2, costUsd: 3.75, byKind: { approved: 1, 'handed-off': 1 },
     });
+  });
+
+  it('cancels pending auto-advance when the sweep is stepped manually', async () => {
+    vi.useFakeTimers();
+    setBindingMock('WorkflowListItems', async () => [parked('first', 'needs-human', 1), parked('second', 'failed', 2)]);
+    activateWorkflowsPane();
+    await loadWorkflowOverview();
+    pushWorkflowLevel({ kind: 'workflow', projectId: 'p', workflowId: 'wf', label: 'Workflow' });
+    pushWorkflowLevel({
+      kind: 'run', projectId: 'p', workflowId: 'wf', workflowLabel: 'Workflow',
+      itemId: 'first', label: 'first', sweep: true,
+    });
+    beginWorkflowSweep('first');
+    recordWorkflowReceipt({ itemId: 'first', kind: 'approved', message: 'Approved', costUsd: 0 });
+    expect(stepWorkflowSweep(1, true)).toBe(true);
+    await vi.runAllTicks();
+    const callsAfterManualStep = getBindingMock('WorkflowGetItem')?.mock.calls.length ?? 0;
+    await vi.advanceTimersByTimeAsync(650);
+    expect(getBindingMock('WorkflowGetItem')).toHaveBeenCalledTimes(callsAfterManualStep);
+  });
+
+  it('clamps a stale sweep index when the sweep set shrinks', async () => {
+    let rows = [parked('first', 'needs-human', 1), parked('second', 'failed', 2)];
+    setBindingMock('WorkflowListItems', async () => rows);
+    activateWorkflowsPane();
+    await loadWorkflowOverview();
+    beginWorkflowSweep('second');
+    rows = [parked('first', 'needs-human', 1)];
+    applyWorkflowItemState({ itemId: 'first', from: 'needs-human', to: 'needs-human', reason: 'gate' });
+    await vi.waitFor(() => expect(getWorkflowItems()).toHaveLength(1));
+    expect(getWorkflowSweep().index).toBe(0);
+  });
+
+  it('lands on all-clear when a sweep entry loads with an empty set', async () => {
+    const disposed = {
+      ...parked('disposed', 'needs-human', 1),
+      state: 'done',
+      reason: '',
+      disposition: '{"action":"discarded","policy":"manual","at":1}',
+    } as WorkItem;
+    setBindingMock('WorkflowListItems', async () => [disposed]);
+    setBindingMock('WorkflowGetItem', async () => ({
+      item: disposed,
+      phases: [], artifacts: [], usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
+    }));
+    openWorkflowsPane({
+      kind: 'sweep-at-run', projectId: 'p', workflowId: 'wf', itemId: 'disposed',
+      workflowLabel: 'Workflow', label: 'Disposed',
+    });
+    await vi.waitFor(() => expect(getWorkflowCurrentLevel()).toEqual({ kind: 'all-clear' }));
   });
 });

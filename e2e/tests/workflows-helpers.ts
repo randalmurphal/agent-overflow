@@ -235,6 +235,39 @@ export function terminalWorkflow(
   return singlePhaseWorkflow(id, `        - to: ${terminal}`, access);
 }
 
+export function retryableFailureWorkflow(id: string): string {
+  return `id: ${id}
+name: ${id}
+inputs:
+  goal:
+    schema:
+      type: string
+phases:
+  - id: run
+    driver: agent
+    provider: claude
+    model: claude-opus-4-7
+    prompt: ${id}.md
+    access: read-only
+    inputs:
+      goal:
+        schema:
+          type: string
+    outputs:
+      complete:
+        schema:
+          type: boolean
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: run.complete
+              value: false
+          to: failed
+        - to: done
+`;
+}
+
 export function humanGateWorkflow(
   id: string,
   access: 'read-only' | 'write' = 'read-only',

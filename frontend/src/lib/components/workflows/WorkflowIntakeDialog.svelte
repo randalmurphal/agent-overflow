@@ -3,14 +3,13 @@
   import type { WorkflowDefinitionView } from '../../types/workflow';
   import Modal from '../primitives/Modal.svelte';
   import DirectoryBrowser from '../sidebar/DirectoryBrowser.svelte';
-  import { WorkflowEnqueueItem } from '../../stores/bindings';
+  import { WorkflowEnqueueItem, WorkflowListDefinitions } from '../../stores/bindings';
   import { getProjects } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { compactWorkflowSeeds, workflowIntakeError } from '../../stores/workflowIntake';
   import { userFacingError } from '../../utils/userFacingError';
   import { isViewOnlySession } from '../../transport/runMode';
   import {
-    getWorkflowDefinitions,
     getWorkflowIntakePrefill,
     loadWorkflowOverview,
   } from '../../stores/workflowsPane.svelte';
@@ -19,12 +18,18 @@
   interface Props { open: boolean; onClose: () => void }
   let { open, onClose }: Props = $props();
   let projects = $derived(getProjects());
-  let definitions = $derived(getWorkflowDefinitions());
+  let definitions: WorkflowDefinitionView[] = $state([]);
+  let definitionsError: string | null = $state(null);
+  let definitionRequestVersion = 0;
   let projectId = $state('');
   let goal = $state('');
   let workflowId = $state('');
   let seeds: Record<string, unknown> = $state({});
   let baseBranch = $state('');
+  let baseBranchEdited = $state(false);
+  let baseBranchSource = '';
+  let prefillBaseBranch = '';
+  let prefillProjectId = '';
   let stepMode = $state(false);
   let submitting = $state(false);
   let viewOnly = $derived(isViewOnlySession());
@@ -42,16 +47,44 @@
     try { return JSON.parse(value); } catch { return value; }
   }
 
+  async function loadDefinitions(project: string): Promise<void> {
+    const version = ++definitionRequestVersion;
+    definitions = [];
+    definitionsError = null;
+    if (!project) return;
+    try {
+      const catalog = await WorkflowListDefinitions(project);
+      if (version !== definitionRequestVersion || project !== projectId) return;
+      definitions = catalog.workflows.map((definition) => ({ projectId: project, catalog, definition }));
+    } catch (error) {
+      if (version !== definitionRequestVersion || project !== projectId) return;
+      definitionsError = userFacingError(error, 'Could not load workflows for this project.');
+      addToast('error', definitionsError);
+    }
+  }
+
   function initialize(): void {
     const prefill = getWorkflowIntakePrefill();
     projectId = prefill?.projectId ?? projects[0]?.project.id ?? '';
     goal = prefill?.goal ?? '';
     workflowId = prefill?.workflowId ?? '';
     seeds = { ...(prefill?.seeds ?? {}) };
-    baseBranch = prefill?.baseBranch ?? '';
+    prefillBaseBranch = prefill?.baseBranch ?? '';
+    prefillProjectId = prefill?.projectId ?? projectId;
+    baseBranch = prefillBaseBranch;
+    baseBranchEdited = Boolean(prefillBaseBranch);
+    baseBranchSource = '';
     stepMode = prefill?.stepMode ?? false;
     pathPickerFor = null;
-    void loadWorkflowOverview();
+    void loadDefinitions(projectId);
+  }
+
+  function selectProject(nextProjectId: string): void {
+    if (projectId === nextProjectId) return;
+    projectId = nextProjectId;
+    workflowId = '';
+    seeds = {};
+    void loadDefinitions(nextProjectId);
   }
 
   $effect(() => {
@@ -62,7 +95,13 @@
   $effect(() => {
     const view = selectedView;
     if (!view) return;
-    baseBranch = getWorkflowIntakePrefill()?.baseBranch ?? view.catalog.baseBranch;
+    const source = `${view.projectId}\n${view.definition.id}`;
+    if (baseBranchSource !== source) {
+      const prefill = view.projectId === prefillProjectId ? prefillBaseBranch : '';
+      baseBranch = prefill || view.catalog.baseBranch;
+      baseBranchEdited = Boolean(prefill);
+      baseBranchSource = source;
+    }
     stepMode = getWorkflowIntakePrefill()?.stepMode ?? view.definition.defaultStepMode;
     const next = { ...untrack(() => seeds) };
     let changed = false;
@@ -94,7 +133,7 @@
     try {
       await WorkflowEnqueueItem(
         projectId, selected.id, selected.scope, goal.trim(),
-        compactWorkflowSeeds(seeds), null, '', stepMode,
+        compactWorkflowSeeds(seeds), null, baseBranchEdited ? baseBranch.trim() : '', stepMode,
       );
       addToast('success', `Queued — position ${predictedPosition} · starts when a slot frees`);
       onClose();
@@ -114,7 +153,7 @@
       <legend class="mb-1 text-xs font-medium text-fg-muted">Project</legend>
       <div class="flex flex-wrap gap-1.5" data-testid="wf-intake-projects">
         {#each projects as project}
-          <button type="button" class={projectId === project.project.id ? 'rounded-md border border-accent bg-accent/10 px-2.5 py-1.5 text-xs' : 'rounded-md border border-border-subtle px-2.5 py-1.5 text-xs'} onclick={() => { projectId = project.project.id; workflowId = ''; }} data-testid="wf-intake-project">● {project.project.name}</button>
+          <button type="button" class={projectId === project.project.id ? 'rounded-md border border-accent bg-accent/10 px-2.5 py-1.5 text-xs' : 'rounded-md border border-border-subtle px-2.5 py-1.5 text-xs'} onclick={() => selectProject(project.project.id)} data-testid="wf-intake-project">● {project.project.name}</button>
         {/each}
       </div>
     </fieldset>
@@ -134,10 +173,11 @@
           </button>
         {/each}
       </div>
+      {#if definitionsError}<p class="mt-1 text-xs text-error" data-testid="wf-intake-definitions-error">{definitionsError}</p>{/if}
     </fieldset>
 
     <label class="block text-xs font-medium text-fg-muted">Base branch
-      <input value={baseBranch} readonly class="mt-1 w-full rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 font-mono text-sm text-fg-muted" data-testid="wf-intake-base-branch" />
+      <input value={baseBranch} oninput={(event) => { baseBranch = (event.currentTarget as HTMLInputElement).value; baseBranchEdited = true; }} class="mt-1 w-full rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 font-mono text-sm text-fg" data-testid="wf-intake-base-branch" />
     </label>
 
     {#if selected}

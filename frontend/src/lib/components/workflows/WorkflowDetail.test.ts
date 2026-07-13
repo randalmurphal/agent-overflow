@@ -51,16 +51,18 @@ describe('WorkflowDetail history receipts', () => {
     vi.useRealTimers();
   });
 
-  it('renders awaiting, merged, PR, and discarded list receipts', () => {
+  it('keeps awaiting-disposition runs live and renders disposed history receipts', () => {
     const view = render(WorkflowDetail, {
       level: { kind: 'workflow', projectId: 'p', workflowId: 'wf', label: 'Workflow' },
     });
     const rows = view.getAllByTestId('wf-history-row').map((row) => row.textContent ?? '');
     expect(rows).toEqual(expect.arrayContaining([
-      expect.stringContaining('done · to dispose'),
       expect.stringContaining('merged · 1h · $2.00'),
       expect.stringContaining('PR #42 · 1h · $3.00'),
       expect.stringContaining('discarded · 1h · $4.00'),
     ]));
+    expect(rows.some((row) => row.includes('awaiting'))).toBe(false);
+    expect(view.getByTestId('wf-live-runs')).toHaveTextContent('awaiting');
+    expect(view.getByTestId('wf-live-runs')).toHaveTextContent('Finished 1h ago · $1.00');
   });
 });

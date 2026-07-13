@@ -1,4 +1,6 @@
 import type { Page } from '@playwright/test';
+import { rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { test as base, expect, type HarnessMockEvent } from './fixtures.js';
 import {
   doneResult,
@@ -8,6 +10,7 @@ import {
   seedWorkflowProject,
   setClaudeScenario,
   terminalWorkflow,
+  type WorkflowDetail,
   type WorkflowStateEvent,
 } from './workflows-helpers.js';
 
@@ -22,7 +25,6 @@ async function openRun(
   page: Page,
   workflowName: string,
   goal: string,
-  source: 'active' | 'history' = 'active',
 ): Promise<void> {
   await page.getByTestId('sidebar-workflows-button').click();
   await expect(page.getByTestId('wf-overview')).toBeVisible();
@@ -30,11 +32,7 @@ async function openRun(
     .getByTestId('wf-workflow-row')
     .filter({ hasText: workflowName })
     .click();
-  if (source === 'history') {
-    await page.getByTestId('wf-history-row').filter({ hasText: goal }).click();
-  } else {
-    await page.getByTestId('wf-run-open').filter({ hasText: goal }).click();
-  }
+  await page.getByTestId('wf-run-open').filter({ hasText: goal }).click();
   await expect(page.getByTestId('wf-run-detail')).toBeVisible();
   await expect(page.getByTestId('wf-title')).toHaveText(goal);
 }
@@ -95,7 +93,12 @@ test('human gate approval completes in the DOM and discard removes the run', asy
   await expect(page.getByTestId('wf-resolved-receipt')).toContainText(
     'Approved',
   );
-  await expect(page.getByTestId('wf-run-state')).toHaveText('done');
+  await expect(page.getByTestId('wf-run-state')).toHaveText('Done');
+
+  await page.getByTestId('wf-pane').press('a');
+  await expect(page.getByRole('alert').filter({ hasText: 'Workflow action failed' })).toHaveCount(0);
+  const guarded = await harness.rpc<{ item: { disposition?: unknown } }>('WorkflowGetItem', itemId);
+  expect(guarded.item.disposition || '').toBe('');
 
   await sidebarRow.click();
   await expect(page.getByTestId('wf-merge')).toBeVisible();
@@ -176,7 +179,7 @@ test('question answer through the UI resumes the same provider session', async (
   await expect(page.getByTestId('wf-resolved-receipt')).toContainText(
     'Use option A',
   );
-  await expect(page.getByTestId('wf-run-state')).toHaveText('done');
+  await expect(page.getByTestId('wf-run-state')).toHaveText('Done');
 });
 
 test('watchdog stall renders parked treatment and recovery actions', async ({
@@ -215,6 +218,78 @@ test('watchdog stall renders parked treatment and recovery actions', async ({
   await expect(page.getByTestId('wf-parked-continue')).toBeVisible();
   await expect(page.getByTestId('wf-parked-resume')).toBeVisible();
   await expect(page.getByTestId('wf-parked-discard')).toBeVisible();
+});
+
+test('done run continues in its linked triage thread, which stays hidden from the sidebar', async ({
+  harness,
+  page,
+}) => {
+  await pauseWorkflowQueue(harness);
+  await setClaudeScenario(harness, 'actions-done-triage-seed', [
+    { steps: [{ emit: { lines: [doneResult({ complete: true })] } }] },
+  ]);
+  const project = await seedWorkflowProject(
+    harness,
+    'actions-done-triage',
+    [{ name: 'done-triage-flow', yaml: terminalWorkflow('done-triage-flow', 'done', 'write') }],
+    [{ workflow: 'done-triage-flow', goal: 'Continue completed run', target: 'done' }],
+  );
+  const itemId = project.workItemIds[0];
+  await setClaudeScenario(harness, 'actions-done-triage-open', [
+    { steps: [{ emit: { lines: [JSON.stringify({ type: 'result', subtype: 'success', is_error: false })] } }] },
+  ]);
+
+  await page.goto(harness.url);
+  await openRun(page, 'done-triage-flow', 'Continue completed run');
+  await page.getByTestId('wf-done-continue').click();
+  await expect(page.locator('[data-pane-kind="thread"]')).toBeVisible();
+  const detail = await harness.rpc<{ item: { triageThreadId?: string } }>('WorkflowGetItem', itemId);
+  expect(detail.item.triageThreadId).toBeTruthy();
+  await expect(page.locator(`[data-ui-surface="chat"][data-thread-id="${detail.item.triageThreadId}"]`)).toBeVisible();
+  await expect(page.locator(`[data-sidebar-thread-id="${detail.item.triageThreadId}"]`)).toHaveCount(0);
+});
+
+test('disposition-parked merge retries through the UI and returns the run to done', async ({
+  harness,
+  page,
+}) => {
+  await pauseWorkflowQueue(harness);
+  await setClaudeScenario(harness, 'actions-merge-retry', [
+    { steps: [{ emit: { lines: [doneResult({ complete: true })] } }] },
+  ]);
+  const project = await seedWorkflowProject(
+    harness,
+    'actions-merge-retry',
+    [{ name: 'merge-retry-flow', yaml: terminalWorkflow('merge-retry-flow', 'done', 'write') }],
+    [{ workflow: 'merge-retry-flow', goal: 'Retry a refused merge', target: 'done' }],
+  );
+  const itemId = project.workItemIds[0];
+  const before = await harness.rpc<{ item: { worktreePath?: string } }>('WorkflowGetItem', itemId);
+  expect(before.item.worktreePath).toBeTruthy();
+  const dirtyPath = join(before.item.worktreePath!, 'p39-dirty.txt');
+  await writeFile(dirtyPath, 'force the first merge to refuse\n');
+
+  await page.goto(harness.url);
+  await openRun(page, 'merge-retry-flow', 'Retry a refused merge');
+  const parked = harness.waitForEvent<WorkflowStateEvent>(
+    'workflow:item-state',
+    (event) => event.itemId === itemId && event.to === 'needs-human' && event.reason === 'disposition',
+  );
+  await page.getByTestId('wf-merge').click();
+  await parked;
+  await expect(page.getByTestId('wf-run-state')).toHaveText('Disposition');
+  await expect(page.getByTestId('wf-merge')).toBeVisible();
+  await rm(dirtyPath);
+
+  const done = harness.waitForEvent<WorkflowStateEvent>(
+    'workflow:item-state',
+    (event) => event.itemId === itemId && event.to === 'done',
+  );
+  await page.getByTestId('wf-merge').click();
+  await done;
+  await expect(page.getByTestId('wf-run-state')).toHaveText('Done');
+  await expect(page.getByTestId('wf-resolved-receipt')).toContainText('Merged to');
+  await expect(page.getByTestId('wf-disposition-receipt')).toBeVisible();
 });
 
 test('needs-attention sweep advances with j/k and finishes at all-clear', async ({
@@ -272,7 +347,7 @@ test('full review opens beside workflows and closes with its source pane', async
   await setClaudeScenario(harness, 'actions-review', [
     { steps: [{ emit: { lines: [doneResult({ complete: true })] } }] },
   ]);
-  await seedWorkflowProject(
+  const project = await seedWorkflowProject(
     harness,
     'actions-review',
     [
@@ -291,7 +366,7 @@ test('full review opens beside workflows and closes with its source pane', async
   );
 
   await page.goto(harness.url);
-  await openRun(page, 'review-flow', 'Review completed work', 'history');
+  await openRun(page, 'review-flow', 'Review completed work');
   await page.getByTestId('wf-open-full-review').click();
   const companion = page.locator(
     '[data-testid="companion-pane-review"][data-companion-source-pane-id="workflows"]',
@@ -299,6 +374,10 @@ test('full review opens beside workflows and closes with its source pane', async
   await expect(companion).toBeVisible();
   await expect(companion.getByTestId('review-pane')).toBeVisible();
   await expect(companion.getByTestId('review-empty')).toBeVisible();
+  const detail = await harness.rpc<WorkflowDetail>('WorkflowGetItem', project.workItemIds[0]);
+  const expectedPhaseThread = [...detail.phases].reverse().find((phase) => phase.threadId)?.threadId;
+  expect(expectedPhaseThread).toBeTruthy();
+  await expect(companion).toHaveAttribute('data-review-thread-id', expectedPhaseThread!);
 
   await page.getByTestId('wf-close').click();
   await expect(page.getByTestId('wf-pane')).toHaveCount(0);

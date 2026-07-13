@@ -3,8 +3,6 @@
   import {
     WorkflowOpenStudioThread,
     WorkflowOpenTriageAgent,
-    WorkflowRemoveQueuedItem,
-    WorkflowReorderQueue,
   } from '../../stores/bindings';
   import { openThreadInNewPane } from '../../stores/panes.svelte';
   import { getProjects } from '../../stores/projects.svelte';
@@ -16,21 +14,17 @@
   import {
     applyWorkflowQueueState,
     getWorkflowCosts,
-    getWorkflowArmedAction,
     getWorkflowDefinitions,
     getWorkflowItems,
     getWorkflowProjectFilter,
     getWorkflowQueueState,
-    loadWorkflowOverview,
     openWorkflowsPane,
     openWorkflowIntake,
     pushWorkflowLevel,
-    reconcileWorkflowQueueOrder,
-    setWorkflowArmedAction,
     setWorkflowProjectFilter,
     workflowThreadFromWire,
   } from '../../stores/workflowsPane.svelte';
-  import { refreshWorkflowsSidebar } from '../../stores/workflowsSidebar.svelte';
+  import WorkflowQueue from './WorkflowQueue.svelte';
 
   let definitions = $derived(getWorkflowDefinitions());
   let items = $derived(getWorkflowItems());
@@ -38,8 +32,6 @@
   let filter = $derived(getWorkflowProjectFilter());
   let queue = $derived(getWorkflowQueueState());
   let projects = $derived(getProjects());
-  let draggedId: string | null = $state(null);
-  let armed = $derived(getWorkflowArmedAction());
   let viewOnly = $derived(isViewOnlySession());
 
   let runsByWorkflow = $derived.by(() => {
@@ -156,41 +148,6 @@
     }
   }
 
-  async function dropBefore(target: WorkItem): Promise<void> {
-    if (viewOnly) return;
-    if (!draggedId || draggedId === target.id || target.projectId !== queued.find((item) => item.id === draggedId)?.projectId) return;
-    const projectItems = queued.filter((item) => item.projectId === target.projectId);
-    const from = projectItems.findIndex((item) => item.id === draggedId);
-    const to = projectItems.findIndex((item) => item.id === target.id);
-    if (from < 0 || to < 0) return;
-    const ordered = projectItems.slice();
-    const [moved] = ordered.splice(from, 1);
-    ordered.splice(to, 0, moved);
-    const ids = ordered.map((item) => item.id);
-    reconcileWorkflowQueueOrder(target.projectId, ids);
-    draggedId = null;
-    try {
-      await WorkflowReorderQueue(target.projectId, ids);
-      refreshWorkflowsSidebar();
-      addToast('success', 'Priority reordered — the drain picks it up immediately');
-    } catch (error) {
-      addToast('error', userFacingError(error, 'Could not reorder the queue.'));
-      void loadWorkflowOverview();
-    }
-  }
-
-  async function cancelQueued(item: WorkItem): Promise<void> {
-    if (viewOnly) return;
-    const key = `queue-cancel:${item.id}`;
-    if (armed !== key) { setWorkflowArmedAction(key); return; }
-    try {
-      await WorkflowRemoveQueuedItem(item.id);
-      setWorkflowArmedAction(null);
-      addToast('info', 'Removed from queue — record kept, nothing was provisioned');
-    } catch (error) {
-      addToast('error', userFacingError(error, 'Could not remove the queued run.'));
-    }
-  }
 </script>
 
 <div class="space-y-5 p-4" data-testid="wf-overview">
@@ -263,17 +220,6 @@
   {/if}
 
   {#if queued.length > 0}
-    <section class="space-y-2" data-testid="wf-up-next">
-      <h2 class="text-[11px] font-semibold uppercase tracking-wider text-fg-muted">Up next · {queued.length}</h2>
-      {#each queued as item, index (item.id)}
-        <div role="listitem" draggable={!viewOnly} ondragstart={() => { if (!viewOnly) draggedId = item.id; }} ondragover={(event) => { if (!viewOnly) event.preventDefault(); }} ondrop={() => dropBefore(item)} class="group flex items-center gap-2 rounded-md border border-border-subtle px-2.5 py-2 hover:bg-surface-2/50" data-testid="wf-queue-row">
-          {#if !viewOnly}<span class="cursor-grab text-fg-muted opacity-0 group-hover:opacity-100" data-testid="wf-queue-grip">⠿</span>{/if}
-          <span class="w-6 text-xs text-fg-muted">#{index + 1}</span>
-          <button class="min-w-0 flex-1 truncate text-left text-sm" onclick={() => openRun(item)} data-testid="wf-queue-open">{item.goal}</button>
-          <span class="text-xs text-fg-muted">{projectName(item.projectId)} · {item.workflowId}{queue.active ? '' : ' · held'} · ${(costs[item.id] ?? 0).toFixed(2)}</span>
-          <button class="rounded px-1.5 py-1 text-xs text-error opacity-0 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40" onclick={() => cancelQueued(item)} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-queue-cancel">{armed === `queue-cancel:${item.id}` ? 'cancel?' : '✕'}</button>
-        </div>
-      {/each}
-    </section>
+    <WorkflowQueue {queued} {costs} queueActive={queue.active} {viewOnly} {projectName} onOpenRun={openRun} />
   {/if}
 </div>

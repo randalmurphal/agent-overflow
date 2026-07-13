@@ -56,3 +56,29 @@ test('intake validates the goal and queues a run into Up next and the sidebar', 
     'Queue from intake',
   );
 });
+
+test('intake persists an edited base-branch override on the queued item', async ({
+  harness,
+  page,
+}) => {
+  await pauseWorkflowQueue(harness);
+  const project = await seedWorkflowProject(harness, 'intake-base-project', [
+    { name: 'intake-base-flow', yaml: terminalWorkflow('intake-base-flow', 'done') },
+  ]);
+
+  await page.goto(harness.url);
+  await page.getByTestId('sidebar-workflows-button').click();
+  await page.getByTestId('wf-new-run').click();
+  await page.getByTestId('wf-intake-workflow').filter({ hasText: 'intake-base-flow' }).click();
+  await page.getByTestId('wf-intake-goal').fill('Queue with an override');
+  await page.getByTestId('wf-seed-goal').fill('Queue with an override');
+  await page.getByTestId('wf-intake-base-branch').fill('release/p39');
+  await page.getByTestId('wf-intake-submit').click();
+  await expect(page.getByTestId('wf-intake-dialog')).toHaveCount(0);
+
+  const items = await harness.rpc<Array<{ id: string; goal: string }>>('WorkflowListItems', project.projectId);
+  const item = items.find((entry) => entry.goal === 'Queue with an override');
+  expect(item).toBeTruthy();
+  const detail = await harness.rpc<{ item: { baseBranch?: string } }>('WorkflowGetItem', item!.id);
+  expect(detail.item.baseBranch).toBe('release/p39');
+});

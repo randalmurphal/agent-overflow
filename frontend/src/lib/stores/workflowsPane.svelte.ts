@@ -72,6 +72,12 @@ let diffError: string | null = $state(null);
 let diffRequestedItemId: string | null = null;
 let runRefreshInFlight = false;
 let runRefreshQueued = false;
+let refreshGeneration = 0;
+let overviewRefreshInFlight = false;
+let overviewRefreshQueued = false;
+let overviewLoadCount = 0;
+let overviewDetailRefreshItemId: string | null = null;
+const overviewItemEventCaptures = new Set<WorkflowItemStateEvent[]>();
 let persistenceHandler: (() => void) | null = null;
 
 export function getWorkflowStack(): readonly WorkflowPaneLevel[] { return stack; }
@@ -119,9 +125,16 @@ export function activateWorkflowsPane(): boolean {
 export function deactivateWorkflowsPane(): void {
   if (!paneActive) return;
   paneActive = false;
+  refreshGeneration += 1;
   closeCompanionsForSource(WORKFLOWS_PANE_ID);
   requestVersion += 1;
+  runRefreshInFlight = false;
   runRefreshQueued = false;
+  overviewRefreshInFlight = false;
+  overviewRefreshQueued = false;
+  overviewLoadCount = 0;
+  overviewDetailRefreshItemId = null;
+  overviewItemEventCaptures.clear();
   if (autoAdvanceTimer) clearTimeout(autoAdvanceTimer);
   autoAdvanceTimer = null;
   items = [];
@@ -219,19 +232,18 @@ function targetStack(target: WorkflowsPaneTarget): WorkflowPaneLevel[] {
   }];
 }
 
-function retargetWorkflowsPane(target: WorkflowsPaneTarget): void {
+function retargetWorkflowsPane(target: WorkflowsPaneTarget): Promise<void> {
   resetLevelTransientState();
-  if (target.kind !== 'overview') projectFilter = target.projectId;
   stack = targetStack(target);
   if (target.kind !== 'sweep-at-run') {
     receipts = new Map();
     sweepIndex = -1;
   }
   requestWorkflowsPanePersistence();
-  void loadWorkflowCurrentLevel();
+  return loadWorkflowCurrentLevel();
 }
 
-export function openWorkflowsPane(target: WorkflowsPaneTarget = { kind: 'overview' }): void {
+export function openWorkflowsPane(target: WorkflowsPaneTarget = { kind: 'overview' }): Promise<void> {
   activateWorkflowsPane();
   if (!getPaneLayoutItems().some((item) => item.kind === 'workflows')) {
     addPaneLayoutItem({
@@ -241,19 +253,28 @@ export function openWorkflowsPane(target: WorkflowsPaneTarget = { kind: 'overvie
       widthPx: averagePaneWidthPx(),
     });
   }
-  retargetWorkflowsPane(target);
+  const loaded = retargetWorkflowsPane(target);
   focusPane(WORKFLOWS_PANE_ID);
   revealPane(WORKFLOWS_PANE_ID);
+  return loaded;
 }
 
 function selectedProjectIds(): string[] {
   const known = getProjects().map((entry) => entry.project.id);
-  return projectFilter ? known.filter((id) => id === projectFilter) : known;
+  const selected = new Set(projectFilter ? [projectFilter] : known);
+  for (const level of stack) {
+    if (level.kind === 'workflow' || level.kind === 'run') selected.add(level.projectId);
+  }
+  return [...selected];
 }
 
 export async function loadWorkflowOverview(): Promise<void> {
   if (!paneActive) return;
+  const generation = refreshGeneration;
   const version = ++requestVersion;
+  const capturedEvents: WorkflowItemStateEvent[] = [];
+  overviewItemEventCaptures.add(capturedEvents);
+  overviewLoadCount += 1;
   loading = true;
   error = null;
   try {
@@ -267,6 +288,7 @@ export async function loadWorkflowOverview(): Promise<void> {
     if (version !== requestVersion) return;
     const merged = mergeWorkflowProjectLoads(loads);
     items = merged.items;
+    for (const event of capturedEvents) items = patchWorkflowItems(items, event);
     costs = merged.costs;
     definitions = merged.definitions;
   } catch (cause) {
@@ -274,8 +296,44 @@ export async function loadWorkflowOverview(): Promise<void> {
     error = userFacingError(cause, 'Could not load workflows.');
     addToast('error', 'Could not load workflows');
   } finally {
-    if (version === requestVersion) loading = false;
+    overviewItemEventCaptures.delete(capturedEvents);
+    if (generation === refreshGeneration) {
+      overviewLoadCount -= 1;
+      if (version === requestVersion) loading = false;
+      if (overviewLoadCount === 0 && overviewRefreshQueued && !overviewRefreshInFlight && paneActive) {
+        scheduleOverviewRefresh();
+      }
+    }
   }
+}
+
+function scheduleOverviewRefresh(detailItemId: string | null = null): void {
+  if (!paneActive) return;
+  if (detailItemId && detail?.item.id === detailItemId) overviewDetailRefreshItemId = detailItemId;
+  if (overviewRefreshInFlight || overviewLoadCount > 0) {
+    overviewRefreshQueued = true;
+    return;
+  }
+  overviewRefreshInFlight = true;
+  const generation = refreshGeneration;
+  void (async () => {
+    do {
+      overviewRefreshQueued = false;
+      const itemId = overviewDetailRefreshItemId;
+      overviewDetailRefreshItemId = null;
+      await loadWorkflowOverview();
+      if (generation !== refreshGeneration) return;
+      if (itemId && paneActive && detail?.item.id === itemId) {
+        await loadRun(itemId, false);
+        if (diffRequestedItemId === itemId) await loadWorkflowDiff();
+      }
+    } while (overviewRefreshQueued && paneActive && generation === refreshGeneration);
+  })().finally(() => {
+    if (generation !== refreshGeneration) return;
+    overviewRefreshInFlight = false;
+    if (overviewRefreshQueued && paneActive) scheduleOverviewRefresh();
+    else if (runRefreshQueued && paneActive && detail) scheduleRunRefresh(detail.item.id);
+  });
 }
 
 async function loadRun(itemId: string, clearCurrent = true): Promise<void> {
@@ -296,6 +354,10 @@ async function loadRun(itemId: string, clearCurrent = true): Promise<void> {
     const currentLevel = getWorkflowCurrentLevel();
     if (currentLevel.kind === 'run' && currentLevel.sweep) {
       beginWorkflowSweep(itemId);
+      if (getWorkflowSweep().items.length === 0) {
+        stack = [...stack.slice(0, 1), { kind: 'all-clear' }];
+        requestWorkflowsPanePersistence();
+      }
     }
   } catch (cause) {
     if (version !== requestVersion) return;
@@ -333,18 +395,25 @@ export async function loadWorkflowDiff(): Promise<void> {
 
 function scheduleRunRefresh(itemId: string): void {
   if (!paneActive || detail?.item.id !== itemId) return;
+  if (overviewRefreshInFlight || overviewLoadCount > 0) {
+    runRefreshQueued = true;
+    return;
+  }
   if (runRefreshInFlight) {
     runRefreshQueued = true;
     return;
   }
   runRefreshInFlight = true;
+  const generation = refreshGeneration;
   void (async () => {
     do {
       runRefreshQueued = false;
       await loadRun(itemId, false);
+      if (generation !== refreshGeneration) return;
       if (diffRequestedItemId === itemId) await loadWorkflowDiff();
-    } while (runRefreshQueued && paneActive && detail?.item.id === itemId);
+    } while (runRefreshQueued && paneActive && detail?.item.id === itemId && generation === refreshGeneration);
   })().finally(() => {
+    if (generation !== refreshGeneration) return;
     runRefreshInFlight = false;
     if (runRefreshQueued && paneActive && detail?.item.id === itemId) scheduleRunRefresh(itemId);
   });
@@ -355,19 +424,25 @@ export async function loadWorkflowCurrentLevel(): Promise<void> {
   const level = getWorkflowCurrentLevel();
   if (level.kind === 'overview' || level.kind === 'workflow') {
     await loadWorkflowOverview();
+    if (getWorkflowCurrentLevel() !== level) return;
   } else if (level.kind === 'run') {
-    if (items.length === 0) await loadWorkflowOverview();
+    if (items.length === 0) {
+      await loadWorkflowOverview();
+      if (getWorkflowCurrentLevel() !== level) return;
+    }
     await loadRun(level.itemId);
+    if (getWorkflowCurrentLevel() !== level) return;
   }
 }
 
 export function applyWorkflowItemState(event: WorkflowItemStateEvent): void {
   if (!paneActive) return;
+  for (const capture of overviewItemEventCaptures) capture.push(event);
   items = patchWorkflowItems(items, event);
   if (detail?.item.id === event.itemId) {
     detail = { ...detail, item: { ...detail.item, state: event.to, reason: event.reason ?? '' } as WorkItem };
-    scheduleRunRefresh(event.itemId);
   }
+  scheduleOverviewRefresh(event.itemId);
 }
 
 export function applyWorkflowPhaseState(event: WorkflowPhaseStateEvent): void {
@@ -398,10 +473,13 @@ export function getWorkflowSweep(): { items: WorkItem[]; index: number } {
   const currentLevel = getWorkflowCurrentLevel();
   const currentId = currentLevel.kind === 'run' ? currentLevel.itemId : '';
   const index = sweep.findIndex((item) => item.id === currentId);
-  return { items: sweep, index: index >= 0 ? index : sweepIndex };
+  const fallback = sweep.length === 0 ? -1 : Math.min(Math.max(sweepIndex, 0), sweep.length - 1);
+  return { items: sweep, index: index >= 0 ? index : fallback };
 }
 
 export function stepWorkflowSweep(direction: -1 | 1, skipResolved = false): boolean {
+  if (autoAdvanceTimer) clearTimeout(autoAdvanceTimer);
+  autoAdvanceTimer = null;
   closeCompanionsForSource(WORKFLOWS_PANE_ID);
   const sweep = workflowSweepItems(items, receipts);
   const current = getWorkflowSweep().index;
@@ -519,7 +597,7 @@ export async function restoreWorkflowsPaneState(snapshot: PersistedWorkflowsPane
       }
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      if (level.kind === 'run' && message.includes('no rows in result set')) {
+      if (/no rows in result set/i.test(message)) {
         stack = stack.slice(0, index);
       } else {
         error = userFacingError(cause, 'Could not restore the workflows pane.');
@@ -534,6 +612,7 @@ export async function restoreWorkflowsPaneState(snapshot: PersistedWorkflowsPane
 
 export function resetWorkflowsPane(): void {
   requestVersion += 1;
+  refreshGeneration += 1;
   stack = [{ kind: 'overview' }];
   projectFilter = null;
   items = [];
@@ -557,6 +636,11 @@ export function resetWorkflowsPane(): void {
   paneActive = false;
   runRefreshInFlight = false;
   runRefreshQueued = false;
+  overviewRefreshInFlight = false;
+  overviewRefreshQueued = false;
+  overviewLoadCount = 0;
+  overviewDetailRefreshItemId = null;
+  overviewItemEventCaptures.clear();
 }
 
 export function workflowThreadFromWire(thread: unknown): Thread {

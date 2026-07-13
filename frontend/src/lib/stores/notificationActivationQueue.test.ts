@@ -114,6 +114,37 @@ describe('notification activation queue', () => {
     expect(opened).toEqual(['run-1', 'triage:project-1']);
   });
 
+  it('serializes activations received after hydration', async () => {
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const opened: string[] = [];
+    const threads = new Map([
+      ['thread-1', thread('thread-1')],
+      ['thread-2', thread('thread-2')],
+    ]);
+    const queue = createNotificationActivationQueue({
+      getThreadById: (id) => threads.get(id),
+      loadThreadById: async (id) => threads.get(id) ?? thread(id),
+      getWorkflowItem: async (id) => ({ item: { id } }) as never,
+      createWorkflowTriageAgent: async (projectId) => thread(`triage:${projectId}`),
+      openThread: async (value) => {
+        opened.push(value.id);
+        if (value.id === 'thread-1') await firstBlocked;
+      },
+      openWorkflowItem: async (detail) => { opened.push(detail.item.id); },
+      openWorkflowsOverview: async () => { opened.push('overview'); },
+      showError: vi.fn(),
+      console: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    await queue.markHydrated();
+
+    queue.receive({ kind: 'thread', threadId: 'thread-1' });
+    queue.receive({ kind: 'thread', threadId: 'thread-2' });
+    await vi.waitFor(() => expect(opened).toEqual(['thread-1']));
+    releaseFirst();
+    await vi.waitFor(() => expect(opened).toEqual(['thread-1', 'thread-2']));
+  });
+
   it('rejects ambiguous and oversized workflow targets', () => {
     const { queue, logger } = setup();
     queue.receive({ kind: 'workflow-item', workItemId: 'run', projectId: 'project' });

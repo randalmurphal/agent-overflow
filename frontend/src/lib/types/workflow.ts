@@ -64,6 +64,8 @@ export interface WorkflowDispositionReceipt {
   mode?: 'ff' | 'merge';
   sha?: string;
   prRef?: string;
+  base?: string;
+  cleanupFailed?: boolean;
   policy: string;
   at: number;
 }
@@ -160,6 +162,8 @@ export function parseWorkflowDisposition(value: unknown): WorkflowDispositionRec
     mode: parsed.mode === 'ff' || parsed.mode === 'merge' ? parsed.mode : undefined,
     sha: typeof parsed.sha === 'string' ? parsed.sha : undefined,
     prRef: typeof parsed.prRef === 'string' ? parsed.prRef : undefined,
+    base: typeof parsed.base === 'string' ? parsed.base : undefined,
+    cleanupFailed: parsed.cleanupFailed === true ? true : undefined,
     policy: parsed.policy,
     at: parsed.at,
   };

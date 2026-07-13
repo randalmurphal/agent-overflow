@@ -5,7 +5,9 @@ import {
   WorkflowCreateItemPR,
   WorkflowDiscardItem,
   WorkflowMergeItem,
+  WorkflowListItems,
   WorkflowRemoveQueuedItem,
+  WorkflowReenqueueFailedItem,
   WorkflowResolveGate,
   WorkflowResumeItem,
 } from './bindings';
@@ -14,6 +16,7 @@ export type WorkflowAction =
   | { kind: 'approve' }
   | { kind: 'reject'; note: string }
   | { kind: 'answer'; answer: string }
+  | { kind: 're-enqueue' }
   | { kind: 'resume' }
   | { kind: 'merge' }
   | { kind: 'create-pr' }
@@ -26,7 +29,9 @@ export interface WorkflowActionBindings {
   cancelItem: (itemId: string) => Promise<void>;
   createPR: (itemId: string) => Promise<{ prRef?: string }>;
   discardItem: (itemId: string) => Promise<unknown>;
-  mergeItem: (itemId: string) => Promise<{ mode?: string; sha?: string }>;
+  listItems: (projectId: string) => Promise<WorkItem[]>;
+  mergeItem: (itemId: string) => Promise<{ base?: string; mode?: string; sha?: string; cleanupFailed?: boolean }>;
+  reenqueueFailedItem: (itemId: string) => Promise<void>;
   removeQueuedItem: (itemId: string) => Promise<void>;
   resolveGate: (itemId: string, decision: string, note: string) => Promise<void>;
   resumeItem: (itemId: string, targetPhase: string) => Promise<void>;
@@ -37,11 +42,17 @@ const liveBindings: WorkflowActionBindings = {
   cancelItem: WorkflowCancelItem,
   createPR: WorkflowCreateItemPR,
   discardItem: WorkflowDiscardItem,
+  listItems: async (projectId) => WorkflowListItems(projectId) as unknown as Promise<WorkItem[]>,
   mergeItem: WorkflowMergeItem,
+  reenqueueFailedItem: WorkflowReenqueueFailedItem,
   removeQueuedItem: WorkflowRemoveQueuedItem,
   resolveGate: WorkflowResolveGate,
   resumeItem: WorkflowResumeItem,
 };
+
+export function workflowActionConfirmationKey(kind: string, item: WorkItem): string {
+  return `${kind}:${item.id}:${item.state}:${item.reason || ''}`;
+}
 
 export async function dispatchWorkflowAction(
   item: WorkItem,
@@ -59,13 +70,28 @@ export async function dispatchWorkflowAction(
     case 'answer':
       await bindings.answerQuestion(item.id, action.answer);
       return { itemId: item.id, kind: 'answered', message: `Answered — “${action.answer}” · the phase resumes its turn`, costUsd };
+    case 're-enqueue': {
+      await bindings.reenqueueFailedItem(item.id);
+      const queued = (await bindings.listItems(item.projectId))
+        .filter((entry) => entry.projectId === item.projectId && entry.state === 'queued')
+        .sort((left, right) => left.sortPosition - right.sortPosition);
+      const index = queued.findIndex((entry) => entry.id === item.id);
+      if (index < 0) throw new Error(`Re-enqueued workflow run ${item.id} is missing from its project queue`);
+      return {
+        itemId: item.id,
+        kind: 're-enqueued',
+        message: `Re-enqueued with the diagnosis as guidance — position ${index + 1}`,
+        costUsd,
+      };
+    }
     case 'resume':
       await bindings.resumeItem(item.id, '');
       return { itemId: item.id, kind: 're-enqueued', message: 'Re-enqueued with the diagnosis as guidance', costUsd };
     case 'merge': {
       const receipt = await bindings.mergeItem(item.id);
+      const mode = receipt.mode === 'ff' ? 'fast-forward' : receipt.mode === 'merge' ? 'merge commit' : 'merged';
       const suffix = receipt.sha ? ` ${receipt.sha.slice(0, 8)}` : '';
-      return { itemId: item.id, kind: 'merged', message: `Merged to main — ${receipt.mode ?? 'merge'}${suffix}`, costUsd };
+      return { itemId: item.id, kind: 'merged', message: `Merged to ${receipt.base || item.baseBranch || 'base'} — ${mode}${suffix}`, costUsd };
     }
     case 'create-pr': {
       const receipt = await bindings.createPR(item.id);

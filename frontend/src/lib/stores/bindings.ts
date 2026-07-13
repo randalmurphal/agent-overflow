@@ -320,6 +320,7 @@ export {
   WorkflowOpenTriageAgent,
   WorkflowOpenTriageThread,
   WorkflowRemoveQueuedItem,
+  WorkflowReenqueueFailedItem,
   WorkflowReorderQueue,
   WorkflowResolveGate,
   WorkflowResumeItem,

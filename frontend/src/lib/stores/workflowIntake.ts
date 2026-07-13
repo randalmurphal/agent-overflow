@@ -24,5 +24,5 @@ export function workflowIntakeError(draft: WorkflowIntakeDraft): string | null {
 }
 
 export function compactWorkflowSeeds(seeds: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(seeds).filter(([, value]) => value !== '' && value !== undefined));
+  return Object.fromEntries(Object.entries(seeds).filter(([, value]) => value !== '' && value !== undefined && value !== null));
 }

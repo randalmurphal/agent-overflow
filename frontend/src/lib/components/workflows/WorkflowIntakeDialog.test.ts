@@ -2,7 +2,7 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from '../../types/models';
 import { addProjectLocal, getProjects, resetProjectsForTest } from '../../stores/projects.svelte';
-import { activateWorkflowsPane, getWorkflowDefinitions, getWorkflowError, loadWorkflowOverview, resetWorkflowsPane } from '../../stores/workflowsPane.svelte';
+import { activateWorkflowsPane, getWorkflowDefinitions, getWorkflowError, loadWorkflowOverview, openWorkflowIntake, resetWorkflowsPane, setWorkflowProjectFilter } from '../../stores/workflowsPane.svelte';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import WorkflowIntakeDialog from './WorkflowIntakeDialog.svelte';
 import { __resetRunModeForTest } from '../../transport/runMode';
@@ -84,17 +84,41 @@ describe('WorkflowIntakeDialog', () => {
     await fireEvent.input(view.getByTestId('wf-intake-goal'), { target: { value: 'Ship it' } });
     await fireEvent.input(view.getByTestId('wf-seed-title'), { target: { value: 'Release' } });
     await fireEvent.change(view.getByTestId('wf-seed-mode'), { target: { value: 'safe' } });
+    await fireEvent.input(view.getByTestId('wf-intake-base-branch'), { target: { value: 'release/v2' } });
     expect(submit).toBeEnabled();
     await fireEvent.click(submit);
     await waitFor(() => expect(getBindingMock('WorkflowEnqueueItem')).toHaveBeenCalledTimes(1));
     const args = getBindingMock('WorkflowEnqueueItem')!.mock.calls[0];
     expect([args[0], args[1], args[2], args[3], args[5], args[6], args[7]]).toEqual([
-      'p', 'wf', 'shared', 'Ship it', null, '', true,
+      'p', 'wf', 'shared', 'Ship it', null, 'release/v2', true,
     ]);
     // The wire carries seeds as one JSON object; a stringified payload arrives
     // as a JSON string literal and the engine rejects it.
     expect(args[4]).toEqual({ title: 'Release', mode: 'safe', approved: false });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads workflows for the dialog project independently of the pane filter', async () => {
+    addProjectLocal({ ...project, id: 'other', name: 'Other', path: '/tmp/other' });
+    setBindingMock('WorkflowListDefinitions', async (projectId: string) => ({
+      baseBranch: `${projectId}-base`, predictedQueuePosition: 1,
+      workflows: [{
+        id: `${projectId}-workflow`, name: `${projectId} workflow`, scope: 'shared', phaseCount: 0,
+        phases: [], inputs: [], defaultStepMode: false, valid: true, allBindingsAvailable: true,
+      }],
+    }));
+    activateWorkflowsPane();
+    setWorkflowProjectFilter('p');
+    openWorkflowIntake({ projectId: 'p', baseBranch: 'prefilled-base' });
+    const view = render(WorkflowIntakeDialog, { open: true, onClose: vi.fn() });
+    await waitFor(() => expect(view.getByTestId('wf-intake-workflow')).toHaveTextContent('p workflow'));
+    await fireEvent.click(view.getByTestId('wf-intake-workflow'));
+    expect(view.getByTestId('wf-intake-base-branch')).toHaveValue('prefilled-base');
+
+    await fireEvent.click(view.getAllByTestId('wf-intake-project').find((button) => button.textContent?.includes('Other'))!);
+    await waitFor(() => expect(view.getByTestId('wf-intake-workflow')).toHaveTextContent('other workflow'));
+    await fireEvent.click(view.getByTestId('wf-intake-workflow'));
+    expect(view.getByTestId('wf-intake-base-branch')).toHaveValue('other-base');
   });
 
   it('refuses intake submission in a view-only session', async () => {

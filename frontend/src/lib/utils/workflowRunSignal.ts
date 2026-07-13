@@ -9,8 +9,11 @@ export interface WorkflowRunSignal {
   glowClass?: string;
 }
 
-const NEUTRAL: WorkflowRunSignal = {
-  signal: 'none', label: '', tone: 'text-fg-muted', dotClass: '', pulse: false,
+const neutralLabels: Record<string, string> = {
+  done: 'Done',
+  queued: 'Queued',
+  running: 'Running',
+  cancelled: 'Cancelled',
 };
 
 function attentionLabel(reason?: WorkflowRunReason): string {
@@ -39,5 +42,7 @@ export function workflowRunSignal(
       signal: 'failed', label: 'Failed', tone: 'text-error', dotClass: 'bg-error', pulse: false,
     };
   }
-  return NEUTRAL;
+  return {
+    signal: 'none', label: neutralLabels[state] ?? '', tone: 'text-fg-muted', dotClass: '', pulse: false,
+  };
 }

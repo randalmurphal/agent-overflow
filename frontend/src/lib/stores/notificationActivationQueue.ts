@@ -75,6 +75,7 @@ export function createNotificationActivationQueue(
   let hydrated = false;
   let pending: NotificationTarget[] = [];
   let hydrationPromise: Promise<void> | null = null;
+  let activationChain = Promise.resolve();
 
   async function apply(target: NotificationTarget): Promise<void> {
     try {
@@ -138,7 +139,7 @@ export function createNotificationActivationQueue(
       pending.push(validated);
       return;
     }
-    void apply(validated);
+    activationChain = activationChain.then(() => apply(validated));
   }
 
   async function markHydrated(): Promise<void> {

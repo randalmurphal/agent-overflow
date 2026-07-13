@@ -7,10 +7,10 @@ describe('workflowRunSignal', () => {
     ['needs-human', 'question', 'attention', 'Question'],
     ['needs-human', 'stuck', 'attention', 'Needs you'],
     ['failed', 'check-failed-genuine', 'failed', 'Failed'],
-    ['running', '', 'none', ''],
-    ['queued', '', 'none', ''],
-    ['cancelled', '', 'none', ''],
-    ['done', '', 'none', ''],
+    ['running', '', 'none', 'Running'],
+    ['queued', '', 'none', 'Queued'],
+    ['cancelled', '', 'none', 'Cancelled'],
+    ['done', '', 'none', 'Done'],
   ])('%s(%s)', (state, reason, signal, label) => {
     expect(workflowRunSignal(state, reason)).toMatchObject({ signal, label });
   });

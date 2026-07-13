@@ -92,4 +92,44 @@ describe('<WorkflowRunDetail>', () => {
       expect(button.title).toBe('Local only');
     }
   });
+
+  it('uses the newest parked phase envelope for the question and suggestions', async () => {
+    setBindingMock('WorkflowGetItem', async () => ({
+      item: {
+        id: 'run', projectId: 'p', workflowId: 'wf', goal: 'Run', state: 'needs-human', reason: 'question',
+        digest: JSON.stringify({ whatHappened: 'Asked', whatItNeeds: '1. Stale choice' }),
+        baseBranch: 'main', worktreePath: '/tmp/run', sortPosition: 0, createdAt: 1,
+      },
+      phases: [
+        { phaseId: 'build', attempt: 1, status: 'completed', outputEnvelope: JSON.stringify({ status: 'question', question: '1. Older choice', outputs: null, reason: null }), startedAt: 1, endedAt: 2 },
+        { phaseId: 'build', attempt: 2, status: 'completed', outputEnvelope: JSON.stringify({ status: 'question', question: '1. Current choice\n2. Another choice', outputs: null, reason: null }), startedAt: 2, endedAt: 3 },
+      ],
+      artifacts: [],
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
+    }));
+    await loadWorkflowCurrentLevel();
+    const view = render(WorkflowRunDetail, { level });
+    expect(await view.findByTestId('wf-question')).toHaveTextContent('Current choice');
+    expect(view.getByTestId('wf-suggested-answers')).toHaveTextContent('Current choice');
+    expect(view.getByTestId('wf-suggested-answers')).not.toHaveTextContent('Stale choice');
+  });
+
+  it('disables artifact rows remotely with a Local only title', async () => {
+    setBindingMock('WorkflowGetItem', async () => ({
+      item: {
+        id: 'run', projectId: 'p', workflowId: 'wf', goal: 'Run', state: 'done', reason: '',
+        baseBranch: 'main', worktreePath: '/tmp/run', sortPosition: 0, createdAt: 1,
+      },
+      phases: [],
+      artifacts: [{ name: 'report', path: '/tmp/run/report.md', size: 12 }],
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
+    }));
+    await loadWorkflowCurrentLevel();
+    (globalThis as { __AO_BOOTSTRAP__?: { remote: boolean } }).__AO_BOOTSTRAP__ = { remote: true };
+    __resetRunModeForTest();
+    const view = render(WorkflowRunDetail, { level });
+    const artifact = await view.findByTestId('wf-output-file') as HTMLButtonElement;
+    expect(artifact.disabled).toBe(true);
+    expect(artifact.title).toBe('Local only');
+  });
 });

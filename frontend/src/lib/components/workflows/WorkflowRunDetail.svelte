@@ -97,6 +97,24 @@
       workspacePath: detail.item.worktreePath,
     });
   }
+
+  function envelopeQuestion(): string {
+    if (!detail) return '';
+    for (const phase of [...detail.phases].reverse()) {
+      if (!phase.outputEnvelope) continue;
+      try {
+        const envelope = (typeof phase.outputEnvelope === 'string'
+          ? JSON.parse(phase.outputEnvelope)
+          : phase.outputEnvelope) as { status?: unknown; question?: unknown } | null;
+        if (envelope?.status === 'question' && typeof envelope.question === 'string' && envelope.question.trim()) {
+          return envelope.question.trim();
+        }
+      } catch (error) {
+        console.warn(`workflows: could not parse output envelope for ${phase.phaseId} attempt ${phase.attempt}`, error);
+      }
+    }
+    return '';
+  }
 </script>
 
 {#if loading && !detail}
@@ -105,6 +123,7 @@
   {@const item = detail.item}
   {@const signal = workflowRunSignal(item.state, item.reason)}
   {@const digest = parseWorkflowDigest(item.digest)}
+  {@const question = envelopeQuestion() || digest?.whatItNeeds || ''}
   {@const checks = checkPhaseIds(item.snapshot)}
   <div class="flex min-h-full flex-col" data-testid="wf-run-detail">
     <div class="flex-1 space-y-5 p-4">
@@ -156,7 +175,7 @@
       {/if}
 
       {#if item.reason === 'question'}
-        <blockquote class="border-l-2 border-warning/60 pl-3 text-sm italic" data-testid="wf-question">{digest?.whatItNeeds || 'The phase needs an answer.'}</blockquote>
+        <blockquote class="border-l-2 border-warning/60 pl-3 text-sm italic" data-testid="wf-question">{question || 'The phase needs an answer.'}</blockquote>
       {/if}
 
       {#if item.state === 'failed'}
@@ -190,13 +209,13 @@
         <section class="space-y-1.5" data-testid="wf-outputs">
           <h3 class="text-[11px] font-semibold uppercase tracking-wider text-fg-muted">Outputs</h3>
           {#each detail.artifacts as artifact (artifact.path)}
-            <button class="flex w-full items-center gap-2 rounded-md border border-border-subtle px-2.5 py-2 text-left text-xs hover:bg-surface-2" onclick={() => openArtifact(artifact.path)} data-testid="wf-output-file">
+            <button class="flex w-full items-center gap-2 rounded-md border border-border-subtle px-2.5 py-2 text-left text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openArtifact(artifact.path)} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-output-file">
               <span>↗</span><span class="min-w-0 flex-1 truncate">{artifact.name}</span><span class="text-fg-muted">{artifact.size} bytes</span>
             </button>
           {/each}
         </section>
       {/if}
     </div>
-    <div class="sticky bottom-0"><WorkflowActionRow {detail} questionText={digest?.whatItNeeds ?? ''} onToggleFirstDiff={() => { void toggleFirstDiff(); }} /></div>
+    <div class="sticky bottom-0"><WorkflowActionRow {detail} questionText={question} onToggleFirstDiff={() => { void toggleFirstDiff(); }} /></div>
   </div>
 {/if}

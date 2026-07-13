@@ -3,6 +3,7 @@ import {
   doneResult,
   enqueueWorkflow,
   pauseWorkflowQueue,
+  retryableFailureWorkflow,
   seedWorkflowProject,
   setClaudeScenario,
   startOneWorkflow,
@@ -21,38 +22,8 @@ test('failed run re-enqueues with guidance and completes', async ({ harness }) =
   await setClaudeScenario(harness, 'reenqueue-failed', [
     { steps: [{ emit: { lines: [doneResult({ complete: false })] } }] },
   ]);
-  const workflow = `id: reenqueue-flow
-name: reenqueue-flow
-inputs:
-  goal:
-    schema:
-      type: string
-phases:
-  - id: run
-    driver: agent
-    provider: claude
-    model: claude-opus-4-7
-    prompt: reenqueue-flow.md
-    access: read-only
-    inputs:
-      goal:
-        schema:
-          type: string
-    outputs:
-      complete:
-        schema:
-          type: boolean
-    gate:
-      routes:
-        - when:
-            eq:
-              ref: run.complete
-              value: false
-          to: failed
-        - to: done
-`;
   const project = await seedWorkflowProject(harness, 'reenqueue', [
-    { name: 'reenqueue-flow', yaml: workflow },
+    { name: 'reenqueue-flow', yaml: retryableFailureWorkflow('reenqueue-flow') },
   ]);
   const item = await enqueueWorkflow(
     harness,

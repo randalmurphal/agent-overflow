@@ -39,6 +39,7 @@ export async function loadWorkflowProject(
 }
 
 export async function loadWorkflowSidebar(
+  projectIds: readonly string[],
   bindings: Pick<WorkflowDataBindings, 'listItems' | 'listDefinitions'>,
 ): Promise<WorkflowMergedLoad> {
   const items = await bindings.listItems('');
@@ -49,9 +50,11 @@ export async function loadWorkflowSidebar(
     if (projectItems) projectItems.push(item);
     else itemsByProject.set(item.projectId, [item]);
   }
-  const loads = await Promise.all([...itemsByProject].map(async ([projectId, projectItems]): Promise<WorkflowProjectLoad> => ({
+  const definitionProjectIds = new Set(projectIds.filter(Boolean));
+  for (const projectId of itemsByProject.keys()) definitionProjectIds.add(projectId);
+  const loads = await Promise.all([...definitionProjectIds].map(async (projectId): Promise<WorkflowProjectLoad> => ({
     projectId,
-    items: projectItems,
+    items: itemsByProject.get(projectId) ?? [],
     costs: {},
     catalog: await bindings.listDefinitions(projectId),
   })));

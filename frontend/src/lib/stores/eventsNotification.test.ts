@@ -27,11 +27,20 @@ describe('workflow notification activation', () => {
     resetWorkflowsPane();
     resetNotificationActivationForTest();
     for (const toast of getToasts()) removeToast(toast.id);
+    setBindingMock('WorkflowListItems', async () => []);
+    setBindingMock('WorkflowListItemCosts', async () => ({}));
+    setBindingMock('WorkflowListDefinitions', async () => ({
+      baseBranch: 'main', predictedQueuePosition: 1, workflows: [],
+    }));
   });
 
   afterEach(() => resetBindingMocks());
 
   it('opens a workflow item inside the sweep after hydration', async () => {
+    setBindingMock('WorkflowListItems', async () => [{
+      id: 'run', projectId: 'p', workflowId: 'wf', goal: 'Run', state: 'needs-human',
+      reason: 'gate', sortPosition: 0, createdAt: 1,
+    }]);
     setBindingMock('WorkflowGetItem', async () => ({
       item: { id: 'run', projectId: 'p', workflowId: 'wf', goal: 'Run', state: 'needs-human' },
       phases: [], artifacts: [], usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },

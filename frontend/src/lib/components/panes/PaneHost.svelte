@@ -478,6 +478,7 @@
               data-testid="companion-pane-review"
               data-companion-pane-id={item.paneId}
               data-companion-source-pane-id={WORKFLOWS_PANE_ID}
+              data-review-thread-id={workflowReviewTarget.threadId}
             >
               {#key workflowReviewTarget.threadId}
                 <ReviewPane source={{ paneId: WORKFLOWS_PANE_ID, ...workflowReviewTarget }} />

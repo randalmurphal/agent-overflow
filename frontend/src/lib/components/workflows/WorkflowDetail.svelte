@@ -18,13 +18,16 @@
   } from '../../stores/workflowsPane.svelte';
   import WorkflowJobNotes from './WorkflowJobNotes.svelte';
   import { isViewOnlySession } from '../../transport/runMode';
+  import { workflowActionConfirmationKey } from '../../stores/workflowActions';
+  import { isWorkflowParked } from '../../stores/workflowData';
+  import { getWorkflowSidebarPhaseProgress } from '../../stores/workflowsSidebar.svelte';
 
   interface Props { level: Extract<WorkflowPaneLevel, { kind: 'workflow' }> }
   let { level }: Props = $props();
   let allItems = $derived(getWorkflowItems());
   let items = $derived(allItems.filter((item) => item.projectId === level.projectId && item.workflowId === level.workflowId));
-  let live = $derived(items.filter((item) => !['done', 'cancelled'].includes(item.state)));
-  let history = $derived(items.filter((item) => ['done', 'cancelled'].includes(item.state)).sort((a, b) => (b.endedAt || b.createdAt) - (a.endedAt || a.createdAt)));
+  let live = $derived(items.filter((item) => item.state !== 'cancelled' && (item.state !== 'done' || isWorkflowParked(item))));
+  let history = $derived(items.filter((item) => item.state === 'cancelled' || (item.state === 'done' && !isWorkflowParked(item))).sort((a, b) => (b.endedAt || b.createdAt) - (a.endedAt || a.createdAt)));
   let costs = $derived(getWorkflowCosts());
   let definition = $derived(getWorkflowDefinitions().find((entry) => entry.projectId === level.projectId && entry.definition.id === level.workflowId));
   let project = $derived(getProjects().find((entry) => entry.project.id === level.projectId)?.project);
@@ -40,10 +43,16 @@
   }
 
   function meta(item: WorkItem): string {
-    const parts = [item.state];
-    if (item.reason) parts.push(item.reason);
-    if (item.state === 'queued') parts.push(`#${item.sortPosition + 1}`);
-    if (costs[item.id]) parts.push(`$${costs[item.id].toFixed(2)}`);
+    const parts: string[] = [];
+    const progress = getWorkflowSidebarPhaseProgress(item);
+    if (item.state === 'queued') parts.push(`Queued #${item.sortPosition + 1}`);
+    else if (item.state === 'running') parts.push(progress ? `Phase ${progress.current}/${progress.total}` : 'Running');
+    else if (item.state === 'needs-human' || item.state === 'failed') {
+      if (item.reason) parts.push(item.reason.split('-').map((word) => word[0]?.toUpperCase() + word.slice(1)).join(' '));
+      parts.push(`parked ${age(item.endedAt || item.createdAt)} ago`);
+    } else if (item.state === 'done') parts.push(`Finished ${age(item.endedAt || item.createdAt)} ago`);
+    else if (item.state === 'cancelled') parts.push(`Cancelled ${age(item.endedAt || item.createdAt)} ago`);
+    if (costs[item.id] !== undefined) parts.push(`$${costs[item.id].toFixed(2)}`);
     return parts.join(' · ');
   }
 
@@ -81,7 +90,7 @@
   async function cancelRun(item: WorkItem, event: MouseEvent): Promise<void> {
     event.stopPropagation();
     if (viewOnly) return;
-    const key = `cancel:${item.id}`;
+    const key = workflowActionConfirmationKey('cancel', item);
     if (armed !== key) { setWorkflowArmedAction(key); return; }
     try {
       await WorkflowCancelItem(item.id);
@@ -111,12 +120,12 @@
       <div class={["group flex items-center gap-2 rounded-lg border border-border-subtle px-3 py-2.5 hover:bg-surface-2/50", signal.glowClass ?? ''].join(' ')} data-testid="wf-run-row">
         {#if signal.signal !== 'none'}
           <span class={`h-2 w-2 rounded-full ${signal.dotClass} ${signal.pulse ? 'animate-pulse' : ''}`}></span>
-          <span class={`text-xs font-medium ${signal.tone}`}>{signal.label}</span>
+          <span class={`text-xs font-medium ${signal.tone}`}>{signal.signal === 'attention' ? 'Needs you' : signal.label}</span>
         {/if}
         <button class="min-w-0 flex-1 truncate text-left text-sm font-medium" onclick={() => openRun(item)} data-testid="wf-run-open">{item.goal}</button>
         <span class="shrink-0 text-xs text-fg-muted">{meta(item)}</span>
         {#if item.state === 'running'}
-          <button class="rounded px-1.5 py-1 text-xs text-error opacity-0 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40" onclick={(event) => cancelRun(item, event)} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-run-cancel">{armed === `cancel:${item.id}` ? 'stop this run?' : '✕'}</button>
+          <button class="rounded px-1.5 py-1 text-xs text-error opacity-0 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40" onclick={(event) => cancelRun(item, event)} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-run-cancel">{armed === workflowActionConfirmationKey('cancel', item) ? 'stop this run?' : '✕'}</button>
         {/if}
       </div>
     {/each}

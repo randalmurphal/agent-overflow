@@ -1,7 +1,7 @@
-import { render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { WorkflowItemDetail } from '../../types/workflow';
-import { resetWorkflowsPane } from '../../stores/workflowsPane.svelte';
+import { recordWorkflowReceipt, resetWorkflowsPane } from '../../stores/workflowsPane.svelte';
 import WorkflowActionRow from './WorkflowActionRow.svelte';
 import { __resetRunModeForTest } from '../../transport/runMode';
 
@@ -40,12 +40,45 @@ describe('WorkflowActionRow', () => {
 
   it('renders a persisted disposition receipt instead of manual disposition buttons', () => {
     const view = render(WorkflowActionRow, {
-      detail: detail('done', '', '{"action":"merged","mode":"ff","sha":"abc","policy":"manual","at":1}'),
+      detail: detail('done', '', '{"action":"merged","base":"main","mode":"ff","sha":"abc","policy":"manual","at":1}'),
     });
     expect(view.getByTestId('wf-disposition-receipt')).toHaveTextContent('Merged to main');
     expect(view.getByTestId('wf-disposition-receipt')).toHaveTextContent('fast-forward · abc');
     expect(view.getByTestId('wf-disposition-receipt')).toHaveTextContent('policy · manual');
     expect(view.queryByTestId('wf-merge')).not.toBeInTheDocument();
+  });
+
+  it('offers done-manual actions for a disposition park', () => {
+    const view = render(WorkflowActionRow, { detail: detail('needs-human', 'disposition') });
+    expect(view.getByTestId('wf-merge')).toBeInTheDocument();
+    expect(view.getByTestId('wf-create-pr')).toBeInTheDocument();
+    expect(view.getByTestId('wf-done-continue')).toBeInTheDocument();
+    expect(view.getByTestId('wf-done-discard')).toBeInTheDocument();
+    expect(view.queryByTestId('wf-parked-resume')).not.toBeInTheDocument();
+  });
+
+  it('shows a failed run disposition receipt without offering re-enqueue', () => {
+    const view = render(WorkflowActionRow, {
+      detail: detail('failed', 'agent-error', '{"action":"discarded","policy":"manual","at":1}'),
+    });
+    expect(view.getByTestId('wf-disposition-receipt')).toHaveTextContent('Discarded');
+    expect(view.queryByTestId('wf-resume')).not.toBeInTheDocument();
+  });
+
+  it('co-renders the session receipt above the persisted disposition', () => {
+    const value = detail('done', '', '{"action":"merged","base":"release","mode":"ff","sha":"abc","policy":"manual","at":1}');
+    recordWorkflowReceipt({ itemId: value.item.id, kind: 'merged', message: 'Merged to release', costUsd: 1 }, false);
+    const view = render(WorkflowActionRow, { detail: value });
+    expect(view.getByTestId('wf-resolved-receipt')).toHaveTextContent('Merged to release');
+    expect(view.getByTestId('wf-disposition-receipt')).toHaveTextContent('Merged to release');
+    expect(view.queryByTestId('wf-receipt-continue')).not.toBeInTheDocument();
+  });
+
+  it('focuses the reject note when request changes opens', async () => {
+    const view = render(WorkflowActionRow, { detail: detail('needs-human', 'gate') });
+    await fireEvent.click(view.getByTestId('wf-request-changes'));
+    const input = await view.findByTestId('wf-reject-note');
+    await waitFor(() => expect(input).toHaveFocus());
   });
 
   it('disables mutating action controls but keeps plain phase navigation live remotely', () => {

@@ -19,6 +19,6 @@ describe('workflow intake validation', () => {
 
   it('accepts typed fields and omits empty optional seeds', () => {
     expect(workflowIntakeError({ projectId: 'p', goal: 'go', definition, seeds: { title: 'x', count: 2 } })).toBeNull();
-    expect(compactWorkflowSeeds({ title: 'x', count: '', flag: false })).toEqual({ title: 'x', flag: false });
+    expect(compactWorkflowSeeds({ title: 'x', count: '', note: null, extra: undefined, flag: false })).toEqual({ title: 'x', flag: false });
   });
 });

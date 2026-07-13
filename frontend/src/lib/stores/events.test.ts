@@ -12,7 +12,7 @@ import {
 import { resetForTest as resetSendQueue } from './sendQueue.svelte';
 import { getThreads, refreshThreads } from './threads.svelte';
 import { getToasts } from './toast.svelte';
-import { getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
+import { addProjectLocal, getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
 import {
   getProviderRateLimit,
   resetForTest as resetRateLimitsInfo,
@@ -27,6 +27,17 @@ import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import type { ProviderStatusEvent } from '../types/events';
 import type { Item, ProjectWithCounts } from '../types/models';
+import type { WorkItem } from '../types/workflow';
+import {
+  activateWorkflowsPane,
+  getWorkflowItems,
+  loadWorkflowOverview,
+  resetWorkflowsPane,
+} from './workflowsPane.svelte';
+import {
+  getProjectWorkflowRuns,
+  resetWorkflowsSidebarForTest,
+} from './workflowsSidebar.svelte';
 
 function providerStatusEvent(overrides: Partial<ProviderStatusEvent> = {}): ProviderStatusEvent {
   return {
@@ -69,6 +80,8 @@ describe('setupEventListeners', () => {
     resetThreadStatuses();
     resetSendQueue();
     resetProjectsForTest();
+    resetWorkflowsPane();
+    resetWorkflowsSidebarForTest();
     resetRateLimitsInfo();
     resetProviderStatuses();
     setBindingMock('AutoResumeThread', async () => {});
@@ -84,6 +97,8 @@ describe('setupEventListeners', () => {
     resetPanesForTest();
     resetThreadStatuses();
     resetSendQueue();
+    resetWorkflowsPane();
+    resetWorkflowsSidebarForTest();
   });
 
   it('registers and unregisters the unified listener set', () => {
@@ -1862,6 +1877,30 @@ describe('setupEventListeners', () => {
 
     expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(10_000);
     expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(10_000);
+  });
+
+  it('refreshes the active workflows pane and sidebar after workflow transport gaps', async () => {
+    addProjectLocal(projectWithCounts('workflow-project').project);
+    let state = 'queued';
+    setBindingMock('WorkflowListItems', async () => [{
+      id: 'run', projectId: 'workflow-project', workflowId: 'wf', workflowScope: 'shared',
+      goal: 'Run', state, reason: '', sortPosition: 1, stepMode: false, source: 'manual', createdAt: 1,
+    } as WorkItem]);
+    setBindingMock('WorkflowListItemCosts', async () => ({}));
+    setBindingMock('WorkflowListDefinitions', async () => ({
+      baseBranch: 'main', predictedQueuePosition: 1, workflows: [],
+    }));
+    activateWorkflowsPane();
+    await loadWorkflowOverview();
+    expect(getWorkflowItems()[0]?.state).toBe('queued');
+    state = 'running';
+
+    emitWailsEvent(transportGapChannel, { channel: 'workflow:item-state', seq: 9 });
+
+    await vi.waitFor(() => {
+      expect(getWorkflowItems()[0]?.state).toBe('running');
+      expect(getProjectWorkflowRuns('workflow-project')[0]?.state).toBe('running');
+    });
   });
 
   it('refreshes the context meter via GetThread after a provider:usage transport gap', async () => {
