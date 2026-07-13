@@ -969,3 +969,40 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   `019f5953-7f26-7b61-9fb3-e3723c822684`. Banner verified. 34 work-plan
   items; Go files are a forbidden zone (backend contract frozen); e2e
   gate runs twice.
+
+- **P3.9 verdict: not gamed, zero riders — merged `9314ba8f`.** The
+  cleanest packet of the campaign. All 34 work-plan items verified in
+  the diff; forbidden zones untouched (zero `*.go`, no bindings, no
+  harness, no transport). Both documented gate reruns honest: the
+  go-test flake was `TestObs_ReplayWriterConcurrentEnqueuesSafe` in
+  `internal/observability` — a package the diff cannot touch — and the
+  frontend-test rerun followed a real fix to the packet's own new
+  async behavior (`openWorkflowsPane` returns its load promise; the
+  activation dependency picks it up by implicit arrow return). Exactly
+  the two sanctioned e2e casing assertions changed; the
+  `openRun('history')` removal is forced by item 22's membership
+  change. Four codex self-review fixes verified in code
+  (refresh-generation isolation, project-bound prefill, drag-state
+  clearing, activation serialization). Review chased three
+  soundness questions to ground: the activation chain cannot be
+  poisoned (`apply()` never rejects), the sweep-index clamp changes no
+  first-step behavior, and the dual overview-refresh entry paths
+  reconcile without lost refreshes. e2e 24 → 28. Independent
+  post-merge battery: 9/9 green (e2e 28/28 twice). Polish-pass notes
+  recorded in the report addendum. Lane `p39` pruned. **Task #3
+  (review fixes) complete.**
+
+- **P4.0 perf review (consult) adjudicated.** Read-only codex consult
+  (gpt-5.6-sol xhigh, session `019f5985-8b4f-7022-941f-f9a9660940ec`)
+  over the workflows hot paths; report + adjudication at
+  `reports/P4.0-perf-review.md`. Nine ranked findings + a test-infra
+  finding. Accepted: usage_ledger partial index; server-side
+  unresolved predicate (S11 slice, incl. the ruling that
+  disposition-bearing failed items are resolved); StateEvent projectId
+  + hook read-skips; WorkflowItemDetailView DTO (B2, full-vertical);
+  waiting-set scheduler; phase-context narrow reads; single-pass
+  rebuild; store-test template DB (benchmark-gated). Trimmed: refresh
+  fan-out fixed by scoping waves (definitions never reload on
+  item-state events), not a DTO redesign. Deferred: profile cache,
+  paged history / summary endpoints (flagged follow-up), incremental
+  context cache. Packet `P4.0-perf-workflows.md` authored (10 items).
