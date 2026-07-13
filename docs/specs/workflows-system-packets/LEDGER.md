@@ -1042,3 +1042,29 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   progress, slots in queue-state); UI-SPEC text governs every item;
   copy/markup assertion amendments sanctioned only where an item
   changes them, each listed in the report.
+
+- **P4.1 verdict: not gamed, three riders — merged `ca450d8c`.** All 22
+  items delivered with honest gates; no e2e or gate-command edits, no
+  testid renames (controls moved into header chrome keep their ids);
+  both mid-run failures were legitimate (pre-existing observability
+  flake; codex's own fixture rejected by the real strict-ancestor
+  validator and fixed in the fixture). Review verified: store progress
+  projection is one indexed query with the frozen snapshot inspected
+  only inside SQLite (tiebreak matches the attention query exactly);
+  engine changes are additive payload + emit-on-slot-change with FSM
+  semantics untouched; "human gate = explicit human route, once per
+  phase" ratified against §5.3; hiding the Checks section on failed
+  runs conforms (spec's failed row carries only evidence + diagnosis);
+  Backspace pop was already bound behind the typing guard, correctly
+  pinned rather than reimplemented. Riders (0bf02c56, applied in-lane):
+  §5.1 bare `parked 7h` header copy; shared `workflowAge` helper
+  replacing three duplicated private `age()` copies (fixes sub-minute
+  "spawned now ago" compositions); restored directory commit for
+  `format: path` intake seeds alongside the new file picking (codex's
+  swap had dropped the pre-existing onSelect path). Noted for M4:
+  approve-target/header ordinal derive from the catalog definition (the
+  wire deliberately carries no snapshot); detail DTO could carry a
+  frozen phase-ID chain if the edited-while-parked window ever matters.
+  Report + addendum: `reports/P4.1-report.md`. Independent post-merge
+  battery: 9/9 green. Lane `p41` pruned. **Task #5 (polish pass)
+  complete — M3 fix/perf/polish campaign closed.**
