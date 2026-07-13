@@ -1033,3 +1033,12 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   reloads. Flagged for M4: `workflow:definitions-changed` signal for
   sidebar catalog staleness. Independent post-merge battery: 9/9 green.
   Lane `p40` pruned. **Task #4 (perf/memory) complete.**
+
+- **P4.1 (polish: workflows UI spec conformance) dispatched.** Lane
+  `p41` at `lane/p41-polish-workflows` (base 35be841d), bootstrap
+  green. codex gpt-5.6-sol xhigh, bypass sandbox, session id
+  `019f59cc-c638-7e83-bb6e-25a7df5dfc00`. Banner verified. 22 items,
+  full-vertical (three wire-backed: human-gate count, cold-load phase
+  progress, slots in queue-state); UI-SPEC text governs every item;
+  copy/markup assertion amendments sanctioned only where an item
+  changes them, each listed in the report.
