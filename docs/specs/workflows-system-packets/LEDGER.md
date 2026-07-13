@@ -27,7 +27,7 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
 | P3.2 disposition + UI data + notifications | `m3/p32-disposition-uidata` | `~/repos/ao-lanes/p32` | gpt-5.6-sol / **xhigh** | `019f576c-444e-70b3-9bd5-0afadd50c1de` | **merged `6d329261`** (workflows-system) |
 | P3.4+P3.5 workflows pane frontend | `m3/p345-workflows-pane` | `~/repos/ao-lanes/p345` | gpt-5.6-sol / **xhigh** | `019f57c7-df07-70c3-b29f-0af4eb40af07` | **merged `a4640596`** (workflows-system) |
 | P3.6 sidebar + exclusions + deep links + remote | `m3/p36-sidebar-remote` | `~/repos/ao-lanes/p36` | gpt-5.6-sol / **xhigh** | `019f583e-5348-7251-a18d-d31e8c6b9c2b` | **merged `481fa3de`** (workflows-system) |
-| P3.7 e2e UI specs per surface | `m3/p37-e2e` | `~/repos/ao-lanes/p37` | gpt-5.6-sol / **xhigh** | `019f5893-e1ef-76a0-a603-b79d249b40e0` | dispatched |
+| P3.7 e2e UI specs per surface | `m3/p37-e2e` | `~/repos/ao-lanes/p37` | gpt-5.6-sol / **xhigh** | `019f5893-e1ef-76a0-a603-b79d249b40e0` | **merged `3062bffb`** (workflows-system) |
 
 ## Events
 
@@ -887,3 +887,32 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   lane, intake spec verified 1/1 green on the fixed build before
   resume. Codex progress before this stop: sidebar 2/2, pane 1/1,
   run-actions/sweep/review 5/5, helpers extraction green.
+
+- **P3.7 verdict: not gamed, two trivial riders — merged `3062bffb`.
+  M3 packet execution COMPLETE.** Codex finished after the two
+  amendments: 23/23 e2e twice in-lane, all eight final gates green.
+  Line-level review across four diff areas found disciplined work:
+  every mutation under test driven through the UI, wire-event waits
+  throughout, no sleeps/skips/wall-clock assertions, the
+  helper-extraction byte-identical claim independently re-proven with
+  `cmp` against the merge base, one additive testid exactly as
+  reported. Riders (adjudicator-applied): single-quote style on the
+  rewired import block; sweep test retitled "wraps" → "advances" (it
+  asserts adjacent j/k movement). Report honestly logs a fourth
+  discrepancy — run detail renders lowercase `done` vs UI-SPEC §5.1
+  `Done` — deferred to the Claude-side conformance audit. Report +
+  addendum → `reports/P3.7-report.md`. Independent post-merge battery:
+  7/8 gates green first pass plus e2e green TWICE (23/23 both); the
+  race gate FAILed on `internal/store` at exactly the default 600s
+  per-binary budget (timeout panic mid-migration, tests progressing —
+  the P0.1 signature). Re-run with `-timeout 1800s`: `ok
+  internal/store 600.425s`, zero failures — honest slowness, the suite
+  has grown to the default budget's edge (codex's in-lane passes were
+  532s/572s). Gate hygiene going forward: the campaign race gate now
+  carries `-timeout 1800s` (harness budget, not an assertion change);
+  future packet gate lists must inherit it. Optimization candidate
+  (not this packet): `newTestStore` runs the full migration chain per
+  test — a shared migrated template DB would cut the -race wall
+  dramatically. Lane `p37` pruned. Remaining M3: Claude-side UI-SPEC
+  conformance audit + fable taste pass (includes the `done` casing
+  note).
