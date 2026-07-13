@@ -563,13 +563,16 @@ a notes file per job, not a memory subsystem (the §12 exclusion stands).
 ## M4 rulings (user decisions, 2026-07-13)
 
 - **D4.5 amendment — enqueue-from-chat is user-directed, not autonomous.**
-  The producer is an `ao` subcommand available to interactive threads
-  (normal chat + triage), described to the agent so it knows the
-  capability exists, but invoked **when the user asks** — the tool
-  guidance must instruct agents not to enqueue unprompted. A settings
-  toggle gates the whole feature (guidance injection + authorization);
-  off means the capability is absent, not merely hidden. The §7.2
+  The producer is a **first-party tool exposed to interactive threads**
+  (normal chat + triage) via the existing per-provider MCP plumbing —
+  self-describing, so the agent knows the capability exists, but invoked
+  **when the user asks**: the tool description must instruct agents not
+  to enqueue unprompted. A settings toggle gates the whole feature; off
+  means the tool is absent from the session, not merely hidden. The §7.2
   confirm card remains the commit point — chat never enqueues silently.
+  (§5's "first-party agency is the `ao` CLI" ruling governs workflow
+  *phases* and is unchanged; interactive threads use the tool surface
+  their providers already support.)
 - **D11 amendment — PR follow-ups become threads.** The bespoke
   "Send comments to the agent → run returns to Running with a fix turn"
   loop is dropped. Instead the PR block gains: (a) **Review comments
