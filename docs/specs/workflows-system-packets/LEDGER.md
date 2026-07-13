@@ -1091,3 +1091,33 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   transport with token auth, `workflowChatEnqueue` toggle (default on),
   persisted thread-item proposals, WorkflowConfirmCard production
   (queue/edit/dismiss), transport classification, full battery.
+
+## P5.0 verdict — MERGED
+
+- Squash-merge `a29c2992` on `workflows-system` (lane `lane/p50-chat-enqueue`,
+  codex gpt-5.6-sol xhigh, session `019f5bb3-61ac-7240-a277-c560c82f65db`).
+- Review: full line review across five diff splits + remainder sweep (53
+  files). No gaming found; the mid-run e2e failure was corrected honestly
+  (revalidation scoped to agent-source commits, fixtures untouched).
+- Riders (in-lane `904e510a`): plan-mode eligibility via threadmode
+  constants (packet gap — chat↔plan toggles without session restart);
+  formatter-churn revert across four FE files + v27 migration SQL reindent;
+  gofmt-unstable comment reworded; bytes.NewReader house pattern.
+- Notable adjudications: Codex per-thread MCP disable-by-omission was a
+  pre-existing bug (deep-merge inherits globals) — explicit
+  `{enabled:false}` overlays accepted with renamed pinning test;
+  archived-project rejection on shared enqueue path accepted as loud
+  adjacent hardening.
+- Battery: 9/9 (go-build, go-test, race, windows, fe-check, fe-test,
+  fe-build, e2e ×2).
+- Report + addendum: `reports/P5.0-report.md`. Carry-forward: MCP-driven
+  e2e needs a harness follow-up (forbidden zone this packet).
+
+## P5.1 dispatched — per-project queues + definitions-changed
+
+- Packet: `P5.1-per-project-queues.md`. Lane `~/repos/ao-lanes/p51`,
+  branch `lane/p51-project-queues`, base = P5.0 merge commit.
+- Scope: migration v29 project queue columns; engine per-project drain
+  gating + QueueStateEvent extension; WorkflowUpdateProjectQueue bound
+  method; per-project drain-summary flush; list-of-queues UI;
+  workflow:definitions-changed watcher.
