@@ -916,3 +916,28 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   dramatically. Lane `p37` pruned. Remaining M3: Claude-side UI-SPEC
   conformance audit + fable taste pass (includes the `done` casing
   note).
+
+- **Second-opinion round complete → adjudication committed `c663fbe5`.**
+  Per the user's request, 3 codex read-only reviews (gpt-5.6-sol xhigh;
+  sessions 019f5903-8499…, 019f5903-add4…, 019f5903-d5f0…) over
+  stores/components/backend plus 4 fable UI-SPEC conformance audits
+  (§§2–4, §5+§9, §§6/7/11, §§8/10/12) produced 55 distinct findings.
+  Every one verified against code before adjudication — three
+  whole-affordance breaks confirmed by multiple independent reviewers
+  (done-run hand-off refused backend-side; failed-run re-enqueue
+  impossible — no FSM path; merge-refusal disposition parks are dead
+  ends). Notable refutations/design rulings: takeover worktree
+  preservation is the documented invariant (B6 refuted); MergeBranch
+  local-only is intended (B8); same-host-proxy loopback caveat is
+  app-wide and pre-M3 (B1 → docs note). Full matrix + rulings R-A…R-H:
+  `reports/M3-second-opinion-adjudication.md`. Fixes split: P3.8
+  backend, P3.9 frontend+e2e, remainder assigned to perf/polish passes;
+  eight scope-sized items flagged to the user rather than deferred
+  silently (PR review-comments flow, chat-proposal producer, triage
+  spawn tools, global queue ordering, …).
+
+- **P3.8 (review fixes: backend) dispatched.** Lane `p38` at
+  `lane/p38-review-fixes-backend` (base c663fbe5), bootstrap + go-build
+  preflight green. codex gpt-5.6-sol xhigh, bypass sandbox, session id
+  `019f591d-091b-75b0-92db-66eeb6a466a9`. Banner verified. Gates
+  inherit `-timeout 1800s` on the race gate per P3.7 lesson.
