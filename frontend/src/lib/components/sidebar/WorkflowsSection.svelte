@@ -31,7 +31,7 @@
       const progress = getWorkflowSidebarPhaseProgress(item);
       const duration = elapsed(item);
       return progress
-        ? `${progress.current}/${progress.total}${duration ? ` · ${duration}` : ''}`
+        ? `${progress.phaseId} · ${progress.current}/${progress.total}${duration ? ` · ${duration}` : ''}`
         : `running${duration ? ` · ${duration}` : ''}`;
     }
     if (item.state === 'queued') return 'queued';

@@ -34,6 +34,11 @@ func TestRemoveQueuedItemCancelsRecordAndLosesRaceToStart(t *testing.T) {
 	if err := h.engine.SetQueue(true, 0, 1); err != nil {
 		t.Fatal(err)
 	}
+	queueEvents := h.emitter.queueEvents()
+	lastQueue := queueEvents[len(queueEvents)-1]
+	if lastQueue.RunningCount != 1 || lastQueue.SlotCapacity != 1 {
+		t.Fatalf("running queue event = %+v, want 1/1 slots", lastQueue)
+	}
 	if err := h.engine.RemoveQueued(running.ID); err == nil {
 		t.Fatal("remove queued item succeeded after start won the race")
 	}

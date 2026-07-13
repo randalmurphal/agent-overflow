@@ -6,6 +6,7 @@ import {
   buildPatchDisplayRows,
   buildSplitDisplayRows,
   extractPatchFile,
+  parsePatchFileSummaries,
   parsePatchFiles,
   parsePatchFilesCached,
   patchFileRowId,
@@ -13,6 +14,28 @@ import {
 } from './patchFiles';
 
 describe('parsePatchFiles', () => {
+  it('builds file summaries without retaining hunk lines', () => {
+    const summaries = parsePatchFileSummaries(`diff --git a/app.ts b/app.ts
+--- a/app.ts
++++ b/app.ts
+@@ -1 +1,2 @@
+-old
++new
++added
+diff --git a/new.ts b/new.ts
+new file mode 100644
+--- /dev/null
++++ b/new.ts
+@@ -0,0 +1 @@
++created
+`);
+
+    expect(summaries).toMatchObject([
+      { path: 'app.ts', kind: 'modified', additions: 2, deletions: 1, lines: [] },
+      { path: 'new.ts', kind: 'added', additions: 1, deletions: 0, lines: [] },
+    ]);
+  });
+
   it('builds aligned split rows for replacement hunks', () => {
     const [file] = parsePatchFiles(`diff --git a/app.ts b/app.ts
 --- a/app.ts

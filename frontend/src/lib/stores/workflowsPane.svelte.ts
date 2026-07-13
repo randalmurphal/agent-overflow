@@ -10,7 +10,12 @@ import type {
   WorkflowResolvedReceipt,
   WorkflowsPaneTarget,
 } from '../types/workflow';
-import { parsePatchFiles, type PatchFile } from '../utils/patchFiles';
+import {
+  extractPatchFile,
+  parsePatchFileSummaries,
+  parsePatchFiles,
+  type PatchFile,
+} from '../utils/patchFiles';
 import { userFacingError } from '../utils/userFacingError';
 import {
   GetBranchBaseDiff,
@@ -93,9 +98,13 @@ export function isWorkflowLoading(): boolean { return loading; }
 export function getWorkflowError(): string | null { return error; }
 export function getWorkflowQueueState(): WorkflowQueueStateEvent {
   const settings = getSettings();
-  return queueState ?? {
-    active: settings.workflowQueueActive,
-    globalConcurrency: settings.workflowConcurrency,
+  const globalConcurrency = queueState?.globalConcurrency ?? settings.workflowConcurrency;
+  return {
+    ...queueState,
+    active: queueState?.active ?? settings.workflowQueueActive,
+    globalConcurrency,
+    runningCount: queueState?.runningCount ?? items.filter((item) => item.state === 'running').length,
+    slotCapacity: queueState?.slotCapacity ?? globalConcurrency,
   };
 }
 export function isWorkflowDiffLoading(): boolean { return diffLoading; }
@@ -436,7 +445,7 @@ export async function loadWorkflowDiff(): Promise<void> {
   try {
     const patch = await GetBranchBaseDiff(newestThread.threadId, loaded.item.baseBranch) as string;
     if (paneActive && version === requestVersion && detail?.item.id === itemId) {
-      diffFiles = parsePatchFiles(patch ?? '');
+      diffFiles = parsePatchFileSummaries(patch ?? '');
     }
   } catch (cause) {
     if (paneActive && version === requestVersion && detail?.item.id === itemId) {
@@ -446,6 +455,23 @@ export async function loadWorkflowDiff(): Promise<void> {
   } finally {
     if (paneActive && version === requestVersion && detail?.item.id === itemId) diffLoading = false;
   }
+}
+
+export async function loadWorkflowDiffFile(path: string): Promise<PatchFile> {
+  const loaded = detail;
+  if (!paneActive || !loaded) throw new Error('Workflow run detail is unavailable');
+  const newestThread = [...loaded.phases].reverse().find((phase) => Boolean(phase.threadId));
+  if (!newestThread?.threadId || !loaded.item.baseBranch) {
+    throw new Error('Workflow diff source is unavailable');
+  }
+  const itemId = loaded.item.id;
+  const patch = await GetBranchBaseDiff(newestThread.threadId, loaded.item.baseBranch) as string;
+  if (!paneActive || detail?.item.id !== itemId) throw new Error('Workflow run changed while loading the file');
+  const filePatch = extractPatchFile(patch ?? '', path);
+  if (!filePatch) throw new Error(`Workflow diff no longer contains ${path}`);
+  const file = parsePatchFiles(filePatch)[0];
+  if (!file) throw new Error(`Could not parse workflow diff for ${path}`);
+  return file;
 }
 
 function scheduleRunRefresh(itemId: string): void {
@@ -487,6 +513,7 @@ export async function loadWorkflowCurrentLevel(): Promise<void> {
     }
     await loadRun(level.itemId);
     if (getWorkflowCurrentLevel() !== level) return;
+    if (detail?.item.reason === 'gate') await loadWorkflowDiff();
   }
 }
 

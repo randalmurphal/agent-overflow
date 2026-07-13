@@ -62,13 +62,16 @@ func (e *Engine) transition(item *runtimeItem, to State, reason Reason) error {
 	if err := e.store.UpdateWorkItemState(item.item.ID, string(to), string(reason), endedAt); err != nil {
 		return fmt.Errorf("transition item %q %s -> %s: %w", item.item.ID, from, to, err)
 	}
+	slotChanged := false
 	if to == StateRunning && !item.slot {
 		item.slot = true
 		e.activeSlots++
+		slotChanged = true
 	}
 	if from == StateRunning && to != StateRunning && item.slot {
 		item.slot = false
 		e.activeSlots--
+		slotChanged = true
 	}
 	item.item.State = string(to)
 	item.item.Reason = string(reason)
@@ -76,6 +79,9 @@ func (e *Engine) transition(item *runtimeItem, to State, reason Reason) error {
 	e.emitter.Emit("workflow:item-state", StateEvent{
 		ItemID: item.item.ID, ProjectID: item.item.ProjectID, From: from, To: to, Reason: reason,
 	})
+	if slotChanged {
+		e.emitQueue()
+	}
 	if to != StateRunning && to != StateQueued {
 		delete(e.items, item.item.ID)
 	}

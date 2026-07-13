@@ -1463,6 +1463,9 @@ export class WorkItem {
     "createdAt": number;
     "startedAt"?: number;
     "endedAt"?: number;
+    "currentPhaseId"?: string;
+    "currentPhaseOrdinal"?: number;
+    "phaseCount"?: number;
 
     /** Creates a new WorkItem instance. */
     constructor($$source: Partial<WorkItem> = {}) {

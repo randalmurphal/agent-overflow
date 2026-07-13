@@ -10,6 +10,8 @@ import {
   patchWorkflowItems,
   workflowSweepItems,
   workflowSidebarRuns,
+  workflowAge,
+  workflowQueuedRank,
 } from './workflowData';
 
 function item(id: string, state: string, endedAt: number, disposition = ''): WorkItem {
@@ -102,5 +104,23 @@ describe('workflow data reducers', () => {
     expect(isWorkflowSidebarRun(rows[6])).toBe(false);
     expect(isWorkflowSidebarRun(rows[7])).toBe(false);
     expect(isWorkflowSidebarRun(rows[8])).toBe(false);
+  });
+
+  it('derives queued rank from project membership instead of sparse sort positions', () => {
+    const rows = [
+      { ...item('first', 'queued', 1), projectId: 'p', sortPosition: 10 },
+      { ...item('other', 'queued', 2), projectId: 'other', sortPosition: 0 },
+      { ...item('second', 'queued', 3), projectId: 'p', sortPosition: 40 },
+    ];
+    expect(workflowQueuedRank(rows, rows[0])).toBe(1);
+    expect(workflowQueuedRank(rows, rows[2])).toBe(2);
+  });
+
+  it('renders bare workflow ages that compose with and without "ago"', () => {
+    const now = Date.now();
+    expect(workflowAge(now - 30_000)).toBe('<1m');
+    expect(workflowAge(now - 6 * 60_000)).toBe('6m');
+    expect(workflowAge(now - 7 * 3_600_000)).toBe('7h');
+    expect(workflowAge(now - 3 * 86_400_000)).toBe('3d');
   });
 });

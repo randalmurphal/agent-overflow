@@ -146,9 +146,27 @@ type Membership struct {
 
 // ResolvedWorkflow carries definition provenance used by prompt validation.
 type ResolvedWorkflow struct {
-	Workflow Workflow `json:"workflow"`
-	Scope    Scope    `json:"scope"`
-	Path     string   `json:"path"`
+	Workflow       Workflow `json:"workflow"`
+	Scope          Scope    `json:"scope"`
+	Path           string   `json:"path"`
+	HumanGateCount int      `json:"humanGateCount"`
+}
+
+// CountHumanGates returns the number of phases that can route through an
+// explicit human approval gate. A phase counts once even when more than one
+// predicate can reach a human route.
+func CountHumanGates(workflow Workflow) int {
+	count := 0
+	for _, phase := range workflow.Phases {
+		for _, route := range phase.Gate.Routes {
+			if route.Human == nil {
+				continue
+			}
+			count++
+			break
+		}
+	}
+	return count
 }
 
 // Bindings is the narrow profile-facing surface used by dry-run validation.

@@ -1,38 +1,40 @@
 <script lang="ts">
   import type { WorkItem, WorkflowDefinitionView } from '../../types/workflow';
-  import {
-    WorkflowOpenStudioThread,
-    WorkflowOpenTriageAgent,
-  } from '../../stores/bindings';
+  import { WorkflowOpenStudioThread } from '../../stores/bindings';
   import { openThreadInNewPane } from '../../stores/panes.svelte';
   import { getProjects } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { getSettings, updateSetting } from '../../stores/settings.svelte';
-  import { userFacingError } from '../../utils/userFacingError';
-  import { isWorkflowParked } from '../../stores/workflowData';
+  import { isWorkflowParked, workflowAge, workflowDefinitionMeta } from '../../stores/workflowData';
   import { isViewOnlySession } from '../../transport/runMode';
   import {
-    applyWorkflowQueueState,
-    getWorkflowCosts,
     getWorkflowDefinitions,
     getWorkflowItems,
-    getWorkflowProjectFilter,
     getWorkflowQueueState,
+    getWorkflowProjectFilter,
     openWorkflowsPane,
-    openWorkflowIntake,
     pushWorkflowLevel,
-    setWorkflowProjectFilter,
     workflowThreadFromWire,
   } from '../../stores/workflowsPane.svelte';
   import WorkflowQueue from './WorkflowQueue.svelte';
+  import { userFacingError } from '../../utils/userFacingError';
 
   let definitions = $derived(getWorkflowDefinitions());
   let items = $derived(getWorkflowItems());
-  let costs = $derived(getWorkflowCosts());
-  let filter = $derived(getWorkflowProjectFilter());
   let queue = $derived(getWorkflowQueueState());
   let projects = $derived(getProjects());
   let viewOnly = $derived(isViewOnlySession());
+
+  async function openStudio(): Promise<void> {
+    if (viewOnly) return;
+    const projectId = getWorkflowProjectFilter() ?? projects[0]?.project.id;
+    if (!projectId) { addToast('error', 'Add a project first'); return; }
+    try {
+      const thread = await WorkflowOpenStudioThread(projectId, '');
+      await openThreadInNewPane(workflowThreadFromWire(thread));
+    } catch (error) {
+      addToast('error', userFacingError(error, 'Could not open workflow studio.'));
+    }
+  }
 
   let runsByWorkflow = $derived.by(() => {
     const grouped = new Map<string, WorkItem[]>();
@@ -56,7 +58,6 @@
   let active = $derived(definitions.filter(isActive));
   let idle = $derived(definitions.filter((view) => !isActive(view)));
   let queued = $derived(items.filter((item) => item.state === 'queued').sort((a, b) => a.sortPosition - b.sortPosition));
-  let runningCount = $derived(items.filter((item) => item.state === 'running').length);
 
   function projectName(projectId: string): string {
     return projects.find((entry) => entry.project.id === projectId)?.project.name ?? projectId;
@@ -81,7 +82,9 @@
     const parts = [];
     if (running) parts.push(`${running} running`);
     if (queuedCount) parts.push(`${queuedCount} queued`);
-    return parts.join(' · ') || 'idle';
+    if (parts.length > 0) return parts.join(' · ');
+    const lastRun = runs.reduce((latest, item) => Math.max(latest, item.endedAt || item.createdAt), 0);
+    return lastRun ? `idle · last run ${workflowAge(lastRun)} ago` : 'idle';
   }
 
   function openWorkflow(view: WorkflowDefinitionView): void {
@@ -98,6 +101,14 @@
     });
   }
 
+  function workflowName(item: WorkItem): string {
+    return definitions.find((entry) => entry.projectId === item.projectId && entry.definition.id === item.workflowId)?.definition.name ?? item.workflowId;
+  }
+
+  function projectColor(projectId: string): string {
+    return projects.find((entry) => entry.project.id === projectId)?.project.color ?? 'var(--fg-hint)';
+  }
+
   function openSweep(view: WorkflowDefinitionView, event: MouseEvent): void {
     event.stopPropagation();
     const oldest = runsFor(view)
@@ -110,85 +121,13 @@
     });
   }
 
-  function targetProjectId(): string | null {
-    return filter ?? projects[0]?.project.id ?? null;
-  }
-
-  async function openStudio(workflowId = ''): Promise<void> {
-    if (viewOnly) return;
-    const projectId = targetProjectId();
-    if (!projectId) { addToast('error', 'Add a project first'); return; }
-    try {
-      const thread = await WorkflowOpenStudioThread(projectId, workflowId);
-      await openThreadInNewPane(workflowThreadFromWire(thread));
-    } catch (error) {
-      addToast('error', userFacingError(error, 'Could not open workflow studio.'));
-    }
-  }
-
-  async function openTriage(): Promise<void> {
-    if (viewOnly) return;
-    const projectId = targetProjectId();
-    if (!projectId) { addToast('error', 'Add a project first'); return; }
-    try {
-      const thread = await WorkflowOpenTriageAgent(projectId);
-      await openThreadInNewPane(workflowThreadFromWire(thread));
-    } catch (error) {
-      addToast('error', userFacingError(error, 'Could not open workflow triage.'));
-    }
-  }
-
-  async function toggleQueue(): Promise<void> {
-    if (viewOnly) return;
-    const active = !queue.active;
-    await updateSetting('workflowQueueActive', active);
-    if (getSettings().workflowQueueActive === active) {
-      applyWorkflowQueueState({ ...queue, active });
-      addToast('info', active ? 'Queue active — draining by priority' : 'Paused — running items finish; nothing new starts');
-    }
-  }
-
 </script>
 
 <div class="space-y-5 p-4" data-testid="wf-overview">
-  <div class="flex flex-wrap items-center gap-2" data-testid="wf-overview-controls">
-    <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={toggleQueue} disabled={viewOnly} title={viewOnly ? 'Local only' : 'Pause stops new starts; running items finish'} data-testid="wf-queue-toggle">
-      {queue.active ? '❚❚ Active' : '▶ Paused'}
-    </button>
-    <span class="hidden items-center gap-1 text-xs text-fg-muted sm:inline-flex" title={`${runningCount} of ${queue.globalConcurrency} concurrency slots in use`} data-testid="wf-slots">
-      <span class="flex gap-0.5" aria-hidden="true">{#each Array.from({ length: queue.globalConcurrency }) as _, index}<span class={index < runningCount ? 'text-fg' : 'text-fg-muted/45'}>●</span>{/each}</span>
-      {runningCount}/{queue.globalConcurrency} slots
-    </span>
-    <select class="hidden rounded-md border border-border-subtle bg-surface-1 px-2 py-1.5 text-xs sm:block" value={filter ?? ''} onchange={(event) => setWorkflowProjectFilter((event.currentTarget as HTMLSelectElement).value || null)} data-testid="wf-project-filter">
-      <option value="">All projects</option>
-      {#each projects as project}
-        <option value={project.project.id}>{project.project.name}</option>
-      {/each}
-    </select>
-    <div class="ml-auto hidden flex-wrap gap-1.5 sm:flex">
-      <button class="rounded-md bg-accent px-2.5 py-1.5 text-xs font-medium text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openWorkflowIntake()} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-new-run">+ New run</button>
-      <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openStudio()} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-new-workflow">+ New workflow</button>
-      <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={openTriage} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-triage">Triage</button>
-    </div>
-    <details class="relative ml-auto sm:hidden" data-testid="wf-overflow">
-      <summary class="cursor-pointer list-none rounded-md border border-border-subtle px-2.5 py-1.5 text-xs" data-testid="wf-overflow-toggle">⋯</summary>
-      <div class="absolute right-0 z-20 mt-1 grid min-w-48 gap-1.5 rounded-md border border-border-subtle bg-surface-1 p-2 shadow-lg">
-        <span class="text-xs text-fg-muted" data-testid="wf-slots-mobile">● {runningCount}/{queue.globalConcurrency} slots</span>
-        <select class="rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-xs" value={filter ?? ''} onchange={(event) => setWorkflowProjectFilter((event.currentTarget as HTMLSelectElement).value || null)} data-testid="wf-project-filter-mobile">
-          <option value="">All projects</option>
-          {#each projects as project}<option value={project.project.id}>{project.project.name}</option>{/each}
-        </select>
-        <button class="rounded-md bg-accent px-2.5 py-1.5 text-left text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openWorkflowIntake()} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-new-run-mobile">+ New run</button>
-        <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-left text-xs disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openStudio()} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-new-workflow-mobile">+ New workflow</button>
-        <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-left text-xs disabled:cursor-not-allowed disabled:opacity-50" onclick={openTriage} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-triage-mobile">Triage</button>
-      </div>
-    </details>
-  </div>
-
   {#if definitions.length === 0}
     <div class="rounded-lg border border-dashed border-border-subtle px-4 py-8 text-center" data-testid="wf-empty">
       <p class="text-sm text-fg-muted">No workflows defined.</p>
-      <button class="mt-3 rounded-md border border-border-subtle px-3 py-1.5 text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openStudio()} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-empty-new-workflow">+ New workflow</button>
+      <button class="mt-3 rounded-md border border-border-subtle px-3 py-1.5 text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={openStudio} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-empty-new-workflow">+ New workflow</button>
     </div>
   {:else}
     {#each [{ label: 'Active', rows: active }, { label: 'Idle', rows: idle }] as section}
@@ -211,7 +150,7 @@
                 {/if}
                 <span class="shrink-0 text-xs text-fg-muted">{summary(view)}</span>
               </div>
-              <div class="mt-1 truncate text-xs text-fg-muted">{projectName(view.projectId)} · {view.definition.scope} · {view.definition.phaseCount} phases · {view.definition.phases.map((phase) => phase.id).join(' → ')}</div>
+              <div class="mt-1 truncate text-xs text-fg-muted">{projectName(view.projectId)} · {view.definition.scope} · {workflowDefinitionMeta(view.definition)} · {view.definition.phases.map((phase) => phase.id).join(' → ')}</div>
             </div>
           {/each}
         </section>
@@ -220,6 +159,6 @@
   {/if}
 
   {#if queued.length > 0}
-    <WorkflowQueue {queued} {costs} queueActive={queue.active} {viewOnly} {projectName} onOpenRun={openRun} />
+    <WorkflowQueue {queued} queueActive={queue.active} {viewOnly} {projectColor} {workflowName} onOpenRun={openRun} />
   {/if}
 </div>

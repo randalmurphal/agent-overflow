@@ -220,3 +220,42 @@ func TestResolveRejectsDeclaredInvalidID(t *testing.T) {
 		t.Fatal("expected invalid fixture directory to fail resolution")
 	}
 }
+
+func TestResolveDerivesHumanGateCount(t *testing.T) {
+	dir := t.TempDir()
+	definition := `id: gated
+name: Gated
+phases:
+  - id: review
+    driver: agent
+    gate:
+      routes:
+        - when:
+            exists: review.ready
+          human:
+            approve: done
+            reject:
+              loop: review
+              max: 1
+        - human:
+            approve: done
+            reject:
+              loop: review
+              max: 1
+  - id: finish
+    driver: tool
+    gate:
+      routes:
+        - park: manual
+`
+	if err := os.WriteFile(filepath.Join(dir, "gated.yaml"), []byte(definition), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := Resolve([]Source{{Dir: dir, Scope: ScopeShared}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0].HumanGateCount != 1 {
+		t.Fatalf("resolved human gates = %+v, want one phase", resolved)
+	}
+}

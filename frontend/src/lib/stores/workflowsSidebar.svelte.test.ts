@@ -73,10 +73,14 @@ describe('workflows sidebar store', () => {
     expect(getProjectWorkflowDefinitions('runless')).toHaveLength(1);
   });
 
-  it('resolves phase progress only after a phase event this session', async () => {
+  it('uses persisted phase progress on cold load and live events afterward', async () => {
+    setBindingMock('WorkflowListUnresolvedItems', async () => [{
+      ...run('running', 'p1', 'running'),
+      currentPhaseId: 'plan', currentPhaseOrdinal: 1, phaseCount: 2,
+    }]);
     await initializeWorkflowsSidebar();
     const item = getProjectWorkflowRuns('p1')[0]!;
-    expect(getWorkflowSidebarPhaseProgress(item)).toBeNull();
+    expect(getWorkflowSidebarPhaseProgress(item)).toEqual({ current: 1, total: 2, phaseId: 'plan' });
     applyWorkflowSidebarPhaseState({ itemId: item.id, phaseId: 'build', attempt: 1, status: 'running' });
     expect(getWorkflowSidebarPhaseProgress(item)).toEqual({ current: 2, total: 2, phaseId: 'build' });
   });

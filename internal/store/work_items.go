@@ -10,29 +10,32 @@ import (
 
 // WorkItem is one persisted workflow run record.
 type WorkItem struct {
-	ID             string          `json:"id"`
-	ProjectID      string          `json:"projectId"`
-	Goal           string          `json:"goal"`
-	WorkflowID     string          `json:"workflowId"`
-	WorkflowScope  string          `json:"workflowScope"`
-	Snapshot       json.RawMessage `json:"snapshot,omitempty"`
-	State          string          `json:"state"`
-	Reason         string          `json:"reason,omitempty"`
-	SortPosition   int             `json:"sortPosition"`
-	Seeds          json.RawMessage `json:"seeds,omitempty"`
-	StepMode       bool            `json:"stepMode"`
-	WorktreePath   string          `json:"worktreePath,omitempty"`
-	Branch         string          `json:"branch,omitempty"`
-	BaseBranch     string          `json:"baseBranch,omitempty"`
-	Budget         json.RawMessage `json:"budget,omitempty"`
-	Source         string          `json:"source"`
-	SourceRef      string          `json:"sourceRef,omitempty"`
-	TriageThreadID string          `json:"triageThreadId,omitempty"`
-	Disposition    json.RawMessage `json:"disposition,omitempty"`
-	Digest         json.RawMessage `json:"digest,omitempty"`
-	CreatedAt      int64           `json:"createdAt"`
-	StartedAt      int64           `json:"startedAt,omitempty"`
-	EndedAt        int64           `json:"endedAt,omitempty"`
+	ID                  string          `json:"id"`
+	ProjectID           string          `json:"projectId"`
+	Goal                string          `json:"goal"`
+	WorkflowID          string          `json:"workflowId"`
+	WorkflowScope       string          `json:"workflowScope"`
+	Snapshot            json.RawMessage `json:"snapshot,omitempty"`
+	State               string          `json:"state"`
+	Reason              string          `json:"reason,omitempty"`
+	SortPosition        int             `json:"sortPosition"`
+	Seeds               json.RawMessage `json:"seeds,omitempty"`
+	StepMode            bool            `json:"stepMode"`
+	WorktreePath        string          `json:"worktreePath,omitempty"`
+	Branch              string          `json:"branch,omitempty"`
+	BaseBranch          string          `json:"baseBranch,omitempty"`
+	Budget              json.RawMessage `json:"budget,omitempty"`
+	Source              string          `json:"source"`
+	SourceRef           string          `json:"sourceRef,omitempty"`
+	TriageThreadID      string          `json:"triageThreadId,omitempty"`
+	Disposition         json.RawMessage `json:"disposition,omitempty"`
+	Digest              json.RawMessage `json:"digest,omitempty"`
+	CreatedAt           int64           `json:"createdAt"`
+	StartedAt           int64           `json:"startedAt,omitempty"`
+	EndedAt             int64           `json:"endedAt,omitempty"`
+	CurrentPhaseID      string          `json:"currentPhaseId,omitempty"`
+	CurrentPhaseOrdinal int             `json:"currentPhaseOrdinal,omitempty"`
+	PhaseCount          int             `json:"phaseCount,omitempty"`
 }
 
 // WorkItemAttentionContext is the narrow item/phase projection used while an
@@ -57,15 +60,34 @@ type WorkItemListFilter struct {
 
 const unresolvedWorkItemsPredicate = `disposition = '' AND state IN ('queued','running','needs-human','done','failed')`
 
+func qualifiedUnresolvedWorkItemsPredicate(prefix string) string {
+	return prefix + `disposition = '' AND ` + prefix + `state IN ('queued','running','needs-human','done','failed')`
+}
+
 const workItemColumns = `id, project_id, goal, workflow_id, workflow_scope,
 snapshot, state, reason, sort_position, seeds, step_mode, worktree_path,
 branch, base_branch, budget, source, source_ref, triage_thread_id,
 disposition, digest, created_at, started_at, ended_at`
 
-const workItemSummaryColumns = `id, project_id, goal, workflow_id, workflow_scope,
-'', state, reason, sort_position, '', step_mode, worktree_path,
-branch, base_branch, '', source, source_ref, triage_thread_id,
-disposition, '', created_at, started_at, ended_at`
+const workItemSummaryListColumns = `w.id, w.project_id, w.goal, w.workflow_id, w.workflow_scope,
+'', w.state, w.reason, w.sort_position, '', w.step_mode, w.worktree_path,
+w.branch, w.base_branch, '', w.source, w.source_ref, w.triage_thread_id,
+w.disposition, '', w.created_at, w.started_at, w.ended_at`
+
+const workItemSummaryProgressJoin = `
+ LEFT JOIN work_item_phases AS current_phase ON current_phase.rowid = (
+     SELECT latest.rowid FROM work_item_phases AS latest
+      WHERE latest.item_id = w.id
+      ORDER BY latest.started_at DESC, latest.phase_id DESC, latest.attempt DESC
+      LIMIT 1
+ )
+ LEFT JOIN json_each(NULLIF(w.snapshot, ''), '$.workflow.phases') AS workflow_phase
+   ON json_extract(workflow_phase.value, '$.id') = current_phase.phase_id`
+
+const workItemSummaryProgressColumns = `,
+COALESCE(current_phase.phase_id, ''),
+COALESCE(CAST(workflow_phase.key AS INTEGER) + 1, 0),
+COALESCE(json_array_length(NULLIF(w.snapshot, ''), '$.workflow.phases'), 0)`
 
 func jsonText(value json.RawMessage) string {
 	if len(value) == 0 {
@@ -74,17 +96,21 @@ func jsonText(value json.RawMessage) string {
 	return string(value)
 }
 
-func scanWorkItem(scanner interface{ Scan(...any) error }) (WorkItem, error) {
+func scanWorkItem(scanner interface{ Scan(...any) error }, includeProgress bool) (WorkItem, error) {
 	var item WorkItem
 	var snapshot, seeds, budget, disposition, digest string
 	var stepMode int
-	if err := scanner.Scan(
+	fields := []any{
 		&item.ID, &item.ProjectID, &item.Goal, &item.WorkflowID, &item.WorkflowScope,
 		&snapshot, &item.State, &item.Reason, &item.SortPosition, &seeds, &stepMode,
 		&item.WorktreePath, &item.Branch, &item.BaseBranch, &budget, &item.Source,
 		&item.SourceRef, &item.TriageThreadID, &disposition, &digest,
 		&item.CreatedAt, &item.StartedAt, &item.EndedAt,
-	); err != nil {
+	}
+	if includeProgress {
+		fields = append(fields, &item.CurrentPhaseID, &item.CurrentPhaseOrdinal, &item.PhaseCount)
+	}
+	if err := scanner.Scan(fields...); err != nil {
 		return WorkItem{}, err
 	}
 	item.Snapshot = json.RawMessage(snapshot)
@@ -116,7 +142,7 @@ func (s *Store) CreateWorkItem(item WorkItem) error {
 func (s *Store) GetWorkItem(id string) (WorkItem, error) {
 	item, err := scanWorkItem(s.db.QueryRow(
 		`SELECT `+workItemColumns+` FROM work_items WHERE id = ?`, id,
-	))
+	), false)
 	if err != nil {
 		return WorkItem{}, fmt.Errorf("store: get work item %s: %w", id, err)
 	}
@@ -172,7 +198,7 @@ func (s *Store) GetWorkItemByPhaseThread(threadID string) (WorkItem, error) {
 		      LIMIT 1
 		 )`,
 		threadID,
-	))
+	), false)
 	if err != nil {
 		return WorkItem{}, fmt.Errorf("store: get work item for phase thread %s: %w", threadID, err)
 	}
@@ -182,36 +208,44 @@ func (s *Store) GetWorkItemByPhaseThread(threadID string) (WorkItem, error) {
 // ListWorkItems returns matching items in queue order. An empty ProjectID
 // lists every project; an empty States slice includes every state.
 func (s *Store) ListWorkItems(filter WorkItemListFilter) ([]WorkItem, error) {
-	return s.listWorkItems(filter, workItemColumns)
+	return s.listWorkItems(filter, workItemColumns, false)
 }
 
 // ListWorkItemSummaries returns matching items without loading snapshot,
 // seeds, or budget payloads. GetWorkItem is the detail path for those fields.
 func (s *Store) ListWorkItemSummaries(filter WorkItemListFilter) ([]WorkItem, error) {
-	return s.listWorkItems(filter, workItemSummaryColumns)
+	return s.listWorkItems(filter, workItemSummaryListColumns, true)
 }
 
-func (s *Store) listWorkItems(filter WorkItemListFilter, columns string) ([]WorkItem, error) {
-	query := `SELECT ` + columns + ` FROM work_items`
+func (s *Store) listWorkItems(filter WorkItemListFilter, columns string, includeProgress bool) ([]WorkItem, error) {
+	table := `work_items`
+	prefix := ``
+	progressColumns := ``
+	if includeProgress {
+		table = `work_items AS w` + workItemSummaryProgressJoin
+		prefix = `w.`
+		progressColumns = workItemSummaryProgressColumns
+	}
+	query := `SELECT ` + columns + progressColumns + ` FROM ` + table
 	conditions := make([]string, 0, 3)
 	args := make([]any, 0, 1+len(filter.States))
 	if filter.ProjectID != "" {
-		conditions = append(conditions, `project_id = ?`)
+		conditions = append(conditions, prefix+`project_id = ?`)
 		args = append(args, filter.ProjectID)
 	}
 	if len(filter.States) > 0 {
-		conditions = append(conditions, `state IN (`+strings.TrimRight(strings.Repeat("?,", len(filter.States)), ",")+`)`)
+		conditions = append(conditions, prefix+`state IN (`+strings.TrimRight(strings.Repeat("?,", len(filter.States)), ",")+`)`)
 		for _, state := range filter.States {
 			args = append(args, state)
 		}
 	}
 	if filter.UnresolvedOnly {
-		conditions = append(conditions, unresolvedWorkItemsPredicate)
+		conditions = append(conditions, qualifiedUnresolvedWorkItemsPredicate(prefix))
 	}
 	if len(conditions) > 0 {
 		query += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
-	query += ` ORDER BY sort_position ASC, created_at ASC`
+	query += ` ORDER BY ` + prefix + `sort_position ASC, ` + prefix + `created_at ASC`
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -221,7 +255,7 @@ func (s *Store) listWorkItems(filter WorkItemListFilter, columns string) ([]Work
 
 	items := make([]WorkItem, 0)
 	for rows.Next() {
-		item, err := scanWorkItem(rows)
+		item, err := scanWorkItem(rows, includeProgress)
 		if err != nil {
 			return nil, fmt.Errorf("store: list work items: scan: %w", err)
 		}

@@ -13,6 +13,7 @@ type JSONSchema struct {
 	Type                 string                `yaml:"type" json:"type"`
 	Enum                 []any                 `yaml:"enum,omitempty" json:"enum,omitempty"`
 	Format               string                `yaml:"format,omitempty" json:"format,omitempty"`
+	Multiline            bool                  `yaml:"multiline,omitempty" json:"multiline,omitempty"`
 	Description          string                `yaml:"description,omitempty" json:"description,omitempty"`
 	Items                *JSONSchema           `yaml:"items,omitempty" json:"items,omitempty"`
 	Properties           map[string]JSONSchema `yaml:"properties,omitempty" json:"properties,omitempty"`
@@ -64,6 +65,9 @@ func validateSchemaDefinition(schema JSONSchema, element string) []Finding {
 	}
 	if schema.Type != "string" && (schema.MinLength != nil || schema.MaxLength != nil) {
 		findings = append(findings, finding("schema.length", element, "minLength and maxLength are valid only for string schemas"))
+	}
+	if schema.Type != "string" && schema.Multiline {
+		findings = append(findings, finding("schema.multiline", element, "multiline is valid only for string schemas"))
 	}
 	if schema.Type != "array" && (schema.MinItems != nil || schema.MaxItems != nil) {
 		findings = append(findings, finding("schema.items", element, "minItems and maxItems are valid only for array schemas"))

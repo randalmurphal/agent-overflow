@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getProjects } from '../../stores/projects.svelte';
   import { getPaneLayoutItems, removePaneLayoutItem } from '../../stores/paneLayout.svelte';
   import { focusPane } from '../../stores/panes.svelte';
   import { registerWorkflowCommands } from '../../stores/workflowCommands.svelte';
@@ -22,6 +21,7 @@
   import WorkflowRunDetail from './WorkflowRunDetail.svelte';
   import WorkflowAllClear from './WorkflowAllClear.svelte';
   import WorkflowIntakeDialog from './WorkflowIntakeDialog.svelte';
+  import WorkflowOverviewControls from './WorkflowOverviewControls.svelte';
   import { closeCompanionsForSource } from '../../stores/companionPanes.svelte';
 
   interface Props { paneId: string }
@@ -70,7 +70,7 @@
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div class="flex h-full min-h-0 flex-col bg-surface-0" tabindex="0" role="application" aria-label="Workflows" onkeydown={handleKeydown} data-testid="wf-pane">
-  <header class="flex min-h-12 items-center gap-2 border-b border-border-subtle px-3" data-testid="wf-header">
+  <header class="@container flex min-h-12 items-center gap-2 border-b border-border-subtle px-3" data-testid="wf-header">
     {#if stack.length > 1}
       <button class="rounded px-1.5 py-1 text-lg text-fg-muted hover:bg-surface-2 hover:text-fg" onclick={popWorkflowLevel} title="Back (esc)" data-testid="wf-back">‹</button>
     {/if}
@@ -85,7 +85,7 @@
       {/each}
     </nav>
     {#if level.kind === 'overview'}
-      <span class="hidden text-[11px] text-fg-muted sm:inline">{getProjects().length} projects</span>
+      <WorkflowOverviewControls />
     {/if}
     <button class="rounded p-1 text-fg-muted hover:bg-surface-2 hover:text-fg" onclick={closePane} aria-label="Close workflows pane" data-testid="wf-close">×</button>
   </header>

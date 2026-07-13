@@ -91,7 +91,8 @@ export async function dispatchWorkflowAction(
       const receipt = await bindings.mergeItem(item.id);
       const mode = receipt.mode === 'ff' ? 'fast-forward' : receipt.mode === 'merge' ? 'merge commit' : 'merged';
       const suffix = receipt.sha ? ` ${receipt.sha.slice(0, 8)}` : '';
-      return { itemId: item.id, kind: 'merged', message: `Merged to ${receipt.base || item.baseBranch || 'base'} — ${mode}${suffix}`, costUsd };
+      const cleanup = receipt.cleanupFailed ? '' : ' · worktree cleaned';
+      return { itemId: item.id, kind: 'merged', message: `Merged to ${receipt.base || item.baseBranch || 'base'} — ${mode}${suffix}${cleanup}`, costUsd };
     }
     case 'create-pr': {
       const receipt = await bindings.createPR(item.id);
@@ -105,6 +106,13 @@ export async function dispatchWorkflowAction(
       return null;
     case 'remove':
       await bindings.removeQueuedItem(item.id);
-      return { itemId: item.id, kind: 'removed', message: 'Removed from queue', costUsd };
+      return {
+        itemId: item.id,
+        kind: 'removed',
+        message: item.source === 'automation'
+          ? 'Removed from queue — automation will re-propose it next cycle'
+          : 'Removed from queue',
+        costUsd,
+      };
   }
 }

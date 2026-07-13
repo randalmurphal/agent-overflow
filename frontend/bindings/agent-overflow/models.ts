@@ -2029,6 +2029,7 @@ export class WorkflowDefinitionListing {
     "name": string;
     "scope": string;
     "phaseCount": number;
+    "humanGateCount": number;
     "phases": WorkflowDefinitionPhase[];
     "inputs": WorkflowDefinitionInput[];
     "defaultStepMode": boolean;
@@ -2049,6 +2050,9 @@ export class WorkflowDefinitionListing {
         }
         if (!("phaseCount" in $$source)) {
             this["phaseCount"] = 0;
+        }
+        if (!("humanGateCount" in $$source)) {
+            this["humanGateCount"] = 0;
         }
         if (!("phases" in $$source)) {
             this["phases"] = [];
@@ -2073,14 +2077,14 @@ export class WorkflowDefinitionListing {
      * Creates a new WorkflowDefinitionListing instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionListing {
-        const $$createField4_0 = $$createType36;
-        const $$createField5_0 = $$createType38;
+        const $$createField5_0 = $$createType36;
+        const $$createField6_0 = $$createType38;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
-            $$parsedSource["phases"] = $$createField4_0($$parsedSource["phases"]);
+            $$parsedSource["phases"] = $$createField5_0($$parsedSource["phases"]);
         }
         if ("inputs" in $$parsedSource) {
-            $$parsedSource["inputs"] = $$createField5_0($$parsedSource["inputs"]);
+            $$parsedSource["inputs"] = $$createField6_0($$parsedSource["inputs"]);
         }
         return new WorkflowDefinitionListing($$parsedSource as Partial<WorkflowDefinitionListing>);
     }
@@ -2147,6 +2151,7 @@ export class WorkflowItemDetailView {
     "item": WorkflowItemView;
     "checkPhaseIds": string[];
     "phases": WorkflowItemPhaseView[];
+    "outputs": { [_ in string]?: any };
     "artifacts": WorkflowArtifact[];
     "usage": store$0.WorkItemUsage;
 
@@ -2160,6 +2165,9 @@ export class WorkflowItemDetailView {
         }
         if (!("phases" in $$source)) {
             this["phases"] = [];
+        }
+        if (!("outputs" in $$source)) {
+            this["outputs"] = {};
         }
         if (!("artifacts" in $$source)) {
             this["artifacts"] = [];
@@ -2178,8 +2186,9 @@ export class WorkflowItemDetailView {
         const $$createField0_0 = $$createType39;
         const $$createField1_0 = $$createType4;
         const $$createField2_0 = $$createType41;
-        const $$createField3_0 = $$createType43;
+        const $$createField3_0 = $$createType42;
         const $$createField4_0 = $$createType44;
+        const $$createField5_0 = $$createType45;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
@@ -2190,11 +2199,14 @@ export class WorkflowItemDetailView {
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField2_0($$parsedSource["phases"]);
         }
+        if ("outputs" in $$parsedSource) {
+            $$parsedSource["outputs"] = $$createField3_0($$parsedSource["outputs"]);
+        }
         if ("artifacts" in $$parsedSource) {
-            $$parsedSource["artifacts"] = $$createField3_0($$parsedSource["artifacts"]);
+            $$parsedSource["artifacts"] = $$createField4_0($$parsedSource["artifacts"]);
         }
         if ("usage" in $$parsedSource) {
-            $$parsedSource["usage"] = $$createField4_0($$parsedSource["usage"]);
+            $$parsedSource["usage"] = $$createField5_0($$parsedSource["usage"]);
         }
         return new WorkflowItemDetailView($$parsedSource as Partial<WorkflowItemDetailView>);
     }
@@ -2346,7 +2358,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType46;
+        const $$createField0_0 = $$createType47;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -2488,8 +2500,9 @@ const $$createType38 = $Create.Array($$createType37);
 const $$createType39 = WorkflowItemView.createFrom;
 const $$createType40 = WorkflowItemPhaseView.createFrom;
 const $$createType41 = $Create.Array($$createType40);
-const $$createType42 = WorkflowArtifact.createFrom;
-const $$createType43 = $Create.Array($$createType42);
-const $$createType44 = store$0.WorkItemUsage.createFrom;
-const $$createType45 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType46 = $Create.Array($$createType45);
+const $$createType42 = $Create.Map($Create.Any, $Create.Any);
+const $$createType43 = WorkflowArtifact.createFrom;
+const $$createType44 = $Create.Array($$createType43);
+const $$createType45 = store$0.WorkItemUsage.createFrom;
+const $$createType46 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType47 = $Create.Array($$createType46);

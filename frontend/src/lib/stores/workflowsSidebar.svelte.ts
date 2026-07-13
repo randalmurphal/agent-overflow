@@ -87,13 +87,20 @@ export function getGlobalWorkflowAttentionCount(): number {
 
 export function getWorkflowSidebarPhaseProgress(item: WorkItem): WorkflowSidebarPhaseProgress | null {
   const event = phaseEvents.get(item.id);
-  if (!event) return null;
   const definition = getProjectWorkflowDefinitions(item.projectId)
     .find((entry) => entry.definition.id === item.workflowId)?.definition;
-  if (!definition) return null;
-  const index = definition.phases.findIndex((phase) => phase.id === event.phaseId);
-  if (index < 0 || definition.phaseCount <= 0) return null;
-  return { current: index + 1, total: definition.phaseCount, phaseId: event.phaseId };
+  if (event && definition) {
+    const index = definition.phases.findIndex((phase) => phase.id === event.phaseId);
+    if (index >= 0 && definition.phaseCount > 0) {
+      return { current: index + 1, total: definition.phaseCount, phaseId: event.phaseId };
+    }
+  }
+  if (!item.currentPhaseId || !item.currentPhaseOrdinal || !item.phaseCount) return null;
+  return {
+    current: item.currentPhaseOrdinal,
+    total: item.phaseCount,
+    phaseId: item.currentPhaseId,
+  };
 }
 
 async function fetchSidebarData(includeDefinitions: boolean): Promise<void> {

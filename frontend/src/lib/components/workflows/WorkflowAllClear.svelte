@@ -1,7 +1,21 @@
 <script lang="ts">
   import { popWorkflowTo, workflowAllClearSummary } from '../../stores/workflowsPane.svelte';
   let summary = $derived(workflowAllClearSummary());
-  let fragments = $derived(Object.entries(summary.byKind).map(([kind, count]) => `${count} ${kind}`).join(' · '));
+  const labels: Record<string, string> = {
+    approved: 'approved',
+    answered: 'answered',
+    'handed-off': 'handed off',
+    merged: 'merged',
+    're-enqueued': 're-enqueued',
+    discarded: 'discarded',
+    pr: 'PR created',
+    removed: 'removed',
+  };
+  const order = Object.keys(labels);
+  let fragments = $derived(order
+    .filter((kind) => (summary.byKind[kind] ?? 0) > 0)
+    .map((kind) => `${summary.byKind[kind]} ${labels[kind]}`)
+    .join(' · '));
 </script>
 
 <div class="flex min-h-[360px] items-center justify-center p-6 text-center" data-testid="wf-all-clear">

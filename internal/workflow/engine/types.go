@@ -176,6 +176,8 @@ type StateEvent struct {
 type QueueEvent struct {
 	Active            bool `json:"active"`
 	GlobalConcurrency int  `json:"globalConcurrency"`
+	RunningCount      int  `json:"runningCount"`
+	SlotCapacity      int  `json:"slotCapacity"`
 	StartsRemaining   int  `json:"startsRemaining,omitempty"`
 }
 

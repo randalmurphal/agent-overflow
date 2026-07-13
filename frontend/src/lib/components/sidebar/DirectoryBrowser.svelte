@@ -24,9 +24,11 @@
      * the user types a path directly). Parent is expected to use the
      * latest value as the "pending add" target. */
     onSelect?: (path: string) => void;
+    /** Fires when the user commits a file row. Omit to retain directory-only behavior. */
+    onSelectFile?: (path: string) => void;
   }
 
-  let { initialPath = '~', onSelect }: Props = $props();
+  let { initialPath = '~', onSelect, onSelectFile }: Props = $props();
 
   // Snapshot the initial path once. `untrack` tells Svelte we don't want
   // this $state init to re-fire if the parent passes a new initialPath —
@@ -73,6 +75,14 @@
     row?.scrollIntoView({ block: 'nearest' });
   }
 
+  function selectFile(name: string): void {
+    const listing = browser.listing;
+    if (!listing || !onSelectFile) return;
+    const separator = listing.separator || '/';
+    const prefix = listing.path.endsWith(separator) ? listing.path : listing.path + separator;
+    onSelectFile(prefix + name);
+  }
+
   function handleListKeydown(e: KeyboardEvent): void {
     const listing = browser.listing;
     if (!listing) return;
@@ -110,9 +120,10 @@
         return;
       case 'Enter': {
         const entry = entries[browser.highlight];
-        if (entry && entry.isDir) {
+        if (entry) {
           e.preventDefault();
-          void browser.drillInto(entry);
+          if (entry.isDir) void browser.drillInto(entry);
+          else selectFile(entry.name);
         }
         return;
       }
@@ -188,6 +199,7 @@
           onclick={() => {
             browser.setHighlight(i);
             if (entry.isDir) void browser.drillInto(entry);
+            else selectFile(entry.name);
           }}
           class="flex items-center gap-2 px-3 py-1 text-xs cursor-pointer select-none
             {browser.highlight === i
@@ -243,7 +255,7 @@
     aria-hidden="true"
   >
     <span><kbd class="font-mono">↑↓</kbd> Navigate</span>
-    <span><kbd class="font-mono">Enter</kbd> Drill in</span>
+    <span><kbd class="font-mono">Enter</kbd> {onSelectFile ? 'Open / select' : 'Drill in'}</span>
     <span><kbd class="font-mono">Backspace</kbd> Back</span>
     <span><kbd class="font-mono">Esc</kbd> Close</span>
   </p>

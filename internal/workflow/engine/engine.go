@@ -728,6 +728,7 @@ func (e *Engine) emitQueue() {
 	}
 	e.emitter.Emit("workflow:queue-state", QueueEvent{
 		Active: e.queueActive, GlobalConcurrency: e.config.GlobalConcurrency,
+		RunningCount: e.activeSlots, SlotCapacity: e.config.GlobalConcurrency,
 		StartsRemaining: startsRemaining,
 	})
 }

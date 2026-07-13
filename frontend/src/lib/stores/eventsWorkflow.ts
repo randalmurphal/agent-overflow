@@ -27,6 +27,8 @@ export function applyWorkflowItemStateEvent(event: WorkflowItemStateEvent): void
 
 export function applyWorkflowQueueStateEvent(event: WorkflowQueueStateEvent): void {
   if (!event || typeof event.active !== 'boolean' || !Number.isFinite(event.globalConcurrency)) return;
+  if (event.runningCount !== undefined && (!Number.isFinite(event.runningCount) || event.runningCount < 0)) return;
+  if (event.slotCapacity !== undefined && (!Number.isFinite(event.slotCapacity) || event.slotCapacity < 0)) return;
   applyWorkflowQueueState(event);
   applyWorkflowSidebarQueueState();
 }

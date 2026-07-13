@@ -84,12 +84,13 @@ func TestWorkflowListDefinitionsIncludesValidationAndPredictedPosition(t *testin
 		byID[listing.ID] = listing
 	}
 	valid := byID["valid"]
-	if !valid.Valid || !valid.AllBindingsAvailable || valid.PhaseCount != 1 || len(valid.Phases) != 1 || valid.Phases[0].Provider != "codex" {
+	if !valid.Valid || !valid.AllBindingsAvailable || valid.PhaseCount != 2 || valid.HumanGateCount != 1 || len(valid.Phases) != 2 || valid.Phases[1].Provider != "codex" {
 		t.Fatalf("valid listing = %+v", valid)
 	}
-	if len(valid.Inputs) != 3 || valid.Inputs[0].Name != "approved" || valid.Inputs[0].Type != "boolean" || !valid.Inputs[0].Required ||
+	if len(valid.Inputs) != 4 || valid.Inputs[0].Name != "approved" || valid.Inputs[0].Type != "boolean" || !valid.Inputs[0].Required ||
 		valid.Inputs[1].Name != "mode" || valid.Inputs[1].Type != "string" || len(valid.Inputs[1].Enum) != 2 || valid.Inputs[1].Required ||
-		valid.Inputs[2].Name != "source" || valid.Inputs[2].Format != "path" || !valid.Inputs[2].Required {
+		valid.Inputs[2].Name != "notes" || !valid.Inputs[2].Multiline || !valid.Inputs[2].Required ||
+		valid.Inputs[3].Name != "source" || valid.Inputs[3].Format != "path" || !valid.Inputs[3].Required {
 		t.Fatalf("valid inputs = %+v", valid.Inputs)
 	}
 	invalid := byID["invalid"]
@@ -100,10 +101,16 @@ func TestWorkflowListDefinitionsIncludesValidationAndPredictedPosition(t *testin
 
 func TestWorkflowItemDetailAndListCostsIncludeUsage(t *testing.T) {
 	app := newTestAppWithStore(t)
-	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{Phases: []def.Phase{
-		{ID: "verify", Driver: def.DriverTool, Check: "go-test"},
-		{ID: "build", Driver: def.DriverAgent},
-	}}})
+	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{
+		Outputs: map[string]def.WorkflowOutput{
+			"summary": {From: "verify.result.summary"},
+			"report":  {From: "verify.report", Artifact: true},
+		},
+		Phases: []def.Phase{
+			{ID: "verify", Driver: def.DriverTool, Check: "go-test"},
+			{ID: "build", Driver: def.DriverAgent},
+		},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,10 +132,10 @@ func TestWorkflowItemDetailAndListCostsIncludeUsage(t *testing.T) {
 	if err := app.store.CreateWorkItemPhase(store.WorkItemPhase{
 		ItemID: item.ID, PhaseID: "verify", Attempt: 1, ThreadID: "phase",
 		InputEnvelope:  json.RawMessage(`{"input":true}`),
-		OutputEnvelope: json.RawMessage(`{"status":"done","outputs":{"ok":true}}`),
+		OutputEnvelope: json.RawMessage(`{"status":"done","outputs":{"result":{"summary":"All checks passed"},"report":"report.md"}}`),
 		GateTrace:      json.RawMessage(`{"trace":true}`),
 		Intervention:   json.RawMessage(`{"kind":"manual"}`), NarrativePath: "/tmp/narrative",
-		Status: "completed", StartedAt: 1, EndedAt: 2,
+		Status: "failed", StartedAt: 1, EndedAt: 2,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +147,8 @@ func TestWorkflowItemDetailAndListCostsIncludeUsage(t *testing.T) {
 		t.Fatalf("detail usage = %+v", detail.Usage)
 	}
 	if len(detail.CheckPhaseIDs) != 1 || detail.CheckPhaseIDs[0] != "verify" ||
-		len(detail.Phases) != 1 || len(detail.Phases[0].OutputEnvelope) == 0 {
+		len(detail.Phases) != 1 || len(detail.Phases[0].OutputEnvelope) == 0 ||
+		detail.Outputs["summary"] != "All checks passed" || len(detail.Outputs) != 1 {
 		t.Fatalf("detail view = %+v", detail)
 	}
 	wire, err := json.Marshal(detail)
@@ -248,11 +256,24 @@ inputs:
     schema:
       type: string
       enum: [fast, thorough]
+  notes:
+    schema:
+      type: string
+      multiline: true
   source:
     schema:
       type: string
       format: path
 phases:
+  - id: prepare
+    driver: agent
+    provider: codex
+    model: gpt-5
+    prompt: prompt.md
+    access: read-only
+    gate:
+      routes:
+        - to: work
   - id: work
     driver: agent
     provider: codex
@@ -261,7 +282,11 @@ phases:
     access: read-only
     gate:
       routes:
-        - to: done
+        - human:
+            approve: done
+            reject:
+              loop: prepare
+              max: 1
 `
 	invalid := `id: invalid
 name: Invalid workflow

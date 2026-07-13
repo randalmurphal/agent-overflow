@@ -75,4 +75,17 @@ describe('WorkflowDetail history receipts', () => {
     expect(rows.some((row) => row.includes('failed-discarded') && row.includes('discarded · 1h · $5.00'))).toBe(true);
     expect(view.getByTestId('wf-live-runs')).not.toHaveTextContent('failed-discarded');
   });
+
+  it('renders persisted running phase progress before any live phase event', async () => {
+    setBindingMock('WorkflowListItems', async () => [{
+      id: 'running', projectId: 'p', workflowId: 'wf', workflowScope: 'shared', goal: 'running cold',
+      state: 'running', reason: '', sortPosition: 0, source: 'manual', createdAt: 1, startedAt: 2,
+      currentPhaseId: 'build', currentPhaseOrdinal: 2, phaseCount: 3,
+    }] as WorkItem[]);
+    await loadWorkflowOverview();
+    const view = render(WorkflowDetail, {
+      level: { kind: 'workflow', projectId: 'p', workflowId: 'wf', label: 'Workflow' },
+    });
+    expect(view.getByTestId('wf-run-row')).toHaveTextContent('build · 2/3');
+  });
 });

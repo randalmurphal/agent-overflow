@@ -1,6 +1,7 @@
 import type {
   WorkItem,
   WorkflowDefinitionCatalog,
+  WorkflowDefinitionListing,
   WorkflowDefinitionView,
   WorkflowItemStateEvent,
   WorkflowResolvedReceipt,
@@ -24,6 +25,27 @@ export interface WorkflowDataBindings {
   listItems(projectId: string): Promise<WorkItem[]>;
   listItemCosts(projectId: string): Promise<Record<string, number | undefined>>;
   listDefinitions(projectId: string): Promise<WorkflowDefinitionCatalog>;
+}
+
+export function workflowDefinitionMeta(definition: WorkflowDefinitionListing): string {
+  const phases = `${definition.phaseCount} ${definition.phaseCount === 1 ? 'phase' : 'phases'}`;
+  const humanGateCount = definition.humanGateCount ?? 0;
+  if (humanGateCount <= 0) return phases;
+  const gates = `${humanGateCount} human ${humanGateCount === 1 ? 'gate' : 'gates'}`;
+  return `${phases} · ${gates}`;
+}
+
+// Bare relative age for workflow meta copy ("6m", "7h", "3d"). Callers append
+// "ago" only where the spec copy carries it (`spawned 6m ago`, `finished 2h
+// ago`) and use the bare form elsewhere (`queued 3h`, `parked 7h`); "<1m"
+// composes in both forms, unlike a "just now" phrasing.
+export function workflowAge(timestampMs: number): string {
+  const minutes = Math.max(0, Math.floor((Date.now() - timestampMs) / 60_000));
+  if (minutes < 1) return '<1m';
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 export async function loadWorkflowProject(
@@ -97,6 +119,30 @@ export function isWorkflowParked(item: WorkItem): boolean {
 
 export function isWorkflowSidebarRun(item: WorkItem): boolean {
   return !isWorkflowResolved(item);
+}
+
+export function workflowQueuedRank(items: readonly WorkItem[], item: WorkItem): number | null {
+  return workflowQueuedRanks(items).get(item.id) ?? null;
+}
+
+export function workflowQueuedRanks(items: readonly WorkItem[]): ReadonlyMap<string, number> {
+  const queued = items
+    .filter((candidate) => candidate.state === 'queued')
+    .sort((left, right) => left.projectId.localeCompare(right.projectId)
+      || left.sortPosition - right.sortPosition
+      || left.createdAt - right.createdAt
+      || left.id.localeCompare(right.id));
+  const ranks = new Map<string, number>();
+  let projectId = '';
+  let rank = 0;
+  for (const item of queued) {
+    if (item.projectId !== projectId) {
+      projectId = item.projectId;
+      rank = 0;
+    }
+    ranks.set(item.id, ++rank);
+  }
+  return ranks;
 }
 
 function sidebarStateRank(item: WorkItem): number {

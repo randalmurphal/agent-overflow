@@ -286,13 +286,49 @@ func TestListWorkItemsUnresolvedExcludesDisposedRegardlessOfState(t *testing.T) 
 
 func TestListWorkItemsUnresolvedUsesStateIndexes(t *testing.T) {
 	s := newTestStore(t)
-	selectSQL := `EXPLAIN QUERY PLAN SELECT ` + workItemSummaryColumns + ` FROM work_items WHERE `
-	orderSQL := ` ORDER BY sort_position ASC, created_at ASC`
+	selectSQL := `EXPLAIN QUERY PLAN SELECT ` + workItemSummaryListColumns + workItemSummaryProgressColumns +
+		` FROM work_items AS w` + workItemSummaryProgressJoin + ` WHERE `
+	orderSQL := ` ORDER BY w.sort_position ASC, w.created_at ASC`
 	assertPlanUses(t, s.db, "idx_work_items_state_sort",
-		selectSQL+unresolvedWorkItemsPredicate+orderSQL)
+		selectSQL+qualifiedUnresolvedWorkItemsPredicate("w.")+orderSQL)
 	assertPlanUses(t, s.db, "idx_work_items_project_sort",
-		selectSQL+`project_id = ? AND `+unresolvedWorkItemsPredicate+orderSQL,
+		selectSQL+`w.project_id = ? AND `+qualifiedUnresolvedWorkItemsPredicate("w.")+orderSQL,
 		"project-a")
+	assertPlanUses(t, s.db, "idx_work_item_phases_item_started",
+		selectSQL+`w.project_id = ? AND `+qualifiedUnresolvedWorkItemsPredicate("w.")+orderSQL,
+		"project-a")
+}
+
+func TestListWorkItemSummariesIncludesPersistedPhaseProgress(t *testing.T) {
+	s := newTestStore(t)
+	item := testWorkItem("running", "project-a", "running", 0, 1)
+	item.Snapshot = json.RawMessage(`{"workflow":{"phases":[{"id":"plan"},{"id":"implement"},{"id":"verify"}]}}`)
+	if err := s.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []WorkItemPhase{
+		{ItemID: item.ID, PhaseID: "plan", Attempt: 1, Status: "completed", StartedAt: 1, EndedAt: 2},
+		{ItemID: item.ID, PhaseID: "implement", Attempt: 1, Status: "running", StartedAt: 3},
+	} {
+		if err := s.CreateWorkItemPhase(phase); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items, err := s.ListWorkItemSummaries(WorkItemListFilter{ProjectID: item.ProjectID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("summaries = %+v, want one", items)
+	}
+	got := items[0]
+	if got.CurrentPhaseID != "implement" || got.CurrentPhaseOrdinal != 2 || got.PhaseCount != 3 {
+		t.Fatalf("summary progress = %+v, want implement 2/3", got)
+	}
+	if len(got.Snapshot) != 0 {
+		t.Fatalf("summary loaded frozen snapshot: %s", got.Snapshot)
+	}
 }
 
 func TestReorderQueuedWorkItemsIsAtomic(t *testing.T) {

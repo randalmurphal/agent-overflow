@@ -41,6 +41,8 @@ export interface WorkflowItemStateEvent {
 export interface WorkflowQueueStateEvent {
   active: boolean;
   globalConcurrency: number;
+  runningCount?: number;
+  slotCapacity?: number;
   startsRemaining?: number;
 }
 

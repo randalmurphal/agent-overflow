@@ -7,6 +7,7 @@
   import { getProjects } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { compactWorkflowSeeds, workflowIntakeError } from '../../stores/workflowIntake';
+  import { workflowDefinitionMeta } from '../../stores/workflowData';
   import { userFacingError } from '../../utils/userFacingError';
   import { isViewOnlySession } from '../../transport/runMode';
   import {
@@ -127,6 +128,11 @@
 
   function updateSeed(name: string, value: unknown): void { seeds = { ...seeds, [name]: value }; }
 
+  function selectSeedFile(name: string, path: string): void {
+    updateSeed(name, path);
+    pathPickerFor = null;
+  }
+
   async function submit(): Promise<void> {
     if (viewOnly || !selected || validationError || submitting) return;
     submitting = true;
@@ -168,7 +174,7 @@
         {#each projectDefinitions as view (`${view.projectId}:${view.definition.id}`)}
           <button type="button" disabled={!view.definition.valid} class={["rounded-md border p-2 text-left", workflowId === view.definition.id ? 'border-accent bg-accent/10' : 'border-border-subtle', view.definition.valid ? 'hover:bg-surface-2' : 'cursor-not-allowed opacity-45'].join(' ')} onclick={() => selectDefinition(view)} title={view.definition.valid ? '' : view.definition.firstValidationError} data-testid="wf-intake-workflow">
             <span class="block text-sm font-medium">{view.definition.name}</span>
-            <span class="mt-0.5 block text-xs text-fg-muted">{view.definition.phaseCount} phases · {view.definition.phases.map((phase) => phase.id).join(' → ')}</span>
+            <span class="mt-0.5 block text-xs text-fg-muted">{workflowDefinitionMeta(view.definition)} · {view.definition.phases.map((phase) => phase.id).join(' → ')}</span>
             {#if !view.definition.valid}<span class="mt-1 block text-xs text-error">{view.definition.firstValidationError}</span>{/if}
           </button>
         {/each}
@@ -184,17 +190,17 @@
       <div class="grid gap-3 sm:grid-cols-2" data-testid="wf-intake-seeds">
         {#each selected.inputs as input (input.name)}
           {#if input.type === 'boolean'}
-            <label class="flex items-center gap-2 text-xs"><input type="checkbox" checked={seeds[input.name] === true} onchange={(event) => updateSeed(input.name, (event.currentTarget as HTMLInputElement).checked)} data-testid={`wf-seed-${input.name}`} /> {input.name}{input.required ? '' : ' · optional'}</label>
+            <label class="flex items-center gap-2 text-xs"><input type="checkbox" checked={seeds[input.name] === true} onchange={(event) => updateSeed(input.name, (event.currentTarget as HTMLInputElement).checked)} data-testid={`wf-seed-${input.name}`} /> {input.name}{#if !input.required}<span class="text-fg-hint">(optional)</span>{/if}</label>
           {:else if input.enum}
-            <label class="text-xs text-fg-muted">{input.name}{input.required ? '' : ' · optional'}
+            <label class="text-xs text-fg-muted">{input.name}{#if !input.required} <span class="text-fg-hint">(optional)</span>{/if}
               <select value={String(seeds[input.name] ?? '')} onchange={(event) => updateSeed(input.name, (event.currentTarget as HTMLSelectElement).value)} class="mt-1 w-full rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-sm" data-testid={`wf-seed-${input.name}`}>
                 <option value="">Choose…</option>{#each input.enum as option}<option value={String(option)}>{String(option)}</option>{/each}
               </select>
             </label>
           {:else if input.multiline}
-            <label class="text-xs text-fg-muted sm:col-span-2">{input.name}{input.required ? '' : ' · optional'}<textarea value={String(seeds[input.name] ?? '')} oninput={(event) => updateSeed(input.name, (event.currentTarget as HTMLTextAreaElement).value)} class="mt-1 min-h-20 w-full rounded-md border border-border-subtle bg-surface-0 p-2 text-sm" data-testid={`wf-seed-${input.name}`}></textarea></label>
+            <label class="text-xs text-fg-muted sm:col-span-2">{input.name}{#if !input.required} <span class="text-fg-hint">(optional)</span>{/if}<textarea value={String(seeds[input.name] ?? '')} oninput={(event) => updateSeed(input.name, (event.currentTarget as HTMLTextAreaElement).value)} class="mt-1 min-h-20 w-full rounded-md border border-border-subtle bg-surface-0 p-2 text-sm" data-testid={`wf-seed-${input.name}`}></textarea></label>
           {:else}
-            <label class="text-xs text-fg-muted">{input.name}{input.required ? '' : ' · optional'}
+            <label class="text-xs text-fg-muted">{input.name}{#if !input.required} <span class="text-fg-hint">(optional)</span>{/if}
               <div class="mt-1 flex gap-1">
                 <input type={input.type === 'number' ? 'number' : 'text'} value={String(seeds[input.name] ?? '')} oninput={(event) => { const raw = (event.currentTarget as HTMLInputElement).value; updateSeed(input.name, input.type === 'number' && raw !== '' ? Number(raw) : raw); }} class="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-sm" data-testid={`wf-seed-${input.name}`} />
                 {#if input.format === 'path'}<button type="button" class="rounded-md border border-border-subtle px-2 text-xs disabled:opacity-45" disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} onclick={() => { pathPickerFor = pathPickerFor === input.name ? null : input.name; }} data-testid={`wf-seed-${input.name}-pick`}>Browse</button>{/if}
@@ -202,7 +208,7 @@
             </label>
           {/if}
           {#if pathPickerFor === input.name}
-            <div class="sm:col-span-2 rounded-md border border-border-subtle p-2"><DirectoryBrowser initialPath={String(seeds[input.name] ?? projects.find((entry) => entry.project.id === projectId)?.project.path ?? '~')} onSelect={(path) => updateSeed(input.name, path)} /></div>
+            <div class="sm:col-span-2 rounded-md border border-border-subtle p-2"><DirectoryBrowser initialPath={String(seeds[input.name] ?? projects.find((entry) => entry.project.id === projectId)?.project.path ?? '~')} onSelect={(path) => updateSeed(input.name, path)} onSelectFile={(path) => selectSeedFile(input.name, path)} /></div>
           {/if}
         {/each}
       </div>

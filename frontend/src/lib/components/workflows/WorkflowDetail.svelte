@@ -19,7 +19,7 @@
   import WorkflowJobNotes from './WorkflowJobNotes.svelte';
   import { isViewOnlySession } from '../../transport/runMode';
   import { workflowActionConfirmationKey } from '../../stores/workflowActions';
-  import { isWorkflowResolved } from '../../stores/workflowData';
+  import { isWorkflowResolved, workflowDefinitionMeta, workflowQueuedRanks } from '../../stores/workflowData';
   import { getWorkflowSidebarPhaseProgress } from '../../stores/workflowsSidebar.svelte';
 
   interface Props { level: Extract<WorkflowPaneLevel, { kind: 'workflow' }> }
@@ -30,6 +30,7 @@
   let history = $derived(items.filter(isWorkflowResolved).sort((a, b) => (b.endedAt || b.createdAt) - (a.endedAt || a.createdAt)));
   let costs = $derived(getWorkflowCosts());
   let definition = $derived(getWorkflowDefinitions().find((entry) => entry.projectId === level.projectId && entry.definition.id === level.workflowId));
+  let queuedRanks = $derived(workflowQueuedRanks(allItems));
   let project = $derived(getProjects().find((entry) => entry.project.id === level.projectId)?.project);
   let armed = $derived(getWorkflowArmedAction());
   const hasAutomation = false;
@@ -45,8 +46,8 @@
   function meta(item: WorkItem): string {
     const parts: string[] = [];
     const progress = getWorkflowSidebarPhaseProgress(item);
-    if (item.state === 'queued') parts.push(`Queued #${item.sortPosition + 1}`);
-    else if (item.state === 'running') parts.push(progress ? `Phase ${progress.current}/${progress.total}` : 'Running');
+    if (item.state === 'queued') parts.push(`queued · #${queuedRanks.get(item.id) ?? '–'}`);
+    else if (item.state === 'running') parts.push(progress ? `${progress.phaseId} · ${progress.current}/${progress.total}` : 'Running');
     else if (item.state === 'needs-human' || item.state === 'failed') {
       if (item.reason) parts.push(item.reason.split('-').map((word) => word[0]?.toUpperCase() + word.slice(1)).join(' '));
       parts.push(`parked ${age(item.endedAt || item.createdAt)} ago`);
@@ -105,7 +106,7 @@
 <div class="space-y-5 p-4" data-testid="wf-workflow-detail">
   <div class="flex items-start gap-3">
     <div class="min-w-0 flex-1">
-      <p class="truncate text-xs text-fg-muted">{project?.name ?? level.projectId} · {definition?.definition.scope ?? 'workflow'} · {definition?.definition.phaseCount ?? 0} phases · {definition?.definition.phases.map((phase) => phase.id).join(' → ')}</p>
+      <p class="truncate text-xs text-fg-muted">{project?.name ?? level.projectId} · {definition?.definition.scope ?? 'workflow'} · {definition ? workflowDefinitionMeta(definition.definition) : '0 phases'} · {definition?.definition.phases.map((phase) => phase.id).join(' → ')}</p>
     </div>
     <button class="rounded-md border border-border-subtle px-2.5 py-1.5 text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={editWorkflow} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-edit-workflow">Edit</button>
   </div>

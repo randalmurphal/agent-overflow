@@ -18,8 +18,8 @@
   } from '../../stores/workflowsPane.svelte';
   import { isViewOnlySession } from '../../transport/runMode';
 
-  interface Props { detail: WorkflowItemDetail; questionText?: string; onToggleFirstDiff?: () => void }
-  let { detail, questionText = '', onToggleFirstDiff }: Props = $props();
+  interface Props { detail: WorkflowItemDetail; questionText?: string; approveTarget?: string; onToggleFirstDiff?: () => void }
+  let { detail, questionText = '', approveTarget = '', onToggleFirstDiff }: Props = $props();
   let item = $derived(detail.item as WorkItem);
   let disposition = $derived(parseWorkflowDisposition(item.disposition));
   let cost = $derived(detail.usage.costUsd || 0);
@@ -165,8 +165,11 @@
         <div class="w-full space-y-1 text-xs" data-testid="wf-disposition-receipt">
           <p class="text-sm text-success">✓ {disposition.action === 'pr' ? `PR ${disposition.prRef ?? 'created'}` : disposition.action === 'merged' ? `${disposition.policy === 'manual' ? `Merged to ${disposition.base || item.baseBranch || 'base'}` : 'Merged automatically'}` : 'Discarded'} · {new Date(disposition.at).toLocaleString()}</p>
           {#if disposition.action === 'merged'}
-            <p class="text-fg-muted">{item.branch || 'run branch'} → {disposition.base || item.baseBranch || 'base'} · {disposition.mode === 'ff' ? 'fast-forward' : disposition.mode === 'merge' ? 'merge commit' : 'merged'}{disposition.sha ? ` · ${disposition.sha}` : ''}</p>
-            <p class="text-fg-muted">policy · {disposition.policy}</p>
+            <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 text-fg-muted">
+              <dt>merge ·{' '}</dt><dd>{item.branch || 'run branch'} → {disposition.base || item.baseBranch || 'base'} · {disposition.mode === 'ff' ? 'fast-forward' : disposition.mode === 'merge' ? 'merge commit' : 'merged'}{disposition.sha ? ` · ${disposition.sha}` : ''}</dd>
+              <dt>policy ·{' '}</dt><dd>{disposition.policy === 'manual' ? 'manual' : 'project opted in; a conflict or dirty base parks for you instead'}</dd>
+              {#if disposition.policy !== 'manual' && disposition.sha}<dt>undo ·{' '}</dt><dd class="font-mono">git revert {disposition.sha}</dd>{/if}
+            </dl>
           {:else if disposition.action === 'pr'}
             <p class="text-fg-muted">{item.branch || 'run branch'} · policy {disposition.policy}</p>
           {:else}
@@ -175,7 +178,7 @@
         </div>
         {#if !receipt}<button class="rounded-md border border-border-subtle px-3 py-1.5 text-xs" onclick={openTriage} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-receipt-continue">Continue with agent ↗ <kbd>t</kbd></button>{/if}
       {:else if item.state === 'needs-human' && item.reason === 'gate'}
-        <button class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white" onclick={() => act({ kind: 'approve' })} disabled={viewOnly || busy} title={viewOnly ? 'Local only' : undefined} data-testid="wf-approve">Approve <kbd>a</kbd></button>
+        <button class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white" onclick={() => act({ kind: 'approve' })} disabled={viewOnly || busy} title={viewOnly ? 'Local only' : undefined} data-testid="wf-approve">Approve{approveTarget ? ` → ${approveTarget}` : ''} <kbd>a</kbd></button>
         <button class="rounded-md border border-border-subtle px-3 py-1.5 text-xs" onclick={openReject} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-request-changes">Request changes <kbd>r</kbd></button>
         <button class="rounded-md border border-border-subtle px-3 py-1.5 text-xs" onclick={() => openPhaseThread(true)} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-take-over">Take over <kbd>t</kbd></button>
       {:else if item.state === 'needs-human' && item.reason === 'question'}

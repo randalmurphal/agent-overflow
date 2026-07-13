@@ -50,7 +50,10 @@ func Resolve(sources []Source) ([]ResolvedWorkflow, error) {
 			if prior, exists := byScope[source.Scope][workflow.ID]; exists {
 				return nil, fmt.Errorf("workflow id %q is duplicated in %s scope: %q and %q", workflow.ID, source.Scope, prior.Path, path)
 			}
-			byScope[source.Scope][workflow.ID] = ResolvedWorkflow{Workflow: workflow, Scope: source.Scope, Path: path}
+			byScope[source.Scope][workflow.ID] = ResolvedWorkflow{
+				Workflow: workflow, Scope: source.Scope, Path: path,
+				HumanGateCount: CountHumanGates(workflow),
+			}
 		}
 	}
 	resolved := make(map[string]ResolvedWorkflow, len(byScope[ScopeProject])+len(byScope[ScopeShared]))

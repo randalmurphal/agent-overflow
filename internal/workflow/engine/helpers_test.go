@@ -200,6 +200,19 @@ func (f *fakeEmitter) errorEvents(itemID string) []ErrorEvent {
 	return result
 }
 
+func (f *fakeEmitter) queueEvents() []QueueEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var result []QueueEvent
+	for _, event := range f.events {
+		queue, ok := event.payload.(QueueEvent)
+		if event.name == "workflow:queue-state" && ok {
+			result = append(result, queue)
+		}
+	}
+	return result
+}
+
 type testHarness struct {
 	store    *store.Store
 	engine   *Engine

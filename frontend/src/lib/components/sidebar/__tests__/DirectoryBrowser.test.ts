@@ -94,6 +94,22 @@ describe('<DirectoryBrowser>', () => {
     expect(onSelect).toHaveBeenLastCalledWith('/Users/me/code');
   });
 
+  it('selects file rows by click or Enter when a file callback is provided', async () => {
+    const onSelectFile = vi.fn();
+    const { getByTestId, findAllByTestId } = render(DirectoryBrowser, {
+      props: { initialPath: '~', onSelectFile },
+    });
+    await flushMount();
+    const entries = await findAllByTestId('directory-browser-entry');
+    await fireEvent.click(entries[2]);
+    expect(onSelectFile).toHaveBeenLastCalledWith('/Users/me/note.txt');
+
+    onSelectFile.mockClear();
+    const list = getByTestId('directory-browser-list');
+    await fireEvent.keyDown(list, { key: 'Enter' });
+    expect(onSelectFile).toHaveBeenLastCalledWith('/Users/me/note.txt');
+  });
+
   it('Backspace goes back to the parent directory', async () => {
     const browse = setBindingMock('BrowseDirectory', async () => mkListing());
     const { getByTestId } = render(DirectoryBrowser, {

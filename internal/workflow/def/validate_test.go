@@ -138,6 +138,9 @@ func TestValidateStructuralGoldenErrors(t *testing.T) {
 			negative := -1
 			r.Workflow.Phases[0].Outputs["approach"] = Variable{Schema: JSONSchema{Type: "string", MinLength: &negative}}
 		}},
+		{"multiline non-string", "schema.multiline", "input \"goal\"", func(r *ResolvedWorkflow) {
+			r.Workflow.Inputs["goal"] = Variable{Schema: JSONSchema{Type: "boolean", Multiline: true}}
+		}},
 		{"workflow output source", "workflow-output.ref", "output \"changed\"", func(r *ResolvedWorkflow) { r.Workflow.Outputs["changed"] = WorkflowOutput{From: "goal"} }},
 		{"workflow artifact source type", "workflow-output.artifact-type", "output \"changed\"", func(r *ResolvedWorkflow) {
 			r.Workflow.Outputs["changed"] = WorkflowOutput{From: "review.ok", Artifact: true}

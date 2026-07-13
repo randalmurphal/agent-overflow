@@ -468,6 +468,7 @@ type WorkflowItemDetailView struct {
 	Item          WorkflowItemView        `json:"item"`
 	CheckPhaseIDs []string                `json:"checkPhaseIds"`
 	Phases        []WorkflowItemPhaseView `json:"phases"`
+	Outputs       map[string]any          `json:"outputs"`
 	Artifacts     []WorkflowArtifact      `json:"artifacts"`
 	Usage         store.WorkItemUsage     `json:"usage"`
 }
@@ -496,6 +497,10 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 	if err != nil {
 		return WorkflowItemDetailView{}, fmt.Errorf("workflow item %s snapshot: %w", itemID, err)
 	}
+	outputs, err := workflowNamedOutputs(item.Snapshot, phases)
+	if err != nil {
+		return WorkflowItemDetailView{}, fmt.Errorf("workflow item %s outputs: %w", itemID, err)
+	}
 	phaseViews := make([]WorkflowItemPhaseView, 0, len(phases))
 	for _, phase := range phases {
 		phaseViews = append(phaseViews, WorkflowItemPhaseView{
@@ -515,8 +520,51 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 			Disposition: item.Disposition, Digest: item.Digest, CreatedAt: item.CreatedAt,
 			StartedAt: item.StartedAt, EndedAt: item.EndedAt,
 		},
-		CheckPhaseIDs: checkPhaseIDs, Phases: phaseViews, Artifacts: artifacts, Usage: usage,
+		CheckPhaseIDs: checkPhaseIDs, Phases: phaseViews, Outputs: outputs, Artifacts: artifacts, Usage: usage,
 	}, nil
+}
+
+func workflowNamedOutputs(payload json.RawMessage, phases []store.WorkItemPhaseTimeline) (map[string]any, error) {
+	outputs := make(map[string]any)
+	if len(payload) == 0 {
+		return outputs, nil
+	}
+	var snapshot engine.Snapshot
+	if err := json.Unmarshal(payload, &snapshot); err != nil {
+		return nil, err
+	}
+	vars := make(map[string]any)
+	latestAttempts := make(map[string]int)
+	for _, phase := range phases {
+		if (phase.Status != "completed" && phase.Status != "failed") || len(phase.OutputEnvelope) == 0 || phase.Attempt < latestAttempts[phase.PhaseID] {
+			continue
+		}
+		var envelope struct {
+			Status  string         `json:"status"`
+			Outputs map[string]any `json:"outputs"`
+		}
+		if err := json.Unmarshal(phase.OutputEnvelope, &envelope); err != nil {
+			return nil, fmt.Errorf("decode phase %s attempt %d: %w", phase.PhaseID, phase.Attempt, err)
+		}
+		if envelope.Status != "done" {
+			continue
+		}
+		latestAttempts[phase.PhaseID] = phase.Attempt
+		for name, value := range envelope.Outputs {
+			if value != nil {
+				vars[phase.PhaseID+"."+name] = value
+			}
+		}
+	}
+	for name, declaration := range snapshot.Workflow.Outputs {
+		if declaration.Artifact {
+			continue
+		}
+		if value, ok := def.LookupVariable(vars, declaration.From); ok {
+			outputs[name] = value
+		}
+	}
+	return outputs, nil
 }
 
 func workflowCheckPhaseIDs(payload json.RawMessage) ([]string, error) {

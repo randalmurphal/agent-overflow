@@ -25,7 +25,7 @@
       "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
         "type": {"enum": ["string", "number", "boolean", "array", "object"]},
-        "enum": {"type": "array"}, "format": {"type": "string"}, "description": {"type": "string"},
+        "enum": {"type": "array"}, "format": {"type": "string"}, "multiline": {"type": "boolean"}, "description": {"type": "string"},
         "items": {"$ref": "#/$defs/jsonSchema"},
         "properties": {"type": "object", "additionalProperties": {"$ref": "#/$defs/jsonSchema"}},
         "required": {"type": "array", "items": {"type": "string"}},

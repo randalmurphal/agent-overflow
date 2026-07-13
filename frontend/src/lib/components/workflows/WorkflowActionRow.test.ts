@@ -81,6 +81,24 @@ describe('WorkflowActionRow', () => {
     await waitFor(() => expect(input).toHaveFocus());
   });
 
+  it('names the next phase in gate approval when one exists', () => {
+    const view = render(WorkflowActionRow, { detail: detail('needs-human', 'gate'), approveTarget: 'docs' });
+    expect(view.getByTestId('wf-approve')).toHaveTextContent('Approve → docs');
+  });
+
+  it('renders automatic merge policy and undo receipt rows', () => {
+    const value = detail('done', '', JSON.stringify({
+      action: 'merged', base: 'main', mode: 'ff', sha: 'abc123', policy: 'auto', at: 1,
+    }));
+    value.item.branch = 'run/work';
+    const view = render(WorkflowActionRow, { detail: value });
+    const receipt = view.getByTestId('wf-disposition-receipt');
+    expect(receipt).toHaveTextContent('Merged automatically');
+    expect(receipt).toHaveTextContent('run/work → main · fast-forward · abc123');
+    expect(receipt).toHaveTextContent('project opted in; a conflict or dirty base parks for you instead');
+    expect(receipt).toHaveTextContent('git revert abc123');
+  });
+
   it('disables mutating action controls but keeps plain phase navigation live remotely', () => {
     (globalThis as { __AO_BOOTSTRAP__?: { remote: boolean } }).__AO_BOOTSTRAP__ = { remote: true };
     __resetRunModeForTest();

@@ -32,9 +32,15 @@ describe('workflow event fan-out', () => {
 
   it('fans queue state into the pane and refreshes sidebar summaries', async () => {
     await initializeWorkflowsSidebar();
-    applyWorkflowQueueStateEvent({ active: false, globalConcurrency: 3, startsRemaining: 2 });
-    expect(getWorkflowQueueState()).toEqual({ active: false, globalConcurrency: 3, startsRemaining: 2 });
+    applyWorkflowQueueStateEvent({ active: false, globalConcurrency: 3, runningCount: 2, slotCapacity: 3, startsRemaining: 2 });
+    expect(getWorkflowQueueState()).toEqual({ active: false, globalConcurrency: 3, runningCount: 2, slotCapacity: 3, startsRemaining: 2 });
     await vi.waitFor(() => expect(getBindingMock('WorkflowListUnresolvedItems')).toHaveBeenCalledTimes(2));
+  });
+
+  it('keeps old queue events compatible by deriving additive slot fields', () => {
+    applyWorkflowQueueStateEvent({ active: true, globalConcurrency: 4 });
+
+    expect(getWorkflowQueueState()).toMatchObject({ runningCount: 0, slotCapacity: 4 });
   });
 
   it('fans item state into the always-on sidebar store', async () => {

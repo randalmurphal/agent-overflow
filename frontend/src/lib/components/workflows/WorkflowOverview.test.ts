@@ -11,11 +11,13 @@ import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.sve
 import { resetSettingsForTest } from '../../stores/settings.svelte';
 import {
   activateWorkflowsPane,
+  applyWorkflowQueueState,
   getWorkflowStack,
   loadWorkflowOverview,
   resetWorkflowsPane,
 } from '../../stores/workflowsPane.svelte';
 import WorkflowOverview from './WorkflowOverview.svelte';
+import WorkflowOverviewControls from './WorkflowOverviewControls.svelte';
 import { __resetRunModeForTest } from '../../transport/runMode';
 import {
   getProjectWorkflowRuns,
@@ -52,7 +54,7 @@ describe('WorkflowOverview queue controls', () => {
     setBindingMock('WorkflowListItemCosts', async () => ({ queued: 0.25 }));
     setBindingMock('WorkflowListDefinitions', async () => ({
       baseBranch: 'main', predictedQueuePosition: 1,
-      workflows: [{ id: 'wf', name: 'Workflow', scope: 'shared', phaseCount: 0, phases: [], inputs: [], defaultStepMode: false, valid: true, allBindingsAvailable: true }],
+      workflows: [{ id: 'wf', name: 'Workflow', scope: 'shared', phaseCount: 1, humanGateCount: 1, phases: [{ id: 'review' }], inputs: [], defaultStepMode: false, valid: true, allBindingsAvailable: true }],
     }));
     setBindingMock('UpdateSettings', async (patch: Partial<Settings>) => makeSettings(patch));
     setBindingMock('WorkflowRemoveQueuedItem', async () => undefined);
@@ -73,11 +75,12 @@ describe('WorkflowOverview queue controls', () => {
   });
 
   it('toggles through UpdateSettings and arms queued cancellation', async () => {
-    const view = render(WorkflowOverview);
-    await fireEvent.click(view.getByTestId('wf-queue-toggle'));
+    const controls = render(WorkflowOverviewControls);
+    await fireEvent.click(controls.getByTestId('wf-queue-toggle'));
     expect(getBindingMock('UpdateSettings')).toHaveBeenCalledWith({ workflowQueueActive: false });
     expect(getBindingMock('WorkflowSetQueue')).toBeUndefined();
 
+    const view = render(WorkflowOverview);
     const cancel = view.getByTestId('wf-queue-cancel');
     await fireEvent.click(cancel);
     expect(getBindingMock('WorkflowRemoveQueuedItem')).not.toHaveBeenCalled();
@@ -86,10 +89,55 @@ describe('WorkflowOverview queue controls', () => {
     await waitFor(() => expect(getBindingMock('WorkflowRemoveQueuedItem')).toHaveBeenCalledWith('queued'));
   });
 
+  it('renders server-owned slot usage in the header controls', () => {
+    applyWorkflowQueueState({
+      active: true, globalConcurrency: 4, runningCount: 2, slotCapacity: 4,
+    });
+    const view = render(WorkflowOverviewControls);
+    expect(view.getByTestId('wf-slots')).toHaveTextContent('2/4');
+    expect(view.getByTestId('wf-slots')).toHaveAttribute('title', '2 of 4 concurrency slots in use');
+    expect(view.getByTestId('wf-overflow')).toBeInTheDocument();
+  });
+
   it('opens queued runs with the full overview-workflow-run stack', async () => {
     const view = render(WorkflowOverview);
+    expect(view.getByTestId('wf-workflow-row')).toHaveTextContent('1 phase · 1 human gate');
+    expect(view.getByTestId('wf-queue-row')).toHaveTextContent('#1');
+    expect(view.getByTestId('wf-queue-row')).toHaveTextContent('Workflow · queued');
     await fireEvent.click(view.getByTestId('wf-queue-open'));
     expect(getWorkflowStack().map((level) => level.kind)).toEqual(['overview', 'workflow', 'run']);
+  });
+
+  it('shows the latest terminal run age in an idle workflow aggregate', async () => {
+    const endedAt = Date.now() - 3 * 24 * 60 * 60 * 1_000;
+    setBindingMock('WorkflowListItems', async () => [{
+      ...queued, id: 'landed', state: 'done', disposition: { action: 'merged', policy: 'manual', at: endedAt },
+      createdAt: endedAt - 1000, endedAt,
+    }] as WorkItem[]);
+    await loadWorkflowOverview();
+    const view = render(WorkflowOverview);
+    expect(view.getByTestId('wf-section-idle')).toHaveTextContent('idle · last run 3d ago');
+  });
+
+  it('shows automation spawn age and held state in queued metadata', async () => {
+    setBindingMock('WorkflowListItems', async () => [{
+      ...queued, source: 'automation', createdAt: Date.now() - 6 * 60 * 1000,
+    }] as WorkItem[]);
+    await loadWorkflowOverview();
+    applyWorkflowQueueState({ active: false, globalConcurrency: 2, runningCount: 0, slotCapacity: 2 });
+    const view = render(WorkflowOverview);
+    expect(view.getByTestId('wf-queue-row')).toHaveTextContent('Workflow · spawned 6m ago · held');
+  });
+
+  it('explains that direct removal of an automation run is temporary', async () => {
+    setBindingMock('WorkflowListItems', async () => [{ ...queued, source: 'automation' }] as WorkItem[]);
+    await loadWorkflowOverview();
+    const view = render(WorkflowOverview);
+    const cancel = view.getByTestId('wf-queue-cancel');
+    await fireEvent.click(cancel);
+    await fireEvent.click(cancel);
+    await waitFor(() => expect(getBindingMock('WorkflowRemoveQueuedItem')).toHaveBeenCalledWith('queued'));
+    expect(getToasts().some((toast) => toast.message === 'Removed from queue — automation will re-propose it next cycle')).toBe(true);
   });
 
   it('refreshes sidebar queue order after a successful drag reorder', async () => {
@@ -173,15 +221,17 @@ describe('WorkflowOverview queue controls', () => {
   it('disables every overview mutation while keeping run navigation live remotely', async () => {
     (globalThis as { __AO_BOOTSTRAP__?: { remote: boolean } }).__AO_BOOTSTRAP__ = { remote: true };
     __resetRunModeForTest();
+    const controls = render(WorkflowOverviewControls);
     const view = render(WorkflowOverview);
 
     for (const testId of ['wf-queue-toggle', 'wf-new-run', 'wf-new-workflow', 'wf-triage', 'wf-queue-cancel']) {
-      const control = view.getByTestId(testId) as HTMLButtonElement;
+      const control = (testId === 'wf-queue-cancel' ? view : controls).getByTestId(testId) as HTMLButtonElement;
       expect(control.disabled).toBe(true);
       expect(control.title).toBe('Local only');
     }
     expect(view.getByTestId('wf-queue-row').getAttribute('draggable')).toBe('false');
-    expect(view.queryByTestId('wf-queue-grip')).toBeNull();
+    expect(view.getByTestId('wf-queue-grip')).toHaveAttribute('title', 'Local only');
+    expect(view.getByTestId('wf-queue-grip')).toHaveAttribute('aria-disabled', 'true');
     expect((view.getByTestId('wf-queue-open') as HTMLButtonElement).disabled).toBe(false);
   });
 });

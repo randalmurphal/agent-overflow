@@ -33,7 +33,7 @@ describe('WorkflowIntakeDialog', () => {
     setBindingMock('WorkflowListDefinitions', async () => ({
       baseBranch: 'main', predictedQueuePosition: 3,
       workflows: [{
-        id: 'wf', name: 'Build', scope: 'shared', phaseCount: 1,
+        id: 'wf', name: 'Build', scope: 'shared', phaseCount: 1, humanGateCount: 1,
         phases: [{ id: 'build' }], defaultStepMode: true, valid: true,
         allBindingsAvailable: true,
         inputs: [
@@ -41,11 +41,16 @@ describe('WorkflowIntakeDialog', () => {
           { name: 'mode', type: 'string', required: false, enum: ['fast', 'safe'] },
           { name: 'approved', type: 'boolean', required: false },
           { name: 'count', type: 'number', required: false },
+          { name: 'notes', type: 'string', required: false, multiline: true },
           { name: 'source', type: 'string', required: false, format: 'path' },
         ],
       }],
     }));
     setBindingMock('WorkflowEnqueueItem', async () => ({ id: 'queued' }));
+    setBindingMock('BrowseDirectory', async () => ({
+      path: '/tmp/p', parent: '/tmp', separator: '/', exists: true, truncated: false,
+      entries: [{ name: 'brief.md', isDir: false, hidden: false, isRepo: false }],
+    }));
   });
 
   afterEach(() => {
@@ -63,15 +68,41 @@ describe('WorkflowIntakeDialog', () => {
     expect(getWorkflowDefinitions()).toHaveLength(1);
     const view = render(WorkflowIntakeDialog, { open: true, onClose: vi.fn() });
     await waitFor(() => expect(view.getByTestId('wf-intake-workflow')).toHaveTextContent('Build'));
+    expect(view.getByTestId('wf-intake-workflow')).toHaveTextContent('1 phase · 1 human gate');
     await view.getByTestId('wf-intake-workflow').click();
     await waitFor(() => expect(view.getByTestId('wf-seed-title')).toHaveAttribute('type', 'text'));
     expect(view.getByTestId('wf-seed-mode').tagName).toBe('SELECT');
     expect(view.getByTestId('wf-seed-approved')).toHaveAttribute('type', 'checkbox');
     expect(view.getByTestId('wf-seed-count')).toHaveAttribute('type', 'number');
+    expect(view.getByTestId('wf-seed-notes').tagName).toBe('TEXTAREA');
+    expect(view.getByTestId('wf-seed-notes').closest('label')?.querySelector('.text-fg-hint')).toHaveTextContent('(optional)');
     expect(view.getByTestId('wf-seed-source-pick')).toHaveTextContent('Browse');
     expect(view.getByTestId('wf-intake-base-branch')).toHaveValue('main');
     expect(view.getByTestId('wf-intake-step-mode')).toBeChecked();
     expect(view.getByTestId('wf-intake-submit')).toHaveTextContent('Queue — position 3');
+  });
+
+  it('commits a selected file into a path seed', async () => {
+    activateWorkflowsPane();
+    await loadWorkflowOverview();
+    const view = render(WorkflowIntakeDialog, { open: true, onClose: vi.fn() });
+    await fireEvent.click(await view.findByTestId('wf-intake-workflow'));
+    await fireEvent.click(view.getByTestId('wf-seed-source-pick'));
+    const entry = await view.findByTestId('directory-browser-entry');
+    await fireEvent.click(entry);
+    expect(view.getByTestId('wf-seed-source')).toHaveValue('/tmp/p/brief.md');
+    expect(view.queryByTestId('directory-browser-list')).toBeNull();
+  });
+
+  it('keeps committing browsed directories into a path seed', async () => {
+    activateWorkflowsPane();
+    await loadWorkflowOverview();
+    const view = render(WorkflowIntakeDialog, { open: true, onClose: vi.fn() });
+    await fireEvent.click(await view.findByTestId('wf-intake-workflow'));
+    await fireEvent.click(view.getByTestId('wf-seed-source-pick'));
+    await view.findByTestId('directory-browser-entry');
+    expect(view.getByTestId('wf-seed-source')).toHaveValue('/tmp/p');
+    expect(view.getByTestId('directory-browser-list')).toBeInTheDocument();
   });
 
   it('gates required inputs and submits compact typed seeds', async () => {

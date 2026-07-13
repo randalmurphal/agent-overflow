@@ -36,6 +36,7 @@ type WorkflowDefinitionListing struct {
 	Name                 string                    `json:"name"`
 	Scope                string                    `json:"scope"`
 	PhaseCount           int                       `json:"phaseCount"`
+	HumanGateCount       int                       `json:"humanGateCount"`
 	Phases               []WorkflowDefinitionPhase `json:"phases"`
 	Inputs               []WorkflowDefinitionInput `json:"inputs"`
 	DefaultStepMode      bool                      `json:"defaultStepMode"`
@@ -111,6 +112,7 @@ func (a *App) WorkflowListDefinitions(projectID string) (WorkflowDefinitionCatal
 		listing := WorkflowDefinitionListing{
 			ID: workflow.Workflow.ID, Name: workflow.Workflow.Name,
 			Scope: string(workflow.Scope), PhaseCount: len(workflow.Workflow.Phases),
+			HumanGateCount:  workflow.HumanGateCount,
 			Phases:          make([]WorkflowDefinitionPhase, 0, len(workflow.Workflow.Phases)),
 			Inputs:          make([]WorkflowDefinitionInput, 0, len(workflow.Workflow.Inputs)),
 			DefaultStepMode: workflow.Workflow.DefaultStepMode,
@@ -131,6 +133,7 @@ func (a *App) WorkflowListDefinitions(projectID string) (WorkflowDefinitionCatal
 			listing.Inputs = append(listing.Inputs, WorkflowDefinitionInput{
 				Name: name, Type: input.Schema.Type, Required: !input.Optional,
 				Enum: append([]any(nil), input.Schema.Enum...), Format: input.Schema.Format,
+				Multiline: input.Schema.Multiline,
 			})
 		}
 		if len(validation.Findings) > 0 {

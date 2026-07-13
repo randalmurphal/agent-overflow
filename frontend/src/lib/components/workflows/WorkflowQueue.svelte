@@ -11,22 +11,31 @@
     setWorkflowArmedAction,
   } from '../../stores/workflowsPane.svelte';
   import { refreshWorkflowsSidebar } from '../../stores/workflowsSidebar.svelte';
+  import { workflowAge, workflowQueuedRanks } from '../../stores/workflowData';
 
   interface Props {
     queued: WorkItem[];
-    costs: Readonly<Record<string, number>>;
     queueActive: boolean;
     viewOnly: boolean;
-    projectName: (projectId: string) => string;
+    projectColor: (projectId: string) => string;
+    workflowName: (item: WorkItem) => string;
     onOpenRun: (item: WorkItem) => void;
   }
 
-  let { queued, costs, queueActive, viewOnly, projectName, onOpenRun }: Props = $props();
+  let { queued, queueActive, viewOnly, projectColor, workflowName, onOpenRun }: Props = $props();
   let draggedId: string | null = $state(null);
   let dropTarget: string | 'after-last' | null = $state(null);
   let reorderInFlight = $state(false);
   let cancelling = $state(new Set<string>());
   let armed = $derived(getWorkflowArmedAction());
+  let queuedRanks = $derived(workflowQueuedRanks(queued));
+
+  function rowMeta(item: WorkItem): string {
+    const queuedAt = item.createdAt > 0
+      ? item.source === 'automation' ? `spawned ${workflowAge(item.createdAt)} ago` : `queued ${workflowAge(item.createdAt)}`
+      : '';
+    return [workflowName(item), queuedAt, queueActive ? '' : 'held'].filter(Boolean).join(' · ');
+  }
 
   function finishDrag(): void {
     draggedId = null;
@@ -104,7 +113,9 @@
     try {
       await WorkflowRemoveQueuedItem(item.id);
       setWorkflowArmedAction(null);
-      addToast('info', 'Removed from queue — record kept, nothing was provisioned');
+      addToast('info', item.source === 'automation'
+        ? 'Removed from queue — automation will re-propose it next cycle'
+        : 'Removed from queue — record kept, nothing was provisioned');
     } catch (error) {
       addToast('error', userFacingError(error, 'Could not remove the queued run.'));
     } finally {
@@ -117,7 +128,7 @@
 
 <section class="space-y-2" data-testid="wf-up-next">
   <h2 class="text-[11px] font-semibold uppercase tracking-wider text-fg-muted">Up next · {queued.length}</h2>
-  {#each queued as item, index (item.id)}
+  {#each queued as item (item.id)}
     <div
       role="listitem"
       draggable={!viewOnly && !reorderInFlight}
@@ -128,10 +139,18 @@
       class={["group flex items-center gap-2 rounded-md border px-2.5 py-2 hover:bg-surface-2/50", dropTarget === item.id ? 'border-accent bg-accent/5' : 'border-border-subtle'].join(' ')}
       data-testid="wf-queue-row"
     >
-      {#if !viewOnly}<span class="cursor-grab text-fg-muted opacity-0 group-hover:opacity-100" data-testid="wf-queue-grip">⠿</span>{/if}
-      <span class="w-6 text-xs text-fg-muted">#{index + 1}</span>
+      <span
+        class={viewOnly
+          ? 'cursor-not-allowed text-fg-muted opacity-40'
+          : 'cursor-grab text-fg-muted opacity-0 group-hover:opacity-100'}
+        title={viewOnly ? 'Local only' : undefined}
+        aria-disabled={viewOnly}
+        data-testid="wf-queue-grip"
+      >⠿</span>
+      <span class="w-6 shrink-0 text-xs text-fg-muted">#{queuedRanks.get(item.id) ?? '–'}</span>
+      <span class="h-2 w-2 shrink-0 rounded-full" style:background-color={projectColor(item.projectId)} aria-hidden="true"></span>
       <button class="min-w-0 flex-1 truncate text-left text-sm" onclick={() => onOpenRun(item)} data-testid="wf-queue-open">{item.goal}</button>
-      <span class="text-xs text-fg-muted">{projectName(item.projectId)} · {item.workflowId}{queueActive ? '' : ' · held'} · ${(costs[item.id] ?? 0).toFixed(2)}</span>
+      <span class="min-w-0 max-w-[45%] truncate text-right text-xs text-fg-muted" title={rowMeta(item)}>{rowMeta(item)}</span>
       <button class="rounded px-1.5 py-1 text-xs text-error opacity-0 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40" onclick={() => cancelQueued(item)} disabled={viewOnly || cancelling.has(item.id)} title={viewOnly ? 'Local only' : undefined} data-testid="wf-queue-cancel">{armed === workflowActionConfirmationKey('queue-cancel', item) ? 'cancel?' : '✕'}</button>
     </div>
   {/each}

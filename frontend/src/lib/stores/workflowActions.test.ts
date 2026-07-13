@@ -52,7 +52,19 @@ describe('workflow action dispatch', () => {
 
   it('uses the disposition base and human merge mode in merge receipts', async () => {
     const receipt = await dispatchWorkflowAction({ id: 'run', baseBranch: 'main' } as WorkItem, { kind: 'merge' }, 1, bindings());
-    expect(receipt?.message).toBe('Merged to release — fast-forward 12345678');
+    expect(receipt?.message).toBe('Merged to release — fast-forward 12345678 · worktree cleaned');
+  });
+
+  it('omits worktree cleanup from a merge receipt when cleanup failed', async () => {
+    const deps = bindings();
+    deps.mergeItem = vi.fn(async () => ({ base: 'main', mode: 'ff', sha: 'abc', cleanupFailed: true }));
+    const receipt = await dispatchWorkflowAction({ id: 'run' } as WorkItem, { kind: 'merge' }, 1, deps);
+    expect(receipt?.message).toBe('Merged to main — fast-forward abc');
+  });
+
+  it('notes that removing an automation run is temporary', async () => {
+    const receipt = await dispatchWorkflowAction({ id: 'run', source: 'automation' } as WorkItem, { kind: 'remove' }, 1, bindings());
+    expect(receipt?.message).toBe('Removed from queue — automation will re-propose it next cycle');
   });
 
   it('dispatches every remaining action to its exact binding', async () => {

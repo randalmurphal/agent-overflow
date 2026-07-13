@@ -74,6 +74,17 @@ export function patchFileRowId(file: Pick<PatchFile, 'path'>, index: number): st
 }
 
 export function parsePatchFiles(patch: string): PatchFile[] {
+  return parsePatch(patch, true);
+}
+
+// Parses only the file-level data needed by lightweight lists. This follows
+// the same path/count rules as parsePatchFiles without retaining one object per
+// patch line, so callers can keep large diffs bounded until a file is opened.
+export function parsePatchFileSummaries(patch: string): PatchFile[] {
+  return parsePatch(patch, false);
+}
+
+function parsePatch(patch: string, includeLines: boolean): PatchFile[] {
   if (!patch.trim()) return [];
   const files: PatchFile[] = [];
   let current: PatchFile | null = null;
@@ -97,7 +108,7 @@ export function parsePatchFiles(patch: string): PatchFile[] {
         kind: 'modified',
         additions: 0,
         deletions: 0,
-        lines: [{ content: line, type: 'meta' }],
+        lines: includeLines ? [{ content: line, type: 'meta' }] : [],
       };
       continue;
     }
@@ -119,16 +130,18 @@ export function parsePatchFiles(patch: string): PatchFile[] {
     // diverge from this panel.
     if (line.startsWith('+') && !line.startsWith('+++')) current.additions += 1;
     if (line.startsWith('-') && !line.startsWith('---')) current.deletions += 1;
-    current.lines.push({
-      content: line,
-      type: line.startsWith('+') && !line.startsWith('+++')
-        ? 'add'
-        : line.startsWith('-') && !line.startsWith('---')
-          ? 'del'
-          : isPatchMetaLine(line)
-            ? 'meta'
-            : 'context',
-    });
+    if (includeLines) {
+      current.lines.push({
+        content: line,
+        type: line.startsWith('+') && !line.startsWith('+++')
+          ? 'add'
+          : line.startsWith('-') && !line.startsWith('---')
+            ? 'del'
+            : isPatchMetaLine(line)
+              ? 'meta'
+              : 'context',
+      });
+    }
   }
   finish();
   return files;

@@ -106,4 +106,15 @@ describe('workflow keyboard scoping', () => {
     expect(getWorkflowCurrentLevel().kind).toBe('overview');
     unregister();
   });
+
+  it('pops one level with Backspace and does nothing at overview', () => {
+    const unregister = registerWorkflowCommands();
+    const context = commandContext(true);
+    pushWorkflowLevel({ kind: 'workflow', projectId: 'p', workflowId: 'wf', label: 'Workflow' });
+    expect(dispatchKey(new KeyboardEvent('keydown', { key: 'Backspace' }), context, { isMac: false })).toBe(true);
+    expect(getWorkflowCurrentLevel().kind).toBe('overview');
+    expect(dispatchKey(new KeyboardEvent('keydown', { key: 'Backspace' }), context, { isMac: false })).toBe(true);
+    expect(getWorkflowCurrentLevel().kind).toBe('overview');
+    unregister();
+  });
 });
