@@ -1,137 +1,14 @@
-import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
-import type { HarnessApp } from '../src/harness.js';
-
-interface WorkflowItem {
-  id: string;
-  state: string;
-  reason?: string;
-}
-
-interface WorkflowPhase {
-  phaseId: string;
-  attempt: number;
-  threadId?: string;
-  outputEnvelope?: unknown;
-  gateTrace?: unknown;
-  status: string;
-}
-
-interface WorkflowDetail {
-  item: WorkflowItem;
-  phases: WorkflowPhase[];
-}
-
-interface WorkflowStateEvent {
-  itemId: string;
-  from: string;
-  to: string;
-  reason?: string;
-}
-
-const prompt = 'Complete this workflow phase and return the required envelope.';
-
-async function seedWorkflow(
-  harness: HarnessApp,
-  projectName: string,
-  workflowName: string,
-  yaml: string,
-  profile = '',
-): Promise<{ projectId: string; path: string }> {
-  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-    projects: [
-      {
-        name: projectName,
-        repo: {},
-        workflows: {
-          definitions: [
-            {
-              name: workflowName,
-              yaml,
-              prompts: { [`${workflowName}.md`]: prompt },
-            },
-          ],
-          profile,
-        },
-      },
-    ],
-  });
-  return seed.projects[0];
-}
-
-async function setClaudeScenario(
-  harness: HarnessApp,
-  name: string,
-  turns: Array<{ label?: string; steps: unknown[] }>,
-): Promise<void> {
-  await harness.rpc('HarnessSetScenario', {
-    scenario: { version: 1, name, provider: 'claude', turns },
-  });
-}
-
-async function enqueue(
-  harness: HarnessApp,
-  projectId: string,
-  workflowId: string,
-  stepMode = false,
-): Promise<WorkflowItem> {
-  return await harness.rpc<WorkflowItem>(
-    'WorkflowEnqueueItem',
-    projectId,
-    workflowId,
-    'project',
-    `Run ${workflowId}`,
-    { goal: `Run ${workflowId}` },
-    null,
-    stepMode,
-  );
-}
-
-function doneResult(outputs: Record<string, unknown>): string {
-  return JSON.stringify({
-    type: 'result',
-    subtype: 'success',
-    is_error: false,
-    structured_output: { status: 'done', outputs, question: null, reason: null },
-  });
-}
-
-function questionResult(question: string): string {
-  return JSON.stringify({
-    type: 'result',
-    subtype: 'success',
-    is_error: false,
-    structured_output: { status: 'question', outputs: null, question, reason: null },
-  });
-}
-
-function singlePhaseWorkflow(id: string, gate: string): string {
-  return `id: ${id}
-name: ${id}
-inputs:
-  goal:
-    schema:
-      type: string
-phases:
-  - id: run
-    driver: agent
-    provider: claude
-    model: claude-opus-4-7
-    prompt: ${id}.md
-    access: read-only
-    inputs:
-      goal:
-        schema:
-          type: string
-    outputs:
-      complete:
-        schema:
-          type: boolean
-    gate:
-      routes:
-${gate}
-cleanup: manual
-`;
-}
+import { test, expect, type HarnessMockEvent } from './fixtures.js';
+import {
+  doneResult,
+  enqueue,
+  questionResult,
+  seedWorkflow,
+  setClaudeScenario,
+  singlePhaseWorkflow,
+  type WorkflowDetail,
+  type WorkflowStateEvent,
+} from './workflows-helpers.js';
 
 test('workflow drain completes two phases through the real queue', async ({ harness }) => {
   await setClaudeScenario(harness, 'workflow-drain', [

@@ -92,7 +92,7 @@
               </span>
               <span aria-hidden="true" class="text-fg-hint">·</span>
             {/if}
-            <span class={'min-w-0 flex-1 truncate text-left ' + (item.state === 'queued' || item.state === 'done' ? 'text-fg-hint' : '')} title={item.goal}>{item.goal}</span>
+            <span data-testid="workflow-sidebar-goal" class={'min-w-0 flex-1 truncate text-left ' + (item.state === 'queued' || item.state === 'done' ? 'text-fg-hint' : '')} title={item.goal}>{item.goal}</span>
             {#if meta}
               <span class="shrink-0 tabular-nums text-fg-hint">{meta}</span>
             {/if}
