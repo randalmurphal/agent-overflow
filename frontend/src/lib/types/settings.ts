@@ -187,6 +187,8 @@ export interface Settings {
   workflowQueueActive: boolean;
   /** Global workflow phase concurrency, bounded by the backend to 1..32. */
   workflowConcurrency: number;
+  /** Attach the user-directed workflow proposal tool to new interactive sessions. */
+  workflowChatEnqueue: boolean;
 }
 
 export interface NetworkPersistedSettings {

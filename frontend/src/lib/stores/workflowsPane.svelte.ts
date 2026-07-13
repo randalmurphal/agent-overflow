@@ -46,6 +46,8 @@ import { closeCompanionsForSource } from './companionPanes.svelte';
 export const WORKFLOWS_PANE_ID = 'workflows';
 
 export interface WorkflowIntakePrefill {
+  threadId?: string;
+  proposalId?: string;
   projectId?: string;
   goal?: string;
   workflowId?: string;

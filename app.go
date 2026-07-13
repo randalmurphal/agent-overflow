@@ -97,6 +97,9 @@ type App struct {
 	workflowAutoDispositionIDs  []string
 	workflowAutoDispositionBusy bool
 	workflowNotificationsMu     sync.Mutex
+	// workflowChatProposalMu serializes queue/dismiss decisions for persisted
+	// chat proposal cards so two local clicks cannot enqueue one proposal twice.
+	workflowChatProposalMu      sync.Mutex
 	workflowNotificationTallies map[string]workflowNotificationTally
 	workflowQueueActive         bool
 	workflowDigestSlots         chan struct{}
@@ -468,6 +471,10 @@ type session struct {
 	// reconciler diffs it against the thread row's current options to
 	// decide between live apply and restart (app_session_config.go).
 	launchOpts provider.SessionOptions
+	// workflowChatMCP records the launch-time setting snapshot. Live Claude
+	// MCP reconciliation preserves the tool for this process even if Settings
+	// changes; the toggle applies on the next session start.
+	workflowChatMCP bool
 	// liveness is the heap-allocated sibling that carries activity-tracking
 	// atomics. Never nil for registered sessions — spawnProviderSession sets
 	// it on construction. Stored behind a pointer so the value-type session

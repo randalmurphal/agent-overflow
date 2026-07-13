@@ -3,7 +3,7 @@
   import type { WorkflowDefinitionView } from '../../types/workflow';
   import Modal from '../primitives/Modal.svelte';
   import DirectoryBrowser from '../sidebar/DirectoryBrowser.svelte';
-  import { WorkflowEnqueueItem, WorkflowListDefinitions } from '../../stores/bindings';
+  import { WorkflowEnqueueItem, WorkflowListDefinitions, WorkflowQueueChatProposal } from '../../stores/bindings';
   import { getProjects } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { compactWorkflowSeeds, workflowIntakeError } from '../../stores/workflowIntake';
@@ -137,10 +137,20 @@
     if (viewOnly || !selected || validationError || submitting) return;
     submitting = true;
     try {
-      await WorkflowEnqueueItem(
-        projectId, selected.id, selected.scope, goal.trim(),
-        compactWorkflowSeeds(seeds), null, baseBranchEdited ? baseBranch.trim() : '', stepMode,
-      );
+      const prefill = getWorkflowIntakePrefill();
+      const compactSeeds = compactWorkflowSeeds(seeds);
+      const selectedBaseBranch = baseBranchEdited ? baseBranch.trim() : '';
+      if (prefill?.threadId && prefill.proposalId) {
+        await WorkflowQueueChatProposal(
+          prefill.threadId, prefill.proposalId, projectId, selected.id, selected.scope,
+          goal.trim(), compactSeeds, selectedBaseBranch, stepMode,
+        );
+      } else {
+        await WorkflowEnqueueItem(
+          projectId, selected.id, selected.scope, goal.trim(),
+          compactSeeds, null, selectedBaseBranch, stepMode,
+        );
+      }
       addToast('success', `Queued — position ${predictedPosition} · starts when a slot frees`);
       onClose();
       refreshWorkflowsSidebar();

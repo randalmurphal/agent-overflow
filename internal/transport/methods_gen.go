@@ -272,6 +272,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowCompleteTakeover", ID: 3393508470},             // main.App.WorkflowCompleteTakeover
 	{Name: "WorkflowCreateItemPR", ID: 1792283305},                 // main.App.WorkflowCreateItemPR
 	{Name: "WorkflowDiscardItem", ID: 2163033761},                  // main.App.WorkflowDiscardItem
+	{Name: "WorkflowDismissChatProposal", ID: 1877476344},          // main.App.WorkflowDismissChatProposal
 	{Name: "WorkflowEnqueueItem", ID: 683191625},                   // main.App.WorkflowEnqueueItem
 	{Name: "WorkflowGetItem", ID: 70120675},                        // main.App.WorkflowGetItem
 	{Name: "WorkflowGetJobNotes", ID: 3798011060},                  // main.App.WorkflowGetJobNotes
@@ -283,6 +284,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowOpenStudioThread", ID: 304020682},              // main.App.WorkflowOpenStudioThread
 	{Name: "WorkflowOpenTriageAgent", ID: 1552981489},              // main.App.WorkflowOpenTriageAgent
 	{Name: "WorkflowOpenTriageThread", ID: 3525577760},             // main.App.WorkflowOpenTriageThread
+	{Name: "WorkflowQueueChatProposal", ID: 2517836963},            // main.App.WorkflowQueueChatProposal
 	{Name: "WorkflowReenqueueFailedItem", ID: 4280612743},          // main.App.WorkflowReenqueueFailedItem
 	{Name: "WorkflowRemoveQueuedItem", ID: 2004111234},             // main.App.WorkflowRemoveQueuedItem
 	{Name: "WorkflowReorderQueue", ID: 1214686266},                 // main.App.WorkflowReorderQueue

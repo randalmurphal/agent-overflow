@@ -232,3 +232,13 @@ func withClaudeTransportType(spec any) any {
 	out["type"] = inferred
 	return out
 }
+
+// HTTPMCPServer returns Claude Code's provider-specific streamable-HTTP
+// server shape. Codex uses a different header key and has its own renderer.
+func HTTPMCPServer(url string, headers map[string]string) map[string]any {
+	spec := map[string]any{"url": url}
+	if len(headers) > 0 {
+		spec["headers"] = headers
+	}
+	return spec
+}

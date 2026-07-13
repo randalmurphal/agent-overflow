@@ -335,6 +335,26 @@ func TestMcpConfigForCLIBackfillsHTTPType(t *testing.T) {
 	}
 }
 
+func TestBuildArgsCanMergeFirstPartyMCPWithNativeDiscovery(t *testing.T) {
+	cfg := Config{
+		MCPServers: map[string]any{
+			"workflows": HTTPMCPServer("http://127.0.0.1/mcp", map[string]string{"Authorization": "Bearer token"}),
+		},
+		MergeMCPServers: true,
+	}
+	args := buildArgs(cfg)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--mcp-config") {
+		t.Fatalf("args missing --mcp-config: %v", args)
+	}
+	if strings.Contains(joined, "--strict-mcp-config") {
+		t.Fatalf("merge args unexpectedly disable native discovery: %v", args)
+	}
+	if !strings.Contains(joined, `"headers":{"Authorization":"Bearer token"}`) {
+		t.Fatalf("args missing HTTP auth headers: %v", args)
+	}
+}
+
 func TestMcpConfigForCLIPreservesExplicitType(t *testing.T) {
 	cfg := Config{
 		MCPServers: map[string]any{

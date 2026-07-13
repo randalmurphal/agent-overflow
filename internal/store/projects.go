@@ -110,6 +110,19 @@ func (s *Store) GetProjectByPath(path string) (Project, error) {
 	return p, nil
 }
 
+// GetProjectBySlug resolves the stable user-facing identifier accepted by
+// workflow tooling.
+func (s *Store) GetProjectBySlug(slug string) (Project, error) {
+	row := s.db.QueryRow(
+		`SELECT `+projectColumns+` FROM projects WHERE slug = ?`, slug,
+	)
+	p, err := scanProject(row)
+	if err != nil {
+		return Project{}, fmt.Errorf("store: get project by slug %s: %w", slug, err)
+	}
+	return p, nil
+}
+
 // ListProjects returns all non-archived projects ordered by name ASC.
 // The frontend re-sorts client-side when the user picks a different
 // ordering.

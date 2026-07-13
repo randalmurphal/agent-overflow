@@ -78,10 +78,9 @@ func codexSandbox(mode provider.RuntimeMode) string {
 // shape of this translation is materially different from its Claude twin.
 //
 // The function intentionally does NOT handle:
-//   - MCPServers: the caller (app.go) merges design-mode MCP servers in
-//     after this returns, because design MCP wiring reaches into app-level
-//     state (designMCP.RegisterThread) that the provider package should not
-//     depend on.
+//   - MCPServers: the caller merges app-owned per-thread MCP servers after
+//     this returns because their registration and transport credentials are
+//     outside the provider package.
 //   - opts.ForkSession: Codex's fork flow is a separate `thread/fork`
 //     app-server call and is NOT triggered by ForkSession. The field is a
 //     no-op for Codex and we don't pretend otherwise.

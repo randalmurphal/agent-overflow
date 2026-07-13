@@ -96,6 +96,12 @@ type Config struct {
 	// bytes the agent writes can include user material.
 	DesignHandler func() http.Handler
 
+	// MCPToolCall handles the single first-party workflow proposal tool.
+	// The transport package owns the authenticated MCP protocol surface;
+	// the App callback owns thread eligibility, validation, and persistence.
+	// Optional — when nil, the MCP route is not registered.
+	MCPToolCall func(context.Context, string, json.RawMessage) (string, error)
+
 	// ReadLimit caps the byte size of a single inbound WS message.
 	// Zero defaults to DefaultReadLimit (75 MiB).
 	ReadLimit int64
@@ -304,6 +310,9 @@ func (s *Server) buildHTTPServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/bootstrap.json", s.loopbackHostGuard(s.handleBootstrap))
 	mux.HandleFunc("/ws", s.loopbackHostGuard(s.handleWS))
+	if s.cfg.MCPToolCall != nil {
+		mux.HandleFunc("/mcp/workflows", s.loopbackHostGuard(s.handleWorkflowMCP))
+	}
 	if s.cfg.DesignHandler != nil {
 		// Wrap in the same loopback host guard as /bootstrap.json:
 		// design files can include user material the agent put in the

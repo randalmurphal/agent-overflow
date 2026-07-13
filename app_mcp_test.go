@@ -296,7 +296,7 @@ func TestSetMcpServerEnabled_ClaudeValidatesBeforeMutatingConfig(t *testing.T) {
 	}
 }
 
-func TestBuildCodexMCPServersForThreadHonorsExplicitEmptyOverlays(t *testing.T) {
+func TestBuildCodexMCPServersForThreadEmitsExplicitDisabledOverlays(t *testing.T) {
 	app, _, codexPath := newMCPTestApp(t)
 	writeCodexConfig(t, codexPath, `
 [mcp_servers.github]
@@ -328,11 +328,13 @@ url = "https://mcp.linear.app/api"
 	if err != nil {
 		t.Fatalf("buildCodexMCPServersForThread all disabled: %v", err)
 	}
-	if allDisabled == nil {
-		t.Fatal("all-disabled overlay is nil, want explicit empty map")
+	if len(allDisabled) != 2 {
+		t.Fatalf("all-disabled overlay len = %d, want 2 explicit entries (%#v)", len(allDisabled), allDisabled)
 	}
-	if len(allDisabled) != 0 {
-		t.Fatalf("all-disabled overlay len = %d, want 0 (%#v)", len(allDisabled), allDisabled)
+	for _, name := range []string{"github", "linear"} {
+		if enabled, ok := allDisabled[name].(map[string]any)["enabled"].(bool); !ok || enabled {
+			t.Fatalf("all-disabled overlay %q = %#v, want enabled:false", name, allDisabled[name])
+		}
 	}
 }
 

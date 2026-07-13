@@ -185,6 +185,29 @@ func validateJSONValue(schema JSONSchema, value any, path string) []string {
 	return errors
 }
 
+// ValidateInputs typechecks one run's supplied workflow inputs against the
+// same schema validator used for authored variable contracts. Undeclared
+// inputs are rejected so a typo cannot be persisted as an inert seed.
+func ValidateInputs(workflow Workflow, inputs map[string]any) []string {
+	errors := make([]string, 0)
+	for name, variable := range workflow.Inputs {
+		value, present := inputs[name]
+		if !present {
+			if !variable.Optional {
+				errors = append(errors, fmt.Sprintf("$.seeds.%s is required", name))
+			}
+			continue
+		}
+		errors = append(errors, validateJSONValue(variable.Schema, value, "$.seeds."+name)...)
+	}
+	for name := range inputs {
+		if _, declared := workflow.Inputs[name]; !declared {
+			errors = append(errors, fmt.Sprintf("$.seeds.%s is not declared by workflow %q", name, workflow.ID))
+		}
+	}
+	return errors
+}
+
 func numericallyEqual(left, right any) bool {
 	leftNumber, leftOK := numberAsFloat64(left)
 	rightNumber, rightOK := numberAsFloat64(right)

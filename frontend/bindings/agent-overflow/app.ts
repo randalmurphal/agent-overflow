@@ -2936,6 +2936,10 @@ export function WorkflowDiscardItem(itemID: string): $CancellablePromise<$models
     });
 }
 
+export function WorkflowDismissChatProposal(threadID: string, proposalID: string): $CancellablePromise<void> {
+    return $Call.ByID(1877476344, threadID, proposalID);
+}
+
 export function WorkflowEnqueueItem(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, baseBranch: string, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(683191625, projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode).then(($result: any) => {
         return $$createType101($result);
@@ -3031,6 +3035,17 @@ export function WorkflowOpenTriageAgent(projectID: string): $CancellablePromise<
 export function WorkflowOpenTriageThread(itemID: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3525577760, itemID).then(($result: any) => {
         return $$createType1($result);
+    });
+}
+
+/**
+ * WorkflowQueueChatProposal resolves a pending card by enqueueing through the
+ * normal workflow path with agent provenance. Edited intake values are passed
+ * here so the persisted receipt matches the run the user approved.
+ */
+export function WorkflowQueueChatProposal(threadID: string, proposalID: string, projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, baseBranch: string, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
+    return $Call.ByID(2517836963, threadID, proposalID, projectID, workflowID, workflowScope, goal, seeds, baseBranch, stepMode).then(($result: any) => {
+        return $$createType101($result);
     });
 }
 

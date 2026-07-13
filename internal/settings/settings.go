@@ -237,9 +237,12 @@ type Settings struct {
 	UsagePeriod string `json:"usagePeriod"`
 
 	// WorkflowQueueActive and WorkflowConcurrency configure the autonomous
-	// workflow drain. Concurrency is global across projects and bounded 1..32.
+	// workflow drain. WorkflowChatEnqueue controls whether newly started
+	// interactive provider sessions receive the first-party proposal tool.
+	// Concurrency is global across projects and bounded 1..32.
 	WorkflowQueueActive bool `json:"workflowQueueActive"`
 	WorkflowConcurrency int  `json:"workflowConcurrency"`
+	WorkflowChatEnqueue bool `json:"workflowChatEnqueue"`
 
 	// Per-client UI view state (pane layout, collapsed projects,
 	// sidebar width, …) deliberately does NOT live here: it moved to
@@ -306,6 +309,7 @@ var DefaultSettings = Settings{
 	UsagePeriod:         "month",
 	WorkflowQueueActive: true,
 	WorkflowConcurrency: 2,
+	WorkflowChatEnqueue: true,
 }
 
 // HiddenModelsForProvider returns the hidden-model slug list for the

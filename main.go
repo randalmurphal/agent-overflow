@@ -328,6 +328,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// and iframe loads falling through to the SPA shell with
 		// X-Frame-Options: DENY.
 		DesignHandler: appService.DesignServer,
+		MCPToolCall:   appService.handleWorkflowMCPToolCall,
 	}
 	if listenAddr != "" {
 		host, port := splitListenAddr(listenAddr)

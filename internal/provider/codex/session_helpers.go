@@ -32,7 +32,7 @@ func buildThreadParams(cfg Config) map[string]any {
 	}
 
 	// `config` is the free-form override bag on ThreadStartParams. We set
-	// mcp_servers (design-mode wiring) and model_reasoning_effort (the
+	// mcp_servers (app-owned per-thread wiring) and model_reasoning_effort (the
 	// thread-level reasoning_effort default, mirrored by the per-turn
 	// `effort` override on turn/start). Keys documented in codex-source:
 	// app-server/src/codex_message_processor.rs (search "model_reasoning_effort").

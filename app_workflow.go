@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"time"
@@ -168,6 +170,10 @@ func (a *App) requireWorkflowEngine() (*engine.Engine, error) {
 }
 
 func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, budget *profile.Budget, baseBranch string, stepMode bool) (store.WorkItem, error) {
+	return a.enqueueWorkflowItem(projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode, "manual", "")
+}
+
+func (a *App) enqueueWorkflowItem(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, budget *profile.Budget, baseBranch string, stepMode bool, source, sourceRef string) (store.WorkItem, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return store.WorkItem{}, err
@@ -202,8 +208,12 @@ func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal str
 			return store.WorkItem{}, fmt.Errorf("enqueue workflow item: encode budget: %w", err)
 		}
 	}
-	if _, err := a.store.GetProject(projectID); err != nil {
+	projectRow, err := a.store.GetProject(projectID)
+	if err != nil {
 		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %w", err)
+	}
+	if projectRow.Archived {
+		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: project %q is archived", projectRow.Name)
 	}
 	// Definition/profile errors are synchronous validation failures, not
 	// provisioning failures. Resolve before persistence so an unknown or broken
@@ -217,10 +227,26 @@ func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal str
 		baseBranch = strings.TrimSpace(projectProfile.BaseBranch)
 	}
 	definitions := workflowDefinitionSource{store: a.store, configRoot: a.workflowDataRoot(), profiles: profiles}
-	if _, err := definitions.Resolve(a.lifeCtx(), store.WorkItem{
+	workflow, err := definitions.Resolve(a.lifeCtx(), store.WorkItem{
 		ProjectID: projectID, WorkflowID: workflowID, WorkflowScope: string(scope),
-	}); err != nil {
+	})
+	if err != nil {
 		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %w", err)
+	}
+	normalizedSeeds := append(json.RawMessage(nil), seeds...)
+	// Chat proposals are untrusted agent-produced input and must be checked at
+	// both proposal time and the approval commit point (the user may edit it).
+	// Preserve the established manual/harness enqueue contract, whose callers
+	// may intentionally let the workflow runner derive values from Goal.
+	if source == "agent" {
+		seedValues, encodedSeeds, err := decodeWorkflowSeeds(seeds)
+		if err != nil {
+			return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %w", err)
+		}
+		if validationErrors := def.ValidateInputs(workflow, seedValues); len(validationErrors) > 0 {
+			return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %s", strings.Join(validationErrors, "; "))
+		}
+		normalizedSeeds = encodedSeeds
 	}
 	sortPosition, err := a.store.NextWorkItemSortPosition(projectID)
 	if err != nil {
@@ -230,14 +256,36 @@ func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal str
 		ID: uuid.NewString(), ProjectID: projectID, Goal: goal,
 		WorkflowID: workflowID, WorkflowScope: string(scope),
 		State: string(engine.StateQueued), SortPosition: sortPosition,
-		Seeds: append(json.RawMessage(nil), seeds...), Budget: encodedBudget,
-		BaseBranch: baseBranch, StepMode: stepMode, Source: "manual",
+		Seeds: normalizedSeeds, Budget: encodedBudget,
+		BaseBranch: baseBranch, StepMode: stepMode, Source: source, SourceRef: sourceRef,
 		CreatedAt: time.Now().UnixMilli(),
 	}
 	if err := workflowEngine.EnqueueDetachedStarts(item); err != nil {
 		return store.WorkItem{}, err
 	}
 	return a.store.GetWorkItem(item.ID)
+}
+
+func decodeWorkflowSeeds(seeds json.RawMessage) (map[string]any, json.RawMessage, error) {
+	if len(seeds) == 0 || string(seeds) == "null" {
+		seeds = json.RawMessage(`{}`)
+	}
+	var values map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(seeds))
+	if err := decoder.Decode(&values); err != nil {
+		return nil, nil, fmt.Errorf("seeds must be an object: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return nil, nil, fmt.Errorf("seeds must contain one JSON object")
+	}
+	if values == nil {
+		return nil, nil, fmt.Errorf("seeds must be an object")
+	}
+	normalized, err := json.Marshal(values)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode seeds: %w", err)
+	}
+	return values, normalized, nil
 }
 
 func (a *App) WorkflowCancelItem(itemID string) error {

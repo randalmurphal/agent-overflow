@@ -313,19 +313,22 @@ func TestRetentionDefaultIsThirtyDays(t *testing.T) {
 
 func TestWorkflowSettingsDefaultsValidationAndSanitization(t *testing.T) {
 	got := NewService(t.TempDir()).Get()
-	if !got.WorkflowQueueActive || got.WorkflowConcurrency != 2 {
-		t.Fatalf("workflow defaults = active:%t concurrency:%d", got.WorkflowQueueActive, got.WorkflowConcurrency)
+	if !got.WorkflowQueueActive || got.WorkflowConcurrency != 2 || !got.WorkflowChatEnqueue {
+		t.Fatalf("workflow defaults = active:%t concurrency:%d chat-enqueue:%t", got.WorkflowQueueActive, got.WorkflowConcurrency, got.WorkflowChatEnqueue)
 	}
 	svc := NewService(t.TempDir())
-	updated, err := svc.Update(map[string]any{"workflowQueueActive": false, "workflowConcurrency": 32})
+	updated, err := svc.Update(map[string]any{"workflowQueueActive": false, "workflowConcurrency": 32, "workflowChatEnqueue": false})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.WorkflowQueueActive || updated.WorkflowConcurrency != 32 {
+	if updated.WorkflowQueueActive || updated.WorkflowConcurrency != 32 || updated.WorkflowChatEnqueue {
 		t.Fatalf("workflow settings update = %+v", updated)
 	}
 	if _, err := svc.Update(map[string]any{"workflowConcurrency": 0}); err == nil {
 		t.Fatal("zero workflow concurrency succeeded")
+	}
+	if _, err := svc.Update(map[string]any{"workflowChatEnqueue": "yes"}); err == nil {
+		t.Fatal("non-boolean workflow chat enqueue succeeded")
 	}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"workflowConcurrency":99}`), 0o600); err != nil {

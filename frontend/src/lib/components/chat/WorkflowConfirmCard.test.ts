@@ -19,5 +19,23 @@ describe('WorkflowConfirmCard', () => {
     expect(onQueue).not.toHaveBeenCalled();
     await fireEvent.click(view.getByTestId('wf-confirm-queue'));
     expect(onQueue).toHaveBeenCalledWith(prefill);
+    await fireEvent.click(view.getByTestId('wf-confirm-dismiss'));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables every pending action remotely and renders resolved receipts without actions', () => {
+    const props = {
+      projectName: 'AO', title: 'Fix it', workflowName: 'Build', baseBranch: 'main',
+      prefill: {}, onQueue: vi.fn(), onEdit: vi.fn(), onDismiss: vi.fn(),
+    };
+    const disabled = render(WorkflowConfirmCard, { ...props, disabled: true });
+    for (const id of ['wf-confirm-queue', 'wf-confirm-edit', 'wf-confirm-dismiss']) {
+      expect(disabled.getByTestId(id)).toBeDisabled();
+      expect(disabled.getByTestId(id)).toHaveAttribute('title', 'Local only');
+    }
+    disabled.unmount();
+    const queued = render(WorkflowConfirmCard, { ...props, state: 'queued' as const });
+    expect(queued.getByTestId('wf-confirm-receipt')).toHaveTextContent('Added to Up next');
+    expect(queued.queryByTestId('wf-confirm-queue')).toBeNull();
   });
 });

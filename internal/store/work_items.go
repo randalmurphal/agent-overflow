@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -147,6 +149,23 @@ func (s *Store) GetWorkItem(id string) (WorkItem, error) {
 		return WorkItem{}, fmt.Errorf("store: get work item %s: %w", id, err)
 	}
 	return item, nil
+}
+
+// GetWorkItemBySourceRef resolves an idempotency/provenance key without
+// materializing the queue. Agent-created chat proposals use this to recover
+// if the run row committed before the proposal card receipt did.
+func (s *Store) GetWorkItemBySourceRef(source, sourceRef string) (WorkItem, bool, error) {
+	item, err := scanWorkItem(s.db.QueryRow(
+		`SELECT `+workItemColumns+` FROM work_items WHERE source = ? AND source_ref = ? LIMIT 1`,
+		source, sourceRef,
+	), false)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkItem{}, false, nil
+	}
+	if err != nil {
+		return WorkItem{}, false, fmt.Errorf("store: get work item by source ref %s/%s: %w", source, sourceRef, err)
+	}
+	return item, true, nil
 }
 
 // GetWorkItemAttentionContext loads only the fields needed for an attention

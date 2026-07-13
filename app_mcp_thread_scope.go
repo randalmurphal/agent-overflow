@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 )
 
@@ -174,10 +175,11 @@ func mcpServerExists(servers []MCPServer, name string) bool {
 	return false
 }
 
-// buildCodexMCPServersForThread builds the full enabled server set for a Codex
-// thread, reading disabled state from SQLite. A nil return means no per-thread
-// snapshot exists and Codex should use native config discovery. A non-nil empty
-// map is an explicit "enable none of the configured servers" overlay.
+// buildCodexMCPServersForThread builds the thread/start overlay for Codex,
+// reading disabled state from SQLite. A nil return means no per-thread snapshot
+// exists and Codex should use native discovery. Disabled names are emitted as
+// enabled:false because Codex deep-merges config; omission would inherit and
+// enable the global server.
 func (a *App) buildCodexMCPServersForThread(t store.Thread) (map[string]any, error) {
 	disabled, snapshotted, err := a.store.GetDisabledMcpServers(t.ID)
 	if err != nil {
@@ -201,6 +203,7 @@ func (a *App) buildCodexMCPServersForThread(t store.Thread) (map[string]any, err
 	out := map[string]any{}
 	for _, srv := range servers {
 		if disabledSet[srv.Name] {
+			out[srv.Name] = codex.DisabledMCPServer()
 			continue
 		}
 		spec := map[string]any{}

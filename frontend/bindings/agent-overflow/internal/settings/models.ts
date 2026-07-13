@@ -428,10 +428,13 @@ export class Settings {
 
     /**
      * WorkflowQueueActive and WorkflowConcurrency configure the autonomous
-     * workflow drain. Concurrency is global across projects and bounded 1..32.
+     * workflow drain. WorkflowChatEnqueue controls whether newly started
+     * interactive provider sessions receive the first-party proposal tool.
+     * Concurrency is global across projects and bounded 1..32.
      */
     "workflowQueueActive": boolean;
     "workflowConcurrency": number;
+    "workflowChatEnqueue": boolean;
 
     /**
      * Window stores the desktop window placement (position, size, and
@@ -554,6 +557,9 @@ export class Settings {
         if (!("workflowConcurrency" in $$source)) {
             this["workflowConcurrency"] = 0;
         }
+        if (!("workflowChatEnqueue" in $$source)) {
+            this["workflowChatEnqueue"] = false;
+        }
         if (!("window" in $$source)) {
             this["window"] = (new windowgeom$0.Geometry());
         }
@@ -573,7 +579,7 @@ export class Settings {
         const $$createField34_0 = $$createType3;
         const $$createField35_0 = $$createType0;
         const $$createField36_0 = $$createType5;
-        const $$createField41_0 = $$createType6;
+        const $$createField42_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
@@ -600,7 +606,7 @@ export class Settings {
             $$parsedSource["remoteEndpoints"] = $$createField36_0($$parsedSource["remoteEndpoints"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField41_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField42_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

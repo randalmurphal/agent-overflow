@@ -196,6 +196,26 @@
 
   <PaneDensitySection />
 
+  <section data-testid="settings-workflows">
+    <SettingsHeader
+      eyebrow="Workflows"
+      title="Chat Proposals"
+      description="Control how workflow runs can be proposed from interactive threads."
+    />
+    <div class="mt-4 flex flex-col gap-1">
+      <SettingsField
+        label="Queue workflows from chat"
+        hint="Let agents show a confirmation card when you ask them to queue workflow work."
+      >
+        <ToggleSwitch
+          checked={settings.workflowChatEnqueue}
+          ariaLabel="Toggle Queue Workflows From Chat"
+          onToggle={(value) => updateSetting('workflowChatEnqueue', value)}
+        />
+      </SettingsField>
+    </div>
+  </section>
+
   <section data-testid="settings-thread-defaults">
     <SettingsHeader
       eyebrow="Thread defaults"

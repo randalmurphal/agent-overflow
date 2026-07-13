@@ -12,6 +12,7 @@
   import ThinkingBlock from './ThinkingBlock.svelte';
   import ToolCallCard from './ToolCallCard.svelte';
   import UserMessage from './UserMessage.svelte';
+  import WorkflowProposalRow from './WorkflowProposalRow.svelte';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import type { UserMessageActions } from './userMessageActions';
@@ -104,6 +105,8 @@
     </div>
   {:else if displayItem.kind === 'compaction'}
     <CompactionDivider {pane} item={displayItem} />
+  {:else if displayItem.kind === 'workflow_proposal'}
+    <WorkflowProposalRow item={displayItem} />
   {:else}
     <AssistantMessage {pane} item={displayItem} />
   {/if}

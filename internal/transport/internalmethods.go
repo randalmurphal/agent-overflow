@@ -266,6 +266,8 @@ var LocalOnlyMethods = map[string]bool{
 	// The five pure workflow reads live in methods_gen_test.go's wireSafeMethods
 	// so remote workflow surfaces can render without gaining mutation access.
 	"WorkflowEnqueueItem":         true,
+	"WorkflowQueueChatProposal":   true,
+	"WorkflowDismissChatProposal": true,
 	"WorkflowCancelItem":          true,
 	"WorkflowResumeItem":          true,
 	"WorkflowAnswerQuestion":      true,

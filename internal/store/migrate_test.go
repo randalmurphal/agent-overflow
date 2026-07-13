@@ -1414,6 +1414,43 @@ func TestV11CompactionReasoningKindWidening(t *testing.T) {
 	}
 }
 
+func TestV28WorkflowProposalKindWidening(t *testing.T) {
+	db := migrateThrough(t, 27)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, slug, created_at, updated_at)
+		VALUES ('p-v28', '/v28', 'v28', 'v28', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, mode)
+		VALUES ('t-v28', 'p-v28', 'Keep me', 'claude', '/tmp', '', 1, 1, 0, 'chat')`)
+	mustExec(t, db, `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+		summary, parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+		VALUES ('existing-v28', 't-v28', 0, 0, 'assistant_text', 'assistant', 'completed',
+		'existing', '', 0, '', '', '', '{}', 1, 1)`)
+	const proposalInsert = `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+		summary, parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+		VALUES ('proposal-v28', 't-v28', 0, 1, 'workflow_proposal', 'assistant', 'completed',
+		'Queue it', '', 0, '', '', '', '{"state":"pending"}', 1, 1)`
+	if _, err := db.Exec(proposalInsert); err == nil {
+		t.Fatal("pre-v28: items must reject kind workflow_proposal")
+	}
+	if err := applyRebuildMigration(db, migrationByVersion(t, 28)); err != nil {
+		t.Fatalf("apply v28 rebuild: %v", err)
+	}
+	if _, err := db.Exec(proposalInsert); err != nil {
+		t.Fatalf("post-v28: workflow_proposal rejected: %v", err)
+	}
+	var existing int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM items WHERE id = 'existing-v28'`).Scan(&existing); err != nil || existing != 1 {
+		t.Fatalf("existing item survival: count=%d err=%v", existing, err)
+	}
+	if _, err := db.Exec(`UPDATE items SET kind = 'not_a_kind' WHERE id = 'proposal-v28'`); err == nil {
+		t.Fatal("post-v28: bogus kind accepted")
+	}
+	var indexName string
+	if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_work_items_agent_source_ref'`).Scan(&indexName); err != nil {
+		t.Fatalf("post-v28: agent source-ref idempotency index missing: %v", err)
+	}
+}
+
 // TestV12ChannelMaxTurnsColumn covers the plain ALTER TABLE ADD COLUMN
 // migration that backs the restart-rebuild path
 // (deliberationForChannel): a pre-existing channel row must backfill
@@ -1569,7 +1606,7 @@ func TestTurnsInflightPartialIndex(t *testing.T) {
 // backfill rule: Codex turns rows use the wire turn id verbatim as
 // their PK (never contains ':'), so they backfill provider_turn_id =
 // turn_id; Claude rows synthesize `<threadID>:<turnIndex>` PKs (always
-// contain ':') and must stay '' — Claude has no wire turn id.
+// contain ':') and must stay empty — Claude has no wire turn id.
 func TestMigrationV20BackfillsProviderTurnID(t *testing.T) {
 	db := migrateThrough(t, 19)
 	mustExec(t, db, `

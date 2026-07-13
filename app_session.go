@@ -176,6 +176,20 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 			designCfg.MCPServers = servers
 		}
 	}
+	if designServers == nil {
+		chatServer, enabled, err := a.workflowChatMCPServerConfig(t)
+		if err != nil {
+			return fmt.Errorf("start session: %w", err)
+		}
+		if enabled {
+			if designCfg.MCPServers == nil {
+				designCfg.MCPServers = map[string]any{}
+			}
+			designCfg.MCPServers[workflowChatMCPServerName] = chatServer
+			designCfg.WorkflowChatMCP = true
+			designCfg.MergeMCPServers = t.Provider == string(provider.Claude)
+		}
+	}
 
 	// Flip any persisted `is_background=running` rows for a Codex thread
 	// to errored/lost BEFORE spawning the new subprocess. Those rows
@@ -362,16 +376,18 @@ func (a *App) spawnProviderSession(
 		cfg.Env = a.mergeProviderEnv(cfg.Env)
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
+		cfg.MergeMCPServers = designCfg.MergeMCPServers
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			return session{}, err
 		}
 		return session{
-			provider:   string(provider.Claude),
-			token:      sessionToken,
-			claude:     sess,
-			launchOpts: opts,
-			liveness:   liveness,
+			provider:        string(provider.Claude),
+			token:           sessionToken,
+			claude:          sess,
+			launchOpts:      opts,
+			workflowChatMCP: designCfg.WorkflowChatMCP,
+			liveness:        liveness,
 		}, nil
 
 	case string(provider.Codex):
@@ -400,11 +416,12 @@ func (a *App) spawnProviderSession(
 			a.handleCodexMCPStartupUpdate(u)
 		})
 		return session{
-			provider:   string(provider.Codex),
-			token:      sessionToken,
-			codex:      sess,
-			launchOpts: opts,
-			liveness:   liveness,
+			provider:        string(provider.Codex),
+			token:           sessionToken,
+			codex:           sess,
+			launchOpts:      opts,
+			workflowChatMCP: designCfg.WorkflowChatMCP,
+			liveness:        liveness,
 		}, nil
 
 	case string(provider.ClaudeTUI):

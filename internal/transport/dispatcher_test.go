@@ -711,6 +711,8 @@ func (p *privilegedApp) StartDiscussionByID() string            { return "ok" }
 func (p *privilegedApp) PostChannelMessage() string             { return "ok" }
 func (p *privilegedApp) ConcludeDiscussion() string             { return "ok" }
 func (p *privilegedApp) WorkflowEnqueueItem() string            { return "ok" }
+func (p *privilegedApp) WorkflowQueueChatProposal() string      { return "ok" }
+func (p *privilegedApp) WorkflowDismissChatProposal() string    { return "ok" }
 func (p *privilegedApp) WorkflowCancelItem() string             { return "ok" }
 func (p *privilegedApp) WorkflowResumeItem() string             { return "ok" }
 func (p *privilegedApp) WorkflowAnswerQuestion() string         { return "ok" }

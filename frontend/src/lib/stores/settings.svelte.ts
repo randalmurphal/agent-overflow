@@ -53,6 +53,7 @@ const DEFAULT_SETTINGS: Settings = {
   usagePeriod: "month",
   workflowQueueActive: true,
   workflowConcurrency: 2,
+  workflowChatEnqueue: true,
 };
 
 function defaultSettings(): Settings {

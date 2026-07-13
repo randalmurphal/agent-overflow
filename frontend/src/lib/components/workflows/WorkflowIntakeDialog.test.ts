@@ -47,6 +47,7 @@ describe('WorkflowIntakeDialog', () => {
       }],
     }));
     setBindingMock('WorkflowEnqueueItem', async () => ({ id: 'queued' }));
+    setBindingMock('WorkflowQueueChatProposal', async () => ({ id: 'queued-proposal' }));
     setBindingMock('BrowseDirectory', async () => ({
       path: '/tmp/p', parent: '/tmp', separator: '/', exists: true, truncated: false,
       entries: [{ name: 'brief.md', isDir: false, hidden: false, isRepo: false }],
@@ -151,6 +152,24 @@ describe('WorkflowIntakeDialog', () => {
     await waitFor(() => expect(view.getByTestId('wf-intake-workflow')).toHaveTextContent('other workflow'));
     await fireEvent.click(view.getByTestId('wf-intake-workflow'));
     expect(view.getByTestId('wf-intake-base-branch')).toHaveValue('other-base');
+  });
+
+  it('resolves an edited chat proposal instead of creating a manual run', async () => {
+    activateWorkflowsPane();
+    await loadWorkflowOverview();
+    openWorkflowIntake({
+      threadId: 'thread-1', proposalId: 'proposal-1', projectId: 'p',
+      workflowId: 'wf', goal: 'Edit me', seeds: { title: 'Release' }, baseBranch: 'main',
+    });
+    const view = render(WorkflowIntakeDialog, { open: true, onClose: vi.fn() });
+    await waitFor(() => expect(view.getByTestId('wf-intake-workflow')).toHaveTextContent('Build'));
+    await waitFor(() => expect(view.getByTestId('wf-intake-submit')).toBeEnabled());
+    await fireEvent.click(view.getByTestId('wf-intake-submit'));
+    await waitFor(() => expect(getBindingMock('WorkflowQueueChatProposal')).toHaveBeenCalled());
+    expect(getBindingMock('WorkflowQueueChatProposal')!.mock.calls[0].slice(0, 6)).toEqual([
+      'thread-1', 'proposal-1', 'p', 'wf', 'shared', 'Edit me',
+    ]);
+    expect(getBindingMock('WorkflowEnqueueItem')).not.toHaveBeenCalled();
   });
 
   it('refuses intake submission in a view-only session', async () => {

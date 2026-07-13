@@ -428,6 +428,17 @@ BEGIN
 END;
 `
 
+// rebuildItemsWorkflowProposalV28SQL widens only the items.kind CHECK from
+// the proven v11 rebuild. Keeping the complete rebuild mechanically derived
+// preserves every column, index, trigger, and FK-safety property of that
+// migration while admitting the persisted chat confirmation card.
+var rebuildItemsWorkflowProposalV28SQL = strings.Replace(
+	rebuildItemsV11SQL,
+	"        'compaction_reasoning',",
+	"        'compaction_reasoning',\n        'workflow_proposal',",
+	1,
+)
+
 const rebuildDiffReviewCommentsV16SQL = `
 CREATE TABLE diff_review_comments_new (
 	id            TEXT    PRIMARY KEY,
@@ -1099,6 +1110,15 @@ CREATE INDEX idx_work_items_state_sort
 		SQL: `CREATE INDEX idx_usage_ledger_project_work_item
   ON usage_ledger(project_id, work_item_id)
   WHERE work_item_id <> '';`,
+	},
+	{
+		Version: 28,
+		Name:    "workflow_proposal_item_kind",
+		SQL: rebuildItemsWorkflowProposalV28SQL + `
+CREATE UNIQUE INDEX idx_work_items_agent_source_ref
+  ON work_items(source_ref)
+  WHERE source = 'agent' AND source_ref <> '';`,
+		Rebuild: true,
 	},
 }
 

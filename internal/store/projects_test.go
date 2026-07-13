@@ -133,6 +133,21 @@ func TestGetProjectByPath(t *testing.T) {
 	}
 }
 
+func TestGetProjectBySlug(t *testing.T) {
+	s := newTestStore(t)
+	project := Project{ID: "p-slug", Path: "/tmp/slug", Name: "Slug Project", CreatedAt: 1, UpdatedAt: 1}
+	if err := s.CreateProject(project); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetProjectBySlug("slug-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != project.ID {
+		t.Fatalf("GetProjectBySlug id = %q, want %q", got.ID, project.ID)
+	}
+}
+
 func TestListProjectsOrdersByName(t *testing.T) {
 	s := newTestStore(t)
 	// newTestStore seeds a default project — account for it in the list.
