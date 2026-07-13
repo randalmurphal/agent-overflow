@@ -961,3 +961,11 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   24/24 twice). Noted for P3.9/polish: discard on non-disposition parks
   leaves needs-human (pre-existing); PR disposition now requires a
   resolvable base. Lane `p38` pruned.
+
+- **P3.9 (review fixes: frontend stores/components + e2e) dispatched.**
+  Lane `p39` at `lane/p39-review-fixes-frontend` (base 6e0db67f),
+  bootstrap + go-build + fe-check preflight green. codex gpt-5.6-sol
+  xhigh, bypass sandbox, session id
+  `019f5953-7f26-7b61-9fb3-e3723c822684`. Banner verified. 34 work-plan
+  items; Go files are a forbidden zone (backend contract frozen); e2e
+  gate runs twice.
