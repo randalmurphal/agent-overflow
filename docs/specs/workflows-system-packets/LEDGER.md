@@ -1068,3 +1068,26 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   Report + addendum: `reports/P4.1-report.md`. Independent post-merge
   battery: 9/9 green. Lane `p41` pruned. **Task #5 (polish pass)
   complete — M3 fix/perf/polish campaign closed.**
+
+- **M4 opened — user rulings ratified (2026-07-13).** Chat enqueue is a
+  user-directed first-party MCP tool with a settings toggle (D4.5
+  amendment); PR follow-ups become linked-thread surfaces — Review
+  comments (N) + Discuss this PR — replacing the D11 fix-turn loop;
+  queues become per-project entities (list-of-queues UI, per-project
+  pause + concurrency, per-project drains ratified in §10); hand-off
+  seeds carry intent context, never diffs (F4.4 resolved);
+  `workflow:definitions-changed` ratified; standing mandate that
+  improvements are always in scope. Rulings in
+  `workflows-system-decisions.md` "M4 rulings"; sequenced as P5.0
+  (producer) → P5.1 (per-project queues + definitions-changed) → P5.2
+  (hand-off context + PR surfaces).
+
+- **P5.0 (user-directed enqueue-from-chat) dispatched.** Lane `p50` at
+  `lane/p50-chat-enqueue` (base 59c4197c), bootstrap green (fe-check
+  0 errors). codex gpt-5.6-sol xhigh, bypass sandbox, session id
+  `019f5bb3-61ac-7240-a277-c560c82f65db`. Banner verified. 7 items:
+  provider HTTP-MCP capability verification first (spike policy, BLOCKED
+  if unsupported), hand-rolled minimal MCP endpoint on the local
+  transport with token auth, `workflowChatEnqueue` toggle (default on),
+  persisted thread-item proposals, WorkflowConfirmCard production
+  (queue/edit/dismiss), transport classification, full battery.
