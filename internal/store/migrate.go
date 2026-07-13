@@ -1120,6 +1120,15 @@ CREATE UNIQUE INDEX idx_work_items_agent_source_ref
   WHERE source = 'agent' AND source_ref <> '';`,
 		Rebuild: true,
 	},
+	{
+		Version: 29,
+		Name:    "project_workflow_queue_settings",
+		SQL: `ALTER TABLE projects ADD COLUMN workflow_queue_paused INTEGER NOT NULL DEFAULT 0
+CHECK(workflow_queue_paused IN (0,1));
+
+ALTER TABLE projects ADD COLUMN workflow_concurrency INTEGER NOT NULL DEFAULT 0
+CHECK(workflow_concurrency BETWEEN 0 AND 32);`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

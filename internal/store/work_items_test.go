@@ -99,6 +99,9 @@ func TestWorkItemCRUDListAndTransitions(t *testing.T) {
 	if count, err := s.CountWorkItemsInStates("queued", "running"); err != nil || count != 3 {
 		t.Fatalf("queued/running count = %d err=%v, want 3", count, err)
 	}
+	if count, err := s.CountProjectWorkItemsInStates("project-a", "queued", "running"); err != nil || count != 2 {
+		t.Fatalf("project-a queued/running count = %d err=%v, want 2", count, err)
+	}
 }
 
 func TestWorkItemTriageAssociationAndPhaseThreadLookup(t *testing.T) {

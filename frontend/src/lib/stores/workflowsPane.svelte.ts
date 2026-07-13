@@ -74,6 +74,7 @@ let armedAction: string | null = $state(null);
 let requestVersion = 0;
 let autoAdvanceTimer: ReturnType<typeof setTimeout> | null = null;
 let paneActive = $state(false);
+let definitionsRevision = $state(0);
 let diffLoading = $state(false);
 let diffError: string | null = $state(null);
 let diffRequestedItemId: string | null = null;
@@ -94,6 +95,7 @@ export function getWorkflowProjectFilter(): string | null { return projectFilter
 export function getWorkflowItems(): readonly WorkItem[] { return items; }
 export function getWorkflowCosts(): Readonly<Record<string, number>> { return costs; }
 export function getWorkflowDefinitions(): readonly WorkflowDefinitionView[] { return definitions; }
+export function getWorkflowDefinitionsRevision(): number { return definitionsRevision; }
 export function getWorkflowDetail(): WorkflowItemDetail | null { return detail; }
 export function getWorkflowDiffFiles(): readonly PatchFile[] { return diffFiles; }
 export function isWorkflowLoading(): boolean { return loading; }
@@ -107,6 +109,12 @@ export function getWorkflowQueueState(): WorkflowQueueStateEvent {
     globalConcurrency,
     runningCount: queueState?.runningCount ?? items.filter((item) => item.state === 'running').length,
     slotCapacity: queueState?.slotCapacity ?? globalConcurrency,
+    projects: queueState?.projects ?? getProjects().map(({ project }) => ({
+      projectId: project.id,
+      paused: project.workflowQueuePaused ?? false,
+      concurrency: project.workflowConcurrency ?? 0,
+      runningCount: items.filter((item) => item.projectId === project.id && item.state === 'running').length,
+    })),
   };
 }
 export function isWorkflowDiffLoading(): boolean { return diffLoading; }
@@ -546,6 +554,23 @@ export function applyWorkflowQueueState(event: WorkflowQueueStateEvent): void {
   queueState = event;
 }
 
+export function reconcileWorkflowProjectQueue(projectId: string, paused: boolean, concurrency: number): void {
+  const current = getWorkflowQueueState();
+  const projects = current.projects ?? [];
+  const existing = projects.find((project) => project.projectId === projectId);
+  queueState = {
+    ...current,
+    projects: existing
+      ? projects.map((project) => project.projectId === projectId ? { ...project, paused, concurrency } : project)
+      : [...projects, { projectId, paused, concurrency, runningCount: 0 }],
+  };
+}
+
+export function applyWorkflowDefinitionsChanged(): void {
+  definitionsRevision += 1;
+  if (paneActive) void loadWorkflowOverview();
+}
+
 export function reconcileWorkflowQueueOrder(projectId: string, orderedIds: string[]): void {
   const positions = new Map(orderedIds.map((id, index) => [id, index]));
   items = items.map((item) => item.projectId === projectId && positions.has(item.id)
@@ -717,6 +742,7 @@ export function resetWorkflowsPane(): void {
   loading = false;
   error = null;
   queueState = null;
+  definitionsRevision = 0;
   receipts = new Map();
   sweepIndex = -1;
   intakeOpen = false;

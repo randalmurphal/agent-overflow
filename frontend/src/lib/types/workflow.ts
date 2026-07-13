@@ -44,6 +44,14 @@ export interface WorkflowQueueStateEvent {
   runningCount?: number;
   slotCapacity?: number;
   startsRemaining?: number;
+  projects?: WorkflowProjectQueueState[];
+}
+
+export interface WorkflowProjectQueueState {
+  projectId: string;
+  paused: boolean;
+  concurrency: number;
+  runningCount: number;
 }
 
 export interface WorkflowPhaseStateEvent {

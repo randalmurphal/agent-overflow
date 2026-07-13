@@ -689,6 +689,8 @@ export class Project {
     "slug": string;
     "color"?: string;
     "sortPosition": number;
+    "workflowQueuePaused": boolean;
+    "workflowConcurrency": number;
     "createdAt": number;
     "updatedAt": number;
     "archived": boolean;
@@ -709,6 +711,12 @@ export class Project {
         }
         if (!("sortPosition" in $$source)) {
             this["sortPosition"] = 0;
+        }
+        if (!("workflowQueuePaused" in $$source)) {
+            this["workflowQueuePaused"] = false;
+        }
+        if (!("workflowConcurrency" in $$source)) {
+            this["workflowConcurrency"] = 0;
         }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = 0;

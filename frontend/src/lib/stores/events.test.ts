@@ -115,6 +115,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('workflow:queue-state')).toBe(1);
     expect(wailsListenerCount('workflow:phase-state')).toBe(1);
     expect(wailsListenerCount('workflow:error')).toBe(1);
+    expect(wailsListenerCount('workflow:definitions-changed')).toBe(1);
 
     cleanup();
 
@@ -131,6 +132,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('workflow:queue-state')).toBe(0);
     expect(wailsListenerCount('workflow:phase-state')).toBe(0);
     expect(wailsListenerCount('workflow:error')).toBe(0);
+    expect(wailsListenerCount('workflow:definitions-changed')).toBe(0);
 
     cleanup = setupEventListeners();
   });

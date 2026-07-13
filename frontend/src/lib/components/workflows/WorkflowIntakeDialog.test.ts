@@ -12,6 +12,7 @@ import {
   resetWorkflowsSidebarForTest,
 } from '../../stores/workflowsSidebar.svelte';
 import type { WorkItem } from '../../types/workflow';
+import { applyWorkflowDefinitionsChangedEvent } from '../../stores/eventsWorkflow';
 
 const project: Project = {
   id: 'p', name: 'Project', path: '/tmp/p', sortPosition: 0,
@@ -152,6 +153,24 @@ describe('WorkflowIntakeDialog', () => {
     await waitFor(() => expect(view.getByTestId('wf-intake-workflow')).toHaveTextContent('other workflow'));
     await fireEvent.click(view.getByTestId('wf-intake-workflow'));
     expect(view.getByTestId('wf-intake-base-branch')).toHaveValue('other-base');
+  });
+
+  it('refreshes its open catalog after definitions change on disk', async () => {
+    let workflowName = 'Build';
+    setBindingMock('WorkflowListDefinitions', async () => ({
+      baseBranch: 'main', predictedQueuePosition: 1,
+      workflows: [{
+        id: 'wf', name: workflowName, scope: 'shared', phaseCount: 0, humanGateCount: 0,
+        phases: [], inputs: [], defaultStepMode: false, valid: true, allBindingsAvailable: true,
+      }],
+    }));
+    activateWorkflowsPane();
+    await loadWorkflowOverview();
+    const view = render(WorkflowIntakeDialog, { open: true, onClose: vi.fn() });
+    await waitFor(() => expect(view.getByTestId('wf-intake-workflow')).toHaveTextContent('Build'));
+    workflowName = 'Build updated';
+    applyWorkflowDefinitionsChangedEvent();
+    await waitFor(() => expect(view.getByTestId('wf-intake-workflow')).toHaveTextContent('Build updated'));
   });
 
   it('resolves an edited chat proposal instead of creating a manual run', async () => {

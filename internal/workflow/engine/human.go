@@ -86,6 +86,9 @@ func (e *Engine) completeTakeover(itemID string) error {
 	if Reason(item.item.Reason) != ReasonTakenOver {
 		return fmt.Errorf("complete takeover %q: item reason is %q, want %q", itemID, item.item.Reason, ReasonTakenOver)
 	}
+	if !e.projectHasCapacity(item.item.ProjectID) {
+		return fmt.Errorf("complete takeover %q: project concurrency is full", itemID)
+	}
 	phases, err := e.store.ListWorkItemPhases(itemID)
 	if err != nil {
 		return fmt.Errorf("complete takeover %q phases: %w", itemID, err)
@@ -124,6 +127,9 @@ func (e *Engine) answer(itemID, answer string) error {
 	if Reason(item.item.Reason) != ReasonQuestion {
 		return fmt.Errorf("answer question %q: item reason is %q, want %q", itemID, item.item.Reason, ReasonQuestion)
 	}
+	if !e.projectHasCapacity(item.item.ProjectID) {
+		return fmt.Errorf("answer question %q: project concurrency is full", itemID)
+	}
 	phases, err := e.store.ListWorkItemPhases(itemID)
 	if err != nil {
 		return fmt.Errorf("answer question %q phases: %w", itemID, err)
@@ -161,6 +167,9 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 	}
 	if Reason(item.item.Reason) != ReasonGate {
 		return fmt.Errorf("resolve human gate %q: item reason is %q, want %q", itemID, item.item.Reason, ReasonGate)
+	}
+	if !e.projectHasCapacity(item.item.ProjectID) {
+		return fmt.Errorf("resolve human gate %q: project concurrency is full", itemID)
 	}
 	phase, ok := findPhase(item.workflow, item.phaseID)
 	if !ok {

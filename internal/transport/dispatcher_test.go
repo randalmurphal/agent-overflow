@@ -718,6 +718,7 @@ func (p *privilegedApp) WorkflowResumeItem() string             { return "ok" }
 func (p *privilegedApp) WorkflowAnswerQuestion() string         { return "ok" }
 func (p *privilegedApp) WorkflowResolveGate() string            { return "ok" }
 func (p *privilegedApp) WorkflowReorderQueue() string           { return "ok" }
+func (p *privilegedApp) WorkflowUpdateProjectQueue() string     { return "ok" }
 func (p *privilegedApp) WorkflowSetQueue() string               { return "ok" }
 func (p *privilegedApp) WorkflowListItems() string              { return "ok" }
 func (p *privilegedApp) WorkflowListItemCosts() string          { return "ok" }

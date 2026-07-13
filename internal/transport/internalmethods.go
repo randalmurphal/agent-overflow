@@ -273,6 +273,7 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowAnswerQuestion":      true,
 	"WorkflowResolveGate":         true,
 	"WorkflowReorderQueue":        true,
+	"WorkflowUpdateProjectQueue":  true,
 	"WorkflowSetQueue":            true,
 	"WorkflowCompleteTakeover":    true,
 	"WorkflowOpenTriageThread":    true,

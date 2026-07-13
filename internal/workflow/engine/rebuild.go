@@ -20,6 +20,9 @@ func (e *Engine) rebuild() error {
 	projectIDs := make(map[string]struct{}, len(projects))
 	for _, project := range projects {
 		projectIDs[project.ID] = struct{}{}
+		if _, exists := e.projectQueues[project.ID]; !exists {
+			e.projectQueues[project.ID] = projectQueueState{}
+		}
 	}
 	activeItems, err := e.store.ListWorkItems(store.WorkItemListFilter{
 		States: []string{string(StateQueued), string(StateRunning), string(StateNeedsHuman)},
@@ -53,8 +56,7 @@ func (e *Engine) rebuild() error {
 				continue
 			}
 			if err := decodeSnapshot(storedItem.Snapshot, &item.workflow); err != nil {
-				item.slot = true
-				e.activeSlots++
+				e.acquireSlot(item)
 				parkErr := e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError})
 				rebuildErr := fmt.Errorf("rebuild item %q snapshot: %w", storedItem.ID, err)
 				e.emitError(storedItem.ID, errors.Join(rebuildErr, parkErr))
@@ -72,8 +74,7 @@ func (e *Engine) rebuild() error {
 			} else if len(item.workflow.Phases) > 0 {
 				item.phaseID = item.workflow.Phases[0].ID
 			}
-			item.slot = true
-			e.activeSlots++
+			e.acquireSlot(item)
 			if !hasCurrent || !terminalEnvelope(current.OutputEnvelope) {
 				item.runnerActive = hasCurrent && current.Status == "running"
 				if err := e.teardown(item, teardownRequest{

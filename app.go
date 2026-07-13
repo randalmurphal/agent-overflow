@@ -80,14 +80,15 @@ type App struct {
 	// headless boot installs the transport bridge; harness mode installs an
 	// explicit unavailable sender. Tests may leave it nil to exercise the
 	// same visible degraded error without pulling in a platform service.
-	osNotifications osNotificationSender
-	store           *store.Store
-	git             *gitops.Core
-	gitWatch        *gitwatch.Manager
-	settings        *settings.Service
-	triage          *triage.Router
-	workflowEngine  *engine.Engine
-	workflowRunner  *workflowAppRunner
+	osNotifications            osNotificationSender
+	store                      *store.Store
+	git                        *gitops.Core
+	gitWatch                   *gitwatch.Manager
+	settings                   *settings.Service
+	triage                     *triage.Router
+	workflowEngine             *engine.Engine
+	workflowRunner             *workflowAppRunner
+	workflowDefinitionsWatcher *workflowDefinitionsWatcher
 	// workflowDispositionMu serializes local git/forge disposition actions.
 	// They are rare, mutate shared repository metadata, and must not race an
 	// automatic policy against a manual click.
@@ -102,6 +103,7 @@ type App struct {
 	workflowChatProposalMu      sync.Mutex
 	workflowNotificationTallies map[string]workflowNotificationTally
 	workflowQueueActive         bool
+	workflowProjectQueuePaused  map[string]bool
 	workflowDigestSlots         chan struct{}
 	generateWorkflowDigestFn    func(context.Context, store.WorkItem, WorkflowDigest) (WorkflowDigest, error)
 	// turnObservers fan provider events out to internal App features after

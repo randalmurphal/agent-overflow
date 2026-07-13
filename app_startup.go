@@ -433,5 +433,6 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	if err := a.initWorkflowEngine(dbDir); err != nil {
 		return err
 	}
+	a.startWorkflowDefinitionsWatcher(dbDir)
 	return nil
 }

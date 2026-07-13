@@ -36,8 +36,35 @@ test('pane navigation, persistence, queue toggle, and queued cancel use the real
   await expect(page.getByTestId('wf-overview')).toBeVisible();
   await expect(page.getByTestId('wf-workflow-row')).toContainText('pane-flow');
   await expect(page.getByTestId('wf-up-next')).toBeVisible();
+  await expect(page.getByTestId('wf-project-queue-name')).toHaveText(
+    'pane-navigation',
+  );
+  await expect(page.getByTestId('wf-project-slots')).toHaveText('0/1');
   await expect(page.getByTestId('wf-queue-open')).toHaveText('Queued pane run');
   await expect(page.getByTestId('wf-queue-toggle')).toHaveText('▶ Paused');
+
+  await page.getByTestId('wf-project-queue-toggle').click();
+  await expect(page.getByTestId('wf-project-queue-toggle')).toHaveText('Resume');
+  await page.getByTestId('wf-project-concurrency').selectOption('2');
+  await expect
+    .poll(async () => {
+      const projects = await harness.rpc<
+        Array<{
+          project: {
+            id: string;
+            workflowQueuePaused: boolean;
+            workflowConcurrency: number;
+          };
+        }>
+      >('ListProjects');
+      const stored = projects.find((entry) => entry.project.id === project.projectId)?.project;
+      return stored
+        ? `${stored.workflowQueuePaused}:${stored.workflowConcurrency}`
+        : 'missing';
+    })
+    .toBe('true:2');
+  await page.getByTestId('wf-project-queue-toggle').click();
+  await expect(page.getByTestId('wf-project-queue-toggle')).toHaveText('Pause');
 
   await page.getByTestId('wf-workflow-row').click();
   await expect(page.getByTestId('wf-workflow-detail')).toBeVisible();

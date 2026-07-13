@@ -57,7 +57,7 @@
 
   let active = $derived(definitions.filter(isActive));
   let idle = $derived(definitions.filter((view) => !isActive(view)));
-  let queued = $derived(items.filter((item) => item.state === 'queued').sort((a, b) => a.sortPosition - b.sortPosition));
+  let queueItems = $derived(items.filter((item) => item.state === 'queued' || item.state === 'running'));
 
   function projectName(projectId: string): string {
     return projects.find((entry) => entry.project.id === projectId)?.project.name ?? projectId;
@@ -103,10 +103,6 @@
 
   function workflowName(item: WorkItem): string {
     return definitions.find((entry) => entry.projectId === item.projectId && entry.definition.id === item.workflowId)?.definition.name ?? item.workflowId;
-  }
-
-  function projectColor(projectId: string): string {
-    return projects.find((entry) => entry.project.id === projectId)?.project.color ?? 'var(--fg-hint)';
   }
 
   function openSweep(view: WorkflowDefinitionView, event: MouseEvent): void {
@@ -158,7 +154,7 @@
     {/each}
   {/if}
 
-  {#if queued.length > 0}
-    <WorkflowQueue {queued} queueActive={queue.active} {viewOnly} {projectColor} {workflowName} onOpenRun={openRun} />
+  {#if queueItems.length > 0}
+    <WorkflowQueue items={queueItems} {queue} {projects} {viewOnly} {workflowName} onOpenRun={openRun} />
   {/if}
 </div>

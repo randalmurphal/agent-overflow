@@ -292,6 +292,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowResumeItem", ID: 3138507556},                   // main.App.WorkflowResumeItem
 	{Name: "WorkflowSetJobNotes", ID: 1934298592},                  // main.App.WorkflowSetJobNotes
 	{Name: "WorkflowSetQueue", ID: 3526159695},                     // main.App.WorkflowSetQueue
+	{Name: "WorkflowUpdateProjectQueue", ID: 778072333},            // main.App.WorkflowUpdateProjectQueue
 	{Name: "WriteTerminal", ID: 146795716},                         // main.App.WriteTerminal
 	{Name: "WriteThreadWorkspaceFile", ID: 3895036895},             // main.App.WriteThreadWorkspaceFile
 }

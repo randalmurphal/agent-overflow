@@ -64,13 +64,11 @@ func (e *Engine) transition(item *runtimeItem, to State, reason Reason) error {
 	}
 	slotChanged := false
 	if to == StateRunning && !item.slot {
-		item.slot = true
-		e.activeSlots++
+		e.acquireSlot(item)
 		slotChanged = true
 	}
 	if from == StateRunning && to != StateRunning && item.slot {
-		item.slot = false
-		e.activeSlots--
+		e.releaseSlot(item)
 		slotChanged = true
 	}
 	item.item.State = string(to)
@@ -86,6 +84,22 @@ func (e *Engine) transition(item *runtimeItem, to State, reason Reason) error {
 		delete(e.items, item.item.ID)
 	}
 	return nil
+}
+
+func (e *Engine) acquireSlot(item *runtimeItem) {
+	item.slot = true
+	e.activeSlots++
+	e.runningByProject[item.item.ProjectID]++
+}
+
+func (e *Engine) releaseSlot(item *runtimeItem) {
+	item.slot = false
+	e.activeSlots--
+	projectID := item.item.ProjectID
+	e.runningByProject[projectID]--
+	if e.runningByProject[projectID] == 0 {
+		delete(e.runningByProject, projectID)
+	}
 }
 
 // teardown is the only function allowed to release resource holders. It is

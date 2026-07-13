@@ -115,24 +115,30 @@ Row (card-bordered, whole row clickable → workflow detail):
   · plan → implement → check → review → docs`; automations: `project · automation ·
   every 6h · in 3h 40m`.
 
-### 3.3 Up next strip (global queue)
+### 3.3 Queues section (per-project queues; M4 rulings amendment)
 
-Below the sections when ≥1 run is queued; hidden when empty. The queue is global and
-cross-workflow, so its order lives here only (D3.1).
+Below the sections when ≥1 project has queued **or running** runs; hidden when
+empty. Renders as a **list of per-project queues** ("Queues · N", one group per
+project, ordered by project name) per the M4 ruling — queues are per project,
+each startable/stoppable with its own concurrency limit.
 
-- Row: hover-revealed drag grip, `#position`, project dot, title, right meta
-  `workflow · queued 3h` / `spawned 6m ago` (automation), `· held` while paused.
-  Click opens the run's detail.
-- **Drag-reorder** sets priority (`sort_position`, D8): drop indicator above/below,
-  persists immediately, toast "Priority reordered — the drain picks it up
-  immediately".
+- **Group header**: project color dot + name, `running/effective-cap` slots
+  (effective cap = min(project cap or global, global concurrency)),
+  `Pause`/`Resume` toggle, and a concurrency select (`Global` = inherit, 1–32).
+  A running-only project still renders — the header is its control surface.
+- Row (within a group): hover-revealed drag grip, `#position`, title, right meta
+  `workflow · queued 3h` / `spawned 6m ago` (automation), `· held` while the
+  global queue **or the project** is paused. Click opens the run's detail.
+- **Drag-reorder** sets priority within the project (`sort_position`, D8): drop
+  indicator above/below, persists immediately, toast "Priority reordered — the
+  drain picks it up immediately". No cross-project drag.
 
 ### 3.4 Overview states
 
 | State | Rendering |
 |---|---|
 | No workflows defined | Empty state: short line + `+ New workflow` (studio). |
-| All idle, queue empty | Sections render; Up next hidden; no amber anywhere. |
+| All idle, queue empty | Sections render; Queues hidden; no amber anywhere. |
 | Attention pending | Amber count on the owning workflow row only (R1). |
 | Queue paused | Toggle `▶ Paused`; queued rows append `held`. |
 | Remote | Identical rendering; mutating controls disabled (§12). |
@@ -415,7 +421,8 @@ first).
   badge; the footer badge shows no count. The normal-view test: workflows are
   invisible until they have a reason not to be.
 - Overview with no workflows → §3.4 empty state. No live runs → `no live runs` hint.
-  No queued runs → Up next hidden. Sweep entered empty → all-clear directly.
+  No queued or running runs in any project → Queues hidden (§3.3). Sweep entered
+  empty → all-clear directly.
 
 ---
 

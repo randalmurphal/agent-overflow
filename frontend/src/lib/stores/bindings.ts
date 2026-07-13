@@ -325,6 +325,7 @@ export {
   WorkflowRemoveQueuedItem,
   WorkflowReenqueueFailedItem,
   WorkflowReorderQueue,
+  WorkflowUpdateProjectQueue,
   WorkflowResolveGate,
   WorkflowResumeItem,
   WorkflowSetJobNotes,

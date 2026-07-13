@@ -25,6 +25,7 @@ func TestWorkflowBoundMethodsRegisteredOnApp(t *testing.T) {
 	for _, name := range []string{
 		"WorkflowEnqueueItem", "WorkflowCancelItem", "WorkflowResumeItem",
 		"WorkflowAnswerQuestion", "WorkflowResolveGate", "WorkflowReorderQueue",
+		"WorkflowUpdateProjectQueue",
 		"WorkflowSetQueue", "WorkflowListItems", "WorkflowListUnresolvedItems", "WorkflowListItemCosts", "WorkflowGetItem",
 		"WorkflowCompleteTakeover", "WorkflowOpenTriageThread", "WorkflowOpenTriageAgent", "WorkflowOpenStudioThread",
 		"WorkflowMergeItem", "WorkflowCreateItemPR", "WorkflowDiscardItem",

@@ -1451,6 +1451,29 @@ func TestV28WorkflowProposalKindWidening(t *testing.T) {
 	}
 }
 
+func TestMigrationV29AddsProjectWorkflowQueueSettings(t *testing.T) {
+	db := migrateThrough(t, 28)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, slug, created_at, updated_at)
+		VALUES ('p-v29', '/v29', 'v29', 'v29', 1, 1)`)
+
+	if err := applyMigration(db, migrationByVersion(t, 29)); err != nil {
+		t.Fatalf("apply migration v29: %v", err)
+	}
+	var paused, concurrency int
+	if err := db.QueryRow(`SELECT workflow_queue_paused, workflow_concurrency
+		FROM projects WHERE id = 'p-v29'`).Scan(&paused, &concurrency); err != nil {
+		t.Fatalf("read migrated project: %v", err)
+	}
+	if paused != 0 || concurrency != 0 {
+		t.Fatalf("migrated defaults = paused %d concurrency %d, want 0/0", paused, concurrency)
+	}
+	mustExec(t, db, `UPDATE projects SET workflow_queue_paused = 1, workflow_concurrency = 32
+		WHERE id = 'p-v29'`)
+	if _, err := db.Exec(`UPDATE projects SET workflow_concurrency = 33 WHERE id = 'p-v29'`); err == nil {
+		t.Fatal("workflow concurrency above 32 unexpectedly succeeded")
+	}
+}
+
 // TestV12ChannelMaxTurnsColumn covers the plain ALTER TABLE ADD COLUMN
 // migration that backs the restart-rebuild path
 // (deliberationForChannel): a pre-existing channel row must backfill

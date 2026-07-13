@@ -123,6 +123,17 @@ func (s workflowDefinitionSource) Resolve(ctx context.Context, item store.WorkIt
 
 func (a *App) initWorkflowEngine(dataRoot string) error {
 	settingsSnapshot := a.currentSettings()
+	projects, err := a.store.ListProjects()
+	if err != nil {
+		return fmt.Errorf("initialize workflow engine: list project queue settings: %w", err)
+	}
+	projectQueues := make([]engine.ProjectQueueConfig, 0, len(projects))
+	for _, projectRow := range projects {
+		projectQueues = append(projectQueues, engine.ProjectQueueConfig{
+			ProjectID: projectRow.ID, Paused: projectRow.WorkflowQueuePaused,
+			Concurrency: projectRow.WorkflowConcurrency,
+		})
+	}
 	profiles := workflowProfileSource{store: a.store, configRoot: dataRoot}
 	runner := newWorkflowAppRunner(a, dataRoot, profiles)
 	// Live workflow turns are the only turns that need work-item usage
@@ -138,7 +149,10 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 	workflowEngine, err := engine.New(
 		a.store, runner, workflowEmitter{app: a, emit: a.emitWithReplay()}, definitions, profiles,
 		workflowSpendSource{store: a.store},
-		engine.Config{Active: settingsSnapshot.WorkflowQueueActive, GlobalConcurrency: settingsSnapshot.WorkflowConcurrency},
+		engine.Config{
+			Active: settingsSnapshot.WorkflowQueueActive, GlobalConcurrency: settingsSnapshot.WorkflowConcurrency,
+			ProjectQueues: projectQueues,
+		},
 	)
 	if err != nil {
 		if a.triage != nil {
@@ -425,6 +439,37 @@ func (a *App) WorkflowReorderQueue(projectID string, orderedIDs []string) error 
 		return err
 	}
 	return workflowEngine.Reorder(projectID, orderedIDs)
+}
+
+// WorkflowUpdateProjectQueue persists one project's queue controls before
+// applying them to the live scheduler. A restart therefore recovers the
+// requested state even if shutdown races the in-memory update.
+func (a *App) WorkflowUpdateProjectQueue(projectID string, paused *bool, concurrency *int) error {
+	workflowEngine, err := a.requireWorkflowEngine()
+	if err != nil {
+		return err
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return fmt.Errorf("update project workflow queue: project id is required")
+	}
+	projectRow, err := a.store.GetProject(projectID)
+	if err != nil {
+		return fmt.Errorf("update project workflow queue: %w", err)
+	}
+	if projectRow.Archived {
+		return fmt.Errorf("update project workflow queue: project %q is archived", projectRow.Name)
+	}
+	updated, err := a.store.UpdateProjectWorkflowQueue(projectID, paused, concurrency)
+	if err != nil {
+		return err
+	}
+	if err := workflowEngine.UpdateProjectQueueSettingsDetachedStarts(
+		projectID, paused, updated.WorkflowConcurrency,
+	); err != nil {
+		return fmt.Errorf("update project workflow queue: apply live settings: %w", err)
+	}
+	return nil
 }
 
 func (a *App) WorkflowSetQueue(active bool, maxStarts, concurrency int) error {

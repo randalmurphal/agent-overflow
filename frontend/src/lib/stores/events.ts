@@ -128,6 +128,7 @@ import type {
 } from '../types/workflow';
 import {
   applyWorkflowErrorEvent,
+  applyWorkflowDefinitionsChangedEvent,
   applyWorkflowItemStateEvent,
   applyWorkflowPhaseStateEvent,
   applyWorkflowQueueStateEvent,
@@ -393,6 +394,9 @@ export function setupEventListeners(): () => void {
   const cancelWorkflowError = wailsEventOn<WorkflowErrorEvent>(
     'workflow:error', applyWorkflowErrorEvent,
   );
+  const cancelWorkflowDefinitionsChanged = wailsEventOn(
+    'workflow:definitions-changed', applyWorkflowDefinitionsChangedEvent,
+  );
 
   return () => {
     cancelItemEvent();
@@ -434,6 +438,7 @@ export function setupEventListeners(): () => void {
     cancelWorkflowQueueState();
     cancelWorkflowPhaseState();
     cancelWorkflowError();
+    cancelWorkflowDefinitionsChanged();
     clearAllDesignThrottles();
     clearAllDiscussionLiveTail();
   };

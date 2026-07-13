@@ -19,7 +19,7 @@ func (e *Engine) schedule() error {
 		return errors.Join(errs...)
 	}
 	for e.activeSlots < e.config.GlobalConcurrency && e.queueActive {
-		item := e.popQueued()
+		item := e.popStartableQueued()
 		if item == nil {
 			break
 		}
@@ -37,11 +37,21 @@ func (e *Engine) schedule() error {
 
 func (e *Engine) resumePendingHuman() error {
 	var errs []error
-	for len(e.pendingHuman) > 0 && e.activeSlots < e.config.GlobalConcurrency {
-		itemID := e.pendingHuman[0]
-		e.pendingHuman[0] = ""
-		e.pendingHuman = e.pendingHuman[1:]
-		_, err := e.recoverPersistedHumanDecision(itemID)
+	for index := 0; index < len(e.pendingHuman) && e.activeSlots < e.config.GlobalConcurrency; {
+		itemID := e.pendingHuman[index]
+		storedItem, err := e.store.GetWorkItem(itemID)
+		if err != nil {
+			e.removePendingHuman(itemID)
+			e.emitError(itemID, err)
+			errs = append(errs, err)
+			continue
+		}
+		if !e.projectHasCapacity(storedItem.ProjectID) {
+			index++
+			continue
+		}
+		e.removePendingHuman(itemID)
+		_, err = e.recoverPersistedHumanDecision(itemID)
 		if err != nil {
 			e.emitError(itemID, err)
 			errs = append(errs, err)
@@ -72,7 +82,6 @@ func queueLess(left, right store.WorkItem) bool {
 }
 
 func (e *Engine) insertQueued(item *runtimeItem) {
-	e.compactQueued()
 	index := sort.Search(len(e.queued), func(index int) bool {
 		return !queueLess(e.queued[index].item, item.item)
 	})
@@ -82,39 +91,25 @@ func (e *Engine) insertQueued(item *runtimeItem) {
 }
 
 func (e *Engine) sortQueued() {
-	e.compactQueued()
 	sort.Slice(e.queued, func(i, j int) bool {
 		return queueLess(e.queued[i].item, e.queued[j].item)
 	})
 }
 
-func (e *Engine) popQueued() *runtimeItem {
-	if e.queueHead >= len(e.queued) {
-		e.queued = nil
-		e.queueHead = 0
-		return nil
+func (e *Engine) popStartableQueued() *runtimeItem {
+	for index, item := range e.queued {
+		if !e.projectCanDrain(item.item.ProjectID) {
+			continue
+		}
+		copy(e.queued[index:], e.queued[index+1:])
+		e.queued[len(e.queued)-1] = nil
+		e.queued = e.queued[:len(e.queued)-1]
+		return item
 	}
-	item := e.queued[e.queueHead]
-	e.queued[e.queueHead] = nil
-	e.queueHead++
-	return item
-}
-
-func (e *Engine) compactQueued() {
-	if e.queueHead == 0 {
-		return
-	}
-	copy(e.queued, e.queued[e.queueHead:])
-	remaining := len(e.queued) - e.queueHead
-	for index := remaining; index < len(e.queued); index++ {
-		e.queued[index] = nil
-	}
-	e.queued = e.queued[:remaining]
-	e.queueHead = 0
+	return nil
 }
 
 func (e *Engine) removeQueuedRuntime(itemID string) {
-	e.compactQueued()
 	for index, item := range e.queued {
 		if item == nil || item.item.ID != itemID {
 			continue
@@ -124,6 +119,18 @@ func (e *Engine) removeQueuedRuntime(itemID string) {
 		e.queued = e.queued[:len(e.queued)-1]
 		return
 	}
+}
+
+func (e *Engine) projectCanDrain(projectID string) bool {
+	return !e.projectQueues[projectID].paused && e.projectHasCapacity(projectID)
+}
+
+func (e *Engine) projectHasCapacity(projectID string) bool {
+	limit := e.projectQueues[projectID].concurrency
+	if limit == 0 || limit > e.config.GlobalConcurrency {
+		limit = e.config.GlobalConcurrency
+	}
+	return e.runningByProject[projectID] < limit
 }
 
 func (e *Engine) startItem(item *runtimeItem) error {

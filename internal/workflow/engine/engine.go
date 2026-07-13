@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -36,6 +37,11 @@ type resourceKey struct {
 	name      string
 }
 
+type projectQueueState struct {
+	paused      bool
+	concurrency int
+}
+
 // Engine owns all mutable scheduler and FSM state on its command goroutine.
 type Engine struct {
 	store       persistence
@@ -54,20 +60,21 @@ type Engine struct {
 	closing  bool
 	used     bool
 
-	ctx             context.Context
-	items           map[string]*runtimeItem
-	queued          []*runtimeItem
-	queueHead       int
-	waiting         []*runtimeItem
-	waitingByID     map[string]struct{}
-	pendingHuman    []string
-	holders         map[resourceKey]int
-	activeSlots     int
-	queueActive     bool
-	startsRemaining int
-	lastTimestamp   int64
-	commandStarts   []*runnerStartFuture
-	inflightStarts  map[*runnerStartFuture]struct{}
+	ctx              context.Context
+	items            map[string]*runtimeItem
+	queued           []*runtimeItem
+	waiting          []*runtimeItem
+	waitingByID      map[string]struct{}
+	pendingHuman     []string
+	holders          map[resourceKey]int
+	activeSlots      int
+	projectQueues    map[string]projectQueueState
+	runningByProject map[string]int
+	queueActive      bool
+	startsRemaining  int
+	lastTimestamp    int64
+	commandStarts    []*runnerStartFuture
+	inflightStarts   map[*runnerStartFuture]struct{}
 }
 
 func New(store persistence, runner Runner, emitter Emitter, definitions DefinitionSource, profiles ProfileSource, spend SpendSource, config Config) (*Engine, error) {
@@ -77,11 +84,25 @@ func New(store persistence, runner Runner, emitter Emitter, definitions Definiti
 	if config.GlobalConcurrency < 1 || config.GlobalConcurrency > MaxGlobalConcurrency {
 		return nil, fmt.Errorf("workflow engine: global concurrency must be between 1 and %d", MaxGlobalConcurrency)
 	}
+	projectQueues := make(map[string]projectQueueState, len(config.ProjectQueues))
+	for _, project := range config.ProjectQueues {
+		if project.ProjectID == "" {
+			return nil, fmt.Errorf("workflow engine: project queue id is required")
+		}
+		if project.Concurrency < 0 || project.Concurrency > MaxProjectConcurrency {
+			return nil, fmt.Errorf("workflow engine: project %q concurrency must be between 0 and %d", project.ProjectID, MaxProjectConcurrency)
+		}
+		if _, exists := projectQueues[project.ProjectID]; exists {
+			return nil, fmt.Errorf("workflow engine: duplicate project queue %q", project.ProjectID)
+		}
+		projectQueues[project.ProjectID] = projectQueueState{paused: project.Paused, concurrency: project.Concurrency}
+	}
 	return &Engine{
 		store: store, runner: runner, emitter: emitter, definitions: definitions,
 		profiles: profiles, spend: spend, config: config, now: time.Now,
 		commands: make(chan any, commandBuffer), done: make(chan struct{}),
 		items: make(map[string]*runtimeItem), holders: make(map[resourceKey]int),
+		projectQueues: projectQueues, runningByProject: make(map[string]int),
 		waitingByID:     make(map[string]struct{}),
 		inflightStarts:  make(map[*runnerStartFuture]struct{}),
 		startsRemaining: -1,
@@ -227,6 +248,30 @@ func (e *Engine) UpdateQueueSettingsDetachedStarts(active *bool, concurrency int
 	return e.request(command)
 }
 
+// UpdateProjectQueueSettings changes one project's persisted queue controls.
+// A nil paused value is a concurrency-only update; concurrency 0 inherits the
+// live global cap.
+func (e *Engine) UpdateProjectQueueSettings(projectID string, paused *bool, concurrency int) error {
+	return e.request(newProjectQueueCommand(projectID, paused, concurrency, true))
+}
+
+// UpdateProjectQueueSettingsDetachedStarts applies project settings without
+// attaching any newly triggered runner starts to the caller's response.
+func (e *Engine) UpdateProjectQueueSettingsDetachedStarts(projectID string, paused *bool, concurrency int) error {
+	return e.request(newProjectQueueCommand(projectID, paused, concurrency, false))
+}
+
+func newProjectQueueCommand(projectID string, paused *bool, concurrency int, waitForStarts bool) projectQueueCommand {
+	command := projectQueueCommand{
+		projectID: projectID, concurrency: concurrency, waitForStarts: waitForStarts,
+	}
+	if paused != nil {
+		command.paused = *paused
+		command.setPaused = true
+	}
+	return command
+}
+
 // Sync waits until every command enqueued before it has been processed.
 func (e *Engine) Sync() error { return e.request(syncCommand{}) }
 
@@ -295,6 +340,14 @@ type queueCommand struct {
 	setActive     bool
 	maxStarts     int
 	setMaxStarts  bool
+	concurrency   int
+	waitForStarts bool
+	reply         chan response
+}
+type projectQueueCommand struct {
+	projectID     string
+	paused        bool
+	setPaused     bool
 	concurrency   int
 	waitForStarts bool
 	reply         chan response
@@ -371,6 +424,9 @@ func (e *Engine) request(command any) error {
 		command.reply = reply
 		e.commands <- command
 	case queueCommand:
+		command.reply = reply
+		e.commands <- command
+	case projectQueueCommand:
 		command.reply = reply
 		e.commands <- command
 	case humanGateCommand:
@@ -509,6 +565,32 @@ func (e *Engine) loop() {
 				e.commandStarts = nil
 				command.reply <- response{err: err}
 			}
+		case projectQueueCommand:
+			if command.projectID == "" {
+				err = fmt.Errorf("set project workflow queue: project id is required")
+			} else if command.concurrency < 0 || command.concurrency > MaxProjectConcurrency {
+				err = fmt.Errorf("set project workflow queue: concurrency must be between 0 and %d", MaxProjectConcurrency)
+			} else {
+				state := e.projectQueues[command.projectID]
+				state.concurrency = command.concurrency
+				if command.setPaused {
+					state.paused = command.paused
+				}
+				e.projectQueues[command.projectID] = state
+				e.emitQueue()
+				if e.queueActive {
+					startErr := e.schedule()
+					if command.waitForStarts {
+						err = startErr
+					}
+				}
+			}
+			if command.waitForStarts {
+				command.reply <- e.commandResponse(err)
+			} else {
+				e.commandStarts = nil
+				command.reply <- response{err: err}
+			}
 		case humanGateCommand:
 			e.removePendingHuman(command.itemID)
 			err = errors.Join(e.resolveHumanGate(command.itemID, command.decision, command.note), e.schedule())
@@ -568,6 +650,9 @@ func (e *Engine) enqueue(item store.WorkItem, reportStartErrors bool) error {
 		return fmt.Errorf("enqueue item %q: %w", item.ID, err)
 	}
 	runtime := &runtimeItem{item: item}
+	if _, exists := e.projectQueues[item.ProjectID]; !exists {
+		e.projectQueues[item.ProjectID] = projectQueueState{}
+	}
 	e.items[item.ID] = runtime
 	e.insertQueued(runtime)
 	startErr := e.schedule()
@@ -615,6 +700,9 @@ func (e *Engine) resume(itemID, targetPhase string) error {
 	}
 	if e.activeSlots >= e.config.GlobalConcurrency {
 		return fmt.Errorf("resume item %q: global concurrency is full", itemID)
+	}
+	if !e.projectHasCapacity(item.item.ProjectID) {
+		return fmt.Errorf("resume item %q: project concurrency is full", itemID)
 	}
 	if len(item.workflow.Phases) == 0 {
 		workflow, err := e.definitions.Resolve(e.ctx, item.item)
@@ -726,9 +814,22 @@ func (e *Engine) emitQueue() {
 	if startsRemaining < 0 {
 		startsRemaining = 0
 	}
+	projectIDs := make([]string, 0, len(e.projectQueues))
+	for projectID := range e.projectQueues {
+		projectIDs = append(projectIDs, projectID)
+	}
+	sort.Strings(projectIDs)
+	projects := make([]ProjectQueueState, 0, len(projectIDs))
+	for _, projectID := range projectIDs {
+		state := e.projectQueues[projectID]
+		projects = append(projects, ProjectQueueState{
+			ProjectID: projectID, Paused: state.paused, Concurrency: state.concurrency,
+			RunningCount: e.runningByProject[projectID],
+		})
+	}
 	e.emitter.Emit("workflow:queue-state", QueueEvent{
 		Active: e.queueActive, GlobalConcurrency: e.config.GlobalConcurrency,
 		RunningCount: e.activeSlots, SlotCapacity: e.config.GlobalConcurrency,
-		StartsRemaining: startsRemaining,
+		StartsRemaining: startsRemaining, Projects: projects,
 	})
 }

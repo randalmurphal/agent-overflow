@@ -39,6 +39,43 @@ func TestCreateProjectHappyPath(t *testing.T) {
 	}
 }
 
+func TestUpdateProjectWorkflowQueue(t *testing.T) {
+	s := newTestStore(t)
+	p := newProject("queue-settings", "/tmp/queue-settings", "Queue Settings")
+	if err := s.CreateProject(p); err != nil {
+		t.Fatal(err)
+	}
+
+	paused := true
+	concurrency := 3
+	got, err := s.UpdateProjectWorkflowQueue(p.ID, &paused, &concurrency)
+	if err != nil {
+		t.Fatalf("UpdateProjectWorkflowQueue: %v", err)
+	}
+	if !got.WorkflowQueuePaused || got.WorkflowConcurrency != 3 {
+		t.Fatalf("updated settings = paused %v concurrency %d", got.WorkflowQueuePaused, got.WorkflowConcurrency)
+	}
+	paused = false
+	got, err = s.UpdateProjectWorkflowQueue(p.ID, &paused, nil)
+	if err != nil {
+		t.Fatalf("update paused only: %v", err)
+	}
+	if got.WorkflowQueuePaused || got.WorkflowConcurrency != 3 {
+		t.Fatalf("partial update changed unrelated setting: %+v", got)
+	}
+	for _, invalid := range []int{-1, MaxProjectWorkflowConcurrency + 1} {
+		if _, err := s.UpdateProjectWorkflowQueue(p.ID, nil, &invalid); err == nil {
+			t.Errorf("concurrency %d unexpectedly accepted", invalid)
+		}
+	}
+	if _, err := s.UpdateProjectWorkflowQueue(p.ID, nil, nil); err == nil {
+		t.Fatal("empty settings update unexpectedly accepted")
+	}
+	if _, err := s.UpdateProjectWorkflowQueue("missing", &paused, nil); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing project error = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestProjectSlug(t *testing.T) {
 	tests := []struct {
 		name string

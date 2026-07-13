@@ -12,6 +12,7 @@
   import { isViewOnlySession } from '../../transport/runMode';
   import {
     getWorkflowIntakePrefill,
+    getWorkflowDefinitionsRevision,
     loadWorkflowOverview,
   } from '../../stores/workflowsPane.svelte';
   import { refreshWorkflowsSidebar } from '../../stores/workflowsSidebar.svelte';
@@ -36,6 +37,7 @@
   let viewOnly = $derived(isViewOnlySession());
   let pathPickerFor: string | null = $state(null);
   let wasOpen = false;
+  let loadedDefinitionsRevision = 0;
 
   let projectDefinitions = $derived(definitions.filter((entry) => entry.projectId === projectId));
   let selectedView = $derived(projectDefinitions.find((entry) => entry.definition.id === workflowId) ?? null);
@@ -77,6 +79,7 @@
     baseBranchSource = '';
     stepMode = prefill?.stepMode ?? false;
     pathPickerFor = null;
+    loadedDefinitionsRevision = getWorkflowDefinitionsRevision();
     void loadDefinitions(projectId);
   }
 
@@ -91,6 +94,13 @@
   $effect(() => {
     if (open && !wasOpen) initialize();
     wasOpen = open;
+  });
+
+  $effect(() => {
+    const revision = getWorkflowDefinitionsRevision();
+    if (!open || revision === loadedDefinitionsRevision) return;
+    loadedDefinitionsRevision = revision;
+    void loadDefinitions(projectId);
   });
 
   $effect(() => {

@@ -3089,6 +3089,15 @@ export function WorkflowSetQueue(active: boolean, maxStarts: number, concurrency
 }
 
 /**
+ * WorkflowUpdateProjectQueue persists one project's queue controls before
+ * applying them to the live scheduler. A restart therefore recovers the
+ * requested state even if shutdown races the in-memory update.
+ */
+export function WorkflowUpdateProjectQueue(projectID: string, paused: boolean | null, concurrency: number | null): $CancellablePromise<void> {
+    return $Call.ByID(778072333, projectID, paused, concurrency);
+}
+
+/**
  * WriteTerminal writes base64-encoded data to the given terminal. The
  * payload is base64 rather than a raw string so that non-UTF-8 byte
  * sequences (control codes, mouse events, binary heredocs) round-trip

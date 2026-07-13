@@ -154,11 +154,19 @@ type SpendSource interface {
 type Config struct {
 	Active            bool
 	GlobalConcurrency int
+	ProjectQueues     []ProjectQueueConfig
+}
+
+type ProjectQueueConfig struct {
+	ProjectID   string
+	Paused      bool
+	Concurrency int
 }
 
 const MaxSeedBytes = 64 * 1024
 const MaxSnapshotBytes = 4 * 1024 * 1024
 const MaxGlobalConcurrency = 32
+const MaxProjectConcurrency = 32
 
 // Snapshot is the persisted, immutable run definition.
 type Snapshot struct {
@@ -174,11 +182,19 @@ type StateEvent struct {
 }
 
 type QueueEvent struct {
-	Active            bool `json:"active"`
-	GlobalConcurrency int  `json:"globalConcurrency"`
-	RunningCount      int  `json:"runningCount"`
-	SlotCapacity      int  `json:"slotCapacity"`
-	StartsRemaining   int  `json:"startsRemaining,omitempty"`
+	Active            bool                `json:"active"`
+	GlobalConcurrency int                 `json:"globalConcurrency"`
+	RunningCount      int                 `json:"runningCount"`
+	SlotCapacity      int                 `json:"slotCapacity"`
+	StartsRemaining   int                 `json:"startsRemaining,omitempty"`
+	Projects          []ProjectQueueState `json:"projects"`
+}
+
+type ProjectQueueState struct {
+	ProjectID    string `json:"projectId"`
+	Paused       bool   `json:"paused"`
+	Concurrency  int    `json:"concurrency"`
+	RunningCount int    `json:"runningCount"`
 }
 
 type PhaseEvent struct {

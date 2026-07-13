@@ -175,6 +175,95 @@ func TestPausedQueueSummarizesAfterRunningWorkSettles(t *testing.T) {
 	}
 }
 
+func TestWorkflowDrainSummaryIsProjectScoped(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	sender := &recordingWorkflowNotificationSender{wake: make(chan struct{}, 2)}
+	app.osNotifications = sender
+	projectA := testutil.EnsureProject(t, app.store, t.TempDir())
+	projectB := testutil.EnsureProject(t, app.store, t.TempDir())
+	if err := app.store.CreateWorkItem(store.WorkItem{
+		ID: "project-b-running", ProjectID: projectB.ID, Goal: "B running", WorkflowID: "wf",
+		WorkflowScope: "shared", State: string(engine.StateRunning), Source: "manual", CreatedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.workflowQueueActive = true
+	app.recordWorkflowNotificationOutcome(projectA.ID, engine.StateDone)
+	app.flushWorkflowDrainSummariesIfIdle()
+	waitForWorkflowSummary(t, sender, projectA.ID, "1 finished")
+}
+
+func TestGlobalPauseFlushesProjectWithPendingOnly(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	sender := &recordingWorkflowNotificationSender{wake: make(chan struct{}, 2)}
+	app.osNotifications = sender
+	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
+	if err := app.store.CreateWorkItem(store.WorkItem{
+		ID: "global-pause-pending", ProjectID: projectRow.ID, Goal: "Pending", WorkflowID: "wf",
+		WorkflowScope: "shared", State: string(engine.StateQueued), Source: "manual", CreatedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.workflowQueueActive = true
+	app.recordWorkflowNotificationOutcome(projectRow.ID, engine.StateDone)
+	app.afterWorkflowQueueEvent(engine.QueueEvent{
+		Active: false, Projects: []engine.ProjectQueueState{{ProjectID: projectRow.ID}},
+	})
+	waitForWorkflowSummary(t, sender, projectRow.ID, "1 finished")
+}
+
+func TestProjectPauseFlushesAfterRunningSettlesAndIgnoresQueued(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	sender := &recordingWorkflowNotificationSender{wake: make(chan struct{}, 2)}
+	app.osNotifications = sender
+	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
+	for _, item := range []store.WorkItem{
+		{ID: "project-pause-pending", State: string(engine.StateQueued), CreatedAt: 1},
+		{ID: "project-pause-running", State: string(engine.StateRunning), CreatedAt: 2},
+	} {
+		item.ProjectID = projectRow.ID
+		item.Goal = item.ID
+		item.WorkflowID = "wf"
+		item.WorkflowScope = "shared"
+		item.Source = "manual"
+		if err := app.store.CreateWorkItem(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app.workflowQueueActive = true
+	app.recordWorkflowNotificationOutcome(projectRow.ID, engine.StateFailed)
+	app.afterWorkflowQueueEvent(engine.QueueEvent{
+		Active: true, Projects: []engine.ProjectQueueState{{ProjectID: projectRow.ID, Paused: true}},
+	})
+	if records := sender.snapshot(); len(records) != 0 {
+		t.Fatalf("summary flushed while project still ran: %+v", records)
+	}
+	if err := app.store.UpdateWorkItemState(
+		"project-pause-running", string(engine.StateNeedsHuman), string(engine.ReasonQuestion), 3,
+	); err != nil {
+		t.Fatal(err)
+	}
+	app.flushWorkflowDrainSummariesIfIdle()
+	waitForWorkflowSummary(t, sender, projectRow.ID, "1 failed")
+}
+
+func waitForWorkflowSummary(t *testing.T, sender *recordingWorkflowNotificationSender, projectID, body string) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case <-sender.wake:
+			for _, record := range sender.snapshot() {
+				if record.Target.Kind == "workflow-triage-agent" && record.Target.ProjectID == projectID && record.Body == body {
+					return
+				}
+			}
+		case <-deadline:
+			t.Fatalf("workflow summary %s/%q not sent: %+v", projectID, body, sender.snapshot())
+		}
+	}
+}
+
 func TestWorkflowTemplateDigestUsesCheckAndStuckInputs(t *testing.T) {
 	failed := workflowTemplateDigest(store.WorkItem{
 		State: string(engine.StateFailed), Reason: string(engine.ReasonCheckFailedGenuine),

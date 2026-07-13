@@ -175,6 +175,7 @@ export const WorkflowOpenTriageThread = dispatch('WorkflowOpenTriageThread');
 export const WorkflowQueueChatProposal = dispatch('WorkflowQueueChatProposal');
 export const WorkflowRemoveQueuedItem = dispatch('WorkflowRemoveQueuedItem');
 export const WorkflowReorderQueue = dispatch('WorkflowReorderQueue');
+export const WorkflowUpdateProjectQueue = dispatch('WorkflowUpdateProjectQueue');
 export const WorkflowResolveGate = dispatch('WorkflowResolveGate');
 export const WorkflowResumeItem = dispatch('WorkflowResumeItem');
 export const WorkflowSetJobNotes = dispatch('WorkflowSetJobNotes');

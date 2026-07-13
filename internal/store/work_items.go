@@ -420,6 +420,26 @@ func (s *Store) CountWorkItemsInStates(states ...string) (int, error) {
 	return count, nil
 }
 
+// CountProjectWorkItemsInStates returns a project-scoped lifecycle count
+// without materializing work item rows.
+func (s *Store) CountProjectWorkItemsInStates(projectID string, states ...string) (int, error) {
+	if len(states) == 0 {
+		return 0, nil
+	}
+	query := `SELECT COUNT(*) FROM work_items WHERE project_id = ? AND state IN (` +
+		strings.TrimRight(strings.Repeat("?,", len(states)), ",") + `)`
+	args := make([]any, 0, len(states)+1)
+	args = append(args, projectID)
+	for _, state := range states {
+		args = append(args, state)
+	}
+	var count int
+	if err := s.db.QueryRow(query, args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("store: count project %s work items in states: %w", projectID, err)
+	}
+	return count, nil
+}
+
 // UpdateWorkItemTriageThread persists the open-or-return association used by
 // item hand-off triage threads. Thread lifetime is deliberately independent,
 // so deletion leaves the id as a stale pointer that the app replaces on the

@@ -59,6 +59,7 @@ describe('WorkflowOverview queue controls', () => {
     setBindingMock('UpdateSettings', async (patch: Partial<Settings>) => makeSettings(patch));
     setBindingMock('WorkflowRemoveQueuedItem', async () => undefined);
     setBindingMock('WorkflowReorderQueue', async () => undefined);
+    setBindingMock('WorkflowUpdateProjectQueue', async () => undefined);
     setBindingMock('WorkflowGetItem', async () => ({
       item: queued, phases: [], artifacts: [],
       usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
@@ -160,7 +161,7 @@ describe('WorkflowOverview queue controls', () => {
     await waitFor(() => expect(getProjectWorkflowRuns('p').map((item) => item.id)).toEqual(['second', 'queued']));
   });
 
-  it('explains cross-project drag refusal and supports dropping after the last row', async () => {
+  it('groups projects independently and supports dropping after the last row', async () => {
     addProjectLocal({ ...project, id: 'other', name: 'Other', path: '/tmp/other' });
     let listed = [
       queued,
@@ -176,11 +177,12 @@ describe('WorkflowOverview queue controls', () => {
     });
     await loadWorkflowOverview();
     const view = render(WorkflowOverview);
+    const groups = view.getAllByTestId('wf-project-queue');
+    expect(groups.map((group) => group.querySelector('[data-testid="wf-project-queue-name"]')?.textContent)).toEqual(['Other', 'Project']);
     let rows = view.getAllByTestId('wf-queue-row');
 
     await fireEvent.dragStart(rows.find((row) => row.textContent?.includes('Queue me'))!);
     await fireEvent.drop(rows.find((row) => row.textContent?.includes('Other'))!);
-    expect(getToasts().some((toast) => toast.message.includes('per project'))).toBe(true);
     expect(getBindingMock('WorkflowReorderQueue')).not.toHaveBeenCalled();
 
     rows = view.getAllByTestId('wf-queue-row');
@@ -189,6 +191,38 @@ describe('WorkflowOverview queue controls', () => {
     await fireEvent.dragOver(afterLast);
     await fireEvent.drop(afterLast);
     await waitFor(() => expect(getBindingMock('WorkflowReorderQueue')).toHaveBeenCalledWith('p', ['second', 'queued']));
+  });
+
+  it('updates project pause and concurrency controls and renders effective slots', async () => {
+    applyWorkflowQueueState({
+      active: true, globalConcurrency: 4, runningCount: 1, slotCapacity: 4,
+      projects: [{ projectId: 'p', paused: false, concurrency: 2, runningCount: 1 }],
+    });
+    const view = render(WorkflowOverview);
+    expect(view.getByTestId('wf-project-queue-name')).toHaveTextContent('Project');
+    expect(view.getByTestId('wf-project-slots')).toHaveTextContent('1/2');
+
+    await fireEvent.click(view.getByTestId('wf-project-queue-toggle'));
+    await waitFor(() => expect(getBindingMock('WorkflowUpdateProjectQueue')).toHaveBeenCalledWith('p', true, null));
+    expect(view.getByTestId('wf-project-queue-toggle')).toHaveTextContent('Resume');
+    expect(view.getByTestId('wf-queue-row')).toHaveTextContent('held');
+
+    await fireEvent.change(view.getByTestId('wf-project-concurrency'), { target: { value: '3' } });
+    await waitFor(() => expect(getBindingMock('WorkflowUpdateProjectQueue')).toHaveBeenCalledWith('p', null, 3));
+    expect(view.getByTestId('wf-project-slots')).toHaveTextContent('1/3');
+  });
+
+  it('renders a running-only project group', async () => {
+    setBindingMock('WorkflowListItems', async () => [{ ...queued, state: 'running' }] as WorkItem[]);
+    await loadWorkflowOverview();
+    applyWorkflowQueueState({
+      active: true, globalConcurrency: 2,
+      projects: [{ projectId: 'p', paused: false, concurrency: 0, runningCount: 1 }],
+    });
+    const view = render(WorkflowOverview);
+    expect(view.getByTestId('wf-project-queue')).toBeInTheDocument();
+    expect(view.getByTestId('wf-project-slots')).toHaveTextContent('1/2');
+    expect(view.queryByTestId('wf-queue-row')).toBeNull();
   });
 
   it('guards queued cancellation and reorder while each request is in flight', async () => {
@@ -224,11 +258,15 @@ describe('WorkflowOverview queue controls', () => {
     const controls = render(WorkflowOverviewControls);
     const view = render(WorkflowOverview);
 
-    for (const testId of ['wf-queue-toggle', 'wf-new-run', 'wf-new-workflow', 'wf-triage', 'wf-queue-cancel']) {
-      const control = (testId === 'wf-queue-cancel' ? view : controls).getByTestId(testId) as HTMLButtonElement;
+    for (const testId of ['wf-queue-toggle', 'wf-new-run', 'wf-new-workflow', 'wf-triage', 'wf-queue-cancel', 'wf-project-queue-toggle']) {
+      const owner = testId === 'wf-queue-cancel' || testId === 'wf-project-queue-toggle' ? view : controls;
+      const control = owner.getByTestId(testId) as HTMLButtonElement;
       expect(control.disabled).toBe(true);
       expect(control.title).toBe('Local only');
     }
+    const concurrency = view.getByTestId('wf-project-concurrency') as HTMLSelectElement;
+    expect(concurrency.disabled).toBe(true);
+    expect(concurrency.title).toBe('Local only');
     expect(view.getByTestId('wf-queue-row').getAttribute('draggable')).toBe('false');
     expect(view.getByTestId('wf-queue-grip')).toHaveAttribute('title', 'Local only');
     expect(view.getByTestId('wf-queue-grip')).toHaveAttribute('aria-disabled', 'true');

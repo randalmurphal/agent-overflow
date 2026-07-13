@@ -95,22 +95,12 @@ func (a *App) afterWorkflowQueueEvent(event engine.QueueEvent) {
 	if event.Active && !wasActive {
 		a.workflowNotificationTallies = make(map[string]workflowNotificationTally)
 	}
-	a.workflowNotificationsMu.Unlock()
-	if !event.Active && wasActive {
-		pending, err := a.store.CountWorkItemsInStates(string(engine.StateQueued))
-		if err != nil {
-			log.Printf("workflow notification: count pending items on pause: %v", err)
-			return
-		}
-		running, err := a.store.CountWorkItemsInStates(string(engine.StateRunning))
-		if err != nil {
-			log.Printf("workflow notification: count running items on pause: %v", err)
-			return
-		}
-		if pending > 0 && running == 0 && !a.workflowAutoDispositionPending() {
-			a.flushWorkflowDrainSummaries()
-		}
+	a.workflowProjectQueuePaused = make(map[string]bool, len(event.Projects))
+	for _, project := range event.Projects {
+		a.workflowProjectQueuePaused[project.ProjectID] = project.Paused
 	}
+	a.workflowNotificationsMu.Unlock()
+	a.flushWorkflowDrainSummariesIfIdle()
 }
 
 func (a *App) flushWorkflowDrainSummariesIfIdle() {
@@ -119,43 +109,54 @@ func (a *App) flushWorkflowDrainSummariesIfIdle() {
 	}
 	a.workflowNotificationsMu.Lock()
 	queueActive := a.workflowQueueActive
+	projectPaused := make(map[string]bool, len(a.workflowProjectQueuePaused))
+	for projectID, paused := range a.workflowProjectQueuePaused {
+		projectPaused[projectID] = paused
+	}
+	projectIDs := make([]string, 0, len(a.workflowNotificationTallies))
+	for projectID := range a.workflowNotificationTallies {
+		projectIDs = append(projectIDs, projectID)
+	}
 	a.workflowNotificationsMu.Unlock()
-	states := []string{string(engine.StateRunning)}
-	if queueActive {
-		states = append(states, string(engine.StateQueued))
-	}
-	busy, err := a.store.CountWorkItemsInStates(states...)
-	if err != nil {
-		log.Printf("workflow notification: count live queue items: %v", err)
-		return
-	}
-	if busy == 0 {
-		a.flushWorkflowDrainSummaries()
+	for _, projectID := range projectIDs {
+		states := []string{string(engine.StateRunning)}
+		if queueActive && !projectPaused[projectID] {
+			states = append(states, string(engine.StateQueued))
+		}
+		busy, err := a.store.CountProjectWorkItemsInStates(projectID, states...)
+		if err != nil {
+			log.Printf("workflow notification: count project %s live queue items: %v", projectID, err)
+			continue
+		}
+		if busy == 0 {
+			a.flushWorkflowDrainSummary(projectID)
+		}
 	}
 }
 
-func (a *App) flushWorkflowDrainSummaries() {
+func (a *App) flushWorkflowDrainSummary(projectID string) {
 	a.workflowNotificationsMu.Lock()
-	tallies := a.workflowNotificationTallies
-	a.workflowNotificationTallies = make(map[string]workflowNotificationTally)
+	tally, exists := a.workflowNotificationTallies[projectID]
+	delete(a.workflowNotificationTallies, projectID)
 	a.workflowNotificationsMu.Unlock()
-	for projectID, tally := range tallies {
-		body := workflowDrainSummaryBody(tally)
-		if body == "" {
-			continue
-		}
-		project, err := a.store.GetProject(projectID)
-		if err != nil {
-			log.Printf("workflow notification summary %s: load project: %v", projectID, err)
-			continue
-		}
-		title := textgen.CapRunesWithEllipsis(project.Name+" workflows", 120)
-		go func(projectID, title, body string) {
-			if err := a.notifyOS(title, body, notify.Target{Kind: "workflow-triage-agent", ProjectID: projectID}); err != nil {
-				log.Printf("workflow notification summary %s: %v", projectID, err)
-			}
-		}(projectID, title, body)
+	if !exists {
+		return
 	}
+	body := workflowDrainSummaryBody(tally)
+	if body == "" {
+		return
+	}
+	project, err := a.store.GetProject(projectID)
+	if err != nil {
+		log.Printf("workflow notification summary %s: load project: %v", projectID, err)
+		return
+	}
+	title := textgen.CapRunesWithEllipsis(project.Name+" workflows", 120)
+	go func() {
+		if err := a.notifyOS(title, body, notify.Target{Kind: "workflow-triage-agent", ProjectID: projectID}); err != nil {
+			log.Printf("workflow notification summary %s: %v", projectID, err)
+		}
+	}()
 }
 
 func workflowDrainSummaryBody(tally workflowNotificationTally) string {

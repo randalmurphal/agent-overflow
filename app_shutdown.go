@@ -120,6 +120,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 		return nil
 	}())
+	if a.workflowDefinitionsWatcher != nil {
+		record("close workflow definitions watcher", a.workflowDefinitionsWatcher.Close())
+	}
 	if a.workflowEngine != nil {
 		engineErr := a.workflowEngine.Close()
 		// No new done events can arrive after the engine closes. Let the
