@@ -49,6 +49,8 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   used as a `Project.Path` key when no local clone matches;
   `NormalizePRState` canonical lowercase mapping; nullForge sentinel
   for unsupported remotes.
+- `pr_url.go` — parses the PR/MR URLs returned by forge `CreatePR` calls
+  back into validated `PRReference` coordinates for later review reads.
 - `forge_detect.go` — origin URL classification (github / gitlab / "")
   with TTL'd cache shared across `Status` and `forgeFor`. Public
   `Core.InvalidateForgeCache(cwd)` drops the cached entry so callers

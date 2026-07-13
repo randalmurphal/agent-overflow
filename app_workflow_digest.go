@@ -83,6 +83,11 @@ func workflowTemplateDigest(
 	}
 	reason := engine.Reason(item.Reason)
 	digest := WorkflowDigest{}
+	if item.State == string(engine.StateDone) {
+		digest.WhatHappened = "The workflow run completed."
+		digest.WhatItNeeds = "Review the completed work and decide the next step."
+		return digest
+	}
 	if item.State == string(engine.StateFailed) {
 		digest.WhatHappened = fmt.Sprintf("The run failed during %s.", phase)
 	} else {

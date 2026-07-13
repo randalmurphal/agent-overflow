@@ -2936,6 +2936,16 @@ export function WorkflowDiscardItem(itemID: string): $CancellablePromise<$models
     });
 }
 
+/**
+ * WorkflowDiscussPR opens or reuses the run's linked thread and sends a
+ * diff-free snapshot of the PR and run intent for discussion preparation.
+ */
+export function WorkflowDiscussPR(itemID: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(1236472344, itemID).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
 export function WorkflowDismissChatProposal(threadID: string, proposalID: string): $CancellablePromise<void> {
     return $Call.ByID(1877476344, threadID, proposalID);
 }
@@ -2946,9 +2956,20 @@ export function WorkflowEnqueueItem(projectID: string, workflowID: string, workf
     });
 }
 
+/**
+ * WorkflowFetchPRReviewComments returns the PR's review conversations that
+ * have not been explicitly resolved. Conversation comments without a forge
+ * resolution state remain visible.
+ */
+export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromise<$models.WorkflowPRReviewComments> {
+    return $Call.ByID(819019128, itemID).then(($result: any) => {
+        return $$createType102($result);
+    });
+}
+
 export function WorkflowGetItem(itemID: string): $CancellablePromise<$models.WorkflowItemDetailView> {
     return $Call.ByID(70120675, itemID).then(($result: any) => {
-        return $$createType102($result);
+        return $$createType103($result);
     });
 }
 
@@ -2965,7 +2986,7 @@ export function WorkflowGetJobNotes(automationID: string): $CancellablePromise<s
  */
 export function WorkflowListDefinitions(projectID: string): $CancellablePromise<$models.WorkflowDefinitionCatalog> {
     return $Call.ByID(2064216126, projectID).then(($result: any) => {
-        return $$createType103($result);
+        return $$createType104($result);
     });
 }
 
@@ -2974,13 +2995,13 @@ export function WorkflowListDefinitions(projectID: string): $CancellablePromise<
  */
 export function WorkflowListItemCosts(projectID: string): $CancellablePromise<{ [_ in string]?: number }> {
     return $Call.ByID(1544440599, projectID).then(($result: any) => {
-        return $$createType104($result);
+        return $$createType105($result);
     });
 }
 
 export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3037887964, projectID).then(($result: any) => {
-        return $$createType105($result);
+        return $$createType106($result);
     });
 }
 
@@ -2991,7 +3012,7 @@ export function WorkflowListItems(projectID: string): $CancellablePromise<store$
  */
 export function WorkflowListUnresolvedItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3613211765, projectID).then(($result: any) => {
-        return $$createType105($result);
+        return $$createType106($result);
     });
 }
 
@@ -3075,6 +3096,17 @@ export function WorkflowResolveGate(itemID: string, decision: string, note: stri
 
 export function WorkflowResumeItem(itemID: string, targetPhase: string): $CancellablePromise<void> {
     return $Call.ByID(3138507556, itemID, targetPhase);
+}
+
+/**
+ * WorkflowSendPRReviewCommentsToThread opens or reuses the run's linked
+ * thread, then sends the current unresolved review comments through the
+ * normal user-message path.
+ */
+export function WorkflowSendPRReviewCommentsToThread(itemID: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(1172404443, itemID).then(($result: any) => {
+        return $$createType1($result);
+    });
 }
 
 /**
@@ -3218,7 +3250,8 @@ const $$createType98 = $models.PRUpdateSubscriptionResult.createFrom;
 const $$createType99 = $models.MCPAuthInitResult.createFrom;
 const $$createType100 = $models.WorkflowDispositionReceipt.createFrom;
 const $$createType101 = store$0.WorkItem.createFrom;
-const $$createType102 = $models.WorkflowItemDetailView.createFrom;
-const $$createType103 = $models.WorkflowDefinitionCatalog.createFrom;
-const $$createType104 = $Create.Map($Create.Any, $Create.Any);
-const $$createType105 = $Create.Array($$createType101);
+const $$createType102 = $models.WorkflowPRReviewComments.createFrom;
+const $$createType103 = $models.WorkflowItemDetailView.createFrom;
+const $$createType104 = $models.WorkflowDefinitionCatalog.createFrom;
+const $$createType105 = $Create.Map($Create.Any, $Create.Any);
+const $$createType106 = $Create.Array($$createType101);

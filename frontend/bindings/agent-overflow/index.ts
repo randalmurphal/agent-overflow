@@ -64,6 +64,7 @@ export {
     WorkflowItemDetailView,
     WorkflowItemPhaseView,
     WorkflowItemView,
+    WorkflowPRReviewComments,
     WorkspaceFileSearchResult,
     WorktreeListItem,
     WorktreeStatus

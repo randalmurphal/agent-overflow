@@ -1,7 +1,9 @@
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowItemDetail } from '../../types/workflow';
 import { recordWorkflowReceipt, resetWorkflowsPane } from '../../stores/workflowsPane.svelte';
+import * as panes from '../../stores/panes.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import WorkflowActionRow from './WorkflowActionRow.svelte';
 import { __resetRunModeForTest } from '../../transport/runMode';
 
@@ -22,6 +24,7 @@ describe('WorkflowActionRow', () => {
   afterEach(() => {
     delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
     __resetRunModeForTest();
+    vi.restoreAllMocks();
   });
 
   it.each([
@@ -97,6 +100,68 @@ describe('WorkflowActionRow', () => {
     expect(receipt).toHaveTextContent('run/work → main · fast-forward · abc123');
     expect(receipt).toHaveTextContent('project opted in; a conflict or dirty base parks for you instead');
     expect(receipt).toHaveTextContent('git revert abc123');
+  });
+
+  it('loads the PR review count once and navigates both follow-up actions to the linked thread', async () => {
+    const value = detail('done', '', JSON.stringify({
+      action: 'pr', prRef: 'https://github.com/owner/repo/pull/9', policy: 'manual', at: 1,
+    }));
+    const thread = {
+      id: 'linked-thread', title: 'Workflow triage', provider: 'codex', model: 'gpt-5.4',
+      workspacePath: '/tmp/workspace', projectPath: '/tmp/workspace', mode: 'workflow-triage',
+      createdAt: 1, updatedAt: 1, archived: false,
+    };
+    const fetchComments = setBindingMock('WorkflowFetchPRReviewComments', async () => ({ count: 3, threads: [] }));
+    const sendComments = setBindingMock('WorkflowSendPRReviewCommentsToThread', async () => thread);
+    const discuss = setBindingMock('WorkflowDiscussPR', async () => thread);
+    const openThread = vi.spyOn(panes, 'openThreadInNewPane').mockResolvedValue({} as never);
+
+    const view = render(WorkflowActionRow, { detail: value });
+    const review = view.getByTestId('wf-pr-review-comments') as HTMLButtonElement;
+    await waitFor(() => expect(review).toHaveTextContent('Review comments (3)'));
+    expect(review.disabled).toBe(false);
+    await view.rerender({ detail: value });
+    expect(fetchComments).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(review);
+    await waitFor(() => expect(sendComments).toHaveBeenCalledWith(value.item.id));
+    await fireEvent.click(view.getByTestId('wf-pr-discuss'));
+    await waitFor(() => expect(discuss).toHaveBeenCalledWith(value.item.id));
+    expect(openThread).toHaveBeenCalledTimes(2);
+    expect(openThread).toHaveBeenNthCalledWith(1, thread);
+    expect(openThread).toHaveBeenNthCalledWith(2, thread);
+  });
+
+  it('disables the PR review action with the lazy fetch error as its title', async () => {
+    const value = detail('done', '', JSON.stringify({
+      action: 'pr', prRef: 'https://github.com/owner/repo/pull/9', policy: 'manual', at: 1,
+    }));
+    const fetchComments = setBindingMock('WorkflowFetchPRReviewComments', async () => {
+      throw new Error('forge unavailable');
+    });
+    const view = render(WorkflowActionRow, { detail: value });
+    const review = view.getByTestId('wf-pr-review-comments') as HTMLButtonElement;
+    await waitFor(() => expect(review.title).toBe('Forge unavailable.'));
+    expect(review.disabled).toBe(true);
+    await view.rerender({ detail: value });
+    expect(fetchComments).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps PR follow-up actions local-only without attempting the lazy fetch remotely', () => {
+    (globalThis as { __AO_BOOTSTRAP__?: { remote: boolean } }).__AO_BOOTSTRAP__ = { remote: true };
+    __resetRunModeForTest();
+    const fetchComments = setBindingMock('WorkflowFetchPRReviewComments', async () => ({ count: 1, threads: [] }));
+    const value = detail('done', '', JSON.stringify({
+      action: 'pr', prRef: 'https://github.com/owner/repo/pull/9', policy: 'manual', at: 1,
+    }));
+
+    const view = render(WorkflowActionRow, { detail: value });
+    for (const testId of ['wf-pr-review-comments', 'wf-pr-discuss']) {
+      const control = view.getByTestId(testId) as HTMLButtonElement;
+      expect(control.disabled).toBe(true);
+      expect(control.title).toBe('Local only');
+    }
+    expect(fetchComments).not.toHaveBeenCalled();
   });
 
   it('disables mutating action controls but keeps plain phase navigation live remotely', () => {

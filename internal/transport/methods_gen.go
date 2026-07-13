@@ -272,8 +272,10 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowCompleteTakeover", ID: 3393508470},             // main.App.WorkflowCompleteTakeover
 	{Name: "WorkflowCreateItemPR", ID: 1792283305},                 // main.App.WorkflowCreateItemPR
 	{Name: "WorkflowDiscardItem", ID: 2163033761},                  // main.App.WorkflowDiscardItem
+	{Name: "WorkflowDiscussPR", ID: 1236472344},                    // main.App.WorkflowDiscussPR
 	{Name: "WorkflowDismissChatProposal", ID: 1877476344},          // main.App.WorkflowDismissChatProposal
 	{Name: "WorkflowEnqueueItem", ID: 683191625},                   // main.App.WorkflowEnqueueItem
+	{Name: "WorkflowFetchPRReviewComments", ID: 819019128},         // main.App.WorkflowFetchPRReviewComments
 	{Name: "WorkflowGetItem", ID: 70120675},                        // main.App.WorkflowGetItem
 	{Name: "WorkflowGetJobNotes", ID: 3798011060},                  // main.App.WorkflowGetJobNotes
 	{Name: "WorkflowListDefinitions", ID: 2064216126},              // main.App.WorkflowListDefinitions
@@ -290,6 +292,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowReorderQueue", ID: 1214686266},                 // main.App.WorkflowReorderQueue
 	{Name: "WorkflowResolveGate", ID: 3348479803},                  // main.App.WorkflowResolveGate
 	{Name: "WorkflowResumeItem", ID: 3138507556},                   // main.App.WorkflowResumeItem
+	{Name: "WorkflowSendPRReviewCommentsToThread", ID: 1172404443}, // main.App.WorkflowSendPRReviewCommentsToThread
 	{Name: "WorkflowSetJobNotes", ID: 1934298592},                  // main.App.WorkflowSetJobNotes
 	{Name: "WorkflowSetQueue", ID: 3526159695},                     // main.App.WorkflowSetQueue
 	{Name: "WorkflowUpdateProjectQueue", ID: 778072333},            // main.App.WorkflowUpdateProjectQueue

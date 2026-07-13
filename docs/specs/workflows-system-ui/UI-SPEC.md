@@ -220,7 +220,7 @@ Action row is a fixed footer, primary first; keys `a` (advance/approve), `r`
 | **gate** | Checks row (`✓ build 9s ✓ test 21s …`); diff file list, each row `path +a −d` expanding hunks in place; leads with the diff (D4.4). Full review → the real ReviewPane (§5.7). | `Approve → <next-phase>` (a, primary) · `Request changes` (r — reveals an inline optional-note input, Enter commits; note rides as loop feedback per D5) · `Take over` (t) |
 | **question** | Question as a quote block; suggested answers as buttons with digit hints lifted from the question; answer input (placeholder "Answer — the phase resumes where it yielded") + Send. Answering resumes the yielded turn — no restart (WHAT-spec §7). | `Take over instead` (t). Digits pick + send a suggestion; `a` focuses the input; Enter sends. |
 | **failed** | Failing check line `✗ go test ./internal/triage — TestParallelDispatch ×3 · genuine`; latest diagnosis as italic quote (`diagnosis #3: "…"`). | `Continue with agent` (t, primary — §8.2) · `Re-enqueue with guidance` (a — requeues with the diagnosis as feedback) · `Discard` (r, danger) |
-| **done** | Checks row; disposition (D3.3): manual view offers merge/PR/discard. After Create PR: PR block (`⎇ PR #214 · branch · open ↗`, `Review comments (N)` → §5.7, `Send comments to the agent` → run returns to Running with a fix turn, D11). Auto-merge projects show a **receipt** instead: green `✓ Merged automatically · today 06:12` + kv rows merge (`branch → main · fast-forward · sha`), policy ("project opted in; a conflict or dirty base parks for you instead"), undo (`git revert <sha>`). | Manual: `Merge to main` (a, primary) · `Create PR` · `Continue with agent ↗` (t) · `Discard` (r, danger). Auto-merge/PR views: `Continue with agent ↗` only. |
+| **done** | Checks row; disposition (D3.3): manual view offers merge/PR/discard. After Create PR: PR block (`⎇ PR #214 · branch · open ↗`, `Review comments (N)` + `Discuss this PR` → the run's linked thread, §5.7; M4 rulings D11 amendment). Auto-merge projects show a **receipt** instead: green `✓ Merged automatically · today 06:12` + kv rows merge (`branch → main · fast-forward · sha`), policy ("project opted in; a conflict or dirty base parks for you instead"), undo (`git revert <sha>`). | Manual: `Merge to main` (a, primary) · `Create PR` · `Continue with agent ↗` (t) · `Discard` (r, danger). Auto-merge/PR views: `Continue with agent ↗` only. |
 | **running** | Phase list: `✓ name · duration` (done), `● name · <live activity>` (running), `○ name` (waiting). Retried phases render one row per attempt (`check · attempt 2`); every attempt row with a thread is openable (§5.6). | `Open phase thread` · `Stop this run` (danger, teardown) |
 | **queued** | Digest + queue position. | `Remove from queue` (danger); toast notes automation runs get re-proposed next cycle. |
 | **cancelled** | Receipt `cancelled · worktree kept`. | `Discard worktree` (danger, guarded — §5.8) · `Back` |
@@ -259,13 +259,30 @@ attempt (completed, failed, superseded retries) via the phase list; clicking ope
 as a normal thread pane. Thread ids come from the denormalized
 `work_item_phases.thread_id`.
 
-### 5.7 PR review integration
+### 5.7 PR follow-ups (M4 rulings D11 amendment)
 
-`Review comments (N)` and any "open full review" affordance MUST open the **real
-ReviewPane** as its own pane — the existing review companion (`reviewPane.svelte.ts`
-→ `openCompanion(paneId, 'review')`) with the workflows pane as `sourcePaneId`,
-targeted at the run's worktree diff or PR. No parallel diff renderer; the inline gate
-file list (§5.3) stays the lightweight in-place skim.
+PR follow-ups become threads — the bespoke send-comments-back-to-the-run loop is
+dropped. The PR block carries two buttons riding the done→thread hand-off
+(`WorkflowOpenTriageThread` machinery, one linked thread per run — reuse, never
+duplicate):
+
+- **`Review comments (N)`** (`wf-pr-review-comments`) — N is the unresolved
+  review-thread count, fetched lazily when the PR block renders (single-flight per
+  item, cached for the pane visit; fetch failure disables the button with the error
+  as its title). Clicking sends the fetched review threads into the run's linked
+  thread as one user message — every forge-sourced string quoted as untrusted data —
+  and lands the user in that thread pane. `(0)` stays actionable: the thread receives
+  the explicit no-unresolved-threads result.
+- **`Discuss this PR`** (`wf-pr-discuss`) — opens/reuses the same linked thread
+  seeded with PR context (title, ref, review decision, check summary) plus the run's
+  intent context (goal + digest), asking the agent to prepare discussion topics.
+  Never includes the diff (hand-off context ruling, F4.4).
+
+Both are Local-only in view-only sessions. Any "open full review" affordance (gate
+state, §5.3) still opens the **real ReviewPane** as its own pane — the existing
+review companion (`reviewPane.svelte.ts` → `openCompanion(paneId, 'review')`) with
+the workflows pane as `sourcePaneId`. No parallel diff renderer; the inline gate file
+list (§5.3) stays the lightweight in-place skim.
 
 ### 5.8 Discard worktree
 

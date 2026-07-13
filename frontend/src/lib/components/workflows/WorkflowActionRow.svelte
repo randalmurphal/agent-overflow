@@ -2,7 +2,13 @@
   import { tick } from 'svelte';
   import type { WorkItem, WorkflowItemDetail, WorkflowResolvedReceipt } from '../../types/workflow';
   import { parseWorkflowDisposition } from '../../types/workflow';
-  import { GetThread, WorkflowOpenTriageThread } from '../../stores/bindings';
+  import {
+    GetThread,
+    WorkflowDiscussPR,
+    WorkflowFetchPRReviewComments,
+    WorkflowOpenTriageThread,
+    WorkflowSendPRReviewCommentsToThread,
+  } from '../../stores/bindings';
   import { dispatchWorkflowAction, workflowActionConfirmationKey, type WorkflowAction } from '../../stores/workflowActions';
   import { setWorkflowActionKeyHandler, type WorkflowActionKey } from '../../stores/workflowCommands.svelte';
   import { openThreadInNewPane } from '../../stores/panes.svelte';
@@ -29,9 +35,18 @@
   let rejectNote = $state('');
   let answer = $state('');
   let busy = $state(false);
+  let prBusy = $state(false);
+  let prReviewCounts = $state<Record<string, { count?: number; error?: string }>>({});
+  const prReviewFetches = new Map<string, Promise<void>>();
   let answerInput: HTMLInputElement | undefined = $state(undefined);
   let rejectInput: HTMLInputElement | undefined = $state(undefined);
   let viewOnly = $derived(isViewOnlySession());
+  let prReviewState = $derived(prReviewCounts[item.id]);
+  let prReviewTitle = $derived(
+    viewOnly
+      ? 'Local only'
+      : prReviewState?.error ?? (prReviewState?.count === undefined ? 'Loading review comments' : undefined),
+  );
 
   async function act(action: WorkflowAction): Promise<void> {
     if (viewOnly || busy) return;
@@ -98,6 +113,38 @@
     }
   }
 
+  async function loadPRReviewCount(itemId: string): Promise<void> {
+    if (prReviewCounts[itemId] || prReviewFetches.has(itemId)) return;
+    prReviewCounts = { ...prReviewCounts, [itemId]: {} };
+    const request = (async () => {
+      try {
+        const result = await WorkflowFetchPRReviewComments(itemId);
+        prReviewCounts = { ...prReviewCounts, [itemId]: { count: result.count } };
+      } catch (error) {
+        prReviewCounts = { ...prReviewCounts, [itemId]: { error: userFacingError(error, 'Could not load review comments.') } };
+      } finally {
+        prReviewFetches.delete(itemId);
+      }
+    })();
+    prReviewFetches.set(itemId, request);
+    await request;
+  }
+
+  async function openPRThread(kind: 'review' | 'discuss'): Promise<void> {
+    if (viewOnly || prBusy || (kind === 'review' && prReviewState?.count === undefined)) return;
+    prBusy = true;
+    try {
+      const thread = kind === 'review'
+        ? await WorkflowSendPRReviewCommentsToThread(item.id)
+        : await WorkflowDiscussPR(item.id);
+      await openThreadInNewPane(workflowThreadFromWire(thread));
+    } catch (error) {
+      addToast('error', userFacingError(error, kind === 'review' ? 'Could not send PR review comments.' : 'Could not discuss this PR.'));
+    } finally {
+      prBusy = false;
+    }
+  }
+
   function suggestedAnswers(): string[] {
     return questionText
       .split(/\n|;/)
@@ -144,6 +191,10 @@
     setWorkflowActionKeyHandler(handleActionKey);
     return () => setWorkflowActionKeyHandler(null);
   });
+
+  $effect(() => {
+    if (!viewOnly && disposition?.action === 'pr') void loadPRReviewCount(item.id);
+  });
 </script>
 
 {#if receipt}
@@ -176,6 +227,10 @@
             <p class="text-fg-muted">branch dropped · record kept · policy {disposition.policy}</p>
           {/if}
         </div>
+        {#if disposition.action === 'pr'}
+          <button class="rounded-md border border-border-subtle px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openPRThread('review')} disabled={viewOnly || prBusy || prReviewState?.count === undefined} title={prReviewTitle} data-testid="wf-pr-review-comments">Review comments ({prReviewState?.count ?? '…'})</button>
+          <button class="rounded-md border border-border-subtle px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50" onclick={() => openPRThread('discuss')} disabled={viewOnly || prBusy} title={viewOnly ? 'Local only' : undefined} data-testid="wf-pr-discuss">Discuss this PR</button>
+        {/if}
         {#if !receipt}<button class="rounded-md border border-border-subtle px-3 py-1.5 text-xs" onclick={openTriage} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-receipt-continue">Continue with agent ↗ <kbd>t</kbd></button>{/if}
       {:else if item.state === 'needs-human' && item.reason === 'gate'}
         <button class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white" onclick={() => act({ kind: 'approve' })} disabled={viewOnly || busy} title={viewOnly ? 'Local only' : undefined} data-testid="wf-approve">Approve{approveTarget ? ` → ${approveTarget}` : ''} <kbd>a</kbd></button>

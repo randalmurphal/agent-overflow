@@ -29,6 +29,7 @@ func TestWorkflowBoundMethodsRegisteredOnApp(t *testing.T) {
 		"WorkflowSetQueue", "WorkflowListItems", "WorkflowListUnresolvedItems", "WorkflowListItemCosts", "WorkflowGetItem",
 		"WorkflowCompleteTakeover", "WorkflowOpenTriageThread", "WorkflowOpenTriageAgent", "WorkflowOpenStudioThread",
 		"WorkflowMergeItem", "WorkflowCreateItemPR", "WorkflowDiscardItem",
+		"WorkflowFetchPRReviewComments", "WorkflowSendPRReviewCommentsToThread", "WorkflowDiscussPR",
 		"WorkflowGetJobNotes", "WorkflowSetJobNotes", "WorkflowListDefinitions",
 		"WorkflowRemoveQueuedItem",
 	} {

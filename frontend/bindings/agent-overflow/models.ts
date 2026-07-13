@@ -2331,6 +2331,35 @@ export class WorkflowItemView {
     }
 }
 
+export class WorkflowPRReviewComments {
+    "count": number;
+    "threads": git$0.ReviewThread[];
+
+    /** Creates a new WorkflowPRReviewComments instance. */
+    constructor($$source: Partial<WorkflowPRReviewComments> = {}) {
+        if (!("count" in $$source)) {
+            this["count"] = 0;
+        }
+        if (!("threads" in $$source)) {
+            this["threads"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowPRReviewComments instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowPRReviewComments {
+        const $$createField1_0 = $$createType17;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("threads" in $$parsedSource) {
+            $$parsedSource["threads"] = $$createField1_0($$parsedSource["threads"]);
+        }
+        return new WorkflowPRReviewComments($$parsedSource as Partial<WorkflowPRReviewComments>);
+    }
+}
+
 /**
  * WorkspaceFileSearchResult is the RPC shape for workspace-file search hits.
  */
