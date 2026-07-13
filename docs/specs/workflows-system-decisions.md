@@ -559,3 +559,41 @@ a notes file per job, not a memory subsystem (the §12 exclusion stands).
   project's profile; the same name in two projects never contends. App-level
   global resources (a machine-wide GPU, say) are a possible later addition, not
   v1.
+
+## M4 rulings (user decisions, 2026-07-13)
+
+- **D4.5 amendment — enqueue-from-chat is user-directed, not autonomous.**
+  The producer is an `ao` subcommand available to interactive threads
+  (normal chat + triage), described to the agent so it knows the
+  capability exists, but invoked **when the user asks** — the tool
+  guidance must instruct agents not to enqueue unprompted. A settings
+  toggle gates the whole feature (guidance injection + authorization);
+  off means the capability is absent, not merely hidden. The §7.2
+  confirm card remains the commit point — chat never enqueues silently.
+- **D11 amendment — PR follow-ups become threads.** The bespoke
+  "Send comments to the agent → run returns to Running with a fix turn"
+  loop is dropped. Instead the PR block gains: (a) **Review comments
+  (N)** — fetched review-comment threads seeded into the run's linked
+  thread, which already carries the work's context; (b) **Discuss this
+  PR** — opens/reuses that thread seeded with PR context to review and
+  prepare discussion topics. Both ride the existing done→thread
+  hand-off machinery.
+- **D3.1 amendment — queues are per-project entities.** The Up-next
+  surface renders a *list of per-project queues* (separate lists in the
+  column UI), never one interleaved strip. Each project queue is FIFO
+  within itself (manual reorder stays per-queue) and gains its own
+  **pause toggle** and **concurrent-run limit** alongside the global
+  ones. Per-project drain summaries are hereby ratified in §10 — they
+  match the engine's structure.
+- **Hand-off context ruling (resolves F4.4).** Seeds handed to a
+  triage/linked thread carry **intent context** — goal, digest
+  (what happened / what it needs), narrative and decisions — never
+  diff summaries or file lists. The agent reads code from the worktree;
+  the seed's job is "what was this work for and where does it stand."
+- **`workflow:definitions-changed` ratified.** Emitted when a
+  definition file is written through the app (studio save path);
+  sidebar/pane refetch the catalog on it. Deferred from P4.0/P4.1 only
+  by packet discipline (no new event channels mid-pass).
+- **Standing mandate:** polish, efficiency, and implementation-quality
+  improvements are always in scope for future packets — flag them in
+  reports, don't sit on them.
