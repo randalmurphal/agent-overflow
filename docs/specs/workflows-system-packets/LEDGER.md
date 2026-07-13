@@ -941,3 +941,23 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   preflight green. codex gpt-5.6-sol xhigh, bypass sandbox, session id
   `019f591d-091b-75b0-92db-66eeb6a466a9`. Banner verified. Gates
   inherit `-timeout 1800s` on the race gate per P3.7 lesson.
+
+- **P3.8 verdict: not gamed, three riders — merged `0ccdeda8`.** Codex
+  completed all 11 work-plan items with honest gate evidence (including
+  a self-review that caught three of its own issues pre-report).
+  Line-level review across seven diff areas: forge flag tests pin
+  presence AND absence; the cleanup-failure test engineers a genuine
+  git refusal (upstream-tracking) rather than mocking; the abandoned
+  run-actions spec edit was restored byte-identical as reported; the
+  prepareWorkspace trigger fix was a necessary consequence of
+  enqueue-time base persistence, caught and reported. All nine
+  assumptions accepted; one contract override — codex cleared the
+  intake base branch on rollback to satisfy a stale pre-P3.8 assertion
+  (correct executor behavior under the no-weakening rule); adjudicator
+  amended the assertion instead. Riders: (1) re-enqueue refuses
+  disposition-bearing runs (stale-receipt dead end), (2) rollback
+  preserves intake base, (3) indent fix — all verified in-lane.
+  Independent post-merge battery: 9/9 green (race 1800s budget, e2e
+  24/24 twice). Noted for P3.9/polish: discard on non-disposition parks
+  leaves needs-human (pre-existing); PR disposition now requires a
+  resolvable base. Lane `p38` pruned.
