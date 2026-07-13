@@ -1152,3 +1152,4 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   WorkflowSendPRReviewCommentsToThread / WorkflowDiscussPR riding the
   linked-thread hand-off; PR block gains Review comments (N) + Discuss
   this PR (D11 amendment).
+- Codex session: `019f5c23-132a-7840-88aa-aa6bf120d5cb` (gpt-5.6-sol, xhigh confirmed in banner).
