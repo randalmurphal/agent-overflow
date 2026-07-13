@@ -1015,3 +1015,21 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   Banner verified. 10 work-plan items, full-vertical (Go + wire +
   frontend); bindings regen sanctioned; template-DB item is
   benchmark-gated (revert if < 25% saving).
+
+- **P4.0 verdict: not gamed, one rider — merged `af71355c`.** All 10
+  items delivered with honest gates; the `methods_gen_test.go` edit was
+  the wire-safety classification checkpoint doing its job, and the
+  amended assertions moved persistence coverage to direct store reads
+  rather than weakening it. Review verified: `startWaiting` cannot
+  spin (every non-increment path removes the waiter), the
+  gate-trace/intervention context fields are genuinely consumed by
+  `loopCounts`, and the scoped pane refresh shares the P3.9
+  capture/generation machinery without dropping mid-wave project ids.
+  Rider (16fcb6d1, applied in-lane): `isWorkflowResolved` unifies the
+  disposition-resolved ruling across parked/sweep/live-history — the
+  packet had only named `isWorkflowSidebarRun`, leaving discarded
+  failed runs haunting the sweep and amber counts. Measured: store race
+  suite 501s → 85s; item-state wave 1+P+3K RPCs → 3 with zero catalog
+  reloads. Flagged for M4: `workflow:definitions-changed` signal for
+  sidebar catalog staleness. Independent post-merge battery: 9/9 green.
+  Lane `p40` pruned. **Task #4 (perf/memory) complete.**
