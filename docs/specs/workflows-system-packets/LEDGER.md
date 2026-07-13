@@ -1153,3 +1153,39 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   linked-thread hand-off; PR block gains Review comments (N) + Discuss
   this PR (D11 amendment).
 - Codex session: `019f5c23-132a-7840-88aa-aa6bf120d5cb` (gpt-5.6-sol, xhigh confirmed in banner).
+
+## P5.2 verdict — MERGED (da481733)
+
+- Codex delivered COMPLETE, no BLOCKED; gates 8/8 in-lane (e2e ×2). One
+  existing assertion set amended — exactly the diff-fence expectations
+  work-plan item 1 authorizes, listed in the report.
+- Line review clean: the large transport test/classification deltas were
+  gofmt alignment reflow from the long
+  WorkflowSendPRReviewCommentsToThread name (3 additive entries per
+  file); ParsePRURL round-trips both forge URL shapes through
+  SplitProjectForForge validation; Core forge reads dispatch on
+  ref.Forge, so the calls survive worktree cleanup (disposition
+  auto-cleanup clears WorktreePath — fallback verified); seed narrative
+  reads bounded with guaranteed truncation detection; fetch-before-
+  thread-open ordering means forge failures never create threads.
+- Rider (verified in-lane e36181b5, squashed): both PR message
+  composers glued the closing code fence onto the truncation marker's
+  line at the 24k-rune cap, leaving the fence unterminated — fixed per
+  the prthread pattern with a regression test forcing message-level
+  truncation.
+- Spec ratifications at merge: UI-SPEC §5.3 done-row and §5.7 rewritten
+  from the pre-ruling D11 surface to the M4 amendment (PR follow-ups
+  ride the linked thread; full-review affordances still open the real
+  ReviewPane).
+- Carry-forward: e2e coverage for the PR buttons needs a harness
+  forge-fake extension (harness.ts was a forbidden zone) — same class
+  as P5.0's MCP-driven e2e follow-up.
+- Battery: 9/9. Report + addendum: `reports/P5.2-report.md`.
+
+## M4 campaign closed
+
+P5.0 (a29c2992), P5.1 (e964d888), P5.2 (da481733) — all M4 rulings from
+2026-07-13 implemented: user-invokable settings-gated chat-enqueue MCP
+tool, per-project queues with pause + concurrency limits +
+workflow:definitions-changed, intent-context hand-off seeds (F4.4), and
+PR follow-ups as linked threads (D11 amendment).
