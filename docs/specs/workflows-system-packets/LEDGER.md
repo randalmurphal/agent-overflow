@@ -1006,3 +1006,12 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   item-state events), not a DTO redesign. Deferred: profile cache,
   paged history / summary endpoints (flagged follow-up), incremental
   context cache. Packet `P4.0-perf-workflows.md` authored (10 items).
+
+- **P4.0 (perf/memory: workflows hot paths) dispatched.** Lane `p40`
+  at `lane/p40-perf-workflows` (base 89d4a6d1), bootstrap (pnpm
+  frontend+e2e, frontend build, go build) green, wails3 CLI verified
+  for the bindings regen item 4 requires. codex gpt-5.6-sol xhigh,
+  bypass sandbox, session id `019f5994-7afa-71e3-bd92-9ba89d4e6637`.
+  Banner verified. 10 work-plan items, full-vertical (Go + wire +
+  frontend); bindings regen sanctioned; template-DB item is
+  benchmark-gated (revert if < 25% saving).
