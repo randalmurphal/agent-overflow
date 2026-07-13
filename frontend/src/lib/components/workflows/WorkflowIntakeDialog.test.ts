@@ -91,7 +91,9 @@ describe('WorkflowIntakeDialog', () => {
     expect([args[0], args[1], args[2], args[3], args[5], args[6]]).toEqual([
       'p', 'wf', 'shared', 'Ship it', null, true,
     ]);
-    expect(JSON.parse(args[4] as string)).toEqual({ title: 'Release', mode: 'safe', approved: false });
+    // The wire carries seeds as one JSON object; a stringified payload arrives
+    // as a JSON string literal and the engine rejects it.
+    expect(args[4]).toEqual({ title: 'Release', mode: 'safe', approved: false });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
