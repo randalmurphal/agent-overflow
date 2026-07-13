@@ -1121,3 +1121,4 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   gating + QueueStateEvent extension; WorkflowUpdateProjectQueue bound
   method; per-project drain-summary flush; list-of-queues UI;
   workflow:definitions-changed watcher.
+- Codex session: `019f5bef-e4b7-72c1-be33-efe4cc9db345` (gpt-5.6-sol, xhigh confirmed in banner).
