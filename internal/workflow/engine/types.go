@@ -199,7 +199,9 @@ type persistence interface {
 	CreateWorkItem(store.WorkItem) error
 	GetWorkItem(string) (store.WorkItem, error)
 	ListWorkItems(store.WorkItemListFilter) ([]store.WorkItem, error)
+	NextWorkItemSortPosition(string) (int, error)
 	UpdateWorkItemState(string, string, string, int64) error
+	ReenqueueFailedWorkItem(string, int) error
 	UpdateWorkItemRunStart(string, json.RawMessage, string, string, string, int64) error
 	ReorderQueuedWorkItems(string, []string) error
 	CreateWorkItemPhase(store.WorkItemPhase) error

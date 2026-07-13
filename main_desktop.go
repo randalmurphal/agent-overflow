@@ -101,7 +101,6 @@ func runClient(rawURL string) {
 // into WSL is a separate cmd/ — see cmd/agent-overflow-windows.
 func runDesktop(listenAddr string) {
 	appService := newApp()
-	notificationService := newDesktopNotificationService(appService)
 	// window + its tracker flush are created on the ApplicationStarted handler
 	// goroutine (see below) and read by the single-instance callback and the
 	// post-Run backstop, so guard both.
@@ -115,6 +114,7 @@ func runDesktop(listenAddr string) {
 		defer winMu.Unlock()
 		return window
 	}
+	notificationService := newDesktopNotificationService(appService, getWindow)
 	title := appidentity.AppTitle(nativeSingleInstanceMode())
 	app := application.New(application.Options{
 		Name:           title,

@@ -731,6 +731,7 @@ func (p *privilegedApp) WorkflowGetJobNotes() string            { return "ok" }
 func (p *privilegedApp) WorkflowSetJobNotes() string            { return "ok" }
 func (p *privilegedApp) WorkflowListDefinitions() string        { return "ok" }
 func (p *privilegedApp) WorkflowRemoveQueuedItem() string       { return "ok" }
+func (p *privilegedApp) WorkflowReenqueueFailedItem() string    { return "ok" }
 func (p *privilegedApp) UpdateThreadMode() string               { return "ok" }
 func (p *privilegedApp) UpdateThreadProvider() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadModel() string              { return "ok" }

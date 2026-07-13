@@ -996,6 +996,11 @@ func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launche
 }
 
 func (a *launcherApp) queueNotificationActivation(target notify.Target) {
+	if window := a.win(); window != nil {
+		window.Show()
+		window.Restore()
+		window.Focus()
+	}
 	a.mu.Lock()
 	dropped, startDrain := a.notificationActivations.Push(target, a.notificationClient != nil)
 	a.mu.Unlock()

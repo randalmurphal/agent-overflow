@@ -16,12 +16,14 @@ import (
 )
 
 type WorkflowDispositionReceipt struct {
-	Action string `json:"action"`
-	Mode   string `json:"mode,omitempty"`
-	SHA    string `json:"sha,omitempty"`
-	PRRef  string `json:"prRef,omitempty"`
-	Policy string `json:"policy"`
-	At     int64  `json:"at"`
+	Action        string `json:"action"`
+	Mode          string `json:"mode,omitempty"`
+	SHA           string `json:"sha,omitempty"`
+	PRRef         string `json:"prRef,omitempty"`
+	Base          string `json:"base,omitempty"`
+	CleanupFailed bool   `json:"cleanupFailed,omitempty"`
+	Policy        string `json:"policy"`
+	At            int64  `json:"at"`
 }
 
 type workflowDispositionAction string
@@ -84,6 +86,13 @@ func (a *App) runWorkflowDisposition(itemID string, action workflowDispositionAc
 		}
 		return WorkflowDispositionReceipt{}, errors.Join(dispositionErr, engineErr)
 	}
+	if dispositionErr == nil && receipt.Action != "" && item.State == string(engine.StateNeedsHuman) && item.Reason == string(engine.ReasonDisposition) {
+		workflowEngine, engineErr := a.requireWorkflowEngine()
+		if engineErr == nil {
+			engineErr = workflowEngine.ResolveDisposition(item.ID)
+		}
+		dispositionErr = errors.Join(dispositionErr, engineErr)
+	}
 	return receipt, dispositionErr
 }
 
@@ -91,8 +100,9 @@ func validateWorkflowDispositionState(item store.WorkItem, action workflowDispos
 	state := engine.State(item.State)
 	switch action {
 	case workflowDispositionMerge, workflowDispositionPR:
-		if state != engine.StateDone {
-			return fmt.Errorf("workflow disposition %s: %s requires item state done, got %s", item.ID, action, state)
+		parkedDisposition := state == engine.StateNeedsHuman && item.Reason == string(engine.ReasonDisposition)
+		if state != engine.StateDone && !parkedDisposition {
+			return fmt.Errorf("workflow disposition %s: %s requires item state done or needs-human(disposition), got %s(%s)", item.ID, action, state, item.Reason)
 		}
 	case workflowDispositionDiscard:
 		if state != engine.StateDone && state != engine.StateFailed && state != engine.StateCancelled && state != engine.StateNeedsHuman {
@@ -105,7 +115,7 @@ func validateWorkflowDispositionState(item store.WorkItem, action workflowDispos
 }
 
 func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispositionAction, policy profile.Disposition) (WorkflowDispositionReceipt, error) {
-	projectRow, err := a.validateWorkflowDispositionWorktree(item)
+	projectRow, removeWorktree, err := a.validateWorkflowDispositionWorktree(item, action)
 	if err != nil {
 		return WorkflowDispositionReceipt{}, err
 	}
@@ -122,16 +132,9 @@ func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispo
 	core := a.gitCore()
 	switch action {
 	case workflowDispositionMerge:
-		projectProfile, err := a.workflowProjectProfile(item.ProjectID)
+		baseBranch, err := a.workflowDispositionBase(item)
 		if err != nil {
 			return WorkflowDispositionReceipt{}, err
-		}
-		baseBranch := strings.TrimSpace(projectProfile.BaseBranch)
-		if baseBranch == "" {
-			baseBranch = strings.TrimSpace(item.BaseBranch)
-		}
-		if baseBranch == "" {
-			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s: base branch is unavailable", item.ID)
 		}
 		merged, err := core.MergeBranch(projectRow.Path, baseBranch, item.Branch)
 		if err != nil {
@@ -139,7 +142,12 @@ func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispo
 		}
 		receipt.Mode = merged.Mode
 		receipt.SHA = merged.SHA
+		receipt.Base = baseBranch
 	case workflowDispositionPR:
+		baseBranch, err := a.workflowDispositionBase(item)
+		if err != nil {
+			return WorkflowDispositionReceipt{}, err
+		}
 		sha, err := core.HeadSHA(item.WorktreePath)
 		if err != nil {
 			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s read PR head: %w", item.ID, err)
@@ -149,19 +157,22 @@ func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispo
 		}
 		prRef, err := core.CreatePR(
 			item.WorktreePath, item.Goal,
-			fmt.Sprintf("Created from Agent Overflow workflow %s.", item.WorkflowID), false,
+			fmt.Sprintf("Created from Agent Overflow workflow %s.", item.WorkflowID), baseBranch, false,
 		)
 		if err != nil {
 			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s create PR: %w", item.ID, err)
 		}
 		receipt.PRRef = prRef
 		receipt.SHA = sha
+		receipt.Base = baseBranch
 	case workflowDispositionDiscard:
-		if _, err := a.RemoveOtherWorktreeForProject(item.ProjectID, "", item.WorktreePath, false); err != nil {
-			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s discard: %w", item.ID, err)
-		}
-		if err := a.store.UpdateWorkItemWorkspace(item.ID, "", "", ""); err != nil {
-			return receipt, err
+		if removeWorktree {
+			if _, err := a.RemoveOtherWorktreeForProject(item.ProjectID, "", item.WorktreePath, true); err != nil {
+				return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s discard: %w", item.ID, err)
+			}
+			if err := a.store.UpdateWorkItemWorkspace(item.ID, "", "", ""); err != nil {
+				return receipt, err
+			}
 		}
 	}
 
@@ -180,42 +191,79 @@ func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispo
 			cleanupErr = err
 		}
 	}
+	if cleanupErr != nil {
+		receipt.CleanupFailed = true
+		updated, encodeErr := json.Marshal(receipt)
+		persistErr := encodeErr
+		if encodeErr == nil {
+			persistErr = a.store.UpdateWorkItemDisposition(item.ID, updated)
+		}
+		if persistErr != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("persist cleanup failure receipt: %w", persistErr))
+		}
+		log.Printf("workflow disposition %s: %v", item.ID, cleanupErr)
+		a.emit("workflow:error", engine.ErrorEvent{
+			ItemID: item.ID,
+			Error:  "workflow disposition landed but automatic worktree cleanup failed",
+		})
+	}
 	a.emit("workflow:item-state", engine.StateEvent{
 		ItemID: item.ID, From: engine.State(item.State), To: engine.State(item.State),
 	})
-	return receipt, cleanupErr
+	return receipt, nil
 }
 
-func (a *App) validateWorkflowDispositionWorktree(item store.WorkItem) (store.Project, error) {
+func (a *App) workflowDispositionBase(item store.WorkItem) (string, error) {
+	projectProfile, err := a.workflowProjectProfile(item.ProjectID)
+	if err != nil {
+		return "", err
+	}
+	baseBranch := strings.TrimSpace(projectProfile.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = strings.TrimSpace(item.BaseBranch)
+	}
+	if baseBranch == "" {
+		return "", fmt.Errorf("workflow disposition %s: base branch is unavailable", item.ID)
+	}
+	return baseBranch, nil
+}
+
+func (a *App) validateWorkflowDispositionWorktree(item store.WorkItem, action workflowDispositionAction) (store.Project, bool, error) {
+	if action == workflowDispositionDiscard && (strings.TrimSpace(item.WorktreePath) == "" || strings.TrimSpace(item.Branch) == "") {
+		return store.Project{}, false, nil
+	}
 	projectRow, err := a.store.GetProject(item.ProjectID)
 	if err != nil {
-		return store.Project{}, err
+		return store.Project{}, false, err
 	}
 	if strings.TrimSpace(item.WorktreePath) == "" || strings.TrimSpace(item.Branch) == "" {
-		return store.Project{}, fmt.Errorf("workflow disposition %s: item branch or worktree is missing", item.ID)
+		return store.Project{}, false, fmt.Errorf("workflow disposition %s: item branch or worktree is missing", item.ID)
 	}
 	info, err := os.Stat(item.WorktreePath)
 	if err != nil {
-		return store.Project{}, fmt.Errorf("workflow disposition %s: inspect worktree: %w", item.ID, err)
+		return store.Project{}, false, fmt.Errorf("workflow disposition %s: inspect worktree: %w", item.ID, err)
 	}
 	if !info.IsDir() {
-		return store.Project{}, fmt.Errorf("workflow disposition %s: worktree is not a directory", item.ID)
+		return store.Project{}, false, fmt.Errorf("workflow disposition %s: worktree is not a directory", item.ID)
 	}
 	worktree, found, err := a.findWorktree(projectRow.Path, item.WorktreePath)
 	if err != nil {
-		return store.Project{}, err
+		return store.Project{}, false, err
 	}
 	if !found || worktree.Branch != item.Branch {
-		return store.Project{}, fmt.Errorf("workflow disposition %s: worktree is not registered on branch %q", item.ID, item.Branch)
+		return store.Project{}, false, fmt.Errorf("workflow disposition %s: worktree is not registered on branch %q", item.ID, item.Branch)
+	}
+	if action == workflowDispositionDiscard {
+		return projectRow, true, nil
 	}
 	changes, err := a.gitCore().CountWorkingTreeChanges(item.WorktreePath)
 	if err != nil {
-		return store.Project{}, fmt.Errorf("workflow disposition %s: inspect item worktree: %w", item.ID, err)
+		return store.Project{}, false, fmt.Errorf("workflow disposition %s: inspect item worktree: %w", item.ID, err)
 	}
 	if changes > 0 {
-		return store.Project{}, fmt.Errorf("workflow disposition %s: item worktree is dirty (%d changed files)", item.ID, changes)
+		return store.Project{}, false, fmt.Errorf("workflow disposition %s: item worktree is dirty (%d changed files)", item.ID, changes)
 	}
-	return projectRow, nil
+	return projectRow, true, nil
 }
 
 func (a *App) workflowProjectProfile(projectID string) (*profile.Profile, error) {

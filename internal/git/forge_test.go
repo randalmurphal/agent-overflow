@@ -176,7 +176,7 @@ func TestNullForgeReturnsErrUnsupported(t *testing.T) {
 	if _, err := f.ListOpenPRs("", "main"); !errors.Is(err, ErrUnsupportedForge) {
 		t.Errorf("ListOpenPRs err = %v, want ErrUnsupportedForge", err)
 	}
-	if _, err := f.CreatePR("", "title", "body", false); !errors.Is(err, ErrUnsupportedForge) {
+	if _, err := f.CreatePR("", "title", "body", "", false); !errors.Is(err, ErrUnsupportedForge) {
 		t.Errorf("CreatePR err = %v, want ErrUnsupportedForge", err)
 	}
 	if _, err := f.ViewPR("", "owner/repo", 1); !errors.Is(err, ErrUnsupportedForge) {

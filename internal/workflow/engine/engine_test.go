@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,174 @@ func TestRemoveQueuedItemCancelsRecordAndLosesRaceToStart(t *testing.T) {
 	}
 	if err := h.engine.RemoveQueued(running.ID); err == nil {
 		t.Fatal("remove queued item succeeded after start won the race")
+	}
+}
+
+func TestReenqueueFailedDrainsWithDiagnosisAtQueueTail(t *testing.T) {
+	failedWhenFalse := def.Predicate{Eq: &def.Comparison{Ref: "work.ok", Value: false}}
+	workflow := onePhaseWorkflow("retry-failed", nil, []def.Route{
+		{When: &failedWhenFalse, To: "failed"},
+		{To: "done"},
+	})
+	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"retry-failed": workflow}, []string{"project"}, nil)
+	item := testItem("failed", "project", "retry-failed", 0)
+	if err := h.engine.Enqueue(item); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: json.RawMessage(`{"status":"done","outputs":{"ok":false,"diagnosis":"tests still fail"},"question":null,"reason":null}`)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := h.store.GetWorkItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.State != string(StateFailed) {
+		t.Fatalf("failed item state = %q", failed.State)
+	}
+	if err := h.engine.SetQueue(false, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	tail := testItem("tail", "project", "retry-failed", 4)
+	if err := h.engine.Enqueue(tail); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.ReenqueueFailed(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := h.store.GetWorkItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.State != string(StateQueued) || reloaded.Reason != "" || reloaded.EndedAt != 0 {
+		t.Fatalf("re-enqueued queued state = %+v", reloaded)
+	}
+	if reloaded.SortPosition <= tail.SortPosition {
+		t.Fatalf("re-enqueued sort position = %d, want after %d", reloaded.SortPosition, tail.SortPosition)
+	}
+	if err := h.engine.SetQueue(true, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	if len(starts) != 2 || starts[1].Key.ItemID != tail.ID {
+		t.Fatalf("queue tail ordering starts = %+v", starts)
+	}
+	h.runner.complete(t, tail.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	starts = h.runner.started()
+	if len(starts) != 3 || starts[2].Key.ItemID != item.ID || starts[2].Key.PhaseID != "work" || starts[2].Key.Attempt != 2 {
+		t.Fatalf("re-enqueued starts = %+v", starts)
+	}
+	if starts[2].Feedback == nil || starts[2].Feedback.Note != "check-failed-genuine: tests still fail" {
+		t.Fatalf("re-enqueued feedback = %+v", starts[2].Feedback)
+	}
+	if starts[2].Feedback.Values["work.diagnosis"] != "tests still fail" {
+		t.Fatalf("re-enqueued feedback values = %+v", starts[2].Feedback.Values)
+	}
+	reloaded, err = h.store.GetWorkItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.StartedAt <= failed.StartedAt {
+		t.Fatalf("re-enqueued start time = %d, original = %d", reloaded.StartedAt, failed.StartedAt)
+	}
+	phases, err := h.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input PhaseInput
+	if len(phases) != 2 || json.Unmarshal(phases[1].InputEnvelope, &input) != nil || input.Feedback == nil || input.Feedback.Note != starts[2].Feedback.Note {
+		t.Fatalf("re-enqueued phase input = %+v, phases=%+v", input, phases)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item.ID, StateDone, "")
+}
+
+func TestReenqueueFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
+	workflow := onePhaseWorkflow("retry-failed", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"retry-failed": workflow}, []string{"project"}, nil)
+	for index, state := range []State{StateQueued, StateRunning, StateNeedsHuman, StateDone, StateCancelled} {
+		item := testItem("not-failed-"+string(state), "project", "retry-failed", index)
+		item.State = string(state)
+		switch state {
+		case StateNeedsHuman:
+			item.Reason = string(ReasonStuck)
+		case StateCancelled:
+			item.Reason = string(ReasonInterrupted)
+		}
+		if err := h.store.CreateWorkItem(item); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.engine.ReenqueueFailed(item.ID); err == nil || !strings.Contains(err.Error(), "invalid state "+string(state)) {
+			t.Fatalf("%s re-enqueue error = %v", state, err)
+		}
+	}
+	broken := testItem("broken", "project", "retry-failed", 6)
+	broken.State = string(StateFailed)
+	broken.Reason = string(ReasonAgentError)
+	broken.Snapshot = json.RawMessage(`{}`)
+	if err := h.store.CreateWorkItem(broken); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.ReenqueueFailed(broken.ID); err == nil || !strings.Contains(err.Error(), "snapshot") {
+		t.Fatalf("broken snapshot re-enqueue error = %v", err)
+	}
+
+	discarded := testItem("discarded", "project", "retry-failed", 7)
+	discarded.State = string(StateFailed)
+	discarded.Reason = string(ReasonCheckFailedGenuine)
+	discarded.Disposition = json.RawMessage(`{"action":"discarded","policy":"manual","at":1}`)
+	if err := h.store.CreateWorkItem(discarded); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.ReenqueueFailed(discarded.ID); err == nil || !strings.Contains(err.Error(), "discarded") {
+		t.Fatalf("discarded re-enqueue error = %v", err)
+	}
+}
+
+func TestResolveDispositionAndResumeRejections(t *testing.T) {
+	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, nil, []string{"project"}, nil)
+	parked := testItem("parked-disposition", "project", "unused", 0)
+	parked.State = string(StateNeedsHuman)
+	parked.Reason = string(ReasonDisposition)
+	parked.EndedAt = 42
+	if err := h.store.CreateWorkItem(parked); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Resume(parked.ID, ""); err == nil || !strings.Contains(err.Error(), "WorkflowMergeItem") {
+		t.Fatalf("disposition resume error = %v", err)
+	}
+	if err := h.engine.ResolveDisposition(parked.ID); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := h.store.GetWorkItem(parked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.State != string(StateDone) || resolved.Reason != "" || resolved.EndedAt != parked.EndedAt {
+		t.Fatalf("resolved disposition = %+v", resolved)
+	}
+	events := h.emitter.stateEvents(parked.ID)
+	if len(events) != 1 || events[0].From != StateNeedsHuman || events[0].To != StateDone || events[0].Reason != "" {
+		t.Fatalf("resolve disposition events = %+v", events)
+	}
+	if err := h.engine.ResolveDisposition(parked.ID); err == nil || !strings.Contains(err.Error(), "invalid state done") {
+		t.Fatalf("done resolve error = %v", err)
+	}
+
+	wrongReason := testItem("wrong-reason", "project", "unused", 1)
+	wrongReason.State = string(StateNeedsHuman)
+	wrongReason.Reason = string(ReasonStuck)
+	if err := h.store.CreateWorkItem(wrongReason); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.ResolveDisposition(wrongReason.ID); err == nil || !strings.Contains(err.Error(), "want needs-human(disposition)") {
+		t.Fatalf("wrong-reason resolve error = %v", err)
 	}
 }
 

@@ -285,7 +285,7 @@ cleanup: manual
 	if err := app.WorkflowSetQueue(true, 0, 1); err != nil {
 		t.Fatal(err)
 	}
-	running, err := app.WorkflowEnqueueItem(projectID, "reset-flow", "project", "run", json.RawMessage(`{"goal":"run"}`), nil, false)
+	running, err := app.WorkflowEnqueueItem(projectID, "reset-flow", "project", "run", json.RawMessage(`{"goal":"run"}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ cleanup: manual
 	if err := app.WorkflowSetQueue(false, 0, 1); err != nil {
 		t.Fatal(err)
 	}
-	queued, err := app.WorkflowEnqueueItem(projectID, "reset-flow", "project", "wait", json.RawMessage(`{"goal":"wait"}`), nil, false)
+	queued, err := app.WorkflowEnqueueItem(projectID, "reset-flow", "project", "wait", json.RawMessage(`{"goal":"wait"}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2114,6 +2114,8 @@ export class WorkflowDispositionReceipt {
     "mode"?: string;
     "sha"?: string;
     "prRef"?: string;
+    "base"?: string;
+    "cleanupFailed"?: boolean;
     "policy": string;
     "at": number;
 

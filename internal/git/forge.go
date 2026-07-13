@@ -21,7 +21,7 @@ type Forge interface {
 	// ListOpenPRs returns open PRs/MRs for the given head/source branch.
 	ListOpenPRs(cwd, head string) ([]GitPR, error)
 	// CreatePR opens a PR/MR for the current branch in cwd. Returns the URL.
-	CreatePR(cwd, title, body string, draft bool) (string, error)
+	CreatePR(cwd, title, body, base string, draft bool) (string, error)
 	// ViewPR fetches metadata for a PR/MR identified by project + number.
 	// project is "owner/repo" (GitHub) or "namespace/.../repo" (GitLab).
 	// cwd may be empty when there is no local clone — gh --repo and
@@ -267,7 +267,7 @@ func (nullForge) ListOpenPRs(string, string) ([]GitPR, error) {
 	return nil, ErrUnsupportedForge
 }
 
-func (nullForge) CreatePR(string, string, string, bool) (string, error) {
+func (nullForge) CreatePR(string, string, string, string, bool) (string, error) {
 	return "", ErrUnsupportedForge
 }
 

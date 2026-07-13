@@ -40,7 +40,7 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 	budgetTokens := int64(1_000_000)
 	item, err := app.WorkflowEnqueueItem(
 		projectRow.ID, "packet-flow", "shared", "exercise workflow",
-		json.RawMessage(`{"goal":"exercise workflow"}`), &profile.Budget{Tokens: &budgetTokens}, false,
+		json.RawMessage(`{"goal":"exercise workflow"}`), &profile.Budget{Tokens: &budgetTokens}, "", false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 	}
 	invalidItem, err := app.WorkflowEnqueueItem(
 		projectRow.ID, "packet-flow", "shared", "invalid envelope",
-		json.RawMessage(`{"goal":"invalid envelope"}`), nil, false,
+		json.RawMessage(`{"goal":"invalid envelope"}`), nil, "", false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +220,7 @@ cleanup: manual
 	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
 	item, err := app.WorkflowEnqueueItem(
 		projectRow.ID, "codex-flow", "shared", "check codex schema",
-		json.RawMessage(`{"goal":"check codex schema"}`), nil, false,
+		json.RawMessage(`{"goal":"check codex schema"}`), nil, "", false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -336,7 +336,7 @@ cleanup: manual
 	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
 	item, err := app.WorkflowEnqueueItem(
 		projectRow.ID, "retry-flow", "shared", "recover envelope",
-		json.RawMessage(`{"goal":"recover envelope"}`), nil, false,
+		json.RawMessage(`{"goal":"recover envelope"}`), nil, "", false,
 	)
 	if err != nil {
 		t.Fatal(err)

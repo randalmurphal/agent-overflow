@@ -31,6 +31,7 @@ type notificationPlatformService interface {
 type desktopNotificationService struct {
 	app     *App
 	service notificationPlatformService
+	window  func() *application.WebviewWindow
 
 	mu             sync.RWMutex
 	started        bool
@@ -38,8 +39,10 @@ type desktopNotificationService struct {
 	nextID         atomic.Uint64
 }
 
-func newDesktopNotificationService(app *App) *desktopNotificationService {
-	return newDesktopNotificationServiceWithPlatform(app, notifications.New())
+func newDesktopNotificationService(app *App, window func() *application.WebviewWindow) *desktopNotificationService {
+	n := newDesktopNotificationServiceWithPlatform(app, notifications.New())
+	n.window = window
+	return n
 }
 
 func newDesktopNotificationServiceWithPlatform(app *App, service notificationPlatformService) *desktopNotificationService {
@@ -167,6 +170,13 @@ func (n *desktopNotificationService) handleResponse(result notifications.Notific
 	if err != nil {
 		log.Printf("notifications: ignore malformed activation payload: %v", err)
 		return
+	}
+	if n.window != nil {
+		if window := n.window(); window != nil {
+			window.Show()
+			window.Restore()
+			window.Focus()
+		}
 	}
 	if err := n.app.activateNotificationTarget(target); err != nil {
 		log.Printf("notifications: ignore invalid activation target: %v", err)

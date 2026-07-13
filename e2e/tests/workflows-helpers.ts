@@ -117,6 +117,7 @@ export async function enqueue(
     `Run ${workflowId}`,
     { goal: `Run ${workflowId}` },
     null,
+    '',
     stepMode,
   );
 }
@@ -137,6 +138,7 @@ export async function enqueueWorkflow(
     goal,
     seeds,
     null,
+    '',
     stepMode,
   );
 }

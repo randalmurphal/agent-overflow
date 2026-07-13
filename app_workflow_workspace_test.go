@@ -42,7 +42,7 @@ worktree_setup:
 	}
 	startWorkflowEngineForTest(t, app, configRoot)
 
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "write", json.RawMessage(`{}`), nil, false)
+	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "write", json.RawMessage(`{}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 			if err := app.WorkflowSetQueue(false, 0, 1); err != nil {
 				t.Fatal(err)
 			}
-			item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", test.name, json.RawMessage(`{}`), nil, false)
+			item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", test.name, json.RawMessage(`{}`), nil, "", false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -125,8 +125,11 @@ func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 			}
 			item = waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonSetupFailed)
 			assertWorkflowSetupFailureEvents(t, bus, item.ID)
-			if item.WorktreePath != "" || item.Branch != "" || item.BaseBranch != "" {
+			if item.WorktreePath != "" || item.Branch != "" {
 				t.Fatalf("failed setup persisted workspace = %+v", item)
+			}
+			if item.BaseBranch != "main" {
+				t.Fatalf("setup rollback lost intake base branch = %q, want main", item.BaseBranch)
 			}
 			worktrees, err := app.gitCore().ListWorktrees(repo)
 			if err != nil || len(worktrees) != 1 {
@@ -190,7 +193,7 @@ func TestWorkflowResumeWithMissingWorktreeParksSetupFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	startWorkflowEngineForTest(t, app, configRoot)
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "missing", json.RawMessage(`{}`), nil, false)
+	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "missing", json.RawMessage(`{}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +224,7 @@ func TestWorkflowRecoversInterruptedProvisioningWithoutSecondWorktree(t *testing
 	if err := app.WorkflowSetQueue(false, 0, 1); err != nil {
 		t.Fatal(err)
 	}
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "recover provision", json.RawMessage(`{}`), nil, false)
+	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "recover provision", json.RawMessage(`{}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +276,7 @@ func TestWorkflowStepModeBindingParksThenApprovesToDone(t *testing.T) {
 		t.Fatal(err)
 	}
 	startWorkflowEngineForTest(t, app, configRoot)
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "reliability-flow", "shared", "step", json.RawMessage(`{}`), nil, true)
+	item, err := app.WorkflowEnqueueItem(projectRow.ID, "reliability-flow", "shared", "step", json.RawMessage(`{}`), nil, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +302,7 @@ func TestWorkflowArtifactFailureDoesNotChangePhaseOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	startWorkflowEngineForTest(t, app, configRoot)
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "artifact failure", json.RawMessage(`{}`), nil, false)
+	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "artifact failure", json.RawMessage(`{}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

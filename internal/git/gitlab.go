@@ -26,7 +26,7 @@ func (f *gitlabForge) BinaryName() string { return "glab" }
 // default "use the current branch" behaviour rather than reading
 // HEAD ourselves — same model gh uses, and avoids a hard dep on git
 // being on PATH inside tests that exercise the missing-glab path.
-func (f *gitlabForge) CreatePR(cwd, title, body string, draft bool) (string, error) {
+func (f *gitlabForge) CreatePR(cwd, title, body, base string, draft bool) (string, error) {
 	if strings.TrimSpace(title) == "" {
 		return "", errors.New("merge request title is required")
 	}
@@ -36,6 +36,9 @@ func (f *gitlabForge) CreatePR(cwd, title, body string, draft bool) (string, err
 		"--description", body,
 		"--yes",
 		"--no-editor",
+	}
+	if base = strings.TrimSpace(base); base != "" {
+		args = append(args, "--target-branch", base)
 	}
 	if draft {
 		args = append(args, "--draft")

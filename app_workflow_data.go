@@ -174,3 +174,17 @@ func (a *App) WorkflowRemoveQueuedItem(itemID string) error {
 	}
 	return workflowEngine.RemoveQueued(itemID)
 }
+
+// WorkflowReenqueueFailedItem returns a failed run to the queue with its
+// latest diagnosis as feedback for the next attempt.
+func (a *App) WorkflowReenqueueFailedItem(itemID string) error {
+	workflowEngine, err := a.requireWorkflowEngine()
+	if err != nil {
+		return err
+	}
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return fmt.Errorf("re-enqueue failed workflow item: item id is required")
+	}
+	return workflowEngine.ReenqueueFailed(itemID)
+}

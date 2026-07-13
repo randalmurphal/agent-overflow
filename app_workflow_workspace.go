@@ -32,7 +32,7 @@ func (r *workflowAppRunner) prepareWorkspace(ctx context.Context, request engine
 		return preparedWorkflowWorkspace{}, fmt.Errorf("load work item: %w", err)
 	}
 
-	if item.WorktreePath != "" || item.Branch != "" || item.BaseBranch != "" {
+	if item.WorktreePath != "" || item.Branch != "" {
 		if item.WorktreePath == "" || item.Branch == "" || item.BaseBranch == "" {
 			return preparedWorkflowWorkspace{}, fmt.Errorf("work item has incomplete workspace fields")
 		}
@@ -66,7 +66,10 @@ func (r *workflowAppRunner) prepareWorkspace(ctx context.Context, request engine
 	if projectProfile == nil {
 		return preparedWorkflowWorkspace{}, fmt.Errorf("load project profile: nil profile")
 	}
-	baseBranch := strings.TrimSpace(projectProfile.BaseBranch)
+	baseBranch := strings.TrimSpace(item.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = strings.TrimSpace(projectProfile.BaseBranch)
+	}
 	if baseBranch == "" {
 		baseBranch = strings.TrimSpace(r.app.gitCore().CurrentBranch(project.Path))
 	}
@@ -92,6 +95,11 @@ func (r *workflowAppRunner) prepareWorkspace(ctx context.Context, request engine
 	rollback := func(cause error) error {
 		if removeErr := core.RemoveWorktreeForce(project.Path, worktreePath, true); removeErr != nil {
 			return errors.Join(cause, fmt.Errorf("rollback worktree %q: %w", worktreePath, removeErr))
+		}
+		// Clear provisioning state but keep the intake-time base branch: it is
+		// user intent from enqueue, not a product of the rolled-back provisioning.
+		if clearErr := r.app.store.UpdateWorkItemWorkspace(item.ID, "", "", item.BaseBranch); clearErr != nil {
+			return errors.Join(cause, fmt.Errorf("clear rolled-back worktree %q: %w", worktreePath, clearErr))
 		}
 		return cause
 	}

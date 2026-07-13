@@ -36,8 +36,8 @@ func (a *App) WorkflowOpenTriageThread(itemID string) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, err
 	}
-	if item.State != string(engine.StateNeedsHuman) && item.State != string(engine.StateFailed) {
-		return store.Thread{}, fmt.Errorf("open workflow triage thread %s: item is %s, want needs-human or failed", itemID, item.State)
+	if item.State != string(engine.StateNeedsHuman) && item.State != string(engine.StateFailed) && item.State != string(engine.StateDone) {
+		return store.Thread{}, fmt.Errorf("open workflow triage thread %s: item is %s, want needs-human, failed, or done", itemID, item.State)
 	}
 	var thread store.Thread
 	if item.TriageThreadID != "" {

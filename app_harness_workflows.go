@@ -342,7 +342,7 @@ func (h *Harness) seedWorkflowItems(projectID string, spec HarnessSeedWorkflowIt
 	}
 	created := make([]string, 0, count)
 	for i := 0; i < count; i++ {
-		item, err := h.app.WorkflowEnqueueItem(projectID, spec.Workflow, string(def.ScopeProject), spec.Goal, seeds, nil, spec.StepMode)
+		item, err := h.app.WorkflowEnqueueItem(projectID, spec.Workflow, string(def.ScopeProject), spec.Goal, seeds, nil, "", spec.StepMode)
 		if err != nil {
 			return created, err
 		}

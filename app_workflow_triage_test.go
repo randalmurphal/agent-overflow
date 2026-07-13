@@ -102,10 +102,22 @@ func TestWorkflowOpenTriageThreadSeedsOnceAndPersistsAssociation(t *testing.T) {
 	if quoted := quoteWorkflowTriageField(strings.Repeat("x", 3_000)); !strings.Contains(quoted, "[truncated]") || len(quoted) > 2_100 {
 		t.Fatalf("oversized triage field was not bounded: len=%d", len(quoted))
 	}
+	done := item
+	done.ID = "triage-done"
+	done.Goal = "continue completed work"
+	done.State = string(engine.StateDone)
+	done.Reason = ""
+	done.TriageThreadID = ""
+	if err := app.store.CreateWorkItem(done); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.WorkflowOpenTriageThread(done.ID); err != nil {
+		t.Fatalf("done item triage: %v", err)
+	}
 	if err := app.store.UpdateWorkItemState(item.ID, string(engine.StateRunning), "", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.WorkflowOpenTriageThread(item.ID); err == nil || !strings.Contains(err.Error(), "want needs-human or failed") {
+	if _, err := app.WorkflowOpenTriageThread(item.ID); err == nil || !strings.Contains(err.Error(), "want needs-human, failed, or done") {
 		t.Fatalf("running item triage error = %v", err)
 	}
 	failedKickoff := item

@@ -2936,8 +2936,8 @@ export function WorkflowDiscardItem(itemID: string): $CancellablePromise<$models
     });
 }
 
-export function WorkflowEnqueueItem(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
-    return $Call.ByID(683191625, projectID, workflowID, workflowScope, goal, seeds, budget, stepMode).then(($result: any) => {
+export function WorkflowEnqueueItem(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, baseBranch: string, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
+    return $Call.ByID(683191625, projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode).then(($result: any) => {
         return $$createType101($result);
     });
 }
@@ -3021,6 +3021,14 @@ export function WorkflowOpenTriageThread(itemID: string): $CancellablePromise<st
     return $Call.ByID(3525577760, itemID).then(($result: any) => {
         return $$createType1($result);
     });
+}
+
+/**
+ * WorkflowReenqueueFailedItem returns a failed run to the queue with its
+ * latest diagnosis as feedback for the next attempt.
+ */
+export function WorkflowReenqueueFailedItem(itemID: string): $CancellablePromise<void> {
+    return $Call.ByID(4280612743, itemID);
 }
 
 /**

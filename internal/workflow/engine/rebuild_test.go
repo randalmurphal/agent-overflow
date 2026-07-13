@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/store"
@@ -111,6 +112,26 @@ func TestStartupRebuildDrainsPersistedQueuedItems(t *testing.T) {
 		t.Fatalf("rebuilt queue starts = %+v", starts)
 	}
 	requireItemState(t, h.store, "persisted", StateRunning, "")
+}
+
+func TestStartupRebuildCancelsItemsWhoseProjectWasDeleted(t *testing.T) {
+	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, nil, []string{"project"}, func(database *store.Store) {
+		orphan := testItem("orphan", "deleted-project", "missing", 0)
+		if err := database.CreateWorkItem(orphan); err != nil {
+			t.Fatal(err)
+		}
+	})
+	requireItemState(t, h.store, "orphan", StateCancelled, ReasonInterrupted)
+	if starts := h.runner.started(); len(starts) != 0 {
+		t.Fatalf("orphan item started: %+v", starts)
+	}
+	events := h.emitter.stateEvents("orphan")
+	if len(events) != 1 || events[0].From != StateQueued || events[0].To != StateCancelled || events[0].Reason != ReasonInterrupted {
+		t.Fatalf("orphan cancellation events = %+v", events)
+	}
+	if err := h.engine.RemoveQueued("orphan"); err == nil || !strings.Contains(err.Error(), "invalid state cancelled") {
+		t.Fatalf("orphan remained tracked: %v", err)
+	}
 }
 
 func TestStartupIgnoresParkedSetupFailureUntilResume(t *testing.T) {

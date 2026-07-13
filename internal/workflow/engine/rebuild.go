@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
@@ -16,7 +17,9 @@ func (e *Engine) rebuild() error {
 	if err != nil {
 		return fmt.Errorf("rebuild workflow engine: list projects: %w", err)
 	}
+	projectIDs := make(map[string]struct{}, len(projects))
 	for _, project := range projects {
+		projectIDs[project.ID] = struct{}{}
 		items, err := e.store.ListWorkItems(store.WorkItemListFilter{
 			ProjectID: project.ID,
 			States:    []string{string(StateQueued), string(StateRunning), string(StateNeedsHuman)},
@@ -82,6 +85,25 @@ func (e *Engine) rebuild() error {
 				continue
 			}
 		}
+	}
+	activeItems, err := e.store.ListWorkItems(store.WorkItemListFilter{
+		States: []string{string(StateQueued), string(StateRunning), string(StateNeedsHuman)},
+	})
+	if err != nil {
+		return fmt.Errorf("rebuild workflow engine: list active items: %w", err)
+	}
+	for _, item := range activeItems {
+		if _, exists := projectIDs[item.ProjectID]; exists {
+			continue
+		}
+		endedAt := e.timestamp()
+		if err := e.store.UpdateWorkItemState(item.ID, string(StateCancelled), string(ReasonInterrupted), endedAt); err != nil {
+			return fmt.Errorf("rebuild workflow engine: cancel orphan item %q: %w", item.ID, err)
+		}
+		e.emitter.Emit("workflow:item-state", StateEvent{
+			ItemID: item.ID, From: State(item.State), To: StateCancelled, Reason: ReasonInterrupted,
+		})
+		log.Printf("workflow rebuild: cancelled orphan item %s for missing project %s", item.ID, item.ProjectID)
 	}
 	_ = e.resumePendingHuman()
 	e.sortQueued()

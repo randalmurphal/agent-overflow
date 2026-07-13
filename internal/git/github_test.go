@@ -1,6 +1,7 @@
 package git
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -53,8 +54,9 @@ func TestCreatePRReturnsURL(t *testing.T) {
 	}
 
 	binDir := t.TempDir()
+	argLog := filepath.Join(binDir, "args.log")
 	ghPath := filepath.Join(binDir, "gh")
-	script := "#!/bin/sh\necho 'https://example.com/pr/9'\n"
+	script := fmt.Sprintf("#!/bin/sh\necho \"$@\" > %q\necho 'https://example.com/pr/9'\n", argLog)
 	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write mock gh: %v", err)
 	}
@@ -62,19 +64,36 @@ func TestCreatePRReturnsURL(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	url, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Demo PR", "Body", false)
+	url, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Demo PR", "Body", "release", false)
 	if err != nil {
 		t.Fatalf("CreatePR returned error: %v", err)
 	}
 	if url != "https://example.com/pr/9" {
 		t.Fatalf("url = %q, want https://example.com/pr/9", url)
 	}
+	args, err := os.ReadFile(argLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if argv := string(args); !strings.Contains(argv, "--base release") {
+		t.Fatalf("argv = %q, missing base", argv)
+	}
+	if _, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Default base", "Body", "", false); err != nil {
+		t.Fatal(err)
+	}
+	args, err = os.ReadFile(argLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if argv := string(args); strings.Contains(argv, "--base") {
+		t.Fatalf("argv = %q, unexpected base", argv)
+	}
 }
 
 func TestCreatePRRequiresTitle(t *testing.T) {
 	core := NewCore()
 
-	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "  ", "body", false)
+	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "  ", "body", "", false)
 	if err == nil {
 		t.Fatal("expected error for empty title")
 	}
@@ -98,7 +117,7 @@ func TestCreatePRHandlesNonZeroExit(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Test PR", "body", false)
+	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Test PR", "body", "", false)
 	if err == nil {
 		t.Fatal("expected error for non-zero exit")
 	}
@@ -122,7 +141,7 @@ func TestCreatePRHandlesEmptyURL(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Test PR", "body", false)
+	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Test PR", "body", "", false)
 	if err == nil {
 		t.Fatal("expected error for empty URL output")
 	}
@@ -135,7 +154,7 @@ func TestCreatePRHandlesMissingGH(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	core := NewCore()
-	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Test PR", "body", false)
+	_, err := core.ForgeByID("github").CreatePR(t.TempDir(), "Test PR", "body", "", false)
 	if err == nil {
 		t.Fatal("expected missing gh error")
 	}

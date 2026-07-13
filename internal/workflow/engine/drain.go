@@ -127,6 +127,9 @@ func (e *Engine) removeQueuedRuntime(itemID string) {
 }
 
 func (e *Engine) startItem(item *runtimeItem) error {
+	if item.reenqueued {
+		return e.startReenqueuedItem(item)
+	}
 	workflow, err := e.definitions.Resolve(e.ctx, item.item)
 	if err != nil {
 		return e.parkUnstartable(item, fmt.Errorf("resolve item %q workflow: %w", item.item.ID, err))
@@ -152,6 +155,22 @@ func (e *Engine) startItem(item *runtimeItem) error {
 	item.item.StartedAt = startedAt
 	item.workflow = workflow
 	item.phaseID = workflow.Phases[0].ID
+	if err := e.transition(item, StateRunning, ""); err != nil {
+		return err
+	}
+	e.recordStart()
+	return e.enterPhase(item)
+}
+
+func (e *Engine) startReenqueuedItem(item *runtimeItem) error {
+	startedAt := e.timestamp()
+	if err := e.store.UpdateWorkItemRunStart(
+		item.item.ID, item.item.Snapshot, item.item.WorktreePath, item.item.Branch,
+		item.item.BaseBranch, startedAt,
+	); err != nil {
+		return err
+	}
+	item.item.StartedAt = startedAt
 	if err := e.transition(item, StateRunning, ""); err != nil {
 		return err
 	}

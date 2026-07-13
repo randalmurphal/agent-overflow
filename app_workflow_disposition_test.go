@@ -28,7 +28,7 @@ func TestWorkflowMergeItemPersistsReceiptAndEmitsRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WorkflowMergeItem: %v", err)
 	}
-	if receipt.Action != "merged" || receipt.Mode != "ff" || receipt.Policy != "manual" || receipt.SHA == "" {
+	if receipt.Action != "merged" || receipt.Mode != "ff" || receipt.Policy != "manual" || receipt.SHA == "" || receipt.Base != "main" {
 		t.Fatalf("receipt = %+v", receipt)
 	}
 	stored, err := app.store.GetWorkItem(item.ID)
@@ -95,6 +95,37 @@ func TestWorkflowMergeRefusalParksDispositionWithoutReceipt(t *testing.T) {
 	}
 	if !foundPark {
 		t.Fatal("disposition refusal did not emit exact done -> needs-human(disposition) event")
+	}
+}
+
+func TestWorkflowMergeResolvesDispositionPark(t *testing.T) {
+	app, bus := setupE2EApp(t)
+	app.testEmitHook = bus.emit
+	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.workflowEngine.Close() })
+	repo := testutil.InitGitRepo(t)
+	projectRow := testutil.EnsureProject(t, app.store, repo)
+	item := createDoneWorkflowWorktree(t, app, projectRow, "parked-merge-item")
+	parkedAt := time.Now().UnixMilli()
+	if err := app.store.UpdateWorkItemState(item.ID, string(engine.StateNeedsHuman), string(engine.ReasonDisposition), parkedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	receipt, err := app.WorkflowMergeItem(item.ID)
+	if err != nil {
+		t.Fatalf("WorkflowMergeItem parked disposition: %v", err)
+	}
+	if receipt.Action != "merged" || receipt.SHA == "" {
+		t.Fatalf("parked merge receipt = %+v", receipt)
+	}
+	stored, err := app.store.GetWorkItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != string(engine.StateDone) || stored.Reason != "" || stored.EndedAt != parkedAt || len(stored.Disposition) == 0 {
+		t.Fatalf("resolved parked merge = %+v", stored)
 	}
 }
 
@@ -169,6 +200,67 @@ func TestWorkflowAutoMergeHonorsCleanupAutoAfterReceipt(t *testing.T) {
 	}
 }
 
+func TestWorkflowDispositionCleanupFailureReturnsMarkedReceiptAndEmits(t *testing.T) {
+	app, bus := setupE2EApp(t)
+	app.testEmitHook = bus.emit
+	configRoot := t.TempDir()
+	repo := testutil.InitGitRepo(t)
+	projectRow := testutil.EnsureProject(t, app.store, repo)
+	projectRow, err := app.store.GetProject(projectRow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeWorkflowProfileForDisposition(t, configRoot, projectRow.Slug, "manual")
+	if err := app.initWorkflowEngine(configRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.workflowEngine.Close() })
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if err := testutil.RunGitAllowError(t.TempDir(), "init", "--bare", remote); err != nil {
+		t.Fatal(err)
+	}
+	testutil.RunGit(t, repo, "remote", "add", "origin", remote)
+	testutil.RunGit(t, repo, "push", "-u", "origin", "main")
+	item := createDoneWorkflowWorktree(t, app, projectRow, "cleanup-failure")
+	testutil.RunGit(t, item.WorktreePath, "branch", "--set-upstream-to", "origin/main", item.Branch)
+	snapshot, err := json.Marshal(engine.Snapshot{Workflow: def.Workflow{ID: "wf", Cleanup: def.CleanupAuto}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.UpdateWorkItemRunStart(item.ID, snapshot, item.WorktreePath, item.Branch, item.BaseBranch, item.StartedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	receipt, err := app.WorkflowMergeItem(item.ID)
+	if err != nil {
+		t.Fatalf("landed disposition returned cleanup error: %v", err)
+	}
+	if !receipt.CleanupFailed || receipt.Action != "merged" || receipt.SHA == "" {
+		t.Fatalf("cleanup-failed receipt = %+v", receipt)
+	}
+	stored, err := app.store.GetWorkItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted WorkflowDispositionReceipt
+	if err := json.Unmarshal(stored.Disposition, &persisted); err != nil || persisted != receipt {
+		t.Fatalf("persisted cleanup-failed receipt = %+v err=%v, want %+v", persisted, err, receipt)
+	}
+	if stored.WorktreePath == "" {
+		t.Fatal("failed cleanup cleared persisted worktree")
+	}
+	foundError := false
+	for _, event := range bus.allEvents() {
+		workflowErr, ok := event.Data.(engine.ErrorEvent)
+		if event.Name == "workflow:error" && ok && workflowErr.ItemID == item.ID {
+			foundError = true
+		}
+	}
+	if !foundError {
+		t.Fatal("cleanup failure did not emit workflow:error")
+	}
+}
+
 func TestWorkflowDiscardUsesGuardedRemovalAndKeepsRecord(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	repo := testutil.InitGitRepo(t)
@@ -187,6 +279,50 @@ func TestWorkflowDiscardUsesGuardedRemovalAndKeepsRecord(t *testing.T) {
 	}
 	if stored.ID != item.ID || stored.WorktreePath != "" {
 		t.Fatalf("discarded record = %+v", stored)
+	}
+}
+
+func TestWorkflowDiscardWithoutWorktreeRecordsReceiptAndResolvesPark(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.workflowEngine.Close() })
+	item := store.WorkItem{
+		ID: "record-only-discard", ProjectID: defaultTestProjectID, Goal: "Read only",
+		WorkflowID: "wf", WorkflowScope: "shared", State: string(engine.StateNeedsHuman),
+		Reason: string(engine.ReasonDisposition), Source: "manual", CreatedAt: 1, EndedAt: 2,
+	}
+	if err := app.store.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := app.WorkflowDiscardItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Action != "discarded" || receipt.Policy != "manual" {
+		t.Fatalf("record-only discard receipt = %+v", receipt)
+	}
+	stored, err := app.store.GetWorkItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != string(engine.StateDone) || stored.Reason != "" || stored.EndedAt != item.EndedAt || len(stored.Disposition) == 0 {
+		t.Fatalf("record-only discarded item = %+v", stored)
+	}
+}
+
+func TestWorkflowDiscardRemovesDirtyWorktree(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	repo := testutil.InitGitRepo(t)
+	projectRow := testutil.EnsureProject(t, app.store, repo)
+	item := createDoneWorkflowWorktree(t, app, projectRow, "dirty-discard")
+	writeDispositionFile(t, item.WorktreePath, "uncommitted.txt", "authorized loss\n")
+	if _, err := app.WorkflowDiscardItem(item.ID); err != nil {
+		t.Fatalf("dirty discard: %v", err)
+	}
+	if _, err := os.Stat(item.WorktreePath); !os.IsNotExist(err) {
+		t.Fatalf("dirty worktree still exists: %v", err)
 	}
 }
 
@@ -244,7 +380,7 @@ func TestWorkflowCreateItemPRPushesAndPersistsReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WorkflowCreateItemPR: %v", err)
 	}
-	if receipt.Action != "pr" || receipt.PRRef != "https://github.com/example/agent-overflow/pull/42" || receipt.SHA == "" {
+	if receipt.Action != "pr" || receipt.PRRef != "https://github.com/example/agent-overflow/pull/42" || receipt.SHA == "" || receipt.Base != "main" {
 		t.Fatalf("PR receipt = %+v", receipt)
 	}
 	stdout, _, err := app.gitCore().Execute(item.WorktreePath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")

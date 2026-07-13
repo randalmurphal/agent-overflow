@@ -28,6 +28,7 @@ type runtimeItem struct {
 	feedback          *Feedback
 	priorThreadID     string
 	takeoverFinalize  bool
+	reenqueued        bool
 }
 
 type resourceKey struct {
@@ -255,6 +256,14 @@ type parkDispositionCommand struct {
 	itemID string
 	reply  chan response
 }
+type reenqueueFailedCommand struct {
+	itemID string
+	reply  chan response
+}
+type resolveDispositionCommand struct {
+	itemID string
+	reply  chan response
+}
 type resumeCommand struct {
 	itemID      string
 	targetPhase string
@@ -335,6 +344,12 @@ func (e *Engine) request(command any) error {
 		command.reply = reply
 		e.commands <- command
 	case parkDispositionCommand:
+		command.reply = reply
+		e.commands <- command
+	case reenqueueFailedCommand:
+		command.reply = reply
+		e.commands <- command
+	case resolveDispositionCommand:
 		command.reply = reply
 		e.commands <- command
 	case resumeCommand:
@@ -436,6 +451,13 @@ func (e *Engine) loop() {
 			command.reply <- response{err: err}
 		case parkDispositionCommand:
 			err = e.parkDisposition(command.itemID)
+			e.commandStarts = nil
+			command.reply <- response{err: err}
+		case reenqueueFailedCommand:
+			err = e.reenqueueFailed(command.itemID)
+			command.reply <- e.itemCommandResponse(command.itemID, err)
+		case resolveDispositionCommand:
+			err = e.resolveDisposition(command.itemID)
 			e.commandStarts = nil
 			command.reply <- response{err: err}
 		case resumeCommand:
@@ -575,6 +597,9 @@ func (e *Engine) resume(itemID, targetPhase string) error {
 	}
 	if State(item.item.State) != StateNeedsHuman {
 		return fmt.Errorf("resume item %q: invalid transition %s -> %s", itemID, item.item.State, StateRunning)
+	}
+	if Reason(item.item.Reason) == ReasonDisposition {
+		return fmt.Errorf("resume item %q: disposition requires WorkflowMergeItem, WorkflowCreateItemPR, or WorkflowDiscardItem", itemID)
 	}
 	if Reason(item.item.Reason) == ReasonGate {
 		humanGate, err := e.isHumanGate(item)

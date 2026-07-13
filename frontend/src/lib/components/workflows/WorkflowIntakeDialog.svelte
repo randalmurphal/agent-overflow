@@ -94,7 +94,7 @@
     try {
       await WorkflowEnqueueItem(
         projectId, selected.id, selected.scope, goal.trim(),
-        compactWorkflowSeeds(seeds), null, stepMode,
+        compactWorkflowSeeds(seeds), null, '', stepMode,
       );
       addToast('success', `Queued — position ${predictedPosition} · starts when a slot frees`);
       onClose();

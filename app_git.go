@@ -532,7 +532,7 @@ func (a *App) GitCreatePR(threadID, title, body string, draft bool) (gitops.GitA
 	}
 
 	core := a.gitCore()
-	url, err := core.CreatePR(workspace, title, body, draft)
+	url, err := core.CreatePR(workspace, title, body, "", draft)
 	if err != nil {
 		return gitops.GitActionResult{}, err
 	}

@@ -224,7 +224,7 @@ func TestGitLabCreatePRReturnsURL(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	url, err := core.ForgeByID("gitlab").CreatePR(repo, "Demo MR", "Body", false)
+	url, err := core.ForgeByID("gitlab").CreatePR(repo, "Demo MR", "Body", "", false)
 	if err != nil {
 		t.Fatalf("CreatePR returned error: %v", err)
 	}
@@ -252,7 +252,7 @@ echo "https://gitlab.com/x/y/-/merge_requests/1"
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	if _, err := core.ForgeByID("gitlab").CreatePR(repo, "Demo MR", "Body", true); err != nil {
+	if _, err := core.ForgeByID("gitlab").CreatePR(repo, "Demo MR", "Body", "release", true); err != nil {
 		t.Fatalf("CreatePR returned error: %v", err)
 	}
 
@@ -265,6 +265,7 @@ echo "https://gitlab.com/x/y/-/merge_requests/1"
 		"--yes",
 		"--no-editor",
 		"--draft",
+		"--target-branch release",
 	}
 	for _, want := range wantContains {
 		if !strings.Contains(argv, want) {
@@ -276,11 +277,18 @@ echo "https://gitlab.com/x/y/-/merge_requests/1"
 	if strings.Contains(argv, "--source-branch") {
 		t.Errorf("argv = %q, must NOT include --source-branch (rely on glab default)", argv)
 	}
+	if _, err := core.ForgeByID("gitlab").CreatePR(repo, "Default target", "Body", "", false); err != nil {
+		t.Fatal(err)
+	}
+	args, _ = os.ReadFile(argLog)
+	if argv := string(args); strings.Contains(argv, "--target-branch") {
+		t.Fatalf("argv = %q, unexpected target branch", argv)
+	}
 }
 
 func TestGitLabCreatePRRequiresTitle(t *testing.T) {
 	core := NewCore()
-	_, err := core.ForgeByID("gitlab").CreatePR(t.TempDir(), "  ", "body", false)
+	_, err := core.ForgeByID("gitlab").CreatePR(t.TempDir(), "  ", "body", "", false)
 	if err == nil {
 		t.Fatal("expected error for empty title")
 	}
@@ -304,7 +312,7 @@ func TestGitLabCreatePRHandlesNonZeroExit(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	_, err := core.ForgeByID("gitlab").CreatePR(repo, "Demo", "body", false)
+	_, err := core.ForgeByID("gitlab").CreatePR(repo, "Demo", "body", "", false)
 	if err == nil {
 		t.Fatal("expected error for non-zero exit")
 	}
@@ -318,7 +326,7 @@ func TestGitLabCreatePRHandlesMissingGlab(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	core := NewCore()
-	_, err := core.ForgeByID("gitlab").CreatePR(repo, "Demo", "body", false)
+	_, err := core.ForgeByID("gitlab").CreatePR(repo, "Demo", "body", "", false)
 	if err == nil {
 		t.Fatal("expected missing glab error")
 	}
@@ -461,7 +469,7 @@ func TestGitLabCreatePRHandlesEmptyURL(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	core := NewCore()
-	_, err := core.ForgeByID("gitlab").CreatePR(repo, "Test MR", "body", false)
+	_, err := core.ForgeByID("gitlab").CreatePR(repo, "Test MR", "body", "", false)
 	if err == nil {
 		t.Fatal("expected error for empty URL output")
 	}

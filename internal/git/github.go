@@ -44,12 +44,15 @@ func (f *githubForge) BinaryName() string { return "gh" }
 
 // CreatePR opens a pull request via GitHub CLI and returns the created URL.
 // When draft is true the PR is opened as a draft (gh pr create --draft).
-func (f *githubForge) CreatePR(cwd, title, body string, draft bool) (string, error) {
+func (f *githubForge) CreatePR(cwd, title, body, base string, draft bool) (string, error) {
 	if strings.TrimSpace(title) == "" {
 		return "", errors.New("pull request title is required")
 	}
 
 	args := []string{"pr", "create", "--title", title, "--body", body}
+	if base = strings.TrimSpace(base); base != "" {
+		args = append(args, "--base", base)
+	}
 	if draft {
 		args = append(args, "--draft")
 	}
@@ -906,8 +909,8 @@ func (f *githubForge) Diff(cwd, project string, number int) (string, error) {
 // CreatePR is a thin wrapper that dispatches to the forge detected for
 // cwd. Returns ErrUnsupportedForge (via nullForge) when the origin
 // remote is missing or its host is not a recognised forge.
-func (c *Core) CreatePR(cwd, title, body string, draft bool) (string, error) {
-	return c.forgeFor(cwd).CreatePR(cwd, title, body, draft)
+func (c *Core) CreatePR(cwd, title, body, base string, draft bool) (string, error) {
+	return c.forgeFor(cwd).CreatePR(cwd, title, body, base, draft)
 }
 
 // ListOpenPRs is a thin wrapper that dispatches to the forge detected

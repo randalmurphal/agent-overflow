@@ -227,6 +227,21 @@ func (s *Store) UpdateWorkItemState(id, state, reason string, endedAt int64) err
 	return requireRowsAffected(result, fmt.Sprintf("store: update work item state %s", id))
 }
 
+// ReenqueueFailedWorkItem atomically returns a failed item to the queue tail.
+// Transition validity belongs to the workflow engine.
+func (s *Store) ReenqueueFailedWorkItem(id string, sortPosition int) error {
+	result, err := s.db.Exec(
+		`UPDATE work_items
+		 SET state = 'queued', reason = '', ended_at = 0, sort_position = ?
+		 WHERE id = ?`,
+		sortPosition, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: re-enqueue failed work item %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: re-enqueue failed work item %s", id))
+}
+
 // UpdateWorkItemRunStart freezes the resolved workflow and workspace fields in
 // one write immediately before execution begins.
 func (s *Store) UpdateWorkItemRunStart(id string, snapshot json.RawMessage, worktreePath, branch, baseBranch string, startedAt int64) error {

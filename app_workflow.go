@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"agent-overflow/internal/aocli"
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usagecost"
@@ -166,7 +167,7 @@ func (a *App) requireWorkflowEngine() (*engine.Engine, error) {
 	return a.workflowEngine, nil
 }
 
-func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, budget *profile.Budget, stepMode bool) (store.WorkItem, error) {
+func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, budget *profile.Budget, baseBranch string, stepMode bool) (store.WorkItem, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return store.WorkItem{}, err
@@ -174,12 +175,18 @@ func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal str
 	projectID = strings.TrimSpace(projectID)
 	workflowID = strings.TrimSpace(workflowID)
 	goal = strings.TrimSpace(goal)
+	baseBranch = strings.TrimSpace(baseBranch)
 	scope := def.Scope(strings.TrimSpace(workflowScope))
 	if projectID == "" || workflowID == "" || goal == "" {
 		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: project id, workflow id, and goal are required")
 	}
 	if scope != def.ScopeProject && scope != def.ScopeShared {
 		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: scope must be project or shared")
+	}
+	if baseBranch != "" {
+		if err := gitops.ValidateBranchName(baseBranch); err != nil {
+			return store.WorkItem{}, fmt.Errorf("enqueue workflow item: invalid base branch: %w", err)
+		}
 	}
 	if validation := profile.ValidateBudget(budget); !validation.Valid() {
 		messages := make([]string, 0, len(validation.Findings))
@@ -202,6 +209,13 @@ func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal str
 	// provisioning failures. Resolve before persistence so an unknown or broken
 	// workflow never enters the queue under the fire-and-forget start contract.
 	profiles := workflowProfileSource{store: a.store, configRoot: a.workflowDataRoot()}
+	projectProfile, err := profiles.Profile(a.lifeCtx(), projectID)
+	if err != nil {
+		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: load project profile: %w", err)
+	}
+	if baseBranch == "" {
+		baseBranch = strings.TrimSpace(projectProfile.BaseBranch)
+	}
 	definitions := workflowDefinitionSource{store: a.store, configRoot: a.workflowDataRoot(), profiles: profiles}
 	if _, err := definitions.Resolve(a.lifeCtx(), store.WorkItem{
 		ProjectID: projectID, WorkflowID: workflowID, WorkflowScope: string(scope),
@@ -217,7 +231,7 @@ func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal str
 		WorkflowID: workflowID, WorkflowScope: string(scope),
 		State: string(engine.StateQueued), SortPosition: sortPosition,
 		Seeds: append(json.RawMessage(nil), seeds...), Budget: encodedBudget,
-		StepMode: stepMode, Source: "manual",
+		BaseBranch: baseBranch, StepMode: stepMode, Source: "manual",
 		CreatedAt: time.Now().UnixMilli(),
 	}
 	if err := workflowEngine.EnqueueDetachedStarts(item); err != nil {

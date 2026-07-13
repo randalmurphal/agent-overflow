@@ -88,8 +88,8 @@ describe('WorkflowIntakeDialog', () => {
     await fireEvent.click(submit);
     await waitFor(() => expect(getBindingMock('WorkflowEnqueueItem')).toHaveBeenCalledTimes(1));
     const args = getBindingMock('WorkflowEnqueueItem')!.mock.calls[0];
-    expect([args[0], args[1], args[2], args[3], args[5], args[6]]).toEqual([
-      'p', 'wf', 'shared', 'Ship it', null, true,
+    expect([args[0], args[1], args[2], args[3], args[5], args[6], args[7]]).toEqual([
+      'p', 'wf', 'shared', 'Ship it', null, '', true,
     ]);
     // The wire carries seeds as one JSON object; a stringified payload arrives
     // as a JSON string literal and the engine rejects it.

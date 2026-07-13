@@ -44,6 +44,10 @@ re-check origin; adding a new App method that touches FS / process /
 settings / credentials must add the name to `LocalOnlyMethods` (and
 the `methods_gen_test.go` integrity test catches drift).
 
+A reverse proxy on the same host makes remote peers appear loopback and
+defeats `LocalOnlyMethods` locality; proxy from a different host, or do not
+front privileged use with a same-host proxy.
+
 ## Additional receivers
 
 `Dispatcher.Register` accepts more than one receiver. The only second

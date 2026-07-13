@@ -282,6 +282,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowOpenStudioThread", ID: 304020682},              // main.App.WorkflowOpenStudioThread
 	{Name: "WorkflowOpenTriageAgent", ID: 1552981489},              // main.App.WorkflowOpenTriageAgent
 	{Name: "WorkflowOpenTriageThread", ID: 3525577760},             // main.App.WorkflowOpenTriageThread
+	{Name: "WorkflowReenqueueFailedItem", ID: 4280612743},          // main.App.WorkflowReenqueueFailedItem
 	{Name: "WorkflowRemoveQueuedItem", ID: 2004111234},             // main.App.WorkflowRemoveQueuedItem
 	{Name: "WorkflowReorderQueue", ID: 1214686266},                 // main.App.WorkflowReorderQueue
 	{Name: "WorkflowResolveGate", ID: 3348479803},                  // main.App.WorkflowResolveGate
