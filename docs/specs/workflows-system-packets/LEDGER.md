@@ -871,3 +871,19 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   against the implementation, not prior packet prose — the P3.6
   pre-dispatch walk checked paths and testids but trusted an RPC
   contract stated in an earlier amendment.
+
+- **P3.7 BLOCKED #2 (valid) → third shipped bug fixed → Scope
+  Amendment 2 → resumed.** The intake e2e spec proved the shipped
+  intake dialog could never enqueue: it stringified
+  `compactWorkflowSeeds(seeds)` before `WorkflowEnqueueItem`, so the
+  `json.RawMessage` param arrived as a JSON string literal and the
+  engine rejected every real submit ("seeds must be one JSON object").
+  The unit test pinned the stringified shape — third mock-masked bug
+  the real-backend suite has caught (sidebar fetch, queued cancel RPC,
+  intake seeds). Fixed on `workflows-system` (`a177f5e9`): pass the
+  object directly (RawMessage binds as `any`); test now pins the
+  object shape; single call site verified, no other RawMessage-param
+  bindings exist. Amendment 2 committed (`8f0e8d8f`), merged to the
+  lane, intake spec verified 1/1 green on the fixed build before
+  resume. Codex progress before this stop: sidebar 2/2, pane 1/1,
+  run-actions/sweep/review 5/5, helpers extraction green.
