@@ -1122,3 +1122,33 @@ scope/assumptions/gaming audits + independent gate re-runs before merge.
   method; per-project drain-summary flush; list-of-queues UI;
   workflow:definitions-changed watcher.
 - Codex session: `019f5bef-e4b7-72c1-be33-efe4cc9db345` (gpt-5.6-sol, xhigh confirmed in banner).
+
+## P5.1 verdict — MERGED
+
+- Squash-merge `e964d888` on `workflows-system` (lane `lane/p51-project-queues`,
+  codex gpt-5.6-sol xhigh, session `019f5bef-e4b7-72c1-be33-efe4cc9db345`).
+- Review: full line review across six diff splits (49 files). No gaming;
+  the two self-review fixes claimed in the report are real; the removed
+  cross-project-drag toast is a contract the grouped UI genuinely changed.
+  No formatter churn (new standing rule held).
+- Riders (in-lane `0b2aa72d`): UI-SPEC §3.3 queue-row grammar restored
+  ('queued 3h', no 'ago'); definitions-watcher refresh gated to the
+  workflows/projects subtrees (data-root SQLite WAL + settings renames no
+  longer trigger re-walks; noise-suppression pinned by test);
+  drag-highlight scoped to the source group.
+- Spec ratifications at merge: UI-SPEC §3.3 rewritten for per-project
+  queue groups ("Queues · N", running/effective-cap headers,
+  pause/resume + concurrency select, held on global OR project pause,
+  running-only groups render); §3.4/§11 wording aligned.
+- Battery: 9/9. Report + addendum: `reports/P5.1-report.md`.
+
+## P5.2 dispatched — intent-context seeds + PR thread surfaces
+
+- Packet: `P5.2-intent-seeds-pr-surfaces.md`. Lane `~/repos/ao-lanes/p52`,
+  branch `lane/p52-intent-seeds`, base = P5.1 merge tip.
+- Scope: seed composer conforms to the F4.4 hand-off ruling (narratives +
+  template digest in, diff-stat block out, untrusted quoting preserved);
+  PRRef→forge resolution; WorkflowFetchPRReviewComments /
+  WorkflowSendPRReviewCommentsToThread / WorkflowDiscussPR riding the
+  linked-thread hand-off; PR block gains Review comments (N) + Discuss
+  this PR (D11 amendment).
