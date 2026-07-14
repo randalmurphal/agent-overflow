@@ -190,7 +190,14 @@
         </div>
       {/if}
       {#if visibleSummary}
-        <p class="whitespace-pre-wrap break-words">{visibleSummary}</p>
+        <!-- wrap-anywhere, not break-words: `overflow-wrap: break-word` doesn't
+             lower a line's min-content width, and the bubble is a shrink-to-fit
+             flex child whose fit-content sizing floors at min-content — pasted
+             plaintext tables (NBSP-padded cells, unbroken border runs) blew the
+             bubble past the pane edge instead of wrapping. `anywhere` counts the
+             break opportunities in min-content, so the 82% cap holds.
+             Guard: userMessageOverflow.browser.test.ts -->
+        <p class="whitespace-pre-wrap wrap-anywhere">{visibleSummary}</p>
       {/if}
     </div>
     <div class="mt-1 flex items-center justify-end gap-1.5 pr-1 text-[0.625rem] text-fg-hint">
