@@ -2,10 +2,7 @@ import type { Item, ItemKind } from '../types/models';
 import type { ItemPatchEvent } from '../types/events';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import { SvelteMap } from 'svelte/reactivity';
-import {
-  FAST_DRAIN_SNAP_LAG_CHARS,
-  PerItemSmoother,
-} from '../markdown/smoothing/PerItemSmoother';
+import { PerItemSmoother } from '../markdown/smoothing/PerItemSmoother';
 import {
   THINKING_TAIL_RUNES,
   getSmoothingClockForTest,
@@ -105,7 +102,15 @@ export function createThreadStreamingReveal(
   // thinking); disposed on row removal, status snap, or pane clear.
   // Sibling to itemIndexById / rowUiState so all three life-cycle
   // ride the same clear paths.
-  const itemSmoothers: Map<string, ItemSmoothing> = new Map();
+  // SvelteMap so `isSmoothing` is reactive across create/dispose:
+  // AssistantMessage derives its rendered streaming mode from it
+  // (status flips to terminal at WIRE settle, while the drain keeps
+  // revealing for seconds — the render must stay in streaming mode
+  // until the smoother disposes, or the volatile-tail markdown guards
+  // drop while text is still growing). The map mutates per smoother
+  // LIFECYCLE (create/dispose), never per reveal frame, so the
+  // reactive wrapper costs nothing on the hot path.
+  const itemSmoothers: SvelteMap<string, ItemSmoothing> = new SvelteMap();
   // Live full revealed text for streaming thinking rows, keyed by item
   // id. Sibling to `itemSmoothers`: written from every onReveal and
   // deleted on every smoother dispose path. Decouples the collapsed
@@ -219,8 +224,9 @@ export function createThreadStreamingReveal(
    *     start when their turn comes rather than snapping in text that streamed
    *     while hidden, and resumes the frontier,
    *   - fast-drains the frontier when any later top-level row is already
-   *     waiting, so the next row appears within ~200ms instead of stalling
-   *     behind a long (often collapsed) thinking block.
+   *     waiting, so the next row appears quickly (rate-ceilinged — see
+   *     FAST_DRAIN_MAX_CHARS_PER_SEC) instead of stalling behind a long
+   *     (often collapsed) thinking block.
    *
    * The frontier is the earliest top-level (`!parentId`) item whose smoother
    * is still revealing. Subagent children are excluded so a streaming child
@@ -233,12 +239,12 @@ export function createThreadStreamingReveal(
    * `applyItemPatch`, `upsertItemsBatch`, `onReveal` (on catch-up), and the
    * item-removal paths; `disposeAll` clears the boundary directly.
    *
-   * Reentrancy: the oversized-backlog snap below fires `onReveal`
-   * synchronously, whose catch-up branch calls back into this function.
-   * The guard collapses the nested call into a re-run after the current
-   * pass — without it, the outer pass would overwrite the boundary and
-   * pause/resume decisions the nested pass just computed from fresher
-   * state.
+   * Reentrancy: defensive guard against any synchronous `onReveal` fired
+   * from within a pass calling back into this function (historically the
+   * oversized-backlog snap did exactly that; today's pass only schedules
+   * async work, but the guard is cheap and the corruption mode — the
+   * outer pass overwriting the boundary and pause/resume decisions the
+   * nested pass computed from fresher state — is silent).
    */
   let recomputingReveal = false;
   let recomputeRevealAgain = false;
@@ -298,17 +304,15 @@ export function createThreadStreamingReveal(
         else entry.smoother.resume();
       }
       if (hasSuccessor) {
-        const frontierSmoother = itemSmoothers.get(f.id)?.smoother;
-        // A backlog too large to rush through at the drain cap would
-        // hold the waiting successor for whole seconds — snap it in one
-        // deliberate burst instead. Below the threshold, drain at the
-        // elevated (finite) per-tick cap so the finish reads as motion
-        // without a single-frame mega re-parse.
-        if (frontierSmoother && frontierSmoother.getLag() > FAST_DRAIN_SNAP_LAG_CHARS) {
-          frontierSmoother.snap();
-        } else {
-          frontierSmoother?.requestFastDrain();
-        }
+        // Drain at the elevated (finite) per-tick cap so the finish
+        // reads as motion. Deliberately NO snap valve for oversized
+        // backlogs: a wholesale reveal is a single giant re-parse plus
+        // a multi-viewport layout jump, and the successor waiting a few
+        // extra seconds behind a rate-ceilinged drain is the better
+        // trade (the drain rate is bounded by
+        // FAST_DRAIN_MAX_CHARS_PER_SEC, so even an essay-sized backlog
+        // reveals as fast intentional streaming).
+        itemSmoothers.get(f.id)?.smoother.requestFastDrain();
       }
     } else {
       // Nothing is gating — make sure no smoother is left paused (the

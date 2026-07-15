@@ -8,7 +8,7 @@ import {
   type TimelineWindowAnchorOperation,
 } from './thread.svelte';
 import {
-  FAST_DRAIN_SNAP_LAG_CHARS,
+  FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS,
   MAX_ADVANCE_PER_TICK_CHARS,
   type SmoothingClock,
 } from '../markdown/smoothing/PerItemSmoother';
@@ -7152,7 +7152,7 @@ describe('createThreadPane', () => {
       expect(pane.revealBoundary).toBeNull();
     });
 
-    it('snaps the frontier outright when its backlog exceeds the snap threshold', async () => {
+    it('fast-drains an oversized backlog in bounded per-frame chunks — never a wholesale snap', async () => {
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);
       try {
@@ -7170,12 +7170,12 @@ describe('createThreadPane', () => {
             updatedAt: 2,
           }),
         );
-        // Backlog comfortably above the snap threshold: even at the
-        // elevated drain cap this would hold the waiting successor for
-        // whole seconds, so the sequencer snaps it in one burst instead.
-        const text = 'word '.repeat(
-          Math.ceil((FAST_DRAIN_SNAP_LAG_CHARS + 200) / 5),
-        );
+        // Backlog well above what the old snap threshold covered. The
+        // sequencer used to reveal this in one wholesale write (a giant
+        // re-parse + multi-viewport layout jump); now it rate-ceilinged
+        // fast-drains, so the successor waits a moment longer and every
+        // frame's reveal stays bounded.
+        const text = 'word '.repeat(400); // 2000 chars
         pane.applyItemDelta({
           threadId: 't',
           itemId: 'text:0:0',
@@ -7185,10 +7185,6 @@ describe('createThreadPane', () => {
         });
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
 
-        // The successor upsert runs the sequencer synchronously: the
-        // oversized backlog snaps with no clock ticks, and the gate
-        // clears via the reentrancy-guarded recompute re-run (the snap's
-        // own onReveal recomputes against the caught-up smoother).
         pane.upsertItem(
           makeItem({
             id: 'tool:0:1',
@@ -7202,10 +7198,93 @@ describe('createThreadPane', () => {
             updatedAt: 4,
           }),
         );
+        // No synchronous wholesale reveal: the successor upsert leaves
+        // the frontier mid-drain and the gate in place.
+        const summaryAfterUpsert =
+          pane.items.find((i) => i.id === 'text:0:0')?.summary ?? '';
+        expect(summaryAfterUpsert.length).toBeLessThan(text.length);
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+
+        // Drain to completion, asserting every frame's advance stays
+        // within the fast-drain per-tick cap (+trailing-whitespace slack
+        // for the word-unit rounding).
+        let previousLength = summaryAfterUpsert.length;
+        let frames = 0;
+        while (pane.revealBoundary !== null && frames < 400) {
+          clock.tickFrame(16);
+          frames++;
+          const summary =
+            pane.items.find((i) => i.id === 'text:0:0')?.summary ?? '';
+          expect(summary.length - previousLength).toBeLessThanOrEqual(
+            FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS,
+          );
+          previousLength = summary.length;
+        }
         expect(pane.items.find((i) => i.id === 'text:0:0')?.summary).toBe(
           text,
         );
         expect(pane.revealBoundary).toBeNull();
+        // Bounded rate means the drain genuinely took multiple frames.
+        expect(frames).toBeGreaterThan(5);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('keeps isItemSmoothing true through the post-completion drain, false once caught up', async () => {
+      // The wire settles status to 'completed' while the smoother is
+      // still revealing. Render code derives its streaming mode from
+      // `status === 'streaming' || isItemSmoothing`, so this signal must
+      // hold through the drain tail and clear exactly at catch-up —
+      // otherwise ChatMarkdown drops its volatile-tail markdown guards
+      // while the text is still visibly growing.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 't',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 0,
+            summary: '',
+            updatedAt: 2,
+          }),
+        );
+        const text = 'word '.repeat(60); // 300 chars
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: text,
+          updatedAt: 3,
+        });
+        pane.applyItemPatch({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          patch: { status: 'completed', summary: text, updatedAt: 4 },
+        });
+
+        const item = () => pane.items.find((i) => i.id === 'text:0:0');
+        // Status settles immediately; the reveal (and the smoothing
+        // signal) keeps draining.
+        expect(item()?.status).toBe('completed');
+        expect(pane.isItemSmoothing('text:0:0')).toBe(true);
+        expect((item()?.summary ?? text).length).toBeLessThan(text.length);
+
+        let frames = 0;
+        while (pane.isItemSmoothing('text:0:0') && frames < 500) {
+          clock.tickFrame(16);
+          frames++;
+        }
+        expect(frames).toBeGreaterThan(1);
+        expect(item()?.summary).toBe(text);
+        expect(pane.isItemSmoothing('text:0:0')).toBe(false);
       } finally {
         __setSmoothingClockForTest(undefined);
       }

@@ -41,10 +41,18 @@ import type { ScrollWriteCaller, WarmReason } from './types';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import type { ContentGeometrySample } from '../virtual/types';
 
-// ResizeObserver width jitter below half a CSS pixel is usually rounding
-// noise. Wider changes mean the content column reflowed; any paired height
-// delta is layout correction, not new live transcript content.
-const CONTENT_REFLOW_WIDTH_EPSILON_PX = 0.5;
+// ResizeObserver width jitter at or below ~1 CSS px is measurement noise,
+// not a reflow: fractional-DPR displays report single-device-pixel wobble
+// (1 device px at 125%/150% scaling ≈ 0.8/0.67 CSS px), and fractional
+// flex distribution can shift a pane's content box by similar amounts
+// without the column meaningfully rewrapping. Every change this window
+// exists for — pane resize, sidebar toggle, Mermaid useMaxWidth — moves
+// width by tens of pixels, so nothing legitimate lives below this
+// threshold. Misclassifying sub-threshold noise as a reflow is the
+// expensive failure: it opens the settle window below and converts live
+// streaming follow into 250ms of instant stepped pins (was 0.5px, which
+// fractional-DPR wobble cleared).
+const CONTENT_REFLOW_WIDTH_EPSILON_PX = 2;
 // Width and height can arrive in separate ResizeObserver deliveries. Keep
 // the layout-correction classification alive briefly so a width-only fire
 // followed by renderer height settle still sync-pins.

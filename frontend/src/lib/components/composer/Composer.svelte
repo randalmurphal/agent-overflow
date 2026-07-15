@@ -510,6 +510,10 @@
       updatedAt: now,
     };
     pane.trackOptimisticItem(optimisticId);
+    // Arm the one-shot structural spring window before the upsert so the
+    // just-sent message glides in instead of sync-pinning (the arm must
+    // precede the flush that mounts the row; see armStructuralSpring).
+    pane.armStructuralSpring();
     pane.upsertItems([optimisticItem]);
 
     try {

@@ -1912,9 +1912,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // so appends after turn end (interrupt echo, force-closed tool
       // rows) arm too — an effect keyed on the active turn never saw
       // those and they landed as instant whole-viewport teleports
-      // (bug-report-20260702T193212Z). Optimistic-send and
-      // rollback-restore rows route through `upsertItems` above,
-      // deliberately outside this arm.
+      // (bug-report-20260702T193212Z). Rollback-restore rows route
+      // through `upsertItems` above, deliberately outside this arm;
+      // the composer's optimistic user-send arms at its own call site
+      // (`pane.armStructuralSpring()` before its upsert).
       if (applied && applied.appendedItems.length > 0) {
         armStructuralSpring();
       }
@@ -2176,6 +2177,19 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return streamingReveal.liveThinkingTailFor(itemId);
     },
 
+    /**
+     * True while a per-item smoother still owns this row's summary
+     * writes — i.e. the reveal is mid-drain, including the multi-second
+     * tail AFTER the wire settles the item's status to terminal.
+     * Reactive (SvelteMap-backed): row components derive their rendered
+     * streaming mode from `status === 'streaming' || isItemSmoothing`,
+     * so the streaming markdown guards hold until the drain finishes
+     * rather than dropping at wire settle while text is still growing.
+     */
+    isItemSmoothing(itemId: string): boolean {
+      return streamingReveal.isSmoothing(itemId);
+    },
+
     // Snap every behind smoother straight to its full received text on
     // visibilitychange → visible. See threadStreamingReveal.svelte.ts
     // `snapAllToReceived` for the full rationale.
@@ -2230,6 +2244,19 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     setSendInFlight(value: boolean): void {
       sendInFlight = value;
     },
+
+    /**
+     * Open the one-shot structural-append spring window for a mutation
+     * this pane is about to apply outside the wire-upsert path. Sole
+     * external caller today: the composer's optimistic user-send, so the
+     * just-sent message glides in through the spring instead of
+     * sync-pinning (the send deliberately does NOT stamp the
+     * live-content latch — one append wants one spring window, not
+     * 500ms of spring eligibility for unrelated reflows). Owns the
+     * loading/discussion gates; call it synchronously BEFORE the item
+     * mutation so the window is open when the flush delivers geometry.
+     */
+    armStructuralSpring,
 
     trackOptimisticItem(id: string): void {
       optimisticItemIds.add(id);

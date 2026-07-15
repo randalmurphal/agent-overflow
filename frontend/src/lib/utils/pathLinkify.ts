@@ -49,6 +49,19 @@
 import type { PathRef } from '../types/models';
 import { parseJsonObject } from './parseJsonObject';
 
+// Memo for `getPathRefsFromMeta`, keyed by the exact meta string.
+// Identity stability is the point, not just parse cost: streaming rows
+// are replaced on every reveal frame (`items[index] = {...}`), so their
+// `$derived` pathRefs re-evaluate per frame while `item.meta` is the
+// same string. Returning the SAME array for the same meta lets Svelte's
+// derived equality stop propagation — otherwise a fresh array identity
+// per frame rebuilds ChatMarkdown's marked extension, and a changed
+// `streamdown.extensions` re-lexes every mounted markdown block per
+// frame (Block.svelte's `tokens` derived). Bounded LRU; entries are
+// small (a handful of validated paths per row).
+const PATH_REFS_MEMO_CAP = 128;
+const pathRefsMemo: Map<string, PathRef[] | undefined> = new Map();
+
 /**
  * Read the Go-validated `pathRefs` allowlist out of an item's meta
  * JSON. Returns `undefined` when the meta has no `pathRefs` key (the
@@ -56,9 +69,30 @@ import { parseJsonObject } from './parseJsonObject';
  * kinds that don't get enriched). Returns a defensively-filtered
  * `PathRef[]` otherwise — entries with missing `path` strings drop
  * silently so a malformed meta can't crash the linkifier.
+ *
+ * Memoized on the meta string: repeated calls with the same meta return
+ * the same array identity (see `pathRefsMemo` above).
  */
 export function getPathRefsFromMeta(meta: string | undefined | null): PathRef[] | undefined {
-  const parsed = parseJsonObject(meta ?? undefined);
+  if (meta === undefined || meta === null || meta === '') return undefined;
+  if (pathRefsMemo.has(meta)) {
+    const memoized = pathRefsMemo.get(meta);
+    // Refresh recency (Map iteration order is insertion order).
+    pathRefsMemo.delete(meta);
+    pathRefsMemo.set(meta, memoized);
+    return memoized;
+  }
+  const out = parsePathRefsFromMeta(meta);
+  if (pathRefsMemo.size >= PATH_REFS_MEMO_CAP) {
+    const oldest = pathRefsMemo.keys().next().value;
+    if (oldest !== undefined) pathRefsMemo.delete(oldest);
+  }
+  pathRefsMemo.set(meta, out);
+  return out;
+}
+
+function parsePathRefsFromMeta(meta: string): PathRef[] | undefined {
+  const parsed = parseJsonObject(meta);
   if (!parsed) return undefined;
   const raw = parsed.pathRefs;
   if (!Array.isArray(raw)) return undefined;
