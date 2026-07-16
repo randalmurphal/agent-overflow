@@ -29,9 +29,9 @@ import { copyToClipboard } from '../../utils/clipboard';
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import { isClipboardChord } from './terminalKeys';
+import { isMacPlatform } from '../../utils/platform';
 
-const isMac =
-  typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+const isMac = isMacPlatform();
 
 export interface BuildTerminalOptions {
   // Receives input the widget produces internally (the Shift+Enter newline).

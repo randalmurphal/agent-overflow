@@ -13,6 +13,8 @@
 // deliberately NOT set on any window: it is Windows-only and would
 // hard-disable the editable-field menus below this layer.
 
+import { isMacPlatform } from './platform';
+
 let installCount = 0;
 let release: (() => void) | null = null;
 
@@ -51,6 +53,14 @@ function preventHistoryKey(event: KeyboardEvent): void {
   if (event.defaultPrevented) return;
   if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+  // On macOS, Alt(Option)+Arrow is never a history gesture — WebKit
+  // binds history to Cmd-based keys — it is the native word-caret
+  // movement (filled in for our fields by textEditingKeymap), so
+  // consuming it would kill word navigation in every text field. On
+  // Windows/Linux webviews Alt+Arrow IS history navigation, even with
+  // a text caret focused, so it stays suppressed there (word ops use
+  // Ctrl+Arrow on those platforms).
+  if (isMacPlatform()) return;
   consume(event);
 }
 

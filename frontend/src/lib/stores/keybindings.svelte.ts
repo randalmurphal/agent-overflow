@@ -22,6 +22,7 @@ import {
   tryParseChord,
   tryParseWhen,
 } from './keybindingParser';
+import { isMacPlatform } from '../utils/platform';
 
 export interface KeybindingRule {
   key: string;
@@ -174,9 +175,7 @@ export function dispatchKey(
   ctx: CommandContext,
   options: { isMac?: boolean } = {},
 ): boolean {
-  const isMac =
-    options.isMac ??
-    (typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform));
+  const isMac = options.isMac ?? isMacPlatform();
 
   // Walk in reverse so user overrides — appended last by the Go merge — beat
   // matching default rules earlier in the list. First rule whose chord AND
@@ -200,9 +199,7 @@ export function eventMatchesKeybindingCommand(
   commandIds: ReadonlySet<string>,
   options: { isMac?: boolean } = {},
 ): boolean {
-  const isMac =
-    options.isMac ??
-    (typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform));
+  const isMac = options.isMac ?? isMacPlatform();
 
   for (let i = resolved.length - 1; i >= 0; i -= 1) {
     const r = resolved[i];
@@ -256,7 +253,7 @@ function evaluateRuleWhen(node: WhenNode, ctx: CommandContext): boolean {
  * Format a chord for human display (platform-aware symbols on macOS).
  */
 export function formatChord(key: string, isMac?: boolean): string {
-  const mac = isMac ?? (typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform));
+  const mac = isMac ?? isMacPlatform();
   const chord = tryParseChord(key);
   if (!chord) return key;
   const parts: string[] = [];
@@ -271,7 +268,7 @@ export function formatChord(key: string, isMac?: boolean): string {
 }
 
 export function encodeChordFromEvent(event: KeyboardEvent, isMac?: boolean): string | null {
-  const mac = isMac ?? (typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform));
+  const mac = isMac ?? isMacPlatform();
   // Ignore pure modifier keys — a chord needs an actual key.
   const key = eventKeyForChordCapture(event, mac);
   if (

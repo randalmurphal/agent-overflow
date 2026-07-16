@@ -8,6 +8,8 @@
 // don't track other modifiers (shift / alt) — the sidebar only needs the
 // platform modifier signal for the thread-jump commands.
 
+import { isMacPlatform } from '../utils/platform';
+
 const HINT_SHOW_DELAY_MS = 100;
 const MAX_JUMP_INDEX = 9;
 
@@ -19,9 +21,7 @@ let pendingTimer: ReturnType<typeof setTimeout> | null = null;
 let platformIsMacForTest: boolean | null = null;
 
 function isJumpModifier(event: KeyboardEvent): boolean {
-  const isMac =
-    platformIsMacForTest ??
-    (typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform));
+  const isMac = platformIsMacForTest ?? isMacPlatform();
   return isMac ? event.key === 'Meta' : event.key === 'Control';
 }
 
