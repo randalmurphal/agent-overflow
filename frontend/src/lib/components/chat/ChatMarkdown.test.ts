@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import ChatMarkdown from './ChatMarkdown.svelte';
+import { CHAT_MARKDOWN_PRESENCE_CONTEXT } from './markdownSettledContext';
 
 // Integration coverage for the path-link primitive flowing through
 // Streamdown's URL gate. The unit suite in `pathLinkExtension.test.ts`
@@ -294,5 +295,41 @@ describe('<ChatMarkdown> path-link rendering', () => {
       expect(href).toContain('path=src%2Ffoo.ts');
       expect(href).not.toContain('workspace=');
     });
+  });
+});
+
+describe('<ChatMarkdown> warm-gate presence registration', () => {
+  // MessageTimeline's quietContextSignal reports settled-by-absence when
+  // ZERO ChatMarkdowns are mounted (nothing to typeset → no reason to
+  // hold the warm gate to the 2.5s failsafe). That only works if every
+  // ChatMarkdown registers on mount and unregisters on unmount — a leak
+  // in either direction poisons the count for the rest of the pane's
+  // life.
+  it('registers on mount and unregisters on unmount via CHAT_MARKDOWN_PRESENCE_CONTEXT', async () => {
+    let mounted = 0;
+    const register = (): (() => void) => {
+      mounted += 1;
+      return () => {
+        mounted -= 1;
+      };
+    };
+
+    const { unmount } = render(ChatMarkdown, {
+      props: { source: 'plain **markdown**' },
+      context: new Map([[CHAT_MARKDOWN_PRESENCE_CONTEXT, register]]),
+    });
+
+    await waitFor(() => expect(mounted).toBe(1));
+    unmount();
+    expect(mounted).toBe(0);
+  });
+
+  it('skips registration outside a timeline (no context)', () => {
+    // Settings preview / design canvas ChatMarkdowns get no presence
+    // context and must render without touching the warm gate.
+    const { container } = render(ChatMarkdown, {
+      props: { source: 'standalone' },
+    });
+    expect(container.textContent).toContain('standalone');
   });
 });

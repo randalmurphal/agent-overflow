@@ -6,7 +6,10 @@
   } from '../../stores/thread.svelte';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import { latchedSpringMode, SPRING_MODE_HOLD_MS } from '../../utils/springAnimationLatch';
-  import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
+  import {
+    CHAT_MARKDOWN_PRESENCE_CONTEXT,
+    CHAT_MARKDOWN_SETTLED_CONTEXT,
+  } from './markdownSettledContext';
   import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
   import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
   import { timelineNodeKey, type TimelineNode } from '../../utils/subagentGrouping';
@@ -143,6 +146,19 @@
   // lifts, and that defense is no longer needed once we know
   // typesetting is done.
   let anyMarkdownSettledSinceArm = $state(false);
+  // Live count of ChatMarkdown instances mounted in this timeline tree
+  // (registered via CHAT_MARKDOWN_PRESENCE_CONTEXT). Zero means the
+  // mounted window has nothing to typeset, so the quiet signal reports
+  // settled-by-absence — without this, a thread whose visible tail has
+  // no markdown rows (all tool output / terminals / images) never flips
+  // the settled boolean and the warm gate holds hidden content until
+  // the 2.5s failsafe.
+  //
+  // Deliberately NOT $state: registrations mutate it from child mount /
+  // teardown effects (an unsafe-mutation context for reactive state),
+  // and its only reader is the controller's imperative
+  // quietContextSignal getter — no template or $derived tracks it.
+  let mountedMarkdownCount = 0;
 
   // Spring while live content advanced within SPRING_MODE_HOLD_MS, else
   // sync-pin. The pane stamps `lastLiveContentAt` on prose/reasoning
@@ -160,7 +176,7 @@
 
   const stick = createUseStickToBottomController({
     animationMode: animationModeForScroll,
-    quietContextSignal: () => anyMarkdownSettledSinceArm,
+    quietContextSignal: () => anyMarkdownSettledSinceArm || mountedMarkdownCount === 0,
     // The virtualizer is the content-geometry source (its spacer height
     // IS the content height) — the controller creates no contentEl RO;
     // samples arrive through `onContentGeometry` below.
@@ -173,6 +189,25 @@
     stick.notifyQuietContextSignalChanged();
   }
   setContext(CHAT_MARKDOWN_SETTLED_CONTEXT, markMarkdownSettled);
+
+  // Presence registration (see mountedMarkdownCount above). The 0↔1
+  // transitions can flip the composed quietContextSignal in either
+  // direction — a first markdown mounting after the quiet timer armed
+  // must DISARM it (typesetting is now possible; the settled-by-absence
+  // license is withdrawn), which the controller handles on notify.
+  function registerMarkdownPresence(): () => void {
+    mountedMarkdownCount += 1;
+    if (mountedMarkdownCount === 1 && !anyMarkdownSettledSinceArm) {
+      stick.notifyQuietContextSignalChanged();
+    }
+    return () => {
+      mountedMarkdownCount -= 1;
+      if (mountedMarkdownCount === 0 && !anyMarkdownSettledSinceArm) {
+        stick.notifyQuietContextSignalChanged();
+      }
+    };
+  }
+  setContext(CHAT_MARKDOWN_PRESENCE_CONTEXT, registerMarkdownPresence);
 
   function armWarmupWithReset(): void {
     anyMarkdownSettledSinceArm = false;

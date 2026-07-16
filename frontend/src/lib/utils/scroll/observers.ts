@@ -349,9 +349,9 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     const settled = deps.getQuietContextSignal()?.() ?? false;
     const haveTimer = quietTimer !== null;
     const warm = deps.warm();
-    let outcome: 'armed' | 'rearmed' | 'noop_warm' | 'noop_no_ro' | 'noop_signal_falsy';
+    let outcome: 'armed' | 'rearmed' | 'disarmed' | 'noop_warm' | 'noop_no_ro' | 'noop_signal_falsy';
     if (warm) outcome = 'noop_warm';
-    else if (!settled) outcome = 'noop_signal_falsy';
+    else if (!settled) outcome = haveTimer ? 'disarmed' : 'noop_signal_falsy';
     else if (!haveTimer && !hasFirstContentRO) outcome = 'noop_no_ro';
     else if (haveTimer) outcome = 'rearmed';
     else outcome = 'armed';
@@ -361,6 +361,17 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       haveTimer,
       warm,
     }));
+    if (outcome === 'disarmed') {
+      // The signal was withdrawn while a quiet timer was armed. This
+      // happens with presence-based signals (a ChatMarkdown mounted after
+      // the timer armed): the armed window was licensed by "no late
+      // typesetting wave is coming" and the mount revoked that license.
+      // Only geometry-quiet-with-signal (or the failsafe) may open the
+      // gate now.
+      if (quietTimer) clearTimeout(quietTimer);
+      quietTimer = null;
+      return;
+    }
     if (outcome === 'noop_warm' || outcome === 'noop_no_ro' || outcome === 'noop_signal_falsy') return;
     // Engine-source settle evidence supersedes the quiet wait: everything
     // mounted has measured within epsilon of its estimate (priors-hit

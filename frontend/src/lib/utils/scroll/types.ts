@@ -211,19 +211,23 @@ export interface UseStickToBottomController {
   skipWarmup(): void;
   /**
    * Notify the controller that the consumer's `quietContextSignal`
-   * flipped truthy. No-op if already warm, if the signal is still falsy
-   * at notify time, or if no content delivery has been seen since the
-   * gate was armed. Otherwise: when engine-sourced settle evidence is
-   * already held (window measured within epsilon — the priors-hit
-   * revisit), the gate opens immediately ('settled'); when it isn't,
-   * the quiet timer is (re)armed with the geometry-gated window —
-   * SETTLED_QUIET_MS once the surface has held still, the conservative
-   * QUIET_MS while it is still moving in large steps.
+   * changed — in either direction. On a truthy notify: no-op if already
+   * warm or if no content delivery has been seen since the gate was
+   * armed; otherwise, when engine-sourced settle evidence is already
+   * held (window measured within epsilon — the priors-hit revisit), the
+   * gate opens immediately ('settled'); when it isn't, the quiet timer
+   * is (re)armed with the geometry-gated window — SETTLED_QUIET_MS once
+   * the surface has held still, the conservative QUIET_MS while it is
+   * still moving in large steps. On a falsy notify: an armed quiet
+   * timer is DISARMED (presence-based signals go true→false when a
+   * ChatMarkdown mounts after the timer armed — the settled-by-absence
+   * license was withdrawn); with no timer armed it is a no-op.
    *
    * This is the seam for "I just learned async typesetting finished
    * mid-cascade" — the measurements-settle-first / signal-flips-later
    * ordering, where waiting out the original conservative window would
-   * delay the reveal for no reason.
+   * delay the reveal for no reason — and its inverse, "typesetting just
+   * became possible after all".
    */
   notifyQuietContextSignalChanged(): void;
   /**

@@ -265,6 +265,24 @@ describe('chase-distance clamp', () => {
     expect(catchupJumps(h)[0]?.value).toBe(4400);
   });
 
+  it('stops clamping a fresh chase once the resume window has passed', () => {
+    // The resume clamp treats every fresh >viewport chase within
+    // RESUME_CLAMP_WINDOW_MS (2000ms) of a visibilitychange→visible as
+    // tab-return backlog and cuts it to one viewport — a deliberate
+    // tradeoff that also cuts a legitimate large structural mount (big
+    // diff card) landing in that window. This pins the window's EDGE:
+    // past 2000ms the same chase is a real mount again and must glide
+    // from its true start with no cut.
+    const h = makeHarness({ clientHeight: 600 });
+    setDocumentResumeAtForTest(now);
+    now += 2001; // idle past the window, no spring running
+    h.setTarget(5000);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    frame();
+    expect(catchupJumps(h)).toHaveLength(0);
+  });
+
   it('never engages on a sub-viewport backlog even under a stall gap', () => {
     const h = makeHarness({ clientHeight: 600 });
     h.setTarget(100);

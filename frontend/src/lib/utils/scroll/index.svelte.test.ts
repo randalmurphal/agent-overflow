@@ -2637,6 +2637,28 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(localController.isWarm).toBe(true);
     });
 
+    it('flipping the signal back to falsy disarms an already-armed quiet timer', async () => {
+      // Presence-based signals (MessageTimeline: "no ChatMarkdown mounted
+      // → nothing to typeset") can go true→false when a markdown row
+      // mounts AFTER the quiet timer armed. The armed timer must not
+      // survive the flip: it was armed on the promise that no typesetting
+      // wave is coming, and the mount just withdrew that promise.
+      settled = true;
+      buildLocalController({ signal: () => settled });
+      const ro = getLocalRO();
+      ro.fire(localContentEl, 800); // arms the conservative QUIET_MS timer
+      await waitMs(30);
+      settled = false;
+      localController.notifyQuietContextSignalChanged(); // must disarm
+      await waitMs(130); // past the armed timer's original deadline
+      expect(localController.isWarm).toBe(false);
+      // Flipping back to settled re-arms and the gate opens on quiet.
+      settled = true;
+      localController.notifyQuietContextSignalChanged();
+      await waitMs(130);
+      expect(localController.isWarm).toBe(true);
+    });
+
     it('keeps warm false through an estimate→measure cascade even with the settle signal on', async () => {
       // Idle-thread flicker regression: the engine mounts rows at the
       // ESTIMATED_ROW_SIZE then corrects to measured heights over a series

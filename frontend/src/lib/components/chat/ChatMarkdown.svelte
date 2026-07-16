@@ -31,7 +31,10 @@
 
   import { getContext } from 'svelte';
   import { Streamdown } from 'svelte-streamdown';
-  import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
+  import {
+    CHAT_MARKDOWN_PRESENCE_CONTEXT,
+    CHAT_MARKDOWN_SETTLED_CONTEXT,
+  } from './markdownSettledContext';
   import { chatMarkdownTheme } from './markdown/streamdownTheme';
   import {
     STREAMDOWN_ALLOWED_IMAGE_PREFIXES,
@@ -88,6 +91,16 @@
   const handleSettled = (): void => {
     markSettled?.();
   };
+
+  // Live presence registration for the warm gate: while at least one
+  // ChatMarkdown is mounted in the timeline, async typesetting may still
+  // be coming and the settled signal must be earned via `onsettled`;
+  // with none mounted the timeline reports settled-by-absence. The
+  // $effect cleanup unregisters on unmount.
+  const registerPresence = getContext<(() => () => void) | undefined>(
+    CHAT_MARKDOWN_PRESENCE_CONTEXT,
+  );
+  $effect(() => registerPresence?.());
 
   let root: HTMLDivElement | undefined = $state();
 

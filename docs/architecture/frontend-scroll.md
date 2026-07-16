@@ -297,6 +297,18 @@ guess at how long the cascade takes. This lengthens the hidden window for
 genuinely cascading threads (the ones that would have flickered) by the
 minimum needed; `FAILSAFE_MS` still caps the worst case.
 
+The signal MessageTimeline supplies is composed:
+`anyMarkdownSettledSinceArm || mountedMarkdownCount === 0`. The second
+term is **settled-by-absence** — a mounted window containing zero
+`ChatMarkdown` rows (all tool output / terminals / images) has no async
+typesetting coming, so it must not sit behind the conservative window
+until the failsafe. Presence is a live count registered through
+`CHAT_MARKDOWN_PRESENCE_CONTEXT`, which makes the signal *withdrawable*:
+a markdown row mounting after the quiet timer armed flips the signal
+back to falsy, and `notifyQuietContextSignalChanged` then DISARMS the
+armed timer — the settled-by-absence license is gone, and only an earned
+settle (or the failsafe) may open the gate.
+
 The geometry gate only ever masks the cascade — it cannot prevent it,
 because the cascade settles in bursts spaced wider than any safe quiet
 window (trace `bug-report-20260622T225817Z`: a final +200–500px burst
