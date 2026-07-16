@@ -177,6 +177,10 @@ type App struct {
 	// clobbering the pending release the installer is about to use.
 	updaterMu   sync.Mutex
 	updaterBusy bool
+	// restartExitFn is the process-exit call RestartToUpdate's watchdog
+	// fires when graceful shutdown wedges (see armRestartExitWatchdog).
+	// nil means os.Exit; tests inject a recorder.
+	restartExitFn func(code int)
 	// shuttingDown is flipped to true once Shutdown begins. Binding entry
 	// points that spin up new work (StartSession, SendMessage, ReconnectSession)
 	// check it and fail fast with ErrShuttingDown so late RPCs can't race

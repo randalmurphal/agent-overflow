@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
@@ -225,6 +226,15 @@ func (a *App) DownloadUpdate(tag string) error {
 	return nil
 }
 
+// restartExitWatchdogDelay is how long RestartToUpdate lets the graceful
+// shutdown run before force-exiting the process. Bounded on both sides:
+// it must exceed the ~24s worst-case sum of app_shutdown.go's sequential
+// per-step timeouts (3+2+2+2+5+5+5s) so a slow-but-healthy teardown is
+// never cut short of its session-close/orphan-reaper/store-close steps,
+// and it must stay under the swap helper's 30s parent-exit timeout —
+// past that, the helper aborts the whole update.
+const restartExitWatchdogDelay = 25 * time.Second
+
 // RestartToUpdate swaps in the staged update and relaunches. It spawns the
 // detached swap helper and asks Wails to begin its normal shutdown, so the
 // transport drains and stores flush before the process exits; the helper then
@@ -237,10 +247,42 @@ func (a *App) RestartToUpdate() error {
 	if a.updater.DownloadedPath() == "" {
 		return ErrUpdateNotReady
 	}
-	if err := a.updater.Restart(a.lifeCtx()); err != nil {
+	return a.restartWithExitWatchdog(a.updater.Restart)
+}
+
+// restartWithExitWatchdog arms a force-exit watchdog around the restart
+// dance. The swap helper waits for THIS process to exit and aborts the
+// update if it is still alive after 30s. A wedged graceful shutdown would
+// therefore not just hang the app — it silently cancels the update and
+// leaves a windowless zombie the user has to Force Quit (observed in the
+// field on macOS: helper log "parent did not exit within timeout —
+// aborting swap"). The process is going away either way, SQLite runs WAL
+// (crash-safe), and provider session files are the authoritative recovery
+// source, so a hard exit that lets the swap proceed strictly beats a
+// zombie that cancels it. Disarmed only when the helper spawn itself
+// fails and the app intentionally stays alive on the old version.
+func (a *App) restartWithExitWatchdog(restart func(ctx context.Context) error) error {
+	disarm := a.armRestartExitWatchdog(restartExitWatchdogDelay)
+	if err := restart(a.lifeCtx()); err != nil {
+		disarm()
 		return fmt.Errorf("restart to update: %w", err)
 	}
 	return nil
+}
+
+// armRestartExitWatchdog schedules a hard process exit after delay and
+// returns a disarm function. Fires through a.restartExitFn (os.Exit when
+// nil) so tests can observe the trigger without dying.
+func (a *App) armRestartExitWatchdog(delay time.Duration) (disarm func()) {
+	timer := time.AfterFunc(delay, func() {
+		log.Printf("updater: graceful shutdown did not finish within %s of RestartToUpdate — force-exiting so the swap helper can proceed", delay)
+		exitFn := a.restartExitFn
+		if exitFn == nil {
+			exitFn = os.Exit
+		}
+		exitFn(0)
+	})
+	return func() { timer.Stop() }
 }
 
 // verifiedProvider wraps an updater.Provider and fails closed when a release
