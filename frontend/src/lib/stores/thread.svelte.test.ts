@@ -6103,6 +6103,80 @@ describe('createThreadPane', () => {
       }
     });
 
+    it('keeps draining when the completion patch carries the trimmed tail preview', async () => {
+      // Thinking rows persist the tail-trimmed preview as their summary
+      // (Go thinkingSummaryPreview mirrors THINKING_TAIL_RUNES), so a
+      // content-present settle patch re-asserts the TRIMMED text — not
+      // the full received stream. Mid-drain, past 400 runes, that patch
+      // summary neither equals nor extends the smoother's received text;
+      // treating it as an overwrite snap+disposes the smoother and dumps
+      // the unrevealed backlog wholesale (the Codex thinking completion
+      // shape, and the recovered-block settle patch on Claude). The
+      // patch must instead read as a re-assert: smoother survives, keeps
+      // draining at the capped rate, and auto-disposes at catch-up.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-think-settle' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-think-settle',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
+        // > 400 runes so the trimmed preview provably differs from the
+        // received text, delivered as one delta so the smoother holds a
+        // large backlog when the settle patch lands.
+        const full = buildWords(80).join(' ') + ' '; // 560 chars
+        expect(full.length).toBeGreaterThan(400);
+        pane.applyItemDelta({
+          threadId: 'thread-think-settle',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: full,
+          updatedAt: 2,
+        });
+        // A couple of frames in: genuinely mid-drain.
+        clock.tickFrame(16);
+        clock.tickFrame(16);
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+        const midDrain = pane.items[0].summary;
+        expect(midDrain.length).toBeLessThan(full.length);
+
+        // The settle patch as Go emits it: completed + trimmed preview.
+        pane.applyItemPatch({
+          threadId: 'thread-think-settle',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', summary: full.slice(-400), updatedAt: 3 },
+        });
+
+        // Smoother survives; the patch neither snapped the reveal nor
+        // wrote the trimmed preview over the mid-drain summary.
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+        expect(pane.items[0].summary).toBe(midDrain);
+        expect(pane.items[0].status).toBe('completed');
+
+        // Drain to completion: converges on the trimmed tail and the
+        // onReveal auto-cleanup disposes the smoother.
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) {
+          clock.tickFrame(16);
+        }
+        expect(pane.items[0].summary).toBe(full.slice(-400));
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(clock.pendingCount()).toBe(0);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
     it('exposes a monotonically-growing live tail past 400 runes for the collapsed view', async () => {
       // Regression guard for the user-reported "5 words appear at once
       // past 400 runes" symptom. The collapsed ThinkingBlock renders a

@@ -44,9 +44,6 @@ func (r *Router) handleContentBlockStop(evt provider.ProviderEvent) error {
 	// turns row commits.
 	switch r.blockTypeForStop(evt.ThreadID, turnIndex, scope, evt.ItemID, evt.Meta) {
 	case "thinking":
-		if signature := blockSignature(evt.Meta); signature != "" {
-			_ = r.persistThinkingSignature(evt.ThreadID, turnIndex, scope, evt.ItemID, signature)
-		}
 		r.settleStreamingThinkingAsync(evt.ThreadID, turnIndex, scope, evt.ItemID, statusCompleted, evt.Content, evt.ContentPresent)
 		return nil
 	case "text":
@@ -88,52 +85,3 @@ func (r *Router) blockTypeForStop(threadID string, turnIndex int, scope, provide
 	return ""
 }
 
-func blockSignature(raw json.RawMessage) string {
-	if signature := metaNestedString(raw, "signature"); signature != "" {
-		return signature
-	}
-	return metaNestedString(raw, "content_block", "signature")
-}
-
-func (r *Router) persistThinkingSignature(threadID string, turnIndex int, scope, providerItemID, signature string) error {
-	itemID, found := r.activeThinkingItemID(threadID, turnIndex, scope, providerItemID)
-	if !found {
-		return nil
-	}
-	item, found, err := r.store.GetThreadItem(threadID, itemID)
-	if err != nil || !found {
-		return err
-	}
-	itemMeta := map[string]any{}
-	if item.Meta != "" && item.Meta != "{}" {
-		_ = json.Unmarshal([]byte(item.Meta), &itemMeta)
-	}
-	itemMeta["signature"] = signature
-	data, err := json.Marshal(itemMeta)
-	if err != nil {
-		return err
-	}
-	item.Meta = string(data)
-
-	// Patch the payload's meta without reading the (potentially large)
-	// data blob. Previously this code pulled the full blob through Go
-	// memory solely to re-insert it with an updated meta; UpdatePayloadMeta
-	// is a narrow UPDATE that touches only the JSON column.
-	if item.PayloadID != "" {
-		metaRow, metaErr := r.store.GetPayloadMeta(item.PayloadID)
-		if metaErr == nil {
-			var payloadMeta ThinkingMeta
-			_ = json.Unmarshal([]byte(metaRow.Meta), &payloadMeta)
-			payloadMeta.Signature = signature
-			payloadMetaJSON, marshalErr := json.Marshal(payloadMeta)
-			if marshalErr != nil {
-				return marshalErr
-			}
-			if err := r.store.UpdatePayloadMeta(item.PayloadID, string(payloadMetaJSON)); err != nil {
-				return err
-			}
-		}
-	}
-
-	return r.persistItem(item, nil)
-}

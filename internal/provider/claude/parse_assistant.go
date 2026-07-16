@@ -171,9 +171,11 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 			events = p.appendToolUseEvent(events, threadID, parentToolUseID, msg.ID, now, block)
 		case "thinking":
 			// Same contract as text, including the error-envelope skip. The
-			// thinking signature is not recovered (the streamed path
-			// captures it on content_block_stop; the session jsonl stays
-			// authoritative for resume). See the streamedMessageIDs field doc.
+			// thinking signature is not recovered: on the wire it rides
+			// `signature_delta`, which we deliberately don't handle
+			// (claude-wire.md §Delta types) — the CLI's session jsonl is
+			// authoritative for resume/fork replay, so AO never needs the
+			// signature. See the streamedMessageIDs field doc.
 			if errorEnum == "" && !p.hasStreamedMessageID(msg.ID) {
 				events = p.appendRecoveredBlockEvent(events, threadID, parentToolUseID, msg.ID, "thinking", block.Thinking, now)
 			}

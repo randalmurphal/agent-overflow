@@ -518,28 +518,49 @@ export function createThreadStreamingReveal(
       // the patch's summary wins cleanly.
       const received = smoothing.smoother.getReceived();
       const patchSummary = patch.summary;
-      if (patchSummary !== received && patchSummary.startsWith(received)) {
+      // Reasoning-tail rows (thinking + compaction_reasoning) persist —
+      // and settle with — the tail-trimmed preview, not the full text
+      // (triage's thinkingSummaryPreview; both sides trim to the last
+      // THINKING_TAIL_RUNES code points with no marker, so the strings
+      // are byte-identical). A settle patch whose summary equals the
+      // trimmed received text is a re-assert of what the smoother
+      // already has, NOT an overwrite; treating it as a mismatch would
+      // snap+dispose mid-drain and dump the unrevealed backlog
+      // wholesale (the Codex thinking completion shape, and the
+      // completion patch from persistCompletedBlockEmitStreaming).
+      const item = options.getItemById(itemId);
+      const summaryMatchesReceived =
+        patchSummary === received ||
+        (item !== undefined &&
+          isReasoningTailKind(item.kind) &&
+          patchSummary === trimToTailRunes(received, THINKING_TAIL_RUNES));
+      if (summaryMatchesReceived) {
+        if (
+          nextStatus !== undefined &&
+          nextStatus !== 'streaming' &&
+          smoothing.smoother.isCaughtUp()
+        ) {
+          // Terminal status AND nothing left to reveal. No further rAF
+          // tick will fire, so the onReveal auto-cleanup can't dispose
+          // — do it here or the smoother (and its itemLiveThinkingTail
+          // entry) leaks until the next thread switch. This is the
+          // completion shape wherever content-block-stop carries
+          // ContentPresent=true (Codex always; Claude recovered
+          // blocks): the settle re-asserts the summary the smoother
+          // already received. The bare-status branch below only covers
+          // the case where that equal summary is OMITTED from the
+          // patch. A not-yet-caught-up smoother keeps draining and
+          // disposes via onReveal once it catches up (applyItemPatch
+          // skips the direct summary write while it lives).
+          disposeSmootherFor(itemId);
+        }
+      } else if (patchSummary.startsWith(received)) {
         if (patch.updatedAt !== undefined) {
           smoothing.setLatestUpdatedAt(patch.updatedAt);
         }
         smoothing.smoother.appendDelta(patchSummary.slice(received.length));
-      } else if (patchSummary !== received) {
+      } else {
         smoothing.smoother.snap();
-        disposeSmootherFor(itemId);
-      } else if (
-        nextStatus !== undefined &&
-        nextStatus !== 'streaming' &&
-        smoothing.smoother.isCaughtUp()
-      ) {
-        // patchSummary === received AND a terminal status AND nothing
-        // left to reveal. No further rAF tick will fire, so the
-        // onReveal auto-cleanup can't dispose — do it here or the
-        // smoother (and its itemLiveThinkingTail entry) leaks until the
-        // next thread switch. This is the Codex completion shape:
-        // content-block-stop carries ContentPresent=true, so
-        // doSettleStreamingText re-asserts the full summary (== what the
-        // smoother received). The bare-status branch below only covers
-        // the case where that equal summary is OMITTED from the patch.
         disposeSmootherFor(itemId);
       }
     } else if (

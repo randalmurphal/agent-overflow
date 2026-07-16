@@ -199,6 +199,59 @@ func (r *Router) emitStreamingBlockStart(
 	return nil
 }
 
+// persistCompletedBlockEmitStreaming persists an already-complete
+// text/thinking row (with its payload), then emits it in the STREAMING
+// wire shape — creation upsert with a blanked summary and streaming
+// status, the full content as one delta, and a settle patch — instead
+// of a single completed upsert.
+//
+// Used for top-level blocks recovered from a never-streamed assistant
+// snapshot (CLI-internal retry — see parse_assistant.go's
+// appendRecoveredBlockEvent). The frontend animates only content that
+// arrives as deltas (per-item smoothers are created by the delta
+// path); a completed upsert mounts the row fully formed, which lands
+// as a multi-viewport one-frame jump when the recovery races a
+// still-revealing thinking row (the reveal gate withholds the new row
+// behind the draining frontier, then releases it wholesale).
+// Streaming the wire projection lets a recovered block reveal at the
+// same cadence as live streamed text.
+//
+// SQLite is unaffected: the row persists as completed BEFORE any event
+// is emitted, so crash/reload reads the settled row; only the wire
+// projection streams. The trailing patch re-asserts the persisted
+// summary so a dropped delta still leaves the row's visible text
+// correct. For thinking rows that summary is the tail-trimmed preview,
+// which the frontend reveal store treats as equal to the streamed text
+// (not an overwrite) — see threadStreamingReveal's applyPatch.
+func (r *Router) persistCompletedBlockEmitStreaming(
+	item store.Item,
+	payload *store.Payload,
+	content string,
+) error {
+	persisted, err := r.persistItemQuietReturning(item, payload)
+	if err != nil {
+		return err
+	}
+	wire := persisted
+	wire.Summary = ""
+	wire.Status = statusStreaming
+	r.emitItemUpsert(wire)
+	r.emitItemDelta(ItemDeltaEvent{
+		ThreadID:  persisted.ThreadID,
+		ItemID:    persisted.ID,
+		Kind:      persisted.Kind,
+		Delta:     content,
+		UpdatedAt: persisted.UpdatedAt,
+	})
+	completed := statusCompleted
+	r.emitItemPatch(persisted.ThreadID, persisted.ID, persisted.Kind, ItemPatchFields{
+		Status:    &completed,
+		Summary:   &persisted.Summary,
+		UpdatedAt: &persisted.UpdatedAt,
+	})
+	return nil
+}
+
 func scopeCounterKey(threadID string, turnIndex int, scope string) string {
 	return fmt.Sprintf("%s|%d|%s", threadID, turnIndex, scope)
 }

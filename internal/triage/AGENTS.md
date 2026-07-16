@@ -265,6 +265,13 @@ split streaming text across separate UI event channels, and do not add
 another rendered cache column or a server-side kind-to-renderer
 dispatch table.
 
+Top-level text/thinking blocks recovered from a never-streamed
+assistant snapshot (CLI-internal retry) persist as completed rows but
+reuse the streaming wire shape — upsert(streaming, blank summary) →
+delta(full content) → patch(completed) — so they animate instead of
+mounting wholesale (`persistCompletedBlockEmitStreaming`); subagent
+recoveries keep the single completed upsert.
+
 ## App-layer observers and enrichers
 
 The router exposes two optional observers plus one enricher
