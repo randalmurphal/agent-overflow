@@ -64,14 +64,10 @@ func runClient(rawURL string) {
 	log.Printf("clientmode: stub serving on %s, attaching to %s", stub.Addr(), cfg.WSURL)
 
 	title := appidentity.AppTitle(nativeSingleInstanceMode())
-	app := application.New(application.Options{
-		Name: title,
-		// No services registered: the App receiver in the local binary
-		// would only confuse a webview that's about to RPC against a
-		// remote backend instead. Wails expects services to be set
-		// before window creation; an empty slice is the documented way
-		// to opt out.
-	})
+	// No services registered (Services left nil): the App receiver in
+	// the local binary would only confuse a webview that's about to
+	// RPC against a remote backend instead.
+	app := application.New(desktopApplicationOptions(title))
 
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            title,
@@ -115,13 +111,12 @@ func runDesktop(listenAddr string) {
 		return window
 	}
 	title := appidentity.AppTitle(nativeSingleInstanceMode())
-	app := application.New(application.Options{
-		Name:           title,
-		SingleInstance: desktopSingleInstanceOptions(getWindow),
-		Services: []application.Service{
-			application.NewService(appService),
-		},
-	})
+	appOpts := desktopApplicationOptions(title)
+	appOpts.SingleInstance = desktopSingleInstanceOptions(getWindow)
+	appOpts.Services = []application.Service{
+		application.NewService(appService),
+	}
+	app := application.New(appOpts)
 
 	// Configure in-app self-update before the transport serves, so the updater
 	// RPC handlers observe appService.updater without a race. No-op for dev
@@ -218,6 +213,25 @@ func loadPersistedWindowGeometry() windowgeom.Geometry {
 		return windowgeom.Geometry{}
 	}
 	return settings.NewService(dir).Get().Window
+}
+
+// desktopApplicationOptions is the shared application.Options base for
+// both desktop entry points (runDesktop, runClient).
+//
+// Mac.ApplicationShouldTerminateAfterLastWindowClosed aligns macOS with
+// the Linux/Windows default (quit when the last window closes). Wails
+// defaults it to false on macOS, and with no tray, app menu, or
+// dock-reopen window to restore, closing the window would otherwise
+// leave a headless zombie backend — transport server, SQLite handle,
+// provider subprocesses — running until Force Quit, and ServiceShutdown
+// would never fire.
+func desktopApplicationOptions(title string) application.Options {
+	return application.Options{
+		Name: title,
+		Mac: application.MacOptions{
+			ApplicationShouldTerminateAfterLastWindowClosed: true,
+		},
+	}
 }
 
 func desktopSingleInstanceOptions(window func() *application.WebviewWindow) *application.SingleInstanceOptions {
