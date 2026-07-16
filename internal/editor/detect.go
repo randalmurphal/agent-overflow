@@ -22,8 +22,13 @@ const (
 	// `--goto path:line:col`.
 	LaunchStyleGoto
 
-	// LaunchStyleLineColumn is Sublime Text's form: `--line N --column N path`.
-	LaunchStyleLineColumn
+	// LaunchStylePathLineColumn appends the position to the path
+	// itself: `path:line:column`. Sublime Text ("Filenames may be
+	// given a :line or :line:column suffix", sublimetext.com/docs/
+	// command_line.html) and Zed (crates/cli: "Use `path:line:column`
+	// syntax to open a file at the given line and column") both take
+	// this form; neither has --line/--column flags.
+	LaunchStylePathLineColumn
 )
 
 // Editor describes one candidate IDE. Available is populated by
@@ -84,13 +89,13 @@ var editorCatalog = []Editor{
 		ID:          "subl",
 		Name:        "Sublime Text",
 		Command:     "subl",
-		LaunchStyle: LaunchStyleLineColumn,
+		LaunchStyle: LaunchStylePathLineColumn,
 	},
 	{
 		ID:          "zed",
 		Name:        "Zed",
 		Command:     "zed",
-		LaunchStyle: LaunchStyleLineColumn,
+		LaunchStyle: LaunchStylePathLineColumn,
 	},
 }
 
