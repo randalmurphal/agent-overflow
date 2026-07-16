@@ -553,6 +553,7 @@
           files={diffFiles}
           viewMode={review.viewMode}
           wordWrap={review.wordWrap}
+          spanContext={review.spanContext}
           collapsedPaths={review.collapsedPaths}
           onToggleCollapsed={review.toggleCollapsed}
           drafts={review.drafts}

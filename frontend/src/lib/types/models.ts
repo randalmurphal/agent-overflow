@@ -108,8 +108,9 @@ export interface Thread {
 
 /**
  * Item.kind discriminates how the timeline renders a persisted row.
- * Values mirror the CHECK enum on items.kind in the Go store (see
- * internal/store/migrate.go — v15, v23).
+ * Values mirror the CHECK enum on items.kind in the Go store (v1
+ * baseline in internal/store/schema_v1.go, last extended by migration
+ * v11 `compaction_reasoning_item_kind`).
  *
  * - `terminal_interaction` is the Codex-only background-terminal wait or
  *   interaction marker persisted from typed `write_stdin` notifications.
@@ -166,6 +167,14 @@ export interface Item {
   payloadId?: string;
   payloadKind?: string;
   payloadMeta?: string;
+  /**
+   * Version-stamped highlight span blob (JSON, Go: PersistedPatchSpans)
+   * for the inline-diff preview patches in `payloadMeta`. Ingested at
+   * row mount via `utils/persistedSpans.ts` so cold-mounted diff cards
+   * paint highlighted without an RPC; absent/empty means "not computed"
+   * and the RPC path covers.
+   */
+  payloadPreviewSpans?: string;
   inputPayloadId?: string;
   parentId?: string;
   isBackground?: boolean;
@@ -175,7 +184,7 @@ export interface Item {
   /**
    * JSON-shaped metadata blob. Existing top-level keys include
    * `task_id` (used for background-task pairing, indexed by
-   * migration v17) and `pathRefs` (`PathRef[]`, written by the
+   * `idx_items_meta_task_id`) and `pathRefs` (`PathRef[]`, written by the
    * pathlinks settle hook on assistant_text rows). Always parse
    * defensively — pre-pathlinks items predate the `pathRefs` key.
    */

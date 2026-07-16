@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/workspacepath"
@@ -56,7 +58,7 @@ func (a *App) GetDiffContextLines(threadID string, req DiffContextRequest) (Diff
 	if req.EndLine-req.StartLine+1 > maxDiffContextLines {
 		return DiffContextResult{}, fmt.Errorf("%s: range exceeds %d lines", action, maxDiffContextLines)
 	}
-	content, err := a.diffContextContent(action, threadID, req)
+	content, err := a.diffContextContent(action, threadID, req, 0)
 	if err != nil {
 		return DiffContextResult{}, err
 	}
@@ -74,7 +76,12 @@ func (a *App) GetDiffContextLines(threadID string, req DiffContextRequest) (Diff
 	}, nil
 }
 
-func (a *App) diffContextContent(action, threadID string, req DiffContextRequest) (string, error) {
+// diffContextContent resolves the new-side file content for a diff
+// scope. maxBytes > 0 rejects oversized files — workspace scopes do a
+// descriptor-bounded read (readWorkspaceFile); ref scopes read the
+// blob and length-check it (git plumbing has no cheap pre-read size
+// probe worth an extra process).
+func (a *App) diffContextContent(action, threadID string, req DiffContextRequest, maxBytes int64) (string, error) {
 	switch req.Scope {
 	case "workspace", "branch", "session":
 		// These scopes diff against the working tree — the new side is
@@ -91,11 +98,11 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", action, err)
 		}
-		data, err := os.ReadFile(filepath.Join(workspace, rel))
+		content, err := readWorkspaceFile(filepath.Join(workspace, rel), maxBytes)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", action, err)
+			return "", fmt.Errorf("%s: %s: %w", action, rel, err)
 		}
-		return string(data), nil
+		return content, nil
 	case "turn":
 		// Turn diffs are checkpoint-ref → checkpoint-ref; the new side
 		// is the target checkpoint's commit, which can lag the worktree.
@@ -111,7 +118,7 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", action, err)
 		}
-		return content, nil
+		return capContent(action, req.Path, content, maxBytes)
 	case "pr":
 		// The fetched head commit is present locally after GetPRDiff's
 		// FetchRefOID; API-only PR threads have no clone to read from.
@@ -127,10 +134,57 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", action, err)
 		}
-		return content, nil
+		return capContent(action, req.Path, content, maxBytes)
 	default:
 		return "", fmt.Errorf("%s: unknown scope %q", action, req.Scope)
 	}
+}
+
+func capContent(action, path, content string, maxBytes int64) (string, error) {
+	if maxBytes > 0 && int64(len(content)) > maxBytes {
+		return "", fmt.Errorf("%s: %s exceeds %d bytes", action, path, maxBytes)
+	}
+	return content, nil
+}
+
+// readWorkspaceFile reads a workspace file that a coding agent may be
+// mutating concurrently. All checks run on the open descriptor —
+// O_NONBLOCK keeps the open itself from hanging if the path is a FIFO,
+// fstat classifies what was actually opened (a pre-open stat could
+// pass a file that is swapped before the read), and the bounded read
+// caps allocation even when the file grows after the fstat. maxBytes
+// <= 0 means unbounded (the type check still applies).
+func readWorkspaceFile(path string, maxBytes int64) (string, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("not a regular file")
+	}
+	if maxBytes <= 0 {
+		data, err := io.ReadAll(f)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	if info.Size() > maxBytes {
+		return "", fmt.Errorf("exceeds %d bytes", maxBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if int64(len(data)) > maxBytes {
+		return "", fmt.Errorf("exceeds %d bytes", maxBytes)
+	}
+	return string(data), nil
 }
 
 // splitContentLines splits file content into lines the way diff line

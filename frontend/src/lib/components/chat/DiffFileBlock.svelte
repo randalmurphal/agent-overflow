@@ -19,11 +19,10 @@
    * the row's outer shell stable — the body region goes absent and
    * the chevron renders inert.
    *
-   * Tokenization: dispatches a single Shiki batch per (file × lang ×
-   * theme) per expanded block via dispatchInlineFileTokens;
-   * module-level inFlightKeys dedupes across blocks. Collapsed
-   * blocks skip the dispatch entirely. Out-of-cache lines render
-   * with the line-tint background until tokens land.
+   * Highlighting: one file-level span request per expanded block
+   * (requestFileSpans; the shared cache dedupes across blocks and
+   * remounts). Collapsed blocks skip the request entirely. Lines
+   * render with the line-tint background until spans land.
    */
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import { untrack } from 'svelte';
@@ -35,18 +34,13 @@
   import RowError from './RowError.svelte';
   import DiffLineContent from './DiffLineContent.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
-  import { dispatchInlineFileTokens } from './diffInlineTokenize';
   import { buildInlineDiffRowsCached } from './inlineDiffRows';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getSettings } from '../../stores/settings.svelte';
-  import { getDiffTheme } from '../../stores/diffTheme.svelte';
-  import type { DiffTheme } from '../../utils/diffHighlighterPool';
-  import type { PatchFile, PatchLine } from '../../utils/patchFiles';
+  import type { PatchFile } from '../../utils/patchFiles';
   import type { Item } from '../../types/models';
   import { lineTintClass } from '../../utils/diffLineTint';
-  import { languageFromPath } from '../../utils/diffLanguage';
-  import type { LineToken } from '../../utils/tokenCache';
-  import { getCachedTokensForLine } from '../../utils/tokenCacheReactive.svelte';
+  import { diffSpanCacheGeneration, getSpansForLine, requestFileSpans } from '../../utils/diffSpanCache.svelte';
   import { openReviewForItem, isPromoteModifier } from './reviewTrigger';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { classifyToolName } from './toolCardHeader';
@@ -148,31 +142,19 @@
     return `${previousPath} → ${file.path}`;
   });
 
-  let theme: DiffTheme = $derived(getDiffTheme());
-  let lang = $derived(languageFromPath(file.path));
-
-  let dispatchableLines = $derived.by(() => {
-    const out: PatchLine[] = [];
-    for (const row of visibleRows) {
-      if (row.kind === 'line') out.push(row.line);
-    }
-    return out;
-  });
-
   $effect(() => {
     if (!effectiveExpanded || !hasBody) return;
-    const t = theme;
-    const linesNow = dispatchableLines;
-    const langNow = lang;
+    // Generation dependency: an eviction (LRU pressure, same-thread
+    // reload) re-runs this effect so a still-mounted card re-requests
+    // instead of staying plain; on a cache hit the re-run is a cheap
+    // Map lookup.
+    diffSpanCacheGeneration();
+    const fileNow = file;
     const id = threadId;
     untrack(() => {
-      void dispatchInlineFileTokens(linesNow, id, langNow, t);
+      void requestFileSpans(fileNow, id);
     });
   });
-
-  function getTokens(line: PatchLine): LineToken[] | null {
-    return getCachedTokensForLine(line, threadId, theme, lang);
-  }
 
   function openReview(event: MouseEvent | KeyboardEvent): void {
     if (!pane || turnIndex === undefined) return;
@@ -324,7 +306,7 @@
                     style="width: var(--gutter-w)"
                     aria-hidden="true"
                   >{row.lineNo > 0 ? row.lineNo : ''}</span><span class="pl-1 pr-3 flex-1 min-w-0"
-                    ><DiffLineContent line={row.line} tokens={getTokens(row.line)} /></span>
+                    ><DiffLineContent line={row.line} spans={getSpansForLine(file, row.line)} /></span>
                 </div>
               {/if}
             {/each}

@@ -67,23 +67,34 @@ tasks:
 
   build:wsl:linux-payload:
     summary: |
-      Cross-compile the Linux ELF backend bundled into the Windows .exe.
+      Build the Linux ELF backend bundled into the Windows .exe.
 
       Built with `-tags nogui` so the Wails desktop code (runDesktop,
       runClient, the *application.App save-file dialog) is compiled out
       via the matching //go:build !nogui guards in main_desktop.go and
-      app_desktop.go. With Wails excluded, nothing in the import graph
-      uses cgo any more, so CGO_ENABLED=0 produces a fully statically
-      linked binary that runs on any Linux x86_64 system regardless of
-      installed libraries. This is what fixes "error while loading
-      shared libraries: libwebkit2gtk-4.1.so.0" on fresh Ubuntu installs
-      where the user hasn't apt-installed the GTK/WebKit runtime.
+      app_desktop.go. With Wails excluded, no GTK/WebKit runtime is
+      linked — this is what fixes "error while loading shared
+      libraries: libwebkit2gtk-4.1.so.0" on fresh Ubuntu installs.
 
-      Static linking also means no Docker cross-compile environment is
-      needed — native `go build` from macOS / Linux / Windows produces
-      identical artifacts. The build:wsl:windows-launcher task downstream
-      embeds whichever ELF this task leaves at the payload path.
+      CGO_ENABLED=1 because internal/highlight compiles the tree-sitter
+      grammars (plain C, no external libraries). The payload links
+      dynamically against glibc only, and inherits the BUILD host's
+      GLIBC_* symbol versions — it runs on any glibc-based WSL distro
+      whose glibc is at least as new as the build host's. Build on the
+      oldest distro you intend to support (a distro older than the
+      build host fails at startup with "version GLIBC_x.y not found").
+      Build natively from Linux/WSL with gcc/clang on PATH (the
+      `package` task already mandates Linux/WSL hosts); cross-building
+      from macOS would need a Linux-targeting C toolchain (e.g.
+      `zig cc`) and is unsupported. If a fully static payload is ever
+      wanted again, musl-gcc with `-linkmode external -extldflags
+      -static` is the documented path.
     internal: true
+    preconditions:
+      - sh: command -v cc || command -v gcc || command -v clang
+        msg: |
+          A C compiler is required (the syntax-highlight grammars are cgo).
+          Install one inside WSL, e.g.: sudo apt install gcc
     cmds:
       - mkdir -p cmd/agent-overflow-windows/payload {{.BIN_DIR | default "bin"}}
       # Pre-clean the output: build:wsl:restore-payload-placeholder
@@ -91,7 +102,7 @@ tasks:
       # the prior build, and `go build -o` refuses to overwrite a file
       # that isn't a recognized Go binary.
       - rm -f cmd/agent-overflow-windows/payload/agent-overflow-linux
-      - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags production,nogui -trimpath -buildvcs=false -ldflags="-w -s -X main.version={{.VERSION | default "dev"}}" -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./
+      - GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build -tags production,nogui -trimpath -buildvcs=false -ldflags="-w -s -X main.version={{.VERSION | default "dev"}}" -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./
       # Stash a copy in bin/ (gitignored) so package:wsl:zip and any
       # follow-on consumer can read the real ELF after the build:wsl
       # task restores the embed-dir placeholder.

@@ -504,6 +504,16 @@ export class Item {
     "payloadId"?: string;
     "payloadKind"?: string;
     "payloadMeta"?: string;
+
+    /**
+     * PayloadPreviewSpans is the linked payload's preview_spans column:
+     * a version-stamped highlight span blob (JSON, shape owned by the
+     * app layer) covering the inline-diff preview patches in
+     * PayloadMeta. Rides item list reads so cold-mounted diff cards
+     * paint highlighted without an RPC; empty means "not computed" and
+     * the frontend falls back to the highlight RPC path.
+     */
+    "payloadPreviewSpans"?: string;
     "inputPayloadId"?: string;
     "parentId"?: string;
     "isBackground"?: boolean;

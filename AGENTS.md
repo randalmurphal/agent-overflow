@@ -7,7 +7,10 @@ performance, memory efficiency, and minimal code.
 ## Stack
 
 - **Backend**: Go 1.26, Wails v3 (system webview shell only), SQLite via
-  `modernc.org/sqlite` (pure Go, no CGO). WAL mode.
+  `modernc.org/sqlite` (pure Go, no CGO). WAL mode. Syntax-highlight
+  spans via tree-sitter (`internal/highlight`) — the one cgo dependency
+  besides the platform webview glue; grammars compile in with the
+  standard toolchain (Windows WSL payload builds with gcc in WSL).
 - **Frontend**: Svelte 5 (runes), Vite 8 (Rolldown), Tailwind CSS 4, TypeScript.
 - **IPC**: HTTP+WebSocket via `internal/transport/`. Wails' binding generator
   still emits the typed TS wrappers; in production `@wailsio/runtime` resolves
@@ -52,7 +55,10 @@ version.
    its state. Provider session files (`~/.claude/`, `~/.codex/`) are the
    authoritative history for crash recovery.
 3. **SQLite is a history cache, not an event store.** Persist per-item on
-   completion, not per-turn.
+   completion, not per-turn. Derived, version-stamped render metadata
+   (`pathRefs`, highlight span blobs) may persist alongside history —
+   it's cache content too: stale entries are dropped and recomputed,
+   never migrated. Raw content stays canonical.
 4. **Frontend memory is bounded by the visible thread.** Heavy payloads
    (diffs, command output, thinking) live in SQLite and load on demand.
 5. **Errors are user-facing state, not log entries.**

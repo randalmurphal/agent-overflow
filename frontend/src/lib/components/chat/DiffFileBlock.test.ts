@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { tick } from 'svelte';
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import DiffFileBlock from './DiffFileBlock.svelte';
-import { dispatchInlineFileTokens } from './diffInlineTokenize';
+import { requestFileSpans } from '../../utils/diffSpanCache.svelte';
 import type { PatchFile, PatchLine } from '../../utils/patchFiles';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -20,9 +20,11 @@ import { formatTimeOfDay } from '../../utils/format';
 import { openReviewCompanion } from '../../stores/reviewPane.svelte';
 
 // Mocked so the collapse tests can assert that collapsed cards skip
-// the Shiki batch dispatch; line-tint rendering does not depend on it.
-vi.mock('./diffInlineTokenize', () => ({
-  dispatchInlineFileTokens: vi.fn(async () => {}),
+// the span request; line-tint rendering does not depend on it.
+vi.mock('../../utils/diffSpanCache.svelte', () => ({
+  requestFileSpans: vi.fn(async () => {}),
+  getSpansForLine: vi.fn(() => null),
+  diffSpanCacheGeneration: vi.fn(() => 0),
 }));
 
 vi.mock('../../stores/reviewPane.svelte', () => ({
@@ -616,20 +618,20 @@ describe('<DiffFileBlock>', () => {
       expect(second.getByTestId('diff-file-toggle').getAttribute('aria-expanded')).toBe('false');
     });
 
-    it('skips the Shiki dispatch while collapsed and dispatches on expand', async () => {
+    it('skips the span request while collapsed and requests on expand', async () => {
       await enableCollapseSetting();
-      const dispatch = vi.mocked(dispatchInlineFileTokens);
-      dispatch.mockClear();
+      const request = vi.mocked(requestFileSpans);
+      request.mockClear();
       const file = makePatchFile();
       const { getByTestId } = render(DiffFileBlock, {
         props: { file, threadId: 'thread-1' },
       });
 
       await tick();
-      expect(dispatch).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
 
       await fireEvent.click(getByTestId('diff-file-toggle'));
-      await waitFor(() => expect(dispatch).toHaveBeenCalled());
+      await waitFor(() => expect(request).toHaveBeenCalledWith(file, 'thread-1'));
     });
 
     it('follows live setting flips for untouched cards while user-expanded cards stay pinned', async () => {

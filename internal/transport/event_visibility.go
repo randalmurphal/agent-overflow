@@ -44,9 +44,40 @@ var loopbackOnlyEventChannels = map[string]bool{
 	// read.
 }
 
+// remoteOnlyEventChannels are the inverse cut: frames that exist to
+// hide WAN round-trip latency and are pure waste on a local pipe.
+var remoteOnlyEventChannels = map[string]bool{
+	// highlight:seed pushes syntax-span metadata alongside streaming
+	// text so a remote client colors code without a highlight RPC per
+	// growth step. Loopback clients get faster spans from the RPC path
+	// (sub-ms round trip), so these frames carry nothing they'd use.
+	// Producer side is gated too (Server.HasRemoteClient) — this
+	// filter is what keeps the frames off loopback pipes while a
+	// remote viewer has the producer running.
+	"highlight:seed": true,
+	// highlight:diff_seed pushes patch-aligned spans for just-persisted
+	// inline-diff previews — same rationale and same producer gate as
+	// highlight:seed, keyed for the diff span cache instead of the
+	// markdown code-block cache.
+	"highlight:diff_seed": true,
+}
+
+// ephemeralEventChannels are never retained in the replay ring:
+// point-in-time cache warmers whose replay after a reconnect would be
+// useless (the client re-requests over RPC on demand) and whose frames
+// are large (span arrays + hash chains per streaming flush window) —
+// ring retention would hold up to DefaultRingCapacity superseded
+// frames per channel. Emit still assigns sequence numbers; Replay
+// finds an empty ring and returns nothing (no gap marker, so clients
+// never try to "recover" frames that were never history).
+var ephemeralEventChannels = map[string]bool{
+	"highlight:seed":      true,
+	"highlight:diff_seed": true,
+}
+
 func eventVisibleToOrigin(channel string, isLoopback bool) bool {
 	if isLoopback {
-		return true
+		return !remoteOnlyEventChannels[channel]
 	}
 	return !loopbackOnlyEventChannels[channel]
 }

@@ -60,25 +60,3 @@ export function prefixTintClass(type: LineTintType): string {
   if (type === 'del') return 'text-error';
   return '';
 }
-
-/**
- * Bit-flag → Tailwind class lookup for Shiki's `fontStyle` field
- * (0-7 bitfield: 1=italic, 2=bold, 4=underline). Module-scope const
- * so the lookup table isn't re-allocated per component instance —
- * 50 file components hosting their own copy adds up otherwise.
- */
-const FONT_STYLE_CLASSES = [
-  '',
-  'italic',
-  'font-bold',
-  'italic font-bold',
-  'underline',
-  'italic underline',
-  'font-bold underline',
-  'italic font-bold underline',
-] as const;
-
-export function fontStyleClass(fontStyle: number | undefined): string {
-  if (!fontStyle) return '';
-  return FONT_STYLE_CLASSES[fontStyle & 7] ?? '';
-}

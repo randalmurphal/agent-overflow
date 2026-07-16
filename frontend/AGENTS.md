@@ -183,13 +183,16 @@ corrupt every project on the machine. Use
      split the GFM text rule's leading ``[`~]+`` run so a `~` cannot
      swallow an adjacent backtick. Composes with upstream's
      bottom-of-file options cache + incremental `parseBlocks`.
-  3. **deferred-typesetting hosts** (`Elements/{Code,Math,Mermaid}`,
+  3. **deferred-typesetting hosts** (`Elements/{Math,Mermaid}`,
      `context`, `Streamdown`) — `registerAsyncResource` /
      `pendingAsyncCount` / `onsettled` let a Streamdown signal when its
-     async work (shiki, katex, mermaid) has settled, so the
-     committed-prefix vs volatile-tail two-instance split in
+     async work (katex, mermaid, backend highlight spans) has settled,
+     so the committed-prefix vs volatile-tail two-instance split in
      `ChatMarkdown.svelte` defers math/mermaid typesetting off the
-     streaming tail. Orthogonal to upstream's parse cache — they stack.
+     streaming tail. Our own `StreamdownCodeHost` participates through
+     the same context hooks (no `Code.svelte` hunk needed — the
+     library's shiki Code component is unused and tree-shaken).
+     Orthogonal to upstream's parse cache — they stack.
   4. **completion-disable** (`utils/parse-incomplete-markdown.js`) — a
      trailing `.filter` drops the 10 inline emphasis/code/math
      speculative completers (they mis-close on lone delimiters
@@ -241,16 +244,16 @@ corrupt every project on the machine. Use
      starts to render then turns back into raw markdown"). Closing `$$`
      must be followed by newline/end-of-string so adjacent same-line
      inline `$$X$$` pairs still take the single-line alternative.
-  9. **typeset/highlight caches** (`Elements/Math.svelte`,
-     `Elements/Mermaid.svelte`, `utils/hightlighter.svelte.js`) —
-     module-level KaTeX HTML cache (deterministic output, LRU cap 500);
-     Mermaid SVG cache keyed on `(theme, sanitized source)` with a
-     per-insertion uniqueId rewrite so two in-DOM instances of the same
-     diagram can't collide on document-scoped `url(#…)`/`xlink:href`
-     ids (LRU cap 100); Shiki per-line token cache so streaming code
-     blocks only tokenize new/changed lines. All three exist because
-     the committed-prefix/volatile-tail split remounts each settled
-     block once — the caches make that migration free. Perf-only: each
+  9. **typeset caches** (`Elements/Math.svelte`,
+     `Elements/Mermaid.svelte`) — module-level KaTeX HTML cache
+     (deterministic output, LRU cap 500); Mermaid SVG cache keyed on
+     `(theme, sanitized source)` with a per-insertion uniqueId rewrite
+     so two in-DOM instances of the same diagram can't collide on
+     document-scoped `url(#…)`/`xlink:href` ids (LRU cap 100). Both
+     exist because the committed-prefix/volatile-tail split remounts
+     each settled block once — the caches make that migration free.
+     (Code blocks get the same treatment from our own
+     `markdown/codeSpanCache.ts`, outside the patch.) Perf-only: each
      can be dropped independently if upstream grows an equivalent.
   10. **relative-reference links** (`Elements/Link.svelte`) — the
       blocked-link branch drops its " [blocked]" suffix for schemeless

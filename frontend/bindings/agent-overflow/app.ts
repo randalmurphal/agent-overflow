@@ -763,9 +763,10 @@ export function GetPayloadChunk(threadID: string, payloadID: string, offset: num
 }
 
 /**
- * GetPayloadData returns a payload body. The caller must supply the owning
- * thread so payload ids cannot be read outside the thread timeline that
- * references them.
+ * GetPayloadData returns a payload body, with the payload's persisted
+ * highlight spans attached for diff kinds. The caller must supply the
+ * owning thread so payload ids cannot be read outside the thread
+ * timeline that references them.
  */
 export function GetPayloadData(threadID: string, payloadID: string): $CancellablePromise<$models.PayloadContent> {
     return $Call.ByID(3448919335, threadID, payloadID).then(($result: any) => {
@@ -773,6 +774,10 @@ export function GetPayloadData(threadID: string, payloadID: string): $Cancellabl
     });
 }
 
+/**
+ * GetPayloadPreview serves a payload's leading bytes, with the payload's
+ * persisted highlight spans attached for diff kinds.
+ */
 export function GetPayloadPreview(threadID: string, payloadID: string, maxBytes: number): $CancellablePromise<$models.PayloadPreview> {
     return $Call.ByID(4070214921, threadID, payloadID, maxBytes).then(($result: any) => {
         return $$createType33($result);
@@ -1257,6 +1262,66 @@ export function GitWorktreeStatusForProject(projectID: string, worktreePath: str
 }
 
 /**
+ * HighlightClassNames returns the classId → semantic-name table
+ * (index = class id, 0 = "none"). The frontend fetches it once at boot
+ * and renders class id N as CSS class `syntax-<name>`. Wire-safe.
+ */
+export function HighlightClassNames(): $CancellablePromise<string[]> {
+    return $Call.ByID(2772816619).then(($result: any) => {
+        return $$createType9($result);
+    });
+}
+
+/**
+ * HighlightCode returns spans for raw source text. Wire-safe: pure
+ * text-in/metadata-out, no local state touched.
+ */
+export function HighlightCode(req: $models.HighlightCodeRequest): $CancellablePromise<$models.HighlightResult> {
+    return $Call.ByID(4080150350, req).then(($result: any) => {
+        return $$createType56($result);
+    });
+}
+
+/**
+ * HighlightPatch returns patch-aligned spans for one file's unified
+ * diff: result line i corresponds to patch line i, add/del spans cover
+ * the prefix-stripped body, context spans include a 1-byte plain pad
+ * for the kept leading space. Wire-safe.
+ */
+export function HighlightPatch(req: $models.HighlightPatchRequest): $CancellablePromise<$models.HighlightResult> {
+    return $Call.ByID(834878499, req).then(($result: any) => {
+        return $$createType56($result);
+    });
+}
+
+/**
+ * HighlightPatchWithContext is HighlightPatch primed with the file
+ * content above each hunk, resolved through the same scope switch as
+ * GetDiffContextLines — a hunk that starts mid-docstring highlights
+ * correctly because the parser has seen the opening. Content
+ * resolution is best-effort: if the scope lookup fails (file gone at
+ * ref, no local clone), the unprimed result is returned instead of an
+ * error. LocalOnlyMethods category 1: it reads workspace/ref file
+ * content by path; remote clients use HighlightPatch.
+ */
+export function HighlightPatchWithContext(threadID: string, req: $models.HighlightPatchContextRequest): $CancellablePromise<$models.HighlightResult> {
+    return $Call.ByID(3722752402, threadID, req).then(($result: any) => {
+        return $$createType56($result);
+    });
+}
+
+/**
+ * HighlightSchemaVersion returns the version stamp carried by persisted
+ * span blobs (items.meta codeSpans, payload preview/full spans). The
+ * frontend fetches it once at boot and ignores stored spans stamped
+ * with anything else — those fall back to the RPC path, which
+ * recomputes under the current schema. Wire-safe.
+ */
+export function HighlightSchemaVersion(): $CancellablePromise<string> {
+    return $Call.ByID(2896867980);
+}
+
+/**
  * IngestDiagnosticBatch is the wire-bound entry point for the
  * frontend's postMessage forwarder. The iframe-injected capture script
  * posts diagnostics to the parent window; the frontend buffers and
@@ -1286,7 +1351,7 @@ export function IngestDiagnosticBatch(batch: design$0.DiagnosticBatch): $Cancell
  */
 export function InterruptAndRevertIfClean(threadID: string): $CancellablePromise<$models.InterruptAndRevertResult> {
     return $Call.ByID(753394581, threadID).then(($result: any) => {
-        return $$createType56($result);
+        return $$createType57($result);
     });
 }
 
@@ -1335,7 +1400,7 @@ export function IsWSL(): $CancellablePromise<boolean> {
  */
 export function LatestDesignOptionSet(threadID: string): $CancellablePromise<$models.DesignOptionSet | null> {
     return $Call.ByID(4252906991, threadID).then(($result: any) => {
-        return $$createType58($result);
+        return $$createType59($result);
     });
 }
 
@@ -1344,7 +1409,7 @@ export function LatestDesignOptionSet(threadID: string): $CancellablePromise<$mo
  */
 export function ListArchivedThreads(): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(2451527188).then(($result: any) => {
-        return $$createType59($result);
+        return $$createType60($result);
     });
 }
 
@@ -1353,7 +1418,7 @@ export function ListArchivedThreads(): $CancellablePromise<store$0.Thread[]> {
  */
 export function ListAttachments(threadID: string): $CancellablePromise<store$0.Attachment[]> {
     return $Call.ByID(1730798413, threadID).then(($result: any) => {
-        return $$createType61($result);
+        return $$createType62($result);
     });
 }
 
@@ -1373,13 +1438,13 @@ export function ListAttachments(threadID: string): $CancellablePromise<store$0.A
  */
 export function ListAvailableEditors(): $CancellablePromise<$models.EditorInfo[]> {
     return $Call.ByID(2556802234).then(($result: any) => {
-        return $$createType63($result);
+        return $$createType64($result);
     });
 }
 
 export function ListChatBarFavorites(): $CancellablePromise<store$0.ChatBarFavorite[]> {
     return $Call.ByID(2114948965).then(($result: any) => {
-        return $$createType65($result);
+        return $$createType66($result);
     });
 }
 
@@ -1399,7 +1464,7 @@ export function ListDesignOptions(threadID: string, setID: string): $Cancellable
 
 export function ListDiffReviewComments(threadID: string, scope: string, sourceKey: string): $CancellablePromise<store$0.DiffReviewComment[]> {
     return $Call.ByID(3057473088, threadID, scope, sourceKey).then(($result: any) => {
-        return $$createType66($result);
+        return $$createType67($result);
     });
 }
 
@@ -1408,13 +1473,13 @@ export function ListDiffReviewComments(threadID: string, scope: string, sourceKe
  */
 export function ListDiscussions(scope: string): $CancellablePromise<store$0.DiscussionDefinition[]> {
     return $Call.ByID(942288562, scope).then(($result: any) => {
-        return $$createType67($result);
+        return $$createType68($result);
     });
 }
 
 export function ListDiscussionsForThread(threadID: string): $CancellablePromise<store$0.DiscussionDefinition[]> {
     return $Call.ByID(2502562885, threadID).then(($result: any) => {
-        return $$createType67($result);
+        return $$createType68($result);
     });
 }
 
@@ -1423,7 +1488,7 @@ export function ListDiscussionsForThread(threadID: string): $CancellablePromise<
  */
 export function ListItems(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(2158085763, threadID).then(($result: any) => {
-        return $$createType68($result);
+        return $$createType69($result);
     });
 }
 
@@ -1434,7 +1499,7 @@ export function ListItems(threadID: string): $CancellablePromise<store$0.Item[]>
  */
 export function ListItemsAfterCursor(threadID: string, after: store$0.TimelineCursor, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(2915892537, threadID, after, itemBudget).then(($result: any) => {
-        return $$createType69($result);
+        return $$createType70($result);
     });
 }
 
@@ -1446,7 +1511,7 @@ export function ListItemsAfterCursor(threadID: string, after: store$0.TimelineCu
  */
 export function ListItemsAfterTurn(threadID: string, afterTurnIndex: number, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(932754656, threadID, afterTurnIndex, itemBudget).then(($result: any) => {
-        return $$createType69($result);
+        return $$createType70($result);
     });
 }
 
@@ -1458,7 +1523,7 @@ export function ListItemsAfterTurn(threadID: string, afterTurnIndex: number, ite
  */
 export function ListItemsBeforeCursor(threadID: string, before: store$0.TimelineCursor, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(162135710, threadID, before, itemBudget).then(($result: any) => {
-        return $$createType69($result);
+        return $$createType70($result);
     });
 }
 
@@ -1471,7 +1536,7 @@ export function ListItemsBeforeCursor(threadID: string, before: store$0.Timeline
  */
 export function ListItemsBeforeTurn(threadID: string, beforeTurnIndex: number, itemBudget: number): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(2147361923, threadID, beforeTurnIndex, itemBudget).then(($result: any) => {
-        return $$createType69($result);
+        return $$createType70($result);
     });
 }
 
@@ -1488,7 +1553,7 @@ export function ListItemsBeforeTurn(threadID: string, beforeTurnIndex: number, i
  */
 export function ListLiveBackgroundTasks(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(320784263, threadID).then(($result: any) => {
-        return $$createType68($result);
+        return $$createType69($result);
     });
 }
 
@@ -1502,7 +1567,7 @@ export function ListLiveBackgroundTasks(threadID: string): $CancellablePromise<s
  */
 export function ListMcpServerStatuses(providerName: string): $CancellablePromise<mcpstatus$0.ServerStatus[]> {
     return $Call.ByID(2582096622, providerName).then(($result: any) => {
-        return $$createType70($result);
+        return $$createType71($result);
     });
 }
 
@@ -1518,7 +1583,7 @@ export function ListMcpServerStatuses(providerName: string): $CancellablePromise
  */
 export function ListMcpServers(provider: string, workspacePath: string): $CancellablePromise<$models.MCPServer[]> {
     return $Call.ByID(1105613677, provider, workspacePath).then(($result: any) => {
-        return $$createType71($result);
+        return $$createType72($result);
     });
 }
 
@@ -1528,7 +1593,7 @@ export function ListMcpServers(provider: string, workspacePath: string): $Cancel
  */
 export function ListMcpServersForNewThread(providerName: string, workspacePath: string): $CancellablePromise<$models.MCPServer[]> {
     return $Call.ByID(3030514258, providerName, workspacePath).then(($result: any) => {
-        return $$createType71($result);
+        return $$createType72($result);
     });
 }
 
@@ -1539,13 +1604,13 @@ export function ListMcpServersForNewThread(providerName: string, workspacePath: 
  */
 export function ListMcpServersForThread(threadID: string): $CancellablePromise<$models.MCPServer[]> {
     return $Call.ByID(2790948120, threadID).then(($result: any) => {
-        return $$createType71($result);
+        return $$createType72($result);
     });
 }
 
 export function ListPRReviewThreads(pr: git$0.PRReference): $CancellablePromise<git$0.ReviewThread[]> {
     return $Call.ByID(763649720, pr).then(($result: any) => {
-        return $$createType73($result);
+        return $$createType74($result);
     });
 }
 
@@ -1554,7 +1619,7 @@ export function ListPRReviewThreads(pr: git$0.PRReference): $CancellablePromise<
  */
 export function ListPayloadMetas(threadID: string): $CancellablePromise<store$0.PayloadMeta[]> {
     return $Call.ByID(1007133701, threadID).then(($result: any) => {
-        return $$createType75($result);
+        return $$createType76($result);
     });
 }
 
@@ -1565,7 +1630,7 @@ export function ListPayloadMetas(threadID: string): $CancellablePromise<store$0.
  */
 export function ListPendingInteractiveRequests(threadID: string): $CancellablePromise<provider$0.PendingInteractiveRequests> {
     return $Call.ByID(4186874978, threadID).then(($result: any) => {
-        return $$createType76($result);
+        return $$createType77($result);
     });
 }
 
@@ -1575,7 +1640,7 @@ export function ListPendingInteractiveRequests(threadID: string): $CancellablePr
  */
 export function ListProjects(): $CancellablePromise<store$0.ProjectWithCounts[]> {
     return $Call.ByID(2721360259).then(($result: any) => {
-        return $$createType78($result);
+        return $$createType79($result);
     });
 }
 
@@ -1586,7 +1651,7 @@ export function ListProjects(): $CancellablePromise<store$0.ProjectWithCounts[]>
  */
 export function ListProposedPlanComments(threadID: string, planItemID: string): $CancellablePromise<store$0.ProposedPlanComment[]> {
     return $Call.ByID(2030403250, threadID, planItemID).then(($result: any) => {
-        return $$createType79($result);
+        return $$createType80($result);
     });
 }
 
@@ -1597,7 +1662,7 @@ export function ListProposedPlanComments(threadID: string, planItemID: string): 
  */
 export function ListRecentThreadItems(threadID: string, turnLimit: number): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(2604956482, threadID, turnLimit).then(($result: any) => {
-        return $$createType69($result);
+        return $$createType70($result);
     });
 }
 
@@ -1614,7 +1679,7 @@ export function ListRecentThreadItems(threadID: string, turnLimit: number): $Can
  */
 export function ListRecentTurns(threadID: string, limit: number): $CancellablePromise<store$0.Turn[]> {
     return $Call.ByID(1083162294, threadID, limit).then(($result: any) => {
-        return $$createType81($result);
+        return $$createType82($result);
     });
 }
 
@@ -1624,7 +1689,7 @@ export function ListRecentTurns(threadID: string, limit: number): $CancellablePr
  */
 export function ListReleases(): $CancellablePromise<$models.ReleaseSummary[]> {
     return $Call.ByID(397986043).then(($result: any) => {
-        return $$createType83($result);
+        return $$createType84($result);
     });
 }
 
@@ -1638,7 +1703,7 @@ export function ListReleases(): $CancellablePromise<$models.ReleaseSummary[]> {
  */
 export function ListRemoteEndpoints(): $CancellablePromise<$models.RemoteEndpointSummary[]> {
     return $Call.ByID(3443007043).then(($result: any) => {
-        return $$createType84($result);
+        return $$createType85($result);
     });
 }
 
@@ -1654,7 +1719,7 @@ export function ListRemoteEndpoints(): $CancellablePromise<$models.RemoteEndpoin
  */
 export function ListSubagentDescendants(threadID: string, rootItemID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(1299118478, threadID, rootItemID).then(($result: any) => {
-        return $$createType68($result);
+        return $$createType69($result);
     });
 }
 
@@ -1663,13 +1728,13 @@ export function ListSubagentDescendants(threadID: string, rootItemID: string): $
  */
 export function ListTerminals(threadID: string): $CancellablePromise<terminal$0.SessionSummary[]> {
     return $Call.ByID(2445206506, threadID).then(($result: any) => {
-        return $$createType86($result);
+        return $$createType87($result);
     });
 }
 
 export function ListThreadCheckpoints(threadID: string): $CancellablePromise<$models.CheckpointView[]> {
     return $Call.ByID(1853132444, threadID).then(($result: any) => {
-        return $$createType88($result);
+        return $$createType89($result);
     });
 }
 
@@ -1680,7 +1745,7 @@ export function ListThreadCheckpoints(threadID: string): $CancellablePromise<$mo
  */
 export function ListThreadProposedPlans(threadID: string): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(2485050629, threadID).then(($result: any) => {
-        return $$createType68($result);
+        return $$createType69($result);
     });
 }
 
@@ -1694,7 +1759,7 @@ export function ListThreadProposedPlans(threadID: string): $CancellablePromise<s
  */
 export function ListThreadSliceAround(threadID: string, anchorItemID: string, targetItemCount: number): $CancellablePromise<store$0.PagedItems> {
     return $Call.ByID(4176102096, threadID, anchorItemID, targetItemCount).then(($result: any) => {
-        return $$createType69($result);
+        return $$createType70($result);
     });
 }
 
@@ -1707,7 +1772,7 @@ export function ListThreadSliceAround(threadID: string, anchorItemID: string, ta
  */
 export function ListThreads(): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(1090132042).then(($result: any) => {
-        return $$createType59($result);
+        return $$createType60($result);
     });
 }
 
@@ -1718,7 +1783,7 @@ export function ListThreads(): $CancellablePromise<store$0.Thread[]> {
  */
 export function ListWSLDistros(): $CancellablePromise<wsllauncher$0.Distro[]> {
     return $Call.ByID(2332614075).then(($result: any) => {
-        return $$createType90($result);
+        return $$createType91($result);
     });
 }
 
@@ -1751,7 +1816,7 @@ export function MarkThreadUnread(id: string): $CancellablePromise<void> {
  */
 export function MoveThreadTerminals(fromThreadID: string, toThreadID: string): $CancellablePromise<terminal$0.SessionSummary[]> {
     return $Call.ByID(3013708277, fromThreadID, toThreadID).then(($result: any) => {
-        return $$createType86($result);
+        return $$createType87($result);
     });
 }
 
@@ -1809,7 +1874,7 @@ export function OpenInEditor(path: string, line: number, col: number, workspaceP
  */
 export function OpenTerminal(threadID: string, opts: $models.TerminalOpenOptions): $CancellablePromise<$models.TerminalHandle> {
     return $Call.ByID(2247958725, threadID, opts).then(($result: any) => {
-        return $$createType91($result);
+        return $$createType92($result);
     });
 }
 
@@ -1893,7 +1958,7 @@ export function PrepareThreadWorktree(threadID: string, baseBranch: string, requ
  */
 export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(1313986574).then(($result: any) => {
-        return $$createType92($result);
+        return $$createType93($result);
     });
 }
 
@@ -1931,7 +1996,7 @@ export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo
  */
 export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(2614227175).then(($result: any) => {
-        return $$createType92($result);
+        return $$createType93($result);
     });
 }
 
@@ -1944,7 +2009,7 @@ export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo>
  */
 export function ProviderTerminalAttach(threadID: string): $CancellablePromise<$models.ProviderTerminalHandle> {
     return $Call.ByID(1393518281, threadID).then(($result: any) => {
-        return $$createType93($result);
+        return $$createType94($result);
     });
 }
 
@@ -2015,7 +2080,7 @@ export function ProviderTerminalSetControl(threadID: string, control: boolean): 
  */
 export function RecheckClaudeAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(2274850917).then(($result: any) => {
-        return $$createType92($result);
+        return $$createType93($result);
     });
 }
 
@@ -2029,7 +2094,7 @@ export function RecheckClaudeAccount(): $CancellablePromise<provider$0.AccountIn
  */
 export function RecheckCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(227978482).then(($result: any) => {
-        return $$createType92($result);
+        return $$createType93($result);
     });
 }
 
@@ -2078,7 +2143,7 @@ export function ReconnectSession(threadID: string): $CancellablePromise<void> {
  */
 export function RefreshMcpServerStatus(providerName: string): $CancellablePromise<mcpstatus$0.ServerStatus[]> {
     return $Call.ByID(2215279661, providerName).then(($result: any) => {
-        return $$createType70($result);
+        return $$createType71($result);
     });
 }
 
@@ -2216,7 +2281,7 @@ export function RespondToUserInput(threadID: string, response: provider$0.UserIn
  */
 export function RestartTerminal(terminalID: string): $CancellablePromise<$models.TerminalHandle> {
     return $Call.ByID(4152403588, terminalID).then(($result: any) => {
-        return $$createType91($result);
+        return $$createType92($result);
     });
 }
 
@@ -2269,7 +2334,7 @@ export function SavePayloadToFile(threadID: string, payloadID: string): $Cancell
  */
 export function SearchThreadItems(threadID: string, query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(1414650511, threadID, query, limit).then(($result: any) => {
-        return $$createType95($result);
+        return $$createType96($result);
     });
 }
 
@@ -2285,7 +2350,7 @@ export function SearchThreadItems(threadID: string, query: string, limit: number
  */
 export function SearchThreadMessages(query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(3644945077, query, limit).then(($result: any) => {
-        return $$createType95($result);
+        return $$createType96($result);
     });
 }
 
@@ -2295,7 +2360,7 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
  */
 export function SearchWorkspaceFiles(threadID: string, query: string, limit: number): $CancellablePromise<$models.WorkspaceFileSearchResult> {
     return $Call.ByID(3852272821, threadID, query, limit).then(($result: any) => {
-        return $$createType96($result);
+        return $$createType97($result);
     });
 }
 
@@ -2337,7 +2402,7 @@ export function SendPlanRevisionComments(threadID: string, planItemID: string, c
 
 export function SetChatBarFavorite(fav: store$0.ChatBarFavorite, starred: boolean): $CancellablePromise<store$0.ChatBarFavorite[]> {
     return $Call.ByID(2813580982, fav, starred).then(($result: any) => {
-        return $$createType65($result);
+        return $$createType66($result);
     });
 }
 
@@ -2553,13 +2618,13 @@ export function StopSession(threadID: string): $CancellablePromise<void> {
 
 export function SubmitPRReview(pr: git$0.PRReference, review: git$0.SubmitReviewRequest): $CancellablePromise<$models.SubmitPRReviewResult> {
     return $Call.ByID(2692607191, pr, review).then(($result: any) => {
-        return $$createType97($result);
+        return $$createType98($result);
     });
 }
 
 export function SubscribePRUpdates(threadID: string, pr: git$0.PRReference): $CancellablePromise<$models.PRUpdateSubscriptionResult> {
     return $Call.ByID(3272491649, threadID, pr).then(($result: any) => {
-        return $$createType98($result);
+        return $$createType99($result);
     });
 }
 
@@ -2590,7 +2655,7 @@ export function TouchRemoteEndpoint(id: string): $CancellablePromise<void> {
  */
 export function TriggerMcpAuth(threadID: string, name: string): $CancellablePromise<$models.MCPAuthInitResult> {
     return $Call.ByID(1291217507, threadID, name).then(($result: any) => {
-        return $$createType99($result);
+        return $$createType100($result);
     });
 }
 
@@ -2867,7 +2932,7 @@ export function UpdateThreadWorkspace(id: string, path: string): $CancellablePro
  */
 export function UploadAttachment(threadID: string, filename: string, mimeType: string, dataB64: string): $CancellablePromise<store$0.Attachment> {
     return $Call.ByID(2485473713, threadID, filename, mimeType, dataB64).then(($result: any) => {
-        return $$createType60($result);
+        return $$createType61($result);
     });
 }
 
@@ -2957,47 +3022,48 @@ const $$createType52 = $models.WorktreeListItem.createFrom;
 const $$createType53 = $Create.Array($$createType52);
 const $$createType54 = $models.GitStatusSubscriptionResult.createFrom;
 const $$createType55 = $models.WorktreeStatus.createFrom;
-const $$createType56 = $models.InterruptAndRevertResult.createFrom;
-const $$createType57 = $models.DesignOptionSet.createFrom;
-const $$createType58 = $Create.Nullable($$createType57);
-const $$createType59 = $Create.Array($$createType1);
-const $$createType60 = store$0.Attachment.createFrom;
-const $$createType61 = $Create.Array($$createType60);
-const $$createType62 = $models.EditorInfo.createFrom;
-const $$createType63 = $Create.Array($$createType62);
-const $$createType64 = store$0.ChatBarFavorite.createFrom;
-const $$createType65 = $Create.Array($$createType64);
-const $$createType66 = $Create.Array($$createType5);
-const $$createType67 = $Create.Array($$createType17);
-const $$createType68 = $Create.Array($$createType43);
-const $$createType69 = store$0.PagedItems.createFrom;
-const $$createType70 = $Create.Array($$createType23);
-const $$createType71 = $Create.Array($$createType6);
-const $$createType72 = git$0.ReviewThread.createFrom;
-const $$createType73 = $Create.Array($$createType72);
-const $$createType74 = store$0.PayloadMeta.createFrom;
-const $$createType75 = $Create.Array($$createType74);
-const $$createType76 = provider$0.PendingInteractiveRequests.createFrom;
-const $$createType77 = store$0.ProjectWithCounts.createFrom;
-const $$createType78 = $Create.Array($$createType77);
-const $$createType79 = $Create.Array($$createType8);
-const $$createType80 = store$0.Turn.createFrom;
-const $$createType81 = $Create.Array($$createType80);
-const $$createType82 = $models.ReleaseSummary.createFrom;
-const $$createType83 = $Create.Array($$createType82);
-const $$createType84 = $Create.Array($$createType0);
-const $$createType85 = terminal$0.SessionSummary.createFrom;
-const $$createType86 = $Create.Array($$createType85);
-const $$createType87 = checkpoint$0.View.createFrom;
-const $$createType88 = $Create.Array($$createType87);
-const $$createType89 = wsllauncher$0.Distro.createFrom;
-const $$createType90 = $Create.Array($$createType89);
-const $$createType91 = $models.TerminalHandle.createFrom;
-const $$createType92 = provider$0.AccountInfo.createFrom;
-const $$createType93 = $models.ProviderTerminalHandle.createFrom;
-const $$createType94 = store$0.ThreadMessageHit.createFrom;
-const $$createType95 = $Create.Array($$createType94);
-const $$createType96 = $models.WorkspaceFileSearchResult.createFrom;
-const $$createType97 = $models.SubmitPRReviewResult.createFrom;
-const $$createType98 = $models.PRUpdateSubscriptionResult.createFrom;
-const $$createType99 = $models.MCPAuthInitResult.createFrom;
+const $$createType56 = $models.HighlightResult.createFrom;
+const $$createType57 = $models.InterruptAndRevertResult.createFrom;
+const $$createType58 = $models.DesignOptionSet.createFrom;
+const $$createType59 = $Create.Nullable($$createType58);
+const $$createType60 = $Create.Array($$createType1);
+const $$createType61 = store$0.Attachment.createFrom;
+const $$createType62 = $Create.Array($$createType61);
+const $$createType63 = $models.EditorInfo.createFrom;
+const $$createType64 = $Create.Array($$createType63);
+const $$createType65 = store$0.ChatBarFavorite.createFrom;
+const $$createType66 = $Create.Array($$createType65);
+const $$createType67 = $Create.Array($$createType5);
+const $$createType68 = $Create.Array($$createType17);
+const $$createType69 = $Create.Array($$createType43);
+const $$createType70 = store$0.PagedItems.createFrom;
+const $$createType71 = $Create.Array($$createType23);
+const $$createType72 = $Create.Array($$createType6);
+const $$createType73 = git$0.ReviewThread.createFrom;
+const $$createType74 = $Create.Array($$createType73);
+const $$createType75 = store$0.PayloadMeta.createFrom;
+const $$createType76 = $Create.Array($$createType75);
+const $$createType77 = provider$0.PendingInteractiveRequests.createFrom;
+const $$createType78 = store$0.ProjectWithCounts.createFrom;
+const $$createType79 = $Create.Array($$createType78);
+const $$createType80 = $Create.Array($$createType8);
+const $$createType81 = store$0.Turn.createFrom;
+const $$createType82 = $Create.Array($$createType81);
+const $$createType83 = $models.ReleaseSummary.createFrom;
+const $$createType84 = $Create.Array($$createType83);
+const $$createType85 = $Create.Array($$createType0);
+const $$createType86 = terminal$0.SessionSummary.createFrom;
+const $$createType87 = $Create.Array($$createType86);
+const $$createType88 = checkpoint$0.View.createFrom;
+const $$createType89 = $Create.Array($$createType88);
+const $$createType90 = wsllauncher$0.Distro.createFrom;
+const $$createType91 = $Create.Array($$createType90);
+const $$createType92 = $models.TerminalHandle.createFrom;
+const $$createType93 = provider$0.AccountInfo.createFrom;
+const $$createType94 = $models.ProviderTerminalHandle.createFrom;
+const $$createType95 = store$0.ThreadMessageHit.createFrom;
+const $$createType96 = $Create.Array($$createType95);
+const $$createType97 = $models.WorkspaceFileSearchResult.createFrom;
+const $$createType98 = $models.SubmitPRReviewResult.createFrom;
+const $$createType99 = $models.PRUpdateSubscriptionResult.createFrom;
+const $$createType100 = $models.MCPAuthInitResult.createFrom;

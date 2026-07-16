@@ -673,6 +673,7 @@ func (p *privilegedApp) ListThreadCheckpoints() string                { return "
 func (p *privilegedApp) GetWorkingTreeDiff() string                   { return "ok" }
 func (p *privilegedApp) GetWorkspaceCurrentDiff() string              { return "ok" }
 func (p *privilegedApp) GetDiffContextLines() string                  { return "ok" }
+func (p *privilegedApp) HighlightPatchWithContext() string            { return "ok" }
 func (p *privilegedApp) ListDiffReviewComments() string               { return "ok" }
 func (p *privilegedApp) CreateDiffReviewComment() string              { return "ok" }
 func (p *privilegedApp) UpdateDiffReviewComment() string              { return "ok" }

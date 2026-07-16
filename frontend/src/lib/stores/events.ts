@@ -14,6 +14,7 @@
 //   - eventsCheckpoint.ts    — checkpoint capture/revert + message revert
 //   - eventsTransportGap.ts  — missed-seq resync
 //   - eventsDiscussion.ts    — discussion:message / discussion:state push
+//   - eventsHighlight.ts     — highlight:seed span ingest (remote clients)
 //
 // This file itself stays a thin fan-in: channel names, generics, and the
 // teardown order live here; the reaction logic lives in the domain modules.
@@ -113,6 +114,12 @@ import {
   type DiscussionStateEvent,
 } from './eventsDiscussion';
 import { applyPRReviewUpdated } from './eventsPRReview';
+import {
+  applyHighlightSeed,
+  applyHighlightDiffSeed,
+  type HighlightSeedEvent,
+  type HighlightDiffSeedEvent,
+} from './eventsHighlight';
 import { clearAllDiscussionLiveTail } from './discussionLiveTail';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 
@@ -357,6 +364,18 @@ export function setupEventListeners(): () => void {
   );
   const cancelPRUpdated = wailsEventOn('pr:updated', applyPRReviewUpdated);
 
+  // highlight:seed — backend-pushed syntax spans for streaming code
+  // fences. Remote-only by transport filtering; loopback clients never
+  // see this channel (they highlight via the local RPC round trip).
+  const cancelHighlightSeed = wailsEventOn<HighlightSeedEvent>(
+    'highlight:seed',
+    applyHighlightSeed,
+  );
+  const cancelHighlightDiffSeed = wailsEventOn<HighlightDiffSeedEvent>(
+    'highlight:diff_seed',
+    applyHighlightDiffSeed,
+  );
+
   return () => {
     cancelItemEvent();
     flushItemEventQueue();
@@ -392,6 +411,8 @@ export function setupEventListeners(): () => void {
     cancelDiscussionMessage();
     cancelDiscussionState();
     cancelPRUpdated();
+    cancelHighlightSeed();
+    cancelHighlightDiffSeed();
     clearAllDesignThrottles();
     clearAllDiscussionLiveTail();
   };

@@ -309,7 +309,25 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	// Thread-scoped design state must be torn down alongside the session
 	// so a restart doesn't leak the prior turn's MCP registration.
 	a.teardownDesignThread(threadID)
-	return a.closeProviderSession(threadID, existing)
+	err := a.closeProviderSession(threadID, existing)
+	// The replacement session streams fresh items; the old stream's
+	// scanner states are dead weight (their final ticks will never
+	// arrive) and a reused item ID would inherit a stale watermark.
+	// unregisterSession can't purge for this path — the token was
+	// already taken above, so its callback no-ops. Unlike
+	// teardownAndCloseSession there is no CleanupThread here (the
+	// replacement path deliberately keeps triage live), so the stream
+	// persist buffers must be drained explicitly first: Close drained
+	// the read loop, but a buffer armed by its final deltas would
+	// otherwise fire its 250ms flush AFTER the purge and re-register
+	// the state it just removed.
+	if a.triage != nil {
+		if flushErr := a.triage.FlushThread(threadID); flushErr != nil {
+			log.Printf("app: flush stream buffers before seeder purge for %s: %v", threadID, flushErr)
+		}
+	}
+	a.highlightSeeder.purgeThread(threadID)
+	return err
 }
 
 // spawnProviderSession builds the provider-specific Config via
@@ -668,5 +686,10 @@ func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	if a.triage != nil {
 		a.triage.CleanupThread(threadID)
 	}
-	return a.closeProviderSession(threadID, sess)
+	err := a.closeProviderSession(threadID, sess)
+	// After the provider process is closed no flush tick can re-register
+	// seeder state; a thread killed mid-stream would otherwise strand
+	// its entries (no final tick ever arrives to clear them).
+	a.highlightSeeder.purgeThread(threadID)
+	return err
 }

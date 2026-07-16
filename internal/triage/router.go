@@ -301,6 +301,68 @@ type Router struct {
 	// CleanupThread so the final reading always reaches the frontend.
 	// Keyed by threadID.
 	usageEmitThrottles map[string]*usageEmitThrottle
+	// assistantTextStream is an app-layer observer of a streaming
+	// assistant_text row's full accumulated text: called with
+	// final=false at each persistence flush window (the same cadence
+	// as the live pathRefs enrichment, possibly on the provider read
+	// loop — implementations must not block) and once with final=true
+	// from the settle path with the row's final model text. Wired via
+	// SetAssistantTextStreamObserver at router construction; nil
+	// disables it. Backs the highlight seed push.
+	assistantTextStream func(threadID, itemID, text string, final bool)
+	// diffPayloadPersisted is an app-layer observer of a just-persisted
+	// diff-bearing payload with COMPLETE content: tool results
+	// (persistToolResult and the summary_only→exact upgrade) carry
+	// their per-file preview patches plus the full unified patch;
+	// diff-kind payload full writes carry the patch alone. payloadID is
+	// the persisted payloads row, so the observer can write derived
+	// span blobs back against it. May run on the provider read loop —
+	// implementations must not block. Wired via SetDiffPayloadObserver
+	// at router construction; nil disables it. Backs highlight span
+	// persistence and the remote diff seed push.
+	diffPayloadPersisted func(threadID, payloadID string, previews []string, patch string)
+	// codeSpanEnricher builds the persisted `codeSpans` meta value for
+	// a settled assistant text (see code_spans.go). Wired via
+	// SetCodeSpanEnricher at router construction; nil disables it.
+	codeSpanEnricher func(text string) json.RawMessage
+}
+
+// SetAssistantTextStreamObserver wires the streaming-text observer
+// (see the assistantTextStream field). Call before the router handles
+// events — it is read without synchronization on the streaming paths.
+func (r *Router) SetAssistantTextStreamObserver(fn func(threadID, itemID, text string, final bool)) {
+	r.assistantTextStream = fn
+}
+
+// SetDiffPayloadObserver wires the diff payload observer (see the
+// diffPayloadPersisted field). Call before the router handles events —
+// it is read without synchronization on the persist paths.
+func (r *Router) SetDiffPayloadObserver(fn func(threadID, payloadID string, previews []string, patch string)) {
+	r.diffPayloadPersisted = fn
+}
+
+// notifyDiffPayloadPersisted forwards a just-persisted diff-bearing
+// payload to the observer: the per-file preview patches from meta (the
+// exact strings the frontend's diff cards parse and render) plus the
+// full unified patch that landed in the payload's data blob. Callers
+// must pass complete content — never a streaming delta, whose spans
+// would key to text no reader ever holds.
+func (r *Router) notifyDiffPayloadPersisted(threadID, payloadID string, meta ToolResultMeta, patch string) {
+	if r.diffPayloadPersisted == nil || payloadID == "" {
+		return
+	}
+	var previews []string
+	if meta.InlineDiff != nil {
+		for _, file := range meta.InlineDiff.Files {
+			if file.PreviewPatch != "" {
+				previews = append(previews, file.PreviewPatch)
+			}
+		}
+	}
+	if len(previews) == 0 && patch == "" {
+		return
+	}
+	r.diffPayloadPersisted(threadID, payloadID, previews, patch)
 }
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a

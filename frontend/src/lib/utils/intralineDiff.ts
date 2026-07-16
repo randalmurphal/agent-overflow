@@ -6,65 +6,66 @@
 // changed middle out to word boundaries, and — when the change is a
 // small enough slice of the line to be signal rather than noise —
 // emit a highlight range per side. Offsets are relative to the
-// prefix-STRIPPED source text, matching what the tokenizer sees.
+// prefix-STRIPPED source text, matching what the highlighter spans
+// cover.
 
-import type { LineToken } from './tokenCache';
+import type { SpanSegment } from './syntaxSpans';
 
 export interface IntralineRange {
   start: number;
   end: number;
 }
 
-/** One render segment of a diff line: token styling plus whether it
+/** One render segment of a diff line: syntax class plus whether it
  * falls inside the intraline changed range. */
 export interface IntralineSegment {
   text: string;
-  color?: string;
-  fontStyle?: number;
+  /** `syntax-<name>` or '' for plain text. */
+  className: string;
   emph: boolean;
 }
 
 /**
- * Split a line's Shiki tokens (or its plain text when untokenized)
- * at the changed-range boundaries so the renderer can wrap the
- * changed slice in a stronger background without disturbing token
- * colors. `text` is the prefix-stripped source the offsets refer to.
+ * Split a line's syntax span segments (or its plain text when spans
+ * haven't landed) at the changed-range boundaries so the renderer can
+ * wrap the changed slice in a stronger background without disturbing
+ * syntax classes. `text` is the prefix-stripped source the offsets
+ * refer to.
  */
 export function segmentLine(
-  tokens: readonly LineToken[] | null,
+  segments: readonly SpanSegment[] | null,
   text: string,
   range: IntralineRange,
 ): IntralineSegment[] {
-  const source: readonly LineToken[] =
-    tokens && tokens.length > 0 ? tokens : [{ content: text }];
+  const source: readonly SpanSegment[] =
+    segments && segments.length > 0 ? segments : [{ text, className: '' }];
   const out: IntralineSegment[] = [];
   let offset = 0;
-  for (const token of source) {
-    const tokenStart = offset;
-    const tokenEnd = offset + token.content.length;
-    const emphStart = Math.min(Math.max(range.start, tokenStart), tokenEnd);
-    const emphEnd = Math.max(Math.min(range.end, tokenEnd), tokenStart);
-    pushSegment(out, token, tokenStart, tokenStart, emphStart, false);
-    pushSegment(out, token, tokenStart, emphStart, emphEnd, true);
-    pushSegment(out, token, tokenStart, emphEnd, tokenEnd, false);
-    offset = tokenEnd;
+  for (const segment of source) {
+    const segStart = offset;
+    const segEnd = offset + segment.text.length;
+    const emphStart = Math.min(Math.max(range.start, segStart), segEnd);
+    const emphEnd = Math.max(Math.min(range.end, segEnd), segStart);
+    pushSegment(out, segment, segStart, segStart, emphStart, false);
+    pushSegment(out, segment, segStart, emphStart, emphEnd, true);
+    pushSegment(out, segment, segStart, emphEnd, segEnd, false);
+    offset = segEnd;
   }
   return out;
 }
 
 function pushSegment(
   out: IntralineSegment[],
-  token: LineToken,
-  tokenStart: number,
+  segment: SpanSegment,
+  segStart: number,
   from: number,
   to: number,
   emph: boolean,
 ): void {
   if (to <= from) return;
   out.push({
-    text: token.content.slice(from - tokenStart, to - tokenStart),
-    color: token.color,
-    fontStyle: token.fontStyle,
+    text: segment.text.slice(from - segStart, to - segStart),
+    className: segment.className,
     emph,
   });
 }

@@ -83,11 +83,18 @@ state registry); the row model in `utils/reviewRows.ts`.
   `app_diff_context.go`) → `utils/diffContextExpansion.ts` merges the
   fetched lines into the parsed file as context rows and rewrites hunk
   headers. Expansion state is per pane and CLEARED on every reload (a
-  fresh patch can renumber everything); version stamps come from
-  `nextExpansionVersion()` because the identity caches are keyed by the
-  SHARED parsed arrays from `parsePatchFilesCached`. Always derive rows
+  fresh patch can renumber everything); the rebuild memo is keyed by
+  the expansion STATE (two panes expanding identical patch text share
+  the parsed base array but never a memo slot), with globally unique
+  `nextExpansionVersion()` stamps for change detection. Always derive rows
   via `filePatchDisplayRows(file)` (carries `newSideTotal`, one memo
   entry per file) and skip `row.gap` in anchor/excerpt walks.
+  Fetched context lines keep a stable `PatchLine` identity across
+  rebuilds and each rebuilt array records its predecessor
+  (`expansionPredecessor`), so `getSpansForLine` keeps serving the
+  superseded array's syntax spans for shared lines while the expanded
+  file's own highlight request is in flight — expanding must never
+  flash already-colored lines plain.
 - **Estimate coherence**: `ReviewDiffBody` hands the engine a stable
   wrapper that reads the current `$derived` build; `viewMode`/`wordWrap`
   changes remount the virtualizer via `{#key}` (exactness is
@@ -147,6 +154,8 @@ state registry); the row model in `utils/reviewRows.ts`.
   the unsubscribe-exactly-once rule above is unaffected.
 
 Diff rendering reuses the chat pipeline: `utils/patchFiles.ts` parsing,
-`DiffLineContent.svelte`, `dispatchInlineFileTokens` (Shiki worker pool),
+`DiffLineContent.svelte`, `utils/diffSpanCache.svelte.ts` (backend
+tree-sitter span requests; the review pane passes `spanContext` so
+hunks are parse-primed with real file content per scope),
 `lineTintClass`. Inline chat diff affordances route here through
 `components/chat/reviewTrigger.ts`.

@@ -1,0 +1,69 @@
+package highlight
+
+import (
+	"strings"
+	"testing"
+
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+
+	"agent-overflow/internal/highlight/grammars"
+)
+
+// The lockstep pin: every vendored query must compile against its
+// pinned grammar, and every capture it defines must resolve in the
+// class taxonomy. A grammar bump that breaks a query, or a query that
+// introduces an unmapped capture, fails here instead of silently
+// rendering plain.
+func TestVendoredQueriesCompileAndMapCaptures(t *testing.T) {
+	if err := Preflight(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range grammars.Names() {
+		g, ok := grammars.Get(name)
+		if !ok {
+			t.Fatalf("grammar %q vanished", name)
+		}
+		for label, source := range map[string]string{"highlights": g.Highlights, "injections": g.Injections} {
+			if source == "" {
+				continue
+			}
+			q, err := tree_sitter.NewQuery(g.Language, source)
+			if err != nil {
+				t.Errorf("grammar %s: %s query does not compile: %v", name, label, err)
+				continue
+			}
+			if label == "highlights" {
+				for _, capture := range q.CaptureNames() {
+					if strings.HasPrefix(capture, "_") {
+						continue
+					}
+					if _, mapped := captureFamily(capture); !mapped {
+						t.Errorf("grammar %s: capture @%s has no class mapping", name, capture)
+					}
+				}
+			}
+			q.Close()
+		}
+	}
+}
+
+// Every wired-up grammar must have a Lang registry entry, and every
+// non-plaintext Lang the frontend can request degrades gracefully when
+// its grammar isn't wired up yet.
+func TestGrammarRegistryAlignment(t *testing.T) {
+	for _, name := range grammars.Names() {
+		if LangFromName(name) == LangPlaintext {
+			t.Errorf("grammar %q has no Lang registry entry", name)
+		}
+	}
+	for lang, name := range langNames {
+		if lang == LangPlaintext {
+			continue
+		}
+		// Must not panic or error regardless of grammar availability.
+		res := Highlight(lang, []byte("sample text\n"))
+		if len(res.Lines) != 2 {
+			t.Errorf("Highlight(%s) returned %d lines, want 2", name, len(res.Lines))
+		}
+	}
+}

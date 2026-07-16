@@ -191,12 +191,17 @@ var LocalOnlyMethods = map[string]bool{
 	// GetDiffContextLines reads arbitrary workspace/ref file content by
 	// line range (review hunk-gap expansion) — same bulk-content class.
 	"GetDiffContextLines": true,
-	"ListDiffReviewComments":         true,
-	"CreateDiffReviewComment":        true,
-	"UpdateDiffReviewComment":        true,
-	"DeleteDiffReviewComment":        true,
-	"MarkDiffReviewCommentsSent":     true,
-	"SendDiffReviewComments":         true,
+	// HighlightPatchWithContext resolves workspace/ref file content by
+	// path to prime span parsing — same class. The wire-safe
+	// HighlightCode / HighlightPatch / HighlightClassNames RPCs are
+	// pure text-in/metadata-out and deliberately NOT in this set.
+	"HighlightPatchWithContext":  true,
+	"ListDiffReviewComments":     true,
+	"CreateDiffReviewComment":    true,
+	"UpdateDiffReviewComment":    true,
+	"DeleteDiffReviewComment":    true,
+	"MarkDiffReviewCommentsSent": true,
+	"SendDiffReviewComments":     true,
 	// Codex model discovery spawns the configured `codex app-server`
 	// subprocess. It looks like a catalog read, but the local process
 	// execution makes it loopback-only.

@@ -101,6 +101,11 @@ export function installAppDefaults(): void {
   setBindingMock('GetUIState', async () => ({}));
   setBindingMock('SetUIState', async () => null);
   setBindingMock('DeleteUIState', async () => null);
+  // App boot warms the highlight schema-version + class-name tables
+  // (warmHighlightTables) so history rows' persisted-span ingest can
+  // seed synchronously.
+  setBindingMock('HighlightSchemaVersion', async () => 'hv-integration');
+  setBindingMock('HighlightClassNames', async () => ['none']);
 }
 
 /**

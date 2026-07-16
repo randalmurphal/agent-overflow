@@ -94,6 +94,27 @@ func (a *App) configureTriageQueueCallbacks() {
 	})
 }
 
+// newTriageRouter constructs the triage router with every App-owned
+// observer wired. ALL construction sites must route through this —
+// a router built bare would silently drop the streaming observers.
+func (a *App) newTriageRouter(st *store.Store) *triage.Router {
+	r := triage.NewRouter(st, a.emitWithReplay())
+	r.SetAssistantTextStreamObserver(a.observeAssistantTextStream)
+	r.SetDiffPayloadObserver(a.observeDiffPayloadPersisted)
+	r.SetCodeSpanEnricher(a.buildPersistedCodeSpans)
+	return r
+}
+
+// ensureTriageRouter lazily constructs the router for the defensive
+// pre-Startup entry paths (production wires it in initSubsystems).
+func (a *App) ensureTriageRouter() {
+	if a.triage != nil {
+		return
+	}
+	a.triage = a.newTriageRouter(a.store)
+	a.configureTriageQueueCallbacks()
+}
+
 func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushItem) {
 	if threadID == "" || len(items) == 0 {
 		return
@@ -578,10 +599,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	providerAttachments := resolved.providerAttachments
 	userMeta := resolved.userMessageMeta
 
-	if a.triage == nil {
-		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
-		a.configureTriageQueueCallbacks()
-	}
+	a.ensureTriageRouter()
 
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -913,12 +931,9 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 		return QueuedItem{}, fmt.Errorf("register queue item: %w", err)
 	}
 
-	if a.triage == nil {
-		// Defensive: production wires triage in initSubsystems.
-		// Mirrors the lazy-init pattern on Send and Steer.
-		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
-		a.configureTriageQueueCallbacks()
-	}
+	// Defensive: production wires triage in initSubsystems. Mirrors
+	// the lazy-init pattern on Send and Steer.
+	a.ensureTriageRouter()
 
 	// Hold flushHandoffMu across the queue append and the immediate flush
 	// handoff below: the revert predicate reads the same queued / in-flight

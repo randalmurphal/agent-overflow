@@ -355,7 +355,7 @@ func (a *App) initObservability(ctx context.Context, dbDir string) error {
 func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	telemetryMetrics := a.telemetry.Metrics()
 
-	a.triage = triage.NewRouter(st, a.emitWithReplay())
+	a.triage = a.newTriageRouter(st)
 	a.triage.SetTelemetry(a.telemetry.Tracer(), triage.TurnMetrics{
 		TurnsStarted:      telemetryMetrics.TurnsStarted,
 		TurnsCompleted:    telemetryMetrics.TurnsCompleted,

@@ -58,7 +58,7 @@ import { openReviewCompanion } from './reviewPane.svelte';
 import { errString } from '../utils/errors';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
-import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
+import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
 import {
   MAX_CACHED_SNAPSHOT_ITEMS,
   threadItemCache,
@@ -698,7 +698,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
   /**
    * Snapshot the outgoing thread into the LRU cache (when worth it),
-   * and the partitioned shiki token cache.
+   * and evict its highlight-span cache entries.
    * Same-thread re-switch (revert-to-checkpoint flows) skips the
    * snapshot AND force-evicts the cache entry so the incoming load
    * fetches fresh state instead of flashing the stale view through
@@ -748,11 +748,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       clearThreadSizePriors(incomingThreadId);
     }
     if (outgoingThreadId) {
-      // Free Shiki tokens cached against the outgoing thread. The shared
-      // cache is partitioned by threadId so this is a clean segmental
-      // drop; new lines tokenized for the incoming thread start from a
-      // fresh per-thread namespace.
-      clearTokensForThread(outgoingThreadId);
+      // Free highlight spans cached against the outgoing thread. The
+      // shared cache tracks per-key thread ownership, so entries a
+      // still-open thread also requested survive the drop.
+      evictDiffSpansForThread(outgoingThreadId);
     }
   }
 

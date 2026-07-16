@@ -20,6 +20,7 @@ var ErrItemSettled = errors.New("store: item is no longer streaming")
 const itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), COALESCE(payloads.kind, ''), COALESCE(payloads.meta, ''),
+    COALESCE(payloads.preview_spans, ''),
     COALESCE(items.input_payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
     items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`
@@ -44,6 +45,7 @@ func scanItemRow(scanner interface{ Scan(...any) error }) (Item, error) {
 		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex,
 		&it.Kind, &it.Role, &it.Status, &it.Summary,
 		&it.PayloadID, &it.PayloadKind, &it.PayloadMeta,
+		&it.PayloadPreviewSpans,
 		&it.InputPayloadID,
 		&it.ParentID, &isBackground, &it.CompletionOf,
 		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,

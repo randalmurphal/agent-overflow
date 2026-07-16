@@ -156,7 +156,7 @@ func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item,
 // task_id ↔ tool_use_id map has been dropped.
 //
 // The query is O(log N) thanks to the partial expression index
-// idx_items_meta_task_id (migration v17) which materialises
+// idx_items_meta_task_id which materialises
 // json_extract(meta, '$.task_id') for the narrow subset of rows that
 // actually carry a task_id. The kind filter stays in Go-space rather
 // than the index because every row this function cares about is a

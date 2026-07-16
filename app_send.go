@@ -250,10 +250,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 			return store.Item{}, fmt.Errorf("send message: stamp send uuid: %w", err)
 		}
 	}
-	if a.triage == nil {
-		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
-		a.configureTriageQueueCallbacks()
-	}
+	a.ensureTriageRouter()
 	if err := a.ensureClaudeContextReadyForUserSendLocked(thread); err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
@@ -354,10 +351,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 }
 
 func (a *App) recordSendFailureAndCompleteTurn(threadID string, turnIndex int, sendErr error) {
-	if a.triage == nil {
-		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
-		a.configureTriageQueueCallbacks()
-	}
+	a.ensureTriageRouter()
 	// Allocate an error id from the same per-turn counter the EventError
 	// handler uses so a subsequent provider error on the same turn doesn't
 	// collide on "error:<turn>:0".

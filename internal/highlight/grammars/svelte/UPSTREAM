@@ -1,0 +1,8 @@
+grammar: themixednuts/tree-sitter-htmlx @ c9b9cc35709fff494a3a9e41cd9471b633649e45
+         crates/tree-sitter-svelte/src (MIT, see LICENSE-grammar.md) — the
+         grammar helix pins for svelte. Vendored: parser.c, scanner.c,
+         tag.h, htmlx/, tree_sitter/ headers (grammar.json and
+         node-types.json omitted; regenerate from upstream if needed).
+queries: helix-editor/helix @ 14d6bc0febed9c692048271a8ae2362ac969c6e0
+         runtime/queries/svelte/{highlights,injections}.scm (MPL-2.0, see LICENSE)
+reconciliations: none

@@ -125,10 +125,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	}
 	turnIndex := activeTurn.TurnIndex
 
-	if a.triage == nil {
-		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
-		a.configureTriageQueueCallbacks()
-	}
+	a.ensureTriageRouter()
 
 	steerItemID, err := a.nextSteerUserItemID(threadID, turnIndex)
 	if err != nil {

@@ -215,6 +215,13 @@ export {
   GetSessionAgentDiff,
   GetWorkspaceCurrentDiff,
   GetDiffContextLines,
+
+  // Syntax-highlight span metadata (backend tree-sitter)
+  HighlightClassNames,
+  HighlightSchemaVersion,
+  HighlightCode,
+  HighlightPatch,
+  HighlightPatchWithContext,
   RevertToMessageCheckpoint,
   RevertToMessageCheckpointWithOptions,
   ListThreadCheckpoints,

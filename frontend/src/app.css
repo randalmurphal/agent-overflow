@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./styles/tokens.css";
+@import "./styles/syntax.css";
 
 :root {
   --surface-0: oklch(0.145 0.014 285.82);

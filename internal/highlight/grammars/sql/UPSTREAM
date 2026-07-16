@@ -1,0 +1,6 @@
+grammar: github.com/DerekStride/tree-sitter-sql @ 851e9cb257ba7c66cc8c14214a31c44d2f1e954e
+         (Go module pseudo-version v0.0.0-20260222203909-851e9cb257ba — the helix pin;
+         tagged releases lack generated sources, the pinned commit ships them) (MIT)
+queries: helix-editor/helix @ 14d6bc0febed9c692048271a8ae2362ac969c6e0
+         runtime/queries/sql/highlights.scm (MPL-2.0, see LICENSE)
+reconciliations: none

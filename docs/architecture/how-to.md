@@ -126,8 +126,8 @@ through `tool_name` on the item as-is.
 Use for any change to the SQLite schema: new column, new index, new
 constraint, new table.
 
-Live example: migration v16 (`idx_items_payload_id`), v17
-(`idx_items_meta_task_id`).
+Live example: migration v13 (`turns` inflight partial index), v22
+(`payloads` highlight-span columns).
 
 1. **Append to `migrations`.** In `internal/store/migrate.go`, add a
    new entry to the `migrations = []Migration{...}` slice. The

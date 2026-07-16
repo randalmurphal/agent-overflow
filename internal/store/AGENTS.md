@@ -20,7 +20,7 @@ root `CLAUDE.md` principle 3.
 - `threads.go` / `thread_view.go` / `thread_forks.go` — threads table
   plus the `ThreadView` translation layer that hydrates `SessionOptions`
   for the provider packages.
-- `projects.go` — projects table (v13 introduces `project_id` FK).
+- `projects.go` — projects table (threads carry a `project_id` FK).
 - `channels.go` / `discussions.go` / `discussion_types.go` —
   multi-agent discussion persistence.
 - `attachments.go` — attachment metadata (bytes on disk are the
@@ -94,38 +94,45 @@ root `CLAUDE.md` principle 3.
 If you're tempted to add a new table, first check whether the provider
 session already has the answer.
 
-## Recent schema changes (v13)
+## Schema notes (v1 baseline)
+
+The migration chain was squashed into the v1 `initial_schema` baseline
+(`schema_v1.go`); the chain in `migrate.go` counts up from there. Facts
+older docs attributed to individual migrations that now live in the
+baseline:
 
 - `projects` is a first-class table. Each thread carries a `project_id`
   FK; a project is the user-level grouping (root dir + name + color)
   above individual threads.
-- `interaction_mode` was renamed to `mode` with a new canonical default
-  of `"chat"` (was `"default"`). The CHECK constraint was rewritten in
-  the same migration; older values are normalised in place.
-- Composer-context columns landed on the threads table:
-  `reasoning_effort` (provider-specific; Codex currently accepts
-  none/minimal/low/medium/high/xhigh/max/ultra), `fast_mode` (bool),
-  `context_window`. The per-thread row is the source of truth;
-  `SessionOptions` in `thread_view.go` translates it for the provider.
-
-## Recent schema changes (v34) — context settings
-
-- `context_window` now accepts any positive provider/model-supported token
-  count instead of a fixed 200k/1m check.
-- `threads` and `chat_model_profiles` carry
+- Threads carry `mode` (canonical default `"chat"`) plus the
+  composer-context columns: `reasoning_effort` (provider-specific;
+  Codex currently accepts none/minimal/low/medium/high/xhigh/max/ultra),
+  `fast_mode` (bool), and `context_window` (any positive
+  provider/model-supported token count). The per-thread row is the
+  source of truth; `SessionOptions` in `thread_view.go` translates it
+  for the provider. `threads` and `chat_model_profiles` also carry
   `auto_compact_standard_percent` and `auto_compact_extended_percent`
   (0 = provider default/inherited setting, otherwise 1..90).
+- Raw content is canonical: there are no `highlighted_content` render
+  caches. `AppendItemSummary(threadID, id, delta, updatedAt)` is the
+  raw append helper, called from triage's stream persistence buffer
+  rather than for every provider token. Payload bindings return raw
+  data; rendering is a frontend projection based on item/payload kind.
 
-## Recent schema changes (v25) — raw chat content
+## Recent schema changes (v22) — persisted highlight spans
 
-- `items.highlighted_content` and `channel_messages.highlighted_content`
-  were removed. Store raw `summary`, channel `content`, and payload `data`
-  only.
-- `AppendItemSummary(threadID, id, delta, updatedAt)` remains the raw
-  append helper, but triage calls it from the stream persistence buffer
-  rather than for every provider token. No render cache is written.
-- Payload bindings return raw data only. Rendering is a frontend projection
-  based on item/payload kind.
+- `payloads` gains `preview_spans` and `spans` TEXT columns (default
+  `''` = not computed). Both hold version-stamped span blobs whose
+  shape is owned by the app layer (`app_highlight_diff_seed.go`);
+  empty or version-stale blobs are inert — the frontend falls back to
+  the highlight RPCs.
+- `preview_spans` (small, size-capped) is joined into item list reads
+  as `Item.PayloadPreviewSpans`; `spans` (full patch spans) is read
+  only by explicit payload loads via `GetPayloadSpans`.
+- `UpdatePayloadSpans` writes both columns. `ReplacePayloadData` and
+  item upserts (INSERT OR REPLACE) reset them to `''`;
+  `AppendPayloadData` deliberately retains them — blobs are
+  content-addressed per file, so still-valid segments stay valid.
 
 ## Extension points
 

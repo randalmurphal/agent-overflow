@@ -70,9 +70,13 @@ func newRing(capacity int) *ring {
 }
 
 // append stores e at the tail, evicting the oldest entry if full.
-// O(1) — the index advances; no element shift.
+// O(1) — the index advances; no element shift. A zero-capacity ring
+// (ephemeral channels) tracks sequence only and retains nothing.
 func (r *ring) append(e Event) {
 	cap := len(r.backing)
+	if cap == 0 {
+		return
+	}
 	if r.count < cap {
 		r.backing[(r.head+r.count)%cap] = e
 		r.count++
@@ -163,7 +167,13 @@ func (b *EventBus) Emit(channel string, payload any) (Event, error) {
 	b.mu.Lock()
 	r, ok := b.rings[channel]
 	if !ok {
-		r = newRing(b.capacity)
+		capacity := b.capacity
+		if ephemeralEventChannels[channel] {
+			// Seed-style cache warmers: sequence tracking only, no
+			// replay retention (see event_visibility.go).
+			capacity = 0
+		}
+		r = newRing(capacity)
 		b.rings[channel] = r
 	}
 	r.seq++

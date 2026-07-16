@@ -16,6 +16,9 @@ import * as flushqueue$0 from "./internal/flushqueue/models.js";
 import * as git$0 from "./internal/git/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as highlight$0 from "./internal/highlight/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as provider$0 from "./internal/provider/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -733,6 +736,157 @@ export class GitWorkspaceState {
 }
 
 /**
+ * HighlightCodeRequest carries raw text (markdown code blocks, any
+ * free-standing source) plus its language name (markdown fence info
+ * string or canonical name; unknown names render plain).
+ */
+export class HighlightCodeRequest {
+    "lang": string;
+    "source": string;
+
+    /** Creates a new HighlightCodeRequest instance. */
+    constructor($$source: Partial<HighlightCodeRequest> = {}) {
+        if (!("lang" in $$source)) {
+            this["lang"] = "";
+        }
+        if (!("source" in $$source)) {
+            this["source"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HighlightCodeRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): HighlightCodeRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new HighlightCodeRequest($$parsedSource as Partial<HighlightCodeRequest>);
+    }
+}
+
+/**
+ * HighlightPatchContextRequest is HighlightPatchRequest plus the
+ * review-pane scope fields (same shape as DiffContextRequest) that
+ * resolve the new-side file content used to prime parsing above each
+ * hunk.
+ */
+export class HighlightPatchContextRequest {
+    "scope": string;
+    "userItemId": string;
+    "headSHA": string;
+    "path": string;
+    "patch": string;
+
+    /** Creates a new HighlightPatchContextRequest instance. */
+    constructor($$source: Partial<HighlightPatchContextRequest> = {}) {
+        if (!("scope" in $$source)) {
+            this["scope"] = "";
+        }
+        if (!("userItemId" in $$source)) {
+            this["userItemId"] = "";
+        }
+        if (!("headSHA" in $$source)) {
+            this["headSHA"] = "";
+        }
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("patch" in $$source)) {
+            this["patch"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HighlightPatchContextRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): HighlightPatchContextRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new HighlightPatchContextRequest($$parsedSource as Partial<HighlightPatchContextRequest>);
+    }
+}
+
+/**
+ * HighlightPatchRequest carries one file's unified diff exactly as the
+ * frontend's patch parser splits it; Path drives language detection.
+ */
+export class HighlightPatchRequest {
+    "path": string;
+    "patch": string;
+
+    /** Creates a new HighlightPatchRequest instance. */
+    constructor($$source: Partial<HighlightPatchRequest> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("patch" in $$source)) {
+            this["patch"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HighlightPatchRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): HighlightPatchRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new HighlightPatchRequest($$parsedSource as Partial<HighlightPatchRequest>);
+    }
+}
+
+/**
+ * HighlightResult is the span payload. Lines align 1:1 with the input
+ * text's newline-split lines (for patches: the patch text's own line
+ * sequence, meta lines plain). Each line's runs are flat
+ * [byteLen, classId, ...] pairs over the line's UTF-8 bytes; empty
+ * runs mean a plain line. Truncated flags inputs past the size cap
+ * (the overflow renders plain). Incomplete flags transient degradation
+ * (parse timeout, patch budget) — the backend cache skips these so a
+ * retry can succeed, and frontend caches must apply the same
+ * transient-vs-permanent distinction instead of memoizing the partial
+ * result for the session.
+ */
+export class HighlightResult {
+    "lang": string;
+    "lines": highlight$0.EncodedLine[];
+    "truncated": boolean;
+    "incomplete": boolean;
+
+    /** Creates a new HighlightResult instance. */
+    constructor($$source: Partial<HighlightResult> = {}) {
+        if (!("lang" in $$source)) {
+            this["lang"] = "";
+        }
+        if (!("lines" in $$source)) {
+            this["lines"] = [];
+        }
+        if (!("truncated" in $$source)) {
+            this["truncated"] = false;
+        }
+        if (!("incomplete" in $$source)) {
+            this["incomplete"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HighlightResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): HighlightResult {
+        const $$createField1_0 = $$createType11;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("lines" in $$parsedSource) {
+            $$parsedSource["lines"] = $$createField1_0($$parsedSource["lines"]);
+        }
+        return new HighlightResult($$parsedSource as Partial<HighlightResult>);
+    }
+}
+
+/**
  * InterruptAndRevertResult is returned by InterruptAndRevertIfClean.
  * The frontend uses Reverted to decide whether to commit or roll back
  * its optimistic UI (timeline row removal + composer rehydrate).
@@ -840,7 +994,7 @@ export class LiveStateTodo {
      * Creates a new LiveStateTodo instance from a string or object.
      */
     static createFrom($$source: any = {}): LiveStateTodo {
-        const $$createField1_0 = $$createType11;
+        const $$createField1_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("steps" in $$parsedSource) {
             $$parsedSource["steps"] = $$createField1_0($$parsedSource["steps"]);
@@ -960,8 +1114,8 @@ export class MCPServer {
      */
     static createFrom($$source: any = {}): MCPServer {
         const $$createField5_0 = $$createType4;
-        const $$createField6_0 = $$createType12;
-        const $$createField8_0 = $$createType12;
+        const $$createField6_0 = $$createType14;
+        const $$createField8_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("args" in $$parsedSource) {
             $$parsedSource["args"] = $$createField5_0($$parsedSource["args"]);
@@ -1094,7 +1248,7 @@ export class PRMergeConflictsResult {
      */
     static createFrom($$source: any = {}): PRMergeConflictsResult {
         const $$createField4_0 = $$createType4;
-        const $$createField5_0 = $$createType13;
+        const $$createField5_0 = $$createType15;
         const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("paths" in $$parsedSource) {
@@ -1146,9 +1300,9 @@ export class PRUpdateSubscriptionResult {
      * Creates a new PRUpdateSubscriptionResult instance from a string or object.
      */
     static createFrom($$source: any = {}): PRUpdateSubscriptionResult {
-        const $$createField2_0 = $$createType14;
-        const $$createField3_0 = $$createType15;
-        const $$createField4_0 = $$createType17;
+        const $$createField2_0 = $$createType16;
+        const $$createField3_0 = $$createType17;
+        const $$createField4_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pr" in $$parsedSource) {
             $$parsedSource["pr"] = $$createField2_0($$parsedSource["pr"]);
@@ -1160,6 +1314,46 @@ export class PRUpdateSubscriptionResult {
             $$parsedSource["threads"] = $$createField4_0($$parsedSource["threads"]);
         }
         return new PRUpdateSubscriptionResult($$parsedSource as Partial<PRUpdateSubscriptionResult>);
+    }
+}
+
+/**
+ * PatchSpanSeed is one file's precomputed diff spans. ContentKey is the
+ * frontend `contentKey(patch text)` string; together with Path it is
+ * exactly the diffSpanCache base key, so the frontend can insert
+ * without recomputing or re-verifying anything (a stale/mismatched key
+ * simply never gets looked up).
+ */
+export class PatchSpanSeed {
+    "path": string;
+    "contentKey": string;
+    "lines": highlight$0.EncodedLine[];
+
+    /** Creates a new PatchSpanSeed instance. */
+    constructor($$source: Partial<PatchSpanSeed> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("contentKey" in $$source)) {
+            this["contentKey"] = "";
+        }
+        if (!("lines" in $$source)) {
+            this["lines"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PatchSpanSeed instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PatchSpanSeed {
+        const $$createField2_0 = $$createType11;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("lines" in $$parsedSource) {
+            $$parsedSource["lines"] = $$createField2_0($$parsedSource["lines"]);
+        }
+        return new PatchSpanSeed($$parsedSource as Partial<PatchSpanSeed>);
     }
 }
 
@@ -1207,6 +1401,11 @@ export class PayloadChunk {
 export class PayloadContent {
     "data": string;
 
+    /**
+     * PatchSpans: see PayloadPreview.PatchSpans.
+     */
+    "patchSpans"?: PatchSpanSeed[];
+
     /** Creates a new PayloadContent instance. */
     constructor($$source: Partial<PayloadContent> = {}) {
         if (!("data" in $$source)) {
@@ -1220,7 +1419,11 @@ export class PayloadContent {
      * Creates a new PayloadContent instance from a string or object.
      */
     static createFrom($$source: any = {}): PayloadContent {
+        const $$createField1_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("patchSpans" in $$parsedSource) {
+            $$parsedSource["patchSpans"] = $$createField1_0($$parsedSource["patchSpans"]);
+        }
         return new PayloadContent($$parsedSource as Partial<PayloadContent>);
     }
 }
@@ -1230,6 +1433,15 @@ export class PayloadPreview {
     "nextOffset": number;
     "totalSize": number;
     "isComplete": boolean;
+
+    /**
+     * PatchSpans carries the persisted highlight spans of a diff-kind
+     * payload (computed once at persist time, stored beside the row).
+     * Keys are content-addressed per file, so spans for a file the
+     * served text truncates simply never match and that file falls back
+     * to the RPC path. See app_highlight_diff_seed.go.
+     */
+    "patchSpans"?: PatchSpanSeed[];
 
     /** Creates a new PayloadPreview instance. */
     constructor($$source: Partial<PayloadPreview> = {}) {
@@ -1253,7 +1465,11 @@ export class PayloadPreview {
      * Creates a new PayloadPreview instance from a string or object.
      */
     static createFrom($$source: any = {}): PayloadPreview {
+        const $$createField4_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("patchSpans" in $$parsedSource) {
+            $$parsedSource["patchSpans"] = $$createField4_0($$parsedSource["patchSpans"]);
+        }
         return new PayloadPreview($$parsedSource as Partial<PayloadPreview>);
     }
 }
@@ -1288,7 +1504,7 @@ export class ProviderTerminalHandle {
      * Creates a new ProviderTerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): ProviderTerminalHandle {
-        const $$createField2_0 = $$createType18;
+        const $$createField2_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -1479,7 +1695,7 @@ export class SendDiffReviewCommentsInput {
      * Creates a new SendDiffReviewCommentsInput instance from a string or object.
      */
     static createFrom($$source: any = {}): SendDiffReviewCommentsInput {
-        const $$createField0_0 = $$createType20;
+        const $$createField0_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pr" in $$parsedSource) {
             $$parsedSource["pr"] = $$createField0_0($$parsedSource["pr"]);
@@ -1519,7 +1735,7 @@ export class SendMessageOptions {
         const $$createField2_0 = $$createType8;
         const $$createField3_0 = $$createType8;
         const $$createField4_0 = $$createType4;
-        const $$createField5_0 = $$createType22;
+        const $$createField5_0 = $$createType26;
         const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
@@ -1684,7 +1900,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType18;
+        const $$createField2_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -1851,11 +2067,11 @@ export class ThreadLiveState {
      * Creates a new ThreadLiveState instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadLiveState {
-        const $$createField3_0 = $$createType24;
-        const $$createField4_0 = $$createType26;
-        const $$createField5_0 = $$createType28;
-        const $$createField6_0 = $$createType29;
-        const $$createField7_0 = $$createType31;
+        const $$createField3_0 = $$createType28;
+        const $$createField4_0 = $$createType30;
+        const $$createField5_0 = $$createType32;
+        const $$createField6_0 = $$createType33;
+        const $$createField7_0 = $$createType35;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("activeTurn" in $$parsedSource) {
             $$parsedSource["activeTurn"] = $$createField3_0($$parsedSource["activeTurn"]);
@@ -1941,7 +2157,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType33;
+        const $$createField0_0 = $$createType37;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -2051,27 +2267,31 @@ const $$createType6 = $Create.Array($$createType5);
 const $$createType7 = store$0.ProposedPlanSourceRef.createFrom;
 const $$createType8 = $Create.Nullable($$createType7);
 const $$createType9 = git$0.GitStatus.createFrom;
-const $$createType10 = LiveStateTodoStep.createFrom;
+const $$createType10 = highlight$0.EncodedLine.createFrom;
 const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = $Create.Map($Create.Any, $Create.Any);
-const $$createType13 = $Create.Map($Create.Any, $$createType4);
-const $$createType14 = git$0.PRReference.createFrom;
-const $$createType15 = git$0.PRDetail.createFrom;
-const $$createType16 = git$0.ReviewThread.createFrom;
-const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = terminal$0.SessionSummary.createFrom;
-const $$createType19 = store$0.DiffReviewPRContext.createFrom;
-const $$createType20 = $Create.Nullable($$createType19);
-const $$createType21 = store$0.DiffReviewSourceRef.createFrom;
-const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = LiveStateActiveTurn.createFrom;
+const $$createType12 = LiveStateTodoStep.createFrom;
+const $$createType13 = $Create.Array($$createType12);
+const $$createType14 = $Create.Map($Create.Any, $Create.Any);
+const $$createType15 = $Create.Map($Create.Any, $$createType4);
+const $$createType16 = git$0.PRReference.createFrom;
+const $$createType17 = git$0.PRDetail.createFrom;
+const $$createType18 = git$0.ReviewThread.createFrom;
+const $$createType19 = $Create.Array($$createType18);
+const $$createType20 = PatchSpanSeed.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = terminal$0.SessionSummary.createFrom;
+const $$createType23 = store$0.DiffReviewPRContext.createFrom;
 const $$createType24 = $Create.Nullable($$createType23);
-const $$createType25 = flushqueue$0.QueuedItem.createFrom;
-const $$createType26 = $Create.Array($$createType25);
-const $$createType27 = QueueFlushedItem.createFrom;
-const $$createType28 = $Create.Array($$createType27);
-const $$createType29 = provider$0.PendingInteractiveRequests.createFrom;
-const $$createType30 = LiveStateTodo.createFrom;
-const $$createType31 = $Create.Nullable($$createType30);
-const $$createType32 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType33 = $Create.Array($$createType32);
+const $$createType25 = store$0.DiffReviewSourceRef.createFrom;
+const $$createType26 = $Create.Nullable($$createType25);
+const $$createType27 = LiveStateActiveTurn.createFrom;
+const $$createType28 = $Create.Nullable($$createType27);
+const $$createType29 = flushqueue$0.QueuedItem.createFrom;
+const $$createType30 = $Create.Array($$createType29);
+const $$createType31 = QueueFlushedItem.createFrom;
+const $$createType32 = $Create.Array($$createType31);
+const $$createType33 = provider$0.PendingInteractiveRequests.createFrom;
+const $$createType34 = LiveStateTodo.createFrom;
+const $$createType35 = $Create.Nullable($$createType34);
+const $$createType36 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType37 = $Create.Array($$createType36);

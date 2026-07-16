@@ -63,4 +63,38 @@ describe('parseJsonObject', () => {
     expect(b).toEqual({ y: 2 });
     expect(a).not.toBe(b);
   });
+
+  // Persisted highlight span blobs (items.meta codeSpans,
+  // Item.payloadPreviewSpans) run up to ~256 KB each; the cache is
+  // byte-bounded so scrolling through many such rows cannot retain
+  // hundreds of megabytes past their rows' unmount.
+  it('evicts oldest entries when the retained-source byte budget is exceeded', () => {
+    const bigSource = (label: string): string =>
+      JSON.stringify({ label, pad: 'x'.repeat(5 << 20) });
+    const a = bigSource('a');
+    const small = '{"keep":true}';
+    const b = bigSource('b');
+
+    const aFirst = parseJsonObject(a);
+    const smallFirst = parseJsonObject(small);
+    // Inserting b (5M chars) pushes a+small+b past the 8M budget:
+    // FIFO drops a; small+b then fit.
+    parseJsonObject(b);
+
+    expect(parseJsonObject(small)).toBe(smallFirst);
+    expect(parseJsonObject(a)).not.toBe(aFirst);
+  });
+
+  it('parses an over-budget source without flushing the cache to make room', () => {
+    const small = '{"keep":true}';
+    const smallFirst = parseJsonObject(small);
+
+    const giant = JSON.stringify({ pad: 'x'.repeat(9 << 20) });
+    expect(parseJsonObject(giant)).toEqual({ pad: 'x'.repeat(9 << 20) });
+
+    // The giant parsed fresh (uncached, losing reference stability only
+    // for itself) and the resident entry survived.
+    expect(parseJsonObject(small)).toBe(smallFirst);
+    expect(parseJsonObject(giant)).not.toBe(parseJsonObject(giant));
+  });
 });

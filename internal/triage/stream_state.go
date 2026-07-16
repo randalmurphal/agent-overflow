@@ -406,11 +406,27 @@ func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalCon
 		pathRefSource = finalContent
 		item.Summary = finalContent
 	}
+	// Final observer tick with the row's final MODEL text
+	// (pathRefSource — before the interrupted-summary decoration; the
+	// decorated text differs from what streamed, and for a stream cut
+	// mid-fence the suffix would land inside the fence, so seeds for
+	// either version can only prefix-match. The undecorated text at
+	// least matches every fence the model actually closed). The
+	// observer pushes final highlight seeds and drops its per-row
+	// state.
+	if r.assistantTextStream != nil {
+		r.assistantTextStream(threadID, itemID, pathRefSource, true)
+	}
 	if status == statusErrored {
 		item.Summary = interruptedSummary(item.Summary)
 	}
 	now := time.Now().UnixMilli()
 	r.enrichPathRefsFromTexts(threadID, &item, pathRefSource)
+	// Persist highlight spans keyed to the FINAL summary (after the
+	// interrupted decoration above — the spans must match exactly what
+	// the frontend renders; for a stream cut mid-fence the decorated
+	// open fence is the rendered content).
+	r.enrichCodeSpans(&item)
 	if finalContentPresent && item.PayloadID != "" {
 		metaJSON := buildPayloadMeta(itemKindAssistantText, provider.ProviderEvent{
 			ThreadID:  threadID,
@@ -516,6 +532,7 @@ func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int
 			item.Status = statusCompleted
 			item.UpdatedAt = time.Now().UnixMilli()
 			r.enrichPathRefsFromTexts(threadID, &item, content)
+			r.enrichCodeSpans(&item)
 			payload := assistantTextPayload(threadID, item.ID, content, item.UpdatedAt)
 			return r.persistItem(item, &payload)
 		}
@@ -541,6 +558,7 @@ func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope,
 		UpdatedAt: now,
 	}
 	r.enrichPathRefsFromTexts(threadID, &item, content)
+	r.enrichCodeSpans(&item)
 	payload := assistantTextPayload(threadID, item.ID, content, now)
 	return r.persistItem(item, &payload)
 }
@@ -717,8 +735,8 @@ func (r *Router) workspacePathFor(threadID string) string {
 
 // mergePathRefsIntoMeta returns the item.Meta JSON string with a
 // `pathRefs` key set to the supplied slice, preserving any other
-// existing top-level keys (e.g. `task_id` — its partial index in
-// migration v17 must keep working). An empty / whitespace-only input
+// existing top-level keys (e.g. `task_id` — its partial index
+// idx_items_meta_task_id must keep working). An empty / whitespace-only input
 // is treated as `{}`. Existing values that aren't JSON objects are
 // replaced — that's a corruption state the store shouldn't produce,
 // but the helper degrades cleanly rather than refusing to persist.

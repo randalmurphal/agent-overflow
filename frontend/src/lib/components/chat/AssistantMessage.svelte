@@ -7,9 +7,24 @@
   import { getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { formatTimeOfDay } from '../../utils/format';
   import { getSettings } from '../../stores/settings.svelte';
+  import { ingestPersistedCodeSpans } from '../../utils/persistedSpans';
   import { splitAtBoundary } from '../../markdown/boundary/split';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
+
+  // Warm the code span cache from the row's persisted fence spans
+  // (items.meta `codeSpans`, written at settle). The init call is the
+  // cold-mount path: it seeds synchronously (tables memoized) BEFORE
+  // ChatMarkdown's code hosts mount, so their first cache reads hit and
+  // no highlight RPC fires. The initial-value capture is the point —
+  // the $effect below covers meta arriving later (settle mid-session,
+  // virtualized item replacement). Streaming rows have no codeSpans key
+  // yet and no-op cheaply.
+  // svelte-ignore state_referenced_locally
+  ingestPersistedCodeSpans(item.meta);
+  $effect(() => {
+    ingestPersistedCodeSpans(item.meta);
+  });
 
   // Rendered streaming mode. Status alone is NOT the signal: the wire
   // settles `status` to a terminal value while the per-item smoother is

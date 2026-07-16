@@ -88,7 +88,11 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 		item.PayloadID = payloadID
 		item.Summary = summary
 		item.UpdatedAt = now
-		return r.persistItem(item, &payload)
+		if err := r.persistItem(item, &payload); err != nil {
+			return err
+		}
+		r.notifyDiffPayloadPersisted(evt.ThreadID, payloadID, meta, string(diffData))
+		return nil
 	}
 	status := statusCompleted
 	if evt.Kind == provider.EventToolComplete {
@@ -114,7 +118,11 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	return r.persistItem(newItem, &payload)
+	if err := r.persistItem(newItem, &payload); err != nil {
+		return err
+	}
+	r.notifyDiffPayloadPersisted(evt.ThreadID, payloadID, meta, string(diffData))
+	return nil
 }
 
 func captureCommandExecutionToolResult(raw json.RawMessage, workspaceRoot string) (ToolResultMeta, []byte, bool) {

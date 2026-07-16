@@ -43,6 +43,29 @@ re-check origin; adding a new App method that touches FS / process /
 settings / credentials must add the name to `LocalOnlyMethods` (and
 the `methods_gen_test.go` integrity test catches drift).
 
+## Event-channel visibility
+
+`event_visibility.go` filters pushed events per connection origin:
+
+- `loopbackOnlyEventChannels` — frames carrying local-terminal bytes or
+  identity/billing data that a LAN peer must not see.
+- `remoteOnlyEventChannels` — frames that exist purely to hide WAN
+  round-trip latency (`highlight:seed`, `highlight:diff_seed`) and are
+  waste on a local pipe. Their producers are ALSO gated on
+  `Server.HasRemoteClient()` (an atomic count of non-loopback WS
+  connections), so no work happens when only loopback clients are
+  attached; the wire filter is what keeps the frames off loopback
+  pipes while a remote viewer keeps the producer running. Caveat:
+  SSH-tunneled remotes arrive as loopback and are invisible to the
+  probe — they keep the RPC path.
+- `ephemeralEventChannels` — the same two seed channels are also
+  excluded from replay-ring retention (`eventbus.go` gives them a
+  zero-capacity ring: sequence tracking only). Seeds are point-in-time
+  cache warmers — replaying superseded frames after a reconnect is
+  useless, and each frame can carry large span/hash arrays that would
+  otherwise sit in the ring up to `DefaultRingCapacity` deep. Replay
+  for these channels returns nothing and no gap marker.
+
 ## Wire frames
 
 - **Client → Server**:

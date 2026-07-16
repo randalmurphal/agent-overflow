@@ -1,8 +1,9 @@
 # SQLite Schema
 
-Source of truth for the shape lives in `internal/store/migrations/`. This
-page is the human-readable summary — if it disagrees with the migrations,
-the migrations win.
+Source of truth for the shape lives in `internal/store/schema_v1.go` (the
+squashed v1 baseline) plus the forward-only chain in
+`internal/store/migrate.go`. This page is the human-readable summary — if
+it disagrees with the migrations, the migrations win.
 
 ## Tables
 
@@ -11,7 +12,7 @@ the migrations win.
 | `projects` | User-defined grouping of threads rooted at a directory. `path` (UNIQUE), `name`, `color`, `sort_position`, `archived`. Each thread belongs to exactly one project. |
 | `threads` | One row per conversation. Provider, session_ref, workspace/project paths, model, `mode` (chat/plan/design/discussion), `reasoning_effort`, `fast_mode`, `context_window`, per-tier auto-compact percentages (`auto_compact_standard_percent`, `auto_compact_extended_percent`), `runtime_mode`, archived flag, fork lineage (`parent_thread_id`, `pending_fork_session_ref`, `forked_from_thread_id`), discussion membership (`discussion_id`), `last_token_usage`. |
 | `items` | Timeline items per thread. `turn_index`, `item_index`, `kind`, `role`, `status`, `summary` (always-loaded preview), `payload_id`, `parent_id` (subagent / nested-tool correlation), `is_background`, `completion_of` (back-reference from tool_completion to its launch), `tool_name`, `decision`, `meta`. |
-| `payloads` | Heavy content. `kind`, `meta` (JSON, loaded with items), `data` (base BLOB, on-demand). |
+| `payloads` | Heavy content. `kind`, `meta` (JSON, loaded with items), `data` (base BLOB, on-demand), plus persisted highlight-span blobs (migration v22): `preview_spans` (small, size-capped; joined into item list reads) and `spans` (full patch spans; read only by explicit payload loads). Span blobs are version-stamped and content-addressed — empty or stale means the frontend recomputes via the highlight RPCs. |
 | `payload_chunks` | Append-only payload data for live streaming payloads. Rows are keyed by `(payload_id, chunk_index)` and carry `start_offset` so chunk reads can jump to the requested byte range. `ON DELETE CASCADE` keeps lifecycle owned by `payloads`. |
 | `channels` | Deliberation channels for multi-agent discussions. Belongs to a thread. |
 | `channel_messages` | Ordered messages within a channel. `sequence`, `from_type`/`from_id`/`from_role`, `content`. |
@@ -42,8 +43,11 @@ implementation markers and revision parent links.
 - `items` — loaded per visible thread. `summary` is raw always-loaded
   text, except for deliberately collapsed heavy rows such as thinking.
 - `payloads.meta` — loaded alongside items (JSON preview/stats).
+- `payloads.preview_spans` — loaded alongside items (small span blobs
+  for inline diff previews; capped at write time).
 - `payloads.data` + `payload_chunks.data` — composed on demand when the
-  user expands, copies, or saves a heavy payload.
+  user expands, copies, or saves a heavy payload. `payloads.spans` rides
+  along with those explicit payload reads.
 
 ## Key Indexes
 

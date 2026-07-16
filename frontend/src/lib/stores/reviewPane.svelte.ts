@@ -54,6 +54,7 @@ import type {
   Thread,
 } from '../types/models';
 import { diffSourceKey } from '../utils/diffSourceKey';
+import type { PatchScopeContext } from '../utils/diffSpanCache.svelte';
 import { conflictPatchFile } from '../utils/conflictFile';
 import { hunkExcerptForComment } from '../utils/prHunkExcerpt';
 import { prRefFromThread, prRefFromUrl, prScopeLabel, type PRRef } from '../utils/prReference';
@@ -100,6 +101,9 @@ export interface ReviewPaneState {
   readonly prDetail: PRDetail | null;
   readonly prThreads: readonly ReviewThread[];
   readonly prHeadSHA: string;
+  /** Scope fields for parse-priming span requests — the same triple
+   * the diff-context expansion sends (`app_diff_context.go` scopes). */
+  readonly spanContext: PatchScopeContext;
   readonly prStale: boolean;
   readonly refreshingPRData: boolean;
   readonly conflictView: boolean;
@@ -1160,6 +1164,13 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     get prDetail() { return prDetail; },
     get prThreads() { return prThreads; },
     get prHeadSHA() { return prHeadSHA; },
+    get spanContext(): PatchScopeContext {
+      return {
+        scope,
+        userItemId: scope === 'turn' ? (turnCheckpointUserItemId ?? '') : '',
+        headSHA: scope === 'pr' ? prHeadSHA : '',
+      };
+    },
     get prStale() { return prStale; },
     get refreshingPRData() { return refreshingPRData; },
     get conflictView() { return conflictView; },

@@ -26,48 +26,23 @@
 // structural type so we don't depend on the internal path.
 type ThemeOverride = Record<string, Record<string, string>>;
 
-// `svelte-streamdown` bundles 28 shiki grammars by default. `diff`
-// is not one of them — without this addition, fenced ` ```diff `
-// blocks emitted by agents fall through to plaintext and the
-// `+`/`-` prefixes render unhighlighted. Adding a single
-// `LanguageInfo` entry here registers the grammar with the
-// library's HighlighterManager, lazy-loaded on first use.
-//
-// Keep this list short — every entry pays a per-thread shiki
-// dynamic import the first time the language is seen. Add one
-// only when an agent regularly emits a fenced block in that
-// language and the fallback (plaintext) is genuinely worse.
-export const extraShikiLanguages = [
-  {
-    id: 'diff',
-    aliases: ['patch'],
-    import: () => import('@shikijs/langs/diff'),
-  },
-];
-
 export const chatMarkdownTheme: ThemeOverride = {
   code: {
     // Drop the border + rounded-xl card; use a single rounded-md
     // wrapper with no border. Background contrast (surface-1 vs the
-    // page's surface-0) is what now defines the block.
+    // page's surface-0) is what now defines the block. These three
+    // entries are consumed by `StreamdownCodeHost` (which renders the
+    // pre/code DOM itself from backend spans); the library's header /
+    // skeleton / line-wrapper classes have no consumer, so chat
+    // surfaces stay zero-chrome — the host's hover-revealed copy
+    // button is the only affordance.
     base: 'my-3 w-full overflow-hidden rounded-md border-0 flex flex-col bg-surface-1',
     // Same background as base — the inner container is mostly there
-    // for the relative positioning the library expects.
+    // for the relative positioning the host's copy overlay expects.
     container: 'relative overflow-visible bg-transparent p-0 font-mono text-[0.8125rem]',
-    // The whole header bar (language label + copy/download buttons)
-    // is hidden — chat surfaces favour zero-chrome code blocks. A
-    // hover-revealed copy button mounted by `StreamdownCodeHost` is
-    // the only chrome we keep. To bring the language label back as
-    // a small hover badge, swap this to a tiny absolute-positioned
-    // pill — see the discussion in chat 2026-05-02.
-    header: 'hidden',
-    buttons: 'hidden',
-    language: 'hidden',
-    skeleton: 'block max-w-full rounded-md font-mono text-transparent bg-surface-2/60 scale-y-90 w-fit animate-pulse whitespace-pre-wrap wrap-anywhere',
     // The pre/code body. Transparent bg so it inherits the wrapper's
     // surface-1; tightened horizontal padding.
     pre: 'whitespace-pre-wrap wrap-anywhere overflow-x-visible font-mono p-3 bg-transparent',
-    line: 'block',
   },
   // Inline code. `app.css` already styles `.markdown-body code` via
   // `--code-inline-bg`, so we just clear Streamdown's hardcoded gray

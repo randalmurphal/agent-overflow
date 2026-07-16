@@ -1,0 +1,5 @@
+grammar: the-mikedavis/tree-sitter-diff @ 2520c3f934b3179bb540d23e0ef45f75304b5fed (helix pin, MIT, see LICENSE-grammar)
+         vendored: src/{parser.c,tree_sitter/}
+queries: helix-editor/helix @ 14d6bc0febed9c692048271a8ae2362ac969c6e0
+         runtime/queries/diff/highlights.scm (MPL-2.0, see LICENSE)
+reconciliations: none

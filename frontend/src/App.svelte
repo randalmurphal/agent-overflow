@@ -48,6 +48,7 @@
   import { clearCommandRegistry, listCommands, type CommandContext } from './lib/stores/commandRegistry.svelte';
   import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
+  import { warmHighlightTables } from './lib/utils/syntaxSpans';
   import { dispatchTextEditing } from './lib/utils/textEditingKeymap';
   import { installExternalLinkDelegate } from './lib/utils/externalLinks';
   import { getVisibleSidebarThreadIds } from './lib/stores/sidebarThreadOrder';
@@ -278,6 +279,14 @@
     // hydration (offline backend) leaves the same-session cache in
     // charge, which is the correct degraded behavior.
     const appStorageReady = hydrateAppStorage();
+    // Highlight schema-version + class-name tables, warmed in parallel
+    // with the layout restore and awaited (bounded) before PaneHost
+    // mounts, so the first history rows' persisted-span ingest seeds
+    // synchronously (utils/persistedSpans.ts) instead of deferring past
+    // their children's cache reads and RPCing anyway. Never rejects;
+    // the race deadline keeps a hung backend from holding boot hostage
+    // (past it, the first rows fall back to the RPC path).
+    const highlightTablesWarm = warmHighlightTables();
     void (async () => {
       try {
         const threads = await loadThreads();
@@ -287,6 +296,10 @@
         await loadPersistedPaneLayout(threads);
         installPaneLayoutPersistence();
         installCompanionPanes();
+        await Promise.race([
+          highlightTablesWarm,
+          new Promise((resolve) => setTimeout(resolve, 1500)),
+        ]);
       } catch (err) {
         console.error('Failed to restore pane layout:', err);
         setPaneLayoutItems([]);

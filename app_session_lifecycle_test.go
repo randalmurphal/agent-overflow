@@ -192,8 +192,42 @@ func TestStartSessionProceedsWhenPriorSubprocessExitsNonZero(t *testing.T) {
 		claude:   existing,
 	}
 
+	// A stream killed by replacement never delivers the final tick that
+	// clears its highlight-seeder state; stopExistingSessionLocked must
+	// purge it (unregisterSession can't — the token is taken before the
+	// close, so its callback no-ops for this path).
+	app.remoteClientProbeFn = func() bool { return true }
+	app.observeAssistantTextStream(thread.ID, "stranded-item", "```python\npass", false)
+	waitForSeedStates(t, app, 1)
+
+	// A delta still sitting in the triage stream-persist buffer is the
+	// other re-registration path: its 250ms flush fires the observer
+	// AFTER the purge unless stopExistingSessionLocked drains the
+	// buffers first (the replacement path has no CleanupThread to do
+	// it). Two deltas: the first creates the streaming row, the second
+	// buffers and arms the timer.
+	app.ensureTriageRouter()
+	for _, content := range []string{"```python\npending", " = 1"} {
+		if err := app.triage.Handle(provider.ProviderEvent{
+			Kind: provider.EventTextDelta, ThreadID: thread.ID,
+			Content: content, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("Handle(text delta) error = %v", err)
+		}
+	}
+
 	if err := app.startSessionNow(thread.ID); err != nil {
 		t.Fatalf("startSessionNow() error = %v, want nil (prior subprocess exit is not a close failure)", err)
+	}
+
+	if got := app.seedStateCount(); got != 0 {
+		t.Fatalf("replacement start must purge stranded seeder states, got %d", got)
+	}
+	// Past the stream-persist flush window: a timer the drain missed
+	// would have re-registered the old stream's state by now.
+	time.Sleep(500 * time.Millisecond)
+	if got := app.seedStateCount(); got != 0 {
+		t.Fatalf("delayed stream flush re-registered purged seeder state: %d", got)
 	}
 
 	// The marker write happens inside the shell script before `cat`

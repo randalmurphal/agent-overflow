@@ -130,6 +130,11 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitSyncBranchForProject", ID: 3862053920},              // main.App.GitSyncBranchForProject
 	{Name: "GitWorktreeStatus", ID: 1333748060},                    // main.App.GitWorktreeStatus
 	{Name: "GitWorktreeStatusForProject", ID: 71861776},            // main.App.GitWorktreeStatusForProject
+	{Name: "HighlightClassNames", ID: 2772816619},                  // main.App.HighlightClassNames
+	{Name: "HighlightCode", ID: 4080150350},                        // main.App.HighlightCode
+	{Name: "HighlightPatch", ID: 834878499},                        // main.App.HighlightPatch
+	{Name: "HighlightPatchWithContext", ID: 3722752402},            // main.App.HighlightPatchWithContext
+	{Name: "HighlightSchemaVersion", ID: 2896867980},               // main.App.HighlightSchemaVersion
 	{Name: "IngestDiagnosticBatch", ID: 2606775930},                // main.App.IngestDiagnosticBatch
 	{Name: "InterruptAndRevertIfClean", ID: 753394581},             // main.App.InterruptAndRevertIfClean
 	{Name: "InterruptTurn", ID: 850013031},                         // main.App.InterruptTurn

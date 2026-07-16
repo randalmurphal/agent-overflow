@@ -105,7 +105,7 @@ func FromItem(item store.Item) (Meta, error) {
 // EncodeDraftSource returns the JSON encoding of a source-proposed-plan
 // ref suitable for ThreadDraft.PendingPlanImplementation. A nil ref or
 // a ref with an empty ItemID returns ("", nil) so the draft stores SQL
-// NULL — keeping the partial index introduced in store migration v31
+// NULL — keeping the partial index idx_thread_drafts_pending_plan_impl
 // selective.
 func EncodeDraftSource(ref *store.ProposedPlanSourceRef) (string, error) {
 	if ref == nil || ref.ItemID == "" {

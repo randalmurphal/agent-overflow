@@ -410,8 +410,13 @@ func (s *Store) ReplacePayloadData(id string, data []byte, meta string, createdA
 	}
 	defer tx.Rollback()
 
+	// Clearing the span columns in the same UPDATE keeps a replaced
+	// payload from carrying span blobs computed for the superseded
+	// content; the persist tap recomputes them for the new data. The
+	// blobs are content-addressed per file, so a stale blob would be
+	// inert anyway — clearing just keeps the row honest.
 	result, err := tx.Exec(
-		`UPDATE payloads SET data = ?, meta = ?, created_at = ? WHERE id = ?`,
+		`UPDATE payloads SET data = ?, meta = ?, created_at = ?, preview_spans = '', spans = '' WHERE id = ?`,
 		data, meta, createdAt, id,
 	)
 	if err != nil {
@@ -445,6 +450,38 @@ func (s *Store) UpdatePayloadMeta(id, meta string) error {
 		return fmt.Errorf("store: update payload meta %s: %w", id, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: update payload meta %s", id))
+}
+
+// UpdatePayloadSpans stores the version-stamped highlight span blobs for
+// an existing payload: previewSpans covers the inline-diff preview
+// patches (joined into item list reads), spans the full data blob (read
+// by the on-demand payload loads). Written by the app-layer persist tap
+// after payload persistence; both columns are always set together so a
+// recompute can never leave one half stale.
+//
+// Returns sql.ErrNoRows (wrapped) if no payload matches id — the
+// span worker racing a thread deletion hits this and treats it as a
+// benign drop.
+func (s *Store) UpdatePayloadSpans(id, previewSpans, spans string) error {
+	result, err := s.db.Exec(
+		`UPDATE payloads SET preview_spans = ?, spans = ? WHERE id = ?`,
+		previewSpans, spans, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update payload spans %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update payload spans %s", id))
+}
+
+// GetPayloadSpans returns a payload's full-data span blob (the spans
+// column). Empty string means "not computed" — the caller falls back to
+// the highlight RPC path.
+func (s *Store) GetPayloadSpans(id string) (string, error) {
+	var spans string
+	if err := s.db.QueryRow(`SELECT spans FROM payloads WHERE id = ?`, id).Scan(&spans); err != nil {
+		return "", fmt.Errorf("store: get payload spans %s: %w", id, err)
+	}
+	return spans, nil
 }
 
 func (s *Store) ListPayloadMetas(threadID string) ([]PayloadMeta, error) {

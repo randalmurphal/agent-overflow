@@ -164,8 +164,9 @@ read/write APIs and subscription-scoped polling.
   engine never writes `scrollTop`; compensation is reported, the scroll
   controller owns every write.
 - Frontend memory stays bounded by the visible window (Core Principle 4):
-  tokenization stays gated to mounted rows via the existing Shiki worker
-  pool; full patch text is parsed but only windowed rows render.
+  highlighting is file-level backend span metadata cached in
+  `utils/diffSpanCache.svelte.ts` (originally the Shiki worker pool);
+  full patch text is parsed but only windowed rows render.
 - SQLite remains a cache: no PR data persistence beyond comment drafts.
 - Per spike policy (`docs/references/spike-policy.md`), the
   `gh api graphql` reviewThreads shape and the review-submit REST call are
@@ -196,7 +197,7 @@ read/write APIs and subscription-scoped polling.
 | `DiffPanelDrawer.svelte`, `diff-panel/*`, `stores/diffPanel.svelte.ts` | review pane local scopes | DELETE (phase 3) |
 | `DiffSidebar.svelte`, `LazyDiffSidebar.svelte`, `DiffSidebarBody.svelte`, `DiffSidebarFile.svelte`, `utils/diffSidebarVirtualizer.svelte.ts` | review pane | DELETE (phase 3) |
 | `stores/diffReviewComments.svelte.ts`, `app_diff_review_comments.go`, `internal/diffreview/` | extended with targets + PR anchors | MIGRATE |
-| `utils/patchFiles.ts`, Shiki worker pool (`diffHighlighterPool`, worker, token caches), `diffLineTint`, `payloadExpansion` | reused by review pane | KEEP |
+| `utils/patchFiles.ts`, syntax spans (`utils/diffSpanCache.svelte.ts`, backend `internal/highlight`; replaced the Shiki worker pool), `diffLineTint`, `payloadExpansion` | reused by review pane | KEEP |
 | `internal/git/forge.go` + `github.go` / `gitlab.go` | extended with review APIs | MIGRATE |
 | `app_checkpoint.go` diff bindings | reused; + one vs-branch method | KEEP |
 

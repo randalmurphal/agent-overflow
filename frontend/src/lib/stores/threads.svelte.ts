@@ -2,7 +2,7 @@ import type { Thread } from '../types/models';
 import { clearPayloadCacheForThread } from '../utils/payloadDataCache';
 import { clearThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { clearThreadSizePriors } from '../utils/virtual/priors';
-import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
+import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
 import { ListThreads } from './bindings';
 import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './thread.svelte';
 import { threadItemCache } from './threadItemCache';
@@ -51,7 +51,7 @@ export function removeThread(id: string): void {
   threadItemCache.evict(id);
   clearThreadScrollSnapshot(id);
   clearThreadSizePriors(id);
-  clearTokensForThread(id);
+  evictDiffSpansForThread(id);
   clearPayloadCacheForThread(id);
   releaseThreadTerminalState(id);
 }

@@ -830,6 +830,20 @@ UPDATE turns SET provider_turn_id = turn_id WHERE turn_id NOT LIKE '%:%';`,
 		Name:    "trim_codex_v2_encrypted_collab_prompts",
 		Fix:     trimCodexV2EncryptedCollabPromptsFixup,
 	},
+	{
+		Version: 22,
+		Name:    "payload_highlight_spans",
+		// Version-stamped, content-addressed highlight span blobs
+		// persisted beside the payload they describe (JSON, shape owned
+		// by the app layer — PersistedPatchSpans). preview_spans covers
+		// the per-file inline-diff preview patches and rides item list
+		// reads via the itemColumns join; spans covers the full payload
+		// data and is read only by the on-demand payload loads. Empty
+		// string means "not computed" — readers fall back to the
+		// highlight RPC path.
+		SQL: `ALTER TABLE payloads ADD COLUMN preview_spans TEXT NOT NULL DEFAULT '';
+ALTER TABLE payloads ADD COLUMN spans TEXT NOT NULL DEFAULT '';`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

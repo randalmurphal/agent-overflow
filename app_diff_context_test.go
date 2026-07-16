@@ -7,6 +7,35 @@ import (
 	"testing"
 )
 
+func TestReadWorkspaceFile(t *testing.T) {
+	dir := t.TempDir()
+
+	regular := filepath.Join(dir, "regular.txt")
+	if err := os.WriteFile(regular, []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	got, err := readWorkspaceFile(regular, 64)
+	if err != nil {
+		t.Fatalf("readWorkspaceFile(regular) error = %v", err)
+	}
+	if got != "hello\nworld\n" {
+		t.Errorf("content = %q, want %q", got, "hello\nworld\n")
+	}
+
+	// maxBytes <= 0 is unbounded but still type-checked.
+	if _, err := readWorkspaceFile(regular, 0); err != nil {
+		t.Errorf("readWorkspaceFile(regular, 0) error = %v", err)
+	}
+
+	if _, err := readWorkspaceFile(regular, 5); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("oversized read error = %v, want exceeds", err)
+	}
+
+	if _, err := readWorkspaceFile(dir, 64); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("directory read error = %v, want not a regular file", err)
+	}
+}
+
 func TestGetDiffContextLinesWorkspaceScope(t *testing.T) {
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()

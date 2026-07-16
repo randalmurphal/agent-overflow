@@ -875,5 +875,6 @@ controller path.
 
 Nested row overflow is allowed for large subagent, wait-group, and command
 output bodies. Focus can jump to `<body>` when the windowing unmounts the
-focused row. Shiki remains a frontend dependency through `svelte-streamdown`
-for assistant markdown and a few payload expansions.
+focused row. Syntax highlighting is backend span metadata
+(`internal/highlight`); the frontend renders spans over text it already
+holds.

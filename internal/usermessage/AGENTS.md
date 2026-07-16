@@ -23,7 +23,7 @@ serialisation boundary.
 | `AttachmentMeta` | Per-attachment slice element. The frontend renders these alongside the user row; storage-internal columns (path, hashes, timestamps) deliberately do not appear. |
 | `Marshal(attachments, src, revSrc, revCommentIDs, revDiff, revDiffCommentIDs) (string, error)` | Builds the JSON blob from the per-entry-point inputs. Returns `("", nil)` when every input is zero-valued so callers can persist an empty Meta column. |
 | `FromItem(item store.Item) (Meta, error)` | Decodes the persisted blob back into a `Meta`. Empty / whitespace-only Meta decodes to the zero `Meta` with no error. |
-| `EncodeDraftSource(ref *store.ProposedPlanSourceRef) (string, error)` | JSON-encodes the draft's `PendingPlanImplementation` column. Returns `("", nil)` for a nil ref or an empty ItemID so the column stores SQL NULL and the partial index added in store migration v31 stays selective. |
+| `EncodeDraftSource(ref *store.ProposedPlanSourceRef) (string, error)` | JSON-encodes the draft's `PendingPlanImplementation` column. Returns `("", nil)` for a nil ref or an empty ItemID so the column stores SQL NULL and the partial index `idx_thread_drafts_pending_plan_impl` stays selective. |
 
 ## Design notes
 

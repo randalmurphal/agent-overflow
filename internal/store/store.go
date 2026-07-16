@@ -60,9 +60,8 @@ func (s *Store) PassiveCheckpoint() error {
 
 // Thread represents a conversation thread.
 //
-// The shape changed at migration v13: ProjectPath is no longer persisted on
-// threads (ProjectID is the FK to the projects table), InteractionMode is
-// renamed to Mode, and three new per-thread composer controls
+// ProjectPath is not persisted on threads — ProjectID is the FK to the
+// projects table — and three per-thread composer controls
 // (ReasoningEffort, FastMode, ContextWindow) are persisted so two threads
 // sharing a project can diverge on these axes.
 type Thread struct {
@@ -174,26 +173,33 @@ type Project struct {
 
 // Item represents a persisted timeline entry.
 type Item struct {
-	ID             string `json:"id"`
-	ThreadID       string `json:"threadId"`
-	TurnIndex      int    `json:"turnIndex"`
-	ItemIndex      int    `json:"itemIndex"`
-	Kind           string `json:"kind"`
-	Role           string `json:"role"`
-	Status         string `json:"status"`
-	Summary        string `json:"summary"`
-	PayloadID      string `json:"payloadId,omitempty"`
-	PayloadKind    string `json:"payloadKind,omitempty"`
-	PayloadMeta    string `json:"payloadMeta,omitempty"`
-	InputPayloadID string `json:"inputPayloadId,omitempty"`
-	ParentID       string `json:"parentId,omitempty"`
-	IsBackground   bool   `json:"isBackground,omitempty"`
-	CompletionOf   string `json:"completionOf,omitempty"`
-	ToolName       string `json:"toolName,omitempty"`
-	Decision       string `json:"decision,omitempty"`
-	Meta           string `json:"meta,omitempty"`
-	CreatedAt      int64  `json:"createdAt"`
-	UpdatedAt      int64  `json:"updatedAt"`
+	ID          string `json:"id"`
+	ThreadID    string `json:"threadId"`
+	TurnIndex   int    `json:"turnIndex"`
+	ItemIndex   int    `json:"itemIndex"`
+	Kind        string `json:"kind"`
+	Role        string `json:"role"`
+	Status      string `json:"status"`
+	Summary     string `json:"summary"`
+	PayloadID   string `json:"payloadId,omitempty"`
+	PayloadKind string `json:"payloadKind,omitempty"`
+	PayloadMeta string `json:"payloadMeta,omitempty"`
+	// PayloadPreviewSpans is the linked payload's preview_spans column:
+	// a version-stamped highlight span blob (JSON, shape owned by the
+	// app layer) covering the inline-diff preview patches in
+	// PayloadMeta. Rides item list reads so cold-mounted diff cards
+	// paint highlighted without an RPC; empty means "not computed" and
+	// the frontend falls back to the highlight RPC path.
+	PayloadPreviewSpans string `json:"payloadPreviewSpans,omitempty"`
+	InputPayloadID      string `json:"inputPayloadId,omitempty"`
+	ParentID            string `json:"parentId,omitempty"`
+	IsBackground        bool   `json:"isBackground,omitempty"`
+	CompletionOf        string `json:"completionOf,omitempty"`
+	ToolName            string `json:"toolName,omitempty"`
+	Decision            string `json:"decision,omitempty"`
+	Meta                string `json:"meta,omitempty"`
+	CreatedAt           int64  `json:"createdAt"`
+	UpdatedAt           int64  `json:"updatedAt"`
 }
 
 // Payload represents heavy content stored for on-demand loading.
