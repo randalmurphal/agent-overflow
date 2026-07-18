@@ -25,17 +25,24 @@ import (
 func writeCodexSteerBinary(t *testing.T, threadID, steerOutcome string) string {
 	t.Helper()
 
-	// steerBranch is embedded into the outer fmt.Sprintf template via a
-	// %s verb, so its own printf format spec needs ONE % (not %%) — the
-	// outer Sprintf is the only layer that strips a percent here.
-	var steerBranch string
+	// steerBranch / startBranch are embedded into the outer fmt.Sprintf
+	// template via %s verbs, so their own printf format specs need ONE
+	// % (not %%) — the outer Sprintf is the only layer that strips a
+	// percent here.
+	silent := `: # simulate an accepted write whose JSON-RPC ack never arrives`
+	steerBranch := `printf '{"jsonrpc":"2.0","id":%s,"result":{"turnId":"steer-turn"}}\n' "$id"`
+	startBranch := `printf '{"jsonrpc":"2.0","id":%s,"result":{"turnId":"start-turn"}}\n' "$id"`
 	switch steerOutcome {
 	case "ok":
-		steerBranch = `printf '{"jsonrpc":"2.0","id":%s,"result":{"turnId":"steer-turn"}}\n' "$id"`
 	case "no-active-turn":
 		steerBranch = `printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"NoActiveTurn"}}\n' "$id"`
 	case "timeout":
-		steerBranch = `: # simulate an accepted write whose JSON-RPC ack never arrives`
+		steerBranch = silent
+	case "start-timeout":
+		startBranch = silent
+	case "no-active-turn+start-timeout":
+		steerBranch = `printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"NoActiveTurn"}}\n' "$id"`
+		startBranch = silent
 	default:
 		t.Fatalf("writeCodexSteerBinary: unknown steerOutcome %q", steerOutcome)
 	}
@@ -58,9 +65,13 @@ while IFS= read -r line; do
         %s
         continue
     fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"turn/start"'; then
+        %s
+        continue
+    fi
     printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
 done
-`, threadID, steerBranch)
+`, threadID, steerBranch, startBranch)
 
 	path := filepath.Join(t.TempDir(), "codex-steer.sh")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {

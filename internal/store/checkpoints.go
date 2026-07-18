@@ -41,6 +41,12 @@ const checkpointColumns = `id, thread_id, user_item_id, turn_index,
     provider_user_message_id, provider_parent_uuid, ref_name, baseline_sha,
     status, files, captured_at, workspace_path`
 
+// checkpointColumnsQualified is checkpointColumns with a `c.` alias
+// prefix for queries that join thread_checkpoints against items.
+const checkpointColumnsQualified = `c.id, c.thread_id, c.user_item_id, c.turn_index,
+    c.provider_user_message_id, c.provider_parent_uuid, c.ref_name, c.baseline_sha,
+    c.status, c.files, c.captured_at, c.workspace_path`
+
 func scanCheckpoint(scanner interface{ Scan(...any) error }) (Checkpoint, error) {
 	var c Checkpoint
 	var filesJSON string
@@ -193,30 +199,46 @@ func (s *Store) GetCheckpointByUserItemID(threadID, userItemID string) (Checkpoi
 	return c, true, nil
 }
 
-func (s *Store) GetPreviousCheckpoint(threadID string, beforeTurnIndex int) (Checkpoint, bool, error) {
-	row := s.db.QueryRow(
-		`SELECT `+checkpointColumns+` FROM thread_checkpoints
-		 WHERE thread_id = ? AND turn_index < ?
-		 ORDER BY turn_index DESC, captured_at DESC
+// GetPreviousCheckpoint returns the checkpoint whose user row precedes
+// the anchor position in timeline order — (turn_index, item_index) of
+// each checkpoint's user item. Timeline position is the key (not
+// captured_at) because same-turn checkpoints exist for queued flush
+// messages, and an interrupt can capture several in one batch within a
+// single wall-clock millisecond — a timestamp tiebreak makes "previous"
+// ambiguous there, while item position is unique per turn.
+func (s *Store) GetPreviousCheckpoint(threadID string, beforeTurnIndex, beforeItemIndex int) (Checkpoint, bool, error) {
+	var prevUserItemID string
+	err := s.db.QueryRow(
+		`SELECT c.user_item_id FROM thread_checkpoints c
+		 JOIN items i ON i.thread_id = c.thread_id AND i.id = c.user_item_id
+		 WHERE c.thread_id = ?
+		   AND (i.turn_index < ? OR (i.turn_index = ? AND i.item_index < ?))
+		 ORDER BY i.turn_index DESC, i.item_index DESC
 		 LIMIT 1`,
-		threadID, beforeTurnIndex,
-	)
-	c, err := scanCheckpoint(row)
+		threadID, beforeTurnIndex, beforeTurnIndex, beforeItemIndex,
+	).Scan(&prevUserItemID)
 	if err == sql.ErrNoRows {
 		return Checkpoint{}, false, nil
 	}
 	if err != nil {
-		return Checkpoint{}, false, fmt.Errorf("store: get previous checkpoint thread=%s before_turn=%d: %w",
-			threadID, beforeTurnIndex, err)
+		return Checkpoint{}, false, fmt.Errorf("store: get previous checkpoint thread=%s before=(%d,%d): %w",
+			threadID, beforeTurnIndex, beforeItemIndex, err)
 	}
-	return c, true, nil
+	return s.GetCheckpointByUserItemID(threadID, prevUserItemID)
 }
 
+// ListCheckpoints returns the thread's checkpoints in timeline order —
+// (turn_index, item_index) of each checkpoint's user item, same
+// rationale as GetPreviousCheckpoint: echo-time replaces and
+// interrupt-batch captures make captured_at non-monotonic against the
+// timeline, and consumers (the UI list, GetSessionAgentDiff's baseline
+// pick) read the order as message order.
 func (s *Store) ListCheckpoints(threadID string) ([]Checkpoint, error) {
 	rows, err := s.db.Query(
-		`SELECT `+checkpointColumns+` FROM thread_checkpoints
-		 WHERE thread_id = ?
-		 ORDER BY turn_index ASC, captured_at ASC`,
+		`SELECT `+checkpointColumnsQualified+` FROM thread_checkpoints c
+		 JOIN items i ON i.thread_id = c.thread_id AND i.id = c.user_item_id
+		 WHERE c.thread_id = ?
+		 ORDER BY i.turn_index ASC, i.item_index ASC`,
 		threadID,
 	)
 	if err != nil {
@@ -267,38 +289,38 @@ func (s *Store) DeleteCheckpointsForThreadReturningRefs(threadID string) ([]Chec
 	return refs, nil
 }
 
-// DeleteCheckpointsFromTurn removes every message checkpoint whose user
-// message is deleted by a rewind starting at fromTurnIndex.
-func (s *Store) DeleteCheckpointsFromTurn(threadID string, fromTurnIndex int) ([]CheckpointRef, error) {
-	rows, err := s.db.Query(
+// checkpointRefsFromTurn collects the git refs of every message
+// checkpoint a rewind starting at fromTurnIndex deletes. Runs inside
+// the caller's transaction — DeleteConversationFromTurn reads the refs
+// and deletes the rows in the same tx so a failed truncation can't
+// strand rows whose checkpoints are already gone (round-5, R5-5).
+// Scope matches the deletion exactly: the explicit turn_index range
+// PLUS any checkpoint attached to a deleted item whose own turn_index
+// drifted below the cut — the items FK cascade removes that row too,
+// so its ref must be in the returned list or the git ref leaks
+// (round-6, R6-7).
+func checkpointRefsFromTurn(tx *sql.Tx, threadID string, fromTurnIndex int) ([]CheckpointRef, error) {
+	rows, err := tx.Query(
 		`SELECT ref_name, workspace_path FROM thread_checkpoints
-		 WHERE thread_id = ? AND turn_index >= ?
+		 WHERE thread_id = ? AND (turn_index >= ? OR user_item_id IN
+		   (SELECT id FROM items WHERE thread_id = ? AND turn_index >= ?))
 		 ORDER BY turn_index`,
-		threadID, fromTurnIndex,
+		threadID, fromTurnIndex, threadID, fromTurnIndex,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list checkpoints from turn for thread %s: %w", threadID, err)
 	}
+	defer rows.Close()
 	var refs []CheckpointRef
 	for rows.Next() {
 		var ref CheckpointRef
 		if err := rows.Scan(&ref.RefName, &ref.WorkspacePath); err != nil {
-			rows.Close()
 			return nil, fmt.Errorf("store: scan checkpoint ref from turn: %w", err)
 		}
 		refs = append(refs, ref)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return nil, fmt.Errorf("store: iterate checkpoints from turn: %w", err)
-	}
-	rows.Close()
-
-	if _, err := s.db.Exec(
-		`DELETE FROM thread_checkpoints WHERE thread_id = ? AND turn_index >= ?`,
-		threadID, fromTurnIndex,
-	); err != nil {
-		return nil, fmt.Errorf("store: delete checkpoints from turn for thread %s: %w", threadID, err)
 	}
 	return refs, nil
 }

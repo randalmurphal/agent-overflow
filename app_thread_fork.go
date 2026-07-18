@@ -70,6 +70,14 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 
 	fork := store.BuildForkedThread(source)
 
+	// The source lock alone leaves the FORK startable mid-build: a
+	// client listing threads right after CreateThread commits can start
+	// a session on the half-built fork, which the final UpdateThread
+	// below would then clobber (round-7, R7-8). The id is freshly
+	// minted, so taking its lock before the row exists is uncontended.
+	unlockFork := a.threadLocks().Lock(fork.ID)
+	defer unlockFork()
+
 	var cleanups closer.Stack
 
 	if err := a.store.CreateThread(fork); err != nil {
@@ -146,12 +154,27 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	if !ok {
 		return store.Thread{}, fmt.Errorf("fork thread from message: no checkpoint for user message %q", userItemID)
 	}
+	// The SQLite clone cuts at the item's position while the provider
+	// cut derives from the checkpoint row; a drifted checkpoint turn
+	// would silently split the two histories. Same guard as the revert
+	// path (RevertToMessageCheckpoint).
+	if checkpointRow.TurnIndex != item.TurnIndex {
+		return store.Thread{}, fmt.Errorf(
+			"fork thread from message: checkpoint turn index %d does not match user message turn index %d",
+			checkpointRow.TurnIndex,
+			item.TurnIndex,
+		)
+	}
 
 	fork := store.BuildForkedThread(source)
 	if _, err := usermessage.FromItem(item); err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread from message: build prompt draft: %w", err)
 	}
 	promptDraftUpdatedAt := time.Now().UnixMilli()
+
+	// Same mid-build startability guard as ForkThread (round-7, R7-8).
+	unlockFork := a.threadLocks().Lock(fork.ID)
+	defer unlockFork()
 
 	var cleanups closer.Stack
 
@@ -167,25 +190,38 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 		)
 	}
 
-	var lastKeptTurnPtr *int
-	if item.TurnIndex > 0 {
-		lastKeptTurn := item.TurnIndex - 1
-		lastKeptTurnPtr = &lastKeptTurn
-		if _, err := a.store.CloneThreadItems(source.ID, fork.ID, lastKeptTurnPtr); err != nil {
+	// SQLite truncation granularity must match the provider's fork cut
+	// (mirrors revertConversationLocked): Codex thread/fork cuts at a turn
+	// boundary, so the clone drops the whole anchor turn; Claude's session
+	// slice cuts at the message itself, so the clone keeps the anchor
+	// turn's provider-order prefix (queued flush messages can share a turn
+	// with the prompt that was running when they were enqueued).
+	if source.Provider == string(provider.Codex) {
+		if item.TurnIndex > 0 {
+			lastKeptTurn := item.TurnIndex - 1
+			if _, err := a.store.CloneThreadItems(source.ID, fork.ID, &lastKeptTurn); err != nil {
+				return store.Thread{}, errors.Join(
+					fmt.Errorf("fork thread from message: clone timeline: %w", err),
+					cleanups.Run(),
+				)
+			}
+			if err := a.store.CloneThreadTurns(source.ID, fork.ID, &lastKeptTurn); err != nil {
+				return store.Thread{}, errors.Join(
+					fmt.Errorf("fork thread from message: clone turns: %w", err),
+					cleanups.Run(),
+				)
+			}
+		}
+	} else {
+		if _, err := a.store.CloneThreadHistoryBeforeItem(source.ID, fork.ID, userItemID); err != nil {
 			return store.Thread{}, errors.Join(
 				fmt.Errorf("fork thread from message: clone timeline: %w", err),
 				cleanups.Run(),
 			)
 		}
-		if err := a.store.CloneThreadTurns(source.ID, fork.ID, lastKeptTurnPtr); err != nil {
-			return store.Thread{}, errors.Join(
-				fmt.Errorf("fork thread from message: clone turns: %w", err),
-				cleanups.Run(),
-			)
-		}
 	}
 
-	sessionRef, pendingForkRef, uuidMap, providerCleanup, err := a.resolveMessageForkResumeState(source, checkpointRow)
+	sessionRef, pendingForkRef, uuidMap, providerCleanup, err := a.resolveMessageForkResumeState(source, checkpointRow, item)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
@@ -302,7 +338,7 @@ func (a *App) resolveForkResumeState(source store.Thread, atTurnIndex *int) (
 	}
 }
 
-func (a *App) resolveMessageForkResumeState(source store.Thread, checkpointRow store.Checkpoint) (
+func (a *App) resolveMessageForkResumeState(source store.Thread, checkpointRow store.Checkpoint, anchorItem store.Item) (
 	sessionRef string,
 	pendingForkRef string,
 	uuidMap map[string]string,
@@ -311,6 +347,10 @@ func (a *App) resolveMessageForkResumeState(source store.Thread, checkpointRow s
 ) {
 	switch source.Provider {
 	case string(provider.Codex):
+		// Codex forks are turn-granular (thread/fork cuts at a turn
+		// boundary), so the anchor's intra-turn position is irrelevant:
+		// the whole anchor turn is dropped, matching the turn-granular
+		// SQLite clone.
 		if checkpointRow.TurnIndex == 0 {
 			return "", "", nil, nil, nil
 		}
@@ -321,7 +361,7 @@ func (a *App) resolveMessageForkResumeState(source store.Thread, checkpointRow s
 		}
 		return ref, "", nil, nil, nil
 	case string(provider.Claude):
-		return a.forkClaudeThreadBeforeMessage(source, checkpointRow)
+		return a.forkClaudeThreadBeforeMessage(source, checkpointRow, anchorItem)
 	default:
 		return "", "", nil, nil, fmt.Errorf("fork thread from message: unsupported provider %q", source.Provider)
 	}
@@ -494,14 +534,22 @@ func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int) (
 	return newID, "", uuidMap, cleanup, nil
 }
 
-func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, checkpointRow store.Checkpoint) (
+func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, checkpointRow store.Checkpoint, anchorItem store.Item) (
 	sessionRef string,
 	pendingForkRef string,
 	uuidMap map[string]string,
 	cleanup func() error,
 	err error,
 ) {
-	if checkpointRow.TurnIndex == 0 {
+	midTurn, err := claudeMidTurnAnchor(anchorItem)
+	if err != nil {
+		return "", "", nil, nil, fmt.Errorf("fork thread from message: %w", err)
+	}
+	// Only an anchor that OPENS turn 0 keeps nothing — the fork then
+	// starts a fresh provider session. A mid-turn-0 anchor (a message
+	// queued during the very first turn) keeps that turn's prefix and
+	// needs the session slice like any later anchor.
+	if checkpointRow.TurnIndex == 0 && !midTurn {
 		return "", "", nil, nil, nil
 	}
 	sourceSessionRef := source.ResolvedSessionRef()
@@ -512,7 +560,7 @@ func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, checkpointRow s
 	if err != nil {
 		return "", "", nil, nil, fmt.Errorf("fork thread from message: locate claude session: %w", err)
 	}
-	newID, newPath, uuidMap, err := a.writeMessageForkedClaudeSession(srcPath, checkpointRow)
+	newID, newPath, uuidMap, err := a.writeMessageForkedClaudeSession(srcPath, checkpointRow, anchorItem, midTurn)
 	if err != nil {
 		return "", "", nil, nil, fmt.Errorf("fork thread from message: write forked session: %w", err)
 	}
@@ -532,15 +580,22 @@ func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, checkpointRow s
 func (a *App) writeForkedClaudeSession(srcPath, sourceThreadID string, atTurnIndex int) (string, string, map[string]string, error) {
 	anchorUUID := a.lookupTurnAnchorClaudeUUID(sourceThreadID, atTurnIndex+1)
 	logCtx := fmt.Sprintf("fork thread (turn %d)", atTurnIndex+1)
-	return writeClaudeSessionSlice(srcPath, anchorUUID, atTurnIndex, logCtx)
+	// Turn-keyed forks anchor at a turn boundary by construction, so the
+	// ordinal fallback's whole-turn granularity is exact here (and the
+	// mid-turn parent-uuid retry detection never applies — no parent).
+	return writeClaudeSessionSlice(srcPath, []string{anchorUUID}, nil, atTurnIndex, false, logCtx)
 }
 
 // writeMessageForkedClaudeSession is the message-keyed-fork call
-// into writeClaudeSessionSlice. The slice anchor is the reverted
-// user message's wire UUID, lifted directly from the checkpoint row.
-func (a *App) writeMessageForkedClaudeSession(srcPath string, checkpointRow store.Checkpoint) (string, string, map[string]string, error) {
+// into writeClaudeSessionSlice. The slice anchors are the reverted
+// user message's wire UUID candidates — the checkpoint row's copy,
+// then the item row's durable meta stamp (claudeSliceAnchorUUIDs);
+// midTurnAnchor comes from the anchor item's position, same as the
+// revert path.
+func (a *App) writeMessageForkedClaudeSession(srcPath string, checkpointRow store.Checkpoint, anchorItem store.Item, midTurnAnchor bool) (string, string, map[string]string, error) {
 	return writeClaudeSessionSlice(
-		srcPath, checkpointRow.ProviderUserMessageID, checkpointRow.TurnIndex-1, "fork thread from message",
+		srcPath, claudeSliceAnchorUUIDs(checkpointRow, anchorItem), claudeSliceParentUUIDs(checkpointRow, anchorItem),
+		checkpointRow.TurnIndex-1, midTurnAnchor, "fork thread from message",
 	)
 }
 
@@ -600,64 +655,91 @@ func (a *App) lookupTurnAnchorClaudeUUID(threadID string, turnIndex int) string 
 // remap in a `closer.Stack` whose rollback deletes the fork thread
 // (and cascades to its items + checkpoints) on any error — a mid-remap
 // failure never leaves a partially-remapped fork visible to readers.
-// The revert caller instead logs-and-continues on error: its SessionRef
-// has already moved, and a partially-remapped row only means that row's
-// next revert takes the loud ordinal-fallback path instead of the
-// uuid-keyed one.
+// The revert path does NOT use this method: it commits the same
+// rewrites atomically with its SessionRef move via
+// computeClaudeProviderIDRemap + UpdateThreadAndRemapProviderIDs
+// (round-6, R6-5).
 func (a *App) remapClaudeProviderIDs(threadID string, uuidMap map[string]string) error {
+	itemUpdates, checkpointUpdates, err := a.computeClaudeProviderIDRemap(threadID, uuidMap)
+	if err != nil {
+		return err
+	}
+	for _, update := range itemUpdates {
+		if err := a.store.UpdateItemMeta(threadID, update.ItemID, update.Meta); err != nil {
+			return fmt.Errorf("remap claude provider ids: update item %s/%s meta: %w", threadID, update.ItemID, err)
+		}
+	}
+	for _, update := range checkpointUpdates {
+		if err := a.store.UpdateCheckpointProviderIDs(threadID, update.UserItemID, update.ProviderUserMessageID, update.ProviderParentUUID); err != nil {
+			return fmt.Errorf("remap claude provider ids: update checkpoint %s/%s: %w", threadID, update.UserItemID, err)
+		}
+	}
+	return nil
+}
+
+// computeClaudeProviderIDRemap reads the thread's user rows and
+// checkpoints and returns the rewrites uuidMap implies, without
+// applying anything. Shared by remapClaudeProviderIDs (fork pipeline,
+// per-row writes under the saga rollback) and the revert path (which
+// hands the result to UpdateThreadAndRemapProviderIDs so the rewrites
+// commit atomically with the SessionRef move — round-6, R6-5).
+func (a *App) computeClaudeProviderIDRemap(threadID string, uuidMap map[string]string) ([]store.ItemMetaUpdate, []store.CheckpointProviderIDsUpdate, error) {
 	if len(uuidMap) == 0 {
-		return nil
+		return nil, nil, nil
 	}
 
 	// 1. user_text items. Read all items, filter, remap meta.
 	items, err := a.store.ListItems(threadID)
 	if err != nil {
-		return fmt.Errorf("remap claude provider ids: list items: %w", err)
+		return nil, nil, fmt.Errorf("remap claude provider ids: list items: %w", err)
 	}
+	var itemUpdates []store.ItemMetaUpdate
 	for _, it := range items {
 		if it.Kind != "user_text" || it.Role != "user" {
 			continue
 		}
-		oldUUID := usermessage.ReadProviderItemID(it.Meta)
-		if oldUUID == "" {
+		// Both meta ids remap in one write: the item id and the parent
+		// uuid stamped alongside it (round-5, R5-8). Unmapped lookups
+		// yield "", which MergeProviderIDs preserves — same semantics as
+		// UpdateCheckpointProviderIDs on the checkpoint side.
+		newUUID := uuidMap[usermessage.ReadProviderItemID(it.Meta)]
+		newParent := uuidMap[usermessage.ReadProviderParentUUID(it.Meta)]
+		if newUUID == "" && newParent == "" {
 			continue
 		}
-		newUUID, ok := uuidMap[oldUUID]
-		if !ok {
-			continue
-		}
-		newMeta, err := usermessage.MergeProviderItemID(it.Meta, newUUID)
+		newMeta, err := usermessage.MergeProviderIDs(it.Meta, newUUID, newParent)
 		if err != nil {
-			return fmt.Errorf("remap claude provider ids: merge item %s/%s meta: %w", threadID, it.ID, err)
+			return nil, nil, fmt.Errorf("remap claude provider ids: merge item %s/%s meta: %w", threadID, it.ID, err)
 		}
 		if newMeta == it.Meta {
 			continue
 		}
-		if err := a.store.UpdateItemMeta(threadID, it.ID, newMeta); err != nil {
-			return fmt.Errorf("remap claude provider ids: update item %s/%s meta: %w", threadID, it.ID, err)
-		}
+		itemUpdates = append(itemUpdates, store.ItemMetaUpdate{ItemID: it.ID, Meta: newMeta})
 	}
 
 	// 2. Checkpoint provider ids — the revert slice anchor
 	// (provider_user_message_id) and the fork parent cursor
 	// (provider_parent_uuid). uuidMap[""] is "" and unmapped lookups
-	// yield "", both of which UpdateCheckpointProviderIDs preserves.
+	// yield "", both of which the empty-preserves UPDATE keeps.
 	checkpoints, err := a.store.ListCheckpoints(threadID)
 	if err != nil {
-		return fmt.Errorf("remap claude provider ids: list checkpoints: %w", err)
+		return nil, nil, fmt.Errorf("remap claude provider ids: list checkpoints: %w", err)
 	}
+	var checkpointUpdates []store.CheckpointProviderIDsUpdate
 	for _, cp := range checkpoints {
 		newMsgID := uuidMap[cp.ProviderUserMessageID]
 		newParent := uuidMap[cp.ProviderParentUUID]
 		if newMsgID == "" && newParent == "" {
 			continue
 		}
-		if err := a.store.UpdateCheckpointProviderIDs(threadID, cp.UserItemID, newMsgID, newParent); err != nil {
-			return fmt.Errorf("remap claude provider ids: update checkpoint %s/%s: %w", threadID, cp.UserItemID, err)
-		}
+		checkpointUpdates = append(checkpointUpdates, store.CheckpointProviderIDsUpdate{
+			UserItemID:            cp.UserItemID,
+			ProviderUserMessageID: newMsgID,
+			ProviderParentUUID:    newParent,
+		})
 	}
 
-	return nil
+	return itemUpdates, checkpointUpdates, nil
 }
 
 func (a *App) activeCodexSession(threadID string) (*codex.Session, bool) {

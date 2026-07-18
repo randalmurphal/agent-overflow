@@ -762,7 +762,7 @@ func TestMarkUserInterrupt_ThenTurnCompleteThenLateText(t *testing.T) {
 		}
 	}
 
-	if _, err := router.MarkUserInterrupt("t1"); err != nil {
+	if _, err := markUserInterruptForTest(router, "t1"); err != nil {
 		t.Fatalf("user interrupt: %v", err)
 	}
 

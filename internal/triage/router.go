@@ -49,6 +49,97 @@ type Router struct {
 	tracer                  trace.Tracer
 	metrics                 TurnMetrics
 	mu                      sync.Mutex
+	// flushAnchorLocks serializes, PER THREAD, every mutation of that
+	// thread's pending-send state that pairs with a store write: the
+	// echo-time pop + attach/deferred-persist (handleUserText), the
+	// interrupt-time bump-and-mark / transition-and-persist (+ in-lock
+	// checkpoint capture) in PromoteQuietFlushSends and
+	// EagerPersistDeferredFlushSends, the session-death drain
+	// (DrainUnconfirmedFlushItems), and the pending-send sweeps
+	// (cleanupThread, ClearPendingSendsByItemIDs,
+	// ClearPendingSendForFailure). r.mu alone cannot do this: the
+	// interrupt paths must release it before their store writes, and an
+	// echo popping in that window reads a pendingSend snapshot whose
+	// AnchoredAtInterrupt claim is not yet — or never becomes — durable
+	// (round-3 review, cold-1/2/3); a sweep in the same window loses to
+	// the echo-failure reinsert (round-5, R5-2). Holding the anchor lock
+	// across pop AND write makes every popped snapshot truthful, and
+	// sweeps total.
+	//
+	// Per-thread — NOT router-wide — because the confirmed hook (git
+	// checkpoint capture) runs inside the lock: one thread's slow
+	// capture must not block every other thread's echoes, interrupts,
+	// and teardowns (round-5, R5-1). Lock order: the anchor lock is
+	// always taken BEFORE r.mu, never while holding it. Entries are
+	// never deleted — a deleted entry would hand a fresh acquirer a NEW
+	// mutex while a waiter still holds the old one, silently splitting
+	// the serialization domain (same never-delete reasoning as
+	// threadEpochs). One pointer per thread ever seen.
+	flushAnchorLocks   map[string]*sync.Mutex
+	flushAnchorLocksMu sync.Mutex
+	// drainLocks serializes, PER THREAD, an interrupt-queue drain's
+	// full pop + persist span. r.mu alone covers only the map pop: a
+	// settle-goroutine drain releases it before persisting the
+	// handed-off rows, and the promoted-echo boundary path checking
+	// hasQueuedInterruptItems in that window sees an empty queue while
+	// rows are still uncommitted — they then land above the sampled
+	// boundary and a revert cuts them as "response" although the
+	// session slice keeps them (round-7, R7-3). Queue APPENDS need no
+	// covering: they happen only on the serial provider read loop,
+	// which is busy running the echo. Lock order: taken after the
+	// thread's flush anchor (echo path), before r.mu; never deleted
+	// (same reasoning as flushAnchorLocks).
+	drainLocks   map[string]*sync.Mutex
+	drainLocksMu sync.Mutex
+	// flushStampEpochs (guarded by r.mu) counts, per thread, the
+	// MarkFlushSendsInterrupted calls that stamped at least one entry.
+	// Interrupt paths are not serialized against each other (a stop
+	// press can race the revert path's interrupt), so a failed
+	// interrupt's RestoreFlushSendsInterrupted only applies while its
+	// own epoch is still current — a newer Mark's live stamp must not
+	// be clobbered by an older call's failure. Never deleted: a
+	// CleanupThread reset would let a stale pre-cleanup token match a
+	// fresh epoch (same never-delete reasoning as threadEpochs).
+	flushStampEpochs map[string]uint64
+	// flushStampUnwinds (guarded by r.mu) parks, per thread by epoch, a
+	// restore token that arrived while a newer Mark's stamp was live.
+	// An applied restore chains down through parked epochs so
+	// overlapping interrupts that ALL fail unwind fully regardless of
+	// failure order; an unwind parked under an epoch whose interrupt
+	// succeeded is permanently unreachable — the succeeded stamp stays,
+	// which is correct — and its entry is the map's only (negligible)
+	// growth. Parked tokens from before a session replacement are
+	// dropped when the chain reaches them (thread epoch mismatch).
+	flushStampUnwinds map[string]map[uint64]FlushStampToken
+	// flushStampSeq (guarded by r.mu) gives each stamping
+	// MarkFlushSendsInterrupted call a router-unique identity. Stamp
+	// epochs alone can't provide one: an applied restore steps the
+	// epoch back down, so a later Mark reuses the number and a
+	// duplicate restore of an already-applied token would park under
+	// — and later clobber — the new call's live stamp.
+	flushStampSeq uint64
+	// flushStampApplied (guarded by r.mu) records the seq of every
+	// restore token that has applied, so duplicate restores are
+	// rejected instead of parked. Never deleted (same reasoning as
+	// flushStampEpochs); one struct{} per FAILED interrupt ever, so
+	// growth is negligible.
+	flushStampApplied map[uint64]struct{}
+	// interruptMarks (guarded by r.mu) records, per thread, every live
+	// MarkFlushSendsInterrupted call as {seq, interrupted turn} in call
+	// order. The per-entry stamp cannot cover an echo whose pending
+	// entry was POPPED before the mark ran but is still persisting —
+	// openQueuedEchoTurn reads the newest entry's turn so that
+	// in-flight echo still settles the cut turn "interrupted"
+	// (round-10, R10-6). Appended even when the mark stamped no FIFO
+	// entries (the popped entry is exactly why the FIFO can be empty).
+	// A failed interrupt's restore removes ITS entry wherever it sits
+	// (seq-keyed, so overlapping failures unwind correctly in any
+	// order — round-11, R11-3); a succeeded interrupt's entry lingers
+	// until MarkThreadActive clears the thread's list — an in-flight
+	// echo cannot survive session replacement, and a replacement after
+	// revert REUSES turn indexes, so a cross-session record would
+	// mislabel a reused index (round-11, CT11-2).
+	interruptMarks          map[string][]interruptMark
 	pendingCommandDiffs     map[string]pendingCommandInlineDiff
 	pendingApprovals        map[string]pendingApprovalState
 	pendingApprovalOrder    map[string][]string
@@ -254,17 +345,29 @@ type Router struct {
 	// turn boundaries by design, so NOT swept by clearOpenTurn — only
 	// by CleanupThread on session teardown. See flush_queue.go.
 	queuedFlushItems map[string][]QueuedFlushItem
+	// claimedFlushItems counts batch items mid-handoff between the
+	// queue delete in tryFlushQueue and the dispatcher's synchronous
+	// in-flight record. Folded into QueuedFlushItemCount so the
+	// revert-on-interrupt predicate sees a draining batch as queued →
+	// claimed → in-flight, never invisible (round-14 close-out, C14-1).
+	// Held only across the dispatcher callback; not swept by
+	// CleanupThread — tryFlushQueue's deferred drop always runs.
+	claimedFlushItems map[string]int
 	// dispatchFlush is the app-layer callback invoked when the queue
 	// drains. Wired via SetFlushDispatcher; nil disables dispatch. Triage
 	// releases r.mu before invoking, and the callback must return quickly;
 	// provider writes belong behind the app-layer async/FIFO dispatcher.
 	// See flush_queue.go.
 	dispatchFlush FlushDispatcher
-	// deferredUserTextConfirmed is an app-layer callback invoked after a
-	// deferred queued user_text row has been persisted from a provider
-	// echo. Used for side effects that require the row to exist, such
-	// as message checkpoint capture.
-	deferredUserTextConfirmed func(threadID string, item store.Item)
+	// flushUserTextConfirmed is an app-layer callback invoked after a
+	// flush-queued user_text row is confirmed by its provider echo —
+	// the deferred persist (persistDeferredUserText) and the eager
+	// quiet row's stamp (attachProviderItemIDToUserRow, non-interrupt-
+	// anchored only). Used for side effects that require the row to
+	// exist at its final position with provider ids stamped, such as
+	// message checkpoint capture. Direct sends never fire it — their
+	// checkpoint is captured at send time in app_send.go.
+	flushUserTextConfirmed func(threadID string, item store.Item)
 	// workspacePathByThread is a small read-through cache for the
 	// thread row's WorkspacePath, populated lazily by enrichPathRefs
 	// (the only hot caller). A thread's workspace is set at create
@@ -420,8 +523,15 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		openAPIRetryRows:           make(map[string]bool),
 		pendingToolPaths:           make(map[string][]string),
 		pendingByThread:            make(map[string][]pendingSend),
+		flushAnchorLocks:           make(map[string]*sync.Mutex),
+		drainLocks:                 make(map[string]*sync.Mutex),
+		flushStampEpochs:           make(map[string]uint64),
+		flushStampUnwinds:          make(map[string]map[uint64]FlushStampToken),
+		flushStampApplied:          make(map[uint64]struct{}),
+		interruptMarks:             make(map[string][]interruptMark),
 		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
 		queuedFlushItems:           make(map[string][]QueuedFlushItem),
+		claimedFlushItems:          make(map[string]int),
 		workspacePathByThread:      make(map[string]string),
 		streamingPathRefsLast:      make(map[string]string),
 		revertedTurns:              make(map[string]struct{}),
@@ -1374,6 +1484,32 @@ func (r *Router) persistItemQuiet(item store.Item, payload *store.Payload) error
 // struct, or the emitted row would carry item_index 0 and mis-sort.
 func (r *Router) persistItemQuietReturning(item store.Item, payload *store.Payload) (store.Item, error) {
 	return r.persistItemWithEmit(item, payload, nil, false)
+}
+
+// persistUserPromptAtTurnHead persists a deferred flush prompt at the
+// HEAD of its turn (store.UpsertItemAtTurnHead) and emits the upsert.
+// Callers gate on the turn having been EMPTY at the prompt's first
+// echo (pendingSend.EchoTurnWasEmpty) — the turn is then the prompt's
+// own, so on the first echo head placement equals the normal append
+// (index 0), while a replay retry or session-death self-heal after a
+// failed first persist finds the RESPONSE at 0..n, where a MAX+1
+// append would sort the prompt after its own response and a revert at
+// the prompt would keep response rows the session slice removes
+// (round-7, R7-4). Steer-shape prompts sharing an occupied turn must
+// use the normal append instead.
+func (r *Router) persistUserPromptAtTurnHead(item store.Item) (store.Item, error) {
+	persisted, err := r.store.UpsertItemAtTurnHead(item)
+	if err != nil {
+		return store.Item{}, err
+	}
+	countsAsActivity := userTextCountsAsThreadActivity(item)
+	if countsAsActivity {
+		r.bumpThreadActivity(persisted.ThreadID, persisted.UpdatedAt, "user_text persist")
+	}
+	r.emitItemUpsertWithActivity(persisted, countsAsActivity)
+	r.metrics.ItemsPersisted.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("kind", persisted.Kind)))
+	return persisted, nil
 }
 
 // persistItemWithInputPayload is the two-payload variant of persistItem used

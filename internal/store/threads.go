@@ -604,6 +604,82 @@ func (s *Store) UpdateThreadAndDeleteCheckpoints(t Thread) ([]CheckpointRef, err
 	return refs, nil
 }
 
+// ItemMetaUpdate names one item's replacement meta blob for
+// UpdateThreadAndRemapProviderIDs.
+type ItemMetaUpdate struct {
+	ItemID string
+	Meta   string
+}
+
+// CheckpointProviderIDsUpdate names one checkpoint's replacement
+// provider ids for UpdateThreadAndRemapProviderIDs. Empty strings
+// preserve the stored value (same contract as
+// UpdateCheckpointProviderIDs).
+type CheckpointProviderIDsUpdate struct {
+	UserItemID            string
+	ProviderUserMessageID string
+	ProviderParentUUID    string
+}
+
+// UpdateThreadAndRemapProviderIDs commits a thread-row update together
+// with precomputed item-meta and checkpoint provider-id rewrites in ONE
+// transaction. The Claude revert path uses it to move SessionRef onto a
+// freshly sliced session file atomically with the uuid remap that keeps
+// stored wire ids pointing into that file: committed separately, a
+// crash between the two leaves ids one fork generation stale, and a
+// retried revert on top of that loses the single-generation forkedFrom
+// provenance the anchor lookups can heal through (round-6, R6-5).
+// The caller precomputes every rewrite; this method only applies data.
+func (s *Store) UpdateThreadAndRemapProviderIDs(t Thread, items []ItemMetaUpdate, checkpoints []CheckpointProviderIDsUpdate) error {
+	t, err := normalizeThreadForUpdate(t)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin update thread %s with provider id remap: %w", t.ID, err)
+	}
+	defer tx.Rollback()
+
+	args := append(updateThreadArgs(t), t.ID)
+	result, err := tx.Exec(updateThreadSetSQL+` WHERE id=?`, args...)
+	if err != nil {
+		return fmt.Errorf("store: update thread %s: %w", t.ID, err)
+	}
+	if err := requireRowsAffected(result, fmt.Sprintf("store: update thread %s", t.ID)); err != nil {
+		return err
+	}
+	for _, item := range items {
+		result, err := tx.Exec(
+			`UPDATE items SET meta = ? WHERE thread_id = ? AND id = ?`,
+			item.Meta, t.ID, item.ItemID,
+		)
+		if err != nil {
+			return fmt.Errorf("store: remap item meta %s/%s: %w", t.ID, item.ItemID, err)
+		}
+		if err := requireRowsAffected(result, fmt.Sprintf("store: remap item meta %s/%s", t.ID, item.ItemID)); err != nil {
+			return err
+		}
+	}
+	for _, cp := range checkpoints {
+		if _, err := tx.Exec(
+			`UPDATE thread_checkpoints
+			    SET provider_user_message_id = CASE WHEN ? != '' THEN ? ELSE provider_user_message_id END,
+			        provider_parent_uuid = CASE WHEN ? != '' THEN ? ELSE provider_parent_uuid END
+			  WHERE thread_id = ? AND user_item_id = ?`,
+			cp.ProviderUserMessageID, cp.ProviderUserMessageID,
+			cp.ProviderParentUUID, cp.ProviderParentUUID,
+			t.ID, cp.UserItemID,
+		); err != nil {
+			return fmt.Errorf("store: remap checkpoint provider ids %s/%s: %w", t.ID, cp.UserItemID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit update thread %s with provider id remap: %w", t.ID, err)
+	}
+	return nil
+}
+
 func (s *Store) UpdateThreadIfProviderSwitchAllowed(t Thread, previousProvider string) error {
 	t, err := normalizeThreadForUpdate(t)
 	if err != nil {

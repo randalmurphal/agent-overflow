@@ -3,8 +3,10 @@ package triage
 import (
 	"log"
 	"strings"
+	"sync"
 	"time"
 
+	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/store"
 )
 
@@ -83,6 +85,102 @@ type pendingSend struct {
 	// BELOW the anchored message — an echo-time bump would leapfrog the
 	// message over them and persist that inverted order.
 	AnchoredAtInterrupt bool
+
+	// WasDeferred marks an entry whose row was originally deferred
+	// (persist-at-echo) and reached SQLite only through the interrupt
+	// eager-persist. Its row owns a FRESH turn index, so if its echo
+	// lands with no init having opened that turn — the interrupt raced
+	// the CLI's mid-loop queue drain and the old round is still live —
+	// attachProviderItemIDToUserRow must open the logical turn exactly
+	// like the still-deferred path does. Promoted eager rows (shared
+	// turn) must NOT get that call: their index belongs to an earlier,
+	// possibly settled turn.
+	WasDeferred bool
+
+	// InterruptedTurnIndex is the logical turn that was open when a
+	// user interrupt claimed this entry (-1 when none has). Stamped
+	// pre-ack by MarkFlushSendsInterrupted — the CLI's mid-loop
+	// queue drain can echo the entry back during the ack wait, before
+	// the eager persist runs (round-6, R6-4) — and again by
+	// EagerPersistDeferredFlushSends. The echo's openQueuedEchoTurn
+	// settles its still-open predecessor as "interrupted" only when
+	// that predecessor IS this turn — the one the user provably cut.
+	// When one interrupt eager-persists several deferred rows and the
+	// CLI echoes them back to back, the later echoes settle their
+	// SIBLINGS' turns, which ended naturally as the CLI drained the
+	// next queued message and must settle as "end_turn".
+	InterruptedTurnIndex int
+
+	// EchoConsumed marks an entry that was reinserted after its echo's
+	// store write failed: the provider PROVABLY consumed the message
+	// (the echo arrived), only AO's write didn't stick. A session-death
+	// drain must not hand such an entry back as restorable — restoring
+	// it to the draft/queue would re-send a message the resumed
+	// transcript already contains, duplicating it in provider context
+	// (round-5, R5-3). The drain instead self-heals the timeline row
+	// from the retained copy and drops the entry.
+	EchoConsumed bool
+
+	// EchoProviderItemID / EchoParentUUID carry the consumed echo's
+	// wire identity across a failed write: handleUserText stashes them
+	// on the popped entry before dispatching to the fallible handlers,
+	// so a reinserted EchoConsumed entry still knows the transcript
+	// uuid and parent that the failed stamp lost. The session-death
+	// self-heal merges them into the healed row (and its checkpoint) —
+	// without them the healed row has no slice anchor and a later
+	// revert degrades to the ordinal fallback, or full-clones, while
+	// the provider transcript still contains the message (round-6,
+	// R6-1).
+	EchoProviderItemID string
+	EchoParentUUID     string
+
+	// EchoPromotedBoundary is the promoted-echo provider-order boundary
+	// (see itemmeta.MarkPromotedEchoBoundary) computed by
+	// attachProviderItemIDToUserRow before its fallible write, or -1.
+	// Stashed for the same reason as the ids above: the boundary is
+	// echo-time information — by session-death drain time the response
+	// rows have persisted and a recomputed MAX would misclassify them
+	// as interrupted tail, so the failed write's value is the only
+	// correct source (round-6, R6-1).
+	EchoPromotedBoundary int
+
+	// EchoTurnWasEmpty records whether the deferred prompt's turn had
+	// no rows when its FIRST echo arrived — true for the turn the echo
+	// itself opens (Claude mid-loop pickup), false for a steer into an
+	// occupied turn where pre-dispatch content correctly precedes the
+	// prompt. Stashed like the fields above because it is first-echo
+	// information: a replay retry or session-death self-heal after a
+	// failed first persist finds the RESPONSE occupying the turn and
+	// can no longer tell response rows (persist the prompt above them)
+	// from pre-dispatch content (persist below) (round-7, R7-4).
+	// Always populated before a reinsert can mark the entry
+	// EchoConsumed: when the first echo's row sample fails, the
+	// router's turn-open state substitutes — a turn nobody opened yet
+	// is the prompt's own — so the retry / self-heal never reads an
+	// unrecorded zero value and appends an empty-turn prompt below its
+	// own response (round-14, D14-1).
+	EchoTurnWasEmpty bool
+
+	// CheckpointCapturedAtEcho marks an entry whose confirmed-hook
+	// checkpoint was captured on the FIRST echo's failure path (the
+	// row existed; only the stamp write failed). The message
+	// checkpoint's git ref must reflect the workspace at the
+	// consumption boundary — that first echo — and provider work keeps
+	// changing the workspace afterwards, so a retry's success-path
+	// hook must NOT replace the true-boundary ref with a later capture
+	// (round-10, R10-2).
+	CheckpointCapturedAtEcho bool
+
+	// NeedsTailRebump marks an anchored quiet entry whose sibling
+	// re-bump failed after an earlier promoted echo drained rows past
+	// it (rebumpAnchoredQuietSiblings): its row sits below content
+	// that precedes it in provider order, and nothing else revisits
+	// the position — the entry's own echo skips the bump as
+	// already-anchored. attachProviderItemIDToUserRow treats the flag
+	// like rebumpOverDrained, so that echo forces the turn-tail bump
+	// and repairs both display order and the revert cut (round-11,
+	// R11-5).
+	NeedsTailRebump bool
 }
 
 type PendingFlushItemSnapshot struct {
@@ -170,6 +268,8 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 		DeferredItem:           deferredItem,
 		QuietItem:              quietItem,
 		ExpectedProviderItemID: expectedProviderItemID,
+		InterruptedTurnIndex:   -1,
+		EchoPromotedBoundary:   -1,
 	})
 	r.mu.Unlock()
 }
@@ -279,6 +379,11 @@ func (r *Router) ClearPendingSendForFailure(threadID, aoItemID string) {
 	if threadID == "" || aoItemID == "" {
 		return
 	}
+	// Anchor lock so the removal is total against an in-flight echo's
+	// failure reinsert (round-5, R5-2).
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	queue := r.pendingByThread[threadID]
@@ -364,6 +469,56 @@ func (r *Router) markWireOnlyUserTextSeen(threadID, providerItemID string) bool 
 	return true
 }
 
+// flushAnchor returns threadID's anchor mutex, creating it on first
+// use. Entries are never deleted (see the flushAnchorLocks field doc).
+func (r *Router) flushAnchor(threadID string) *sync.Mutex {
+	r.flushAnchorLocksMu.Lock()
+	defer r.flushAnchorLocksMu.Unlock()
+	mu, ok := r.flushAnchorLocks[threadID]
+	if !ok {
+		mu = &sync.Mutex{}
+		r.flushAnchorLocks[threadID] = mu
+	}
+	return mu
+}
+
+// isWireOnlyUserTextSeen reports whether providerItemID was already
+// recorded by markWireOnlyUserTextSeen. Both echo-handling paths mark
+// exactly at their durability point (row persisted / stamp committed),
+// so a false here after an error means no durable write happened for
+// the envelope — the caller can safely reinsert the popped pending
+// entry for retry or death-drain recovery.
+func (r *Router) isWireOnlyUserTextSeen(threadID, providerItemID string) bool {
+	if threadID == "" || providerItemID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, seen := r.wireOnlyUserTextSeen[threadID][providerItemID]
+	return seen
+}
+
+// reinsertPendingSendHead puts a popped pending-send entry back at the
+// FIFO head after its echo handling failed before reaching a durable
+// write. Head position restores the FIFO-pop semantics (the entry was
+// at or ahead of the head when consumed); identity-matched entries
+// don't care about position. Keeping the entry live means a
+// re-delivered echo can retry instead of persisting an injected-context
+// duplicate (round-4 review, CT4-3).
+//
+// The reinserted entry is marked EchoConsumed: the arrival of the echo
+// proved the provider transcript contains the message even though AO's
+// write failed, so a session-death drain must self-heal the timeline
+// row from the retained copy instead of restoring the message to the
+// draft — a restore would re-send content the provider context already
+// has (round-5, R5-3).
+func (r *Router) reinsertPendingSendHead(threadID string, entry pendingSend) {
+	entry.EchoConsumed = true
+	r.mu.Lock()
+	r.pendingByThread[threadID] = append([]pendingSend{entry}, r.pendingByThread[threadID]...)
+	r.mu.Unlock()
+}
+
 // clearWireOnlyUserTextForThread sweeps the dedup set for threadID.
 // Called by CleanupThread on session teardown. Acquires r.mu — for
 // the CleanupThread codepath that already holds r.mu, see
@@ -381,13 +536,27 @@ func (r *Router) clearWireOnlyUserTextLocked(threadID string) {
 }
 
 // EagerPersistedFlush describes a deferred flush send that was eagerly
-// persisted during interrupt. The app layer uses it for checkpoint
-// capture and (for Codex) re-send.
+// persisted during interrupt. The app layer uses it for the Codex
+// re-send; checkpoint capture happens inside
+// EagerPersistDeferredFlushSends itself via the confirmed hook.
 type EagerPersistedFlush struct {
 	UserItemID string
 	TurnIndex  int
-	Content    string
-	Meta       string
+	// ItemIndex is the store-assigned position within the turn — the
+	// value the internal checkpoint capture feeds to the
+	// position-ordered previous-checkpoint lookup. Exposed so tests can
+	// pin that a real index (not a zero placeholder) was threaded
+	// through; a zero would make a Codex steer's checkpoint (persisted
+	// mid-turn at a real index > 0) diff against the wrong baseline.
+	ItemIndex int
+	Content   string
+	Meta      string
+	// QueueItemID and EnqueuedAt carry the original queue identity so a
+	// failed Codex resend can return the message to the flush queue
+	// with its Zone 1 identity and FIFO position intact (round-13,
+	// CT13-2).
+	QueueItemID string
+	EnqueuedAt  int64
 }
 
 // EagerPersistDeferredFlushSends immediately persists all deferred
@@ -395,29 +564,103 @@ type EagerPersistedFlush struct {
 // interrupt so queued messages become visible without waiting for the
 // provider echo.
 //
-// Under lock: snapshots deferred items and nils DeferredItem on each
-// pending send entry. Nilling routes the echo path to
+// interruptedTurnIndex is the turn that was open when the user issued
+// the interrupt (-1 when none), sampled by the caller via
+// OpenTurnIndex BEFORE awaiting the provider's interrupt ack. Sampling
+// here instead would race the ack wait: the read loop keeps processing
+// wire events during it, so the cut turn can settle (clearing
+// openTurns) before this runs, and its echo would then settle it
+// "end_turn" instead of "interrupted" (round-5, R5-4).
+//
+// The whole transition + persist runs under the thread's flush anchor lock, which the
+// echo path (handleUserText) also holds across its pending-send pop and
+// row write: an echo therefore consumes each entry either strictly
+// before this transition (still DeferredItem — the normal deferred
+// persist; the snapshot loop below then skips the popped entry) or
+// strictly after the persist committed or failed-and-unclaimed (the
+// attach path finds the row, or self-heals from QuietItem on failure).
+// The mid-transition window that stranded a consumed message
+// unstamped (round-3 review, cold-1/CT-2) cannot be observed.
+//
+// Under r.mu: MOVES each entry's DeferredItem to QuietItem, sets
+// WasDeferred, and claims AnchoredAtInterrupt — all before any store
+// write. Nilling DeferredItem routes the echo path to
 // attachProviderItemIDToUserRow instead of persistDeferredUserText
-// (re-persist); the AnchoredAtInterrupt marker set after the persist is
-// what keeps that path stamp-only (without it, the :flush: echo bump
-// would reposition the row a second time).
+// (re-persist); the QuietItem copy keeps the message recoverable when
+// the session dies before the echo (DrainUnconfirmedFlushItems
+// restores the draft from it and the death path deletes the persisted
+// row). If the persist fails, the WHOLE transition is undone
+// (restorePendingSendDeferred) — not just the claim: an entry left
+// with QuietItem set but no persisted row would make a second
+// interrupt take the quiet-promote path and bump a row that doesn't
+// exist, so repeated interrupts could never make the message visible
+// (round-6, R6-6). Restored entries retry the eager persist on the
+// next interrupt and route their echo through the normal deferred
+// persist.
 //
 // Each item is persisted via persistItem (UpsertItem + emit) so the
 // frontend receives a provider:item_event upsert immediately.
-func (r *Router) EagerPersistDeferredFlushSends(threadID string) []EagerPersistedFlush {
+//
+// The confirmed hook (checkpoint capture) runs here for each persisted
+// row, still under the thread's flush anchor lock: this is the rows'
+// baseline capture — revert stays offered even if the session dies
+// before the echo — and the echo-time hook later replaces the ref at
+// the true consumption boundary (round-7, R7-1). The baseline must
+// commit before the mutex releases, or an echo in the gap would stamp
+// the row while UpdateCheckpointProviderIDs no-ops against a
+// checkpoint that doesn't exist yet, leaving it permanently without
+// provider ids (round-4 review, CT4-1).
+func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurnIndex int, tok FlushStampToken) []EagerPersistedFlush {
 	if threadID == "" || r.store == nil {
 		return nil
 	}
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
 
 	r.mu.Lock()
+	// Whole-transition fence, not just the stamp write: a session
+	// replacement recycles deterministic flush IDs, and death recovery
+	// re-registers same-ID entries that a stale interrupt returning
+	// post-ack must not claim, persist, or (Codex) re-send through the
+	// dead session (round-11, CT11-1). Replacement registration can
+	// only follow the death drain, which serializes behind this
+	// function's anchor lock, so the epoch check at claim time covers
+	// the store writes below too.
+	if r.threadEpochs[threadID] != tok.threadEpoch {
+		r.mu.Unlock()
+		return nil
+	}
 	pending := r.pendingByThread[threadID]
-	var snapshots []store.Item
+	// The stamp re-write covers only entries REGISTERED between this
+	// interrupt's pre-ack Mark and now — Mark already stamped everything
+	// else. It is fenced by the mark token's stamp epoch: a concurrent
+	// interrupt that Marked during the ack wait published a NEWER stamp
+	// that this pass's post-ack value must not clobber (round-9, R9-5).
+	stampCurrent := r.flushStampEpochs[threadID] == tok.stampEpoch
+	type eagerSnapshot struct {
+		item        store.Item
+		queueItemID string
+		enqueuedAt  int64
+	}
+	var snapshots []eagerSnapshot
 	for i := range pending {
 		if pending[i].DeferredItem != nil && pending[i].QueueItemID != "" {
-			snapshots = append(snapshots, *pending[i].DeferredItem)
+			snapshots = append(snapshots, eagerSnapshot{
+				item:        *pending[i].DeferredItem,
+				queueItemID: pending[i].QueueItemID,
+				enqueuedAt:  pending[i].EnqueuedAt,
+			})
+			pending[i].QuietItem = pending[i].DeferredItem
 			pending[i].DeferredItem = nil
+			pending[i].WasDeferred = true
+			pending[i].AnchoredAtInterrupt = true
+			if stampCurrent {
+				pending[i].InterruptedTurnIndex = interruptedTurnIndex
+			}
 		}
 	}
+	confirmedHook := r.flushUserTextConfirmed
 	r.mu.Unlock()
 
 	if len(snapshots) == 0 {
@@ -425,25 +668,26 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string) []EagerPersiste
 	}
 
 	result := make([]EagerPersistedFlush, 0, len(snapshots))
-	persistedIDs := make(map[string]struct{}, len(snapshots))
-	for _, item := range snapshots {
-		if err := r.persistItem(item, nil); err != nil {
-			log.Printf("triage: eager persist deferred flush %s/%s: %v", item.ThreadID, item.ID, err)
+	for _, snap := range snapshots {
+		persisted, err := r.persistItemWithEmit(snap.item, nil, nil, true)
+		if err != nil {
+			log.Printf("triage: eager persist deferred flush %s/%s: %v", snap.item.ThreadID, snap.item.ID, err)
+			r.restorePendingSendDeferred(threadID, snap.item.ID)
 			continue
 		}
-		persistedIDs[item.ID] = struct{}{}
+		if confirmedHook != nil {
+			confirmedHook(threadID, persisted)
+		}
 		result = append(result, EagerPersistedFlush{
-			UserItemID: item.ID,
-			TurnIndex:  item.TurnIndex,
-			Content:    item.Summary,
-			Meta:       item.Meta,
+			UserItemID:  persisted.ID,
+			TurnIndex:   persisted.TurnIndex,
+			ItemIndex:   persisted.ItemIndex,
+			Content:     persisted.Summary,
+			Meta:        persisted.Meta,
+			QueueItemID: snap.queueItemID,
+			EnqueuedAt:  snap.enqueuedAt,
 		})
 	}
-	// The row now sits at its user-visible interrupt position (the
-	// persist landed at the turn tail). Without the marker the echo's
-	// :flush: bump would move it again — past any post-interrupt tail
-	// the provider flushes while stopping.
-	r.markPendingSendsAnchoredAtInterrupt(threadID, persistedIDs)
 	return result
 }
 
@@ -454,42 +698,400 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string) []EagerPersiste
 // waiting for the provider echo. The pending send entries stay in the
 // FIFO — the echo still stamps provider_item_id via
 // attachProviderItemIDToUserRow.
-func (r *Router) PromoteQuietFlushSends(threadID string) int {
+//
+// The whole claim + bump-and-mark runs under the thread's flush anchor lock, which the
+// echo path (handleUserText) also holds across its pending-send pop and
+// row write. That makes every popped snapshot truthful: an echo that
+// consumed the entry BEFORE this promote's claim removes it from the
+// pending list (the snapshot loop below skips it — consumed
+// pre-promotion, not promoted-above-tail, correctly unmarked); an echo
+// popping AFTER sees either a committed bump+marker (claim held —
+// stamp-only, boundary derivable from the marker) or a
+// failed-and-unclaimed entry (claim reverted — the echo's own bump is
+// the fallback positioning). The mid-flight windows where a popped
+// claim had no durable marker, or a failed bump could not be unclaimed
+// because the entry was already consumed, cannot be observed (round-3
+// review, cold-2/cold-3/CT-1/CT-4).
+//
+// The confirmed hook (checkpoint capture) runs here for each promoted
+// row, still under the thread's flush anchor lock: this is the
+// promoted rows' baseline capture — revert stays offered even if the
+// session dies before the echo — and the echo-time hook later replaces
+// the ref at the true consumption boundary (round-7, R7-1). The
+// baseline must commit before the mutex releases, or an echo in the
+// gap would stamp the row while UpdateCheckpointProviderIDs no-ops
+// against a checkpoint that doesn't exist yet, leaving it permanently
+// without provider ids (round-4 review, CT4-1). Returns the promoted
+// rows at their post-bump position.
+//
+// tok is the interrupt's pre-ack mark token; its thread reactivation
+// epoch fences the whole claim + bump against a session replacement
+// that re-registered same-ID entries during the ack wait — a stale
+// interrupt must not promote (or checkpoint) the replacement's rows
+// (round-11, CT11-1).
+func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []store.Item {
 	if threadID == "" || r.store == nil {
-		return 0
+		return nil
 	}
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
 
 	r.mu.Lock()
+	if r.threadEpochs[threadID] != tok.threadEpoch {
+		r.mu.Unlock()
+		return nil
+	}
 	pending := r.pendingByThread[threadID]
 	var ids []string
-	for _, p := range pending {
-		if p.DeferredItem == nil && strings.Contains(p.AOItemID, ":flush:") {
-			ids = append(ids, p.AOItemID)
+	for i := range pending {
+		// Already-anchored entries were promoted (and checkpointed) by an
+		// earlier interrupt; a second interrupt before the echo must not
+		// bump them again or re-capture — the re-capture would replace the
+		// first interrupt's checkpoint snapshot with the workspace state at
+		// the SECOND interrupt, destroying the boundary a later files
+		// revert is supposed to restore.
+		if pending[i].DeferredItem == nil && !pending[i].AnchoredAtInterrupt && strings.Contains(pending[i].AOItemID, ":flush:") {
+			ids = append(ids, pending[i].AOItemID)
+			pending[i].AnchoredAtInterrupt = true
 		}
 	}
 	r.mu.Unlock()
 
 	if len(ids) == 0 {
-		return 0
+		return nil
 	}
 
-	promoted := 0
-	promotedIDs := make(map[string]struct{}, len(ids))
+	r.mu.Lock()
+	confirmedHook := r.flushUserTextConfirmed
+	r.mu.Unlock()
+
+	promoted := make([]store.Item, 0, len(ids))
 	for _, id := range ids {
-		item, err := r.store.BumpItemToTurnEnd(threadID, id)
+		// Bump and promotion marker land in ONE transaction: the marker is
+		// the durable twin of the AnchoredAtInterrupt claim — the
+		// interrupted round's trailing rows will persist BELOW this row,
+		// yet precede it in the provider transcript (Claude appends the
+		// queued_command attachment only at consumption), and revert /
+		// fork-from-message read the marker to cut at the message in
+		// PROVIDER order. A bump whose marker didn't stick would hand those
+		// paths a repositioned row with display-order semantics.
+		item, err := r.store.BumpItemToTurnEnd(threadID, id, itemmeta.MarkPromotedAtInterrupt, time.Now().UnixMilli())
 		if err != nil {
 			log.Printf("triage: promote quiet flush %s/%s: %v", threadID, id, err)
+			r.unclaimPendingSendAnchor(threadID, id)
 			continue
 		}
-		promotedIDs[id] = struct{}{}
 		r.emitItemUpsertWithActivity(item, false)
-		promoted++
+		if confirmedHook != nil {
+			confirmedHook(threadID, item)
+		}
+		promoted = append(promoted, item)
 	}
-	// Mark the successfully-bumped entries so the echo-side reposition
-	// (attachProviderItemIDToUserRow) knows the row is already at its
-	// user-visible interrupt position and stamps without re-bumping.
-	r.markPendingSendsAnchoredAtInterrupt(threadID, promotedIDs)
 	return promoted
+}
+
+// rebumpAnchoredQuietSiblings restores FIFO order after a promoted
+// echo re-bumped its row over freshly drained content: later-FIFO
+// anchored quiet rows in the same turn were positioned below the
+// echoed row at promote time and now sit below the drained rows too —
+// both inversions of provider order (all interrupted-tail content
+// precedes every queued message's attachment, and the siblings'
+// echoes come after this one). Bumping each sibling in FIFO order
+// puts the layout back to drained-content < echoed row < siblings,
+// and lifts the siblings past the revert cut at the echoed message
+// (the user-row predicate cuts item_index >= anchor) to match the
+// session slice, which removes them (round-7, R7-2).
+//
+// WasDeferred entries are skipped: their rows live in their own fresh
+// turns, so same-turn drained content cannot reorder them. Per-sibling
+// failures log loudly, record the repair obligation on the entry
+// (pendingSend.NeedsTailRebump — the sibling's own echo forces the
+// tail bump an anchored row otherwise skips), and continue. Caller
+// holds the thread's flush anchor lock, so no promote or pop can
+// interleave.
+func (r *Router) rebumpAnchoredQuietSiblings(threadID, echoedItemID string, turnIndex int, now int64) {
+	r.mu.Lock()
+	var siblingIDs []string
+	for _, entry := range r.pendingByThread[threadID] {
+		if entry.AOItemID == echoedItemID || entry.WasDeferred || !entry.AnchoredAtInterrupt {
+			continue
+		}
+		if entry.QuietItem == nil || entry.QuietItem.TurnIndex != turnIndex {
+			continue
+		}
+		if !strings.Contains(entry.AOItemID, ":flush:") {
+			continue
+		}
+		siblingIDs = append(siblingIDs, entry.AOItemID)
+	}
+	r.mu.Unlock()
+	for _, id := range siblingIDs {
+		item, err := r.store.BumpItemToTurnEnd(threadID, id, nil, now)
+		if err != nil {
+			log.Printf("triage: re-bump anchored flush sibling %s/%s over drained rows: %v", threadID, id, err)
+			r.markSiblingNeedsTailRebump(threadID, id)
+			continue
+		}
+		r.emitItemUpsertWithActivity(item, false)
+	}
+}
+
+// markSiblingNeedsTailRebump records the repair obligation for a
+// sibling whose re-bump failed — see pendingSend.NeedsTailRebump.
+// Idempotent; a no-op when the entry was consumed in the meantime
+// (impossible while the caller holds the flush anchor lock, but the
+// scan is cheap insurance either way).
+func (r *Router) markSiblingNeedsTailRebump(threadID, aoItemID string) {
+	r.mu.Lock()
+	pending := r.pendingByThread[threadID]
+	for i := range pending {
+		if pending[i].AOItemID == aoItemID {
+			pending[i].NeedsTailRebump = true
+			break
+		}
+	}
+	r.mu.Unlock()
+}
+
+// restorePendingSendDeferred undoes EagerPersistDeferredFlushSends'
+// deferred→quiet transition after its store persist failed: the
+// retained copy moves back to DeferredItem, and the WasDeferred /
+// AnchoredAtInterrupt claims clear. The entry is then
+// indistinguishable from a never-eager-persisted deferred send — a
+// second interrupt retries the persist instead of quiet-promoting a
+// row that doesn't exist, and the echo routes through
+// persistDeferredUserText (round-6, R6-6). InterruptedTurnIndex is
+// deliberately KEPT: the interrupt that failed to persist still cut
+// its turn, and the echo's predecessor settle needs that fact.
+// Runs under the anchor lock held by the caller, so no echo can
+// observe the mid-restore entry.
+func (r *Router) restorePendingSendDeferred(threadID, aoItemID string) {
+	r.mu.Lock()
+	pending := r.pendingByThread[threadID]
+	for i := range pending {
+		if pending[i].AOItemID == aoItemID {
+			if pending[i].QuietItem != nil {
+				pending[i].DeferredItem = pending[i].QuietItem
+				pending[i].QuietItem = nil
+			}
+			pending[i].WasDeferred = false
+			pending[i].AnchoredAtInterrupt = false
+			break
+		}
+	}
+	r.mu.Unlock()
+}
+
+// MarkFlushSendsInterrupted stamps interruptedTurnIndex onto every
+// unconsumed pending flush entry for threadID and returns each stamped
+// entry's PREVIOUS value keyed by AOItemID. Called by the interrupt
+// paths BEFORE awaiting the provider's interrupt ack: the read loop
+// keeps settling wire events during that wait, so the CLI's mid-loop
+// queue drain can consume an entry before the post-ack eager persist
+// ever sees it — the echo would then settle the cut turn "end_turn"
+// instead of "interrupted" (round-6, R6-4). Deferred-ORIGIN entries
+// (WasDeferred, eager-persisted by an EARLIER interrupt, awaiting
+// echo) need the refresh too, not just still-deferred ones: a second
+// interrupt cuts the first prompt's response turn, and a stale
+// first-interrupt stamp would settle that turn "end_turn" with the
+// settlement claim blocking the truncated result from correcting it
+// (round-7, R7-5).
+//
+// FlushStampToken fences one MarkFlushSendsInterrupted call's
+// follow-ups — RestoreFlushSendsInterrupted on a failed interrupt and
+// the post-ack eager stamp — against concurrent interrupts (stamp
+// epoch) and session replacement (thread reactivation epoch: death
+// recovery drains the FIFO and deterministic flush IDs let a
+// replacement session re-register same-ID entries that a stale
+// follow-up must not touch — round-9, R9-6). Opaque to callers.
+type FlushStampToken struct {
+	prev        map[string]int
+	stampEpoch  uint64
+	threadEpoch uint64
+	// seq uniquely identifies the Mark call. Stamp epochs are REUSED
+	// after restores step them back, so epoch alone cannot tell a live
+	// token from a duplicate restore of an already-applied one — a
+	// duplicate would park and later chain-apply over a fresh mark
+	// sharing the recycled epoch (round-10, R10-3). Also keys this
+	// Mark's interruptMarks entry, which a failed interrupt's restore
+	// removes (round-11, R11-3).
+	seq uint64
+}
+
+// interruptMark is one live MarkFlushSendsInterrupted call in a
+// thread's interruptMarks list: the turn it named as interrupted,
+// keyed by the call's token seq so a failed interrupt's restore can
+// remove exactly its own entry regardless of restore order.
+type interruptMark struct {
+	seq  uint64
+	turn int
+}
+
+// When the interrupt request itself fails, the caller passes the
+// returned token to RestoreFlushSendsInterrupted — restore, not a flat
+// -1 clear: entries re-stamped by this call may carry a PRIOR
+// interrupt's still-valid stamp that a wipe would destroy. The token's
+// stamp epoch (bumped only when at least one entry was stamped) fences
+// the restore against interrupts that are not serialized with each
+// other: a stop press racing the revert path's interrupt (round-8,
+// R8-2).
+func (r *Router) MarkFlushSendsInterrupted(threadID string, interruptedTurnIndex int) FlushStampToken {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pending := r.pendingByThread[threadID]
+	var prev map[string]int
+	for i := range pending {
+		if pending[i].QueueItemID == "" {
+			continue
+		}
+		if prev == nil {
+			prev = make(map[string]int)
+		}
+		prev[pending[i].AOItemID] = pending[i].InterruptedTurnIndex
+		pending[i].InterruptedTurnIndex = interruptedTurnIndex
+	}
+	if prev != nil {
+		r.flushStampEpochs[threadID]++
+	}
+	r.flushStampSeq++
+	// The thread-level mark list gets an entry even when nothing was
+	// stamped: an entry the CLI's queue drain popped just before this
+	// call is mid-persist with a -1 stamp retained, and the list is the
+	// only way its openQueuedEchoTurn can still learn which turn the
+	// interrupt cut (round-10, R10-6).
+	r.interruptMarks[threadID] = append(r.interruptMarks[threadID], interruptMark{
+		seq:  r.flushStampSeq,
+		turn: interruptedTurnIndex,
+	})
+	return FlushStampToken{
+		prev:        prev,
+		stampEpoch:  r.flushStampEpochs[threadID],
+		threadEpoch: r.threadEpochs[threadID],
+		seq:         r.flushStampSeq,
+	}
+}
+
+// RestoreFlushSendsInterrupted reverts MarkFlushSendsInterrupted after
+// a failed interrupt request, writing back each entry's previous stamp.
+// Entries consumed in the meantime are gone from the FIFO and skipped —
+// their echo already settled under the tentative stamp, the safe side
+// of that race (the provider provably drained them mid-interrupt).
+//
+// The restore applies only while the token's stamp epoch is still the
+// thread's current one: a concurrent interrupt that Marked after this
+// call re-stamped every surviving entry, and its stamp is live — a
+// succeeded later interrupt's provenance must not be reverted by an
+// earlier call's failure. A restore arriving under a newer epoch is
+// PARKED instead of dropped, and an applied restore steps the epoch
+// back and chains through parked epochs — overlapping interrupts that
+// all fail unwind fully regardless of failure order, while an unwind
+// parked under a succeeded interrupt's epoch stays (correctly)
+// unreachable (round-9, R9-2). A token from before a session
+// replacement (thread reactivation epoch moved) no-ops entirely, and
+// stale-generation parked unwinds are dropped when the chain reaches
+// them (round-9, R9-6).
+func (r *Router) RestoreFlushSendsInterrupted(threadID string, tok FlushStampToken) {
+	if tok.seq == 0 {
+		// Zero-value token — no Mark ever ran for it.
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.threadEpochs[threadID] != tok.threadEpoch {
+		return
+	}
+	if _, applied := r.flushStampApplied[tok.seq]; applied {
+		// Duplicate restore of a token that already applied: parking it
+		// would let a recycled epoch chain-apply it over a fresh mark's
+		// live stamp (round-10, R10-3).
+		return
+	}
+	// The thread-level mark list unwinds independently of the stamp
+	// epochs — Mark appends even when it stamped no entries, so this
+	// must run before every stamp-path early return (round-10, R10-6).
+	// Removal is seq-keyed, so overlapping failed interrupts unwind
+	// correctly in any restore order (round-11, R11-3).
+	r.removeInterruptMarkLocked(threadID, tok.seq)
+	if len(tok.prev) == 0 {
+		return
+	}
+	if r.flushStampEpochs[threadID] != tok.stampEpoch {
+		stash := r.flushStampUnwinds[threadID]
+		if stash == nil {
+			stash = make(map[uint64]FlushStampToken)
+			r.flushStampUnwinds[threadID] = stash
+		}
+		stash[tok.stampEpoch] = tok
+		return
+	}
+	r.applyFlushStampRestoreLocked(threadID, tok)
+	stash := r.flushStampUnwinds[threadID]
+	for {
+		current := r.flushStampEpochs[threadID]
+		parked, ok := stash[current]
+		if !ok {
+			return
+		}
+		delete(stash, current)
+		if parked.threadEpoch != r.threadEpochs[threadID] {
+			return
+		}
+		if _, applied := r.flushStampApplied[parked.seq]; applied {
+			return
+		}
+		r.applyFlushStampRestoreLocked(threadID, parked)
+	}
+}
+
+// applyFlushStampRestoreLocked writes back one Mark call's previous
+// stamps, steps the thread's stamp epoch below it, records the token as
+// consumed, and removes the Mark's interrupt-mark entry (chained parked
+// tokens reach here without passing the direct path's removal). Caller
+// holds r.mu and has verified the epoch is current and the token
+// unapplied.
+func (r *Router) applyFlushStampRestoreLocked(threadID string, tok FlushStampToken) {
+	pending := r.pendingByThread[threadID]
+	for i := range pending {
+		if value, ok := tok.prev[pending[i].AOItemID]; ok {
+			pending[i].InterruptedTurnIndex = value
+		}
+	}
+	r.flushStampEpochs[threadID] = tok.stampEpoch - 1
+	r.flushStampApplied[tok.seq] = struct{}{}
+	r.removeInterruptMarkLocked(threadID, tok.seq)
+}
+
+// removeInterruptMarkLocked deletes seq's entry from the thread's
+// interrupt-mark list, wherever it sits — a failed interrupt withdraws
+// exactly its own claim, leaving every other live mark in place, so
+// overlapping failures unwind correctly in any restore order.
+// Idempotent: a duplicate removal finds nothing. Caller holds r.mu.
+func (r *Router) removeInterruptMarkLocked(threadID string, seq uint64) {
+	marks := r.interruptMarks[threadID]
+	for i := range marks {
+		if marks[i].seq == seq {
+			r.interruptMarks[threadID] = append(marks[:i], marks[i+1:]...)
+			return
+		}
+	}
+}
+
+// unclaimPendingSendAnchor reverts an AnchoredAtInterrupt claim whose
+// store write failed, restoring the echo-time bump as the row's
+// fallback positioning. No-op when the entry was consumed in the
+// meantime — the echo already handled the row under the claimed
+// (stamp-only) semantics, which is the safe side of the race.
+func (r *Router) unclaimPendingSendAnchor(threadID, aoItemID string) {
+	r.mu.Lock()
+	pending := r.pendingByThread[threadID]
+	for i := range pending {
+		if pending[i].AOItemID == aoItemID {
+			pending[i].AnchoredAtInterrupt = false
+			break
+		}
+	}
+	r.mu.Unlock()
 }
 
 // markPendingSendsAnchoredAtInterrupt flips AnchoredAtInterrupt on the
@@ -534,6 +1136,11 @@ func (r *Router) ClearPendingSendsByItemIDs(threadID string, ids []string) {
 	for _, id := range ids {
 		remove[id] = struct{}{}
 	}
+	// Anchor lock so the removal is total against an in-flight echo's
+	// failure reinsert (round-5, R5-2).
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	queue := r.pendingByThread[threadID]

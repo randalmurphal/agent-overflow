@@ -152,9 +152,11 @@ func TestRevertToMessageCheckpointRemapsSurvivingProviderIDs(t *testing.T) {
 }
 
 // TestRevertToMessageCheckpointOrdinalFallbackStillReachableForStaleIDs
-// pins the legacy escape hatch: a checkpoint whose stored uuid is
-// absent from the session file (pre-stamp rows, regressed remap) still
-// reverts via the ordinal walk, loudly.
+// pins the legacy escape hatch: when BOTH stored uuid copies — the
+// checkpoint's and the item row's meta stamp (the R5-7 retry
+// candidate) — are absent from the session file (pre-stamp rows, a
+// wholesale regressed remap), the revert still lands via the ordinal
+// walk, loudly.
 func TestRevertToMessageCheckpointOrdinalFallbackStillReachableForStaleIDs(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
@@ -166,6 +168,9 @@ func TestRevertToMessageCheckpointOrdinalFallbackStillReachableForStaleIDs(t *te
 	}
 	if err := app.store.UpdateCheckpointProviderIDs(thread.ID, stale.UserItemID, "uuid-not-in-file", "also-not-in-file"); err != nil {
 		t.Fatalf("poison checkpoint uuid: %v", err)
+	}
+	if err := app.store.UpdateItemMeta(thread.ID, "user:2", `{"provider_item_id":"uuid-not-in-file"}`); err != nil {
+		t.Fatalf("poison item meta uuid: %v", err)
 	}
 
 	logBuf := captureLog(t)

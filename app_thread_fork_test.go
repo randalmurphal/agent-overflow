@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -247,6 +248,131 @@ func TestForkOfForkRemapStaysCorrect(t *testing.T) {
 	}
 }
 
+// TestForkThreadFromMessageKeepsSharedTurnPrefix — forking a Claude thread
+// at a queued flush message that shares its turn with the prompt that was
+// running when it was enqueued must keep that turn's prefix (prompt + agent
+// work before the queued message) in the fork, matching the session-file
+// slice which cuts at the message uuid, not the turn boundary.
+func TestForkThreadFromMessageKeepsSharedTurnPrefix(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := initCheckpointRepo(t)
+	const sessionID = "fork-midturn-source"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"fork-midturn-source","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"fork-midturn-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"fork-midturn-source","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"fork-midturn-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"uq","parentUuid":"a1","sessionId":"fork-midturn-source","message":{"role":"user","content":"queued"}}
+{"type":"assistant","uuid":"aq","parentUuid":"uq","sessionId":"fork-midturn-source","message":{"role":"assistant","content":[{"type":"text","text":"queued reply"}]}}
+`)
+	source := createCheckpointTestThread(t, app, "src-midturn-fork", "claude", workspace)
+	source.SessionRef = sessionID
+	if err := app.store.UpdateThread(source); err != nil {
+		t.Fatalf("update source: %v", err)
+	}
+	insertUserItemWithMeta(t, app.store, source.ID, "user:0", 0, "first", `{"provider_item_id":"u0"}`)
+	insertAssistantTextItem(t, app.store, source.ID, "a:0", 0, "reply 0")
+	insertUserItemWithMeta(t, app.store, source.ID, "user:1", 1, "second", `{"provider_item_id":"u1"}`)
+	insertAssistantTextItem(t, app.store, source.ID, "a:1", 1, "reply 1")
+	insertUserItemWithMeta(t, app.store, source.ID, "user:q", 1, "queued", `{"provider_item_id":"uq"}`)
+	insertAssistantTextItem(t, app.store, source.ID, "a:q", 1, "queued reply")
+	saveSourceCheckpoint(t, app, source.ID, workspace, "chk-q", "user:q", 1, "uq", "a1")
+
+	fork, err := app.ForkThreadFromMessage(source.ID, "user:q")
+	if err != nil {
+		t.Fatalf("fork from message: %v", err)
+	}
+
+	items, err := app.store.ListItems(fork.ID)
+	if err != nil {
+		t.Fatalf("list fork items: %v", err)
+	}
+	var got []string
+	for _, it := range items {
+		got = append(got, it.Summary)
+	}
+	want := []string{"first", "reply 0", "second", "reply 1"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("fork items = %v, want %v", got, want)
+	}
+
+	oldToNew := readForkUUIDMap(t, workspace, fork.SessionRef)
+	for _, oldUUID := range []string{"u0", "a0", "u1", "a1"} {
+		if oldToNew[oldUUID] == "" {
+			t.Fatalf("fork JSONL missing remap for %q: %v", oldUUID, oldToNew)
+		}
+	}
+	if oldToNew["uq"] != "" || oldToNew["aq"] != "" {
+		t.Errorf("fork JSONL kept the queued message or its reply: %v", oldToNew)
+	}
+	bySummary := map[string]store.Item{}
+	for _, it := range items {
+		if it.Kind == "user_text" {
+			bySummary[it.Summary] = it
+		}
+	}
+	if gotID := usermessage.ReadProviderItemID(bySummary["second"].Meta); gotID != oldToNew["u1"] {
+		t.Errorf("fork \"second\" provider_item_id = %q, want fork-remapped %q", gotID, oldToNew["u1"])
+	}
+}
+
+// TestForkThreadFromMessageMidTurnZeroKeepsPrefix — a queued message
+// consumed during the very FIRST turn is a mid-turn-0 anchor: the fork must
+// keep turn 0's prefix and slice the session, not start empty (the turn-0
+// shortcut only applies to an anchor that OPENS turn 0).
+func TestForkThreadFromMessageMidTurnZeroKeepsPrefix(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := initCheckpointRepo(t)
+	const sessionID = "fork-midturn0-source"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"fork-midturn0-source","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"fork-midturn0-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"uq","parentUuid":"a0","sessionId":"fork-midturn0-source","message":{"role":"user","content":"queued"}}
+{"type":"assistant","uuid":"aq","parentUuid":"uq","sessionId":"fork-midturn0-source","message":{"role":"assistant","content":[{"type":"text","text":"queued reply"}]}}
+`)
+	source := createCheckpointTestThread(t, app, "src-midturn0-fork", "claude", workspace)
+	source.SessionRef = sessionID
+	if err := app.store.UpdateThread(source); err != nil {
+		t.Fatalf("update source: %v", err)
+	}
+	insertUserItemWithMeta(t, app.store, source.ID, "user:0", 0, "first", `{"provider_item_id":"u0"}`)
+	insertAssistantTextItem(t, app.store, source.ID, "a:0", 0, "reply 0")
+	insertUserItemWithMeta(t, app.store, source.ID, "user:q", 0, "queued", `{"provider_item_id":"uq"}`)
+	saveSourceCheckpoint(t, app, source.ID, workspace, "chk-q0", "user:q", 0, "uq", "a0")
+
+	fork, err := app.ForkThreadFromMessage(source.ID, "user:q")
+	if err != nil {
+		t.Fatalf("fork from message: %v", err)
+	}
+
+	items, err := app.store.ListItems(fork.ID)
+	if err != nil {
+		t.Fatalf("list fork items: %v", err)
+	}
+	var got []string
+	for _, it := range items {
+		got = append(got, it.Summary)
+	}
+	want := []string{"first", "reply 0"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("fork items = %v, want %v", got, want)
+	}
+	if fork.SessionRef == "" {
+		t.Fatal("mid-turn-0 fork must slice the session, not start fresh")
+	}
+	oldToNew := readForkUUIDMap(t, workspace, fork.SessionRef)
+	if oldToNew["u0"] == "" || oldToNew["a0"] == "" {
+		t.Fatalf("fork JSONL missing turn-0 prefix: %v", oldToNew)
+	}
+	if oldToNew["uq"] != "" {
+		t.Errorf("fork JSONL kept the queued message: %v", oldToNew)
+	}
+}
+
 // saveSourceCheckpoint is a thin test helper for the fork tests: a
 // checkpoint with the full provider-id surface (user UUID + parent
 // UUID) that message-keyed forks use to find their Claude slice point.
@@ -363,5 +489,86 @@ func TestLookupTurnAnchorClaudeUUIDReturnsEmptyForUnstamped(t *testing.T) {
 	}
 	if got := app.lookupTurnAnchorClaudeUUID(thread.ID, 99); got != "" {
 		t.Errorf("lookupTurnAnchorClaudeUUID(turn=99) = %q, want empty (turn out of range)", got)
+	}
+}
+
+// TestForkThreadFromMessageHeadHealedFirstPromptStartsFresh is the fork
+// mirror of the R8-1 revert fix: a head-healed turn-0 prompt at a
+// negative item_index opens turn 0, so a fork before it keeps nothing
+// and starts a fresh provider session instead of attempting an empty
+// slice.
+func TestForkThreadFromMessageHeadHealedFirstPromptStartsFresh(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := initCheckpointRepo(t)
+	const sessionID = "fork-headheal-source"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"fork-headheal-source","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"fork-headheal-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+`)
+	source := createCheckpointTestThread(t, app, "src-headheal-fork", "claude", workspace)
+	source.SessionRef = sessionID
+	if err := app.store.UpdateThread(source); err != nil {
+		t.Fatalf("update source: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItem(store.Item{
+		ID: "user:0:flush:0", ThreadID: source.ID, TurnIndex: 0, ItemIndex: -1,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "first", Meta: `{"provider_item_id":"u0"}`,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert head-healed prompt: %v", err)
+	}
+	if err := app.store.InsertItem(store.Item{
+		ID: "text:0:0", ThreadID: source.ID, TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant", Status: "completed",
+		Summary: "reply 0", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert response row: %v", err)
+	}
+	saveSourceCheckpoint(t, app, source.ID, workspace, "chk-headheal", "user:0:flush:0", 0, "u0", "")
+
+	fork, err := app.ForkThreadFromMessage(source.ID, "user:0:flush:0")
+	if err != nil {
+		t.Fatalf("fork from head-healed first prompt: %v", err)
+	}
+	if fork.SessionRef != "" {
+		t.Errorf("fork SessionRef = %q, want empty — forking before the turn-opening prompt keeps nothing", fork.SessionRef)
+	}
+	items, err := app.store.ListItems(fork.ID)
+	if err != nil {
+		t.Fatalf("list fork items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("fork items = %+v, want none", items)
+	}
+}
+
+// TestForkThreadFromMessageRejectsCheckpointTurnDrift pins R8-4
+// (round 8): the SQLite clone cuts at the item's turn while the
+// provider cut derives from the checkpoint row, so a checkpoint whose
+// cached turn drifted from its user item must fail the fork loudly —
+// the same guard the revert path applies — instead of silently
+// splitting the two histories.
+func TestForkThreadFromMessageRejectsCheckpointTurnDrift(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	workspace := initCheckpointRepo(t)
+	source := createCheckpointTestThread(t, app, "src-drift-fork", "claude", workspace)
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItem(store.Item{
+		ID: "user:1", ThreadID: source.ID, TurnIndex: 1, ItemIndex: 0,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "second prompt", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert prompt: %v", err)
+	}
+	saveSourceCheckpoint(t, app, source.ID, workspace, "chk-drift", "user:1", 0, "", "")
+
+	if _, err := app.ForkThreadFromMessage(source.ID, "user:1"); err == nil ||
+		!strings.Contains(err.Error(), "does not match user message turn index") {
+		t.Fatalf("fork with drifted checkpoint turn = %v, want turn-mismatch error", err)
 	}
 }

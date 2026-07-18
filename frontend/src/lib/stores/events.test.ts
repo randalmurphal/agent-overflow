@@ -2602,6 +2602,38 @@ describe('setupEventListeners', () => {
     });
     expect(pane.items).toHaveLength(1);
   });
+
+  // provider:queue_restored reports queued messages whose store rows
+  // the backend deleted when it restored their content to the composer
+  // draft (failed Codex resend, session death). Rows the event names
+  // must leave the mounted timeline — without this, a deleted store
+  // row keeps a ghost row on screen until the next full reload — and
+  // rows it does not name must stay.
+  it('removes only the restored rows from the timeline on provider:queue_restored', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-q' }));
+    pane.upsertItems([
+      makeItem({ id: 'u:keep', threadId: 'thread-q', turnIndex: 0, kind: 'user_text', role: 'user' }),
+      makeItem({ id: 'user:1:flush:1', threadId: 'thread-q', turnIndex: 1, kind: 'user_text', role: 'user' }),
+      makeItem({ id: 'user:1:flush:2', threadId: 'thread-q', turnIndex: 1, kind: 'user_text', role: 'user' }),
+    ]);
+
+    emitWailsEvent('provider:queue_restored', {
+      threadId: 'thread-q',
+      reason: 'resend_failed',
+      userItemIds: ['user:1:flush:1', 'user:1:flush:2'],
+    });
+
+    expect(pane.items.map((it) => it.id)).toEqual(['u:keep']);
+
+    // Absent ids are a no-op, not an error (the session-death restore
+    // can name rows that were never promoted into the timeline).
+    emitWailsEvent('provider:queue_restored', {
+      threadId: 'thread-q',
+      reason: 'session_died',
+      userItemIds: ['user:9:flush:9'],
+    });
+    expect(pane.items.map((it) => it.id)).toEqual(['u:keep']);
+  });
   // ===== flushItemEventQueue per-item batching =====
   // A tool burst arrives on the wire as upserts, patches, and deltas of
   // many DIFFERENT rows interleaved. The flush must not fragment on

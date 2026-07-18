@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/diffsummary"
+	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
@@ -57,8 +59,9 @@ func (a *App) captureMessageCheckpoint(thread store.Thread, userItem store.Item)
 		return
 	}
 
+	now := time.Now().UnixMilli()
 	var files []diffsummary.File
-	if prev, ok, err := a.store.GetPreviousCheckpoint(thread.ID, userItem.TurnIndex); err != nil {
+	if prev, ok, err := a.store.GetPreviousCheckpoint(thread.ID, userItem.TurnIndex, userItem.ItemIndex); err != nil {
 		log.Printf("checkpoint: previous checkpoint lookup failed thread=%s user_item=%s: %v", thread.ID, userItem.ID, err)
 		a.emitCheckpointError(thread.ID, userItem.ID, userItem.TurnIndex, err)
 	} else if ok {
@@ -73,20 +76,22 @@ func (a *App) captureMessageCheckpoint(thread store.Thread, userItem store.Item)
 		}
 	}
 
-	now := time.Now().UnixMilli()
 	record := store.Checkpoint{
 		ID:         uuid.NewString(),
 		ThreadID:   thread.ID,
 		UserItemID: userItem.ID,
 		TurnIndex:  userItem.TurnIndex,
-		// Mirror the row's provider_item_id onto the checkpoint at capture
+		// Mirror the row's provider ids onto the checkpoint at capture
 		// time. For a direct send the row meta already carries the minted
 		// send uuid (app_send.go stamps it before this call), so the
 		// checkpoint is revert-ready before Claude's replay echo — the
-		// revert path keys on this id. Empty when the meta has none yet
-		// (eager-persist-on-interrupt rows, legacy sends); the echo then
-		// fills it via UpdateCheckpointProviderIDs as before.
+		// revert path keys on this id. A row confirmed by its echo also
+		// carries the parent uuid (stamped in the same tx as the item id,
+		// round-5 R5-8). Empty when the meta has none yet (eager-persist-
+		// on-interrupt rows, legacy sends); the echo then fills both via
+		// UpdateCheckpointProviderIDs as before.
 		ProviderUserMessageID: usermessage.ReadProviderItemID(userItem.Meta),
+		ProviderParentUUID:    usermessage.ReadProviderParentUUID(userItem.Meta),
 		RefName:               ref,
 		Status:                "ready",
 		Files:                 files,
@@ -133,7 +138,14 @@ func (a *App) GetMessageCheckpointDiff(threadID string, userItemID string) (stri
 	if err != nil {
 		return "", err
 	}
-	prev, ok, err := a.store.GetPreviousCheckpoint(threadID, target.TurnIndex)
+	anchorItem, found, err := a.store.GetThreadItem(threadID, userItemID)
+	if err != nil {
+		return "", fmt.Errorf("%s: load anchor item: %w", action, err)
+	}
+	if !found {
+		return "", fmt.Errorf("%s: anchor item %q not found", action, userItemID)
+	}
+	prev, ok, err := a.store.GetPreviousCheckpoint(threadID, anchorItem.TurnIndex, anchorItem.ItemIndex)
 	if err != nil {
 		return "", fmt.Errorf("%s: previous: %w", action, err)
 	}
@@ -427,8 +439,11 @@ type revertConversationLockedArgs struct {
 //     session file.
 //  5. Conversation-and-files mode only: ListTrackedFilesFromTurn +
 //     RestoreWorktreePaths + workspaceFiles.Invalidate.
-//  6. DeleteCheckpointsFromTurn + DeleteConversationFromTurn truncate
-//     SQLite at the user-item's turnIndex (inclusive).
+//  6. SQLite truncation at the provider revert's granularity: Codex
+//     deletes whole turns from the user-item's turnIndex (inclusive,
+//     matching thread/fork's turn-boundary cut); Claude deletes from
+//     the user item itself (DeleteConversationFromItem, matching the
+//     session slice at the message uuid).
 //  7. deleteCheckpointRefs removes the matching git refs.
 //  8. UpsertThreadDraft restores the composer draft.
 func (a *App) revertConversationLocked(args revertConversationLockedArgs) error {
@@ -476,7 +491,7 @@ func (a *App) revertConversationLocked(args revertConversationLockedArgs) error 
 				return err
 			}
 		}
-		if err := a.revertProviderConversationToMessage(args.thread, args.record); err != nil {
+		if err := a.revertProviderConversationToMessage(args.thread, args.record, args.userItem); err != nil {
 			return fmt.Errorf("%s: %w", args.errorPrefix, err)
 		}
 	}
@@ -501,26 +516,59 @@ func (a *App) revertConversationLocked(args revertConversationLockedArgs) error 
 		}
 	}
 
-	refs, err := a.store.DeleteCheckpointsFromTurn(args.thread.ID, args.userItem.TurnIndex)
-	if err != nil {
-		return fmt.Errorf("%s: truncate checkpoints: %w", args.errorPrefix, err)
-	}
-	if _, err := a.store.DeleteConversationFromTurn(args.thread.ID, args.userItem.TurnIndex); err != nil {
-		return fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
-	}
-	if err := a.deleteCheckpointRefs(context.Background(), args.thread.ID, args.errorPrefix, refs); err != nil {
-		return err
-	}
+	// The prompt draft is restored BEFORE the destructive truncation: the
+	// provider slice above already removed the message from provider
+	// history, so from here on the composer draft is the user's only copy.
+	// If truncation then fails, the timeline still holds the rows and the
+	// checkpoint, and a retry converges — the provider revert re-runs
+	// against the already-cut transcript (the already-cut detector clones
+	// it whole) and this upsert is idempotent. The old order deleted the
+	// checkpoint (the retry key) first, so any later failure stranded the
+	// message with no way to restore it (round-4 review, CT4-4).
 	if err := a.store.UpsertThreadDraft(args.promptDraft); err != nil {
 		return fmt.Errorf("%s: restore prompt draft: %w", args.errorPrefix, err)
 	}
+
+	// Truncation granularity must match the provider revert above. Codex
+	// thread/fork cuts provider history at the turn boundary before the
+	// checkpoint's turn, so SQLite drops the whole turn. Claude's session
+	// slice (and the TUI's native Esc-revert) cut at the message itself, so
+	// only the anchor row and what follows it go — a queued flush message
+	// that shares its turn with an earlier prompt keeps that prompt and the
+	// agent work that preceded the queued send. The Codex coarseness is an
+	// app-server API limit, not permanent: see the granularity note on
+	// codex.Session.ForkAt for what upstream already has and when this
+	// branch can move to a message-granular cut.
+	var refs []store.CheckpointRef
+	var err error
+	if args.thread.Provider == string(provider.Codex) {
+		// One transaction for checkpoints + conversation: the old
+		// two-call shape could commit the checkpoint delete and then
+		// fail the conversation delete, stranding rows whose revert
+		// anchors were already gone (round-5, R5-5).
+		refs, _, err = a.store.DeleteConversationFromTurn(args.thread.ID, args.userItem.TurnIndex)
+		if err != nil {
+			return fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
+		}
+	} else {
+		refs, err = a.store.DeleteConversationFromItem(args.thread.ID, args.userItem.ID)
+		if err != nil {
+			return fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
+		}
+	}
+	// Best-effort, after the point of no return: the checkpoint rows are
+	// gone, so a ref-deletion failure can't be retried through this path
+	// anyway — surfacing it as a hard error would only fail a revert that
+	// has already fully happened. Orphaned refs are logged garbage;
+	// they're swept when the thread is deleted.
+	a.deleteCheckpointRefsBestEffort(args.thread.ID, args.errorPrefix, "", refs)
 	return nil
 }
 
-func (a *App) revertProviderConversationToMessage(thread store.Thread, checkpoint store.Checkpoint) error {
+func (a *App) revertProviderConversationToMessage(thread store.Thread, checkpoint store.Checkpoint, userItem store.Item) error {
 	switch thread.Provider {
 	case string(provider.Claude):
-		return a.revertClaudeThreadToMessage(thread, checkpoint)
+		return a.revertClaudeThreadToMessage(thread, checkpoint, userItem)
 	default:
 		return fmt.Errorf("unsupported provider %q", thread.Provider)
 	}
@@ -582,8 +630,16 @@ func (a *App) revertCodexThreadToMessage(thread store.Thread, checkpoint store.C
 	return nil
 }
 
-func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.Checkpoint) error {
-	if checkpoint.TurnIndex == 0 {
+func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.Checkpoint, userItem store.Item) error {
+	midTurn, err := claudeMidTurnAnchor(userItem)
+	if err != nil {
+		return fmt.Errorf("claude rollback: %w", err)
+	}
+	// A revert to the row that opens turn 0 keeps nothing: drop the session
+	// reference and let the next send start fresh. An anchor deeper in turn
+	// 0 — a flush message queued during the very first turn — keeps that
+	// turn's prefix, so it needs the session slice like any later turn.
+	if checkpoint.TurnIndex == 0 && !midTurn {
 		thread.SessionRef = ""
 		thread.PendingForkRef = ""
 		return a.store.UpdateThread(thread)
@@ -607,71 +663,231 @@ func (a *App) revertClaudeThreadToMessage(thread store.Thread, checkpoint store.
 	// synthetic entries (boolean flags, content sentinels, injected XML)
 	// so the fallback is correct as long as the wire shape stays in its
 	// documented set.
-	newID, newPath, uuidMap, err := a.writeRevertedClaudeSession(srcPath, checkpoint)
+	newID, newPath, uuidMap, err := a.writeRevertedClaudeSession(srcPath, checkpoint, userItem, midTurn)
 	if err != nil {
 		return fmt.Errorf("write reverted session: %w", err)
 	}
-	thread.SessionRef = newID
-	thread.PendingForkRef = ""
-	if err := a.store.UpdateThread(thread); err != nil {
-		_ = os.Remove(newPath)
-		return fmt.Errorf("persist reverted claude state: %w", err)
-	}
 	// The slice reminted every uuid, so surviving items' provider_item_id
 	// and surviving checkpoints' provider ids all point at the OLD
-	// session file. Remap them to the new ids or the NEXT revert/fork on
-	// this thread degrades to the loud ordinal-fallback path. Rows at or
-	// past the revert anchor are about to be truncated by the caller and
-	// are absent from the map — unmapped ids are left untouched.
-	//
-	// Log-and-continue on failure (deviation from fail-loudly, justified):
-	// SessionRef already moved to the slice, so erroring out here would
-	// strand the thread half-reverted; stale ids only cost the fallback's
-	// known synthetic-entry sensitivity, not correctness.
-	if err := a.remapClaudeProviderIDs(thread.ID, uuidMap); err != nil {
-		log.Printf("claude rollback: remap provider ids for thread %s after revert: %v — subsequent reverts fall back to ordinal slicing", thread.ID, err)
+	// session file. Compute the rewrites BEFORE committing anything —
+	// a failure here aborts with the thread untouched (the slice file is
+	// an inert orphan) — then commit SessionRef + remap in ONE store
+	// transaction. Committed separately, a crash between the two left
+	// ids one fork generation stale, and a retried revert on top of that
+	// lost the single-generation forkedFrom provenance the anchor
+	// lookups heal through (round-6, R6-5). Rows at or past the revert
+	// anchor are about to be truncated by the caller and are absent from
+	// the map — unmapped ids are left untouched.
+	itemUpdates, checkpointUpdates, err := a.computeClaudeProviderIDRemap(thread.ID, uuidMap)
+	if err != nil {
+		a.removeAbandonedSessionSlice(newPath)
+		return fmt.Errorf("claude rollback: compute provider id remap: %w", err)
+	}
+	thread.SessionRef = newID
+	thread.PendingForkRef = ""
+	if err := a.store.UpdateThreadAndRemapProviderIDs(thread, itemUpdates, checkpointUpdates); err != nil {
+		a.removeAbandonedSessionSlice(newPath)
+		return fmt.Errorf("persist reverted claude state: %w", err)
 	}
 	return nil
+}
+
+// removeAbandonedSessionSlice deletes a Claude slice file whose revert
+// aborted before committing any store state. The file is inert (no
+// thread references it), so a failed delete only leaks disk — but a
+// silent leak across repeated failed reverts is invisible, so log it
+// (round-7, R7-6).
+func (a *App) removeAbandonedSessionSlice(path string) {
+	if err := os.Remove(path); err != nil {
+		log.Printf("app: claude rollback: remove abandoned session slice %s: %v", path, err)
+	}
+}
+
+// claudeMidTurnAnchor reports whether a revert/fork anchor row sits
+// mid-turn in PROVIDER order — content the session slice must retain
+// precedes it inside its own turn. Display position alone
+// (ItemIndex > 0) undercounts: a promoted flush row healed at its
+// dispatch-time index after a failed tail bump (round-10, R10-1) can
+// sit at display index 0 while the interrupted round's tail —
+// provider-order BEFORE the queued message — persists below it, and
+// the ordinal whole-turn slice (or the turn-0 drop-SessionRef branch)
+// would cut that retained prefix from the transcript while
+// DeleteConversationFromItem's promoted predicate keeps it in SQLite
+// (round-12, C12-1). The promotion marker is the durable record of
+// that ordering. Head-healed deferred prompts (negative index,
+// unmarked — round-7 R7-4 / round-8 R8-1) stay turn-initial. A
+// malformed marker fails loudly per the corrupt-metadata posture
+// (round-9, R9-4).
+func claudeMidTurnAnchor(userItem store.Item) (bool, error) {
+	state, err := itemmeta.DecodePromotionState(userItem.Meta)
+	if err != nil {
+		return false, fmt.Errorf("decode promotion state for %s/%s: %w", userItem.ThreadID, userItem.ID, err)
+	}
+	return userItem.ItemIndex > 0 || state.Promoted, nil
 }
 
 // writeRevertedClaudeSession is the revert-path call into
 // writeClaudeSessionSlice. Returns the slice's uuidMap (old → new for
 // every kept row) so the caller can refresh stored provider ids — the
-// slice remints every uuid, exactly like a fork.
-func (a *App) writeRevertedClaudeSession(srcPath string, checkpoint store.Checkpoint) (string, string, map[string]string, error) {
+// slice remints every uuid, exactly like a fork. midTurnAnchor comes
+// from claudeMidTurnAnchor: a queued flush row sharing its turn with
+// content that precedes it in provider order.
+func (a *App) writeRevertedClaudeSession(srcPath string, checkpoint store.Checkpoint, userItem store.Item, midTurnAnchor bool) (string, string, map[string]string, error) {
 	return writeClaudeSessionSlice(
-		srcPath, checkpoint.ProviderUserMessageID, checkpoint.TurnIndex-1, "claude rollback",
+		srcPath, claudeSliceAnchorUUIDs(checkpoint, userItem), claudeSliceParentUUIDs(checkpoint, userItem),
+		checkpoint.TurnIndex-1, midTurnAnchor, "claude rollback",
 	)
 }
 
-// writeClaudeSessionSlice tries the UUID-keyed fork-slice when
-// anchorUUID is non-empty. On ErrMessageNotFound — most often: the
-// stored UUID is stale because the session was forked but the
-// post-fork remap regressed — it falls back to the ordinal walk at
-// fallbackLastKeptTurn so a known-imperfect slice still beats a
+// claudeSliceParentUUIDs returns the anchor's transcript-parent uuid
+// candidates for the already-cut retry, in the same trust order as
+// claudeSliceAnchorUUIDs: the checkpoint's provider_parent_uuid, then
+// the item row's meta stamp. The item copy is written atomically with
+// the item id at the echo (round-5, R5-8), so a checkpoint whose
+// follow-up update failed — previously the ONLY durable parent copy —
+// no longer strands the retry without a slice-through point.
+func claudeSliceParentUUIDs(checkpointRow store.Checkpoint, userItem store.Item) []string {
+	var candidates []string
+	if checkpointRow.ProviderParentUUID != "" {
+		candidates = append(candidates, checkpointRow.ProviderParentUUID)
+	}
+	if p := usermessage.ReadProviderParentUUID(userItem.Meta); p != "" && p != checkpointRow.ProviderParentUUID {
+		candidates = append(candidates, p)
+	}
+	return candidates
+}
+
+// claudeSliceAnchorUUIDs returns the wire uuid candidates keying a
+// Claude slice at userItem, in trust order: the checkpoint's
+// provider_user_message_id, then the item row's own durable meta stamp
+// when it differs. The two copies are written at different moments —
+// the item meta at the echo's stamp, the checkpoint by a follow-up
+// UpdateCheckpointProviderIDs that can fail after the stamp committed
+// (round-4 review, CT4-6) — and refreshed by different remap loops
+// (remapClaudeProviderIDs updates items before checkpoints, each row
+// autocommitting), so either copy can be a remap generation staler than
+// the other. writeClaudeSessionSlice tries each candidate before
+// declaring the anchor missing (round-5, R5-7); a checkpoint without
+// any id does NOT mean the message never reached the provider — the
+// item-meta candidate keeps a consumed mid-turn message on the exact
+// UUID-keyed slice instead of misclassifying it into the unconsumed
+// full-clone path, which would truncate the timeline while the provider
+// transcript keeps the message.
+func claudeSliceAnchorUUIDs(checkpointRow store.Checkpoint, userItem store.Item) []string {
+	var candidates []string
+	if checkpointRow.ProviderUserMessageID != "" {
+		candidates = append(candidates, checkpointRow.ProviderUserMessageID)
+	}
+	if id := usermessage.ReadProviderItemID(userItem.Meta); id != "" && id != checkpointRow.ProviderUserMessageID {
+		if len(candidates) == 0 {
+			log.Printf("claude slice: checkpoint for %s/%s carries no provider uuid — using the item row's durable stamp %q", userItem.ThreadID, userItem.ID, id)
+		}
+		candidates = append(candidates, id)
+	}
+	return candidates
+}
+
+// writeClaudeSessionSlice tries the UUID-keyed fork-slice for each
+// anchor candidate in order (checkpoint copy first, then the item
+// row's meta stamp — see claudeSliceAnchorUUIDs; either can be a remap
+// generation staler than the other, so a miss on the first is retried
+// on the next before any fallback, round-5 R5-7). Only when EVERY
+// candidate is ErrMessageNotFound — most often: the stored UUIDs are
+// stale because the session was forked but the post-fork remap
+// regressed — does it fall back to the ordinal walk at
+// fallbackLastKeptTurn, so a known-imperfect slice still beats a
 // hard error. Other errors from the UUID-keyed branch propagate
 // verbatim. logCtx prefixes the fallback log so the operator can
 // tell which entry point hit the stale id; a loud log here is
 // deliberate because a wrong-source slice is worse than the
 // ordinal walk's known synthetic-entry sensitivity.
 //
+// midTurnAnchor changes the no-UUID handling: the ordinal walk keeps
+// whole turns, so for an anchor that does NOT open its turn (a queued
+// flush row sharing turn N with an earlier prompt) it would slice at
+// end-of-turn-N-1 and drop the shared turn's kept prefix from the
+// provider session while SQLite retains it. A mid-turn anchor with an
+// EMPTY uuid was never consumed — the checkpoint's provider id is
+// stamped only by the consumption echo — so the transcript is already
+// at the right cut and is cloned whole (the common case: revert of an
+// interrupt-promoted row before its echo). A mid-turn anchor with a
+// NON-EMPTY uuid that the transcript doesn't contain splits on
+// anchorParentUUIDs (the checkpoint's provider_parent_uuid, then the
+// item meta's copy — see claudeSliceParentUUIDs, round-5 R5-8):
+//
+//   - Parent PRESENT in the transcript: a prior slice already cut this
+//     transcript exactly at the anchor — the post-slice remap refreshed
+//     the surviving parent's id while the cut-away anchor's id had
+//     nothing to map to. This is the retry of a revert whose later step
+//     (files restore, SQLite truncation) failed after the provider
+//     commit; re-slice keeping through the parent and let the caller
+//     redo the remaining steps. Through-the-parent, not a whole clone:
+//     anything appended after the failed revert (a resumed session's
+//     rows) must not be resurrected into the retried cut (round-5,
+//     R5-6).
+//   - Parent ABSENT (or unknown): the stored ids went stale wholesale
+//     (fork remap regression). Cloning the full transcript would resume
+//     a session that still contains the reverted prompt and its
+//     response; slicing ordinally would drop the shared turn's kept
+//     prefix. Both silently diverge from the visible timeline, so the
+//     operation FAILS — loud and recoverable beats a session whose
+//     context contradicts what the user reverted.
+//
 // Returns (newSessionID, newPath, uuidMap, err). Fork and revert
 // callers both thread the uuidMap into `remapClaudeProviderIDs` so
 // stored ids track the reminted session.
 func writeClaudeSessionSlice(
-	srcPath, anchorUUID string,
+	srcPath string,
+	anchorUUIDs []string,
+	anchorParentUUIDs []string,
 	fallbackLastKeptTurn int,
+	midTurnAnchor bool,
 	logCtx string,
 ) (string, string, map[string]string, error) {
-	if uuid := strings.TrimSpace(anchorUUID); uuid != "" {
+	dedupNonEmpty := func(uuids []string) []string {
+		var out []string
+		for _, candidate := range uuids {
+			if uuid := strings.TrimSpace(candidate); uuid != "" && !slices.Contains(out, uuid) {
+				out = append(out, uuid)
+			}
+		}
+		return out
+	}
+	candidates := dedupNonEmpty(anchorUUIDs)
+	for i, uuid := range candidates {
 		newID, newPath, uuidMap, err := sessionfork.WriteForkFileForUserMessageUUID(srcPath, uuid, "")
 		if err == nil {
+			if i > 0 {
+				log.Printf("%s: anchor uuid %q missed but candidate %q matched session %s — the missed copy is a remap generation stale (round-5, R5-7)", logCtx, candidates[0], uuid, srcPath)
+			}
 			return newID, newPath, uuidMap, nil
 		}
 		if !errors.Is(err, sessionfork.ErrMessageNotFound) {
 			return "", "", nil, err
 		}
-		log.Printf("%s: stored provider_user_message_id %q not in session %s — falling back to ordinal slice; check fork remap coverage", logCtx, uuid, srcPath)
+	}
+	if len(candidates) > 0 {
+		missed := strings.Join(candidates, ", ")
+		if midTurnAnchor {
+			for _, parent := range dedupNonEmpty(anchorParentUUIDs) {
+				newID, newPath, uuidMap, parentErr := sessionfork.WriteForkFileThroughUUID(srcPath, parent, "")
+				if parentErr == nil {
+					log.Printf("%s: anchor uuids [%s] absent but the parent %q is present in session %s — a prior slice already cut this transcript at the anchor; re-slicing through the parent", logCtx, missed, parent, srcPath)
+					return newID, newPath, uuidMap, nil
+				}
+				if !errors.Is(parentErr, sessionfork.ErrMessageNotFound) {
+					return "", "", nil, parentErr
+				}
+			}
+			return "", "", nil, fmt.Errorf(
+				"%s: stored provider uuid %q is missing from session %s — the queued message was consumed but its stored id no longer matches the transcript (fork remap drift); refusing a mid-turn cut that would silently diverge from the timeline",
+				logCtx, missed, srcPath,
+			)
+		}
+		log.Printf("%s: stored provider uuids [%s] not in session %s — falling back to ordinal slice; check fork remap coverage", logCtx, missed, srcPath)
+	}
+	if midTurnAnchor {
+		return sessionfork.WriteForkFileFullTranscript(srcPath, "")
 	}
 	newID, newPath, uuidMap, err := sessionfork.WriteForkFileForLastKeptTurn(srcPath, fallbackLastKeptTurn, "")
 	if err == nil {

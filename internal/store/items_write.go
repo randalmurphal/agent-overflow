@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"agent-overflow/internal/itemmeta"
 )
 
 func (s *Store) appendStreamingItemSummary(
@@ -301,6 +303,14 @@ func upsertInputPayload(tx *sql.Tx, payload *Payload, item *Item) error {
 // inside the same transaction so concurrent upserts can't both see
 // "absent" and race to insert.
 func writeItem(tx *sql.Tx, item *Item) error {
+	return writeItemWithIndexFn(tx, item, nextItemIndexTx)
+}
+
+// writeItemWithIndexFn is writeItem with the new-row index allocator
+// injected: nextItemIndexTx appends (the default), headItemIndexTx
+// prepends (UpsertItemAtTurnHead). Existing rows update in place either
+// way — placement only applies to the insert.
+func writeItemWithIndexFn(tx *sql.Tx, item *Item, indexFn func(*sql.Tx, string, int, string) (int, error)) error {
 	var existingItemIndex int
 	var existingCreatedAt int64
 	row := tx.QueryRow(
@@ -313,7 +323,7 @@ func writeItem(tx *sql.Tx, item *Item) error {
 		item.CreatedAt = existingCreatedAt
 		return updateExistingItem(tx, *item)
 	case sql.ErrNoRows:
-		return insertNewItem(tx, item)
+		return insertNewItem(tx, item, indexFn)
 	default:
 		return fmt.Errorf("store: upsert item lookup %s: %w", item.ID, err)
 	}
@@ -347,12 +357,13 @@ func updateExistingItem(tx *sql.Tx, item Item) error {
 	return nil
 }
 
-// insertNewItem computes MAX(item_index)+1 within the transaction to
-// keep concurrent upserts from colliding on the same slot, then inserts
-// the row. The computed ItemIndex is written back onto `item` so the
-// re-read step (readBackUpsertedItem) returns the persisted value.
-func insertNewItem(tx *sql.Tx, item *Item) error {
-	next, err := nextItemIndexTx(tx, item.ThreadID, item.TurnIndex, "store: upsert item next index")
+// insertNewItem allocates the row's index through indexFn within the
+// transaction to keep concurrent upserts from colliding on the same
+// slot, then inserts the row. The computed ItemIndex is written back
+// onto `item` so the re-read step (readBackUpsertedItem) returns the
+// persisted value.
+func insertNewItem(tx *sql.Tx, item *Item, indexFn func(*sql.Tx, string, int, string) (int, error)) error {
+	next, err := indexFn(tx, item.ThreadID, item.TurnIndex, "store: upsert item next index")
 	if err != nil {
 		return err
 	}
@@ -361,6 +372,38 @@ func insertNewItem(tx *sql.Tx, item *Item) error {
 		return err
 	}
 	return nil
+}
+
+// UpsertItemAtTurnHead is UpsertItem with HEAD placement for a new row:
+// a missing row inserts at MIN(item_index)-1 for its turn (0 when the
+// turn is empty — identical to the append path there); an existing row
+// updates in place with its index preserved, exactly like UpsertItem.
+// For a row that owns the FIRST slot of its turn — a deferred flush
+// prompt whose turn was empty at its first echo — this makes the
+// persist retryable after a failure: response rows that took 0..n
+// while the prompt's first persist failed no longer push a MAX+1 retry
+// below the prompt's own response (round-7, R7-4). The caller decides
+// turn ownership; rows steered into an occupied turn must append. No
+// payload variant: the deferred-prompt path persists bare user rows.
+func (s *Store) UpsertItemAtTurnHead(item Item) (Item, error) {
+	applyItemDefaults(&item)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Item{}, fmt.Errorf("store: begin upsert item at head tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := writeItemWithIndexFn(tx, &item, headItemIndexTx); err != nil {
+		return Item{}, err
+	}
+	persisted, err := readBackUpsertedItem(tx, item.ThreadID, item.ID)
+	if err != nil {
+		return Item{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, fmt.Errorf("store: commit upsert item at head tx: %w", err)
+	}
+	return persisted, nil
 }
 
 // readBackUpsertedItem re-reads the just-written row through the same
@@ -376,10 +419,16 @@ func readBackUpsertedItem(tx *sql.Tx, threadID, id string) (Item, error) {
 }
 
 // BumpItemToTurnEnd atomically moves an item to MAX(item_index)+1 for
-// its turn, placing it after all items currently at that turn. Returns
-// the updated item. Used by the interrupt path to reposition
-// quietly-persisted flush messages after the "Stopped by user" marker.
-func (s *Store) BumpItemToTurnEnd(threadID, itemID string) (Item, error) {
+// its turn, placing it after all items currently at that turn, and —
+// when transformMeta is non-nil — rewrites the row's meta through it in
+// the SAME transaction (reading the current meta inside the tx, so a
+// concurrent meta merge on the row is never lost). Returns the updated
+// item. Used by the interrupt promote (bump + promotion marker) and the
+// echo-time flush reposition (bump + provider_item_id stamp): both
+// pairings are load-bearing together, and committing the bump without
+// its meta would leave truncation predicates reading a repositioned row
+// with stale ordering metadata. updatedAt stamps the mutation time.
+func (s *Store) BumpItemToTurnEnd(threadID, itemID string, transformMeta func(string) (string, error), updatedAt int64) (Item, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Item{}, fmt.Errorf("store: begin bump item index tx: %w", err)
@@ -387,10 +436,11 @@ func (s *Store) BumpItemToTurnEnd(threadID, itemID string) (Item, error) {
 	defer tx.Rollback()
 
 	var turnIndex int
+	var meta string
 	if err := tx.QueryRow(
-		`SELECT turn_index FROM items WHERE thread_id = ? AND id = ?`,
+		`SELECT turn_index, meta FROM items WHERE thread_id = ? AND id = ?`,
 		threadID, itemID,
-	).Scan(&turnIndex); err != nil {
+	).Scan(&turnIndex, &meta); err != nil {
 		return Item{}, fmt.Errorf("store: bump item index lookup %s: %w", itemID, err)
 	}
 
@@ -398,9 +448,14 @@ func (s *Store) BumpItemToTurnEnd(threadID, itemID string) (Item, error) {
 	if err != nil {
 		return Item{}, err
 	}
+	if transformMeta != nil {
+		if meta, err = transformMeta(meta); err != nil {
+			return Item{}, fmt.Errorf("store: bump item index transform meta %s: %w", itemID, err)
+		}
+	}
 	if _, err := tx.Exec(
-		`UPDATE items SET item_index = ? WHERE thread_id = ? AND id = ?`,
-		next, threadID, itemID,
+		`UPDATE items SET item_index = ?, meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,
+		next, meta, updatedAt, threadID, itemID,
 	); err != nil {
 		return Item{}, fmt.Errorf("store: bump item index update %s: %w", itemID, err)
 	}
@@ -413,6 +468,51 @@ func (s *Store) BumpItemToTurnEnd(threadID, itemID string) (Item, error) {
 		return Item{}, fmt.Errorf("store: commit bump item index tx: %w", err)
 	}
 	return item, nil
+}
+
+// UpdateItemMetaMerge atomically rewrites a row's meta through
+// transform inside one transaction: the current meta is read under the
+// tx, transformed, and written back, so two concurrent merges (the
+// interrupt promote and the wire-echo stamp run on different
+// goroutines) compose instead of one overwriting the other. Returns the
+// updated row and whether the meta actually changed — callers use the
+// flag to skip redundant frontend emissions on duplicate echoes.
+// updated_at is stamped only when the meta changed.
+func (s *Store) UpdateItemMetaMerge(threadID, id string, transform func(string) (string, error), updatedAt int64) (Item, bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: begin meta merge tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var meta string
+	if err := tx.QueryRow(
+		`SELECT meta FROM items WHERE thread_id = ? AND id = ?`,
+		threadID, id,
+	).Scan(&meta); err != nil {
+		return Item{}, false, fmt.Errorf("store: meta merge lookup %s/%s: %w", threadID, id, err)
+	}
+	merged, err := transform(meta)
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: meta merge transform %s/%s: %w", threadID, id, err)
+	}
+	changed := merged != meta
+	if changed {
+		if _, err := tx.Exec(
+			`UPDATE items SET meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,
+			merged, updatedAt, threadID, id,
+		); err != nil {
+			return Item{}, false, fmt.Errorf("store: meta merge update %s/%s: %w", threadID, id, err)
+		}
+	}
+	item, err := readBackItemTx(tx, threadID, id)
+	if err != nil {
+		return Item{}, false, fmt.Errorf("store: meta merge re-read %s/%s: %w", threadID, id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, false, fmt.Errorf("store: commit meta merge tx: %w", err)
+	}
+	return item, changed, nil
 }
 
 // DeleteThreadItem removes one item scoped by thread and id. Intended for
@@ -432,46 +532,279 @@ func (s *Store) DeleteThreadItem(threadID, itemID string) error {
 	)
 }
 
-// DeleteConversationFromTurn removes items and turn rows with turn_index >=
-// fromTurnIndex. Reverting to a user-message checkpoint deletes that selected
-// prompt too, so the predicate is inclusive.
-func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (int, error) {
+// DeleteConversationFromTurn removes items, turn rows, tracked files,
+// and message checkpoints with turn_index >= fromTurnIndex, returning
+// the git refs of the deleted checkpoints so the caller can drop them
+// from the workspace. Reverting to a user-message checkpoint deletes
+// that selected prompt too, so the predicate is inclusive.
+//
+// Everything runs in ONE transaction. The old shape — a separate
+// checkpoint delete committed before this call — could succeed and
+// then have the conversation delete fail, stranding timeline rows
+// whose checkpoints (the revert/fork anchors and the retry key) were
+// already gone; a retry could no longer resolve the revert point
+// (round-5 review, R5-5). A failure now rolls back both.
+func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) ([]CheckpointRef, int, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, fmt.Errorf("store: begin delete conversation from turn tx: %w", err)
+		return nil, 0, fmt.Errorf("store: begin delete conversation from turn tx: %w", err)
 	}
 	defer tx.Rollback()
 
+	refs, err := checkpointRefsFromTurn(tx, threadID, fromTurnIndex)
+	if err != nil {
+		return nil, 0, err
+	}
+	// Explicit, though the items delete below cascades the checkpoint
+	// rows via their items FK: the turn_index predicate also covers a
+	// checkpoint whose recorded turn drifted from its user item's.
+	if _, err := tx.Exec(
+		`DELETE FROM thread_checkpoints WHERE thread_id = ? AND turn_index >= ?`,
+		threadID, fromTurnIndex,
+	); err != nil {
+		return nil, 0, fmt.Errorf("store: delete checkpoints from turn for thread %s: %w", threadID, err)
+	}
 	result, err := tx.Exec(
 		`DELETE FROM items WHERE thread_id = ? AND turn_index >= ?`,
 		threadID, fromTurnIndex,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("store: delete items from turn for thread %s: %w", threadID, err)
+		return nil, 0, fmt.Errorf("store: delete items from turn for thread %s: %w", threadID, err)
 	}
 	n, err := result.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("store: delete items from turn rows affected: %w", err)
+		return nil, 0, fmt.Errorf("store: delete items from turn rows affected: %w", err)
 	}
 	if _, err := tx.Exec(
 		`DELETE FROM turns WHERE thread_id = ? AND turn_index >= ?`,
 		threadID, fromTurnIndex,
 	); err != nil {
-		return 0, fmt.Errorf("store: delete turns from turn for thread %s: %w", threadID, err)
+		return nil, 0, fmt.Errorf("store: delete turns from turn for thread %s: %w", threadID, err)
 	}
 	if _, err := tx.Exec(
 		`DELETE FROM thread_tracked_files WHERE thread_id = ? AND turn_index >= ?`,
 		threadID, fromTurnIndex,
 	); err != nil {
-		return 0, fmt.Errorf("store: delete tracked files from turn for thread %s: %w", threadID, err)
+		return nil, 0, fmt.Errorf("store: delete tracked files from turn for thread %s: %w", threadID, err)
 	}
 	// Truncating the conversation is a structural change, not a fresh
 	// interaction. The next user_text persist (or a turn settle that
 	// follows the resume) bumps activity through MarkThreadActivity.
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("store: commit delete conversation from turn tx: %w", err)
+		return nil, 0, fmt.Errorf("store: commit delete conversation from turn tx: %w", err)
 	}
-	return int(n), nil
+	return refs, int(n), nil
+}
+
+// DeleteConversationFromItem removes the anchor item and everything after it
+// in PROVIDER order, plus the checkpoints of deleted user rows and the
+// turns / tracked-file rows of turns left without any items. Returns the git
+// refs of the deleted checkpoints so the caller can drop them from the
+// workspace.
+//
+// Provider order is timeline order — (turn_index, item_index) — for every row
+// except interrupt-promoted queued messages (itemmeta promotion marker):
+// those were bumped over their turn's not-yet-persisted tail, so their
+// same-turn NON-USER successors precede them in the provider transcript and
+// survive the cut; same-turn user successors are later-queued messages and go.
+// When the promoted row's echo stamped a provider-order boundary (the CLI
+// consumed it mid-loop and its response persisted in the same turn), non-user
+// successors PAST the boundary are that response — provider-order AFTER the
+// message — and are deleted with it. Whenever the cut removes same-turn
+// non-user content, the surviving turn row's settle metadata described that
+// deleted content — completed_at is trimmed back to the last surviving row
+// and the assistant_message_id cleared; token usage stays, the spend was real
+// and the ledger already has it.
+//
+// This is the item-granular twin of DeleteConversationFromTurn, for providers
+// whose conversation revert cuts at the message itself (Claude's session-file
+// slice anchors on the message uuid). Queued flush messages can share a turn
+// with the prompt that was running when they were enqueued; deleting the whole
+// turn would take that original prompt — and the agent work before the queued
+// message — down with them. When the anchor opens its turn the predicate
+// degenerates to DeleteConversationFromTurn's. Codex reverts keep the
+// turn-granular delete: thread/fork cuts provider history at a turn boundary,
+// and SQLite must match it.
+func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]CheckpointRef, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("store: begin delete conversation from item tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var turnIndex, itemIndex int
+	var meta string
+	if err := tx.QueryRow(
+		`SELECT turn_index, item_index, meta FROM items WHERE thread_id = ? AND id = ?`,
+		threadID, itemID,
+	).Scan(&turnIndex, &itemIndex, &meta); err != nil {
+		return nil, fmt.Errorf("store: delete conversation from item lookup %s/%s: %w", threadID, itemID, err)
+	}
+	promotion, err := itemmeta.DecodePromotionState(meta)
+	if err != nil {
+		// Corrupt anchor meta means the provider-order cut is undecidable;
+		// failing beats silently degrading to a display-order cut that the
+		// session slice would disagree with.
+		return nil, fmt.Errorf("store: delete conversation from item %s/%s: %w", threadID, itemID, err)
+	}
+
+	// Checkpoints anchored on any item being deleted, derived from the
+	// items themselves rather than the checkpoint's cached turn_index —
+	// the FK cascade follows the item delete, so ref collection must
+	// track the item cut exactly or a checkpoint whose cached turn
+	// drifted from its item's actual position cascades away with its
+	// git ref never returned. The subquery over-matches checkpoint-less
+	// rows (non-user, parented, promoted-cut survivors) harmlessly:
+	// among checkpoint-bearing rows (top-level user), position >= the
+	// anchor means deleted in both the plain and promoted-anchor item
+	// predicates below. Must run before the item delete removes the rows.
+	const checkpointPredicate = `thread_id = ?
+		 AND user_item_id IN (SELECT id FROM items
+		                      WHERE thread_id = ?
+		                        AND (turn_index > ?
+		                             OR (turn_index = ? AND item_index >= ?)))`
+	rows, err := tx.Query(
+		`SELECT ref_name, workspace_path FROM thread_checkpoints WHERE `+checkpointPredicate+
+			` ORDER BY turn_index`,
+		threadID, threadID, turnIndex, turnIndex, itemIndex,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list checkpoints from item for thread %s: %w", threadID, err)
+	}
+	var refs []CheckpointRef
+	for rows.Next() {
+		var ref CheckpointRef
+		if err := rows.Scan(&ref.RefName, &ref.WorkspacePath); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: scan checkpoint ref from item: %w", err)
+		}
+		refs = append(refs, ref)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("store: iterate checkpoints from item: %w", err)
+	}
+	rows.Close()
+	if _, err := tx.Exec(
+		`DELETE FROM thread_checkpoints WHERE `+checkpointPredicate,
+		threadID, threadID, turnIndex, turnIndex, itemIndex,
+	); err != nil {
+		return nil, fmt.Errorf("store: delete checkpoints from item for thread %s: %w", threadID, err)
+	}
+
+	// deletedTurnContent: does this cut remove same-turn NON-USER rows?
+	// Those are the rows the anchor turn's settle metadata describes
+	// (streamed content, the response), so their deletion triggers the
+	// trim below. Computed BEFORE the delete removes the evidence.
+	contentPredicate := ""
+	contentArgs := []any{}
+	itemPredicate := `turn_index > ? OR (turn_index = ? AND item_index >= ?)`
+	itemArgs := []any{threadID, turnIndex, turnIndex, itemIndex}
+	if promotion.Promoted {
+		// Same-turn successors up to the echo boundary that are not
+		// top-level user rows — streamed assistant/tool content AND
+		// parented wire-only user rows (subagent prompts nested under
+		// their launching tool_call) — are the interrupted round's tail:
+		// they precede the promoted message in the provider transcript
+		// and stay. Same-turn TOP-LEVEL user successors are later-promoted
+		// queued rows; only those carry checkpoints, so the checkpoint
+		// predicate above already matched exactly the user rows this
+		// delete removes. Past the boundary (stamped when the CLI consumed
+		// the message mid-loop), everything else is the response —
+		// provider-order AFTER the message — and goes with it.
+		itemPredicate = `turn_index > ? OR (turn_index = ? AND item_index >= ? AND role = 'user' AND parent_id = '')`
+		if promotion.HasEchoBoundary {
+			itemPredicate += ` OR (turn_index = ? AND item_index > ? AND (role != 'user' OR parent_id != ''))`
+			itemArgs = append(itemArgs, turnIndex, promotion.EchoBoundary)
+			contentPredicate = `item_index > ?`
+			contentArgs = []any{threadID, turnIndex, promotion.EchoBoundary}
+		}
+	} else {
+		contentPredicate = `item_index > ?`
+		contentArgs = []any{threadID, turnIndex, itemIndex}
+	}
+	deletedTurnContent := false
+	if contentPredicate != "" {
+		if err := tx.QueryRow(
+			`SELECT EXISTS(SELECT 1 FROM items
+			  WHERE thread_id = ? AND turn_index = ? AND (role != 'user' OR parent_id != '') AND `+contentPredicate+`)`,
+			contentArgs...,
+		).Scan(&deletedTurnContent); err != nil {
+			return nil, fmt.Errorf("store: probe deleted turn content for thread %s: %w", threadID, err)
+		}
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM items WHERE thread_id = ? AND (`+itemPredicate+`)`,
+		itemArgs...,
+	); err != nil {
+		return nil, fmt.Errorf("store: delete items from item for thread %s: %w", threadID, err)
+	}
+
+	// The anchor turn keeps its turns / tracked-file rows while any items
+	// survive in it: the remaining prefix still happened, and its tracked
+	// paths must stay visible to a later files-revert of the whole turn.
+	for _, table := range []string{"turns", "thread_tracked_files"} {
+		if _, err := tx.Exec(
+			`DELETE FROM `+table+` WHERE thread_id = ?
+			 AND turn_index >= ?
+			 AND NOT EXISTS (SELECT 1 FROM items
+			                 WHERE thread_id = ? AND turn_index = `+table+`.turn_index)`,
+			threadID, turnIndex, threadID,
+		); err != nil {
+			return nil, fmt.Errorf("store: delete %s from item for thread %s: %w", table, threadID, err)
+		}
+	}
+
+	// A surviving anchor turn that just lost streamed content ends at its
+	// last surviving row, not at the settle the deleted response produced:
+	// trim completed_at back (never forward — MIN) and drop the
+	// assistant_message_id that now points at a deleted message. Gated on
+	// deletedTurnContent, NOT on the anchor being mid-turn: an anchor that
+	// is the LAST row of its turn (an at-pickup bumped quiet flush) deletes
+	// nothing the settle metadata describes, and rewriting it would corrupt
+	// accurate history. The completed_at IS NOT NULL guard leaves a
+	// (guard-violating) active turn alone rather than fabricating a
+	// settlement.
+	if deletedTurnContent {
+		if err := trimTurnSettleToSurvivorsTx(tx, threadID, turnIndex); err != nil {
+			return nil, err
+		}
+	}
+
+	// Like DeleteConversationFromTurn: truncation is a structural change,
+	// not a fresh interaction — no MarkThreadActivity bump.
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit delete conversation from item tx: %w", err)
+	}
+	return refs, nil
+}
+
+// trimTurnSettleToSurvivorsTx rewrites a surviving turn row whose settle
+// metadata described just-deleted content: completed_at trims back to the
+// last surviving row's created_at (bumped anchors carry dispatch-time
+// created_at OLDER than the kept tail, so the anchor is the wrong target)
+// and assistant_message_id clears — the message it referenced is gone.
+// No-op when the turn kept no rows (its turn row was already deleted) or
+// was never settled.
+func trimTurnSettleToSurvivorsTx(tx *sql.Tx, threadID string, turnIndex int) error {
+	var lastKept sql.NullInt64
+	if err := tx.QueryRow(
+		`SELECT MAX(created_at) FROM items WHERE thread_id = ? AND turn_index = ?`,
+		threadID, turnIndex,
+	).Scan(&lastKept); err != nil {
+		return fmt.Errorf("store: trim turn settle survivors lookup for thread %s: %w", threadID, err)
+	}
+	if !lastKept.Valid {
+		return nil
+	}
+	if _, err := tx.Exec(
+		`UPDATE turns SET completed_at = MIN(completed_at, ?), assistant_message_id = ''
+		 WHERE thread_id = ? AND turn_index = ? AND completed_at IS NOT NULL`,
+		lastKept.Int64, threadID, turnIndex,
+	); err != nil {
+		return fmt.Errorf("store: trim anchor turn settle for thread %s: %w", threadID, err)
+	}
+	return nil
 }
 
 // UpdateItemMeta rewrites only the `meta` column on a single item

@@ -223,7 +223,7 @@ func TestEagerPersistDeferredFlushSends_PersistsAndNilsDeferred(t *testing.T) {
 	router.RegisterPendingFlushSend("t1", "q-1", item1)
 	router.RegisterPendingFlushSend("t1", "q-2", item2)
 
-	result := router.EagerPersistDeferredFlushSends("t1")
+	result := eagerPersistForTest(router, "t1", router.OpenTurnIndex("t1"))
 	if len(result) != 2 {
 		t.Fatalf("expected 2 eagerly persisted items, got %d", len(result))
 	}
@@ -278,7 +278,7 @@ func TestEagerPersistDeferredFlushSends_SkipsNonFlushPendingSends(t *testing.T) 
 	// Direct send (non-flush) — has no QueueItemID.
 	router.RegisterPendingSend("t1", "user:0", 0)
 
-	result := router.EagerPersistDeferredFlushSends("t1")
+	result := eagerPersistForTest(router, "t1", router.OpenTurnIndex("t1"))
 	if len(result) != 0 {
 		t.Fatalf("should not eagerly persist non-flush pending sends, got %d", len(result))
 	}

@@ -326,8 +326,12 @@ func cursorFromItem(item Item) TimelineCursor {
 	}
 }
 
+// cursorIsValid distinguishes real cursors from the empty sentinel by
+// TurnIndex alone: turn indexes are never negative, but item indexes
+// can be — head-healed prompts persist at negative indexes
+// (UpsertItemAtTurnHead), and a page bounded by one must keep paging.
 func cursorIsValid(cursor TimelineCursor) bool {
-	return cursor.TurnIndex >= 0 && cursor.ItemIndex >= 0
+	return cursor.TurnIndex >= 0
 }
 
 func (s *Store) finalizePagedItems(threadID string, items []Item) (PagedItems, error) {

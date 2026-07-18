@@ -246,6 +246,49 @@ func TestListItemsBeforeTurn_ItemBudgetSemantics(t *testing.T) {
 	}
 }
 
+// TestListItemsBeforeTurn_ExcludesHeadHealedRowsOfFloorTurn pins the
+// strictly-earlier-turn contract against head-healed prompts (round-11):
+// self-heal inserts a turn's prompt at MIN(item_index)-1, so index 0 is
+// not the start of a turn — the synthetic floor cursor must sit below
+// every possible index or a negative-index row from beforeTurnIndex
+// leaks into the "older turns" page and duplicates a row the caller
+// already has.
+func TestListItemsBeforeTurn_ExcludesHeadHealedRowsOfFloorTurn(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/w-headheal", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	rows := []store.Item{
+		{ID: "t0-i0", TurnIndex: 0, ItemIndex: 0, Kind: "assistant_text", Role: "assistant"},
+		// Head-healed prompt in the floor turn at a NEGATIVE index.
+		{ID: "t1-healed", TurnIndex: 1, ItemIndex: -1, Kind: "user_text", Role: "user"},
+		{ID: "t1-i0", TurnIndex: 1, ItemIndex: 0, Kind: "assistant_text", Role: "assistant"},
+	}
+	for i, row := range rows {
+		row.ThreadID = thread.ID
+		row.Status = "completed"
+		row.Summary = "x"
+		row.CreatedAt = int64(i)
+		row.UpdatedAt = int64(i)
+		if err := app.store.InsertItem(row); err != nil {
+			t.Fatalf("insert %s: %v", row.ID, err)
+		}
+	}
+
+	paged, err := app.ListItemsBeforeTurn(thread.ID, 1, 10)
+	if err != nil {
+		t.Fatalf("ListItemsBeforeTurn: %v", err)
+	}
+	if len(paged.Items) != 1 || paged.Items[0].ID != "t0-i0" {
+		ids := make([]string, 0, len(paged.Items))
+		for _, item := range paged.Items {
+			ids = append(ids, item.ID)
+		}
+		t.Errorf("Items = %v, want exactly [t0-i0] — floor-turn rows must not leak into the older page", ids)
+	}
+}
+
 func TestListThreadProposedPlans_NilNormalization(t *testing.T) {
 	// Empty thread must return []Item{}, not nil. Otherwise the
 	// frontend JSON deserializer sees `null` and the type-safe

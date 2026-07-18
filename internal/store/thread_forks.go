@@ -1,10 +1,13 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+
+	"agent-overflow/internal/itemmeta"
 )
 
 // BuildForkedThread returns a Thread row populated from source plus the
@@ -74,6 +77,15 @@ func BuildForkedThread(source Thread) Thread {
 // fsync instead of 200. Per-row InsertItem would commit individually
 // and dominate the fork wall-clock for large threads.
 func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughTurnIndex *int) (map[string]string, error) {
+	return s.cloneThreadItems(sourceThreadID, targetThreadID, func(item Item) bool {
+		return throughTurnIndex == nil || item.TurnIndex <= *throughTurnIndex
+	})
+}
+
+// cloneThreadItems is the shared clone body behind CloneThreadItems and
+// CloneThreadHistoryBeforeItem: keep decides which source rows copy;
+// the background-running skip applies on top of it unconditionally.
+func (s *Store) cloneThreadItems(sourceThreadID, targetThreadID string, keep func(Item) bool) (map[string]string, error) {
 	items, err := s.ListItems(sourceThreadID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list source items for fork %s: %w", sourceThreadID, err)
@@ -85,7 +97,7 @@ func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughT
 		if item.IsBackground && item.Status == "running" {
 			continue
 		}
-		if throughTurnIndex != nil && item.TurnIndex > *throughTurnIndex {
+		if !keep(item) {
 			continue
 		}
 		oldID := item.ID
@@ -180,4 +192,122 @@ func (s *Store) CloneThreadTurns(sourceThreadID, targetThreadID string, throughT
 		return fmt.Errorf("store: clone turns into thread %s: %w", targetThreadID, err)
 	}
 	return nil
+}
+
+// CloneThreadHistoryBeforeItem copies into targetThreadID everything that
+// precedes the anchor item in PROVIDER order — the fork-side twin of
+// DeleteConversationFromItem's kept-set, for providers whose fork cuts
+// provider history at the message itself (Claude's session-file slice).
+// Codex forks stay on the turn-granular CloneThreadItems/CloneThreadTurns
+// pair, matching thread/fork's turn-boundary cut.
+//
+// Kept items: earlier turns, plus the anchor turn's rows before the anchor.
+// An interrupt-promoted anchor (itemmeta promotion marker) additionally
+// keeps its turn's content successors — everything but TOP-LEVEL user rows,
+// i.e. the interrupted round's streamed tail including parented wire-only
+// subagent prompts, which precede the promoted message in the provider
+// transcript; same-turn top-level user successors are later-queued messages
+// and stay behind. When the promoted row's echo stamped a provider-order
+// boundary (mid-loop consumption whose response persisted in the same
+// turn), content successors past it are that response and stay behind too. Turns rows clone where kept items exist;
+// whenever the cut excludes same-turn non-user content the cloned turn row's
+// settle metadata described it, so completed_at trims back to the last
+// cloned row and assistant_message_id clears (token usage kept) — the same
+// trim DeleteConversationFromItem applies.
+//
+// Like the CloneThreadItems + CloneThreadTurns pair, the steps are not one
+// SQL transaction: every caller wraps the clone in the fork saga's rollback
+// stack, which deletes the fork thread (and cascades its rows) on failure.
+func (s *Store) CloneThreadHistoryBeforeItem(sourceThreadID, targetThreadID, anchorItemID string) (map[string]string, error) {
+	var turnIndex, itemIndex int
+	var meta string
+	if err := s.db.QueryRow(
+		`SELECT turn_index, item_index, meta FROM items WHERE thread_id = ? AND id = ?`,
+		sourceThreadID, anchorItemID,
+	).Scan(&turnIndex, &itemIndex, &meta); err != nil {
+		return nil, fmt.Errorf("store: clone history anchor lookup %s/%s: %w", sourceThreadID, anchorItemID, err)
+	}
+	promotion, err := itemmeta.DecodePromotionState(meta)
+	if err != nil {
+		// Corrupt anchor meta means the provider-order cut is undecidable;
+		// failing the fork beats silently cloning a set the session slice
+		// would disagree with.
+		return nil, fmt.Errorf("store: clone history anchor %s/%s: %w", sourceThreadID, anchorItemID, err)
+	}
+
+	idMap, err := s.cloneThreadItems(sourceThreadID, targetThreadID, func(item Item) bool {
+		if item.TurnIndex != turnIndex {
+			return item.TurnIndex < turnIndex
+		}
+		if item.ItemIndex < itemIndex {
+			return true
+		}
+		// Only TOP-LEVEL user successors are later-queued messages that
+		// stay behind; a parented wire-only user row (subagent prompt
+		// nested under its tool_call) is interrupted-tail content like any
+		// assistant row — the session slice retains it.
+		if !promotion.Promoted || (item.Role == "user" && item.ParentID == "") {
+			return false
+		}
+		return !promotion.HasEchoBoundary || item.ItemIndex <= promotion.EchoBoundary
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := s.db.Exec(
+		`INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at,
+		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)
+		 SELECT ? || ':' || turn_index, ?, turn_index, started_at, completed_at,
+		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id
+		 FROM turns
+		 WHERE thread_id = ?
+		   AND turn_index IN (SELECT DISTINCT turn_index FROM items WHERE thread_id = ?)`,
+		targetThreadID, targetThreadID, sourceThreadID, targetThreadID,
+	); err != nil {
+		return nil, fmt.Errorf("store: clone turns before item into thread %s: %w", targetThreadID, err)
+	}
+
+	// Same content probe as DeleteConversationFromItem's, evaluated on the
+	// SOURCE rows the keep predicate excluded: content rows (anything but
+	// top-level user rows) after the anchor (plain) or past the echo
+	// boundary (promoted).
+	excludedContent := false
+	switch {
+	case !promotion.Promoted:
+		if err := s.db.QueryRow(
+			`SELECT EXISTS(SELECT 1 FROM items
+			  WHERE thread_id = ? AND turn_index = ? AND (role != 'user' OR parent_id != '') AND item_index > ?)`,
+			sourceThreadID, turnIndex, itemIndex,
+		).Scan(&excludedContent); err != nil {
+			return nil, fmt.Errorf("store: probe excluded turn content for fork %s: %w", targetThreadID, err)
+		}
+	case promotion.HasEchoBoundary:
+		if err := s.db.QueryRow(
+			`SELECT EXISTS(SELECT 1 FROM items
+			  WHERE thread_id = ? AND turn_index = ? AND (role != 'user' OR parent_id != '') AND item_index > ?)`,
+			sourceThreadID, turnIndex, promotion.EchoBoundary,
+		).Scan(&excludedContent); err != nil {
+			return nil, fmt.Errorf("store: probe excluded turn content for fork %s: %w", targetThreadID, err)
+		}
+	}
+	if excludedContent {
+		var lastKept sql.NullInt64
+		if err := s.db.QueryRow(
+			`SELECT MAX(created_at) FROM items WHERE thread_id = ? AND turn_index = ?`,
+			targetThreadID, turnIndex,
+		).Scan(&lastKept); err != nil {
+			return nil, fmt.Errorf("store: cloned turn survivors lookup for fork %s: %w", targetThreadID, err)
+		}
+		if lastKept.Valid {
+			if _, err := s.db.Exec(
+				`UPDATE turns SET completed_at = MIN(completed_at, ?), assistant_message_id = ''
+				 WHERE thread_id = ? AND turn_index = ? AND completed_at IS NOT NULL`,
+				lastKept.Int64, targetThreadID, turnIndex,
+			); err != nil {
+				return nil, fmt.Errorf("store: trim cloned anchor turn settle for thread %s: %w", targetThreadID, err)
+			}
+		}
+	}
+	return idMap, nil
 }

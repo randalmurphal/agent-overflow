@@ -324,3 +324,40 @@ func writeClaudeMarkerBinary(t *testing.T, markerPath string) string {
 func shellQuote(path string) string {
 	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
 }
+
+// TestInterruptTurn_SerializesWithThreadLock pins R12-5 (round 12):
+// the whole interrupt — session capture, pre-ack Mark, ack wait,
+// post-ack bookkeeping — runs under the thread action lock, the same
+// lock the session-start funnel holds across MarkThreadActive + spawn,
+// the death drain holds across its restore, and the dispatch worker
+// holds per batch. Without it, an interrupt could capture a session,
+// then act on a thread a replacement start had already reactivated;
+// the in-triage epoch fences alone cannot cover the Codex resend or
+// the session capture itself.
+func TestInterruptTurn_SerializesWithThreadLock(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-interrupt-lock")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	unlock := app.threadLocks().Lock(thread.ID)
+	done := make(chan error, 1)
+	go func() { done <- app.InterruptTurn(thread.ID) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("InterruptTurn returned (%v) while the thread action lock was held — it must block on the lock", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("InterruptTurn() error = %v, want nil (no session registered)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("InterruptTurn did not return after the thread action lock was released")
+	}
+}

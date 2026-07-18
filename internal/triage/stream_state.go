@@ -173,6 +173,16 @@ func (r *Router) maybeDeferOrPersist(threadID string, item store.Item, payload *
 	return nil
 }
 
+// hasQueuedInterruptItems reports whether any deferred persists are
+// queued for threadID. The promoted-echo boundary path uses it to
+// decide whether a drain (and a re-bump of the promoted row) is needed
+// before sampling the turn's max item_index (round-6, R6-2).
+func (r *Router) hasQueuedInterruptItems(threadID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.interruptQueue[threadID]) > 0
+}
+
 func (r *Router) drainInterruptQueueIfIdle(threadID string) {
 	if r.hasActiveStreamingItem(threadID) {
 		return
@@ -185,12 +195,36 @@ func (r *Router) drainInterruptQueueIfIdle(threadID string) {
 	}
 }
 
-// drainInterruptQueue persists every queued item for the thread. The
-// queue is handed off before iteration (cleared from the map under the
-// lock), so an early return on persist failure would silently strand
-// the remaining items. We log each failure and return the first error
-// once the full queue has been attempted.
+// drainLock returns threadID's drain mutex, creating it on first use.
+// Entries are never deleted (see the drainLocks field doc).
+func (r *Router) drainLock(threadID string) *sync.Mutex {
+	r.drainLocksMu.Lock()
+	defer r.drainLocksMu.Unlock()
+	mu, ok := r.drainLocks[threadID]
+	if !ok {
+		mu = &sync.Mutex{}
+		r.drainLocks[threadID] = mu
+	}
+	return mu
+}
+
+// drainInterruptQueue persists every queued item for the thread, under
+// the thread's drain lock so the pop-to-persisted span is atomic
+// against the promoted-echo boundary sample (round-7, R7-3).
 func (r *Router) drainInterruptQueue(threadID string, forceErrored bool) error {
+	lock := r.drainLock(threadID)
+	lock.Lock()
+	defer lock.Unlock()
+	return r.drainInterruptQueueLocked(threadID, forceErrored)
+}
+
+// drainInterruptQueueLocked is the drain body; the caller must hold the
+// thread's drain lock. The queue is handed off before iteration
+// (cleared from the map under r.mu), so an early return on persist
+// failure would silently strand the remaining items. We log each
+// failure and return the first error once the full queue has been
+// attempted.
+func (r *Router) drainInterruptQueueLocked(threadID string, forceErrored bool) error {
 	r.mu.Lock()
 	queue := r.interruptQueue[threadID]
 	delete(r.interruptQueue, threadID)

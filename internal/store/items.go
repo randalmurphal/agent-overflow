@@ -104,6 +104,27 @@ func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (
 	return int(maxIndex.Int64) + 1, nil
 }
 
+// headItemIndexTx mirrors nextItemIndexTx at the turn's HEAD:
+// MIN(item_index)-1, or 0 for an empty turn (identical to
+// nextItemIndexTx's empty-turn result, so head and tail placement only
+// diverge once the turn has rows). Negative indexes are valid — every
+// ordering read sorts by (turn_index, item_index), and the mid-turn
+// anchor predicate (ItemIndex > 0) correctly treats a head-inserted
+// row as turn-initial.
+func headItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
+	var minIndex sql.NullInt64
+	if err := tx.QueryRow(
+		`SELECT MIN(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
+		threadID, turnIndex,
+	).Scan(&minIndex); err != nil {
+		return 0, fmt.Errorf("%s: %w", label, err)
+	}
+	if !minIndex.Valid {
+		return 0, nil
+	}
+	return int(minIndex.Int64) - 1, nil
+}
+
 func insertItemTx(exec sqlExecutor, item Item, label string) error {
 	if _, err := exec.Exec(
 		itemInsertSQL,

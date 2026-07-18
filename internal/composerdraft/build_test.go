@@ -124,6 +124,9 @@ func TestFromUserItemSkipsBlankAttachmentIDs(t *testing.T) {
 	}
 }
 
+// Restored messages precede the existing draft content: chronological
+// order, matching the Codex TUI's composer restore (the restored
+// messages were typed before whatever the composer holds now).
 func TestMergePartsAppendsContentAndDedupesAttachments(t *testing.T) {
 	current := store.ThreadDraft{
 		ThreadID:      "t-1",
@@ -140,7 +143,7 @@ func TestMergePartsAppendsContentAndDedupesAttachments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergeParts: %v", err)
 	}
-	if draft.Content != "existing\n\nfirst restored\n\nsecond restored" {
+	if draft.Content != "first restored\n\nsecond restored\n\nexisting" {
 		t.Fatalf("Content = %q", draft.Content)
 	}
 	var ids []string

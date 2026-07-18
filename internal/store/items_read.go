@@ -396,3 +396,22 @@ func (s *Store) LatestToolCallByName(threadID string, turnIndex int, toolNames [
 	}
 	return it, true, nil
 }
+
+// MaxItemIndexForTurn returns the highest item_index currently persisted
+// for (threadID, turnIndex), with ok=false when the turn holds no items.
+// The echo handler uses it to stamp a promoted row's provider-order
+// boundary: every row at or below this index existed before the echo, so
+// it precedes the queued message in the provider transcript.
+func (s *Store) MaxItemIndexForTurn(threadID string, turnIndex int) (int, bool, error) {
+	var maxIndex sql.NullInt64
+	if err := s.db.QueryRow(
+		`SELECT MAX(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
+		threadID, turnIndex,
+	).Scan(&maxIndex); err != nil {
+		return 0, false, fmt.Errorf("store: max item index for %s/%d: %w", threadID, turnIndex, err)
+	}
+	if !maxIndex.Valid {
+		return 0, false, nil
+	}
+	return int(maxIndex.Int64), true, nil
+}

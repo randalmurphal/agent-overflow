@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"agent-overflow/internal/checkpoint"
+	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 )
 
 func TestRevertToMessageCheckpointDeletesSelectedPromptAndRestoresDraft(t *testing.T) {
@@ -420,6 +422,509 @@ func TestRevertToMessageCheckpointSlicesClaudeSessionByTurnBoundary(t *testing.T
 		t.Fatalf("thread pending fork ref = %q, want empty", updated.PendingForkRef)
 	}
 	assertClaudeSessionText(t, workspace, updated.SessionRef, []string{"first"}, []string{"second"})
+}
+
+// TestRevertToMessageCheckpointKeepsSharedTurnPrefix — reverting to a
+// queued flush message that shares its turn with the prompt that was
+// running when it was enqueued. Claude truncation is item-granular
+// (DeleteConversationFromItem), so the original prompt and the agent
+// work before the queued send survive in SQLite, and the session slice
+// cuts the JSONL at the queued message's uuid — the two stay aligned.
+func TestRevertToMessageCheckpointKeepsSharedTurnPrefix(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	const sessionID = "source-session"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"source-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"uq","parentUuid":"a0","sessionId":"source-session","message":{"role":"user","content":"queued follow-up"}}
+{"type":"assistant","uuid":"a1","parentUuid":"uq","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"u1","parentUuid":"a1","sessionId":"source-session","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u1","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
+`)
+	thread := createCheckpointTestThread(t, app, "t-shared-turn", "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	// Turn 0 holds the original prompt, its streamed reply, the queued
+	// flush row (eager-persisted mid-turn), and the post-queue reply.
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertAssistantTextItem(t, app.store, thread.ID, "text:0:0", 0, "reply 0")
+	insertUserItemWithMeta(t, app.store, thread.ID, "flush:0", 0, "queued follow-up", `{"provider_item_id":"uq"}`)
+	insertAssistantTextItem(t, app.store, thread.ID, "text:0:1", 0, "reply 1")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	insertAssistantTextItem(t, app.store, thread.ID, "text:1:0", 1, "reply 2")
+	for _, cp := range []struct {
+		id, userItemID, providerID string
+		turnIndex                  int
+	}{
+		{"chk-first", "user:0", "u0", 0},
+		{"chk-flush", "flush:0", "uq", 0},
+		{"chk-second", "user:1", "u1", 1},
+	} {
+		if err := app.store.SaveCheckpoint(store.Checkpoint{
+			ID:                    cp.id,
+			ThreadID:              thread.ID,
+			UserItemID:            cp.userItemID,
+			TurnIndex:             cp.turnIndex,
+			ProviderUserMessageID: cp.providerID,
+			RefName:               checkpoint.ThreadRefPrefix(thread.ID) + "message/" + cp.id,
+			CapturedAt:            time.Now().UnixMilli(),
+			WorkspacePath:         workspace,
+		}); err != nil {
+			t.Fatalf("save checkpoint %s: %v", cp.id, err)
+		}
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "flush:0", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	gotIDs := make([]string, len(items))
+	for i, it := range items {
+		gotIDs[i] = it.ID
+	}
+	if strings.Join(gotIDs, ",") != "user:0,text:0:0" {
+		t.Fatalf("items after revert = %v, want [user:0 text:0:0]", gotIDs)
+	}
+	if _, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, "user:0"); err != nil || !ok {
+		t.Fatalf("original prompt's checkpoint should survive (ok=%v err=%v)", ok, err)
+	}
+	if _, ok, _ := app.store.GetCheckpointByUserItemID(thread.ID, "flush:0"); ok {
+		t.Fatal("reverted flush row's checkpoint should be deleted")
+	}
+	draft, ok, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil || !ok {
+		t.Fatalf("get draft: ok=%v err=%v", ok, err)
+	}
+	if draft.Content != "queued follow-up" {
+		t.Fatalf("draft content = %q, want the reverted queued message", draft.Content)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef == "" || updated.SessionRef == sessionID {
+		t.Fatalf("thread session ref = %q, want recovered fork session", updated.SessionRef)
+	}
+	assertClaudeSessionText(t, workspace, updated.SessionRef,
+		[]string{"first", "reply 0"},
+		[]string{"queued follow-up", "reply 1", "second", "reply 2"})
+}
+
+// midTurnAnchorFixture seeds the shared shape behind the two mid-turn
+// uuid-edge revert tests: a Claude session whose transcript never
+// consumed the queued message (the trailing assistant entry is the
+// interrupted round's tail), and a timeline whose promoted flush row
+// shares turn 0 with the original prompt. flushProviderID is the
+// checkpoint's stored wire id — empty models "echo never arrived",
+// non-empty-but-absent models fork-remap drift. flushParentID is the
+// checkpoint's provider_parent_uuid; "a1" (the transcript's last entry)
+// models a prior revert whose provider slice committed and remapped
+// before a later step failed.
+func midTurnAnchorFixture(t *testing.T, app *App, threadID, sessionID, flushProviderID, flushParentID string) store.Thread {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"`+sessionID+`","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"`+sessionID+`","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"assistant","uuid":"a1","parentUuid":"a0","sessionId":"`+sessionID+`","message":{"role":"assistant","content":[{"type":"text","text":"interrupted tail"}]}}
+`)
+	thread := createCheckpointTestThread(t, app, threadID, "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	promotedMeta, err := itemmeta.MarkPromotedAtInterrupt("")
+	if err != nil {
+		t.Fatalf("mark promoted: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertAssistantTextItem(t, app.store, thread.ID, "text:0:0", 0, "reply 0")
+	insertUserItemWithMeta(t, app.store, thread.ID, "flush:0", 0, "queued follow-up", promotedMeta)
+	insertAssistantTextItem(t, app.store, thread.ID, "text:0:1", 0, "interrupted tail")
+	for _, cp := range []struct {
+		id, userItemID, providerID, parentID string
+	}{
+		{"chk-first", "user:0", "u0", ""},
+		{"chk-flush", "flush:0", flushProviderID, flushParentID},
+	} {
+		if err := app.store.SaveCheckpoint(store.Checkpoint{
+			ID:                    cp.id,
+			ThreadID:              thread.ID,
+			UserItemID:            cp.userItemID,
+			TurnIndex:             0,
+			ProviderUserMessageID: cp.providerID,
+			ProviderParentUUID:    cp.parentID,
+			RefName:               checkpoint.ThreadRefPrefix(thread.ID) + "message/" + cp.id,
+			CapturedAt:            time.Now().UnixMilli(),
+			WorkspacePath:         workspace,
+		}); err != nil {
+			t.Fatalf("save checkpoint %s: %v", cp.id, err)
+		}
+	}
+	return thread
+}
+
+// TestRevertToMessageCheckpointMidTurnAnchorWithoutUUIDClonesFullTranscript
+// pins the R1 fallback: a mid-turn anchor (queued flush row sharing its turn
+// with the running prompt) whose checkpoint never got a provider id — the
+// CLI never consumed the message, so it never reached the JSONL — must clone
+// the transcript WHOLE. The ordinal walk keeps whole turns, so it would
+// slice at end-of-turn-N-1 and drop the shared turn's kept prefix from the
+// provider session while SQLite retains it.
+func TestRevertToMessageCheckpointMidTurnAnchorWithoutUUIDClonesFullTranscript(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	const sessionID = "midturn-nouuid-session"
+	thread := midTurnAnchorFixture(t, app, "t-midturn-nouuid", sessionID, "", "")
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "flush:0", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+
+	// The promoted anchor's cut keeps the interrupted tail in
+	// SQLite (it precedes the never-consumed message in provider
+	// order) — matching the full transcript kept on the JSONL side.
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	gotIDs := make([]string, len(items))
+	for i, it := range items {
+		gotIDs[i] = it.ID
+	}
+	if strings.Join(gotIDs, ",") != "user:0,text:0:0,text:0:1" {
+		t.Fatalf("items after revert = %v, want [user:0 text:0:0 text:0:1]", gotIDs)
+	}
+	draft, ok, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil || !ok {
+		t.Fatalf("get draft: ok=%v err=%v", ok, err)
+	}
+	if draft.Content != "queued follow-up" {
+		t.Fatalf("draft content = %q, want the reverted queued message", draft.Content)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef == "" || updated.SessionRef == sessionID {
+		t.Fatalf("thread session ref = %q, want recovered fork session", updated.SessionRef)
+	}
+	assertClaudeSessionText(t, updated.WorkspacePath, updated.SessionRef,
+		[]string{"first", "reply 0", "interrupted tail"},
+		nil)
+}
+
+// TestRevertToMessageCheckpointMidTurnAnchorStaleUUIDFails pins D2/CT4:
+// a mid-turn anchor whose checkpoint carries a NON-EMPTY provider id
+// that the transcript doesn't contain proves the message WAS consumed
+// (only the echo stamps the id) and the stored id went stale (fork
+// remap drift). Cloning the full transcript would resume a session that
+// still contains the reverted prompt and its response; slicing
+// ordinally would drop the shared turn's kept prefix. The revert must
+// FAIL loudly and mutate nothing: SessionRef, timeline rows,
+// checkpoints, and the draft all stay as they were.
+func TestRevertToMessageCheckpointMidTurnAnchorStaleUUIDFails(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	const sessionID = "midturn-staleuuid-session"
+	thread := midTurnAnchorFixture(t, app, "t-midturn-staleuuid", sessionID, "uq-stale", "uq-parent-stale")
+
+	err := app.RevertToMessageCheckpoint(thread.ID, "flush:0", RevertModeConversationOnly)
+	if err == nil {
+		t.Fatal("revert with a stale consumed uuid must fail, not silently diverge")
+	}
+	if !strings.Contains(err.Error(), "uq-stale") {
+		t.Errorf("error should name the stale uuid: %v", err)
+	}
+
+	// Nothing moved: the provider revert failed before any truncation.
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef != sessionID {
+		t.Errorf("session ref = %q, want untouched %q", updated.SessionRef, sessionID)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 4 {
+		t.Errorf("items after failed revert = %d, want 4 untouched", len(items))
+	}
+	if _, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, "flush:0"); err != nil || !ok {
+		t.Errorf("anchor checkpoint must survive a failed revert (ok=%v err=%v)", ok, err)
+	}
+	if _, ok, err := app.store.GetThreadDraft(thread.ID); err != nil {
+		t.Fatalf("get draft: %v", err)
+	} else if ok {
+		t.Error("failed revert must not restore the composer draft")
+	}
+}
+
+// TestRevertToMessageCheckpointMidTurnAnchorRetryAfterPartialFailure pins
+// CT-3 (round 3) and R5-6 (round 5): a revert whose provider slice
+// COMMITTED (SessionRef repointed, surviving ids remapped) but whose
+// later step failed leaves the anchor's own uuid legitimately absent
+// from the new transcript while its remapped PARENT uuid is present. A
+// retry must recognize that state as "already cut here" and finish the
+// revert — re-slicing THROUGH the parent and truncating SQLite —
+// instead of failing forever on the stale-uuid guard. Through the
+// parent, not a whole clone: rows appended after the failed revert must
+// not be resurrected into the retried cut.
+func TestRevertToMessageCheckpointMidTurnAnchorRetryAfterPartialFailure(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	// The fixture transcript ends at "interrupted tail" (a1) and does NOT
+	// contain the anchor: exactly what a committed prior slice leaves
+	// behind. The checkpoint carries the post-remap state — its own uuid
+	// stale ("uq-cut", cut away so never remapped), its parent current
+	// ("a1", remapped to the sliced file's id).
+	const sessionID = "midturn-retry-session"
+	thread := midTurnAnchorFixture(t, app, "t-midturn-retry", sessionID, "uq-cut", "a1")
+
+	// A row appended AFTER the partial failure (the session resumed and
+	// streamed before the user retried). The through-parent re-slice
+	// must cut it (R5-6).
+	sessionPath, err := sessionfork.LocateSessionFile(sessionID, thread.WorkspacePath)
+	if err != nil {
+		t.Fatalf("locate session: %v", err)
+	}
+	f, err := os.OpenFile(sessionPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open session for append: %v", err)
+	}
+	if _, err := f.WriteString(`{"type":"assistant","uuid":"a2","parentUuid":"a1","sessionId":"` + sessionID + `","message":{"role":"assistant","content":[{"type":"text","text":"post-failure noise"}]}}` + "\n"); err != nil {
+		t.Fatalf("append post-failure row: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "flush:0", RevertModeConversationOnly); err != nil {
+		t.Fatalf("retry revert: %v", err)
+	}
+
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	gotIDs := make([]string, len(items))
+	for i, it := range items {
+		gotIDs[i] = it.ID
+	}
+	if strings.Join(gotIDs, ",") != "user:0,text:0:0,text:0:1" {
+		t.Fatalf("items after retry = %v, want [user:0 text:0:0 text:0:1]", gotIDs)
+	}
+	draft, ok, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil || !ok {
+		t.Fatalf("get draft: ok=%v err=%v", ok, err)
+	}
+	if draft.Content != "queued follow-up" {
+		t.Fatalf("draft content = %q, want the reverted queued message", draft.Content)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef == "" || updated.SessionRef == sessionID {
+		t.Fatalf("thread session ref = %q, want a fresh re-slice of the already-cut transcript", updated.SessionRef)
+	}
+	assertClaudeSessionText(t, updated.WorkspacePath, updated.SessionRef,
+		[]string{"first", "reply 0", "interrupted tail"},
+		[]string{"post-failure noise"})
+}
+
+// TestRevertToMessageCheckpointMidTurnAnchorRetryUsesItemMetaParent pins
+// the R5-8 fallback (round 5): the already-cut retry's slice-through
+// parent comes from the checkpoint's provider_parent_uuid — but that
+// copy is written by a follow-up UPDATE that can fail after the item
+// meta stamp committed. The item meta carries the parent too (stamped
+// atomically with the item id), so a retry whose CHECKPOINT parent is
+// empty must still recognize the already-cut transcript and finish the
+// revert through the item-meta parent instead of refusing forever.
+func TestRevertToMessageCheckpointMidTurnAnchorRetryUsesItemMetaParent(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	const sessionID = "midturn-metaparent-session"
+	// Checkpoint: stale anchor uuid, NO parent copy (the follow-up
+	// UpdateCheckpointProviderIDs never committed).
+	thread := midTurnAnchorFixture(t, app, "t-midturn-metaparent", sessionID, "uq-cut", "")
+
+	// The item row's meta carries the parent — stamped in the same tx
+	// as the item id at the echo (R5-8).
+	flushRow, found, err := app.store.GetThreadItem(thread.ID, "flush:0")
+	if err != nil || !found {
+		t.Fatalf("load flush row: found=%v err=%v", found, err)
+	}
+	patched, err := usermessage.MergeProviderIDs(flushRow.Meta, "", "a1")
+	if err != nil {
+		t.Fatalf("merge parent into item meta: %v", err)
+	}
+	if err := app.store.UpdateItemMeta(thread.ID, "flush:0", patched); err != nil {
+		t.Fatalf("update item meta: %v", err)
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "flush:0", RevertModeConversationOnly); err != nil {
+		t.Fatalf("retry revert via item-meta parent: %v", err)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	gotIDs := make([]string, len(items))
+	for i, it := range items {
+		gotIDs[i] = it.ID
+	}
+	if strings.Join(gotIDs, ",") != "user:0,text:0:0,text:0:1" {
+		t.Fatalf("items after retry = %v, want [user:0 text:0:0 text:0:1]", gotIDs)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef == "" || updated.SessionRef == sessionID {
+		t.Fatalf("thread session ref = %q, want a fresh re-slice", updated.SessionRef)
+	}
+	assertClaudeSessionText(t, updated.WorkspacePath, updated.SessionRef,
+		[]string{"first", "reply 0", "interrupted tail"},
+		nil)
+}
+
+// TestRevertToMessageCheckpointSurvivesUndeletableRefs pins CT4-4
+// (round 4): once the provider slice and the SQLite truncation have
+// committed, the revert has happened — a checkpoint-ref cleanup
+// failure after that point of no return must not fail the revert,
+// because the checkpoint rows (the retry key) are already gone and the
+// composer draft is the user's only remaining copy of the message. Ref
+// deletion is best-effort; the draft must be restored regardless.
+func TestRevertToMessageCheckpointSurvivesUndeletableRefs(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	const sessionID = "midturn-badref-session"
+	thread := midTurnAnchorFixture(t, app, "t-midturn-badref", sessionID, "", "")
+	// A second queued message AFTER the anchor whose checkpoint ref fails
+	// validation (outside the thread's namespace) — the deterministic
+	// stand-in for any undeletable ref. The truncation deletes the row
+	// and its checkpoint; the ref cleanup for it can only be
+	// skipped-with-log. (The anchor's own ref stays valid: it is
+	// validated up front, before any destructive work.)
+	insertUserItem(t, app.store, thread.ID, "user:0:extra", 0, "second queued")
+	if err := app.store.SaveCheckpoint(store.Checkpoint{
+		ID:            "chk-evil",
+		ThreadID:      thread.ID,
+		UserItemID:    "user:0:extra",
+		TurnIndex:     0,
+		RefName:       "refs/other/evil",
+		CapturedAt:    time.Now().UnixMilli(),
+		WorkspacePath: thread.WorkspacePath,
+	}); err != nil {
+		t.Fatalf("save undeletable-ref checkpoint: %v", err)
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "flush:0", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert must survive an undeletable checkpoint ref: %v", err)
+	}
+	draft, ok, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil || !ok {
+		t.Fatalf("get draft: ok=%v err=%v", ok, err)
+	}
+	if draft.Content != "queued follow-up" {
+		t.Fatalf("draft content = %q, want the reverted queued message", draft.Content)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	gotIDs := make([]string, len(items))
+	for i, it := range items {
+		gotIDs[i] = it.ID
+	}
+	if strings.Join(gotIDs, ",") != "user:0,text:0:0,text:0:1" {
+		t.Fatalf("items after revert = %v, want [user:0 text:0:0 text:0:1]", gotIDs)
+	}
+}
+
+// TestClaudeSliceAnchorUUID pins CT4-6 (round 4): the slice anchor
+// prefers the checkpoint's provider uuid but falls back to the item
+// row's durable meta stamp — the two are written at different moments,
+// and a failed UpdateCheckpointProviderIDs after the stamp committed
+// must not misclassify a consumed message into the unconsumed
+// full-clone path.
+func TestClaudeSliceAnchorUUIDs(t *testing.T) {
+	stamped := store.Item{ThreadID: "t1", ID: "flush:0", Meta: `{"provider_item_id":"uq-item"}`}
+	cases := []struct {
+		name         string
+		checkpointID string
+		item         store.Item
+		want         []string
+	}{
+		{"both copies, checkpoint first (R5-7 retry order)", "uq-chk", stamped, []string{"uq-chk", "uq-item"}},
+		{"matching copies dedupe", "uq-item", stamped, []string{"uq-item"}},
+		{"item meta fallback (CT4-6)", "", stamped, []string{"uq-item"}},
+		{"both empty", "", store.Item{ThreadID: "t1", ID: "flush:0", Meta: "{}"}, nil},
+	}
+	for _, tc := range cases {
+		got := claudeSliceAnchorUUIDs(store.Checkpoint{ProviderUserMessageID: tc.checkpointID}, tc.item)
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("%s: claudeSliceAnchorUUIDs = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestWriteClaudeSessionSliceRetriesNextAnchorCandidate pins R5-7
+// (round 5): when the first anchor candidate (the checkpoint's copy)
+// misses the transcript but the second (the item row's meta stamp) is
+// present, the slice retries and lands on the exact UUID-keyed cut —
+// it must NOT fall through to the ordinal walk or a mid-turn refusal.
+// The split arises because remapClaudeProviderIDs refreshes items
+// before checkpoints with per-row autocommit: a crash between the
+// loops leaves the checkpoint copy a generation staler than the item's.
+func TestWriteClaudeSessionSliceRetriesNextAnchorCandidate(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "retry-candidate-session.jsonl")
+	jsonl := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"retry-candidate-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"retry-candidate-session","message":{"role":"assistant","content":[{"type":"text","text":"first reply"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"retry-candidate-session","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"retry-candidate-session","message":{"role":"assistant","content":[{"type":"text","text":"second reply"}]}}
+`
+	if err := os.WriteFile(srcPath, []byte(jsonl), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	_, newPath, _, err := writeClaudeSessionSlice(srcPath, []string{"uq-stale-checkpoint", "u2"}, nil, 0, false, "test slice")
+	if err != nil {
+		t.Fatalf("slice with stale first candidate: %v", err)
+	}
+	data, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatalf("read slice: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{"first", "first reply"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("slice missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "second") {
+		t.Fatalf("slice kept the cut turn — the item-uuid candidate was not used:\n%s", text)
+	}
 }
 
 // TestRevertToMessageCheckpointSurvivesCompactBoundary is the
@@ -1077,6 +1582,24 @@ func insertUserItemWithMeta(t *testing.T, st *store.Store, threadID, id string, 
 	}
 }
 
+func insertAssistantTextItem(t *testing.T, st *store.Store, threadID, id string, turnIndex int, summary string) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	if _, err := st.AppendItem(store.Item{
+		ID:        id,
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		Kind:      "assistant_text",
+		Role:      "assistant",
+		Status:    "completed",
+		Summary:   summary,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("append assistant text item: %v", err)
+	}
+}
+
 func insertRunningBackgroundToolCall(t *testing.T, st *store.Store, threadID, id string, turnIndex, itemIndex int) {
 	t.Helper()
 	now := time.Now().UnixMilli()
@@ -1155,5 +1678,119 @@ func TestRevertToMessageCheckpointSucceedsAfterCrashedTurnRecovery(t *testing.T)
 	}
 	if len(items) != 0 {
 		t.Fatalf("items after revert = %+v, want empty", items)
+	}
+}
+
+// TestRevertToMessageCheckpointHeadHealedFirstPromptDropsSession pins
+// R8-1 (round 8): a deferred turn-0 prompt healed at the turn HEAD
+// (UpsertItemAtTurnHead, R7-4) sits at a NEGATIVE item_index below its
+// response rows. It still opens turn 0, so reverting it must take the
+// drop-the-session branch — the previous exact-zero turn-initial check
+// sent it down the slice path, which fails on the empty prefix.
+func TestRevertToMessageCheckpointHeadHealedFirstPromptDropsSession(t *testing.T) {
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := t.TempDir()
+	const sessionID = "head-healed-session"
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"head-healed-session","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"head-healed-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+`)
+	thread := createCheckpointTestThread(t, app, "t-headheal", "claude", workspace)
+	thread.SessionRef = sessionID
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItem(store.Item{
+		ID: "user:0:flush:0", ThreadID: thread.ID, TurnIndex: 0, ItemIndex: -1,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "first", Meta: `{"provider_item_id":"u0"}`,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert head-healed prompt: %v", err)
+	}
+	if err := app.store.InsertItem(store.Item{
+		ID: "text:0:0", ThreadID: thread.ID, TurnIndex: 0, ItemIndex: 0,
+		Kind: "assistant_text", Role: "assistant", Status: "completed",
+		Summary: "reply 0", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert response row: %v", err)
+	}
+	if err := app.store.SaveCheckpoint(store.Checkpoint{
+		ID:                    "chk-headheal",
+		ThreadID:              thread.ID,
+		UserItemID:            "user:0:flush:0",
+		TurnIndex:             0,
+		ProviderUserMessageID: "u0",
+		RefName:               checkpoint.ThreadRefPrefix(thread.ID) + "message/headheal",
+		CapturedAt:            now,
+		WorkspacePath:         thread.WorkspacePath,
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	if err := app.RevertToMessageCheckpoint(thread.ID, "user:0:flush:0", RevertModeConversationOnly); err != nil {
+		t.Fatalf("revert head-healed first prompt: %v", err)
+	}
+	reverted, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("reload thread: %v", err)
+	}
+	if reverted.SessionRef != "" {
+		t.Errorf("SessionRef = %q, want empty — reverting the turn-opening prompt keeps nothing", reverted.SessionRef)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("items after revert = %+v, want none", items)
+	}
+}
+
+// TestClaudeMidTurnAnchor pins R12-6 (round 12): the revert/fork
+// mid-turn predicate must consult the durable promotion marker, not
+// display position alone. A promoted flush row healed at its
+// dispatch-time index after a failed tail bump (R10-1) can sit at
+// display index 0 while the interrupted round's tail — provider-order
+// BEFORE the queued message — persists below it; a bare ItemIndex > 0
+// check would classify it turn-initial and cut that retained prefix
+// from the session slice.
+func TestClaudeMidTurnAnchor(t *testing.T) {
+	promotedMeta, err := itemmeta.MarkPromotedAtInterrupt("")
+	if err != nil {
+		t.Fatalf("mark promoted meta: %v", err)
+	}
+	cases := []struct {
+		name    string
+		item    store.Item
+		want    bool
+		wantErr bool
+	}{
+		{name: "plain turn-initial prompt", item: store.Item{ItemIndex: 0}, want: false},
+		{name: "head-healed deferred prompt (negative index, unmarked)", item: store.Item{ItemIndex: -1}, want: false},
+		{name: "display mid-turn row", item: store.Item{ItemIndex: 2}, want: true},
+		{name: "promoted row self-healed to display index 0 (R10-1)", item: store.Item{ItemIndex: 0, Meta: promotedMeta}, want: true},
+		{name: "promoted row above the tail", item: store.Item{ItemIndex: 3, Meta: promotedMeta}, want: true},
+		{name: "corrupt promotion marker fails loudly", item: store.Item{ItemIndex: 0, Meta: `{"promoted_at_interrupt":"yes"}`}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := claudeMidTurnAnchor(tc.item)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("claudeMidTurnAnchor = (%v, nil), want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("claudeMidTurnAnchor: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("claudeMidTurnAnchor = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
