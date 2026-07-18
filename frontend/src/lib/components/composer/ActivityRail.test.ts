@@ -146,6 +146,48 @@ describe('<ActivityRail>', () => {
     expect((await findByTestId('activity-rail-todos-count')).textContent?.trim()).toBe('3/3');
   });
 
+  it('renders the stepped spinner (not animate-spin) on the in-progress row only', async () => {
+    // The in-progress indicator is a standing animation — it lives for
+    // the whole todo, not a transient loading flash — so it must be the
+    // spoked steps(12) spinner, never a continuous animate-spin (see
+    // primitives/SteppedSpinner.svelte and the app.css --animate-pulse
+    // note for the frame-production incident behind this).
+    const pane = await buildPane();
+    pane.setLiveTodo([
+      { step: 'active', status: 'inProgress' },
+      { step: 'queued', status: 'pending' },
+      { step: 'done', status: 'completed' },
+    ]);
+    const { container, findByTestId, queryAllByTestId } = render(ActivityRail, {
+      props: { pane },
+    });
+    await tick();
+    await fireEvent.click(await findByTestId('activity-rail-todos-toggle'));
+    await tick();
+
+    const spinners = queryAllByTestId('stepped-spinner');
+    expect(spinners).toHaveLength(1);
+    expect(spinners[0].classList.contains('stepped-spin')).toBe(true);
+    expect(container.querySelector('.animate-spin')).toBeNull();
+  });
+
+  it('renders the in-progress spinner static in low power mode', async () => {
+    // Same contract as the shimmer: low-power mode drops standing
+    // animations. The glyph stays (the row still reads as active); only
+    // the rotation stops.
+    getSettings().lowPowerMode = true;
+    const pane = await buildPane();
+    pane.setLiveTodo([{ step: 'active', status: 'inProgress' }]);
+    const { findByTestId, queryAllByTestId } = render(ActivityRail, { props: { pane } });
+    await tick();
+    await fireEvent.click(await findByTestId('activity-rail-todos-toggle'));
+    await tick();
+
+    const spinners = queryAllByTestId('stepped-spinner');
+    expect(spinners).toHaveLength(1);
+    expect(spinners[0].classList.contains('stepped-spin')).toBe(false);
+  });
+
   it('renders the owner badge only on Task* rows that were claimed', async () => {
     // The Claude Code 2.1.150+ Task* family threads an `owner` field
     // through the snapshot. The visual is added-only: empty owner

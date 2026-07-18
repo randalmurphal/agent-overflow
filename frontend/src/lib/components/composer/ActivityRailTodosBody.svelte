@@ -7,10 +7,11 @@
 
   import type { LiveTodo, ThreadPane } from '../../stores/thread.svelte';
   import type { TodoStep, TodoStepStatus } from '../../types/events';
+  import { getSettings } from '../../stores/settings.svelte';
   import Icon from '../primitives/Icon.svelte';
+  import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import Circle from 'lucide-svelte/icons/circle';
   import CircleCheck from 'lucide-svelte/icons/circle-check';
-  import LoaderCircle from 'lucide-svelte/icons/loader-circle';
 
   interface Props {
     liveTodo: LiveTodo;
@@ -62,10 +63,11 @@
     `${counts.inProgress} in progress, ${counts.pending} pending, ${counts.completed} completed`,
   );
 
+  // In-progress rows render <SteppedSpinner> instead of an Icon (see
+  // its header for why a standing indicator must not use animate-spin),
+  // so these helpers only cover completed/pending.
   function statusIcon(status: TodoStepStatus) {
-    if (status === 'completed') return CircleCheck;
-    if (status === 'inProgress') return LoaderCircle;
-    return Circle;
+    return status === 'completed' ? CircleCheck : Circle;
   }
 
   function statusClass(status: TodoStepStatus): string {
@@ -75,9 +77,7 @@
   }
 
   function statusIconClass(status: TodoStepStatus): string {
-    if (status === 'inProgress') return 'animate-spin text-accent';
-    if (status === 'completed') return 'text-fg-hint/55';
-    return 'text-fg-hint/65';
+    return status === 'completed' ? 'text-fg-hint/55' : 'text-fg-hint/65';
   }
 </script>
 
@@ -92,12 +92,20 @@
   <ul class="flex flex-col gap-0.5 pl-1" data-testid="activity-rail-todos-list">
     {#each visibleSteps as entry (entry.step.id ?? entry.originalIndex)}
       <li class="flex flex-wrap items-start gap-x-1.5 gap-y-px py-px text-[0.75rem] leading-snug">
-        <Icon
-          icon={statusIcon(entry.step.status)}
-          size={11}
-          strokeWidth={2}
-          class={`mt-[3px] shrink-0 ${statusIconClass(entry.step.status)}`}
-        />
+        {#if entry.step.status === 'inProgress'}
+          <SteppedSpinner
+            size={11}
+            class="mt-[3px] text-accent"
+            animate={!getSettings().lowPowerMode}
+          />
+        {:else}
+          <Icon
+            icon={statusIcon(entry.step.status)}
+            size={11}
+            strokeWidth={2}
+            class={`mt-[3px] shrink-0 ${statusIconClass(entry.step.status)}`}
+          />
+        {/if}
         <span class={statusClass(entry.step.status)}>{entry.step.step}</span>
         {#if entry.step.owner}
           <span

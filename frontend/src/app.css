@@ -187,7 +187,9 @@ html.light {
      opacity changes/sec, imperceptible on indicator dots, ~40× less
      lane traffic. Spinners (animate-spin) are deliberately NOT stepped
      — rotation reads as broken when discretized — and are only used
-     transiently. */
+     transiently. Standing spinners use primitives/SteppedSpinner.svelte
+     instead: a spoked glyph whose steps(12) rotation lands on spoke
+     positions, so the discretization reads as design. */
   --animate-pulse: pulse 2s steps(8, jump-none) infinite;
   @keyframes pulse {
     50% {
