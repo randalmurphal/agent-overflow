@@ -61,10 +61,16 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     `rotate(0.0001deg)` defeats WebKit's compositor pixel alignment
     (which would round the sub-pixel translate to whole device pixels
     and oscillate around the trajectory), and the spring holds a
-    DPR-derived "fusion floor" (~1.1/dpr px per 60Hz frame) while
-    decelerating so bilinear-resample breathing on thin rows cycles
-    above flicker fusion (~60Hz) instead of inside the visible 5–40Hz
-    band. The residue is a render detail, not a second scroll
+    refresh-aware "fusion floor" while decelerating: derived from
+    devicePixelRatio plus the spring's measured rAF cadence so the
+    glide advances 1/k device pixels per displayed frame
+    (k = ⌊refresh/60⌋). Every harmonic of the bilinear-resample
+    breathing on thin rows then either phase-locks (constant resample
+    weights — invisible) or patterns at ≥60Hz, above flicker fusion;
+    sub-120Hz displays get the full one-pixel-per-frame lock (zero
+    breathing). A refresh-blind floor aliased into a visible ~12Hz
+    beat on 144Hz panels — see `fusionFloorPxPerFrame` in spring.ts
+    for the derivation. The residue is a render detail, not a second scroll
     writer — it never changes `scrollTop` and fires no scroll events.
     Release rules: a clear that accompanies a real write (any
     non-spring caller, or detach) is instant; a release with no write

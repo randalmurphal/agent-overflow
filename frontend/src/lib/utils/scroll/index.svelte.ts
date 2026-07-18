@@ -492,19 +492,15 @@ export function createUseStickToBottomController(
     prefersReducedMotion: motionReduced,
     forceNextSpringTickTrace,
     settleGlideResidue,
-    // Fusion floor from the display's device quantum (1/dpr CSS px):
-    // breathing rate = speed ÷ quantum must stay above flicker fusion
-    // (~60 cycles/s), so floor ≈ 1.1/dpr px per 60Hz frame (10%
-    // margin). Clamped: never stiffer than the historical 1.4 even at
-    // dpr < 0.8, and ≥ 0.4 so a 3×+ retina keeps a meaningful hold.
-    // Read live — zoom and monitor moves change dpr between chases.
-    glideFusionFloorPxPerFrame: () => {
-      const dpr =
-        typeof window !== 'undefined' && window.devicePixelRatio > 0
-          ? window.devicePixelRatio
-          : 1;
-      return Math.min(1.4, Math.max(0.4, 1.1 / dpr));
-    },
+    // Display input to the spring's refresh-aware fusion floor — the
+    // derivation lives beside its sibling constants in spring.ts
+    // (fusionFloorPxPerFrame); the spring supplies the other input,
+    // its measured rAF cadence. Read live — zoom and monitor moves
+    // change dpr between and during chases.
+    devicePixelRatio: () =>
+      typeof window !== 'undefined' && window.devicePixelRatio > 0
+        ? window.devicePixelRatio
+        : 1,
   });
 
   // ===== Content observation pipeline =====

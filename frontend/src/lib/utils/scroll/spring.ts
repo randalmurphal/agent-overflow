@@ -159,14 +159,13 @@ const RESUME_CLAMP_WINDOW_MS = 2000;
 // continuously through the fractional glide residue (the controller
 // rides the sub-CSS-pixel remainder of each spring write on a
 // contentEl translateY — see writeScrollTop), bounded below by the
-// fusion floor (see the deps.glideFusionFloorPxPerFrame call site):
-// position is exact, but bilinear resampling makes thin features
-// (1px separators, glyph stems) breathe between sharp and dim as the
-// fractional offset sweeps each device pixel. The breathing rate is
-// speed ÷ device quantum; above ~60 cycles/s flicker fusion hides it,
-// while a 2026-07-04T2026 capture measured 49% of glide time at
+// fusion floor (see fusionFloorPxPerFrame below): position is exact,
+// but bilinear resampling makes thin features (1px separators, glyph
+// stems) breathe between sharp and dim as the fractional offset
+// sweeps each device pixel. The breathing rate is speed ÷ device
+// quantum; a 2026-07-04T2026 capture measured 49% of glide time at
 // 5–40px/s — squarely visible. The floor keeps a decelerating glide's
-// breathing above fusion; it replaces the historical anti-judder
+// breathing invisible; it replaces the historical anti-judder
 // floor/taper (integer-quantized scrollTop rendering slow tails as
 // 1px steps), which the residue made obsolete.
 const SPRING_DECEL_ENVELOPE_RATIO = 0.11;
@@ -187,6 +186,80 @@ const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
 // there). Raising this further trades landing softness back into
 // perceptible breathing.
 const SPRING_FUSION_FLOOR_RELEASE_PX = 3;
+
+// ===== Fusion-floor derivation (display physics) =====
+// The glide renders fractionally (scrollTop + the controller's
+// translateY residue), and bilinear resampling makes thin features
+// breathe sharp↔dim once per DEVICE pixel crossed — a modulation at
+// (speed ÷ device quantum) cycles/s. The floor keeps a decelerating
+// chase fast enough that this modulation stays invisible.
+//
+// "Above flicker fusion (~60Hz)" is necessary but NOT sufficient: the
+// display samples the modulation at its refresh rate, and any harmonic
+// landing near a multiple of the refresh aliases down into a slow,
+// fully visible beat. The historical refresh-blind floor (1.1/dpr px
+// per 60Hz frame ⇒ ~66 cycles/s at 1.1 dpr) hit all three regimes on
+// real hardware (2026-07-18 report): clean on a 165Hz panel (0.4
+// cycles/frame — well sampled), shimmering on a 144Hz panel (the
+// spiky waveform's 2nd harmonic at 0.917 cycles/frame aliases to
+// 0.083 ⇒ a ~12Hz beat), and worst at 60Hz (1.1 cycles/frame aliases
+// to 0.1 ⇒ ~6Hz full-amplitude pulsing).
+//
+// Refresh-aware rule: hold the floor at r = 1/k device pixels per
+// DISPLAYED frame, k = ⌊refresh / 60⌋. Every harmonic m·r then either
+// phase-locks (m a multiple of k ⇒ constant resample weights, zero
+// modulation) or patterns at refresh/k ≥ 60Hz — above fusion by
+// construction. Sub-120Hz displays get k = 1, a FULL phase lock: one
+// device pixel per frame, no breathing at all — 60Hz panels become
+// the best case rather than the worst. 120–179Hz get the half lock
+// (alternation at refresh/2 ≥ 60Hz), 180Hz+ the third, and so on.
+// The +0.05 rung tolerance keeps a display reporting 119.9Hz on the
+// k=2 rung instead of flapping to a needlessly stiff k=1 floor.
+const FLICKER_FUSION_HZ = 60;
+const REFRESH_LADDER_TOLERANCE = 0.05;
+// Clamps: never slower than 0.4 (a 3×-retina one-pixel lock would be
+// a meaningless 20px/s hold — and at that quantum the breathing
+// amplitude is negligible anyway) and never stiffer than the
+// deceleration envelope's own lower cap (1.6) so the floor always
+// fits under the envelope.
+const FUSION_FLOOR_MIN_PX_PER_FRAME = 0.4;
+const FUSION_FLOOR_MAX_PX_PER_FRAME = 1.6;
+
+// Pure derivation, exported for tests. `frameIntervalMs` is the
+// spring's measured rAF cadence (null until first measured — falls
+// back to the 60Hz assumption, whose k=1 phase-locked floor is also
+// the safe transient choice). Returns px per 60Hz-equivalent frame,
+// the spring's velocity unit; the frame-rate-independent integration
+// (velocity · dtFrames) is what converts a held floor back into
+// exactly 1/k device pixels per displayed frame.
+export function fusionFloorPxPerFrame(
+  devicePixelRatio: number,
+  frameIntervalMs: number | null,
+): number {
+  const dpr = devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const deviceQuantumCssPx = 1 / dpr;
+  const refreshHz =
+    frameIntervalMs !== null && frameIntervalMs > 0
+      ? 1000 / frameIntervalMs
+      : FLICKER_FUSION_HZ;
+  const k = Math.max(1, Math.floor(refreshHz / FLICKER_FUSION_HZ + REFRESH_LADDER_TOLERANCE));
+  const floorCssPxPerSecond = (deviceQuantumCssPx * refreshHz) / k;
+  return Math.min(
+    FUSION_FLOOR_MAX_PX_PER_FRAME,
+    Math.max(FUSION_FLOOR_MIN_PX_PER_FRAME, floorCssPxPerSecond / 60),
+  );
+}
+
+// Cadence input to the derivation above: EMA over real tick gaps,
+// bounded to plausible single-frame intervals so a missed frame or a
+// background stall never reads as a slow display. The EMA persists
+// across chases (cadence is a display property, not a chase property)
+// and re-converges within ~20 frames after the window moves to a
+// monitor with a different refresh rate.
+const FRAME_INTERVAL_EMA_ALPHA = 0.15;
+const FRAME_INTERVAL_SAMPLE_MIN_MS = 3;
+const FRAME_INTERVAL_SAMPLE_MAX_MS = 21;
+
 // How long a structural-append mark (markStructuralAppend, the
 // controller's markStructuralContentPending) keeps near-term content
 // growth spring-eligible while animationMode is 'instant'.
@@ -299,17 +372,12 @@ export interface SpringChaseDeps {
    */
   settleGlideResidue(): void;
   /**
-   * Minimum glide speed (px per 60Hz frame) a DECELERATING chase may
-   * not fall below until the last SPRING_FUSION_FLOOR_RELEASE_PX.
-   * Display-aware: bilinear resampling of the fractional residue makes
-   * thin features breathe between sharp and dim at (speed ÷ device
-   * quantum) cycles/s; the controller derives this floor from
-   * devicePixelRatio so the breathing stays above flicker fusion
-   * (~60Hz) on every display. Engages only after the chase has
-   * exceeded it (per quantum), so gentle sub-line growths keep their
-   * natural soft entry.
+   * Live devicePixelRatio (zoom and monitor moves change it between —
+   * and during — chases). One of the two inputs to the refresh-aware
+   * fusion-floor derivation (fusionFloorPxPerFrame); the spring
+   * supplies the other, its measured rAF cadence.
    */
-  glideFusionFloorPxPerFrame(): number;
+  devicePixelRatio(): number;
 }
 
 export interface SpringChase {
@@ -355,9 +423,12 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   let lastTickAt: number | null = null;
   // True once the CURRENT quantum's glide has exceeded the fusion
   // floor — only then does the floor hold the deceleration up (see
-  // glideFusionFloorPxPerFrame). Reset at every catch-up and on
+  // fusionFloorPxPerFrame). Reset at every catch-up and on
   // cancel, so each growth's entry ramp stays natural.
   let fusionFloorEngaged = false;
+  // Measured rAF cadence for the fusion-floor derivation. Deliberately
+  // NOT reset in cancel() — see the constant block.
+  let frameIntervalEmaMs: number | null = null;
   // Monotonic counter (cheaper than `Symbol('spring')` per start). 0 means
   // no spring in flight; positive values identify the current spring run.
   let springToken = 0;
@@ -592,6 +663,18 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const previousTickAt = lastTickAt;
       const dtFrames = previousTickAt === null ? 1 : (now - previousTickAt) / SIXTY_FPS_INTERVAL_MS;
       lastTickAt = now;
+      if (previousTickAt !== null) {
+        const frameGapMs = now - previousTickAt;
+        if (
+          frameGapMs >= FRAME_INTERVAL_SAMPLE_MIN_MS
+          && frameGapMs <= FRAME_INTERVAL_SAMPLE_MAX_MS
+        ) {
+          frameIntervalEmaMs =
+            frameIntervalEmaMs === null
+              ? frameGapMs
+              : frameIntervalEmaMs + (frameGapMs - frameIntervalEmaMs) * FRAME_INTERVAL_EMA_ALPHA;
+        }
+      }
       if (chaseTelemetry) recordChaseFrame(now, previousTickAt, dtFrames);
       const integrationFrames = Math.min(Math.max(dtFrames, 0), SPRING_MAX_CATCHUP_STEPS);
 
@@ -741,7 +824,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               // the constant block). Applies only to velocity already
               // pointing at the target; reversals decelerate through
               // zero naturally.
-              const fusionFloor = deps.glideFusionFloorPxPerFrame();
+              const fusionFloor = fusionFloorPxPerFrame(
+                deps.devicePixelRatio(),
+                frameIntervalEmaMs,
+              );
               if (Math.abs(velocity) >= fusionFloor) {
                 fusionFloorEngaged = true;
               } else if (
