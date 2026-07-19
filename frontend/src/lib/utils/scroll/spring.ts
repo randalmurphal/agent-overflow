@@ -540,6 +540,15 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       // Bucket bounds documented at CHASE_GAP_BUCKET_BOUNDS_MS:
       // [<9, 9–13, 13–18, 18–26, 26–42, >42] ms.
       gapBuckets: stats.gapBuckets,
+      // The rAF cadence the spring is actually being driven at (the
+      // fusion-floor EMA). On mixed-refresh multi-monitor setups
+      // Chromium can pace rAF to the WRONG monitor's clock — compare
+      // this against the refresh rate of the monitor the window is on:
+      // a 6.06ms EMA while sitting on a 144Hz (6.94ms) panel means
+      // ~21 frames/s are being dropped at presentation, visible as
+      // pixel-skips at any glide speed.
+      cadenceEmaMs:
+        frameIntervalEmaMs === null ? null : Math.round(frameIntervalEmaMs * 100) / 100,
       catchupClamps: stats.catchupClamps,
       distanceJumps: stats.distanceJumps,
       targetChanges: stats.targetChanges,
