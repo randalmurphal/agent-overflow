@@ -13,6 +13,12 @@
  * `ClipboardItem` for `image/png` (Chromium, WebKit 13.1+, and the
  * Wails WebView2 bundle). The explicit try/catch chain keeps the call
  * safe when permissions are denied or the API is unavailable.
+ *
+ * WebKit constraint: `clipboard.write()` must be reached synchronously
+ * within the user-gesture task — an `await` before it consumes the
+ * gesture and WKWebView rejects with NotAllowedError. Async payloads
+ * (PNG rasterisation) are therefore passed to `ClipboardItem` as a
+ * pending Promise; the browser awaits the blob itself.
  */
 
 export type CopyResult = 'png' | 'svg' | 'text' | 'failed';
@@ -21,8 +27,7 @@ export async function copyAsPNG(svg: SVGSVGElement): Promise<CopyResult> {
   const serialised = serialiseSvg(svg);
   if (!serialised) return 'failed';
   try {
-    const pngBlob = await rasterisePNG(svg, serialised);
-    await writeClipboardItem(new ClipboardItem({ 'image/png': pngBlob }));
+    await writeClipboardItem(new ClipboardItem({ 'image/png': rasterisePNG(svg, serialised) }));
     return 'png';
   } catch {
     return copyAsSVGInternal(serialised);

@@ -608,6 +608,7 @@ pre, code, kbd, samp, .ansi-body {
   cursor: pointer;
   font-weight: 500;
   color: var(--text-secondary);
+  -webkit-user-select: none;
   user-select: none;
   padding: 0.125rem 0;
 }
