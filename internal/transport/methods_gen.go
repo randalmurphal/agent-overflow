@@ -99,6 +99,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetThreadItem", ID: 1969869112},                  // main.App.GetThreadItem
 	{Name: "GetThreadLiveState", ID: 70226550},               // main.App.GetThreadLiveState
 	{Name: "GetThreadRuntimeMode", ID: 2573491630},           // main.App.GetThreadRuntimeMode
+	{Name: "GetTurnEditsDiff", ID: 2905371438},               // main.App.GetTurnEditsDiff
 	{Name: "GetUIRenderTracePath", ID: 1009213933},           // main.App.GetUIRenderTracePath
 	{Name: "GetUIState", ID: 3380106838},                     // main.App.GetUIState
 	{Name: "GetUsageStats", ID: 3135466533},                  // main.App.GetUsageStats
@@ -170,6 +171,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListRemoteEndpoints", ID: 3443007043},            // main.App.ListRemoteEndpoints
 	{Name: "ListSubagentDescendants", ID: 1299118478},        // main.App.ListSubagentDescendants
 	{Name: "ListTerminals", ID: 2445206506},                  // main.App.ListTerminals
+	{Name: "ListThreadEditDiffs", ID: 2243533007},            // main.App.ListThreadEditDiffs
 	{Name: "ListThreadProposedPlans", ID: 2485050629},        // main.App.ListThreadProposedPlans
 	{Name: "ListThreadSliceAround", ID: 4176102096},          // main.App.ListThreadSliceAround
 	{Name: "ListThreads", ID: 1090132042},                    // main.App.ListThreads

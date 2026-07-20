@@ -144,6 +144,12 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 			return "", fmt.Errorf("%s: %w", action, err)
 		}
 		return capContent(action, req.Path, content, maxBytes)
+	case "edits":
+		// An edit diff is a historical snapshot: only its hunks were
+		// persisted, and no tree from that moment exists to read the
+		// surrounding lines from. The frontend suppresses gap rows in
+		// this scope; this refusal is the defensive backstop.
+		return "", fmt.Errorf("%s: context expansion is not available for historical edit diffs", action)
 	default:
 		return "", fmt.Errorf("%s: unknown scope %q", action, req.Scope)
 	}

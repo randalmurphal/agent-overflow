@@ -61,12 +61,15 @@ export interface PatchFile {
   /** New-side file length, learned from a context-expansion response.
    * Sizes (or retires) the trailing hunk gap. Absent on plain parses. */
   newSideTotal?: number;
+  /** Skip hunk-gap rows entirely. Set for historical edit diffs: only
+   * their hunks were persisted, so there is no source to expand from. */
+  suppressGaps?: boolean;
 }
 
 /** Display rows for a PatchFile — the canonical call shape, so every
  * consumer shares one memo entry per file (see buildPatchDisplayRows). */
 export function filePatchDisplayRows(file: PatchFile): PatchDisplayRow[] {
-  return buildPatchDisplayRows(file.lines, file.newSideTotal);
+  return buildPatchDisplayRows(file.lines, file.newSideTotal, file.suppressGaps === true);
 }
 
 export function patchFileRowId(file: Pick<PatchFile, 'path'>, index: number): string {
@@ -222,26 +225,26 @@ export function extractPatchFile(patch: string, filePath: string): string | null
 // response) participates in the key: it changes the trailing gap.
 const displayRowsCache = new WeakMap<
   PatchLine[],
-  { newSideTotal: number | undefined; rows: PatchDisplayRow[] }
+  { newSideTotal: number | undefined; suppressGaps: boolean; rows: PatchDisplayRow[] }
 >();
 
-export function buildPatchDisplayRows(lines: PatchLine[], newSideTotal?: number): PatchDisplayRow[] {
+export function buildPatchDisplayRows(lines: PatchLine[], newSideTotal?: number, suppressGaps = false): PatchDisplayRow[] {
   const cached = displayRowsCache.get(lines);
-  if (cached && cached.newSideTotal === newSideTotal) return cached.rows;
-  const rows = buildPatchDisplayRowsUncached(lines, newSideTotal);
+  if (cached && cached.newSideTotal === newSideTotal && cached.suppressGaps === suppressGaps) return cached.rows;
+  const rows = buildPatchDisplayRowsUncached(lines, newSideTotal, suppressGaps);
   attachIntralineRanges(rows);
-  displayRowsCache.set(lines, { newSideTotal, rows });
+  displayRowsCache.set(lines, { newSideTotal, suppressGaps, rows });
   return rows;
 }
 
-function buildPatchDisplayRowsUncached(lines: PatchLine[], newSideTotal?: number): PatchDisplayRow[] {
+function buildPatchDisplayRowsUncached(lines: PatchLine[], newSideTotal?: number, suppressGaps = false): PatchDisplayRow[] {
   const rows: PatchDisplayRow[] = [];
   let oldLine = 0;
   let newLine = 0;
   let fallbackIndex = 0;
   // Conflict pseudo-files represent hidden runs as their own fold rows
   // (utils/conflictFile.ts) — emitting hunk gaps there would double up.
-  const emitGaps = !lines.some((line) => line.fold !== undefined || line.type === 'marker');
+  const emitGaps = !suppressGaps && !lines.some((line) => line.fold !== undefined || line.type === 'marker');
   let gapId = 0;
   let sawHunk = false;
   // oldStart of the first hunk: 0 marks an added file (fully present,

@@ -11,12 +11,15 @@ import {
   GetPRDetail,
   GetPRDiff,
   GetPRMergeConflicts,
+  GetPayloadData,
   GetThread,
+  GetTurnEditsDiff,
   SavePRCIJobLog,
   GetWorkspaceCurrentDiff,
   GitListBranches,
   ListBranchCommits,
   ListPRCommits,
+  ListThreadEditDiffs,
   ListPRReviewThreads,
   MarkDiffReviewCommentsSent,
   ReplyToPRThread,
@@ -77,6 +80,31 @@ import type { CommentListItem } from '../utils/reviewComments';
 
 export type ReviewScope = DiffReviewScope;
 
+/** One edit tool call in the Edits selector — metadata only, the diff
+ * loads on selection. Mirrors the ListThreadEditDiffs wire entry. */
+export interface EditDiffEntryView {
+  itemId: string;
+  payloadId: string;
+  turnIndex: number;
+  title: string;
+  paths: string[];
+  insertions: number;
+  deletions: number;
+  createdAt: number;
+}
+
+/** Edits-scope selection: one tool call's diff, or a whole turn's
+ * edits concatenated in order. */
+export type EditSelection =
+  | { kind: 'item'; itemId: string; payloadId: string }
+  | { kind: 'turn'; turnIndex: number };
+
+/** Selector `<option>` value encoding for an EditSelection. */
+export function editSelectionKey(selection: EditSelection | null): string | null {
+  if (!selection) return null;
+  return selection.kind === 'item' ? `item:${selection.itemId}` : `turn:${selection.turnIndex}`;
+}
+
 export interface ReviewPaneState {
   /** Thread this state was created for — the registry's staleness check. */
   readonly threadId: string;
@@ -95,6 +123,16 @@ export interface ReviewPaneState {
   readonly commits: readonly BranchCommit[];
   /** Selected single commit, or null for the full-range diff. */
   readonly selectedCommitSHA: string | null;
+  /** Edit tool calls of the thread (timeline order); populated in
+   * edits scope only. Feeds the turn-grouped edit selector. */
+  readonly edits: readonly EditDiffEntryView[];
+  /** Turn index → first user prompt summary, for selector group labels. */
+  readonly editTurnLabels: ReadonlyMap<number, string>;
+  /** Current edits-scope selection (never null once loaded with edits). */
+  readonly selectedEditKey: string | null;
+  /** Edit tool call to select on the next edits-scope load — set by
+   * the inline-diff affordance before setScope('edits'). */
+  pendingEditItemID: string | null;
   pendingJumpFilePath: string | null;
   /** Diff row key to jump to (comments-list click); consumed by the diff body. */
   readonly pendingJumpRowKey: string | null;
@@ -142,6 +180,9 @@ export interface ReviewPaneState {
   setScope(scope: ReviewScope, opts?: { baseBranch?: string }): Promise<void>;
   /** Switch the loaded diff to a single commit (null → full range). */
   selectCommit(sha: string | null): Promise<void>;
+  /** Switch the edits-scope diff (selector value encoding: `item:<id>`
+   * or `turn:<n>`; null → default, the latest turn). */
+  selectEdit(key: string | null): Promise<void>;
   reload(): Promise<void>;
   consumePendingJumpFilePath(): void;
   /** Jump the diff body to a comment row: leaves conflict/CI-log views,
@@ -295,6 +336,8 @@ export async function openReviewCompanion(
   opts: {
     scope?: ReviewScope;
     filePath?: string;
+    /** Edits scope: the edit tool call to pin on load. */
+    editItemId?: string;
   } = {},
 ): Promise<ReviewPaneState | null> {
   const companion = openCompanion(sourcePaneId, 'review');
@@ -303,8 +346,15 @@ export async function openReviewCompanion(
   if (opts.filePath) {
     state.pendingJumpFilePath = opts.filePath;
   }
+  if (opts.editItemId) {
+    state.pendingEditItemID = opts.editItemId;
+  }
   if (opts.scope) {
     await state.setScope(opts.scope);
+  } else if (opts.editItemId) {
+    // A pinned edit implies edits scope; setScope reloads even when the
+    // pane already sits there, which is what consumes the pending pin.
+    await state.setScope('edits');
   }
   return state;
 }
@@ -353,6 +403,10 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   let expandedPRThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
   let commits: BranchCommit[] = $state([]);
   let selectedCommitSHA: string | null = $state(null);
+  let edits: EditDiffEntryView[] = $state([]);
+  let editTurnLabels: ReadonlyMap<number, string> = $state(new Map());
+  let selectedEdit: EditSelection | null = $state(null);
+  let pendingEditItemID: string | null = null;
   const effectiveSubmitTarget = $derived<'agent' | 'pr'>(
     scope === 'pr' && !selectedCommitSHA ? submitTarget : 'agent',
   );
@@ -386,6 +440,15 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   let wordWrap = $state(getSettings().diffWordWrap);
   let loadSeq = 0;
   const sourceKey = $derived.by(() => {
+    if (scope === 'edits') {
+      // An edit payload is immutable, so its id is the stable identity;
+      // a whole-turn view keys by the turn (its edit set only grows
+      // while the turn is still streaming).
+      if (!selectedEdit) return '';
+      return selectedEdit.kind === 'item'
+        ? `edit:${selectedEdit.payloadId}`
+        : `edit-turn:${selectedEdit.turnIndex}`;
+    }
     if (selectedCommitSHA) {
       // A single commit's content is immutable — the SHA itself is the
       // stable identity, in both branch and pr scope.
@@ -406,6 +469,12 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   const files = $derived.by(() => {
     void contextExpansionVersion;
     const parsed = sortFilesTreeOrder(parsePatchFilesCached(patchText));
+    if (scope === 'edits') {
+      // Historical edit diffs have no source to expand gaps from — only
+      // the hunks were persisted. Copies, not mutation: the parse cache
+      // is shared across panes and scopes.
+      return parsed.map((file) => ({ ...file, suppressGaps: true }));
+    }
     if (contextExpansions.size === 0) return parsed;
     return parsed.map((file) => applyContextExpansion(file, contextExpansions.get(file.path)));
   });
@@ -562,6 +631,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     // range.
     if (scopeChanged) {
       selectedCommitSHA = null;
+      selectedEdit = null;
     }
     openEditors = [];
     draftBodies.clear();
@@ -576,22 +646,38 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     openEditors = [];
     draftBodies.clear();
     collapseOverrides.clear();
-    await reload({ commitSelectionOnly: true });
+    await reload({ selectionOnly: true });
   }
 
-  async function reload(opts?: { commitSelectionOnly?: boolean }): Promise<void> {
-    // Commit selection changes only which diff is shown — the commit
-    // list, PR detail, and subscription are all still valid, so reuse
-    // them and fetch just the diff. Only when a previous full load
-    // actually populated them; otherwise fall through to a full load.
-    const commitOnly = opts?.commitSelectionOnly === true
-      && commits.length > 0
-      && (scope !== 'pr' || subscriptionId !== null);
+  async function selectEdit(key: string | null): Promise<void> {
+    const next = editSelectionFromKey(key, edits);
+    if (editSelectionKey(next) === editSelectionKey(selectedEdit)) return;
+    selectedEdit = next;
+    openEditors = [];
+    draftBodies.clear();
+    collapseOverrides.clear();
+    await reload({ selectionOnly: true });
+  }
+
+  async function reload(opts?: { selectionOnly?: boolean }): Promise<void> {
+    // A commit/edit selection changes only which diff is shown — the
+    // selector list, PR detail, and subscription are all still valid,
+    // so reuse them and fetch just the diff. Only when a previous full
+    // load actually populated them; otherwise fall through to a full
+    // load.
+    const selectionOnly = opts?.selectionOnly === true
+      && (scope === 'edits'
+        ? edits.length > 0
+        : commits.length > 0 && (scope !== 'pr' || subscriptionId !== null));
+    // The inline-diff affordance pins an edit for the NEXT load;
+    // consumed here so a later manual reload doesn't re-pin it.
+    const pinnedEditItemID = pendingEditItemID;
+    pendingEditItemID = null;
     const seq = loadSeq + 1;
     loadSeq = seq;
     loading = true;
     error = null;
-    if (!commitOnly) {
+    if (!selectionOnly) {
       // Unconditionally, not just in pr scope: scope can change mid-load
       // (the selector stays enabled while a PR loads), and an in-flight
       // pr load that resolved during setScope's awaits may have
@@ -600,7 +686,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
       await unsubscribePR();
     }
     try {
-      if (!commitOnly) {
+      if (!selectionOnly) {
         if (scope === 'pr' && !prRef) {
           // Persisted 'pr' scope restores before the thread/git status is at
           // hand; resolve the reference here instead of failing the load.
@@ -617,7 +703,8 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
         baseBranch,
         selectedCommitSHA,
         prRef,
-        commitOnly ? { commits, prDetail } : undefined,
+        { pinnedItemId: pinnedEditItemID, current: selectedEdit },
+        selectionOnly ? { commits, prDetail, edits, editTurnLabels } : undefined,
       );
       if (seq !== loadSeq || disposed) {
         // A newer load or dispose superseded this one — the subscription it
@@ -626,6 +713,11 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
         return;
       }
       commits = loaded.commits ?? [];
+      edits = loaded.edits ?? [];
+      editTurnLabels = loaded.editTurnLabels ?? new Map();
+      if (loaded.selectedEdit !== undefined) {
+        selectedEdit = loaded.selectedEdit;
+      }
       if (loaded.selectedCommitSHA !== undefined) {
         selectedCommitSHA = loaded.selectedCommitSHA;
       }
@@ -650,7 +742,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
         prStale = false;
         // The fast path didn't refresh the PR snapshot, so CI state
         // hasn't moved either — the subscription pump covers it.
-        if (!commitOnly) void loadCIJobs();
+        if (!selectionOnly) void loadCIJobs();
       }
       // patchText and selectedCommitSHA are already updated above, so
       // the derived reflects this load — no need to re-derive by hand.
@@ -705,6 +797,8 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     if (selectedCommitSHA) {
       return { scope: 'commit', commitSHA: selectedCommitSHA, headSHA: '' };
     }
+    // 'edits' passes through: the backend declines context priming for
+    // historical diffs and the highlighter falls back to unprimed spans.
     return { scope, commitSHA: '', headSHA: '' };
   }
 
@@ -1194,6 +1288,11 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     get openEditors() { return openEditors; },
     get commits() { return commits; },
     get selectedCommitSHA() { return selectedCommitSHA; },
+    get edits() { return edits; },
+    get editTurnLabels() { return editTurnLabels; },
+    get selectedEditKey() { return editSelectionKey(selectedEdit); },
+    get pendingEditItemID() { return pendingEditItemID; },
+    set pendingEditItemID(value: string | null) { pendingEditItemID = value; },
     get pendingJumpFilePath() { return pendingJumpFilePath; },
     set pendingJumpFilePath(value: string | null) { pendingJumpFilePath = value; },
     get pendingJumpRowKey() { return pendingJumpRowKey; },
@@ -1237,6 +1336,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
 
     setScope,
     selectCommit,
+    selectEdit,
     reload,
     consumePendingJumpFilePath(): void {
       pendingJumpFilePath = null;
@@ -1336,18 +1436,74 @@ interface LoadedPatch {
   /** The commit the diff was actually computed for — a stale selection
    * that left the range resolves back to null (full range). */
   selectedCommitSHA?: string | null;
+  /** Edit selector rows (edits scope); omitted → empty. */
+  edits?: EditDiffEntryView[];
+  editTurnLabels?: ReadonlyMap<number, string>;
+  /** The edit selection the diff was actually computed for — a pinned
+   * or stale selection resolves against the fresh list. */
+  selectedEdit?: EditSelection | null;
   prDetail?: PRDetail;
   prThreads?: ReviewThread[];
   prHeadSHA?: string;
   subscriptionId?: string;
 }
 
-/** State a commit-selection-only reload reuses instead of refetching:
- * the commit list is unchanged by picking a commit, and in pr scope the
- * live subscription already holds the detail. */
+/** The edits-scope selection reload should aim for: a freshly pinned
+ * tool call (inline-diff affordance) wins over the current selection. */
+interface EditDesire {
+  pinnedItemId: string | null;
+  current: EditSelection | null;
+}
+
+/** State a selection-only reload reuses instead of refetching: the
+ * commit/edit lists are unchanged by picking an entry, and in pr scope
+ * the live subscription already holds the detail. */
 interface ExistingLoad {
   commits: BranchCommit[];
   prDetail: PRDetail | null;
+  edits: EditDiffEntryView[];
+  editTurnLabels: ReadonlyMap<number, string>;
+}
+
+/** Decode a selector value (`item:<id>` / `turn:<n>`) against the
+ * current entries; unknown or null values resolve to the default. */
+function editSelectionFromKey(key: string | null, entries: readonly EditDiffEntryView[]): EditSelection | null {
+  if (key) {
+    if (key.startsWith('item:')) {
+      const itemId = key.slice('item:'.length);
+      const entry = entries.find((candidate) => candidate.itemId === itemId);
+      if (entry) return { kind: 'item', itemId: entry.itemId, payloadId: entry.payloadId };
+    } else if (key.startsWith('turn:')) {
+      const turnIndex = Number(key.slice('turn:'.length));
+      if (entries.some((candidate) => candidate.turnIndex === turnIndex)) {
+        return { kind: 'turn', turnIndex };
+      }
+    }
+  }
+  return defaultEditSelection(entries);
+}
+
+/** Default edits-scope selection: the latest turn's whole set. */
+function defaultEditSelection(entries: readonly EditDiffEntryView[]): EditSelection | null {
+  if (entries.length === 0) return null;
+  return { kind: 'turn', turnIndex: entries[entries.length - 1].turnIndex };
+}
+
+/** Validate a desired selection against the fresh list: a pinned tool
+ * call wins; a stale selection falls back to the default. */
+function resolveEditSelection(desire: EditDesire, entries: readonly EditDiffEntryView[]): EditSelection | null {
+  if (desire.pinnedItemId) {
+    const pinned = entries.find((candidate) => candidate.itemId === desire.pinnedItemId);
+    if (pinned) return { kind: 'item', itemId: pinned.itemId, payloadId: pinned.payloadId };
+  }
+  const current = desire.current;
+  if (current?.kind === 'item' && entries.some((candidate) => candidate.itemId === current.itemId)) {
+    return current;
+  }
+  if (current?.kind === 'turn' && entries.some((candidate) => candidate.turnIndex === current.turnIndex)) {
+    return current;
+  }
+  return defaultEditSelection(entries);
 }
 
 /** Validate a selection against the fresh list, not just the diff call:
@@ -1369,6 +1525,7 @@ async function loadPatch(
   baseBranch: string | null,
   selectedCommitSHA: string | null,
   prRef: PRRef | null,
+  editDesire: EditDesire,
   existing?: ExistingLoad,
 ): Promise<LoadedPatch> {
   switch (scope) {
@@ -1379,6 +1536,32 @@ async function loadPatch(
     }
     case 'workspace':
       return { patchText: ((await GetWorkspaceCurrentDiff(threadId)) ?? '') as string };
+    case 'edits': {
+      let entries = existing?.edits;
+      let turnLabels = existing?.editTurnLabels;
+      if (!entries || !turnLabels) {
+        const list = await ListThreadEditDiffs(threadId);
+        entries = (list?.entries ?? []).map((entry) => ({
+          itemId: String(entry.itemId),
+          payloadId: String(entry.payloadId),
+          turnIndex: Number(entry.turnIndex),
+          title: String(entry.title ?? ''),
+          paths: (entry.paths ?? []).map(String),
+          insertions: Number(entry.insertions ?? 0),
+          deletions: Number(entry.deletions ?? 0),
+          createdAt: Number(entry.createdAt ?? 0),
+        }));
+        turnLabels = new Map((list?.turnLabels ?? []).map((label) => [Number(label.turnIndex), String(label.label ?? '')]));
+      }
+      const selection = resolveEditSelection(editDesire, entries);
+      let patchText = '';
+      if (selection?.kind === 'item') {
+        patchText = String((await GetPayloadData(threadId, selection.payloadId))?.data ?? '');
+      } else if (selection) {
+        patchText = String((await GetTurnEditsDiff(threadId, selection.turnIndex)) ?? '');
+      }
+      return { patchText, edits: entries, editTurnLabels: turnLabels, selectedEdit: selection };
+    }
     case 'branch': {
       const branch = baseBranch?.trim() || await defaultBaseBranch(threadId);
       if (existing) {
@@ -1554,7 +1737,7 @@ function persistScope(threadId: string, scope: ReviewScope, baseBranch: string |
 }
 
 function isReviewScope(value: unknown): value is ReviewScope {
-  return value === 'workspace' || value === 'branch' || value === 'pr';
+  return value === 'workspace' || value === 'branch' || value === 'pr' || value === 'edits';
 }
 
 function userFacingError(err: unknown): string {

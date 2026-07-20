@@ -57,6 +57,9 @@ beforeEach(() => {
   setBindingMock('GetCommitDiff', async () => '');
   setBindingMock('ListPRCommits', async () => []);
   setBindingMock('GetPRCommitDiff', async () => '');
+  setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
+  setBindingMock('GetTurnEditsDiff', async () => '');
+  setBindingMock('GetPayloadData', async () => ({ data: '' }));
   setBindingMock('GitListBranches', async () => [{ name: 'main', isCurrent: false, isDefault: true }]);
   setBindingMock('ListDiffReviewComments', async () => []);
   setBindingMock('CreateDiffReviewComment', async () => ({}));
@@ -507,6 +510,42 @@ describe('<ReviewPane>', () => {
     await waitFor(() => {
       expect(view.getByTestId('review-send-strip').querySelector('select')).not.toBeNull();
       expect(view.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    });
+  });
+
+  it('edits scope shows the turn-grouped selector and switches to a single edit', async () => {
+    setBindingMock('ListThreadEditDiffs', async () => ({
+      entries: [
+        { itemId: 'tool:1', payloadId: 'pl-1', turnIndex: 1, title: 'Edited parser.go', paths: ['parser.go'], insertions: 1, deletions: 0, createdAt: 1 },
+        { itemId: 'tool:2a', payloadId: 'pl-2a', turnIndex: 2, title: 'Edited lexer.go', paths: ['lexer.go'], insertions: 2, deletions: 1, createdAt: 2 },
+        { itemId: 'tool:2b', payloadId: 'pl-2b', turnIndex: 2, title: 'Edited lexer.go', paths: ['lexer.go'], insertions: 1, deletions: 1, createdAt: 3 },
+      ],
+      turnLabels: [
+        { turnIndex: 1, label: 'fix the parser' },
+        { turnIndex: 2, label: 'now the lexer' },
+      ],
+    }));
+    setBindingMock('GetTurnEditsDiff', async () => patch());
+    const payload = setBindingMock('GetPayloadData', async () => ({ data: patch() }));
+
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => {
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
+    });
+    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'edits' } });
+
+    await waitFor(() => {
+      expect(view.getByTestId('review-edit-select')).toBeInTheDocument();
+    });
+    const select = view.getByTestId('review-edit-select') as HTMLSelectElement;
+    // Default: the latest turn's whole set, grouped under its prompt.
+    expect(select.value).toBe('turn:2');
+    const groups = [...select.querySelectorAll('optgroup')].map((group) => group.label);
+    expect(groups).toEqual(['fix the parser', 'now the lexer']);
+
+    await fireEvent.change(select, { target: { value: 'item:tool:2a' } });
+    await waitFor(() => {
+      expect(payload).toHaveBeenCalledWith('thread-1', 'pl-2a');
     });
   });
 

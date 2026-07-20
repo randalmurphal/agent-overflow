@@ -157,14 +157,14 @@
   function openReview(event: MouseEvent | KeyboardEvent): void {
     if (!pane) return;
     if (event && 'stopPropagation' in event) event.stopPropagation();
-    openReviewForItem(pane, { filePath: file.path });
+    openReviewForItem(pane, { filePath: file.path, editItemId: itemId });
   }
 
   function onHeaderClick(event: MouseEvent): void {
     if (!isPromoteModifier(event)) return;
     if (!pane) return;
     event.preventDefault();
-    openReviewForItem(pane, { filePath: file.path });
+    openReviewForItem(pane, { filePath: file.path, editItemId: itemId });
   }
 
   function onToggle(event: MouseEvent): void {

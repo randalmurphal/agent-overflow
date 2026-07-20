@@ -1515,3 +1515,122 @@ describe('comments-only PR refresh', () => {
     expect(detail).not.toHaveBeenCalled();
   });
 });
+
+describe('reviewPane store — edits scope', () => {
+  // A patch whose first hunk starts mid-file: workspace scope would emit
+  // a leading hunk-gap row for it, edits scope must not.
+  function gappyPatch(): string {
+    return [
+      'diff --git a/x.go b/x.go',
+      'index 1111111..2222222 100644',
+      '--- a/x.go',
+      '+++ b/x.go',
+      '@@ -5,3 +5,3 @@',
+      ' ctx',
+      '-old',
+      '+new',
+    ].join('\n');
+  }
+
+  function installEditMocks() {
+    const entries = [
+      { itemId: 'tool:1', payloadId: 'pl-1', turnIndex: 1, title: 'Edited parser.go', paths: ['parser.go'], insertions: 1, deletions: 0, createdAt: 1 },
+      { itemId: 'tool:2a', payloadId: 'pl-2a', turnIndex: 2, title: 'Edited lexer.go', paths: ['lexer.go'], insertions: 2, deletions: 1, createdAt: 2 },
+      { itemId: 'tool:2b', payloadId: 'pl-2b', turnIndex: 2, title: 'Edited lexer.go', paths: ['lexer.go'], insertions: 1, deletions: 1, createdAt: 3 },
+    ];
+    const list = setBindingMock('ListThreadEditDiffs', async () => ({
+      entries,
+      turnLabels: [
+        { turnIndex: 1, label: 'fix the parser' },
+        { turnIndex: 2, label: 'now the lexer' },
+      ],
+    }));
+    const payload = setBindingMock('GetPayloadData', async () => ({ data: gappyPatch() }));
+    const turnDiff = setBindingMock('GetTurnEditsDiff', async () => gappyPatch());
+    return { list, payload, turnDiff };
+  }
+
+  it('defaults to the latest turn and keys comments by turn', async () => {
+    const { turnDiff } = installEditMocks();
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+
+    await state.setScope('edits');
+    expect(state.scope).toBe('edits');
+    expect(state.edits.length).toBe(3);
+    expect(state.editTurnLabels.get(2)).toBe('now the lexer');
+    expect(state.selectedEditKey).toBe('turn:2');
+    expect(state.sourceKey).toBe('edit-turn:2');
+    expect(turnDiff).toHaveBeenCalledWith('thread-1', 2);
+    expect(state.files.length).toBe(1);
+  });
+
+  it('suppresses hunk-gap rows on historical edit diffs', async () => {
+    installEditMocks();
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+
+    // Baseline: the same patch in workspace scope DOES emit a leading gap.
+    setBindingMock('GetWorkspaceCurrentDiff', async () => gappyPatch());
+    await state.reload();
+    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(true);
+
+    await state.setScope('edits');
+    expect(state.files[0].suppressGaps).toBe(true);
+    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(false);
+  });
+
+  it('opens pinned to the clicked edit and keys comments by payload id', async () => {
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
+    const { payload } = installEditMocks();
+
+    const state = await openReviewCompanion('pane-1', 'thread-1', {
+      editItemId: 'tool:2a',
+      filePath: 'lexer.go',
+    });
+    expect(state).not.toBeNull();
+    await waitLoaded(state!);
+
+    expect(state!.scope).toBe('edits');
+    expect(state!.selectedEditKey).toBe('item:tool:2a');
+    expect(state!.sourceKey).toBe('edit:pl-2a');
+    expect(payload).toHaveBeenCalledWith('thread-1', 'pl-2a');
+    expect(state!.pendingJumpFilePath).toBe('lexer.go');
+  });
+
+  it('selection changes reuse the loaded list (fast path)', async () => {
+    const { list, payload, turnDiff } = installEditMocks();
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('edits');
+    expect(list).toHaveBeenCalledTimes(1);
+
+    await state.selectEdit('item:tool:1');
+    expect(state.selectedEditKey).toBe('item:tool:1');
+    expect(state.sourceKey).toBe('edit:pl-1');
+    expect(payload).toHaveBeenCalledWith('thread-1', 'pl-1');
+
+    await state.selectEdit('turn:1');
+    expect(state.selectedEditKey).toBe('turn:1');
+    expect(turnDiff).toHaveBeenLastCalledWith('thread-1', 1);
+
+    // Unknown keys resolve to the default (latest turn) instead of erroring.
+    await state.selectEdit('item:gone');
+    expect(state.selectedEditKey).toBe('turn:2');
+
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows an empty surface for a thread with no edits', async () => {
+    setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+
+    await state.setScope('edits');
+    expect(state.edits.length).toBe(0);
+    expect(state.selectedEditKey).toBeNull();
+    expect(state.sourceKey).toBe('');
+    expect(state.files.length).toBe(0);
+    expect(state.error).toBeNull();
+  });
+});

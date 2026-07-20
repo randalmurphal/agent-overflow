@@ -283,7 +283,7 @@ export interface SourceProposedPlan {
   title?: string;
 }
 
-export type DiffReviewScope = "workspace" | "branch" | "pr";
+export type DiffReviewScope = "workspace" | "branch" | "pr" | "edits";
 
 export interface SourceDiffReview {
   threadId?: string;

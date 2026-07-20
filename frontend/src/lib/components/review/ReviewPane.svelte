@@ -174,8 +174,31 @@
   }
 
   function isReviewScope(value: string): value is ReviewScope {
-    return value === 'workspace' || value === 'branch' || value === 'pr';
+    return value === 'workspace' || value === 'branch' || value === 'pr' || value === 'edits';
   }
+
+  function setEdit(value: string): void {
+    if (!review) return;
+    void review.selectEdit(value || null);
+  }
+
+  // Edits selector groups: ascending turn order; each group offers the
+  // whole-turn option first, then every edit — including single-edit
+  // turns, so a pinned `item:` selection always has a matching option.
+  const editGroups = $derived.by(() => {
+    if (!review || review.scope !== 'edits') return [];
+    const groups = new Map<number, typeof review.edits[number][]>();
+    for (const entry of review.edits) {
+      const group = groups.get(entry.turnIndex);
+      if (group) group.push(entry);
+      else groups.set(entry.turnIndex, [entry]);
+    }
+    return [...groups.entries()].map(([turnIndex, entries]) => ({
+      turnIndex,
+      label: review.editTurnLabels.get(turnIndex) ?? `Turn ${turnIndex}`,
+      entries,
+    }));
+  });
 
   function commentById(commentId: string): DiffReviewComment | null {
     return review?.comments.find((comment) => comment.id === commentId) ?? null;
@@ -252,6 +275,7 @@
         <option value="workspace">Workspace</option>
         <option value="branch">Branch</option>
       {/if}
+      <option value="edits">Edits</option>
       {#if review?.prRef}
         <option value="pr">{review.prScopeLabel ?? 'PR'}</option>
       {/if}
@@ -287,6 +311,28 @@
         <option value="">All commits</option>
         {#each review.commits as commit (commit.sha)}
           <option value={commit.sha}>{commit.shortSha} {commit.subject}</option>
+        {/each}
+      </select>
+    {/if}
+
+    {#if review && review.scope === 'edits' && editGroups.length > 0}
+      <select
+        class="min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
+        aria-label="Edit"
+        data-testid="review-edit-select"
+        value={review.selectedEditKey ?? ''}
+        onchange={(event) => setEdit(event.currentTarget.value)}
+        disabled={review.loading}
+      >
+        {#each editGroups as group (group.turnIndex)}
+          <optgroup label={group.label}>
+            <option value={`turn:${group.turnIndex}`}>
+              All edits in turn ({group.entries.length})
+            </option>
+            {#each group.entries as entry (entry.itemId)}
+              <option value={`item:${entry.itemId}`}>{entry.title} +{entry.insertions} −{entry.deletions}</option>
+            {/each}
+          </optgroup>
         {/each}
       </select>
     {/if}

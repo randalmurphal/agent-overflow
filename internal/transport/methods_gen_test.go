@@ -106,6 +106,11 @@ var wireSafeMethods = map[string]bool{
 	"GetPayloadData":    true,
 	"ListPayloadMetas":  true,
 
+	// Edits-scope review reads: SQLite-only projections of persisted
+	// tool-call diff payloads (no FS, no git, no provider session).
+	"ListThreadEditDiffs": true,
+	"GetTurnEditsDiff":    true,
+
 	// Live-state counts (the per-thread surface is LocalOnly in
 	// category 2 because it leaks composer drafts; these are
 	// global-thread-count reads with no sensitive content).

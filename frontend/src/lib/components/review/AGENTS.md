@@ -9,7 +9,7 @@ its source thread pane; open it via `openReviewCompanion` /
 
 | File | Role |
 |---|---|
-| `ReviewPane.svelte` | Shell: scope/branch/commit selectors, tree/split/wrap toggles, error + send strip, snippet wiring. |
+| `ReviewPane.svelte` | Shell: scope/branch/commit/edit selectors, tree/split/wrap toggles, error + send strip, snippet wiring. |
 | `ReviewDiffBody.svelte` | The continuous virtualized surface: one `TimelineVirtualizer` over the flat row model, sticky overlay file header, keyboard (j/k files, n/p comments, c file-level comment), jump-to-file. |
 | `ReviewRail.svelte` | The left rail shell: Files \| Comments tabs, resizable width persisted via appStorage `reviewTreeWidth`. Tab state is owned by `ReviewPane` (the toolbar comment tally switches to the Comments tab). |
 | `ReviewFileTree.svelte` | Files tab: GitHub-style tree (`utils/reviewTree.ts`), click-to-jump, top-file highlight, per-file comment-count badges, a search box plus an extension-filter dropdown (funnel button right of the search box, multi-select `Menu` of file-type options with counts). The extension set filters the rail; the dropdown's "Apply filter to diff" checkbox extends it to the diff body (state owned by `ReviewPane`, which derives the `diffFiles` subset and maps top-file highlight indexes back to the full list). The text search stays rail-only. |
@@ -152,6 +152,24 @@ state registry); the row model in `utils/reviewRows.ts`.
   listener owns that flip, and resume catch-up-polls only when a tick
   was missed. Pausing suspends fetches without releasing ownership;
   the unsubscribe-exactly-once rule above is unaffected.
+
+- **Edits scope** renders persisted tool-call diff payloads — the
+  historical change itself, correct after commits/rebases — never a
+  git recomputation. `ListThreadEditDiffs` lists metadata only; the
+  selected diff loads via `GetPayloadData` (single edit) or
+  `GetTurnEditsDiff` (a turn's payloads concatenated in item order —
+  sequential story, NOT a net diff: a file edited twice appears as two
+  sections, and comment/collapse path-keyed maps treat them as one
+  path). The selector is turn-grouped (`optgroup` per turn, whole-turn
+  option first, labels from the turn's first user prompt). sourceKeys:
+  `edit:<payloadId>` / `edit-turn:<turnIndex>`. Hunk-gap rows are
+  suppressed (`PatchFile.suppressGaps` — only the hunks were
+  persisted; `app_diff_context.go` refuses the scope as backstop), and
+  span priming degrades to unprimed highlighting the same way. Sends
+  are agent-only (scope ≠ 'pr'). The inline chat affordance
+  (`reviewTrigger.ts`) passes `editItemId` so the pane opens pinned to
+  that tool call (`pendingEditItemID`, consumed on the next load);
+  stale selections resolve to the default — the latest turn.
 
 Diff rendering reuses the chat pipeline: `utils/patchFiles.ts` parsing,
 `DiffLineContent.svelte`, `utils/diffSpanCache.svelte.ts` (backend

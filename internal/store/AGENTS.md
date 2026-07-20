@@ -28,6 +28,11 @@ root `CLAUDE.md` principle 3.
 - `message_anchors.go` — per-real-user-message provider correlation
   rows (`turn_index` + Claude wire uuids) backing fork-from-message
   and revert-on-interrupt. Pure SQLite; no git side.
+- `edit_diff_items.go` — read surfaces behind the review pane's Edits
+  scope: `ListEditDiffItems` (metadata-only rows for items whose
+  payload carries a unified diff — `tool_result` and legacy `diff`
+  kinds), `ListTurnEditDiffPatches` (one turn's diff blobs in item
+  order), and `ListTurnUserSummaries` (selector group labels).
 - `drafts.go` — composer drafts per thread.
 - `chat_bar.go` — composer favorites and last-used model profile seeds.
 - `search.go` — case-insensitive substring search across thread titles

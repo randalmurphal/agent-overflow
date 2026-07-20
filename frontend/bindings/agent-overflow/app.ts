@@ -941,6 +941,16 @@ export function GetThreadRuntimeMode(threadID: string): $CancellablePromise<stri
 }
 
 /**
+ * GetTurnEditsDiff returns one turn's edit diffs concatenated in item
+ * order — the sequential story of what the turn changed. Nothing is
+ * merged: a file edited twice appears as two patch sections, each with
+ * the line numbers of its own moment.
+ */
+export function GetTurnEditsDiff(threadID: string, turnIndex: number): $CancellablePromise<string> {
+    return $Call.ByID(2905371438, threadID, turnIndex);
+}
+
+/**
  * GetUIRenderTracePath returns the dev trace file path used by
  * AppendUIRenderTraceBatch. The frontend exposes it through the console trace
  * API so a debug run can be inspected after a visual glitch.
@@ -1778,6 +1788,16 @@ export function ListTerminals(threadID: string): $CancellablePromise<terminal$0.
 }
 
 /**
+ * ListThreadEditDiffs lists a thread's edit tool calls for the review
+ * pane's Edits scope, grouped client-side by turn via TurnLabels.
+ */
+export function ListThreadEditDiffs(threadID: string): $CancellablePromise<$models.EditDiffList> {
+    return $Call.ByID(2243533007, threadID).then(($result: any) => {
+        return $$createType90($result);
+    });
+}
+
+/**
  * ListThreadProposedPlans returns the current proposed-plan item for a thread,
  * outside the timeline window. It keeps the historical slice return shape for
  * binding compatibility, but callers should treat it as 0-or-1 items.
@@ -1822,7 +1842,7 @@ export function ListThreads(): $CancellablePromise<store$0.Thread[]> {
  */
 export function ListWSLDistros(): $CancellablePromise<wsllauncher$0.Distro[]> {
     return $Call.ByID(2332614075).then(($result: any) => {
-        return $$createType91($result);
+        return $$createType92($result);
     });
 }
 
@@ -1913,7 +1933,7 @@ export function OpenInEditor(path: string, line: number, col: number, workspaceP
  */
 export function OpenTerminal(threadID: string, opts: $models.TerminalOpenOptions): $CancellablePromise<$models.TerminalHandle> {
     return $Call.ByID(2247958725, threadID, opts).then(($result: any) => {
-        return $$createType92($result);
+        return $$createType93($result);
     });
 }
 
@@ -1997,7 +2017,7 @@ export function PrepareThreadWorktree(threadID: string, baseBranch: string, requ
  */
 export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(1313986574).then(($result: any) => {
-        return $$createType93($result);
+        return $$createType94($result);
     });
 }
 
@@ -2035,7 +2055,7 @@ export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo
  */
 export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(2614227175).then(($result: any) => {
-        return $$createType93($result);
+        return $$createType94($result);
     });
 }
 
@@ -2048,7 +2068,7 @@ export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo>
  */
 export function ProviderTerminalAttach(threadID: string): $CancellablePromise<$models.ProviderTerminalHandle> {
     return $Call.ByID(1393518281, threadID).then(($result: any) => {
-        return $$createType94($result);
+        return $$createType95($result);
     });
 }
 
@@ -2119,7 +2139,7 @@ export function ProviderTerminalSetControl(threadID: string, control: boolean): 
  */
 export function RecheckClaudeAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(2274850917).then(($result: any) => {
-        return $$createType93($result);
+        return $$createType94($result);
     });
 }
 
@@ -2133,7 +2153,7 @@ export function RecheckClaudeAccount(): $CancellablePromise<provider$0.AccountIn
  */
 export function RecheckCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(227978482).then(($result: any) => {
-        return $$createType93($result);
+        return $$createType94($result);
     });
 }
 
@@ -2320,7 +2340,7 @@ export function RespondToUserInput(threadID: string, response: provider$0.UserIn
  */
 export function RestartTerminal(terminalID: string): $CancellablePromise<$models.TerminalHandle> {
     return $Call.ByID(4152403588, terminalID).then(($result: any) => {
-        return $$createType92($result);
+        return $$createType93($result);
     });
 }
 
@@ -2365,7 +2385,7 @@ export function SavePayloadToFile(threadID: string, payloadID: string): $Cancell
  */
 export function SearchThreadItems(threadID: string, query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(1414650511, threadID, query, limit).then(($result: any) => {
-        return $$createType96($result);
+        return $$createType97($result);
     });
 }
 
@@ -2381,7 +2401,7 @@ export function SearchThreadItems(threadID: string, query: string, limit: number
  */
 export function SearchThreadMessages(query: string, limit: number): $CancellablePromise<store$0.ThreadMessageHit[]> {
     return $Call.ByID(3644945077, query, limit).then(($result: any) => {
-        return $$createType96($result);
+        return $$createType97($result);
     });
 }
 
@@ -2391,7 +2411,7 @@ export function SearchThreadMessages(query: string, limit: number): $Cancellable
  */
 export function SearchWorkspaceFiles(threadID: string, query: string, limit: number): $CancellablePromise<$models.WorkspaceFileSearchResult> {
     return $Call.ByID(3852272821, threadID, query, limit).then(($result: any) => {
-        return $$createType97($result);
+        return $$createType98($result);
     });
 }
 
@@ -2649,13 +2669,13 @@ export function StopSession(threadID: string): $CancellablePromise<void> {
 
 export function SubmitPRReview(pr: git$0.PRReference, review: git$0.SubmitReviewRequest): $CancellablePromise<$models.SubmitPRReviewResult> {
     return $Call.ByID(2692607191, pr, review).then(($result: any) => {
-        return $$createType98($result);
+        return $$createType99($result);
     });
 }
 
 export function SubscribePRUpdates(threadID: string, pr: git$0.PRReference): $CancellablePromise<$models.PRUpdateSubscriptionResult> {
     return $Call.ByID(3272491649, threadID, pr).then(($result: any) => {
-        return $$createType99($result);
+        return $$createType100($result);
     });
 }
 
@@ -2686,7 +2706,7 @@ export function TouchRemoteEndpoint(id: string): $CancellablePromise<void> {
  */
 export function TriggerMcpAuth(threadID: string, name: string): $CancellablePromise<$models.MCPAuthInitResult> {
     return $Call.ByID(1291217507, threadID, name).then(($result: any) => {
-        return $$createType100($result);
+        return $$createType101($result);
     });
 }
 
@@ -3087,14 +3107,15 @@ const $$createType86 = $Create.Array($$createType85);
 const $$createType87 = $Create.Array($$createType0);
 const $$createType88 = terminal$0.SessionSummary.createFrom;
 const $$createType89 = $Create.Array($$createType88);
-const $$createType90 = wsllauncher$0.Distro.createFrom;
-const $$createType91 = $Create.Array($$createType90);
-const $$createType92 = $models.TerminalHandle.createFrom;
-const $$createType93 = provider$0.AccountInfo.createFrom;
-const $$createType94 = $models.ProviderTerminalHandle.createFrom;
-const $$createType95 = store$0.ThreadMessageHit.createFrom;
-const $$createType96 = $Create.Array($$createType95);
-const $$createType97 = $models.WorkspaceFileSearchResult.createFrom;
-const $$createType98 = $models.SubmitPRReviewResult.createFrom;
-const $$createType99 = $models.PRUpdateSubscriptionResult.createFrom;
-const $$createType100 = $models.MCPAuthInitResult.createFrom;
+const $$createType90 = $models.EditDiffList.createFrom;
+const $$createType91 = wsllauncher$0.Distro.createFrom;
+const $$createType92 = $Create.Array($$createType91);
+const $$createType93 = $models.TerminalHandle.createFrom;
+const $$createType94 = provider$0.AccountInfo.createFrom;
+const $$createType95 = $models.ProviderTerminalHandle.createFrom;
+const $$createType96 = store$0.ThreadMessageHit.createFrom;
+const $$createType97 = $Create.Array($$createType96);
+const $$createType98 = $models.WorkspaceFileSearchResult.createFrom;
+const $$createType99 = $models.SubmitPRReviewResult.createFrom;
+const $$createType100 = $models.PRUpdateSubscriptionResult.createFrom;
+const $$createType101 = $models.MCPAuthInitResult.createFrom;

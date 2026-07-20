@@ -160,7 +160,7 @@
 
   function openFullDiff(): void {
     if (!pane || !payloadId) return;
-    openReviewForItem(pane);
+    openReviewForItem(pane, { editItemId: item.id });
   }
 
   function applyMetaToPatchFile(

@@ -208,12 +208,14 @@ export {
   UpdateKeybindings,
   ResetKeybindings,
 
-  // Review pane diffs (workspace / branch / per-commit)
+  // Review pane diffs (workspace / branch / per-commit / edits)
   GetBranchBaseDiff,
   GetWorkspaceCurrentDiff,
   ListBranchCommits,
   GetCommitDiff,
   GetDiffContextLines,
+  ListThreadEditDiffs,
+  GetTurnEditsDiff,
 
   // Syntax-highlight span metadata (backend tree-sitter)
   HighlightClassNames,
