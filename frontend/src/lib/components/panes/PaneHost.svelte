@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import ChatView from '../chat/ChatView.svelte';
-  import TakeControlPane from '../takecontrol/TakeControlPane.svelte';
   import CompanionPane from './CompanionPane.svelte';
   import {
     focusPane,
@@ -427,7 +426,18 @@
           onfocusin={() => handlePaneFocusIn(item.paneId)}
         >
           {#if item.kind === 'take-control'}
-            <TakeControlPane paneId={item.paneId} />
+            <!-- Lazy: TakeControlPane pulls the xterm stack; a static
+                 import here would drag the terminal chunks into the eager
+                 startup graph (see the TerminalView mount in ChatView). -->
+            {#await import('../takecontrol/TakeControlPane.svelte')}
+              <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading terminal...</div>
+            {:then { default: TakeControlPane }}
+              <TakeControlPane paneId={item.paneId} />
+            {:catch err}
+              <div class="flex h-full items-center justify-center text-xs text-error" data-testid="take-control-load-error">
+                Failed to load terminal: {err instanceof Error ? err.message : String(err)}
+              </div>
+            {/await}
           {:else}
             <CompanionPane paneId={item.paneId} kind={item.kind} sourcePaneId={item.sourcePaneId!} />
           {/if}

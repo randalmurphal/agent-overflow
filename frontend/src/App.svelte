@@ -27,7 +27,6 @@
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import PaneHost from './lib/components/panes/PaneHost.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
-  import SettingsView from './lib/components/settings/SettingsView.svelte';
   import TransportStatusBanner from './lib/components/shared/TransportStatusBanner.svelte';
   import DiscussionStartFlow from './lib/components/discussion/DiscussionStartFlow.svelte';
   import CommandPalette from './lib/components/palette/CommandPalette.svelte';
@@ -405,11 +404,21 @@
 </script>
 
 {#snippet settingsSurface()}
-  <SettingsView
-    initialSection={settingsSection}
-    contextTarget={settingsContextTarget}
-    onClose={() => showSettings = false}
-  />
+  <!-- Lazy: the settings surface only exists while open, so its chunk
+       stays out of the eager startup graph. -->
+  {#await import('./lib/components/settings/SettingsView.svelte')}
+    <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading settings...</div>
+  {:then { default: SettingsView }}
+    <SettingsView
+      initialSection={settingsSection}
+      contextTarget={settingsContextTarget}
+      onClose={() => showSettings = false}
+    />
+  {:catch err}
+    <div class="flex h-full items-center justify-center text-xs text-error" data-testid="settings-load-error">
+      Failed to load settings: {err instanceof Error ? err.message : String(err)}
+    </div>
+  {/await}
 {/snippet}
 
 <main class="app-shell relative h-screen w-screen overflow-hidden text-text-primary flex flex-col">

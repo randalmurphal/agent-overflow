@@ -333,7 +333,7 @@ describe('PaneHost', () => {
     }
   });
 
-  it('renders a plan companion layout item through CompanionPane', () => {
+  it('renders a plan companion layout item through CompanionPane', async () => {
     registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
     setPaneLayoutItemsForTest([
       { id: 'source', paneId: 'source', kind: 'thread', widthPx: 1 },
@@ -347,7 +347,10 @@ describe('PaneHost', () => {
 
     expect(companion).toBeInTheDocument();
     expect(review).toBeInTheDocument();
-    expect(rendered.getAllByTestId('stub-companion-panel')).toHaveLength(2);
+    // Panel bodies mount through CompanionPane's lazy loader map.
+    await waitFor(() => {
+      expect(rendered.getAllByTestId('stub-companion-panel')).toHaveLength(2);
+    });
     expect(companion.closest('[data-pane-id="plan-source"]')).toHaveAttribute('data-pane-kind', 'plan');
     expect(review.closest('[data-pane-id="review-source"]')).toHaveAttribute('data-pane-kind', 'review');
   });

@@ -294,9 +294,10 @@ describe('<ChatView>', () => {
     setBindingMock('GetTerminalReplay', async () => '');
     const pane = await buildPane({ ...seedThread(), mode: 'terminal' });
     const { getByTestId, queryByTestId, container } = render(ChatView, { props: { pane } });
-    await tick();
-
-    expect(container.querySelector('[data-ui-surface="terminal"]')).not.toBeNull();
+    // TerminalView mounts through a lazy import, so wait for it to land.
+    await waitFor(() => {
+      expect(container.querySelector('[data-ui-surface="terminal"]')).not.toBeNull();
+    });
     expect(getByTestId('terminal-pane-close')).toBeInTheDocument();
     // The chat machinery must be absent — proves the branch replaces, not overlays.
     expect(queryByTestId('chat-header')).toBeNull();

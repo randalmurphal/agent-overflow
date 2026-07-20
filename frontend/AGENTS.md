@@ -125,6 +125,15 @@ stable `<pre>` with Idiomorph so selection survives streaming updates.
   the template.
 - Do NOT call `window.runtime` directly. Use `stores/bindings.ts`.
 - Do NOT preload heavy payloads.
+- Do NOT statically import conditional feature surfaces from eager code.
+  Settings, review/plan/design companion panels, discussion mode, the
+  terminal surfaces, and the git/usage overlays all mount lazily
+  (`{#await import(...)}` at replace-surface branches;
+  `primitives/LazyOverlay.svelte` for modals/drawers with exit
+  transitions) so their chunks stay out of the startup graph. One static
+  import from an eagerly-loaded module silently drags the whole feature
+  chunk back into startup — check `dist/index.html`'s modulepreload list
+  when touching these boundaries.
 - Do NOT add visible in-app explanatory text for internal mechanics,
   shortcuts, or implementation details.
 

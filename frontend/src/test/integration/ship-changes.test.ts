@@ -88,8 +88,11 @@ describe('App integration — ship changes drawer', () => {
     await waitFor(() => {
       expect(rendered.getByTestId('ship-changes-drawer')).toBeInTheDocument();
     });
-    // Initial stage for "dirty tree" is the commit step.
-    expect(rendered.getByTestId('ship-changes-step-commit')).toBeInTheDocument();
+    // Initial stage for "dirty tree" is the commit step. The drawer is a
+    // lazy mount, so its stage resolution lands a beat after the drawer.
+    await waitFor(() => {
+      expect(rendered.getByTestId('ship-changes-step-commit')).toBeInTheDocument();
+    });
   });
 
   it('advances commit → push → PR as each binding resolves', async () => {

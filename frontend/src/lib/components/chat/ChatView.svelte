@@ -7,8 +7,6 @@
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
-  import TerminalView from '../terminal/TerminalView.svelte';
-  import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignClarificationPicker from '../design/DesignClarificationPicker.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
@@ -396,9 +394,32 @@
 {/snippet}
 
 {#if pane.thread && inDiscussionMode}
-  <DiscussionView {pane} />
+  <!-- Lazy for the same reason as TerminalView below: the discussion
+       surface (ChannelView + editor) is mode-gated, so its chunk stays
+       out of the eager startup graph. -->
+  {#await import('../discussion/DiscussionView.svelte')}
+    <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading discussion...</div>
+  {:then { default: DiscussionView }}
+    <DiscussionView {pane} />
+  {:catch err}
+    <div class="flex h-full items-center justify-center text-xs text-error" data-testid="discussion-load-error">
+      Failed to load discussion: {err instanceof Error ? err.message : String(err)}
+    </div>
+  {/await}
 {:else if pane.thread && inTerminalMode}
-  <TerminalView {pane} {onPaneDragStart} />
+  <!-- Lazy: TerminalView pulls the xterm stack (terminal-vendor +
+       TerminalSurface chunks, ~900KB). A static import here would put
+       them back in the eager startup graph that LazyThreadTerminalDrawer
+       exists to keep them out of. -->
+  {#await import('../terminal/TerminalView.svelte')}
+    <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading terminal...</div>
+  {:then { default: TerminalView }}
+    <TerminalView {pane} {onPaneDragStart} />
+  {:catch err}
+    <div class="flex h-full items-center justify-center text-xs text-error" data-testid="terminal-pane-load-error">
+      Failed to load terminal: {err instanceof Error ? err.message : String(err)}
+    </div>
+  {/await}
 {:else if pane.thread}
   <!-- Standard chat surface. Companion panes mount through PaneHost. -->
   <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="relative flex h-full min-h-0 overflow-hidden">
