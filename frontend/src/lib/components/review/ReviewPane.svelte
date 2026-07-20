@@ -200,6 +200,14 @@
     }));
   });
 
+  // Native <select> popups size to their longest option with no CSS
+  // truncation available, so unbounded label text (a pathological
+  // commit subject) must be capped before render. Edits-scope labels
+  // arrive pre-capped from Go (editSelectorLabel).
+  function capOptionLabel(label: string): string {
+    return label.length > 80 ? `${label.slice(0, 77).trimEnd()}...` : label;
+  }
+
   function commentById(commentId: string): DiffReviewComment | null {
     return review?.comments.find((comment) => comment.id === commentId) ?? null;
   }
@@ -310,7 +318,7 @@
       >
         <option value="">All commits</option>
         {#each review.commits as commit (commit.sha)}
-          <option value={commit.sha}>{commit.shortSha} {commit.subject}</option>
+          <option value={commit.sha}>{commit.shortSha} {capOptionLabel(commit.subject)}</option>
         {/each}
       </select>
     {/if}

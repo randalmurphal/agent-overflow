@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agent-overflow/internal/textgen"
 	"agent-overflow/internal/triage"
 )
 
@@ -33,6 +34,17 @@ type EditDiffTurnLabel struct {
 type EditDiffList struct {
 	Entries    []EditDiffEntry     `json:"entries"`
 	TurnLabels []EditDiffTurnLabel `json:"turnLabels"`
+}
+
+// Selector labels render inside a NATIVE <select>/<optgroup> popup,
+// which sizes itself to its longest label with no CSS truncation
+// available — an uncapped multi-line prompt as a label stretches the
+// popup across every monitor. Collapse whitespace to single spaces
+// and cap well under a screen width.
+const maxEditSelectorLabelRunes = 80
+
+func editSelectorLabel(s string) string {
+	return textgen.CapRunesWithEllipsis(strings.Join(strings.Fields(s), " "), maxEditSelectorLabelRunes)
 }
 
 // A whole turn's concatenated edit diffs stay bounded like every other
@@ -95,6 +107,7 @@ func (a *App) ListThreadEditDiffs(threadID string) (EditDiffList, error) {
 				}
 			}
 		}
+		entry.Title = editSelectorLabel(entry.Title)
 		entries = append(entries, entry)
 		turnsWithEdits[row.TurnIndex] = true
 	}
@@ -107,7 +120,7 @@ func (a *App) ListThreadEditDiffs(threadID string) (EditDiffList, error) {
 		}
 		for _, summary := range summaries {
 			if turnsWithEdits[summary.TurnIndex] {
-				labels = append(labels, EditDiffTurnLabel{TurnIndex: summary.TurnIndex, Label: summary.Summary})
+				labels = append(labels, EditDiffTurnLabel{TurnIndex: summary.TurnIndex, Label: editSelectorLabel(summary.Summary)})
 			}
 		}
 	}

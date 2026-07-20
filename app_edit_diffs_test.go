@@ -136,6 +136,50 @@ func TestListThreadEditDiffs(t *testing.T) {
 	}
 }
 
+// Selector labels feed a NATIVE <select> popup that sizes to its
+// longest label — an uncapped pasted-stack-trace prompt once stretched
+// the popup across three monitors.
+func TestListThreadEditDiffsCapsSelectorLabels(t *testing.T) {
+	app := newTestAppWithStore(t)
+	threadID := editDiffFixture(t, app)
+
+	longPrompt := "first line with an error pasted in\n" +
+		strings.Repeat("svelte-vendor.js:1517 Uncaught Error: each_key_duplicate ", 40)
+	item := store.Item{
+		ID: "user:1", ThreadID: threadID, TurnIndex: 1, ItemIndex: 0,
+		Kind: "user_text", Role: "user", Status: "completed", Summary: longPrompt,
+	}
+	if _, err := app.store.UpsertItem(item, nil); err != nil {
+		t.Fatalf("UpsertItem() error = %v", err)
+	}
+
+	list, err := app.ListThreadEditDiffs(threadID)
+	if err != nil {
+		t.Fatalf("ListThreadEditDiffs() error = %v", err)
+	}
+	var label string
+	for _, turnLabel := range list.TurnLabels {
+		if turnLabel.TurnIndex == 1 {
+			label = turnLabel.Label
+		}
+	}
+	if got := len([]rune(label)); got > maxEditSelectorLabelRunes {
+		t.Fatalf("label length = %d runes, want <= %d: %q", got, maxEditSelectorLabelRunes, label)
+	}
+	if strings.ContainsAny(label, "\n\t") || strings.Contains(label, "  ") {
+		t.Fatalf("label whitespace not collapsed: %q", label)
+	}
+	if !strings.HasPrefix(label, "first line with an error pasted in") || !strings.HasSuffix(label, "...") {
+		t.Fatalf("label = %q, want collapsed prefix + ellipsis", label)
+	}
+	// Entry titles ride the same popup; they get the same cap.
+	for _, entry := range list.Entries {
+		if got := len([]rune(entry.Title)); got > maxEditSelectorLabelRunes {
+			t.Fatalf("entry title length = %d runes: %q", got, entry.Title)
+		}
+	}
+}
+
 func TestListThreadEditDiffsEmptyThread(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-no-edits")
