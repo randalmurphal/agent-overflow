@@ -32,6 +32,9 @@ describe('<ContextWindowMeter>', () => {
       },
     });
 
+    // The ring face shows the rounded percentage.
+    expect(getByLabelText(/Context Window/).textContent?.trim()).toBe('33');
+
     await fireEvent.mouseEnter(getByLabelText(/Context Window/));
 
     expect(await screen.findByText('33% used')).toBeTruthy();
@@ -113,9 +116,48 @@ describe('<ContextWindowMeter>', () => {
     });
 
     expect(getByLabelText(/exceeded/)).toBeTruthy();
+    // The ring face shows the MAX sentinel, not the raw percentage.
+    expect(getByLabelText(/exceeded/).textContent?.trim()).toBe('MAX');
     await fireEvent.mouseEnter(getByLabelText(/Context Window/));
     expect(await screen.findByText('Context window exceeded')).toBeTruthy();
     // The "% used" line is replaced by the exceeded message.
     expect(screen.queryByText('100% used')).toBeNull();
+  });
+
+  // The upstream normalizer clamps non-finite values, but the display
+  // must not depend on that: a normalizer bug would otherwise render a
+  // literal "NaN" ring label and aria text.
+  it('renders a non-finite wire percentage as 0, never a literal NaN', () => {
+    const { getByLabelText } = render(ContextWindowMeter, {
+      props: {
+        data: {
+          usedTokens: 100,
+          maxTokens: 2000,
+          usedPercentage: NaN,
+        },
+      },
+    });
+
+    const button = getByLabelText(/Context Window/);
+    expect(button.textContent?.trim()).toBe('0');
+    expect(button.getAttribute('aria-label')).toContain('0% used');
+  });
+
+  // The meter forwards the raw wire percentage and relies on MeterRing
+  // to clamp overshoot, so an out-of-range value must fill exactly one
+  // revolution — never a negative dashoffset (longer-than-full arc).
+  it('clamps an over-100 wire percentage to a full arc', () => {
+    const { container } = render(ContextWindowMeter, {
+      props: {
+        data: {
+          usedTokens: 300000,
+          maxTokens: 200000,
+          usedPercentage: 150,
+        },
+      },
+    });
+
+    const arc = container.querySelectorAll('svg circle')[1];
+    expect(Number(arc.getAttribute('stroke-dashoffset'))).toBe(0);
   });
 });

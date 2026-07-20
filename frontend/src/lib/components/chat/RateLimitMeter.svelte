@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
   import { formatResetCountdown } from '../../utils/format';
   import { getProviderAccount } from '../../stores/accountInfo.svelte';
   import { getProviderRateLimit } from '../../stores/rateLimitsInfo.svelte';
   import type { ProviderID } from '../../types/providers';
+  import { useHoverPopover } from './hoverPopover.svelte';
+  import MeterRing, { METER_BUTTON_CLASS } from './MeterRing.svelte';
   import Popover from '../primitives/Popover.svelte';
 
   // The ring face shows a static window label ("5h"/"7d"); the
@@ -29,17 +30,14 @@
   let entry = $derived(getProviderRateLimit(provider, windowMins));
 
   let buttonEl: HTMLButtonElement | undefined = $state(undefined);
-  let showPopover = $state(false);
-  // Computed at hover-open time so the displayed countdown is fresh on
-  // each open. A `$derived` over `entry.resetsAt` would only invalidate
-  // when the wire pushes a new value — meaning a popover hover an hour
-  // later would still show the original "Resets in 1h" string.
+  // Computed on each hover-open so the displayed countdown is fresh.
+  // A `$derived` over `entry.resetsAt` would only invalidate when the
+  // wire pushes a new value — meaning a popover hover an hour later
+  // would still show the original "Resets in 1h" string.
   let countdownText = $state('');
-  let closeTimer: number | null = null;
-
-  // Same geometry as ContextWindowMeter so the rings line up visually.
-  const RADIUS = 9.75;
-  const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
+  const popover = useHoverPopover(() => {
+    countdownText = entry ? formatResetCountdown(entry.resetsAt) : '';
+  });
 
   let label = $derived(
     windowMins === 300
@@ -53,14 +51,13 @@
   );
 
   // Number.isFinite filters out NaN / Infinity so a wire glitch can't
-  // produce a NaN dashoffset (which renders as a no-arc circle in some
-  // browsers, fooling the visual sanity check).
+  // leak NaN into the threshold palette, displayPct, or the aria label.
+  // (MeterRing guards its own dashoffset math independently.)
   let percentage = $derived(
     entry && Number.isFinite(entry.usedPercent)
       ? Math.max(0, Math.min(100, entry.usedPercent))
       : 0,
   );
-  let dashOffset = $derived(CIRCUMFERENCE - (percentage / 100) * CIRCUMFERENCE);
 
   // Same threshold palette as ContextWindowMeter — percent-only,
   // provider-agnostic. Claude's status field intentionally does not
@@ -86,77 +83,35 @@
     const acc = getProviderAccount(provider);
     return acc?.subscriptionType ?? '';
   });
-
-  function openPopover(): void {
-    if (closeTimer !== null) {
-      window.clearTimeout(closeTimer);
-      closeTimer = null;
-    }
-    countdownText = entry ? formatResetCountdown(entry.resetsAt) : '';
-    showPopover = true;
-  }
-
-  function scheduleClose(): void {
-    if (closeTimer !== null) window.clearTimeout(closeTimer);
-    closeTimer = window.setTimeout(() => {
-      showPopover = false;
-      closeTimer = null;
-    }, 140);
-  }
-
-  onDestroy(() => {
-    if (closeTimer !== null) window.clearTimeout(closeTimer);
-  });
 </script>
 
 <button
   bind:this={buttonEl}
   type="button"
-  class="relative inline-flex h-8 w-8 items-center justify-center bg-transparent border-none p-0 cursor-help focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded-full hover:bg-surface-2/30 transition-colors"
+  class={METER_BUTTON_CLASS}
   aria-label={entry
     ? `${popoverHeader}: ${displayPct}% used`
     : `${popoverHeader}: awaiting first update`}
-  onmouseenter={openPopover}
-  onmouseleave={scheduleClose}
-  onfocus={openPopover}
-  onblur={scheduleClose}
+  onmouseenter={popover.open}
+  onmouseleave={popover.scheduleClose}
+  onfocus={popover.open}
+  onblur={popover.scheduleClose}
 >
-  <svg class="absolute inset-0 m-auto h-7 w-7 -rotate-90" viewBox="0 0 24 24" aria-hidden="true">
-    <circle
-      cx="12" cy="12" r={RADIUS}
-      fill="none"
-      stroke-width="3"
-      class="stroke-text-secondary/20"
-    />
-    {#if entry}
-      <circle
-        cx="12" cy="12" r={RADIUS}
-        fill="none"
-        stroke-width="3"
-        stroke-linecap="round"
-        stroke-dasharray={CIRCUMFERENCE}
-        stroke-dashoffset={dashOffset}
-        class={strokeColor}
-      />
-    {/if}
-  </svg>
-  <span class="absolute left-1/2 top-1/2 block -translate-x-1/2 -translate-y-1/2 text-center text-[0.53125rem] leading-none font-semibold tabular-nums text-text-secondary" aria-hidden="true">
-    {label}
-  </span>
+  <MeterRing {label} {percentage} strokeClass={strokeColor} showArc={!!entry} />
 </button>
 
 <Popover
   anchor={buttonEl}
-  open={showPopover}
-  onClose={() => (showPopover = false)}
+  open={popover.show}
+  onClose={() => (popover.show = false)}
   placement="top-end"
   role="none"
 >
   {#snippet children()}
     <div
       role="tooltip"
-      onmouseenter={openPopover}
-      onmouseleave={scheduleClose}
+      onmouseenter={popover.open}
+      onmouseleave={popover.scheduleClose}
       class="relative bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu px-3 py-2 min-w-[170px]"
     >
       <p class="mb-1.5 text-[0.625rem] font-semibold text-fg-subtle uppercase tracking-wider">{popoverHeader}</p>

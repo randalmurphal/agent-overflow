@@ -1,21 +1,18 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
   import type { ContextWindow } from '../../types/events';
   import type { Thread } from '../../types/models';
   import { formatTokens } from '../../utils/format';
   import { OPEN_SETTINGS_EVENT } from '../../stores/events';
   import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal';
   import Icon from '../primitives/Icon.svelte';
+  import { useHoverPopover } from './hoverPopover.svelte';
+  import MeterRing, { METER_BUTTON_CLASS } from './MeterRing.svelte';
   import Popover from '../primitives/Popover.svelte';
 
   let { data, thread }: { data: ContextWindow; thread?: Thread | null } = $props();
 
   let buttonEl: HTMLButtonElement | undefined = $state(undefined);
-  let showPopover = $state(false);
-  let closeTimer: number | null = null;
-
-  const RADIUS = 9.75;
-  const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
+  const popover = useHoverPopover();
 
   let maxTokens = $derived(data.maxTokens ?? 0);
   // Trust the wire `usedPercentage`. The canonical normalizer lives in
@@ -23,11 +20,14 @@
   // / negative); by the time data reaches this component it has been
   // through that pipeline. Don't recompute `usedTokens / maxTokens` here —
   // it would silently undo the Codex baseline correction.
-  let percentage = $derived(data.usedPercentage ?? 0);
+  // The Number.isFinite guard only defends the display against a
+  // normalizer bug: without it a non-finite value would render a
+  // literal "NaN"/"Infinity" ring label and aria text.
+  let percentage = $derived(
+    Number.isFinite(data.usedPercentage) ? (data.usedPercentage as number) : 0,
+  );
 
   let exceeded = $derived(data.exceeded === true);
-
-  let dashOffset = $derived(CIRCUMFERENCE - (percentage / 100) * CIRCUMFERENCE);
 
   let strokeColor = $derived(
     exceeded || percentage > 95 ? 'stroke-error' : percentage > 80 ? 'stroke-warning' : 'stroke-fg-subtle',
@@ -40,22 +40,6 @@
   let ariaLabel = $derived(
     exceeded ? 'Context Window: exceeded (model returned ContextWindowExceeded)' : `Context Window: ${displayPct}% used`,
   );
-
-  function openPopover(): void {
-    if (closeTimer !== null) {
-      window.clearTimeout(closeTimer);
-      closeTimer = null;
-    }
-    showPopover = true;
-  }
-
-  function scheduleClose(): void {
-    if (closeTimer !== null) window.clearTimeout(closeTimer);
-    closeTimer = window.setTimeout(() => {
-      showPopover = false;
-      closeTimer = null;
-    }, 140);
-  }
 
   function openContextSettings(): void {
     if (!thread) return;
@@ -72,58 +56,35 @@
         },
       },
     }));
-    showPopover = false;
+    popover.show = false;
   }
-
-  onDestroy(() => {
-    if (closeTimer !== null) window.clearTimeout(closeTimer);
-  });
 </script>
 
 <button
   bind:this={buttonEl}
   type="button"
-  class="relative inline-flex h-8 w-8 items-center justify-center bg-transparent border-none p-0 cursor-help focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded-full hover:bg-surface-2/30 transition-colors"
+  class={METER_BUTTON_CLASS}
   aria-label={ariaLabel}
-  onmouseenter={openPopover}
-  onmouseleave={scheduleClose}
-  onfocus={openPopover}
-  onblur={scheduleClose}
+  onmouseenter={popover.open}
+  onmouseleave={popover.scheduleClose}
+  onfocus={popover.open}
+  onblur={popover.scheduleClose}
 >
-  <svg class="absolute inset-0 m-auto h-7 w-7 -rotate-90" viewBox="0 0 24 24" aria-hidden="true">
-    <circle
-      cx="12" cy="12" r={RADIUS}
-      fill="none"
-      stroke-width="3"
-      class="stroke-text-secondary/20"
-    />
-    <circle
-      cx="12" cy="12" r={RADIUS}
-      fill="none"
-      stroke-width="3"
-      stroke-linecap="round"
-      stroke-dasharray={CIRCUMFERENCE}
-      stroke-dashoffset={dashOffset}
-      class={strokeColor}
-    />
-  </svg>
-  <span class="absolute left-1/2 top-1/2 block -translate-x-1/2 -translate-y-1/2 text-center text-[0.53125rem] leading-none font-semibold tabular-nums text-text-secondary" aria-hidden="true">
-    {displayLabel}
-  </span>
+  <MeterRing label={displayLabel} {percentage} strokeClass={strokeColor} />
 </button>
 
 <Popover
   anchor={buttonEl}
-  open={showPopover}
-  onClose={() => (showPopover = false)}
+  open={popover.show}
+  onClose={() => (popover.show = false)}
   placement="top-end"
   role="none"
 >
   {#snippet children()}
     <div
       role="tooltip"
-      onmouseenter={openPopover}
-      onmouseleave={scheduleClose}
+      onmouseenter={popover.open}
+      onmouseleave={popover.scheduleClose}
       class="relative bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu px-3 py-2 min-w-[190px]"
     >
       {#if thread}
