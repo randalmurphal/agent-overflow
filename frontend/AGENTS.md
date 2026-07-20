@@ -159,7 +159,7 @@ directly; packages are hardlinked from the pnpm store, so direct edits
 corrupt every project on the machine. Use
 `pnpm patch <pkg>@<version> --edit-dir <dir>` + `pnpm patch-commit`.
 
-- `svelte@5.56.3.patch` — three hunks with different drop rules:
+- `svelte@5.56.3.patch` — four hunks with different drop rules:
   1. **zombie-mint fix** — reactivity leak where deriveds read during
      component init are force-connected and never released (upstream
      [sveltejs/svelte#18420](https://github.com/sveltejs/svelte/issues/18420)).
@@ -175,6 +175,16 @@ corrupt every project on the machine. Use
      `src/lib/utils/zombieMintProbe.ts`) that fires if a future svelte
      re-introduces the hunk-1 shape. Keep while hunk 1 exists; drop
      alongside it.
+  4. **event-slot-release** — svelte's delegated-event dispatcher pins
+     every event in a module slot (`last_propagated_event`, a Firefox
+     GC workaround) and never clears it, so `event.target` anchors the
+     last-clicked component's detached subtree — a whole closed pane —
+     until the next delegated event. The hunk schedules a macrotask
+     clear after each dispatch (strictly after propagation settles, so
+     the Firefox window is preserved). Unreported upstream as of
+     2026-07 (upstream `main` still never clears). Drop when
+     `svelte-patch-event-slot.test.ts` passes on an unpatched release;
+     `chatview-dom-retention.test.ts` also relies on the clear.
 - `svelte-streamdown@3.1.2.patch` — markdown-pipeline fixes, grouped by
   concern. Behavior is held across version bumps: re-roll by
   `git apply --reject`-ing the prior patch into a clean `pnpm patch`

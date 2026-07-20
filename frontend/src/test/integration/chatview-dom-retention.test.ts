@@ -17,13 +17,16 @@
 // pinning the first pane's whole subtree after it closed.
 //
 // Technique: mount for real, WeakRef the DOM, close, force GC, assert
-// collected. Two probe subtleties this suite works around:
-//  - svelte keeps the last delegated event in a module slot
-//    (`last_propagated_event`); its `target` retains a just-closed tree
-//    until the next user event, so we flush the slot with a throwaway
-//    click before asserting (see flushSvelteEventSlot).
+// collected. Probe subtleties:
 //  - stack locals count as GC roots: element/pane references must stay
 //    confined to inner function scopes.
+//  - svelte keeps the last delegated event in a module slot
+//    (`last_propagated_event`); pristine svelte never clears it, so its
+//    `target` would retain a just-closed tree until the next user event.
+//    The "event-slot-release" hunk of patches/svelte@5.56.3.patch clears
+//    the slot a macrotask after each dispatch (focused regression:
+//    svelte-patch-event-slot.test.ts), so this suite needs no flush —
+//    the settle waits in collectHard let the clear fire.
 //
 // Needs --expose-gc; the suite skips (loudly) without it. The
 // `make test` gate runs without it — run explicitly via:
@@ -55,7 +58,6 @@ import { resetAppStorageForTest } from '../../lib/stores/appStorage';
 import type { Thread } from '../../lib/types/models';
 import { setBindingMock, resetBindingMocks } from '../mocks/bindings-app';
 import { installPaneMocks } from '../helpers/chat';
-import EventSlotFlush from './svelte-patch-fixtures/EventSlotFlush.svelte';
 
 const gc = (globalThis as { gc?: () => void }).gc;
 
@@ -98,25 +100,6 @@ async function buildPane(thread: Thread, paneId: string) {
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 25));
-
-/**
- * Svelte keeps the last delegated event in a module slot
- * (`last_propagated_event` in internal/client/dom/elements/events.js);
- * its `target` would retain a just-closed pane's tree until the next
- * user event. Route a throwaway click through the delegation path so
- * the slot points at this (kept-mounted, tiny) fixture instead.
- */
-let eventSlotFlushHost: HTMLElement | null = null;
-function flushSvelteEventSlot(): void {
-  if (!eventSlotFlushHost) {
-    eventSlotFlushHost = document.body.appendChild(document.createElement('div'));
-    mount(EventSlotFlush, { target: eventSlotFlushHost });
-    flushSync();
-  }
-  eventSlotFlushHost
-    .querySelector('button')!
-    .dispatchEvent(new MouseEvent('click', { bubbles: true }));
-}
 
 async function collectHard(): Promise<void> {
   for (let i = 0; i < 5; i += 1) {
@@ -181,7 +164,6 @@ describe.runIf(gc)('closed chat pane DOM is collectable', () => {
     }
 
     const refs = await mountAndClose();
-    flushSvelteEventSlot();
     await collectHard();
     expect(survivors(refs), 'pane DOM still strongly reachable after close').toBe(0);
   });
@@ -257,7 +239,6 @@ describe.runIf(gc)('closed review companion DOM is collectable', () => {
     }
 
     const refs = await mountAndClose();
-    flushSvelteEventSlot();
     await collectHard();
     expect(survivors(refs), 'review pane DOM still strongly reachable after close').toBe(0);
   });
@@ -308,7 +289,6 @@ describe.runIf(gc)('closed pane under PaneHost is collectable while siblings liv
     }
 
     const refs = await closePane();
-    flushSvelteEventSlot();
     await collectHard();
 
     // Pane B must still be alive and mounted throughout.

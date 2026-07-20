@@ -1,3 +1,41 @@
+diff --git a/src/internal/client/dom/elements/events.js b/src/internal/client/dom/elements/events.js
+index 45e042a8c6ddb6837fad161f0f3ecba2f11fdf97..1aef5179cfa2c18242a4b974c8e9f931712241cb 100644
+--- a/src/internal/client/dom/elements/events.js
++++ b/src/internal/client/dom/elements/events.js
+@@ -164,6 +164,9 @@ export function delegate(events) {
+ // set on the event object is lost, causing the event delegation
+ // to process the event twice
+ let last_propagated_event = null;
++// PATCH(event-slot-release): whether a macrotask is already queued to
++// clear last_propagated_event once the current dispatch settles
++let last_propagated_event_clear_scheduled = false;
+ 
+ /**
+  * @this {EventTarget}
+@@ -179,6 +182,23 @@ export function handle_event_propagation(event) {
+ 
+ 	last_propagated_event = event;
+ 
++	// PATCH(event-slot-release): the pin above is only needed while this
++	// event can still reach further delegated roots — i.e. during the
++	// current dispatch and its trailing microtasks. Without a clear, the
++	// slot retains the LAST delegated event indefinitely, and through
++	// event.target it anchors the entire detached subtree of whatever
++	// component the user last clicked in — potentially an entire closed
++	// pane — until the next delegated event happens to overwrite it.
++	// A macrotask runs strictly after the dispatch (and its microtasks)
++	// settles, so clearing there preserves the Firefox workaround.
++	if (!last_propagated_event_clear_scheduled) {
++		last_propagated_event_clear_scheduled = true;
++		setTimeout(() => {
++			last_propagated_event_clear_scheduled = false;
++			last_propagated_event = null;
++		});
++	}
++
+ 	// composedPath contains list of nodes the event has propagated through.
+ 	// We check `event_symbol` to skip all nodes below it in case this is a
+ 	// parent of the `event_symbol` node, which indicates that there's nested
 diff --git a/src/internal/client/reactivity/effects.js b/src/internal/client/reactivity/effects.js
 index c5d195dfaeb41422bbdd2923f239b248be0240c9..b65ee61b329bdc4d6ea11f572aab8d95905b8836 100644
 --- a/src/internal/client/reactivity/effects.js
