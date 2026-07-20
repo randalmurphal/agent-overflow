@@ -137,6 +137,41 @@ export function parsePatchFiles(patch: string): PatchFile[] {
   return files;
 }
 
+/**
+ * Merge same-path patch sections into one PatchFile per path, preserving
+ * first-appearance order. A whole-turn edits concatenation contains one
+ * section per tool call, so a file edited twice in a turn parses as two
+ * PatchFiles with the same path — but the review surface keys file-header
+ * rows, the file tree, and the collapse/comment maps by path, and a
+ * duplicate crashes the keyed each. Sections keep their own hunk headers,
+ * so the merged file renders them as consecutive hunks in edit order.
+ * Line arrays are shared parse-cache state and never mutated; a merged
+ * file gets a fresh concatenated array.
+ */
+export function mergePatchFilesByPath(files: PatchFile[]): PatchFile[] {
+  const merged: PatchFile[] = [];
+  const indexByPath = new Map<string, number>();
+  for (const file of files) {
+    const at = indexByPath.get(file.path);
+    if (at === undefined) {
+      indexByPath.set(file.path, merged.length);
+      merged.push(file);
+      continue;
+    }
+    const existing = merged[at];
+    merged[at] = {
+      ...existing,
+      additions: existing.additions + file.additions,
+      deletions: existing.deletions + file.deletions,
+      // A later section deleting the file is its end state; otherwise the
+      // first section's kind (added / renamed) describes the file best.
+      kind: file.kind === 'deleted' ? 'deleted' : existing.kind,
+      lines: [...existing.lines, ...file.lines],
+    };
+  }
+  return merged;
+}
+
 // Content-keyed memo over parsePatchFiles for render-hot preview
 // paths: inline diff rows re-parse their preview patch on every windowing
 // remount and every item-churn re-derive, and returning the SAME

@@ -6,6 +6,7 @@ import {
   buildPatchDisplayRows,
   buildSplitDisplayRows,
   extractPatchFile,
+  mergePatchFilesByPath,
   parsePatchFiles,
   parsePatchFilesCached,
   patchFileRowId,
@@ -344,5 +345,54 @@ deleted file mode 100644
     const splitRows = buildSplitDisplayRows(buildPatchDisplayRows(file.lines));
     const gapPair = splitRows.find((pair) => pair.left?.gap);
     expect(gapPair?.right).toBe(gapPair?.left);
+  });
+});
+
+describe('mergePatchFilesByPath', () => {
+  function section(path: string, opts: { adds?: number; dels?: number; kind?: string } = {}) {
+    const patch = [
+      `diff --git a/${path} b/${path}`,
+      ...(opts.kind === 'added' ? ['new file mode 100644'] : []),
+      ...(opts.kind === 'deleted' ? ['deleted file mode 100644'] : []),
+      `--- ${opts.kind === 'added' ? '/dev/null' : `a/${path}`}`,
+      `+++ ${opts.kind === 'deleted' ? '/dev/null' : `b/${path}`}`,
+      '@@ -1,2 +1,2 @@',
+      ...Array.from({ length: opts.dels ?? 1 }, (_, i) => `-old ${i}`),
+      ...Array.from({ length: opts.adds ?? 1 }, (_, i) => `+new ${i}`),
+    ].join('\n');
+    const [file] = parsePatchFiles(patch);
+    return file;
+  }
+
+  it('merges same-path sections in first-appearance order and sums counts', () => {
+    const a1 = section('a.go', { adds: 2, dels: 1 });
+    const b = section('b.go');
+    const a2 = section('a.go', { adds: 1, dels: 3 });
+    const merged = mergePatchFilesByPath([a1, b, a2]);
+
+    expect(merged.map((file) => file.path)).toEqual(['a.go', 'b.go']);
+    expect(merged[0].additions).toBe(3);
+    expect(merged[0].deletions).toBe(4);
+    // Both sections' rows render as consecutive hunks in edit order.
+    expect(merged[0].lines).toEqual([...a1.lines, ...a2.lines]);
+    // Unmerged files pass through by identity.
+    expect(merged[1]).toBe(b);
+    // Shared parse results are never mutated.
+    expect(a1.additions).toBe(2);
+    expect(a1.lines.length).toBeLessThan(merged[0].lines.length);
+  });
+
+  it('keeps the first section kind unless a later section deletes the file', () => {
+    const added = mergePatchFilesByPath([section('a.go', { kind: 'added' }), section('a.go')]);
+    expect(added[0].kind).toBe('added');
+
+    const deleted = mergePatchFilesByPath([section('a.go'), section('a.go', { kind: 'deleted' })]);
+    expect(deleted[0].kind).toBe('deleted');
+  });
+
+  it('is identity-preserving when no path repeats', () => {
+    const a = section('a.go');
+    const b = section('b.go');
+    expect(mergePatchFilesByPath([a, b])).toEqual([a, b]);
   });
 });

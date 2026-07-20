@@ -1621,6 +1621,44 @@ describe('reviewPane store — edits scope', () => {
     expect(list).toHaveBeenCalledTimes(1);
   });
 
+  it('merges same-path sections of a whole-turn diff into one file', async () => {
+    // A file edited twice in one turn appears as two sections in the
+    // concatenated whole-turn diff. Duplicate paths crash the review
+    // surface's path-keyed each blocks (svelte each_key_duplicate), so
+    // the store must collapse them into a single PatchFile.
+    installEditMocks();
+    const twiceEdited = [
+      'diff --git a/x.go b/x.go',
+      '--- a/x.go',
+      '+++ b/x.go',
+      '@@ -5,3 +5,3 @@',
+      ' ctx',
+      '-old',
+      '+new',
+      'diff --git a/x.go b/x.go',
+      '--- a/x.go',
+      '+++ b/x.go',
+      '@@ -9,2 +9,3 @@',
+      ' ctx2',
+      '+later',
+    ].join('\n');
+    setBindingMock('GetTurnEditsDiff', async () => twiceEdited);
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('edits');
+
+    expect(state.files.map((file) => file.path)).toEqual(['x.go']);
+    expect(state.files[0].additions).toBe(2);
+    expect(state.files[0].deletions).toBe(1);
+    expect(state.files[0].suppressGaps).toBe(true);
+    // Both sections' hunks render, in edit order.
+    const contents = state.files[0].lines.map((line) => line.content);
+    expect(contents).toContain('+new');
+    expect(contents).toContain('+later');
+    expect(contents.indexOf('+new')).toBeLessThan(contents.indexOf('+later'));
+  });
+
   it('shows an empty surface for a thread with no edits', async () => {
     setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
     const state = reviewStateForPane('pane-1', 'thread-1');

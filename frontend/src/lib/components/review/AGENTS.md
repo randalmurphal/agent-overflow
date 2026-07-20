@@ -158,9 +158,11 @@ state registry); the row model in `utils/reviewRows.ts`.
   git recomputation. `ListThreadEditDiffs` lists metadata only; the
   selected diff loads via `GetPayloadData` (single edit) or
   `GetTurnEditsDiff` (a turn's payloads concatenated in item order —
-  sequential story, NOT a net diff: a file edited twice appears as two
-  sections, and comment/collapse path-keyed maps treat them as one
-  path). The selector is turn-grouped (`optgroup` per turn, whole-turn
+  sequential story, NOT a net diff: a file edited twice keeps both
+  sections, merged into ONE PatchFile as consecutive hunks
+  (`mergePatchFilesByPath` — the surface keys rows/tree/collapse by
+  path, and duplicate paths crash the keyed each)). The selector is
+  turn-grouped (`optgroup` per turn, whole-turn
   option first, labels from the turn's first user prompt). sourceKeys:
   `edit:<payloadId>` / `edit-turn:<turnIndex>`. Hunk-gap rows are
   suppressed (`PatchFile.suppressGaps` — only the hunks were

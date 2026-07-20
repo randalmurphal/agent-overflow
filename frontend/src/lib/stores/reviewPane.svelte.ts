@@ -70,6 +70,7 @@ import {
 } from '../utils/diffContextExpansion';
 import {
   filePatchDisplayRows,
+  mergePatchFilesByPath,
   parsePatchFilesCached,
   type DiffGap,
   type PatchFile,
@@ -470,10 +471,13 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     void contextExpansionVersion;
     const parsed = sortFilesTreeOrder(parsePatchFilesCached(patchText));
     if (scope === 'edits') {
-      // Historical edit diffs have no source to expand gaps from — only
-      // the hunks were persisted. Copies, not mutation: the parse cache
-      // is shared across panes and scopes.
-      return parsed.map((file) => ({ ...file, suppressGaps: true }));
+      // A whole-turn concatenation repeats a path when a file was edited
+      // more than once in the turn — merge those sections into one file
+      // (the review surface keys rows/tree/collapse by path). Historical
+      // edit diffs also have no source to expand gaps from — only the
+      // hunks were persisted. Copies, not mutation: the parse cache is
+      // shared across panes and scopes.
+      return mergePatchFilesByPath(parsed).map((file) => ({ ...file, suppressGaps: true }));
     }
     if (contextExpansions.size === 0) return parsed;
     return parsed.map((file) => applyContextExpansion(file, contextExpansions.get(file.path)));
