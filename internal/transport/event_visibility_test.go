@@ -28,6 +28,10 @@ func TestEventVisibleToOrigin(t *testing.T) {
 		"provider:item_event",
 		"provider:usage",
 		"provider:session_died",
+		// highlight:diff_seed goes everywhere: its persist-time seeds can
+		// be parse-primed — better than the loopback RPC recompute — so
+		// local clients consume them as in-place cache upgrades.
+		"highlight:diff_seed",
 	} {
 		if !eventVisibleToOrigin(channel, false) {
 			t.Fatalf("remote-safe event %s hidden from non-loopback peer", channel)
@@ -38,7 +42,6 @@ func TestEventVisibleToOrigin(t *testing.T) {
 	}
 	for _, channel := range []string{
 		"highlight:seed",
-		"highlight:diff_seed",
 	} {
 		if !eventVisibleToOrigin(channel, false) {
 			t.Fatalf("remote-only event %s hidden from non-loopback peer", channel)

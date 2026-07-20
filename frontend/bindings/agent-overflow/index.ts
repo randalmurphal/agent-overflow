@@ -61,6 +61,7 @@ export {
     TerminalReplay,
     ThreadDefaults,
     ThreadLiveState,
+    TurnEditsDiff,
     UpdateAvailability,
     WorkspaceFileSearchResult,
     WorktreeListItem,

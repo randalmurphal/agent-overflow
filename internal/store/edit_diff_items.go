@@ -55,13 +55,20 @@ func (s *Store) ListEditDiffItems(threadID string) ([]EditDiffItem, error) {
 	return entries, nil
 }
 
-// ListTurnEditDiffPatches returns the diff payload bytes of one turn's
+// TurnEditDiffPatch is one edit payload's diff bytes plus the payload
+// id, so callers can pair the patch with its persisted span blob.
+type TurnEditDiffPatch struct {
+	PayloadID string
+	Data      []byte
+}
+
+// ListTurnEditDiffPatches returns the diff payloads of one turn's
 // edit-diff tool calls in item order — the sequential story of what
 // the turn changed. Callers concatenate; nothing here is merged or
 // deduplicated (the same file edited twice yields two patch sections).
-func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([][]byte, error) {
+func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnEditDiffPatch, error) {
 	rows, err := s.db.Query(`
-		SELECT payloads.data
+		SELECT payloads.id, payloads.data
 		  FROM items
 		  JOIN payloads ON payloads.id = items.payload_id
 		 WHERE items.thread_id = ?
@@ -76,13 +83,13 @@ func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([][]byt
 	}
 	defer rows.Close()
 
-	var patches [][]byte
+	var patches []TurnEditDiffPatch
 	for rows.Next() {
-		var data []byte
-		if err := rows.Scan(&data); err != nil {
+		var patch TurnEditDiffPatch
+		if err := rows.Scan(&patch.PayloadID, &patch.Data); err != nil {
 			return nil, fmt.Errorf("store: scan turn edit diff patch for %s/%d: %w", threadID, turnIndex, err)
 		}
-		patches = append(patches, data)
+		patches = append(patches, patch)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate turn edit diff patches for %s/%d: %w", threadID, turnIndex, err)

@@ -232,3 +232,43 @@ func TestPadRuns(t *testing.T) {
 		t.Error("zero pad should return the input unchanged")
 	}
 }
+
+func TestPatchMatchesContent(t *testing.T) {
+	patch := "diff --git a/x.py b/x.py\n" +
+		"--- a/x.py\n" +
+		"+++ b/x.py\n" +
+		"@@ -2,3 +2,3 @@\n" +
+		" keep one\n" +
+		"-old line\n" +
+		"+new line\n" +
+		" keep two\n"
+	matching := "top\nkeep one\nnew line\nkeep two\nbottom\n"
+
+	cases := []struct {
+		name    string
+		patch   string
+		content string
+		want    bool
+	}{
+		{"exact match", patch, matching, true},
+		{"match without trailing newline", patch, "top\nkeep one\nnew line\nkeep two\nbottom", true},
+		{"drifted add line", patch, "top\nkeep one\nCHANGED\nkeep two\nbottom\n", false},
+		{"drifted context line", patch, "top\nDRIFT\nnew line\nkeep two\nbottom\n", false},
+		{"content too short", patch, "top\nkeep one\n", false},
+		{"empty content", patch, "", false},
+		{"empty patch", "", matching, false},
+		// A pure deletion has no new-side lines to verify — nothing
+		// checkable must not be presumed to match.
+		{"pure deletion", "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -2,1 +1,0 @@\n-gone\n", "top\nbottom\n", false},
+		// Old-side lines don't participate: the deleted line is absent
+		// from the new-side content by definition.
+		{"deletion with matching context", "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,2 @@\n keep one\n-gone\n keep two\n", "keep one\nkeep two\n", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PatchMatchesContent(tc.patch, tc.content); got != tc.want {
+				t.Fatalf("PatchMatchesContent() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"agent-overflow/internal/gitdiff"
+	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/workspacepath"
 )
 
@@ -29,6 +30,12 @@ type DiffContextRequest struct {
 	// 1-based inclusive line range on the new side.
 	StartLine int `json:"startLine"`
 	EndLine   int `json:"endLine"`
+	// VerifyPatch (edits scope only): the file's historical patch text.
+	// The workspace file is served only when every new-side patch line
+	// still byte-matches it — a drifted file must never masquerade as
+	// historical context. Live scopes ignore the field (their content
+	// IS the diff's source by construction).
+	VerifyPatch string `json:"verifyPatch,omitempty"`
 }
 
 type DiffContextResult struct {
@@ -146,10 +153,35 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 		return capContent(action, req.Path, content, maxBytes)
 	case "edits":
 		// An edit diff is a historical snapshot: only its hunks were
-		// persisted, and no tree from that moment exists to read the
-		// surrounding lines from. The frontend suppresses gap rows in
-		// this scope; this refusal is the defensive backstop.
-		return "", fmt.Errorf("%s: context expansion is not available for historical edit diffs", action)
+		// persisted, and no tree from that moment exists. The current
+		// workspace file stands in ONLY when it provably still matches
+		// the patch (every new-side hunk line byte-equal at its line
+		// number) — otherwise refuse, and the frontend disables the
+		// file's expansion affordances. Default-closed: no VerifyPatch
+		// or an oversized one refuses too.
+		if req.VerifyPatch == "" || len(req.VerifyPatch) > highlight.MaxRequestBytes {
+			return "", fmt.Errorf("%s: edit diff verification patch is required", action)
+		}
+		thread, err := a.store.GetThread(threadID)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", action, err)
+		}
+		_, workspace, err := a.resolveGitPaths(thread)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", action, err)
+		}
+		rel, err := workspacepath.NormalizeRelative(req.Path)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", action, err)
+		}
+		content, err := readWorkspaceFile(filepath.Join(workspace, rel), maxBytes)
+		if err != nil {
+			return "", fmt.Errorf("%s: %s: %w", action, rel, err)
+		}
+		if !highlight.PatchMatchesContent(req.VerifyPatch, content) {
+			return "", fmt.Errorf("%s: %s has changed since this edit", action, rel)
+		}
+		return content, nil
 	default:
 		return "", fmt.Errorf("%s: unknown scope %q", action, req.Scope)
 	}

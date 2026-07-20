@@ -872,3 +872,57 @@ describe('seedPayloadPatchSpans', () => {
     expect(__diffSpanCacheStatsForTest().entries).toBe(0);
   });
 });
+
+describe('primed span upgrades (monotonic)', () => {
+  function seedFor(file: PatchFile, overrides: Partial<PatchSpanSeedWire> = {}): PatchSpanSeedWire {
+    return {
+      path: file.path,
+      contentKey: contentKey(file.lines.map((l) => l.content).join('\n')),
+      lines: file.lines.map((line) =>
+        line.type === 'add' ? { r: [1, 1] } : {},
+      ),
+      ...overrides,
+    };
+  }
+
+  it('a primed seed replaces an unprimed RPC entry in place', async () => {
+    const file = makeFile('src/up.svelte', ['const a = 1;']);
+    setBindingMock('HighlightPatch', async () => keywordResult(file));
+    await requestFileSpans(file, 'thread-1');
+    // Unprimed RPC spans landed (full-width keyword run).
+    expect(getSpansForLine(file, file.lines[2])?.r?.[0]).toBe(file.lines[2].content.length - 1);
+
+    await seedPayloadPatchSpans('thread-1', [seedFor(file, { primed: true })]);
+    // The primed seed's spans (1-byte run) replaced them — recolor, no refetch.
+    expect(getSpansForLine(file, file.lines[2])?.r?.[0]).toBe(1);
+  });
+
+  it('an unprimed seed never downgrades a primed entry', async () => {
+    const file = makeFile('src/keep.svelte', ['const k = 1;']);
+    await seedPayloadPatchSpans('thread-1', [seedFor(file, { primed: true })]);
+    expect(getSpansForLine(file, file.lines[2])?.r?.[0]).toBe(1);
+
+    await seedPayloadPatchSpans('thread-1', [
+      seedFor(file, { lines: file.lines.map(() => ({})) }),
+    ]);
+    // Primed spans survive the equal-content unprimed seed.
+    expect(getSpansForLine(file, file.lines[2])?.r?.[0]).toBe(1);
+  });
+
+  it('a complete primed base entry suppresses the scoped RPC entirely', async () => {
+    const file = makeFile('src/skip.svelte', ['const s = 1;']);
+    const scoped = setBindingMock('HighlightPatchWithContext', async () => keywordResult(file));
+    const unprimed = setBindingMock('HighlightPatch', async () => keywordResult(file));
+    await seedPayloadPatchSpans('thread-1', [seedFor(file, { primed: true })]);
+
+    const context = { scope: 'edits', commitSHA: '', headSHA: '' };
+    await requestFileSpans(file, 'thread-1', context);
+    // The seed is the best possible answer for this content: a scoped
+    // request could at most match it, and for a drifted file would come
+    // back unprimed yet win read precedence over the primed base entry.
+    expect(scoped).not.toHaveBeenCalled();
+    expect(unprimed).not.toHaveBeenCalled();
+    // The read side falls through the missing scoped entry to the base.
+    expect(getSpansForLine(file, file.lines[2], 'thread-1', context)?.r?.[0]).toBe(1);
+  });
+});

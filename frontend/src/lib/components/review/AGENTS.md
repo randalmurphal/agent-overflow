@@ -164,11 +164,22 @@ state registry); the row model in `utils/reviewRows.ts`.
   path, and duplicate paths crash the keyed each)). The selector is
   turn-grouped (`optgroup` per turn, whole-turn
   option first, labels from the turn's first user prompt). sourceKeys:
-  `edit:<payloadId>` / `edit-turn:<turnIndex>`. Hunk-gap rows are
-  suppressed (`PatchFile.suppressGaps` — only the hunks were
-  persisted; `app_diff_context.go` refuses the scope as backstop), and
-  span priming degrades to unprimed highlighting the same way. Sends
-  are agent-only (scope ≠ 'pr'). The inline chat affordance
+  `edit:<payloadId>` / `edit-turn:<turnIndex>`. Historical fidelity is
+  verification-gated: the current workspace file stands in for the
+  historical tree ONLY when every new-side patch line still
+  byte-matches it (`highlight.PatchMatchesContent`; the expansion and
+  priming requests carry the patch as `verifyPatch`). Verified files
+  get hunk-gap expansion and primed spans like live scopes; drifted
+  files degrade — expansion refusals retire the file's gap rows
+  quietly (store `unexpandableEditPaths`, no error banner) and spans
+  fall back to unprimed. Merged multi-section files always suppress
+  gaps (`mergePatchFilesByPath` sets `suppressGaps` — their sections'
+  line numbers describe different moments). Span quality is monotonic:
+  persist-time seeds (primed with the just-edited file, attached to
+  `GetPayloadData`/`GetTurnEditsDiff` and pushed on
+  `highlight:diff_seed` to ALL clients) upgrade unprimed cache entries
+  in place and are never downgraded. Sends are agent-only
+  (scope ≠ 'pr'). The inline chat affordance
   (`reviewTrigger.ts`) passes `editItemId` so the pane opens pinned to
   that tool call (`pendingEditItemID`, consumed on the next load);
   stale selections resolve to the default — the latest turn.

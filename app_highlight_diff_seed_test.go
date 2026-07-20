@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,7 +29,7 @@ func TestComputePatchSpanSeeds(t *testing.T) {
 		"@@ -1 +1 @@\n" +
 		"-old\n" +
 		"+new"
-	seeds := a.computePatchSpanSeeds(diffSeedTestPatch + "\n" + other)
+	seeds := a.computePatchSpanSeeds(diffSeedTestPatch+"\n"+other, nil)
 	if len(seeds) != 2 {
 		t.Fatalf("expected 2 seeds, got %#v", seeds)
 	}
@@ -49,7 +51,7 @@ func TestComputePatchSpanSeeds(t *testing.T) {
 	// An over-cap file is skipped while its siblings still seed.
 	big := "diff --git a/big.py b/big.py\n--- a/big.py\n+++ b/big.py\n@@ -0,0 +1 @@\n+" +
 		strings.Repeat("x", diffSeedMaxFileBytes)
-	seeds = a.computePatchSpanSeeds(big + "\n" + diffSeedTestPatch)
+	seeds = a.computePatchSpanSeeds(big+"\n"+diffSeedTestPatch, nil)
 	if len(seeds) != 1 || seeds[0].Path != "src/app.py" {
 		t.Fatalf("expected only the small file to seed, got %#v", seeds)
 	}
@@ -58,7 +60,7 @@ func TestComputePatchSpanSeeds(t *testing.T) {
 	// make the frontend key MATCH while the spans cover the original
 	// byte lengths — the one divergence that could misalign colors.
 	invalid := "diff --git a/bad.py b/bad.py\n--- a/bad.py\n+++ b/bad.py\n@@ -0,0 +1 @@\n+x\xff\xfe"
-	seeds = a.computePatchSpanSeeds(invalid + "\n" + diffSeedTestPatch)
+	seeds = a.computePatchSpanSeeds(invalid+"\n"+diffSeedTestPatch, nil)
 	if len(seeds) != 1 || seeds[0].Path != "src/app.py" {
 		t.Fatalf("expected the invalid-UTF-8 file to be skipped, got %#v", seeds)
 	}
@@ -69,12 +71,12 @@ func TestComputePatchSpanSeeds(t *testing.T) {
 	// loop would never highlight starves valid later siblings.
 	huge := "diff --git a/huge.py b/huge.py\n--- a/huge.py\n+++ b/huge.py\n@@ -0,0 +1 @@\n+" +
 		strings.Repeat("x", diffSeedMaxTotalBytes+1)
-	seeds = a.computePatchSpanSeeds(huge + "\n" + diffSeedTestPatch)
+	seeds = a.computePatchSpanSeeds(huge+"\n"+diffSeedTestPatch, nil)
 	if len(seeds) != 1 || seeds[0].Path != "src/app.py" {
 		t.Fatalf("skipped file must not consume aggregate budget, got %#v", seeds)
 	}
 
-	if got := a.computePatchSpanSeeds(""); got != nil {
+	if got := a.computePatchSpanSeeds("", nil); got != nil {
 		t.Fatalf("empty patch must not seed, got %#v", got)
 	}
 }
@@ -367,7 +369,7 @@ func TestGetPayloadDataServesPersistedPatchSpans(t *testing.T) {
 
 	// Simulate the persist worker: current-version spans on payload-diff,
 	// a stale-schema blob on payload-stale, nothing on payload-none.
-	seeds := app.computePatchSpanSeeds(diffSeedTestPatch)
+	seeds := app.computePatchSpanSeeds(diffSeedTestPatch, nil)
 	if len(seeds) != 1 {
 		t.Fatalf("fixture seeds wrong: %#v", seeds)
 	}
@@ -459,5 +461,73 @@ func TestCapPatchSpanSeedBytes(t *testing.T) {
 	}
 	if capPatchSpanSeedBytes([]PatchSpanSeed{big}, 8) != nil {
 		t.Fatal("all-over-budget must return nil")
+	}
+}
+
+func TestComputePatchSpanSeedsPrimed(t *testing.T) {
+	a := &App{}
+	matching := "def f():\n    pass\n"
+
+	primed := a.computePatchSpanSeeds(diffSeedTestPatch, func(path string) string {
+		if path != "src/app.py" {
+			t.Fatalf("prime resolver called with %q", path)
+		}
+		return matching
+	})
+	if len(primed) != 1 || !primed[0].Primed {
+		t.Fatalf("matching content must prime, got %+v", primed)
+	}
+
+	// Drifted content (a later edit landed before the worker read the
+	// file) degrades to unprimed spans — never wrong colors.
+	drifted := a.computePatchSpanSeeds(diffSeedTestPatch, func(string) string {
+		return "def f():\n    something_else\n"
+	})
+	if len(drifted) != 1 || drifted[0].Primed {
+		t.Fatalf("drifted content must not prime, got %+v", drifted)
+	}
+
+	unresolved := a.computePatchSpanSeeds(diffSeedTestPatch, func(string) string { return "" })
+	if len(unresolved) != 1 || unresolved[0].Primed {
+		t.Fatalf("unresolvable content must not prime, got %+v", unresolved)
+	}
+}
+
+func TestWorkspaceFilePrimer(t *testing.T) {
+	app := newTestAppWithStore(t)
+	workspace := t.TempDir()
+	thread := testThread("thread-primer")
+	thread.WorkspacePath = workspace
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "src"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "src", "app.py"), []byte("def f():\n    pass\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	prime := app.workspaceFilePrimer(thread.ID)
+	if prime == nil {
+		t.Fatal("workspaceFilePrimer() = nil for a resolvable thread")
+	}
+	if got := prime("src/app.py"); got != "def f():\n    pass\n" {
+		t.Fatalf("prime(src/app.py) = %q", got)
+	}
+	// Workspace-escaping and absolute paths resolve to "" (unprimed),
+	// never to an out-of-workspace read.
+	if got := prime("../outside.py"); got != "" {
+		t.Fatalf("prime(../outside.py) = %q, want empty", got)
+	}
+	if got := prime("/etc/hostname"); got != "" {
+		t.Fatalf("prime(/etc/hostname) = %q, want empty", got)
+	}
+	if got := prime("src/missing.py"); got != "" {
+		t.Fatalf("prime(missing) = %q, want empty", got)
+	}
+
+	if app.workspaceFilePrimer("no-such-thread") != nil {
+		t.Fatal("workspaceFilePrimer() must be nil for an unknown thread")
 	}
 }

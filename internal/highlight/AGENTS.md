@@ -72,18 +72,26 @@ lines by construction.
   harness turns that into a loud test failure, the runtime path into
   `ClassNone`.
 
-## Seed push (remote clients) and persisted spans
+## Seed push and persisted spans
 
 Clients don't pay a highlight RPC round trip for always-rendered
 content: the app layer precomputes spans as the same seed wire shapes
 and both pushes them live and persists them with history —
 `app_highlight_seed.go` (streaming code fences → `highlight:seed`
-events, plus settle-time `codeSpans` enrichment into `items.meta` via
-the triage `SetCodeSpanEnricher` hook), `app_highlight_diff_seed.go`
-(diff-payload persist tap → `payloads.preview_spans` / `payloads.spans`
-columns, plus `highlight:diff_seed` events for remote clients). Cold
-loads read the persisted blobs; live remote clients get the event
-push; the RPC path covers every miss. Persisted blobs are stamped with
+events for remote clients, plus settle-time `codeSpans` enrichment
+into `items.meta` via the triage `SetCodeSpanEnricher` hook),
+`app_highlight_diff_seed.go` (diff-payload persist tap →
+`payloads.preview_spans` / `payloads.spans` columns, plus
+`highlight:diff_seed` events for every client). Diff seeds go to
+loopback clients too because persist time is the one moment the
+workspace file still matches the patch: the producer primes each
+file's parse with real file content when
+`PatchMatchesContent(patch, content)` verifies the match, marks those
+seeds `Primed`, and the frontend cache upgrades unprimed entries in
+place (never the reverse) — quality no loopback RPC recompute can
+reach later. Cold loads read the persisted blobs; live clients get
+the event push; the RPC path covers every miss. Persisted blobs are
+stamped with
 `SchemaVersion()` (`hv`) and content-addressed per fence/file, so a
 stale blob — old grammar, edited content — is inert and the RPC
 recomputes. Rules that live here:

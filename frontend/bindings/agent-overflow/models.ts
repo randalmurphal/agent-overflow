@@ -467,6 +467,15 @@ export class DiffContextRequest {
     "startLine": number;
     "endLine": number;
 
+    /**
+     * VerifyPatch (edits scope only): the file's historical patch text.
+     * The workspace file is served only when every new-side patch line
+     * still byte-matches it — a drifted file must never masquerade as
+     * historical context. Live scopes ignore the field (their content
+     * IS the diff's source by construction).
+     */
+    "verifyPatch"?: string;
+
     /** Creates a new DiffContextRequest instance. */
     constructor($$source: Partial<DiffContextRequest> = {}) {
         if (!("scope" in $$source)) {
@@ -970,6 +979,14 @@ export class HighlightResult {
     "truncated": boolean;
     "incomplete": boolean;
 
+    /**
+     * Primed: spans were computed with real file content above each
+     * hunk. The frontend span cache treats primed entries as strictly
+     * better than unprimed ones for the same content (monotonic
+     * upgrade, never downgrade).
+     */
+    "primed"?: boolean;
+
     /** Creates a new HighlightResult instance. */
     constructor($$source: Partial<HighlightResult> = {}) {
         if (!("lang" in $$source)) {
@@ -1443,6 +1460,15 @@ export class PatchSpanSeed {
     "path": string;
     "contentKey": string;
     "lines": highlight$0.EncodedLine[];
+
+    /**
+     * Primed: computed with real file content above each hunk (see
+     * HighlightResult.Primed). Persist-time seeds are primed when the
+     * just-edited workspace file still matched the patch at compute
+     * time — the only moment historical-diff spans can be primed
+     * correctly, since the file drifts afterward.
+     */
+    "primed"?: boolean;
 
     /** Creates a new PatchSpanSeed instance. */
     constructor($$source: Partial<PatchSpanSeed> = {}) {
@@ -2186,6 +2212,40 @@ export class ThreadLiveState {
             $$parsedSource["todo"] = $$createField7_0($$parsedSource["todo"]);
         }
         return new ThreadLiveState($$parsedSource as Partial<ThreadLiveState>);
+    }
+}
+
+/**
+ * TurnEditsDiff is a whole turn's concatenated edit diffs plus the
+ * constituent payloads' persisted highlight spans. Per-file content
+ * addressing makes the span union safe: a file edited once in the turn
+ * keys identically to its payload's section and paints primed; a file
+ * edited twice renders merged (different text, different key) and
+ * falls back to the RPC path.
+ */
+export class TurnEditsDiff {
+    "data": string;
+    "patchSpans"?: PatchSpanSeed[];
+
+    /** Creates a new TurnEditsDiff instance. */
+    constructor($$source: Partial<TurnEditsDiff> = {}) {
+        if (!("data" in $$source)) {
+            this["data"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TurnEditsDiff instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TurnEditsDiff {
+        const $$createField1_0 = $$createType25;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("patchSpans" in $$parsedSource) {
+            $$parsedSource["patchSpans"] = $$createField1_0($$parsedSource["patchSpans"]);
+        }
+        return new TurnEditsDiff($$parsedSource as Partial<TurnEditsDiff>);
     }
 }
 

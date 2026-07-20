@@ -61,6 +61,11 @@ type HighlightResult struct {
 	Lines      []highlight.EncodedLine `json:"lines"`
 	Truncated  bool                    `json:"truncated"`
 	Incomplete bool                    `json:"incomplete"`
+	// Primed: spans were computed with real file content above each
+	// hunk. The frontend span cache treats primed entries as strictly
+	// better than unprimed ones for the same content (monotonic
+	// upgrade, never downgrade).
+	Primed bool `json:"primed,omitempty"`
 }
 
 // HighlightClassNames returns the classId → semantic-name table
@@ -133,12 +138,18 @@ func (a *App) HighlightPatchWithContext(threadID string, req HighlightPatchConte
 		CommitSHA: req.CommitSHA,
 		HeadSHA:   req.HeadSHA,
 		Path:      req.Path,
+		// Edits scope only serves content proven to still match this
+		// historical patch (drifted files degrade to unprimed spans,
+		// never to wrong colors); live scopes ignore the field.
+		VerifyPatch: req.Patch,
 	}, highlight.MaxPrimeBytes)
 	var res highlight.Result
+	primed := false
 	if err != nil || content == "" {
 		res = a.highlightCache().Patch(lang, req.Patch)
 	} else {
 		res = a.highlightCache().PatchWithContext(lang, req.Patch, content)
+		primed = true
 	}
-	return HighlightResult{Lang: lang.String(), Lines: res.Lines, Truncated: res.Truncated, Incomplete: res.Incomplete}, nil
+	return HighlightResult{Lang: lang.String(), Lines: res.Lines, Truncated: res.Truncated, Incomplete: res.Incomplete, Primed: primed}, nil
 }

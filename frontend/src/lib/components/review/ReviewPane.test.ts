@@ -58,7 +58,7 @@ beforeEach(() => {
   setBindingMock('ListPRCommits', async () => []);
   setBindingMock('GetPRCommitDiff', async () => '');
   setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
-  setBindingMock('GetTurnEditsDiff', async () => '');
+  setBindingMock('GetTurnEditsDiff', async () => ({ data: '' }));
   setBindingMock('GetPayloadData', async () => ({ data: '' }));
   setBindingMock('GitListBranches', async () => [{ name: 'main', isCurrent: false, isDefault: true }]);
   setBindingMock('ListDiffReviewComments', async () => []);
@@ -525,7 +525,7 @@ describe('<ReviewPane>', () => {
         { turnIndex: 2, label: 'now the lexer' },
       ],
     }));
-    setBindingMock('GetTurnEditsDiff', async () => patch());
+    setBindingMock('GetTurnEditsDiff', async () => ({ data: patch() }));
     const payload = setBindingMock('GetPayloadData', async () => ({ data: patch() }));
 
     const view = render(ReviewPane, { ctx: makeCtx() });

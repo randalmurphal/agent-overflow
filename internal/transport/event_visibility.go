@@ -54,12 +54,13 @@ var remoteOnlyEventChannels = map[string]bool{
 	// Producer side is gated too (Server.HasRemoteClient) — this
 	// filter is what keeps the frames off loopback pipes while a
 	// remote viewer has the producer running.
+	//
+	// highlight:diff_seed is deliberately NOT here anymore: its seeds
+	// can be parse-primed with the just-edited workspace file — better
+	// spans than what the loopback RPC path recomputes for a persisted
+	// diff — so local clients consume them as in-place upgrades rather
+	// than redundant warmers. Its producer gate was dropped alongside.
 	"highlight:seed": true,
-	// highlight:diff_seed pushes patch-aligned spans for just-persisted
-	// inline-diff previews — same rationale and same producer gate as
-	// highlight:seed, keyed for the diff span cache instead of the
-	// markdown code-block cache.
-	"highlight:diff_seed": true,
 }
 
 // ephemeralEventChannels are never retained in the replay ring:

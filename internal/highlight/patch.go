@@ -212,3 +212,37 @@ func padRuns(line EncodedLine, pad int) EncodedLine {
 	runs = append(runs, line.Runs...)
 	return EncodedLine{Runs: runs}
 }
+
+// PatchMatchesContent reports whether every new-side line of the
+// patch's hunks (adds and context) byte-matches `content` at its
+// 1-based new-side line number. True means the file still holds the
+// state this patch produced at every position the patch describes —
+// the gate for treating live file content as a stand-in for a
+// historical edit diff (parse priming, hunk-gap expansion). False on
+// any mismatch, and on patches with no verifiable new-side lines
+// (pure deletions, no hunks): with nothing to check, the content must
+// not be presumed to match.
+func PatchMatchesContent(patch, content string) bool {
+	parsed := parsePatch(patch)
+	var contentLines []string
+	if content != "" {
+		contentLines = strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	}
+	verified := false
+	for _, hunk := range parsed.hunks {
+		newDocLines := strings.Split(string(hunk.newDoc), "\n")
+		for _, ref := range hunk.lines {
+			if ref.newDocLine < 0 || ref.newFileLine < 1 {
+				continue
+			}
+			if ref.newFileLine > len(contentLines) || ref.newDocLine >= len(newDocLines) {
+				return false
+			}
+			if contentLines[ref.newFileLine-1] != newDocLines[ref.newDocLine] {
+				return false
+			}
+			verified = true
+		}
+	}
+	return verified
+}

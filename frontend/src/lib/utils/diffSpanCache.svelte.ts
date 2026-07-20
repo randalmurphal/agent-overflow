@@ -53,6 +53,11 @@ interface SpanEntry {
    * skipped by eviction; the cache may exceed its budget by the
    * working set, which is bounded by the visible views. */
   gen: number;
+  /** Spans were computed with real file content above each hunk
+   * (backend `primed` flag). Upgrades are monotonic: a primed seed or
+   * result replaces an unprimed entry for the same content, never the
+   * reverse. */
+  primed: boolean;
   /** Set (Date.now()) when the backend flagged the result incomplete —
    * transient degradation (parse timeout, patch budget) that a retry
    * can beat. The entry still displays, but a request that touches it
@@ -188,7 +193,7 @@ function entryBytes(spans: EncodedLine[]): number {
   return bytes;
 }
 
-function insert(key: string, spans: EncodedLine[], incomplete: boolean): void {
+function insert(key: string, spans: EncodedLine[], incomplete: boolean, primed: boolean): void {
   const prior = entries.get(key);
   if (prior) totalBytes -= prior.bytes;
   const bytes = entryBytes(spans);
@@ -197,6 +202,7 @@ function insert(key: string, spans: EncodedLine[], incomplete: boolean): void {
     spans,
     bytes,
     gen: generation,
+    primed,
     ...(incomplete ? { incompleteAt: Date.now() } : {}),
   });
   totalBytes += bytes;
@@ -270,6 +276,20 @@ export async function requestFileSpans(
   const key = context ? scopedKey(base, threadId, context) : base;
   registerThread(key, threadId);
 
+  if (context) {
+    // A complete PRIMED base entry (a persist-time seed) is the best
+    // possible answer for this content — a scoped RPC could at most
+    // match it, and for a drifted edits-scope file it would come back
+    // WORSE (unprimed) yet win the scoped-first read precedence. Skip
+    // the request; the read side falls through to the base entry.
+    const baseEntry = entries.get(base);
+    if (baseEntry && baseEntry.primed && baseEntry.incompleteAt === undefined) {
+      registerThread(base, threadId);
+      touch(base);
+      return;
+    }
+  }
+
   const cached = entries.get(key);
   if (cached) {
     touch(key);
@@ -286,7 +306,8 @@ export async function requestFileSpans(
 
   try {
     const patch = patchTextOf(file);
-    let result: { lines: EncodedLine[] | null; incomplete: boolean } | null = null;
+    let result: { lines: EncodedLine[] | null; incomplete: boolean; primed?: boolean } | null =
+      null;
     if (context) {
       try {
         result = await HighlightPatchWithContext(threadId, {
@@ -318,8 +339,12 @@ export async function requestFileSpans(
       // late incomplete flight (a seed landed complete spans while
       // this request was out) must not downgrade it.
       touch(key);
+    } else if (existing && existing.primed && !result.primed && existing.incompleteAt === undefined) {
+      // Monotonic: a primed entry (seed landed while this request was
+      // out) never downgrades to an unprimed RPC result.
+      touch(key);
     } else {
-      insert(key, result.lines ?? [], result.incomplete);
+      insert(key, result.lines ?? [], result.incomplete, result.primed === true);
     }
   } catch (err) {
     if (inFlight.get(key) !== flight) return;
@@ -353,6 +378,9 @@ export interface PatchSpanSeedWire {
   path?: string;
   contentKey?: string;
   lines?: EncodedLine[] | null;
+  /** Spans were parse-primed with the just-edited file (see
+   * SpanEntry.primed) — such a seed upgrades an unprimed entry. */
+  primed?: boolean;
 }
 
 /**
@@ -442,7 +470,7 @@ export function seedPayloadPatchSpansSync(
 ): void {
   for (const file of files) {
     if (!file || typeof file.path !== 'string' || typeof file.contentKey !== 'string') continue;
-    seedPatchFileSpans(threadId, file.path, file.contentKey, file.lines ?? []);
+    seedPatchFileSpans(threadId, file.path, file.contentKey, file.lines ?? [], file.primed === true);
   }
 }
 
@@ -451,18 +479,22 @@ function seedPatchFileSpans(
   path: string,
   sourceContentKey: string,
   spans: EncodedLine[],
+  primed: boolean,
 ): void {
   if (!path || !sourceContentKey) return;
   const key = `${path} ${sourceContentKey}`;
   if (threadId) registerThread(key, threadId);
   const existing = entries.get(key);
-  if (existing && existing.incompleteAt === undefined) {
+  // A complete entry survives an equal-or-worse seed; a PRIMED seed
+  // replaces an unprimed entry (monotonic upgrade — the recolor is the
+  // fidelity fix, zero layout shift).
+  if (existing && existing.incompleteAt === undefined && (existing.primed || !primed)) {
     touch(key);
     return;
   }
   // insert() bumps the generation, so a consumer already mounted plain
   // (the seed push racing its render) repaints from the seeded entry.
-  insert(key, spans, false);
+  insert(key, spans, false, primed);
 }
 
 /** How many superseded arrays a read may walk through (see below).

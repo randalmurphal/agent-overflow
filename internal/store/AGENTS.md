@@ -31,8 +31,10 @@ root `CLAUDE.md` principle 3.
 - `edit_diff_items.go` — read surfaces behind the review pane's Edits
   scope: `ListEditDiffItems` (metadata-only rows for items whose
   payload carries a unified diff — `tool_result` and legacy `diff`
-  kinds), `ListTurnEditDiffPatches` (one turn's diff blobs in item
-  order), and `ListTurnUserSummaries` (selector group labels).
+  kinds), `ListTurnEditDiffPatches` (one turn's payload-id + diff-blob
+  pairs in item order — the id lets the app attach that payload's
+  persisted span seeds), and `ListTurnUserSummaries` (selector group
+  labels).
 - `drafts.go` — composer drafts per thread.
 - `chat_bar.go` — composer favorites and last-used model profile seeds.
 - `search.go` — case-insensitive substring search across thread titles

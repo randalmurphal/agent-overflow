@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/store"
 )
 
@@ -158,10 +159,11 @@ func TestGetTurnEditsDiffConcatenatesInOrder(t *testing.T) {
 	app := newTestAppWithStore(t)
 	threadID := editDiffFixture(t, app)
 
-	combined, err := app.GetTurnEditsDiff(threadID, 2)
+	turnDiff, err := app.GetTurnEditsDiff(threadID, 2)
 	if err != nil {
 		t.Fatalf("GetTurnEditsDiff() error = %v", err)
 	}
+	combined := turnDiff.Data
 	// Both same-file edits appear as separate sequential sections.
 	betaOut := strings.Index(combined, "-alpha")
 	gammaIn := strings.Index(combined, "+gamma")
@@ -180,7 +182,36 @@ func TestGetTurnEditsDiffConcatenatesInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTurnEditsDiff(no edits) error = %v", err)
 	}
-	if empty != "" {
-		t.Fatalf("expected empty diff for edit-less turn, got %q", empty)
+	if empty.Data != "" {
+		t.Fatalf("expected empty diff for edit-less turn, got %q", empty.Data)
+	}
+}
+
+func TestGetTurnEditsDiffAttachesPersistedSpans(t *testing.T) {
+	app := newTestAppWithStore(t)
+	threadID := editDiffFixture(t, app)
+
+	// One of turn 2's payloads has persist-time spans; the other never
+	// got a blob (dropped burst) — only the stored seeds attach.
+	seed := PatchSpanSeed{
+		Path:       "lexer.go",
+		ContentKey: "ck-lexer",
+		Lines:      []highlight.EncodedLine{{Runs: []uint16{4, 1}}},
+		Primed:     true,
+	}
+	if ok := app.persistPayloadSpans("pl-edit-2", nil, []PatchSpanSeed{seed}); !ok {
+		t.Fatal("persistPayloadSpans() reported missing payload row")
+	}
+
+	turnDiff, err := app.GetTurnEditsDiff(threadID, 2)
+	if err != nil {
+		t.Fatalf("GetTurnEditsDiff() error = %v", err)
+	}
+	if len(turnDiff.PatchSpans) != 1 {
+		t.Fatalf("PatchSpans = %+v, want the one persisted seed", turnDiff.PatchSpans)
+	}
+	got := turnDiff.PatchSpans[0]
+	if got.Path != "lexer.go" || got.ContentKey != "ck-lexer" || !got.Primed {
+		t.Fatalf("seed = %+v", got)
 	}
 }

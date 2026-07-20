@@ -57,7 +57,7 @@ import type {
   Thread,
 } from '../types/models';
 import { diffSourceKey } from '../utils/diffSourceKey';
-import type { PatchScopeContext } from '../utils/diffSpanCache.svelte';
+import { seedPayloadPatchSpans, type PatchScopeContext } from '../utils/diffSpanCache.svelte';
 import { conflictPatchFile } from '../utils/conflictFile';
 import { hunkExcerptForComment } from '../utils/prHunkExcerpt';
 import { prRefFromThread, prRefFromUrl, prScopeLabel, type PRRef } from '../utils/prReference';
@@ -439,6 +439,10 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   const collapseOverrides = new Map<string, boolean>();
   let viewMode: 'stacked' | 'split' = $state('stacked');
   let wordWrap = $state(getSettings().diffWordWrap);
+  // Edits-scope files whose expansion attempt was refused (workspace
+  // drifted from the historical diff): their gap rows retire for this
+  // load. Cleared with the expansions on every reload.
+  const unexpandableEditPaths = new SvelteSet<string>();
   let loadSeq = 0;
   const sourceKey = $derived.by(() => {
     if (scope === 'edits') {
@@ -469,15 +473,21 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   // expansions overlay per file, keyed by the version counter.
   const files = $derived.by(() => {
     void contextExpansionVersion;
-    const parsed = sortFilesTreeOrder(parsePatchFilesCached(patchText));
+    let parsed = sortFilesTreeOrder(parsePatchFilesCached(patchText));
     if (scope === 'edits') {
       // A whole-turn concatenation repeats a path when a file was edited
       // more than once in the turn — merge those sections into one file
-      // (the review surface keys rows/tree/collapse by path). Historical
-      // edit diffs also have no source to expand gaps from — only the
-      // hunks were persisted. Copies, not mutation: the parse cache is
-      // shared across panes and scopes.
-      return mergePatchFilesByPath(parsed).map((file) => ({ ...file, suppressGaps: true }));
+      // (the review surface keys rows/tree/collapse by path); merged
+      // multi-section files get suppressGaps from the helper (their
+      // sections' line numbers describe different moments, so gap
+      // coordinates are incoherent). Single-section files keep their
+      // gap rows — expansion serves the CURRENT workspace file only
+      // after the backend verifies it still matches this historical
+      // patch, and a refusal retires the file's gaps here. Copies, not
+      // mutation: the parse cache is shared across panes and scopes.
+      parsed = mergePatchFilesByPath(parsed).map((file) =>
+        unexpandableEditPaths.has(file.path) ? { ...file, suppressGaps: true } : file,
+      );
     }
     if (contextExpansions.size === 0) return parsed;
     return parsed.map((file) => applyContextExpansion(file, contextExpansions.get(file.path)));
@@ -784,6 +794,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   void reload();
 
   function clearContextExpansions(): void {
+    unexpandableEditPaths.clear();
     if (contextExpansions.size === 0) return;
     contextExpansions.clear();
     contextExpansionVersion += 1;
@@ -801,9 +812,21 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     if (selectedCommitSHA) {
       return { scope: 'commit', commitSHA: selectedCommitSHA, headSHA: '' };
     }
-    // 'edits' passes through: the backend declines context priming for
-    // historical diffs and the highlighter falls back to unprimed spans.
+    // 'edits' resolves the workspace file too, but only after the
+    // backend verifies it still matches the historical patch (the
+    // request carries the patch as VerifyPatch); a drifted file
+    // degrades to unprimed spans, never to wrong colors.
     return { scope, commitSHA: '', headSHA: '' };
+  }
+
+  // The historical patch text of one edits-scope file, for the
+  // backend's has-the-file-drifted verification. Empty for unknown
+  // paths (the backend then refuses, which is the safe direction).
+  function editVerifyPatch(path: string): string {
+    if (scope !== 'edits') return '';
+    const file = files.find((candidate) => candidate.path === path);
+    if (!file) return '';
+    return file.lines.map((line) => line.content).join('\n');
   }
 
   async function expandDiffContext(path: string, gap: DiffGap, dir: ExpandDirection): Promise<void> {
@@ -819,6 +842,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
         path,
         startLine: range.start,
         endLine: range.end,
+        verifyPatch: editVerifyPatch(path),
       });
       // The diff reloaded underneath the fetch — its line numbering may
       // no longer be the one this slice was addressed against.
@@ -836,6 +860,14 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
       error = null;
     } catch (err) {
       if (seq !== loadSeq || disposed) return;
+      if (scope === 'edits') {
+        // The workspace file has drifted from this historical edit (or
+        // is gone) — expansion can't be offered truthfully. Retire the
+        // file's gap affordances instead of raising an error banner:
+        // the diff itself is still fully valid.
+        unexpandableEditPaths.add(path);
+        return;
+      }
       error = userFacingError(err);
     }
   }
@@ -1560,9 +1592,16 @@ async function loadPatch(
       const selection = resolveEditSelection(editDesire, entries);
       let patchText = '';
       if (selection?.kind === 'item') {
-        patchText = String((await GetPayloadData(threadId, selection.payloadId))?.data ?? '');
+        const payload = await GetPayloadData(threadId, selection.payloadId);
+        patchText = String(payload?.data ?? '');
+        // Persist-time spans travel with the data (primed when the file
+        // still matched at edit time) — seed them so the first paint is
+        // colored without the RPC path. Fire-and-forget cache warmer.
+        void seedPayloadPatchSpans(threadId, payload?.patchSpans);
       } else if (selection) {
-        patchText = String((await GetTurnEditsDiff(threadId, selection.turnIndex)) ?? '');
+        const turnDiff = await GetTurnEditsDiff(threadId, selection.turnIndex);
+        patchText = String(turnDiff?.data ?? '');
+        void seedPayloadPatchSpans(threadId, turnDiff?.patchSpans);
       }
       return { patchText, edits: entries, editTurnLabels: turnLabels, selectedEdit: selection };
     }

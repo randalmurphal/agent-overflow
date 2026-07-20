@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,5 +207,67 @@ func TestSplitContentLines(t *testing.T) {
 		if got := len(splitContentLines(tc.content)); got != tc.want {
 			t.Fatalf("splitContentLines(%q) len = %d, want %d", tc.content, got, tc.want)
 		}
+	}
+}
+
+func TestGetDiffContextLinesEditsScope(t *testing.T) {
+	app := newTestAppWithStore(t)
+	workspace := t.TempDir()
+	thread := testThread("thread-diff-context-edits")
+	thread.WorkspacePath = workspace
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	var lines []string
+	for i := 1; i <= 20; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	writeFile := func(content string) {
+		if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+	}
+	writeFile(strings.Join(lines, "\n") + "\n")
+
+	verifyPatch := "diff --git a/notes.txt b/notes.txt\n" +
+		"--- a/notes.txt\n" +
+		"+++ b/notes.txt\n" +
+		"@@ -10,3 +10,3 @@\n" +
+		" line 10\n" +
+		"-old eleven\n" +
+		"+line 11\n" +
+		" line 12\n"
+
+	// Verified: the workspace still matches this historical patch, so
+	// its lines serve as context.
+	result, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+		Scope:       "edits",
+		Path:        "notes.txt",
+		StartLine:   1,
+		EndLine:     5,
+		VerifyPatch: verifyPatch,
+	})
+	if err != nil {
+		t.Fatalf("GetDiffContextLines(verified) error = %v", err)
+	}
+	if len(result.Lines) != 5 || result.Lines[0] != "line 1" || result.TotalLines != 20 {
+		t.Fatalf("verified result = %+v", result)
+	}
+
+	// No verification patch → default-closed refusal.
+	if _, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+		Scope: "edits", Path: "notes.txt", StartLine: 1, EndLine: 5,
+	}); err == nil {
+		t.Fatal("missing VerifyPatch must refuse")
+	}
+
+	// The file drifted (line 11 rewritten since the edit) → refusal, so
+	// current lines can never masquerade as historical context.
+	writeFile(strings.Join(lines[:10], "\n") + "\nrewritten since\n" + strings.Join(lines[11:], "\n") + "\n")
+	if _, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+		Scope: "edits", Path: "notes.txt", StartLine: 1, EndLine: 5, VerifyPatch: verifyPatch,
+	}); err == nil {
+		t.Fatal("drifted workspace must refuse edits-scope expansion")
 	}
 }

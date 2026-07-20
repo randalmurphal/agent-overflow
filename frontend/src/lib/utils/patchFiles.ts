@@ -147,6 +147,11 @@ export function parsePatchFiles(patch: string): PatchFile[] {
  * so the merged file renders them as consecutive hunks in edit order.
  * Line arrays are shared parse-cache state and never mutated; a merged
  * file gets a fresh concatenated array.
+ *
+ * Merged files get `suppressGaps`: their sections carry line numbers
+ * from different moments of the file, so inter-section gap coordinates
+ * are incoherent and expansion could not verify against any single
+ * state. Single-section files pass through untouched (gaps allowed).
  */
 export function mergePatchFilesByPath(files: PatchFile[]): PatchFile[] {
   const merged: PatchFile[] = [];
@@ -167,6 +172,7 @@ export function mergePatchFilesByPath(files: PatchFile[]): PatchFile[] {
       // first section's kind (added / renamed) describes the file best.
       kind: file.kind === 'deleted' ? 'deleted' : existing.kind,
       lines: [...existing.lines, ...file.lines],
+      suppressGaps: true,
     };
   }
   return merged;

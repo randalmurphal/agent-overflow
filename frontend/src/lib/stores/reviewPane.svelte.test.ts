@@ -1546,7 +1546,7 @@ describe('reviewPane store — edits scope', () => {
       ],
     }));
     const payload = setBindingMock('GetPayloadData', async () => ({ data: gappyPatch() }));
-    const turnDiff = setBindingMock('GetTurnEditsDiff', async () => gappyPatch());
+    const turnDiff = setBindingMock('GetTurnEditsDiff', async () => ({ data: gappyPatch() }));
     return { list, payload, turnDiff };
   }
 
@@ -1565,17 +1565,51 @@ describe('reviewPane store — edits scope', () => {
     expect(state.files.length).toBe(1);
   });
 
-  it('suppresses hunk-gap rows on historical edit diffs', async () => {
+  it('emits gap rows for single-section edit files and verifies expansion', async () => {
     installEditMocks();
+    const contextLines = setBindingMock('GetDiffContextLines', async () => ({
+      lines: ['top 1', 'top 2', 'top 3', 'top 4'],
+      startLine: 1,
+      eof: false,
+      totalLines: 20,
+    }));
     const state = reviewStateForPane('pane-1', 'thread-1');
     await waitLoaded(state);
 
-    // Baseline: the same patch in workspace scope DOES emit a leading gap.
-    setBindingMock('GetWorkspaceCurrentDiff', async () => gappyPatch());
-    await state.reload();
-    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(true);
-
     await state.setScope('edits');
+    // A single-section historical diff offers hunk-gap expansion like
+    // any live scope — the backend verifies the workspace still
+    // matches before serving lines.
+    expect(state.files[0].suppressGaps).toBeUndefined();
+    const gapRow = filePatchDisplayRows(state.files[0]).find((row) => row.gap);
+    expect(gapRow).toBeDefined();
+
+    await state.expandDiffContext('x.go', gapRow!.gap!, 'up');
+    expect(contextLines).toHaveBeenCalledWith('thread-1', expect.objectContaining({
+      scope: 'edits',
+      path: 'x.go',
+      // The historical patch rides along for drift verification.
+      verifyPatch: expect.stringContaining('@@ -5,3 +5,3 @@'),
+    }));
+    expect(state.error).toBeNull();
+  });
+
+  it('retires a file\'s gaps when edits-scope expansion is refused', async () => {
+    installEditMocks();
+    setBindingMock('GetDiffContextLines', async () => {
+      throw new Error('x.go has changed since this edit');
+    });
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('edits');
+
+    const gapRow = filePatchDisplayRows(state.files[0]).find((row) => row.gap);
+    expect(gapRow).toBeDefined();
+
+    await state.expandDiffContext('x.go', gapRow!.gap!, 'up');
+    // Drifted workspace: the file's gap affordances retire quietly —
+    // the historical diff itself is still fully valid, so no banner.
+    expect(state.error).toBeNull();
     expect(state.files[0].suppressGaps).toBe(true);
     expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(false);
   });
@@ -1642,7 +1676,7 @@ describe('reviewPane store — edits scope', () => {
       ' ctx2',
       '+later',
     ].join('\n');
-    setBindingMock('GetTurnEditsDiff', async () => twiceEdited);
+    setBindingMock('GetTurnEditsDiff', async () => ({ data: twiceEdited }));
 
     const state = reviewStateForPane('pane-1', 'thread-1');
     await waitLoaded(state);
@@ -1651,6 +1685,8 @@ describe('reviewPane store — edits scope', () => {
     expect(state.files.map((file) => file.path)).toEqual(['x.go']);
     expect(state.files[0].additions).toBe(2);
     expect(state.files[0].deletions).toBe(1);
+    // Merged multi-section files keep gaps suppressed: their sections'
+    // line numbers describe different moments of the file.
     expect(state.files[0].suppressGaps).toBe(true);
     // Both sections' hunks render, in edit order.
     const contents = state.files[0].lines.map((line) => line.content);

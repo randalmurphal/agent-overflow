@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"path/filepath"
 	"unicode/utf8"
 
 	"agent-overflow/internal/highlight"
+	"agent-overflow/internal/workspacepath"
 )
 
 // Diff span persistence: patch-aligned highlight spans for the diff
@@ -24,9 +26,11 @@ import (
 //   - payloads.spans — spans for the full data blob, attached to
 //     GetPayloadData / GetPayloadPreview responses for every caller.
 //
-// The same worker still emits the remote-only `highlight:diff_seed`
-// push while a remote client is attached, so live streaming keeps its
-// round-trip head start. Key mismatches (splitter drift vs the frontend
+// The same worker emits the `highlight:diff_seed` push to every
+// client: remote clients get a round-trip head start, and local ones
+// upgrade unprimed RPC results in place (persist-time seeds are primed
+// with the just-edited file when it still matches — see
+// workspaceFilePrimer). Key mismatches (splitter drift vs the frontend
 // parser, content replaced after compute) are fail-safe: a stale blob's
 // per-file contentKey never matches, the seed misses the cache, and the
 // RPC path recomputes. Version skew is caught server-side — a blob
@@ -69,6 +73,12 @@ type PatchSpanSeed struct {
 	Path       string                  `json:"path"`
 	ContentKey string                  `json:"contentKey"`
 	Lines      []highlight.EncodedLine `json:"lines"`
+	// Primed: computed with real file content above each hunk (see
+	// HighlightResult.Primed). Persist-time seeds are primed when the
+	// just-edited workspace file still matched the patch at compute
+	// time — the only moment historical-diff spans can be primed
+	// correctly, since the file drifts afterward.
+	Primed bool `json:"primed,omitempty"`
 }
 
 // PersistedPatchSpans is the payloads.preview_spans / payloads.spans
@@ -82,8 +92,7 @@ type PersistedPatchSpans struct {
 	Files   []PatchSpanSeed `json:"files"`
 }
 
-// HighlightDiffSeedEvent is the `highlight:diff_seed` payload (remote
-// clients only).
+// HighlightDiffSeedEvent is the `highlight:diff_seed` payload.
 type HighlightDiffSeedEvent struct {
 	ThreadID string          `json:"threadId"`
 	Files    []PatchSpanSeed `json:"files"`
@@ -94,7 +103,13 @@ type HighlightDiffSeedEvent struct {
 // Results go through the shared content-addressed cache, so the
 // frontend's own HighlightPatch request for the same file (a race the
 // seed push deliberately tolerates) is a lookup, not a re-parse.
-func (a *App) computePatchSpanSeeds(patch string) []PatchSpanSeed {
+//
+// `prime` (nil = never prime) resolves a diff path to current file
+// content; a file is parse-primed only when that content still
+// byte-matches the patch's new-side lines — the guard against a
+// same-file edit landing between persist and this worker's read, so
+// stale content degrades to unprimed spans instead of wrong colors.
+func (a *App) computePatchSpanSeeds(patch string, prime func(path string) string) []PatchSpanSeed {
 	if patch == "" || len(patch) > diffSeedMaxScanBytes {
 		return nil
 	}
@@ -122,7 +137,18 @@ func (a *App) computePatchSpanSeeds(patch string) []PatchSpanSeed {
 		// Unknown languages still seed: all-plain spans are the
 		// backend's authoritative answer and stop the frontend from
 		// asking again (same contract as requestFileSpans' cache).
-		res := a.highlightCache().Patch(lang, seg.Patch)
+		var content string
+		if prime != nil {
+			content = prime(seg.Path)
+		}
+		var res highlight.Result
+		primed := false
+		if content != "" && highlight.PatchMatchesContent(seg.Patch, content) {
+			res = a.highlightCache().PatchWithContext(lang, seg.Patch, content)
+			primed = true
+		} else {
+			res = a.highlightCache().Patch(lang, seg.Patch)
+		}
 		if res.Incomplete {
 			// Transient degradation never seeds or persists — the RPC
 			// path owns incomplete retries and their damping.
@@ -132,9 +158,40 @@ func (a *App) computePatchSpanSeeds(patch string) []PatchSpanSeed {
 			Path:       seg.Path,
 			ContentKey: highlight.FrontendContentKey(seg.Patch),
 			Lines:      res.Lines,
+			Primed:     primed,
 		})
 	}
 	return seeds
+}
+
+// workspaceFilePrimer returns a memoized path → content resolver over
+// the thread's workspace for persist-time span priming, or nil when
+// the workspace can't be resolved. Unreadable, oversized, or
+// workspace-escaping paths (absolute-path edits included) memoize as
+// "" — those files simply stay unprimed.
+func (a *App) workspaceFilePrimer(threadID string) func(path string) string {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return nil
+	}
+	_, workspace, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return nil
+	}
+	contents := map[string]string{}
+	return func(path string) string {
+		if content, ok := contents[path]; ok {
+			return content
+		}
+		content := ""
+		if rel, err := workspacepath.NormalizeRelative(path); err == nil {
+			if read, err := readWorkspaceFile(filepath.Join(workspace, rel), highlight.MaxPrimeBytes); err == nil {
+				content = read
+			}
+		}
+		contents[path] = content
+		return content
+	}
 }
 
 // observeDiffPayloadPersisted is the triage router's diff payload
@@ -143,10 +200,10 @@ func (a *App) computePatchSpanSeeds(patch string) []PatchSpanSeed {
 // compute happens on a goroutine, bounded in count by
 // diffSeedMaxWorkers (excess bursts drop; the RPC path covers those
 // payloads) and in work by the caps above. The worker computes preview
-// AND full-data spans in one pass, writes both columns, and — while a
-// remote client is attached — pushes the preview seeds on the
-// remote-only `highlight:diff_seed` channel so live streaming paints a
-// round trip earlier.
+// AND full-data spans in one pass (parse-primed per file when the
+// workspace still matches), writes both columns, and pushes the
+// preview seeds on the `highlight:diff_seed` channel so live surfaces
+// paint primed spans without a round trip.
 func (a *App) observeDiffPayloadPersisted(threadID, payloadID string, previews []string, patch string) {
 	if a.diffSeedWorkers.Add(1) > diffSeedMaxWorkers {
 		a.diffSeedWorkers.Add(-1)
@@ -154,6 +211,11 @@ func (a *App) observeDiffPayloadPersisted(threadID, payloadID string, previews [
 	}
 	go func() {
 		defer a.diffSeedWorkers.Add(-1)
+		// The moment right after persist is the ONLY time the workspace
+		// can prime a historical diff correctly — the file IS the
+		// post-edit state (verified per file against the patch, so a
+		// racing later edit degrades to unprimed, never wrong colors).
+		prime := a.workspaceFilePrimer(threadID)
 		var previewSeeds []PatchSpanSeed
 		total := 0
 		for _, preview := range previews {
@@ -171,7 +233,7 @@ func (a *App) observeDiffPayloadPersisted(threadID, payloadID string, previews [
 				break
 			}
 			total += len(preview)
-			previewSeeds = append(previewSeeds, a.computePatchSpanSeeds(preview)...)
+			previewSeeds = append(previewSeeds, a.computePatchSpanSeeds(preview, prime)...)
 		}
 		// preview_spans rides every item list read, so it gets the same
 		// retained-bytes guardrail as the items.meta codeSpans blob;
@@ -181,8 +243,12 @@ func (a *App) observeDiffPayloadPersisted(threadID, payloadID string, previews [
 		// worker) must not push seeds either: the frontend's cleanup
 		// for that thread may already have run, and a late seed would
 		// re-register cache entries for it.
-		persisted := a.persistPayloadSpans(payloadID, previewSeeds, a.computePatchSpanSeeds(patch))
-		if persisted && len(previewSeeds) > 0 && a.hasRemoteClient() {
+		persisted := a.persistPayloadSpans(payloadID, previewSeeds, a.computePatchSpanSeeds(patch, prime))
+		if persisted && len(previewSeeds) > 0 {
+			// Pushed to every client (local included): primed seeds are
+			// strictly better than what the local RPC path computes for
+			// an already-persisted diff, so the frontend upgrades its
+			// cache in place when the seed wins the race.
 			a.emit("highlight:diff_seed", HighlightDiffSeedEvent{ThreadID: threadID, Files: previewSeeds})
 		}
 	}()
@@ -258,6 +324,13 @@ func (a *App) persistedPayloadPatchSpans(payloadKind, payloadID string) []PatchS
 	if !diffPayloadKind(payloadKind) {
 		return nil
 	}
+	return a.loadPersistedPatchSpans(payloadID)
+}
+
+// loadPersistedPatchSpans is the kind-free variant for callers whose
+// query already filtered to diff-bearing payload kinds (the turn edits
+// read).
+func (a *App) loadPersistedPatchSpans(payloadID string) []PatchSpanSeed {
 	blob, err := a.store.GetPayloadSpans(payloadID)
 	if err != nil {
 		log.Printf("app: read payload spans %s: %v", payloadID, err)

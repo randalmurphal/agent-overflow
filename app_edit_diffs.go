@@ -114,25 +114,37 @@ func (a *App) ListThreadEditDiffs(threadID string) (EditDiffList, error) {
 	return EditDiffList{Entries: entries, TurnLabels: labels}, nil
 }
 
+// TurnEditsDiff is a whole turn's concatenated edit diffs plus the
+// constituent payloads' persisted highlight spans. Per-file content
+// addressing makes the span union safe: a file edited once in the turn
+// keys identically to its payload's section and paints primed; a file
+// edited twice renders merged (different text, different key) and
+// falls back to the RPC path.
+type TurnEditsDiff struct {
+	Data       string          `json:"data"`
+	PatchSpans []PatchSpanSeed `json:"patchSpans,omitempty"`
+}
+
 // GetTurnEditsDiff returns one turn's edit diffs concatenated in item
 // order — the sequential story of what the turn changed. Nothing is
 // merged: a file edited twice appears as two patch sections, each with
 // the line numbers of its own moment.
-func (a *App) GetTurnEditsDiff(threadID string, turnIndex int) (string, error) {
+func (a *App) GetTurnEditsDiff(threadID string, turnIndex int) (TurnEditsDiff, error) {
 	const action = "get turn edits diff"
 	if _, err := a.store.GetThread(threadID); err != nil {
-		return "", fmt.Errorf("%s: %w", action, err)
+		return TurnEditsDiff{}, fmt.Errorf("%s: %w", action, err)
 	}
 	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
-		return "", fmt.Errorf("%s: %w", action, err)
+		return TurnEditsDiff{}, fmt.Errorf("%s: %w", action, err)
 	}
 	patches, err := a.store.ListTurnEditDiffPatches(threadID, turnIndex)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", action, err)
+		return TurnEditsDiff{}, fmt.Errorf("%s: %w", action, err)
 	}
 	var combined strings.Builder
+	var spans []PatchSpanSeed
 	for _, patch := range patches {
-		text := strings.TrimRight(string(patch), "\n")
+		text := strings.TrimRight(string(patch.Data), "\n")
 		if text == "" {
 			continue
 		}
@@ -142,8 +154,9 @@ func (a *App) GetTurnEditsDiff(threadID string, turnIndex int) (string, error) {
 		combined.WriteString(text)
 		combined.WriteByte('\n')
 		if combined.Len() > maxTurnEditsDiffBytes {
-			return "", fmt.Errorf("%s: turn %d exceeds %d bytes — open its edits individually", action, turnIndex, maxTurnEditsDiffBytes)
+			return TurnEditsDiff{}, fmt.Errorf("%s: turn %d exceeds %d bytes — open its edits individually", action, turnIndex, maxTurnEditsDiffBytes)
 		}
+		spans = append(spans, a.loadPersistedPatchSpans(patch.PayloadID)...)
 	}
-	return combined.String(), nil
+	return TurnEditsDiff{Data: combined.String(), PatchSpans: spans}, nil
 }

@@ -191,3 +191,51 @@ func TestHighlightGuardsShutdown(t *testing.T) {
 		t.Error("HighlightPatchWithContext should refuse during shutdown")
 	}
 }
+
+func TestHighlightPatchWithContextEditsScope(t *testing.T) {
+	app := newTestAppWithStore(t)
+	workspace := t.TempDir()
+	thread := testThread("thread-highlight-edits")
+	thread.WorkspacePath = workspace
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	// The post-edit file state: matches testDocstringPatch's new side.
+	fileContent := "def handler(request):\n" +
+		"    \"\"\"Docstring prose already open.\n" +
+		"    New line with for and while keywords.\n" +
+		"    Another prose line.\n" +
+		"    \"\"\"\n"
+	if err := os.WriteFile(filepath.Join(workspace, "route.py"), []byte(fileContent), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	res, err := app.HighlightPatchWithContext(thread.ID, HighlightPatchContextRequest{
+		Scope: "edits",
+		Path:  "route.py",
+		Patch: testDocstringPatch,
+	})
+	if err != nil {
+		t.Fatalf("HighlightPatchWithContext(edits) error = %v", err)
+	}
+	if !res.Primed {
+		t.Fatal("matching workspace must produce a primed result")
+	}
+
+	// Drift the docstring region: verification fails and the result
+	// degrades to unprimed spans (never wrong colors), still no error.
+	if err := os.WriteFile(filepath.Join(workspace, "route.py"), []byte("completely different\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(drift) error = %v", err)
+	}
+	drifted, err := app.HighlightPatchWithContext(thread.ID, HighlightPatchContextRequest{
+		Scope: "edits",
+		Path:  "route.py",
+		Patch: testDocstringPatch,
+	})
+	if err != nil {
+		t.Fatalf("HighlightPatchWithContext(drifted) error = %v", err)
+	}
+	if drifted.Primed {
+		t.Fatal("drifted workspace must not produce a primed result")
+	}
+}
