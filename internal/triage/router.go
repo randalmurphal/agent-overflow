@@ -44,11 +44,11 @@ type TurnMetrics struct {
 
 // Router classifies provider events and routes them.
 type Router struct {
-	store                   *store.Store
-	emit                    func(eventName string, data any) // wraps app.Event.Emit
-	tracer                  trace.Tracer
-	metrics                 TurnMetrics
-	mu                      sync.Mutex
+	store   *store.Store
+	emit    func(eventName string, data any) // wraps app.Event.Emit
+	tracer  trace.Tracer
+	metrics TurnMetrics
+	mu      sync.Mutex
 	// flushAnchorLocks serializes, PER THREAD, every mutation of that
 	// thread's pending-send state that pairs with a store write: the
 	// echo-time pop + attach/deferred-persist (handleUserText), the
@@ -295,12 +295,6 @@ type Router struct {
 	// when persisting a running row; cleared after the flip completes
 	// or when the turn closes via clearOpenTurn / CleanupThread.
 	openAPIRetryRows map[string]bool
-	// pendingToolPaths stages workspace paths from mutating tool starts until
-	// the matching successful completion arrives. Keyed by
-	// `<threadID>|<itemID>`. Failed/denied tools drop their staged paths so a
-	// later conversation+files revert does not restore files the agent never
-	// successfully changed.
-	pendingToolPaths map[string][]string
 	// eventHook is a test-only seam: when set, the Router invokes it for
 	// every Handle call AFTER the routing switch runs. Production code
 	// never sets a hook (the call site in Handle is nil-checked so the
@@ -521,7 +515,6 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		codexBackground:            make(map[string]*codexBackgroundState),
 		terminalInteractionSeq:     make(map[string]int),
 		openAPIRetryRows:           make(map[string]bool),
-		pendingToolPaths:           make(map[string][]string),
 		pendingByThread:            make(map[string][]pendingSend),
 		flushAnchorLocks:           make(map[string]*sync.Mutex),
 		drainLocks:                 make(map[string]*sync.Mutex),
@@ -796,7 +789,6 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	// content, turn boundaries, terminal interactions, or matching command
 	// completion.
 	if r.observeCodexToolStart(evt) {
-		r.stageToolPaths(evt)
 		return r.emitInline(evt)
 	}
 	// Lifecycle row first so the file-change / command-mutation helpers
@@ -812,7 +804,6 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	if err := r.capturePendingCommandInlineDiff(evt); err != nil {
 		return err
 	}
-	r.stageToolPaths(evt)
 	return r.emitInline(evt)
 }
 
@@ -857,75 +848,8 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	if err := r.observeCodexToolComplete(evt); err != nil {
 		return err
 	}
-	r.settleToolPaths(evt)
 	r.maybeFlushQueueAtBoundary(evt.ThreadID)
 	return r.emitInline(evt)
-}
-
-// stageToolPaths records candidate paths from a mutating tool start. The paths
-// are only made durable after the matching successful completion, which avoids
-// restoring denied/failed edits on a later conversation+files revert.
-func (r *Router) stageToolPaths(evt provider.ProviderEvent) {
-	raw := extractToolPaths(evt)
-	if len(raw) == 0 || evt.ItemID == "" {
-		return
-	}
-	r.mu.Lock()
-	r.pendingToolPaths[evt.ThreadID+"|"+evt.ItemID] = raw
-	r.mu.Unlock()
-}
-
-func (r *Router) settleToolPaths(evt provider.ProviderEvent) {
-	if evt.ItemID == "" {
-		return
-	}
-	key := evt.ThreadID + "|" + evt.ItemID
-	r.mu.Lock()
-	raw := r.pendingToolPaths[key]
-	delete(r.pendingToolPaths, key)
-	r.mu.Unlock()
-	if !toolCallSucceeded(evt) {
-		return
-	}
-	if len(raw) == 0 && isCodexFileChangeItem(evt.ItemType) {
-		raw = extractToolPaths(evt)
-	}
-	if len(raw) == 0 {
-		return
-	}
-	thread, err := r.store.GetThread(evt.ThreadID)
-	if err != nil {
-		log.Printf("triage: track tool paths load thread %s: %v", evt.ThreadID, err)
-		turnIndex, _ := r.currentTurnIndex(evt.ThreadID)
-		r.emit("checkpoint:error", map[string]any{
-			"threadId":  evt.ThreadID,
-			"turnIndex": turnIndex,
-			"error":     err.Error(),
-		})
-		return
-	}
-	paths := normalizeWorkspaceRelativePaths(raw, thread.WorkspacePath)
-	if len(paths) == 0 {
-		return
-	}
-	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
-	if err != nil {
-		log.Printf("triage: track tool paths current turn thread=%s item=%s: %v", evt.ThreadID, evt.ItemID, err)
-		r.emit("checkpoint:error", map[string]any{
-			"threadId":  evt.ThreadID,
-			"turnIndex": 0,
-			"error":     err.Error(),
-		})
-		return
-	}
-	if err := r.store.UpsertTrackedFiles(evt.ThreadID, turnIndex, paths); err != nil {
-		log.Printf("triage: track tool paths thread=%s item=%s: %v", evt.ThreadID, evt.ItemID, err)
-		r.emit("checkpoint:error", map[string]any{
-			"threadId":  evt.ThreadID,
-			"turnIndex": turnIndex,
-			"error":     err.Error(),
-		})
-	}
 }
 
 // handleInit reacts to a wire `system/init` envelope (Claude only — Codex

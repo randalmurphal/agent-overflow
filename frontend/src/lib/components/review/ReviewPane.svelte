@@ -149,9 +149,9 @@
     void review.setScope(value);
   }
 
-  function setCheckpoint(value: string): void {
+  function setCommit(value: string): void {
     if (!review) return;
-    void review.selectCheckpoint(value || null);
+    void review.selectCommit(value || null);
   }
 
   function setBaseBranch(value: string): void {
@@ -174,7 +174,7 @@
   }
 
   function isReviewScope(value: string): value is ReviewScope {
-    return value === 'turn' || value === 'session' || value === 'workspace' || value === 'branch' || value === 'pr';
+    return value === 'workspace' || value === 'branch' || value === 'pr';
   }
 
   function commentById(commentId: string): DiffReviewComment | null {
@@ -229,7 +229,7 @@
       wasLoading = loading;
     });
   });
-  const WORKTREE_SCOPES: readonly ReviewScope[] = ['workspace', 'session', 'branch'];
+  const WORKTREE_SCOPES: readonly ReviewScope[] = ['workspace', 'branch'];
   const diffStale = $derived(
     !!review && !review.loading && !review.conflictView
       && WORKTREE_SCOPES.includes(review.scope)
@@ -249,8 +249,6 @@
       disabled={!review}
     >
       {#if ctx.workspacePath}
-        <option value="turn">Turn</option>
-        <option value="session">Session</option>
         <option value="workspace">Workspace</option>
         <option value="branch">Branch</option>
       {/if}
@@ -277,18 +275,18 @@
       </select>
     {/if}
 
-    {#if review?.scope === 'turn'}
+    {#if review && (review.scope === 'branch' || review.scope === 'pr') && review.commits.length > 0}
       <select
         class="min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
-        aria-label="Turn checkpoint"
-        data-testid="review-checkpoint-select"
-        value={review.selectedCheckpointUserItemId ?? ''}
-        onchange={(event) => setCheckpoint(event.currentTarget.value)}
+        aria-label="Commit"
+        data-testid="review-commit-select"
+        value={review.selectedCommitSHA ?? ''}
+        onchange={(event) => setCommit(event.currentTarget.value)}
         disabled={review.loading}
       >
-        <option value="">Latest</option>
-        {#each review.checkpoints as checkpoint (checkpoint.userItemId)}
-          <option value={checkpoint.userItemId}>Turn {checkpoint.turnIndex}</option>
+        <option value="">All commits</option>
+        {#each review.commits as commit (commit.sha)}
+          <option value={commit.sha}>{commit.shortSha} {commit.subject}</option>
         {/each}
       </select>
     {/if}

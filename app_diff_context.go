@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	"agent-overflow/internal/checkpoint"
+	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/workspacepath"
 )
 
@@ -18,14 +18,14 @@ import (
 // NEW side (expanded context is unchanged on both sides, so the new
 // side is the only source needed). Scope mirrors the review pane's
 // scope selector; the extra fields disambiguate the new-side source
-// where the scope alone can't: UserItemID for turn scope (the
-// checkpoint the loaded diff targets), HeadSHA for pr scope (the
-// fetched head commit).
+// where the scope alone can't: CommitSHA for commit scope (a selected
+// commit in the workspace repo), HeadSHA for pr scope (the fetched
+// head commit).
 type DiffContextRequest struct {
-	Scope      string `json:"scope"`
-	UserItemID string `json:"userItemId"`
-	HeadSHA    string `json:"headSHA"`
-	Path       string `json:"path"`
+	Scope     string `json:"scope"`
+	CommitSHA string `json:"commitSHA"`
+	HeadSHA   string `json:"headSHA"`
+	Path      string `json:"path"`
 	// 1-based inclusive line range on the new side.
 	StartLine int `json:"startLine"`
 	EndLine   int `json:"endLine"`
@@ -83,7 +83,7 @@ func (a *App) GetDiffContextLines(threadID string, req DiffContextRequest) (Diff
 // probe worth an extra process).
 func (a *App) diffContextContent(action, threadID string, req DiffContextRequest, maxBytes int64) (string, error) {
 	switch req.Scope {
-	case "workspace", "branch", "session":
+	case "workspace", "branch":
 		// These scopes diff against the working tree — the new side is
 		// the file on disk, uncommitted edits included.
 		thread, err := a.store.GetThread(threadID)
@@ -103,30 +103,39 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 			return "", fmt.Errorf("%s: %s: %w", action, rel, err)
 		}
 		return content, nil
-	case "turn":
-		// Turn diffs are checkpoint-ref → checkpoint-ref; the new side
-		// is the target checkpoint's commit, which can lag the worktree.
-		thread, target, err := a.loadCheckpointForUserItem(action, threadID, req.UserItemID)
+	case "commit":
+		// Commit diffs are parent → commit; the new side is the
+		// selected commit's tree, which can lag the worktree.
+		thread, err := a.store.GetThread(threadID)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("%s: %w", action, err)
 		}
-		workspace, err := checkpoint.ValidateWorkspaceMatch(action, thread.WorkspacePath, target.WorkspacePath)
+		_, workspace, err := a.resolveGitPaths(thread)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("%s: %w", action, err)
 		}
-		content, err := a.checkpointStore().ShowFileAtRef(context.Background(), workspace, target.RefName, req.Path)
+		sha := strings.TrimSpace(req.CommitSHA)
+		if sha == "" {
+			return "", fmt.Errorf("%s: commit SHA is required", action)
+		}
+		content, err := gitdiff.ShowFileAtCommit(context.Background(), workspace, sha, req.Path)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", action, err)
 		}
 		return capContent(action, req.Path, content, maxBytes)
 	case "pr":
 		// The fetched head commit is present locally after GetPRDiff's
-		// FetchRefOID; API-only PR threads have no clone to read from.
+		// FetchRefOID (and with it every commit the PR carries);
+		// API-only PR threads have no clone to read from. A selected
+		// per-commit diff reads that commit's tree instead of the head.
 		workspace, ok := a.localCloneWorkspace(threadID)
 		if !ok {
 			return "", errors.New("expanding context requires a local clone")
 		}
-		sha := strings.TrimSpace(req.HeadSHA)
+		sha := strings.TrimSpace(req.CommitSHA)
+		if sha == "" {
+			sha = strings.TrimSpace(req.HeadSHA)
+		}
 		if sha == "" {
 			return "", fmt.Errorf("%s: head SHA is required", action)
 		}

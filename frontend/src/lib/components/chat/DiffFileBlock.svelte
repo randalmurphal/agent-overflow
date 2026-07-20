@@ -57,7 +57,6 @@
      *  override together with `file.path`; without it the toggle
      *  falls back to block-local state. */
     itemId?: string;
-    turnIndex?: number;
     workspacePath?: string;
     /** Tool name the file edit originated from (Edit / Write /
      *  MultiEdit / NotebookEdit / fileChange). Drives the icon +
@@ -79,7 +78,6 @@
     payloadId,
     threadId,
     itemId,
-    turnIndex,
     workspacePath,
     toolName,
     createdAt,
@@ -91,7 +89,7 @@
   let visibleRows = $derived(inlineRows.rows);
   let hasBody = $derived(visibleRows.length > 0);
   let isLong = $derived(inlineRows.hasOverflow);
-  let canPromoteToReview = $derived(pane !== undefined && turnIndex !== undefined);
+  let canPromoteToReview = $derived(pane !== undefined);
   let shouldShowFullCTA = $derived(canPromoteToReview && (isLong || hasMoreDiffContent));
   let maxLineNo = $derived(inlineRows.maxLineNo);
   let gutterChars = $derived(Math.max(2, String(maxLineNo).length));
@@ -157,16 +155,16 @@
   });
 
   function openReview(event: MouseEvent | KeyboardEvent): void {
-    if (!pane || turnIndex === undefined) return;
+    if (!pane) return;
     if (event && 'stopPropagation' in event) event.stopPropagation();
-    openReviewForItem(pane, { turnIndex, filePath: file.path });
+    openReviewForItem(pane, { filePath: file.path });
   }
 
   function onHeaderClick(event: MouseEvent): void {
     if (!isPromoteModifier(event)) return;
-    if (!pane || turnIndex === undefined) return;
+    if (!pane) return;
     event.preventDefault();
-    openReviewForItem(pane, { turnIndex, filePath: file.path });
+    openReviewForItem(pane, { filePath: file.path });
   }
 
   function onToggle(event: MouseEvent): void {

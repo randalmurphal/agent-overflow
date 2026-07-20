@@ -130,7 +130,7 @@ func TestPromotedQuietFlushEcho_StampsProviderOrderBoundary(t *testing.T) {
 	// End to end: reverting at the promoted row keeps the interrupted tail
 	// (provider-order before the attachment) and cuts the response
 	// (provider-order after it).
-	if _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
+	if err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	items, err := st.ListItems("t1")
@@ -1618,7 +1618,7 @@ func TestPromotedEchoBoundary_CoversRowsDeferredBehindMidSettleStream(t *testing
 	if err := router.persistItem(responseRow, nil); err != nil {
 		t.Fatalf("persist response: %v", err)
 	}
-	if _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
+	if err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, found, _ := st.GetThreadItem("t1", "tool:0:1"); !found {
@@ -1629,15 +1629,14 @@ func TestPromotedEchoBoundary_CoversRowsDeferredBehindMidSettleStream(t *testing
 	}
 }
 
-// TestEchoBoundaryCheckpoint_CapturedOnFailureNotReplacedOnRetry pins
+// TestEchoBoundaryAnchor_RecordedOnFailureNotReplacedOnRetry pins
 // R10-2 (round 10): when a flush echo's write fails pre-durability, the
-// confirmed-hook checkpoint is captured RIGHT THEN against the existing
-// row — the echo is the consumption boundary, and by retry or
-// session-death time the response has moved the workspace. The retry's
-// success-path hook must then be skipped so the true-boundary ref
-// stands. Deferred shapes whose row never persisted stay honestly
-// checkpoint-less (the checkpoint row needs the item FK).
-func TestEchoBoundaryCheckpoint_CapturedOnFailureNotReplacedOnRetry(t *testing.T) {
+// confirmed-hook anchor is recorded RIGHT THEN against the existing
+// row — the echo is the consumption boundary. The retry's success-path
+// hook must then be skipped so the boundary-time record stands.
+// Deferred shapes whose row never persisted stay honestly anchor-less
+// (the anchor row needs the item FK).
+func TestEchoBoundaryAnchor_RecordedOnFailureNotReplacedOnRetry(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	var hookRows []store.Item
@@ -1663,16 +1662,16 @@ func TestEchoBoundaryCheckpoint_CapturedOnFailureNotReplacedOnRetry(t *testing.T
 		QuietItem: &quietRow, ExpectedProviderItemID: "ao-uuid-1",
 		InterruptedTurnIndex: -1, EchoPromotedBoundary: -1,
 	}
-	router.captureEchoBoundaryCheckpoint("t1", &entry)
+	router.recordEchoBoundaryAnchor("t1", &entry)
 	if len(hookRows) != 1 || hookRows[0].ID != "user:0:flush:1" {
-		t.Fatalf("hook rows after failure capture = %+v, want the quiet row once", hookRows)
+		t.Fatalf("hook rows after failure record = %+v, want the quiet row once", hookRows)
 	}
-	if !entry.CheckpointCapturedAtEcho {
-		t.Fatal("CheckpointCapturedAtEcho not set after capture")
+	if !entry.AnchorRecordedAtEcho {
+		t.Fatal("AnchorRecordedAtEcho not set after record")
 	}
-	router.captureEchoBoundaryCheckpoint("t1", &entry)
+	router.recordEchoBoundaryAnchor("t1", &entry)
 	if len(hookRows) != 1 {
-		t.Fatalf("hook rows after repeated capture = %d, want still 1", len(hookRows))
+		t.Fatalf("hook rows after repeated record = %d, want still 1", len(hookRows))
 	}
 
 	// Deferred shape: row not in the store — no capture, no flag.
@@ -1685,13 +1684,13 @@ func TestEchoBoundaryCheckpoint_CapturedOnFailureNotReplacedOnRetry(t *testing.T
 		AOItemID: "user:1:flush:1", QueueItemID: "queue:q2", TurnIndex: 1,
 		DeferredItem: &deferredRow, InterruptedTurnIndex: -1, EchoPromotedBoundary: -1,
 	}
-	router.captureEchoBoundaryCheckpoint("t1", &deferredEntry)
-	if len(hookRows) != 1 || deferredEntry.CheckpointCapturedAtEcho {
-		t.Fatalf("deferred capture = (rows %d, flag %v), want no capture for a missing row", len(hookRows), deferredEntry.CheckpointCapturedAtEcho)
+	router.recordEchoBoundaryAnchor("t1", &deferredEntry)
+	if len(hookRows) != 1 || deferredEntry.AnchorRecordedAtEcho {
+		t.Fatalf("deferred record = (rows %d, flag %v), want no record for a missing row", len(hookRows), deferredEntry.AnchorRecordedAtEcho)
 	}
 
 	// Retry: the reinserted entry carries the flag; the successful echo
-	// must skip the success-path hook so the boundary ref stands.
+	// must skip the success-path hook so the boundary-time record stands.
 	router.reinsertPendingSendHead("t1", entry)
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: "t1", Content: "queued text",
@@ -1874,7 +1873,7 @@ func TestSelfHealUnanchoredBumpFailure_MarksBoundary(t *testing.T) {
 
 	// End to end: revert at the healed message keeps the pre-echo output
 	// (provider-order BEFORE the attachment) and cuts the response.
-	if _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
+	if err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, found, _ := st.GetThreadItem("t1", "tool:0:1"); !found {
@@ -1966,7 +1965,7 @@ func TestRebumpOverDrained_PreservesAnchoredSiblingFIFO(t *testing.T) {
 	// Revert at q1: the drained completion (interrupted tail) survives,
 	// the sibling q2 — consumed after q1 in the provider transcript — is
 	// cut, matching the session slice.
-	if _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
+	if err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, found, _ := st.GetThreadItem("t1", "tool:0:1"); !found {
@@ -2080,7 +2079,7 @@ func TestFailedSiblingRebump_RepairedBySiblingEcho(t *testing.T) {
 	// The repaired layout restores the revert semantics the failed
 	// re-bump broke: a revert at q1 cuts q2 (consumed later in the
 	// provider transcript) and keeps the drained completion.
-	if _, err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
+	if err := st.DeleteConversationFromItem("t1", "user:0:flush:1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, found, _ := st.GetThreadItem("t1", "tool:0:1"); !found {

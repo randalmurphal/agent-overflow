@@ -51,7 +51,6 @@ function readyPane(threadId = 'thread-1'): ReturnType<typeof createThreadPane> {
     userInputs: [],
   }));
   setBindingMock('ListRecentTurns', async () => []);
-  setBindingMock('ListThreadCheckpoints', async () => []);
   setBindingMock('ListItems', async () => []);
   setBindingMock('ListPayloadMetas', async () => []);
   setBindingMock('ListThreadSliceAround', async () => ({

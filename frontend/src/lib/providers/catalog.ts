@@ -24,7 +24,7 @@ export interface ProviderEffortOption {
 // UI must hide or disable when the active thread's provider doesn't support it.
 // claude-tui drives the real interactive TUI from outside the process, so the
 // affordances AO mediates for the headless providers (runtime-mode selection,
-// plan toggle, fork, revert-to-checkpoint, composer attachments, MCP picker)
+// plan toggle, fork, composer attachments, MCP picker)
 // have no meaning there — the human reaches them inside the terminal via
 // take-control instead. Default (unknown provider) is "supported" so only an
 // explicit `false` gates an affordance off; see `providerSupports`.
@@ -39,11 +39,8 @@ export interface ProviderCapabilities {
   runtimeModes: boolean;
   // chat ↔ plan interaction-mode toggle. false → chat only (no plan mode).
   planMode: boolean;
-  // Fork-thread and fork-and-revert affordances.
+  // Fork-thread and fork-from-message affordances.
   fork: boolean;
-  // Revert-to-message / restore-checkpoint affordances (viewing a diff is not
-  // gated — only the state-mutating restore is).
-  revert: boolean;
   // Composer image/file attachments (button, paste, drag-drop).
   attachments: boolean;
   // MCP server selection + status picker.
@@ -54,7 +51,6 @@ const FULL_CAPABILITIES: ProviderCapabilities = {
   runtimeModes: true,
   planMode: true,
   fork: true,
-  revert: true,
   attachments: true,
   mcp: true,
 };
@@ -68,7 +64,6 @@ const TUI_CAPABILITIES: ProviderCapabilities = {
   runtimeModes: false,
   planMode: false,
   fork: false,
-  revert: false,
   attachments: true,
   mcp: false,
 };

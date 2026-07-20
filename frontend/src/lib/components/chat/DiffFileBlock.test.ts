@@ -125,9 +125,6 @@ function fakePane(): Partial<ThreadPane> {
   return {
     paneId: 'pane-1',
     threadId: 'thread-1',
-    checkpoints: {
-      checkpoints: [{ userItemId: 'user-1', turnIndex: 1 }],
-    },
     thread: { id: 'thread-1', workspacePath: '/tmp/workspace' } as ThreadPane['thread'],
   } as Partial<ThreadPane>;
 }
@@ -234,7 +231,7 @@ describe('<DiffFileBlock>', () => {
     const pane = fakePane() as ThreadPane;
     const file = makeLongPatchFile(16);
     const { getByTestId } = render(DiffFileBlock, {
-      props: { pane, file, payloadId: 'p-long', threadId: 'thread-1', turnIndex: 1 },
+      props: { pane, file, payloadId: 'p-long', threadId: 'thread-1' },
     });
     expect(getByTestId('diff-file-fade')).toBeInTheDocument();
     const cta = getByTestId('diff-file-show-full');
@@ -245,8 +242,7 @@ describe('<DiffFileBlock>', () => {
     expect(bodyText).not.toContain('line 16;');
     await fireEvent.click(cta);
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
-      scope: 'turn',
-      checkpointUserItemId: 'user-1',
+      scope: 'workspace',
       filePath: 'src/big.ts',
     });
   });
@@ -287,16 +283,15 @@ describe('<DiffFileBlock>', () => {
     expect(queryByTestId('diff-file-show-full')).toBeNull();
   });
 
-  it('clicking the review trigger opens the turn checkpoint with filePath', async () => {
+  it('clicking the review trigger opens workspace review with filePath', async () => {
     const pane = fakePane() as ThreadPane;
     const file = makePatchFile();
     const { getByTestId } = render(DiffFileBlock, {
-      props: { pane, file, payloadId: 'p-1', threadId: 'thread-1', turnIndex: 1 },
+      props: { pane, file, payloadId: 'p-1', threadId: 'thread-1' },
     });
     await fireEvent.click(getByTestId('diff-file-open-sidebar'));
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
-      scope: 'turn',
-      checkpointUserItemId: 'user-1',
+      scope: 'workspace',
       filePath: 'src/foo.ts',
     });
   });
@@ -305,12 +300,11 @@ describe('<DiffFileBlock>', () => {
     const pane = fakePane() as ThreadPane;
     const file = makeLongPatchFile(500, 'src/long.ts');
     const { getByTestId } = render(DiffFileBlock, {
-      props: { pane, file, payloadId: 'p-2', threadId: 'thread-1', turnIndex: 1 },
+      props: { pane, file, payloadId: 'p-2', threadId: 'thread-1' },
     });
     await fireEvent.click(getByTestId('diff-file-show-full'));
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
-      scope: 'turn',
-      checkpointUserItemId: 'user-1',
+      scope: 'workspace',
       filePath: 'src/long.ts',
     });
   });
@@ -319,12 +313,11 @@ describe('<DiffFileBlock>', () => {
     const pane = fakePane() as ThreadPane;
     const file = makePatchFile();
     const { getByTestId } = render(DiffFileBlock, {
-      props: { pane, file, payloadId: 'p-3', threadId: 'thread-1', turnIndex: 1 },
+      props: { pane, file, payloadId: 'p-3', threadId: 'thread-1' },
     });
     await fireEvent.click(getByTestId('diff-file-header'), { metaKey: true });
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
-      scope: 'turn',
-      checkpointUserItemId: 'user-1',
+      scope: 'workspace',
       filePath: 'src/foo.ts',
     });
   });
@@ -333,7 +326,7 @@ describe('<DiffFileBlock>', () => {
     const pane = fakePane() as ThreadPane;
     const file = makePatchFile();
     const { getByTestId } = render(DiffFileBlock, {
-      props: { pane, file, payloadId: 'p-4', threadId: 'thread-1', turnIndex: 1 },
+      props: { pane, file, payloadId: 'p-4', threadId: 'thread-1' },
     });
     await fireEvent.click(getByTestId('diff-file-header'));
     expect(openReviewCompanion).not.toHaveBeenCalled();
@@ -420,7 +413,6 @@ describe('<DiffFileBlock>', () => {
         file: makePatchFile(),
         payloadId: 'p-time',
         threadId: 'thread-1',
-        turnIndex: 1,
         toolName: 'Edit',
         createdAt,
       },
@@ -540,7 +532,7 @@ describe('<DiffFileBlock>', () => {
       const pane = fakePane() as ThreadPane;
       const file = makeLongPatchFile(16);
       const { getByTestId, queryByTestId } = render(DiffFileBlock, {
-        props: { pane, file, payloadId: 'p-expand', threadId: 'thread-1', turnIndex: 1 },
+        props: { pane, file, payloadId: 'p-expand', threadId: 'thread-1' },
       });
       expect(queryByTestId('diff-file-body')).toBeNull();
 
@@ -580,7 +572,7 @@ describe('<DiffFileBlock>', () => {
       const pane = fakePane() as ThreadPane;
       const file = makePatchFile();
       const { getByTestId } = render(DiffFileBlock, {
-        props: { pane, file, payloadId: 'p-mod-toggle', threadId: 'thread-1', turnIndex: 1 },
+        props: { pane, file, payloadId: 'p-mod-toggle', threadId: 'thread-1' },
       });
 
       await fireEvent.click(getByTestId('diff-file-toggle'), { metaKey: true });
@@ -588,8 +580,7 @@ describe('<DiffFileBlock>', () => {
       // One promote (the toggle bails and lets the wrapper handle it),
       // and the card stays expanded.
       expect(openReviewCompanion).toHaveBeenCalledExactlyOnceWith('pane-1', 'thread-1', {
-        scope: 'turn',
-        checkpointUserItemId: 'user-1',
+        scope: 'workspace',
         filePath: 'src/foo.ts',
       });
       expect(getByTestId('diff-file-body')).toBeInTheDocument();

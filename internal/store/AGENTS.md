@@ -25,9 +25,9 @@ root `CLAUDE.md` principle 3.
   multi-agent discussion persistence.
 - `attachments.go` — attachment metadata (bytes on disk are the
   `internal/attachment` package's problem).
-- `checkpoints.go` — message-checkpoint row/ref bookkeeping plus
-  `thread_tracked_files`; the ref-level mechanics live in
-  `internal/checkpoint`.
+- `message_anchors.go` — per-real-user-message provider correlation
+  rows (`turn_index` + Claude wire uuids) backing fork-from-message
+  and revert-on-interrupt. Pure SQLite; no git side.
 - `drafts.go` — composer drafts per thread.
 - `chat_bar.go` — composer favorites and last-used model profile seeds.
 - `search.go` — case-insensitive substring search across thread titles

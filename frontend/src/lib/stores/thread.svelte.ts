@@ -1,7 +1,6 @@
 import { tick } from 'svelte';
 import type { Item, Project, Thread } from '../types/models';
 import { asProviderID } from '../types/providers';
-import type { Checkpoint } from '../types/checkpoint';
 import type {
   ApprovalRequest,
   ContextWindow,
@@ -13,12 +12,6 @@ import type {
   SubagentNotificationEvent,
   UserInputRequest,
 } from '../types/events';
-import type {
-  CheckpointCapturedEvent,
-  CheckpointErrorEvent,
-  CheckpointRevertedEvent,
-  CheckpointUnavailableEvent,
-} from '../types/checkpoint';
 import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
 import type {
   ActiveOptionSet,
@@ -29,7 +22,6 @@ import {
   CloseThreadTerminals,
   CreateThread,
   ListRecentTurns,
-  ListThreadCheckpoints,
   MoveThreadTerminals,
   SwitchThread,
   AutoResumeThread,
@@ -44,7 +36,6 @@ import {
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 
 import { addToast } from './toast.svelte';
-import { createThreadCheckpointState, type ThreadCheckpointState } from './threadCheckpoints.svelte';
 import { createGitStatusSlot, type GitStatusSlot } from './gitStatus.svelte';
 import {
   closeCompanion,
@@ -301,14 +292,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // fire-once FOCUS_TERMINAL_EVENT, whose listener didn't exist yet when the
   // event fired on a cold first open (the lazy import hadn't resolved).
   let pendingTerminalFocus = $state(false);
-  // Checkpoint bookkeeping is per-pane and resets on thread switch so
-  // per-message checkpoint affordances never flash stale availability.
-  const checkpoints: ThreadCheckpointState = createThreadCheckpointState();
 
   // Live git-status for this pane's workspace. Owns the single gitwatch
   // subscription (driven by ChatHeaderActions via attach); GitActionsControl
-  // and the header diff/PR badges read it. Reset on thread switch like
-  // checkpoints so a stale count never flashes for the incoming thread.
+  // and the header diff/PR badges read it. Reset on thread switch so a
+  // stale count never flashes for the incoming thread.
   const gitStatus: GitStatusSlot = createGitStatusSlot();
 
   const channelState = createThreadChannelState();
@@ -365,8 +353,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * entry so a slow paged fetch from thread A cannot clobber thread B's
    * items when the user flips between them quickly. Also exposed
    * publicly via the `switchGeneration` getter so MessageTimeline's
-   * `$effect.pre` can detect same-thread re-switch (the
-   * revert-to-checkpoint flow) and re-run its restore reset path —
+   * `$effect.pre` can detect same-thread re-switch (forced reloads
+   * that mutate items in place) and re-run its restore reset path —
    * must be `$state` for that effect dependency to track.
    */
   let switchGeneration = $state(0);
@@ -688,18 +676,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // (hydrateSubagentChildren) lives in threadSubagentMemory.ts as
   // `subagentMemory.hydrateChildren`.
 
-  async function refreshCheckpointsForThread(threadID: string): Promise<void> {
-    const checkpointRows = ((await ListThreadCheckpoints(threadID)) ??
-      []) as Checkpoint[];
-    if (thread?.id !== threadID) return;
-    const sorted = [...checkpointRows].sort((a, b) => a.turnIndex - b.turnIndex);
-    checkpoints.setCheckpoints(sorted);
-  }
-
   /**
    * Snapshot the outgoing thread into the LRU cache (when worth it),
    * and evict its highlight-span cache entries.
-   * Same-thread re-switch (revert-to-checkpoint flows) skips the
+   * Same-thread re-switch skips the
    * snapshot AND force-evicts the cache entry so the incoming load
    * fetches fresh state instead of flashing the stale view through
    * `cache.get`. Streamed events evict inactive-thread cache entries
@@ -742,7 +722,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     }
     if (sameThreadReswitch) {
       threadItemCache.evict(incomingThreadId);
-      // Revert-to-checkpoint mutates this thread's items in place; its
+      // A same-thread re-switch mutates this thread's items in place; its
       // measured-size priors are now stale (the structure/content key would
       // also refuse them, but evict to free them promptly — same as the item cache).
       clearThreadSizePriors(incomingThreadId);
@@ -757,9 +737,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
   /**
    * Wipe pane-scoped state to the empty/default shape for the incoming
-   * thread: transient fields, turn-lifecycle pointers, live-todo state,
-   * and checkpoint bookkeeping. Pure mutation of pane state — no cache or
-   * outgoing-thread side effects.
+   * thread: transient fields, turn-lifecycle pointers, and live-todo
+   * state. Pure mutation of pane state — no cache or outgoing-thread
+   * side effects.
    */
   function resetIncomingPaneState(newThread: Thread): void {
     pendingInteractiveState.clear();
@@ -787,7 +767,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     subagentNotifications = [];
 
     liveTodoState.resetForThread(newThread.id);
-    checkpoints.clearForThread();
     gitStatus.reset();
   }
 
@@ -901,8 +880,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // Companion panes (plan / design-preview / review / take-control)
     // belong to the thread they were opened for. Switching this pane to
     // a DIFFERENT thread closes them instead of retargeting them; a
-    // same-thread re-switch (revert-to-checkpoint reload) keeps them
-    // open. Closing
+    // same-thread re-switch keeps them open. Closing
     // happens synchronously, before any effect flush sees the new
     // thread, so a mounted companion body never re-renders against a
     // thread it wasn't opened for.
@@ -1048,22 +1026,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       },
     );
 
-    const checkpointsPromise = withGenGuard(
-      'load checkpoints',
-      gen,
-      () => refreshCheckpointsForThread(newThread.id),
-      () => {},
-      (err) => {
-        checkpoints.setError(`Failed to load checkpoints: ${errString(err)}`);
-      },
-    );
-
     await Promise.allSettled([
       switchPromise,
       liveStatePromise,
       loadItemsPromise,
       recentTurnsPromise,
-      checkpointsPromise,
       autoResumePromise,
     ]);
     return { liveStateHydrationConsumed };
@@ -1259,9 +1226,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get showTerminal() {
       return showTerminal;
     },
-    get checkpoints() {
-      return checkpoints;
-    },
     get gitStatus() {
       return gitStatus;
     },
@@ -1282,28 +1246,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         return true;
       }
       return thread?.id === threadID;
-    },
-    refreshCheckpoints: refreshCheckpointsForThread,
-    applyCheckpointCaptured(payload: CheckpointCapturedEvent | null): void {
-      if (!payload || payload.threadId !== thread?.id) return;
-      void refreshCheckpointsForThread(payload.threadId);
-    },
-    applyCheckpointUnavailable(
-      payload: CheckpointUnavailableEvent | null,
-    ): void {
-      if (!payload || payload.threadId !== thread?.id) return;
-      checkpoints.markUnavailable(payload.reason);
-      checkpoints.setError(
-        'Workspace is not a git repo. Checkpoint diffs are unavailable.',
-      );
-    },
-    applyCheckpointError(payload: CheckpointErrorEvent | null): void {
-      if (!payload || payload.threadId !== thread?.id) return;
-      checkpoints.setError(`Checkpoint failed: ${payload.error}`);
-    },
-    applyCheckpointReverted(payload: CheckpointRevertedEvent | null): void {
-      if (!payload || payload.threadId !== thread?.id) return;
-      void refreshCheckpointsForThread(payload.threadId);
     },
     /**
      * Most recent completed turn, or null if the thread has no settled
@@ -1437,9 +1379,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * Monotonically increasing counter bumped at the top of every
      * `switchThread`, `clear`, `startDraftPlaceholder`, and
      * `adoptMaterializedDraftThread` call. Exposed so consumers can
-     * detect a same-thread re-switch — the path the revert-to-checkpoint
-     * flow takes when it calls `switchThread(currentThread)` to reload
-     * items in place. `pane.threadId` doesn't change on that path, so
+     * detect a same-thread re-switch — the path a forced
+     * `switchThread(currentThread)` reload takes to replace items
+     * in place. `pane.threadId` doesn't change on that path, so
      * any reset logic keyed purely on the thread id (the
      * MessageTimeline restore-effect.pre, in particular) would miss the
      * event and leave stale scroll state (the regression: revert lands
@@ -1651,7 +1593,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // `pagingGeneration` and `scrollToItemRequest.nonce` stay
       // monotonic for the pane's lifetime so no consumer observes a
       // regressed counter.
-      checkpoints.clearForThread();
       gitStatus.reset();
       // Invalidate any in-flight switchThread so its late resolutions can't
       // repopulate the pane we just cleared.

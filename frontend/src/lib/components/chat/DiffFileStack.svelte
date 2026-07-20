@@ -160,7 +160,7 @@
 
   function openFullDiff(): void {
     if (!pane || !payloadId) return;
-    openReviewForItem(pane, { turnIndex: item.turnIndex });
+    openReviewForItem(pane);
   }
 
   function applyMetaToPatchFile(
@@ -194,7 +194,6 @@
     {payloadId}
     threadId={item.threadId}
     itemId={item.id}
-    turnIndex={item.turnIndex}
     workspacePath={paneWorkspacePath(pane)}
     toolName={item.toolName}
     createdAt={item.createdAt}

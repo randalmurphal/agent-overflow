@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -803,13 +802,12 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 	}
 }
 
-func TestSendMessageCapturesCheckpointBeforeEachUserMessage(t *testing.T) {
+func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.checkpoints = checkpoint.NewStore()
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
 
-	workspace := initCheckpointRepo(t)
-	thread := testThread("thread-send-first-checkpoint")
+	workspace := t.TempDir()
+	thread := testThread("thread-send-first-anchor")
 	thread.Provider = string(provider.Claude)
 	thread.WorkspacePath = workspace
 	if err := app.store.CreateThread(thread); err != nil {
@@ -858,33 +856,31 @@ func TestSendMessageCapturesCheckpointBeforeEachUserMessage(t *testing.T) {
 		t.Fatalf("first user item TurnIndex = %d, want 0", userItem.TurnIndex)
 	}
 
-	if _, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, userItem.ID); err != nil || !ok {
-		t.Fatalf("checkpoint for first user item missing after first send: ok=%v err=%v", ok, err)
+	if _, ok, err := app.store.GetMessageAnchor(thread.ID, userItem.ID); err != nil || !ok {
+		t.Fatalf("anchor for first user item missing after first send: ok=%v err=%v", ok, err)
 	}
 
-	writeFile(t, workspace, "agent-output.txt", "created during first turn\n")
 	if err := app.SendMessage(thread.ID, "second turn", nil); err != nil {
 		t.Fatalf("SendMessage(second) error = %v", err)
 	}
-	if _, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, "user:1"); err != nil || !ok {
-		t.Fatalf("checkpoint for second user item missing after second send: ok=%v err=%v", ok, err)
+	if _, ok, err := app.store.GetMessageAnchor(thread.ID, "user:1"); err != nil || !ok {
+		t.Fatalf("anchor for second user item missing after second send: ok=%v err=%v", ok, err)
 	}
 }
 
-// TestSendMessageStampsProviderItemIDOnRowAndCheckpointBeforeEcho pins the
-// send-time-uuid fix. On a fast send→escape the revert fires before
-// Claude's replay echo arrives, and resolveRevertCheckpoint returns the
-// checkpoint as-is when one exists (the git-workspace common case). So the
-// minted uuid must land on BOTH the row meta AND the checkpoint at send
-// time — before any echo — or the revert reads an empty id and drops to
-// the ordinal-walk slice. No provider echo is simulated here: the assertion
+// TestSendMessageStampsProviderItemIDOnRowAndAnchorBeforeEcho pins the
+// send-time-uuid fix. On a fast send→escape the un-send fires before
+// Claude's replay echo arrives, and resolveMessageAnchor returns the
+// anchor as-is when one exists (the common case). So the minted uuid
+// must land on BOTH the row meta AND the anchor at send time — before
+// any echo — or the rollback reads an empty id and drops to the
+// ordinal-walk slice. No provider echo is simulated here: the assertion
 // is precisely the pre-echo state.
-func TestSendMessageStampsProviderItemIDOnRowAndCheckpointBeforeEcho(t *testing.T) {
+func TestSendMessageStampsProviderItemIDOnRowAndAnchorBeforeEcho(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.checkpoints = checkpoint.NewStore()
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
 
-	workspace := initCheckpointRepo(t)
+	workspace := t.TempDir()
 	thread := testThread("thread-send-prestamp-uuid")
 	thread.Provider = string(provider.Claude)
 	thread.WorkspacePath = workspace
@@ -932,12 +928,12 @@ func TestSendMessageStampsProviderItemIDOnRowAndCheckpointBeforeEcho(t *testing.
 		t.Fatalf("user row has no provider_item_id at persist time — send-time pre-stamp did not fire (meta: %q)", userItem.Meta)
 	}
 
-	cp, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, userItem.ID)
+	anchor, ok, err := app.store.GetMessageAnchor(thread.ID, userItem.ID)
 	if err != nil || !ok {
-		t.Fatalf("checkpoint missing after send: ok=%v err=%v", ok, err)
+		t.Fatalf("anchor missing after send: ok=%v err=%v", ok, err)
 	}
-	if cp.ProviderUserMessageID != rowID {
-		t.Fatalf("checkpoint ProviderUserMessageID = %q, want %q (must mirror the pre-stamped row meta so a fast revert keys on the UUID-slice path)", cp.ProviderUserMessageID, rowID)
+	if anchor.ProviderUserMessageID != rowID {
+		t.Fatalf("anchor ProviderUserMessageID = %q, want %q (must mirror the pre-stamped row meta so a fast un-send keys on the UUID-slice path)", anchor.ProviderUserMessageID, rowID)
 	}
 }
 

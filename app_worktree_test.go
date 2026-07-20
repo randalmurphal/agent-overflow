@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/checkpoint"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
@@ -34,7 +33,7 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	rootCheckpointRef := saveWorktreeTestCheckpoint(t, app, thread.ID, repo, "root-before-worktree", "user:0", 0)
+	seedWorktreeTestAnchor(t, app, thread.ID, "root-before-worktree", "user:0", 0)
 
 	worktreePath, err := app.GitCreateWorktree(thread.ID, "feature/worktree")
 	if err != nil {
@@ -68,18 +67,11 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	if stored.Branch != "feature/worktree" {
 		t.Fatalf("stored Branch = %q, want feature/worktree", stored.Branch)
 	}
-	checkpoints, err := app.store.ListCheckpoints(thread.ID)
-	if err != nil {
-		t.Fatalf("ListCheckpoints after create worktree: %v", err)
-	}
-	if len(checkpoints) != 0 {
-		t.Fatalf("checkpoints after create worktree = %d, want 0", len(checkpoints))
-	}
-	if err := testutil.RunGitAllowError(repo, "rev-parse", "--verify", rootCheckpointRef); err == nil {
-		t.Fatalf("root checkpoint ref %s still exists after worktree switch", rootCheckpointRef)
-	}
+	// Message anchors are workspace-independent: switching into the
+	// worktree must keep them.
+	assertThreadMessageAnchorCount(t, app, thread.ID, 1)
 
-	worktreeCheckpointRef := saveWorktreeTestCheckpoint(t, app, thread.ID, worktreePath, "worktree-before-removal", "user:1", 1)
+	seedWorktreeTestAnchor(t, app, thread.ID, "worktree-before-removal", "user:1", 1)
 
 	if err := app.GitRemoveWorktree(thread.ID); err != nil {
 		t.Fatalf("GitRemoveWorktree() error = %v", err)
@@ -101,19 +93,10 @@ func TestGitCreateAndRemoveWorktree(t *testing.T) {
 	if stored.Branch != "main" {
 		t.Fatalf("stored Branch after removal = %q, want main", stored.Branch)
 	}
-	checkpoints, err = app.store.ListCheckpoints(thread.ID)
-	if err != nil {
-		t.Fatalf("ListCheckpoints after remove worktree: %v", err)
-	}
-	if len(checkpoints) != 0 {
-		t.Fatalf("checkpoints after remove worktree = %d, want 0", len(checkpoints))
-	}
-	if err := testutil.RunGitAllowError(repo, "rev-parse", "--verify", worktreeCheckpointRef); err == nil {
-		t.Fatalf("worktree checkpoint ref %s still exists after worktree removal", worktreeCheckpointRef)
-	}
+	assertThreadMessageAnchorCount(t, app, thread.ID, 2)
 }
 
-func TestAttachThreadWorktreeInvalidatesCheckpoints(t *testing.T) {
+func TestAttachThreadWorktreeKeepsMessageAnchors(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
 	testutil.RunGit(t, repo, "branch", "feature/attach")
@@ -122,13 +105,13 @@ func TestAttachThreadWorktreeInvalidatesCheckpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
 	}
-	thread := testThread("thread-attach-worktree-checkpoints")
+	thread := testThread("thread-attach-worktree-anchors")
 	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	checkpointRef := saveWorktreeTestCheckpoint(t, app, thread.ID, repo, "root-before-attach", "user:0", 0)
+	seedWorktreeTestAnchor(t, app, thread.ID, "root-before-attach", "user:0", 0)
 
 	updated, err := app.AttachThreadWorktree(thread.ID, "feature/attach")
 	if err != nil {
@@ -140,10 +123,10 @@ func TestAttachThreadWorktreeInvalidatesCheckpoints(t *testing.T) {
 	if !samePath(updated.WorkspacePath, updated.WorktreePath) || updated.WorktreePath == "" {
 		t.Fatalf("updated workspace/worktree = %q/%q, want attached worktree", updated.WorkspacePath, updated.WorktreePath)
 	}
-	assertThreadCheckpointsInvalidated(t, app, thread.ID, repo, checkpointRef)
+	assertThreadMessageAnchorCount(t, app, thread.ID, 1)
 }
 
-func TestSwitchThreadWorkspaceInvalidatesCheckpoints(t *testing.T) {
+func TestSwitchThreadWorkspaceKeepsMessageAnchors(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)
 
@@ -151,7 +134,7 @@ func TestSwitchThreadWorkspaceInvalidatesCheckpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
 	}
-	thread := testThread("thread-switch-workspace-checkpoints")
+	thread := testThread("thread-switch-workspace-anchors")
 	thread.ProjectID = project.ID
 	thread.WorkspacePath = repo
 	if err := app.store.CreateThread(thread); err != nil {
@@ -164,7 +147,7 @@ func TestSwitchThreadWorkspaceInvalidatesCheckpoints(t *testing.T) {
 	t.Cleanup(func() {
 		_ = app.gitCore().RemoveWorktreeForce(repo, worktreePath, true)
 	})
-	checkpointRef := saveWorktreeTestCheckpoint(t, app, thread.ID, worktreePath, "worktree-before-switch", "user:0", 0)
+	seedWorktreeTestAnchor(t, app, thread.ID, "worktree-before-switch", "user:0", 0)
 
 	updated, err := app.switchThreadWorkspace(thread.ID, repo)
 	if err != nil {
@@ -173,7 +156,7 @@ func TestSwitchThreadWorkspaceInvalidatesCheckpoints(t *testing.T) {
 	if !samePath(updated.WorkspacePath, repo) || updated.WorktreePath != "" {
 		t.Fatalf("updated workspace/worktree = %q/%q, want project root", updated.WorkspacePath, updated.WorktreePath)
 	}
-	assertThreadCheckpointsInvalidated(t, app, thread.ID, repo, checkpointRef)
+	assertThreadMessageAnchorCount(t, app, thread.ID, 1)
 }
 
 func TestGetWorkspaceCurrentDiffUsesLinkedWorktree(t *testing.T) {
@@ -299,7 +282,7 @@ func TestGetBranchBaseDiffMissingBranchErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("GetBranchBaseDiff() error = nil, want missing branch error")
 	}
-	if !strings.Contains(err.Error(), "get branch base diff: checkpoint: merge-base missing-branch HEAD") {
+	if !strings.Contains(err.Error(), "get branch base diff: gitdiff: merge-base missing-branch HEAD") {
 		t.Fatalf("error = %v, want wrapped merge-base context", err)
 	}
 }
@@ -1430,7 +1413,7 @@ func containsWorktree(worktrees []WorktreeListItem, want string) bool {
 	return false
 }
 
-func saveWorktreeTestCheckpoint(t *testing.T, app *App, threadID, workspace, checkpointID, userItemID string, turnIndex int) string {
+func seedWorktreeTestAnchor(t *testing.T, app *App, threadID, summary, userItemID string, turnIndex int) {
 	t.Helper()
 	if err := app.store.InsertItem(store.Item{
 		ID:        userItemID,
@@ -1439,40 +1422,25 @@ func saveWorktreeTestCheckpoint(t *testing.T, app *App, threadID, workspace, che
 		ItemIndex: 0,
 		Kind:      "user_text",
 		Role:      "user",
-		Summary:   checkpointID,
+		Summary:   summary,
 		CreatedAt: time.Now().UnixMilli(),
 	}); err != nil {
 		t.Fatalf("InsertItem(%s): %v", userItemID, err)
 	}
-	ref := checkpoint.ThreadRefPrefix(threadID) + "message/" + checkpointID
-	if err := app.checkpointStore().CaptureRef(t.Context(), workspace, ref); err != nil {
-		t.Fatalf("CaptureRef(%s): %v", ref, err)
-	}
-	if err := app.store.SaveCheckpoint(store.Checkpoint{
-		ID:            checkpointID,
-		ThreadID:      threadID,
-		UserItemID:    userItemID,
-		TurnIndex:     turnIndex,
-		RefName:       ref,
-		CapturedAt:    time.Now().UnixMilli(),
-		WorkspacePath: workspace,
-	}); err != nil {
-		t.Fatalf("SaveCheckpoint(%s): %v", checkpointID, err)
-	}
-	return ref
+	seedMessageAnchor(t, app.store, threadID, userItemID, turnIndex, "", "")
 }
 
-func assertThreadCheckpointsInvalidated(t *testing.T, app *App, threadID, repo, ref string) {
+// assertThreadMessageAnchorCount pins the workspace-change posture:
+// message anchors correlate messages to provider history, not to a
+// workspace, so worktree attach/switch/remove must leave them intact.
+func assertThreadMessageAnchorCount(t *testing.T, app *App, threadID string, want int) {
 	t.Helper()
-	checkpoints, err := app.store.ListCheckpoints(threadID)
+	anchors, err := app.store.ListMessageAnchors(threadID)
 	if err != nil {
-		t.Fatalf("ListCheckpoints(%s): %v", threadID, err)
+		t.Fatalf("ListMessageAnchors(%s): %v", threadID, err)
 	}
-	if len(checkpoints) != 0 {
-		t.Fatalf("checkpoints for %s = %d, want 0", threadID, len(checkpoints))
-	}
-	if err := testutil.RunGitAllowError(repo, "rev-parse", "--verify", ref); err == nil {
-		t.Fatalf("checkpoint ref %s still exists after workspace switch", ref)
+	if len(anchors) != want {
+		t.Fatalf("message anchors for %s = %d, want %d", threadID, len(anchors), want)
 	}
 }
 

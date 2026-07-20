@@ -574,14 +574,14 @@ func (a *App) InterruptTurn(threadID string) error {
 // mark's token, fencing the eager stamp against newer concurrent
 // interrupts and session replacement (round-9, R9-5/R9-6).
 func (a *App) eagerPersistFlushSendsOnInterrupt(threadID string, sess session, interruptedTurn int, stampToken triage.FlushStampToken) {
-	// Checkpoint capture for both paths happens INSIDE the router calls,
-	// under the thread's flush anchor lock, via the confirmed hook. This
-	// is the rows' baseline capture (revert stays offered if the session
-	// dies before the echo); the echo-time hook later replaces the ref
-	// at the consumption boundary (round-7, R7-1). The baseline must
-	// commit before the mutex releases or an echo in the gap stamps the
-	// row against a checkpoint that doesn't exist yet (round-4 review,
-	// CT4-1).
+	// Message-anchor recording for both paths happens INSIDE the router
+	// calls, under the thread's flush anchor lock, via the confirmed
+	// hook. This is the rows' baseline anchor (rollback stays offered if
+	// the session dies before the echo); the echo-time hook later stamps
+	// the provider ids at the consumption boundary (round-7, R7-1). The
+	// baseline must commit before the mutex releases or an echo in the
+	// gap stamps ids onto an anchor that doesn't exist yet (round-4
+	// review, CT4-1).
 	a.triage.PromoteQuietFlushSends(threadID, stampToken)
 
 	persisted := a.triage.EagerPersistDeferredFlushSends(threadID, interruptedTurn, stampToken)

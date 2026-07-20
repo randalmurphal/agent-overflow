@@ -1,3 +1,8 @@
+// Wire shape of one row in the review pane's commit selector
+// (`ListBranchCommits`). Re-exported so feature code doesn't import
+// from the generated bindings tree directly.
+export type { BranchCommit } from '../../../bindings/agent-overflow/models';
+
 export interface GitStatus {
   isRepo: boolean;
   branch: string;

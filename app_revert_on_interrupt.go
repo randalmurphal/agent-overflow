@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -118,17 +117,16 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 		}
 	}
 
-	// Resolve a checkpoint for the provider-revert helpers. When the
-	// at-send capture failed (e.g. workspace is not a git repo), we
-	// synthesize a record carrying just the turn index — Claude
-	// session-fork and Codex fork-at-turn only read TurnIndex.
-	record := a.resolveRevertCheckpoint(threadID, userItem)
+	// Resolve the message anchor for the provider-rollback helpers.
+	// When the at-send record didn't land, we synthesize one from the
+	// item row — Claude session-fork and Codex fork-at-turn read
+	// TurnIndex plus the provider ids the item meta already carries.
+	anchor := a.resolveMessageAnchor("interrupt-and-revert", threadID, userItem)
 
-	err = a.revertConversationLocked(revertConversationLockedArgs{
+	err = a.rollbackConversationLocked(rollbackConversationLockedArgs{
 		thread:       thread,
 		userItem:     userItem,
-		record:       record,
-		mode:         RevertModeConversationOnly,
+		anchor:       anchor,
 		promptDraft:  promptDraft,
 		errorPrefix:  "interrupt-and-revert",
 		markReverted: false,
@@ -193,7 +191,7 @@ func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Ite
 	userCount := 0
 	for _, item := range items {
 		if item.Kind == "user_text" && item.Role == "user" {
-			if checkpoint.IsWireOnlyUserItem(item) {
+			if store.IsWireOnlyUserItem(item) {
 				continue
 			}
 			userItem = item
@@ -255,27 +253,29 @@ func (a *App) pendingFlushWorkCount(threadID string) int {
 	return total
 }
 
-// resolveRevertCheckpoint returns the persisted checkpoint for the
-// user item, or a synthesized record with just UserItemID, TurnIndex,
-// and ProviderUserMessageID populated when the at-send capture didn't
-// write a row (non-git workspace, capture error). The Claude revert
-// path keys on `ProviderUserMessageID` when available so the slice
-// point is immune to synthetic-entry ordinal drift; populating it on
-// the synthesized record means a non-git workspace also benefits from
-// the structural fix.
-func (a *App) resolveRevertCheckpoint(threadID string, userItem store.Item) store.Checkpoint {
-	if record, ok, err := a.store.GetCheckpointByUserItemID(threadID, userItem.ID); err == nil && ok {
-		if record.TurnIndex == userItem.TurnIndex {
-			return record
+// resolveMessageAnchor returns the persisted message anchor for the
+// user item, or a synthesized record built from the item row when the
+// at-send record didn't land (record error, legacy row) or its turn
+// index drifted from the item's. The Claude rollback/fork paths key on
+// `ProviderUserMessageID` when available so the slice point is immune
+// to synthetic-entry ordinal drift; populating it on the synthesized
+// record means an anchor-less row also benefits from the structural
+// fix. op labels log lines only.
+func (a *App) resolveMessageAnchor(op string, threadID string, userItem store.Item) store.MessageAnchor {
+	if anchor, ok, err := a.store.GetMessageAnchor(threadID, userItem.ID); err == nil && ok {
+		if anchor.TurnIndex == userItem.TurnIndex {
+			return anchor
 		}
-		log.Printf("app: interrupt-and-revert: checkpoint turn index %d does not match user item turn index %d; synthesizing", record.TurnIndex, userItem.TurnIndex)
+		log.Printf("app: %s: anchor turn index %d does not match user item turn index %d; synthesizing", op, anchor.TurnIndex, userItem.TurnIndex)
 	} else if err != nil {
-		log.Printf("app: interrupt-and-revert: load checkpoint: %v", err)
+		log.Printf("app: %s: load message anchor: %v", op, err)
 	}
-	return store.Checkpoint{
+	return store.MessageAnchor{
+		ThreadID:              threadID,
 		UserItemID:            userItem.ID,
 		TurnIndex:             userItem.TurnIndex,
 		ProviderUserMessageID: usermessage.ReadProviderItemID(userItem.Meta),
+		ProviderParentUUID:    usermessage.ReadProviderParentUUID(userItem.Meta),
 	}
 }
 

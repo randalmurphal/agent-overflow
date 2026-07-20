@@ -11,7 +11,6 @@ import (
 	"time"
 
 	attachmentstore "agent-overflow/internal/attachment"
-	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/settings"
@@ -372,17 +371,7 @@ func TestForkThreadFromMessageFirstMessageCreatesEmptyFork(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertItem: %v", err)
 	}
-	if err := app.store.SaveCheckpoint(store.Checkpoint{
-		ID:            "checkpoint-first",
-		ThreadID:      source.ID,
-		UserItemID:    "user-first",
-		TurnIndex:     0,
-		RefName:       "refs/agent-overflow/checkpoints/source/message/first",
-		CapturedAt:    time.Now().UnixMilli(),
-		WorkspacePath: source.WorkspacePath,
-	}); err != nil {
-		t.Fatalf("SaveCheckpoint: %v", err)
-	}
+	seedMessageAnchor(t, app.store, source.ID, "user-first", 0, "", "")
 
 	forked, err := app.ForkThreadFromMessage(source.ID, "user-first")
 	if err != nil {
@@ -421,15 +410,18 @@ func TestForkThreadFromMessageFirstMessageCreatesEmptyFork(t *testing.T) {
 	}
 }
 
-func TestForkThreadFromMessageRejectsMissingCheckpoint(t *testing.T) {
+// A user row without a persisted at-send anchor (record error, legacy
+// row) synthesizes one from the item itself — fork-from-message must
+// succeed instead of stranding the message.
+func TestForkThreadFromMessageSynthesizesMissingAnchor(t *testing.T) {
 	app := newTestAppWithStore(t)
-	source := testThread("thread-message-fork-no-checkpoint")
+	source := testThread("thread-message-fork-no-anchor")
 	source.Provider = string(provider.Claude)
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
 	if err := app.store.InsertItem(store.Item{
-		ID:        "user-no-checkpoint",
+		ID:        "user-no-anchor",
 		ThreadID:  source.ID,
 		TurnIndex: 0,
 		ItemIndex: 0,
@@ -440,20 +432,28 @@ func TestForkThreadFromMessageRejectsMissingCheckpoint(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertItem: %v", err)
 	}
-	if _, err := app.ForkThreadFromMessage(source.ID, "user-no-checkpoint"); err == nil {
-		t.Fatal("ForkThreadFromMessage succeeded without checkpoint")
+	forked, err := app.ForkThreadFromMessage(source.ID, "user-no-anchor")
+	if err != nil {
+		t.Fatalf("ForkThreadFromMessage without anchor: %v", err)
+	}
+	draft, ok, err := app.store.GetThreadDraft(forked.ID)
+	if err != nil || !ok {
+		t.Fatalf("GetThreadDraft: ok=%v err=%v", ok, err)
+	}
+	if draft.Content != "first" {
+		t.Fatalf("fork draft = %q, want selected prompt", draft.Content)
 	}
 }
 
-func TestForkThreadFromMessageDoesNotCopyCheckpointRefs(t *testing.T) {
+func TestForkThreadFromMessageDoesNotCopyMessageAnchors(t *testing.T) {
 	app := newTestAppWithStore(t)
-	source := testThread("thread-message-fork-stale-checkpoint-ref")
+	source := testThread("thread-message-fork-anchor-copy")
 	source.Provider = string(provider.Claude)
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
 	if err := app.store.InsertItem(store.Item{
-		ID:        "user-stale-checkpoint",
+		ID:        "user-anchored",
 		ThreadID:  source.ID,
 		TurnIndex: 0,
 		ItemIndex: 0,
@@ -464,28 +464,18 @@ func TestForkThreadFromMessageDoesNotCopyCheckpointRefs(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertItem: %v", err)
 	}
-	if err := app.store.SaveCheckpoint(store.Checkpoint{
-		ID:            "checkpoint-stale-ref",
-		ThreadID:      source.ID,
-		UserItemID:    "user-stale-checkpoint",
-		TurnIndex:     0,
-		RefName:       checkpoint.ThreadRefPrefix(source.ID) + "message/missing-ref",
-		CapturedAt:    time.Now().UnixMilli(),
-		WorkspacePath: source.WorkspacePath,
-	}); err != nil {
-		t.Fatalf("SaveCheckpoint: %v", err)
-	}
+	seedMessageAnchor(t, app.store, source.ID, "user-anchored", 0, "", "")
 
-	forked, err := app.ForkThreadFromMessage(source.ID, "user-stale-checkpoint")
+	forked, err := app.ForkThreadFromMessage(source.ID, "user-anchored")
 	if err != nil {
 		t.Fatalf("ForkThreadFromMessage: %v", err)
 	}
-	checkpoints, err := app.store.ListCheckpoints(forked.ID)
+	anchors, err := app.store.ListMessageAnchors(forked.ID)
 	if err != nil {
-		t.Fatalf("ListCheckpoints(fork): %v", err)
+		t.Fatalf("ListMessageAnchors(fork): %v", err)
 	}
-	if len(checkpoints) != 0 {
-		t.Fatalf("fork checkpoints = %d, want 0", len(checkpoints))
+	if len(anchors) != 0 {
+		t.Fatalf("fork message anchors = %d, want 0", len(anchors))
 	}
 }
 
@@ -511,17 +501,7 @@ func TestForkThreadFromMessageRejectsMissingClaudeSessionForLaterTurn(t *testing
 			t.Fatalf("InsertItem: %v", err)
 		}
 	}
-	if err := app.store.SaveCheckpoint(store.Checkpoint{
-		ID:            "checkpoint-second",
-		ThreadID:      source.ID,
-		UserItemID:    "user-1",
-		TurnIndex:     1,
-		RefName:       "refs/agent-overflow/checkpoints/source/message/second",
-		CapturedAt:    time.Now().UnixMilli(),
-		WorkspacePath: source.WorkspacePath,
-	}); err != nil {
-		t.Fatalf("SaveCheckpoint: %v", err)
-	}
+	seedMessageAnchor(t, app.store, source.ID, "user-1", 1, "", "")
 	if _, err := app.ForkThreadFromMessage(source.ID, "user-1"); err == nil || !strings.Contains(err.Error(), "missing a Claude session reference") {
 		t.Fatalf("ForkThreadFromMessage error = %v, want missing session reference", err)
 	}
@@ -563,18 +543,7 @@ func TestForkThreadFromMessageSlicesClaudeSessionByTurnBoundary(t *testing.T) {
 			t.Fatalf("InsertItem: %v", err)
 		}
 	}
-	if err := app.store.SaveCheckpoint(store.Checkpoint{
-		ID:                    "checkpoint-second",
-		ThreadID:              source.ID,
-		UserItemID:            "user-1",
-		TurnIndex:             1,
-		ProviderUserMessageID: "u1",
-		RefName:               "refs/agent-overflow/checkpoints/" + source.ID + "/message/second",
-		CapturedAt:            time.Now().UnixMilli(),
-		WorkspacePath:         workspace,
-	}); err != nil {
-		t.Fatalf("SaveCheckpoint: %v", err)
-	}
+	seedMessageAnchor(t, app.store, source.ID, "user-1", 1, "u1", "")
 
 	forked, err := app.ForkThreadFromMessage(source.ID, "user-1")
 	if err != nil {
@@ -628,18 +597,7 @@ func TestForkThreadFromMessageSlicesClaudeSessionFromPendingForkRef(t *testing.T
 			t.Fatalf("InsertItem: %v", err)
 		}
 	}
-	if err := app.store.SaveCheckpoint(store.Checkpoint{
-		ID:                    "checkpoint-pending",
-		ThreadID:              source.ID,
-		UserItemID:            "user-1",
-		TurnIndex:             1,
-		ProviderUserMessageID: "u1",
-		RefName:               "refs/agent-overflow/checkpoints/" + source.ID + "/message/pending",
-		CapturedAt:            time.Now().UnixMilli(),
-		WorkspacePath:         workspace,
-	}); err != nil {
-		t.Fatalf("SaveCheckpoint: %v", err)
-	}
+	seedMessageAnchor(t, app.store, source.ID, "user-1", 1, "u1", "")
 
 	forked, err := app.ForkThreadFromMessage(source.ID, "user-1")
 	if err != nil {
@@ -654,12 +612,12 @@ func TestForkThreadFromMessageSlicesClaudeSessionFromPendingForkRef(t *testing.T
 	}
 }
 
-func TestForkThreadFromMessageCanForkOlderCheckpointAfterClaudeSessionFork(t *testing.T) {
+func TestForkThreadFromMessageCanForkOlderAnchorAfterClaudeSessionFork(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	workspace := initCheckpointRepo(t)
+	workspace := t.TempDir()
 	const sessionID = "source-session"
 	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"source-session","message":{"role":"user","content":"first"}}
 {"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
@@ -668,7 +626,7 @@ func TestForkThreadFromMessageCanForkOlderCheckpointAfterClaudeSessionFork(t *te
 {"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"source-session","message":{"role":"user","content":"third"}}
 {"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
 `)
-	source := createCheckpointTestThread(t, app, "thread-message-fork-after-revert", "claude", workspace)
+	source := createAppTestThread(t, app, "thread-message-fork-after-revert", "claude", workspace)
 	source.SessionRef = sessionID
 	if err := app.store.UpdateThread(source); err != nil {
 		t.Fatalf("update thread: %v", err)
@@ -676,52 +634,23 @@ func TestForkThreadFromMessageCanForkOlderCheckpointAfterClaudeSessionFork(t *te
 	insertUserItem(t, app.store, source.ID, "user-0", 0, "first")
 	insertUserItem(t, app.store, source.ID, "user-1", 1, "second")
 	insertUserItem(t, app.store, source.ID, "user-2", 2, "third")
-	for _, row := range []store.Checkpoint{
-		{
-			ID:                    "checkpoint-second",
-			ThreadID:              source.ID,
-			UserItemID:            "user-1",
-			TurnIndex:             1,
-			ProviderUserMessageID: "u1",
-			ProviderParentUUID:    "a0",
-			RefName:               checkpoint.ThreadRefPrefix(source.ID) + "message/second",
-			CapturedAt:            time.Now().UnixMilli(),
-			WorkspacePath:         workspace,
-		},
-		{
-			ID:                    "checkpoint-third",
-			ThreadID:              source.ID,
-			UserItemID:            "user-2",
-			TurnIndex:             2,
-			ProviderUserMessageID: "u2",
-			ProviderParentUUID:    "a1",
-			RefName:               checkpoint.ThreadRefPrefix(source.ID) + "message/third",
-			CapturedAt:            time.Now().UnixMilli(),
-			WorkspacePath:         workspace,
-		},
-	} {
-		if err := app.checkpointStore().CaptureRef(t.Context(), workspace, row.RefName); err != nil {
-			t.Fatalf("capture checkpoint ref %s: %v", row.RefName, err)
-		}
-		if err := app.store.SaveCheckpoint(row); err != nil {
-			t.Fatalf("SaveCheckpoint(%s): %v", row.ID, err)
-		}
-	}
+	seedMessageAnchor(t, app.store, source.ID, "user-1", 1, "u1", "a0")
+	seedMessageAnchor(t, app.store, source.ID, "user-2", 2, "u2", "a1")
 
-	if err := app.RevertToMessageCheckpoint(source.ID, "user-2", RevertModeConversationOnly); err != nil {
-		t.Fatalf("RevertToMessageCheckpoint: %v", err)
+	if err := rollbackToMessage(app, source.ID, "user-2"); err != nil {
+		t.Fatalf("rollbackToMessage: %v", err)
 	}
 	revertedSource, err := app.store.GetThread(source.ID)
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
 	if revertedSource.SessionRef == "" || revertedSource.SessionRef == sessionID {
-		t.Fatalf("source session after revert = %q, want remapped fork session", revertedSource.SessionRef)
+		t.Fatalf("source session after rollback = %q, want remapped fork session", revertedSource.SessionRef)
 	}
 
 	forked, err := app.ForkThreadFromMessage(source.ID, "user-1")
 	if err != nil {
-		t.Fatalf("ForkThreadFromMessage after revert: %v", err)
+		t.Fatalf("ForkThreadFromMessage after rollback: %v", err)
 	}
 	assertClaudeSessionText(t, workspace, forked.SessionRef, []string{"first"}, []string{"second", "third"})
 	items, err := app.store.ListItems(forked.ID)

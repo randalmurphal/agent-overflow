@@ -85,12 +85,7 @@ func (a *App) configureTriageQueueCallbacks() {
 	}
 	a.triage.SetFlushDispatcher(a.enqueueFlushDispatch)
 	a.triage.SetFlushUserTextConfirmedHook(func(threadID string, item store.Item) {
-		thread, err := a.store.GetThread(threadID)
-		if err != nil {
-			log.Printf("flush queue: load thread for flush checkpoint %s/%s: %v", threadID, item.ID, err)
-			return
-		}
-		a.captureMessageCheckpoint(thread, item)
+		a.recordMessageAnchor(item)
 	})
 }
 
@@ -322,7 +317,7 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) []triage.Un
 			restorable = append(restorable, item)
 			continue
 		}
-		if err := a.cleanupStaleFlushRow(threadID, staleID, "flush queue: restore unconfirmed"); err != nil {
+		if err := a.cleanupStaleFlushRow(threadID, staleID); err != nil {
 			log.Printf("flush queue: cleanup unconfirmed quiet row %s/%s failed — requeueing the message instead of restoring it to the draft: %v", threadID, staleID, err)
 			item.StaleUserItemID = staleID
 			cleanupFailed = append(cleanupFailed, item)
@@ -384,41 +379,21 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) []triage.Un
 }
 
 // cleanupStaleFlushRow removes a quietly-persisted flush row whose
-// message is being restored or redispatched, along with its
-// checkpoint's git ref. The checkpoint must be read BEFORE the row
-// delete (the FK cascade removes it) but its ref may only be deleted
-// AFTER the delete succeeds — a failed delete leaves the checkpoint
-// row alive, and destroying its git ref would strand a checkpoint
-// whose diff/restore can never resolve. A lookup FAILURE (not
-// not-found) aborts before the delete for the same reason: a
-// checkpoint may exist that we cannot see, and cascading it would
-// permanently orphan its ref — a leftover timeline row is
-// recoverable, a destroyed ref record is not. A row already gone
+// message is being restored or redispatched. The FK cascade on
+// message_anchors takes any anchor row with it. A row already gone
 // (an earlier retry finished the job) is success.
-func (a *App) cleanupStaleFlushRow(threadID, userItemID, action string) error {
+func (a *App) cleanupStaleFlushRow(threadID, userItemID string) error {
 	if _, found, err := a.store.GetThreadItem(threadID, userItemID); err != nil {
 		return fmt.Errorf("lookup stale flush row: %w", err)
 	} else if !found {
 		return nil
 	}
-	cp, hasCheckpoint, err := a.store.GetCheckpointByUserItemID(threadID, userItemID)
-	if err != nil {
-		return fmt.Errorf("lookup stale flush row checkpoint: %w", err)
-	}
-	if err := a.store.DeleteThreadItem(threadID, userItemID); err != nil {
-		return err
-	}
-	if hasCheckpoint {
-		a.deleteCheckpointRefsBestEffort(threadID, action, "", []store.CheckpointRef{
-			{RefName: cp.RefName, WorkspacePath: cp.WorkspacePath},
-		})
-	}
-	return nil
+	return a.store.DeleteThreadItem(threadID, userItemID)
 }
 
 // restoreEagerPersistedFlushesToDraft returns eagerly-persisted
 // interrupt rows to the composer draft after a definite Codex resend
-// failure: the store rows are deleted (with their checkpoint refs) and
+// failure: the store rows are deleted and
 // the content lands back in the composer, merged ahead of any draft
 // text the user already typed. This mirrors the Codex TUI, whose
 // recovery posture for input the model never consumed is
@@ -440,7 +415,7 @@ func (a *App) restoreEagerPersistedFlushesToDraft(threadID string, persisted []t
 	restorable := make([]triage.EagerPersistedFlush, 0, len(persisted))
 	var cleanupFailed []triage.EagerPersistedFlush
 	for _, p := range persisted {
-		if err := a.cleanupStaleFlushRow(threadID, p.UserItemID, "flush queue: restore failed resend"); err != nil {
+		if err := a.cleanupStaleFlushRow(threadID, p.UserItemID); err != nil {
 			log.Printf("flush queue: cleanup eager flush row %s/%s failed — requeueing the message instead of restoring it to the draft: %v", threadID, p.UserItemID, err)
 			cleanupFailed = append(cleanupFailed, p)
 			continue
@@ -931,7 +906,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// message twice (round-11, R11-1). The remaining loss windows
 		// (allocation, persist, send) are the same ones a first
 		// dispatch of any message already has.
-		if err := a.cleanupStaleFlushRow(threadID, item.StaleUserItemID, "flush queue: dispatch stale-row cleanup"); err != nil {
+		if err := a.cleanupStaleFlushRow(threadID, item.StaleUserItemID); err != nil {
 			return QueueFlushedItem{}, false, requeue, fmt.Errorf("cleanup stale flush row %s: %w", item.StaleUserItemID, err)
 		}
 		requeue.StaleUserItemID = ""

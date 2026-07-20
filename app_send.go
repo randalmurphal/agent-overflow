@@ -231,10 +231,10 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	}()
 
 	// Mint the user message id and stamp it onto the row meta BEFORE the
-	// optimistic persist and checkpoint capture below, then send it to the
+	// optimistic persist and anchor record below, then send it to the
 	// provider as the envelope's message id. Claude honours a client-supplied
 	// top-level uuid verbatim (see claude.Session.Send), so the row's
-	// provider_item_id and the checkpoint's ProviderUserMessageID both point
+	// provider_item_id and the anchor's ProviderUserMessageID both point
 	// at the real transcript uuid from the moment of persist — no dependency
 	// on the replay echo. This closes the fast send→escape race: a revert
 	// firing before the echo arrives still finds a stable id and takes the
@@ -290,7 +290,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
 		log.Printf("send message: delete draft for thread %s: %v", threadID, draftErr)
 	}
-	a.captureMessageCheckpoint(thread, userItem)
+	a.recordMessageAnchor(userItem)
 	// Click-time plan/diff-review acceptance. Sticky: a subsequent
 	// sendToProvider failure does NOT revert the marks — the user
 	// committed to send and the on-screen badge reflects that, while

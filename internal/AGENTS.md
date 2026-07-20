@@ -13,7 +13,7 @@ one closest to what you're touching.
 | `store/` | SQLite access, migrations, schema. |
 | `usagecost/` | Hardcoded per-million-token USD rate table with progressive family-prefix matching (exact match, then trim trailing `-`/`.` segments). Prices `usage_ledger` rows whose wire carries no cost (Codex, claudetui) at query time — `app_usage.go`'s `GetUsageStats` is the only caller. Stdlib-only; estimates are computed fresh per query and never persisted, so a rate-table update reprices all history. |
 | `itemmeta/` | Shaping helpers for the persisted `items.meta` JSON column, shared by the triage write path and the store migration chain (which cannot import each other). Stdlib-only. |
-| `checkpoint/` | Message-keyed git-ref snapshots, diffs, and restore helpers. |
+| `gitdiff/` | Review-pane diff sources via `git` subprocesses: workspace-vs-HEAD, branch-base-to-worktree (temp-index snapshot, no clean filters), per-commit patches, commit lists, and the legacy checkpoint-ref sweeper. |
 | `git/` | Git and `gh` operations (branches, worktrees, commit, push, PR). |
 | `project/` | Project-row lifecycle helpers that bridge git repository roots and `store.Project`. |
 | `gitwatch/` | Live git status streams per workspace (recursive fs watch + polling fallback). |

@@ -150,7 +150,7 @@ func TestServiceShutdownTreatsSubprocessExitAsCleanClose(t *testing.T) {
 // Pre-fix, the exit error bubbled out of startSessionNow as "close
 // claude session for thread <id>: exit status 1" — visible as
 // "Revert failed: Exit status 1" when the same start-replacement
-// flow ran under RevertToMessageCheckpoint after an interrupt. The
+// flow ran under a conversation rollback after an interrupt. The
 // replacement also never started, so the user had to retry. Post-fix,
 // the replacement starts on the first attempt and the previous
 // subprocess's non-zero exit is treated as the clean teardown it

@@ -36,12 +36,12 @@
 
   function openSidebarForFile(filePath: string) {
     if (!pane || !payloadId) return;
-    openReviewForItem(pane, { turnIndex: item.turnIndex, filePath });
+    openReviewForItem(pane, { filePath });
   }
 
   function openSidebarForPatch() {
     if (!pane || !payloadId) return;
-    openReviewForItem(pane, { turnIndex: item.turnIndex });
+    openReviewForItem(pane);
   }
 
   let canOpenSidebar = $derived(pane !== undefined && payloadId !== undefined);

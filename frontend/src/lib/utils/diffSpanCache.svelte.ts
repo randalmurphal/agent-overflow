@@ -38,7 +38,7 @@ import {
  * Same shape as the diff-context expansion request. */
 export interface PatchScopeContext {
   scope: string;
-  userItemId: string;
+  commitSHA: string;
   headSHA: string;
 }
 
@@ -169,7 +169,7 @@ function scopedKey(base: string, threadId: string, context: PatchScopeContext): 
   // threadId is part of the identity: the backend resolves priming
   // content through the THREAD's workspace/refs, so the same
   // (scope, path, patch) primes differently across threads.
-  return `${base}\0${threadId}\0${context.scope}\0${context.userItemId}\0${context.headSHA}`;
+  return `${base}\0${threadId}\0${context.scope}\0${context.commitSHA}\0${context.headSHA}`;
 }
 
 function touch(key: string): void {
@@ -291,7 +291,7 @@ export async function requestFileSpans(
       try {
         result = await HighlightPatchWithContext(threadId, {
           scope: context.scope,
-          userItemId: context.userItemId,
+          commitSHA: context.commitSHA,
           headSHA: context.headSHA,
           path: file.path,
           patch,
@@ -536,7 +536,7 @@ export function getSpansForLine(
  * another live thread survive until their last owner is evicted.
  *
  * Bumps the generation when anything was removed: a same-thread
- * reload (revert-to-checkpoint re-enters the switch path with the
+ * reload (a forced switchThread re-enters the switch path with the
  * same id) evicts entries whose review companion stays mounted, and
  * the bump is what makes those consumers re-request.
  */

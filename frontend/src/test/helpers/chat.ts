@@ -98,7 +98,6 @@ export function installPaneMocks(items: Item[] = []): void {
   // override this via setBindingMock('ListRecentTurns', ...) after calling
   // buildPane / installPaneMocks.
   setBindingMock('ListRecentTurns', async () => []);
-  setBindingMock('ListThreadCheckpoints', async () => []);
   // UsageChip queries the lifetime usage bucket on mount. Default to "no
   // usage yet" so buildPane-based tests that don't care about the usage
   // chip don't have to stub it; tests exercising usage data override this.

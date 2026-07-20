@@ -21,7 +21,6 @@ describe('CompanionPane across a source-pane thread switch', () => {
     // Review-state creation kicks off a workspace-scope diff load; give
     // it the minimal backend surface so mount side effects resolve.
     setBindingMock('GetWorkspaceCurrentDiff', async () => '');
-    setBindingMock('ListThreadCheckpoints', async () => []);
     setBindingMock('GetGitStatus', async () => ({}));
     setBindingMock('GetThread', async () => makeThread());
     setBindingMock('GitListBranches', async () => []);

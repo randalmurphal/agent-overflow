@@ -12,7 +12,6 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/updater"
 
 	"agent-overflow/internal/attachment"
-	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
 	"agent-overflow/internal/codexmodels"
@@ -74,15 +73,14 @@ type App struct {
 	// ServiceStartup in desktop mode (app_desktop.go); left nil in the
 	// headless WSL backend, where there is no native window to attach a
 	// dialog to and the frontend uses a download fallback instead.
-	saveDialog  savePayloadPicker
-	store       *store.Store
-	git         *gitops.Core
-	gitWatch    *gitwatch.Manager
-	settings    *settings.Service
-	triage      *triage.Router
-	checkpoints *checkpoint.Store
-	registry    *discussion.Registry
-	channels    *discussion.ChannelService
+	saveDialog savePayloadPicker
+	store      *store.Store
+	git        *gitops.Core
+	gitWatch   *gitwatch.Manager
+	settings   *settings.Service
+	triage     *triage.Router
+	registry   *discussion.Registry
+	channels   *discussion.ChannelService
 	// designWorkdir owns each thread's per-thread {main,options}
 	// directory layout. The base directory is the HTTP file server's
 	// StripPrefix target — designServer below mounts it at /design/
@@ -233,7 +231,7 @@ type App struct {
 	// (pendingFlushWorkCount) makes the queued message observable to a
 	// concurrent Stop click as either still-queued or already-in-flight, never
 	// neither. Deliberately NOT the per-thread action lock: that lock is held
-	// for seconds by git / worktree / checkpoint ops, and queueing a message
+	// for seconds by git / worktree ops, and queueing a message
 	// must stay responsive while those run. See RegisterQueueItem for the full
 	// lock hierarchy and deadlock-freedom argument.
 	flushHandoffMu sync.Mutex

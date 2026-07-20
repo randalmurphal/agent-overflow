@@ -933,7 +933,7 @@ describe('createThreadPane', () => {
     });
 
     it('keeps companions open on a same-thread re-switch', async () => {
-      // The revert-to-checkpoint flow reloads items in place via
+      // A forced in-place reload (same-thread re-switch) reloads items via
       // switchThread(currentThread); an open plan/review pane must
       // survive that.
       const pane = createThreadPane();
@@ -2569,9 +2569,9 @@ describe('createThreadPane', () => {
 
     it('requestScrollToItem carries flash option', () => {
       const pane = createThreadPane();
-      pane.requestScrollToItem('checkpoint-user-message', { flash: true });
+      pane.requestScrollToItem('revert-target-user-message', { flash: true });
 
-      expect(pane.scrollToItemRequest.itemId).toBe('checkpoint-user-message');
+      expect(pane.scrollToItemRequest.itemId).toBe('revert-target-user-message');
       expect(pane.scrollToItemRequest.flash).toBe(true);
     });
 
@@ -3662,7 +3662,6 @@ describe('createThreadPane', () => {
       const pane = createThreadPane();
       const sliceCalls: Array<{ anchor: unknown; budget: unknown }> = [];
       setBindingMock('AutoResumeThread', async () => {});
-      setBindingMock('ListThreadCheckpoints', async () => []);
       setBindingMock(
         'ListThreadSliceAround',
         async (_threadId, anchor, budget) => {
@@ -4787,7 +4786,7 @@ describe('createThreadPane', () => {
     });
 
     it('bumps switchGeneration on every switchThread (including same-thread re-switch)', async () => {
-      // The revert-to-checkpoint flow calls pane.switchThread(currentThread).
+      // A forced in-place reload calls pane.switchThread(currentThread).
       // pane.threadId does not change on that path, so MessageTimeline's
       // restore $effect.pre would miss the event if it keyed only on
       // pane.threadId. Exposing switchGeneration gives the timeline a
@@ -4939,23 +4938,21 @@ describe('createThreadPane', () => {
       setBindingMock('GetThreadLiveState', stamp('GetThreadLiveState'));
       setBindingMock('ListThreadSliceAround', stamp('ListThreadSliceAround'));
       setBindingMock('ListRecentTurns', stamp('ListRecentTurns'));
-      setBindingMock('ListThreadCheckpoints', stamp('ListThreadCheckpoints'));
 
       // Don't await — every mock hangs intentionally.
       void pane.switchThread(makeThread({ id: 't' }));
 
-      // Yield enough microtasks for all five Promise constructors to
+      // Yield enough microtasks for all four Promise constructors to
       // run (each one assigns its slot synchronously inside the
       // `() => new Promise(() => {})` body).
       for (let i = 0; i < 8; i++) await Promise.resolve();
 
-      // All five must have started. The exact ordering between them
+      // All four must have started. The exact ordering between them
       // is non-deterministic by design; we only assert that no fetch
       // is missing — which it would be under serialisation.
       expect(Object.keys(startedAt).sort()).toEqual([
         'GetThreadLiveState',
         'ListRecentTurns',
-        'ListThreadCheckpoints',
         'ListThreadSliceAround',
         'SwitchThread',
       ]);

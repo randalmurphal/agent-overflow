@@ -36,7 +36,7 @@ Deep-dive design docs under [`architecture/`](architecture/).
 | [`schema.md`](architecture/schema.md) | SQLite schema summary. Tables, indexes, migration policy. |
 | [`providers.md`](architecture/providers.md) | Provider process model, session identity, approval round-trip. |
 | [`recovery.md`](architecture/recovery.md) | Session recovery on restart, thread switch, disconnect. |
-| [`revert-modes.md`](architecture/revert-modes.md) | Checkpoint storage and the four revert modes. |
+| [`revert-modes.md`](architecture/revert-modes.md) | Message anchors, fork-from-message, and Stop/Esc conversation rollback. |
 | [`discussion-deliberation.md`](architecture/discussion-deliberation.md) | Multi-agent discussion coordination FSM. |
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
 

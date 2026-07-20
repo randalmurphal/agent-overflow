@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
@@ -28,7 +27,7 @@ import (
 func TestResolveCodexForkAnchorPicksLatestProviderBackedTurn(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "codex-anchor", "codex", t.TempDir())
+	thread := createAppTestThread(t, app, "codex-anchor", "codex", t.TempDir())
 
 	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
 	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
@@ -63,7 +62,7 @@ func TestResolveCodexForkAnchorPicksLatestProviderBackedTurn(t *testing.T) {
 func TestResolveCodexForkAnchorSkipsTurnsWithoutProviderID(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "codex-anchor-skip", "codex", t.TempDir())
+	thread := createAppTestThread(t, app, "codex-anchor-skip", "codex", t.TempDir())
 
 	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
 	// Turn 1 failed before the wire — no turns row at all.
@@ -84,7 +83,7 @@ func TestResolveCodexForkAnchorSkipsTurnsWithoutProviderID(t *testing.T) {
 func TestResolveCodexForkAnchorFreshWhenNoProviderTurns(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "codex-anchor-fresh", "codex", t.TempDir())
+	thread := createAppTestThread(t, app, "codex-anchor-fresh", "codex", t.TempDir())
 
 	// A local-only failed send is the only occupant of the prefix.
 	insertUserItem(t, app.store, thread.ID, "u:0-failed", 0, "failed before provider")
@@ -106,7 +105,7 @@ func TestResolveCodexForkAnchorFreshWhenNoProviderTurns(t *testing.T) {
 func TestResolveCodexForkAnchorRejectsLegacyDataHole(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "codex-anchor-hole", "codex", t.TempDir())
+	thread := createAppTestThread(t, app, "codex-anchor-hole", "codex", t.TempDir())
 
 	insertUserItemWithMeta(t, app.store, thread.ID, "user:0", 0, "first", `{"provider_item_id":"provider-user-0"}`)
 
@@ -116,11 +115,11 @@ func TestResolveCodexForkAnchorRejectsLegacyDataHole(t *testing.T) {
 	}
 }
 
-func TestRevertToMessageCheckpointCodexForksAtAnchorAndStopsSession(t *testing.T) {
+func TestConversationRollbackCodexForksAtAnchorAndStopsSession(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	workspace := t.TempDir()
-	thread := createCheckpointTestThread(t, app, "codex-active-revert", "codex", workspace)
+	thread := createAppTestThread(t, app, "codex-active-revert", "codex", workspace)
 	thread.SessionRef = "provider-active-revert"
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
@@ -129,7 +128,7 @@ func TestRevertToMessageCheckpointCodexForksAtAnchorAndStopsSession(t *testing.T
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
 	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
 	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
-	saveCodexCheckpoint(t, app.store, thread, "chk-active", "user:1", 1)
+	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
 
 	requestLog := filepath.Join(t.TempDir(), "fork-requests.jsonl")
 	binary := writeCodexForkAtBinary(t, codexForkMock{
@@ -158,7 +157,7 @@ func TestRevertToMessageCheckpointCodexForksAtAnchorAndStopsSession(t *testing.T
 		codex:    sess,
 	})
 
-	if err := app.RevertToMessageCheckpoint(thread.ID, "user:1", RevertModeConversationOnly); err != nil {
+	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
 	// The stop is load-bearing (invariant 29): straggler wire events
@@ -186,11 +185,11 @@ func TestRevertToMessageCheckpointCodexForksAtAnchorAndStopsSession(t *testing.T
 	}
 }
 
-func TestRevertToMessageCheckpointCodexForksThroughTempSessionWhenStopped(t *testing.T) {
+func TestConversationRollbackCodexForksThroughTempSessionWhenStopped(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	workspace := t.TempDir()
-	thread := createCheckpointTestThread(t, app, "codex-stopped-revert", "codex", workspace)
+	thread := createAppTestThread(t, app, "codex-stopped-revert", "codex", workspace)
 	thread.SessionRef = "provider-stopped-revert"
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
@@ -199,7 +198,7 @@ func TestRevertToMessageCheckpointCodexForksThroughTempSessionWhenStopped(t *tes
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
 	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
 	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
-	saveCodexCheckpoint(t, app.store, thread, "chk-stopped", "user:1", 1)
+	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
 
 	requestLog := filepath.Join(t.TempDir(), "fork-requests.jsonl")
 	binary := writeCodexForkAtBinary(t, codexForkMock{
@@ -211,7 +210,7 @@ func TestRevertToMessageCheckpointCodexForksThroughTempSessionWhenStopped(t *tes
 		t.Fatalf("update settings: %v", err)
 	}
 
-	if err := app.RevertToMessageCheckpoint(thread.ID, "user:1", RevertModeConversationOnly); err != nil {
+	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
 	if _, ok := app.activeCodexSession(thread.ID); ok {
@@ -230,11 +229,11 @@ func TestRevertToMessageCheckpointCodexForksThroughTempSessionWhenStopped(t *tes
 	}
 }
 
-func TestRevertToMessageCheckpointCodexRejectsForkTailMismatch(t *testing.T) {
+func TestConversationRollbackCodexRejectsForkTailMismatch(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	workspace := t.TempDir()
-	thread := createCheckpointTestThread(t, app, "codex-mismatch-revert", "codex", workspace)
+	thread := createAppTestThread(t, app, "codex-mismatch-revert", "codex", workspace)
 	thread.SessionRef = "provider-mismatch-revert"
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
@@ -243,7 +242,7 @@ func TestRevertToMessageCheckpointCodexRejectsForkTailMismatch(t *testing.T) {
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
 	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
 	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
-	saveCodexCheckpoint(t, app.store, thread, "chk-mismatch", "user:1", 1)
+	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
 
 	binary := writeCodexForkAtBinary(t, codexForkMock{
 		resumedThreadID: "provider-mismatch-revert",
@@ -254,7 +253,7 @@ func TestRevertToMessageCheckpointCodexRejectsForkTailMismatch(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 
-	err := app.RevertToMessageCheckpoint(thread.ID, "user:1", RevertModeConversationOnly)
+	err := rollbackToMessage(app, thread.ID, "user:1")
 	if err == nil || !strings.Contains(err.Error(), "expected anchor") {
 		t.Fatalf("revert error = %v, want fork tail mismatch", err)
 	}
@@ -274,11 +273,11 @@ func TestRevertToMessageCheckpointCodexRejectsForkTailMismatch(t *testing.T) {
 	}
 }
 
-func TestRevertToMessageCheckpointCodexAnchorSkipsLocalOnlyFailedTurn(t *testing.T) {
+func TestConversationRollbackCodexAnchorSkipsLocalOnlyFailedTurn(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	workspace := t.TempDir()
-	thread := createCheckpointTestThread(t, app, "codex-local-only-revert", "codex", workspace)
+	thread := createAppTestThread(t, app, "codex-local-only-revert", "codex", workspace)
 	thread.SessionRef = "provider-local-only-revert"
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
@@ -289,7 +288,7 @@ func TestRevertToMessageCheckpointCodexAnchorSkipsLocalOnlyFailedTurn(t *testing
 	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
 	// Turn 1 never reached the wire — no turns row.
 	insertCodexTurn(t, app.store, thread.ID, 2, "turn-c")
-	saveCodexCheckpoint(t, app.store, thread, "chk-local-only", "user:2", 2)
+	seedMessageAnchor(t, app.store, thread.ID, "user:2", 2, "", "")
 
 	requestLog := filepath.Join(t.TempDir(), "fork-requests.jsonl")
 	binary := writeCodexForkAtBinary(t, codexForkMock{
@@ -301,7 +300,7 @@ func TestRevertToMessageCheckpointCodexAnchorSkipsLocalOnlyFailedTurn(t *testing
 		t.Fatalf("update settings: %v", err)
 	}
 
-	if err := app.RevertToMessageCheckpoint(thread.ID, "user:2", RevertModeConversationOnly); err != nil {
+	if err := rollbackToMessage(app, thread.ID, "user:2"); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
 	forkRequest := readCodexForkRequest(t, requestLog)
@@ -317,21 +316,21 @@ func TestRevertToMessageCheckpointCodexAnchorSkipsLocalOnlyFailedTurn(t *testing
 	}
 }
 
-// TestRevertToMessageCheckpointCodexTurnZeroClearsSessionRef: reverting
+// TestConversationRollbackCodexTurnZeroClearsSessionRef: reverting
 // the very first message needs no fork — SessionRef clears, the session
 // stops, and the next send starts a fresh Codex thread.
-func TestRevertToMessageCheckpointCodexTurnZeroClearsSessionRef(t *testing.T) {
+func TestConversationRollbackCodexTurnZeroClearsSessionRef(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	workspace := t.TempDir()
-	thread := createCheckpointTestThread(t, app, "codex-turn-zero-revert", "codex", workspace)
+	thread := createAppTestThread(t, app, "codex-turn-zero-revert", "codex", workspace)
 	thread.SessionRef = "provider-turn-zero-revert"
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
 	}
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
-	saveCodexCheckpoint(t, app.store, thread, "chk-zero", "user:0", 0)
+	seedMessageAnchor(t, app.store, thread.ID, "user:0", 0, "", "")
 
 	requestLog := filepath.Join(t.TempDir(), "fork-requests.jsonl")
 	binary := writeCodexForkAtBinary(t, codexForkMock{
@@ -355,7 +354,7 @@ func TestRevertToMessageCheckpointCodexTurnZeroClearsSessionRef(t *testing.T) {
 		codex:    sess,
 	})
 
-	if err := app.RevertToMessageCheckpoint(thread.ID, "user:0", RevertModeConversationOnly); err != nil {
+	if err := rollbackToMessage(app, thread.ID, "user:0"); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
 	if _, ok := app.activeCodexSession(thread.ID); ok {
@@ -380,21 +379,21 @@ func TestRevertToMessageCheckpointCodexTurnZeroClearsSessionRef(t *testing.T) {
 	}
 }
 
-// TestRevertToMessageCheckpointCodexLocalOnlyThreadNeedsNoSessionRef:
+// TestConversationRollbackCodexLocalOnlyThreadNeedsNoSessionRef:
 // a thread whose sends all failed before reaching the provider has no
 // SessionRef and no provider-backed turns. Reverting past turn 0 must
 // take the fresh-thread path (no fork, cursor stays empty) instead of
 // failing on the missing thread reference.
-func TestRevertToMessageCheckpointCodexLocalOnlyThreadNeedsNoSessionRef(t *testing.T) {
+func TestConversationRollbackCodexLocalOnlyThreadNeedsNoSessionRef(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	workspace := t.TempDir()
-	thread := createCheckpointTestThread(t, app, "codex-local-only-thread", "codex", workspace)
+	thread := createAppTestThread(t, app, "codex-local-only-thread", "codex", workspace)
 	insertUserItem(t, app.store, thread.ID, "user:0-failed", 0, "first (send failed)")
 	insertUserItem(t, app.store, thread.ID, "user:1-failed", 1, "second (send failed)")
-	saveCodexCheckpoint(t, app.store, thread, "chk-no-ref", "user:1-failed", 1)
+	seedMessageAnchor(t, app.store, thread.ID, "user:1-failed", 1, "", "")
 
-	if err := app.RevertToMessageCheckpoint(thread.ID, "user:1-failed", RevertModeConversationOnly); err != nil {
+	if err := rollbackToMessage(app, thread.ID, "user:1-failed"); err != nil {
 		t.Fatalf("revert: %v", err)
 	}
 	updated, err := app.store.GetThread(thread.ID)
@@ -410,23 +409,6 @@ func TestRevertToMessageCheckpointCodexLocalOnlyThreadNeedsNoSessionRef(t *testi
 	}
 	if len(items) != 1 || items[0].ID != "user:0-failed" {
 		t.Fatalf("items after revert = %+v, want only the first failed send", items)
-	}
-}
-
-func saveCodexCheckpoint(t *testing.T, st *store.Store, thread store.Thread, id, userItemID string, turnIndex int) {
-	t.Helper()
-	if err := st.SaveCheckpoint(store.Checkpoint{
-		ID:         id,
-		ThreadID:   thread.ID,
-		UserItemID: userItemID,
-		TurnIndex:  turnIndex,
-		RefName:    checkpoint.ThreadRefPrefix(thread.ID) + "message/" + id,
-		CapturedAt: 1,
-		// Codex fork-at-turn uses turn index, not provider user message id,
-		// but the checkpoint still carries the workspace for shared validation.
-		WorkspacePath: thread.WorkspacePath,
-	}); err != nil {
-		t.Fatalf("save checkpoint: %v", err)
 	}
 }
 

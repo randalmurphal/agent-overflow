@@ -82,8 +82,9 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   - Canonical path comparison helpers (the one source of truth).
 - What does NOT belong here:
   - Decisions about *when* to stage or push; that's `app.go`.
-  - Checkpoint / hidden-ref manipulation — `internal/checkpoint` owns
-    the hidden namespace.
+  - Review-pane diff computation — `internal/gitdiff` owns those
+    subprocess pipelines (temp-index worktree snapshots, per-commit
+    patches, commit lists).
   - Non-git file operations.
 
 ## Extension points
@@ -112,7 +113,8 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
 
 ## References
 
-- `internal/checkpoint` — hidden-ref snapshots (not regular git ops).
+- `internal/gitdiff` — review-pane diff subprocess pipelines (not
+  regular git ops).
 - `internal/testutil/git.go` — `InitGitRepo` / `RunGit` helpers for
   tests. Note `testutil.CanonicalPath` intentionally duplicates this
   package's helper to avoid a circular import.

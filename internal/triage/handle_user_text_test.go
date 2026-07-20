@@ -67,16 +67,13 @@ func TestHandleUserText_PendingSendMatch_StampsProviderItemID(t *testing.T) {
 
 	router.RegisterPendingSend("t1", "user:0", 0)
 	seedUserTextRow(t, st, "t1", 0, "hello world", "")
-	if err := st.SaveCheckpoint(store.Checkpoint{
-		ID:            "checkpoint-user-0",
-		ThreadID:      "t1",
-		UserItemID:    "user:0",
-		TurnIndex:     0,
-		RefName:       "refs/agent-overflow/checkpoints/dDE/message/user-0",
-		CapturedAt:    time.Now().UnixMilli(),
-		WorkspacePath: t.TempDir(),
+	if err := st.UpsertMessageAnchor(store.MessageAnchor{
+		ThreadID:   "t1",
+		UserItemID: "user:0",
+		TurnIndex:  0,
+		CreatedAt:  time.Now().UnixMilli(),
 	}); err != nil {
-		t.Fatalf("seed checkpoint: %v", err)
+		t.Fatalf("seed anchor: %v", err)
 	}
 
 	// Reset emissions captured during the seed so the assertion below
@@ -108,19 +105,19 @@ func TestHandleUserText_PendingSendMatch_StampsProviderItemID(t *testing.T) {
 		t.Fatalf("meta.provider_item_id = %v, want msg_xyz (full meta: %s)", meta["provider_item_id"], persisted.Meta)
 	}
 	// The parent uuid stamps into item meta in the SAME write as the
-	// item id (round-5, R5-8): the checkpoint's copy below is a separate
-	// follow-up that can fail, and the already-cut revert retry needs a
-	// durable parent it can slice through.
+	// item id (round-5, R5-8): the anchor's copy below is a separate
+	// follow-up that can fail, and the already-cut rollback retry needs
+	// a durable parent it can slice through.
 	if p, _ := meta["provider_parent_uuid"].(string); p != "parent-abc" {
 		t.Fatalf("meta.provider_parent_uuid = %v, want parent-abc (full meta: %s)", meta["provider_parent_uuid"], persisted.Meta)
 	}
-	checkpoint, ok, err := st.GetCheckpointByUserItemID("t1", "user:0")
+	anchor, ok, err := st.GetMessageAnchor("t1", "user:0")
 	if err != nil || !ok {
-		t.Fatalf("checkpoint missing after provider id stamp: ok=%v err=%v", ok, err)
+		t.Fatalf("anchor missing after provider id stamp: ok=%v err=%v", ok, err)
 	}
-	if checkpoint.ProviderUserMessageID != "msg_xyz" || checkpoint.ProviderParentUUID != "parent-abc" {
-		t.Fatalf("checkpoint provider ids = %q/%q, want msg_xyz/parent-abc",
-			checkpoint.ProviderUserMessageID, checkpoint.ProviderParentUUID)
+	if anchor.ProviderUserMessageID != "msg_xyz" || anchor.ProviderParentUUID != "parent-abc" {
+		t.Fatalf("anchor provider ids = %q/%q, want msg_xyz/parent-abc",
+			anchor.ProviderUserMessageID, anchor.ProviderParentUUID)
 	}
 
 	// No new row should be minted under user:wire:msg_xyz when the
@@ -723,32 +720,29 @@ func TestHandleUserText_PendingSendMatch_DuplicateProviderItemID_NoLog(t *testin
 
 // TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUID pins
 // the common direct-send success path: app_send.go pre-stamps the
-// minted uuid on the row + checkpoint, Claude honours it and echoes
+// minted uuid on the row + anchor, Claude honours it and echoes
 // that exact id back plus the parentUuid it assigned. The echo must
 // fold the echo-only parent_uuid into BOTH the item meta — the same
 // write as the id key, so the already-cut retry has a durable parent
-// the checkpoint follow-up can't lose (round-5, R5-8) — and the
-// checkpoint. Since the parent is new, the meta write is not a no-op:
+// the anchor follow-up can't lose (round-5, R5-8) — and the
+// anchor. Since the parent is new, the meta write is not a no-op:
 // exactly one upsert re-emits with the enriched meta.
 func TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUID(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
 	router.RegisterPendingSend("t1", "user:0", 0)
-	// Row + checkpoint carry the honoured send uuid; the checkpoint has no
+	// Row + anchor carry the honoured send uuid; the anchor has no
 	// parent_uuid yet (Claude assigns parentUuid, unknown at pre-stamp).
 	seedUserTextRow(t, st, "t1", 0, "ship it", `{"provider_item_id":"p"}`)
-	if err := st.SaveCheckpoint(store.Checkpoint{
-		ID:                    "checkpoint-user-0",
+	if err := st.UpsertMessageAnchor(store.MessageAnchor{
 		ThreadID:              "t1",
 		UserItemID:            "user:0",
 		TurnIndex:             0,
 		ProviderUserMessageID: "p",
-		RefName:               "refs/agent-overflow/checkpoints/dDE/message/user-0",
-		CapturedAt:            time.Now().UnixMilli(),
-		WorkspacePath:         t.TempDir(),
+		CreatedAt:             time.Now().UnixMilli(),
 	}); err != nil {
-		t.Fatalf("seed checkpoint: %v", err)
+		t.Fatalf("seed anchor: %v", err)
 	}
 	emissions.reset()
 
@@ -776,14 +770,14 @@ func TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUID(t *testing.T)
 	}
 
 	// parent_uuid — known only from the echo — must be folded into the
-	// checkpoint even though the message id is unchanged.
-	cp, ok, err := st.GetCheckpointByUserItemID("t1", "user:0")
+	// anchor even though the message id is unchanged.
+	anchor, ok, err := st.GetMessageAnchor("t1", "user:0")
 	if err != nil || !ok {
-		t.Fatalf("checkpoint missing: ok=%v err=%v", ok, err)
+		t.Fatalf("anchor missing: ok=%v err=%v", ok, err)
 	}
-	if cp.ProviderUserMessageID != "p" || cp.ProviderParentUUID != "parent-honored" {
-		t.Fatalf("checkpoint provider ids = %q/%q, want p/parent-honored (fold in the echoed parent_uuid)",
-			cp.ProviderUserMessageID, cp.ProviderParentUUID)
+	if anchor.ProviderUserMessageID != "p" || anchor.ProviderParentUUID != "parent-honored" {
+		t.Fatalf("anchor provider ids = %q/%q, want p/parent-honored (fold in the echoed parent_uuid)",
+			anchor.ProviderUserMessageID, anchor.ProviderParentUUID)
 	}
 
 	// The parent is new to the row meta, so exactly one upsert re-emits
@@ -829,7 +823,7 @@ func TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUID(t *testing.T)
 // top-level uuid; Claude is expected to echo that exact id back. If the
 // echo carries a DIFFERENT id (Claude did not honour the supplied uuid
 // — a binary-contract drift), attachProviderItemIDToUserRow must
-// overwrite the row + checkpoint to the echoed id (the real transcript
+// overwrite the row + anchor to the echoed id (the real transcript
 // uuid, the correct slice anchor) and log loudly so the regression is
 // observable instead of silently falling back to the ordinal walk.
 func TestHandleUserText_PreStampedIDDrift_OverwritesAndLogs(t *testing.T) {
@@ -837,19 +831,16 @@ func TestHandleUserText_PreStampedIDDrift_OverwritesAndLogs(t *testing.T) {
 	createTestThread(t, st, "t1")
 
 	router.RegisterPendingSend("t1", "user:0", 0)
-	// Row + checkpoint carry the minted send uuid (the pre-stamp).
+	// Row + anchor carry the minted send uuid (the pre-stamp).
 	seedUserTextRow(t, st, "t1", 0, "fix the bug", `{"provider_item_id":"minted-uuid"}`)
-	if err := st.SaveCheckpoint(store.Checkpoint{
-		ID:                    "checkpoint-user-0",
+	if err := st.UpsertMessageAnchor(store.MessageAnchor{
 		ThreadID:              "t1",
 		UserItemID:            "user:0",
 		TurnIndex:             0,
 		ProviderUserMessageID: "minted-uuid",
-		RefName:               "refs/agent-overflow/checkpoints/dDE/message/user-0",
-		CapturedAt:            time.Now().UnixMilli(),
-		WorkspacePath:         t.TempDir(),
+		CreatedAt:             time.Now().UnixMilli(),
 	}); err != nil {
-		t.Fatalf("seed checkpoint: %v", err)
+		t.Fatalf("seed anchor: %v", err)
 	}
 	emissions.reset()
 
@@ -881,13 +872,13 @@ func TestHandleUserText_PreStampedIDDrift_OverwritesAndLogs(t *testing.T) {
 		t.Fatalf("row provider_item_id = %q, want claude-real-uuid (overwrite to the echoed id)", got)
 	}
 
-	cp, ok, err := st.GetCheckpointByUserItemID("t1", "user:0")
+	anchor, ok, err := st.GetMessageAnchor("t1", "user:0")
 	if err != nil || !ok {
-		t.Fatalf("checkpoint missing: ok=%v err=%v", ok, err)
+		t.Fatalf("anchor missing: ok=%v err=%v", ok, err)
 	}
-	if cp.ProviderUserMessageID != "claude-real-uuid" || cp.ProviderParentUUID != "parent-xyz" {
-		t.Fatalf("checkpoint provider ids = %q/%q, want claude-real-uuid/parent-xyz (self-heal to the echoed id)",
-			cp.ProviderUserMessageID, cp.ProviderParentUUID)
+	if anchor.ProviderUserMessageID != "claude-real-uuid" || anchor.ProviderParentUUID != "parent-xyz" {
+		t.Fatalf("anchor provider ids = %q/%q, want claude-real-uuid/parent-xyz (self-heal to the echoed id)",
+			anchor.ProviderUserMessageID, anchor.ProviderParentUUID)
 	}
 
 	upserts := itemUpsertEmissionsForID(emissions.snapshot(), "t1", "user:0")

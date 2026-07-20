@@ -47,10 +47,11 @@ function installDefaultMocks(): void {
   setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/tmp/ws' }) as Thread);
   setBindingMock('GetGitStatus', async () => ({}));
   setBindingMock('GetWorkspaceCurrentDiff', async () => '');
-  setBindingMock('GetSessionAgentDiff', async () => '');
   setBindingMock('GetBranchBaseDiff', async () => '');
-  setBindingMock('GetMessageCheckpointDiff', async () => '');
-  setBindingMock('ListThreadCheckpoints', async () => []);
+  setBindingMock('ListBranchCommits', async () => []);
+  setBindingMock('GetCommitDiff', async () => '');
+  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('GetPRCommitDiff', async () => '');
   setBindingMock('GitListBranches', async () => [{ name: 'develop', isCurrent: false, isDefault: true }]);
   setBindingMock('ListDiffReviewComments', async () => []);
   setBindingMock('CreateDiffReviewComment', async () => ({}));
@@ -121,12 +122,10 @@ describe('reviewPane store', () => {
 
   it('loads the binding for each scope', async () => {
     const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => 'workspace patch');
-    const session = setBindingMock('GetSessionAgentDiff', async () => 'session patch');
     const branch = setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
-    const message = setBindingMock('GetMessageCheckpointDiff', async () => 'turn patch');
-    setBindingMock('ListThreadCheckpoints', async () => [
-      { userItemId: 'old', turnIndex: 1 },
-      { userItemId: 'latest', turnIndex: 3 },
+    setBindingMock('ListBranchCommits', async () => [
+      { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
+      { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'second', author: 'r', authoredAt: 2 },
     ]);
     setBindingMock('GitListBranches', async () => [
       { name: 'develop', isCurrent: false, isDefault: true },
@@ -136,19 +135,12 @@ describe('reviewPane store', () => {
     await waitLoaded(state);
     expect(workspace).toHaveBeenCalledWith('thread-1');
 
-    await state.setScope('session');
-    expect(session).toHaveBeenCalledWith('thread-1');
-    expect(state.patchText).toBe('session patch');
-
-    await state.setScope('turn');
-    expect(message).toHaveBeenCalledWith('thread-1', 'latest');
-    expect(state.patchText).toBe('turn patch');
-    expect(state.checkpoints.map((checkpoint) => checkpoint.userItemId)).toEqual(['old', 'latest']);
-
     await state.setScope('branch');
     expect(branch).toHaveBeenCalledWith('thread-1', 'develop');
     expect(state.baseBranch).toBe('develop');
     expect(state.patchText).toBe('branch patch');
+    expect(state.commits.map((commit) => commit.shortSha)).toEqual(['aaaaaaa', 'bbbbbbb']);
+    expect(state.selectedCommitSHA).toBeNull();
   });
 
   it('persists and restores last-used scope per thread', async () => {
@@ -182,49 +174,82 @@ describe('reviewPane store', () => {
     expect(workspace).toHaveBeenCalledTimes(1);
   });
 
-  it('selects a specific turn checkpoint and falls back to latest when invalid', async () => {
-    const message = setBindingMock(
-      'GetMessageCheckpointDiff',
-      async (_threadId: string, userItemId: string) => `patch ${userItemId}`,
-    );
-    setBindingMock('ListThreadCheckpoints', async () => [
-      { userItemId: 'old', turnIndex: 1 },
-      { userItemId: 'latest', turnIndex: 3 },
+  it('selects a single commit in branch scope and keys comments by its SHA', async () => {
+    const sha = 'a'.repeat(40);
+    setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
+    setBindingMock('ListBranchCommits', async () => [
+      { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
+    const commitDiff = setBindingMock('GetCommitDiff', async () => 'commit patch');
 
     const state = reviewStateForPane('pane-1', 'thread-1');
     await waitLoaded(state);
+    await state.setScope('branch');
 
-    await state.selectCheckpoint('old');
-    expect(state.scope).toBe('turn');
-    expect(state.selectedCheckpointUserItemId).toBe('old');
-    expect(state.patchText).toBe('patch old');
-    expect(message).toHaveBeenLastCalledWith('thread-1', 'old');
+    await state.selectCommit(sha);
+    expect(state.scope).toBe('branch');
+    expect(state.selectedCommitSHA).toBe(sha);
+    expect(state.patchText).toBe('commit patch');
+    expect(state.sourceKey).toBe(`commit:${sha}`);
+    expect(commitDiff).toHaveBeenLastCalledWith('thread-1', sha);
 
-    await state.selectCheckpoint('missing');
-    expect(state.selectedCheckpointUserItemId).toBeNull();
-    expect(state.patchText).toBe('patch latest');
-    expect(message).toHaveBeenLastCalledWith('thread-1', 'latest');
+    // Back to the full range.
+    await state.selectCommit(null);
+    expect(state.selectedCommitSHA).toBeNull();
+    expect(state.patchText).toBe('branch patch');
   });
 
-  it('openReviewCompanion applies scope, checkpoint, and pending jump target', async () => {
-    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
-    setBindingMock('GetMessageCheckpointDiff', async () => 'turn patch');
-    setBindingMock('ListThreadCheckpoints', async () => [
-      { userItemId: 'u1', turnIndex: 1 },
-      { userItemId: 'u2', turnIndex: 2 },
+  it('drops a selected commit that left the range and reloads the full diff', async () => {
+    const sha = 'a'.repeat(40);
+    setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
+    setBindingMock('ListBranchCommits', async () => [
+      { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
+    setBindingMock('GetCommitDiff', async () => 'commit patch');
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('branch');
+    await state.selectCommit(sha);
+    expect(state.patchText).toBe('commit patch');
+
+    // Rebase: the SHA is gone from base..HEAD.
+    setBindingMock('ListBranchCommits', async () => []);
+    await state.reload();
+    expect(state.selectedCommitSHA).toBeNull();
+    expect(state.patchText).toBe('branch patch');
+  });
+
+  it('resets the selected commit when the scope changes', async () => {
+    const sha = 'a'.repeat(40);
+    setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
+    setBindingMock('ListBranchCommits', async () => [
+      { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    setBindingMock('GetCommitDiff', async () => 'commit patch');
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('branch');
+    await state.selectCommit(sha);
+    expect(state.selectedCommitSHA).toBe(sha);
+
+    await state.setScope('workspace');
+    expect(state.selectedCommitSHA).toBeNull();
+  });
+
+  it('openReviewCompanion applies scope and pending jump target', async () => {
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
+    setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
 
     const state = await openReviewCompanion('pane-1', 'thread-1', {
-      scope: 'turn',
-      checkpointUserItemId: 'u1',
+      scope: 'branch',
       filePath: 'src/app.ts',
     });
 
     expect(state).not.toBeNull();
     await waitLoaded(state!);
-    expect(state!.scope).toBe('turn');
-    expect(state!.selectedCheckpointUserItemId).toBe('u1');
+    expect(state!.scope).toBe('branch');
     expect(state!.pendingJumpFilePath).toBe('src/app.ts');
 
     const same = reviewStateForPane('pane-1', 'thread-1');
@@ -336,14 +361,27 @@ describe('reviewPane store', () => {
   });
 
   it('restores a persisted scope before the first load', async () => {
-    appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'session', baseBranch: null }));
-    const session = setBindingMock('GetSessionAgentDiff', async () => 'session patch');
+    appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'branch', baseBranch: 'develop' }));
+    const branch = setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
 
     const state = reviewStateForPane('pane-1', 'thread-1');
     await waitLoaded(state);
 
-    expect(state.scope).toBe('session');
-    expect(session).toHaveBeenCalledWith('thread-1');
+    expect(state.scope).toBe('branch');
+    expect(branch).toHaveBeenCalledWith('thread-1', 'develop');
+  });
+
+  it('falls back to workspace scope for a persisted scope that no longer exists', async () => {
+    // 'turn' and 'session' were removed with the checkpoint machinery;
+    // stale persisted entries must not wedge the pane.
+    appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'turn', baseBranch: null }));
+    const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => 'workspace patch');
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+
+    expect(state.scope).toBe('workspace');
+    expect(workspace).toHaveBeenCalledWith('thread-1');
   });
 
   it('refreshes comments and records the active diff source after loading a patch', async () => {
@@ -429,7 +467,7 @@ describe('reviewPane store', () => {
     expect(state.consumeDraftEditorFocus(anchor)).toBe(true);
 
     state.setDraftBody(anchor, 'stale text');
-    await state.setScope('session');
+    await state.setScope('branch');
     expect(state.draftBodyFor(anchor)).toBe('');
   });
 
@@ -532,6 +570,65 @@ describe('reviewPane store — PR scope', () => {
     await state.setScope('workspace');
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     expect(unsubscribe).toHaveBeenCalledWith('sub-1');
+  });
+
+  it('selects a single PR commit and keys comments by its SHA', async () => {
+    const sha = 'b'.repeat(40);
+    installPRMocks();
+    const list = setBindingMock('ListPRCommits', async () => [
+      { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    const commitDiff = setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
+
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    expect(list).toHaveBeenCalledWith('thread-1', expect.objectContaining({ Number: 5 }), 'main');
+    expect(state.commits.map((commit) => commit.sha)).toEqual([sha]);
+    expect(state.sourceKey).toBe(PR_SOURCE_KEY);
+
+    await state.selectCommit(sha);
+    expect(state.selectedCommitSHA).toBe(sha);
+    expect(state.sourceKey).toBe(`commit:${sha}`);
+    expect(commitDiff).toHaveBeenLastCalledWith('thread-1', expect.objectContaining({ Number: 5 }), sha);
+
+    // Back to the whole PR.
+    await state.selectCommit(null);
+    expect(state.selectedCommitSHA).toBeNull();
+    expect(state.sourceKey).toBe(PR_SOURCE_KEY);
+  });
+
+  it('drops a selected PR commit that left the range (force-push) and reloads the full diff', async () => {
+    const sha = 'b'.repeat(40);
+    installPRMocks();
+    setBindingMock('ListPRCommits', async () => [
+      { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
+    const fullDiff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
+
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await state.selectCommit(sha);
+    expect(state.selectedCommitSHA).toBe(sha);
+
+    setBindingMock('ListPRCommits', async () => []);
+    await state.reload();
+    expect(state.selectedCommitSHA).toBeNull();
+    expect(state.sourceKey).toBe(PR_SOURCE_KEY);
+    expect(fullDiff).toHaveBeenCalled();
+  });
+
+  it('shows no PR commit selector without a local clone (empty commit list)', async () => {
+    installPRMocks(); // default ListPRCommits mock resolves []
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+
+    expect(state.commits).toEqual([]);
+    expect(state.selectedCommitSHA).toBeNull();
+    expect(state.files.length).toBe(1);
   });
 
   it('switching scope away mid-PR-load lands on the new scope and closes the late subscription', async () => {
@@ -1315,8 +1412,8 @@ describe('collapse overrides across reloads', () => {
     expect(state.collapsedPaths.has('go.sum')).toBe(false); // override held
 
     // Scope switch is a new subject: overrides reset, defaults return.
-    await state.setScope('session');
-    setBindingMock('GetSessionAgentDiff', async () => patchFor('go.sum', 2));
+    setBindingMock('GetBranchBaseDiff', async () => patchFor('go.sum', 2));
+    await state.setScope('branch');
     await state.reload();
     expect(state.collapsedPaths.has('go.sum')).toBe(true);
   });

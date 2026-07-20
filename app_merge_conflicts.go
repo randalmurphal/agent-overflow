@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/gitdiff"
 )
 
 type PRMergeConflictsResult struct {
@@ -105,7 +106,7 @@ func (a *App) localCloneWorkspace(threadID string) (string, bool) {
 	if err != nil || strings.TrimSpace(workspace) == "" {
 		return "", false
 	}
-	if !a.checkpointStore().IsGitRepository(context.Background(), workspace) {
+	if !gitdiff.IsGitRepository(context.Background(), workspace) {
 		return "", false
 	}
 	return workspace, true

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -13,8 +12,8 @@ import (
 
 // deleteThreadTree removes a thread and everything owned by it: children
 // first (recursively), then in-process state (session, terminals,
-// deliberations, system prompt), then on-disk state (checkpoint git refs,
-// attachment files), then the DB row itself.
+// deliberations, system prompt), then on-disk state (attachment files),
+// then the DB row itself.
 //
 // All cleanup steps are idempotent. If any step fails, we collect the
 // error and continue so the work we CAN do still happens, then aggregate
@@ -25,12 +24,11 @@ import (
 // because the preserved row makes each retry idempotent.
 //
 // We do NOT wrap the whole operation in a single sql.Tx: cleanup touches
-// the in-process session map, a live terminal process, the git ref
-// store, and the attachment filesystem. A long DB transaction across
-// those boundaries would serialise the rest of the store while git
-// refs are deleted, which pushes user-visible latency well into the
-// hundreds of ms. The idempotent-retry model gives us atomicity at the
-// resource-ownership level without that cost.
+// the in-process session map, a live terminal process, and the
+// attachment filesystem. A long DB transaction across those boundaries
+// would serialise the rest of the store, pushing user-visible latency
+// well into the hundreds of ms. The idempotent-retry model gives us
+// atomicity at the resource-ownership level without that cost.
 func (a *App) deleteThreadTreeLocked(threadID string) error {
 	return a.deleteThreadTree(threadID, false)
 }
@@ -116,9 +114,6 @@ func (a *App) deleteThreadTree(threadID string, subtreeLocksHeld bool) error {
 	a.clearThreadSystemPrompt(threadID)
 	a.removeDeliberation(thread)
 	a.clearAutoReconnectAttempted(threadID)
-	if err := a.cleanupThreadCheckpoints(threadID, thread, threadFound); err != nil {
-		errs = append(errs, fmt.Errorf("cleanup checkpoints: %w", err))
-	}
 	if err := a.cleanupThreadAttachmentFiles(threadID); err != nil {
 		errs = append(errs, fmt.Errorf("cleanup attachments: %w", err))
 	}
@@ -189,35 +184,6 @@ func (a *App) cleanupThreadAttachmentFiles(threadID string) error {
 		return fmt.Errorf("remove attachment files for %s: %w", threadID, err)
 	}
 	return nil
-}
-
-// cleanupThreadCheckpoints removes both the Git refs and the SQLite
-// bookkeeping rows for a thread's checkpoints. Each step is idempotent:
-// CleanupThread tolerates missing refs, DeleteCheckpointsForThread
-// tolerates a missing thread row. Errors are aggregated so a failure on
-// one side doesn't hide a failure on the other. Threads whose workspace
-// is not a git repo (tests, newly-created threads before any capture)
-// skip the ref cleanup — the ref namespace is guaranteed empty there.
-func (a *App) cleanupThreadCheckpoints(threadID string, thread store.Thread, threadFound bool) error {
-	var errs []error
-	if threadFound {
-		workspace := thread.WorkspacePath
-		if workspace != "" {
-			ctx := context.Background()
-			cp := a.checkpointStore()
-			if cp != nil && cp.IsGitRepository(ctx, workspace) {
-				if err := cp.CleanupThread(ctx, workspace, threadID); err != nil {
-					errs = append(errs, fmt.Errorf("cleanup checkpoint refs: %w", err))
-				}
-			}
-		}
-	}
-	if a.store != nil {
-		if err := a.store.DeleteCheckpointsForThread(threadID); err != nil {
-			errs = append(errs, fmt.Errorf("drop checkpoint rows: %w", err))
-		}
-	}
-	return errors.Join(errs...)
 }
 
 func (a *App) removeDeliberation(thread store.Thread) {

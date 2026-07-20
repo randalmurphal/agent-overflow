@@ -4,8 +4,12 @@ Unified, virtualized diff/review surface replacing the RHS sidebar system —
 covering local agent diffs (turn / session / workspace / vs-branch) and full
 PR/MR review (GitHub via `gh`, GitLab via `glab`) without leaving the app.
 
-Status: designed 2026-07-05, not yet implemented. Supersedes the RHS
-`DiffPanelDrawer` + `DiffSidebar` surfaces once phase 3 lands.
+Status: designed 2026-07-05; all phases shipped (historical spec —
+details below reflect the design as written, not the current code).
+Superseded in part 2026-07-19: the checkpoint-backed **Turn**/**Session**
+scopes were removed with the git-checkpoint machinery; the shipped
+scopes are Workspace / Branch / PR, with a per-commit selector on the
+branch and PR scopes (`app_review_diffs.go`, `internal/gitdiff/`).
 
 ## Goal
 

@@ -32,7 +32,7 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 
 	thread := testThread("flush-codex-ok")
 	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -96,13 +96,13 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 	if flushRow.Summary != "drained" {
 		t.Errorf("flush row summary: got %q, want %q", flushRow.Summary, "drained")
 	}
-	checkpoint, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, "user:3:flush:1")
+	anchor, ok, err := app.store.GetMessageAnchor(thread.ID, "user:3:flush:1")
 	if err != nil || !ok {
-		t.Fatalf("checkpoint for flushed user item missing after echo: ok=%v err=%v", ok, err)
+		t.Fatalf("anchor for flushed user item missing after echo: ok=%v err=%v", ok, err)
 	}
-	if checkpoint.ProviderUserMessageID != "wire-user-1" || checkpoint.ProviderParentUUID != "parent-wire-1" {
-		t.Fatalf("checkpoint provider ids = %q/%q, want wire-user-1/parent-wire-1",
-			checkpoint.ProviderUserMessageID, checkpoint.ProviderParentUUID)
+	if anchor.ProviderUserMessageID != "wire-user-1" || anchor.ProviderParentUUID != "parent-wire-1" {
+		t.Fatalf("anchor provider ids = %q/%q, want wire-user-1/parent-wire-1",
+			anchor.ProviderUserMessageID, anchor.ProviderParentUUID)
 	}
 }
 
@@ -123,7 +123,7 @@ func TestDispatchFlush_EchoLandsAfterRowsThatArrivedFirst(t *testing.T) {
 
 	thread := testThread("flush-echo-insert-position")
 	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -1228,7 +1228,7 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 
 	thread := testThread("flush-claude-eager")
 	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -1368,19 +1368,20 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 		}
 	}
 	// The echo confirms the CLI consumed the message, so the flush row gets
-	// its own checkpoint — that row is now a revert target like any other
-	// user message. Reverting to it is safe at a shared turn because Claude
-	// truncation is item-granular (DeleteConversationFromItem): the original
-	// user:3 prompt and the agent work before the queued send survive.
-	cp, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, flushRow.ID)
+	// its own message anchor — that row is now an un-send/fork target like
+	// any other user message. Rolling back to it is safe at a shared turn
+	// because Claude truncation is item-granular
+	// (DeleteConversationFromItem): the original user:3 prompt and the
+	// agent work before the queued send survive.
+	anchor, ok, err := app.store.GetMessageAnchor(thread.ID, flushRow.ID)
 	if err != nil || !ok {
-		t.Fatalf("eagerly-persisted flush row has no checkpoint after echo (ok=%v err=%v)", ok, err)
+		t.Fatalf("eagerly-persisted flush row has no anchor after echo (ok=%v err=%v)", ok, err)
 	}
-	if cp.TurnIndex != 3 {
-		t.Errorf("flush checkpoint turn_index: got %d, want 3 (the shared turn)", cp.TurnIndex)
+	if anchor.TurnIndex != 3 {
+		t.Errorf("flush anchor turn_index: got %d, want 3 (the shared turn)", anchor.TurnIndex)
 	}
-	if cp.ProviderUserMessageID != echoID {
-		t.Errorf("flush checkpoint provider_user_message_id: got %q, want %q", cp.ProviderUserMessageID, echoID)
+	if anchor.ProviderUserMessageID != echoID {
+		t.Errorf("flush anchor provider_user_message_id: got %q, want %q", anchor.ProviderUserMessageID, echoID)
 	}
 }
 
@@ -1396,7 +1397,7 @@ func TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho(t *
 
 	thread := testThread("flush-claude-reposition")
 	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -1536,7 +1537,7 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 
 	thread := testThread("flush-claude-interrupt")
 	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -1665,7 +1666,7 @@ func TestDispatchFlush_Claude_NoActiveTurn_DefersLikeCodex(t *testing.T) {
 
 	thread := testThread("flush-claude-no-active")
 	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -2178,7 +2179,7 @@ func TestDispatchFlush_StaleRowCleanupBeforePersist(t *testing.T) {
 
 	thread := testThread("flush-stale-cleanup")
 	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -2302,7 +2303,7 @@ func TestDispatchFlush_PostPersistFailureRequeuesWithFreshRowMarker(t *testing.T
 
 	thread := testThread("flush-postpersist-marker")
 	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -2377,7 +2378,7 @@ func TestDispatchFlush_PostPersistFailureRequeuesWithFreshRowMarker(t *testing.T
 // TestCodexResendAfterInterrupt_FailedSendRestoresDraft pins the
 // Codex-TUI-parity recovery for a definite resend failure: input the
 // model never consumed goes back to the composer (eager row + its
-// checkpoint deleted, content restored to the draft, queue_restored
+// anchor deleted, content restored to the draft, queue_restored
 // emitted), never stays in the timeline looking sent and never
 // requeues (the TUI restores unconsumed input to the composer; the
 // queue path was the pre-parity behavior, round-13 CT13-2).
@@ -2386,7 +2387,7 @@ func TestCodexResendAfterInterrupt_FailedSendRestoresDraft(t *testing.T) {
 
 	thread := testThread("codex-resend-requeue")
 	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -2419,11 +2420,11 @@ func TestCodexResendAfterInterrupt_FailedSendRestoresDraft(t *testing.T) {
 	} else if found {
 		t.Error("eager row survived the failed resend — the timeline shows a message the provider never received")
 	}
-	// ...its checkpoint went with it...
-	if _, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, "user:1:flush:1"); err != nil {
-		t.Fatalf("GetCheckpointByUserItemID: %v", err)
+	// ...its message anchor went with it (FK cascade)...
+	if _, ok, err := app.store.GetMessageAnchor(thread.ID, "user:1:flush:1"); err != nil {
+		t.Fatalf("GetMessageAnchor: %v", err)
 	} else if ok {
-		t.Error("checkpoint for the deleted eager row survived")
+		t.Error("anchor for the deleted eager row survived")
 	}
 	// ...the dead-send pending entry is gone...
 	if app.triage.HasPendingSendForThread(thread.ID) {
@@ -2465,7 +2466,7 @@ func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 
 	thread := testThread("codex-resend-draft-fail")
 	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -2548,7 +2549,7 @@ func TestStartSession_FlushesRequeuedItems(t *testing.T) {
 
 	thread := testThread("flush-on-start")
 	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -2984,7 +2985,7 @@ func TestCodexResendAfterInterrupt_AmbiguousTimeoutKeepsPendingConfirmation(t *t
 
 	thread := testThread("codex-resend-ambiguous")
 	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -3040,7 +3041,7 @@ func TestCodexResendAfterInterrupt_MissingAttachmentRestoresDraft(t *testing.T) 
 
 	thread := testThread("codex-resend-missing-att")
 	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}

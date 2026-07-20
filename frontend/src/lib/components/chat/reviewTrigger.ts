@@ -8,24 +8,12 @@ import type { ThreadPane } from '../../stores/thread.svelte';
 import { openReviewCompanion } from '../../stores/reviewPane.svelte';
 
 export interface OpenReviewForItemOpts {
-  turnIndex: number;
   filePath?: string;
 }
 
-export function openReviewForItem(pane: ThreadPane, opts: OpenReviewForItemOpts): void {
+export function openReviewForItem(pane: ThreadPane, opts: OpenReviewForItemOpts = {}): void {
   const threadId = pane.threadId;
   if (!threadId) return;
-  const checkpoint = pane.checkpoints.checkpoints.find(
-    (candidate) => candidate.turnIndex === opts.turnIndex,
-  );
-  if (checkpoint) {
-    void openReviewCompanion(pane.paneId, threadId, {
-      scope: 'turn',
-      checkpointUserItemId: checkpoint.userItemId,
-      filePath: opts.filePath,
-    });
-    return;
-  }
   void openReviewCompanion(pane.paneId, threadId, {
     scope: 'workspace',
     filePath: opts.filePath,

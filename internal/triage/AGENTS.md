@@ -61,13 +61,11 @@ none fits.
   storing stdin bytes.
 - `tool_result_file_change.go` — `file_change` tool-result normalisation
   (inline diff projection, unified patch assembly).
-- `tool_paths.go` — per-turn agent-touched-path tracking. Extracts paths
-  from Claude `Edit`/`Write`/`MultiEdit`/`NotebookEdit` tool args and
-  Codex `fileChange` items, normalises to workspace-relative form, and
-  persists them to `thread_tracked_files`. Message checkpoints are
-  captured before user sends in `app_checkpoint.go`; the tracked-path
-  table scopes conversation-and-files revert and agent-only diff
-  previews. Bash side effects are intentionally untracked.
+- `tool_paths.go` — file-tool predicates and path normalisers shared by
+  the `file_change` tool-result dispatch and the command inline-diff
+  pipeline: recognises Claude `Edit`/`Write`/`MultiEdit`/`NotebookEdit`
+  and Codex `fileChange` items and normalises their paths to
+  workspace-relative form.
 - `tool_result_diff_upgrade.go` — late-arriving diff upgrades that
   attach a richer payload onto a previously persisted tool result.
 - `command_inline_diff_capture.go` / `command_inline_diff_parser.go` /

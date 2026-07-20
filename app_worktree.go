@@ -170,11 +170,8 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 			return store.Thread{}, fmt.Errorf("create worktree: %w", err)
 		}
 		purge = moved
-		if err := a.updateThreadAndInvalidateCheckpointsForWorkspaceChange(thread, "create worktree", project); err != nil {
-			_ = core.RemoveWorktreeForce(project, worktreePath, true)
-			return store.Thread{}, err
-		}
-	} else if err := a.store.UpdateThread(thread); err != nil {
+	}
+	if err := a.store.UpdateThread(thread); err != nil {
 		// Worktree was created on disk but the store update failed. Clean up
 		// so we don't leak a worktree directory.
 		_ = core.RemoveWorktreeForce(project, worktreePath, true)
@@ -241,11 +238,8 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 			return store.Thread{}, fmt.Errorf("attach worktree: %w", err)
 		}
 		purge = moved
-		if err := a.updateThreadAndInvalidateCheckpointsForWorkspaceChange(thread, "attach worktree", project); err != nil {
-			_ = core.RemoveWorktreeForce(project, worktreePath, true)
-			return store.Thread{}, err
-		}
-	} else if err := a.store.UpdateThread(thread); err != nil {
+	}
+	if err := a.store.UpdateThread(thread); err != nil {
 		_ = core.RemoveWorktreeForce(project, worktreePath, true)
 		return store.Thread{}, err
 	}
@@ -412,12 +406,6 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 			continue
 		}
 		if !gitops.SameFilesystemPath(previousWorkspace, t.WorkspacePath) {
-			refs, err := a.store.DeleteCheckpointsForThreadReturningRefs(id)
-			if err != nil {
-				sweepErrs = append(sweepErrs, fmt.Errorf("thread %s checkpoint cleanup failed: %w", id, err))
-			} else {
-				a.deleteCheckpointRefsBestEffort(id, "remove worktree", project, refs)
-			}
 			// Claude resolves --resume against the slug of the current cwd, so
 			// reattaching to the project root strands the transcript under the
 			// deleted worktree's slug — the next resume would fail with "No
@@ -805,10 +793,8 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 			return store.Thread{}, fmt.Errorf("switch workspace: %w", err)
 		}
 		purge = moved
-		if err := a.updateThreadAndInvalidateCheckpointsForWorkspaceChange(thread, "switch workspace", project); err != nil {
-			return store.Thread{}, err
-		}
-	} else if err := a.store.UpdateThread(thread); err != nil {
+	}
+	if err := a.store.UpdateThread(thread); err != nil {
 		return store.Thread{}, err
 	}
 	a.purgeRelocatedClaudeSessions(threadID, purge)

@@ -9,7 +9,7 @@ its source thread pane; open it via `openReviewCompanion` /
 
 | File | Role |
 |---|---|
-| `ReviewPane.svelte` | Shell: scope/branch/checkpoint selectors, tree/split/wrap toggles, error + send strip, snippet wiring. |
+| `ReviewPane.svelte` | Shell: scope/branch/commit selectors, tree/split/wrap toggles, error + send strip, snippet wiring. |
 | `ReviewDiffBody.svelte` | The continuous virtualized surface: one `TimelineVirtualizer` over the flat row model, sticky overlay file header, keyboard (j/k files, n/p comments, c file-level comment), jump-to-file. |
 | `ReviewRail.svelte` | The left rail shell: Files \| Comments tabs, resizable width persisted via appStorage `reviewTreeWidth`. Tab state is owned by `ReviewPane` (the toolbar comment tally switches to the Comments tab). |
 | `ReviewFileTree.svelte` | Files tab: GitHub-style tree (`utils/reviewTree.ts`), click-to-jump, top-file highlight, per-file comment-count badges, a search box plus an extension-filter dropdown (funnel button right of the search box, multi-select `Menu` of file-type options with counts). The extension set filters the rail; the dropdown's "Apply filter to diff" checkbox extends it to the diff body (state owned by `ReviewPane`, which derives the `diffFiles` subset and maps top-file highlight indexes back to the full list). The text search stays rail-only. |

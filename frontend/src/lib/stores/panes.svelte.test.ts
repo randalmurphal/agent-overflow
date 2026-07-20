@@ -67,7 +67,6 @@ function mockThreadSwitch(thread: Thread): void {
     items: [], oldestTurnIndex: -1, hasMore: false,
   }));
   setBindingMock('ListRecentTurns', async () => []);
-  setBindingMock('ListThreadCheckpoints', async () => []);
   setBindingMock('GetThreadLiveState', async () => null);
   setBindingMock('ListPendingInteractiveRequests', async () => null);
 }
@@ -551,7 +550,6 @@ describe('panes store', () => {
       }));
       setBindingMock('ListItems', async () => []);
       setBindingMock('ListRecentTurns', async () => []);
-      setBindingMock('ListThreadCheckpoints', async () => []);
       setBindingMock('MarkThreadRead', async () => {});
       setBindingMock('MarkThreadUnread', async () => {});
       const pane = createThreadPane();

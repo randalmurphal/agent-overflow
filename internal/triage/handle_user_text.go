@@ -59,10 +59,10 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 		// EagerPersistDeferredFlushSends) hold the same mutex across their
 		// claim + store write, so a claim this echo observes is a claim
 		// whose bump/persist already committed — and a failed write was
-		// already unclaimed. The confirmed hook (checkpoint capture) runs
-		// inside the lock too; it is already synchronous on this read
-		// loop, and the only new waiters are the rare interrupt paths,
-		// which need the ordering more than the latency.
+		// already unclaimed. The confirmed hook (message-anchor record)
+		// runs inside the lock too; it is already synchronous on this
+		// read loop, and the only new waiters are the rare interrupt
+		// paths, which need the ordering more than the latency.
 		handled, err := func() (bool, error) {
 			anchor := r.flushAnchor(evt.ThreadID)
 			anchor.Lock()
@@ -86,17 +86,15 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 			}
 			if handleErr != nil && !r.isWireOnlyUserTextSeen(evt.ThreadID, providerItemID) {
 				// This echo IS the consumption boundary even though the
-				// write failed, and the checkpoint's git ref needs the
-				// workspace NOW — by retry or session-death drain time
-				// the provider's response work has moved it, and a later
-				// capture would silently discard kept edits on a
-				// conversation-and-files revert. The checkpoint row
-				// doesn't depend on the failed stamp, only on the item
-				// row existing (FK) — so capture for found rows (quiet
-				// persists committed at dispatch); deferred rows that
-				// never persisted stay honestly checkpoint-less until
+				// write failed: record the message anchor now so fork /
+				// revert-on-interrupt can slice at this message without
+				// waiting for a retry or session-death self-heal. The
+				// anchor row doesn't depend on the failed stamp, only on
+				// the item row existing (FK) — so record for found rows
+				// (quiet persists committed at dispatch); deferred rows
+				// that never persisted stay honestly anchor-less until
 				// their write lands (round-10, R10-2).
-				r.captureEchoBoundaryCheckpoint(evt.ThreadID, &pending)
+				r.recordEchoBoundaryAnchor(evt.ThreadID, &pending)
 				// Both paths mark the dedup set exactly at their durable
 				// point, so unseen means nothing committed for this
 				// envelope: reinsert the popped entry so a re-delivered
@@ -251,7 +249,7 @@ func (r *Router) persistDeferredUserText(pending *pendingSend, providerItemID st
 	if confirmedHook != nil {
 		confirmedHook(item.ThreadID, persisted)
 	}
-	if err := r.store.UpdateCheckpointProviderIDs(item.ThreadID, item.ID, providerItemID, parentUUID); err != nil {
+	if err := r.store.UpdateMessageAnchorProviderIDs(item.ThreadID, item.ID, providerItemID, parentUUID); err != nil {
 		return fmt.Errorf("triage: update message checkpoint provider ids: %w", err)
 	}
 	return nil
@@ -394,7 +392,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 			// — record the replay guard first (see the main path's twin).
 			r.markWireOnlyUserTextSeen(threadID, providerItemID)
 		}
-		if err := r.store.UpdateCheckpointProviderIDs(threadID, aoItemID, providerItemID, parentUUID); err != nil {
+		if err := r.store.UpdateMessageAnchorProviderIDs(threadID, aoItemID, providerItemID, parentUUID); err != nil {
 			return fmt.Errorf("triage: update message checkpoint provider ids: %w", err)
 		}
 		if providerItemID == "" {
@@ -413,7 +411,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 		// (app_send.go stamps it before persist) and Claude echoed it back
 		// verbatim, as well as for a genuine duplicate (session-resume
 		// replay). The row already carries the id, so skip the redundant
-		// write + emit; UpdateCheckpointProviderIDs above still folds in
+		// write + emit; UpdateMessageAnchorProviderIDs above still folds in
 		// parent_uuid, which only the echo knows.
 		return nil
 	}
@@ -611,25 +609,15 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 	r.emitItemUpsertWithActivity(persisted, false)
 	// Eager quiet flush rows reach their final state only here — bumped
 	// to the turn tail with provider ids stamped — so this is their
-	// checkpoint-capture moment, mirroring persistDeferredUserText's
-	// hook for deferred rows. Without it a queued message dispatched
-	// into an active turn is never revertable (no checkpoint row gates
-	// the affordance). Direct sends (QueueItemID == "") captured at
-	// send time. Interrupt-anchored rows were captured mid-interrupt as
-	// a baseline (revert stays offered if the session dies before the
-	// echo), but the hook runs for them TOO: this echo is the
-	// consumption boundary, and the interrupt-time snapshot predates the
-	// interrupted tail's and sibling queued messages' responses — all
-	// provider-order-before content the conversation cut KEEPS, so a
-	// conversation-and-files revert restoring the older ref would
-	// silently discard kept edits (round-7, R7-1). The hook's replace
-	// swaps in a fresh ref at the true boundary and deletes the stale
-	// one. Skipped when a FAILED first echo already captured at the
-	// boundary (CheckpointCapturedAtEcho) — this retry runs later, and
-	// its replace would swap the true-boundary ref for a post-response
-	// workspace state (round-10, R10-2); UpdateCheckpointProviderIDs
-	// below still folds this echo's ids into that earlier capture.
-	if pending.QueueItemID != "" && !pending.CheckpointCapturedAtEcho {
+	// anchor-record moment, mirroring persistDeferredUserText's hook for
+	// deferred rows. Without it a queued message dispatched into an
+	// active turn carries no message anchor and can't be a fork /
+	// revert-on-interrupt slice point. Direct sends (QueueItemID == "")
+	// recorded at send time. Skipped when a FAILED first echo already
+	// recorded at the boundary (AnchorRecordedAtEcho);
+	// UpdateMessageAnchorProviderIDs below still folds this echo's ids
+	// into that earlier record.
+	if pending.QueueItemID != "" && !pending.AnchorRecordedAtEcho {
 		r.mu.Lock()
 		confirmedHook := r.flushUserTextConfirmed
 		r.mu.Unlock()
@@ -637,31 +625,31 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 			confirmedHook(threadID, persisted)
 		}
 	}
-	// AFTER the hook, deliberately: the flush row's checkpoint is
-	// created (or replaced) inside the hook — an update running before
-	// it would stamp zero rows or a doomed row. (Since round-5 R5-8 the
-	// hook's capture mirrors both ids from the freshly stamped item
-	// meta, so this update is mainly for checkpoints that PRE-EXIST the
-	// echo — direct sends captured at send time — whose rows still need
-	// the echo's ids folded in.)
-	if err := r.store.UpdateCheckpointProviderIDs(threadID, aoItemID, providerItemID, parentUUID); err != nil {
-		return fmt.Errorf("triage: update message checkpoint provider ids: %w", err)
+	// AFTER the hook, deliberately: the flush row's anchor is created
+	// (or replaced) inside the hook — an update running before it would
+	// stamp zero rows or a doomed row. (The hook's record mirrors both
+	// ids from the freshly stamped item meta, round-5 R5-8, so this
+	// update is mainly for anchors that PRE-EXIST the echo — direct
+	// sends recorded at send time — whose rows still need the echo's
+	// ids folded in.)
+	if err := r.store.UpdateMessageAnchorProviderIDs(threadID, aoItemID, providerItemID, parentUUID); err != nil {
+		return fmt.Errorf("triage: update message anchor provider ids: %w", err)
 	}
 	return nil
 }
 
-// captureEchoBoundaryCheckpoint runs the confirmed hook for a queued
-// flush entry whose echo handling failed pre-durability, so the message
-// checkpoint's git ref is captured at the true consumption boundary —
-// the echo — instead of whenever a retry or session-death self-heal
-// later gets the row durable (round-10, R10-2). Only an EXISTING row
-// can carry a checkpoint (the checkpoint row's item FK): quiet shapes
-// persisted at dispatch capture here; a deferred shape whose persist
-// failed stays checkpoint-less until its write lands — its capture then
-// runs at that (late, but earliest possible) moment. Caller holds the
-// thread's flush anchor lock, same as the success-path hook sites.
-func (r *Router) captureEchoBoundaryCheckpoint(threadID string, pending *pendingSend) {
-	if pending.QueueItemID == "" || pending.CheckpointCapturedAtEcho {
+// recordEchoBoundaryAnchor runs the confirmed hook for a queued flush
+// entry whose echo handling failed pre-durability, so the message
+// anchor exists from the true consumption boundary — the echo —
+// instead of whenever a retry or session-death self-heal later gets
+// the row durable (round-10, R10-2). Only an EXISTING row can carry an
+// anchor (the anchor row's item FK): quiet shapes persisted at
+// dispatch record here; a deferred shape whose persist failed stays
+// anchor-less until its write lands — its record then runs at that
+// (late, but earliest possible) moment. Caller holds the thread's
+// flush anchor lock, same as the success-path hook sites.
+func (r *Router) recordEchoBoundaryAnchor(threadID string, pending *pendingSend) {
+	if pending.QueueItemID == "" || pending.AnchorRecordedAtEcho {
 		return
 	}
 	r.mu.Lock()
@@ -679,7 +667,7 @@ func (r *Router) captureEchoBoundaryCheckpoint(threadID string, pending *pending
 		return
 	}
 	confirmedHook(threadID, row)
-	pending.CheckpointCapturedAtEcho = true
+	pending.AnchorRecordedAtEcho = true
 }
 
 // persistWireOnlySubagentPrompt creates a fresh nested `user_text` row

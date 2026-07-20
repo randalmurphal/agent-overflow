@@ -13,14 +13,8 @@ func TestDeleteConversationFromTurnRemovesSelectedAndForwardTurns(t *testing.T) 
 	now := time.Now().UnixMilli()
 	createDeleteConversationThread(t, s, "t-del", now)
 	insertDeleteConversationRows(t, s, "t-del", 5, now)
-	if err := s.UpsertTrackedFiles("t-del", 1, []string{"keep.txt"}); err != nil {
-		t.Fatalf("track keep: %v", err)
-	}
-	if err := s.UpsertTrackedFiles("t-del", 3, []string{"drop.txt"}); err != nil {
-		t.Fatalf("track drop: %v", err)
-	}
 
-	_, deleted, err := s.DeleteConversationFromTurn("t-del", 2)
+	deleted, err := s.DeleteConversationFromTurn("t-del", 2)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -41,13 +35,6 @@ func TestDeleteConversationFromTurnRemovesSelectedAndForwardTurns(t *testing.T) 
 		}
 	}
 	assertTurnsRemaining(t, s, "t-del", []int{0, 1})
-	tracked, err := s.ListTrackedFiles("t-del")
-	if err != nil {
-		t.Fatalf("list tracked: %v", err)
-	}
-	if len(tracked) != 1 || tracked[0] != "keep.txt" {
-		t.Fatalf("tracked files after delete = %v, want [keep.txt]", tracked)
-	}
 }
 
 func TestDeleteConversationFromTurnScopesToThread(t *testing.T) {
@@ -58,7 +45,7 @@ func TestDeleteConversationFromTurnScopesToThread(t *testing.T) {
 		insertDeleteConversationRows(t, s, id, 3, now)
 	}
 
-	if _, _, err := s.DeleteConversationFromTurn("t-a", 1); err != nil {
+	if _, err := s.DeleteConversationFromTurn("t-a", 1); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -85,7 +72,7 @@ func TestDeleteConversationFromTurnEmptyIsNoop(t *testing.T) {
 	now := time.Now().UnixMilli()
 	createDeleteConversationThread(t, s, "t-empty", now)
 
-	_, deleted, err := s.DeleteConversationFromTurn("t-empty", 0)
+	deleted, err := s.DeleteConversationFromTurn("t-empty", 0)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -109,7 +96,7 @@ func TestDeleteConversationFromTurnDoesNotBumpThreadUpdatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get before: %v", err)
 	}
-	if _, _, err := s.DeleteConversationFromTurn("t-touch", 0); err != nil {
+	if _, err := s.DeleteConversationFromTurn("t-touch", 0); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	after, err := s.GetThread("t-touch")
@@ -123,52 +110,33 @@ func TestDeleteConversationFromTurnDoesNotBumpThreadUpdatedAt(t *testing.T) {
 
 // TestDeleteConversationFromItemKeepsSameTurnPrefix — the item-granular
 // truncation behind Claude reverts to queued flush messages: same-turn rows
-// BEFORE the anchor survive (with their turn row, tracked files, and
-// checkpoints); the anchor, everything after it, and fully-emptied turns go.
+// BEFORE the anchor survive (with their turn row and message-anchor rows);
+// the anchor, everything after it, and fully-emptied turns go.
 func TestDeleteConversationFromItemKeepsSameTurnPrefix(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 	createDeleteConversationThread(t, s, "t-item", now)
 	insertDeleteConversationRows(t, s, "t-item", 5, now)
-	if err := s.UpsertTrackedFiles("t-item", 2, []string{"anchor-turn.txt"}); err != nil {
-		t.Fatalf("track anchor turn: %v", err)
-	}
-	if err := s.UpsertTrackedFiles("t-item", 3, []string{"later-turn.txt"}); err != nil {
-		t.Fatalf("track later turn: %v", err)
-	}
-	for _, cp := range []struct {
-		userItemID, ref string
-		turnIndex       int
+	for _, a := range []struct {
+		userItemID string
+		turnIndex  int
 	}{
-		{"t-item-item-2-0", "refs/ao/keep", 2},
-		{"t-item-item-2-1", "refs/ao/anchor", 2},
-		{"t-item-item-3-0", "refs/ao/later", 3},
+		{"t-item-item-2-0", 2},
+		{"t-item-item-2-1", 2},
+		{"t-item-item-3-0", 3},
 	} {
-		if _, err := s.ReplaceCheckpointByUserItemID(Checkpoint{
-			ID:            cp.userItemID + "-cp",
-			ThreadID:      "t-item",
-			UserItemID:    cp.userItemID,
-			TurnIndex:     cp.turnIndex,
-			RefName:       cp.ref,
-			Status:        "ready",
-			CapturedAt:    now,
-			WorkspacePath: "/tmp",
+		if err := s.UpsertMessageAnchor(MessageAnchor{
+			ThreadID:   "t-item",
+			UserItemID: a.userItemID,
+			TurnIndex:  a.turnIndex,
+			CreatedAt:  now,
 		}); err != nil {
-			t.Fatalf("insert checkpoint %s: %v", cp.userItemID, err)
+			t.Fatalf("insert anchor %s: %v", a.userItemID, err)
 		}
 	}
 
-	refs, err := s.DeleteConversationFromItem("t-item", "t-item-item-2-1")
-	if err != nil {
+	if err := s.DeleteConversationFromItem("t-item", "t-item-item-2-1"); err != nil {
 		t.Fatalf("delete: %v", err)
-	}
-
-	gotRefs := make([]string, len(refs))
-	for i, r := range refs {
-		gotRefs[i] = r.RefName
-	}
-	if fmt.Sprint(gotRefs) != fmt.Sprint([]string{"refs/ao/anchor", "refs/ao/later"}) {
-		t.Errorf("deleted refs = %v, want [refs/ao/anchor refs/ao/later]", gotRefs)
 	}
 
 	items, err := s.ListItems("t-item")
@@ -184,96 +152,68 @@ func TestDeleteConversationFromItemKeepsSameTurnPrefix(t *testing.T) {
 	}
 	assertTurnsRemaining(t, s, "t-item", []int{0, 1, 2})
 
-	tracked, err := s.ListTrackedFiles("t-item")
-	if err != nil {
-		t.Fatalf("list tracked: %v", err)
+	if _, ok, err := s.GetMessageAnchor("t-item", "t-item-item-2-0"); err != nil || !ok {
+		t.Errorf("same-turn prefix anchor should survive (ok=%v err=%v)", ok, err)
 	}
-	if fmt.Sprint(tracked) != fmt.Sprint([]string{"anchor-turn.txt"}) {
-		t.Errorf("tracked files after delete = %v, want [anchor-turn.txt]", tracked)
+	if _, ok, _ := s.GetMessageAnchor("t-item", "t-item-item-2-1"); ok {
+		t.Error("anchor row for the cut item should be deleted")
 	}
-
-	if _, ok, err := s.GetCheckpointByUserItemID("t-item", "t-item-item-2-0"); err != nil || !ok {
-		t.Errorf("same-turn prefix checkpoint should survive (ok=%v err=%v)", ok, err)
-	}
-	if _, ok, _ := s.GetCheckpointByUserItemID("t-item", "t-item-item-2-1"); ok {
-		t.Error("anchor checkpoint should be deleted")
-	}
-	if _, ok, _ := s.GetCheckpointByUserItemID("t-item", "t-item-item-3-0"); ok {
-		t.Error("later-turn checkpoint should be deleted")
+	if _, ok, _ := s.GetMessageAnchor("t-item", "t-item-item-3-0"); ok {
+		t.Error("later-turn anchor should be deleted")
 	}
 }
 
-// TestDeleteConversationFromItemCheckpointTurnDrift pins R8-3 (round 8):
-// ref collection follows the ITEMS the cut deletes, not the checkpoint's
-// cached turn_index. A checkpoint whose cached turn drifted below the
-// anchor while its user item sits in a deleted later turn must still
-// return its ref (the FK cascade deletes the row either way — missing
-// the SELECT leaks the git ref); a checkpoint whose cached turn drifted
-// above the anchor while its user item survives must be kept.
-func TestDeleteConversationFromItemCheckpointTurnDrift(t *testing.T) {
+// TestDeleteConversationFromItemAnchorTurnDrift pins R8-3 (round 8),
+// re-based onto message anchors: anchor-row deletion follows the ITEMS
+// the cut deletes (via the items FK cascade), not the anchor's cached
+// turn_index. A row whose cached turn drifted below the cut while its
+// item sits in a deleted later turn still dies; one whose cached turn
+// drifted above while its item survives must be kept.
+func TestDeleteConversationFromItemAnchorTurnDrift(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 	createDeleteConversationThread(t, s, "t-drift", now)
 	insertDeleteConversationRows(t, s, "t-drift", 5, now)
-	for _, cp := range []struct {
-		userItemID, ref string
-		turnIndex       int
+	for _, a := range []struct {
+		userItemID string
+		turnIndex  int
 	}{
 		// Item survives (same-turn prefix) but cached turn says later.
-		{"t-drift-item-2-0", "refs/ao/stale-high", 9},
+		{"t-drift-item-2-0", 9},
 		// Item is deleted (later turn) but cached turn says earlier.
-		{"t-drift-item-3-0", "refs/ao/stale-low", 0},
+		{"t-drift-item-3-0", 0},
 	} {
-		if _, err := s.ReplaceCheckpointByUserItemID(Checkpoint{
-			ID:            cp.userItemID + "-cp",
-			ThreadID:      "t-drift",
-			UserItemID:    cp.userItemID,
-			TurnIndex:     cp.turnIndex,
-			RefName:       cp.ref,
-			Status:        "ready",
-			CapturedAt:    now,
-			WorkspacePath: "/tmp",
+		if err := s.UpsertMessageAnchor(MessageAnchor{
+			ThreadID:   "t-drift",
+			UserItemID: a.userItemID,
+			TurnIndex:  a.turnIndex,
+			CreatedAt:  now,
 		}); err != nil {
-			t.Fatalf("insert checkpoint %s: %v", cp.userItemID, err)
+			t.Fatalf("insert anchor %s: %v", a.userItemID, err)
 		}
 	}
 
-	refs, err := s.DeleteConversationFromItem("t-drift", "t-drift-item-2-1")
-	if err != nil {
+	if err := s.DeleteConversationFromItem("t-drift", "t-drift-item-2-1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	gotRefs := make([]string, len(refs))
-	for i, r := range refs {
-		gotRefs[i] = r.RefName
+	if _, ok, err := s.GetMessageAnchor("t-drift", "t-drift-item-2-0"); err != nil || !ok {
+		t.Errorf("surviving item's anchor must survive its stale-high cached turn (ok=%v err=%v)", ok, err)
 	}
-	if fmt.Sprint(gotRefs) != fmt.Sprint([]string{"refs/ao/stale-low"}) {
-		t.Errorf("deleted refs = %v, want [refs/ao/stale-low]", gotRefs)
-	}
-	if _, ok, err := s.GetCheckpointByUserItemID("t-drift", "t-drift-item-2-0"); err != nil || !ok {
-		t.Errorf("surviving item's checkpoint must survive its stale-high cached turn (ok=%v err=%v)", ok, err)
-	}
-	if _, ok, _ := s.GetCheckpointByUserItemID("t-drift", "t-drift-item-3-0"); ok {
-		t.Error("deleted item's checkpoint row should be gone")
+	if _, ok, _ := s.GetMessageAnchor("t-drift", "t-drift-item-3-0"); ok {
+		t.Error("deleted item's anchor row should be gone")
 	}
 }
 
 // TestDeleteConversationFromItemTurnInitialMatchesTurnGranular — when the
 // anchor opens its turn, the item-granular delete degenerates to
-// DeleteConversationFromTurn: the emptied anchor turn loses its turns row
-// and tracked files too.
+// DeleteConversationFromTurn: the emptied anchor turn loses its turns row.
 func TestDeleteConversationFromItemTurnInitialMatchesTurnGranular(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().UnixMilli()
 	createDeleteConversationThread(t, s, "t-init", now)
 	insertDeleteConversationRows(t, s, "t-init", 4, now)
-	if err := s.UpsertTrackedFiles("t-init", 1, []string{"keep.txt"}); err != nil {
-		t.Fatalf("track keep: %v", err)
-	}
-	if err := s.UpsertTrackedFiles("t-init", 2, []string{"drop.txt"}); err != nil {
-		t.Fatalf("track drop: %v", err)
-	}
 
-	if _, err := s.DeleteConversationFromItem("t-init", "t-init-item-2-0"); err != nil {
+	if err := s.DeleteConversationFromItem("t-init", "t-init-item-2-0"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -285,13 +225,6 @@ func TestDeleteConversationFromItemTurnInitialMatchesTurnGranular(t *testing.T) 
 		t.Fatalf("remaining items: got %d, want 4", len(items))
 	}
 	assertTurnsRemaining(t, s, "t-init", []int{0, 1})
-	tracked, err := s.ListTrackedFiles("t-init")
-	if err != nil {
-		t.Fatalf("list tracked: %v", err)
-	}
-	if fmt.Sprint(tracked) != fmt.Sprint([]string{"keep.txt"}) {
-		t.Errorf("tracked files after delete = %v, want [keep.txt]", tracked)
-	}
 }
 
 // TestDeleteConversationFromItemPromotedAnchorKeepsSameTurnTail — an
@@ -356,39 +289,26 @@ func TestDeleteConversationFromItemPromotedAnchorKeepsSameTurnTail(t *testing.T)
 	if err := s.UpdateTurnCompleted("t-promo-turn-1", now+500, "interrupted", "am-1", `{"in":5}`, ""); err != nil {
 		t.Fatalf("settle turn 1: %v", err)
 	}
-	for _, cp := range []struct {
-		userItemID, ref string
-		turnIndex       int
+	for _, a := range []struct {
+		userItemID string
+		turnIndex  int
 	}{
-		{"t-promo-prompt", "refs/ao/keep", 1},
-		{"t-promo-anchor", "refs/ao/anchor", 1},
-		{"t-promo-user-2", "refs/ao/later", 2},
+		{"t-promo-prompt", 1},
+		{"t-promo-anchor", 1},
+		{"t-promo-user-2", 2},
 	} {
-		if _, err := s.ReplaceCheckpointByUserItemID(Checkpoint{
-			ID:            cp.userItemID + "-cp",
-			ThreadID:      "t-promo",
-			UserItemID:    cp.userItemID,
-			TurnIndex:     cp.turnIndex,
-			RefName:       cp.ref,
-			Status:        "ready",
-			CapturedAt:    now,
-			WorkspacePath: "/tmp",
+		if err := s.UpsertMessageAnchor(MessageAnchor{
+			ThreadID:   "t-promo",
+			UserItemID: a.userItemID,
+			TurnIndex:  a.turnIndex,
+			CreatedAt:  now,
 		}); err != nil {
-			t.Fatalf("insert checkpoint %s: %v", cp.userItemID, err)
+			t.Fatalf("insert anchor %s: %v", a.userItemID, err)
 		}
 	}
 
-	refs, err := s.DeleteConversationFromItem("t-promo", "t-promo-anchor")
-	if err != nil {
+	if err := s.DeleteConversationFromItem("t-promo", "t-promo-anchor"); err != nil {
 		t.Fatalf("delete: %v", err)
-	}
-
-	gotRefs := make([]string, len(refs))
-	for i, r := range refs {
-		gotRefs[i] = r.RefName
-	}
-	if fmt.Sprint(gotRefs) != fmt.Sprint([]string{"refs/ao/anchor", "refs/ao/later"}) {
-		t.Errorf("deleted refs = %v, want [refs/ao/anchor refs/ao/later]", gotRefs)
 	}
 
 	items, err := s.ListItems("t-promo")
@@ -419,11 +339,11 @@ func TestDeleteConversationFromItemPromotedAnchorKeepsSameTurnTail(t *testing.T)
 		t.Errorf("promoted cut rewrote turn 1 settle metadata: %+v", turn1)
 	}
 
-	if _, ok, err := s.GetCheckpointByUserItemID("t-promo", "t-promo-prompt"); err != nil || !ok {
-		t.Errorf("prefix checkpoint should survive (ok=%v err=%v)", ok, err)
+	if _, ok, err := s.GetMessageAnchor("t-promo", "t-promo-prompt"); err != nil || !ok {
+		t.Errorf("prefix anchor should survive (ok=%v err=%v)", ok, err)
 	}
-	if _, ok, _ := s.GetCheckpointByUserItemID("t-promo", "t-promo-anchor"); ok {
-		t.Error("anchor checkpoint should be deleted")
+	if _, ok, _ := s.GetMessageAnchor("t-promo", "t-promo-anchor"); ok {
+		t.Error("cut item's anchor row should be deleted")
 	}
 }
 
@@ -472,7 +392,7 @@ func TestDeleteConversationFromItemTrimsAnchorTurnSettle(t *testing.T) {
 		t.Fatalf("settle turn: %v", err)
 	}
 
-	if _, err := s.DeleteConversationFromItem("t-trim", "t-trim-anchor"); err != nil {
+	if err := s.DeleteConversationFromItem("t-trim", "t-trim-anchor"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -520,7 +440,7 @@ func TestDeleteConversationFromItemLeavesActiveAnchorTurnAlone(t *testing.T) {
 		}
 	}
 
-	if _, err := s.DeleteConversationFromItem("t-active", "t-active-anchor"); err != nil {
+	if err := s.DeleteConversationFromItem("t-active", "t-active-anchor"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -538,7 +458,7 @@ func TestDeleteConversationFromItemMissingAnchorErrors(t *testing.T) {
 	now := time.Now().UnixMilli()
 	createDeleteConversationThread(t, s, "t-miss", now)
 
-	if _, err := s.DeleteConversationFromItem("t-miss", "no-such-item"); err == nil {
+	if err := s.DeleteConversationFromItem("t-miss", "no-such-item"); err == nil {
 		t.Fatal("expected error for missing anchor item")
 	}
 }
@@ -646,7 +566,7 @@ func TestDeleteConversationFromItemAtPickupAnchorKeepsSettle(t *testing.T) {
 		t.Fatalf("settle turn 0: %v", err)
 	}
 
-	if _, err := s.DeleteConversationFromItem("t-pickup", "t-pickup-anchor"); err != nil {
+	if err := s.DeleteConversationFromItem("t-pickup", "t-pickup-anchor"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -717,7 +637,7 @@ func TestDeleteConversationFromItemPromotedBoundaryCutsResponse(t *testing.T) {
 		t.Fatalf("settle turn: %v", err)
 	}
 
-	if _, err := s.DeleteConversationFromItem("t-bound", "t-bound-anchor"); err != nil {
+	if err := s.DeleteConversationFromItem("t-bound", "t-bound-anchor"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 

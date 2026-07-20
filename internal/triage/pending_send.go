@@ -161,7 +161,7 @@ type pendingSend struct {
 	// own response (round-14, D14-1).
 	EchoTurnWasEmpty bool
 
-	// CheckpointCapturedAtEcho marks an entry whose confirmed-hook
+	// AnchorRecordedAtEcho marks an entry whose confirmed-hook
 	// checkpoint was captured on the FIRST echo's failure path (the
 	// row existed; only the stamp write failed). The message
 	// checkpoint's git ref must reflect the workspace at the
@@ -169,7 +169,7 @@ type pendingSend struct {
 	// changing the workspace afterwards, so a retry's success-path
 	// hook must NOT replace the true-boundary ref with a later capture
 	// (round-10, R10-2).
-	CheckpointCapturedAtEcho bool
+	AnchorRecordedAtEcho bool
 
 	// NeedsTailRebump marks an anchored quiet entry whose sibling
 	// re-bump failed after an earlier promoted echo drained rows past
@@ -607,7 +607,7 @@ type EagerPersistedFlush struct {
 // before the echo — and the echo-time hook later replaces the ref at
 // the true consumption boundary (round-7, R7-1). The baseline must
 // commit before the mutex releases, or an echo in the gap would stamp
-// the row while UpdateCheckpointProviderIDs no-ops against a
+// the row while UpdateMessageAnchorProviderIDs no-ops against a
 // checkpoint that doesn't exist yet, leaving it permanently without
 // provider ids (round-4 review, CT4-1).
 func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurnIndex int, tok FlushStampToken) []EagerPersistedFlush {
@@ -719,7 +719,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 // session dies before the echo — and the echo-time hook later replaces
 // the ref at the true consumption boundary (round-7, R7-1). The
 // baseline must commit before the mutex releases, or an echo in the
-// gap would stamp the row while UpdateCheckpointProviderIDs no-ops
+// gap would stamp the row while UpdateMessageAnchorProviderIDs no-ops
 // against a checkpoint that doesn't exist yet, leaving it permanently
 // without provider ids (round-4 review, CT4-1). Returns the promoted
 // rows at their post-bump position.

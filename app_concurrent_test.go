@@ -1,16 +1,13 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -200,62 +197,6 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 	wg.Wait()
 
 	_ = app.StopSession(thread.ID)
-}
-
-// TestConcurrent_CheckpointCaptureDuringWrite: run checkpoint captures in a
-// tight loop while the workspace is being mutated. Neither flow should
-// corrupt — every commit ref must exist when both loops finish.
-func TestConcurrent_CheckpointCaptureDuringWrite(t *testing.T) {
-	app, _, _ := setupCascadeApp(t)
-	workspace := testutil.InitGitRepo(t)
-
-	thread := e2eThreadCascade("thread-conc-checkpoint", provider.Claude, workspace)
-	if err := app.store.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-
-	const iterations = 8
-	var wg sync.WaitGroup
-	errCh := make(chan error, iterations*2)
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		for i := 0; i < iterations; i++ {
-			path := fmt.Sprintf("%s/file-%d.txt", workspace, i)
-			if err := os.WriteFile(path, []byte(fmt.Sprintf("contents %d", i)), 0o644); err != nil {
-				errCh <- err
-				return
-			}
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		for i := 0; i < iterations; i++ {
-			if _, err := app.checkpoints.CaptureBaseline(ctx, workspace, thread.ID, i); err != nil {
-				errCh <- fmt.Errorf("capture turn %d: %w", i, err)
-				return
-			}
-		}
-	}()
-
-	wg.Wait()
-	close(errCh)
-	for err := range errCh {
-		if err != nil {
-			t.Fatalf("concurrent error: %v", err)
-		}
-	}
-
-	for i := 0; i < iterations; i++ {
-		ref := checkpoint.RefForThreadTurn(thread.ID, i)
-		if err := testutil.RunGitAllowError(workspace, "rev-parse", "--verify", ref); err != nil {
-			t.Fatalf("checkpoint ref %s missing: %v", ref, err)
-		}
-	}
 }
 
 // TestConcurrent_SettingsUpdateDuringStartup: concurrent UpdateSettings calls

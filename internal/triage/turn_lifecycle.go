@@ -1154,7 +1154,6 @@ func (r *Router) clearOpenTurn(threadID string) {
 				delete(r.pendingCommandDiffs, key)
 			}
 		}
-		deleteByPrefix(r.pendingToolPaths, threadID+"|")
 		// pendingApprovals / pendingApprovalItems / pendingUserInputs
 		// are keyed by `<threadID>:<requestID-or-itemID>`. Approvals are
 		// inherently mid-turn — the model issues a control_request, the
@@ -1489,7 +1488,6 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 			delete(r.pendingCommandDiffs, key)
 		}
 	}
-	deleteByPrefix(r.pendingToolPaths, threadID+"|")
 	approvalPrefix := threadID + ":"
 	deleteByPrefix(r.pendingApprovals, approvalPrefix)
 	deleteByPrefix(r.pendingApprovalItems, approvalPrefix)

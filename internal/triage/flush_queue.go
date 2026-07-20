@@ -120,14 +120,13 @@ func (r *Router) SetFlushDispatcher(fn FlushDispatcher) {
 //
 // CONTRACT: the hook runs outside r.mu but UNDER the thread's flush
 // anchor lock — the
-// in-lock invocation is load-bearing (the checkpoint it captures must
-// exist before the mutex releases, or an echo in the gap stamps the
-// row against a checkpoint that isn't there yet; round-4 CT4-1) — and
+// in-lock invocation is load-bearing (the message anchor it records
+// must exist before the mutex releases, or an echo in the gap stamps
+// ids onto an anchor that isn't there yet; round-4 CT4-1) — and
 // often on the provider read loop. It must not call back into any
 // Router method (the anchor lock is not reentrant; DrainUnconfirmedFlushItems,
 // PromoteQuietFlushSends etc. would deadlock) and must not block
-// indefinitely. Store/git/emit work, as the checkpoint capture does,
-// is fine.
+// indefinitely. Store/emit work, as the anchor record does, is fine.
 func (r *Router) SetFlushUserTextConfirmedHook(fn func(threadID string, item store.Item)) {
 	r.mu.Lock()
 	r.flushUserTextConfirmed = fn
@@ -473,7 +472,7 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 // selfHealEchoConsumedFlushRow makes sure the timeline carries a flush
 // message whose provider consumption was proven by an echo that then
 // failed before its durable write (round-5, R5-3), and stamps the
-// echo's stashed wire identity onto the row and its checkpoint
+// echo's stashed wire identity onto the row and its message anchor
 // (round-6, R6-1): the entry is dropped after this, so an unstamped
 // row would permanently lack its slice anchor — a later revert would
 // ordinal-walk or full-clone while the provider transcript still
@@ -564,18 +563,16 @@ func (r *Router) selfHealEchoConsumedFlushRow(threadID string, entry pendingSend
 		log.Printf("triage: echo-consumed flush row %s/%s was missing at session-death drain — re-persisted the retained copy", threadID, entry.AOItemID)
 	}
 	if hasEchoIDs {
-		// Fold the ids into the row's checkpoint too — the checkpoint
-		// copy is the revert path's first anchor candidate. Rows that
-		// existed at the failed echo already hold a checkpoint captured
-		// at the true consumption boundary
-		// (captureEchoBoundaryCheckpoint, round-10 R10-2) — capturing
-		// one HERE instead would snapshot a workspace the response
-		// already moved. Rows healed from a never-persisted deferred
-		// copy have no checkpoint (the capture needs the row's FK) and
-		// honestly stay that way: no revert affordance beats one that
-		// restores the wrong workspace state.
-		if err := r.store.UpdateCheckpointProviderIDs(threadID, entry.AOItemID, entry.EchoProviderItemID, entry.EchoParentUUID); err != nil {
-			log.Printf("triage: self-heal checkpoint ids for echo-consumed flush row %s/%s: %v", threadID, entry.AOItemID, err)
+		// Fold the ids into the row's message anchor too — the anchor
+		// copy is the rollback path's first slice candidate. Rows that
+		// existed at the failed echo already hold an anchor recorded
+		// at the true consumption boundary (recordEchoBoundaryAnchor,
+		// round-10 R10-2). Rows healed from a never-persisted deferred
+		// copy have no anchor row (the upsert needs the row's FK); the
+		// update is then a no-op and rollback falls back to the
+		// item-meta synthesis.
+		if err := r.store.UpdateMessageAnchorProviderIDs(threadID, entry.AOItemID, entry.EchoProviderItemID, entry.EchoParentUUID); err != nil {
+			log.Printf("triage: self-heal anchor ids for echo-consumed flush row %s/%s: %v", threadID, entry.AOItemID, err)
 		}
 	}
 }

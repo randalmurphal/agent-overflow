@@ -43,7 +43,7 @@ function keywordResult(file: PatchFile) {
   };
 }
 
-const workspaceContext = { scope: 'workspace', userItemId: '', headSHA: '' };
+const workspaceContext = { scope: 'workspace', commitSHA: '', headSHA: '' };
 
 beforeEach(() => {
   resetDiffSpanCacheForTest();
@@ -144,7 +144,7 @@ describe('requestFileSpans', () => {
       'thread-1',
       {
         scope: 'workspace',
-        userItemId: '',
+        commitSHA: '',
         headSHA: '',
         path: 'src/scoped.ts',
         patch: file.lines.map((l) => l.content).join('\n'),
@@ -194,7 +194,7 @@ describe('requestFileSpans', () => {
     ).toBeUndefined();
 
     // Distinct scopes within one thread key apart too.
-    await requestFileSpans(file, 'thread-a', { scope: 'turn', userItemId: 'u1', headSHA: '' });
+    await requestFileSpans(file, 'thread-a', { scope: 'commit', commitSHA: 'a1b2c3d', headSHA: '' });
     expect(primed).toHaveBeenCalledTimes(3);
   });
 
@@ -441,7 +441,7 @@ describe('requestFileSpans', () => {
   });
 
   it('a same-thread reload mid-flight starts a fresh request and discards the stale result', async () => {
-    // Reload (revert-to-checkpoint) while a request is pending: the
+    // Reload (same-thread re-switch) while a request is pending: the
     // mounted consumer re-registers on the generation bump BEFORE the
     // old RPC settles. The old flight was computed against pre-reload
     // state (scoped requests prime from the workspace), so it must be
@@ -666,7 +666,7 @@ describe('evictDiffSpansForThread', () => {
     setBindingMock('HighlightPatch', async () => keywordResult(file));
     await requestFileSpans(file, 'thread-a');
 
-    // Same-thread reload (revert-to-checkpoint) evicts while the
+    // Same-thread reload evicts while the
     // review companion stays mounted; the bump re-runs its request
     // effect.
     const before = diffSpanCacheGeneration();

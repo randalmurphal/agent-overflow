@@ -7,13 +7,13 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as checkpoint$0 from "./internal/checkpoint/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
 import * as flushqueue$0 from "./internal/flushqueue/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as git$0 from "./internal/git/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as gitdiff$0 from "./internal/gitdiff/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as highlight$0 from "./internal/highlight/models.js";
@@ -64,6 +64,18 @@ export class AttachmentThumbnail {
         return new AttachmentThumbnail($$parsedSource as Partial<AttachmentThumbnail>);
     }
 }
+
+/**
+ * BranchCommit is the wire shape of one row in the review pane's
+ * per-commit selector.
+ */
+export const BranchCommit = gitdiff$0.Commit;
+
+/**
+ * BranchCommit is the wire shape of one row in the review pane's
+ * per-commit selector.
+ */
+export type BranchCommit = gitdiff$0.Commit;
 
 /**
  * ChannelParticipantState is one entry in ChannelStatePayload's
@@ -177,24 +189,6 @@ export class ChannelStatePayload {
         return new ChannelStatePayload($$parsedSource as Partial<ChannelStatePayload>);
     }
 }
-
-/**
- * CheckpointView is the wire shape returned by ListMessageCheckpoints
- * and friends. Canonical declaration (plus the field-subset projection
- * rule) lives in internal/checkpoint; main keeps the alias so the
- * Wails binding generator still emits it under the agent-overflow
- * namespace the frontend imports from.
- */
-export const CheckpointView = checkpoint$0.View;
-
-/**
- * CheckpointView is the wire shape returned by ListMessageCheckpoints
- * and friends. Canonical declaration (plus the field-subset projection
- * rule) lives in internal/checkpoint; main keeps the alias so the
- * Wails binding generator still emits it under the agent-overflow
- * namespace the frontend imports from.
- */
-export type CheckpointView = checkpoint$0.View;
 
 export class ContextSettingsProfile {
     "provider": string;
@@ -457,13 +451,13 @@ export class DesignWorkdirInfo {
  * NEW side (expanded context is unchanged on both sides, so the new
  * side is the only source needed). Scope mirrors the review pane's
  * scope selector; the extra fields disambiguate the new-side source
- * where the scope alone can't: UserItemID for turn scope (the
- * checkpoint the loaded diff targets), HeadSHA for pr scope (the
- * fetched head commit).
+ * where the scope alone can't: CommitSHA for commit scope (a selected
+ * commit in the workspace repo), HeadSHA for pr scope (the fetched
+ * head commit).
  */
 export class DiffContextRequest {
     "scope": string;
-    "userItemId": string;
+    "commitSHA": string;
     "headSHA": string;
     "path": string;
 
@@ -478,8 +472,8 @@ export class DiffContextRequest {
         if (!("scope" in $$source)) {
             this["scope"] = "";
         }
-        if (!("userItemId" in $$source)) {
-            this["userItemId"] = "";
+        if (!("commitSHA" in $$source)) {
+            this["commitSHA"] = "";
         }
         if (!("headSHA" in $$source)) {
             this["headSHA"] = "";
@@ -773,7 +767,7 @@ export class HighlightCodeRequest {
  */
 export class HighlightPatchContextRequest {
     "scope": string;
-    "userItemId": string;
+    "commitSHA": string;
     "headSHA": string;
     "path": string;
     "patch": string;
@@ -783,8 +777,8 @@ export class HighlightPatchContextRequest {
         if (!("scope" in $$source)) {
             this["scope"] = "";
         }
-        if (!("userItemId" in $$source)) {
-            this["userItemId"] = "";
+        if (!("commitSHA" in $$source)) {
+            this["commitSHA"] = "";
         }
         if (!("headSHA" in $$source)) {
             this["headSHA"] = "";
@@ -1663,24 +1657,6 @@ export const RemoteEndpointSummary = settings$0.RemoteEndpointSummary;
  * stored RemoteEndpoint shape — see settings.RemoteEndpoint.Summary.
  */
 export type RemoteEndpointSummary = settings$0.RemoteEndpointSummary;
-
-export class RevertToMessageCheckpointOptions {
-    "killRunningBackgroundTasks"?: boolean;
-
-    /** Creates a new RevertToMessageCheckpointOptions instance. */
-    constructor($$source: Partial<RevertToMessageCheckpointOptions> = {}) {
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new RevertToMessageCheckpointOptions instance from a string or object.
-     */
-    static createFrom($$source: any = {}): RevertToMessageCheckpointOptions {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new RevertToMessageCheckpointOptions($$parsedSource as Partial<RevertToMessageCheckpointOptions>);
-    }
-}
 
 export class SendDiffReviewCommentsInput {
     "pr"?: store$0.DiffReviewPRContext | null;

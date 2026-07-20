@@ -136,7 +136,7 @@ viewport-sized slice with `App.ListThreadSliceAround(threadID,
 anchorItemID, SLICE_AROUND_ITEM_BUDGET)`.
 
 The switch runs `SwitchThread`, live-state hydration, recent-turn fetch,
-checkpoint refresh, and the initial slice under one `Promise.allSettled`.
+and the initial slice under one `Promise.allSettled`.
 There is no second wider-window load on switch. Older history pages in
 lazily through `pane.loadOlder()` when the user scrolls near the top, with
 the manual "Load older messages" button as the explicit fallback. The

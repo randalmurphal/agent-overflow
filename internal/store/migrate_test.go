@@ -39,11 +39,11 @@ func TestMigrationFreshDB(t *testing.T) {
 	tables := []string{
 		"migration_versions", "threads", "items", "payloads", "payload_chunks",
 		"channels", "channel_messages", "discussion_definitions",
-		"attachments", "thread_drafts", "thread_checkpoints", "turns",
+		"attachments", "thread_drafts", "message_anchors", "turns",
 		"proposed_plans", "proposed_plan_comments",
 		"chat_bar_favorites", "chat_model_profiles", "new_thread_mcp_defaults",
 		"diff_review_comments", "pending_background_task_terminals",
-		"projects", "thread_tracked_files", "usage_ledger", "ui_state",
+		"projects", "usage_ledger", "ui_state",
 	}
 	for _, table := range tables {
 		var name string
@@ -58,7 +58,7 @@ func TestMigrationFreshDB(t *testing.T) {
 	for _, table := range []string{
 		"design_snapshots", "design_artifacts",
 		"new_thread_drafts", "draft_attachments",
-		"mcp_servers",
+		"mcp_servers", "thread_checkpoints", "thread_tracked_files",
 	} {
 		var dropped string
 		err := s.db.QueryRow(
@@ -623,25 +623,96 @@ func TestChannelMessagesSequenceUnique(t *testing.T) {
 	}
 }
 
-func TestThreadCheckpointsUniqueThreadUserItem(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThreadForCheckpoint(t, s, "t-chk-unique")
+// TestV23CarriesCheckpointRowsIntoMessageAnchors pins the v23 slim-down:
+// provider correlation (turn index + Claude wire uuids) moves from
+// thread_checkpoints into message_anchors, the git-era tables drop, and
+// review comments scoped to the removed turn/session diff sources are
+// purged while other scopes survive.
+func TestV23CarriesCheckpointRowsIntoMessageAnchors(t *testing.T) {
+	db := migrateThrough(t, 22)
 
-	if _, err := s.db.Exec(`INSERT INTO thread_checkpoints
-		(id, thread_id, user_item_id, turn_index, ref_name, captured_at, workspace_path)
-		VALUES ('chk-a', 't-chk-unique', 't-chk-unique-user:1', 1, 'refs/a', 1000, '/tmp')`); err != nil {
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v23', '/v23', 'v23', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, mode)
+		VALUES ('t-v23', 'p-v23', 'T', 'claude', '/tmp', '', 1, 1, 0, 'chat')`)
+	mustExec(t, db, `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+		summary, parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+		VALUES ('t-v23-user:0', 't-v23', 0, 0, 'user_text', 'user', 'completed', 'hi', '', 0, '', '', '', '{}', 1, 1)`)
+	mustExec(t, db, `INSERT INTO thread_checkpoints
+		(id, thread_id, user_item_id, turn_index, provider_user_message_id, provider_parent_uuid,
+		 ref_name, captured_at, workspace_path)
+		VALUES ('chk-v23', 't-v23', 't-v23-user:0', 0, 'wire-uuid', 'parent-uuid', 'refs/x', 4242, '/tmp')`)
+	mustExec(t, db, `INSERT INTO thread_tracked_files (thread_id, turn_index, path)
+		VALUES ('t-v23', 0, 'tracked.txt')`)
+	for i, scope := range []string{"turn", "session", "workspace"} {
+		mustExec(t, db, `INSERT INTO diff_review_comments
+			(id, thread_id, scope, source_key, file_path, side, body, created_at, updated_at)
+			VALUES (?, 't-v23', ?, 'sk', 'f.go', 'file', 'note', ?, ?)`,
+			fmt.Sprintf("c-%s", scope), scope, i, i)
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 23)); err != nil {
+		t.Fatalf("apply v23: %v", err)
+	}
+
+	var turnIndex int
+	var msgID, parentUUID string
+	var createdAt int64
+	if err := db.QueryRow(`SELECT turn_index, provider_user_message_id, provider_parent_uuid, created_at
+		FROM message_anchors WHERE thread_id = 't-v23' AND user_item_id = 't-v23-user:0'`).
+		Scan(&turnIndex, &msgID, &parentUUID, &createdAt); err != nil {
+		t.Fatalf("read carried anchor: %v", err)
+	}
+	if turnIndex != 0 || msgID != "wire-uuid" || parentUUID != "parent-uuid" || createdAt != 4242 {
+		t.Errorf("carried anchor = turn=%d msg=%q parent=%q created=%d, want 0/wire-uuid/parent-uuid/4242",
+			turnIndex, msgID, parentUUID, createdAt)
+	}
+
+	for _, table := range []string{"thread_checkpoints", "thread_tracked_files"} {
+		var name string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name); err == nil {
+			t.Errorf("%s should be dropped by v23", table)
+		}
+	}
+
+	rows, err := db.Query(`SELECT scope FROM diff_review_comments WHERE thread_id = 't-v23' ORDER BY scope`)
+	if err != nil {
+		t.Fatalf("query comments: %v", err)
+	}
+	defer rows.Close()
+	var scopes []string
+	for rows.Next() {
+		var scope string
+		if err := rows.Scan(&scope); err != nil {
+			t.Fatalf("scan scope: %v", err)
+		}
+		scopes = append(scopes, scope)
+	}
+	if fmt.Sprint(scopes) != fmt.Sprint([]string{"workspace"}) {
+		t.Errorf("surviving comment scopes = %v, want [workspace] (turn/session purged)", scopes)
+	}
+}
+
+func TestMessageAnchorsPrimaryKeyThreadUserItem(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadWithUserItems(t, s, "t-anc-unique")
+
+	if _, err := s.db.Exec(`INSERT INTO message_anchors
+		(thread_id, user_item_id, turn_index, created_at)
+		VALUES ('t-anc-unique', 't-anc-unique-user:1', 1, 1000)`); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
 
-	if _, err := s.db.Exec(`INSERT INTO thread_checkpoints
-		(id, thread_id, user_item_id, turn_index, ref_name, captured_at, workspace_path)
-		VALUES ('chk-b', 't-chk-unique', 't-chk-unique-user:1', 1, 'refs/b', 2000, '/tmp')`); err == nil {
-		t.Error("expected UNIQUE violation on (thread_id, user_item_id)")
+	if _, err := s.db.Exec(`INSERT INTO message_anchors
+		(thread_id, user_item_id, turn_index, created_at)
+		VALUES ('t-anc-unique', 't-anc-unique-user:1', 1, 2000)`); err == nil {
+		t.Error("expected PK violation on (thread_id, user_item_id)")
 	}
 
-	if _, err := s.db.Exec(`INSERT INTO thread_checkpoints
-		(id, thread_id, user_item_id, turn_index, ref_name, captured_at, workspace_path)
-		VALUES ('chk-c', 't-chk-unique', 't-chk-unique-user:2', 2, 'refs/c', 3000, '/tmp')`); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO message_anchors
+		(thread_id, user_item_id, turn_index, created_at)
+		VALUES ('t-anc-unique', 't-anc-unique-user:2', 2, 3000)`); err != nil {
 		t.Errorf("different user_item_id must succeed: %v", err)
 	}
 }
@@ -702,26 +773,49 @@ func TestThreadTurnsCascade(t *testing.T) {
 	}
 }
 
-func TestThreadCheckpointsCascadeOnThreadDelete(t *testing.T) {
+func TestMessageAnchorsCascadeOnThreadDelete(t *testing.T) {
 	s := newTestStore(t)
-	mustCreateThreadForCheckpoint(t, s, "t-chk-casc")
+	mustCreateThreadWithUserItems(t, s, "t-anc-casc")
 
-	if _, err := s.db.Exec(`INSERT INTO thread_checkpoints
-		(id, thread_id, user_item_id, turn_index, ref_name, captured_at, workspace_path)
-		VALUES ('chk-1', 't-chk-casc', 't-chk-casc-user:0', 0, 'refs/x', 1000, '/tmp')`); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO message_anchors
+		(thread_id, user_item_id, turn_index, created_at)
+		VALUES ('t-anc-casc', 't-anc-casc-user:0', 0, 1000)`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	if _, err := s.db.Exec(`DELETE FROM threads WHERE id = 't-chk-casc'`); err != nil {
+	if _, err := s.db.Exec(`DELETE FROM threads WHERE id = 't-anc-casc'`); err != nil {
 		t.Fatalf("delete thread: %v", err)
 	}
 
 	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM thread_checkpoints`).Scan(&count); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM message_anchors`).Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if count != 0 {
-		t.Errorf("expected cascade to drop checkpoints, still have %d", count)
+		t.Errorf("expected cascade to drop anchors, still have %d", count)
+	}
+}
+
+func TestMessageAnchorsCascadeOnItemDelete(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadWithUserItems(t, s, "t-anc-item")
+
+	if _, err := s.db.Exec(`INSERT INTO message_anchors
+		(thread_id, user_item_id, turn_index, created_at)
+		VALUES ('t-anc-item', 't-anc-item-user:1', 1, 1000)`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := s.db.Exec(`DELETE FROM items WHERE thread_id = 't-anc-item' AND id = 't-anc-item-user:1'`); err != nil {
+		t.Fatalf("delete item: %v", err)
+	}
+
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM message_anchors`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected items FK cascade to drop the anchor, still have %d", count)
 	}
 }
 

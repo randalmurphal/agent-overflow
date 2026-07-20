@@ -704,7 +704,6 @@ describe('setupEventListeners', () => {
       releaseSnapshot = resolve;
     }));
     setBindingMock('ListRecentTurns', async () => []);
-    setBindingMock('ListThreadCheckpoints', async () => []);
 
     const pane = createThreadPane();
     registerPaneForTest('main', pane);

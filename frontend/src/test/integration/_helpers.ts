@@ -189,7 +189,6 @@ export function installThreadViewDefaults(): void {
   }));
   setBindingMock('GitStatusUnsubscribe', async () => {});
   setBindingMock('GitListBranches', async () => []);
-  setBindingMock('ListThreadCheckpoints', async () => []);
   // Thread-wide aggregate surfaces (PlanSidebar / ActivityRail) fetch
   // these bindings on mount / thread-switch.
   // Default to empty lists so tests that don't assert on those

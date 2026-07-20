@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachment"
-	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/errorsx"
@@ -39,8 +38,8 @@ import (
 // because every other subsystem either embeds the store or reads from it,
 // observability boots next because the triage router installs metrics
 // before it can accept events, and the remaining subsystems (triage,
-// checkpoints, discussion, design, terminals, attachments, workspace
-// search) boot last once their inputs are ready.
+// discussion, design, terminals, attachments, workspace search) boot
+// last once their inputs are ready.
 //
 //wails:ignore
 func (a *App) Start(ctx context.Context) error {
@@ -115,6 +114,13 @@ func (a *App) Start(ctx context.Context) error {
 	// every tick so toggling retention on/off (or changing the window)
 	// doesn't require a restart. See app_retention_cleanup.go.
 	a.startRetentionCleanup()
+
+	// Drain the hidden refs/agent-overflow/* refs the removed
+	// per-message git-checkpoint machinery left in user repos. Runs on
+	// every boot (idempotent, one for-each-ref probe per workspace) so
+	// repos restored from backups get cleaned too. See
+	// app_legacy_checkpoint_refs.go.
+	go a.sweepLegacyCheckpointRefs()
 
 	// Start the sidebar's host CPU/memory sampler. Emits a
 	// `system:stats` event every ~2s. See app_sysstat.go.
@@ -343,8 +349,8 @@ func (a *App) initObservability(ctx context.Context, dbDir string) error {
 	return nil
 }
 
-// initSubsystems wires the remaining services: triage (with metrics and
-// checkpoint capture), discussion registry/channels, design artifacts and
+// initSubsystems wires the remaining services: triage (with metrics),
+// discussion registry/channels, design artifacts and
 // reactor, the design MCP server, terminals, attachments, and workspace
 // search. Called after initStores / initObservability so every subsystem
 // has its dependencies in place.
@@ -364,7 +370,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		PayloadsPersisted: telemetryMetrics.PayloadsPersisted,
 	})
 	// Flush-queue callbacks: drain queued user messages at provider
-	// boundaries and capture message checkpoints once the provider echo
+	// boundaries and record message anchors once the provider echo
 	// confirms the deferred user row. See app_flush_queue.go.
 	a.configureTriageQueueCallbacks()
 	// Settle turn rows the previous app instance left in-flight. An
@@ -398,7 +404,6 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	} else {
 		logBootPhase("app.recover_orphaned_background_tasks", recoverStarted)
 	}
-	a.checkpoints = checkpoint.NewStore()
 	a.registry = discussion.NewRegistry(st)
 	a.channels = discussion.NewChannelService(st)
 	designBase := filepath.Join(dbDir, "design-workdirs")

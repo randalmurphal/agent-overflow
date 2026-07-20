@@ -11,7 +11,7 @@
 //   - eventsDesign.ts        — design preview/options throttled reload
 //   - eventsTerminal.ts      — backgrounded-terminal output/exit
 //   - eventsQueue.ts         — send-queue mirror (state/flushed/restored)
-//   - eventsCheckpoint.ts    — checkpoint capture/revert + message revert
+//   - eventsMessageRevert.ts — user-message revert (Stop/Esc un-send)
 //   - eventsTransportGap.ts  — missed-seq resync
 //   - eventsDiscussion.ts    — discussion:message / discussion:state push
 //   - eventsHighlight.ts     — highlight:seed span ingest (remote clients)
@@ -37,13 +37,7 @@ import type {
   TerminalExitEventPayload,
   TerminalOutputEventPayload,
 } from '../types/terminal';
-import type {
-  CheckpointCapturedEvent,
-  CheckpointErrorEvent,
-  CheckpointRevertedEvent,
-  CheckpointUnavailableEvent,
-  UserMessageRevertedEvent,
-} from '../types/checkpoint';
+import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { setSystemStats } from './systemStats.svelte';
 import { transportGapChannel } from '../transport/wsClient';
 // wailsEventOn lives in a leaf module so low-level stores can subscribe to
@@ -99,13 +93,7 @@ import {
   type QueueFlushedPayload,
   type QueueRestoredPayload,
 } from './eventsQueue';
-import {
-  applyCheckpointCaptured,
-  applyCheckpointUnavailable,
-  applyCheckpointError,
-  applyCheckpointReverted,
-  applyUserMessageReverted,
-} from './eventsCheckpoint';
+import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
 import {
   applyDiscussionMessage,
@@ -263,22 +251,6 @@ export function setupEventListeners(): () => void {
     applyQueueRestored,
   );
 
-  const cancelCheckpointCaptured = wailsEventOn<CheckpointCapturedEvent | null>(
-    'checkpoint:captured',
-    applyCheckpointCaptured,
-  );
-  const cancelCheckpointUnavailable = wailsEventOn<CheckpointUnavailableEvent | null>(
-    'checkpoint:unavailable',
-    applyCheckpointUnavailable,
-  );
-  const cancelCheckpointError = wailsEventOn<CheckpointErrorEvent | null>(
-    'checkpoint:error',
-    applyCheckpointError,
-  );
-  const cancelCheckpointReverted = wailsEventOn<CheckpointRevertedEvent | null>(
-    'checkpoint:reverted',
-    applyCheckpointReverted,
-  );
   const cancelUserMessageReverted = wailsEventOn<UserMessageRevertedEvent | null>(
     'user_message:reverted',
     applyUserMessageReverted,
@@ -396,10 +368,6 @@ export function setupEventListeners(): () => void {
     cancelQueueStateChanged();
     cancelQueueFlushed();
     cancelQueueRestored();
-    cancelCheckpointCaptured();
-    cancelCheckpointUnavailable();
-    cancelCheckpointError();
-    cancelCheckpointReverted();
     cancelUserMessageReverted();
     cancelThreadUpdated();
     cancelDefaultSwapped();

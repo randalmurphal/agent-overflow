@@ -39,11 +39,11 @@ type HighlightPatchRequest struct {
 // resolve the new-side file content used to prime parsing above each
 // hunk.
 type HighlightPatchContextRequest struct {
-	Scope      string `json:"scope"`
-	UserItemID string `json:"userItemId"`
-	HeadSHA    string `json:"headSHA"`
-	Path       string `json:"path"`
-	Patch      string `json:"patch"`
+	Scope     string `json:"scope"`
+	CommitSHA string `json:"commitSHA"`
+	HeadSHA   string `json:"headSHA"`
+	Path      string `json:"path"`
+	Patch     string `json:"patch"`
 }
 
 // HighlightResult is the span payload. Lines align 1:1 with the input
@@ -129,10 +129,10 @@ func (a *App) HighlightPatchWithContext(threadID string, req HighlightPatchConte
 		return HighlightResult{Lang: lang.String(), Truncated: true}, nil
 	}
 	content, err := a.diffContextContent(action, threadID, DiffContextRequest{
-		Scope:      req.Scope,
-		UserItemID: req.UserItemID,
-		HeadSHA:    req.HeadSHA,
-		Path:       req.Path,
+		Scope:     req.Scope,
+		CommitSHA: req.CommitSHA,
+		HeadSHA:   req.HeadSHA,
+		Path:      req.Path,
 	}, highlight.MaxPrimeBytes)
 	var res highlight.Result
 	if err != nil || content == "" {

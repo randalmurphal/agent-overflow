@@ -78,7 +78,6 @@ function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThr
   }));
   setBindingMock('AutoResumeThread', async () => {});
   setBindingMock('ListRecentTurns', async () => []);
-  setBindingMock('ListThreadCheckpoints', async () => []);
   setBindingMock('ListThreadSliceAround', async () => ({
     items: [],
     oldestTurnIndex: -1,

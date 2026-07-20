@@ -8,9 +8,9 @@ export {
 
 export {
     AttachmentThumbnail,
+    BranchCommit,
     ChannelParticipantState,
     ChannelStatePayload,
-    CheckpointView,
     ContextSettingsProfile,
     ContextSettingsUpdate,
     CreateThreadOptions,
@@ -46,7 +46,6 @@ export {
     QueuedItem,
     ReleaseSummary,
     RemoteEndpointSummary,
-    RevertToMessageCheckpointOptions,
     SendDiffReviewCommentsInput,
     SendMessageOptions,
     SourceDiffReview,

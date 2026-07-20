@@ -844,6 +844,52 @@ UPDATE turns SET provider_turn_id = turn_id WHERE turn_id NOT LIKE '%:%';`,
 		SQL: `ALTER TABLE payloads ADD COLUMN preview_spans TEXT NOT NULL DEFAULT '';
 ALTER TABLE payloads ADD COLUMN spans TEXT NOT NULL DEFAULT '';`,
 	},
+	{
+		Version: 23,
+		Name:    "message_anchors_replace_checkpoints",
+		// The per-message git-checkpoint machinery is gone. What fork-
+		// from-message and revert-on-interrupt still need from the old
+		// thread_checkpoints row is pure provider correlation — turn
+		// index + Claude wire uuids — so the table slims into
+		// message_anchors and the git-side columns (ref_name,
+		// baseline_sha, status, files, workspace_path) drop with the
+		// snapshots themselves. thread_tracked_files backed only the
+		// removed session-diff/files-revert paths. Review comments
+		// scoped to the removed 'turn'/'session' diff sources are
+		// orphaned (their diffs can never load again) and go too; the
+		// scope CHECK constraint keeps the legacy values because
+		// rebuilding the table to tighten it buys nothing. Leftover
+		// refs/agent-overflow/* refs in workspaces are swept by the app
+		// at startup, not here — migrations don't run subprocesses.
+		SQL: `CREATE TABLE message_anchors (
+    thread_id                TEXT    NOT NULL,
+    user_item_id             TEXT    NOT NULL,
+    turn_index               INTEGER NOT NULL,
+    provider_user_message_id TEXT    NOT NULL DEFAULT '',
+    provider_parent_uuid     TEXT    NOT NULL DEFAULT '',
+    created_at               INTEGER NOT NULL,
+    PRIMARY KEY (thread_id, user_item_id),
+    FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+    FOREIGN KEY (thread_id, user_item_id) REFERENCES items(thread_id, id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_message_anchors_thread_turn
+    ON message_anchors(thread_id, turn_index);
+
+INSERT INTO message_anchors (
+	thread_id, user_item_id, turn_index,
+	provider_user_message_id, provider_parent_uuid, created_at
+)
+SELECT thread_id, user_item_id, turn_index,
+       provider_user_message_id, provider_parent_uuid, captured_at
+  FROM thread_checkpoints;
+
+DROP TABLE thread_checkpoints;
+
+DROP TABLE thread_tracked_files;
+
+DELETE FROM diff_review_comments WHERE scope IN ('turn', 'session');`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

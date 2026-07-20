@@ -1,21 +1,22 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import {
   GetBranchBaseDiff,
+  GetCommitDiff,
   GetDiffContextLines,
   GetGitStatus,
-  GetMessageCheckpointDiff,
   GetMergeConflictFile,
   GetPRCIJobLog,
   GetPRCIJobs,
+  GetPRCommitDiff,
   GetPRDetail,
   GetPRDiff,
   GetPRMergeConflicts,
   GetThread,
   SavePRCIJobLog,
-  GetSessionAgentDiff,
   GetWorkspaceCurrentDiff,
   GitListBranches,
-  ListThreadCheckpoints,
+  ListBranchCommits,
+  ListPRCommits,
   ListPRReviewThreads,
   MarkDiffReviewCommentsSent,
   ReplyToPRThread,
@@ -39,8 +40,7 @@ import {
 } from './diffReviewComments.svelte';
 import { getSettings } from './settings.svelte';
 import { getActiveTurn } from './threadStatuses.svelte';
-import type { Checkpoint } from '../types/checkpoint';
-import type { GitBranch } from '../types/git';
+import type { BranchCommit, GitBranch } from '../types/git';
 import type {
   CIJob,
   CIJobLogResult,
@@ -90,8 +90,11 @@ export interface ReviewPaneState {
   readonly comments: readonly DiffReviewComment[];
   readonly drafts: readonly DiffReviewComment[];
   readonly openEditors: readonly CommentAnchor[];
-  readonly checkpoints: readonly Checkpoint[];
-  selectedCheckpointUserItemId: string | null;
+  /** Commits the branch/PR carries (newest first); empty outside those
+   * scopes and for non-git workspaces. Feeds the commit selector. */
+  readonly commits: readonly BranchCommit[];
+  /** Selected single commit, or null for the full-range diff. */
+  readonly selectedCommitSHA: string | null;
   pendingJumpFilePath: string | null;
   /** Diff row key to jump to (comments-list click); consumed by the diff body. */
   readonly pendingJumpRowKey: string | null;
@@ -133,7 +136,8 @@ export interface ReviewPaneState {
   readonly viewMode: 'stacked' | 'split';
   readonly wordWrap: boolean;
   setScope(scope: ReviewScope, opts?: { baseBranch?: string }): Promise<void>;
-  selectCheckpoint(userItemId: string | null): Promise<void>;
+  /** Switch the loaded diff to a single commit (null → full range). */
+  selectCommit(sha: string | null): Promise<void>;
   reload(): Promise<void>;
   consumePendingJumpFilePath(): void;
   /** Jump the diff body to a comment row: leaves conflict/CI-log views,
@@ -286,7 +290,6 @@ export async function openReviewCompanion(
   threadId: string,
   opts: {
     scope?: ReviewScope;
-    checkpointUserItemId?: string | null;
     filePath?: string;
   } = {},
 ): Promise<ReviewPaneState | null> {
@@ -297,14 +300,7 @@ export async function openReviewCompanion(
     state.pendingJumpFilePath = opts.filePath;
   }
   if (opts.scope) {
-    if (opts.scope === 'turn') {
-      state.selectedCheckpointUserItemId = opts.checkpointUserItemId ?? null;
-      await state.setScope('turn');
-    } else {
-      await state.setScope(opts.scope);
-    }
-  } else if (opts.checkpointUserItemId !== undefined) {
-    await state.selectCheckpoint(opts.checkpointUserItemId);
+    await state.setScope(opts.scope);
   }
   return state;
 }
@@ -351,8 +347,8 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   const replyErrors = new SvelteMap<string, string>();
   const sendingReplyIds: SvelteSet<string> = $state(new SvelteSet<string>());
   let expandedPRThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
-  let selectedCheckpointUserItemId: string | null = $state(null);
-  let checkpoints: Checkpoint[] = $state([]);
+  let commits: BranchCommit[] = $state([]);
+  let selectedCommitSHA: string | null = $state(null);
   let pendingJumpFilePath: string | null = $state(null);
   let pendingJumpRowKey: string | null = $state(null);
   let patchText = $state('');
@@ -363,10 +359,6 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   // is the sole reactive signal the `files` derived reads.
   const contextExpansions = new Map<string, ContextExpansionState>();
   let contextExpansionVersion = $state(0);
-  // The checkpoint userItemId the loaded turn diff actually targets —
-  // "Latest" leaves selectedCheckpointUserItemId null, but expansion
-  // must read the same commit the diff was computed against.
-  let turnCheckpointUserItemId: string | null = null;
   let sendingComments = $state(false);
   let openEditors: CommentAnchor[] = $state([]);
   // Draft-editor text lives HERE, not in the row component: editor rows
@@ -387,6 +379,11 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   let wordWrap = $state(getSettings().diffWordWrap);
   let loadSeq = 0;
   const sourceKey = $derived.by(() => {
+    if (selectedCommitSHA) {
+      // A single commit's content is immutable — the SHA itself is the
+      // stable identity, in both branch and pr scope.
+      return `commit:${selectedCommitSHA}`;
+    }
     if (scope === 'pr' && prRef) {
       // Stable across PR head movement: drafts must survive pushes; each
       // draft's commitSha records the head SHA it was anchored to.
@@ -533,7 +530,8 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   }
 
   async function setScope(nextScope: ReviewScope, opts?: { baseBranch?: string }): Promise<void> {
-    if (nextScope !== scope) {
+    const scopeChanged = nextScope !== scope;
+    if (scopeChanged) {
       resetConflictState();
       resetCIState();
     }
@@ -551,8 +549,12 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     baseBranch = nextScope === 'branch'
       ? (opts?.baseBranch?.trim() || baseBranch || await defaultBaseBranch(threadId))
       : null;
-    if (nextScope !== 'turn') {
-      selectedCheckpointUserItemId = null;
+    // Back to "latest" on scope entry — the previous selection belongs
+    // to another commit range. A base-branch change within branch scope
+    // keeps it; reload's validation drops a selection that left the new
+    // range.
+    if (scopeChanged) {
+      selectedCommitSHA = null;
     }
     openEditors = [];
     draftBodies.clear();
@@ -561,13 +563,12 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     await reload();
   }
 
-  async function selectCheckpoint(userItemId: string | null): Promise<void> {
-    selectedCheckpointUserItemId = userItemId;
+  async function selectCommit(sha: string | null): Promise<void> {
+    if (sha === selectedCommitSHA) return;
+    selectedCommitSHA = sha;
+    openEditors = [];
+    draftBodies.clear();
     collapseOverrides.clear();
-    resetConflictState();
-    if (scope === 'pr') await unsubscribePR();
-    if (scope !== 'turn') scope = 'turn';
-    persistScope(threadId, scope, baseBranch);
     await reload();
   }
 
@@ -596,7 +597,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
         threadId,
         scope,
         baseBranch,
-        selectedCheckpointUserItemId,
+        selectedCommitSHA,
         prRef,
       );
       if (seq !== loadSeq || disposed) {
@@ -605,9 +606,9 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
         if (loaded.subscriptionId) void UnsubscribePRUpdates(loaded.subscriptionId);
         return;
       }
-      if (loaded.checkpoints) checkpoints = loaded.checkpoints;
-      if (loaded.selectedCheckpointUserItemId !== undefined) {
-        selectedCheckpointUserItemId = loaded.selectedCheckpointUserItemId;
+      commits = loaded.commits ?? [];
+      if (loaded.selectedCommitSHA !== undefined) {
+        selectedCommitSHA = loaded.selectedCommitSHA;
       }
       if (loaded.prDetail) prDetail = loaded.prDetail;
       if (loaded.prThreads) prThreads = loaded.prThreads;
@@ -616,7 +617,6 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
         subscriptionId = loaded.subscriptionId;
         registerPRReviewState(subscriptionId, { applyPRUpdate });
       }
-      turnCheckpointUserItemId = loaded.turnCheckpointUserItemId ?? null;
       clearContextExpansions();
       patchText = loaded.patchText;
       // Fresh defaults for the new patch, with the user's explicit
@@ -631,9 +631,11 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
         prStale = false;
         void loadCIJobs();
       }
-      const nextSourceKey = scope === 'pr'
-        ? sourceKey
-        : (loaded.patchText ? diffSourceKey(loaded.patchText) : '');
+      const nextSourceKey = selectedCommitSHA
+        ? `commit:${selectedCommitSHA}`
+        : scope === 'pr'
+          ? sourceKey
+          : (loaded.patchText ? diffSourceKey(loaded.patchText) : '');
       if (!nextSourceKey) {
         openEditors = [];
         draftBodies.clear();
@@ -652,7 +654,6 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
       }
     } catch (err) {
       if (seq !== loadSeq) return;
-      turnCheckpointUserItemId = null;
       clearContextExpansions();
       patchText = '';
       openEditors = [];
@@ -673,15 +674,31 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     contextExpansionVersion += 1;
   }
 
+  // The scope triple GetDiffContextLines / HighlightPatchWithContext
+  // use to resolve new-side file content (`app_diff_context.go`). A
+  // selected commit in branch scope reads through 'commit' scope; pr
+  // scope reads the local PR clone, at the selected commit when one is
+  // set (falling back to the head).
+  function patchScopeContext(): PatchScopeContext {
+    if (scope === 'pr') {
+      return { scope: 'pr', commitSHA: selectedCommitSHA ?? '', headSHA: prHeadSHA };
+    }
+    if (selectedCommitSHA) {
+      return { scope: 'commit', commitSHA: selectedCommitSHA, headSHA: '' };
+    }
+    return { scope, commitSHA: '', headSHA: '' };
+  }
+
   async function expandDiffContext(path: string, gap: DiffGap, dir: ExpandDirection): Promise<void> {
     const range = expansionFetchRange(gap, dir);
     if (!range) return;
     const seq = loadSeq;
     try {
+      const context = patchScopeContext();
       const result = await GetDiffContextLines(threadId, {
-        scope,
-        userItemId: scope === 'turn' ? (turnCheckpointUserItemId ?? '') : '',
-        headSHA: scope === 'pr' ? prHeadSHA : '',
+        scope: context.scope,
+        commitSHA: context.commitSHA,
+        headSHA: context.headSHA,
         path,
         startLine: range.start,
         endLine: range.end,
@@ -727,7 +744,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
       await createDiffReviewComment(threadId, {
         scope,
         sourceKey,
-        commitSha: scope === 'pr' ? prHeadSHA : undefined,
+        commitSha: selectedCommitSHA ?? (scope === 'pr' ? prHeadSHA : undefined),
         filePath: anchor.filePath,
         oldLine: anchor.oldLine,
         newLine: anchor.newLine,
@@ -1152,9 +1169,8 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     get comments() { return comments; },
     get drafts() { return drafts; },
     get openEditors() { return openEditors; },
-    get checkpoints() { return checkpoints; },
-    get selectedCheckpointUserItemId() { return selectedCheckpointUserItemId; },
-    set selectedCheckpointUserItemId(value: string | null) { selectedCheckpointUserItemId = value; },
+    get commits() { return commits; },
+    get selectedCommitSHA() { return selectedCommitSHA; },
     get pendingJumpFilePath() { return pendingJumpFilePath; },
     set pendingJumpFilePath(value: string | null) { pendingJumpFilePath = value; },
     get pendingJumpRowKey() { return pendingJumpRowKey; },
@@ -1165,11 +1181,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     get prThreads() { return prThreads; },
     get prHeadSHA() { return prHeadSHA; },
     get spanContext(): PatchScopeContext {
-      return {
-        scope,
-        userItemId: scope === 'turn' ? (turnCheckpointUserItemId ?? '') : '',
-        headSHA: scope === 'pr' ? prHeadSHA : '',
-      };
+      return patchScopeContext();
     },
     get prStale() { return prStale; },
     get refreshingPRData() { return refreshingPRData; },
@@ -1200,7 +1212,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     get wordWrap() { return wordWrap; },
 
     setScope,
-    selectCheckpoint,
+    selectCommit,
     reload,
     consumePendingJumpFilePath(): void {
       pendingJumpFilePath = null;
@@ -1295,11 +1307,11 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
 
 interface LoadedPatch {
   patchText: string;
-  checkpoints?: Checkpoint[];
-  selectedCheckpointUserItemId?: string | null;
-  /** Turn scope: the checkpoint the diff was actually computed against
-   * ("Latest" resolves to a concrete checkpoint here). */
-  turnCheckpointUserItemId?: string;
+  /** Commit selector rows for the loaded range; omitted → empty. */
+  commits?: BranchCommit[];
+  /** The commit the diff was actually computed for — a stale selection
+   * that left the range resolves back to null (full range). */
+  selectedCommitSHA?: string | null;
   prDetail?: PRDetail;
   prThreads?: ReviewThread[];
   prHeadSHA?: string;
@@ -1310,44 +1322,43 @@ async function loadPatch(
   threadId: string,
   scope: ReviewScope,
   baseBranch: string | null,
-  selectedCheckpointUserItemId: string | null,
+  selectedCommitSHA: string | null,
   prRef: PRRef | null,
 ): Promise<LoadedPatch> {
   switch (scope) {
     case 'pr': {
       if (!prRef) throw new Error('No PR or MR is available for this thread.');
-      return loadPRPatch(threadId, prRef);
+      return loadPRPatch(threadId, prRef, selectedCommitSHA);
     }
-    case 'turn': {
-      const checkpoints = sortedCheckpoints(
-        ((await ListThreadCheckpoints(threadId)) ?? []) as Checkpoint[],
-      );
-      const selected = selectedCheckpointUserItemId
-        ? checkpoints.find((checkpoint) => checkpoint.userItemId === selectedCheckpointUserItemId) ?? null
-        : null;
-      const checkpoint = selected ?? latestCheckpoint(checkpoints);
-      if (!checkpoint) {
-        return { patchText: '', checkpoints, selectedCheckpointUserItemId: null };
-      }
-      return {
-        patchText: ((await GetMessageCheckpointDiff(threadId, checkpoint.userItemId)) ?? '') as string,
-        checkpoints,
-        selectedCheckpointUserItemId: selected ? selected.userItemId : null,
-        turnCheckpointUserItemId: checkpoint.userItemId,
-      };
-    }
-    case 'session':
-      return { patchText: ((await GetSessionAgentDiff(threadId)) ?? '') as string };
     case 'workspace':
       return { patchText: ((await GetWorkspaceCurrentDiff(threadId)) ?? '') as string };
     case 'branch': {
       const branch = baseBranch?.trim() || await defaultBaseBranch(threadId);
-      return { patchText: ((await GetBranchBaseDiff(threadId, branch)) ?? '') as string };
+      const commits = ((await ListBranchCommits(threadId, branch)) ?? []) as BranchCommit[];
+      // Validate against the fresh list, not just the diff call: after a
+      // rebase or base change the selected SHA can vanish — fall back to
+      // the full range instead of erroring.
+      if (selectedCommitSHA && commits.some((commit) => commit.sha === selectedCommitSHA)) {
+        return {
+          patchText: ((await GetCommitDiff(threadId, selectedCommitSHA)) ?? '') as string,
+          commits,
+          selectedCommitSHA,
+        };
+      }
+      return {
+        patchText: ((await GetBranchBaseDiff(threadId, branch)) ?? '') as string,
+        commits,
+        selectedCommitSHA: null,
+      };
     }
   }
 }
 
-async function loadPRPatch(threadId: string, ref: PRRef): Promise<LoadedPatch> {
+async function loadPRPatch(
+  threadId: string,
+  ref: PRRef,
+  selectedCommitSHA: string | null,
+): Promise<LoadedPatch> {
   const pr = prReference(ref);
   // The subscription resolves the PR detail, whose baseRefName the diff
   // needs to compute a local three-dot diff (gh/glab's PR-diff API caps at
@@ -1356,9 +1367,23 @@ async function loadPRPatch(threadId: string, ref: PRRef): Promise<LoadedPatch> {
   const subResult = await SubscribePRUpdates(threadId, pr);
   try {
     const detail = subResult.detail as PRDetail;
-    const patchText = String((await GetPRDiff(threadId, pr, detail?.baseRefName ?? '')) ?? '');
+    const baseRef = detail?.baseRefName ?? '';
+    // Per-commit PR review needs the local clone; without one the backend
+    // returns an empty list and the selector stays hidden.
+    const commits = baseRef
+      ? (((await ListPRCommits(threadId, pr, baseRef)) ?? []) as BranchCommit[])
+      : [];
+    const commitSHA =
+      selectedCommitSHA && commits.some((commit) => commit.sha === selectedCommitSHA)
+        ? selectedCommitSHA
+        : null;
+    const patchText = commitSHA
+      ? String((await GetPRCommitDiff(threadId, pr, commitSHA)) ?? '')
+      : String((await GetPRDiff(threadId, pr, baseRef)) ?? '');
     return {
       patchText,
+      commits,
+      selectedCommitSHA: commitSHA,
       prDetail: detail,
       prThreads: (subResult.threads ?? []) as ReviewThread[],
       prHeadSHA: String(subResult.headSHA ?? detail?.headSHA ?? ''),
@@ -1377,18 +1402,6 @@ function prReference(ref: PRRef): Parameters<typeof GetPRDiff>[1] {
     Repo: ref.repo,
     Number: ref.number,
   };
-}
-
-function sortedCheckpoints(checkpoints: readonly Checkpoint[]): Checkpoint[] {
-  return [...checkpoints].sort((a, b) => a.turnIndex - b.turnIndex);
-}
-
-export function latestCheckpoint(checkpoints: readonly Checkpoint[]): Checkpoint | null {
-  let latest: Checkpoint | null = null;
-  for (const checkpoint of checkpoints) {
-    if (!latest || checkpoint.turnIndex > latest.turnIndex) latest = checkpoint;
-  }
-  return latest;
 }
 
 async function defaultBaseBranch(threadId: string): Promise<string> {
@@ -1471,7 +1484,7 @@ function persistScope(threadId: string, scope: ReviewScope, baseBranch: string |
 }
 
 function isReviewScope(value: unknown): value is ReviewScope {
-  return value === 'turn' || value === 'session' || value === 'workspace' || value === 'branch' || value === 'pr';
+  return value === 'workspace' || value === 'branch' || value === 'pr';
 }
 
 function userFacingError(err: unknown): string {

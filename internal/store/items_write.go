@@ -532,75 +532,49 @@ func (s *Store) DeleteThreadItem(threadID, itemID string) error {
 	)
 }
 
-// DeleteConversationFromTurn removes items, turn rows, tracked files,
-// and message checkpoints with turn_index >= fromTurnIndex, returning
-// the git refs of the deleted checkpoints so the caller can drop them
-// from the workspace. Reverting to a user-message checkpoint deletes
-// that selected prompt too, so the predicate is inclusive.
-//
-// Everything runs in ONE transaction. The old shape — a separate
-// checkpoint delete committed before this call — could succeed and
-// then have the conversation delete fail, stranding timeline rows
-// whose checkpoints (the revert/fork anchors and the retry key) were
-// already gone; a retry could no longer resolve the revert point
-// (round-5 review, R5-5). A failure now rolls back both.
-func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) ([]CheckpointRef, int, error) {
+// DeleteConversationFromTurn removes items and turn rows with
+// turn_index >= fromTurnIndex. Rolling back to a user message deletes
+// that selected prompt too, so the predicate is inclusive. Message
+// anchors follow their ITEMS via the FK cascade — never their own
+// cached turn_index, which can drift from the item's (R8-3).
+// Everything runs in ONE transaction so a failure rolls back the whole
+// truncation.
+func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (int, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, 0, fmt.Errorf("store: begin delete conversation from turn tx: %w", err)
+		return 0, fmt.Errorf("store: begin delete conversation from turn tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	refs, err := checkpointRefsFromTurn(tx, threadID, fromTurnIndex)
-	if err != nil {
-		return nil, 0, err
-	}
-	// Explicit, though the items delete below cascades the checkpoint
-	// rows via their items FK: the turn_index predicate also covers a
-	// checkpoint whose recorded turn drifted from its user item's.
-	if _, err := tx.Exec(
-		`DELETE FROM thread_checkpoints WHERE thread_id = ? AND turn_index >= ?`,
-		threadID, fromTurnIndex,
-	); err != nil {
-		return nil, 0, fmt.Errorf("store: delete checkpoints from turn for thread %s: %w", threadID, err)
-	}
 	result, err := tx.Exec(
 		`DELETE FROM items WHERE thread_id = ? AND turn_index >= ?`,
 		threadID, fromTurnIndex,
 	)
 	if err != nil {
-		return nil, 0, fmt.Errorf("store: delete items from turn for thread %s: %w", threadID, err)
+		return 0, fmt.Errorf("store: delete items from turn for thread %s: %w", threadID, err)
 	}
 	n, err := result.RowsAffected()
 	if err != nil {
-		return nil, 0, fmt.Errorf("store: delete items from turn rows affected: %w", err)
+		return 0, fmt.Errorf("store: delete items from turn rows affected: %w", err)
 	}
 	if _, err := tx.Exec(
 		`DELETE FROM turns WHERE thread_id = ? AND turn_index >= ?`,
 		threadID, fromTurnIndex,
 	); err != nil {
-		return nil, 0, fmt.Errorf("store: delete turns from turn for thread %s: %w", threadID, err)
-	}
-	if _, err := tx.Exec(
-		`DELETE FROM thread_tracked_files WHERE thread_id = ? AND turn_index >= ?`,
-		threadID, fromTurnIndex,
-	); err != nil {
-		return nil, 0, fmt.Errorf("store: delete tracked files from turn for thread %s: %w", threadID, err)
+		return 0, fmt.Errorf("store: delete turns from turn for thread %s: %w", threadID, err)
 	}
 	// Truncating the conversation is a structural change, not a fresh
 	// interaction. The next user_text persist (or a turn settle that
 	// follows the resume) bumps activity through MarkThreadActivity.
 	if err := tx.Commit(); err != nil {
-		return nil, 0, fmt.Errorf("store: commit delete conversation from turn tx: %w", err)
+		return 0, fmt.Errorf("store: commit delete conversation from turn tx: %w", err)
 	}
-	return refs, int(n), nil
+	return int(n), nil
 }
 
 // DeleteConversationFromItem removes the anchor item and everything after it
-// in PROVIDER order, plus the checkpoints of deleted user rows and the
-// turns / tracked-file rows of turns left without any items. Returns the git
-// refs of the deleted checkpoints so the caller can drop them from the
-// workspace.
+// in PROVIDER order, plus the turn rows of turns left without any items.
+// Message anchors of deleted user rows cascade away via their items FK.
 //
 // Provider order is timeline order — (turn_index, item_index) — for every row
 // except interrupt-promoted queued messages (itemmeta promotion marker):
@@ -625,10 +599,10 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 // degenerates to DeleteConversationFromTurn's. Codex reverts keep the
 // turn-granular delete: thread/fork cuts provider history at a turn boundary,
 // and SQLite must match it.
-func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]CheckpointRef, error) {
+func (s *Store) DeleteConversationFromItem(threadID, itemID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("store: begin delete conversation from item tx: %w", err)
+		return fmt.Errorf("store: begin delete conversation from item tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -638,58 +612,14 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]Checkpoin
 		`SELECT turn_index, item_index, meta FROM items WHERE thread_id = ? AND id = ?`,
 		threadID, itemID,
 	).Scan(&turnIndex, &itemIndex, &meta); err != nil {
-		return nil, fmt.Errorf("store: delete conversation from item lookup %s/%s: %w", threadID, itemID, err)
+		return fmt.Errorf("store: delete conversation from item lookup %s/%s: %w", threadID, itemID, err)
 	}
 	promotion, err := itemmeta.DecodePromotionState(meta)
 	if err != nil {
 		// Corrupt anchor meta means the provider-order cut is undecidable;
 		// failing beats silently degrading to a display-order cut that the
 		// session slice would disagree with.
-		return nil, fmt.Errorf("store: delete conversation from item %s/%s: %w", threadID, itemID, err)
-	}
-
-	// Checkpoints anchored on any item being deleted, derived from the
-	// items themselves rather than the checkpoint's cached turn_index —
-	// the FK cascade follows the item delete, so ref collection must
-	// track the item cut exactly or a checkpoint whose cached turn
-	// drifted from its item's actual position cascades away with its
-	// git ref never returned. The subquery over-matches checkpoint-less
-	// rows (non-user, parented, promoted-cut survivors) harmlessly:
-	// among checkpoint-bearing rows (top-level user), position >= the
-	// anchor means deleted in both the plain and promoted-anchor item
-	// predicates below. Must run before the item delete removes the rows.
-	const checkpointPredicate = `thread_id = ?
-		 AND user_item_id IN (SELECT id FROM items
-		                      WHERE thread_id = ?
-		                        AND (turn_index > ?
-		                             OR (turn_index = ? AND item_index >= ?)))`
-	rows, err := tx.Query(
-		`SELECT ref_name, workspace_path FROM thread_checkpoints WHERE `+checkpointPredicate+
-			` ORDER BY turn_index`,
-		threadID, threadID, turnIndex, turnIndex, itemIndex,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: list checkpoints from item for thread %s: %w", threadID, err)
-	}
-	var refs []CheckpointRef
-	for rows.Next() {
-		var ref CheckpointRef
-		if err := rows.Scan(&ref.RefName, &ref.WorkspacePath); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("store: scan checkpoint ref from item: %w", err)
-		}
-		refs = append(refs, ref)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, fmt.Errorf("store: iterate checkpoints from item: %w", err)
-	}
-	rows.Close()
-	if _, err := tx.Exec(
-		`DELETE FROM thread_checkpoints WHERE `+checkpointPredicate,
-		threadID, threadID, turnIndex, turnIndex, itemIndex,
-	); err != nil {
-		return nil, fmt.Errorf("store: delete checkpoints from item for thread %s: %w", threadID, err)
+		return fmt.Errorf("store: delete conversation from item %s/%s: %w", threadID, itemID, err)
 	}
 
 	// deletedTurnContent: does this cut remove same-turn NON-USER rows?
@@ -707,10 +637,8 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]Checkpoin
 		// their launching tool_call) — are the interrupted round's tail:
 		// they precede the promoted message in the provider transcript
 		// and stay. Same-turn TOP-LEVEL user successors are later-promoted
-		// queued rows; only those carry checkpoints, so the checkpoint
-		// predicate above already matched exactly the user rows this
-		// delete removes. Past the boundary (stamped when the CLI consumed
-		// the message mid-loop), everything else is the response —
+		// queued rows and go. Past the boundary (stamped when the CLI
+		// consumed the message mid-loop), everything else is the response —
 		// provider-order AFTER the message — and goes with it.
 		itemPredicate = `turn_index > ? OR (turn_index = ? AND item_index >= ? AND role = 'user' AND parent_id = '')`
 		if promotion.HasEchoBoundary {
@@ -730,29 +658,26 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]Checkpoin
 			  WHERE thread_id = ? AND turn_index = ? AND (role != 'user' OR parent_id != '') AND `+contentPredicate+`)`,
 			contentArgs...,
 		).Scan(&deletedTurnContent); err != nil {
-			return nil, fmt.Errorf("store: probe deleted turn content for thread %s: %w", threadID, err)
+			return fmt.Errorf("store: probe deleted turn content for thread %s: %w", threadID, err)
 		}
 	}
 	if _, err := tx.Exec(
 		`DELETE FROM items WHERE thread_id = ? AND (`+itemPredicate+`)`,
 		itemArgs...,
 	); err != nil {
-		return nil, fmt.Errorf("store: delete items from item for thread %s: %w", threadID, err)
+		return fmt.Errorf("store: delete items from item for thread %s: %w", threadID, err)
 	}
 
-	// The anchor turn keeps its turns / tracked-file rows while any items
-	// survive in it: the remaining prefix still happened, and its tracked
-	// paths must stay visible to a later files-revert of the whole turn.
-	for _, table := range []string{"turns", "thread_tracked_files"} {
-		if _, err := tx.Exec(
-			`DELETE FROM `+table+` WHERE thread_id = ?
-			 AND turn_index >= ?
-			 AND NOT EXISTS (SELECT 1 FROM items
-			                 WHERE thread_id = ? AND turn_index = `+table+`.turn_index)`,
-			threadID, turnIndex, threadID,
-		); err != nil {
-			return nil, fmt.Errorf("store: delete %s from item for thread %s: %w", table, threadID, err)
-		}
+	// The anchor turn keeps its turn row while any items survive in it:
+	// the remaining prefix still happened.
+	if _, err := tx.Exec(
+		`DELETE FROM turns WHERE thread_id = ?
+		 AND turn_index >= ?
+		 AND NOT EXISTS (SELECT 1 FROM items
+		                 WHERE thread_id = ? AND turn_index = turns.turn_index)`,
+		threadID, turnIndex, threadID,
+	); err != nil {
+		return fmt.Errorf("store: delete turns from item for thread %s: %w", threadID, err)
 	}
 
 	// A surviving anchor turn that just lost streamed content ends at its
@@ -767,16 +692,16 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]Checkpoin
 	// settlement.
 	if deletedTurnContent {
 		if err := trimTurnSettleToSurvivorsTx(tx, threadID, turnIndex); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
 	// Like DeleteConversationFromTurn: truncation is a structural change,
 	// not a fresh interaction — no MarkThreadActivity bump.
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: commit delete conversation from item tx: %w", err)
+		return fmt.Errorf("store: commit delete conversation from item tx: %w", err)
 	}
-	return refs, nil
+	return nil
 }
 
 // trimTurnSettleToSurvivorsTx rewrites a surviving turn row whose settle

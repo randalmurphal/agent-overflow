@@ -920,9 +920,8 @@ export class ProposedPlanSourceRef {
 /**
  * Thread represents a conversation thread.
  * 
- * The shape changed at migration v13: ProjectPath is no longer persisted on
- * threads (ProjectID is the FK to the projects table), InteractionMode is
- * renamed to Mode, and three new per-thread composer controls
+ * ProjectPath is not persisted on threads — ProjectID is the FK to the
+ * projects table — and three per-thread composer controls
  * (ReasoningEffort, FastMode, ContextWindow) are persisted so two threads
  * sharing a project can diverge on these axes.
  */

@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -27,7 +26,6 @@ func newCommitMsgTestApp(t *testing.T) *App {
 	t.Helper()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
-	app.checkpoints = checkpoint.NewStore()
 	return app
 }
 
