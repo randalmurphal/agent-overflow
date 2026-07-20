@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,11 +32,20 @@ type DiffContextRequest struct {
 	StartLine int `json:"startLine"`
 	EndLine   int `json:"endLine"`
 	// VerifyPatch (edits scope only): the file's historical patch text.
-	// The workspace file is served only when every new-side patch line
-	// still byte-matches it — a drifted file must never masquerade as
-	// historical context. Live scopes ignore the field (their content
-	// IS the diff's source by construction).
+	// A snapshot or workspace file is served only when every new-side
+	// patch line still byte-matches it — a drifted file must never
+	// masquerade as historical context. Live scopes ignore the field
+	// (their content IS the diff's source by construction).
 	VerifyPatch string `json:"verifyPatch,omitempty"`
+	// Edit selection (edits scope only): which edit's persisted file
+	// snapshot resolves this path. EditPayloadID selects one edit's
+	// snapshot; when it is empty EditTurnIndex selects the whole turn,
+	// whose LAST snapshot of Path is the state the merged section
+	// describes. Snapshots are still verified against VerifyPatch, and
+	// an absent snapshot (pre-feature history) falls back to workspace
+	// verification.
+	EditPayloadID string `json:"editPayloadId"`
+	EditTurnIndex int    `json:"editTurnIndex"`
 }
 
 type DiffContextResult struct {
@@ -90,6 +100,69 @@ func (a *App) GetDiffContextLines(threadID string, req DiffContextRequest) (Diff
 		EOF:        end >= total,
 		TotalLines: total,
 	}, nil
+}
+
+// VerifyEditDiffsRequest carries one edits-scope load's candidate files
+// for batch expandability verification. The edit selection mirrors
+// DiffContextRequest; each file's VerifyPatch is its merged historical
+// patch text.
+type VerifyEditDiffsRequest struct {
+	EditPayloadID string               `json:"editPayloadId"`
+	EditTurnIndex int                  `json:"editTurnIndex"`
+	Files         []EditDiffVerifyFile `json:"files"`
+}
+
+// EditDiffVerifyFile is one candidate file of a VerifyEditDiffs batch.
+type EditDiffVerifyFile struct {
+	Path        string `json:"path"`
+	VerifyPatch string `json:"verifyPatch"`
+}
+
+// VerifyEditDiffsResult lists the paths whose expansion requests would
+// be served — the positive gate for rendering gap arrows.
+type VerifyEditDiffsResult struct {
+	ExpandablePaths []string `json:"expandablePaths"`
+}
+
+// maxVerifyEditDiffFiles bounds one verification batch; overflow files
+// simply stay unexpandable (fail-closed keeps arrows honest).
+const maxVerifyEditDiffFiles = 200
+
+// VerifyEditDiffs reports which of an edits-scope diff's files can
+// serve hunk-gap expansion, so the frontend renders arrows only where a
+// click would succeed. Each file runs the SAME resolution the serving
+// path uses (snapshot first, workspace fallback, verified against the
+// patch either way), bounded at MaxPrimeBytes per file so one giant
+// generated file can't force unbounded reads on every load — the one
+// deliberate divergence from click-time resolution, and it only errs
+// fail-closed: an over-cap file shows no arrow (snapshots never exceed
+// the cap either; only a huge pre-snapshot workspace file can hit it).
+// Same wire-exposure class as GetDiffContextLines: classified
+// LocalOnlyMethods; remote clients' rejection leaves every path
+// unexpandable, which is exactly what their clicks would find.
+func (a *App) VerifyEditDiffs(threadID string, req VerifyEditDiffsRequest) (VerifyEditDiffsResult, error) {
+	const action = "verify edit diffs"
+	if a.shuttingDown.Load() {
+		return VerifyEditDiffsResult{}, ErrShuttingDown
+	}
+	files := req.Files
+	if len(files) > maxVerifyEditDiffFiles {
+		files = files[:maxVerifyEditDiffFiles]
+	}
+	expandable := []string{}
+	for _, file := range files {
+		_, _, err := a.diffContextContent(action, threadID, DiffContextRequest{
+			Scope:         "edits",
+			Path:          file.Path,
+			VerifyPatch:   file.VerifyPatch,
+			EditPayloadID: req.EditPayloadID,
+			EditTurnIndex: req.EditTurnIndex,
+		}, highlight.MaxPrimeBytes)
+		if err == nil {
+			expandable = append(expandable, file.Path)
+		}
+	}
+	return VerifyEditDiffsResult{ExpandablePaths: expandable}, nil
 }
 
 // diffContextContent resolves the new-side file content for a diff
@@ -163,9 +236,12 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 		}
 		return capContent(action, req.Path, content, maxBytes)
 	case "edits":
-		// An edit diff is a historical snapshot: only its hunks were
-		// persisted, and no tree from that moment exists. The current
-		// workspace file stands in ONLY when it provably still matches
+		// An edit diff is historical: only its hunks were persisted as
+		// the patch, and no tree from that moment exists. Resolution is
+		// snapshot-first — the file content captured at persist time,
+		// when it provably matched the patch — with the current
+		// workspace file as the fallback for edits that predate
+		// snapshots. Either source is served ONLY when it still matches
 		// the patch (every new-side hunk line equal at its line number,
 		// exactly or modulo Claude's leading-tab mangling) — otherwise
 		// refuse, and the frontend disables the file's expansion
@@ -173,6 +249,12 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 		// one refuses too.
 		if req.VerifyPatch == "" || len(req.VerifyPatch) > highlight.MaxRequestBytes {
 			return "", false, fmt.Errorf("%s: edit diff verification patch is required", action)
+		}
+		if content, ok := a.editFileSnapshot(threadID, req); ok &&
+			(maxBytes <= 0 || int64(len(content)) <= maxBytes) {
+			if matched, expanded := highlight.PatchContentMatch(req.VerifyPatch, content); matched {
+				return content, expanded, nil
+			}
 		}
 		thread, err := a.store.GetThread(threadID)
 		if err != nil {
@@ -198,6 +280,27 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 	default:
 		return "", false, fmt.Errorf("%s: unknown scope %q", action, req.Scope)
 	}
+}
+
+// editFileSnapshot resolves the persisted new-side snapshot for the
+// request's edit selection. Store read errors log and report no
+// snapshot — the workspace fallback may still verify, and refusing
+// expansion over a cache-read hiccup would retire arrows needlessly.
+func (a *App) editFileSnapshot(threadID string, req DiffContextRequest) (string, bool) {
+	if req.EditPayloadID != "" {
+		content, found, err := a.store.GetEditFileSnapshot(threadID, req.EditPayloadID, req.Path)
+		if err != nil {
+			log.Printf("app: read edit file snapshot %s %s: %v", req.EditPayloadID, req.Path, err)
+			return "", false
+		}
+		return content, found
+	}
+	content, found, err := a.store.GetLatestTurnEditFileSnapshot(threadID, req.EditTurnIndex, req.Path)
+	if err != nil {
+		log.Printf("app: read turn edit file snapshot %s/%d %s: %v", threadID, req.EditTurnIndex, req.Path, err)
+		return "", false
+	}
+	return content, found
 }
 
 func capContent(action, path, content string, maxBytes int64) (string, bool, error) {

@@ -891,6 +891,27 @@ DROP TABLE thread_tracked_files;
 
 DELETE FROM diff_review_comments WHERE scope IN ('turn', 'session');`,
 	},
+	{
+		Version: 24,
+		Name:    "edit_file_snapshots",
+		// Per-edit new-side file snapshots backing the review pane's
+		// Edits scope: gzip-compressed full file content captured at
+		// diff persist time, the one moment the just-edited workspace
+		// file provably matches the patch. Hunk-gap expansion and span
+		// priming resolve against the snapshot first, so a historical
+		// edit stays expandable after later turns drift the workspace
+		// file. Rows ride the payload lifecycle (the payload GC
+		// triggers cascade here); absent rows — pre-feature history or
+		// size-capped writes — degrade to the workspace-verify
+		// fallback. No backfill: old edits simply have no snapshot.
+		SQL: `CREATE TABLE edit_file_snapshots (
+    payload_id TEXT    NOT NULL REFERENCES payloads(id) ON DELETE CASCADE,
+    path       TEXT    NOT NULL,
+    content    BLOB    NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (payload_id, path)
+);`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

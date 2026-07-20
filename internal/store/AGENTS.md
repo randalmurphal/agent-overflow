@@ -35,6 +35,16 @@ root `CLAUDE.md` principle 3.
   pairs in item order — the id lets the app attach that payload's
   persisted span seeds), and `ListTurnUserSummaries` (selector group
   labels).
+- `edit_file_snapshots.go` — per-edit new-side file snapshots
+  (migration v24) behind the Edits scope's snapshot-first expansion
+  and priming. Keyed `(payload_id, path)`, cascade with `payloads`,
+  gzip encode/decode owned by the accessors: `PutEditFileSnapshot`
+  (payload-existence guarded in-statement — a deletion race surfaces
+  as wrapped `sql.ErrNoRows`, not an FK violation),
+  `GetEditFileSnapshot`, and `GetLatestTurnEditFileSnapshot` (the
+  turn's last edit of a path in item order, matching the whole-turn
+  concatenation). Misses return `found=false` — an expected state
+  (pre-feature history), not an error.
 - `drafts.go` — composer drafts per thread.
 - `chat_bar.go` — composer favorites and last-used model profile seeds.
 - `search.go` — case-insensitive substring search across thread titles
@@ -125,6 +135,17 @@ baseline:
   raw append helper, called from triage's stream persistence buffer
   rather than for every provider token. Payload bindings return raw
   data; rendering is a frontend projection based on item/payload kind.
+
+## Recent schema changes (v24) — edit file snapshots
+
+- `edit_file_snapshots` (see `edit_file_snapshots.go` above): the
+  gzip-compressed new-side file content of each edit diff payload,
+  captured at the app layer's diff persist tap when the workspace file
+  still provably matched the patch. A pure cache riding the payload
+  lifecycle — payload GC cascades here, an upsert that replaces a
+  payload row (INSERT OR REPLACE deletes + re-inserts) drops its
+  snapshots with it, and readers always re-verify content against the
+  request's patch, so a stale row can never serve.
 
 ## Recent schema changes (v22) — persisted highlight spans
 

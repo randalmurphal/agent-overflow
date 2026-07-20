@@ -167,8 +167,12 @@ state registry); the row model in `utils/reviewRows.ts`.
   section (later-above edits shift earlier hunks by their net delta)
   — that coherence is what lets a merged file verify, prime, and
   gap-expand below, and keeps the gutter's number sizing honest.
-  Overlapping sections can't be renumbered and fall back to
-  edit-order concatenation with `suppressGaps` set. The store
+  A file CREATED in the turn composes instead: later hunks apply to
+  the creation content (old side byte-verified per splice) and the
+  merge emits one clean added-file section of end-of-turn content.
+  Overlapping sections on pre-existing files can't be renumbered and
+  fall back to edit-order concatenation with `suppressGaps` set (a
+  failed composition falls back the same way). The store
   consumes the merge through `mergePatchFilesByPathCached`, keyed on
   the stable parse-cache array: the `files` derived re-runs per
   expansion click, and a fresh merged lines array per run would break
@@ -177,22 +181,29 @@ state registry); the row model in `utils/reviewRows.ts`.
   turn-grouped (`optgroup` per turn, whole-turn
   option first, labels from the turn's first user prompt). sourceKeys:
   `edit:<payloadId>` / `edit-turn:<turnIndex>`. Historical fidelity is
-  verification-gated: the current workspace file stands in for the
-  historical tree ONLY when every new-side patch line still matches it
-  — byte-exactly or modulo Claude's structuredPatch tab mangling
+  verification-gated and snapshot-first: the persist tap captures each
+  edit's new-side file content into `edit_file_snapshots` (gzipped,
+  per payload+path, written only when the just-edited workspace file
+  provably matched the patch), and `app_diff_context.go` resolves the
+  edit selection (`editPayloadId` / `editTurnIndex`, whole-turn = last
+  snapshot of the path in item order) against snapshots before falling
+  back to the current workspace file for pre-snapshot history. Either
+  source serves ONLY when every new-side patch line still matches it —
+  byte-exactly or modulo Claude's structuredPatch tab mangling
   (leading tabs ship as two spaces per tab;
   `highlight.PatchContentMatch` tolerates exactly that transform and
   `GetDiffContextLines` tab-expands served lines to match); the
   expansion and priming requests carry the patch as `verifyPatch`.
-  Verified files — merged multi-section ones included, since matching
-  sections all describe the final file — get hunk-gap expansion and
-  primed spans like live scopes; drifted files degrade — expansion
-  refusals retire the file's gap rows quietly (store
-  `unexpandableEditPaths` sets `suppressGaps`, no error banner) and
-  spans fall back to unprimed. Edits OUTSIDE the workspace (absolute
-  paths — agent memory files, scratchpads) retire their gaps up
-  front: the backend resolves workspace-relative paths only, so those
-  arrows could never serve. Span quality is monotonic:
+  Gap arrows are POSITIVELY gated at load time: after an edits load
+  the store fires `VerifyEditDiffs` (a batch run of the same
+  resolution) and only verified paths get gap rows
+  (`editExpandablePaths`) — an arrow that can't serve never renders.
+  Absolute-path edits (agent memory files, scratchpads) are never even
+  sent; drifted pre-snapshot files and remote clients (the RPC is
+  LocalOnly) simply never verify. A click-time refusal (rare
+  load-to-click race) still retires the path quietly
+  (`unexpandableEditPaths`, no error banner), and unverified files'
+  spans fall back to unprimed. Span quality is monotonic:
   persist-time seeds (primed with the just-edited file, attached to
   `GetPayloadData`/`GetTurnEditsDiff` and pushed on
   `highlight:diff_seed` to ALL clients) upgrade unprimed cache entries

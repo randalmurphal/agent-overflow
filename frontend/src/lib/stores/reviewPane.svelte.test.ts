@@ -22,7 +22,7 @@ import { diffSourceKey } from '../utils/diffSourceKey';
 import { expansionPredecessor } from '../utils/diffContextExpansion';
 import { filePatchDisplayRows, parsePatchFilesCached } from '../utils/patchFiles';
 import { buildReviewRows } from '../utils/reviewRows';
-import { setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 
 function patchFor(path: string, lines: number): string {
   return [
@@ -1548,7 +1548,20 @@ describe('reviewPane store — edits scope', () => {
     }));
     const payload = setBindingMock('GetPayloadData', async () => ({ data: gappyPatch() }));
     const turnDiff = setBindingMock('GetTurnEditsDiff', async () => ({ data: gappyPatch() }));
-    return { list, payload, turnDiff };
+    // Load-time expandability pass: by default every candidate verifies,
+    // so gap arrows appear once the (fire-and-forget) result lands.
+    const verify = setBindingMock('VerifyEditDiffs', async (_threadId, req) => ({
+      expandablePaths: (req as { files: { path: string }[] }).files.map((file) => file.path),
+    }));
+    return { list, payload, turnDiff, verify };
+  }
+
+  // The verification pass is fire-and-forget off the load; assertions on
+  // gap affordances wait for its result to land.
+  async function waitGapsVerified(state: ReturnType<typeof reviewStateForPane>, path: string): Promise<void> {
+    await vi.waitFor(() => {
+      expect(state.files.find((file) => file.path === path)?.suppressGaps).toBeUndefined();
+    });
   }
 
   it('defaults to the latest turn and keys comments by turn', async () => {
@@ -1579,9 +1592,9 @@ describe('reviewPane store — edits scope', () => {
 
     await state.setScope('edits');
     // A single-section historical diff offers hunk-gap expansion like
-    // any live scope — the backend verifies the workspace still
-    // matches before serving lines.
-    expect(state.files[0].suppressGaps).toBeUndefined();
+    // any live scope — once the load-time verification pass proves the
+    // backend can serve it (snapshot or still-matching workspace).
+    await waitGapsVerified(state, 'x.go');
     const gapRow = filePatchDisplayRows(state.files[0]).find((row) => row.gap);
     expect(gapRow).toBeDefined();
 
@@ -1603,16 +1616,43 @@ describe('reviewPane store — edits scope', () => {
     const state = reviewStateForPane('pane-1', 'thread-1');
     await waitLoaded(state);
     await state.setScope('edits');
+    await waitGapsVerified(state, 'x.go');
 
     const gapRow = filePatchDisplayRows(state.files[0]).find((row) => row.gap);
     expect(gapRow).toBeDefined();
 
     await state.expandDiffContext('x.go', gapRow!.gap!, 'up');
-    // Drifted workspace: the file's gap affordances retire quietly —
-    // the historical diff itself is still fully valid, so no banner.
+    // A click-time refusal (the rare load-to-click race): the file's
+    // gap affordances retire quietly — the historical diff itself is
+    // still fully valid, so no banner.
     expect(state.error).toBeNull();
     expect(state.files[0].suppressGaps).toBe(true);
     expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(false);
+  });
+
+  it('gates gap arrows on load-time verification', async () => {
+    const { verify } = installEditMocks();
+    setBindingMock('VerifyEditDiffs', async () => ({ expandablePaths: [] }));
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('edits');
+
+    // Nothing verified → no arrows, ever: an unservable expansion
+    // affordance must never render (drifted pre-snapshot history,
+    // remote clients whose LocalOnly RPC rejects).
+    expect(state.files[0].suppressGaps).toBe(true);
+    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(false);
+    // The batch carried the edit selection and per-file verify patch.
+    expect(verify).not.toHaveBeenCalled();
+    const batch = getBindingMock('VerifyEditDiffs')!.mock.calls.at(-1);
+    expect(batch?.[0]).toBe('thread-1');
+    expect(batch?.[1]).toMatchObject({
+      editPayloadId: '',
+      editTurnIndex: 2,
+      files: [
+        { path: 'x.go', verifyPatch: expect.stringContaining('@@ -5,3 +5,3 @@') },
+      ],
+    });
   });
 
   it('opens pinned to the clicked edit and keys comments by payload id', async () => {
@@ -1689,7 +1729,7 @@ describe('reviewPane store — edits scope', () => {
     // Disjoint sections renumber into ONE coherent section — a single
     // meta block with hunks in final-file order — so the merged file
     // verifies, primes, and gap-expands like a single-section diff.
-    expect(state.files[0].suppressGaps).toBeUndefined();
+    await waitGapsVerified(state, 'x.go');
     expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(true);
     const contents = state.files[0].lines.map((line) => line.content);
     expect(contents.filter((content) => content.startsWith('diff --git'))).toHaveLength(1);
@@ -1726,11 +1766,17 @@ describe('reviewPane store — edits scope', () => {
     await state.setScope('edits');
 
     // The absolute-path edit renders but can never expand (the backend
-    // only resolves workspace-relative paths) — no dead arrows.
+    // only resolves workspace-relative paths): it is never even sent
+    // for verification — no dead arrows.
+    await waitGapsVerified(state, 'x.go');
     const outside = state.files.find((file) => file.path.startsWith('/'));
     expect(outside).toBeDefined();
     expect(outside!.suppressGaps).toBe(true);
     expect(filePatchDisplayRows(outside!).some((row) => row.gap)).toBe(false);
+    const verifyBatch = getBindingMock('VerifyEditDiffs')!.mock.calls.at(-1)?.[1] as {
+      files: { path: string }[];
+    };
+    expect(verifyBatch.files.map((file) => file.path)).toEqual(['x.go']);
     // Workspace-relative files keep their gap affordances.
     const inside = state.files.find((file) => file.path === 'x.go');
     expect(inside!.suppressGaps).toBeUndefined();
@@ -1764,6 +1810,7 @@ describe('reviewPane store — edits scope', () => {
     const state = reviewStateForPane('pane-1', 'thread-1');
     await waitLoaded(state);
     await state.setScope('edits');
+    await waitGapsVerified(state, 'x.go');
 
     const baseLines = state.files[0].lines;
     const gapRow = filePatchDisplayRows(state.files[0]).find((row) => row.gap);

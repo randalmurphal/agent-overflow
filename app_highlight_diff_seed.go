@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"path/filepath"
+	"time"
 	"unicode/utf8"
 
 	"agent-overflow/internal/highlight"
@@ -216,6 +217,11 @@ func (a *App) observeDiffPayloadPersisted(threadID, payloadID string, previews [
 		// post-edit state (verified per file against the patch, so a
 		// racing later edit degrades to unprimed, never wrong colors).
 		prime := a.workspaceFilePrimer(threadID)
+		// The same moment is the only chance to capture the new-side
+		// file snapshots that keep this edit expandable after the
+		// workspace drifts. The primer memoizes, so the span computes
+		// below reuse these reads.
+		a.persistEditFileSnapshots(payloadID, patch, prime)
 		var previewSeeds []PatchSpanSeed
 		total := 0
 		for _, preview := range previews {
@@ -252,6 +258,37 @@ func (a *App) observeDiffPayloadPersisted(threadID, payloadID string, previews [
 			a.emit("highlight:diff_seed", HighlightDiffSeedEvent{ThreadID: threadID, Files: previewSeeds})
 		}
 	}()
+}
+
+// persistEditFileSnapshots captures the new-side content of every file
+// this edit payload's patch touched, verified against the patch the
+// same way priming is — a file that drifted before the worker read it
+// (or lives outside the workspace) is simply not snapshotted, and the
+// Edits scope degrades to its workspace-verify fallback for that edit.
+// Content is stored gzipped per (payload, path); the store call guards
+// the payload-deletion race itself (wrapped sql.ErrNoRows = benign
+// drop, and every later file of the same payload would drop too).
+func (a *App) persistEditFileSnapshots(payloadID, patch string, prime func(path string) string) {
+	if prime == nil || patch == "" || len(patch) > diffSeedMaxScanBytes {
+		return
+	}
+	captured := 0
+	for _, seg := range highlight.SplitPatchFiles(patch) {
+		if captured >= diffSeedMaxFiles {
+			break
+		}
+		content := prime(seg.Path)
+		if content == "" || !highlight.PatchMatchesContent(seg.Patch, content) {
+			continue
+		}
+		captured++
+		if err := a.store.PutEditFileSnapshot(payloadID, seg.Path, content, time.Now().UnixMilli()); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return
+			}
+			log.Printf("app: persist edit file snapshot %s %s: %v", payloadID, seg.Path, err)
+		}
+	}
 }
 
 // persistPayloadSpans writes both span blobs against the payload row.

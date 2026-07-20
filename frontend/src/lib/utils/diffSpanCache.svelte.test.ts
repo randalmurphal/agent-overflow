@@ -148,6 +148,9 @@ describe('requestFileSpans', () => {
         headSHA: '',
         path: 'src/scoped.ts',
         patch: file.lines.map((l) => l.content).join('\n'),
+        // Non-edits scopes carry the neutral edit selection.
+        editPayloadId: '',
+        editTurnIndex: -1,
       },
     ]);
     expect(unprimed).not.toHaveBeenCalled();

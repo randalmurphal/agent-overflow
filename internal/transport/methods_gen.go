@@ -270,6 +270,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UpdateThreadRuntimeMode", ID: 325190827},         // main.App.UpdateThreadRuntimeMode
 	{Name: "UpdateThreadWorkspace", ID: 3875142865},          // main.App.UpdateThreadWorkspace
 	{Name: "UploadAttachment", ID: 2485473713},               // main.App.UploadAttachment
+	{Name: "VerifyEditDiffs", ID: 3907724148},                // main.App.VerifyEditDiffs
 	{Name: "Version", ID: 2431199839},                        // main.App.Version
 	{Name: "WriteTerminal", ID: 146795716},                   // main.App.WriteTerminal
 	{Name: "WriteThreadWorkspaceFile", ID: 3895036895},       // main.App.WriteThreadWorkspaceFile

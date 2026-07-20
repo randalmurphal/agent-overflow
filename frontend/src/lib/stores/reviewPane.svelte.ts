@@ -29,6 +29,7 @@ import {
   SetPRUpdatesActive,
   SubscribePRUpdates,
   UnsubscribePRUpdates,
+  VerifyEditDiffs,
 } from './bindings';
 import { appStorageGet, appStorageSet } from './appStorage';
 import { openCompanion } from './companionPanes.svelte';
@@ -443,6 +444,11 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   // drifted from the historical diff): their gap rows retire for this
   // load. Cleared with the expansions on every reload.
   const unexpandableEditPaths = new SvelteSet<string>();
+  // Edits-scope files the backend verified servable at load time
+  // (VerifyEditDiffs) — the POSITIVE gate for gap arrows: a file's gaps
+  // render only once its path lands here, so an arrow that can't serve
+  // never appears. Cleared with the expansions on every reload.
+  const editExpandablePaths = new SvelteSet<string>();
   let loadSeq = 0;
   const sourceKey = $derived.by(() => {
     if (scope === 'edits') {
@@ -483,22 +489,22 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
       // cache: this derived re-runs per expansion click, and only a
       // stable merged lines array keeps the expansion rebuild memo and
       // the span cache's predecessor fallback working — a fresh array
-      // per run flashes the whole file plain for a round trip. Merged
-      // files keep their gap rows: expansion serves the CURRENT
-      // workspace file only after the backend verifies every hunk line
-      // still matches this historical patch, and a refusal retires the
-      // file's gaps here. Copies, not mutation: the parse cache is
-      // shared across panes and scopes.
-      // Absolute paths are edits OUTSIDE the workspace (agent memory
-      // files, scratchpads): the diff renders, but expansion can never
-      // be served (the backend only resolves workspace-relative
-      // paths), so their gap arrows would be dead-on-arrival — retire
-      // them up front like refused paths.
+      // per run flashes the whole file plain for a round trip.
+      // Gap arrows are verification-gated (merged files included): a
+      // file's gaps render only after the load-time VerifyEditDiffs
+      // pass proved an expansion request would be served (persisted
+      // edit snapshot first, verified workspace file as the
+      // pre-snapshot fallback), so no arrow is ever dead-on-arrival —
+      // absolute paths outside the workspace, drifted pre-snapshot
+      // files, and remote clients all simply never verify. A
+      // click-time refusal (rare race) still retires the path via
+      // unexpandableEditPaths. Copies, not mutation: the parse cache
+      // is shared across panes and scopes.
       parsed = sortFilesTreeOrder(mergePatchFilesByPathCached(parsePatchFilesCached(patchText))).map(
         (file) =>
-          unexpandableEditPaths.has(file.path) || file.path.startsWith('/')
-            ? { ...file, suppressGaps: true }
-            : file,
+          editExpandablePaths.has(file.path) && !unexpandableEditPaths.has(file.path)
+            ? file
+            : { ...file, suppressGaps: true },
       );
     } else {
       parsed = sortFilesTreeOrder(parsePatchFilesCached(patchText));
@@ -758,6 +764,10 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
       }
       clearContextExpansions();
       patchText = loaded.patchText;
+      // Fire-and-forget: arrows appear when verification lands; the
+      // diff itself renders immediately (gaps just aren't expandable
+      // yet).
+      if (scope === 'edits') void verifyEditExpandability(seq);
       // Fresh defaults for the new patch, with the user's explicit
       // collapse/expand choices layered back on top.
       const nextCollapsed = defaultCollapsedPaths(parsePatchFilesCached(loaded.patchText));
@@ -809,6 +819,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
 
   function clearContextExpansions(): void {
     unexpandableEditPaths.clear();
+    editExpandablePaths.clear();
     if (contextExpansions.size === 0) return;
     contextExpansions.clear();
     contextExpansionVersion += 1;
@@ -826,11 +837,29 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     if (selectedCommitSHA) {
       return { scope: 'commit', commitSHA: selectedCommitSHA, headSHA: '' };
     }
-    // 'edits' resolves the workspace file too, but only after the
-    // backend verifies it still matches the historical patch (the
-    // request carries the patch as VerifyPatch); a drifted file
-    // degrades to unprimed spans, never to wrong colors.
+    if (scope === 'edits') {
+      // The edit selection routes the backend to that edit's persisted
+      // file snapshots (workspace file as pre-snapshot fallback), and
+      // content is served only after it verifies against the historical
+      // patch (the request carries the patch as VerifyPatch); a drifted
+      // file degrades to unprimed spans, never to wrong colors.
+      return {
+        scope,
+        commitSHA: '',
+        headSHA: '',
+        editPayloadId: selectedEdit?.kind === 'item' ? selectedEdit.payloadId : '',
+        editTurnIndex: selectedEdit?.kind === 'turn' ? selectedEdit.turnIndex : -1,
+      };
+    }
     return { scope, commitSHA: '', headSHA: '' };
+  }
+
+  // One file's patch text, serialized from its merged lines — the ONLY
+  // way an edits-scope verifyPatch is built. The load-time verification
+  // batch and the click-time expansion request both call this, so the
+  // two verdicts compare the same bytes by construction.
+  function filePatchText(file: PatchFile): string {
+    return file.lines.map((line) => line.content).join('\n');
   }
 
   // The historical patch text of one edits-scope file, for the
@@ -840,7 +869,44 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     if (scope !== 'edits') return '';
     const file = files.find((candidate) => candidate.path === path);
     if (!file) return '';
-    return file.lines.map((line) => line.content).join('\n');
+    return filePatchText(file);
+  }
+
+  // Load-time expandability pass for the edits scope: one batch RPC
+  // proves which files an expansion click would actually serve, and
+  // only those get gap arrows (editExpandablePaths gates the files
+  // derived). Candidates come from the unsuppressed merge, NOT the
+  // files derived — that one already suppresses everything still
+  // unverified. Any failure (remote client's LocalOnly rejection
+  // included) just leaves paths unverified: no arrows, no error
+  // banner, exactly what clicking would have found out the hard way.
+  async function verifyEditExpandability(seq: number): Promise<void> {
+    if (scope !== 'edits' || !patchText) return;
+    const merged = mergePatchFilesByPathCached(parsePatchFilesCached(patchText));
+    // Added files are fully present — no gaps to gate, so no reason to
+    // resolve them.
+    const candidates = merged.filter(
+      (file) => !file.suppressGaps && file.kind !== 'added' && !file.path.startsWith('/'),
+    );
+    if (candidates.length === 0) return;
+    const context = patchScopeContext();
+    try {
+      const result = await VerifyEditDiffs(threadId, {
+        editPayloadId: context.editPayloadId ?? '',
+        editTurnIndex: context.editTurnIndex ?? -1,
+        files: candidates.map((file) => ({
+          path: file.path,
+          verifyPatch: filePatchText(file),
+        })),
+      });
+      if (seq !== loadSeq || disposed) return;
+      for (const path of result.expandablePaths ?? []) {
+        editExpandablePaths.add(path);
+      }
+    } catch {
+      if (seq !== loadSeq || disposed) return;
+      // Unverified stays unexpandable — the honest degrade.
+    }
   }
 
   async function expandDiffContext(path: string, gap: DiffGap, dir: ExpandDirection): Promise<void> {
@@ -857,6 +923,8 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
         startLine: range.start,
         endLine: range.end,
         verifyPatch: editVerifyPatch(path),
+        editPayloadId: context.editPayloadId ?? '',
+        editTurnIndex: context.editTurnIndex ?? -1,
       });
       // The diff reloaded underneath the fetch — its line numbering may
       // no longer be the one this slice was addressed against.

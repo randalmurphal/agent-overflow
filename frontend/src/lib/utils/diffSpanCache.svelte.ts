@@ -40,6 +40,11 @@ export interface PatchScopeContext {
   scope: string;
   commitSHA: string;
   headSHA: string;
+  /** Edits scope only: the edit selection whose persisted file snapshot
+   * the backend resolves priming content against (payload id for a
+   * single edit, turn index for a whole-turn view; -1 = no turn). */
+  editPayloadId?: string;
+  editTurnIndex?: number;
 }
 
 interface SpanEntry {
@@ -174,7 +179,10 @@ function scopedKey(base: string, threadId: string, context: PatchScopeContext): 
   // threadId is part of the identity: the backend resolves priming
   // content through the THREAD's workspace/refs, so the same
   // (scope, path, patch) primes differently across threads.
-  return `${base}\0${threadId}\0${context.scope}\0${context.commitSHA}\0${context.headSHA}`;
+  // The edit selection is identity too: two selections can serve the
+  // same (path, patch) from different snapshots, whose gap lines can
+  // prime grammar state differently.
+  return `${base}\0${threadId}\0${context.scope}\0${context.commitSHA}\0${context.headSHA}\0${context.editPayloadId ?? ''}\0${context.editTurnIndex ?? -1}`;
 }
 
 function touch(key: string): void {
@@ -316,6 +324,8 @@ export async function requestFileSpans(
           headSHA: context.headSHA,
           path: file.path,
           patch,
+          editPayloadId: context.editPayloadId ?? '',
+          editTurnIndex: context.editTurnIndex ?? -1,
         });
       } catch {
         // LocalOnly method rejected — remote client or scope failure.

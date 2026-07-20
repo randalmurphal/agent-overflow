@@ -354,6 +354,7 @@ export const GetCommitDiff = dispatch('GetCommitDiff');
 export const ListThreadEditDiffs = dispatch('ListThreadEditDiffs');
 export const GetTurnEditsDiff = dispatch('GetTurnEditsDiff');
 export const GetDiffContextLines = dispatch('GetDiffContextLines');
+export const VerifyEditDiffs = dispatch('VerifyEditDiffs');
 export const HighlightClassNames = dispatch('HighlightClassNames');
 export const HighlightSchemaVersion = dispatch('HighlightSchemaVersion');
 export const HighlightCode = dispatch('HighlightCode');

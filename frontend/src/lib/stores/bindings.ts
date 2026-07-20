@@ -214,6 +214,7 @@ export {
   ListBranchCommits,
   GetCommitDiff,
   GetDiffContextLines,
+  VerifyEditDiffs,
   ListThreadEditDiffs,
   GetTurnEditsDiff,
 

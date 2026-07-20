@@ -671,6 +671,7 @@ func (p *privilegedApp) GetCommitDiff() string                  { return "ok" }
 func (p *privilegedApp) ListPRCommits() string                  { return "ok" }
 func (p *privilegedApp) GetPRCommitDiff() string                { return "ok" }
 func (p *privilegedApp) GetDiffContextLines() string            { return "ok" }
+func (p *privilegedApp) VerifyEditDiffs() string                { return "ok" }
 func (p *privilegedApp) HighlightPatchWithContext() string      { return "ok" }
 func (p *privilegedApp) ListDiffReviewComments() string         { return "ok" }
 func (p *privilegedApp) CreateDiffReviewComment() string        { return "ok" }

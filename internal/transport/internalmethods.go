@@ -183,7 +183,10 @@ var LocalOnlyMethods = map[string]bool{
 	"GetPRCommitDiff":         true,
 	// GetDiffContextLines reads arbitrary workspace/ref file content by
 	// line range (review hunk-gap expansion) — same bulk-content class.
+	// VerifyEditDiffs runs the same content resolution (it only reports
+	// servability, but the resolution reads workspace files by path).
 	"GetDiffContextLines": true,
+	"VerifyEditDiffs":     true,
 	// HighlightPatchWithContext resolves workspace/ref file content by
 	// path to prime span parsing — same class. The wire-safe
 	// HighlightCode / HighlightPatch / HighlightClassNames RPCs are

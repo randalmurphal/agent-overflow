@@ -159,11 +159,19 @@ export function parsePatchFiles(patch: string): PatchFile[] {
  * describes the final file, so it verifies, primes, and expands exactly
  * like a single-section diff.
  *
- * Overlapping sections (an edit re-touching an earlier edit's lines,
- * including any edit to a file created in the same turn) cannot be
- * renumbered without real patch composition — those fall back to plain
- * concatenation in edit order with `suppressGaps` set: their gap
- * coordinates are fiction and verification would refuse them anyway.
+ * A file CREATED in the turn composes instead of renumbering: the
+ * creation section carries the entire file, so later sections' hunks
+ * apply to that content directly (old-side lines byte-verified before
+ * each splice), and the merge emits one clean added-file section of the
+ * end-of-turn content — exactly what a Write-then-Edit sequence means.
+ *
+ * Overlapping sections on a pre-existing file (an edit re-touching an
+ * earlier edit's lines) cannot be renumbered without the file content
+ * to compose against — those fall back to plain concatenation in edit
+ * order with `suppressGaps` set: their gap coordinates are fiction and
+ * verification would refuse them anyway. A failed composition (a later
+ * hunk's old side not matching the built content) falls back the same
+ * way.
  *
  * Line arrays are shared parse-cache state and never mutated; merged
  * files get fresh arrays sharing the sections' PatchLine objects.
@@ -271,6 +279,9 @@ function mergeFileSections(sections: PatchFile[]): PatchFile {
     parsed.push(parsedSection);
   }
 
+  const composed = composeCreatedFileSections(sections, parsed);
+  if (composed) return composed;
+
   const placed: SectionHunk[] = [];
   for (const parsedSection of parsed) {
     // A section's old side is the file every earlier section produced,
@@ -311,6 +322,78 @@ function mergeFileSections(sections: PatchFile[]): PatchFile {
     lines.push(...hunk.body);
   }
   return { ...sections[0], ...sectionTotals(sections), lines };
+}
+
+/**
+ * Merge a created-then-edited file by real patch composition: seed the
+ * file content from the creation section's add lines, apply each later
+ * section's hunks to it in order (old-side lines byte-verified before
+ * every splice — patches and content share Claude's tab mangling, so
+ * byte-exact is the right comparison), and emit ONE added-file section
+ * holding the end-of-turn content. Returns null when the shape doesn't
+ * apply (first section isn't a pure creation) or a hunk's old side
+ * doesn't match the built content — callers fall back.
+ */
+function composeCreatedFileSections(sections: PatchFile[], parsed: ParsedSection[]): PatchFile | null {
+  const creation = parsed[0].hunks;
+  // A pure creation is exactly one hunk of only-adds starting at +1
+  // (git's `@@ -0,0 +1,N @@` shape).
+  if (creation.length !== 1) return null;
+  const seed = creation[0];
+  if (seed.oldStart !== 0 || seed.oldCount !== 0 || seed.newStart !== 1) return null;
+
+  let content = seed.body.map((line) => line.content.slice(1));
+  for (let index = 1; index < parsed.length; index += 1) {
+    // A later re-creation or rename has no old side to verify against
+    // the built content; a deletion means the file's end state isn't an
+    // added file at all. All three keep today's fallback behavior.
+    if (sections[index].kind !== 'modified') return null;
+    const applied = applyHunksToContent(content, parsed[index].hunks);
+    if (!applied) return null;
+    content = applied;
+  }
+
+  const lines: PatchLine[] = [...parsed[0].preamble];
+  lines.push({ content: formatHunkHeader(0, 0, 1, content.length, seed.suffix), type: 'meta' });
+  for (const text of content) {
+    lines.push({ content: `+${text}`, type: 'add' });
+  }
+  return {
+    ...sections[0],
+    kind: 'added',
+    additions: content.length,
+    deletions: 0,
+    lines,
+  };
+}
+
+/**
+ * Apply one section's hunks to file content (1-based diff coordinates
+ * over a 0-based array), verifying every old-side line byte-exactly
+ * before splicing. Returns null on any mismatch — never a guess.
+ */
+function applyHunksToContent(content: string[], hunks: SectionHunk[]): string[] | null {
+  const out = content.slice();
+  let delta = 0;
+  for (const hunk of hunks) {
+    // Zero-old-count hunks insert AFTER old line `oldStart` (git's
+    // `-N,0` convention); others replace starting AT `oldStart`.
+    const start = (hunk.oldCount === 0 ? hunk.oldStart : hunk.oldStart - 1) + delta;
+    if (start < 0 || start > out.length) return null;
+    const oldLines: string[] = [];
+    const newLines: string[] = [];
+    for (const line of hunk.body) {
+      const text = line.content.slice(1);
+      if (line.type === 'del' || line.type === 'context') oldLines.push(text);
+      if (line.type === 'add' || line.type === 'context') newLines.push(text);
+    }
+    for (let offset = 0; offset < oldLines.length; offset += 1) {
+      if (out[start + offset] !== oldLines[offset]) return null;
+    }
+    out.splice(start, oldLines.length, ...newLines);
+    delta += newLines.length - oldLines.length;
+  }
+  return out;
 }
 
 function concatFileSections(sections: PatchFile[]): PatchFile {

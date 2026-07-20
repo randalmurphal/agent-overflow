@@ -493,6 +493,52 @@ func TestComputePatchSpanSeedsPrimed(t *testing.T) {
 	}
 }
 
+func TestObserveDiffPayloadPersistedCapturesEditFileSnapshots(t *testing.T) {
+	app := newTestAppWithStore(t)
+	workspace := t.TempDir()
+	thread := testThread("thread-snapshots")
+	thread.WorkspacePath = workspace
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "src"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	// src/app.py matches its patch section's new side; notes.txt drifted
+	// (a later edit beat the worker to the file).
+	if err := os.WriteFile(filepath.Join(workspace, "src", "app.py"), []byte("def f():\n    pass\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte("already drifted\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	notesPatch := "diff --git a/notes.txt b/notes.txt\n" +
+		"--- a/notes.txt\n" +
+		"+++ b/notes.txt\n" +
+		"@@ -1 +1 @@\n" +
+		"-old\n" +
+		"+new"
+	patch := diffSeedTestPatch + "\n" + notesPatch
+	insertDiffSpanPayload(t, app, thread.ID, "item-1", "payload-1", "tool_result", patch)
+
+	app.observeDiffPayloadPersisted(thread.ID, "payload-1", nil, patch)
+	waitForPayloadSpans(t, app, "payload-1")
+
+	// The verified file snapshots with the post-edit workspace content.
+	content, found, err := app.store.GetEditFileSnapshot(thread.ID, "payload-1", "src/app.py")
+	if err != nil || !found {
+		t.Fatalf("GetEditFileSnapshot() = %v found=%v", err, found)
+	}
+	if content != "def f():\n    pass\n" {
+		t.Fatalf("snapshot content = %q", content)
+	}
+	// The drifted file must NOT snapshot — a wrong snapshot would serve
+	// wrong gap lines forever; absence degrades to workspace verify.
+	if _, found, err := app.store.GetEditFileSnapshot(thread.ID, "payload-1", "notes.txt"); err != nil || found {
+		t.Fatalf("drifted file snapshot: err=%v found=%v, want nil/false", err, found)
+	}
+}
+
 func TestWorkspaceFilePrimer(t *testing.T) {
 	app := newTestAppWithStore(t)
 	workspace := t.TempDir()

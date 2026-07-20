@@ -44,6 +44,9 @@ type HighlightPatchContextRequest struct {
 	HeadSHA   string `json:"headSHA"`
 	Path      string `json:"path"`
 	Patch     string `json:"patch"`
+	// Edit selection (edits scope only) — see DiffContextRequest.
+	EditPayloadID string `json:"editPayloadId"`
+	EditTurnIndex int    `json:"editTurnIndex"`
 }
 
 // HighlightResult is the span payload. Lines align 1:1 with the input
@@ -143,8 +146,12 @@ func (a *App) HighlightPatchWithContext(threadID string, req HighlightPatchConte
 		Path:      req.Path,
 		// Edits scope only serves content proven to still match this
 		// historical patch (drifted files degrade to unprimed spans,
-		// never to wrong colors); live scopes ignore the field.
-		VerifyPatch: req.Patch,
+		// never to wrong colors); live scopes ignore the field. The
+		// edit selection routes resolution to that edit's persisted
+		// snapshot before the workspace fallback.
+		VerifyPatch:   req.Patch,
+		EditPayloadID: req.EditPayloadID,
+		EditTurnIndex: req.EditTurnIndex,
 	}, highlight.MaxPrimeBytes)
 	var res highlight.Result
 	primed := false

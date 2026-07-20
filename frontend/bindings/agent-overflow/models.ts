@@ -469,12 +469,24 @@ export class DiffContextRequest {
 
     /**
      * VerifyPatch (edits scope only): the file's historical patch text.
-     * The workspace file is served only when every new-side patch line
-     * still byte-matches it — a drifted file must never masquerade as
-     * historical context. Live scopes ignore the field (their content
-     * IS the diff's source by construction).
+     * A snapshot or workspace file is served only when every new-side
+     * patch line still byte-matches it — a drifted file must never
+     * masquerade as historical context. Live scopes ignore the field
+     * (their content IS the diff's source by construction).
      */
     "verifyPatch"?: string;
+
+    /**
+     * Edit selection (edits scope only): which edit's persisted file
+     * snapshot resolves this path. EditPayloadID selects one edit's
+     * snapshot; when it is empty EditTurnIndex selects the whole turn,
+     * whose LAST snapshot of Path is the state the merged section
+     * describes. Snapshots are still verified against VerifyPatch, and
+     * an absent snapshot (pre-feature history) falls back to workspace
+     * verification.
+     */
+    "editPayloadId": string;
+    "editTurnIndex": number;
 
     /** Creates a new DiffContextRequest instance. */
     constructor($$source: Partial<DiffContextRequest> = {}) {
@@ -495,6 +507,12 @@ export class DiffContextRequest {
         }
         if (!("endLine" in $$source)) {
             this["endLine"] = 0;
+        }
+        if (!("editPayloadId" in $$source)) {
+            this["editPayloadId"] = "";
+        }
+        if (!("editTurnIndex" in $$source)) {
+            this["editTurnIndex"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -731,6 +749,34 @@ export class EditDiffTurnLabel {
 }
 
 /**
+ * EditDiffVerifyFile is one candidate file of a VerifyEditDiffs batch.
+ */
+export class EditDiffVerifyFile {
+    "path": string;
+    "verifyPatch": string;
+
+    /** Creates a new EditDiffVerifyFile instance. */
+    constructor($$source: Partial<EditDiffVerifyFile> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("verifyPatch" in $$source)) {
+            this["verifyPatch"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EditDiffVerifyFile instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EditDiffVerifyFile {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EditDiffVerifyFile($$parsedSource as Partial<EditDiffVerifyFile>);
+    }
+}
+
+/**
  * EditorInfo is the wire shape of an editor row exposed to the
  * frontend by ListAvailableEditors. We deliberately publish a subset
  * of editor.Editor — ResolvedPath stays internal because it would
@@ -902,6 +948,12 @@ export class HighlightPatchContextRequest {
     "path": string;
     "patch": string;
 
+    /**
+     * Edit selection (edits scope only) — see DiffContextRequest.
+     */
+    "editPayloadId": string;
+    "editTurnIndex": number;
+
     /** Creates a new HighlightPatchContextRequest instance. */
     constructor($$source: Partial<HighlightPatchContextRequest> = {}) {
         if (!("scope" in $$source)) {
@@ -918,6 +970,12 @@ export class HighlightPatchContextRequest {
         }
         if (!("patch" in $$source)) {
             this["patch"] = "";
+        }
+        if (!("editPayloadId" in $$source)) {
+            this["editPayloadId"] = "";
+        }
+        if (!("editTurnIndex" in $$source)) {
+            this["editTurnIndex"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -2288,6 +2346,74 @@ export class UpdateAvailability {
 }
 
 /**
+ * VerifyEditDiffsRequest carries one edits-scope load's candidate files
+ * for batch expandability verification. The edit selection mirrors
+ * DiffContextRequest; each file's VerifyPatch is its merged historical
+ * patch text.
+ */
+export class VerifyEditDiffsRequest {
+    "editPayloadId": string;
+    "editTurnIndex": number;
+    "files": EditDiffVerifyFile[];
+
+    /** Creates a new VerifyEditDiffsRequest instance. */
+    constructor($$source: Partial<VerifyEditDiffsRequest> = {}) {
+        if (!("editPayloadId" in $$source)) {
+            this["editPayloadId"] = "";
+        }
+        if (!("editTurnIndex" in $$source)) {
+            this["editTurnIndex"] = 0;
+        }
+        if (!("files" in $$source)) {
+            this["files"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new VerifyEditDiffsRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): VerifyEditDiffsRequest {
+        const $$createField2_0 = $$createType41;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("files" in $$parsedSource) {
+            $$parsedSource["files"] = $$createField2_0($$parsedSource["files"]);
+        }
+        return new VerifyEditDiffsRequest($$parsedSource as Partial<VerifyEditDiffsRequest>);
+    }
+}
+
+/**
+ * VerifyEditDiffsResult lists the paths whose expansion requests would
+ * be served — the positive gate for rendering gap arrows.
+ */
+export class VerifyEditDiffsResult {
+    "expandablePaths": string[];
+
+    /** Creates a new VerifyEditDiffsResult instance. */
+    constructor($$source: Partial<VerifyEditDiffsResult> = {}) {
+        if (!("expandablePaths" in $$source)) {
+            this["expandablePaths"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new VerifyEditDiffsResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): VerifyEditDiffsResult {
+        const $$createField0_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("expandablePaths" in $$parsedSource) {
+            $$parsedSource["expandablePaths"] = $$createField0_0($$parsedSource["expandablePaths"]);
+        }
+        return new VerifyEditDiffsResult($$parsedSource as Partial<VerifyEditDiffsResult>);
+    }
+}
+
+/**
  * WorkspaceFileSearchResult is the RPC shape for workspace-file search hits.
  */
 export class WorkspaceFileSearchResult {
@@ -2314,7 +2440,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType41;
+        const $$createField0_0 = $$createType43;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -2454,5 +2580,7 @@ const $$createType36 = $Create.Array($$createType35);
 const $$createType37 = provider$0.PendingInteractiveRequests.createFrom;
 const $$createType38 = LiveStateTodo.createFrom;
 const $$createType39 = $Create.Nullable($$createType38);
-const $$createType40 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType40 = EditDiffVerifyFile.createFrom;
 const $$createType41 = $Create.Array($$createType40);
+const $$createType42 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType43 = $Create.Array($$createType42);

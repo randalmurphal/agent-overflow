@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/testutil"
@@ -269,6 +270,151 @@ func TestGetDiffContextLinesEditsScope(t *testing.T) {
 		Scope: "edits", Path: "notes.txt", StartLine: 1, EndLine: 5, VerifyPatch: verifyPatch,
 	}); err == nil {
 		t.Fatal("drifted workspace must refuse edits-scope expansion")
+	}
+}
+
+// VerifyEditDiffs runs the serving path's exact resolution per file, so
+// its verdicts are the ones expansion clicks would get: workspace-
+// verified and snapshot-backed files pass, drifted and out-of-workspace
+// files don't.
+func TestVerifyEditDiffs(t *testing.T) {
+	app := newTestAppWithStore(t)
+	workspace := t.TempDir()
+	thread := testThread("thread-verify-edit-diffs")
+	thread.WorkspacePath = workspace
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "ok.txt"), []byte("line 1\nline 2\nline 3\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	patchFor := func(path string) string {
+		return "diff --git a/" + path + " b/" + path + "\n" +
+			"--- a/" + path + "\n" +
+			"+++ b/" + path + "\n" +
+			"@@ -2,1 +2,1 @@\n" +
+			"-old two\n" +
+			"+line 2\n"
+	}
+
+	// gone.txt only survives as a snapshot; drifted.txt has neither a
+	// matching workspace file nor a snapshot.
+	insertDiffSpanPayload(t, app, thread.ID, "item-v", "payload-v", "tool_result", patchFor("gone.txt"))
+	if err := app.store.PutEditFileSnapshot("payload-v", "gone.txt", "line 1\nline 2\nline 3\n", time.Now().UnixMilli()); err != nil {
+		t.Fatalf("PutEditFileSnapshot() error = %v", err)
+	}
+
+	result, err := app.VerifyEditDiffs(thread.ID, VerifyEditDiffsRequest{
+		EditPayloadID: "payload-v",
+		EditTurnIndex: -1,
+		Files: []EditDiffVerifyFile{
+			{Path: "ok.txt", VerifyPatch: patchFor("ok.txt")},
+			{Path: "gone.txt", VerifyPatch: patchFor("gone.txt")},
+			{Path: "drifted.txt", VerifyPatch: patchFor("drifted.txt")},
+			{Path: "/abs/outside.txt", VerifyPatch: patchFor("/abs/outside.txt")},
+			{Path: "empty.txt", VerifyPatch: ""},
+		},
+	})
+	if err != nil {
+		t.Fatalf("VerifyEditDiffs() error = %v", err)
+	}
+	if len(result.ExpandablePaths) != 2 ||
+		result.ExpandablePaths[0] != "ok.txt" || result.ExpandablePaths[1] != "gone.txt" {
+		t.Fatalf("ExpandablePaths = %v, want [ok.txt gone.txt]", result.ExpandablePaths)
+	}
+}
+
+// A persisted edit-file snapshot outranks the workspace: once captured,
+// the edit stays expandable no matter how far the workspace drifts —
+// including the file being deleted outright.
+func TestGetDiffContextLinesEditsScopeSnapshotFirst(t *testing.T) {
+	app := newTestAppWithStore(t)
+	workspace := t.TempDir()
+	thread := testThread("thread-diff-context-snapshot")
+	thread.WorkspacePath = workspace
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	var lines []string
+	for i := 1; i <= 20; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	historical := strings.Join(lines, "\n") + "\n"
+	verifyPatch := "diff --git a/notes.txt b/notes.txt\n" +
+		"--- a/notes.txt\n" +
+		"+++ b/notes.txt\n" +
+		"@@ -10,3 +10,3 @@\n" +
+		" line 10\n" +
+		"-old eleven\n" +
+		"+line 11\n" +
+		" line 12\n"
+
+	// Two edits of the same turn touched the file; the later snapshot is
+	// the state the whole-turn merged section describes. The workspace
+	// copy is GONE — only snapshots can serve.
+	insertDiffSpanPayload(t, app, thread.ID, "item-early", "payload-early", "tool_result", verifyPatch)
+	insertDiffSpanPayload(t, app, thread.ID, "item-late", "payload-late", "tool_result", verifyPatch)
+	now := time.Now().UnixMilli()
+	stale := strings.Join(lines[:10], "\n") + "\nsuperseded eleven\n" + strings.Join(lines[11:], "\n") + "\n"
+	if err := app.store.PutEditFileSnapshot("payload-early", "notes.txt", stale, now); err != nil {
+		t.Fatalf("PutEditFileSnapshot(early) error = %v", err)
+	}
+	if err := app.store.PutEditFileSnapshot("payload-late", "notes.txt", historical, now); err != nil {
+		t.Fatalf("PutEditFileSnapshot(late) error = %v", err)
+	}
+
+	// Single-edit selection resolves that payload's snapshot.
+	result, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+		Scope: "edits", Path: "notes.txt", StartLine: 1, EndLine: 5,
+		VerifyPatch: verifyPatch, EditPayloadID: "payload-late", EditTurnIndex: -1,
+	})
+	if err != nil {
+		t.Fatalf("GetDiffContextLines(snapshot) error = %v", err)
+	}
+	if len(result.Lines) != 5 || result.Lines[0] != "line 1" || result.TotalLines != 20 {
+		t.Fatalf("snapshot result = %+v", result)
+	}
+
+	// Whole-turn selection resolves the LAST matching snapshot of the
+	// path in item order (both payloads sit in the same turn; the later
+	// one wins and is the one that verifies).
+	result, err = app.GetDiffContextLines(thread.ID, DiffContextRequest{
+		Scope: "edits", Path: "notes.txt", StartLine: 10, EndLine: 12,
+		VerifyPatch: verifyPatch, EditTurnIndex: 0,
+	})
+	if err != nil {
+		t.Fatalf("GetDiffContextLines(turn snapshot) error = %v", err)
+	}
+	if len(result.Lines) != 3 || result.Lines[1] != "line 11" {
+		t.Fatalf("turn snapshot result = %+v", result)
+	}
+
+	// A snapshot that does not match the verification patch (the early
+	// edit's state predates the verified section) must not serve — and
+	// with no workspace file either, the request refuses.
+	if _, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+		Scope: "edits", Path: "notes.txt", StartLine: 1, EndLine: 5,
+		VerifyPatch: verifyPatch, EditPayloadID: "payload-early", EditTurnIndex: -1,
+	}); err == nil {
+		t.Fatal("mismatched snapshot with no workspace file must refuse")
+	}
+
+	// A mismatched snapshot must FALL THROUGH to the workspace, not
+	// refuse outright: once the file exists on disk in matching state,
+	// the same request serves from it.
+	if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte(historical), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	result, err = app.GetDiffContextLines(thread.ID, DiffContextRequest{
+		Scope: "edits", Path: "notes.txt", StartLine: 1, EndLine: 5,
+		VerifyPatch: verifyPatch, EditPayloadID: "payload-early", EditTurnIndex: -1,
+	})
+	if err != nil {
+		t.Fatalf("GetDiffContextLines(workspace fallthrough) error = %v", err)
+	}
+	if len(result.Lines) != 5 || result.Lines[0] != "line 1" {
+		t.Fatalf("workspace fallthrough result = %+v", result)
 	}
 }
 

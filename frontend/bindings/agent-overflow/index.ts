@@ -22,6 +22,7 @@ export {
     EditDiffEntry,
     EditDiffList,
     EditDiffTurnLabel,
+    EditDiffVerifyFile,
     EditorInfo,
     GeneratedCommitMessage,
     GitStatusSubscriptionResult,
@@ -63,6 +64,8 @@ export {
     ThreadLiveState,
     TurnEditsDiff,
     UpdateAvailability,
+    VerifyEditDiffsRequest,
+    VerifyEditDiffsResult,
     WorkspaceFileSearchResult,
     WorktreeListItem,
     WorktreeStatus

@@ -2990,6 +2990,22 @@ export function UploadAttachment(threadID: string, filename: string, mimeType: s
 }
 
 /**
+ * VerifyEditDiffs reports which of an edits-scope diff's files can
+ * serve hunk-gap expansion, so the frontend renders arrows only where a
+ * click would succeed. Each file runs the SAME resolution the serving
+ * path uses (snapshot first, workspace fallback, verified against the
+ * patch either way) — the load-time verdict can never drift from the
+ * click-time one. Same wire-exposure class as GetDiffContextLines:
+ * classified LocalOnlyMethods; remote clients' rejection leaves every
+ * path unexpandable, which is exactly what their clicks would find.
+ */
+export function VerifyEditDiffs(threadID: string, req: $models.VerifyEditDiffsRequest): $CancellablePromise<$models.VerifyEditDiffsResult> {
+    return $Call.ByID(3907724148, threadID, req).then(($result: any) => {
+        return $$createType103($result);
+    });
+}
+
+/**
  * Version returns the build-stamped semantic version (e.g. "0.0.1") or
  * "dev" for unstamped builds. The frontend's Settings footer reads
  * this to display the current release. Read-only, no FS / process /
@@ -3122,3 +3138,4 @@ const $$createType99 = $models.WorkspaceFileSearchResult.createFrom;
 const $$createType100 = $models.SubmitPRReviewResult.createFrom;
 const $$createType101 = $models.PRUpdateSubscriptionResult.createFrom;
 const $$createType102 = $models.MCPAuthInitResult.createFrom;
+const $$createType103 = $models.VerifyEditDiffsResult.createFrom;
