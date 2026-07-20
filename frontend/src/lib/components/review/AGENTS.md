@@ -166,15 +166,18 @@ state registry); the row model in `utils/reviewRows.ts`.
   option first, labels from the turn's first user prompt). sourceKeys:
   `edit:<payloadId>` / `edit-turn:<turnIndex>`. Historical fidelity is
   verification-gated: the current workspace file stands in for the
-  historical tree ONLY when every new-side patch line still
-  byte-matches it (`highlight.PatchMatchesContent`; the expansion and
-  priming requests carry the patch as `verifyPatch`). Verified files
-  get hunk-gap expansion and primed spans like live scopes; drifted
-  files degrade — expansion refusals retire the file's gap rows
-  quietly (store `unexpandableEditPaths`, no error banner) and spans
-  fall back to unprimed. Merged multi-section files always suppress
-  gaps (`mergePatchFilesByPath` sets `suppressGaps` — their sections'
-  line numbers describe different moments). Span quality is monotonic:
+  historical tree ONLY when every new-side patch line still matches it
+  — byte-exactly or modulo Claude's structuredPatch tab mangling
+  (leading tabs ship as two spaces per tab;
+  `highlight.PatchContentMatch` tolerates exactly that transform and
+  `GetDiffContextLines` tab-expands served lines to match); the
+  expansion and priming requests carry the patch as `verifyPatch`.
+  Verified files — merged multi-section ones included, since matching
+  sections all describe the final file — get hunk-gap expansion and
+  primed spans like live scopes; drifted files degrade — expansion
+  refusals retire the file's gap rows quietly (store
+  `unexpandableEditPaths` sets `suppressGaps`, no error banner) and
+  spans fall back to unprimed. Span quality is monotonic:
   persist-time seeds (primed with the just-edited file, attached to
   `GetPayloadData`/`GetTurnEditsDiff` and pushed on
   `highlight:diff_seed` to ALL clients) upgrade unprimed cache entries

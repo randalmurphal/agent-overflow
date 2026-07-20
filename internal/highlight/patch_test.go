@@ -272,3 +272,60 @@ func TestPatchMatchesContent(t *testing.T) {
 		})
 	}
 }
+
+func TestExpandLeadingTabs(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"no tabs", "no tabs"},
+		{"\tone", "  one"},
+		{"\t\t\tthree", "      three"},
+		// Interior tabs are preserved — the CLI transform is /^\t+/ only.
+		{"\tlead\tinner", "  lead\tinner"},
+		{"  spaces\tinner", "  spaces\tinner"},
+		{"\t", "  "},
+	}
+	for _, tc := range cases {
+		if got := ExpandLeadingTabs(tc.in); got != tc.want {
+			t.Errorf("ExpandLeadingTabs(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// Claude's structuredPatch ships leading tabs as two spaces per tab,
+// so a tab-indented file never byte-matches its own edit diff.
+// Verification tolerates exactly that transform and reports it, so
+// context served beside the patch can apply the same expansion.
+func TestPatchContentMatchTabMangling(t *testing.T) {
+	mangledPatch := "diff --git a/x.go b/x.go\n" +
+		"--- a/x.go\n" +
+		"+++ b/x.go\n" +
+		"@@ -1,3 +1,3 @@\n" +
+		" func f() {\n" +
+		"-  old()\n" +
+		"+  call()\n" +
+		" }\n"
+	tabContent := "func f() {\n\tcall()\n}\n"
+
+	matched, tabExpanded := PatchContentMatch(mangledPatch, tabContent)
+	if !matched || !tabExpanded {
+		t.Fatalf("tab-indented content = (%v, %v), want (true, true)", matched, tabExpanded)
+	}
+
+	// Byte-exact content reports no expansion.
+	matched, tabExpanded = PatchContentMatch(mangledPatch, "func f() {\n  call()\n}\n")
+	if !matched || tabExpanded {
+		t.Fatalf("space-indented content = (%v, %v), want (true, false)", matched, tabExpanded)
+	}
+
+	// Real drift still refuses — the tolerance is the tab transform,
+	// nothing wider.
+	matched, _ = PatchContentMatch(mangledPatch, "func f() {\n\tchanged()\n}\n")
+	if matched {
+		t.Fatal("drifted content must not match")
+	}
+	// Two tabs expand to four spaces, not two — depth must agree.
+	matched, _ = PatchContentMatch(mangledPatch, "func f() {\n\t\tcall()\n}\n")
+	if matched {
+		t.Fatal("deeper indentation must not match")
+	}
+}

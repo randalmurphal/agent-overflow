@@ -83,13 +83,18 @@ func HighlightPatchText(lang Lang, patch string) Result {
 }
 
 // HighlightPatchTextPrimed is HighlightPatchText with the new-side
-// file content prepended to each hunk's virtual documents as
-// parse-priming context, so a hunk that starts mid-construct (inside a
-// docstring, block comment, template literal) still highlights
-// correctly. Above the first hunk the old and new files are identical,
-// so priming both sides with new-side text is exact there; for later
-// hunks it is a best-effort approximation that the unprimed path gets
-// wrong anyway. Empty fileContent means no priming.
+// file content spliced around each hunk's virtual documents as
+// parse-priming context: the content ABOVE the hunk is prepended (a
+// hunk that starts mid-construct — inside a docstring, block comment,
+// template literal — still highlights correctly) and the content BELOW
+// it is appended (a construct the hunk sits inside still CLOSES — a
+// hunk inside a raw-text element like svelte/html `<script>` needs the
+// closing tag to exist before the grammar emits the node its language
+// injection anchors on; without the suffix such hunks paint fully
+// plain). Above the first hunk the old and new files are identical, so
+// priming both sides with new-side text is exact there; for later
+// hunks and for the suffix it is a best-effort approximation that the
+// unprimed path gets wrong anyway. Empty fileContent means no priming.
 func HighlightPatchTextPrimed(lang Lang, patch, fileContent string) Result {
 	if len(patch) > MaxRequestBytes {
 		return Result{Truncated: true}
@@ -115,8 +120,9 @@ func HighlightPatchTextPrimed(lang Lang, patch, fileContent string) Result {
 			break
 		}
 		prime := primer.primeFor(hunk.newStart)
-		oldLines, oldRes := highlightHunkDoc(lang, prime, hunk.oldDoc)
-		newLines, newRes := highlightHunkDoc(lang, prime, hunk.newDoc)
+		suffix := primer.suffixFrom(hunk.newStart + hunk.newCount)
+		oldLines, oldRes := highlightHunkDoc(lang, prime, suffix, hunk.oldDoc)
+		newLines, newRes := highlightHunkDoc(lang, prime, suffix, hunk.newDoc)
 		truncated = truncated || oldRes.Truncated || newRes.Truncated
 		incomplete = incomplete || oldRes.Incomplete || newRes.Incomplete
 		for _, ref := range hunk.lines {
@@ -138,9 +144,10 @@ func HighlightPatchTextPrimed(lang Lang, patch, fileContent string) Result {
 }
 
 // primer yields fileContent prefixes (everything above a hunk's first
-// line) as zero-copy slices. Hunks arrive in ascending newStart order,
-// so one forward newline scan serves the whole patch; a malformed
-// descending header restarts the scan.
+// line) and suffixes (everything below its last line) as zero-copy
+// slices. Hunks arrive in ascending newStart order and each hunk asks
+// prefix-then-suffix, so one forward newline scan serves the whole
+// patch; a malformed descending header restarts the scan.
 type primer struct {
 	content string
 	line    int // 0-based count of newlines consumed up to off
@@ -171,21 +178,58 @@ func (pr *primer) primeFor(newStart int) string {
 	return pr.content[:pr.off-1]
 }
 
+// suffixFrom returns the content from 1-based file line fileLine to
+// the end — byte-equal to strings.Join(strings.Split(content, "\n")
+// [fileLine-1:], "\n"). Empty when the content has fewer lines.
+func (pr *primer) suffixFrom(fileLine int) string {
+	n := fileLine - 1
+	if pr.content == "" {
+		return ""
+	}
+	if n <= 0 {
+		return pr.content
+	}
+	if n < pr.line {
+		pr.line, pr.off = 0, 0
+	}
+	for pr.line < n {
+		next := strings.IndexByte(pr.content[pr.off:], '\n')
+		if next < 0 {
+			return ""
+		}
+		pr.off += next + 1
+		pr.line++
+	}
+	return pr.content[pr.off:]
+}
+
 // highlightHunkDoc highlights one reconstructed hunk side, optionally
-// primed with preceding file content. Empty docs (the old side of an
-// added file) short-circuit; only the doc's own lines are returned.
-func highlightHunkDoc(lang Lang, prime string, doc []byte) ([]EncodedLine, Result) {
+// spliced between preceding and following file content. Empty docs
+// (the old side of an added file) short-circuit; only the doc's own
+// lines are returned.
+func highlightHunkDoc(lang Lang, prime, suffix string, doc []byte) ([]EncodedLine, Result) {
 	if len(doc) == 0 {
 		return nil, Result{}
 	}
-	if prime == "" {
+	if prime == "" && suffix == "" {
 		res := Highlight(lang, doc)
 		return res.Lines, res
 	}
-	// Keep the combined document under the input cap by trimming the
-	// prime's HEAD (the text nearest the hunk carries the grammar
-	// state that matters). If the doc alone is over cap, priming is
-	// pointless — let Highlight's own truncation handle it.
+	// Keep the combined document under the input cap: first trim the
+	// suffix's TAIL (the text nearest the hunk closes the constructs
+	// that matter), then the prime's HEAD (same reasoning, other
+	// direction). If the doc alone is over cap, priming is pointless —
+	// let Highlight's own truncation handle it.
+	if overflow := len(prime) + 1 + len(doc) + len(suffix) + 1 - maxInputBytes; overflow > 0 && suffix != "" {
+		keep := len(suffix) - overflow
+		if keep <= 0 {
+			suffix = ""
+		} else if cut := strings.LastIndexByte(suffix[:keep], '\n'); cut > 0 {
+			suffix = suffix[:cut]
+		} else {
+			suffix = ""
+		}
+	}
 	if overflow := len(prime) + 1 + len(doc) - maxInputBytes; overflow > 0 {
 		if overflow >= len(prime) {
 			res := Highlight(lang, doc)
@@ -198,16 +242,36 @@ func highlightHunkDoc(lang Lang, prime string, doc []byte) ([]EncodedLine, Resul
 		}
 		prime = prime[overflow+cut+1:]
 	}
-	combined := make([]byte, 0, len(prime)+1+len(doc))
-	combined = append(combined, prime...)
-	combined = append(combined, '\n')
+	size := len(prime) + 1 + len(doc)
+	if suffix != "" {
+		size += 1 + len(suffix)
+	}
+	combined := make([]byte, 0, size)
+	if prime != "" {
+		combined = append(combined, prime...)
+		combined = append(combined, '\n')
+	}
 	combined = append(combined, doc...)
+	if suffix != "" {
+		combined = append(combined, '\n')
+		combined = append(combined, suffix...)
+	}
 	res := Highlight(lang, combined)
-	skip := countLines([]byte(prime))
+	skip := 0
+	if prime != "" {
+		skip = countLines([]byte(prime))
+	}
 	if skip >= len(res.Lines) {
 		return nil, res
 	}
-	return res.Lines[skip:], res
+	// Drop the suffix's trailing entries: callers index doc lines only,
+	// and the trimmed slice keeps that contract visible.
+	docLines := countLines(doc)
+	lines := res.Lines[skip:]
+	if len(lines) > docLines {
+		lines = lines[:docLines]
+	}
+	return lines, res
 }
 
 // paintSpan is one capture's byte range awaiting precedence

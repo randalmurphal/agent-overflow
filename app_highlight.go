@@ -133,7 +133,10 @@ func (a *App) HighlightPatchWithContext(threadID string, req HighlightPatchConte
 	if len(req.Patch) > highlight.MaxRequestBytes {
 		return HighlightResult{Lang: lang.String(), Truncated: true}, nil
 	}
-	content, err := a.diffContextContent(action, threadID, DiffContextRequest{
+	// tabExpanded is irrelevant here: the prime only shapes grammar
+	// state around the hunk lines, and tab-vs-space indentation doesn't
+	// change tokenization; span byte lengths come from the patch text.
+	content, _, err := a.diffContextContent(action, threadID, DiffContextRequest{
 		Scope:     req.Scope,
 		CommitSHA: req.CommitSHA,
 		HeadSHA:   req.HeadSHA,

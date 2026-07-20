@@ -61,8 +61,9 @@ export interface PatchFile {
   /** New-side file length, learned from a context-expansion response.
    * Sizes (or retires) the trailing hunk gap. Absent on plain parses. */
   newSideTotal?: number;
-  /** Skip hunk-gap rows entirely. Set for historical edit diffs: only
-   * their hunks were persisted, so there is no source to expand from. */
+  /** Skip hunk-gap rows entirely. Set by the review pane for edits-
+   * scope files whose expansion was refused (the workspace drifted from
+   * the historical patch, so there is no source to expand from). */
   suppressGaps?: boolean;
 }
 
@@ -148,10 +149,14 @@ export function parsePatchFiles(patch: string): PatchFile[] {
  * Line arrays are shared parse-cache state and never mutated; a merged
  * file gets a fresh concatenated array.
  *
- * Merged files get `suppressGaps`: their sections carry line numbers
- * from different moments of the file, so inter-section gap coordinates
- * are incoherent and expansion could not verify against any single
- * state. Single-section files pass through untouched (gaps allowed).
+ * Merged sections MAY carry line numbers from different moments of the
+ * file (each section was diffed as its edit landed), so gap rows are
+ * not suppressed here: the display-row builder skips between-gaps for
+ * non-ascending hunks, and edits-scope expansion verifies every hunk
+ * line against the workspace file before serving — sections that
+ * drifted apart refuse and retire the file's gaps quietly. Sequential
+ * same-turn edits to disjoint regions (the common case) all describe
+ * the final file, so their gap coordinates cohere.
  */
 export function mergePatchFilesByPath(files: PatchFile[]): PatchFile[] {
   const merged: PatchFile[] = [];
@@ -172,7 +177,6 @@ export function mergePatchFilesByPath(files: PatchFile[]): PatchFile[] {
       // first section's kind (added / renamed) describes the file best.
       kind: file.kind === 'deleted' ? 'deleted' : existing.kind,
       lines: [...existing.lines, ...file.lines],
-      suppressGaps: true,
     };
   }
   return merged;

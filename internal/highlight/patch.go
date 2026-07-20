@@ -43,6 +43,7 @@ type hunkLineRef struct {
 
 type patchHunk struct {
 	oldStart, newStart int // 1-based file line numbers from the @@ header
+	newCount           int // new-side line count (context + adds)
 	oldDoc, newDoc     []byte
 	lines              []hunkLineRef
 }
@@ -77,6 +78,7 @@ func parsePatch(patch string) parsedPatch {
 		}
 		current.oldDoc = []byte(strings.TrimSuffix(oldBody.String(), "\n"))
 		current.newDoc = []byte(strings.TrimSuffix(newBody.String(), "\n"))
+		current.newCount = newLines
 		result.hunks = append(result.hunks, *current)
 		current = nil
 		oldBody.Reset()
@@ -213,16 +215,48 @@ func padRuns(line EncodedLine, pad int) EncodedLine {
 	return EncodedLine{Runs: runs}
 }
 
+// ExpandLeadingTabs replaces a line's leading tab run with two spaces
+// per tab — byte-for-byte the transform Claude Code applies to file
+// content before computing an edit's structuredPatch (cli 2.1.212:
+// `e.replace(/^\t+/gm, (t) => "  ".repeat(t.length))`). Interior tabs
+// are preserved, matching the CLI. Patch verification tolerates this
+// one divergence (a tab-indented file can never byte-match its own
+// Claude edit diff otherwise), and edits-scope context expansion
+// applies it to served lines so they indent like the hunk lines they
+// sit between.
+func ExpandLeadingTabs(line string) string {
+	n := 0
+	for n < len(line) && line[n] == '\t' {
+		n++
+	}
+	if n == 0 {
+		return line
+	}
+	return strings.Repeat("  ", n) + line[n:]
+}
+
 // PatchMatchesContent reports whether every new-side line of the
-// patch's hunks (adds and context) byte-matches `content` at its
-// 1-based new-side line number. True means the file still holds the
-// state this patch produced at every position the patch describes —
-// the gate for treating live file content as a stand-in for a
-// historical edit diff (parse priming, hunk-gap expansion). False on
-// any mismatch, and on patches with no verifiable new-side lines
-// (pure deletions, no hunks): with nothing to check, the content must
-// not be presumed to match.
+// patch's hunks (adds and context) matches `content` at its 1-based
+// new-side line number. True means the file still holds the state
+// this patch produced at every position the patch describes — the
+// gate for treating live file content as a stand-in for a historical
+// edit diff (parse priming, hunk-gap expansion). False on any
+// mismatch, and on patches with no verifiable new-side lines (pure
+// deletions, no hunks): with nothing to check, the content must not
+// be presumed to match.
 func PatchMatchesContent(patch, content string) bool {
+	matched, _ := PatchContentMatch(patch, content)
+	return matched
+}
+
+// PatchContentMatch is PatchMatchesContent plus the tab-mangling
+// verdict: a content line may match either byte-exactly or after
+// ExpandLeadingTabs (Claude's structuredPatch ships tab indentation
+// as two spaces per tab, so a tab-indented file never byte-matches
+// its own edit diff). tabExpanded reports whether any line needed the
+// expansion — callers serving content lines next to this patch's
+// lines apply the same transform so indentation stays consistent.
+func PatchContentMatch(patch, content string) (matched, tabExpanded bool) {
 	parsed := parsePatch(patch)
 	var contentLines []string
 	if content != "" {
@@ -236,13 +270,16 @@ func PatchMatchesContent(patch, content string) bool {
 				continue
 			}
 			if ref.newFileLine > len(contentLines) || ref.newDocLine >= len(newDocLines) {
-				return false
+				return false, false
 			}
-			if contentLines[ref.newFileLine-1] != newDocLines[ref.newDocLine] {
-				return false
+			if got := contentLines[ref.newFileLine-1]; got != newDocLines[ref.newDocLine] {
+				if ExpandLeadingTabs(got) != newDocLines[ref.newDocLine] {
+					return false, false
+				}
+				tabExpanded = true
 			}
 			verified = true
 		}
 	}
-	return verified
+	return verified, tabExpanded
 }

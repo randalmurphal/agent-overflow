@@ -15,6 +15,18 @@ import (
 // grammar and class-table changes are picked up automatically below.
 const encodingFormatVersion = "enc1"
 
+// patchDocStrategyVersion names how patch hunks are turned into the
+// virtual documents that get parsed — the third input (besides grammar
+// and class table) that determines span output for a given patch.
+// Bump when that construction changes so persisted span blobs computed
+// under the old strategy retire instead of pinning stale colors:
+// primed blobs are cached "best possible" answers the RPC path never
+// re-asks for. v2: primed docs splice the file content BELOW the hunk
+// too (an unclosed raw-text element — svelte/html <script> — painted
+// its hunks fully plain, and those all-plain blobs persisted as
+// primed).
+const patchDocStrategyVersion = "patchdoc2"
+
 var (
 	schemaVersionOnce sync.Once
 	schemaVersion     string
@@ -35,6 +47,8 @@ func SchemaVersion() string {
 	schemaVersionOnce.Do(func() {
 		h := fnv.New64a()
 		io.WriteString(h, encodingFormatVersion)
+		h.Write([]byte{0})
+		io.WriteString(h, patchDocStrategyVersion)
 		h.Write([]byte{0})
 		for _, name := range classNames {
 			io.WriteString(h, name)

@@ -477,14 +477,12 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     if (scope === 'edits') {
       // A whole-turn concatenation repeats a path when a file was edited
       // more than once in the turn — merge those sections into one file
-      // (the review surface keys rows/tree/collapse by path); merged
-      // multi-section files get suppressGaps from the helper (their
-      // sections' line numbers describe different moments, so gap
-      // coordinates are incoherent). Single-section files keep their
-      // gap rows — expansion serves the CURRENT workspace file only
-      // after the backend verifies it still matches this historical
-      // patch, and a refusal retires the file's gaps here. Copies, not
-      // mutation: the parse cache is shared across panes and scopes.
+      // (the review surface keys rows/tree/collapse by path). Every
+      // file keeps its gap rows: expansion serves the CURRENT workspace
+      // file only after the backend verifies every hunk line still
+      // matches this historical patch (merged sections included), and a
+      // refusal retires the file's gaps here. Copies, not mutation: the
+      // parse cache is shared across panes and scopes.
       parsed = mergePatchFilesByPath(parsed).map((file) =>
         unexpandableEditPaths.has(file.path) ? { ...file, suppressGaps: true } : file,
       );

@@ -65,7 +65,7 @@ func (a *App) GetDiffContextLines(threadID string, req DiffContextRequest) (Diff
 	if req.EndLine-req.StartLine+1 > maxDiffContextLines {
 		return DiffContextResult{}, fmt.Errorf("%s: range exceeds %d lines", action, maxDiffContextLines)
 	}
-	content, err := a.diffContextContent(action, threadID, req, 0)
+	content, tabExpanded, err := a.diffContextContent(action, threadID, req, 0)
 	if err != nil {
 		return DiffContextResult{}, err
 	}
@@ -75,8 +75,17 @@ func (a *App) GetDiffContextLines(threadID string, req DiffContextRequest) (Diff
 		return DiffContextResult{Lines: []string{}, StartLine: req.StartLine, EOF: true, TotalLines: total}, nil
 	}
 	end := min(req.EndLine, total)
+	served := append([]string(nil), lines[req.StartLine-1:end]...)
+	if tabExpanded {
+		// The verified patch carries Claude's tab mangling (leading tabs
+		// shipped as two spaces); served lines sit between its hunk lines,
+		// so they get the same transform or the indentation visibly jumps.
+		for i, line := range served {
+			served[i] = highlight.ExpandLeadingTabs(line)
+		}
+	}
 	return DiffContextResult{
-		Lines:      append([]string(nil), lines[req.StartLine-1:end]...),
+		Lines:      served,
 		StartLine:  req.StartLine,
 		EOF:        end >= total,
 		TotalLines: total,
@@ -87,47 +96,49 @@ func (a *App) GetDiffContextLines(threadID string, req DiffContextRequest) (Diff
 // scope. maxBytes > 0 rejects oversized files — workspace scopes do a
 // descriptor-bounded read (readWorkspaceFile); ref scopes read the
 // blob and length-check it (git plumbing has no cheap pre-read size
-// probe worth an extra process).
-func (a *App) diffContextContent(action, threadID string, req DiffContextRequest, maxBytes int64) (string, error) {
+// probe worth an extra process). tabExpanded is edits-scope only: the
+// verification patch matched via ExpandLeadingTabs, so lines served
+// beside its hunks need the same transform.
+func (a *App) diffContextContent(action, threadID string, req DiffContextRequest, maxBytes int64) (content string, tabExpanded bool, err error) {
 	switch req.Scope {
 	case "workspace", "branch":
 		// These scopes diff against the working tree — the new side is
 		// the file on disk, uncommitted edits included.
 		thread, err := a.store.GetThread(threadID)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", action, err)
+			return "", false, fmt.Errorf("%s: %w", action, err)
 		}
 		_, workspace, err := a.resolveGitPaths(thread)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", action, err)
+			return "", false, fmt.Errorf("%s: %w", action, err)
 		}
 		rel, err := workspacepath.NormalizeRelative(req.Path)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", action, err)
+			return "", false, fmt.Errorf("%s: %w", action, err)
 		}
 		content, err := readWorkspaceFile(filepath.Join(workspace, rel), maxBytes)
 		if err != nil {
-			return "", fmt.Errorf("%s: %s: %w", action, rel, err)
+			return "", false, fmt.Errorf("%s: %s: %w", action, rel, err)
 		}
-		return content, nil
+		return content, false, nil
 	case "commit":
 		// Commit diffs are parent → commit; the new side is the
 		// selected commit's tree, which can lag the worktree.
 		thread, err := a.store.GetThread(threadID)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", action, err)
+			return "", false, fmt.Errorf("%s: %w", action, err)
 		}
 		_, workspace, err := a.resolveGitPaths(thread)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", action, err)
+			return "", false, fmt.Errorf("%s: %w", action, err)
 		}
 		sha := strings.TrimSpace(req.CommitSHA)
 		if sha == "" {
-			return "", fmt.Errorf("%s: commit SHA is required", action)
+			return "", false, fmt.Errorf("%s: commit SHA is required", action)
 		}
 		content, err := gitdiff.ShowFileAtCommit(context.Background(), workspace, sha, req.Path)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", action, err)
+			return "", false, fmt.Errorf("%s: %w", action, err)
 		}
 		return capContent(action, req.Path, content, maxBytes)
 	case "pr":
@@ -137,61 +148,63 @@ func (a *App) diffContextContent(action, threadID string, req DiffContextRequest
 		// per-commit diff reads that commit's tree instead of the head.
 		workspace, ok := a.localCloneWorkspace(threadID)
 		if !ok {
-			return "", errors.New("expanding context requires a local clone")
+			return "", false, errors.New("expanding context requires a local clone")
 		}
 		sha := strings.TrimSpace(req.CommitSHA)
 		if sha == "" {
 			sha = strings.TrimSpace(req.HeadSHA)
 		}
 		if sha == "" {
-			return "", fmt.Errorf("%s: head SHA is required", action)
+			return "", false, fmt.Errorf("%s: head SHA is required", action)
 		}
 		content, err := a.gitCore().ShowTreeFile(workspace, sha, req.Path)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", action, err)
+			return "", false, fmt.Errorf("%s: %w", action, err)
 		}
 		return capContent(action, req.Path, content, maxBytes)
 	case "edits":
 		// An edit diff is a historical snapshot: only its hunks were
 		// persisted, and no tree from that moment exists. The current
 		// workspace file stands in ONLY when it provably still matches
-		// the patch (every new-side hunk line byte-equal at its line
-		// number) — otherwise refuse, and the frontend disables the
-		// file's expansion affordances. Default-closed: no VerifyPatch
-		// or an oversized one refuses too.
+		// the patch (every new-side hunk line equal at its line number,
+		// exactly or modulo Claude's leading-tab mangling) — otherwise
+		// refuse, and the frontend disables the file's expansion
+		// affordances. Default-closed: no VerifyPatch or an oversized
+		// one refuses too.
 		if req.VerifyPatch == "" || len(req.VerifyPatch) > highlight.MaxRequestBytes {
-			return "", fmt.Errorf("%s: edit diff verification patch is required", action)
+			return "", false, fmt.Errorf("%s: edit diff verification patch is required", action)
 		}
 		thread, err := a.store.GetThread(threadID)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", action, err)
+			return "", false, fmt.Errorf("%s: %w", action, err)
 		}
 		_, workspace, err := a.resolveGitPaths(thread)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", action, err)
+			return "", false, fmt.Errorf("%s: %w", action, err)
 		}
 		rel, err := workspacepath.NormalizeRelative(req.Path)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", action, err)
+			return "", false, fmt.Errorf("%s: %w", action, err)
 		}
 		content, err := readWorkspaceFile(filepath.Join(workspace, rel), maxBytes)
 		if err != nil {
-			return "", fmt.Errorf("%s: %s: %w", action, rel, err)
+			return "", false, fmt.Errorf("%s: %s: %w", action, rel, err)
 		}
-		if !highlight.PatchMatchesContent(req.VerifyPatch, content) {
-			return "", fmt.Errorf("%s: %s has changed since this edit", action, rel)
+		matched, expanded := highlight.PatchContentMatch(req.VerifyPatch, content)
+		if !matched {
+			return "", false, fmt.Errorf("%s: %s has changed since this edit", action, rel)
 		}
-		return content, nil
+		return content, expanded, nil
 	default:
-		return "", fmt.Errorf("%s: unknown scope %q", action, req.Scope)
+		return "", false, fmt.Errorf("%s: unknown scope %q", action, req.Scope)
 	}
 }
 
-func capContent(action, path, content string, maxBytes int64) (string, error) {
+func capContent(action, path, content string, maxBytes int64) (string, bool, error) {
 	if maxBytes > 0 && int64(len(content)) > maxBytes {
-		return "", fmt.Errorf("%s: %s exceeds %d bytes", action, path, maxBytes)
+		return "", false, fmt.Errorf("%s: %s exceeds %d bytes", action, path, maxBytes)
 	}
-	return content, nil
+	return content, false, nil
 }
 
 // readWorkspaceFile reads a workspace file that a coding agent may be

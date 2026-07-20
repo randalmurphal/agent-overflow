@@ -375,10 +375,10 @@ describe('mergePatchFilesByPath', () => {
     expect(merged[0].deletions).toBe(4);
     // Both sections' rows render as consecutive hunks in edit order.
     expect(merged[0].lines).toEqual([...a1.lines, ...a2.lines]);
-    // Multi-section line numbers describe different moments of the
-    // file, so merged files suppress hunk-gap rows.
-    expect(merged[0].suppressGaps).toBe(true);
-    // Unmerged files pass through by identity (gaps stay allowed).
+    // Gap rows stay allowed: coherence is the expansion verification's
+    // job (a drifted section refuses and retires the file's gaps).
+    expect(merged[0].suppressGaps).toBeUndefined();
+    // Unmerged files pass through by identity.
     expect(merged[1]).toBe(b);
     expect(merged[1].suppressGaps).toBeUndefined();
     // Shared parse results are never mutated.

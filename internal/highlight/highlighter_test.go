@@ -231,6 +231,90 @@ func TestPrimerMatchesSplitJoin(t *testing.T) {
 	}
 }
 
+func TestPrimerSuffixFrom(t *testing.T) {
+	contents := []string{
+		"a\nb\nc\nd",
+		"a\nb\nc\n",
+		"single",
+		"",
+		"\n\n",
+	}
+	for _, content := range contents {
+		pr := primer{content: content}
+		// Interleaved prefix-then-suffix requests in ascending order —
+		// the shape HighlightPatchTextPrimed drives per hunk — then a
+		// descending request (scan restart).
+		for _, at := range []int{1, 2, 3, 3, 10, 2} {
+			prime := pr.primeFor(at)
+			suffix := pr.suffixFrom(at + 1)
+			var wantPrime, wantSuffix string
+			if content != "" {
+				fileLines := strings.Split(content, "\n")
+				if at > 1 {
+					wantPrime = strings.Join(fileLines[:min(at-1, len(fileLines))], "\n")
+				}
+				if at < len(fileLines) {
+					wantSuffix = strings.Join(fileLines[at:], "\n")
+				}
+			}
+			if prime != wantPrime {
+				t.Errorf("primeFor(%d) on %q = %q, want %q", at, content, prime, wantPrime)
+			}
+			if suffix != wantSuffix {
+				t.Errorf("suffixFrom(%d) on %q = %q, want %q", at+1, content, suffix, wantSuffix)
+			}
+		}
+	}
+}
+
+// A hunk INSIDE a raw-text element (svelte/html <script>) must still
+// highlight when primed: without the file content BELOW the hunk the
+// element never closes, the grammar never emits the raw_text node the
+// TypeScript injection anchors on, and every hunk line painted plain —
+// which then persisted as a primed "best possible" span blob
+// (2026-07-19 regression).
+func TestHighlightPatchTextPrimedClosesRawTextElement(t *testing.T) {
+	content := `<script lang="ts">
+  function above(): number {
+    return 1;
+  }
+  function target(): number {
+    return 2;
+  }
+</script>
+
+<div class="x">{above()}</div>
+`
+	patch := "diff --git a/x.svelte b/x.svelte\n" +
+		"--- a/x.svelte\n" +
+		"+++ b/x.svelte\n" +
+		"@@ -5,3 +5,3 @@\n" +
+		"   function target(): number {\n" +
+		"-    return 0;\n" +
+		"+    return 2;\n" +
+		"   }\n"
+	lang := LangFromPath("x.svelte")
+
+	res := HighlightPatchTextPrimed(lang, patch, content)
+	if res.Incomplete {
+		t.Fatal("primed parse reported incomplete")
+	}
+	// Patch lines 4-7 are the hunk body; the function signature and the
+	// add line are TypeScript and must carry spans.
+	for _, i := range []int{4, 6} {
+		if len(res.Lines[i].Runs) == 0 {
+			t.Errorf("patch line %d rendered plain; primed script-body hunks must highlight", i)
+		}
+	}
+
+	// Control: the unprimed parse of the same hunk sees markup text and
+	// stays plain — the priming is what carries the script context.
+	unprimed := HighlightPatchText(lang, patch)
+	if got := unprimed.Lines[6].Runs; len(got) != 0 {
+		t.Logf("unprimed add line unexpectedly has runs %v (grammar change?)", got)
+	}
+}
+
 func TestHighlightOverCapTruncates(t *testing.T) {
 	// Build > maxInputBytes of python using long (but under
 	// maxLineBytes) lines so the head parses quickly; everything must

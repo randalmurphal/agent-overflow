@@ -67,6 +67,15 @@ lines by construction.
 - **Per-hunk isolation.** Hunks parse as independent documents so a
   construct left open at the end of one hunk can't poison the next
   across the invisible gap.
+- **Primed docs splice BOTH sides of the hunk.** `PatchWithContext`
+  builds prefix + hunk + suffix from the resolved file content — the
+  suffix is load-bearing, not garnish: a hunk inside a raw-text
+  element (svelte/html `<script>`) paints fully plain without the
+  closing tag, because the grammar never emits the node the language
+  injection anchors on. Changing this construction changes span
+  output for identical inputs — bump `patchDocStrategyVersion`
+  (version.go) so persisted blobs computed under the old strategy
+  retire instead of pinning stale colors.
 - **Unmapped captures fail CI, render plain at runtime.**
   `captureFamily` returns ok=false for unknown names; the query-compile
   harness turns that into a loud test failure, the runtime path into

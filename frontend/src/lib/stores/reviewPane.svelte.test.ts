@@ -1685,9 +1685,10 @@ describe('reviewPane store — edits scope', () => {
     expect(state.files.map((file) => file.path)).toEqual(['x.go']);
     expect(state.files[0].additions).toBe(2);
     expect(state.files[0].deletions).toBe(1);
-    // Merged multi-section files keep gaps suppressed: their sections'
-    // line numbers describe different moments of the file.
-    expect(state.files[0].suppressGaps).toBe(true);
+    // Merged files keep their gap rows — expansion verification is
+    // what retires them if the sections drifted apart.
+    expect(state.files[0].suppressGaps).toBeUndefined();
+    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(true);
     // Both sections' hunks render, in edit order.
     const contents = state.files[0].lines.map((line) => line.content);
     expect(contents).toContain('+new');

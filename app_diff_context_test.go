@@ -271,3 +271,55 @@ func TestGetDiffContextLinesEditsScope(t *testing.T) {
 		t.Fatal("drifted workspace must refuse edits-scope expansion")
 	}
 }
+
+// Claude's structuredPatch ships leading tabs as two spaces per tab, so
+// a tab-indented file (all gofmt'd Go) never byte-matches its own edit
+// diff. Verification must tolerate exactly that transform, and the
+// served context lines must come back tab-expanded so they indent like
+// the hunk lines they sit between.
+func TestGetDiffContextLinesEditsScopeTabMangledPatch(t *testing.T) {
+	app := newTestAppWithStore(t)
+	workspace := t.TempDir()
+	thread := testThread("thread-diff-context-edits-tabs")
+	thread.WorkspacePath = workspace
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	content := "package x\n" +
+		"\n" +
+		"func f() {\n" +
+		"\tbefore()\n" +
+		"\tcall()\n" +
+		"\tafter()\n" +
+		"}\n"
+	if err := os.WriteFile(filepath.Join(workspace, "x.go"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	verifyPatch := "diff --git a/x.go b/x.go\n" +
+		"--- a/x.go\n" +
+		"+++ b/x.go\n" +
+		"@@ -4,3 +4,3 @@\n" +
+		"   before()\n" +
+		"-  old()\n" +
+		"+  call()\n" +
+		"   after()\n"
+
+	result, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+		Scope:       "edits",
+		Path:        "x.go",
+		StartLine:   1,
+		EndLine:     7,
+		VerifyPatch: verifyPatch,
+	})
+	if err != nil {
+		t.Fatalf("GetDiffContextLines(tab-mangled) error = %v", err)
+	}
+	if len(result.Lines) != 7 {
+		t.Fatalf("len(Lines) = %d, want 7", len(result.Lines))
+	}
+	if result.Lines[3] != "  before()" || result.Lines[4] != "  call()" {
+		t.Fatalf("served lines not tab-expanded: %q", result.Lines[3:5])
+	}
+}
