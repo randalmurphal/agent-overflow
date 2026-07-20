@@ -489,8 +489,16 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
       // still matches this historical patch, and a refusal retires the
       // file's gaps here. Copies, not mutation: the parse cache is
       // shared across panes and scopes.
+      // Absolute paths are edits OUTSIDE the workspace (agent memory
+      // files, scratchpads): the diff renders, but expansion can never
+      // be served (the backend only resolves workspace-relative
+      // paths), so their gap arrows would be dead-on-arrival — retire
+      // them up front like refused paths.
       parsed = sortFilesTreeOrder(mergePatchFilesByPathCached(parsePatchFilesCached(patchText))).map(
-        (file) => (unexpandableEditPaths.has(file.path) ? { ...file, suppressGaps: true } : file),
+        (file) =>
+          unexpandableEditPaths.has(file.path) || file.path.startsWith('/')
+            ? { ...file, suppressGaps: true }
+            : file,
       );
     } else {
       parsed = sortFilesTreeOrder(parsePatchFilesCached(patchText));

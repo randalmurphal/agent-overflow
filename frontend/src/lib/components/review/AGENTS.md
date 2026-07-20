@@ -189,7 +189,10 @@ state registry); the row model in `utils/reviewRows.ts`.
   primed spans like live scopes; drifted files degrade — expansion
   refusals retire the file's gap rows quietly (store
   `unexpandableEditPaths` sets `suppressGaps`, no error banner) and
-  spans fall back to unprimed. Span quality is monotonic:
+  spans fall back to unprimed. Edits OUTSIDE the workspace (absolute
+  paths — agent memory files, scratchpads) retire their gaps up
+  front: the backend resolves workspace-relative paths only, so those
+  arrows could never serve. Span quality is monotonic:
   persist-time seeds (primed with the just-edited file, attached to
   `GetPayloadData`/`GetTurnEditsDiff` and pushed on
   `highlight:diff_seed` to ALL clients) upgrade unprimed cache entries

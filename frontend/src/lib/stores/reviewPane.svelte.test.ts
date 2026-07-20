@@ -1702,6 +1702,41 @@ describe('reviewPane store — edits scope', () => {
     expect(contents.indexOf('+new')).toBeLessThan(contents.indexOf('+later'));
   });
 
+  it('retires gap arrows up front for edits outside the workspace', async () => {
+    installEditMocks();
+    const outsideEdit = [
+      'diff --git a//home/user/.claude/memory/notes.md b//home/user/.claude/memory/notes.md',
+      '--- a//home/user/.claude/memory/notes.md',
+      '+++ b//home/user/.claude/memory/notes.md',
+      '@@ -5,2 +5,2 @@',
+      ' ctx',
+      '-old',
+      '+new',
+      'diff --git a/x.go b/x.go',
+      '--- a/x.go',
+      '+++ b/x.go',
+      '@@ -5,2 +5,2 @@',
+      ' ctx',
+      '-old',
+      '+new',
+    ].join('\n');
+    setBindingMock('GetTurnEditsDiff', async () => ({ data: outsideEdit }));
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('edits');
+
+    // The absolute-path edit renders but can never expand (the backend
+    // only resolves workspace-relative paths) — no dead arrows.
+    const outside = state.files.find((file) => file.path.startsWith('/'));
+    expect(outside).toBeDefined();
+    expect(outside!.suppressGaps).toBe(true);
+    expect(filePatchDisplayRows(outside!).some((row) => row.gap)).toBe(false);
+    // Workspace-relative files keep their gap affordances.
+    const inside = state.files.find((file) => file.path === 'x.go');
+    expect(inside!.suppressGaps).toBeUndefined();
+    expect(filePatchDisplayRows(inside!).some((row) => row.gap)).toBe(true);
+  });
+
   it('keeps merged-file lines identity stable across expansion rebuilds', async () => {
     installEditMocks();
     const twiceEdited = [
