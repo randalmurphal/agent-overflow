@@ -29,6 +29,17 @@
   } satisfies Record<CompanionPanelKind, CompanionLoader>;
 
   let { paneId, kind, sourcePaneId }: Props = $props();
+  // Captured ONCE, deliberately non-reactive: an {#await} block re-runs
+  // its expression whenever any dependency invalidates, with no
+  // promise-identity cutoff — and a divider drag replaces this pane's
+  // layout item (the source behind the `kind` prop) every frame. Calling
+  // the loader inside the template minted a fresh promise per frame,
+  // flashing the pending branch and remounting the panel body mid-drag
+  // (full review reload + scroll reset). A companion's kind is fixed for
+  // its lifetime, so one promise is correct; thread switches remount the
+  // body through {#key panelKey} without changing kind.
+  // svelte-ignore state_referenced_locally
+  const panelLoad = COMPANION_LOADERS[kind]();
   let sourcePane = $derived(getPane(sourcePaneId));
   let panelContext = $derived(
     sourcePane ? makePanelContext(sourcePane, () => closeCompanion(paneId)) : null,
@@ -47,7 +58,7 @@
     data-companion-source-pane-id={sourcePaneId}
   >
     {#key panelKey}
-      {#await COMPANION_LOADERS[kind]() then { default: PanelComponent }}
+      {#await panelLoad then { default: PanelComponent }}
         <PanelComponent ctx={panelContext} />
       {:catch err}
         <div class="flex h-full min-h-0 items-center justify-center px-4 text-sm text-error" data-testid="companion-pane-load-error">

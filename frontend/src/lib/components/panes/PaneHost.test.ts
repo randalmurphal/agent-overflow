@@ -29,6 +29,7 @@ import {
 } from '../../stores/panes.svelte';
 import {
   addPaneLayoutItem,
+  applyPaneBoundaryDrag,
   getPaneLayoutItems,
   movePaneLayoutItem,
   removePaneLayoutItem,
@@ -353,6 +354,52 @@ describe('PaneHost', () => {
     });
     expect(companion.closest('[data-pane-id="plan-source"]')).toHaveAttribute('data-pane-kind', 'plan');
     expect(review.closest('[data-pane-id="review-source"]')).toHaveAttribute('data-pane-kind', 'review');
+  });
+
+  // Regression: CompanionPane called its lazy loader inside the {#await}
+  // expression. Svelte re-runs an await block whenever any dependency of
+  // its expression invalidates — and a divider drag replaces the pane's
+  // layout item (hence the `kind` prop's source) every frame — so each
+  // frame minted a fresh import() promise, flashed the pending branch,
+  // and remounted the panel body: a full review reload plus scroll reset
+  // from simply resizing the pane.
+  it('keeps a companion panel body mounted through divider width churn', async () => {
+    registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
+    setPaneLayoutItemsForTest([
+      { id: 'source', paneId: 'source', kind: 'thread', widthPx: 800 },
+      { id: 'review-source', paneId: 'review-source', kind: 'review', widthPx: 800, sourcePaneId: 'source' },
+    ]);
+
+    const rendered = render(PaneHost);
+    await waitFor(() => {
+      expect(rendered.getByTestId('stub-companion-panel')).toBeInTheDocument();
+    });
+    const body = rendered.getByTestId('stub-companion-panel');
+
+    const startWidths = new Map([
+      ['source', 800],
+      ['review-source', 800],
+    ]);
+    for (const deltaPx of [-30, -60, -90, -120]) {
+      applyPaneBoundaryDrag({
+        leftPaneId: 'source',
+        rightPaneId: 'review-source',
+        startWidths,
+        deltaPx,
+        minPaneWidth: 560,
+        overflowPx: 0,
+        zeroSum: false,
+      });
+      await tick();
+      // Drain the await block's pending-vs-resolved microtask window: an
+      // unstable promise identity swaps the body out right here.
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([680, 920]);
+    expect(body.isConnected).toBe(true);
+    expect(rendered.getByTestId('stub-companion-panel')).toBe(body);
   });
 
   it('renders an explicit broken state for a companion whose source pane is missing', () => {

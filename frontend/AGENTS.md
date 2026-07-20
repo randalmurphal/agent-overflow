@@ -133,7 +133,14 @@ stable `<pre>` with Idiomorph so selection survives streaming updates.
   transitions) so their chunks stay out of the startup graph. One static
   import from an eagerly-loaded module silently drags the whole feature
   chunk back into startup — check `dist/index.html`'s modulepreload list
-  when touching these boundaries.
+  when touching these boundaries. An `{#await}` input must be a promise
+  with STABLE identity — never a reactive expression that constructs one
+  (`{#await loaders[kind]()}`): the block re-runs on ANY dependency
+  invalidation with no promise-identity cutoff, so unrelated churn (e.g.
+  per-frame layout-item replacement during a divider drag) re-pends the
+  block and remounts the mounted surface. Capture the promise once at
+  init (see `CompanionPane.svelte`); regression:
+  `PaneHost.test.ts` "divider width churn".
 - Do NOT add visible in-app explanatory text for internal mechanics,
   shortcuts, or implementation details.
 
