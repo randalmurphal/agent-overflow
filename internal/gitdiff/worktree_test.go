@@ -63,6 +63,38 @@ func TestDiffWorkspaceVsHeadFreshInitRepo(t *testing.T) {
 	}
 }
 
+func TestDiffWorkspaceVsHeadShowsDeletions(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	commitFile(t, repo, "doomed.txt", "was here\n", "add doomed")
+	if err := os.Remove(filepath.Join(repo, "doomed.txt")); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	patch, err := DiffWorkspaceVsHead(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("DiffWorkspaceVsHead: %v", err)
+	}
+	if !strings.Contains(string(patch), "-was here") {
+		t.Fatalf("expected the deletion in the diff, got:\n%s", patch)
+	}
+}
+
+func TestDiffWorkspaceVsHeadStagesSymlinks(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	if err := os.Symlink("README.txt", filepath.Join(repo, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	patch, err := DiffWorkspaceVsHead(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("DiffWorkspaceVsHead: %v", err)
+	}
+	text := string(patch)
+	if !strings.Contains(text, "120000") || !strings.Contains(text, "+README.txt") {
+		t.Fatalf("expected the symlink as a new 120000 entry with its target text, got:\n%s", text)
+	}
+}
+
 func TestDiffWorkspaceVsHeadRespectsGitignore(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	commitFile(t, repo, ".gitignore", "ignored.txt\n", "add gitignore")

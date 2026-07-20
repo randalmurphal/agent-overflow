@@ -125,6 +125,10 @@ export interface ReviewPaneState {
   readonly ciLogError: string | null;
   readonly ciLogSavedPath: string | null;
   readonly submitTarget: 'agent' | 'pr';
+  /** submitTarget with single-commit view forced to 'agent': drafts on a
+   * commit diff carry that diff's line numbers, which the forge would
+   * misanchor against the PR head diff. */
+  readonly effectiveSubmitTarget: 'agent' | 'pr';
   readonly verdict: 'comment' | 'approve' | 'request-changes';
   readonly summaryBody: string;
   readonly submitError: string | null;
@@ -349,6 +353,9 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   let expandedPRThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
   let commits: BranchCommit[] = $state([]);
   let selectedCommitSHA: string | null = $state(null);
+  const effectiveSubmitTarget = $derived<'agent' | 'pr'>(
+    scope === 'pr' && !selectedCommitSHA ? submitTarget : 'agent',
+  );
   let pendingJumpFilePath: string | null = $state(null);
   let pendingJumpRowKey: string | null = $state(null);
   let patchText = $state('');
@@ -569,29 +576,40 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     openEditors = [];
     draftBodies.clear();
     collapseOverrides.clear();
-    await reload();
+    await reload({ commitSelectionOnly: true });
   }
 
-  async function reload(): Promise<void> {
+  async function reload(opts?: { commitSelectionOnly?: boolean }): Promise<void> {
+    // Commit selection changes only which diff is shown — the commit
+    // list, PR detail, and subscription are all still valid, so reuse
+    // them and fetch just the diff. Only when a previous full load
+    // actually populated them; otherwise fall through to a full load.
+    const commitOnly = opts?.commitSelectionOnly === true
+      && commits.length > 0
+      && (scope !== 'pr' || subscriptionId !== null);
     const seq = loadSeq + 1;
     loadSeq = seq;
     loading = true;
     error = null;
-    // Unconditionally, not just in pr scope: scope can change mid-load
-    // (the selector stays enabled while a PR loads), and an in-flight
-    // pr load that resolved during setScope's awaits may have
-    // registered a subscription after the scope flipped. No-op when
-    // none is held.
-    await unsubscribePR();
+    if (!commitOnly) {
+      // Unconditionally, not just in pr scope: scope can change mid-load
+      // (the selector stays enabled while a PR loads), and an in-flight
+      // pr load that resolved during setScope's awaits may have
+      // registered a subscription after the scope flipped. No-op when
+      // none is held.
+      await unsubscribePR();
+    }
     try {
-      if (scope === 'pr' && !prRef) {
-        // Persisted 'pr' scope restores before the thread/git status is at
-        // hand; resolve the reference here instead of failing the load.
-        await ensurePRRef();
-      } else {
-        // Fire-and-forget: a PR opened after this pane mounted becomes
-        // selectable on the next reload without blocking the diff load.
-        probePRRef();
+      if (!commitOnly) {
+        if (scope === 'pr' && !prRef) {
+          // Persisted 'pr' scope restores before the thread/git status is at
+          // hand; resolve the reference here instead of failing the load.
+          await ensurePRRef();
+        } else {
+          // Fire-and-forget: a PR opened after this pane mounted becomes
+          // selectable on the next reload without blocking the diff load.
+          probePRRef();
+        }
       }
       const loaded = await loadPatch(
         threadId,
@@ -599,6 +617,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
         baseBranch,
         selectedCommitSHA,
         prRef,
+        commitOnly ? { commits, prDetail } : undefined,
       );
       if (seq !== loadSeq || disposed) {
         // A newer load or dispose superseded this one — the subscription it
@@ -629,13 +648,13 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
       collapsedPaths = nextCollapsed;
       if (scope === 'pr') {
         prStale = false;
-        void loadCIJobs();
+        // The fast path didn't refresh the PR snapshot, so CI state
+        // hasn't moved either — the subscription pump covers it.
+        if (!commitOnly) void loadCIJobs();
       }
-      const nextSourceKey = selectedCommitSHA
-        ? `commit:${selectedCommitSHA}`
-        : scope === 'pr'
-          ? sourceKey
-          : (loaded.patchText ? diffSourceKey(loaded.patchText) : '');
+      // patchText and selectedCommitSHA are already updated above, so
+      // the derived reflects this load — no need to re-derive by hand.
+      const nextSourceKey = sourceKey;
       if (!nextSourceKey) {
         openEditors = [];
         draftBodies.clear();
@@ -811,7 +830,11 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   }
 
   async function submitPRReview(): Promise<void> {
-    if (scope !== 'pr' || !prRef || !sourceKey || sendingComments) return;
+    // A single-commit view's drafts carry line numbers from that commit's
+    // diff, which SubmitPRReview would anchor against the PR head diff —
+    // wrong lines or hard failures. The UI hides the 'pr' target there;
+    // this guard backs it up.
+    if (scope !== 'pr' || selectedCommitSHA || !prRef || !sourceKey || sendingComments) return;
     const orphaned = orphanedDraftIds();
     const submitDrafts = drafts.filter((comment) => !orphaned.has(comment.id));
     // A bare Approve is a valid review; comment and request-changes need
@@ -1201,6 +1224,7 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
     get ciLogError() { return ciLogError; },
     get ciLogSavedPath() { return ciLogSavedPath; },
     get submitTarget() { return submitTarget; },
+    get effectiveSubmitTarget() { return effectiveSubmitTarget; },
     get verdict() { return verdict; },
     get summaryBody() { return summaryBody; },
     get submitError() { return submitError; },
@@ -1318,38 +1342,67 @@ interface LoadedPatch {
   subscriptionId?: string;
 }
 
+/** State a commit-selection-only reload reuses instead of refetching:
+ * the commit list is unchanged by picking a commit, and in pr scope the
+ * live subscription already holds the detail. */
+interface ExistingLoad {
+  commits: BranchCommit[];
+  prDetail: PRDetail | null;
+}
+
+/** Validate a selection against the fresh list, not just the diff call:
+ * after a rebase, base change, or force-push the selected SHA can vanish
+ * — fall back to the full range instead of erroring. */
+function resolveSelectedCommit(
+  selectedCommitSHA: string | null,
+  commits: readonly BranchCommit[],
+): string | null {
+  if (selectedCommitSHA && commits.some((commit) => commit.sha === selectedCommitSHA)) {
+    return selectedCommitSHA;
+  }
+  return null;
+}
+
 async function loadPatch(
   threadId: string,
   scope: ReviewScope,
   baseBranch: string | null,
   selectedCommitSHA: string | null,
   prRef: PRRef | null,
+  existing?: ExistingLoad,
 ): Promise<LoadedPatch> {
   switch (scope) {
     case 'pr': {
       if (!prRef) throw new Error('No PR or MR is available for this thread.');
+      if (existing) return loadPRPatchCommitOnly(threadId, prRef, selectedCommitSHA, existing);
       return loadPRPatch(threadId, prRef, selectedCommitSHA);
     }
     case 'workspace':
       return { patchText: ((await GetWorkspaceCurrentDiff(threadId)) ?? '') as string };
     case 'branch': {
       const branch = baseBranch?.trim() || await defaultBaseBranch(threadId);
-      const commits = ((await ListBranchCommits(threadId, branch)) ?? []) as BranchCommit[];
-      // Validate against the fresh list, not just the diff call: after a
-      // rebase or base change the selected SHA can vanish — fall back to
-      // the full range instead of erroring.
-      if (selectedCommitSHA && commits.some((commit) => commit.sha === selectedCommitSHA)) {
-        return {
-          patchText: ((await GetCommitDiff(threadId, selectedCommitSHA)) ?? '') as string,
-          commits,
-          selectedCommitSHA,
-        };
+      if (existing) {
+        const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
+        const patchText = commitSHA
+          ? ((await GetCommitDiff(threadId, commitSHA)) ?? '') as string
+          : ((await GetBranchBaseDiff(threadId, branch)) ?? '') as string;
+        return { patchText, commits: existing.commits, selectedCommitSHA: commitSHA };
       }
-      return {
-        patchText: ((await GetBranchBaseDiff(threadId, branch)) ?? '') as string,
-        commits,
-        selectedCommitSHA: null,
-      };
+      if (selectedCommitSHA) {
+        // Sequenced: the selection must be validated against the fresh
+        // list before deciding which diff to fetch.
+        const commits = ((await ListBranchCommits(threadId, branch)) ?? []) as BranchCommit[];
+        const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
+        const patchText = commitSHA
+          ? ((await GetCommitDiff(threadId, commitSHA)) ?? '') as string
+          : ((await GetBranchBaseDiff(threadId, branch)) ?? '') as string;
+        return { patchText, commits, selectedCommitSHA: commitSHA };
+      }
+      const [commits, patchText] = await Promise.all([
+        ListBranchCommits(threadId, branch).then((rows) => (rows ?? []) as BranchCommit[]),
+        GetBranchBaseDiff(threadId, branch).then((patch) => (patch ?? '') as string),
+      ]);
+      return { patchText, commits, selectedCommitSHA: null };
     }
   }
 }
@@ -1368,15 +1421,14 @@ async function loadPRPatch(
   try {
     const detail = subResult.detail as PRDetail;
     const baseRef = detail?.baseRefName ?? '';
+    const headSHA = String(subResult.headSHA ?? detail?.headSHA ?? '');
     // Per-commit PR review needs the local clone; without one the backend
-    // returns an empty list and the selector stays hidden.
+    // returns an empty list and the selector stays hidden. The known head
+    // SHA lets the backend skip its fetch when the objects are local.
     const commits = baseRef
-      ? (((await ListPRCommits(threadId, pr, baseRef)) ?? []) as BranchCommit[])
+      ? (((await ListPRCommits(threadId, pr, baseRef, headSHA)) ?? []) as BranchCommit[])
       : [];
-    const commitSHA =
-      selectedCommitSHA && commits.some((commit) => commit.sha === selectedCommitSHA)
-        ? selectedCommitSHA
-        : null;
+    const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
     const patchText = commitSHA
       ? String((await GetPRCommitDiff(threadId, pr, commitSHA)) ?? '')
       : String((await GetPRDiff(threadId, pr, baseRef)) ?? '');
@@ -1386,13 +1438,31 @@ async function loadPRPatch(
       selectedCommitSHA: commitSHA,
       prDetail: detail,
       prThreads: (subResult.threads ?? []) as ReviewThread[],
-      prHeadSHA: String(subResult.headSHA ?? detail?.headSHA ?? ''),
+      prHeadSHA: headSHA,
       subscriptionId: String(subResult.id),
     };
   } catch (err) {
     await UnsubscribePRUpdates(String(subResult.id ?? ''));
     throw err;
   }
+}
+
+/** Commit-selection fast path: the caller's PR subscription stays live,
+ * so only the diff itself is refetched — no re-subscribe, no detail or
+ * commit-list round-trips. Returns no subscriptionId on purpose. */
+async function loadPRPatchCommitOnly(
+  threadId: string,
+  ref: PRRef,
+  selectedCommitSHA: string | null,
+  existing: ExistingLoad,
+): Promise<LoadedPatch> {
+  const pr = prReference(ref);
+  const baseRef = existing.prDetail?.baseRefName ?? '';
+  const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
+  const patchText = commitSHA
+    ? String((await GetPRCommitDiff(threadId, pr, commitSHA)) ?? '')
+    : String((await GetPRDiff(threadId, pr, baseRef)) ?? '');
+  return { patchText, commits: existing.commits, selectedCommitSHA: commitSHA };
 }
 
 function prReference(ref: PRRef): Parameters<typeof GetPRDiff>[1] {

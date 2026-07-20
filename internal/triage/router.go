@@ -53,7 +53,7 @@ type Router struct {
 	// thread's pending-send state that pairs with a store write: the
 	// echo-time pop + attach/deferred-persist (handleUserText), the
 	// interrupt-time bump-and-mark / transition-and-persist (+ in-lock
-	// checkpoint capture) in PromoteQuietFlushSends and
+	// anchor record) in PromoteQuietFlushSends and
 	// EagerPersistDeferredFlushSends, the session-death drain
 	// (DrainUnconfirmedFlushItems), and the pending-send sweeps
 	// (cleanupThread, ClearPendingSendsByItemIDs,
@@ -66,9 +66,9 @@ type Router struct {
 	// across pop AND write makes every popped snapshot truthful, and
 	// sweeps total.
 	//
-	// Per-thread — NOT router-wide — because the confirmed hook (git
-	// checkpoint capture) runs inside the lock: one thread's slow
-	// capture must not block every other thread's echoes, interrupts,
+	// Per-thread — NOT router-wide — because the confirmed hook
+	// (message anchor record) runs inside the lock: one thread's slow
+	// record must not block every other thread's echoes, interrupts,
 	// and teardowns (round-5, R5-1). Lock order: the anchor lock is
 	// always taken BEFORE r.mu, never while holding it. Entries are
 	// never deleted — a deleted entry would hand a fresh acquirer a NEW
@@ -187,10 +187,9 @@ type Router struct {
 	// `type:"user"` envelope from a task_notification → second `result`
 	// envelope) or the synthetic-truncate-then-real race; in either
 	// case the second handler invocation is a persistence no-op so
-	// the checkpoint isn't captured twice and the turns row isn't
-	// re-stamped. Cleared by setOpenTurn (so a re-init can re-settle
-	// the same turn) and CleanupThread (session teardown). Key =
-	// threadID|turnIndex.
+	// the turns row isn't re-stamped. Cleared by setOpenTurn (so a
+	// re-init can re-settle the same turn) and CleanupThread (session
+	// teardown). Key = threadID|turnIndex.
 	//
 	// Note: this gate operates at LOGICAL-TURN granularity. The
 	// frontend-facing `provider:turn_completed` emission is gated
@@ -359,8 +358,8 @@ type Router struct {
 	// quiet row's stamp (attachProviderItemIDToUserRow, non-interrupt-
 	// anchored only). Used for side effects that require the row to
 	// exist at its final position with provider ids stamped, such as
-	// message checkpoint capture. Direct sends never fire it — their
-	// checkpoint is captured at send time in app_send.go.
+	// message anchor recording. Direct sends never fire it — their
+	// anchor is recorded at send time in app_send.go.
 	flushUserTextConfirmed func(threadID string, item store.Item)
 	// workspacePathByThread is a small read-through cache for the
 	// thread row's WorkspacePath, populated lazily by enrichPathRefs

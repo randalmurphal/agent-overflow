@@ -92,6 +92,30 @@ func TestListCommitsKeepsSeparatorCharactersInSubject(t *testing.T) {
 	}
 }
 
+func TestListCommitsSurvivesControlBytesInSubject(t *testing.T) {
+	// %s emits raw subject bytes, so a subject holding the parser's own
+	// field separator (or any other control byte) must not break the
+	// record framing — the NUL record lead is the only unforgeable byte.
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "checkout", "-b", "feature")
+	commitFile(t, repo, "a.txt", "a\n", "sep \x1f and \x1e inside")
+	commitFile(t, repo, "b.txt", "b\n", "clean subject")
+
+	commits, err := ListCommits(context.Background(), repo, "main")
+	if err != nil {
+		t.Fatalf("ListCommits: %v", err)
+	}
+	if len(commits) != 2 {
+		t.Fatalf("expected 2 commits despite control bytes, got %+v", commits)
+	}
+	if commits[0].Subject != "clean subject" || commits[1].Subject != "sep \x1f and \x1e inside" {
+		t.Fatalf("subjects mangled: %+v", commits)
+	}
+	if commits[1].AuthoredAt <= 0 {
+		t.Fatalf("fields shifted by control bytes: %+v", commits[1])
+	}
+}
+
 // cloneWithRemoteOnlyBranch builds an origin whose "release" branch is
 // one commit behind main, clones it, and adds a commit on the clone's
 // main — the shape the branch picker produces when it projects

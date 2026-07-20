@@ -24,12 +24,15 @@ const maxListedCommits = 300
 
 var commitSHAPattern = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
 
-// field/record separators for the `git log --pretty` parse: subjects
-// can contain anything printable, so split on control characters that
-// git never emits inside a format placeholder.
+// Separators for the `git log --pretty` parse. Records are LED by a
+// NUL (`%x00`) — the one byte a commit object can never contain, so a
+// subject holding arbitrary control characters cannot forge a record
+// boundary. Fields split on \x1f with the subject last and SplitN, so
+// a \x1f inside the subject stays in the subject.
 const (
-	logFieldSep  = "\x1f"
-	logRecordSep = "\x1e"
+	logFieldSep    = "\x1f"
+	logRecordLead  = "\x00"
+	logCommitCount = 5 // %H, %h, %an, %at, %s
 )
 
 // ListCommits returns the commits reachable from HEAD but not from
@@ -54,7 +57,7 @@ func ListCommitsRange(ctx context.Context, workspace, base, head string) ([]Comm
 	}
 	stdout, _, _, err := runGit(ctx, workspace, nil, false,
 		"log", "--no-decorate", "--max-count="+strconv.Itoa(maxListedCommits),
-		"--pretty=format:%H"+logFieldSep+"%h"+logFieldSep+"%an"+logFieldSep+"%at"+logFieldSep+"%s"+logRecordSep,
+		"--pretty=format:%x00%H"+logFieldSep+"%h"+logFieldSep+"%an"+logFieldSep+"%at"+logFieldSep+"%s",
 		base+".."+head, "--")
 	if err != nil {
 		return nil, fmt.Errorf("gitdiff: log %s..%s: %w", base, head, err)
@@ -64,13 +67,15 @@ func ListCommitsRange(ctx context.Context, workspace, base, head string) ([]Comm
 
 func parseCommitLog(stdout string) ([]Commit, error) {
 	commits := []Commit{}
-	for _, record := range strings.Split(stdout, logRecordSep) {
-		record = strings.TrimLeft(record, "\n")
-		if strings.TrimSpace(record) == "" {
+	for _, record := range strings.Split(stdout, logRecordLead) {
+		// git separates format entries with a newline, which lands at the
+		// tail of the previous record; the subject itself never holds one.
+		record = strings.TrimSuffix(record, "\n")
+		if record == "" {
 			continue
 		}
-		fields := strings.Split(record, logFieldSep)
-		if len(fields) != 5 {
+		fields := strings.SplitN(record, logFieldSep, logCommitCount)
+		if len(fields) != logCommitCount {
 			return nil, fmt.Errorf("gitdiff: malformed log record %q", record)
 		}
 		authoredAt, err := strconv.ParseInt(fields[3], 10, 64)
@@ -116,7 +121,8 @@ func CommitDiff(ctx context.Context, workspace, sha string) ([]byte, error) {
 			hashes[1], hashes[0], "--")
 	} else {
 		stdout, _, _, err = runGitWithStdoutLimit(ctx, workspace, nil, false, maxDiffOutputBytes,
-			"diff-tree", "--patch", "--minimal", "--no-color", "--root", "--find-renames", sha, "--")
+			"diff-tree", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
+			"--root", "--find-renames", sha, "--")
 	}
 	if errors.Is(err, errGitOutputTooLarge) {
 		return nil, fmt.Errorf("gitdiff: commit diff exceeds %d byte limit", maxDiffOutputBytes)

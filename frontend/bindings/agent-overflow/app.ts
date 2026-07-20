@@ -1636,13 +1636,19 @@ export function ListMcpServersForThread(threadID: string): $CancellablePromise<$
 
 /**
  * ListPRCommits returns the commits a PR carries (`origin/base..head`,
- * newest first), computed from the thread's local clone after fetching
- * the PR head and base. Empty — not an error — when the thread has no
- * local clone (a pr-anchor thread with no checkout): the frontend
- * hides the commit selector instead of failing the PR load.
+ * newest first), computed from the thread's local clone. Empty — not
+ * an error — when the thread has no local clone (a pr-anchor thread
+ * with no checkout): the frontend hides the commit selector instead of
+ * failing the PR load.
+ * 
+ * headSHA is an optimization contract, not a filter: when the caller
+ * already knows the PR head OID (GetPRDiff fetched it moments earlier)
+ * and that commit plus the base branch are present locally, the fetch
+ * round-trips are skipped. Empty, unknown, or not-yet-fetched values
+ * fall back to a full fetch.
  */
-export function ListPRCommits(threadID: string, pr: git$0.PRReference, baseRef: string): $CancellablePromise<$models.BranchCommit[]> {
-    return $Call.ByID(4110818691, threadID, pr, baseRef).then(($result: any) => {
+export function ListPRCommits(threadID: string, pr: git$0.PRReference, baseRef: string, headSHA: string): $CancellablePromise<$models.BranchCommit[]> {
+    return $Call.ByID(4110818691, threadID, pr, baseRef, headSHA).then(($result: any) => {
         return $$createType66($result);
     });
 }

@@ -67,7 +67,7 @@ var ErrMessageNotFound = errors.New("sessionfork: upToMessageUUID not found in s
 //
 // The uuidMap powers the fork-time remap in
 // `app_thread_fork.go::remapClaudeProviderIDs`, which refreshes AO
-// `items.meta` and `thread_checkpoints` rows so a subsequent revert
+// `items.meta` and `message_anchors` rows so a subsequent revert
 // lookup in the forked session JSONL finds the cloned user message
 // by its current UUID — preserving the invariant "stored
 // provider_item_id always matches the active session's UUID."
@@ -144,7 +144,7 @@ func WriteForkFileFullTranscript(
 // <newID>.jsonl. This is the structural fix for the ordinal-walk
 // off-by-N bug — by matching on the Claude-assigned user message
 // UUID stored on the AO `user_text` row's `meta.provider_item_id`
-// (or its checkpoint's `provider_user_message_id`), the slice point
+// (or its anchor's `provider_user_message_id`), the slice point
 // is immune to any number of synthetic user-role entries between
 // real prompts. The uuid matches a real `type:"user"` entry, a user
 // entry's `forkedFrom.messageUuid` fork provenance (heals a stored id
@@ -153,7 +153,7 @@ func WriteForkFileFullTranscript(
 // consumed mid-loop (see parentUUIDForUserMessageUUIDInTranscript).
 //
 // Returns the old→new uuid remap so the calling fork pipeline can
-// refresh AO-stored wire ids on cloned items / checkpoints
+// refresh AO-stored wire ids on cloned items / anchors
 // (`app_thread_fork.go::remapClaudeProviderIDs`); revert callers
 // that aren't forking can discard it.
 //
@@ -167,7 +167,7 @@ func WriteForkFileFullTranscript(
 // Returns `ErrSessionEmpty` when the message is the very first real
 // prompt in the transcript — mirrors `SliceUUIDForLastKeptTurn(-1)`
 // so `revertClaudeThreadToMessage` can route through its
-// "checkpoint.TurnIndex == 0" branch identically.
+// "anchor.TurnIndex == 0" branch identically.
 func WriteForkFileForUserMessageUUID(
 	srcPath string,
 	upToUserMessageUUID string,
@@ -198,7 +198,7 @@ func WriteForkFileForUserMessageUUID(
 // a queued message's parent is usually an assistant entry.
 //
 // Used by the already-cut revert retry: the anchor row is gone (a
-// prior slice cut exactly at it) but its checkpointed PARENT survives.
+// prior slice cut exactly at it) but its anchored PARENT survives.
 // Keeping through the parent — rather than cloning the file whole —
 // also cuts any rows appended after the failed revert, which a whole
 // clone would silently resurrect into the resumed session (round-5,

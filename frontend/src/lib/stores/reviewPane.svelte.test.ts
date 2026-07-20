@@ -583,7 +583,9 @@ describe('reviewPane store — PR scope', () => {
     const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
     await waitLoaded(state);
     await state.setScope('pr');
-    expect(list).toHaveBeenCalledWith('thread-1', expect.objectContaining({ Number: 5 }), 'main');
+    // The known head SHA rides along so the backend can skip its fetch
+    // when the objects are already in the local clone.
+    expect(list).toHaveBeenCalledWith('thread-1', expect.objectContaining({ Number: 5 }), 'main', 'sha-a');
     expect(state.commits.map((commit) => commit.sha)).toEqual([sha]);
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
 
@@ -596,6 +598,56 @@ describe('reviewPane store — PR scope', () => {
     await state.selectCommit(null);
     expect(state.selectedCommitSHA).toBeNull();
     expect(state.sourceKey).toBe(PR_SOURCE_KEY);
+  });
+
+  it('commit selection reuses the live subscription and commit list (fast path)', async () => {
+    const sha = 'b'.repeat(40);
+    const { subscribe, unsubscribe } = installPRMocks();
+    const list = setBindingMock('ListPRCommits', async () => [
+      { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
+
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
+
+    await state.selectCommit(sha);
+    await state.selectCommit(null);
+    // Picking a commit only refetches the diff — no re-subscribe, no
+    // commit-list round-trip, and the pump stays live throughout.
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it('single-commit view forces the agent target and blocks PR submission', async () => {
+    const sha = 'b'.repeat(40);
+    installPRMocks();
+    setBindingMock('ListPRCommits', async () => [
+      { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
+    const submit = setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
+
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    state.setSubmitTarget('pr');
+    state.setSummaryBody('looks good');
+    expect(state.effectiveSubmitTarget).toBe('pr');
+
+    await state.selectCommit(sha);
+    // Drafts on a commit diff carry that diff's line numbers — the forge
+    // would anchor them against the PR head diff, so PR submission is off.
+    expect(state.effectiveSubmitTarget).toBe('agent');
+    await state.submitPRReview();
+    expect(submit).not.toHaveBeenCalled();
+
+    await state.selectCommit(null);
+    expect(state.effectiveSubmitTarget).toBe('pr');
   });
 
   it('drops a selected PR commit that left the range (force-push) and reloads the full diff', async () => {

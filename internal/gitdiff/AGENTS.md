@@ -11,7 +11,7 @@ constructors.
   `DiffBranchBaseToWorktree` (merge-base of the base branch → a
   synthetic tree of the current worktree, so committed + staged +
   unstaged + untracked share one patch stream). Plus the
-  `IsGitRepository` / `HasHeadCommit` probes.
+  `IsGitRepository` probe.
 - `commits.go` — `ListCommits` / `ListCommitsRange` (the per-commit
   selector rows, `base..head` newest first, capped at
   `maxListedCommits`), `CommitDiff` (a single commit's patch:

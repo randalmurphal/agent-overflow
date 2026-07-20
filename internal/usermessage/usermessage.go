@@ -151,12 +151,12 @@ func ReadProviderItemID(metaJSON string) string {
 // isn't a string. Like the item id, it rides as a top-level JSON key —
 // internal correlation, not UI-facing content.
 //
-// The durable parent uuid also lives on the message checkpoint row
+// The durable parent uuid also lives on the message anchor row
 // (`provider_parent_uuid`), but that copy is written by a separate
 // follow-up UPDATE that can fail after the item-meta stamp committed;
 // this copy is stamped in the SAME transaction as `provider_item_id`
 // (round-5, R5-8) so the already-cut revert retry — which slices
-// through the parent — has a fallback the checkpoint write can't lose.
+// through the parent — has a fallback the anchor write can't lose.
 func ReadProviderParentUUID(metaJSON string) string {
 	trimmed := strings.TrimSpace(metaJSON)
 	if trimmed == "" {

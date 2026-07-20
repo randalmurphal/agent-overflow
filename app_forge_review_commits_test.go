@@ -54,7 +54,7 @@ func TestListPRCommitsFromLocalClone(t *testing.T) {
 	app := newTestAppWithStore(t)
 	threadID, prSHAs := prCloneFixture(t, app)
 
-	commits, err := app.ListPRCommits(threadID, prRef(), "main")
+	commits, err := app.ListPRCommits(threadID, prRef(), "main", "")
 	if err != nil {
 		t.Fatalf("ListPRCommits() error = %v", err)
 	}
@@ -77,7 +77,7 @@ func TestListPRCommitsWithoutCloneReturnsEmpty(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	commits, err := app.ListPRCommits(thread.ID, prRef(), "main")
+	commits, err := app.ListPRCommits(thread.ID, prRef(), "main", "")
 	if err != nil {
 		t.Fatalf("ListPRCommits() error = %v", err)
 	}
@@ -86,11 +86,41 @@ func TestListPRCommitsWithoutCloneReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestListPRCommitsWithKnownHeadSkipsFetch(t *testing.T) {
+	app := newTestAppWithStore(t)
+	threadID, prSHAs := prCloneFixture(t, app)
+	thread, err := app.store.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	// Break the remote: any fetch now fails, so a passing listing proves
+	// the known-head fast path skipped the network entirely.
+	testutil.RunGit(t, thread.WorkspacePath, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone"))
+
+	commits, err := app.ListPRCommits(threadID, prRef(), "main", prSHAs[0])
+	if err != nil {
+		t.Fatalf("ListPRCommits() with known head error = %v", err)
+	}
+	if len(commits) != 2 || commits[0].SHA != prSHAs[0] {
+		t.Fatalf("expected the local listing from the known head, got %+v", commits)
+	}
+
+	// GetPRCommitDiff takes the same no-fetch fast path when the commit
+	// is already local.
+	patch, err := app.GetPRCommitDiff(threadID, prRef(), prSHAs[0])
+	if err != nil {
+		t.Fatalf("GetPRCommitDiff() with local commit error = %v", err)
+	}
+	if !strings.Contains(patch, "+second.txt content") {
+		t.Fatalf("expected the commit diff from local objects, got:\n%s", patch)
+	}
+}
+
 func TestListPRCommitsRequiresBaseRef(t *testing.T) {
 	app := newTestAppWithStore(t)
 	threadID, _ := prCloneFixture(t, app)
 
-	if _, err := app.ListPRCommits(threadID, prRef(), "  "); err == nil {
+	if _, err := app.ListPRCommits(threadID, prRef(), "  ", ""); err == nil {
 		t.Fatal("expected error for an empty base ref")
 	}
 }

@@ -158,7 +158,7 @@ func (r *Router) persistDeferredUserText(pending *pendingSend, providerItemID st
 	item.UpdatedAt = now
 
 	// The parent uuid is merged into the SAME persist as the item id:
-	// the checkpoint's copy below is a separate follow-up write that can
+	// the anchor's copy below is a separate follow-up write that can
 	// fail after this commit, and the already-cut revert retry needs a
 	// durable parent it can slice through (round-5, R5-8).
 	//
@@ -250,7 +250,7 @@ func (r *Router) persistDeferredUserText(pending *pendingSend, providerItemID st
 		confirmedHook(item.ThreadID, persisted)
 	}
 	if err := r.store.UpdateMessageAnchorProviderIDs(item.ThreadID, item.ID, providerItemID, parentUUID); err != nil {
-		return fmt.Errorf("triage: update message checkpoint provider ids: %w", err)
+		return fmt.Errorf("triage: update message anchor provider ids: %w", err)
 	}
 	return nil
 }
@@ -379,7 +379,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 
 	// Item id and parent uuid merge together — the same store tx stamps
 	// both, so the parent (the already-cut retry's slice-through point)
-	// can't be lost to a failed checkpoint follow-up (round-5, R5-8).
+	// can't be lost to a failed anchor follow-up (round-5, R5-8).
 	parentUUID := readParentUUIDFromMeta(evt.Meta)
 	mergedMeta, err := usermessage.MergeProviderIDs(existing.Meta, providerItemID, parentUUID)
 	if err != nil {
@@ -388,12 +388,12 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 	if mergedMeta == existing.Meta {
 		if providerItemID != "" {
 			// The row already durably carries this id, so the echo is
-			// consumed regardless of what the checkpoint update below does
+			// consumed regardless of what the anchor update below does
 			// — record the replay guard first (see the main path's twin).
 			r.markWireOnlyUserTextSeen(threadID, providerItemID)
 		}
 		if err := r.store.UpdateMessageAnchorProviderIDs(threadID, aoItemID, providerItemID, parentUUID); err != nil {
-			return fmt.Errorf("triage: update message checkpoint provider ids: %w", err)
+			return fmt.Errorf("triage: update message anchor provider ids: %w", err)
 		}
 		if providerItemID == "" {
 			// We popped a pending-send marker but the wire echo carried
@@ -421,7 +421,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 		// direct send this means Claude did not honour the top-level uuid
 		// we supplied (claude.Session.Send) — a binary-contract drift. We
 		// overwrite to the echoed id (the real transcript uuid, the correct
-		// slice anchor) and self-heal the checkpoint below, but log loudly:
+		// slice anchor) and self-heal the anchor below, but log loudly:
 		// a silent drift would mean every fast send→escape quietly
 		// regressed from the UUID-keyed slice to the ordinal-walk fallback.
 		// Re-spike the uuid contract per docs/references/spike-policy.md.
@@ -660,7 +660,7 @@ func (r *Router) recordEchoBoundaryAnchor(threadID string, pending *pendingSend)
 	}
 	row, found, err := r.store.GetThreadItem(threadID, pending.AOItemID)
 	if err != nil {
-		log.Printf("triage: lookup for echo-boundary checkpoint capture %s/%s: %v", threadID, pending.AOItemID, err)
+		log.Printf("triage: lookup for echo-boundary anchor record %s/%s: %v", threadID, pending.AOItemID, err)
 		return
 	}
 	if !found {

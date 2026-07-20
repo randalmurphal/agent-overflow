@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-var maxDiffOutputBytes int64 = 10 * 1024 * 1024
+const maxDiffOutputBytes int64 = 10 * 1024 * 1024
 
 var errGitOutputTooLarge = errors.New("git output exceeded limit")
 
@@ -111,22 +111,10 @@ func runGitWithStdoutLimit(
 	if err != nil {
 		return "", "", 0, fmt.Errorf("git %s: stdout pipe: %w", strings.Join(args, " "), err)
 	}
-	stderrFile, err := os.CreateTemp("", "agent-overflow-git-stderr-*")
-	if err != nil {
-		return "", "", 0, fmt.Errorf("git %s: stderr temp file: %w", strings.Join(args, " "), err)
-	}
-	stderrPath := stderrFile.Name()
-	defer os.Remove(stderrPath)
-	defer stderrFile.Close()
-	readStderr := func() string {
-		_ = stderrFile.Close()
-		data, err := os.ReadFile(stderrPath)
-		if err != nil {
-			return ""
-		}
-		return string(data)
-	}
-	cmd.Stderr = stderrFile
+	// A plain buffer as Stderr is drained by os/exec's own copy goroutine
+	// and never blocks, so no temp file is needed alongside the stdout pipe.
+	var errBuf strings.Builder
+	cmd.Stderr = &errBuf
 	if err := cmd.Start(); err != nil {
 		return "", "", 0, fmt.Errorf("git %s: start: %w", strings.Join(args, " "), err)
 	}
@@ -135,11 +123,11 @@ func runGitWithStdoutLimit(
 	if int64(len(data)) > maxStdoutBytes {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		return "", readStderr(), 0, errGitOutputTooLarge
+		return "", errBuf.String(), 0, errGitOutputTooLarge
 	}
 	waitErr := cmd.Wait()
 	stdout = string(data)
-	stderr = readStderr()
+	stderr = errBuf.String()
 	if readErr != nil {
 		return stdout, stderr, 0, fmt.Errorf("git %s: read stdout: %w", strings.Join(args, " "), readErr)
 	}

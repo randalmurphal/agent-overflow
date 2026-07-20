@@ -112,11 +112,17 @@ func (a *App) localPRDiff(threadID string, pr gitops.PRReference, baseRef string
 }
 
 // ListPRCommits returns the commits a PR carries (`origin/base..head`,
-// newest first), computed from the thread's local clone after fetching
-// the PR head and base. Empty — not an error — when the thread has no
-// local clone (a pr-anchor thread with no checkout): the frontend
-// hides the commit selector instead of failing the PR load.
-func (a *App) ListPRCommits(threadID string, pr gitops.PRReference, baseRef string) ([]BranchCommit, error) {
+// newest first), computed from the thread's local clone. Empty — not
+// an error — when the thread has no local clone (a pr-anchor thread
+// with no checkout): the frontend hides the commit selector instead of
+// failing the PR load.
+//
+// headSHA is an optimization contract, not a filter: when the caller
+// already knows the PR head OID (GetPRDiff fetched it moments earlier)
+// and that commit plus the base branch are present locally, the fetch
+// round-trips are skipped. Empty, unknown, or not-yet-fetched values
+// fall back to a full fetch.
+func (a *App) ListPRCommits(threadID string, pr gitops.PRReference, baseRef, headSHA string) ([]BranchCommit, error) {
 	if a.shuttingDown.Load() {
 		return nil, ErrShuttingDown
 	}
@@ -134,9 +140,13 @@ func (a *App) ListPRCommits(threadID string, pr gitops.PRReference, baseRef stri
 	if err := gitops.ValidateBranchName(baseRef); err != nil {
 		return nil, err
 	}
-	headOID, err := a.fetchPRHeadAndBase(workspace, pr, baseRef)
-	if err != nil {
-		return nil, err
+	headOID := strings.TrimSpace(headSHA)
+	if !gitdiff.RevisionsExist(context.Background(), workspace, headOID, "refs/remotes/origin/"+baseRef) {
+		var err error
+		headOID, err = a.fetchPRHeadAndBase(workspace, pr, baseRef)
+		if err != nil {
+			return nil, err
+		}
 	}
 	commits, err := gitdiff.ListCommitsRange(context.Background(), workspace, "origin/"+baseRef, headOID)
 	if err != nil {
@@ -160,15 +170,18 @@ func (a *App) GetPRCommitDiff(threadID string, pr gitops.PRReference, sha string
 	if !ok {
 		return "", errors.New("viewing a PR commit requires a local clone")
 	}
-	// Re-fetch the head so the commit (and its parent, for the diff) is
-	// present even when this call races a push or lands in a fresh
-	// session; a no-op when already up to date.
-	headRef, err := gitops.PRHeadRef(pr.Forge, pr.Number)
-	if err != nil {
-		return "", err
-	}
-	if _, err := a.gitCore().FetchRefOID(workspace, "origin", headRef); err != nil {
-		return "", fmt.Errorf("fetch PR head: %w", err)
+	// The commit almost always sits in the clone already (ListPRCommits
+	// just fetched the head), so only fetch the PR head — the case where
+	// this call races a push or lands in a fresh session — when the
+	// commit is missing locally.
+	if !gitdiff.RevisionsExist(context.Background(), workspace, sha) {
+		headRef, err := gitops.PRHeadRef(pr.Forge, pr.Number)
+		if err != nil {
+			return "", err
+		}
+		if _, err := a.gitCore().FetchRefOID(workspace, "origin", headRef); err != nil {
+			return "", fmt.Errorf("fetch PR head: %w", err)
+		}
 	}
 	patch, err := gitdiff.CommitDiff(context.Background(), workspace, sha)
 	if err != nil {

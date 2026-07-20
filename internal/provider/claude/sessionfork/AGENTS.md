@@ -124,7 +124,7 @@ support fork-at-point with consistent semantics.
   - Decisions about *when* to fork or *when* to relocate, and the
     copy-then-commit-then-purge sequencing — all the caller's job.
   - Updating thread rows / SessionRef plumbing — that's `app_thread_fork.go`
-    or `app_checkpoint.go`.
+    or `app_conversation_rollback.go`.
   - Provider lifecycle (start/stop the Claude subprocess) — that's
     `internal/provider/claude/session.go`.
   - Codex anything — keep provider-specific code in its package.

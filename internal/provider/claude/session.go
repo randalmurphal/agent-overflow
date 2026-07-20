@@ -467,11 +467,11 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	// fails the send loudly instead of poisoning the session JSONL with a
 	// uuid the revert path can never match. Reject non-canonical forms too:
 	// the caller (app_send.go) stamps this exact string on the user row and
-	// the message checkpoint, and the revert path matches the JSONL `uuid`
+	// the message anchor, and the revert path matches the JSONL `uuid`
 	// against that stored string byte-for-byte. Normalizing here instead
 	// would desync the envelope from the pre-stamped row; sending a
 	// non-canonical id as-is would bet on the CLI never canonicalizing.
-	// Requiring canonical input keeps row, checkpoint, envelope, and the
+	// Requiring canonical input keeps row, anchor, envelope, and the
 	// echoed JSONL uuid identical, and turns the parsed value into a real
 	// check rather than a discarded result.
 	if opts.UserMessageUUID != "" {

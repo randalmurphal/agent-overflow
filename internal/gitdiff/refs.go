@@ -53,3 +53,16 @@ func revisionExists(ctx context.Context, workspace, rev string) bool {
 		"rev-parse", "--verify", "--quiet", rev+"^{commit}")
 	return err == nil && code == 0
 }
+
+// RevisionsExist reports whether every rev is non-empty, flag-safe,
+// and resolves to a commit in the workspace. Callers use it to skip a
+// network fetch when the objects they need are already local.
+func RevisionsExist(ctx context.Context, workspace string, revs ...string) bool {
+	for _, rev := range revs {
+		rev = strings.TrimSpace(rev)
+		if rev == "" || strings.HasPrefix(rev, "-") || !revisionExists(ctx, workspace, rev) {
+			return false
+		}
+	}
+	return true
+}

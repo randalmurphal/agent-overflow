@@ -126,7 +126,7 @@ type pendingSend struct {
 	// on the popped entry before dispatching to the fallible handlers,
 	// so a reinserted EchoConsumed entry still knows the transcript
 	// uuid and parent that the failed stamp lost. The session-death
-	// self-heal merges them into the healed row (and its checkpoint) —
+	// self-heal merges them into the healed row (and its anchor) —
 	// without them the healed row has no slice anchor and a later
 	// revert degrades to the ordinal fallback, or full-clones, while
 	// the provider transcript still contains the message (round-6,
@@ -161,13 +161,12 @@ type pendingSend struct {
 	// own response (round-14, D14-1).
 	EchoTurnWasEmpty bool
 
-	// AnchorRecordedAtEcho marks an entry whose confirmed-hook
-	// checkpoint was captured on the FIRST echo's failure path (the
-	// row existed; only the stamp write failed). The message
-	// checkpoint's git ref must reflect the workspace at the
-	// consumption boundary — that first echo — and provider work keeps
-	// changing the workspace afterwards, so a retry's success-path
-	// hook must NOT replace the true-boundary ref with a later capture
+	// AnchorRecordedAtEcho marks an entry whose confirmed-hook message
+	// anchor was recorded on the FIRST echo's failure path (the row
+	// existed; only the stamp write failed). That first echo is the
+	// true consumption boundary, so a retry's success path must not
+	// run the hook again — it only folds the retry's provider ids
+	// into the existing anchor via UpdateMessageAnchorProviderIDs
 	// (round-10, R10-2).
 	AnchorRecordedAtEcho bool
 
@@ -537,17 +536,16 @@ func (r *Router) clearWireOnlyUserTextLocked(threadID string) {
 
 // EagerPersistedFlush describes a deferred flush send that was eagerly
 // persisted during interrupt. The app layer uses it for the Codex
-// re-send; checkpoint capture happens inside
+// re-send; anchor recording happens inside
 // EagerPersistDeferredFlushSends itself via the confirmed hook.
 type EagerPersistedFlush struct {
 	UserItemID string
 	TurnIndex  int
-	// ItemIndex is the store-assigned position within the turn — the
-	// value the internal checkpoint capture feeds to the
-	// position-ordered previous-checkpoint lookup. Exposed so tests can
-	// pin that a real index (not a zero placeholder) was threaded
-	// through; a zero would make a Codex steer's checkpoint (persisted
-	// mid-turn at a real index > 0) diff against the wrong baseline.
+	// ItemIndex is the store-assigned position within the turn.
+	// Fork/revert slicing is position-ordered, so tests pin that a
+	// real index (not a zero placeholder) was threaded through — a
+	// zero would place a Codex steer persisted mid-turn ahead of the
+	// content it actually followed.
 	ItemIndex int
 	Content   string
 	Meta      string
@@ -601,15 +599,15 @@ type EagerPersistedFlush struct {
 // Each item is persisted via persistItem (UpsertItem + emit) so the
 // frontend receives a provider:item_event upsert immediately.
 //
-// The confirmed hook (checkpoint capture) runs here for each persisted
-// row, still under the thread's flush anchor lock: this is the rows'
-// baseline capture — revert stays offered even if the session dies
-// before the echo — and the echo-time hook later replaces the ref at
-// the true consumption boundary (round-7, R7-1). The baseline must
-// commit before the mutex releases, or an echo in the gap would stamp
-// the row while UpdateMessageAnchorProviderIDs no-ops against a
-// checkpoint that doesn't exist yet, leaving it permanently without
-// provider ids (round-4 review, CT4-1).
+// The confirmed hook (message anchor record) runs here for each
+// persisted row, still under the thread's flush anchor lock: this is
+// the rows' baseline record — fork/revert stays offered even if the
+// session dies before the echo — and the echo later fills the anchor's
+// provider ids at the true consumption boundary (round-7, R7-1). The
+// record must commit before the mutex releases, or an echo in the gap
+// would stamp the row while UpdateMessageAnchorProviderIDs no-ops
+// against an anchor that doesn't exist yet, leaving it permanently
+// without provider ids (round-4 review, CT4-1).
 func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurnIndex int, tok FlushStampToken) []EagerPersistedFlush {
 	if threadID == "" || r.store == nil {
 		return nil
@@ -713,21 +711,21 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 // because the entry was already consumed, cannot be observed (round-3
 // review, cold-2/cold-3/CT-1/CT-4).
 //
-// The confirmed hook (checkpoint capture) runs here for each promoted
-// row, still under the thread's flush anchor lock: this is the
-// promoted rows' baseline capture — revert stays offered even if the
-// session dies before the echo — and the echo-time hook later replaces
-// the ref at the true consumption boundary (round-7, R7-1). The
-// baseline must commit before the mutex releases, or an echo in the
-// gap would stamp the row while UpdateMessageAnchorProviderIDs no-ops
-// against a checkpoint that doesn't exist yet, leaving it permanently
-// without provider ids (round-4 review, CT4-1). Returns the promoted
-// rows at their post-bump position.
+// The confirmed hook (message anchor record) runs here for each
+// promoted row, still under the thread's flush anchor lock: this is
+// the promoted rows' baseline record — fork/revert stays offered even
+// if the session dies before the echo — and the echo later fills the
+// anchor's provider ids at the true consumption boundary (round-7,
+// R7-1). The record must commit before the mutex releases, or an echo
+// in the gap would stamp the row while UpdateMessageAnchorProviderIDs
+// no-ops against an anchor that doesn't exist yet, leaving it
+// permanently without provider ids (round-4 review, CT4-1). Returns
+// the promoted rows at their post-bump position.
 //
 // tok is the interrupt's pre-ack mark token; its thread reactivation
 // epoch fences the whole claim + bump against a session replacement
 // that re-registered same-ID entries during the ack wait — a stale
-// interrupt must not promote (or checkpoint) the replacement's rows
+// interrupt must not promote (or anchor) the replacement's rows
 // (round-11, CT11-1).
 func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []store.Item {
 	if threadID == "" || r.store == nil {
@@ -745,12 +743,11 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 	pending := r.pendingByThread[threadID]
 	var ids []string
 	for i := range pending {
-		// Already-anchored entries were promoted (and checkpointed) by an
-		// earlier interrupt; a second interrupt before the echo must not
-		// bump them again or re-capture — the re-capture would replace the
-		// first interrupt's checkpoint snapshot with the workspace state at
-		// the SECOND interrupt, destroying the boundary a later files
-		// revert is supposed to restore.
+		// Already-anchored entries were promoted (and anchor-recorded) by
+		// an earlier interrupt; a second interrupt before the echo must
+		// not bump them again — the row's anchored position IS the
+		// boundary a later fork/revert slices at, and a re-bump would
+		// move it past content that arrived after the first interrupt.
 		if pending[i].DeferredItem == nil && !pending[i].AnchoredAtInterrupt && strings.Contains(pending[i].AOItemID, ":flush:") {
 			ids = append(ids, pending[i].AOItemID)
 			pending[i].AnchoredAtInterrupt = true

@@ -31,9 +31,9 @@ func IsGitRepository(ctx context.Context, workspace string) bool {
 	return strings.TrimSpace(stdout) == "true"
 }
 
-// HasHeadCommit reports whether HEAD resolves to a commit. False on
+// hasHeadCommit reports whether HEAD resolves to a commit. False on
 // fresh-init repos with no commits yet.
-func HasHeadCommit(ctx context.Context, workspace string) (bool, error) {
+func hasHeadCommit(ctx context.Context, workspace string) (bool, error) {
 	_, _, code, err := runGit(ctx, workspace, nil, true, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return false, err
@@ -43,66 +43,52 @@ func HasHeadCommit(ctx context.Context, workspace string) (bool, error) {
 
 // DiffWorkspaceVsHead returns the unified patch for everything currently
 // uncommitted in the workspace: tracked changes against HEAD plus
-// untracked-not-ignored files. Mirrors `git status` semantics — the
-// caller wants to see manual edits alongside agent work. Returns an
-// empty slice on fresh-init repos that have no HEAD to diff against
-// (no commits yet, so "uncommitted" doesn't apply).
+// untracked-not-ignored files, in one diff stream. Mirrors `git status`
+// semantics — the caller wants to see manual edits alongside agent
+// work. On a fresh-init repo with no HEAD the diff runs against the
+// empty tree, so untracked files still show.
 func DiffWorkspaceVsHead(ctx context.Context, workspace string) ([]byte, error) {
-	hasHead, err := HasHeadCommit(ctx, workspace)
+	worktreeTree, err := captureSyntheticWorktreeTree(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	defer worktreeTree.cleanup()
+
+	oldSide := "HEAD"
+	hasHead, err := hasHeadCommit(ctx, workspace)
 	if err != nil {
 		return nil, fmt.Errorf("gitdiff: probe HEAD: %w", err)
 	}
-
-	remainingBytes := maxDiffOutputBytes
-	var parts []string
-	if hasHead {
-		tracked, _, _, err := runGitWithStdoutLimit(ctx, workspace, nil, false, remainingBytes,
-			"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv", "HEAD", "--")
-		if errors.Is(err, errGitOutputTooLarge) {
-			return nil, fmt.Errorf("gitdiff: workspace diff exceeds %d byte limit", maxDiffOutputBytes)
-		}
+	if !hasHead {
+		oldSide, err = emptyTreeOID(ctx, workspace, worktreeTree.env)
 		if err != nil {
-			return nil, fmt.Errorf("gitdiff: diff HEAD: %w", err)
+			return nil, err
 		}
-		if t := strings.TrimSpace(tracked); t != "" {
-			parts = append(parts, t)
-		}
-		remainingBytes -= int64(len(tracked))
 	}
-
-	untracked, _, code, err := runGit(ctx, workspace, nil, true,
-		"ls-files", "--others", "--exclude-standard", "-z")
+	stdout, _, _, err := runGitWithStdoutLimit(ctx, workspace, worktreeTree.env, false, maxDiffOutputBytes,
+		"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
+		oldSide, worktreeTree.oid, "--")
+	if errors.Is(err, errGitOutputTooLarge) {
+		return nil, fmt.Errorf("gitdiff: workspace diff exceeds %d byte limit", maxDiffOutputBytes)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("gitdiff: ls-files others: %w", err)
+		return nil, fmt.Errorf("gitdiff: diff workspace vs HEAD: %w", err)
 	}
-	if code == 0 {
-		for _, p := range strings.Split(untracked, "\x00") {
-			p = strings.TrimSpace(p)
-			if p == "" {
-				continue
-			}
-			if remainingBytes <= 0 {
-				return nil, fmt.Errorf("gitdiff: workspace diff exceeds %d byte limit", maxDiffOutputBytes)
-			}
-			patch, _, exit, err := runGitWithStdoutLimit(ctx, workspace, nil, true, remainingBytes,
-				"diff", "--no-index", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv", "--",
-				"/dev/null", p)
-			if errors.Is(err, errGitOutputTooLarge) {
-				return nil, fmt.Errorf("gitdiff: workspace diff exceeds %d byte limit", maxDiffOutputBytes)
-			}
-			if err != nil {
-				return nil, fmt.Errorf("gitdiff: diff new file %s: %w", p, err)
-			}
-			if exit != 0 && exit != 1 {
-				return nil, fmt.Errorf("gitdiff: diff new file %s exited %d", p, exit)
-			}
-			if t := strings.TrimSpace(patch); t != "" {
-				parts = append(parts, t)
-			}
-			remainingBytes -= int64(len(patch))
-		}
+	return []byte(stdout), nil
+}
+
+// emptyTreeOID writes (into the temp object dir the env points at) and
+// returns the empty tree, the old side of a fresh-init workspace diff.
+func emptyTreeOID(ctx context.Context, workspace string, env []string) (string, error) {
+	stdout, _, _, err := runGitWithStdin(ctx, workspace, env, nil, false, "mktree")
+	if err != nil {
+		return "", fmt.Errorf("gitdiff: write empty tree: %w", err)
 	}
-	return []byte(strings.Join(parts, "\n\n")), nil
+	oid := strings.TrimSpace(stdout)
+	if oid == "" {
+		return "", errors.New("gitdiff: mktree returned empty oid")
+	}
+	return oid, nil
 }
 
 // DiffBranchBaseToWorktree returns the patch a PR from HEAD plus the current
@@ -182,7 +168,7 @@ func writeWorktreeTree(ctx context.Context, workspace string, env []string) (str
 	}
 	// Seed the temp index from HEAD so the snapshot includes tracked files that
 	// exist only on HEAD. Skip on a fresh-init repo where HEAD doesn't resolve.
-	hasHead, err := HasHeadCommit(ctx, workspace)
+	hasHead, err := hasHeadCommit(ctx, workspace)
 	if err != nil {
 		return "", fmt.Errorf("gitdiff: probe HEAD: %w", err)
 	}
@@ -245,7 +231,23 @@ func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string)
 	if err != nil {
 		return fmt.Errorf("gitdiff: list worktree changes: %w", err)
 	}
+	// Partition once: deletions and symlinks need per-path handling; the
+	// (overwhelmingly common) regular files batch into ONE hash-object
+	// and ONE update-index so a large worktree doesn't fan out O(files)
+	// subprocesses.
 	seen := map[string]struct{}{}
+	var deleted []string // batched `update-index --force-remove --stdin`
+	var regular []string // batched `hash-object --stdin-paths`
+	var regularModes []string
+	var indexInfo strings.Builder // NUL-terminated `<mode> <oid>\t<path>` records
+	writeIndexInfo := func(mode, oid, path string) {
+		indexInfo.WriteString(mode)
+		indexInfo.WriteByte(' ')
+		indexInfo.WriteString(oid)
+		indexInfo.WriteByte('\t')
+		indexInfo.WriteString(path)
+		indexInfo.WriteByte(0)
+	}
 	for _, p := range strings.Split(changed, "\x00") {
 		if p == "" {
 			continue
@@ -256,26 +258,54 @@ func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string)
 		seen[p] = struct{}{}
 		info, statErr := os.Lstat(filepath.Join(workspace, p))
 		if errors.Is(statErr, os.ErrNotExist) {
-			if _, _, _, err := runGit(ctx, workspace, env, true,
-				"update-index", "--force-remove", "--", p); err != nil {
-				return fmt.Errorf("gitdiff: stage deletion %s: %w", p, err)
-			}
+			deleted = append(deleted, p)
 			continue
 		}
 		if statErr != nil {
 			return fmt.Errorf("gitdiff: inspect %s: %w", p, statErr)
 		}
-		mode := gitIndexMode(info.Mode())
-		oid, err := hashWorktreePathNoFilters(ctx, workspace, p, info.Mode(), env)
+		if info.Mode()&os.ModeSymlink != 0 || strings.ContainsRune(p, '\n') {
+			// Symlinks hash their target text via stdin, and a path holding
+			// a newline can't ride the LF-separated --stdin-paths batch.
+			oid, err := hashWorktreePathNoFilters(ctx, workspace, p, info.Mode(), env)
+			if err != nil {
+				return fmt.Errorf("gitdiff: hash %s: %w", p, err)
+			}
+			if oid == "" {
+				return fmt.Errorf("gitdiff: hash %s returned empty oid", p)
+			}
+			writeIndexInfo(gitIndexMode(info.Mode()), oid, p)
+			continue
+		}
+		regular = append(regular, p)
+		regularModes = append(regularModes, gitIndexMode(info.Mode()))
+	}
+	if len(regular) > 0 {
+		stdin := strings.Join(regular, "\n") + "\n"
+		stdout, _, _, err := runGitWithStdin(ctx, workspace, env, []byte(stdin), false,
+			"hash-object", "-w", "--no-filters", "--stdin-paths")
 		if err != nil {
-			return fmt.Errorf("gitdiff: hash %s: %w", p, err)
+			return fmt.Errorf("gitdiff: hash worktree files: %w", err)
 		}
-		if oid == "" {
-			return fmt.Errorf("gitdiff: hash %s returned empty oid", p)
+		oids := strings.Fields(stdout)
+		if len(oids) != len(regular) {
+			return fmt.Errorf("gitdiff: hash-object returned %d oids for %d paths", len(oids), len(regular))
 		}
-		if _, _, _, err := runGit(ctx, workspace, env, false,
-			"update-index", "--add", "--cacheinfo", mode, oid, p); err != nil {
-			return fmt.Errorf("gitdiff: stage %s: %w", p, err)
+		for i, p := range regular {
+			writeIndexInfo(regularModes[i], oids[i], p)
+		}
+	}
+	if indexInfo.Len() > 0 {
+		if _, _, _, err := runGitWithStdin(ctx, workspace, env, []byte(indexInfo.String()), false,
+			"update-index", "-z", "--index-info"); err != nil {
+			return fmt.Errorf("gitdiff: stage worktree changes: %w", err)
+		}
+	}
+	if len(deleted) > 0 {
+		stdin := strings.Join(deleted, "\x00") + "\x00"
+		if _, _, _, err := runGitWithStdin(ctx, workspace, env, []byte(stdin), false,
+			"update-index", "-z", "--force-remove", "--stdin"); err != nil {
+			return fmt.Errorf("gitdiff: stage deletions: %w", err)
 		}
 	}
 	return nil

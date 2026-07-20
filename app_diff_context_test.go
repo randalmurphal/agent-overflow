@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/testutil"
 )
 
 func TestReadWorkspaceFile(t *testing.T) {
@@ -107,6 +110,58 @@ func TestGetDiffContextLinesWorkspaceScope(t *testing.T) {
 	}
 	if len(past.Lines) != 0 || !past.EOF || past.TotalLines != 50 {
 		t.Fatalf("past = {%d lines, eof:%v, total:%d}, want {0, true, 50}", len(past.Lines), past.EOF, past.TotalLines)
+	}
+}
+
+func TestGetDiffContextLinesCommitScope(t *testing.T) {
+	app := newTestAppWithStore(t)
+	workspace := testutil.InitGitRepo(t)
+	thread := testThread("thread-diff-context-commit")
+	thread.WorkspacePath = workspace
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	writeAndCommit := func(content, message string) {
+		if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		testutil.RunGit(t, workspace, "add", "notes.txt")
+		testutil.RunGit(t, workspace, "commit", "-m", message)
+	}
+	writeAndCommit("one\ntwo\nthree\n", "first")
+	sha, _, err := gitops.NewCore().Execute(workspace, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse: %v", err)
+	}
+	// The worktree moves on: commit scope must read the SELECTED
+	// commit's tree, not the file on disk.
+	writeAndCommit("one\nedited\nthree\nfour\n", "second")
+
+	result, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+		Scope:     "commit",
+		CommitSHA: strings.TrimSpace(sha),
+		Path:      "notes.txt",
+		StartLine: 1,
+		EndLine:   10,
+	})
+	if err != nil {
+		t.Fatalf("GetDiffContextLines(commit) error = %v", err)
+	}
+	if got := strings.Join(result.Lines, "\n"); got != "one\ntwo\nthree" {
+		t.Fatalf("commit-scope lines = %q, want the first commit's content", got)
+	}
+	if !result.EOF || result.TotalLines != 3 {
+		t.Fatalf("meta = {eof:%v total:%d}, want {true 3}", result.EOF, result.TotalLines)
+	}
+
+	if _, err := app.GetDiffContextLines(thread.ID, DiffContextRequest{
+		Scope:     "commit",
+		Path:      "notes.txt",
+		StartLine: 1,
+		EndLine:   10,
+	}); err == nil || !strings.Contains(err.Error(), "commit SHA is required") {
+		t.Fatalf("missing-SHA error = %v, want commit SHA is required", err)
 	}
 }
 

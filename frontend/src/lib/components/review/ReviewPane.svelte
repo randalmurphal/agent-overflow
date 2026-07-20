@@ -614,7 +614,10 @@
             {review.drafts.length} {review.drafts.length === 1 ? 'draft' : 'drafts'}
           </div>
           <div class="flex items-center gap-2">
-            {#if review.scope === 'pr'}
+            {#if review.scope === 'pr' && !review.selectedCommitSHA}
+              <!-- Single-commit view: drafts anchor to that commit's diff,
+                   not the PR head diff — PR submission would mis-place
+                   them, so the only target is the linked agent. -->
               <select
                 class="rounded border border-border-subtle bg-surface-0 px-2 py-1 text-[0.6875rem]"
                 value={review.submitTarget}
@@ -627,15 +630,15 @@
             <button
               type="button"
               class="rounded border border-accent/45 px-2 py-1 text-[0.6875rem] font-medium text-accent hover:bg-accent/10 disabled:opacity-45"
-              disabled={review.sendingComments || (review.submitTarget === 'agent' && review.isTurnActive)}
-              title={review.isTurnActive && review.submitTarget === 'agent' ? 'Send from the chat box while the agent is working' : 'Send comments'}
-              onclick={() => { void (review?.submitTarget === 'pr' ? review?.submitPRReview() : review?.sendComments()); }}
+              disabled={review.sendingComments || (review.effectiveSubmitTarget === 'agent' && review.isTurnActive)}
+              title={review.isTurnActive && review.effectiveSubmitTarget === 'agent' ? 'Send from the chat box while the agent is working' : 'Send comments'}
+              onclick={() => { void (review?.effectiveSubmitTarget === 'pr' ? review?.submitPRReview() : review?.sendComments()); }}
             >
               Send comments
             </button>
           </div>
         </div>
-        {#if review.scope === 'pr' && review.submitTarget === 'pr'}
+        {#if review.effectiveSubmitTarget === 'pr'}
           <div class="mt-2 flex flex-wrap items-center gap-2">
             {#each ['comment', 'approve', 'request-changes'] as nextVerdict}
               {@const ownPRBlocked = review.prRef?.forge === 'github' && review.prDetail?.viewerIsAuthor && nextVerdict !== 'comment'}

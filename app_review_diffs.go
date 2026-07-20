@@ -13,20 +13,21 @@ import (
 // against HEAD plus untracked-not-ignored files). Empty for non-git
 // workspaces.
 func (a *App) GetWorkspaceCurrentDiff(threadID string) (string, error) {
+	const action = "get workspace current diff"
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		return "", fmt.Errorf("get workspace current diff: %w", err)
+		return "", fmt.Errorf("%s: %w", action, err)
 	}
 	_, workspace, err := a.resolveGitPaths(thread)
 	if err != nil {
-		return "", fmt.Errorf("get workspace current diff: %w", err)
+		return "", fmt.Errorf("%s: %w", action, err)
 	}
 	if !gitdiff.IsGitRepository(context.Background(), workspace) {
 		return "", nil
 	}
 	patch, err := gitdiff.DiffWorkspaceVsHead(context.Background(), workspace)
 	if err != nil {
-		return "", fmt.Errorf("get workspace current diff: %w", err)
+		return "", fmt.Errorf("%s: %w", action, err)
 	}
 	return string(patch), nil
 }

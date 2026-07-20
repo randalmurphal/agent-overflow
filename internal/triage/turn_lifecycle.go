@@ -404,9 +404,9 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// per-round `provider:turn_completed` emission at the top of this
 	// handler.
 	//
-	// Checkpoint capture does NOT happen here. Message checkpoints are
-	// captured by app_send.go before provider stdin/RPC dispatch so the
-	// snapshot maps directly to "before this user message".
+	// Anchor recording does NOT happen here. Message anchors are
+	// recorded by app_send.go before provider stdin/RPC dispatch so
+	// the anchor maps directly to "before this user message".
 	r.settleTurnRow(evt, turnIndex, now, meta, persistErr)
 
 	r.clearOpenTurn(evt.ThreadID)

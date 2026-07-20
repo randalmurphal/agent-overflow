@@ -20,7 +20,7 @@ var ErrUserTurnOutOfRange = errors.New("sessionfork: user turn index out of rang
 // prompt, which has no anchor entry in the JSONL because nothing came
 // after it. The most common cause is the Claude subprocess dying
 // before it persisted the user's most recent prompt to its session
-// JSONL — AO's checkpoint table records the user_text row at TurnIndex
+// JSONL — AO's anchor table records the user_text row at TurnIndex
 // N but the JSONL only has prompts 0..N-1. Revert callers should
 // detect this and route to a "copy the JSONL as-is" path rather than
 // failing the revert; the JSONL is already in the right state from
