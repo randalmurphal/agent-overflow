@@ -239,34 +239,41 @@ export function scheduleThreadProposedPlansRefresh(threadId: string | null | und
   refreshTimers.set(threadId, timer);
 }
 
+// Module-level handler, NOT defined inside retainProposedPlanEventListener:
+// the registration is a refcounted singleton that outlives individual
+// retainers, and a callback created inside the retain call would close over
+// the FIRST caller's `threadIdScope` argument forever — pinning that
+// caller's component scope chain (and through it the pane's entire DOM
+// tree) until the last release, long after that pane closed. Found via the
+// DOM-retention probe (chatview-dom-retention.test.ts).
+function handlePlanItemUpsert(item: Item): void {
+  if (item.payloadKind !== 'proposed_plan') return;
+  // Synchronous insert ensures observers (PlanSidebar, Composer) see the
+  // new plan immediately — without this, getThreadCurrentProposedPlan
+  // returns stale data for ~100ms until the debounced refresh resolves.
+  // That window forced PlanSidebar to read pane.items as a fallback,
+  // which coupled it to chat streaming. See Composer.svelte / PlanSidebar.svelte.
+  const changed = upsertItemIntoCache(item);
+  if (!changed) return;
+  if (listenerThreadScopes.size > 0) {
+    let matched = false;
+    for (const scope of listenerThreadScopes) {
+      if (scope() === item.threadId) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) return;
+  }
+  scheduleThreadProposedPlansRefresh(item.threadId);
+}
+
 export function retainProposedPlanEventListener(threadIdScope?: () => string | null | undefined): () => void {
   listenerRefCount += 1;
   if (threadIdScope) {
     listenerThreadScopes.add(threadIdScope);
   }
-  if (!cancelItemUpsert) {
-    cancelItemUpsert = onItemUpsert((item) => {
-      if (item.payloadKind !== 'proposed_plan') return;
-      // Synchronous insert ensures observers (PlanSidebar, Composer) see the
-      // new plan immediately — without this, getThreadCurrentProposedPlan
-      // returns stale data for ~100ms until the debounced refresh resolves.
-      // That window forced PlanSidebar to read pane.items as a fallback,
-      // which coupled it to chat streaming. See Composer.svelte / PlanSidebar.svelte.
-      const changed = upsertItemIntoCache(item);
-      if (!changed) return;
-      if (listenerThreadScopes.size > 0) {
-        let matched = false;
-        for (const scope of listenerThreadScopes) {
-          if (scope() === item.threadId) {
-            matched = true;
-            break;
-          }
-        }
-        if (!matched) return;
-      }
-      scheduleThreadProposedPlansRefresh(item.threadId);
-    });
-  }
+  cancelItemUpsert ??= onItemUpsert(handlePlanItemUpsert);
 
   let released = false;
   return () => {
