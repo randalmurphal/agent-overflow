@@ -35,14 +35,14 @@
     declined: { bg: 'bg-warning', pulse: false },
   };
 
-  // Stagger offsets for the backgrounded three-dot variant. Each
-  // delay is applied as a Tailwind arbitrary-value class so the
-  // animation timing reads as a utility rather than an inline style.
-  // The delays are multiples of the stepped animate-pulse jump
-  // interval (2s / steps(8) = 250ms) so all three dots change on the
-  // same instants — off-grid delays triple the union of jump times
-  // and therefore the compositor present rate.
-  const BG_DOT_DELAYS = ['', '[animation-delay:250ms]', '[animation-delay:500ms]'] as const;
+  // Stagger offsets for the backgrounded three-dot variant.
+  // ambient-pulse-s2/-s4 are marker classes (no CSS behind them): the
+  // ambient ticker (utils/ambientTicker.ts) writes those dots' inline
+  // opacity from the pulse phase shifted by 250ms/500ms. Shifts stay
+  // on the ticker's slot grid so all three dots change on instants
+  // the ticker already writes — off-grid offsets would need extra
+  // phases and extra style passes.
+  const BG_DOT_SHIFTS = ['', 'ambient-pulse-s2', 'ambient-pulse-s4'] as const;
 
   interface Props {
     /**
@@ -86,8 +86,8 @@
     role="status"
     aria-label={label}
   >
-    {#each BG_DOT_DELAYS as delayClass}
-      <span class="h-[3.5px] w-[3.5px] rounded-full bg-accent animate-pulse {delayClass}"></span>
+    {#each BG_DOT_SHIFTS as shiftClass}
+      <span class="h-[3.5px] w-[3.5px] rounded-full bg-accent animate-pulse {shiftClass}"></span>
     {/each}
   </span>
 {/if}

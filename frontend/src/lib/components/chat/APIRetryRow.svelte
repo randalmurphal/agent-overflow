@@ -58,7 +58,7 @@
     icon={RefreshCw}
     size={11}
     strokeWidth={2}
-    class={isLive ? 'opacity-90 animate-pulse' : 'opacity-60'}
+    class={isLive ? 'animate-pulse' : 'opacity-60'}
   />
   <span>{item.summary || 'Retrying provider request...'}</span>
 </div>

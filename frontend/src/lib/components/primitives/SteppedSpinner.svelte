@@ -4,10 +4,15 @@
   // keeps compositor frame production pinned to panel refresh for as
   // long as it is visible — the standing-animation cost documented at
   // app.css `--animate-pulse` — but a plain glyph can't be stepped
-  // without reading as broken. A spoked glyph can: steps(12) lands
-  // every jump exactly on the next spoke position (the iOS activity
-  // indicator's design), cutting updates to ~10/s. Transient spinners
-  // should keep using animate-spin.
+  // without reading as broken. A spoked glyph can: each jump lands
+  // exactly on the next spoke position (the iOS activity indicator's
+  // design). `stepped-spin` is a marker class: utils/ambientTicker.ts
+  // writes the rotation inline (one spoke per 125ms slot ≈ 1.5s/rev) —
+  // a CSS animation, even a stepped one, ticks main-thread style
+  // recalc every vsync while it runs (see the @theme note in app.css).
+  // With the ticker idle or reduced motion active there is no inline
+  // transform and the glyph rests unrotated. Transient spinners should
+  // keep using animate-spin.
   let {
     size = 11,
     class: className = '',
@@ -49,14 +54,3 @@
     />
   {/each}
 </svg>
-
-<style>
-  .stepped-spin {
-    animation: spoke-rotate 1.2s steps(12) infinite;
-  }
-  @keyframes spoke-rotate {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-</style>

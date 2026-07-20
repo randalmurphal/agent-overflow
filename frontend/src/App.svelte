@@ -22,12 +22,13 @@
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyTheme } from './lib/utils/theme';
   import { applyFonts } from './lib/utils/fonts';
+  import { startAmbientTicker } from './lib/utils/ambientTicker';
   import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import PaneHost from './lib/components/panes/PaneHost.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
-  import TransportStatusBanner from './lib/components/shared/TransportStatusBanner.svelte';
   import SettingsView from './lib/components/settings/SettingsView.svelte';
+  import TransportStatusBanner from './lib/components/shared/TransportStatusBanner.svelte';
   import DiscussionStartFlow from './lib/components/discussion/DiscussionStartFlow.svelte';
   import CommandPalette from './lib/components/palette/CommandPalette.svelte';
   import KeybindingsCheatSheet from './lib/components/palette/KeybindingsCheatSheet.svelte';
@@ -377,7 +378,12 @@
     window.addEventListener('beforeunload', flushPaneLayout);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    // Shared wall-clock driver for all ambient indicator visuals
+    // (pulse dots, working-LED chase, status glows, stepped spinners).
+    const stopAmbientTicker = startAmbientTicker();
+
     return () => {
+      stopAmbientTicker();
       flushPaneLayout();
       cleanupEvents();
       cleanupUpdates();
