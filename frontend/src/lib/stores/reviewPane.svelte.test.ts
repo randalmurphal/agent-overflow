@@ -19,6 +19,7 @@ import { registerComposerDraft, resetComposerDraftRegistryForTest } from './comp
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import type { DiffReviewComment, PRDetail, Thread } from '../types/models';
 import { diffSourceKey } from '../utils/diffSourceKey';
+import { expansionPredecessor } from '../utils/diffContextExpansion';
 import { filePatchDisplayRows, parsePatchFilesCached } from '../utils/patchFiles';
 import { buildReviewRows } from '../utils/reviewRows';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -1685,15 +1686,64 @@ describe('reviewPane store — edits scope', () => {
     expect(state.files.map((file) => file.path)).toEqual(['x.go']);
     expect(state.files[0].additions).toBe(2);
     expect(state.files[0].deletions).toBe(1);
-    // Merged files keep their gap rows — expansion verification is
-    // what retires them if the sections drifted apart.
+    // Disjoint sections renumber into ONE coherent section — a single
+    // meta block with hunks in final-file order — so the merged file
+    // verifies, primes, and gap-expands like a single-section diff.
     expect(state.files[0].suppressGaps).toBeUndefined();
     expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(true);
-    // Both sections' hunks render, in edit order.
     const contents = state.files[0].lines.map((line) => line.content);
+    expect(contents.filter((content) => content.startsWith('diff --git'))).toHaveLength(1);
+    expect(contents.filter((content) => content.startsWith('@@'))).toEqual([
+      '@@ -5,2 +5,2 @@',
+      '@@ -9,1 +9,2 @@',
+    ]);
     expect(contents).toContain('+new');
     expect(contents).toContain('+later');
     expect(contents.indexOf('+new')).toBeLessThan(contents.indexOf('+later'));
+  });
+
+  it('keeps merged-file lines identity stable across expansion rebuilds', async () => {
+    installEditMocks();
+    const twiceEdited = [
+      'diff --git a/x.go b/x.go',
+      '--- a/x.go',
+      '+++ b/x.go',
+      '@@ -5,3 +5,3 @@',
+      ' ctx',
+      '-old',
+      '+new',
+      'diff --git a/x.go b/x.go',
+      '--- a/x.go',
+      '+++ b/x.go',
+      '@@ -9,2 +9,3 @@',
+      ' ctx2',
+      '+later',
+    ].join('\n');
+    setBindingMock('GetTurnEditsDiff', async () => ({ data: twiceEdited }));
+    setBindingMock('GetDiffContextLines', async () => ({
+      lines: ['l1', 'l2', 'l3', 'l4'],
+      startLine: 1,
+      eof: false,
+      totalLines: 20,
+    }));
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('edits');
+
+    const baseLines = state.files[0].lines;
+    const gapRow = filePatchDisplayRows(state.files[0]).find((row) => row.gap);
+    expect(gapRow?.gap?.location).toBe('leading');
+    await state.expandDiffContext('x.go', gapRow!.gap!, 'all');
+
+    // The rebuilt array must record the EXACT array it superseded: the
+    // span cache walks this chain to keep serving the pre-expansion
+    // spans while the expanded file's own highlight request is in
+    // flight. When the merge minted a fresh base array on every derived
+    // re-run, the chain pointed at an unregistered array and the whole
+    // file flashed plain on every expansion click.
+    const expandedLines = state.files[0].lines;
+    expect(expandedLines).not.toBe(baseLines);
+    expect(expansionPredecessor(expandedLines)).toBe(baseLines);
   });
 
   it('shows an empty surface for a thread with no edits', async () => {

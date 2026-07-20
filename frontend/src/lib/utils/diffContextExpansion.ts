@@ -1,4 +1,11 @@
-import { parseHunkHeader, type DiffGap, type PatchFile, type PatchLine } from './patchFiles';
+import {
+  formatHunkHeader,
+  hunkHeaderSuffix,
+  parseHunkHeader,
+  type DiffGap,
+  type PatchFile,
+  type PatchLine,
+} from './patchFiles';
 
 // Hunk-gap context expansion: merges fetched new-side source lines
 // (GetDiffContextLines) back into a parsed PatchFile so the display-row
@@ -215,7 +222,7 @@ function applyContextExpansionUncached(file: PatchFile, state: ContextExpansionS
       if (line.type === 'add' || line.type === 'context') newCount += 1;
     }
     lines.push({
-      content: `@@ -${hunk.oldStart},${oldCount} +${hunk.newStart},${newCount} @@${hunk.suffix}`,
+      content: formatHunkHeader(hunk.oldStart, oldCount, hunk.newStart, newCount, hunk.suffix),
       type: 'meta',
     });
     lines.push(...hunk.body);
@@ -237,9 +244,4 @@ function contextLine(state: ContextExpansionState, lineNo: number): PatchLine {
   const line: PatchLine = { content: ` ${text}`, type: 'context' };
   memo.set(lineNo, line);
   return line;
-}
-
-function hunkHeaderSuffix(content: string): string {
-  const match = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(.*)$/.exec(content);
-  return match?.[1] ?? '';
 }

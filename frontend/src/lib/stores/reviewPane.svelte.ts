@@ -70,7 +70,7 @@ import {
 } from '../utils/diffContextExpansion';
 import {
   filePatchDisplayRows,
-  mergePatchFilesByPath,
+  mergePatchFilesByPathCached,
   parsePatchFilesCached,
   type DiffGap,
   type PatchFile,
@@ -473,19 +473,27 @@ function createReviewPaneState(sourcePaneId: string, threadId: string, initialTh
   // expansions overlay per file, keyed by the version counter.
   const files = $derived.by(() => {
     void contextExpansionVersion;
-    let parsed = sortFilesTreeOrder(parsePatchFilesCached(patchText));
+    let parsed: PatchFile[];
     if (scope === 'edits') {
       // A whole-turn concatenation repeats a path when a file was edited
-      // more than once in the turn — merge those sections into one file
-      // (the review surface keys rows/tree/collapse by path). Every
-      // file keeps its gap rows: expansion serves the CURRENT workspace
-      // file only after the backend verifies every hunk line still
-      // matches this historical patch (merged sections included), and a
-      // refusal retires the file's gaps here. Copies, not mutation: the
-      // parse cache is shared across panes and scopes.
-      parsed = mergePatchFilesByPath(parsed).map((file) =>
-        unexpandableEditPaths.has(file.path) ? { ...file, suppressGaps: true } : file,
+      // more than once in the turn — merge those sections into one
+      // renumbered file-ordered section per path (the review surface
+      // keys rows/tree/collapse by path; see mergePatchFilesByPath).
+      // The merge runs BEFORE tree sorting and through the identity
+      // cache: this derived re-runs per expansion click, and only a
+      // stable merged lines array keeps the expansion rebuild memo and
+      // the span cache's predecessor fallback working — a fresh array
+      // per run flashes the whole file plain for a round trip. Merged
+      // files keep their gap rows: expansion serves the CURRENT
+      // workspace file only after the backend verifies every hunk line
+      // still matches this historical patch, and a refusal retires the
+      // file's gaps here. Copies, not mutation: the parse cache is
+      // shared across panes and scopes.
+      parsed = sortFilesTreeOrder(mergePatchFilesByPathCached(parsePatchFilesCached(patchText))).map(
+        (file) => (unexpandableEditPaths.has(file.path) ? { ...file, suppressGaps: true } : file),
       );
+    } else {
+      parsed = sortFilesTreeOrder(parsePatchFilesCached(patchText));
     }
     if (contextExpansions.size === 0) return parsed;
     return parsed.map((file) => applyContextExpansion(file, contextExpansions.get(file.path)));
