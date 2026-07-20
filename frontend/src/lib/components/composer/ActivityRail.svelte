@@ -105,14 +105,15 @@
   onDestroy(() => { bgDispose?.(); });
 
   // While an input request is pending the agent is blocked on the user, so the
-  // working timer/dots/shimmer are suppressed and only the "Input requested"
+  // working hairline/LEDs/timer are suppressed and only the "Input requested"
   // chip shows. `showWorking` gates every working-segment render below.
   let showWorking = $derived(isWorking && inputRequest === null);
 
-  // The shimmer is an infinite CSS animation — a continuous raster +
-  // composite cost for the whole working duration. Low-power mode
-  // drops it (the working chip and timer still show).
-  let showShimmer = $derived(showWorking && !getSettings().lowPowerMode);
+  // The LED chase is a standing animation (4 presents/s — stepped, see
+  // the working-indicator note in app.css). Low-power mode drops the
+  // chase; the LEDs render static at their resting opacity. The
+  // hairline never animates, so it shows in every mode.
+  let ledChase = $derived(!getSettings().lowPowerMode);
 
   // Rail visible when ANY sub-state is non-empty (a pending input always shows
   // its chip). Each segment within the row has its own predicate so e.g. a
@@ -143,11 +144,11 @@
     aria-label="Activity"
     data-testid="activity-rail"
   >
-    {#if showShimmer}
+    {#if showWorking}
       <span
-        class="activity-shimmer pointer-events-none absolute inset-x-0 top-0 z-10 block h-px overflow-hidden"
+        class="working-hairline pointer-events-none absolute inset-x-0 top-0 z-10 block h-px"
         aria-hidden="true"
-        data-testid="activity-rail-shimmer"
+        data-testid="activity-rail-hairline"
       ></span>
     {/if}
     <div class={activityRailRowClasses}>
@@ -177,10 +178,14 @@
           aria-live="polite"
           data-testid="activity-rail-working"
         >
-          <span class="inline-flex items-center gap-[3px]" aria-hidden="true">
-            <span class="h-1 w-1 rounded-full bg-fg-hint/65 animate-pulse"></span>
-            <span class="h-1 w-1 rounded-full bg-fg-hint/65 animate-pulse [animation-delay:200ms]"></span>
-            <span class="h-1 w-1 rounded-full bg-fg-hint/65 animate-pulse [animation-delay:400ms]"></span>
+          <span
+            class="inline-flex items-center gap-1 {ledChase ? 'working-leds' : ''}"
+            aria-hidden="true"
+            data-testid="activity-rail-working-leds"
+          >
+            <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
+            <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
+            <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
           </span>
           {#if activeTurn}
             <span class="text-fg-muted">

@@ -713,40 +713,39 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 /*
- * Activity-rail working shimmer: a thin accent-tinted highlight band
- * that sweeps across the top edge of the composer card while the
- * agent is working.
+ * Activity-rail working indicator: a static accent hairline across the
+ * top edge of the composer card (presence) plus a three-LED
+ * left-to-right chase in the rail's working chip (liveness).
  *
- * Implementation: the host span is the track; a `::before` pseudo-
- * element is the band. The band is 50% of the track wide with a
- * peak-in-the-middle gradient (transparent → accent → transparent),
- * and animates via `transform: translateX()` so the peak glides from
- * the track's left edge to its right edge. `animation-direction:
- * alternate` reverses smoothly at each endpoint. The band's
- * transparent edges absorb the over-translate at -50% / +150% so the
- * highlight is always perceptibly present — no off-screen dead time
- * between cycles. translateX is composite-only so the animation
- * never repaints.
+ * This replaced the smooth shimmer sweep, which was the app's last
+ * standing per-vsync compositor client — a continuously-eased
+ * transform animation presents every vsync (165/s on a 165Hz panel)
+ * for the entire working turn (same incident as the --animate-pulse
+ * override in @theme). Here the hairline never animates, and the LEDs
+ * advance one step every 250ms with step-end timing: 4 presents/s
+ * total while working.
+ *
+ * Low-power mode omits the .working-leds wrapper class, which drops
+ * the chase and leaves the LEDs at their resting opacity; the hairline
+ * is static and stays in every mode.
  */
-.activity-shimmer::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 50%;
+.working-hairline {
   background: linear-gradient(
     90deg,
     transparent,
-    color-mix(in oklab, var(--accent) 75%, transparent),
+    color-mix(in oklab, var(--accent) 55%, transparent),
     transparent
   );
-  animation: activity-shimmer 1.6s ease-in-out infinite alternate;
 }
-@keyframes activity-shimmer {
-  from { transform: translateX(-50%); }
-  to   { transform: translateX(150%); }
+.working-led {
+  opacity: 0.45;
 }
+.working-leds .working-led:nth-child(1) { animation: working-led-a 750ms step-end infinite; }
+.working-leds .working-led:nth-child(2) { animation: working-led-b 750ms step-end infinite; }
+.working-leds .working-led:nth-child(3) { animation: working-led-c 750ms step-end infinite; }
+@keyframes working-led-a { 0%, 100% { opacity: 1; }   33.333% { opacity: 0.2; } }
+@keyframes working-led-b { 0%, 100% { opacity: 0.2; } 33.333% { opacity: 1; } 66.667% { opacity: 0.2; } }
+@keyframes working-led-c { 0%, 100% { opacity: 0.2; } 66.667% { opacity: 1; } }
 
 /*
  * Band-limited hairline for timeline separators (response divider,

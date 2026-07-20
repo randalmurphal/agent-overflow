@@ -456,7 +456,7 @@ export function createUseStickToBottomController(
   // spring-glide". Spring glides are the app's dominant GPU cost —
   // one compositor frame per vsync for the whole chase — so this is
   // the scroll half of low-power mode (the reveal smoother and the
-  // activity shimmer gate on the same setting at their own sites).
+  // working-LED chase gate on the same setting at their own sites).
   // Read live (plain non-reactive read; the spring gate and resolver
   // sample it per event/tick, so a toggle applies to the next
   // decision without any subscription).

@@ -38,7 +38,11 @@
   // Stagger offsets for the backgrounded three-dot variant. Each
   // delay is applied as a Tailwind arbitrary-value class so the
   // animation timing reads as a utility rather than an inline style.
-  const BG_DOT_DELAYS = ['', '[animation-delay:200ms]', '[animation-delay:400ms]'] as const;
+  // The delays are multiples of the stepped animate-pulse jump
+  // interval (2s / steps(8) = 250ms) so all three dots change on the
+  // same instants — off-grid delays triple the union of jump times
+  // and therefore the compositor present rate.
+  const BG_DOT_DELAYS = ['', '[animation-delay:250ms]', '[animation-delay:500ms]'] as const;
 
   interface Props {
     /**

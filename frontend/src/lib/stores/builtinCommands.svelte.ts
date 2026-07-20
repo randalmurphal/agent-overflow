@@ -725,7 +725,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'settings.toggleLowPowerMode',
     label: 'Settings: Toggle Low Power Mode',
     description:
-      'Minimize rendering work: instant scroll placement, chunked text reveal, no shimmer. For weaker machines or when running GPU-heavy apps alongside.',
+      'Minimize rendering work: instant scroll placement, chunked text reveal, static working indicator. For weaker machines or when running GPU-heavy apps alongside.',
     icon: '⚙',
     run: () => {
       void updateSetting('lowPowerMode', !getSettings().lowPowerMode);

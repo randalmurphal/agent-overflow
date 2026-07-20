@@ -183,7 +183,7 @@
 
       <SettingsField
         label="Low power mode"
-        hint="Minimize rendering work: instant scroll placement, chunked text reveal, no shimmer. For weaker machines or when running GPU-heavy apps alongside."
+        hint="Minimize rendering work: instant scroll placement, chunked text reveal, static working indicator. For weaker machines or when running GPU-heavy apps alongside."
       >
         <ToggleSwitch
           checked={settings.lowPowerMode}

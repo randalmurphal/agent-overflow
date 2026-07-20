@@ -49,9 +49,11 @@ describe('<Indicator>', () => {
     // has no delay class; dots 2 and 3 each carry one. Asserting on
     // the class (the behavior contract) instead of the inline style
     // keeps the test resilient to how the animation delay is wired.
+    // The delays must stay multiples of the stepped animate-pulse jump
+    // interval (250ms) so all three dots present on the same instants.
     expect(dots[0].className).not.toContain('animation-delay');
-    expect(dots[1].className).toContain('[animation-delay:200ms]');
-    expect(dots[2].className).toContain('[animation-delay:400ms]');
+    expect(dots[1].className).toContain('[animation-delay:250ms]');
+    expect(dots[2].className).toContain('[animation-delay:500ms]');
   });
 
   it('renders a static red dot when error', () => {
