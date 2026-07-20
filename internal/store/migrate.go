@@ -859,8 +859,9 @@ ALTER TABLE payloads ADD COLUMN spans TEXT NOT NULL DEFAULT '';`,
 		// orphaned (their diffs can never load again) and go too; the
 		// scope CHECK constraint keeps the legacy values because
 		// rebuilding the table to tighten it buys nothing. Leftover
-		// refs/agent-overflow/* refs in workspaces are swept by the app
-		// at startup, not here — migrations don't run subprocesses.
+		// refs/agent-overflow/* refs in workspaces are cleaned up
+		// manually if at all (see docs/architecture/schema.md) —
+		// migrations don't run subprocesses.
 		SQL: `CREATE TABLE message_anchors (
     thread_id                TEXT    NOT NULL,
     user_item_id             TEXT    NOT NULL,

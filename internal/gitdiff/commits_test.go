@@ -92,6 +92,41 @@ func TestListCommitsKeepsSeparatorCharactersInSubject(t *testing.T) {
 	}
 }
 
+// cloneWithRemoteOnlyBranch builds an origin whose "release" branch is
+// one commit behind main, clones it, and adds a commit on the clone's
+// main — the shape the branch picker produces when it projects
+// origin/release to the bare name "release" with no local branch.
+func cloneWithRemoteOnlyBranch(t *testing.T) string {
+	t.Helper()
+	origin := testutil.InitGitRepo(t)
+	testutil.RunGit(t, origin, "branch", "release")
+	clone := filepath.Join(t.TempDir(), "clone")
+	testutil.RunGit(t, origin, "clone", origin, clone)
+	testutil.RunGit(t, clone, "config", "user.name", "Agent Overflow")
+	testutil.RunGit(t, clone, "config", "user.email", "agent-overflow@example.com")
+	commitFile(t, clone, "local.txt", "local work\n", "local commit")
+	return clone
+}
+
+func TestListCommitsResolvesRemoteOnlyBaseBranch(t *testing.T) {
+	clone := cloneWithRemoteOnlyBranch(t)
+
+	commits, err := ListCommits(context.Background(), clone, "release")
+	if err != nil {
+		t.Fatalf("ListCommits with remote-only base: %v", err)
+	}
+	if len(commits) != 1 || commits[0].Subject != "local commit" {
+		t.Fatalf("expected the clone's local commit vs origin/release, got %+v", commits)
+	}
+}
+
+func TestListCommitsUnknownBaseBranchErrors(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	if _, err := ListCommits(context.Background(), repo, "no-such-branch"); err == nil {
+		t.Fatal("expected error for a branch that exists nowhere")
+	}
+}
+
 func TestListCommitsRangeRejectsBadRefs(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	cases := []struct {

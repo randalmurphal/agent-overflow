@@ -18,10 +18,10 @@ constructors.
   first-parent for merge commits — matching how GitHub/GitLab render a
   commit — `diff-tree --root` for a root commit), and
   `ShowFileAtCommit` (hunk-gap expansion when a commit is selected).
-- `legacyrefs.go` — `CleanupLegacyCheckpointRefs`, the every-boot
-  sweeper draining the hidden `refs/agent-overflow/*` namespace the
-  removed checkpoint machinery wrote. Called from
-  `app_legacy_checkpoint_refs.go`.
+- `refs.go` — `resolveBaseRef`: maps the branch picker's short branch
+  names onto usable revisions (local name as-is, else the remote
+  tracking ref — the picker projects "origin/feature" to "feature",
+  which git's revision resolution won't DWIM on its own).
 - `run.go` — subprocess plumbing: `runGit` variants with env scrubbing
   (`GIT_EXTERNAL_DIFF` / `GIT_DIFF_OPTS` cleared), a hard
   `maxDiffOutputBytes` stdout cap, and `WaitDelay` so a wedged pipe

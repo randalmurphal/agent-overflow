@@ -115,13 +115,6 @@ func (a *App) Start(ctx context.Context) error {
 	// doesn't require a restart. See app_retention_cleanup.go.
 	a.startRetentionCleanup()
 
-	// Drain the hidden refs/agent-overflow/* refs the removed
-	// per-message git-checkpoint machinery left in user repos. Runs on
-	// every boot (idempotent, one for-each-ref probe per workspace) so
-	// repos restored from backups get cleaned too. See
-	// app_legacy_checkpoint_refs.go.
-	go a.sweepLegacyCheckpointRefs()
-
 	// Start the sidebar's host CPU/memory sampler. Emits a
 	// `system:stats` event every ~2s. See app_sysstat.go.
 	a.startSystemStatsSampler()

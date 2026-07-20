@@ -282,8 +282,8 @@ func TestGetBranchBaseDiffMissingBranchErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("GetBranchBaseDiff() error = nil, want missing branch error")
 	}
-	if !strings.Contains(err.Error(), "get branch base diff: gitdiff: merge-base missing-branch HEAD") {
-		t.Fatalf("error = %v, want wrapped merge-base context", err)
+	if !strings.Contains(err.Error(), `get branch base diff: gitdiff: branch "missing-branch" not found locally or on any remote`) {
+		t.Fatalf("error = %v, want wrapped branch-not-found context", err)
 	}
 }
 

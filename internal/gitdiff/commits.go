@@ -41,14 +41,12 @@ func ListCommits(ctx context.Context, workspace, baseBranch string) ([]Commit, e
 
 // ListCommitsRange returns `base..head`, newest first, capped at
 // maxListedCommits. head must be "HEAD" or a hex SHA (a fetched PR head
-// OID); base is a ref name and only guarded against flag injection.
+// OID); base is a picker branch name resolved via resolveBaseRef (so a
+// remote-only branch like "feature" works as "origin/feature").
 func ListCommitsRange(ctx context.Context, workspace, base, head string) ([]Commit, error) {
-	base = strings.TrimSpace(base)
-	if base == "" {
-		return nil, errors.New("gitdiff: base ref is required")
-	}
-	if strings.HasPrefix(base, "-") {
-		return nil, fmt.Errorf("gitdiff: invalid base ref %q", base)
+	base, err := resolveBaseRef(ctx, workspace, base)
+	if err != nil {
+		return nil, err
 	}
 	head = strings.TrimSpace(head)
 	if head != "HEAD" && !commitSHAPattern.MatchString(head) {

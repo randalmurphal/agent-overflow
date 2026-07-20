@@ -111,9 +111,9 @@ func DiffWorkspaceVsHead(ctx context.Context, workspace string) ([]byte, error) 
 // committed changes, unstaged/staged changes, and untracked-not-ignored files
 // all share one patch stream.
 func DiffBranchBaseToWorktree(ctx context.Context, workspace, baseBranch string) ([]byte, error) {
-	baseBranch = strings.TrimSpace(baseBranch)
-	if baseBranch == "" {
-		return nil, errors.New("gitdiff: base branch is required")
+	baseBranch, err := resolveBaseRef(ctx, workspace, baseBranch)
+	if err != nil {
+		return nil, err
 	}
 	mergeBase, _, _, err := runGit(ctx, workspace, nil, false, "merge-base", baseBranch, "HEAD")
 	if err != nil {

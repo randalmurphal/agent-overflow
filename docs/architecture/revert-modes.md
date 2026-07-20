@@ -55,11 +55,10 @@ Provider-side rollback differs by provider:
 
 ## Legacy checkpoint refs
 
-Repos touched by older AO versions still carry hidden
-`refs/agent-overflow/*` snapshot refs. `sweepLegacyCheckpointRefs`
-(`app_legacy_checkpoint_refs.go`, backed by
-`gitdiff.CleanupLegacyCheckpointRefs`) deletes them across every
-workspace the DB knows about on every boot — idempotent and cheap when
-the namespace is empty. Workspaces whose threads/projects were deleted
-can't be enumerated; `docs/architecture/schema.md` notes the manual
-one-liner for those.
+Repos touched by older AO versions may still carry hidden
+`refs/agent-overflow/*` snapshot refs. Nothing writes them anymore and
+AO does not clean them up automatically — drain a repo manually with:
+
+```sh
+git for-each-ref --format='%(refname)' refs/agent-overflow/ | xargs -n1 git update-ref -d
+```

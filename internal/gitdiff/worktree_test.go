@@ -144,41 +144,16 @@ func TestDiffBranchBaseToWorktreeRequiresBase(t *testing.T) {
 	}
 }
 
-func TestCleanupLegacyCheckpointRefs(t *testing.T) {
-	repo := testutil.InitGitRepo(t)
-	head := headSHA(t, repo)
-	testutil.RunGit(t, repo, "update-ref", "refs/agent-overflow/thread-1/msg-1", head)
-	testutil.RunGit(t, repo, "update-ref", "refs/agent-overflow/thread-1/msg-2", head)
-	testutil.RunGit(t, repo, "update-ref", "refs/keepme/other", head)
+func TestDiffBranchBaseToWorktreeResolvesRemoteOnlyBaseBranch(t *testing.T) {
+	clone := cloneWithRemoteOnlyBranch(t)
+	writeFile(t, clone, "untracked.txt", "uncommitted too\n")
 
-	deleted, err := CleanupLegacyCheckpointRefs(context.Background(), repo)
+	patch, err := DiffBranchBaseToWorktree(context.Background(), clone, "release")
 	if err != nil {
-		t.Fatalf("CleanupLegacyCheckpointRefs: %v", err)
+		t.Fatalf("DiffBranchBaseToWorktree with remote-only base: %v", err)
 	}
-	if deleted != 2 {
-		t.Fatalf("expected 2 refs deleted, got %d", deleted)
-	}
-
-	refs, _, _, err := runGit(context.Background(), repo, nil, false, "for-each-ref", "--format=%(refname)")
-	if err != nil {
-		t.Fatalf("for-each-ref: %v", err)
-	}
-	if strings.Contains(refs, "refs/agent-overflow/") {
-		t.Fatalf("legacy refs survived:\n%s", refs)
-	}
-	if !strings.Contains(refs, "refs/keepme/other") {
-		t.Fatalf("unrelated ref was deleted:\n%s", refs)
-	}
-
-	// Idempotent second run.
-	deleted, err = CleanupLegacyCheckpointRefs(context.Background(), repo)
-	if err != nil || deleted != 0 {
-		t.Fatalf("second run: deleted=%d err=%v", deleted, err)
-	}
-
-	// Non-repo workspace is a no-op, not an error.
-	deleted, err = CleanupLegacyCheckpointRefs(context.Background(), t.TempDir())
-	if err != nil || deleted != 0 {
-		t.Fatalf("non-repo: deleted=%d err=%v", deleted, err)
+	text := string(patch)
+	if !strings.Contains(text, "local work") || !strings.Contains(text, "uncommitted too") {
+		t.Fatalf("expected committed + uncommitted changes vs origin/release, got:\n%s", text)
 	}
 }
