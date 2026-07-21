@@ -102,7 +102,11 @@ export function createComposerMentions(opts: ComposerMentionsOptions): ComposerM
     // `input` event drives `handleInput` in Composer.svelte, which calls
     // `draft.setContent(textarea.value)` — store update is automatic.
     const replacement = `@${file.path} `;
-    textarea.focus();
+    // preventScroll: DOM focus must never scroll the pane strip (see
+    // paneComposerFocus.ts) — mouse-selecting a mention option holds focus
+    // on the clicked button, and reclaiming it must not nudge a
+    // partially-visible pane.
+    textarea.focus({ preventScroll: true });
     textarea.setSelectionRange(mentionTrigger.start, mentionTrigger.end);
     document.execCommand('insertText', false, replacement);
     closeMention();

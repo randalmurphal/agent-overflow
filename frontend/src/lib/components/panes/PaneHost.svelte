@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
   import ChatView from '../chat/ChatView.svelte';
   import CompanionPane from './CompanionPane.svelte';
   import {
@@ -95,12 +95,19 @@
     }
   }
 
+  // Single home for the strip's scroll bounds: every scrollLeft the strip
+  // targets — reconcile clamp, glide destination, instant snap — funnels
+  // through here so a future bounds tweak cannot drift between them.
+  function clampStripScrollLeft(el: HTMLElement, left: number): number {
+    const maxScrollLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+    return Math.max(0, Math.min(maxScrollLeft, left));
+  }
+
   function reconcilePaneHostGeometry(): void {
     const el = hostEl;
     if (!el) return;
 
-    const maxScrollLeft = Math.max(0, el.scrollWidth - el.clientWidth);
-    const nextScrollLeft = Math.max(0, Math.min(maxScrollLeft, el.scrollLeft));
+    const nextScrollLeft = clampStripScrollLeft(el, el.scrollLeft);
     if (nextScrollLeft !== el.scrollLeft) el.scrollLeft = nextScrollLeft;
     const appliedScrollLeft = el.scrollLeft;
     scrollLeft = appliedScrollLeft;
@@ -116,10 +123,7 @@
         cancelStripGlide();
       } else {
         const resolvedTarget = alignedPaneScrollLeft(targetPane, glideTargetAlignment);
-        glideTargetLeft = Math.max(
-          0,
-          Math.min(maxScrollLeft, resolvedTarget),
-        );
+        glideTargetLeft = clampStripScrollLeft(el, resolvedTarget);
         glideCurrentLeft = appliedScrollLeft;
         if (Math.abs(glideTargetLeft - glideCurrentLeft) < 0.75) cancelStripGlide();
       }
@@ -195,6 +199,11 @@
   const paneStructureKey = $derived(
     `${globalSurface ? 'global' : 'panes'}:${layoutItems.map((item) => item.paneId).join('|')}`,
   );
+  // Last surface mode seen by the structure effect, for detecting the strip
+  // (re)appearing: first mount after layout restore, or a global surface
+  // (settings) closing. Both paint at scrollLeft 0 no matter which pane
+  // holds logical focus, so the effect snaps the focused pane into view.
+  let lastSurfaceMode: 'global' | 'panes' | null = null;
 
   function reconcilePaneHostLayout(): void {
     for (const item of layoutItems) {
@@ -206,14 +215,30 @@
 
   $effect(() => {
     paneStructureKey; // dep
+    const surfaceMode = globalSurface ? 'global' : 'panes';
+    const stripAppeared = surfaceMode === 'panes' && lastSurfaceMode !== 'panes';
+    lastSurfaceMode = surfaceMode;
     // Svelte has flushed the keyed pane sections before this effect runs.
     // Force current scroll geometry now so WebKit cannot paint a frame at an
     // offset beyond the shrunken strip; timeline reconciliation still waits
     // for its separate two-frame settle below.
     reconcilePaneHostGeometry();
     if (typeof requestAnimationFrame === 'undefined') {
+      // No-rAF environments get the timeline reconcile only — the whole
+      // reveal machinery (requestPaneScroll included) is rAF-driven, so
+      // the appearance snap below is deliberately unreachable here.
       const handle = setTimeout(reconcilePaneHostLayout, 32);
       return () => clearTimeout(handle);
+    }
+
+    // The strip just (re)appeared at scrollLeft 0. Bring the focused pane
+    // into view instantly: there is no prior position worth gliding from,
+    // and DOM focus restoration never scrolls (composer initial focus and
+    // paneComposerFocus are preventScroll'd), so nothing else reveals it.
+    // Untracked — a focus change alone must not re-run this effect.
+    if (stripAppeared) {
+      const focusTarget = untrack(() => focusedPaneId);
+      if (focusTarget) requestPaneScroll(focusTarget, { instant: true });
     }
 
     let secondHandle = 0;
@@ -231,18 +256,29 @@
   // scrollIntoView would measure pre-flush geometry — an unmounted <section>
   // on open, stale offsets after moveFocusedPane's insertBefore reorder or a
   // neighbor's unmount. By rAF time Svelte has flushed and layout is
-  // current. Same-frame requests coalesce to the latest target.
+  // current. Same-frame requests coalesce to the latest target; `instant`
+  // skips the glide and writes the aligned offset directly — used when the
+  // strip (re)appears and the current position is not one the user ever
+  // saw. Instant wins the frame regardless of request order: a reveal
+  // landing in the strip-appearance frame still starts from that unseen
+  // position, so gliding it would animate from nowhere.
   let pendingScrollPaneId: string | null = null;
-  function requestPaneScroll(paneId: string): void {
+  let pendingScrollInstant = false;
+  function requestPaneScroll(paneId: string, opts?: { instant?: boolean }): void {
     const alreadyScheduled = pendingScrollPaneId !== null;
     pendingScrollPaneId = paneId;
+    pendingScrollInstant = pendingScrollInstant || (opts?.instant ?? false);
     if (alreadyScheduled) return;
     requestAnimationFrame(() => {
       const target = pendingScrollPaneId;
+      const instant = pendingScrollInstant;
       pendingScrollPaneId = null;
+      pendingScrollInstant = false;
       if (!target) return;
       const paneEl = paneElementById(target);
-      if (paneEl) scrollPaneIntoView(paneEl);
+      if (!paneEl) return;
+      if (instant) snapPaneIntoView(paneEl);
+      else scrollPaneIntoView(paneEl);
     });
   }
 
@@ -302,8 +338,7 @@
   ): void {
     const el = hostEl;
     if (!el) return;
-    const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
-    glideTargetLeft = Math.max(0, Math.min(maxLeft, target));
+    glideTargetLeft = clampStripScrollLeft(el, target);
     glideTargetPaneId = paneId;
     glideTargetAlignment = alignment;
     if (glideFrame) return; // retargeted mid-flight — the running loop picks it up
@@ -333,6 +368,18 @@
     if (paneLeft >= viewLeft && paneRight <= viewRight) return null;
     const alignment: PaneRevealAlignment = paneLeft < viewLeft ? 'start' : 'end';
     return { left: alignedPaneScrollLeft(paneEl, alignment), alignment };
+  }
+
+  // Instant counterpart of scrollPaneIntoView: any in-flight glide predates
+  // the strip's reappearance and is stale, so cancel it before measuring.
+  function snapPaneIntoView(paneEl: HTMLElement): void {
+    const el = hostEl;
+    if (!el) return;
+    cancelStripGlide();
+    const target = paneRevealTarget(paneEl, el.scrollLeft);
+    if (target === null) return;
+    el.scrollLeft = clampStripScrollLeft(el, target.left);
+    scrollLeft = el.scrollLeft;
   }
 
   function scrollPaneIntoView(paneEl: HTMLElement): void {

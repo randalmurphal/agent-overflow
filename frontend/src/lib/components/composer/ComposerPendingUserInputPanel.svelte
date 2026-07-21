@@ -120,15 +120,19 @@
     return Array.from(panelRoot?.querySelectorAll<HTMLButtonElement>('[data-user-input-option]') ?? []);
   }
 
+  // preventScroll on both: DOM focus must never scroll the pane strip (see
+  // paneComposerFocus.ts). This pane holds logical focus when these fire,
+  // but the user may have scrolled the strip away from it — a bare focus()
+  // would yank the strip back.
   async function focusOption(optionIndex: number): Promise<void> {
     await tick();
     const buttons = optionButtons();
     const button = buttons[Math.min(Math.max(optionIndex, 0), buttons.length - 1)];
-    button?.focus();
+    button?.focus({ preventScroll: true });
   }
 
   function focusComposerTextarea(): void {
-    composerTextareaIn(composerRootFor(panelRoot))?.focus();
+    composerTextareaIn(composerRootFor(panelRoot))?.focus({ preventScroll: true });
   }
 
   function shouldHandlePlainNavigation(event: KeyboardEvent): boolean {

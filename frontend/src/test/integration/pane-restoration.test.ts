@@ -12,7 +12,7 @@ import {
   seedSidebarProject,
 } from './_helpers';
 import { setBindingMock } from '../mocks/bindings-app';
-import { createPane, getFocusedPaneId } from '../../lib/stores/panes.svelte';
+import { createPane, focusPane, getFocusedPaneId } from '../../lib/stores/panes.svelte';
 import {
   getPaneLayoutItems,
   applyPaneBoundaryDrag,
@@ -220,6 +220,12 @@ describe('App integration - pane restoration', () => {
       { id: 'left', paneId: 'left', kind: 'thread', widthPx: 1 },
       { id: 'right', paneId: 'right', kind: 'thread', widthPx: 1 },
     ]);
+    // setPaneLayoutItemsForTest bypasses persistence; focus a pane to
+    // trigger the immediate persist of the new layout, then clear so the
+    // final assertion counts only the pagehide flush. (This used to lean on
+    // a composer stealing DOM focus on mount — removed as a bug: only the
+    // focused pane's composer takes focus now.)
+    focusPane('left');
     await waitFor(() => expect(uiState.setUIState).toHaveBeenCalled());
     uiState.setUIState.mockClear();
 

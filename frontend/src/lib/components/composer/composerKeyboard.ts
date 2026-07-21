@@ -105,6 +105,10 @@ export function handleMentionPopoverKeydown(
  */
 export function focusTextareaAtEnd(node: HTMLTextAreaElement): void {
   const end = node.value.length;
-  node.focus();
+  // preventScroll is load-bearing: a bare focus() natively scrolls every
+  // scrollable ancestor — the horizontal pane strip included — to the
+  // textarea. Strip reveal belongs to revealPane/PaneHost alone; DOM focus
+  // must never scroll (same contract as paneComposerFocus.ts).
+  node.focus({ preventScroll: true });
   node.setSelectionRange(end, end);
 }
