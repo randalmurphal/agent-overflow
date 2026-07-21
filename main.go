@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/settings"
@@ -97,6 +98,17 @@ func main() {
 
 	if shouldSyncShellEnv(flags) {
 		syncShellEnvForBoot()
+	}
+
+	// Opt-in loopback pprof listener (AGENT_OVERFLOW_PPROF=1). Started
+	// for every backend mode — headless, embedded webview, client —
+	// because memory questions don't care which shell the process wears.
+	if pprofAddr, _, pprofErr := pprofserve.StartIfEnabled(); pprofErr != nil {
+		// The operator explicitly asked for profiling; a silent no-op
+		// listener would waste their next hour. Loud, not fatal.
+		log.Printf("pprof: %v", pprofErr)
+	} else if pprofAddr != "" {
+		log.Printf("pprof: serving on http://%s/debug/pprof/", pprofAddr)
 	}
 
 	switch {

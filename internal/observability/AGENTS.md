@@ -18,6 +18,12 @@ at most one interface dispatch.
   - `writer.go` — append-only writer with size-based rotation.
   - `manager.go` — cache of writers keyed by thread id; idle cleanup.
   - `record.go` — on-disk shape (`{ts, threadId, kind, data}`).
+- `pprofserve/` — opt-in loopback-only `net/http/pprof` listener
+  (`AGENT_OVERFLOW_PPROF=1` → `127.0.0.1:6363`, or an explicit
+  loopback host:port). Deliberately a separate listener so profiling
+  never rides the authenticated transport wire. The env var crosses
+  the WSL boundary via WSLENV passthrough at both hops (dev
+  supervisor `childEnv`, `wsllauncher.LaunchOptions.PassthroughEnv`).
 - `integration_test.go` — end-to-end test against both subpackages.
 
 ## Responsibility boundary

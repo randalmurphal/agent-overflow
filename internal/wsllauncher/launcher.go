@@ -78,6 +78,12 @@ type LaunchOptions struct {
 	// CommandRunner overrides exec.CommandContext for testing. Empty
 	// uses the real wsl.exe via the package's resolveCommand helper.
 	CommandRunner CommandRunner
+
+	// PassthroughEnv lists environment variable names to forward into
+	// the WSL child via WSLENV. Names unset in this process are
+	// skipped. Diagnostics like AGENT_OVERFLOW_PPROF ride this;
+	// anything load-bearing belongs in explicit launch args instead.
+	PassthroughEnv []string
 }
 
 // DefaultBootstrapTimeout is the default value for

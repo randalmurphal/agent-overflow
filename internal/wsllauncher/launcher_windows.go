@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
@@ -69,6 +70,9 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 
 	runner := resolveCommand(opts)
 	cmd := runner(ctx, "wsl.exe", args...)
+	if len(opts.PassthroughEnv) > 0 {
+		cmd.Env = AppendWSLENV(os.Environ(), opts.PassthroughEnv...)
+	}
 	// CREATE_SUSPENDED + HideWindow:
 	//   - CREATE_SUSPENDED gives us a window to adopt the child into
 	//     the Job Object before it runs a single instruction. Without
