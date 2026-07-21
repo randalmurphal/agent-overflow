@@ -34,14 +34,19 @@
   import { createTimelineRowUiPrune } from './timelineRowUiPrune';
   import { coldLoadPriors, coldLoadWarmEdge } from '../../utils/coldLoadTrace';
 
-  // Extra buffer rendered above + below the viewport. Sized for two viewports
-  // worth of rows on each side so fast scrolls (trackpad fling, scrollbar
-  // drag) don't outrun the rendered window — that was the source of the
-  // "text disappears under the composer then reappears" flicker. Each
-  // ~56px row × 1800px = ~32 extra rows per side. Trade a few MB of mounted
-  // DOM/component state for the smoother scroll. Revisit only if it's
-  // ever measured to hurt mount-time on first-open.
-  const BUFFER_SIZE_PX = 1800;
+  // Extra buffer rendered above + below the viewport so fast scrolls
+  // (trackpad fling, scrollbar drag) don't outrun the rendered window —
+  // that was the source of the "text disappears under the composer then
+  // reappears" flicker. The px value is also the dominant compositor
+  // tile cost: every painted px is rasterized per pane at ~4 bytes ×
+  // pane width, twice (renderer tile + GPU shared-image mirror), so
+  // buffer × 2 sides × panes is most of the webview's visible-state
+  // memory (memory-infra measurement, 2026-07-21: 86MB of tiles at
+  // 1800px across 4 panes, ~2/3 of it buffer). 1200px keeps ~a full
+  // viewport of runway per side; if the flicker ever reappears under
+  // violent flicks, this constant is the dial (keep it in sync with
+  // TimelineVirtualizer's DEFAULT_BUFFER_PX).
+  const BUFFER_SIZE_PX = 1200;
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
   const BOTTOM_PAD_PX = 16;
