@@ -38,7 +38,8 @@
 
   const DEFAULT_ESTIMATE_PX = 56;
   // Keep in sync with MessageTimeline's BUFFER_SIZE_PX — the rationale
-  // (scroll runway vs compositor tile memory) lives on that constant.
+  // (scroll-runway sizing; deliberately NOT a memory dial) lives on
+  // that constant.
   const DEFAULT_BUFFER_PX = 1200;
   // Matches upstream virtua's scrollend timing, which the app's snapshot
   // persistence and the browser harness quiet-waits already assume.

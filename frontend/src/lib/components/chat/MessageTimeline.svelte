@@ -37,15 +37,28 @@
   // Extra buffer rendered above + below the viewport so fast scrolls
   // (trackpad fling, scrollbar drag) don't outrun the rendered window —
   // that was the source of the "text disappears under the composer then
-  // reappears" flicker. The px value is also the dominant compositor
-  // tile cost: every painted px is rasterized per pane at ~4 bytes ×
-  // pane width, twice (renderer tile + GPU shared-image mirror), so
-  // buffer × 2 sides × panes is most of the webview's visible-state
-  // memory (memory-infra measurement, 2026-07-21: 86MB of tiles at
-  // 1800px across 4 panes, ~2/3 of it buffer). 1200px keeps ~a full
-  // viewport of runway per side; if the flicker ever reappears under
-  // violent flicks, this constant is the dial (keep it in sync with
-  // TimelineVirtualizer's DEFAULT_BUFFER_PX).
+  // reappears" flicker. Mechanically the window recenters on every
+  // scroll event (any landing point mounts same-frame), so the buffer
+  // only bridges the compositor-vs-main-thread gap: 1-2 frames of
+  // scroll velocity in the steady state, plus main-thread stall bursts
+  // (streaming markdown parse, highlight ingest — tens of ms) at fling
+  // speed. It also lets row-size estimate corrections and async row
+  // content (images, first-visit mermaid/katex/spans) settle offscreen
+  // instead of at the visible edge.
+  //
+  // NOT a memory dial. The 1800 -> 1200 trim (2026-07-21) was tried as
+  // a tile-memory cut and measured ~nothing (86.4 -> 89.9MB renderer
+  // cc/tile_memory, within noise): parked-at-bottom panes only fill
+  // the above-side buffer, and layer overheads dominated. The real
+  // tile win was the content-layer promotion lease
+  // (utils/scroll/index.svelte.ts) + the launcher AA flags — after
+  // which parked panes raster NONE of the buffer (demoted panes have
+  // no layer; buffered rows cost DOM only, ~10 rows/pane parked, with
+  // transient raster only on the actively-promoted pane). Shrinking
+  // below ~800px starts exposing the stall x fling blanking scenarios
+  // above for low-single-digit-MB DOM savings; 1200 ≈ a viewport of
+  // stall insurance. Keep in sync with TimelineVirtualizer's
+  // DEFAULT_BUFFER_PX.
   const BUFFER_SIZE_PX = 1200;
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
