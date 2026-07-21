@@ -54,6 +54,7 @@ import (
 
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/diagenv"
+	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/wsldistro"
@@ -151,6 +152,17 @@ func main() {
 		log.SetOutput(tolerantMultiWriter(os.Stderr, logFile))
 		log.Printf("launcher: started, log=%s", logFile.Name())
 		defer logFile.Close()
+	}
+
+	// Same opt-in env var as the WSL backend (WSLENV forwards it across
+	// the boundary), but a different loopback: this binds Windows-side
+	// 127.0.0.1, the backend binds WSL-side 127.0.0.1 — same default
+	// port, zero conflict. Lets the launcher's own heap be profiled;
+	// query it from PowerShell, not a WSL shell.
+	if pprofAddr, _, pprofErr := pprofserve.StartIfEnabled(); pprofErr != nil {
+		log.Printf("launcher: pprof: %v", pprofErr)
+	} else if pprofAddr != "" {
+		log.Printf("launcher: pprof listening on %s (Windows loopback)", pprofAddr)
 	}
 
 	flags, err := parseLauncherFlags(os.Args[1:])
@@ -1012,6 +1024,12 @@ func browserArgs(enableDevArgs bool) []string {
 		"--no-pings",
 		"--no-experiments",
 		"--no-default-browser-check",
+		// Every byte this webview loads comes from the loopback backend
+		// (or the embedded picker page) — the HTTP disk cache can never
+		// win anything over a localhost fetch, but Chromium still sizes
+		// an index and in-memory bookkeeping for it in the network
+		// service. 1 MiB is the practical floor (0 means "default").
+		"--disk-cache-size=1048576",
 	}
 	if enableDevArgs {
 		args = append(args,
