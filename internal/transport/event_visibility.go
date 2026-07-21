@@ -76,6 +76,29 @@ var ephemeralEventChannels = map[string]bool{
 	"highlight:diff_seed": true,
 }
 
+// latestOnlyEventChannels get a capacity-1 replay ring: unkeyed
+// channels where every frame carries the COMPLETE current state, so
+// the newest frame fully supersedes all prior ones. A default-depth
+// ring would retain up to DefaultRingCapacity superseded frames
+// forever (system:stats emits every 2s, so its ring held ~33 minutes
+// of stale CPU samples) and replay them all on reconnect just to be
+// overwritten by the last one. Replay for these channels delivers the
+// single newest frame and never a gap marker — "missed" frames are not
+// lost history, they're superseded state, so there is no gap to
+// recover from.
+//
+// Membership rule: the channel must be UNKEYED — one global state, not
+// per-thread / per-workspace / per-server payloads multiplexed on one
+// channel. Keyed channels (git:status, provider:usage,
+// discussion:state, mcp:status) must NOT go here: capacity 1 would
+// evict other keys' latest frames and turn their reconnect replay into
+// data loss.
+var latestOnlyEventChannels = map[string]bool{
+	// Host CPU + memory sample for the sidebar footer; a fresh sample
+	// lands every 2s regardless (app_sysstat.go).
+	"system:stats": true,
+}
+
 func eventVisibleToOrigin(channel string, isLoopback bool) bool {
 	if isLoopback {
 		return !remoteOnlyEventChannels[channel]

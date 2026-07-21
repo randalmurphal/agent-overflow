@@ -590,3 +590,40 @@ func TestEventBus_RingRetainsWireBytesOnly(t *testing.T) {
 		t.Fatalf("replayed envelope = %+v (payload %+v), want ch1 seq 1 title hello", frame, got)
 	}
 }
+
+func TestEventBus_LatestOnlyChannel_RetainsOneAndNeverGaps(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+
+	// system:stats is in latestOnlyEventChannels: whole-state frames
+	// where the newest supersedes everything prior.
+	for i := 1; i <= 5; i++ {
+		bus.Emit("system:stats", i)
+	}
+
+	// A fresh client (or one that missed any number of frames) gets
+	// exactly the newest frame — never a gap marker, which would make
+	// it log/recover for state the frame in hand already replaces.
+	out := bus.Replay(map[string]uint64{"system:stats": 0})
+	if len(out) != 1 || out[0].Gap || out[0].Seq != 5 {
+		t.Fatalf("expected single non-gap newest frame seq=5, got %+v", out)
+	}
+	if string(out[0].WireBytes) == "" {
+		t.Fatalf("replayed frame must carry pre-encoded wire bytes")
+	}
+
+	// A client already at head gets nothing.
+	out = bus.Replay(map[string]uint64{"system:stats": 5})
+	if len(out) != 0 {
+		t.Fatalf("expected no replay at head, got %+v", out)
+	}
+
+	// Sequence numbering is unaffected by the shallow ring.
+	evt, err := bus.Emit("system:stats", 6)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if evt.Seq != 6 {
+		t.Fatalf("expected seq 6, got %d", evt.Seq)
+	}
+}

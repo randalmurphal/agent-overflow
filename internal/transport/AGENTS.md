@@ -68,6 +68,15 @@ the `methods_gen_test.go` integrity test catches drift).
   frame can carry large span/hash arrays that would otherwise sit in
   the ring up to `DefaultRingCapacity` deep. Replay for these channels
   returns nothing and no gap marker.
+- `latestOnlyEventChannels` — unkeyed whole-state channels
+  (`system:stats`) get a capacity-1 ring: the newest frame fully
+  supersedes all prior ones, so a default-depth ring would retain
+  hundreds of stale samples forever and replay them all on reconnect.
+  Replay delivers the single newest frame and never a gap marker —
+  evicted frames are superseded state, not lost history. Keyed
+  channels (git:status, provider:usage, discussion:state, mcp:status)
+  must NOT join this set: capacity 1 would evict other keys' latest
+  frames.
 
 ## Wire frames
 
