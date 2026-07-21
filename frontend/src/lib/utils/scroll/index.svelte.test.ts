@@ -3513,6 +3513,137 @@ describe('createUseStickToBottomController — spring chase', () => {
       });
     });
 
+    describe('content layer-promotion lease (will-change on contentEl)', () => {
+      // The glide residue needs contentEl composited, but a permanent
+      // will-change is a steady-state tile-memory tax (full-content-
+      // height layer + composited-scrolling machinery per parked pane —
+      // see the lease section in index.svelte.ts). The lease promotes on
+      // scroll activity and demotes after idle. Per project rules these
+      // tests pin the TRANSITIONS (promote → release → re-promote,
+      // detach while promoted), not just the two states.
+      let leaseScrollEl: HTMLDivElement | undefined;
+      let leaseController: UseStickToBottomController | undefined;
+      // Mirrors MessageTimeline's content-keyed latch: 'spring' while
+      // streaming, flipped to 'instant' once live content stops — which
+      // is what lets the post-arrival sentinel (and with it
+      // spring.isActive()) die so the lease can demote.
+      let leaseAnimationMode: 'spring' | 'instant' = 'spring';
+
+      function buildLeaseController(releaseMs: number): {
+        scrollEl: HTMLDivElement;
+        contentEl: HTMLDivElement;
+        geom: Geometry;
+        controller: UseStickToBottomController;
+      } {
+        const sEl = document.createElement('div');
+        const cEl = document.createElement('div');
+        sEl.appendChild(cEl);
+        document.body.appendChild(sEl);
+        const g: Geometry = { scrollHeight: 1400, clientHeight: 600, scrollTop: 800, contentHeight: 1200 };
+        stubGeometry(sEl, cEl, g);
+        leaseAnimationMode = 'spring';
+        const localController = createUseStickToBottomController({
+          animationMode: () => leaseAnimationMode,
+          contentLeaseReleaseMs: releaseMs,
+        });
+        localController.attach(sEl, cEl);
+        leaseScrollEl = sEl;
+        leaseController = localController;
+        return { scrollEl: sEl, contentEl: cEl, geom: g, controller: localController };
+      }
+
+      afterEach(() => {
+        leaseController?.detach();
+        leaseScrollEl?.remove();
+        leaseController = undefined;
+        leaseScrollEl = undefined;
+      });
+
+      it('starts unpromoted; instant writes alone do not promote', () => {
+        expect(contentEl.style.willChange).toBe('');
+        // Instant placements involve no glide transform, and the stubbed
+        // scrollTop setter fires no scroll event — nothing should promote.
+        controller.forceStick();
+        expect(contentEl.style.willChange).toBe('');
+      });
+
+      it('a scroll event promotes the content layer', () => {
+        fireScroll(scrollEl);
+        expect(contentEl.style.willChange).toBe('transform');
+      });
+
+      it('a spring chase promotes via tick writes (no scroll event needed)', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150); // warm — first-fire snap is an instant write
+        expect(contentEl.style.willChange).toBe('');
+        geom.scrollHeight = 1400;
+        geom.contentHeight = 1200;
+        ro.fire(contentEl, 1200);
+        await advanceUntil(() => contentEl.style.willChange === 'transform');
+      });
+
+      it('releases after the idle window and re-promotes on the next activity', async () => {
+        const { scrollEl: sEl, contentEl: cEl } = buildLeaseController(40);
+        fireScroll(sEl);
+        expect(cEl.style.willChange).toBe('transform');
+        // Deadline passes in mocked time; the real release timer then
+        // observes it expired with no spring and no residue.
+        mockNow += 60;
+        await waitMs(80);
+        expect(cEl.style.willChange).toBe('');
+        // Transition coverage: the lease must re-arm after a release.
+        fireScroll(sEl);
+        expect(cEl.style.willChange).toBe('transform');
+      });
+
+      it('defers demotion while the chase is live, then demotes once settled', async () => {
+        const { scrollEl: sEl, contentEl: cEl, geom: g } = buildLeaseController(30);
+        // Rounding scrollTop stub so the chase leaves a live residue.
+        stubGeometry(sEl, cEl, g, {
+          setScrollTop: (v, gg) => {
+            gg.scrollTop = Math.round(Math.max(0, Math.min(v, gg.scrollHeight - gg.clientHeight)));
+          },
+        });
+        const ro = getRO();
+        ro.fire(cEl, 1200);
+        await waitMs(150); // warm
+        g.scrollHeight = 1800;
+        g.contentHeight = 1600;
+        ro.fire(cEl, 1600);
+        await advanceUntil(() => cEl.style.transform !== '');
+        expect(cEl.style.willChange).toBe('transform');
+        // Freeze frames mid-glide: deadline expires but the residue is
+        // still on the transform — the lease must never demote mid-motion.
+        mockNow += 60;
+        await waitMs(60);
+        expect(cEl.style.willChange).toBe('transform');
+        // Let the chase land and the residue ease out. The spring then
+        // idles in sentinel mode (isActive() stays true — the lease
+        // keeps deferring); flipping the consumer latch to 'instant'
+        // kills the sentinel on its next tick, after which the deferred
+        // recheck demotes.
+        await advanceUntil(() => g.scrollTop === 1200);
+        await advanceUntil(() => cEl.style.transform === '');
+        leaseAnimationMode = 'instant';
+        await nextFrame();
+        await nextFrame();
+        mockNow += 5000;
+        await waitMs(600);
+        expect(cEl.style.willChange).toBe('');
+      });
+
+      it('detach demotes and cancels the lease', () => {
+        fireScroll(scrollEl);
+        expect(contentEl.style.willChange).toBe('transform');
+        controller.detach();
+        expect(contentEl.style.willChange).toBe('');
+        // Re-attach starts a fresh, unpromoted lease.
+        controller.attach(scrollEl, contentEl);
+        expect(contentEl.style.willChange).toBe('');
+      });
+    });
+
     describe('momentum carry across catch-up during streaming', () => {
       // Content height grows in line-sized quanta while streaming, so the
       // spring repeatedly reaches the bottom and idles between line wraps.

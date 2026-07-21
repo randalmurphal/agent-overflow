@@ -71,6 +71,7 @@ import {
   type ResolverState,
 } from './resolver';
 import { createSpringChase, type ArrivalReadback } from './spring';
+import { nowMs } from './time';
 import { trace } from './trace';
 import type {
   ScrollObservationKind,
@@ -355,6 +356,90 @@ export function createUseStickToBottomController(
     residueSettleHandle = requestAnimationFrame(step);
   }
 
+  // ===== Content layer-promotion lease =====
+  // The glide residue above needs contentEl composited (its translateY
+  // must ride on the compositor, not trigger main-thread repaints), but
+  // a PERMANENT `will-change: transform` is a steady-state memory tax:
+  // the promoted layer spans the full virtual content height, and its
+  // presence forces the scroller into composited scrolling — two extra
+  // always-rastered viewport-sized layers per pane plus overlap
+  // promotion of the sticky headers and the composer. Measured on the
+  // Windows/WebView2 build (2026-07-21, four parked panes): renderer
+  // cc/tile_memory 89.9MB with permanent promotion vs 62.4MB with the
+  // hint stripped mid-session, and each fully-demoted pane's marginal
+  // tile cost drops to ~0 (its content rasters into the root layer's
+  // existing viewport tiles).
+  //
+  // So promotion is a LEASE tied to scroll activity: any scroll event
+  // (user or programmatic — intent's handleScroll calls
+  // noteScrollActivity before its tagged-write bail) and every
+  // spring-tick write renew it; a deadline timer demotes after
+  // CONTENT_LEASE_RELEASE_MS of stillness. While scrolling, panes
+  // composite exactly as they always have (no per-frame raster on
+  // wheel, residue rides a real layer); parked panes pay nothing.
+  // Renewal is allocation-free on the hot path (a timestamp write; the
+  // timer is rearmed at most once per release window, not per event).
+  //
+  // Demotion is deferred while the spring is active or a residue is
+  // still easing out (`transform` non-empty) so the layer never
+  // collapses mid-motion. The deferral is bounded: after arrival the
+  // spring only stays active as its streaming sentinel, which dies as
+  // soon as the consumer's animationMode latch flips to 'instant'
+  // (MessageTimeline's content-keyed hold window) — so a finished turn
+  // demotes at roughly max(lease idle, latch hold) + one recheck. Promoting/demoting repaints the pane once
+  // (tile re-raster) — at promote time that's masked by the scroll
+  // motion that triggered it, at demote time the pane is at rest and
+  // the repaint produces identical pixels (modulo text-AA mode — see
+  // the launcher's --disable-lcd-text rationale in
+  // cmd/agent-overflow-windows/main.go).
+  const CONTENT_LEASE_RELEASE_MS = 5000;
+  // Deferred-demotion recheck cadence when the deadline has passed but
+  // the residue is still easing out (the ease runs ~100ms; the spring
+  // case renews the deadline itself via tick writes).
+  const CONTENT_LEASE_BUSY_RECHECK_MS = 250;
+  const contentLeaseReleaseMs =
+    options.contentLeaseReleaseMs ?? CONTENT_LEASE_RELEASE_MS;
+  let contentPromoted = false;
+  let contentLeaseDeadline = 0;
+  let contentLeaseTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function renewContentLease(): void {
+    if (!contentEl) return;
+    contentLeaseDeadline = nowMs() + contentLeaseReleaseMs;
+    if (!contentPromoted) {
+      contentPromoted = true;
+      contentEl.style.willChange = 'transform';
+    }
+    if (contentLeaseTimer === null) {
+      contentLeaseTimer = setTimeout(checkContentLeaseRelease, contentLeaseReleaseMs);
+    }
+  }
+
+  function checkContentLeaseRelease(): void {
+    contentLeaseTimer = null;
+    if (!contentPromoted || !contentEl) return;
+    const remaining = contentLeaseDeadline - nowMs();
+    if (remaining > 0 || spring.isActive() || glideResidue !== 0) {
+      contentLeaseTimer = setTimeout(
+        checkContentLeaseRelease,
+        Math.max(remaining, CONTENT_LEASE_BUSY_RECHECK_MS),
+      );
+      return;
+    }
+    contentPromoted = false;
+    contentEl.style.willChange = '';
+  }
+
+  /** Detach-path teardown: cancel the timer and leave the element unpromoted. */
+  function clearContentLease(): void {
+    if (contentLeaseTimer !== null) {
+      clearTimeout(contentLeaseTimer);
+      contentLeaseTimer = null;
+    }
+    contentPromoted = false;
+    if (contentEl) contentEl.style.willChange = '';
+  }
+
   function writeScrollTop(caller: ScrollWriteCaller, value: number): void {
     if (!scrollEl) return;
     // Hot path: spring follow can call this every frame. The app contract is
@@ -422,6 +507,10 @@ export function createUseStickToBottomController(
     // chase. Same-frame visually: the transform composites with this
     // frame's paint regardless of its position in the sequence.
     if (caller === 'spring.tick') {
+      // Glide writes need the composited layer live before the residue
+      // transform below lands (and each tick renews the lease so a
+      // long chase never demotes mid-flight).
+      renewContentLease();
       // Render the engine-rounded remainder via the content transform.
       // |residue| ≥ 1 means the engine clamped the write (max-scrollTop
       // race), not rounding — never smear a clamp onto the transform.
@@ -560,6 +649,7 @@ export function createUseStickToBottomController(
     spring,
     sampleResizeCorrelation: observers.sampleResizeCorrelation,
     resizeDifferenceNow: observers.resizeDifferenceNow,
+    noteScrollActivity: renewContentLease,
   });
 
   // Snapshot of the flags the pure delivery resolver decides over.
@@ -1003,6 +1093,10 @@ export function createUseStickToBottomController(
     spring.cancel();
     spring.clearStopRequest();
     applyGlideResidue(0);
+    // Lease teardown must run while contentEl is still set so the
+    // element leaves the controller unpromoted (a stale will-change on
+    // a detached-but-reused element would silently re-tax the pane).
+    clearContentLease();
     scrollEl = undefined;
     contentEl = undefined;
   }

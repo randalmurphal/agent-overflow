@@ -1030,6 +1030,18 @@ func browserArgs(enableDevArgs bool) []string {
 		// an index and in-memory bookkeeping for it in the network
 		// service. 1 MiB is the practical floor (0 means "default").
 		"--disk-cache-size=1048576",
+		// Force grayscale text AA in every layer state. The scroll
+		// controller demotes each parked pane's content layer to shed
+		// its tile memory (the promotion lease in
+		// frontend/src/lib/utils/scroll/index.svelte.ts); without this
+		// flag, demoted text picks up ClearType subpixel AA while
+		// composited text renders grayscale, so panes visibly snap
+		// between the two styles at lease boundaries. With it, chat
+		// text is pixel-identical to the permanently-promoted rendering
+		// this replaced, and root-layer text (sidebar/topbar) matches
+		// instead of being the app's odd subpixel surface. Glyph-edge
+		// blending only — text color is untouched.
+		"--disable-lcd-text",
 	}
 	if enableDevArgs {
 		args = append(args,

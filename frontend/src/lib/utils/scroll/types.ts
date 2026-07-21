@@ -327,4 +327,13 @@ export interface UseStickToBottomOptions {
    * double-report every height change).
    */
   externalContentGeometry?: boolean;
+  /**
+   * How long the content layer-promotion lease outlives the last scroll
+   * activity (scroll event or spring tick) before the controller demotes
+   * contentEl back to unpromoted (`will-change` cleared). See the
+   * "Content layer-promotion lease" section in index.svelte.ts for the
+   * memory economics. Override is a tuning/test seam; the default is
+   * CONTENT_LEASE_RELEASE_MS.
+   */
+  contentLeaseReleaseMs?: number;
 }
