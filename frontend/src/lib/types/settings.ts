@@ -58,8 +58,8 @@ export interface Settings {
   timestampFormat: "locale" | "12-hour" | "24-hour";
   /**
    * Sans typeface for the `--font-sans` CSS variable. Default `geist`
-   * is eagerly bundled; `hack-nerd` lazy-loads a separate woff2 chunk;
-   * `system` uses the OS fallback chain.
+   * is eagerly bundled; `hack-nerd` lazy-loads its unicode-range woff2
+   * slices on demand; `system` uses the OS fallback chain.
    */
   sansFont: SansFont;
   /**
