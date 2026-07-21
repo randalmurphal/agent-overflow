@@ -22,10 +22,16 @@ import (
 // path indefinitely. The timeout turns that hang into a clean test failure.
 func countUntrackedWithTimeout(t *testing.T, path string, budget int, d time.Duration) (insertions, bytesRead int) {
 	t.Helper()
+	// Lstat outside the goroutine: it never blocks on a FIFO, and the
+	// caller contract is that untrackedStats has already stat'ed the path.
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", path, err)
+	}
 	type result struct{ ins, read int }
 	done := make(chan result, 1)
 	go func() {
-		ins, read := countUntrackedFileLines(path, budget)
+		ins, read := countUntrackedFileLines(info, path, budget)
 		done <- result{ins, read}
 	}()
 	select {

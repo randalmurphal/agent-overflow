@@ -92,6 +92,16 @@ type Core struct {
 	gitlabHostsMu sync.RWMutex
 	gitlabHosts   []string
 
+	// untrackedLines memoizes per-file added-line counts for the
+	// untracked-insertions badge, keyed cwd → rel path → (size, mtime,
+	// lines). Written wholesale by every untrackedStats scan and swept
+	// by untrackedCacheTTL, so it stays bounded by the workspaces
+	// actively being watched. Plain Mutex: both scan phases (snapshot,
+	// store) are single short critical sections with no hot read path
+	// between them.
+	untrackedMu    sync.Mutex
+	untrackedLines map[string]*untrackedLineCache
+
 	// fetchCache records the last time MaybeFetchRemotes successfully
 	// ran `git fetch` against a given canonical repo root. Keyed by the
 	// repository top-level path so worktrees of the same repo share
@@ -124,6 +134,7 @@ func NewCore() *Core {
 		prCache:        make(map[string]prCacheEntry),
 		forgeCache:     make(map[string]forgeCacheEntry),
 		fetchCache:     make(map[string]time.Time),
+		untrackedLines: make(map[string]*untrackedLineCache),
 		nowFn:          time.Now,
 	}
 	core.forges = map[string]Forge{

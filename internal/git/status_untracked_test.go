@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/testutil"
 )
@@ -46,8 +47,9 @@ func TestCountAddedLines(t *testing.T) {
 
 // TestCountUntrackedFileLines covers the per-file counter that backs the
 // untracked-insertion tally: regular files (with/without trailing newline,
-// binary), the scan-budget cap, a file that vanished mid-scan, and the
-// security-critical symlink case (counted as its link text, never followed).
+// binary), the scan-budget cap, and the security-critical symlink case
+// (counted as its link text, never followed). The vanished-mid-scan case
+// lives at the untrackedStats level now that the caller owns the Lstat.
 // The FIFO no-hang guard lives in status_fifo_test.go (needs syscall.Mkfifo).
 func TestCountUntrackedFileLines(t *testing.T) {
 	dir := t.TempDir()
@@ -58,26 +60,29 @@ func TestCountUntrackedFileLines(t *testing.T) {
 		}
 		return p
 	}
+	count := func(path string, budget int) (int, int) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("lstat %s: %v", path, err)
+		}
+		return countUntrackedFileLines(info, path, budget)
+	}
 
 	// Regular text file: every newline is a line; bytesRead is the full size.
-	if ins, read := countUntrackedFileLines(write("text.txt", "a\nb\nc\n"), maxUntrackedScanBytes); ins != 3 || read != 6 {
+	if ins, read := count(write("text.txt", "a\nb\nc\n"), maxUntrackedScanBytes); ins != 3 || read != 6 {
 		t.Fatalf("text file: got (%d, %d), want (3, 6)", ins, read)
 	}
 	// No trailing newline still counts the final partial line.
-	if ins, read := countUntrackedFileLines(write("tail.txt", "x\ny"), maxUntrackedScanBytes); ins != 2 || read != 3 {
+	if ins, read := count(write("tail.txt", "x\ny"), maxUntrackedScanBytes); ins != 2 || read != 3 {
 		t.Fatalf("no-trailing-newline: got (%d, %d), want (2, 3)", ins, read)
 	}
 	// Binary content (NUL in the probe window) -> 0 lines, but bytes are read.
-	if ins, read := countUntrackedFileLines(write("blob.bin", "\x00\x01\x02"), maxUntrackedScanBytes); ins != 0 || read != 3 {
+	if ins, read := count(write("blob.bin", "\x00\x01\x02"), maxUntrackedScanBytes); ins != 0 || read != 3 {
 		t.Fatalf("binary file: got (%d, %d), want (0, 3)", ins, read)
-	}
-	// A file that vanished mid-scan (Lstat fails) degrades to (0, 0).
-	if ins, read := countUntrackedFileLines(filepath.Join(dir, "gone.txt"), maxUntrackedScanBytes); ins != 0 || read != 0 {
-		t.Fatalf("missing file: got (%d, %d), want (0, 0)", ins, read)
 	}
 	// Budget cap: only `budget` bytes are read, so trailing lines beyond it are
 	// not tallied and bytesRead never exceeds the budget. "a\n" -> 1 line, 2 bytes.
-	if ins, read := countUntrackedFileLines(write("capped.txt", "a\nb\nc\n"), 2); ins != 1 || read != 2 {
+	if ins, read := count(write("capped.txt", "a\nb\nc\n"), 2); ins != 1 || read != 2 {
 		t.Fatalf("budget cap: got (%d, %d), want (1, 2)", ins, read)
 	}
 
@@ -87,7 +92,7 @@ func TestCountUntrackedFileLines(t *testing.T) {
 	if err := os.Symlink("text.txt", link); err != nil {
 		t.Skipf("symlinks unsupported on this platform: %v", err)
 	}
-	if ins, read := countUntrackedFileLines(link, maxUntrackedScanBytes); ins != 1 || read != 0 {
+	if ins, read := count(link, maxUntrackedScanBytes); ins != 1 || read != 0 {
 		t.Fatalf("symlink: got (%d, %d), want (1, 0) - link text counted, target not opened", ins, read)
 	}
 }
@@ -114,12 +119,124 @@ func TestUntrackedStatsBudgetExhaustion(t *testing.T) {
 		t.Fatalf("full budget: got (%d insertions, %d files), want (9, 3)", ins, files)
 	}
 
-	// Tiny budget: the first file's 1-byte read spends the whole budget, so files
-	// 2 and 3 hit the budget<=0 short-circuit - counted but not tallied. The file
-	// count must survive; only the line tally stops.
-	if ins, files := core.untrackedStats(repo, 1); ins != 1 || files != 3 {
+	// Tiny budget on a COLD cache (fresh Core): the first file's 1-byte read
+	// spends the whole budget, so files 2 and 3 hit the budget<=0
+	// short-circuit - counted but not tallied. The file count must survive;
+	// only the line tally stops.
+	if ins, files := NewCore().untrackedStats(repo, 1); ins != 1 || files != 3 {
 		t.Fatalf("budget exhausted: got (%d insertions, %d files), want (1, 3) - "+
 			"file count must survive budget exhaustion", ins, files)
+	}
+
+	// Tiny budget on a WARM cache: the budget bounds I/O, not accuracy -
+	// unchanged files replay their cached tallies without spending budget,
+	// so the full count survives a budget that couldn't read a single file.
+	if ins, files := core.untrackedStats(repo, 1); ins != 9 || files != 3 {
+		t.Fatalf("warm cache + tiny budget: got (%d insertions, %d files), want (9, 3) - "+
+			"cache hits must not be budget-gated", ins, files)
+	}
+}
+
+// TestUntrackedStatsCacheAvoidsReread proves the (size, mtime) memo does its
+// job across the state transitions that matter: an unchanged file is never
+// re-opened (asserted by making it unreadable - a re-read would tally 0), a
+// changed file is re-read, and a deleted file's entry leaves the cache so a
+// later re-create with different content is counted fresh.
+func TestUntrackedStatsCacheAvoidsReread(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+	path := filepath.Join(repo, "f.txt")
+
+	writeRepoFile(t, repo, "f.txt", "1\n2\n3\n")
+	if ins, files := core.untrackedStats(repo, maxUntrackedScanBytes); ins != 3 || files != 1 {
+		t.Fatalf("first scan: got (%d, %d), want (3, 1)", ins, files)
+	}
+
+	// chmod 0000 changes ctime, not (size, mtime): the cache key still
+	// matches, so the tally must come from the memo. A regression that
+	// re-opens the file gets an EACCES and tallies 0 instead of 3.
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if ins, _ := core.untrackedStats(repo, maxUntrackedScanBytes); ins != 3 {
+		t.Fatalf("unchanged file: got %d insertions, want 3 from cache without re-reading", ins)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod back: %v", err)
+	}
+
+	// Content change (different size) misses the cache and is re-read.
+	writeRepoFile(t, repo, "f.txt", "1\n")
+	if ins, _ := core.untrackedStats(repo, maxUntrackedScanBytes); ins != 1 {
+		t.Fatalf("changed file: got %d insertions, want 1 re-read", ins)
+	}
+
+	// Deletion drops the entry (the wholesale-replace store self-cleans)...
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if ins, files := core.untrackedStats(repo, maxUntrackedScanBytes); ins != 0 || files != 0 {
+		t.Fatalf("after delete: got (%d, %d), want (0, 0)", ins, files)
+	}
+	core.untrackedMu.Lock()
+	entries := len(core.untrackedLines[repo].files)
+	core.untrackedMu.Unlock()
+	if entries != 0 {
+		t.Fatalf("cache after delete: %d entries, want 0 (wholesale replace must evict)", entries)
+	}
+
+	// ...so a re-created file is counted from a fresh read.
+	writeRepoFile(t, repo, "f.txt", "1\n2\n")
+	if ins, _ := core.untrackedStats(repo, maxUntrackedScanBytes); ins != 2 {
+		t.Fatalf("re-created file: got %d insertions, want 2", ins)
+	}
+}
+
+// TestUntrackedStatsPartialReadNotCached proves a budget-truncated tally is
+// never memoized: caching the partial count would replay it forever once the
+// budget recovers, permanently under-reporting the file.
+func TestUntrackedStatsPartialReadNotCached(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	writeRepoFile(t, repo, "f.txt", "1\n2\n3\n")
+	// Budget 2 reads "1\n" only: partial tally of 1.
+	if ins, _ := core.untrackedStats(repo, 2); ins != 1 {
+		t.Fatalf("truncated scan: got %d insertions, want 1", ins)
+	}
+	// Full budget must re-read and reach the true count - a cached partial
+	// entry would short-circuit to 1 here.
+	if ins, _ := core.untrackedStats(repo, maxUntrackedScanBytes); ins != 3 {
+		t.Fatalf("recovered budget: got %d insertions, want 3 (partial reads must not be cached)", ins)
+	}
+}
+
+// TestUntrackedStatsCacheTTLSweep proves a workspace that stops being
+// scanned ages out of the cache instead of pinning its map for the process
+// lifetime.
+func TestUntrackedStatsCacheTTLSweep(t *testing.T) {
+	repoA := testutil.InitGitRepo(t)
+	repoB := testutil.InitGitRepo(t)
+	core := NewCore()
+	now := time.Now()
+	core.nowFn = func() time.Time { return now }
+
+	writeRepoFile(t, repoA, "a.txt", "1\n")
+	writeRepoFile(t, repoB, "b.txt", "1\n")
+	core.untrackedStats(repoA, maxUntrackedScanBytes)
+	core.untrackedStats(repoB, maxUntrackedScanBytes)
+
+	// Advance past the TTL and scan only repoB: the store's sweep must drop
+	// repoA while keeping the just-refreshed repoB.
+	now = now.Add(untrackedCacheTTL + time.Minute)
+	core.untrackedStats(repoB, maxUntrackedScanBytes)
+
+	core.untrackedMu.Lock()
+	_, hasA := core.untrackedLines[repoA]
+	_, hasB := core.untrackedLines[repoB]
+	core.untrackedMu.Unlock()
+	if hasA || !hasB {
+		t.Fatalf("TTL sweep: hasA=%v hasB=%v, want stale A swept and fresh B kept", hasA, hasB)
 	}
 }
 
