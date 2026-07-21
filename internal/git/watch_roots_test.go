@@ -270,17 +270,72 @@ func TestPruneIgnoredSubtrees(t *testing.T) {
 	}
 
 	// Root cap: more sibling dirs than maxPrunedWatchRoots forces fallback.
+	// The boundary is already depth 1, so the depth ladder has nowhere to
+	// degrade to — the overflow must surface as an error.
 	capDir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(capDir, "blocked"), 0o755); err != nil {
 		t.Fatalf("mkdir blocked: %v", err)
 	}
 	for i := 0; i <= maxPrunedWatchRoots; i++ {
-		if err := os.Mkdir(filepath.Join(capDir, fmt.Sprintf("d%03d", i)), 0o755); err != nil {
+		if err := os.Mkdir(filepath.Join(capDir, fmt.Sprintf("d%04d", i)), 0o755); err != nil {
 			t.Fatalf("mkdir cap fixture: %v", err)
 		}
 	}
 	if _, err := pruneIgnoredSubtrees(capDir, []string{"blocked"}); err == nil {
 		t.Fatalf("cap overflow: want error signalling fallback to single recursive root")
+	}
+}
+
+// TestPruneIgnoredSubtreesDepthLadderDegrades covers the overflow path
+// that must NOT give up pruning: a __pycache__-shaped tree whose full
+// boundary set needs more than maxPrunedWatchRoots roots (one ancestor
+// per package dir) degrades to pruning only the shallow boundaries.
+// The shallow boundary (the big tree worth pruning) stays pruned; the
+// deep scattered boundaries stay watched via their recursive top-level
+// subtree roots.
+func TestPruneIgnoredSubtreesDepthLadderDegrades(t *testing.T) {
+	dir := t.TempDir()
+	// 40 top-level dirs x 30 subdirs, each holding a depth-3 ignored
+	// boundary: pruning all of them needs 1 + 40 + 1200 ancestor roots,
+	// over the 1024 cap. Plus one depth-1 boundary that survives the
+	// depth-2 rung.
+	const tops, subs = 40, 30
+	boundaries := make([]string, 0, tops*subs+1)
+	for ti := range tops {
+		for si := range subs {
+			b := filepath.Join(fmt.Sprintf("t%02d", ti), fmt.Sprintf("s%02d", si), "ig")
+			if err := os.MkdirAll(filepath.Join(dir, b), 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", b, err)
+			}
+			boundaries = append(boundaries, b)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "topig"), 0o755); err != nil {
+		t.Fatalf("mkdir topig: %v", err)
+	}
+	boundaries = append(boundaries, "topig")
+
+	roots, err := pruneIgnoredSubtrees(dir, boundaries)
+	if err != nil {
+		t.Fatalf("depth ladder must degrade, not fail: %v", err)
+	}
+	if len(roots) > maxPrunedWatchRoots {
+		t.Fatalf("got %d roots, want <= %d", len(roots), maxPrunedWatchRoots)
+	}
+	// topig (depth 1) survives the degraded rung: still pruned.
+	if _, found := findWatchRoot(roots, filepath.Join(dir, "topig")); found {
+		t.Fatalf("got %+v, depth-1 boundary topig must stay pruned", roots)
+	}
+	// The deep boundaries' top-level dirs collapse back to plain
+	// recursive subtree roots — watched, not exploded into ancestors.
+	if !containsWatchRoot(roots, filepath.Join(dir, "t00"), true) {
+		t.Fatalf("got %d roots, want recursive subtree root at t00", len(roots))
+	}
+	if _, found := findWatchRoot(roots, filepath.Join(dir, "t00", "s00")); found {
+		t.Fatalf("s00 must not be a root: its parent t00 is already recursive")
+	}
+	if root, _ := findWatchRoot(roots, dir); root.Kind != KindAncestor || root.Recursive {
+		t.Fatalf("cwd root = %+v, want non-recursive KindAncestor (topig still pruned)", root)
 	}
 }
 

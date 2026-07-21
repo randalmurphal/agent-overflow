@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -59,10 +60,19 @@ type WatchRoot struct {
 }
 
 // maxPrunedWatchRoots caps how many roots ignored-subtree pruning may
-// produce. A pathological layout (thousands of scattered ignored dirs)
-// degrades to the single recursive root rather than exploding the root
-// list — correct either way; pruning is an optimization.
-const maxPrunedWatchRoots = 256
+// produce. Real repos need room: a Python tree with __pycache__
+// scattered through every package produces one ancestor root per
+// package dir (ai-foundations-shaped repos measure 300-500 roots), and
+// a root is cheap — one notify watchpoint and one slice entry. The cap
+// exists so a pathological layout degrades deliberately instead of
+// exploding: overflow retries with only shallower boundaries (see
+// pruneIgnoredSubtrees) before ever giving up pruning entirely.
+const maxPrunedWatchRoots = 1024
+
+// errWatchRootCap signals the root list outgrew maxPrunedWatchRoots for
+// one boundary subset — the ladder in pruneIgnoredSubtrees retries with
+// a shallower subset; other errors abort pruning.
+var errWatchRootCap = fmt.Errorf("pruned roots exceed cap %d", maxPrunedWatchRoots)
 
 // WatchRoots returns the filesystem roots a live git-status watcher should
 // observe for cwd. Linked worktrees keep the important commit/index/ref
@@ -245,7 +255,18 @@ func (c *Core) ignoredBoundaryDirs(cwd string) ([]string, error) {
 // blocked nor itself an ancestor becomes a recursive root. A non-nil
 // error means the caller should fall back to the single recursive root
 // (no blocked dirs is success with that same single root; failure
-// modes are malformed boundaries, readdir errors, and the root cap).
+// modes are malformed boundaries and readdir errors).
+//
+// When the full boundary set produces more than maxPrunedWatchRoots
+// roots, pruning degrades by depth instead of giving up: it retries
+// with only boundaries at most 3, then 2, then 1 path segments deep.
+// Shallow boundaries are the big trees (.venv, node_modules — the
+// watches worth saving); deep ones are scattered small dirs
+// (__pycache__) whose pruning is what explodes the root count. Deep
+// ignored dirs left watched cost some refresh churn that the debounce
+// and status-equality dedup absorb — strictly better than the old
+// all-or-nothing fallback re-inflating to one watch per directory of
+// the whole tree.
 //
 // Boundary validation stays inline rather than reusing
 // workspacepath.NormalizeRelative: that helper trims whitespace, which
@@ -253,6 +274,7 @@ func (c *Core) ignoredBoundaryDirs(cwd string) ([]string, error) {
 // verbatim from git's NUL-delimited listing.
 func pruneIgnoredSubtrees(cwd string, blocked []string) ([]WatchRoot, error) {
 	cleaned := make([]string, 0, len(blocked))
+	maxDepth := 0
 	for _, b := range blocked {
 		b = filepath.Clean(b)
 		if b == "." || b == "" || b == ".." || strings.HasPrefix(b, ".."+string(filepath.Separator)) || filepath.IsAbs(b) {
@@ -261,15 +283,75 @@ func pruneIgnoredSubtrees(cwd string, blocked []string) ([]WatchRoot, error) {
 			return nil, fmt.Errorf("ignored boundary %q is not a workspace-relative subtree", b)
 		}
 		cleaned = append(cleaned, b)
+		if d := boundaryDepth(b); d > maxDepth {
+			maxDepth = d
+		}
 	}
 	if len(cleaned) == 0 {
 		return []WatchRoot{{Path: cwd, Recursive: true, Kind: KindSubtree}}, nil
 	}
 
+	for _, cutoff := range depthLadder(maxDepth) {
+		subset := cleaned
+		if cutoff < maxDepth {
+			subset = boundariesAtMostDepth(cleaned, cutoff)
+		}
+		roots, err := buildPrunedRoots(cwd, subset)
+		if errors.Is(err, errWatchRootCap) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if cutoff < maxDepth {
+			log.Printf("git: watch-root pruning for %s degraded to boundaries <=%d deep (%d of %d): full set exceeds %d roots",
+				cwd, cutoff, len(subset), len(cleaned), maxPrunedWatchRoots)
+		}
+		return roots, nil
+	}
+	return nil, fmt.Errorf("pruned roots exceed cap %d even for top-level boundaries", maxPrunedWatchRoots)
+}
+
+// depthLadder returns the boundary-depth cutoffs to attempt, deepest
+// first: the full set, then 3, 2, 1 (skipping cutoffs that wouldn't
+// filter anything).
+func depthLadder(maxDepth int) []int {
+	ladder := []int{maxDepth}
+	for _, d := range []int{3, 2, 1} {
+		if d < maxDepth {
+			ladder = append(ladder, d)
+		}
+	}
+	return ladder
+}
+
+func boundaryDepth(rel string) int {
+	return strings.Count(rel, string(filepath.Separator)) + 1
+}
+
+func boundariesAtMostDepth(boundaries []string, cutoff int) []string {
+	subset := make([]string, 0, len(boundaries))
+	for _, b := range boundaries {
+		if boundaryDepth(b) <= cutoff {
+			subset = append(subset, b)
+		}
+	}
+	return subset
+}
+
+// buildPrunedRoots computes the ancestor/subtree root split for one
+// boundary subset. errWatchRootCap means this subset needs too many
+// roots (the caller's depth ladder retries shallower); other errors
+// abort pruning.
+func buildPrunedRoots(cwd string, cleaned []string) ([]WatchRoot, error) {
+	if len(cleaned) == 0 {
+		return []WatchRoot{{Path: cwd, Recursive: true, Kind: KindSubtree}}, nil
+	}
 	// Drop boundaries nested inside other boundaries (defensive: git's
 	// --directory collapse shouldn't emit them, but the gitDir append in
 	// workspaceWatchRoots could nest if a repo ignored its own .git
 	// parent chain in a weird layout).
+	cleaned = append([]string(nil), cleaned...)
 	sort.Slice(cleaned, func(i, j int) bool { return len(cleaned[i]) < len(cleaned[j]) })
 	blockedSet := make(map[string]struct{}, len(cleaned))
 	for _, b := range cleaned {
@@ -297,7 +379,7 @@ func pruneIgnoredSubtrees(cwd string, blocked []string) ([]WatchRoot, error) {
 		}
 		roots = append(roots, WatchRoot{Path: abs, Recursive: false, Kind: KindAncestor})
 		if len(roots) > maxPrunedWatchRoots {
-			return nil, fmt.Errorf("pruned roots exceed cap %d", maxPrunedWatchRoots)
+			return nil, errWatchRootCap
 		}
 		entries, err := os.ReadDir(abs)
 		if err != nil {
@@ -321,7 +403,7 @@ func pruneIgnoredSubtrees(cwd string, blocked []string) ([]WatchRoot, error) {
 			}
 			roots = append(roots, WatchRoot{Path: filepath.Join(cwd, rel), Recursive: true, Kind: KindSubtree})
 			if len(roots) > maxPrunedWatchRoots {
-				return nil, fmt.Errorf("pruned roots exceed cap %d", maxPrunedWatchRoots)
+				return nil, errWatchRootCap
 			}
 		}
 	}

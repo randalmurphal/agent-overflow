@@ -50,7 +50,11 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   linked worktree's private gitdir plus the shared common dir get the
   same treatment. The global ignore file (core.excludesFile) is watched
   via its parent dir with `TriggerFile` narrowing events to that one
-  basename.
+  basename. Root count is capped at `maxPrunedWatchRoots` (1024 — real
+  Python repos measure 300-500); overflow degrades by depth (retry with
+  boundaries at most 3, 2, 1 segments deep — shallow boundaries are the
+  big trees worth pruning, deep scattered `__pycache__` is what explodes
+  the count) before falling back to the single recursive root.
 - `worktree_paths.go` — pure path helpers backing the app layer's
   worktree creation: `SanitizeWorktreePathSegment` (branch → fs-safe
   directory name), `DefaultWorktreesBaseDir` (the `<repo>-worktrees`
