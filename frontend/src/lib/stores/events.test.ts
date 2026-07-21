@@ -1995,6 +1995,107 @@ describe('setupEventListeners', () => {
     expect(getProviderRateLimit('codex', 10080)?.usedPercent).toBe(28);
   });
 
+  it('does not revert local read state when a provider:usage gap refreshes the thread row', async () => {
+    const local = makeThread({
+      id: 'thread-usage-read',
+      lastReadAt: 2_000,
+      latestTurnCompletedAt: 1_000,
+    });
+    const pane = await buildPane(local);
+    const freshUsage = JSON.stringify({ usedTokens: 1_000, maxTokens: 200_000, contextPercent: 0.5 });
+    // The re-fetched row's job is lastTokenUsage; its read marker can
+    // predate the debounced MarkThreadRead persist and must merge
+    // forward, not revert the pane copy.
+    setBindingMock('GetThread', async () => ({
+      ...local,
+      lastReadAt: 500,
+      lastTokenUsage: freshUsage,
+    }));
+
+    emitWailsEvent(transportGapChannel, {
+      channel: 'provider:usage',
+      seq: 8,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(pane.thread?.lastTokenUsage).toBe(freshUsage);
+    expect(pane.thread?.lastReadAt).toBe(2_000);
+  });
+
+  it('preserves a newer local read marker across a transport-gap thread resync', async () => {
+    // ChatView marks a thread read locally and debounces the
+    // MarkThreadRead persist; a gap-triggered ListThreads snapshot can
+    // be read before that persist lands. Replacing rows verbatim would
+    // revert lastReadAt and resurrect a "Completed" pill the focused
+    // pane already cleared — and could never clear again, because the
+    // read-mark effect keys off the (still-read) pane copy.
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 2_000, latestTurnCompletedAt: 1_000 }),
+    ]);
+    await refreshThreads();
+
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 500, latestTurnCompletedAt: 1_000 }),
+    ]);
+    emitWailsEvent(transportGapChannel, {
+      channel: 'thread:updated',
+      seq: 3,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getThreads()[0]?.lastReadAt).toBe(2_000);
+    expect(getThreads()[0]?.latestTurnCompletedAt).toBe(1_000);
+  });
+
+  it('preserves an explicit unread marker across a transport-gap thread resync', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 0, latestTurnCompletedAt: 300 }),
+    ]);
+    await refreshThreads();
+
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 500, latestTurnCompletedAt: 300 }),
+    ]);
+    emitWailsEvent(transportGapChannel, {
+      channel: 'thread:updated',
+      seq: 4,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getThreads()[0]?.lastReadAt).toBe(0);
+  });
+
+  it('converges pane thread rows on completions backfilled by a transport-gap resync', async () => {
+    // The final turn_completed fell into the gap: the backend snapshot
+    // carries the completion but no pane ever saw the event. The resync
+    // must fan the merged row out to panes — ChatView's read-mark
+    // effect keys off pane.thread, so a pane left on the stale copy
+    // can never clear the sidebar "Completed" pill.
+    const stale = makeThread({
+      id: 'thread-gap',
+      lastReadAt: 350,
+      latestTurnCompletedAt: 300,
+    });
+    const pane = await buildPane(stale);
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-gap', lastReadAt: 350, latestTurnCompletedAt: 900 }),
+    ]);
+
+    emitWailsEvent(transportGapChannel, {
+      channel: 'provider:turn_completed',
+      seq: 11,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getThreads().find((t) => t.id === 'thread-gap')?.latestTurnCompletedAt).toBe(900);
+    expect(pane.thread?.latestTurnCompletedAt).toBe(900);
+    expect(pane.thread?.lastReadAt).toBe(350);
+  });
+
   it('preserves an explicit unread marker when thread:updated is stale', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({

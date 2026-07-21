@@ -6,7 +6,7 @@
 import type { Thread } from '../types/models';
 import { iterPanes } from './panes.svelte';
 import { GetThread } from './bindings';
-import { refreshSidebarProjections } from './eventsThreadRows';
+import { refreshSidebarProjections, syncThreadRow } from './eventsThreadRows';
 import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 
@@ -41,9 +41,13 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // store, so a missed usage event would leave the meter stale
       // forever. Re-read each affected thread's row so
       // `seedContextWindow` rebuilds the meter from the persisted
-      // snapshot. (`replaceThread` re-runs the seed via
-      // thread.svelte.ts.) Dedupe by threadId so two panes mounting
-      // the same thread don't issue two RPCs for the same refresh.
+      // snapshot (the pane replaceThread inside syncThreadRow re-runs
+      // the seed via thread.svelte.ts). syncThreadRow rather than a
+      // raw replaceThread because the fresh row's job here is
+      // lastTokenUsage — its read/completion markers can lag live
+      // local state and must merge forward, not revert. Dedupe by
+      // threadId so two panes mounting the same thread don't issue
+      // two RPCs for the same refresh.
       const seen = new Set<string>();
       for (const pane of iterPanes()) {
         if (!pane.threadId || seen.has(pane.threadId)) continue;
@@ -52,9 +56,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
         void GetThread(threadId).then((thread) => {
           const t = thread as Thread | null;
           if (!t) return;
-          for (const p of iterPanes()) {
-            if (p.threadId === threadId) p.replaceThread(t);
-          }
+          syncThreadRow(t);
         }).catch((err: unknown) => {
           console.warn(`events: refresh thread ${threadId} after provider:usage gap: ${err}`);
         });

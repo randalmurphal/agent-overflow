@@ -531,6 +531,78 @@ describe('<ChatView>', () => {
     expect(markRead).not.toHaveBeenCalled();
   });
 
+  it('re-marks read when a stale thread replace reverts the read marker', async () => {
+    vi.useFakeTimers();
+    try {
+      const thread = { ...seedThread(), latestTurnCompletedAt: 1_000, lastReadAt: 1_500 };
+      setBindingMock('ListThreads', async () => [thread]);
+      await refreshThreads();
+      const pane = await buildPane(thread);
+      const markRead = setBindingMock('MarkThreadRead', async () => {});
+
+      vi.setSystemTime(2_000);
+      render(ChatView, { props: { pane } });
+      await tick();
+      expect(markRead).not.toHaveBeenCalled();
+
+      // A wholesale replace from a stale backend snapshot drags
+      // lastReadAt behind the completion again. The completion state is
+      // unchanged, so a dedup marker keyed only on completions would
+      // skip this revert forever and the "Completed" pill would stick
+      // on the focused pane.
+      pane.replaceThread({ ...pane.thread!, lastReadAt: 500 });
+      await tick();
+
+      expect(markRead).toHaveBeenCalledTimes(1);
+      expect(markRead).toHaveBeenLastCalledWith('thread-1');
+      expect(pane.thread?.lastReadAt).toBe(2_000);
+      expect(getThreads()[0]?.lastReadAt).toBe(2_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('marks read from the settled turn when the thread row completion is stale', async () => {
+    vi.useFakeTimers();
+    try {
+      const thread = { ...seedThread(), latestTurnCompletedAt: 1_000, lastReadAt: 1_500 };
+      setBindingMock('ListThreads', async () => [thread]);
+      await refreshThreads();
+      const pane = await buildPane(thread);
+      const markRead = setBindingMock('MarkThreadRead', async () => {});
+
+      vi.setSystemTime(2_500);
+      render(ChatView, { props: { pane } });
+      await tick();
+      expect(markRead).not.toHaveBeenCalled();
+
+      // Transport-gap recovery: the final turn_completed fell into the
+      // gap, so pane.thread.latestTurnCompletedAt is stale while
+      // refreshFromBackend rehydrated the settled turn with the real
+      // completion. The read target must follow the newest completion
+      // knowledge, not prefer the defined-but-stale thread row value.
+      pane.settleTurn({
+        turnId: 'turn-missed',
+        turnIndex: 3,
+        startedAt: 1_900,
+        completedAt: 2_000,
+        stopReason: 'end_turn',
+        assistantMessageId: null,
+        tokenUsage: null,
+        aborted: false,
+        errorMessage: '',
+      });
+      await tick();
+
+      expect(markRead).toHaveBeenCalledTimes(1);
+      expect(markRead).toHaveBeenLastCalledWith('thread-1');
+      expect(pane.thread?.lastReadAt).toBe(2_500);
+      expect(getThreads()[0]?.lastReadAt).toBe(2_500);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('clears a stale sidebar error status once the thread is open', async () => {
     const thread = seedThread();
     setBindingMock('ListThreads', async () => [thread]);

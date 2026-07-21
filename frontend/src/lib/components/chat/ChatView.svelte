@@ -213,8 +213,13 @@
     // the effect re-runs (and can fire the read-mark) the moment the
     // user focuses this pane.
     if (getFocusedThreadPaneId() !== pane.paneId) return;
+    // `lastReadAt` belongs in the marker: a wholesale thread replace
+    // (transport-gap resync, stale backend snapshot) can move it
+    // BACKWARD, and that revert must re-enter the effect body instead
+    // of deduping against a run that handled the same completion state.
     const marker = [
       thread.id,
+      thread.lastReadAt ?? '',
       thread.latestTurnCompletedAt ?? '',
       thread.hasIncompleteTurn ? 'interrupted' : '',
       pane.timelineRevision,
@@ -223,9 +228,20 @@
     if (marker === lastReadMarker) return;
     lastReadMarker = marker;
     const shouldClearInterrupted = thread.hasIncompleteTurn === true;
-    const readTarget = thread.latestTurnCompletedAt
-      ?? pane.latestSettledTurn?.completedAt
-      ?? (shouldClearInterrupted ? Date.now() : undefined);
+    // Completion knowledge lives in two places that advance
+    // independently: the thread row (turn_completed push / sidebar
+    // resync) and the pane's settled-turn record (refreshFromBackend).
+    // Take the max — preferring a defined-but-stale row value over a
+    // fresher settled turn left the read target behind a completion the
+    // user was looking at, so the sidebar "Completed" pill could never
+    // clear after the final turn_completed fell into a transport gap.
+    const completions = [
+      thread.latestTurnCompletedAt,
+      pane.latestSettledTurn?.completedAt,
+    ].filter((value): value is number => value !== undefined);
+    const readTarget = completions.length > 0
+      ? Math.max(...completions)
+      : (shouldClearInterrupted ? Date.now() : undefined);
     if (readTarget === undefined) {
       return;
     }
