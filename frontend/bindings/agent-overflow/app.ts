@@ -2994,10 +2994,14 @@ export function UploadAttachment(threadID: string, filename: string, mimeType: s
  * serve hunk-gap expansion, so the frontend renders arrows only where a
  * click would succeed. Each file runs the SAME resolution the serving
  * path uses (snapshot first, workspace fallback, verified against the
- * patch either way) — the load-time verdict can never drift from the
- * click-time one. Same wire-exposure class as GetDiffContextLines:
- * classified LocalOnlyMethods; remote clients' rejection leaves every
- * path unexpandable, which is exactly what their clicks would find.
+ * patch either way), bounded at MaxPrimeBytes per file so one giant
+ * generated file can't force unbounded reads on every load — the one
+ * deliberate divergence from click-time resolution, and it only errs
+ * fail-closed: an over-cap file shows no arrow (snapshots never exceed
+ * the cap either; only a huge pre-snapshot workspace file can hit it).
+ * Same wire-exposure class as GetDiffContextLines: classified
+ * LocalOnlyMethods; remote clients' rejection leaves every path
+ * unexpandable, which is exactly what their clicks would find.
  */
 export function VerifyEditDiffs(threadID: string, req: $models.VerifyEditDiffsRequest): $CancellablePromise<$models.VerifyEditDiffsResult> {
     return $Call.ByID(3907724148, threadID, req).then(($result: any) => {
