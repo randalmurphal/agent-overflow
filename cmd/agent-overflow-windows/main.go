@@ -53,7 +53,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/appidentity"
-	"agent-overflow/internal/observability/pprofserve"
+	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/wsldistro"
@@ -488,7 +488,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	l, bs, err := wsllauncher.Launch(ctx, wsllauncher.LaunchOptions{
 		Distro:         distro,
 		BinaryPath:     binPath,
-		PassthroughEnv: []string{pprofserve.EnvVar},
+		PassthroughEnv: diagenv.Passthrough(),
 	})
 	logBootPhase("launcher.wsl_launch", phaseStarted)
 	if err != nil {

@@ -116,6 +116,13 @@ type Config struct {
 	// early but hold navigation until the backend is actually ready.
 	RequireReadyForBootstrap bool
 
+	// CrossOriginIsolate makes every asset and design response carry
+	// cross-origin isolation headers (COOP/COEP/CORP) so the SPA runs
+	// crossOriginIsolated and measureUserAgentSpecificMemory works.
+	// Diagnostic opt-in (AGENT_OVERFLOW_RENDERER_DIAG) — COEP blocks
+	// remote subresources while on. See WriteCrossOriginIsolationHeaders.
+	CrossOriginIsolate bool
+
 	// HTTPReadHeaderTimeout, HTTPReadTimeout, HTTPWriteTimeout,
 	// HTTPIdleTimeout map onto net/http.Server fields. Zero values
 	// pick safe defaults documented in New().
@@ -345,13 +352,25 @@ func (s *Server) buildHTTPServer() *http.Server {
 		// (which can include user material) over LAN. LAN-served design
 		// previews are a separate feature — pick it up via a deliberate
 		// token-validation pass when we want them.
-		mux.Handle("/design/", s.loopbackHostGuard(s.designLoopbackOnly(designH).ServeHTTP))
+		// Diag-mode isolation headers must cover /design/ too: COEP
+		// applies to nested documents, so the preview iframe fails to
+		// load under the isolated shell unless its responses carry
+		// CORP/COEP themselves.
+		var designFinal http.Handler = s.loopbackHostGuard(s.designLoopbackOnly(designH).ServeHTTP)
+		if s.cfg.CrossOriginIsolate {
+			designFinal = withCrossOriginIsolation(designFinal)
+		}
+		mux.Handle("/design/", designFinal)
 	}
-	if s.cfg.AssetHandler != nil {
-		mux.Handle("/", withAssetHeaders(s.cfg.AssetHandler))
-	} else {
-		mux.Handle("/", withAssetHeaders(http.NotFoundHandler()))
+	assetH := s.cfg.AssetHandler
+	if assetH == nil {
+		assetH = http.NotFoundHandler()
 	}
+	assetFinal := withAssetHeaders(assetH)
+	if s.cfg.CrossOriginIsolate {
+		assetFinal = withCrossOriginIsolation(assetFinal)
+	}
+	mux.Handle("/", assetFinal)
 	return &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: s.cfg.HTTPReadHeaderTimeout,
@@ -647,6 +666,17 @@ func withAssetHeaders(next http.Handler) http.Handler {
 			// old shell that fetches new asset URLs from a stale manifest.
 			h.Set("Cache-Control", "no-cache, must-revalidate")
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withCrossOriginIsolation stamps the diagnostic isolation headers on
+// every response of the wrapped handler. Kept separate from
+// withAssetHeaders because it also wraps the /design/ route, which has
+// its own header stack.
+func withCrossOriginIsolation(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		WriteCrossOriginIsolationHeaders(w.Header())
 		next.ServeHTTP(w, r)
 	})
 }

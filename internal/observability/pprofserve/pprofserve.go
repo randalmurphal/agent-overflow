@@ -27,10 +27,12 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/diagenv"
 )
 
 // EnvVar names the opt-in environment variable.
-const EnvVar = "AGENT_OVERFLOW_PPROF"
+const EnvVar = diagenv.Pprof
 
 // DefaultAddr is used when the variable is a bare enable ("1"/"true").
 const DefaultAddr = "127.0.0.1:6363"

@@ -26,6 +26,7 @@ one closest to what you're touching.
 | `atomicfile/` | Crash-safe small-JSON state files: `WriteJSON` (temp + fsync + rename, 0600/0700) and `ReadJSON` (absent → not-found, not error). Backs `wsldistro`'s `wsl.json` and the launcher's `window.json`. Stdlib-only. |
 | `logging/` | Structured NDJSON provider-event logging. |
 | `observability/` | Opt-in OpenTelemetry tracing + NDJSON replay writer. |
+| `diagenv/` | Names of the opt-in diagnostic env vars (`AGENT_OVERFLOW_PPROF`, `AGENT_OVERFLOW_RENDERER_DIAG`) plus the `Passthrough()` list the WSL-boundary launchers forward via WSLENV. Names only, stdlib-only; the behaviors live in `observability/pprofserve` and the transport server. |
 | `platform/` | Runtime-environment probes shared by host-specific packages, such as WSL detection. |
 | `sysstat/` | Host CPU + memory sampler (gopsutil wrapper) backing the sidebar system-stats footer. Pure read-only; cadence + emission owned by `app_sysstat.go`. |
 | `workspacefiles/` | Workspace-scoped file search for @-mention completion. |

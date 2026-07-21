@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"agent-overflow/internal/observability/pprofserve"
+	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/wsllauncher"
 
 	"gopkg.in/yaml.v3"
@@ -311,9 +311,9 @@ func childEnv(cfg config, frontendURL string) []string {
 	// First hop of the WSL-boundary passthrough: the supervisor may run
 	// in WSL while `wails3 task run` launches a Windows exe via interop,
 	// which only carries variables listed in WSLENV. The Windows
-	// launcher then forwards the same variable back into the WSL
+	// launcher then forwards the same variables back into the WSL
 	// backend (wsllauncher.LaunchOptions.PassthroughEnv).
-	return wsllauncher.AppendWSLENV(env, pprofserve.EnvVar)
+	return wsllauncher.AppendWSLENV(env, diagenv.Passthrough()...)
 }
 
 func waitForHTTP(ctx context.Context, rawURL string, timeout time.Duration) error {

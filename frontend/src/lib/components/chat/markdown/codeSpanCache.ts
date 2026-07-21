@@ -141,3 +141,11 @@ export function resetCodeSpanCacheForTest(): void {
 export function __codeSpanCacheStatsForTest(): { entries: number } {
   return { entries: cache.size };
 }
+
+/** Diagnostic accounting (memoryReport). Key chars approximate source
+ *  size; encoded span payloads scale with it. */
+export function codeSpanCacheStats(): { entries: number; approxKeyChars: number } {
+  let approxKeyChars = 0;
+  for (const key of cache.keys()) approxKeyChars += key.length;
+  return { entries: cache.size, approxKeyChars };
+}

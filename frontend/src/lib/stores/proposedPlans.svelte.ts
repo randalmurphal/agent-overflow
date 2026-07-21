@@ -300,6 +300,26 @@ export function upsertProposedPlanForTests(item: Item): void {
   upsertItemIntoCache(item);
 }
 
+/** Diagnostic accounting (memoryReport). */
+export function proposedPlanCacheStats(): {
+  threads: number;
+  items: number;
+  commentEntries: number;
+  comments: number;
+} {
+  let items = 0;
+  for (const entry of Object.values(cache)) items += entry.items.length;
+  let comments = 0;
+  const commentEntries = Object.values(commentCache);
+  for (const entry of commentEntries) comments += entry.comments.length;
+  return {
+    threads: Object.keys(cache).length,
+    items,
+    commentEntries: commentEntries.length,
+    comments,
+  };
+}
+
 export function resetProposedPlanCacheForTests(): void {
   for (const timer of refreshTimers.values()) {
     clearTimeout(timer);
