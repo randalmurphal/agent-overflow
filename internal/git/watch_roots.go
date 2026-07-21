@@ -140,7 +140,9 @@ func (c *Core) globalExcludesRoot(cwd string) (WatchRoot, bool) {
 	var path string
 	result, err := c.run(cwd, "config", "--path", "--get", "core.excludesFile")
 	if err == nil && result.exitCode == 0 {
-		path = strings.TrimSpace(result.stdout)
+		// Trim only the terminator: a quoted config value may carry
+		// legitimate leading/trailing spaces in the filename.
+		path = strings.TrimRight(result.stdout, "\r\n")
 	}
 	if path == "" {
 		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
@@ -150,6 +152,11 @@ func (c *Core) globalExcludesRoot(cwd string) (WatchRoot, bool) {
 		} else {
 			return WatchRoot{}, false
 		}
+	}
+	// --path expands only ~; a relative value is resolved by git against
+	// its process cwd — the repo here, NOT this app's own cwd.
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
 	}
 	dir := filepath.Dir(path)
 	if !isExistingDirectory(dir) {

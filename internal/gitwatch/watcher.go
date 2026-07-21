@@ -97,9 +97,12 @@ type workspaceWatcher struct {
 	// rootsFn recomputes the normalized watch roots (nil disables
 	// rebuilds — polling fallback and tests that inject static roots).
 	// installFn is captured in start so rebuilds reuse the same seam
-	// tests inject.
+	// tests inject. stopFn unregisters eventsCh from notify (seamed so
+	// tests can pin the teardown ordering); set once at construction,
+	// never mutated, so all goroutines read it without sync.
 	rootsFn   func() ([]gitops.WatchRoot, error)
 	installFn func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error
+	stopFn    func(ch chan<- notify.EventInfo)
 
 	// needsRebuild and forceReinstall are run-goroutine-local state,
 	// set while draining events and consumed at the next refresh edge.
@@ -133,6 +136,7 @@ func newWorkspaceWatcher(cwd string, statusFn StatusFn, initial gitops.GitStatus
 		lastStatus: initial,
 		watchRoots: append([]gitops.WatchRoot(nil), watchRoots...),
 		rootsFn:    rootsFn,
+		stopFn:     func(ch chan<- notify.EventInfo) { notify.Stop(ch) },
 		// The initial roots were computed before notify was installed;
 		// a directory created inside that window is invisible to both.
 		// Starting flagged makes the first refresh edge revalidate —
@@ -198,7 +202,7 @@ func (w *workspaceWatcher) stop() {
 	w.cancel()
 	// notify.Stop on an unregistered channel is a no-op, so we can call
 	// it unconditionally — including in the polling-fallback path.
-	notify.Stop(w.eventsCh)
+	w.stopFn(w.eventsCh)
 	<-w.done
 }
 
@@ -211,7 +215,7 @@ func (w *workspaceWatcher) run() {
 	// and reinstall, leaving the reinstalled watches registered forever.
 	// stop() blocks on done, so by the time it returns this final Stop
 	// has happened after any in-flight reinstall completed.
-	defer notify.Stop(w.eventsCh)
+	defer w.stopFn(w.eventsCh)
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("gitwatch: panic in run loop for %s: %v", w.cwd, r)
@@ -238,11 +242,15 @@ func (w *workspaceWatcher) run() {
 		pollTicker = time.NewTicker(pollFallbackInterval)
 		pollCh = pollTicker.C
 	}
-	defer func() {
-		if pollTicker != nil {
-			pollTicker.Stop()
+	stopPolling := func() {
+		if pollTicker == nil {
+			return
 		}
-	}()
+		pollTicker.Stop()
+		pollTicker = nil
+		pollCh = nil
+	}
+	defer stopPolling()
 	if w.fallbackPolling {
 		startPolling()
 	}
@@ -250,10 +258,15 @@ func (w *workspaceWatcher) run() {
 	// refreshEdge is every path that runs statusFn off fs events: apply
 	// a pending watch-root rebuild first so the refresh observes the
 	// world the new roots describe. A rebuild whose reinstall fails
-	// leaves the watcher blind, so it escalates to polling.
+	// leaves the watcher blind, so it escalates to polling; a later
+	// reinstall that succeeds proves the watches are live again, so the
+	// now-redundant ticker stops.
 	refreshEdge := func() {
-		if w.maybeRebuildWatches() {
+		switch w.maybeRebuildWatches() {
+		case rebuildLostWatches:
 			startPolling()
+		case rebuildReinstalled:
+			stopPolling()
 		}
 		w.refresh()
 	}
@@ -263,20 +276,14 @@ func (w *workspaceWatcher) run() {
 		case <-w.ctx.Done():
 			return
 		case ev := <-w.eventsCh:
-			// A (near-)full queue means notify may already have dropped
-			// events — possibly including a rebuild trigger, which rides
-			// individual events and would be lost for good. Recompute AND
-			// force-reinstall pessimistically: with pruning active the
-			// queue overflows rarely, and a spurious reinstall just
-			// re-arms the same watches.
-			if w.rootsFn != nil && len(w.eventsCh) >= notifyChannelSize-1 {
-				w.needsRebuild = true
-				w.forceReinstall = true
-			}
 			roots := w.currentWatchRoots()
 			w.inspectEvent(ev, roots)
 			// Drain any other events queued in this tick to avoid
 			// repeatedly resetting the timer when a burst arrives.
+			// drainNotify also watches for a (near-)full queue — the
+			// dropped-events pessimism — sampling every dequeue so a
+			// producer outpacing the drain itself can't slip past a
+			// single top-of-loop check.
 			w.drainNotify(roots)
 			now := time.Now()
 			if !debounceArmed {

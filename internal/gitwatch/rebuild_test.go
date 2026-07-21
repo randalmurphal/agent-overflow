@@ -58,6 +58,13 @@ type rebuildHarness struct {
 	rootsResult    []gitops.WatchRoot
 	rootsErr       error
 	rootsFnCalls   int
+
+	// seq orders installFn returns against stopFn calls so tests can
+	// pin the teardown guarantee: after stop() returns, the LAST
+	// unregister must have happened after the last (re)install.
+	seq                  int
+	lastStopSeq          int
+	lastInstallReturnSeq int
 }
 
 // newRebuildHarness builds the watcher and absorbs the startup
@@ -90,11 +97,13 @@ func newRebuildHarness(t *testing.T, initialRoots []gitops.WatchRoot) *rebuildHa
 		if gate != nil {
 			<-gate
 		}
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.seq++
+		h.lastInstallReturnSeq = h.seq
 		if err != nil {
 			return err
 		}
-		h.mu.Lock()
-		defer h.mu.Unlock()
 		h.installs = append(h.installs, append([]gitops.WatchRoot(nil), roots...))
 		return nil
 	}
@@ -110,12 +119,24 @@ func newRebuildHarness(t *testing.T, initialRoots []gitops.WatchRoot) *rebuildHa
 		return inner(cwd)
 	}
 	h.w = newWorkspaceWatcher(h.ws, statusFn, gitops.GitStatus{Branch: "main"}, initialRoots, rootsFn)
+	h.w.stopFn = func(ch chan<- notify.EventInfo) {
+		notify.Stop(ch)
+		h.mu.Lock()
+		h.seq++
+		h.lastStopSeq = h.seq
+		h.mu.Unlock()
+	}
 	h.w.start(install)
 	t.Cleanup(h.w.stop)
 
 	h.w.eventsCh <- writeEvent(filepath.Join(h.ws, ".startup-sync"))
+	// Wait past the whole startup edge — recompute AND its refresh —
+	// so a test arming statusGate can't accidentally gate the startup
+	// refresh, and completedCallCount baselines start settled.
 	waitFor(t, 3*time.Second, func() bool { return h.rootsCalls() == 1 },
 		"startup recompute to settle")
+	waitFor(t, 3*time.Second, func() bool { return h.stub.completedCallCount() >= 1 },
+		"startup refresh to settle")
 	return h
 }
 
@@ -150,6 +171,15 @@ func (h *rebuildHarness) statusEnteredCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.statusEntered
+}
+
+// finalStopAfterLastInstall reports whether the most recent unregister
+// (stopFn) happened after the most recent installFn return — the
+// no-leaked-watches guarantee stop() must provide.
+func (h *rebuildHarness) finalStopAfterLastInstall() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lastStopSeq > h.lastInstallReturnSeq
 }
 
 func (h *rebuildHarness) set(fn func(h *rebuildHarness)) {
@@ -433,11 +463,15 @@ func TestOverflowBurstForcesReinstall(t *testing.T) {
 	}, "pessimistic recompute + forced reinstall after a full-queue drain")
 }
 
-// TestStopDuringRebuildDoesNotDeadlock: stop() while the run loop is
-// inside a rebuild's installFn must complete once the install returns,
-// and the run loop's deferred notify.Stop (before done closes) is what
-// guarantees no watches survive stop(). Run with -race.
-func TestStopDuringRebuildDoesNotDeadlock(t *testing.T) {
+// TestStopDuringRebuildDoesNotLeakWatches: stop() concurrent with a
+// rebuild can land its unregister between the rebuild's Stop and
+// reinstall — the reinstall then re-registers watches that nothing
+// would ever stop. The run loop's deferred stopFn (before done closes)
+// closes that hole: after stop() returns, the LAST unregister must
+// have happened after the reinstall returned, which the harness pins
+// via sequence numbers. Also asserts stop() blocks until the gated
+// install completes and then returns promptly. Run with -race.
+func TestStopDuringRebuildDoesNotLeakWatches(t *testing.T) {
 	h := newRebuildHarness(t, nil)
 	subA := filepath.Join(h.ws, "a")
 	if err := os.Mkdir(subA, 0o755); err != nil {
@@ -473,6 +507,10 @@ func TestStopDuringRebuildDoesNotDeadlock(t *testing.T) {
 	case <-stopped:
 	case <-time.After(3 * time.Second):
 		t.Fatal("stop() did not return after installFn unblocked")
+	}
+	if !h.finalStopAfterLastInstall() {
+		t.Fatal("final unregister happened before the racing reinstall returned — " +
+			"the reinstalled watches would leak for the process lifetime")
 	}
 }
 

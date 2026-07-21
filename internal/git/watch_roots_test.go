@@ -184,6 +184,34 @@ func TestWatchRootsIncludesGlobalExcludesDir(t *testing.T) {
 	}
 }
 
+// TestWatchRootsRelativeExcludesFileResolvesAgainstRepo: a relative
+// core.excludesFile is resolved by git against the cwd its commands run
+// in — the repo — so the watch root must join it there, not against the
+// app process's own working directory.
+func TestWatchRootsRelativeExcludesFileResolvesAgainstRepo(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	confDir := filepath.Join(repo, "conf")
+	if err := os.MkdirAll(confDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeRepoFile(t, repo, filepath.Join("conf", "ign"), "node_modules/\n")
+	testutil.RunGit(t, repo, "config", "core.excludesFile", "conf/ign")
+
+	roots, err := NewCore().WatchRoots(repo)
+	if err != nil {
+		t.Fatalf("WatchRoots: %v", err)
+	}
+	// conf/ is also a plain workspace subtree root here; the excludes
+	// entry is a separate raw entry (normalization merges them later),
+	// so search for the trigger-bearing one specifically.
+	for _, root := range roots {
+		if SameFilesystemPath(root.Path, confDir) && root.TriggerFile == "ign" {
+			return
+		}
+	}
+	t.Fatalf("roots = %+v, want an entry at %s with TriggerFile=ign", roots, confDir)
+}
+
 // TestPruneIgnoredSubtrees covers the pure pruning geometry: the
 // no-boundary passthrough, ancestor/subtree splitting, nested-boundary
 // filtering, malformed boundaries, non-directory entries, and the root

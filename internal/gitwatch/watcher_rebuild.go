@@ -98,37 +98,47 @@ func rootIndexByPath(roots []gitops.WatchRoot, path string) int {
 	return -1
 }
 
+// rebuildOutcome is maybeRebuildWatches' report to the refresh edge:
+// whether the watch set was left alone, successfully reinstalled (the
+// watches are proven live — any polling fallback is now redundant), or
+// lost to a reinstall failure (escalate to polling).
+type rebuildOutcome uint8
+
+const (
+	rebuildNone rebuildOutcome = iota
+	rebuildReinstalled
+	rebuildLostWatches
+)
+
 // maybeRebuildWatches recomputes and reinstalls the watch roots when a
-// drained event flagged them stale. Returns true when the watcher lost
-// its fs watches (reinstall failure) and the caller must escalate to
-// polling.
+// drained event flagged them stale.
 //
 // Failure to *recompute* keeps the existing (still installed) watches
 // AND keeps needsRebuild set: the tree that needs (re)watching may
 // never produce another event, so the retry has to ride whatever
 // causes the next refresh edge rather than wait for a second trigger.
-func (w *workspaceWatcher) maybeRebuildWatches() (lostWatches bool) {
+func (w *workspaceWatcher) maybeRebuildWatches() rebuildOutcome {
 	if !w.needsRebuild || w.rootsFn == nil || w.ctx.Err() != nil {
-		return false
+		return rebuildNone
 	}
 	newRoots, err := w.rootsFn()
 	if err != nil {
 		log.Printf("gitwatch: recomputing watch roots for %s: %v (keeping existing watches; retrying at next refresh)", w.cwd, err)
-		return false
+		return rebuildNone
 	}
 	force := w.forceReinstall
 	w.needsRebuild, w.forceReinstall = false, false
 	if !force && slices.Equal(w.currentWatchRoots(), newRoots) {
-		return false
+		return rebuildNone
 	}
-	notify.Stop(w.eventsCh)
+	w.stopFn(w.eventsCh)
 	if err := w.installFn(newRoots, w.eventsCh); err != nil {
 		log.Printf("gitwatch: reinstalling watches for %s (%v); falling back to %s polling",
 			w.cwd, err, pollFallbackInterval)
-		return true
+		return rebuildLostWatches
 	}
 	w.setWatchRoots(newRoots)
-	return false
+	return rebuildReinstalled
 }
 
 // drainNotify empties the queued burst, inspecting each event for
@@ -136,8 +146,22 @@ func (w *workspaceWatcher) maybeRebuildWatches() (lostWatches bool) {
 // refresh edge and inspectEvent short-circuits once saturated, so a
 // burst stays cheap). roots is the caller's snapshot — the run
 // goroutine is the only writer, so one snapshot serves the whole drain.
+//
+// Every iteration also samples the queue depth: a (near-)full queue
+// means notify may already have dropped events — possibly including a
+// rebuild trigger, which rides individual events and would be lost for
+// good — so recompute AND force-reinstall pessimistically. Sampling
+// per dequeue (not once at drain start) matters because a producer
+// outpacing the drain can fill the queue mid-drain; drops only ever
+// happen at full capacity, and the drain sees every level in between.
+// With pruning active the queue rarely fills, and a spurious forced
+// reinstall just re-arms the same watches.
 func (w *workspaceWatcher) drainNotify(roots []gitops.WatchRoot) {
 	for {
+		if w.rootsFn != nil && len(w.eventsCh) >= notifyChannelSize-1 {
+			w.needsRebuild = true
+			w.forceReinstall = true
+		}
 		select {
 		case ev := <-w.eventsCh:
 			w.inspectEvent(ev, roots)

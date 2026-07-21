@@ -3,6 +3,7 @@ package gitwatch
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -108,9 +109,6 @@ func normalizeWatchRoots(cwd string, roots []gitops.WatchRoot) ([]gitops.WatchRo
 			continue
 		}
 		abs, canon, err := canonicalize(path)
-		if err == nil {
-			err = rejectSystemPath(abs, canon)
-		}
 		if err != nil {
 			// cwd (index 0) failing is fatal — there is no workspace to
 			// watch. A pruned child root can legitimately vanish between
@@ -119,6 +117,19 @@ func normalizeWatchRoots(cwd string, roots []gitops.WatchRoot) ([]gitops.WatchRo
 			// ancestor root sees the deletion and triggers a refresh.
 			if i == 0 {
 				return nil, err
+			}
+			continue
+		}
+		if err := rejectSystemPath(abs, canon); err != nil {
+			if i == 0 {
+				return nil, err
+			}
+			// Unlike a vanished dir, this drop is a policy decision, and
+			// dropping a trigger-bearing root (e.g. an excludes file
+			// directly under a refused path) silently reopens the
+			// staleness hole its triggers exist to close — say so.
+			if root.Kind != gitops.KindSubtree || root.TriggerFile != "" {
+				log.Printf("gitwatch: dropping trigger-bearing watch root %s for %s: %v", path, cwd, err)
 			}
 			continue
 		}

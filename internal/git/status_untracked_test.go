@@ -259,6 +259,14 @@ func TestUntrackedStatsFreshWriteNotCached(t *testing.T) {
 	core := NewCore()
 
 	writeRepoFile(t, repo, "f.txt", "1\n2\n")
+	// Pin "now" just after the file's actual mtime so the assertion
+	// cannot flake when a stalled runner puts >2s between the write and
+	// the scan's own nowFn capture.
+	info, err := os.Lstat(filepath.Join(repo, "f.txt"))
+	if err != nil {
+		t.Fatalf("lstat: %v", err)
+	}
+	core.nowFn = func() time.Time { return info.ModTime().Add(100 * time.Millisecond) }
 	if ins, _ := core.untrackedStats(repo, maxUntrackedScanBytes); ins != 2 {
 		t.Fatalf("fresh scan: got %d insertions, want 2", ins)
 	}

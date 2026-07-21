@@ -51,11 +51,16 @@ share a watcher per canonical cwd via refcount.
    root's notify watchpoint dies permanently and only a fresh install
    re-arms it. Recompute failure keeps the existing watches and leaves
    the rebuild flag set so any later refresh edge retries; reinstall
-   failure (watches already stopped) escalates to polling. Watchers
+   failure (watches already stopped) escalates to polling, and a later
+   reinstall that succeeds stops the then-redundant ticker. Watchers
    start rebuild-flagged to close the compute-vs-install subscribe
-   race. run()'s deferred `notify.Stop` (before `done` closes)
-   guarantees `stop()` never races a rebuild's reinstall into leaked
-   watches.
+   race. run()'s deferred unregister (before `done` closes) guarantees
+   `stop()` never races a rebuild's reinstall into leaked watches.
+   Accepted boundary: dead-watchpoint recovery needs the recreate event
+   to arrive via a watched parent — a root whose parent is unwatched
+   (the global-ignore dir, a linked worktree's private gitdir, cwd
+   itself) stays dead after delete+recreate until any other rebuild
+   trigger fires.
 5. `lastStatus` is compared with `GitStatus.Equal` — unchanged status
    does not emit, keeping the wire quiet during heavy fs activity that
    doesn't affect the working tree (build outputs, ignored files).
