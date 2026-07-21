@@ -279,7 +279,14 @@ describe('setupEventListeners', () => {
     expect(pane.lastLiveContentAt).toBeLessThanOrEqual(after);
   });
 
-  it('does not stamp lastLiveContentAt for new Bash rows', async () => {
+  it('does not stamp lastLiveContentAt through the events predicate for new Bash rows', async () => {
+    // Scope: the per-row predicate (providerUpsertAdvancesLiveContent)
+    // stamps inserts only for text-like kinds. Non-text appends stamp
+    // through the pane's gated arm site instead
+    // (armLiveContentAppendSpring — requires an attached scroll
+    // controller, absent here; see 'stamps lastLiveContentAt when a
+    // background completion batch lands post-turn' below and the
+    // structural-append describe in thread.svelte.test.ts).
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
     expect(pane.lastLiveContentAt).toBe(0);
 
@@ -491,15 +498,19 @@ describe('setupEventListeners', () => {
     expect(pane.lastLiveContentAt).toBeGreaterThan(0);
   });
 
-  it('does not stamp lastLiveContentAt for a same-batch tool row insert plus completion', async () => {
+  it('does not stamp lastLiveContentAt through the events predicate for a same-batch tool row insert plus completion', async () => {
     // Both upserts compare against the pre-batch snapshot, so the
     // completion still resolves down the insert path — correct, because a
     // row that mounted this flush is in its estimate phase for the whole
     // flush. Pins the once-per-batch snapshot: a refactor to per-upsert
-    // lookup would silently start stamping these bursts. (This test is
-    // also why buildPane owns pane registration: registering the same
-    // pane under a second key made iterPanes() apply value-different
-    // batches twice, and the re-application stamped spuriously.)
+    // lookup would silently start stamping these bursts through the
+    // UNGATED events predicate. In production the append itself stamps
+    // via the pane's gated arm site (no controller is attached here, so
+    // that path stays closed — see the post-turn background-completion
+    // test below). (This test is also why buildPane owns pane
+    // registration: registering the same pane under a second key made
+    // iterPanes() apply value-different batches twice, and the
+    // re-application stamped spuriously.)
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
     expect(pane.lastLiveContentAt).toBe(0);
 
@@ -534,6 +545,84 @@ describe('setupEventListeners', () => {
 
     expect(pane.items[0].status).toBe('completed');
     expect(pane.lastLiveContentAt).toBe(0);
+  });
+
+  it('stamps lastLiveContentAt when a background completion batch lands post-turn', async () => {
+    // The reported regression: a backgrounded task completing after the
+    // turn ended arrives as NEW rows (task-notification + tool_completion
+    // sibling, with same-batch enrichment resolving down the insert
+    // path), so the per-row predicate never stamped and the rows
+    // teleported in once the structural one-shot lapsed — while the
+    // identical rows arriving mid-turn glided (streaming kept the latch
+    // fresh). With a scroll controller attached (a mounted timeline),
+    // the pane's append arm must stamp the latch AND open the one-shot
+    // so the completion spring-scrolls in exactly like it does while
+    // the agent is working.
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [
+      makeItem({ id: 'seed', threadId: 'thread-a', turnIndex: 0, itemIndex: 0 }),
+    ]);
+    const markStructuralContentPending = vi.fn();
+    pane.attachScrollController({
+      pauseAutoScroll: () => () => {},
+      observe: () => {},
+      markStructuralContentPending,
+      preserveScrollAnchor: () => Promise.resolve(),
+    });
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    const notification = makeItem({
+      id: 'task-notification:task-1',
+      threadId: 'thread-a',
+      turnIndex: 0,
+      itemIndex: 1,
+      kind: 'notification',
+      role: 'system',
+      status: 'completed',
+      summary: 'Background task completed',
+      meta: JSON.stringify({ task_id: 'task-1', source: 'task_notification', output_file_state: 'loading' }),
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: notification,
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: makeItem({
+        id: 'bash-1:completion',
+        threadId: 'thread-a',
+        turnIndex: 0,
+        itemIndex: 2,
+        kind: 'tool_completion',
+        role: 'assistant',
+        status: 'completed',
+        toolName: 'Bash',
+        summary: 'Background command finished',
+        completionOf: 'bash-1',
+        meta: JSON.stringify({ task_id: 'task-1', status_source: 'task_notification' }),
+      }),
+    });
+    // Enrichment re-upsert of the notification in the same batch — still
+    // resolves down the insert path against the pre-batch snapshot.
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: {
+        ...notification,
+        meta: JSON.stringify({ task_id: 'task-1', source: 'task_notification', output_file_state: 'loaded' }),
+        updatedAt: notification.updatedAt + 1,
+      },
+    });
+    await nextFrame();
+
+    expect(pane.items.map((item) => item.id)).toEqual([
+      'seed',
+      'task-notification:task-1',
+      'bash-1:completion',
+    ]);
+    expect(markStructuralContentPending).toHaveBeenCalled();
+    expect(pane.lastLiveContentAt).toBeGreaterThan(0);
   });
 
   it('does not let off-window new rows stamp over a visible no-op bump', async () => {

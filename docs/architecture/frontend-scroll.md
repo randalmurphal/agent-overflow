@@ -473,36 +473,47 @@ adapter seam (delivery timing, windowing, measurement) in
 
 Chat chooses animation mode with a content-keyed latch. `ThreadPane`
 stamps `lastLiveContentAt` whenever live timeline content advances:
-assistant prose, thinking, compaction reasoning, direct text patches, and
+assistant prose, thinking, compaction reasoning, direct text patches,
 visible-field updates to already mounted rows — a running tool row growing
 its output preview per flush window, or running→completed result chrome
-landing. `MessageTimeline` returns `spring` for `SPRING_MODE_HOLD_MS`
-after that stamp and `instant` otherwise.
+landing — and wire appends / reveal-gate releases entering the loaded
+tail (via `armLiveContentAppendSpring`, below). `MessageTimeline` returns
+`spring` for `SPRING_MODE_HOLD_MS` after that stamp and `instant`
+otherwise.
 
 The spring is keyed on content arrival, not provider turn state. It
 therefore covers end-of-turn smoother drains and text-stream gaps, while
-tool row INSERTS (whose estimate→remeasure churn would spring-chase
-transient targets) and late Streamdown typesetting on settled content
-sync-pin invisibly by default. The stamp is window-wide, not
-viewport-local: a rendered-field change anywhere in the loaded window
-opens the hold, so an unrelated bottom reflow landing within it springs
-instead of pinning — accepted bleed, since the window is short and keyed
-to real content changes. The 500ms hold is pure tuning — the historical
-requirement that it outlast the spring sentinel retain duration died with
-the descriptor gate (see Engine Compensation Routing).
+late Streamdown typesetting on settled content sync-pins invisibly by
+default. The stamp is window-wide, not viewport-local: a rendered-field
+change anywhere in the loaded window opens the hold, so an unrelated
+bottom reflow landing within it springs instead of pinning — accepted
+bleed, since the window is short and keyed to real content changes. The
+500ms hold is pure tuning — the historical requirement that it outlast
+the spring sentinel retain duration died with the descriptor gate (see
+Engine Compensation Routing).
 
-Structural transcript appends have a narrower override:
+Structural transcript appends additionally have a one-shot override:
 `markStructuralContentPending()` makes the next near-term command/tool row
 growth spring-eligible even when the content latch currently returns
-`instant`. This is intentionally one-shot. After the structural append
-spring arrives it cancels instead of entering the streaming sentinel, so
+`instant`. When a chase starts from the one-shot alone (latch instant),
+it cancels on arrival instead of entering the streaming sentinel, so
 routed engine compensations are not declined after the append settles.
 
-The pane data layer is the sole owner of the arm
-(`armStructuralSpring` in `thread.svelte.ts`), with two call sites:
+The pane data layer is the sole owner of the arm, with two arm shapes in
+`thread.svelte.ts`: `armLiveContentAppendSpring` (arm + latch stamp) for
 `applyProviderItemUpserts` (a wire append to the loaded tail) and
 `recomputeRevealPass` (the reveal gate releasing withheld rows — rows
-already in `pane.items` mount without any upsert in that flush). Both run
+already in `pane.items` mount without any upsert in that flush), and bare
+`armStructuralSpring` (arm only, no stamp) for the composer's optimistic
+user-send. The stamp is what keeps a post-turn append animating through
+its whole settle: the one-shot covers only the first growth delivery, and
+a background-task completion sibling landing minutes after turn end used
+to mount with a brief chase and then teleport when its payload preview /
+markdown / highlight spans settled past the 250ms window — while the
+identical rows arriving mid-stream glided, because streaming kept the
+latch fresh. Stamping at the arm site gives both cases the same
+`SPRING_MODE_HOLD_MS` rolling window (refreshed by the completion's
+follow-up enrichment upserts through the update path). All arm sites run
 synchronously with the data change, strictly before the Svelte flush in
 which the virtualizer measures the new/released rows and delivers their
 geometry sample. An effect-based arm (MessageTimeline's former

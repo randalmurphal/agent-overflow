@@ -116,11 +116,12 @@ function itemUpsertCountsAsActivity(upsert: PendingItemUpsert): boolean {
 }
 
 function providerUpsertAdvancesLiveContent(existing: Item | undefined, incoming: Item): boolean {
-  // A brand-new row opens the spring latch only for text-like kinds: tool
-  // rows enter the timeline at a virtual size estimate and remeasure a few
-  // milliseconds later, and spring-chasing those transient targets is
-  // visible WebKit stutter (the structural-append one-shot covers genuine
-  // tail appends instead — see markStructuralContentPending).
+  // A brand-new row opens the spring latch THROUGH THIS PREDICATE only
+  // for text-like kinds. Non-text appends still stamp — but at the
+  // pane's arm site (`armLiveContentAppendSpring` in thread.svelte.ts),
+  // which shares the structural arm's restore gates (loading /
+  // discussion / controller-attached); this ungated per-row predicate
+  // must not duplicate that decision without them.
   //
   // `existing` comes from a snapshot taken BEFORE the batch applies, so a
   // same-batch insert+update burst for one row resolves both upserts down
@@ -213,9 +214,10 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
       // A provider upsert that advances live content marks the
       // scroll-animation latch so the controller spring-chases. New
       // text-like rows and visible-field updates to any mounted row
-      // stamp; new tool rows (estimate→remeasure churn) and
-      // timestamp-only bumps deliberately do not — see
-      // providerUpsertAdvancesLiveContent.
+      // stamp here; timestamp-only bumps deliberately do not — see
+      // providerUpsertAdvancesLiveContent. New non-text rows stamp via
+      // the pane's gated append arm inside applyProviderItemUpserts
+      // instead of this ungated path.
       if (hasLiveContentAdvance) pane.markLiveContentAdvanced();
     }
   }

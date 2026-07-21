@@ -162,13 +162,14 @@
 
   // Spring while live content advanced within SPRING_MODE_HOLD_MS, else
   // sync-pin. The pane stamps `lastLiveContentAt` on prose/reasoning
-  // reveals, direct text patches, new text-like provider rows, and
+  // reveals, direct text patches, new text-like provider rows,
   // visible-field updates to already mounted rows (tool output previews,
-  // running→completed result chrome), so during a stream the latch reads
-  // 'spring' continuously and falls to 'instant' ~SPRING_MODE_HOLD_MS
-  // after the last advance. New tool rows deliberately do not stamp;
-  // their virtual estimates often remeasure almost immediately, and
-  // sync-pinning those corrections is smoother than spring-chasing them.
+  // running→completed result chrome), and gated wire appends / reveal
+  // releases (armLiveContentAppendSpring), so during a stream the latch
+  // reads 'spring' continuously and falls to 'instant'
+  // ~SPRING_MODE_HOLD_MS after the last advance — and a post-turn append
+  // (background-task completion sibling) gets the same window as the
+  // identical rows arriving mid-stream.
   // The 500ms hold is pure tuning; see springAnimationLatch.ts.
   function animationModeForScroll(): 'spring' | 'instant' {
     return latchedSpringMode(performance.now(), pane.lastLiveContentAt, SPRING_MODE_HOLD_MS);
@@ -434,16 +435,18 @@
     });
   });
 
-  // Structural-append spring arming and the post-flush 'live-content'
-  // nudge are owned entirely by the pane data layer
-  // (thread.svelte.ts `armStructuralSpring`): `applyProviderItemUpserts`
-  // arms for wire appends and `recomputeRevealPass` arms when the reveal
-  // gate releases withheld rows. Both run synchronously with the data
+  // Structural-append spring arming, the live-content latch stamp for
+  // appends, and the post-flush 'live-content' nudge are owned entirely
+  // by the pane data layer (thread.svelte.ts
+  // `armLiveContentAppendSpring`): `applyProviderItemUpserts` arms for
+  // wire appends and `recomputeRevealPass` arms when the reveal gate
+  // releases withheld rows. Both run synchronously with the data
   // change, so they cannot lose the ordering race an effect here had
   // against the virtualizer's same-flush geometry delivery
   // (bug-report-20260702T193212Z), and neither is keyed on an active
-  // turn, so post-turn appends (interrupt echo, force-closed tool rows)
-  // arm too. Sidebar/host layout nudges keep using the instant
+  // turn, so post-turn appends (interrupt echo, force-closed tool rows,
+  // background-task completion siblings) arm and stamp too.
+  // Sidebar/host layout nudges keep using the instant
   // 'content'/'host-layout' paths; ChatView composer geometry observes as
   // 'composer-geometry' so activity-rail changes during streaming can
   // continue the spring.

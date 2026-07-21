@@ -29,7 +29,8 @@ export interface ThreadStreamingRevealOptions {
   setItemAt(index: number, item: Item): void;
   /** Stamp the live-content latch (pane's stampLiveContent). */
   stampLiveContent(): void;
-  /** Arm the structural-append spring (pane's armStructuralSpring — pane owns all its gates). */
+  /** Arm the structural-append spring and stamp the live-content latch
+   *  (pane's armLiveContentAppendSpring — pane owns all its gates). */
   armStructuralSpring(): void;
   /** rowUiState.appendLivePayloadDeltaForItem — live reasoning-tail payload append. */
   appendLivePayloadDeltaForItem(
@@ -329,13 +330,15 @@ export function createThreadStreamingReveal(
       // A boundary change that releases withheld rows mounts them via
       // MessageTimeline's reveal slice — rows already in `pane.items`, so
       // no wire upsert lands in that flush and `applyProviderItemUpserts`'s
-      // arm never sees it. Arm the structural-append spring here,
-      // synchronously with the release. `prev !== null` skips the gate
-      // ENGAGING (which only withholds); `boundaryChangeReleasesRows`
-      // skips drops that mount nothing (lone row drained, tail removed).
-      // In practice the latch is usually spring-fresh here (onReveal
-      // stamps every revealed frame), so this mostly matters for releases
-      // landing after a >500ms reveal gap.
+      // arm never sees it. Arm the structural-append spring (and stamp
+      // the live-content latch — mounting withheld rows IS content
+      // advancing) here, synchronously with the release. `prev !== null`
+      // skips the gate ENGAGING (which only withholds);
+      // `boundaryChangeReleasesRows` skips drops that mount nothing
+      // (lone row drained, tail removed). In practice the latch is
+      // usually spring-fresh here (onReveal stamps every revealed
+      // frame), so this mostly matters for releases landing after a
+      // >500ms reveal gap.
       if (prev !== null && boundaryChangeReleasesRows(prev, next)) {
         options.armStructuralSpring();
       }

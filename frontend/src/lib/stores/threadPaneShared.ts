@@ -150,12 +150,14 @@ export interface PaneScrollController {
    * One-shot structural-append spring arm (250ms TTL in the controller).
    * The pane data layer is the sole caller (`armStructuralSpring` in
    * thread.svelte.ts): synchronously while applying provider upserts that
-   * APPEND in-window rows, and when the reveal gate releases withheld
-   * rows — both ordered strictly before the flush in which the
-   * virtualizer delivers the resulting content-geometry sample. A
-   * component-effect arm loses that race — and is blind to appends
-   * outside an active turn (interrupt echo, force-closed tool rows) — so
-   * the append's own growth sync-pins as a visible teleport
+   * APPEND in-window rows, when the reveal gate releases withheld rows
+   * (both of which also stamp the pane's live-content latch — see
+   * `armLiveContentAppendSpring`), and for the composer's optimistic
+   * user-send (arm only) — each ordered strictly before the flush in
+   * which the virtualizer delivers the resulting content-geometry
+   * sample. A component-effect arm loses that race — and is blind to
+   * appends outside an active turn (interrupt echo, force-closed tool
+   * rows) — so the append's own growth sync-pins as a visible teleport
    * (bug-report-20260702T193212Z).
    */
   markStructuralContentPending(): void;

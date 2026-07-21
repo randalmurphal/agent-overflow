@@ -7475,6 +7475,62 @@ describe('createThreadPane', () => {
       expect(markStructuralContentPending).toHaveBeenCalledTimes(1);
     });
 
+    it('stamps the live-content latch alongside the wire-append arm', async () => {
+      // A wire append entering the loaded tail is live content: besides
+      // the 250ms one-shot, it must open the full SPRING_MODE_HOLD_MS
+      // rolling window so the appended rows' follow-up growth (payload
+      // preview, markdown, highlight spans) keeps spring-chasing. The
+      // one-shot alone covered only the first growth delivery — a
+      // background-task completion sibling landing after turn end
+      // mounted with a brief chase and then teleported once its settle
+      // outlived the 250ms window, while the identical rows arriving
+      // mid-stream glided (streaming kept the latch fresh).
+      const thread = makeThread({ id: 'thread-arm-stamp' });
+      const pane = await buildPane(thread, [
+        makeItem({ id: 'seed', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
+      ]);
+      attachMockScrollController(pane);
+      expect(pane.lastLiveContentAt).toBe(0);
+
+      const before = performance.now();
+      pane.applyProviderItemUpserts([
+        makeItem({
+          id: 'bash-1:completion',
+          threadId: thread.id,
+          turnIndex: 0,
+          itemIndex: 1,
+          kind: 'tool_completion',
+          role: 'assistant',
+          status: 'completed',
+          toolName: 'Bash',
+          summary: 'Background command finished',
+          completionOf: 'bash-1',
+        }),
+      ]);
+      const after = performance.now();
+
+      // Stamped synchronously with the apply, on the same
+      // performance.now() timebase the MessageTimeline latch reads.
+      expect(pane.lastLiveContentAt).toBeGreaterThanOrEqual(before);
+      expect(pane.lastLiveContentAt).toBeLessThanOrEqual(after);
+    });
+
+    it('pane.armStructuralSpring (composer optimistic send) arms without stamping', async () => {
+      // The composer's send is deliberately a one-shot: one append wants
+      // one spring window, not 500ms of spring eligibility for
+      // unrelated reflows.
+      const thread = makeThread({ id: 'thread-arm-composer' });
+      const pane = await buildPane(thread, [
+        makeItem({ id: 'seed', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
+      ]);
+      const { markStructuralContentPending } = attachMockScrollController(pane);
+
+      pane.armStructuralSpring();
+
+      expect(markStructuralContentPending).toHaveBeenCalledTimes(1);
+      expect(pane.lastLiveContentAt).toBe(0);
+    });
+
     it('does not arm for update-only batches', async () => {
       const thread = makeThread({ id: 'thread-arm-upd' });
       const seed = makeItem({
@@ -7547,16 +7603,18 @@ describe('createThreadPane', () => {
       await Promise.resolve();
       expect(pane.loading).toBe(true);
 
-      // A streaming upsert arriving mid-load must not arm: the whole
-      // switch+load settle is a restore, not an in-turn append
+      // A streaming upsert arriving mid-load must not arm — and must not
+      // stamp the latch either (the stamp shares the arm's gates): the
+      // whole switch+load settle is a restore, not an in-turn append
       // (bug-report-20260622T041049Z class).
       pane.applyProviderItemUpserts([bItem]);
       expect(markStructuralContentPending).not.toHaveBeenCalled();
+      expect(pane.lastLiveContentAt).toBe(0);
 
       releaseSlice({ items: [bItem], oldestTurnIndex: 0, hasMore: false });
       await switching;
 
-      // A genuine append to the settled window arms again.
+      // A genuine append to the settled window arms (and stamps) again.
       pane.applyProviderItemUpserts([
         makeItem({
           id: 'b-1',
@@ -7571,6 +7629,7 @@ describe('createThreadPane', () => {
         }),
       ]);
       expect(markStructuralContentPending).toHaveBeenCalledTimes(1);
+      expect(pane.lastLiveContentAt).toBeGreaterThan(0);
     });
 
     it("schedules the post-flush 'live-content' nudge alongside the arm", async () => {
@@ -7720,8 +7779,11 @@ describe('createThreadPane', () => {
 
       // The chat timeline is swapped out for ChannelView in discussion
       // mode, so the registered controller watches channel messages —
-      // arming it would spring unrelated channel growth for 250ms.
+      // arming it would spring unrelated channel growth for 250ms. The
+      // append stamp shares the gate (the pane's timeline latch has no
+      // reader on this surface).
       expect(markStructuralContentPending).not.toHaveBeenCalled();
+      expect(pane.lastLiveContentAt).toBe(0);
       // Outwait the nudge's flush + frame (and its hidden-window timeout
       // fallback) so a skipped mark that still scheduled the observe
       // would be caught.

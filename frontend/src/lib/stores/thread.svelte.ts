@@ -163,10 +163,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // changes shape or identity; `applyItemDelta` intentionally does not bump.
   let timelineRevision = $state(0);
   // Non-reactive timestamp of the last LIVE timeline content advance — a
-  // smoother reveal, an overwrite patch, a text-like provider row, or a
+  // smoother reveal, an overwrite patch, a text-like provider row, a
   // visible-field update to an already mounted row (tool output preview,
   // running→completed result chrome; see events.ts
-  // providerUpsertAdvancesLiveContent).
+  // providerUpsertAdvancesLiveContent), or a wire append / reveal-gate
+  // release entering the loaded tail (`armLiveContentAppendSpring`
+  // below — that path shares the arm's restore gates, so a switch-load
+  // settle never stamps).
   // Read imperatively by the scroll controller
   // (MessageTimeline's `animationMode` getter) to choose spring vs
   // sync-pin; see utils/springAnimationLatch.ts. Deliberately NOT
@@ -205,7 +208,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       items[index] = item;
     },
     stampLiveContent,
-    armStructuralSpring,
+    armStructuralSpring: armLiveContentAppendSpring,
     appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
   });
   // Windowed-history / paging machinery (loaded-window cursors and flags,
@@ -437,13 +440,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
   /**
    * Arm the structural-append spring and schedule its follow-up nudge.
-   * The pane data layer is the sole owner of this decision; the two call
-   * sites are `applyProviderItemUpserts` (a wire append to the loaded
-   * tail) and `recomputeRevealPass` (the reveal gate releasing withheld
-   * rows). Scroll writes still belong to the controller — the pane only
-   * talks to the registered `PaneScrollController` surface, the same
-   * seam the `scrollToItemRequest` intent publishes through when a
-   * scroll needs virtualizer index resolution.
+   * Returns whether the gates passed and the controller was armed. The
+   * pane data layer is the sole owner of this decision; the call sites
+   * are `armLiveContentAppendSpring` below (wire appends to the loaded
+   * tail via `applyProviderItemUpserts`, and `recomputeRevealPass`
+   * releasing withheld rows) plus the composer's optimistic user-send,
+   * which arms WITHOUT the live-content stamp (the send stays a
+   * one-shot; see `lastLiveContentAt`). Scroll writes still belong to
+   * the controller — the pane only talks to the registered
+   * `PaneScrollController` surface, the same seam the
+   * `scrollToItemRequest` intent publishes through when a scroll needs
+   * virtualizer index resolution.
    *
    * The arm runs synchronously with the data change — strictly before the
    * Svelte flush in which the virtualizer measures the new/released rows
@@ -469,11 +476,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    *   changes render nothing, and arming would open a 250ms spring
    *   window on unrelated channel-message growth.
    */
-  function armStructuralSpring(): void {
+  function armStructuralSpring(): boolean {
     const controller = scrollController;
-    if (!controller) return;
-    if (loading) return;
-    if (threadUsesDiscussionSurface(thread)) return;
+    if (!controller) return false;
+    if (loading) return false;
+    if (threadUsesDiscussionSurface(thread)) return false;
     controller.markStructuralContentPending();
     const token = ++structuralNudgeToken;
     const generation = switchGeneration;
@@ -485,6 +492,25 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (scrollController !== controller) return;
       controller.observe('live-content');
     })();
+    return true;
+  }
+
+  /**
+   * A wire append to the loaded tail (or a reveal-gate release mounting
+   * withheld rows) IS live content advancing: arm the structural spring
+   * AND stamp the live-content latch, sharing the arm's restore gates.
+   * The arm's 250ms one-shot alone only covers the append's first
+   * growth delivery — a background-task completion landing after turn
+   * end mounted with a brief chase and then teleported when its payload
+   * preview / markdown / highlight spans settled, because nothing had
+   * stamped the latch and every follow-up delta resolved 'instant'.
+   * The stamp opens the same SPRING_MODE_HOLD_MS rolling window those
+   * rows get when they arrive mid-stream, so post-turn appends animate
+   * identically. The one-shot stays armed alongside it: it is the
+   * append's own floor, independent of latch tuning.
+   */
+  function armLiveContentAppendSpring(): void {
+    if (armStructuralSpring()) stampLiveContent();
   }
 
   function rebuildItemIndexes(nextItems: Item[]): void {
@@ -1847,17 +1873,20 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     ): ApplyItemUpsertsToWindowResult | null {
       const applied = upsertItemsBatch(incoming);
       // A wire append to the loaded tail arms the structural-append
-      // spring and its follow-up nudge (see `armStructuralSpring`, which
-      // also owns the loading/discussion gates). Turn-state-independent,
-      // so appends after turn end (interrupt echo, force-closed tool
-      // rows) arm too — an effect keyed on the active turn never saw
+      // spring, stamps the live-content latch, and schedules the
+      // follow-up nudge (see `armLiveContentAppendSpring`;
+      // `armStructuralSpring` owns the loading/discussion gates).
+      // Turn-state-independent, so appends after turn end (interrupt
+      // echo, force-closed tool rows, background-task completion
+      // siblings) arm too — an effect keyed on the active turn never saw
       // those and they landed as instant whole-viewport teleports
       // (bug-report-20260702T193212Z). Rollback-restore rows route
       // through `upsertItems` above, deliberately outside this arm;
       // the composer's optimistic user-send arms at its own call site
-      // (`pane.armStructuralSpring()` before its upsert).
+      // (`pane.armStructuralSpring()` before its upsert) without the
+      // stamp.
       if (applied && applied.appendedItems.length > 0) {
-        armStructuralSpring();
+        armLiveContentAppendSpring();
       }
       return applied;
     },
