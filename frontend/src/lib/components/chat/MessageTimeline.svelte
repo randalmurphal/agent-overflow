@@ -64,25 +64,29 @@
   // overlay; combined with the --composer-height variable from ChatView.
   const BOTTOM_PAD_PX = 16;
   // Soft fade at the top of the scroll viewport: content dissolves under
-  // the chat header instead of meeting a hard gap. Paint-only mask, so
-  // (unlike padding or a spacer) it never changes
-  // scrollHeight/clientHeight/scrollTop and never fires the content
-  // ResizeObserver — it stays entirely clear of the scroll controller.
+  // the chat header instead of meeting a hard gap. Implemented as a
+  // gradient OVERLAY (surface color -> transparent, painted over the
+  // content), NOT a mask on the scroller. The two are pixel-identical
+  // here because the backdrop the old mask revealed is the flat
+  // .chat-surface-ground color (verified live 2026-07-21, max channel
+  // delta 2/255) — but their compositor cost is wildly different: a
+  // mask on the scroller rasterizes as a full viewport-sized texture
+  // whenever the pane's content layer is lease-promoted (~4.5MB
+  // renderer + the same again in the GPU-process mirror, per streaming
+  // pane — it was the single largest paint in the promoted scroller's
+  // layer stack) and re-applies on the raster path of every streaming
+  // repaint. The overlay is a 32px strip that paints once. Like the
+  // mask, it is paint-only: no effect on scrollHeight/clientHeight/
+  // scrollTop and no content-RO traffic, so it stays entirely clear of
+  // the scroll controller.
   //
-  // Two mask layers composited as a union: layer 1 is the fade over the
-  // content column; layer 2 is a solid strip that keeps the right
-  // SCROLLBAR_SAFE_PX fully opaque so the SCROLLBAR itself never fades at
-  // the top (a single full-width gradient would fade the scrollbar too,
-  // since it's part of this element's paint). SCROLLBAR_SAFE_PX is an
-  // approximate scrollbar width — overshooting just leaves a thin unfaded
-  // margin on the right, where the centered content never reaches anyway.
-  // Tune either number to taste.
+  // The overlay stops SCROLLBAR_SAFE_PX short of the right edge so the
+  // scrollbar never gets tinted at the top (the old mask kept an
+  // always-opaque strip there for the same reason). Overshooting just
+  // leaves a thin unfaded margin on the right, where the centered
+  // content never reaches anyway. Tune either number to taste.
   const TOP_FADE_PX = 32;
   const SCROLLBAR_SAFE_PX = 16;
-  const TOP_FADE_MASK =
-    `linear-gradient(to bottom, transparent 0, #000 ${TOP_FADE_PX}px) ` +
-    `left top / calc(100% - ${SCROLLBAR_SAFE_PX}px) 100% no-repeat, ` +
-    `linear-gradient(#000, #000) right top / ${SCROLLBAR_SAFE_PX}px 100% no-repeat`;
   const TARGET_FLASH_MS = 900;
   // happy-dom returns 0 for clientHeight/clientWidth, which makes the
   // windowing engine mount zero rows. In happy-dom test runs we mount
@@ -616,12 +620,14 @@
      totalSize — padding changes don't move it, so they could never
      re-pin through that seam. ChatView's composer-overlay RO
      calls `observe('composer-geometry')` to handle that case explicitly.
-     The top `mask` fades the first TOP_FADE_PX of content as it rises
-     under the header (replacing the old hard top padding), while a solid
-     mask layer over the right SCROLLBAR_SAFE_PX keeps the scrollbar from
-     fading with it. It's a paint-only effect, so like the padding-bottom
-     above it never changes scrollHeight/clientHeight/scrollTop and stays
-     clear of the controller.
+     The top-fade OVERLAY (sibling after the scroller) fades the first
+     TOP_FADE_PX of content as it rises under the header (replacing the
+     old hard top padding), stopping SCROLLBAR_SAFE_PX short of the
+     right edge so the scrollbar never tints. It's a paint-only effect,
+     so like the padding-bottom above it never changes
+     scrollHeight/clientHeight/scrollTop and stays clear of the
+     controller. See the TOP_FADE_PX comment for why it is not a mask
+     on this element.
      `scrollbar-gutter: stable both-edges` keeps the centered
      `mx-auto max-w-[62rem]` rows aligned with ChatView's composer overlay.
      The styled `::-webkit-scrollbar` (app.css) is a classic, space-consuming
@@ -646,8 +652,6 @@
     style:overflow-anchor="none"
     style:scrollbar-gutter="stable both-edges"
     style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
-    style:mask={TOP_FADE_MASK}
-    style:-webkit-mask={TOP_FADE_MASK}
     tabindex="-1"
     data-testid="message-timeline-scroll"
     role="log"
@@ -883,6 +887,18 @@
       </div>
     {/if}
   </div>
+
+  <!-- Top-fade overlay (see the TOP_FADE_PX comment for why this is an
+       overlay and not a mask on the scroller). Sits after the scroller
+       in source order so it paints above content, before the
+       jump-to-latest chip so the chip stays on top. -->
+  <div
+    aria-hidden="true"
+    class="pointer-events-none absolute top-0 left-0"
+    style:right={`${SCROLLBAR_SAFE_PX}px`}
+    style:height={`${TOP_FADE_PX}px`}
+    style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
+  ></div>
 
   <!-- Visible when the user has escaped or is no longer near the bottom.
        Wiring this to `!isSticky` would also pop the chip during sidebar/
