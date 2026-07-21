@@ -97,24 +97,42 @@ func normalizeWatchRoots(cwd string, roots []gitops.WatchRoot) ([]gitops.WatchRo
 
 	candidates := make([]gitops.WatchRoot, 0, len(roots)+1)
 	indexByPath := make(map[string]int, len(roots)+1)
-	for _, root := range append([]gitops.WatchRoot{{Path: cwd, Recursive: true}}, roots...) {
+	// cwd itself is always a candidate so the workspace is watched even
+	// if the roots list omits it — but non-recursively: when ignored-
+	// subtree pruning is active, the supplied roots deliberately watch
+	// cwd non-recursively, and forcing Recursive here would drag every
+	// pruned subtree back in via the OR-merge below.
+	for i, root := range append([]gitops.WatchRoot{{Path: cwd, Recursive: false}}, roots...) {
 		path := strings.TrimSpace(root.Path)
 		if path == "" {
 			continue
 		}
 		abs, canon, err := canonicalize(path)
-		if err != nil {
-			return nil, err
+		if err == nil {
+			err = rejectSystemPath(abs, canon)
 		}
-		if err := rejectSystemPath(abs, canon); err != nil {
-			return nil, err
+		if err != nil {
+			// cwd (index 0) failing is fatal — there is no workspace to
+			// watch. A pruned child root can legitimately vanish between
+			// WatchRoots computing it and this normalization (an agent
+			// deleting a directory); dropping it is correct — its parent
+			// ancestor root sees the deletion and triggers a refresh.
+			if i == 0 {
+				return nil, err
+			}
+			continue
 		}
 		if index, ok := indexByPath[canon]; ok {
 			candidates[index].Recursive = candidates[index].Recursive || root.Recursive
+			candidates[index].RebuildOnChildDir = candidates[index].RebuildOnChildDir || root.RebuildOnChildDir
 			continue
 		}
 		indexByPath[canon] = len(candidates)
-		candidates = append(candidates, gitops.WatchRoot{Path: canon, Recursive: root.Recursive})
+		candidates = append(candidates, gitops.WatchRoot{
+			Path:              canon,
+			Recursive:         root.Recursive,
+			RebuildOnChildDir: root.RebuildOnChildDir,
+		})
 	}
 	if len(candidates) == 0 {
 		return nil, errors.New("gitwatch: no valid watch roots")

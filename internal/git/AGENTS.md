@@ -26,12 +26,20 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
 - `status_pr_cache.go` — open-PR lookup cache used by `Status` /
   `StatusFast`; `InvalidatePRCache` lives here too.
 - `status_untracked.go` — untracked-file insertion/file counting for
-  the status badge, including the bounded line scanner.
+  the status badge, including the bounded line scanner and the
+  per-workspace (size, mtime)-keyed line-count memo that keeps the
+  gitwatch refresh cadence from re-reading every untracked file's
+  content on each scan.
 - `status_pending.go` — pending merge/rebase/bisect detection via the
   resolved git directory.
-- `watch_roots.go` — live-status watcher root discovery, including
-  linked-worktree gitdir/common-dir metadata roots and recursive vs
-  non-recursive watch intent.
+- `watch_roots.go` — live-status watcher root discovery. Prunes
+  git-ignored subtrees from the workspace watch (ignored content can
+  never change status; node_modules alone is thousands of inotify
+  watches): ancestors of pruned boundaries become non-recursive
+  `RebuildOnChildDir` roots, surviving subtrees recursive roots.
+  Git metadata is watched narrowly (git dir non-recursive + refs/ +
+  info/, never objects/); a linked worktree's private gitdir plus the
+  shared common dir get the same treatment.
 - `worktree_paths.go` — pure path helpers backing the app layer's
   worktree creation: `SanitizeWorktreePathSegment` (branch → fs-safe
   directory name), `DefaultWorktreesBaseDir` (the `<repo>-worktrees`

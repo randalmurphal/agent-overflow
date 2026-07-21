@@ -3,7 +3,10 @@ package gitwatch
 import (
 	"context"
 	"log"
+	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,8 +92,22 @@ type workspaceWatcher struct {
 
 	// fallbackPolling is set in start() before the run goroutine begins
 	// and never written after — safe to read from the run goroutine
-	// without sync.
+	// without sync. A rebuild-time install failure switches to polling
+	// via run-loop-local state instead (see run).
 	fallbackPolling bool
+
+	// rootsFn recomputes the normalized watch roots (nil disables
+	// rebuilds — polling fallback and tests that inject static roots).
+	// installFn is captured in start so rebuilds reuse the same seam
+	// tests inject.
+	rootsFn   func() ([]gitops.WatchRoot, error)
+	installFn func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error
+
+	// needsRebuild is run-goroutine-local state: set when a drained
+	// event indicates the root set may be stale (ignore-rule edit, new
+	// directory under a RebuildOnChildDir root), consumed at the next
+	// refresh edge.
+	needsRebuild bool
 
 	mu          sync.Mutex
 	subscribers []*Subscription
@@ -98,7 +115,7 @@ type workspaceWatcher struct {
 	watchRoots  []gitops.WatchRoot
 }
 
-func newWorkspaceWatcher(cwd string, statusFn StatusFn, initial gitops.GitStatus, watchRoots []gitops.WatchRoot) *workspaceWatcher {
+func newWorkspaceWatcher(cwd string, statusFn StatusFn, initial gitops.GitStatus, watchRoots []gitops.WatchRoot, rootsFn func() ([]gitops.WatchRoot, error)) *workspaceWatcher {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &workspaceWatcher{
 		cwd:        cwd,
@@ -110,25 +127,38 @@ func newWorkspaceWatcher(cwd string, statusFn StatusFn, initial gitops.GitStatus
 		done:       make(chan struct{}),
 		lastStatus: initial,
 		watchRoots: append([]gitops.WatchRoot(nil), watchRoots...),
+		rootsFn:    rootsFn,
 	}
 }
 
-// start installs the recursive fs watcher and spawns the run loop.
-// Falls back transparently to polling on installation failure (the
-// most common cause is the user's inotify watch limit being exhausted
-// on Linux). The fallback uses the same Updates() channel, so callers
-// see a uniform interface.
+// start installs the fs watcher and spawns the run loop. Falls back
+// transparently to polling on installation failure (the most common
+// cause is the user's inotify watch limit being exhausted on Linux).
+// The fallback uses the same Updates() channel, so callers see a
+// uniform interface.
 func (w *workspaceWatcher) start(installFn func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error) {
-	install := installFn
-	if install == nil {
-		install = installNotifyWatcher
+	if installFn == nil {
+		installFn = installNotifyWatcher
 	}
-	if err := install(w.watchRoots, w.eventsCh); err != nil {
+	w.installFn = installFn
+	if err := installFn(w.currentWatchRoots(), w.eventsCh); err != nil {
 		log.Printf("gitwatch: fs watch unavailable for %s roots=%v (%v); falling back to %s polling",
 			w.cwd, w.watchRoots, err, pollFallbackInterval)
 		w.fallbackPolling = true
 	}
 	go w.run()
+}
+
+func (w *workspaceWatcher) currentWatchRoots() []gitops.WatchRoot {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.watchRoots
+}
+
+func (w *workspaceWatcher) setWatchRoots(roots []gitops.WatchRoot) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.watchRoots = roots
 }
 
 // installNotifyWatcher attaches watchers rooted at each path. rjeczalik/notify
@@ -178,21 +208,44 @@ func (w *workspaceWatcher) run() {
 	// continuous fs activity from starving the refresh.
 	var firstEventAt time.Time
 
+	var pollTicker *time.Ticker
 	var pollCh <-chan time.Time
+	startPolling := func() {
+		if pollTicker != nil {
+			return
+		}
+		pollTicker = time.NewTicker(pollFallbackInterval)
+		pollCh = pollTicker.C
+	}
+	defer func() {
+		if pollTicker != nil {
+			pollTicker.Stop()
+		}
+	}()
 	if w.fallbackPolling {
-		ticker := time.NewTicker(pollFallbackInterval)
-		defer ticker.Stop()
-		pollCh = ticker.C
+		startPolling()
+	}
+
+	// refreshEdge is every path that runs statusFn off fs events: apply
+	// a pending watch-root rebuild first so the refresh observes the
+	// world the new roots describe. A rebuild whose reinstall fails
+	// leaves the watcher blind, so it escalates to polling.
+	refreshEdge := func() {
+		if w.maybeRebuildWatches() {
+			startPolling()
+		}
+		w.refresh()
 	}
 
 	for {
 		select {
 		case <-w.ctx.Done():
 			return
-		case <-w.eventsCh:
+		case ev := <-w.eventsCh:
+			w.inspectEvent(ev)
 			// Drain any other events queued in this tick to avoid
 			// repeatedly resetting the timer when a burst arrives.
-			drainNotify(w.eventsCh)
+			w.drainNotify()
 			now := time.Now()
 			if !debounceArmed {
 				firstEventAt = now
@@ -208,7 +261,7 @@ func (w *workspaceWatcher) run() {
 					}
 				}
 				debounceArmed = false
-				w.refresh()
+				refreshEdge()
 				continue
 			}
 			if debounceArmed {
@@ -223,13 +276,82 @@ func (w *workspaceWatcher) run() {
 			debounceArmed = true
 		case <-debounce.C:
 			debounceArmed = false
-			w.refresh()
+			refreshEdge()
 		case <-pollCh:
 			w.refresh()
 		case <-w.refreshCh:
 			w.refresh()
 		}
 	}
+}
+
+// inspectEvent flags a watch-root rebuild when the event indicates the
+// root set may be stale:
+//   - an ignore-rule change (.gitignore anywhere, the git dir's
+//     info/exclude) moves the pruned-subtree boundaries;
+//   - a directory appearing directly under a RebuildOnChildDir root
+//     (an ancestor of a pruned subtree) is covered by no existing root,
+//     so its future contents would otherwise go unwatched.
+//
+// Deletions need no rebuild: notify drops watches on its own and the
+// stale extra roots are harmless until the next legitimate rebuild.
+func (w *workspaceWatcher) inspectEvent(ev notify.EventInfo) {
+	if w.needsRebuild || w.rootsFn == nil {
+		return
+	}
+	path := ev.Path()
+	base := filepath.Base(path)
+	if base == ".gitignore" ||
+		strings.HasSuffix(path, string(filepath.Separator)+filepath.Join("info", "exclude")) {
+		w.needsRebuild = true
+		return
+	}
+	parent := filepath.Dir(path)
+	roots := w.currentWatchRoots()
+	for _, root := range roots {
+		if !root.RebuildOnChildDir || root.Path != parent {
+			continue
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.IsDir() {
+			return
+		}
+		for _, existing := range roots {
+			if existing.Path == path {
+				return
+			}
+		}
+		w.needsRebuild = true
+		return
+	}
+}
+
+// maybeRebuildWatches recomputes and reinstalls the watch roots when a
+// drained event flagged them stale. Returns true when the watcher lost
+// its fs watches (reinstall failure) and the caller must escalate to
+// polling. Failure to *recompute* keeps the existing (still installed)
+// watches — the next boundary-changing event re-flags.
+func (w *workspaceWatcher) maybeRebuildWatches() (lostWatches bool) {
+	if !w.needsRebuild {
+		return false
+	}
+	w.needsRebuild = false
+	newRoots, err := w.rootsFn()
+	if err != nil {
+		log.Printf("gitwatch: recomputing watch roots for %s: %v (keeping existing watches)", w.cwd, err)
+		return false
+	}
+	if slices.Equal(w.currentWatchRoots(), newRoots) {
+		return false
+	}
+	notify.Stop(w.eventsCh)
+	if err := w.installFn(newRoots, w.eventsCh); err != nil {
+		log.Printf("gitwatch: reinstalling watches for %s (%v); falling back to %s polling",
+			w.cwd, err, pollFallbackInterval)
+		return true
+	}
+	w.setWatchRoots(newRoots)
+	return false
 }
 
 // requestRefresh asks the run loop to do a full statusFn refresh on
@@ -243,10 +365,15 @@ func (w *workspaceWatcher) requestRefresh() {
 	}
 }
 
-func drainNotify(ch chan notify.EventInfo) {
+// drainNotify empties the queued burst, inspecting each event for
+// rebuild triggers on the way (the flag is sticky until the next
+// refresh edge, and inspectEvent short-circuits once set, so a burst
+// costs at most one root-set scan).
+func (w *workspaceWatcher) drainNotify() {
 	for {
 		select {
-		case <-ch:
+		case ev := <-w.eventsCh:
+			w.inspectEvent(ev)
 		default:
 			return
 		}
