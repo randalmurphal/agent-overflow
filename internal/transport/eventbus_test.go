@@ -516,3 +516,77 @@ func drainEvents(t *testing.T, sub *Subscriber, n int, timeout time.Duration) []
 	}
 	return out
 }
+
+// TestEventBus_RingGrowsThroughAllStagesThenEvicts drives one channel
+// through every backing-array transition: empty → initial allocation →
+// two doublings (the second clamped by capacity) → eviction. Replay
+// after the growth chain must return the surviving window in order —
+// proving grow() re-linearizes head/count correctly at each stage.
+func TestEventBus_RingGrowsThroughAllStagesThenEvicts(t *testing.T) {
+	// 40 sits between growth stages: 16 → 32 → clamp at 40 → evict.
+	bus := NewEventBus(40)
+	defer bus.Close()
+
+	for i := 1; i <= 45; i++ {
+		if _, err := bus.Emit("ch1", i); err != nil {
+			t.Fatalf("emit %d: %v", i, err)
+		}
+	}
+
+	// 45 emits into a 40-cap ring: surviving seqs are 6..45. A client
+	// at lastSeq=5 sits exactly on the in-window edge.
+	out := bus.Replay(map[string]uint64{"ch1": 5})
+	if len(out) != 40 {
+		t.Fatalf("replay returned %d events, want 40", len(out))
+	}
+	for i, e := range out {
+		if want := uint64(6 + i); e.Seq != want {
+			t.Fatalf("replay[%d].Seq = %d, want %d (growth must preserve order)", i, e.Seq, want)
+		}
+		if e.Gap {
+			t.Fatalf("replay[%d] unexpectedly a gap marker", i)
+		}
+	}
+
+	// One past the edge gaps.
+	out = bus.Replay(map[string]uint64{"ch1": 4})
+	if len(out) != 1 || !out[0].Gap {
+		t.Fatalf("lastSeq=4 must gap, got %+v", out)
+	}
+}
+
+// TestEventBus_RingRetainsWireBytesOnly pins the ring's single-copy
+// payload retention: replayed events carry no Data (the ring drops it
+// at append — retaining it would hold every payload twice) but their
+// WireBytes still decode to a complete, correct envelope, which is
+// what the replay write path sends verbatim.
+func TestEventBus_RingRetainsWireBytesOnly(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+
+	type payload struct {
+		Title string `json:"title"`
+	}
+	if _, err := bus.Emit("ch1", payload{Title: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := bus.Replay(map[string]uint64{"ch1": 0})
+	if len(out) != 1 {
+		t.Fatalf("replay returned %d events, want 1", len(out))
+	}
+	if out[0].Data != nil {
+		t.Fatalf("ring retained Data (%s); WireBytes already embeds the payload", string(out[0].Data))
+	}
+	var frame ServerFrame
+	if err := json.Unmarshal(out[0].WireBytes, &frame); err != nil {
+		t.Fatalf("replayed WireBytes not valid JSON: %v", err)
+	}
+	var got payload
+	if err := json.Unmarshal(frame.Data, &got); err != nil {
+		t.Fatalf("envelope Data not valid JSON: %v", err)
+	}
+	if got.Title != "hello" || frame.Seq != 1 || frame.Channel != "ch1" {
+		t.Fatalf("replayed envelope = %+v (payload %+v), want ch1 seq 1 title hello", frame, got)
+	}
+}
