@@ -1574,3 +1574,54 @@ func TestServer_CrossOriginIsolationOffByDefault(t *testing.T) {
 		}
 	}
 }
+
+func TestWithAssetHeadersCachePolicy(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h := withAssetHeaders(inner)
+	cases := []struct {
+		name       string
+		path       string
+		remoteAddr string
+		want       string
+	}{
+		// Loopback peers are the embedded webview: it never renavigates,
+		// so caching can't pay off but WOULD pin decoded script text in
+		// the renderer's in-memory HTTP cache.
+		{"loopback asset v4", "/assets/index-abc.js", "127.0.0.1:54321", "no-store"},
+		{"loopback asset v6", "/assets/index-abc.js", "[::1]:54321", "no-store"},
+		// Remote clients reload across sessions; hashed assets are
+		// content-addressed forever.
+		{"remote asset", "/assets/index-abc.js", "192.168.1.50:54321", "public, max-age=31536000, immutable"},
+		// The SPA shell must never be shadowed by a stale copy.
+		{"shell root", "/", "127.0.0.1:54321", "no-cache, must-revalidate"},
+		{"shell index", "/index.html", "192.168.1.50:54321", "no-cache, must-revalidate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, tc.path, nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.RemoteAddr = tc.remoteAddr
+			rec := newHeaderRecorder()
+			h.ServeHTTP(rec, req)
+			if got := rec.Header().Get("Cache-Control"); got != tc.want {
+				t.Errorf("Cache-Control = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// headerRecorder is the minimal ResponseWriter these header tests need;
+// the full httptest.ResponseRecorder would work too but the package
+// currently doesn't import net/http/httptest.
+type headerRecorder struct {
+	h http.Header
+}
+
+func newHeaderRecorder() *headerRecorder             { return &headerRecorder{h: make(http.Header)} }
+func (r *headerRecorder) Header() http.Header        { return r.h }
+func (r *headerRecorder) Write(b []byte) (int, error) { return len(b), nil }
+func (r *headerRecorder) WriteHeader(int)             {}

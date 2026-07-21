@@ -306,14 +306,18 @@ func loopbackOnly(next http.Handler) http.Handler {
 }
 
 // withSecurityHeaders wraps the static asset handler with the same
-// security headers the Wails-managed path uses. Unlike the SPA shell
-// (which holds the bootstrap token), Vite-hashed asset paths are
-// content-addressable forever, so they get a long max-age.
+// security headers the Wails-managed path uses. Cache-Control is
+// no-store for the same reason the transport server uses it for
+// loopback peers (see transport.withAssetHeaders): this stub only ever
+// serves the local embedded webview, which loads the SPA once per
+// process — caching can't pay off, but cacheable scripts pin their
+// decoded text in the renderer's in-memory HTTP cache for the page's
+// lifetime.
 func withSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		transport.WriteSecurityHeaders(h)
-		h.Set("Cache-Control", "public, max-age=31536000, immutable")
+		h.Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})
 }

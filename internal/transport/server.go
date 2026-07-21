@@ -643,10 +643,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 // withAssetHeaders wraps the asset handler with caching + security
-// headers. Cache headers are content-aware: Vite-hashed asset paths
-// (/assets/*) get a year of immutable caching because their filename
-// already encodes their content hash, while index.html and "/" go out
-// as no-cache so a fresh deploy isn't shadowed by a stale shell.
+// headers. Cache headers are content- and peer-aware: Vite-hashed asset
+// paths (/assets/*) get a year of immutable caching for remote peers
+// but no-store for loopback ones (see below), while index.html and "/"
+// go out as no-cache so a fresh deploy isn't shadowed by a stale shell.
 //
 // Security headers come from WriteSecurityHeaders so the rule set stays
 // in sync between this server and clientmode's stub.
@@ -656,9 +656,23 @@ func withAssetHeaders(next http.Handler) http.Handler {
 		WriteSecurityHeaders(h)
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/assets/"):
+			if remoteAddrIsLoopback(r.RemoteAddr) {
+				// The only loopback consumer is the embedded webview,
+				// which loads the SPA once per process and never
+				// renavigates — a cached asset can never be reused.
+				// Cacheable scripts DO cost: Blink's in-memory HTTP
+				// cache retains their decoded text for the page's
+				// lifetime (~6 MB measured 2026-07-21, renderer
+				// web_cache/Script_resources). no-store keeps assets
+				// out of that cache; the rare manual reload refetches
+				// embedded bytes over loopback.
+				h.Set("Cache-Control", "no-store")
+				break
+			}
 			// Vite emits hashed filenames under /assets/, so the response
 			// is content-addressable forever — a content change ships a
-			// new path, never overwrites this one.
+			// new path, never overwrites this one. Remote clients reload
+			// across sessions, so the cache genuinely pays off there.
 			h.Set("Cache-Control", "public, max-age=31536000, immutable")
 		default:
 			// "/" and "/index.html" are the SPA entry shell; a deploy
