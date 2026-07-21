@@ -3,10 +3,8 @@ package gitwatch
 import (
 	"context"
 	"log"
-	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -103,11 +101,18 @@ type workspaceWatcher struct {
 	rootsFn   func() ([]gitops.WatchRoot, error)
 	installFn func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error
 
-	// needsRebuild is run-goroutine-local state: set when a drained
-	// event indicates the root set may be stale (ignore-rule edit, new
-	// directory under a RebuildOnChildDir root), consumed at the next
-	// refresh edge.
-	needsRebuild bool
+	// needsRebuild and forceReinstall are run-goroutine-local state,
+	// set while draining events and consumed at the next refresh edge.
+	// needsRebuild means the root set may be stale (ignore-rule or git
+	// index/config edit, new directory under an ancestor root) and must
+	// be recomputed. forceReinstall additionally bypasses the
+	// roots-unchanged short-circuit: it is set when a current root's
+	// directory was recreated (its notify watchpoint died with the
+	// deletion and is never resurrected) or when the event queue was
+	// full (drops may have hidden such an event) — identical roots
+	// still need a fresh install to re-arm dead watchpoints.
+	needsRebuild   bool
+	forceReinstall bool
 
 	mu          sync.Mutex
 	subscribers []*Subscription
@@ -128,6 +133,12 @@ func newWorkspaceWatcher(cwd string, statusFn StatusFn, initial gitops.GitStatus
 		lastStatus: initial,
 		watchRoots: append([]gitops.WatchRoot(nil), watchRoots...),
 		rootsFn:    rootsFn,
+		// The initial roots were computed before notify was installed;
+		// a directory created inside that window is invisible to both.
+		// Starting flagged makes the first refresh edge revalidate —
+		// equality-gated, so the common case is one cheap recompute and
+		// no reinstall.
+		needsRebuild: true,
 	}
 }
 
@@ -149,6 +160,9 @@ func (w *workspaceWatcher) start(installFn func(roots []gitops.WatchRoot, ch cha
 	go w.run()
 }
 
+// currentWatchRoots returns the live roots slice. Callers must treat it
+// as immutable: setWatchRoots replaces the slice wholesale (and stores
+// its own copy), so a returned snapshot is never mutated under a reader.
 func (w *workspaceWatcher) currentWatchRoots() []gitops.WatchRoot {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -156,6 +170,7 @@ func (w *workspaceWatcher) currentWatchRoots() []gitops.WatchRoot {
 }
 
 func (w *workspaceWatcher) setWatchRoots(roots []gitops.WatchRoot) {
+	roots = slices.Clone(roots)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.watchRoots = roots
@@ -191,6 +206,12 @@ func (w *workspaceWatcher) stop() {
 // the polling tick (when active), and the subscriber fan-out.
 func (w *workspaceWatcher) run() {
 	defer close(w.done)
+	// Runs before done closes (defers are LIFO): a stop() racing a
+	// rebuild can have its notify.Stop land between the rebuild's Stop
+	// and reinstall, leaving the reinstalled watches registered forever.
+	// stop() blocks on done, so by the time it returns this final Stop
+	// has happened after any in-flight reinstall completed.
+	defer notify.Stop(w.eventsCh)
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("gitwatch: panic in run loop for %s: %v", w.cwd, r)
@@ -242,10 +263,21 @@ func (w *workspaceWatcher) run() {
 		case <-w.ctx.Done():
 			return
 		case ev := <-w.eventsCh:
-			w.inspectEvent(ev)
+			// A (near-)full queue means notify may already have dropped
+			// events — possibly including a rebuild trigger, which rides
+			// individual events and would be lost for good. Recompute AND
+			// force-reinstall pessimistically: with pruning active the
+			// queue overflows rarely, and a spurious reinstall just
+			// re-arms the same watches.
+			if w.rootsFn != nil && len(w.eventsCh) >= notifyChannelSize-1 {
+				w.needsRebuild = true
+				w.forceReinstall = true
+			}
+			roots := w.currentWatchRoots()
+			w.inspectEvent(ev, roots)
 			// Drain any other events queued in this tick to avoid
 			// repeatedly resetting the timer when a burst arrives.
-			w.drainNotify()
+			w.drainNotify(roots)
 			now := time.Now()
 			if !debounceArmed {
 				firstEventAt = now
@@ -285,75 +317,6 @@ func (w *workspaceWatcher) run() {
 	}
 }
 
-// inspectEvent flags a watch-root rebuild when the event indicates the
-// root set may be stale:
-//   - an ignore-rule change (.gitignore anywhere, the git dir's
-//     info/exclude) moves the pruned-subtree boundaries;
-//   - a directory appearing directly under a RebuildOnChildDir root
-//     (an ancestor of a pruned subtree) is covered by no existing root,
-//     so its future contents would otherwise go unwatched.
-//
-// Deletions need no rebuild: notify drops watches on its own and the
-// stale extra roots are harmless until the next legitimate rebuild.
-func (w *workspaceWatcher) inspectEvent(ev notify.EventInfo) {
-	if w.needsRebuild || w.rootsFn == nil {
-		return
-	}
-	path := ev.Path()
-	base := filepath.Base(path)
-	if base == ".gitignore" ||
-		strings.HasSuffix(path, string(filepath.Separator)+filepath.Join("info", "exclude")) {
-		w.needsRebuild = true
-		return
-	}
-	parent := filepath.Dir(path)
-	roots := w.currentWatchRoots()
-	for _, root := range roots {
-		if !root.RebuildOnChildDir || root.Path != parent {
-			continue
-		}
-		info, err := os.Lstat(path)
-		if err != nil || !info.IsDir() {
-			return
-		}
-		for _, existing := range roots {
-			if existing.Path == path {
-				return
-			}
-		}
-		w.needsRebuild = true
-		return
-	}
-}
-
-// maybeRebuildWatches recomputes and reinstalls the watch roots when a
-// drained event flagged them stale. Returns true when the watcher lost
-// its fs watches (reinstall failure) and the caller must escalate to
-// polling. Failure to *recompute* keeps the existing (still installed)
-// watches — the next boundary-changing event re-flags.
-func (w *workspaceWatcher) maybeRebuildWatches() (lostWatches bool) {
-	if !w.needsRebuild {
-		return false
-	}
-	w.needsRebuild = false
-	newRoots, err := w.rootsFn()
-	if err != nil {
-		log.Printf("gitwatch: recomputing watch roots for %s: %v (keeping existing watches)", w.cwd, err)
-		return false
-	}
-	if slices.Equal(w.currentWatchRoots(), newRoots) {
-		return false
-	}
-	notify.Stop(w.eventsCh)
-	if err := w.installFn(newRoots, w.eventsCh); err != nil {
-		log.Printf("gitwatch: reinstalling watches for %s (%v); falling back to %s polling",
-			w.cwd, err, pollFallbackInterval)
-		return true
-	}
-	w.setWatchRoots(newRoots)
-	return false
-}
-
 // requestRefresh asks the run loop to do a full statusFn refresh on
 // its next iteration. Non-blocking; coalesces with any pending request.
 // Used by the Manager to trigger a follow-up refresh after the initial
@@ -362,21 +325,6 @@ func (w *workspaceWatcher) requestRefresh() {
 	select {
 	case w.refreshCh <- struct{}{}:
 	default:
-	}
-}
-
-// drainNotify empties the queued burst, inspecting each event for
-// rebuild triggers on the way (the flag is sticky until the next
-// refresh edge, and inspectEvent short-circuits once set, so a burst
-// costs at most one root-set scan).
-func (w *workspaceWatcher) drainNotify() {
-	for {
-		select {
-		case ev := <-w.eventsCh:
-			w.inspectEvent(ev)
-		default:
-			return
-		}
 	}
 }
 

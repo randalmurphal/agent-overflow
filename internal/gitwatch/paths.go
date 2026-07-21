@@ -124,14 +124,24 @@ func normalizeWatchRoots(cwd string, roots []gitops.WatchRoot) ([]gitops.WatchRo
 		}
 		if index, ok := indexByPath[canon]; ok {
 			candidates[index].Recursive = candidates[index].Recursive || root.Recursive
-			candidates[index].RebuildOnChildDir = candidates[index].RebuildOnChildDir || root.RebuildOnChildDir
+			// Kinds are ordered by trigger surface (each kind's rebuild
+			// triggers are a superset of the previous one's), so taking
+			// the max preserves every trigger of both duplicates.
+			// TriggerFile is orthogonal: keep the first non-empty (one
+			// WatchRoots output never carries two different trigger
+			// files for the same directory).
+			candidates[index].Kind = max(candidates[index].Kind, root.Kind)
+			if candidates[index].TriggerFile == "" {
+				candidates[index].TriggerFile = root.TriggerFile
+			}
 			continue
 		}
 		indexByPath[canon] = len(candidates)
 		candidates = append(candidates, gitops.WatchRoot{
-			Path:              canon,
-			Recursive:         root.Recursive,
-			RebuildOnChildDir: root.RebuildOnChildDir,
+			Path:        canon,
+			Recursive:   root.Recursive,
+			Kind:        root.Kind,
+			TriggerFile: root.TriggerFile,
 		})
 	}
 	if len(candidates) == 0 {
@@ -150,7 +160,16 @@ func normalizeWatchRoots(cwd string, roots []gitops.WatchRoot) ([]gitops.WatchRo
 
 	pruned := make([]gitops.WatchRoot, 0, len(candidates))
 	for _, candidate := range candidates {
-		if isCoveredByAnyRoot(candidate, pruned) {
+		// Only plain-content roots are dropped when a recursive root
+		// already covers them. Trigger-bearing roots (ancestor, git
+		// metadata, global-ignore dir) must survive coverage: the
+		// watcher matches rebuild triggers against root paths, so
+		// dropping one silences its triggers even though the covering
+		// root still delivers the raw events. The duplicate watchpoint
+		// costs one extra watch and some double-delivered events the
+		// debounce absorbs.
+		if candidate.Kind == gitops.KindSubtree && candidate.TriggerFile == "" &&
+			isCoveredByAnyRoot(candidate, pruned) {
 			continue
 		}
 		pruned = append(pruned, candidate)

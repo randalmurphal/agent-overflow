@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -342,6 +343,13 @@ func (c *Core) runBinaryWithInputLimit(binary, cwd, stdin string, maxBytes int64
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binary, args...)
+	// Background-cadence git (`status` every debounce edge) must not
+	// opportunistically rewrite .git/index: the write is a pure cache
+	// optimization for git, but it fires an fs event under the watched
+	// git dir — feeding the very refresh loop that ran the status, and
+	// tripping the watcher's index-write rebuild trigger. Mandatory
+	// locks (add, commit) are unaffected. Harmless for gh/glab.
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

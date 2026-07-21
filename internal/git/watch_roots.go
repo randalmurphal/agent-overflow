@@ -2,10 +2,40 @@ package git
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+)
+
+// WatchRootKind classifies a watch root by which events under it can
+// invalidate the root set itself, so the watcher knows when to
+// recompute. Kinds are ordered by trigger surface — each kind's
+// triggers are a superset of the previous one's — which lets root
+// normalization merge duplicate paths by taking the larger kind
+// without losing any trigger.
+type WatchRootKind uint8
+
+const (
+	// KindSubtree is plain workspace content (a recursive pruned
+	// subtree, or the whole-cwd fallback). No event under it changes
+	// the root set.
+	KindSubtree WatchRootKind = iota
+
+	// KindAncestor is a non-recursive ancestor of a pruned ignored
+	// boundary: a directory appearing directly under it is covered by
+	// no existing root, so the watcher must recompute.
+	KindAncestor
+
+	// KindGitMeta is a git metadata directory (git dir, refs/, info/,
+	// a linked worktree's private gitdir). New child directories
+	// trigger like KindAncestor (a late-created info/ must become a
+	// root), and writes to index / exclude / config additionally
+	// trigger: `git add -f` moves ignored boundaries via the index,
+	// info/exclude edits change ignore rules, and config edits can
+	// re-point core.excludesFile.
+	KindGitMeta
 )
 
 // WatchRoot is a filesystem path that should trigger live git-status refreshes.
@@ -14,14 +44,18 @@ import (
 type WatchRoot struct {
 	Path      string
 	Recursive bool
+	Kind      WatchRootKind
 
-	// RebuildOnChildDir marks workspace-side non-recursive roots (the
-	// ancestors of pruned ignored subtrees): a directory appearing
-	// directly under one of these is not covered by any existing root,
-	// so the watcher must recompute its roots. Git metadata roots leave
-	// it false — objects/ fan-out and worktree bookkeeping create
-	// directories routinely and never invalidate the root set.
-	RebuildOnChildDir bool
+	// TriggerFile, when non-empty, names one direct child whose events
+	// flag a root recompute regardless of Kind. It carries the global
+	// ignore file (core.excludesFile): the file is watched via its
+	// parent directory — watching the file itself would die on the
+	// editor write-temp-then-rename pattern — but that directory can be
+	// busy (core.excludesFile in $HOME is common), so only events for
+	// exactly this basename may trigger. Orthogonal to Kind on purpose:
+	// folding it into the kind ladder would break the superset ordering
+	// the normalize merge relies on.
+	TriggerFile string
 }
 
 // maxPrunedWatchRoots caps how many roots ignored-subtree pruning may
@@ -41,11 +75,12 @@ const maxPrunedWatchRoots = 256
 // is routinely thousands) and turns every build/install into a refresh
 // storm. Instead of one recursive root at cwd, the pruned form watches
 // each maximal non-ignored subtree recursively and every ancestor of an
-// ignored boundary non-recursively (flagged RebuildOnChildDir so the
-// watcher recomputes roots when a new directory appears there). The
-// transitions that could re-legitimize an ignored path — .gitignore
-// edits, `git add -f`, index writes — all happen inside watched
-// locations, so the watcher can react by rebuilding.
+// ignored boundary non-recursively (KindAncestor, so the watcher
+// recomputes roots when a new directory appears there). The transitions
+// that could re-legitimize an ignored path — .gitignore edits,
+// info/exclude edits, index writes (`git add -f`), global-ignore edits
+// — all happen inside watched locations whose kinds tell the watcher
+// to rebuild.
 //
 // The git metadata side is deliberately narrow: for a primary checkout
 // the git dir is watched non-recursively (HEAD, index, MERGE_HEAD,
@@ -65,10 +100,13 @@ func (c *Core) WatchRoots(cwd string) ([]WatchRoot, error) {
 		return nil, err
 	}
 	if !ok {
-		return []WatchRoot{{Path: cwd, Recursive: true}}, nil
+		return []WatchRoot{{Path: cwd, Recursive: true, Kind: KindSubtree}}, nil
 	}
 
 	roots := c.workspaceWatchRoots(cwd, gitDir)
+	if excludes, ok := c.globalExcludesRoot(cwd); ok {
+		roots = append(roots, excludes)
+	}
 
 	commonDir, ok, err := c.revParsePath(cwd, "--git-common-dir")
 	if err != nil {
@@ -83,9 +121,41 @@ func (c *Core) WatchRoots(cwd string) ([]WatchRoot, error) {
 	// Linked worktree: the private gitdir (worktrees/<name>) is small —
 	// gitdir file, HEAD, index, pending-op state — and safe to watch
 	// whole; the shared common dir gets the narrow treatment.
-	roots = append(roots, WatchRoot{Path: gitDir, Recursive: true})
+	roots = append(roots, WatchRoot{Path: gitDir, Recursive: true, Kind: KindGitMeta})
 	roots = append(roots, gitMetadataRoots(commonDir)...)
 	return roots, nil
+}
+
+// globalExcludesRoot returns a watch root for the directory holding the
+// user's global ignore file (core.excludesFile, defaulting to git's
+// $XDG_CONFIG_HOME/git/ignore convention when unset). Editing that file
+// moves prunable boundaries exactly like a .gitignore edit, but it
+// lives outside the workspace — without this root a tree un-ignored by
+// a global-ignore edit would stay unwatched forever. The file's
+// basename rides along as TriggerFile so only its own events recompute
+// roots (the parent dir can be as busy as $HOME). Absent config and a
+// missing default directory disable the root (watching a nonexistent
+// dir would fail the whole install).
+func (c *Core) globalExcludesRoot(cwd string) (WatchRoot, bool) {
+	var path string
+	result, err := c.run(cwd, "config", "--path", "--get", "core.excludesFile")
+	if err == nil && result.exitCode == 0 {
+		path = strings.TrimSpace(result.stdout)
+	}
+	if path == "" {
+		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+			path = filepath.Join(xdg, "git", "ignore")
+		} else if home, homeErr := os.UserHomeDir(); homeErr == nil {
+			path = filepath.Join(home, ".config", "git", "ignore")
+		} else {
+			return WatchRoot{}, false
+		}
+	}
+	dir := filepath.Dir(path)
+	if !isExistingDirectory(dir) {
+		return WatchRoot{}, false
+	}
+	return WatchRoot{Path: dir, Recursive: false, Kind: KindSubtree, TriggerFile: filepath.Base(path)}, true
 }
 
 // gitMetadataRoots returns the narrow watch set for a git directory:
@@ -98,23 +168,28 @@ func (c *Core) WatchRoots(cwd string) ([]WatchRoot, error) {
 // count and no object write changes status without a ref/index write
 // beside it.
 func gitMetadataRoots(gitDir string) []WatchRoot {
-	roots := []WatchRoot{{Path: gitDir, Recursive: false}}
+	roots := []WatchRoot{{Path: gitDir, Recursive: false, Kind: KindGitMeta}}
 	if refsDir := filepath.Join(gitDir, "refs"); isExistingDirectory(refsDir) {
-		roots = append(roots, WatchRoot{Path: refsDir, Recursive: true})
+		roots = append(roots, WatchRoot{Path: refsDir, Recursive: true, Kind: KindGitMeta})
 	}
 	if infoDir := filepath.Join(gitDir, "info"); isExistingDirectory(infoDir) {
-		roots = append(roots, WatchRoot{Path: infoDir, Recursive: false})
+		roots = append(roots, WatchRoot{Path: infoDir, Recursive: false, Kind: KindGitMeta})
 	}
 	return roots
 }
 
 // workspaceWatchRoots computes the pruned workspace-side roots for cwd.
 // Any failure (git listing, readdir, cap overflow) degrades to the
-// single recursive root — always correct, just heavier.
+// single recursive root — always correct, just heavier. The degrade is
+// logged: silently re-inflating to tens of thousands of inotify
+// watches is exactly the regression the pruning exists to prevent, and
+// it must be diagnosable when it recurs.
 func (c *Core) workspaceWatchRoots(cwd, gitDir string) []WatchRoot {
+	fallback := []WatchRoot{{Path: cwd, Recursive: true, Kind: KindSubtree}}
 	blocked, err := c.ignoredBoundaryDirs(cwd)
 	if err != nil {
-		return []WatchRoot{{Path: cwd, Recursive: true}}
+		log.Printf("git: watch-root pruning disabled for %s (single recursive watch): %v", cwd, err)
+		return fallback
 	}
 	// The git dir is metadata, not workspace: its watch policy is owned
 	// by gitMetadataRoots. For a primary checkout it sits under cwd and
@@ -124,9 +199,10 @@ func (c *Core) workspaceWatchRoots(cwd, gitDir string) []WatchRoot {
 		rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		blocked = append(blocked, rel)
 	}
-	roots, ok := pruneIgnoredSubtrees(cwd, blocked)
-	if !ok {
-		return []WatchRoot{{Path: cwd, Recursive: true}}
+	roots, err := pruneIgnoredSubtrees(cwd, blocked)
+	if err != nil {
+		log.Printf("git: watch-root pruning disabled for %s (single recursive watch): %v", cwd, err)
+		return fallback
 	}
 	return roots
 }
@@ -158,24 +234,29 @@ func (c *Core) ignoredBoundaryDirs(cwd string) ([]string, error) {
 
 // pruneIgnoredSubtrees turns (cwd, blocked subtree list) into watch
 // roots: every ancestor of a blocked dir is watched non-recursively
-// (with RebuildOnChildDir set), and each of its child directories that
-// is neither blocked nor itself an ancestor becomes a recursive root.
-// Returns ok=false when the caller should fall back to the single
-// recursive root (no blocked dirs is ok=true with that same single
-// root; failure modes are readdir errors and the root cap).
-func pruneIgnoredSubtrees(cwd string, blocked []string) ([]WatchRoot, bool) {
+// (KindAncestor), and each of its child directories that is neither
+// blocked nor itself an ancestor becomes a recursive root. A non-nil
+// error means the caller should fall back to the single recursive root
+// (no blocked dirs is success with that same single root; failure
+// modes are malformed boundaries, readdir errors, and the root cap).
+//
+// Boundary validation stays inline rather than reusing
+// workspacepath.NormalizeRelative: that helper trims whitespace, which
+// would corrupt legitimately space-padded directory names arriving
+// verbatim from git's NUL-delimited listing.
+func pruneIgnoredSubtrees(cwd string, blocked []string) ([]WatchRoot, error) {
 	cleaned := make([]string, 0, len(blocked))
 	for _, b := range blocked {
 		b = filepath.Clean(b)
 		if b == "." || b == "" || b == ".." || strings.HasPrefix(b, ".."+string(filepath.Separator)) || filepath.IsAbs(b) {
 			// A boundary that isn't a proper relative subtree means the
 			// listing wasn't what we expected; don't guess.
-			return nil, false
+			return nil, fmt.Errorf("ignored boundary %q is not a workspace-relative subtree", b)
 		}
 		cleaned = append(cleaned, b)
 	}
 	if len(cleaned) == 0 {
-		return []WatchRoot{{Path: cwd, Recursive: true}}, true
+		return []WatchRoot{{Path: cwd, Recursive: true, Kind: KindSubtree}}, nil
 	}
 
 	// Drop boundaries nested inside other boundaries (defensive: git's
@@ -207,13 +288,13 @@ func pruneIgnoredSubtrees(cwd string, blocked []string) ([]WatchRoot, bool) {
 		if ancestor != "." {
 			abs = filepath.Join(cwd, ancestor)
 		}
-		roots = append(roots, WatchRoot{Path: abs, Recursive: false, RebuildOnChildDir: true})
+		roots = append(roots, WatchRoot{Path: abs, Recursive: false, Kind: KindAncestor})
 		if len(roots) > maxPrunedWatchRoots {
-			return nil, false
+			return nil, fmt.Errorf("pruned roots exceed cap %d", maxPrunedWatchRoots)
 		}
 		entries, err := os.ReadDir(abs)
 		if err != nil {
-			return nil, false
+			return nil, fmt.Errorf("listing ancestor %s: %w", abs, err)
 		}
 		for _, entry := range entries {
 			// IsDir is false for symlinks: a recursive watch never
@@ -231,14 +312,14 @@ func pruneIgnoredSubtrees(cwd string, blocked []string) ([]WatchRoot, bool) {
 			if _, isAncestor := ancestors[rel]; isAncestor {
 				continue
 			}
-			roots = append(roots, WatchRoot{Path: filepath.Join(cwd, rel), Recursive: true})
+			roots = append(roots, WatchRoot{Path: filepath.Join(cwd, rel), Recursive: true, Kind: KindSubtree})
 			if len(roots) > maxPrunedWatchRoots {
-				return nil, false
+				return nil, fmt.Errorf("pruned roots exceed cap %d", maxPrunedWatchRoots)
 			}
 		}
 	}
 	sort.Slice(roots, func(i, j int) bool { return roots[i].Path < roots[j].Path })
-	return roots, true
+	return roots, nil
 }
 
 func hasBlockedAncestor(blockedSet map[string]struct{}, rel string) bool {

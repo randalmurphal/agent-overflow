@@ -11,6 +11,10 @@ share a watcher per canonical cwd via refcount.
   refcount bookkeeping.
 - `watcher.go` — per-cwd `workspaceWatcher` + `Subscription`. Owns the
   debounce timer, polling fallback, and subscriber fan-out.
+- `watcher_rebuild.go` — watch-root staleness: per-event rebuild
+  triggers (`inspectEvent`) and the refresh-edge recompute/reinstall
+  (`maybeRebuildWatches`), including the forced reinstall that re-arms
+  dead watchpoints after a root dir is deleted and recreated.
 - `paths.go` — path canonicalization and watch-root normalization so
   `/tmp` symlinks don't spawn duplicate watchers on macOS, and nested
   git metadata roots are pruned before watcher installation.
@@ -34,13 +38,24 @@ share a watcher per canonical cwd via refcount.
    A trailing-edge 250ms debounce coalesces bursts, then re-runs
    `StatusFn` and broadcasts to subscribers.
 4. While draining an event burst, the watcher inspects paths for
-   root-set staleness: a `.gitignore` / `info/exclude` change, or a new
-   directory directly under a `RebuildOnChildDir` root (an ancestor of
-   a pruned subtree — a new sibling dir there is covered by no root).
-   At the next refresh edge it recomputes roots via the manager's
-   pipeline and reinstalls only when they differ. Recompute failure
-   keeps the existing watches; reinstall failure (watches already
-   stopped) escalates to polling.
+   root-set staleness (see `watcher_rebuild.go`): a `.gitignore`
+   change; an index / exclude / config write under a `KindGitMeta`
+   root (`git add -f` moves pruned boundaries via the index); an event
+   for a root's `TriggerFile` (the global ignore file); or a new
+   directory directly under a `KindAncestor` / `KindGitMeta` root (a
+   new sibling dir there is covered by no root). At the next refresh
+   edge it recomputes roots via the manager's pipeline and reinstalls
+   only when they differ — EXCEPT when a current root's directory was
+   recreated or the event queue hit capacity (drops possible): those
+   force a reinstall even with identical roots, because a deleted
+   root's notify watchpoint dies permanently and only a fresh install
+   re-arms it. Recompute failure keeps the existing watches and leaves
+   the rebuild flag set so any later refresh edge retries; reinstall
+   failure (watches already stopped) escalates to polling. Watchers
+   start rebuild-flagged to close the compute-vs-install subscribe
+   race. run()'s deferred `notify.Stop` (before `done` closes)
+   guarantees `stop()` never races a rebuild's reinstall into leaked
+   watches.
 5. `lastStatus` is compared with `GitStatus.Equal` — unchanged status
    does not emit, keeping the wire quiet during heavy fs activity that
    doesn't affect the working tree (build outputs, ignored files).

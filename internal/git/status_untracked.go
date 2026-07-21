@@ -30,6 +30,16 @@ const maxUntrackedScanBytes = 64 * 1024 * 1024
 // per historical cwd for the process lifetime.
 const untrackedCacheTTL = 30 * time.Minute
 
+// untrackedRacyWindow is the mtime margin inside which a file is too
+// recently written to memoize: a same-size rewrite landing in the same
+// mtime tick as the read would replay a stale count forever on a
+// coarse-granularity filesystem. Git's index has the identical problem
+// and solves it the same way ("racily clean" smudging); 2s covers the
+// coarsest common granularity (FAT, some network filesystems). Files
+// written within the window are simply re-read each scan until they
+// quiesce — which is also when caching them starts paying off.
+const untrackedRacyWindow = 2 * time.Second
+
 // untrackedLineEntry memoizes one regular file's added-line count keyed
 // to its (size, mtime) at read time - the same stat-based change
 // detection git's own index uses. Only fully-read files are cached: a
@@ -84,33 +94,40 @@ func (c *Core) untrackedStats(cwd string, budget int) (insertions, files int) {
 
 	prev := c.untrackedLineCacheSnapshot(cwd)
 	next := make(map[string]untrackedLineEntry, len(prev))
+	scanStart := c.nowFn()
 
 	for rel := range strings.SplitSeq(listing.stdout, "\x00") {
 		if rel == "" {
 			continue
 		}
 		files++
-		if budget <= 0 {
-			continue // keep counting files; just stop tallying lines
-		}
 		path := filepath.Join(cwd, rel)
 		info, err := os.Lstat(path)
 		if err != nil {
 			continue // vanished mid-scan - routine while an agent is writing
 		}
+		// Cache hits replay before the budget gate: they cost no I/O, and
+		// gating them would let one large uncached file early in listing
+		// order evict every later file's entry each scan — permanently
+		// re-reading the exact content the memo exists to skip.
 		if entry, ok := prev[rel]; ok && info.Mode().IsRegular() &&
 			entry.size == info.Size() && entry.mtimeNs == info.ModTime().UnixNano() {
 			next[rel] = entry
 			insertions += entry.lines
 			continue
 		}
+		if budget <= 0 {
+			continue // keep counting files; just stop tallying lines
+		}
 		ins, read := countUntrackedFileLines(info, path, budget)
 		insertions += ins
 		budget -= read
-		// Cache only complete reads of regular files. read < size means
-		// the budget truncated the tally; a mid-write size change makes
-		// the entry self-invalidate via the mtime/size key next scan.
-		if info.Mode().IsRegular() && int64(read) == info.Size() {
+		// Cache only complete reads of regular files whose mtime has
+		// quiesced. read < size means the budget truncated the tally; a
+		// too-recent mtime means a same-size same-tick rewrite could
+		// make the entry replay stale content (see untrackedRacyWindow).
+		if info.Mode().IsRegular() && int64(read) == info.Size() &&
+			info.ModTime().Add(untrackedRacyWindow).Before(scanStart) {
 			next[rel] = untrackedLineEntry{
 				size:    info.Size(),
 				mtimeNs: info.ModTime().UnixNano(),

@@ -8,7 +8,10 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
 
 - `core.go` — `Core` struct with `Execute` / `runBinary`, the shared
   command runner with timeouts and stdout/stderr size caps; PR cache
-  and forge cache plumbing.
+  and forge cache plumbing. Every subprocess runs with
+  `GIT_OPTIONAL_LOCKS=0` so the background status cadence never
+  opportunistically rewrites `.git/index` (which would fire fs events
+  back into gitwatch); mandatory locks (add/commit) are unaffected.
 - `actions.go` — staging, commits, push/pull, branch create/checkout/
   rename. Worktree CRUD (`CreateWorktree*`, `RemoveWorktree*`,
   `ListWorktrees`) lives in `core.go` next to the `Worktree` struct
@@ -29,17 +32,25 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   the status badge, including the bounded line scanner and the
   per-workspace (size, mtime)-keyed line-count memo that keeps the
   gitwatch refresh cadence from re-reading every untracked file's
-  content on each scan.
+  content on each scan. Cache hits replay before the budget gate
+  (hits cost no I/O); files written within the last ~2s are not
+  memoized (git's "racily clean" analog).
 - `status_pending.go` — pending merge/rebase/bisect detection via the
   resolved git directory.
 - `watch_roots.go` — live-status watcher root discovery. Prunes
   git-ignored subtrees from the workspace watch (ignored content can
   never change status; node_modules alone is thousands of inotify
   watches): ancestors of pruned boundaries become non-recursive
-  `RebuildOnChildDir` roots, surviving subtrees recursive roots.
-  Git metadata is watched narrowly (git dir non-recursive + refs/ +
-  info/, never objects/); a linked worktree's private gitdir plus the
-  shared common dir get the same treatment.
+  `KindAncestor` roots, surviving subtrees recursive `KindSubtree`
+  roots. `WatchRootKind` tells the watcher which events under a root
+  can invalidate the root set (kinds are ordered by trigger surface so
+  normalization merges duplicates by max). Git metadata is watched
+  narrowly as `KindGitMeta` (git dir non-recursive + refs/ + info/,
+  never objects/; index/exclude/config writes are rebuild triggers); a
+  linked worktree's private gitdir plus the shared common dir get the
+  same treatment. The global ignore file (core.excludesFile) is watched
+  via its parent dir with `TriggerFile` narrowing events to that one
+  basename.
 - `worktree_paths.go` — pure path helpers backing the app layer's
   worktree creation: `SanitizeWorktreePathSegment` (branch → fs-safe
   directory name), `DefaultWorktreesBaseDir` (the `<repo>-worktrees`

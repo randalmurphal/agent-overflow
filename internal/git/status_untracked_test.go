@@ -109,9 +109,11 @@ func TestUntrackedStatsBudgetExhaustion(t *testing.T) {
 	core := NewCore()
 
 	// Three identical untracked files, 3 lines / 6 bytes each. Identical content
-	// makes the result independent of ls-files iteration order.
+	// makes the result independent of ls-files iteration order. Backdated so
+	// the racy-mtime guard lets the first scan memoize them.
 	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
 		writeRepoFile(t, repo, name, "1\n2\n3\n")
+		backdateRepoFile(t, repo, name)
 	}
 
 	// Full budget: every file is read and tallied - 3 files x 3 lines.
@@ -148,6 +150,7 @@ func TestUntrackedStatsCacheAvoidsReread(t *testing.T) {
 	path := filepath.Join(repo, "f.txt")
 
 	writeRepoFile(t, repo, "f.txt", "1\n2\n3\n")
+	backdateRepoFile(t, repo, "f.txt")
 	if ins, files := core.untrackedStats(repo, maxUntrackedScanBytes); ins != 3 || files != 1 {
 		t.Fatalf("first scan: got (%d, %d), want (3, 1)", ins, files)
 	}
@@ -208,6 +211,73 @@ func TestUntrackedStatsPartialReadNotCached(t *testing.T) {
 	// entry would short-circuit to 1 here.
 	if ins, _ := core.untrackedStats(repo, maxUntrackedScanBytes); ins != 3 {
 		t.Fatalf("recovered budget: got %d insertions, want 3 (partial reads must not be cached)", ins)
+	}
+}
+
+// TestUntrackedStatsCachedTailSurvivesBudgetExhaustion is the regression
+// guard for cache hits being budget-gated: a large uncached file early in
+// listing order exhausts the budget, but every later file with a valid memo
+// entry must still replay (hits cost no I/O) AND be carried into the next
+// cache generation. Gating hits would evict them each scan, permanently
+// re-reading the exact content the memo exists to skip and undercounting
+// the badge to just the early file.
+func TestUntrackedStatsCachedTailSurvivesBudgetExhaustion(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		writeRepoFile(t, repo, name, "1\n2\n3\n")
+		backdateRepoFile(t, repo, name)
+	}
+	if ins, files := core.untrackedStats(repo, maxUntrackedScanBytes); ins != 9 || files != 3 {
+		t.Fatalf("warm-up scan: got (%d, %d), want (9, 3)", ins, files)
+	}
+
+	// "0first.txt" sorts before a.txt in ls-files order; budget 2 is spent
+	// entirely on its 2 bytes, so a/b/c are reached with budget exhausted.
+	writeRepoFile(t, repo, "0first.txt", "x\n")
+	ins, files := core.untrackedStats(repo, 2)
+	if ins != 10 || files != 4 {
+		t.Fatalf("exhausted scan: got (%d insertions, %d files), want (10, 4) - "+
+			"cached tail must replay despite an exhausted budget", ins, files)
+	}
+	core.untrackedMu.Lock()
+	entries := len(core.untrackedLines[repo].files)
+	core.untrackedMu.Unlock()
+	if entries != 3 {
+		t.Fatalf("cache after exhausted scan: %d entries, want 3 - "+
+			"budget exhaustion must not evict cached entries", entries)
+	}
+}
+
+// TestUntrackedStatsFreshWriteNotCached pins the racy-mtime guard: a file
+// whose mtime is within untrackedRacyWindow of the scan is counted but NOT
+// memoized (a same-size rewrite in the same mtime tick would replay a stale
+// count forever), and starts being memoized once its mtime quiesces.
+func TestUntrackedStatsFreshWriteNotCached(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	writeRepoFile(t, repo, "f.txt", "1\n2\n")
+	if ins, _ := core.untrackedStats(repo, maxUntrackedScanBytes); ins != 2 {
+		t.Fatalf("fresh scan: got %d insertions, want 2", ins)
+	}
+	core.untrackedMu.Lock()
+	entries := len(core.untrackedLines[repo].files)
+	core.untrackedMu.Unlock()
+	if entries != 0 {
+		t.Fatalf("fresh file cached: %d entries, want 0 (mtime inside the racy window)", entries)
+	}
+
+	backdateRepoFile(t, repo, "f.txt")
+	if ins, _ := core.untrackedStats(repo, maxUntrackedScanBytes); ins != 2 {
+		t.Fatalf("quiesced scan: got %d insertions, want 2", ins)
+	}
+	core.untrackedMu.Lock()
+	entries = len(core.untrackedLines[repo].files)
+	core.untrackedMu.Unlock()
+	if entries != 1 {
+		t.Fatalf("quiesced file not cached: %d entries, want 1", entries)
 	}
 }
 
@@ -421,6 +491,16 @@ func TestStatusInsertionsIncludeUntracked(t *testing.T) {
 	if status.Insertions != panelIns || status.Deletions != panelDel {
 		t.Fatalf("badge (+%d -%d) != panel (+%d -%d) - the badge must match the diff panel",
 			status.Insertions, status.Deletions, panelIns, panelDel)
+	}
+}
+
+// backdateRepoFile moves rel's mtime safely past untrackedRacyWindow so
+// the memo's racy-mtime guard treats it as quiesced.
+func backdateRepoFile(t *testing.T, repo, rel string) {
+	t.Helper()
+	old := time.Now().Add(-untrackedRacyWindow - 8*time.Second)
+	if err := os.Chtimes(filepath.Join(repo, rel), old, old); err != nil {
+		t.Fatalf("chtimes %s: %v", rel, err)
 	}
 }
 
