@@ -206,7 +206,15 @@ require (
 
 tool github.com/wailsapp/wails/v3/cmd/wails3
 
-// Fork pin: branch ao-webview2-dpi-hardening — WebView2 mixed-DPI GPU-crash
-// prevention + ProcessFailed recovery on top of the v3.0.0-alpha2.112 tag.
-// Drop once wails #5732 / #5733 land upstream.
-replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-alpha2.112.0.20260703173515-5e478c96489e
+// Fork pin: branch ao-webview2-memory-trim (on top of
+// ao-webview2-dpi-hardening) — WebView2 mixed-DPI GPU-crash prevention +
+// ProcessFailed recovery on top of the v3.0.0-alpha2.112 tag, plus
+// WebviewWindow.SuspendWebview/ResumeWebview (minimised-window memory
+// trim, consumed by cmd/agent-overflow-windows/webviewtrim.go). The
+// webview2 module is replaced alongside because the suspend API's COM
+// bindings live there; both pins must reference the same fork commit.
+// Drop the DPI hunks once wails #5732 / #5733 land upstream; the
+// suspend API is an upstream-PR candidate.
+replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-alpha2.112.0.20260721045806-ea37c79ebc0a
+
+replace github.com/wailsapp/wails/webview2 => github.com/randalmurphal/wails/webview2 v1.0.28-0.20260721045806-ea37c79ebc0a

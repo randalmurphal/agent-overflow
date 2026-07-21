@@ -914,6 +914,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	// Windows-side in window.json, not the WSL settings.
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		w, flush := uiwindow.RestoreAndTrack(app, opts, loadWindowGeometry(), saveWindowGeometry)
+		trimWebviewMemoryOnMinimise(w)
 		a.mu.Lock()
 		a.window = w
 		a.flushGeometry = flush
