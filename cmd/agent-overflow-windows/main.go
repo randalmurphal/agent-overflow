@@ -1042,6 +1042,24 @@ func browserArgs(enableDevArgs bool) []string {
 		// instead of being the app's odd subpixel surface. Glyph-edge
 		// blending only — text color is untouched.
 		"--disable-lcd-text",
+		// MANDATORY COMPANION to --disable-lcd-text. Blink composites a
+		// scroller eagerly whenever doing so cannot hurt LCD text; with
+		// LCD text globally off, that guard always passes, so EVERY
+		// scroller (each pane timeline, the pane strip) got promoted to
+		// composited scrolling with content-sized raster layers —
+		// measured 2026-07-21: renderer cc/tile_memory 165.5MB vs the
+		// 89.9MB the lease work started from. This feature (verified
+		// present in WebView2 150.0.4078.83) restores the
+		// prefer-non-composited default so scrollers stay unlayerized;
+		// scrolling still runs on the compositor via raster-inducing
+		// scroll, and the lease's explicit will-change promotion — which
+		// bypasses the preference — keeps actively-scrolling panes
+		// composited exactly as designed. If a future WebView2 drops the
+		// feature the symptom to watch for is this same eager-compositing
+		// regression, visible as full-scroll-height layers in the CDP
+		// LayerTree dump for panes whose contentEl carries no
+		// will-change.
+		"--enable-features=PreferNonCompositedScrolling",
 	}
 	if enableDevArgs {
 		args = append(args,
