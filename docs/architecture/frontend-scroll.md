@@ -443,22 +443,25 @@ documented at the function):
   the at/below-fold growth that pushed the bottom down, so letting the
   requested value land paints one frame short of bottom — the cold
   thread-switch flicker.
-- **width-reflow pass** — during the width-reflow settle window the paired
-  contentRO sync-pins, so the compensation lands in the same paint.
-- **mid-chase decline** — a spring is in flight (or sentinel-alive) and
-  the jump is within one viewport: decline. A decline needs no follow-up:
-  the engine's scroll offset syncs from real scroll events, so an
-  unapplied compensation cannot desync its model — the content simply
-  shifts under the stationary viewport. Larger jumps are bulk layout
-  corrections (fresh-mount estimate→measure, late shiki/katex/mermaid
-  typesetting) and fall through to the final pass so they snap in one
-  paint instead of becoming a multi-hundred-px spring chase.
-- **pass** — anything else applies verbatim.
+- **pass** — anything else applies verbatim, mid-chase included. The
+  compensation is an exact coordinate shift: layout moved the content
+  under the viewport by `delta`, and the write moves the viewport by the
+  same `delta` before paint, holding the visual field stationary. The
+  spring re-reads `el.scrollTop` every tick, so an applied write
+  mid-chase just relocates the chase — the remaining gap is unchanged
+  and the glide continues seamlessly.
 
-There is deliberately no `animationMode` tier: keying the decline on
-`springActive` alone makes mode-latch timing irrelevant to compensation
-handling, which is what retired the `SPRING_MODE_HOLD_MS >
-RETAIN_ANIMATION_DURATION_MS` cross-file invariant.
+There is deliberately no **mid-chase decline** tier. The virtua-era gate
+declined sub-viewport compensations while a spring chase was in flight,
+but declining an exact compensation is what *caused* the visible jump: a
+background completion patching its collapsed tool row above the viewport
+shifted the content under a stationary viewport by the row's height
+delta, then the spring re-chased the same distance (2026-07-21). Nor is
+there an `animationMode` tier: the resolver's engaged tiers key on
+observed geometry (`pinned` + `moves-away`), which makes mode-latch and
+spring-lifecycle timing irrelevant to compensation handling — what
+retired the `SPRING_MODE_HOLD_MS > RETAIN_ANIMATION_DURATION_MS`
+cross-file invariant.
 
 Routed writes are controller writes: attributed (`engine.compensation` /
 `engine.anchorRedirect` in the `scroll.write` trace) and self-tagged for
@@ -497,7 +500,8 @@ Structural transcript appends additionally have a one-shot override:
 growth spring-eligible even when the content latch currently returns
 `instant`. When a chase starts from the one-shot alone (latch instant),
 it cancels on arrival instead of entering the streaming sentinel, so
-routed engine compensations are not declined after the append settles.
+later negative geometry corrections sync-pin invisibly instead of
+deferring to a dead chase after the append settles.
 
 The pane data layer is the sole owner of the arm, with two arm shapes in
 `thread.svelte.ts`: `armLiveContentAppendSpring` (arm + latch stamp) for

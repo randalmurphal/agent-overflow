@@ -193,8 +193,6 @@ export interface ContentObserver {
   sampleResizeCorrelation(): boolean;
   /** Raw resizeDifference read for trace payloads only. */
   resizeDifferenceNow(): number;
-  /** True while the width-reflow settle window is open (engine-compensation input). */
-  widthReflowActive(): boolean;
   /**
    * Stamp a synthetic RO-correlation before an out-of-content instant
    * pin (composer/host geometry), so the resulting scroll event is
@@ -649,7 +647,6 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       return correlated;
     },
     resizeDifferenceNow: () => resizeDifference,
-    widthReflowActive: () => contentReflowSettleUntil > nowMs(),
     stampSyntheticResizeCorrelation: () => {
       // Stamp resizeDifference BEFORE the caller writes scrollTop so the
       // resulting scroll event is treated as RO-correlated, not

@@ -676,9 +676,9 @@ export function createUseStickToBottomController(
   // its tier-by-tier regression history lives in the resolver's
   // provenance notes and scroll-contracts.md C10). Gathers the
   // observation, delegates the decision to the pure resolver, applies
-  // the one write through the chokepoint. Detached: decline — a
-  // declined compensation cannot desync the engine (its offset follows
-  // real scroll events).
+  // the one write through the chokepoint. Detached (no scrollEl): drop —
+  // an unapplied compensation cannot desync the engine (its offset
+  // follows real scroll events).
   function applyEngineCompensation(compensation: EngineCompensation): boolean {
     if (!scrollEl) return false;
     const observation: EngineCompensationObservation = {
@@ -686,8 +686,6 @@ export function createUseStickToBottomController(
       target: compensation.target,
       scrollTop: scrollEl.scrollTop,
       bottomTarget: targetScrollTop(),
-      clientHeight: scrollEl.clientHeight,
-      widthReflowActive: observers.widthReflowActive(),
     };
     const decision = resolveEngineCompensation(resolverStateSnapshot(), observation);
     if (isUiRenderTraceEnabled()) trace('scroll.engineCompensation', () => ({
@@ -696,16 +694,21 @@ export function createUseStickToBottomController(
       delta: Math.round(compensation.delta),
       scrollTop: Math.round(observation.scrollTop),
       bottomTarget: Math.round(observation.bottomTarget),
-      writeCaller: decision.write?.caller ?? null,
-      writeValue: decision.write ? Math.round(decision.write.value) : null,
+      writeCaller: decision.write.caller,
+      writeValue: Math.round(decision.write.value),
       springToken: spring.token(),
       warm,
       isAtBottomState,
       escapedFromLockState,
       pauseDepth,
     }));
-    if (decision.write === null) return false;
     writeScrollTop(decision.write.caller, decision.write.value);
+    // The compensation moved the whole scroll range (scrollHeight and
+    // the written offset shifted together): translate the spring's
+    // growth-rate feedforward frame so the shift doesn't read as
+    // content delivery (a +290px background-completion patch would
+    // otherwise spike the rate EMA and burst the drain follow).
+    spring.noteExternalTargetShift(compensation.delta);
     return true;
   }
 

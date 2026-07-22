@@ -235,11 +235,11 @@ export interface UseStickToBottomController {
    * writes scrollTop itself: TimelineVirtualizer forwards each
    * `EngineCompensation` observation here synchronously (same task as
    * the geometry change it compensates), the resolver's
-   * `resolveEngineCompensation` decides, and any write goes through the
+   * `resolveEngineCompensation` decides, and the write goes through the
    * controller chokepoint (tagged like every controller write). Returns
-   * true if a write landed; a decline needs no follow-up — the engine
-   * re-reads the DOM offset from the next scroll event, so an unapplied
-   * compensation cannot desync it.
+   * true if a write landed — false only while detached, which needs no
+   * follow-up: the engine re-reads the DOM offset from the next scroll
+   * event, so an unapplied compensation cannot desync it.
    *
    * The consumer wires this directly:
    * `<TimelineVirtualizer onCompensation={stick.applyEngineCompensation}>`.

@@ -4400,11 +4400,14 @@ describe('createUseStickToBottomController — spring chase', () => {
       mode = 'instant';
       for (let i = 0; i < 10; i++) await nextFrame();
 
-      // Spring canceled (springToken=0): a routed compensation resolves
-      // through the pass tier instead of the mid-chase decline.
-      geom.scrollHeight = 1500;
-      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 50, target: 850 })).toBe(true);
-      expect(geom.scrollTop).toBe(850);
+      // Spring canceled (springToken=0): a negative contentRO delta
+      // sync-pins instead of deferring to a chase (the carve-out is
+      // springActive-keyed). A stuck-live token would defer and leave
+      // scrollTop at 800.
+      geom.scrollHeight = 1500; // target 900, current 800 — no overshoot
+      geom.contentHeight = 1190;
+      ro.fire(contentEl, 1190); // delta -10
+      expect(geom.scrollTop).toBe(900);
     });
   });
 
@@ -5817,22 +5820,21 @@ describe('createUseStickToBottomController — spring chase', () => {
       });
     });
 
-    it('spring stays sentinel-alive during streaming when arrived past the retain window — compensations stay declined', async () => {
+    it('spring stays sentinel-alive during streaming when arrived past the retain window — negative deltas defer to the chase', async () => {
       // The inter-chunk dead-zone bug: spring arrives, 350ms pass with
       // no new content (async shiki load, parseIncompleteMarkdown
       // rebalance, slow model cadence), cancelSpring sets springToken=0.
-      // In that window a routed engine compensation resolves through the
-      // pass tier and negative contentRO deltas sync-pin — both produce
-      // a user-visible instant snap mid-stream where the spring should
+      // In that window a negative contentRO delta sync-pins — a
+      // user-visible instant snap mid-stream where the spring should
       // have smoothly chased. Code blocks exacerbate this because shiki
       // language loads are async and parseIncompleteMarkdown rebalances
       // create timing gaps > 350ms.
       //
       // Fix: when arrived but animationMode is still 'spring', the
       // spring re-rAFs as a sentinel (springToken stays non-zero) so the
-      // resolver's decline tier and negative-delta carve-out remain
-      // engaged. The next chunk's positive contentRO delta bumps
-      // lastTargetChangedAt and the chase resumes.
+      // resolver's negative-delta carve-out remains engaged. The next
+      // chunk's positive contentRO delta bumps lastTargetChangedAt and
+      // the chase resumes.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150); // warm
@@ -5854,24 +5856,26 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       // Widen the scroll range so the compensation target sits above the
       // current position without being clamped by the stub geometry
-      // (maxTarget = scrollHeight - clientHeight). This isolates the
-      // decline decision from clamping.
+      // (maxTarget = scrollHeight - clientHeight).
       geom.scrollHeight = 1200;
       // contentHeight unchanged — no contentRO fire.
 
-      // The engine compensates for an above-viewport row remeasure while the
-      // model is between chunks. The sentinel keeps springActive true, so
-      // the resolver declines — without the sentinel this would resolve
-      // through the pass tier and snap (the regression).
-      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 10, target: 510 })).toBe(false);
-      expect(geom.scrollTop).toBe(500);
+      // The engine compensates for an above-viewport row remeasure while
+      // the model is between chunks. A compensation is an exact
+      // coordinate shift (content already moved by the same delta), so
+      // it applies verbatim — sentinel or not — and is NOT the snap the
+      // sentinel exists to prevent.
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 10, target: 510 })).toBe(true);
+      expect(geom.scrollTop).toBe(510);
 
-      // Similarly, a small negative contentRO delta (parseIncomplete
-      // Markdown rebalance) must NOT sync-pin.
+      // The snap the sentinel DOES prevent: a small negative contentRO
+      // delta (parseIncompleteMarkdown rebalance) must NOT sync-pin —
+      // the carve-out defers to the live chase, which absorbs the
+      // corrected target on its next tick.
       geom.scrollHeight = 1190;
       geom.contentHeight = 890;
-      ro.fire(contentEl, 890); // target = 590, current=500, no overshoot
-      expect(geom.scrollTop).toBe(500);
+      ro.fire(contentEl, 890); // target = 590, current=510, no overshoot
+      expect(geom.scrollTop).toBe(510);
 
       // Next streaming chunk arrives — spring resumes chasing.
       geom.scrollHeight = 1300;
@@ -5905,15 +5909,15 @@ describe('createUseStickToBottomController — spring chase', () => {
       mode = 'instant';
       for (let i = 0; i < 10; i++) await nextFrame();
 
-      // Widen scrollHeight so the compensation value isn't clamped by
-      // the stub geometry (maxTarget = scrollHeight - clientHeight must
-      // exceed the write value).
-      geom.scrollHeight = 1200;
-
-      // A routed compensation now passes (springToken should be 0 after
-      // the instant-mode cancel, so the decline tier can't fire).
-      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 10, target: 510 })).toBe(true);
-      expect(geom.scrollTop).toBe(510);
+      // With the sentinel cancelled (springToken=0), a negative
+      // contentRO delta sync-pins instead of deferring to a chase — the
+      // carve-out (resolver negativeWillPin, springActive branch) is the
+      // one springActive-keyed behavior observable from here. Widen the
+      // range so the target isn't clamped by the stub geometry.
+      geom.scrollHeight = 1190;
+      geom.contentHeight = 890;
+      ro.fire(contentEl, 890); // target = 590, current=500, no overshoot
+      expect(geom.scrollTop).toBe(590);
     });
 
     it('text selection mid-spring pauses scrollTop advancement', async () => {
@@ -5998,8 +6002,7 @@ describe('createUseStickToBottomController — spring chase', () => {
     // applyEngineCompensation. Decision policy is exhaustively covered
     // in scroll/resolver.test.ts (resolveEngineCompensation); these
     // tests pin the controller-side choreography — chokepoint routing,
-    // attribution, self-tagging, and the decline/detach return
-    // contract.
+    // attribution, self-tagging, and the detach return contract.
 
     it('applies a dormant compensation through the write chokepoint (attributed + self-tagged)', async () => {
       const ro = getRO();
@@ -6060,7 +6063,16 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.escapedFromLock).toBe(false);
     });
 
-    it('declines a small compensation mid-chase (no write; spring stays the single writer)', async () => {
+    it('applies a small compensation mid-chase; the chase continues from the shifted position', async () => {
+      // Regression (2026-07-21, the background-completion jump): a
+      // backgrounded task settles while the drain chase runs, growing
+      // its collapsed tool row ABOVE the viewport. The compensation is
+      // an exact coordinate shift — content already moved by the same
+      // delta — so it must WRITE; the legacy decline left the content
+      // shifted under a stationary viewport (the visible jump) and the
+      // spring then re-chased the same distance. The spring re-reads
+      // scrollTop each tick, so the applied shift leaves the remaining
+      // gap unchanged and the glide continues seamlessly.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -6074,11 +6086,9 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(springStart).toBeGreaterThan(400);
       expect(springStart).toBeLessThan(800);
 
-      // Small mid-chase compensation: declined, nothing written; the
-      // engine re-syncs from the next real scroll event on its own.
       const handled = controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 10, target: springStart + 10 });
-      expect(handled).toBe(false);
-      expect(geom.scrollTop).toBe(springStart);
+      expect(handled).toBe(true);
+      expect(geom.scrollTop).toBe(springStart + 10);
 
       // The chase still completes.
       await advanceUntil(() => geom.scrollTop === 800);
@@ -6109,7 +6119,12 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 100, target: 500 })).toBe(false);
     });
 
-    it('post-restore warm settle re-arms the mid-chase decline (restore does not permanently disarm)', async () => {
+    it('post-restore warm settle re-arms the anchor redirect (restore does not permanently disarm)', async () => {
+      // Restore drops the controller to !warm, which routes every
+      // compensation through the pass tier verbatim. Once the warm-up
+      // settles, the engaged tiers must be back: a pinned moves-away
+      // compensation redirects to the bottom target again instead of
+      // passing verbatim (which would visibly lift a pinned viewport).
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -6123,19 +6138,10 @@ describe('createUseStickToBottomController — spring chase', () => {
       ro.fire(contentEl, 800);
       await waitMs(150);
       expect(controller.isWarm).toBe(true);
+      expect(geom.scrollTop).toBe(400); // pinned at bottom (target 400)
 
-      // Start a spring chase and verify the decline tier suppresses
-      // small compensations again.
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      ro.fire(contentEl, 1200);
-      await nextFrame();
-      const midChase = geom.scrollTop;
-      expect(midChase).toBeGreaterThan(400);
-      expect(midChase).toBeLessThan(800);
-
-      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 20, target: midChase + 20 })).toBe(false);
-      expect(geom.scrollTop).toBe(midChase);
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: -100, target: 300 })).toBe(true);
+      expect(geom.scrollTop).toBe(400); // redirected — stayed at the bottom
     });
 
     it('sentinel + content-latch hold cover a wire-round gap — pinned moves-away compensation is redirected', async () => {
@@ -6146,8 +6152,8 @@ describe('createUseStickToBottomController — spring chase', () => {
       // gap and springActive stays true. An engine compensation arriving
       // in the gap that would move a pinned viewport away from the
       // bottom is redirected — and because the resolver's redirect tier
-      // outranks both decline and pass, the no-displacement outcome
-      // holds even if the sentinel has already died (the reason the
+      // outranks the verbatim apply, the no-displacement outcome holds
+      // even if the sentinel has already died (the reason the
       // HOLD > RETAIN cross-file invariant could be retired). Uses the
       // REAL production latch so this can't drift from MessageTimeline.
       let contentAdvancing = true;
@@ -6175,12 +6181,14 @@ describe('createUseStickToBottomController — spring chase', () => {
       for (let i = 0; i < 5; i++) await nextFrame();
 
       // The latch-held sentinel is what keeps springActive true through
-      // the gap: a small non-moves-away compensation is DECLINED (widen
-      // the range so the DOM is not pinned and the target isn't
-      // clamped). With a broken latch the sentinel cancels on its next
-      // tick and this would resolve through the pass tier instead.
+      // the gap: a small negative contentRO delta defers to the chase
+      // (the carve-out) instead of sync-pinning (widen the range so the
+      // target isn't clamped and there's no overshoot). With a broken
+      // latch the sentinel cancels on its next tick and this would
+      // sync-pin to 600.
       geom.scrollHeight = 1200;
-      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 10, target: 510 })).toBe(false);
+      geom.contentHeight = 890;
+      ro.fire(contentEl, 890); // target = 600, current=500, no overshoot
       expect(geom.scrollTop).toBe(500);
       geom.scrollHeight = 1100; // pinned again (bottomTarget back to 500)
 
@@ -6191,35 +6199,6 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(500); // redirected to the bottom target
     });
 
-    it('passes a mid-chase compensation during a width-reflow settle window', async () => {
-      // Pins the controller-side `widthReflowActive` sampling
-      // (contentReflowSettleUntil > nowMs()) on the engine path: during a
-      // width reflow the paired contentRO sync-pins, so the compensation
-      // must land in the same paint instead of hitting the mid-chase
-      // decline. If the sampling regressed (dropped / wrong clock /
-      // wrong window), the decline tier would fire and this returns
-      // false.
-      const ro = getRO();
-      ro.fire(contentEl, 800);
-      await waitMs(150); // warm
-
-      // Start a chase (height-only growth, no width change).
-      geom.scrollHeight = 1400;
-      geom.contentHeight = 1200;
-      ro.fire(contentEl, 1200);
-      await nextFrame();
-      const midChase = geom.scrollTop;
-      expect(midChase).toBeGreaterThan(400);
-      expect(midChase).toBeLessThan(800);
-
-      // Width change mid-chase (same height → delta 0, but the reflow
-      // settle window opens before the early return).
-      ro.fire(contentEl, 1200, 640);
-
-      // Small jump that the decline tier would otherwise suppress.
-      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 20, target: midChase + 20 })).toBe(true);
-      expect(geom.scrollTop).toBe(midChase + 20);
-    });
   });
 
   describe("observe('live-content') during sentinel — pane structural nudges", () => {
@@ -6511,11 +6490,11 @@ describe('createUseStickToBottomController — external content-geometry source'
     });
 
     it('a width-only sample opens the width-reflow settle window', async () => {
-      // Mirrors the RO-sourced mid-chase width-reflow test: during the
-      // settle window the paired sync-pin lands, so a small mid-chase
-      // engine compensation must pass instead of hitting the decline
-      // tier. If the width sample failed to open the window, this
-      // returns false.
+      // During the settle window a negative delta is layout correction
+      // and must sync-pin (contentRO.negativeDeltaReflow) even though a
+      // spring chase is in flight — the reflow override on the
+      // carve-out. If the width sample failed to open the window, the
+      // carve-out would defer and scrollTop would stay mid-chase.
       mode = 'spring';
       deliver(800);
       await waitMs(150); // warm via quiet timer (no signal option)
@@ -6532,9 +6511,11 @@ describe('createUseStickToBottomController — external content-geometry source'
       // Same height, new width → delta 0, reflow window opens.
       deliver(1200, 640);
 
-      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: 20, target: midChase + 20 })).toBe(true);
-      expect(geom.scrollTop).toBe(midChase + 20);
-      await advanceUntil(() => geom.scrollTop === 800);
+      // Reflow shrink at the same width: sync-pin to the new bottom.
+      geom.scrollHeight = 1390;
+      geom.contentHeight = 1190;
+      deliver(1190, 640); // delta -10, target 790 — above midChase
+      expect(geom.scrollTop).toBe(790);
     });
   });
 
