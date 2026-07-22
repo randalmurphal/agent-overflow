@@ -80,15 +80,58 @@ export function getPathRefsFromMeta(meta: string | undefined | null): PathRef[] 
     // Refresh recency (Map iteration order is insertion order).
     pathRefsMemo.delete(meta);
     pathRefsMemo.set(meta, memoized);
-    return memoized;
+    // Re-canonicalize on every hit, not just on parse: a draining
+    // row's per-frame calls hit this branch, and without the refresh
+    // its CONTENT entry would keep the recency stamp from the last
+    // meta change — 128 distinct allowlists parsed elsewhere before
+    // settle would evict it, and the settle meta would mint a fresh
+    // identity (the re-lex regression, back for exactly the row that
+    // needs the guarantee). If the entry was already evicted, this
+    // reinstalls the live instance as canonical.
+    return canonicalizePathRefs(memoized);
   }
-  const out = parsePathRefsFromMeta(meta);
+  const out = canonicalizePathRefs(parsePathRefsFromMeta(meta));
   if (pathRefsMemo.size >= PATH_REFS_MEMO_CAP) {
     const oldest = pathRefsMemo.keys().next().value;
     if (oldest !== undefined) pathRefsMemo.delete(oldest);
   }
   pathRefsMemo.set(meta, out);
   return out;
+}
+
+// Content-canonical instances for the parsed arrays, keyed by the refs'
+// serialized content. The meta-string memo above alone is not enough
+// for identity stability: the settle patch merges the codeSpans blob
+// into the SAME meta string the allowlist rides on, so a row's meta
+// changes at settle while its pathRefs content is byte-identical — and
+// a string-keyed miss returning a fresh array identity re-lexes every
+// mounted markdown block mid-drain (ChatMarkdown extension rebuild;
+// regression: ChatMarkdown.settleRelex.test.ts). Canonicalizing by
+// content makes any meta that parses to the same allowlist resolve to
+// ONE array instance, so Svelte's derived equality cuts the chain.
+const pathRefsByContent: Map<string, PathRef[]> = new Map();
+
+function canonicalizePathRefs(refs: PathRef[] | undefined): PathRef[] | undefined {
+  if (!refs) return undefined;
+  let key = '';
+  for (const ref of refs) {
+    // NUL/SOH separators: paths may contain any printable char, so a
+    // printable-joined key could collide across field/ref boundaries.
+    key += `${ref.path}\u0000${ref.line ?? ''}\u0000${ref.col ?? ''}\u0001`;
+  }
+  const canonical = pathRefsByContent.get(key);
+  if (canonical) {
+    // Refresh recency (Map iteration order is insertion order).
+    pathRefsByContent.delete(key);
+    pathRefsByContent.set(key, canonical);
+    return canonical;
+  }
+  if (pathRefsByContent.size >= PATH_REFS_MEMO_CAP) {
+    const oldest = pathRefsByContent.keys().next().value;
+    if (oldest !== undefined) pathRefsByContent.delete(oldest);
+  }
+  pathRefsByContent.set(key, refs);
+  return refs;
 }
 
 function parsePathRefsFromMeta(meta: string): PathRef[] | undefined {
