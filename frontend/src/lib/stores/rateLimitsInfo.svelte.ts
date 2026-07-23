@@ -86,16 +86,40 @@ function limitsForAccount(provider: ProviderID, accountId?: string): LimitMap | 
 
 function defaultLimit(provider: ProviderID, entries: RateLimitEntry[]): RateLimitEntry | null {
   if (provider === 'codex') {
-    return entries.find((entry) => entry.limitId.toLowerCase() === 'codex') ?? entries[0] ?? null;
+    return entries.find((entry) => entry.limitId.toLowerCase() === 'codex') ?? null;
   }
   if (provider === 'claude') {
     return entries.find((entry) => {
       const id = entry.limitId.toLowerCase();
       return id === 'session' || id === 'weekly_all'
         || id === 'five_hour' || id === 'seven_day';
-    }) ?? entries[0] ?? null;
+    }) ?? null;
   }
-  return entries[0] ?? null;
+  return null;
+}
+
+export function rateLimitDisplayName(
+  entry: Pick<RateLimitEntry, 'limitId' | 'limitName'>,
+): string {
+  const name = entry.limitName.trim();
+  if (name) return name;
+
+  const id = entry.limitId.trim().toLowerCase();
+  switch (id) {
+    case 'codex':
+    case 'weekly_all':
+    case 'seven_day':
+      return 'All models';
+    case 'session':
+    case 'five_hour':
+      return 'Current session';
+  }
+
+  const scopedID = id.includes(':') ? id.slice(id.lastIndexOf(':') + 1) : id;
+  const humanized = scopedID
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b[a-z]/g, (character) => character.toUpperCase());
+  return humanized || 'Usage limit';
 }
 
 export function getProviderRateLimit(
@@ -108,12 +132,40 @@ export function getProviderRateLimit(
   return defaultLimit(provider, candidates);
 }
 
+export interface RateLimitWindowGroup {
+  primary: RateLimitEntry | null;
+  limits: RateLimitEntry[];
+}
+
+// Returns every account limit for one composer duration, with the recognized
+// provider-wide default first and scoped/model limits sorted by display name.
+// `primary` stays null for a scoped-only update so hover details can render
+// without letting that scoped quota drive the account-wide ring.
+export function getProviderRateLimitsForWindow(
+  provider: ProviderID | undefined,
+  windowMins: number,
+): RateLimitWindowGroup {
+  if (!provider || windowMins <= 0) return { primary: null, limits: [] };
+  const candidates = [...(limitsForAccount(provider)?.values() ?? [])]
+    .filter((entry) => entry.windowMins === windowMins);
+  const primary = defaultLimit(provider, candidates);
+  const primaryKey = primary ? entryKey(primary) : '';
+  const scoped = candidates
+    .filter((entry) => entryKey(entry) !== primaryKey)
+    .sort((a, b) => rateLimitDisplayName(a).localeCompare(rateLimitDisplayName(b)));
+  return {
+    primary,
+    limits: primary ? [primary, ...scoped] : scoped,
+  };
+}
+
 export function getProviderRateLimits(
   provider: ProviderID,
   accountId?: string,
 ): RateLimitEntry[] {
   return [...(limitsForAccount(provider, accountId)?.values() ?? [])]
-    .sort((a, b) => a.windowMins - b.windowMins || a.limitName.localeCompare(b.limitName));
+    .sort((a, b) => a.windowMins - b.windowMins
+      || rateLimitDisplayName(a).localeCompare(rateLimitDisplayName(b)));
 }
 
 function normalizeExpired(entry: RateLimitEntry | null): RateLimitEntry | null {

@@ -74,6 +74,82 @@ describe('<RateLimitMeter>', () => {
     expect(screen.getByText('Resets in 1h')).toBeTruthy();
   });
 
+  it('lists scoped limits on hover without letting them override the ring', async () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        {
+          limitId: 'weekly_scoped:fable',
+          limitName: 'Fable',
+          usedPercent: 99,
+          windowMins: 10080,
+          resetsAt: NOW_SEC + 3600,
+        },
+        {
+          limitId: 'weekly_all',
+          limitName: 'All models',
+          usedPercent: 52,
+          windowMins: 10080,
+          resetsAt: NOW_SEC + 3600,
+        },
+      ],
+      updatedAt: NOW_SEC,
+    });
+    const { container, getByLabelText } = render(RateLimitMeter, {
+      props: { windowMins: 10080, provider: 'claude' as const },
+    });
+
+    const button = getByLabelText(/7-day limits: 52% used/i);
+    const arc = container.querySelectorAll('svg circle')[1];
+    expect(arc.getAttribute('class')).toContain('stroke-fg-subtle');
+
+    await fireEvent.mouseEnter(button);
+    expect(await screen.findByText('All models')).toBeTruthy();
+    expect(screen.getByText('52% used')).toBeTruthy();
+    expect(screen.getByText('Fable')).toBeTruthy();
+    expect(screen.getByText('99% used')).toBeTruthy();
+  });
+
+  it('shows scoped-only details while leaving the account-wide ring empty', async () => {
+    setProviderRateLimits({
+      provider: 'codex',
+      limits: [{
+        limitId: 'spark',
+        limitName: 'GPT-5.3-Codex-Spark',
+        usedPercent: 99,
+        windowMins: 300,
+        resetsAt: NOW_SEC + 3600,
+      }],
+      updatedAt: NOW_SEC,
+    });
+    const { container, getByLabelText } = render(RateLimitMeter, {
+      props: { windowMins: 300, provider: 'codex' as const },
+    });
+
+    const button = getByLabelText(/5-hour limit: awaiting first update/i);
+    expect(container.querySelectorAll('svg circle')).toHaveLength(1);
+
+    await fireEvent.mouseEnter(button);
+    expect(await screen.findByText('GPT-5.3-Codex-Spark')).toBeTruthy();
+    expect(screen.getByText('99% used')).toBeTruthy();
+  });
+
+  it('labels an unnamed Codex provider-wide bucket as All models', async () => {
+    seedProviderEntry('codex', {
+      limitId: 'codex',
+      limitName: '',
+      usedPercent: 42,
+      windowMins: 300,
+      resetsAt: NOW_SEC + 3600,
+    });
+    const { getByLabelText } = render(RateLimitMeter, {
+      props: { windowMins: 300, provider: 'codex' as const },
+    });
+
+    await fireEvent.mouseEnter(getByLabelText(/5-hour limit: 42% used/i));
+    expect(await screen.findByText('All models')).toBeTruthy();
+  });
+
   it('refreshes countdown text on each hover-open so a stale derived value cannot persist', async () => {
     seedProviderEntry('claude', {
       limitId: 'five_hour', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600,
@@ -213,7 +289,7 @@ describe('<RateLimitMeter>', () => {
   it('omits the plan label when provider is supplied but accountInfo has no subscriptionType', async () => {
     setProviderAccount('codex', { apiProvider: 'openai' }); // no subscriptionType
     seedProviderEntry('codex', {
-      limitId: 'primary', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600,
+      limitId: 'codex', limitName: '5h', usedPercent: 42, windowMins: 300, resetsAt: NOW_SEC + 3600,
     });
 
     const { getByLabelText } = render(RateLimitMeter, {

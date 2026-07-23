@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   getProviderRateLimit,
   getProviderRateLimits,
+  getProviderRateLimitsForWindow,
+  rateLimitDisplayName,
   resetForTest,
   setProviderRateLimits,
 } from './rateLimitsInfo.svelte';
@@ -73,8 +75,8 @@ describe('rateLimitsInfo', () => {
     setProviderRateLimits({
       provider: 'codex',
       limits: [
-        { limitId: 'primary', limitName: '5h', usedPercent: 25, windowMins: 300, resetsAt: 1776283200 },
-        { limitId: 'secondary', limitName: '7d', usedPercent: 60, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'codex', limitName: '5h', usedPercent: 25, windowMins: 300, resetsAt: 1776283200 },
+        { limitId: 'codex', limitName: '7d', usedPercent: 60, windowMins: 10080, resetsAt: 1776981600 },
       ],
       updatedAt: 1776283000,
     });
@@ -119,7 +121,7 @@ describe('rateLimitsInfo', () => {
     setProviderRateLimits({
       provider: 'codex',
       limits: [
-        { limitId: 'primary', limitName: '5h', usedPercent: 88, windowMins: 300, resetsAt: 1776283200 },
+        { limitId: 'codex', limitName: '5h', usedPercent: 88, windowMins: 300, resetsAt: 1776283200 },
       ],
       updatedAt: 1776283500,
     });
@@ -352,5 +354,51 @@ describe('rateLimitsInfo', () => {
     const limits = getProviderRateLimits('codex', 'one');
     expect(limits.map((entry) => entry.limitId)).toEqual(['codex', 'spark']);
     expect(limits.map((entry) => entry.usedPercent)).toEqual([100, 46]);
+  });
+
+  it('groups composer details by duration with the provider default first', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'weekly_scoped:fable', limitName: 'Fable', usedPercent: 99, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 52, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'monthly_other', limitName: 'Monthly other', usedPercent: 80, windowMins: 43200, resetsAt: 1779000000 },
+      ],
+      updatedAt: 1776283000,
+    });
+
+    const group = getProviderRateLimitsForWindow('claude', 10080);
+    expect(group.primary?.limitId).toBe('weekly_all');
+    expect(group.limits.map((entry) => entry.limitId)).toEqual([
+      'weekly_all',
+      'weekly_scoped:fable',
+    ]);
+    expect(group.limits.map((entry) => entry.usedPercent)).toEqual([52, 99]);
+  });
+
+  it('keeps scoped-only composer details separate from the account-wide primary', () => {
+    setProviderRateLimits({
+      provider: 'codex',
+      limits: [
+        { limitId: 'spark', limitName: 'GPT-5.3-Codex-Spark', usedPercent: 99, windowMins: 300, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776283000,
+    });
+
+    const group = getProviderRateLimitsForWindow('codex', 300);
+    expect(group.primary).toBeNull();
+    expect(group.limits.map((entry) => entry.limitId)).toEqual(['spark']);
+    expect(getProviderRateLimit('codex', 300)).toBeNull();
+  });
+
+  it('provides readable names for unnamed provider limits', () => {
+    expect(rateLimitDisplayName({
+      limitId: 'codex',
+      limitName: '',
+    })).toBe('All models');
+    expect(rateLimitDisplayName({
+      limitId: 'weekly_scoped:fable',
+      limitName: '',
+    })).toBe('Fable');
   });
 });

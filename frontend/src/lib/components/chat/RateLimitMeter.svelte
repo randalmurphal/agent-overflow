@@ -1,7 +1,10 @@
 <script lang="ts">
   import { formatResetCountdown } from '../../utils/format';
   import { getProviderAccount } from '../../stores/accountInfo.svelte';
-  import { getProviderRateLimit } from '../../stores/rateLimitsInfo.svelte';
+  import {
+    getProviderRateLimitsForWindow,
+    rateLimitDisplayName,
+  } from '../../stores/rateLimitsInfo.svelte';
   import type { ProviderID } from '../../types/providers';
   import { useHoverPopover } from './hoverPopover.svelte';
   import MeterRing, { METER_BUTTON_CLASS } from './MeterRing.svelte';
@@ -25,18 +28,19 @@
     provider?: ProviderID;
   } = $props();
 
-  // Re-runs whenever the global store's Map identity flips on
-  // `setProviderRateLimits`. Empty/missing → null → empty ring.
-  let entry = $derived(getProviderRateLimit(provider, windowMins));
+  // The recognized provider-wide default remains the sole source for the
+  // ring. Additional entries only enrich the hover card, so a scoped
+  // Fable/Spark quota can never make the account-wide ring look exhausted.
+  let limitGroup = $derived(getProviderRateLimitsForWindow(provider, windowMins));
+  let entries = $derived(limitGroup.limits);
+  let entry = $derived(limitGroup.primary);
 
   let buttonEl: HTMLButtonElement | undefined = $state(undefined);
-  // Computed on each hover-open so the displayed countdown is fresh.
-  // A `$derived` over `entry.resetsAt` would only invalidate when the
-  // wire pushes a new value — meaning a popover hover an hour later
-  // would still show the original "Resets in 1h" string.
-  let countdownText = $state('');
+  // Touched on every hover-open so countdowns recompute against current wall
+  // time even when the provider has not pushed a new snapshot.
+  let countdownGeneration = $state(0);
   const popover = useHoverPopover(() => {
-    countdownText = entry ? formatResetCountdown(entry.resetsAt) : '';
+    countdownGeneration += 1;
   });
 
   let label = $derived(
@@ -46,18 +50,32 @@
         ? '7d'
         : `${Math.max(1, Math.round(windowMins / 60))}h`,
   );
-  let popoverHeader = $derived(
-    windowMins === 300 ? '5-hour limit' : windowMins === 10080 ? '7-day limit' : `${label} limit`,
-  );
+  let popoverHeader = $derived.by(() => {
+    const base = windowMins === 300 ? '5-hour' : windowMins === 10080 ? '7-day' : label;
+    return `${base} ${entries.length > 1 ? 'limits' : 'limit'}`;
+  });
 
   // Number.isFinite filters out NaN / Infinity so a wire glitch can't
   // leak NaN into the threshold palette, displayPct, or the aria label.
   // (MeterRing guards its own dashoffset math independently.)
-  let percentage = $derived(
-    entry && Number.isFinite(entry.usedPercent)
-      ? Math.max(0, Math.min(100, entry.usedPercent))
-      : 0,
-  );
+  function normalizedPercentage(usedPercent: number): number {
+    return Number.isFinite(usedPercent)
+      ? Math.max(0, Math.min(100, usedPercent))
+      : 0;
+  }
+
+  let percentage = $derived(entry ? normalizedPercentage(entry.usedPercent) : 0);
+  let displayedEntries = $derived.by(() => {
+    // Explicit dependency: formatResetCountdown reads Date.now(), which is not
+    // reactive by itself.
+    void countdownGeneration;
+    return entries.map((limit) => ({
+      key: `${limit.limitId}\u0000${limit.windowMins}`,
+      name: rateLimitDisplayName(limit),
+      percentage: Math.round(normalizedPercentage(limit.usedPercent)),
+      countdown: formatResetCountdown(limit.resetsAt),
+    }));
+  });
 
   // Same threshold palette as ContextWindowMeter — percent-only,
   // provider-agnostic. Claude's status field intentionally does not
@@ -112,20 +130,29 @@
       role="tooltip"
       onmouseenter={popover.open}
       onmouseleave={popover.scheduleClose}
-      class="relative bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu px-3 py-2 min-w-[170px]"
+      class="relative bg-surface-1 border border-border-subtle rounded-[var(--radius-control)] shadow-menu px-3 py-2 min-w-[210px] max-w-[280px]"
     >
       <p class="mb-1.5 text-[0.625rem] font-semibold text-fg-subtle uppercase tracking-wider">{popoverHeader}</p>
-      <div class="space-y-0.5 text-xs text-fg-muted">
-        {#if entry}
-          <p>{displayPct}% used</p>
-          {#if countdownText}
-            <p class="text-fg-hint">{countdownText}</p>
-          {/if}
+      <div class="text-xs text-fg-muted">
+        {#if displayedEntries.length > 0}
+          <div class="space-y-2">
+            {#each displayedEntries as limit (limit.key)}
+              <div>
+                <div class="flex items-baseline justify-between gap-4">
+                  <p class="min-w-0 truncate" title={limit.name}>{limit.name}</p>
+                  <p class="shrink-0 tabular-nums">{limit.percentage}% used</p>
+                </div>
+                {#if limit.countdown}
+                  <p class="mt-0.5 text-fg-hint">{limit.countdown}</p>
+                {/if}
+              </div>
+            {/each}
+          </div>
         {:else}
           <p class="text-fg-hint">Awaiting first update…</p>
         {/if}
         {#if planLabel}
-          <p class="text-fg-hint">Plan: {planLabel}</p>
+          <p class="mt-1.5 text-fg-hint">Plan: {planLabel}</p>
         {/if}
       </div>
     </div>

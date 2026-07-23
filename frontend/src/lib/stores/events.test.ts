@@ -2348,7 +2348,7 @@ describe('setupEventListeners', () => {
       rateLimits: {
         provider: 'codex',
         limits: [
-          { limitId: 'primary', limitName: '5h', usedPercent: 88, windowMins: 300, resetsAt: 1776283200 },
+          { limitId: 'codex', limitName: '5h', usedPercent: 88, windowMins: 300, resetsAt: 1776283200 },
         ],
         updatedAt: 1776283000,
       },

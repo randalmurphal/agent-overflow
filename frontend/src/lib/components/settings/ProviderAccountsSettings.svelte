@@ -12,6 +12,7 @@
   import { setProviderAccount } from '../../stores/accountInfo.svelte';
   import {
     getProviderRateLimits,
+    rateLimitDisplayName,
     setProviderRateLimits,
   } from '../../stores/rateLimitsInfo.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -105,8 +106,8 @@
     return account.displayName || account.email || account.subscriptionType || 'Saved account';
   }
 
-  function limitLabel(limit: { limitName: string; windowMins: number }): string {
-    const name = limit.limitName.trim();
+  function limitLabel(limit: { limitId: string; limitName: string; windowMins: number }): string {
+    const name = rateLimitDisplayName(limit);
     if (limit.windowMins <= 0) return name || 'Usage limit';
     const window = limit.windowMins === 300
       ? '5h'
