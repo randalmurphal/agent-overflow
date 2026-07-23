@@ -37,6 +37,7 @@ export {
     LiveStateTodoStep,
     MCPAuthInitResult,
     MCPServer,
+    ManagedProviderAccount,
     NewThreadDefaultsUpdate,
     PRCIJobLogResult,
     PRMergeConflictsResult,

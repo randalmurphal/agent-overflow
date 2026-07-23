@@ -165,6 +165,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListPendingInteractiveRequests", ID: 4186874978}, // main.App.ListPendingInteractiveRequests
 	{Name: "ListProjects", ID: 2721360259},                   // main.App.ListProjects
 	{Name: "ListProposedPlanComments", ID: 2030403250},       // main.App.ListProposedPlanComments
+	{Name: "ListProviderAccounts", ID: 981125684},            // main.App.ListProviderAccounts
 	{Name: "ListRecentThreadItems", ID: 2604956482},          // main.App.ListRecentThreadItems
 	{Name: "ListRecentTurns", ID: 1083162294},                // main.App.ListRecentTurns
 	{Name: "ListReleases", ID: 397986043},                    // main.App.ListReleases
@@ -176,6 +177,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListThreadSliceAround", ID: 4176102096},          // main.App.ListThreadSliceAround
 	{Name: "ListThreads", ID: 1090132042},                    // main.App.ListThreads
 	{Name: "ListWSLDistros", ID: 2332614075},                 // main.App.ListWSLDistros
+	{Name: "LoginProviderAccount", ID: 1520009058},           // main.App.LoginProviderAccount
 	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995},     // main.App.MarkDiffReviewCommentsSent
 	{Name: "MarkThreadRead", ID: 1480646012},                 // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375},                // main.App.MarkThreadUnread
@@ -200,6 +202,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ReconfigureObservability", ID: 225050321},        // main.App.ReconfigureObservability
 	{Name: "ReconnectSession", ID: 1420075138},               // main.App.ReconnectSession
 	{Name: "RefreshMcpServerStatus", ID: 2215279661},         // main.App.RefreshMcpServerStatus
+	{Name: "RefreshProviderAccountUsage", ID: 2539237007},    // main.App.RefreshProviderAccountUsage
 	{Name: "RefreshTerminal", ID: 2618043580},                // main.App.RefreshTerminal
 	{Name: "RegisterQueueItem", ID: 1034543696},              // main.App.RegisterQueueItem
 	{Name: "RemoveOtherWorktree", ID: 2899196344},            // main.App.RemoveOtherWorktree
@@ -241,6 +244,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "StopSession", ID: 3838500111},                    // main.App.StopSession
 	{Name: "SubmitPRReview", ID: 2692607191},                 // main.App.SubmitPRReview
 	{Name: "SubscribePRUpdates", ID: 3272491649},             // main.App.SubscribePRUpdates
+	{Name: "SwitchProviderAccount", ID: 1249964095},          // main.App.SwitchProviderAccount
 	{Name: "SwitchThread", ID: 3897387725},                   // main.App.SwitchThread
 	{Name: "TouchRemoteEndpoint", ID: 2647456459},            // main.App.TouchRemoteEndpoint
 	{Name: "TriggerMcpAuth", ID: 1291217507},                 // main.App.TriggerMcpAuth

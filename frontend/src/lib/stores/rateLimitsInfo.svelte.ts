@@ -1,76 +1,46 @@
-// Per-provider rate-limit snapshot, hydrated from the
-// `provider:usage` event with `action: 'rate_limits'`. The composer
-// toolbar's RateLimitMeter components read from this store via
-// `getProviderRateLimit(provider, windowMins)`.
-//
-// The store is process-global rather than per-pane because:
-//   1. Rate limits are an account property, not a thread property —
-//      every Claude pane on this machine sees the same 5h/7d ring,
-//      every Codex pane sees the same Codex limits.
-//   2. The user expectation is "values persist until a new update
-//      arrives, even across thread switches and turn completions."
-//      Per-pane state was prone to wipe-on-replaceThread bugs and
-//      did not survive thread navigation; a global store has only
-//      one writer (this module) and never resets in production.
-//   3. Mirrors `accountInfo.svelte.ts` (the planType store) so
-//      the popover's percent + plan + reset readouts come from
-//      symmetric sources.
-//
-// Shape: `Map<provider, Map<windowMins, RateLimitEntry>>`. Inner map
-// is keyed by `windowMins` (300 = 5h, 10080 = 7d) so Claude's
-// single-window updates merge into the right slot without clobbering
-// the other window. Codex emits both windows in one snapshot —
-// either provider lands cleanly through the same merge path.
+// Last-known provider quotas, isolated by native account and dynamic limit ID.
+// The toolbar asks for the active account's default 5h/7d allowance; Provider
+// Settings renders every server-advertised bucket for every saved account.
 
 import type { RateLimitEntry, RateLimitsSnapshot } from '../types/events';
-import {
-  asProviderID,
-  type ProviderID,
-} from '../types/providers';
+import { asProviderID, type ProviderID } from '../types/providers';
+import { getProviderAccount } from './accountInfo.svelte';
 
-let limitsByProvider: Map<ProviderID, Map<number, RateLimitEntry>> = $state(new Map());
+const LEGACY_ACCOUNT = '__active__';
+const MAX_TIMER_DELAY = 2_147_000_000;
+
+type LimitMap = Map<string, RateLimitEntry>;
+type AccountMap = Map<string, LimitMap>;
+
+let limitsByProvider: Map<ProviderID, AccountMap> = $state(new Map());
+let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+
+function entryKey(entry: RateLimitEntry): string {
+  return `${entry.limitId.trim().toLowerCase()}\u0000${entry.windowMins}`;
+}
+
+function accountKey(snapshot: RateLimitsSnapshot): string {
+  return snapshot.accountId?.trim() || LEGACY_ACCOUNT;
+}
 
 export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
-  // Empty snapshots arrive on edge-case wires (no entries known yet).
-  // Treat as a no-op rather than wiping — the global store's contract
-  // is "last-known good value persists until a non-empty update."
   if (!snapshot?.limits?.length) return;
   const provider = asProviderID(snapshot.provider);
   if (!provider) return;
 
-  const existing = limitsByProvider.get(provider) ?? new Map<number, RateLimitEntry>();
+  const providerAccounts = limitsByProvider.get(provider) ?? new Map<string, LimitMap>();
+  const key = accountKey(snapshot);
+  const existing = providerAccounts.get(key) ?? new Map<string, RateLimitEntry>();
   const merged = new Map(existing);
   let changed = false;
-  for (const entry of snapshot.limits) {
-    // Defense-in-depth: each provider's parser drops snapshots for
-    // unknown windows, but multiple parsers feed this same map (Claude,
-    // Codex, plus any future provider). Refuse `windowMins<=0` here so
-    // a parser regression upstream can't pollute the global store with
-    // a slot the rings can't render.
-    if (entry.windowMins <= 0) continue;
 
-    // Stale-event defense around window-reset boundaries.
-    //
-    // Multiple sessions emit `rate_limit_event` independently, and a
-    // long-running Claude session can keep emitting its in-process
-    // pre-reset reading for several requests after a fresher session
-    // has already observed the new (post-reset) reading. The events
-    // arrive interleaved on the wire, so without this guard the ring
-    // visibly oscillates between the old high percentage and the new
-    // low one until every session catches up.
-    //
-    // `resetsAt` is the next reset boundary as the wire saw it: a
-    // pre-reset event reports the boundary that's about to fire,
-    // a post-reset event reports the boundary 5h/7d later. The newer
-    // window's `resetsAt` strictly dominates. Drop incoming entries
-    // whose `resetsAt` is older than what we've already stored.
-    //
-    // Equal `resetsAt` means "same window". Usage should climb
-    // monotonically inside a window, but delayed probe/notification
-    // races can replay an older lower reading after a fresher one.
-    // Drop same-window lower readings; allow lower values only when
-    // `resetsAt` advances, which means the window actually reset.
-    const prior = merged.get(entry.windowMins);
+  for (const entry of snapshot.limits) {
+    // A provider can introduce a scoped bucket before exposing a stable
+    // duration for it. Keep windowMins=0 for the Settings list; toolbar
+    // lookups remain limited to concrete durations.
+    if (entry.windowMins < 0 || !entry.limitId?.trim()) continue;
+    const key = entryKey(entry);
+    const prior = merged.get(key);
     if (prior && prior.resetsAt > entry.resetsAt) continue;
     if (
       prior
@@ -81,20 +51,18 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
     ) {
       continue;
     }
-
     if (prior && rateLimitEntriesEqual(prior, entry)) continue;
-
-    merged.set(entry.windowMins, entry);
+    merged.set(key, { ...entry });
     changed = true;
   }
-
   if (!changed) return;
 
-  // Reassign the outer Map so $derived consumers re-run. Svelte 5 runes
-  // track Map identity, not in-place mutation.
+  const nextAccounts = new Map(providerAccounts);
+  nextAccounts.set(key, merged);
   const next = new Map(limitsByProvider);
-  next.set(provider, merged);
+  next.set(provider, nextAccounts);
   limitsByProvider = next;
+  scheduleExpiry();
 }
 
 function rateLimitEntriesEqual(a: RateLimitEntry, b: RateLimitEntry): boolean {
@@ -105,17 +73,103 @@ function rateLimitEntriesEqual(a: RateLimitEntry, b: RateLimitEntry): boolean {
     && a.resetsAt === b.resetsAt;
 }
 
+function activeAccountKey(provider: ProviderID): string {
+  return getProviderAccount(provider)?.accountId || LEGACY_ACCOUNT;
+}
+
+function limitsForAccount(provider: ProviderID, accountId?: string): LimitMap | undefined {
+  const accounts = limitsByProvider.get(provider);
+  if (!accounts) return undefined;
+  const key = accountId || activeAccountKey(provider);
+  return accounts.get(key) ?? (key !== LEGACY_ACCOUNT ? accounts.get(LEGACY_ACCOUNT) : undefined);
+}
+
+function defaultLimit(provider: ProviderID, entries: RateLimitEntry[]): RateLimitEntry | null {
+  if (provider === 'codex') {
+    return entries.find((entry) => entry.limitId.toLowerCase() === 'codex') ?? entries[0] ?? null;
+  }
+  if (provider === 'claude') {
+    return entries.find((entry) => {
+      const id = entry.limitId.toLowerCase();
+      return id === 'session' || id === 'weekly_all'
+        || id === 'five_hour' || id === 'seven_day';
+    }) ?? entries[0] ?? null;
+  }
+  return entries[0] ?? null;
+}
+
 export function getProviderRateLimit(
   provider: ProviderID | undefined,
   windowMins: number,
 ): RateLimitEntry | null {
-  if (!provider) return null;
-  return limitsByProvider.get(provider)?.get(windowMins) ?? null;
+  if (!provider || windowMins <= 0) return null;
+  const candidates = [...(limitsForAccount(provider)?.values() ?? [])]
+    .filter((entry) => entry.windowMins === windowMins);
+  return defaultLimit(provider, candidates);
 }
 
-// Test-only reset. Production code never clears the global store —
-// rate-limit data is intended to live as long as the app runs, since
-// it represents the most recent observation of an account-wide limit.
+export function getProviderRateLimits(
+  provider: ProviderID,
+  accountId?: string,
+): RateLimitEntry[] {
+  return [...(limitsForAccount(provider, accountId)?.values() ?? [])]
+    .sort((a, b) => a.windowMins - b.windowMins || a.limitName.localeCompare(b.limitName));
+}
+
+function normalizeExpired(entry: RateLimitEntry | null): RateLimitEntry | null {
+  if (!entry || entry.resetsAt <= 0 || entry.resetsAt > Date.now() / 1000) return entry;
+  let resetsAt = entry.resetsAt;
+  const windowSeconds = entry.windowMins * 60;
+  if (windowSeconds > 0) {
+    const elapsedWindows = Math.floor((Date.now() / 1000 - resetsAt) / windowSeconds) + 1;
+    resetsAt += elapsedWindows * windowSeconds;
+  }
+  return { ...entry, usedPercent: 0, resetsAt };
+}
+
+function scheduleExpiry(): void {
+  if (expiryTimer) clearTimeout(expiryTimer);
+  let nextReset = Number.POSITIVE_INFINITY;
+  const nowSeconds = Date.now() / 1000;
+  for (const accounts of limitsByProvider.values()) {
+    for (const limits of accounts.values()) {
+      for (const entry of limits.values()) {
+        if (entry.resetsAt > nowSeconds && entry.resetsAt < nextReset) {
+          nextReset = entry.resetsAt;
+        }
+      }
+    }
+  }
+  if (!Number.isFinite(nextReset)) {
+    expiryTimer = undefined;
+    return;
+  }
+  const delay = Math.min(MAX_TIMER_DELAY, Math.max(1, (nextReset - nowSeconds) * 1000));
+  expiryTimer = setTimeout(() => {
+    expiryTimer = undefined;
+    expireElapsedLimits();
+  }, delay);
+}
+
+function expireElapsedLimits(): void {
+  const next = new Map<ProviderID, AccountMap>();
+  for (const [provider, accounts] of limitsByProvider) {
+    const nextAccounts = new Map<string, LimitMap>();
+    for (const [accountId, limits] of accounts) {
+      const nextLimits = new Map<string, RateLimitEntry>();
+      for (const [key, entry] of limits) {
+        nextLimits.set(key, normalizeExpired(entry) ?? entry);
+      }
+      nextAccounts.set(accountId, nextLimits);
+    }
+    next.set(provider, nextAccounts);
+  }
+  limitsByProvider = next;
+  scheduleExpiry();
+}
+
 export function resetForTest(): void {
+  if (expiryTimer) clearTimeout(expiryTimer);
+  expiryTimer = undefined;
   limitsByProvider = new Map();
 }

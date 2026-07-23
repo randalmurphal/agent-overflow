@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provideraccounts"
 )
 
 // providerProbeRunner bundles the per-provider hooks runAccountProbe
@@ -22,6 +23,7 @@ type providerProbeRunner struct {
 	probe           func(ctx context.Context) (provider.AccountInfo, error)
 	unauthenticated func(provider.AccountInfo) bool
 	emitUnauth      func()
+	afterAdopt      func(provideraccounts.Account)
 }
 
 // runAccountProbe is the shared cache-aware probe orchestrator behind
@@ -48,9 +50,18 @@ func (a *App) runAccountProbe(r providerProbeRunner) (provider.AccountInfo, erro
 	if r.unauthenticated != nil && r.emitUnauth != nil && r.unauthenticated(info) {
 		r.emitUnauth()
 	}
-	a.emit("provider:account", ProviderAccountEvent{
-		Provider: r.providerName,
-		Account:  info,
-	})
+	account, _ := a.adoptCurrentProviderAccount(r.providerName, info)
+	a.emitProviderAccount(r.providerName, account, info)
+	if r.afterAdopt != nil {
+		r.afterAdopt(account)
+	}
 	return info, nil
+}
+
+func (a *App) emitProviderAccount(providerName string, account provideraccounts.Account, info provider.AccountInfo) {
+	a.emit("provider:account", ProviderAccountEvent{
+		Provider:  providerName,
+		AccountID: account.ID,
+		Account:   info,
+	})
 }

@@ -21,6 +21,8 @@ import * as json$0 from "../../../encoding/json/models.js";
  * signal; consumers branch on that.
  */
 export class AccountInfo {
+    "email"?: string;
+    "displayName"?: string;
     "subscriptionType"?: string;
     "tokenSource"?: string;
     "apiProvider"?: string;
@@ -564,6 +566,7 @@ export class RateLimitEntry {
  */
 export class RateLimitsSnapshot {
     "provider": string;
+    "accountId"?: string;
     "limits": RateLimitEntry[];
     "updatedAt": number;
 
@@ -586,10 +589,10 @@ export class RateLimitsSnapshot {
      * Creates a new RateLimitsSnapshot instance from a string or object.
      */
     static createFrom($$source: any = {}): RateLimitsSnapshot {
-        const $$createField1_0 = $$createType20;
+        const $$createField2_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("limits" in $$parsedSource) {
-            $$parsedSource["limits"] = $$createField1_0($$parsedSource["limits"]);
+            $$parsedSource["limits"] = $$createField2_0($$parsedSource["limits"]);
         }
         return new RateLimitsSnapshot($$parsedSource as Partial<RateLimitsSnapshot>);
     }

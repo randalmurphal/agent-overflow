@@ -15,6 +15,64 @@ import (
 	"agent-overflow/internal/settings"
 )
 
+func TestMergeRateLimitsSnapshotKeepsAccountAndDynamicBuckets(t *testing.T) {
+	incoming := provider.RateLimitsSnapshot{
+		Provider:  string(provider.Codex),
+		AccountID: "account-one",
+		UpdatedAt: 10,
+		Limits: []provider.RateLimitEntry{
+			{LimitID: "codex", LimitName: "Codex", WindowMins: 300, UsedPercent: 100, ResetsAt: 1000},
+			{LimitID: "spark", LimitName: "Spark", WindowMins: 300, UsedPercent: 46, ResetsAt: 1000},
+		},
+	}
+	got, changed := mergeRateLimitsSnapshot(provider.RateLimitsSnapshot{}, incoming)
+	if !changed {
+		t.Fatal("merge reported unchanged")
+	}
+	if got.AccountID != "account-one" {
+		t.Fatalf("AccountID = %q, want account-one", got.AccountID)
+	}
+	if len(got.Limits) != 2 {
+		t.Fatalf("Limits len = %d, want 2", len(got.Limits))
+	}
+}
+
+func TestMergeRateLimitsSnapshotCollapsesClaudeLegacyAliases(t *testing.T) {
+	current := provider.RateLimitsSnapshot{
+		Provider:  string(provider.Claude),
+		AccountID: "account-one",
+		Limits: []provider.RateLimitEntry{
+			{LimitID: "seven_day", LimitName: "seven_day", WindowMins: 10080, UsedPercent: 50, ResetsAt: 1000},
+			{LimitID: "weekly_all", LimitName: "All models", WindowMins: 10080, UsedPercent: 49, ResetsAt: 1000},
+			{LimitID: "weekly_scoped:fable", LimitName: "Fable", WindowMins: 10080, UsedPercent: 99, ResetsAt: 1000},
+		},
+	}
+	incoming := provider.RateLimitsSnapshot{
+		Provider:  string(provider.Claude),
+		AccountID: "account-one",
+		Limits: []provider.RateLimitEntry{
+			{LimitID: "weekly_all", LimitName: "All models", WindowMins: 10080, UsedPercent: 50, ResetsAt: 1000},
+		},
+	}
+
+	got, changed := mergeRateLimitsSnapshot(current, incoming)
+	if !changed {
+		t.Fatal("merge reported unchanged")
+	}
+	if len(got.Limits) != 2 {
+		t.Fatalf("Limits len = %d, want canonical weekly plus Fable: %+v", len(got.Limits), got.Limits)
+	}
+	if got.Limits[0].LimitID != "weekly_all" || got.Limits[0].LimitName != "All models" {
+		t.Fatalf("canonical weekly limit = %+v", got.Limits[0])
+	}
+	if got.Limits[0].UsedPercent != 50 {
+		t.Fatalf("canonical weekly utilization = %v, want 50", got.Limits[0].UsedPercent)
+	}
+	if got.Limits[1].LimitID != "weekly_scoped:fable" {
+		t.Fatalf("scoped limit was changed: %+v", got.Limits[1])
+	}
+}
+
 // TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel pins Step 1b's wiring
 // into the probe loop: a regression that swapped a.lifeCtx() back to
 // context.Background() (or dropped the <-ctx.Done() select arm) would

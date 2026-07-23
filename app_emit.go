@@ -60,6 +60,11 @@ func (a *App) emitRateLimitsSnapshot(snap provider.RateLimitsSnapshot) {
 	if a.shuttingDown.Load() {
 		return
 	}
+	if snap.AccountID == "" && a.providerAccounts != nil {
+		if account, ok := a.providerAccounts.Active(snap.Provider, time.Now()); ok {
+			snap.AccountID = account.ID
+		}
+	}
 	a.emit("provider:usage", provider.UsageEvent{
 		Action:     "rate_limits",
 		RateLimits: &snap,

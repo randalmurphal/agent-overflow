@@ -234,6 +234,7 @@ type Config struct {
 	// serviceTier on thread/start|resume and turn/start. It must not rewrite
 	// Model; fast mode does not change the selected model.
 	ServiceTier string
+	Env         map[string]string
 	EventLogger *logging.Logger
 }
 
@@ -266,6 +267,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		Binary:           binary,
 		Args:             []string{"app-server"},
 		Dir:              cfg.WorkDir,
+		Env:              cfg.Env,
 		EventLogger:      cfg.EventLogger,
 		EventLogRedactor: newCodexProviderEventLogRedactor(),
 		ThreadID:         threadID,

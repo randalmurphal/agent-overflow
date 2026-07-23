@@ -799,7 +799,13 @@ func (p *privilegedApp) ListMcpServerStatuses() string  { return "ok" }
 func (p *privilegedApp) RefreshMcpServerStatus() string { return "ok" }
 func (p *privilegedApp) TriggerMcpAuth() string         { return "ok" }
 
-// 9. In-app self-update (network + local-FS + host-process control).
+// 9. Native provider account credentials and login processes.
+func (p *privilegedApp) ListProviderAccounts() string        { return "ok" }
+func (p *privilegedApp) LoginProviderAccount() string        { return "ok" }
+func (p *privilegedApp) SwitchProviderAccount() string       { return "ok" }
+func (p *privilegedApp) RefreshProviderAccountUsage() string { return "ok" }
+
+// 10. In-app self-update (network + local-FS + host-process control).
 func (p *privilegedApp) CheckForUpdate() string  { return "ok" }
 func (p *privilegedApp) ListReleases() string    { return "ok" }
 func (p *privilegedApp) DownloadUpdate() string  { return "ok" }

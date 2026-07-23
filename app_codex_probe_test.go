@@ -5,8 +5,10 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 )
 
@@ -43,6 +45,27 @@ func TestProbeCodexAccountReturnsInfo(t *testing.T) {
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
+	accountStore, err := provideraccounts.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeHome := t.TempDir()
+	credentials, err := provideraccounts.NewCredentials(nativeHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeCredential, err := credentials.ActiveCredentialPath(string(provider.Codex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(activeCredential), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activeCredential, []byte(`{"tokens":{"access_token":"test"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.providerAccounts = accountStore
+	app.providerCredentials = credentials
 
 	binary := writeCodexProbeMockBinary(t, `{"rateLimits":{"limitId":"codex","planType":"pro"}}`)
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
@@ -129,6 +152,26 @@ func TestProbeCodexAccountEmitsRateLimitsOnCacheMiss(t *testing.T) {
 
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
+	accountStore, err := provideraccounts.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := provideraccounts.NewCredentials(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeCredential, err := credentials.ActiveCredentialPath(string(provider.Codex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(activeCredential), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activeCredential, []byte(`{"tokens":{"access_token":"test"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.providerAccounts = accountStore
+	app.providerCredentials = credentials
 
 	var (
 		mu       sync.Mutex
@@ -171,6 +214,14 @@ func TestProbeCodexAccountEmitsRateLimitsOnCacheMiss(t *testing.T) {
 	}
 	if evt.RateLimits.Provider != string(provider.Codex) {
 		t.Errorf("RateLimits.Provider: got %q, want %q", evt.RateLimits.Provider, provider.Codex)
+	}
+	if evt.RateLimits.AccountID == "" {
+		t.Fatal("RateLimits.AccountID is empty after unmanaged account adoption")
+	}
+	if account, ok := accountStore.Active(string(provider.Codex), time.Now()); !ok ||
+		account.ID != evt.RateLimits.AccountID ||
+		account.RateLimits == nil {
+		t.Fatalf("adopted account did not persist attributed limits: %+v, ok=%v", account, ok)
 	}
 	if len(evt.RateLimits.Limits) != 2 {
 		t.Fatalf("RateLimits.Limits len: got %d, want 2", len(evt.RateLimits.Limits))

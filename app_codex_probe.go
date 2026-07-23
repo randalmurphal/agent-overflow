@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/provideraccounts"
 )
 
 // codexProbeCache is a package-level cache shared across App instances
@@ -70,15 +71,32 @@ func resetCodexProbeCacheForTest() {
 // `docs/architecture/refactor-phase-1/duplication.md`.
 func (a *App) ProbeCodexAccount() (provider.AccountInfo, error) {
 	binary := a.providerBinaryPath(string(provider.Codex))
+	selection := a.captureProviderAccountSelection(string(provider.Codex))
+	var observedSnapshot *provider.RateLimitsSnapshot
+	cacheKey := binary + "\x00account=" + selection.AccountID
+	if selection.AccountID == "" {
+		cacheKey = binary + "\x00account=unmanaged"
+	}
 	return a.runAccountProbe(providerProbeRunner{
 		providerName: string(provider.Codex),
 		cache:        codexAccountProbeCache(),
-		binary:       binary,
+		binary:       cacheKey,
 		probe: func(ctx context.Context) (provider.AccountInfo, error) {
 			return codex.ProbeAccount(ctx, codex.ProbeConfig{
-				Binary:     binary,
-				OnSnapshot: a.emitRateLimitsSnapshot,
+				Binary: binary,
+				Env:    selection.Env,
+				OnSnapshot: func(snapshot provider.RateLimitsSnapshot) {
+					copy := cloneRateLimitsSnapshot(snapshot)
+					observedSnapshot = &copy
+				},
 			})
+		},
+		afterAdopt: func(account provideraccounts.Account) {
+			if observedSnapshot == nil {
+				return
+			}
+			observedSnapshot.AccountID = account.ID
+			a.emitRateLimitsSnapshot(*observedSnapshot)
 		},
 	})
 }
@@ -91,6 +109,6 @@ func (a *App) ProbeCodexAccount() (provider.AccountInfo, error) {
 // needs one (e.g. after a `codex login` flow lands).
 func (a *App) RecheckCodexAccount() (provider.AccountInfo, error) {
 	binary := a.providerBinaryPath(string(provider.Codex))
-	codexAccountProbeCache().Invalidate(binary)
+	codexAccountProbeCache().Invalidate(a.providerProbeCacheKey(string(provider.Codex), binary))
 	return a.ProbeCodexAccount()
 }

@@ -91,6 +91,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:usage')).toBe(1);
     expect(wailsListenerCount('provider:model_fallback')).toBe(1);
     expect(wailsListenerCount('provider:status')).toBe(1);
+    expect(wailsListenerCount('provider:account_usage_error')).toBe(1);
     expect(wailsListenerCount('provider:item_event')).toBe(1);
     expect(wailsListenerCount('provider:turn_started')).toBe(1);
     expect(wailsListenerCount('provider:turn_completed')).toBe(1);
@@ -103,6 +104,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:usage')).toBe(0);
     expect(wailsListenerCount('provider:model_fallback')).toBe(0);
     expect(wailsListenerCount('provider:status')).toBe(0);
+    expect(wailsListenerCount('provider:account_usage_error')).toBe(0);
     expect(wailsListenerCount('provider:item_event')).toBe(0);
     expect(wailsListenerCount('provider:turn_started')).toBe(0);
     expect(wailsListenerCount('provider:turn_completed')).toBe(0);
@@ -2292,7 +2294,7 @@ describe('setupEventListeners', () => {
   // drop those rather than write a 0-keyed slot — the toolbar reads
   // `getProviderRateLimit(provider, 300)` / `(provider, 10080)` and a
   // stray 0 entry would let an unrenderable window fill memory forever.
-  it('filters out windowMins=0 entries so unknown rate-limit types do not pollute the store', async () => {
+  it('keeps unknown-duration limits out of the toolbar lookup', async () => {
     const pane = await buildPane();
 
     emitWailsEvent('provider:usage', {

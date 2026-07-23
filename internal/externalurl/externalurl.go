@@ -13,6 +13,13 @@ import (
 	"agent-overflow/internal/platform"
 )
 
+const (
+	// BrowserHelperEnvironment marks an Agent Overflow re-exec requested by
+	// a provider's BROWSER hook. The sole argument is the OAuth HTTP(S) URL.
+	BrowserHelperEnvironment = "AGENT_OVERFLOW_BROWSER_HELPER"
+	BrowserHelperValue       = "1"
+)
+
 // Command describes the platform command used to hand a URL to the OS.
 type Command struct {
 	Name string

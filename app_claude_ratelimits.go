@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/providerstatus"
 )
 
 // rateLimitProbeHTTPClient is the shared HTTP client used by every
@@ -34,7 +36,21 @@ func (a *App) probeClaudeRateLimits(ctx context.Context) {
 	if a.shuttingDown.Load() {
 		return
 	}
-	snap, err := claude.ProbeRateLimits(ctx, a.rateLimitProbeClient())
+	a.providerAccountMu.RLock()
+	selection := a.providerAccountSelectionLocked(string(provider.Claude))
+	var (
+		snap provider.RateLimitsSnapshot
+		err  error
+	)
+	if selection.CredentialPath != "" {
+		snap, err = a.probeClaudeRateLimitsForSelection(ctx, selection)
+	} else {
+		snap, err = claude.ProbeRateLimits(ctx, a.rateLimitProbeClient())
+	}
+	if err == nil {
+		snap.AccountID = selection.AccountID
+	}
+	a.providerAccountMu.RUnlock()
 	if err != nil {
 		if errors.Is(err, claude.ErrNoCredentials) {
 			return
@@ -43,6 +59,65 @@ func (a *App) probeClaudeRateLimits(ctx context.Context) {
 		return
 	}
 	a.emitRateLimitsSnapshot(snap)
+}
+
+func (a *App) probeClaudeRateLimitsForSelection(
+	ctx context.Context,
+	selection providerAccountSelection,
+) (provider.RateLimitsSnapshot, error) {
+	var snapshot provider.RateLimitsSnapshot
+	var err error
+	if a.providerCredentials != nil && selection.AccountID != "" {
+		var data []byte
+		data, err = a.providerCredentials.ReadCredential(
+			string(provider.Claude),
+			selection.AccountID,
+			selection.CredentialActive,
+		)
+		if err == nil {
+			snapshot, err = claude.ProbeRateLimitsFromCredentialData(
+				ctx,
+				a.rateLimitProbeClient(),
+				data,
+			)
+		}
+	} else {
+		snapshot, err = claude.ProbeRateLimitsFromCredentialPath(
+			ctx,
+			a.rateLimitProbeClient(),
+			selection.CredentialPath,
+		)
+	}
+	if !errors.Is(err, claude.ErrOAuthUnauthorized) || selection.Home == "" {
+		return snapshot, err
+	}
+
+	// Let Claude own refresh-token rotation exactly as it does before a
+	// normal turn. The zero-turn account probe initializes the CLI without
+	// inference and writes refreshed credentials back to the selected native
+	// home. Retry the usage endpoint only after that native path completes.
+	info, refreshErr := claude.ProbeAccount(ctx, claude.ProbeConfig{
+		Binary: a.providerBinaryPath(string(provider.Claude)),
+		Env:    selection.Env,
+	})
+	if refreshErr != nil {
+		return provider.RateLimitsSnapshot{}, fmt.Errorf("refresh Claude credentials: %w", refreshErr)
+	}
+	if providerstatus.ClaudeUnauthenticated(info) {
+		return provider.RateLimitsSnapshot{}, errors.New("Claude credentials expired; log in again")
+	}
+	if a.providerCredentials != nil && selection.AccountID != "" {
+		data, readErr := a.providerCredentials.ReadCredential(
+			string(provider.Claude),
+			selection.AccountID,
+			selection.CredentialActive,
+		)
+		if readErr != nil {
+			return provider.RateLimitsSnapshot{}, readErr
+		}
+		return claude.ProbeRateLimitsFromCredentialData(ctx, a.rateLimitProbeClient(), data)
+	}
+	return claude.ProbeRateLimitsFromCredentialPath(ctx, a.rateLimitProbeClient(), selection.CredentialPath)
 }
 
 // rateLimitProbeClient returns the HTTP client used by the probe.
@@ -74,7 +149,9 @@ func (a *App) rateLimitProbeClient() *http.Client {
 // long-lived resources to leak.
 func (a *App) startClaudeRateLimitProbeLoop() {
 	a.startRateLimitProbeLoop(rateLimitProbeLoop{
-		probeImmediately: true,
+		// Startup account probing invokes the first usage read after adopting
+		// an existing native login, so the snapshot is account-scoped.
+		probeImmediately: false,
 		hasActiveSession: a.hasActiveClaudeSession,
 		probe:            a.probeClaudeRateLimits,
 	})

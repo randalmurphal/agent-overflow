@@ -83,6 +83,22 @@ func (m sessionManager) updateLaunchOpts(threadID, sessionToken string, opts pro
 	m.app.sessions[threadID] = current
 }
 
+func (m sessionManager) updateCredentials(
+	threadID, sessionToken string,
+	generation uint64,
+	accountID string,
+) {
+	m.app.mu.Lock()
+	defer m.app.mu.Unlock()
+	current, ok := m.app.sessions[threadID]
+	if !ok || current.token != sessionToken {
+		return
+	}
+	current.credentialGeneration = generation
+	current.credentialAccountID = accountID
+	m.app.sessions[threadID] = current
+}
+
 // unregister removes the session for threadID iff it still carries
 // sessionToken (guarding against a newer session having replaced it), and
 // returns the removed session so the caller can release its process group

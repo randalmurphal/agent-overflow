@@ -13,9 +13,10 @@ import (
 )
 
 // writeMockCodexAppServerScript writes a shell script to tmpDir that
-// mimics `codex app-server` during a probe. The probe sends three
+// mimics `codex app-server` during a probe. The probe sends four
 // NDJSON lines (initialize request, initialized notification,
-// account/rateLimits/read request); the script reads them, emits a
+// account/read, account/rateLimits/read); the script reads enough to let
+// the probe proceed, emits a
 // noisy id=1 init reply (which the probe must skip), then emits the
 // id=2 response carrying the supplied rate-limits payload.
 //
@@ -54,6 +55,25 @@ func writeMockCodexAppServerScript(t *testing.T, tmpDir, rateLimitsJSON, errMsg 
 		t.Fatalf("write mock: %v", err)
 	}
 	return path
+}
+
+func TestProbeAccountWaitsBrieflyForOutOfOrderAccountIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mock-codex-out-of-order")
+	script := "#!/bin/bash\n" +
+		"read -r _ || true\nread -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+		`printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"planType":"pro"}}}'` + "\n" +
+		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"person@example.com","planType":"pro"}}}'` + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: path})
+	if err != nil {
+		t.Fatalf("ProbeAccount: %v", err)
+	}
+	if info.Email != "person@example.com" {
+		t.Fatalf("Email = %q, want person@example.com", info.Email)
+	}
 }
 
 func TestProbeAccountExtractsPlanType(t *testing.T) {
@@ -201,8 +221,7 @@ func TestProbeAccountInvokesOnSnapshotCallback(t *testing.T) {
 // Realistic probe response wire shape: both `rateLimits` and
 // `rateLimitsByLimitId` populated, with multiple buckets and distinct
 // values across them. Mirrors the bug user's scenario (codex at 100%,
-// spark at 46%); proves the probe path applies the same canonical-
-// bucket filter the notification path does.
+// spark at 46%); proves the probe retains every server-advertised bucket.
 func TestProbeAccountInvokesOnSnapshotCallbackWithMultiBucket(t *testing.T) {
 	// Mock binary's printf is line-oriented — keep the fixture on one
 	// line so the NDJSON frame doesn't span multiple ReadLine calls.
@@ -223,14 +242,20 @@ func TestProbeAccountInvokesOnSnapshotCallbackWithMultiBucket(t *testing.T) {
 		t.Fatalf("OnSnapshot fired %d times, want 1", len(got))
 	}
 	snap := got[0]
-	if len(snap.Limits) != 2 {
-		t.Fatalf("Limits len: got %d, want 2 (codex bucket only)", len(snap.Limits))
+	if len(snap.Limits) != 4 {
+		t.Fatalf("Limits len: got %d, want 4 (codex and spark buckets)", len(snap.Limits))
 	}
 	if snap.Limits[0].UsedPercent != 100 {
 		t.Errorf("Limits[0].UsedPercent: got %v, want 100 (codex bucket from rateLimitsByLimitId, NOT spark's 46 nor top-level's 1)", snap.Limits[0].UsedPercent)
 	}
 	if snap.Limits[1].UsedPercent != 91 {
 		t.Errorf("Limits[1].UsedPercent: got %v, want 91", snap.Limits[1].UsedPercent)
+	}
+	if snap.Limits[2].LimitID != "spark" || snap.Limits[2].UsedPercent != 46 {
+		t.Errorf("Limits[2]: got %+v, want spark primary at 46", snap.Limits[2])
+	}
+	if snap.Limits[3].LimitID != "spark" || snap.Limits[3].UsedPercent != 22 {
+		t.Errorf("Limits[3]: got %+v, want spark secondary at 22", snap.Limits[3])
 	}
 }
 
@@ -258,27 +283,29 @@ func TestProbeAccountSkipsOnSnapshotCallbackForEmptyResponse(t *testing.T) {
 	}
 }
 
-func TestProbeAccountSkipsOnSnapshotCallbackForNonCodexBucket(t *testing.T) {
-	// If the only bucket in the response is non-canonical (e.g. spark
-	// alone), the canonical-bucket filter drops every entry —
-	// buildRateLimitsSnapshot returns ok=false and OnSnapshot must NOT
-	// fire. Otherwise we'd publish a spark-only snapshot that pollutes
-	// the (provider, windowMins)-keyed store.
+func TestProbeAccountRetainsStandaloneDynamicBucket(t *testing.T) {
+	// Server-advertised buckets are dynamic. A renamed or newly introduced
+	// model allowance must remain visible without an app release.
 	binary := writeMockCodexAppServerScript(t, t.TempDir(),
 		`{"rateLimits":{"limitId":"spark","primary":{"usedPercent":46,"windowDurationMins":300,"resetsAt":1775809666},"secondary":{"usedPercent":22,"windowDurationMins":10080,"resetsAt":1776396466}}}`,
 		"")
 
-	var fired bool
+	var got provider.RateLimitsSnapshot
 	if _, err := ProbeAccount(context.Background(), ProbeConfig{
 		Binary: binary,
-		OnSnapshot: func(provider.RateLimitsSnapshot) {
-			fired = true
+		OnSnapshot: func(snapshot provider.RateLimitsSnapshot) {
+			got = snapshot
 		},
 	}); err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
-	if fired {
-		t.Fatal("OnSnapshot fired for a snapshot whose only bucket is non-canonical (spark)")
+	if len(got.Limits) != 2 {
+		t.Fatalf("Limits len: got %d, want 2", len(got.Limits))
+	}
+	for _, limit := range got.Limits {
+		if limit.LimitID != "spark" {
+			t.Errorf("LimitID: got %q, want spark", limit.LimitID)
+		}
 	}
 }
 

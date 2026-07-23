@@ -22,6 +22,7 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   });
   setBindingMock("GetProviderStatuses", async () => []);
   setBindingMock("GetModelsForProvider", async () => []);
+  setBindingMock("ListProviderAccounts", async () => []);
   await loadSettings();
   return merged;
 }
@@ -90,6 +91,63 @@ describe("<ProviderSettings> — model visibility toggles", () => {
     // The refusal must be visible, not a silent no-op.
     expect(
       getToasts().some((toast) => toast.message.includes("At least one model must stay visible")),
+    ).toBe(true);
+  });
+});
+
+describe("<ProviderSettings> — provider accounts", () => {
+  it("renders dynamic account-scoped usage buckets", async () => {
+    await seed();
+    setBindingMock("ListProviderAccounts", async () => [{
+      id: "codex-secondary",
+      provider: "codex",
+      email: "second@example.com",
+      subscriptionType: "pro",
+      addedAt: 1,
+      lastUsedAt: 2,
+      active: true,
+      rateLimits: {
+        provider: "codex",
+        accountId: "codex-secondary",
+        updatedAt: 3,
+        limits: [
+          {
+            limitId: "spark",
+            limitName: "GPT-5.3-Codex-Spark",
+            usedPercent: 46,
+            windowMins: 300,
+            resetsAt: Math.floor(Date.now() / 1000) + 3600,
+          },
+        ],
+      },
+    }]);
+
+    const { findByTestId, findByText } = render(ProviderSettings);
+    expect(await findByTestId("provider-account-codex-secondary")).toBeTruthy();
+    expect(await findByText("second@example.com")).toBeTruthy();
+    expect(await findByText("GPT-5.3-Codex-Spark · 5h")).toBeTruthy();
+    expect(await findByText("46%")).toBeTruthy();
+  });
+
+  it("states clearly that a failed switch did not happen", async () => {
+    await seed();
+    setBindingMock("ListProviderAccounts", async () => [{
+      id: "claude-secondary",
+      provider: "claude",
+      email: "second@example.com",
+      addedAt: 1,
+      lastUsedAt: 2,
+      active: false,
+    }]);
+    setBindingMock("SwitchProviderAccount", async () => {
+      throw new Error("credential file is unavailable");
+    });
+
+    const { findByRole } = render(ProviderSettings);
+    await fireEvent.click(await findByRole("button", { name: "Switch to second@example.com" }));
+
+    expect(
+      getToasts().some((toast) => toast.message.includes("Claude account did not switch")),
     ).toBe(true);
   });
 });

@@ -242,7 +242,7 @@ export function applyProviderAccount(evt: ProviderAccountEvent): void {
   if (!evt || typeof evt.account !== 'object' || evt.account === null) return;
   const provider = asProviderID(evt.provider);
   if (!provider) return;
-  setProviderAccount(provider, evt.account);
+  setProviderAccount(provider, evt.account, evt.accountId);
 }
 
 /**

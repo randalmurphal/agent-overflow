@@ -34,6 +34,7 @@ import (
 type ProbeConfig struct {
 	Binary  string // default: "codex"
 	WorkDir string
+	Env     map[string]string
 	Timeout time.Duration // default: 8s, mirroring the Claude probe.
 
 	// OnSnapshot, when non-nil, fires once with the rate-limit snapshot
@@ -43,9 +44,8 @@ type ProbeConfig struct {
 	// startup — Codex TUI does the same proactive read in
 	// `tui/src/app/background_requests.rs::fetch_account_rate_limits`.
 	// nil = legacy behavior (snapshot discarded). The callback fires
-	// only when `buildRateLimitsSnapshot` returns ok=true after the
-	// canonical-bucket filter — empty / non-codex / malformed snapshots
-	// produce no call.
+	// only when `buildRateLimitsSnapshot` returns ok=true; empty or
+	// malformed snapshots produce no call.
 	OnSnapshot func(provider.RateLimitsSnapshot)
 }
 
@@ -59,6 +59,8 @@ const (
 
 	probeInitializeID = 1
 	probeRateLimitsID = 2
+	probeAccountID    = 3
+	accountReadGrace  = 150 * time.Millisecond
 )
 
 // ProbeAccount runs the JSON-RPC handshake against `codex app-server`
@@ -92,6 +94,7 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		Binary: binary,
 		Args:   buildProbeArgs(),
 		Dir:    cfg.WorkDir,
+		Env:    cfg.Env,
 	})
 	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("codex: probe spawn: %w", err)
@@ -125,7 +128,19 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		return provider.AccountInfo{}, fmt.Errorf("codex: probe write initialized: %w", err)
 	}
 
-	// 3) account/rateLimits/read request
+	// 3) account/read request. We do not wait for it independently: the
+	// rate-limit response remains the completion boundary so older/fake
+	// app-servers that do not implement account/read still probe cleanly.
+	if err := writeJSONRPC(proc, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      probeAccountID,
+		"method":  "account/read",
+		"params":  map[string]any{"refreshToken": false},
+	}); err != nil {
+		return provider.AccountInfo{}, fmt.Errorf("codex: probe write account/read: %w", err)
+	}
+
+	// 4) account/rateLimits/read request
 	if err := writeJSONRPC(proc, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      probeRateLimitsID,
@@ -159,9 +174,10 @@ func writeJSONRPC(proc *provider.Process, v any) error {
 // JSON-RPC error replies, EOF, ctx cancellation.
 //
 // onSnapshot, when non-nil, fires once with the rate-limit snapshot
-// extracted from the same response — only on a successful match and
-// only when `buildRateLimitsSnapshot` reports ok=true (canonical
-// codex bucket present and well-formed).
+// extracted from the same response. Once rate limits arrive, the probe gives
+// account/read a short grace period to arrive out of order so saved-account
+// deduplication gets the email without making older app-servers a hard
+// dependency.
 func readRateLimitsResponse(ctx context.Context, proc *provider.Process, onSnapshot func(provider.RateLimitsSnapshot)) (provider.AccountInfo, error) {
 	type readResult struct {
 		line []byte
@@ -183,18 +199,60 @@ func readRateLimitsResponse(ctx context.Context, proc *provider.Process, onSnaps
 		}
 	}()
 
+	var accountInfo provider.AccountInfo
+	var rateLimitInfo provider.AccountInfo
+	var rateLimitRaw json.RawMessage
+	var rateLimitsReady bool
+	var accountReady bool
+	var graceTimer *time.Timer
+	var grace <-chan time.Time
+	defer func() {
+		if graceTimer != nil {
+			graceTimer.Stop()
+		}
+	}()
+	finish := func() (provider.AccountInfo, error) {
+		if onSnapshot != nil {
+			if snap, ok := buildRateLimitsSnapshot(rateLimitRaw, time.Now().UnixMilli()); ok {
+				onSnapshot(snap)
+			}
+		}
+		if accountInfo.Email != "" {
+			rateLimitInfo.Email = accountInfo.Email
+		}
+		if accountInfo.SubscriptionType != "" {
+			rateLimitInfo.SubscriptionType = accountInfo.SubscriptionType
+		}
+		if accountInfo.APIProvider != "" {
+			rateLimitInfo.APIProvider = accountInfo.APIProvider
+		}
+		return rateLimitInfo, nil
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return provider.AccountInfo{}, fmt.Errorf("codex: probe: %w", ctx.Err())
+		case <-grace:
+			return finish()
 		case r := <-ch:
 			if r.err != nil {
+				if rateLimitsReady {
+					return finish()
+				}
 				if errors.Is(r.err, io.EOF) {
 					return provider.AccountInfo{}, fmt.Errorf("codex: probe: app-server exited before emitting rateLimits response")
 				}
 				return provider.AccountInfo{}, fmt.Errorf("codex: probe read: %w", r.err)
 			}
 			if len(r.line) == 0 {
+				continue
+			}
+			if info, matched := tryParseAccountResponse(r.line); matched {
+				accountInfo = info
+				accountReady = true
+				if rateLimitsReady {
+					return finish()
+				}
 				continue
 			}
 			info, raw, matched, err := tryParseRateLimitsResponse(r.line)
@@ -204,14 +262,47 @@ func readRateLimitsResponse(ctx context.Context, proc *provider.Process, onSnaps
 			if !matched {
 				continue
 			}
-			if onSnapshot != nil {
-				if snap, ok := buildRateLimitsSnapshot(raw, time.Now().UnixMilli()); ok {
-					onSnapshot(snap)
-				}
+			rateLimitInfo = info
+			rateLimitRaw = raw
+			rateLimitsReady = true
+			if accountReady {
+				return finish()
 			}
-			return info, nil
+			graceTimer = time.NewTimer(accountReadGrace)
+			grace = graceTimer.C
 		}
 	}
+}
+
+func tryParseAccountResponse(line []byte) (provider.AccountInfo, bool) {
+	var envelope struct {
+		ID     *json.Number    `json:"id,omitempty"`
+		Result json.RawMessage `json:"result,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(line))
+	dec.UseNumber()
+	if err := dec.Decode(&envelope); err != nil || envelope.ID == nil {
+		return provider.AccountInfo{}, false
+	}
+	id, err := envelope.ID.Int64()
+	if err != nil || id != probeAccountID {
+		return provider.AccountInfo{}, false
+	}
+	var result struct {
+		Account *struct {
+			Type     string `json:"type"`
+			Email    string `json:"email"`
+			PlanType string `json:"planType"`
+		} `json:"account"`
+	}
+	if err := json.Unmarshal(envelope.Result, &result); err != nil || result.Account == nil {
+		return provider.AccountInfo{APIProvider: "openai"}, true
+	}
+	return provider.AccountInfo{
+		Email:            result.Account.Email,
+		SubscriptionType: result.Account.PlanType,
+		APIProvider:      "openai",
+	}, true
 }
 
 // tryParseRateLimitsResponse classifies one NDJSON frame.
@@ -255,9 +346,9 @@ func tryParseRateLimitsResponse(line []byte) (provider.AccountInfo, json.RawMess
 //	   "credits":{...},"rateLimitReachedType":null},
 //	 "rateLimitsByLimitId":{...}}
 //
-// We deliberately read only `rateLimits` (the top-level
-// "backward-compatible single-bucket view") so the probe reflects the
-// user's overall account, not per-bucket variants like Codex Spark.
+// We read plan metadata from `rateLimits` (the top-level
+// "backward-compatible single-bucket view"). Quota extraction separately
+// retains every entry in rateLimitsByLimitId.
 //
 // Empty Result, missing planType, or a JSON parse error all yield a
 // zero-value AccountInfo (legitimate when the backend hasn't yet

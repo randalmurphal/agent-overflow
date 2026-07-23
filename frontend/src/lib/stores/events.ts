@@ -23,6 +23,7 @@ import type {
   ItemStreamEvent,
   ModelFallbackEvent,
   ProviderAccountEvent,
+  ProviderAccountUsageErrorEvent,
   SystemStatsEvent,
   TodoUpdateEvent,
   ProviderStatusEvent,
@@ -110,6 +111,7 @@ import {
 } from './eventsHighlight';
 import { clearAllDiscussionLiveTail } from './discussionLiveTail';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
+import { addToast } from './toast.svelte';
 
 /**
  * Frontend custom DOM event names live in `./eventNames` so consumers
@@ -168,6 +170,14 @@ export function setupEventListeners(): () => void {
   const cancelProviderAccount = wailsEventOn<ProviderAccountEvent>(
     'provider:account',
     applyProviderAccount,
+  );
+  const cancelProviderAccountUsageError = wailsEventOn<ProviderAccountUsageErrorEvent>(
+    'provider:account_usage_error',
+    (evt) => {
+      if (!evt?.provider || !evt.accountId) return;
+      const label = evt.provider === 'claude' ? 'Claude' : 'Codex';
+      addToast('warning', evt.message || `${label} connected, but usage could not be refreshed.`);
+    },
   );
 
   // system:stats — periodic host CPU + memory snapshot (~2s cadence)
@@ -357,6 +367,7 @@ export function setupEventListeners(): () => void {
     cancelModelFallback();
     cancelProviderStatus();
     cancelProviderAccount();
+    cancelProviderAccountUsageError();
     cancelSystemStats();
     cancelTurnStarted();
     cancelTurnCompleted();

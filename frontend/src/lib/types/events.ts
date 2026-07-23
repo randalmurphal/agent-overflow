@@ -201,6 +201,7 @@ export type ItemStreamEvent =
  */
 export interface RateLimitsSnapshot {
   provider: string;
+  accountId?: string;
   limits: RateLimitEntry[];
   updatedAt: number;
 }
@@ -294,11 +295,20 @@ export interface ProviderStatusEvent {
  */
 export interface ProviderAccountEvent {
   provider: ProviderID;
+  accountId?: string;
   account: {
+    email?: string;
+    displayName?: string;
     subscriptionType?: string;
     tokenSource?: string;
     apiProvider?: string;
   };
+}
+
+export interface ProviderAccountUsageErrorEvent {
+  provider: ProviderID;
+  accountId: string;
+  message?: string;
 }
 
 export interface RateLimitEntry {

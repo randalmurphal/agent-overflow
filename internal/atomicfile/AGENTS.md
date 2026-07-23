@@ -1,12 +1,14 @@
 # internal/atomicfile/
 
-Crash-safe JSON state files: `WriteJSON` (temp file + fsync + rename, 0600
-file / 0700 dir) and `ReadJSON` (absent → `found=false`, not an error). The
-shared home for the atomic-write dance that small per-user state blobs rely on.
+Crash-safe private state files: `Write` / `WriteJSON` (temp file + fsync +
+rename, 0600 file / 0700 dir) and `ReadJSON` (absent → `found=false`, not an
+error). The shared home for the atomic-write dance that small per-user state
+blobs rely on.
 
 ## Layout
 
-- `atomicfile.go` — `WriteJSON(path, v)` and `ReadJSON(path, v) (found, err)`.
+- `atomicfile.go` — byte-oriented `Write(path, data)`, `WriteJSON(path, v)`,
+  and `ReadJSON(path, v) (found, err)`.
 
 ## Responsibility boundary
 
@@ -22,6 +24,8 @@ shared home for the atomic-write dance that small per-user state blobs rely on.
   write it across processes via /mnt/c, so the rename atomicity is
   load-bearing.
 - `cmd/agent-overflow-windows/windowstate.go` (`window.json`).
+- `internal/provideraccounts` — metadata JSON plus opaque provider-native
+  credential copies kept private at 0600.
 
 ## Anti-patterns
 

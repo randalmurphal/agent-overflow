@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
+	claudeprovider "agent-overflow/internal/provider/claude"
 )
 
 // rateLimitProbeInterval is how often a provider's periodic rate-limit
@@ -44,40 +47,56 @@ func (a *App) rememberRateLimitsEvent(name string, data any) {
 		return
 	}
 	incoming.Provider = providerName
+	cacheKey := rateLimitsCacheKey(providerName, incoming.AccountID)
 	a.rateLimitsMu.Lock()
-	defer a.rateLimitsMu.Unlock()
 	if a.rateLimitsByProvider == nil {
 		a.rateLimitsByProvider = make(map[string]provider.RateLimitsSnapshot)
 	}
-	merged, changed := mergeRateLimitsSnapshot(a.rateLimitsByProvider[providerName], incoming)
+	merged, changed := mergeRateLimitsSnapshot(a.rateLimitsByProvider[cacheKey], incoming)
 	if changed {
-		a.rateLimitsByProvider[providerName] = merged
+		a.rateLimitsByProvider[cacheKey] = merged
+	}
+	a.rateLimitsMu.Unlock()
+	if changed && incoming.AccountID != "" && a.providerAccounts != nil {
+		if err := a.providerAccounts.RememberRateLimits(providerName, incoming.AccountID, merged); err != nil {
+			// Rate-limit snapshots are useful cache state but never worth
+			// failing a provider turn. Keep the in-memory value and surface the
+			// persistence problem in logs.
+			log.Printf("rate limits: persist %s account %s: %v", providerName, incoming.AccountID, err)
+		}
 	}
 }
 
-// mergeRateLimitsSnapshot mirrors the frontend store's per-window freshness
-// rules. Claude reports its 5h and 7d windows in separate events, while Codex
-// normally reports both together; replacing a whole provider snapshot would
-// therefore erase Claude's other ring. Delayed events must not regress a reset
-// boundary or a same-window usage reading either.
+// mergeRateLimitsSnapshot mirrors the frontend store's per-limit/window
+// freshness rules. Additional model-scoped buckets can share a duration with
+// the provider default, so limit ID participates in identity. Delayed events
+// must not regress a reset boundary or same-window usage reading.
 func mergeRateLimitsSnapshot(current, incoming provider.RateLimitsSnapshot) (provider.RateLimitsSnapshot, bool) {
+	original := current
+	if current.Provider == "" {
+		current.Provider = incoming.Provider
+	}
+	current, normalizedCurrent := normalizeProviderRateLimitsSnapshot(current)
+	incoming, _ = normalizeProviderRateLimitsSnapshot(incoming)
 	merged := cloneRateLimitsSnapshot(current)
 	if merged.Provider == "" {
 		merged.Provider = incoming.Provider
 	}
-	indexByWindow := make(map[int]int, len(merged.Limits))
+	if merged.AccountID == "" {
+		merged.AccountID = incoming.AccountID
+	}
+	indexByWindow := make(map[string]int, len(merged.Limits))
 	for i, entry := range merged.Limits {
-		if entry.WindowMins > 0 {
-			indexByWindow[entry.WindowMins] = i
-		}
+		indexByWindow[rateLimitEntryKey(entry)] = i
 	}
 
-	changed := false
+	changed := normalizedCurrent
 	for _, entry := range incoming.Limits {
-		if entry.WindowMins <= 0 {
+		if strings.TrimSpace(entry.LimitID) == "" {
 			continue
 		}
-		if index, exists := indexByWindow[entry.WindowMins]; exists {
+		entryKey := rateLimitEntryKey(entry)
+		if index, exists := indexByWindow[entryKey]; exists {
 			prior := merged.Limits[index]
 			if prior.ResetsAt > entry.ResetsAt ||
 				(prior.ResetsAt == entry.ResetsAt && prior.UsedPercent > entry.UsedPercent) {
@@ -90,25 +109,43 @@ func mergeRateLimitsSnapshot(current, incoming provider.RateLimitsSnapshot) (pro
 			changed = true
 			continue
 		}
-		indexByWindow[entry.WindowMins] = len(merged.Limits)
+		indexByWindow[entryKey] = len(merged.Limits)
 		merged.Limits = append(merged.Limits, entry)
 		changed = true
 	}
 	if !changed {
-		return current, false
+		return original, false
 	}
 	if incoming.UpdatedAt > merged.UpdatedAt {
 		merged.UpdatedAt = incoming.UpdatedAt
 	}
 	sort.Slice(merged.Limits, func(i, j int) bool {
+		if merged.Limits[i].LimitID != merged.Limits[j].LimitID {
+			return merged.Limits[i].LimitID < merged.Limits[j].LimitID
+		}
 		return merged.Limits[i].WindowMins < merged.Limits[j].WindowMins
 	})
 	return merged, true
 }
 
+func rateLimitsCacheKey(providerName, accountID string) string {
+	return providerName + "\x00" + accountID
+}
+
+func rateLimitEntryKey(entry provider.RateLimitEntry) string {
+	return strings.ToLower(strings.TrimSpace(entry.LimitID)) + "\x00" + strconv.Itoa(entry.WindowMins)
+}
+
 func cloneRateLimitsSnapshot(snapshot provider.RateLimitsSnapshot) provider.RateLimitsSnapshot {
 	snapshot.Limits = append([]provider.RateLimitEntry(nil), snapshot.Limits...)
 	return snapshot
+}
+
+func normalizeProviderRateLimitsSnapshot(snapshot provider.RateLimitsSnapshot) (provider.RateLimitsSnapshot, bool) {
+	if strings.EqualFold(strings.TrimSpace(snapshot.Provider), string(provider.Claude)) {
+		return claudeprovider.NormalizeRateLimitsSnapshot(snapshot)
+	}
+	return snapshot, false
 }
 
 // GetRateLimitsSnapshots returns the last known account-scoped quota for each
@@ -124,9 +161,55 @@ func (a *App) GetRateLimitsSnapshots() []provider.RateLimitsSnapshot {
 	}
 	a.rateLimitsMu.RUnlock()
 	sort.Slice(snapshots, func(i, j int) bool {
-		return snapshots[i].Provider < snapshots[j].Provider
+		if snapshots[i].Provider != snapshots[j].Provider {
+			return snapshots[i].Provider < snapshots[j].Provider
+		}
+		return snapshots[i].AccountID < snapshots[j].AccountID
 	})
 	return snapshots
+}
+
+func (a *App) hydratePersistedAccountRateLimits() {
+	if a.providerAccounts == nil {
+		return
+	}
+	now := time.Now()
+	type repair struct {
+		providerName string
+		accountID    string
+		snapshot     provider.RateLimitsSnapshot
+	}
+	var repairs []repair
+	a.rateLimitsMu.Lock()
+	if a.rateLimitsByProvider == nil {
+		a.rateLimitsByProvider = make(map[string]provider.RateLimitsSnapshot)
+	}
+	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+		for _, account := range a.providerAccounts.List(providerName, now) {
+			if account.RateLimits == nil {
+				continue
+			}
+			snapshot := cloneRateLimitsSnapshot(*account.RateLimits)
+			snapshot.Provider = providerName
+			snapshot.AccountID = account.ID
+			if normalized, changed := normalizeProviderRateLimitsSnapshot(snapshot); changed {
+				snapshot = normalized
+				repairs = append(repairs, repair{
+					providerName: providerName,
+					accountID:    account.ID,
+					snapshot:     snapshot,
+				})
+			}
+			a.rateLimitsByProvider[rateLimitsCacheKey(providerName, account.ID)] = snapshot
+		}
+	}
+	a.rateLimitsMu.Unlock()
+
+	for _, repair := range repairs {
+		if err := a.providerAccounts.RememberRateLimits(repair.providerName, repair.accountID, repair.snapshot); err != nil {
+			log.Printf("rate limits: repair cached %s account %s: %v", repair.providerName, repair.accountID, err)
+		}
+	}
 }
 
 // startRateLimitProbeLoop runs the shared app-level probe cadence for

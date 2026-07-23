@@ -1,5 +1,5 @@
-// Per-provider authenticated-account snapshot, hydrated from the
-// `provider:account` event fired once on app startup. The rate-limit
+// Per-provider active authenticated-account snapshot, hydrated from the
+// startup probe and updated live after account login or switching. The rate-limit
 // ring popover reads `subscriptionType` to render "Plan: pro" / "Plan:
 // Claude Max"; absence is rendered as a neutral fallback in the popover
 // so a misconfigured environment doesn't show a blank field.
@@ -18,16 +18,20 @@
 import type { ProviderAccountEvent } from '../types/events';
 
 type Provider = ProviderAccountEvent['provider'];
-type Account = ProviderAccountEvent['account'];
+type Account = ProviderAccountEvent['account'] & { accountId?: string };
 
 let accounts: Map<Provider, Account> = $state(new Map());
 
-export function setProviderAccount(provider: Provider, account: Account): void {
+export function setProviderAccount(
+  provider: Provider,
+  account: ProviderAccountEvent['account'],
+  accountId?: string,
+): void {
   // Reassign the Map rather than mutating in place so readers using
   // `$derived` over `accounts.get(...)` invalidate. Svelte 5 runes
   // track Map identity, not internal mutations.
   const next = new Map(accounts);
-  next.set(provider, account);
+  next.set(provider, { ...account, accountId });
   accounts = next;
 }
 
@@ -35,9 +39,9 @@ export function getProviderAccount(provider: Provider): Account | null {
   return accounts.get(provider) ?? null;
 }
 
-// Test-only reset. Production code should never need to clear the map —
-// account info only flips when the user re-launches the app. Mirrors the
-// `resetForTest` pattern in providerStatus.svelte.ts.
+// Test-only reset. Production updates replace the active account via
+// setProviderAccount; they never clear the map. Mirrors the `resetForTest`
+// pattern in providerStatus.svelte.ts.
 export function resetForTest(): void {
   accounts = new Map();
 }

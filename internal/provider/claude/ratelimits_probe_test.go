@@ -8,12 +8,31 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
 )
+
+func TestLoadOAuthBearerRejectsCredentialSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is platform-policy dependent on Windows")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	if err := os.WriteFile(target, []byte(`{"claudeAiOauth":{"accessToken":"secret"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, ".credentials.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadOAuthBearerFromPath(link); err == nil {
+		t.Fatal("loadOAuthBearerFromPath() accepted a credential symlink")
+	}
+}
 
 // TestParseRateLimitsFromHeaders_BothWindows pins the success path
 // where the API returns both the 5h and 7d windows.
@@ -55,8 +74,11 @@ func TestParseRateLimitsFromHeaders_BothWindows(t *testing.T) {
 	if five.ResetsAt != 1778479200 {
 		t.Errorf("5h ResetsAt: got %d, want 1778479200", five.ResetsAt)
 	}
-	if five.LimitID != "five_hour" {
-		t.Errorf("5h LimitID: got %q, want five_hour", five.LimitID)
+	if five.LimitID != "session" {
+		t.Errorf("5h LimitID: got %q, want session", five.LimitID)
+	}
+	if five.LimitName != "Current session" {
+		t.Errorf("5h LimitName: got %q, want Current session", five.LimitName)
 	}
 
 	seven, ok := byWindow[10080]
@@ -69,8 +91,11 @@ func TestParseRateLimitsFromHeaders_BothWindows(t *testing.T) {
 	if seven.ResetsAt != 1778814000 {
 		t.Errorf("7d ResetsAt: got %d, want 1778814000", seven.ResetsAt)
 	}
-	if seven.LimitID != "seven_day" {
-		t.Errorf("7d LimitID: got %q, want seven_day", seven.LimitID)
+	if seven.LimitID != "weekly_all" {
+		t.Errorf("7d LimitID: got %q, want weekly_all", seven.LimitID)
+	}
+	if seven.LimitName != "All models" {
+		t.Errorf("7d LimitName: got %q, want All models", seven.LimitName)
 	}
 }
 
@@ -158,7 +183,7 @@ func TestParseRateLimitsFromHeaders_NoHeadersError(t *testing.T) {
 
 // TestProbeRateLimits_EndToEnd exercises the full HTTP path using a
 // local httptest server. This is the only test that covers
-// loadOAuthBearer + executeRateLimitsProbe + parseRateLimitsFromHeaders
+// loadOAuthBearer + executeUsageProbe + parseUsageResponse
 // composed together.
 func TestProbeRateLimits_EndToEnd(t *testing.T) {
 	tmpHome := t.TempDir()
@@ -186,12 +211,11 @@ func TestProbeRateLimits_EndToEnd(t *testing.T) {
 		receivedMethod = r.Method
 		receivedPath = r.URL.Path
 
-		w.Header().Set("Anthropic-Ratelimit-Unified-5h-Utilization", "0.19")
-		w.Header().Set("Anthropic-Ratelimit-Unified-5h-Reset", "1778479200")
-		w.Header().Set("Anthropic-Ratelimit-Unified-7d-Utilization", "0.45")
-		w.Header().Set("Anthropic-Ratelimit-Unified-7d-Reset", "1778814000")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"x","type":"message","content":[]}`))
+		_, _ = w.Write([]byte(`{"limits":[
+			{"kind":"session","group":"session","percent":19,"resets_at":"2026-05-10T12:00:00Z","is_active":true,"scope":null},
+			{"kind":"weekly_all","group":"weekly","percent":45,"resets_at":"2026-05-14T12:00:00Z","is_active":true,"scope":null}
+		]}`))
 	}))
 	defer srv.Close()
 
@@ -211,11 +235,11 @@ func TestProbeRateLimits_EndToEnd(t *testing.T) {
 	if len(snap.Limits) != 2 {
 		t.Fatalf("Limits len: got %d, want 2", len(snap.Limits))
 	}
-	if receivedMethod != http.MethodPost {
-		t.Errorf("method: got %q, want POST", receivedMethod)
+	if receivedMethod != http.MethodGet {
+		t.Errorf("method: got %q, want GET", receivedMethod)
 	}
-	if receivedPath != "/v1/messages" {
-		t.Errorf("path: got %q, want /v1/messages", receivedPath)
+	if receivedPath != "/api/oauth/usage" {
+		t.Errorf("path: got %q, want /api/oauth/usage", receivedPath)
 	}
 	if receivedAuth != "Bearer test-bearer-xyz" {
 		t.Errorf("Authorization: got %q, want %q", receivedAuth, "Bearer test-bearer-xyz")
@@ -225,6 +249,28 @@ func TestProbeRateLimits_EndToEnd(t *testing.T) {
 	}
 	if receivedVersion != anthropicVersion {
 		t.Errorf("anthropic-version: got %q, want %q", receivedVersion, anthropicVersion)
+	}
+}
+
+func TestParseUsageResponseRetainsDynamicScopedLimits(t *testing.T) {
+	now := time.UnixMilli(1_700_000_000_000)
+	snap, err := parseUsageResponse([]byte(`{"limits":[
+		{"kind":"weekly_scoped","group":"weekly","percent":100,"resets_at":"2026-05-14T12:00:00Z","scope":{"model":{"id":"claude-fable","display_name":"Fable"},"surface":null}},
+		{"kind":"weekly_scoped","group":"weekly","percent":12,"resets_at":"2026-05-14T12:00:00Z","scope":{"model":{"id":"claude-sonnet","display_name":"Sonnet"},"surface":null}}
+	]}`), now)
+	if err != nil {
+		t.Fatalf("parseUsageResponse: %v", err)
+	}
+	if len(snap.Limits) != 2 {
+		t.Fatalf("Limits len: got %d, want 2", len(snap.Limits))
+	}
+	if got := snap.Limits[0]; got.LimitID != "weekly_scoped:claude-fable" ||
+		got.LimitName != "Fable" || got.WindowMins != 10080 || got.UsedPercent != 100 {
+		t.Errorf("Fable limit: got %+v", got)
+	}
+	if got := snap.Limits[1]; got.LimitID != "weekly_scoped:claude-sonnet" ||
+		got.LimitName != "Sonnet" {
+		t.Errorf("Sonnet limit: got %+v", got)
 	}
 }
 
@@ -288,6 +334,9 @@ func TestProbeRateLimits_Unauthorized(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unauthorized") {
 		t.Errorf("err: got %v, want one containing 'unauthorized'", err)
+	}
+	if !errors.Is(err, ErrOAuthUnauthorized) {
+		t.Errorf("err: got %v, want ErrOAuthUnauthorized", err)
 	}
 }
 

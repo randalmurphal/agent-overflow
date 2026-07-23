@@ -150,6 +150,10 @@ export const GetPayloadData = dispatch('GetPayloadData');
 export const ListItems = dispatch('ListItems');
 export const ListPayloadMetas = dispatch('ListPayloadMetas');
 export const GetRateLimitsSnapshots = dispatch('GetRateLimitsSnapshots');
+export const ListProviderAccounts = dispatch('ListProviderAccounts');
+export const LoginProviderAccount = dispatch('LoginProviderAccount');
+export const SwitchProviderAccount = dispatch('SwitchProviderAccount');
+export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage');
 
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');

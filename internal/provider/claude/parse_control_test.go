@@ -38,8 +38,11 @@ func TestParseRateLimitEvent_FiveHourUtilization(t *testing.T) {
 		t.Fatalf("Limits len: got %d, want 1", len(snap.Limits))
 	}
 	got := snap.Limits[0]
-	if got.LimitID != "five_hour" {
-		t.Errorf("LimitID: got %q, want %q", got.LimitID, "five_hour")
+	if got.LimitID != "session" {
+		t.Errorf("LimitID: got %q, want %q", got.LimitID, "session")
+	}
+	if got.LimitName != "Current session" {
+		t.Errorf("LimitName: got %q, want %q", got.LimitName, "Current session")
 	}
 	if got.UsedPercent != 42 {
 		t.Errorf("UsedPercent: got %v, want 42 (utilization 0.42 × 100)", got.UsedPercent)
@@ -71,8 +74,11 @@ func TestParseRateLimitEvent_SevenDayUtilization(t *testing.T) {
 		t.Fatalf("Limits len: got %d, want 1", len(snap.Limits))
 	}
 	got := snap.Limits[0]
-	if got.LimitID != "seven_day" {
-		t.Errorf("LimitID: got %q, want %q", got.LimitID, "seven_day")
+	if got.LimitID != "weekly_all" {
+		t.Errorf("LimitID: got %q, want %q", got.LimitID, "weekly_all")
+	}
+	if got.LimitName != "All models" {
+		t.Errorf("LimitName: got %q, want %q", got.LimitName, "All models")
 	}
 	if got.UsedPercent != 51 {
 		t.Errorf("UsedPercent: got %v, want 51", got.UsedPercent)
@@ -87,11 +93,11 @@ func TestParseRateLimitEvent_SevenDayUtilization(t *testing.T) {
 // local_agent_outlives.ndjson) where Claude emits status:"allowed"
 // envelopes without a `utilization` field. Claude only populates
 // utilization once we cross the warning threshold, so most sessions
-// never see one over the stream wire. The steady-state percentages are
-// populated out-of-band by the HTTP-header probe
-// (`ratelimits_probe.go`); the parser must drop these wire events so a
-// 0% fallback doesn't race the probe's real reading and visibly clobber
-// it on first turn.
+// never see one over the stream wire. The steady-state percentages come from
+// the OAuth usage endpoint, with unified response headers as a compatibility
+// fallback (`ratelimits_probe.go`); the parser must drop these wire events so
+// a 0% fallback doesn't race the probe's real reading and visibly clobber it
+// on first turn.
 func TestParseRateLimitEvent_MissingUtilization(t *testing.T) {
 	line := []byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1777920000,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false}}`)
 	events, err := ParseLine(testThread, line)

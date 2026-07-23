@@ -18,13 +18,12 @@ var loopbackOnlyEventChannels = map[string]bool{
 	// fan-out itself, but once a local pane attaches the sink emits to every
 	// subscriber; keep these frames loopback-only like their app-terminal twin.
 	"provider:terminal_output": true,
-	// provider:account carries the user's authenticated subscriptionType
-	// + tokenSource (oauth | apikey | console) + apiProvider. tokenSource
-	// is upstream-typed and discloses the auth model of the local user;
-	// subscriptionType + apiProvider are plan/billing identity. Combined,
-	// this is single-frame profiling disclosure to a LAN-attached
-	// subscriber. Loopback-only.
-	"provider:account": true,
+	// provider:account carries the user's email/display name plus authenticated
+	// subscriptionType, tokenSource (oauth | apikey | console), and
+	// apiProvider. This is account, auth-model, and billing identity in one
+	// frame, so it remains loopback-only.
+	"provider:account":             true,
+	"provider:account_usage_error": true,
 
 	// provider:usage (token counts, context %, rate limits) and
 	// provider:session_died are open to remote clients — essential

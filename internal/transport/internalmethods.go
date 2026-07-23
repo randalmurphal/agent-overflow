@@ -302,6 +302,10 @@ var LocalOnlyMethods = map[string]bool{
 	"ProbeCodexAccount":             true,
 	"RecheckClaudeAccount":          true,
 	"RecheckCodexAccount":           true,
+	"ListProviderAccounts":          true,
+	"LoginProviderAccount":          true,
+	"SwitchProviderAccount":         true,
+	"RefreshProviderAccountUsage":   true,
 
 	// claude-tui take-control: Attach arms raw-output fan-out and Replay
 	// returns the PTY frame buffer; Input/Resize/Refresh/SetControl steer the

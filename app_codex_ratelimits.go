@@ -25,9 +25,14 @@ func (a *App) probeCodexRateLimits(ctx context.Context) {
 	defer a.codexRateLimitProbeRunning.Store(false)
 
 	binary := a.providerBinaryPath(string(provider.Codex))
+	selection := a.captureProviderAccountSelection(string(provider.Codex))
 	_, err := codex.ProbeAccount(ctx, codex.ProbeConfig{
-		Binary:     binary,
-		OnSnapshot: a.emitRateLimitsSnapshot,
+		Binary: binary,
+		Env:    selection.Env,
+		OnSnapshot: func(snapshot provider.RateLimitsSnapshot) {
+			snapshot.AccountID = selection.AccountID
+			a.emitRateLimitsSnapshot(snapshot)
+		},
 	})
 	if err != nil {
 		log.Printf("codex: rate-limit probe: %v", err)

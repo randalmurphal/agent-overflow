@@ -62,12 +62,20 @@ func resetClaudeProbeCacheForTest() {
 // already has the value from the original miss.
 func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	binary := a.providerBinaryPath(string(provider.Claude))
+	selection := a.captureProviderAccountSelection(string(provider.Claude))
+	cacheKey := binary + "\x00account=" + selection.AccountID
+	if selection.AccountID == "" {
+		cacheKey = binary + "\x00account=unmanaged"
+	}
 	return a.runAccountProbe(providerProbeRunner{
 		providerName: string(provider.Claude),
 		cache:        claudeAccountProbeCache(),
-		binary:       binary,
+		binary:       cacheKey,
 		probe: func(ctx context.Context) (provider.AccountInfo, error) {
-			return claude.ProbeAccount(ctx, claude.ProbeConfig{Binary: binary})
+			return claude.ProbeAccount(ctx, claude.ProbeConfig{
+				Binary: binary,
+				Env:    selection.Env,
+			})
 		},
 		unauthenticated: providerstatus.ClaudeUnauthenticated,
 		emitUnauth:      a.emitClaudeUnauthenticatedStatus,
@@ -86,6 +94,6 @@ func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 // rather than passing a `bypassCache` flag that's easy to forget.
 func (a *App) RecheckClaudeAccount() (provider.AccountInfo, error) {
 	binary := a.providerBinaryPath(string(provider.Claude))
-	claudeAccountProbeCache().Invalidate(binary)
+	claudeAccountProbeCache().Invalidate(a.providerProbeCacheKey(string(provider.Claude), binary))
 	return a.ProbeClaudeAccount()
 }

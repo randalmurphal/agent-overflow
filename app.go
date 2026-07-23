@@ -30,6 +30,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -108,6 +109,17 @@ type App struct {
 	telemetry        *obsotel.Provider
 	replay           *replay.Manager
 	configDir        string
+	// providerAccounts persists account labels, the active selection, and
+	// last-known quota snapshots. providerCredentials keeps credential bytes
+	// in provider-native homes and treats them as opaque. Both are initialized
+	// with the store in ServiceStartup; tests that do not exercise accounts may
+	// leave them nil.
+	providerAccounts    *provideraccounts.Store
+	providerCredentials *provideraccounts.Credentials
+	// providerAccountMu serializes login and activation so two settings
+	// clients cannot interleave active-credential snapshots and overwrite a
+	// freshly selected account.
+	providerAccountMu sync.RWMutex
 	// uiTracer is the dev-only JSONL render-trace appender. It's lazily
 	// constructed from configDir the first time AppendUIRenderTraceBatch
 	// runs so tests that build a bare App{configDir: t.TempDir()} stay
@@ -144,7 +156,9 @@ type App struct {
 	// event bus is only a bounded replay buffer and a first connection has no
 	// prior channel sequence to request, so event-only ownership could leave
 	// the 5h/7d rings blank even after a successful startup probe.
-	rateLimitsMu         sync.RWMutex
+	rateLimitsMu sync.RWMutex
+	// Keys are provider + account ID. The empty account ID is retained for
+	// unmanaged/legacy sessions.
 	rateLimitsByProvider map[string]provider.RateLimitsSnapshot
 	// transportServer is the Phase C HTTP+WS transport. Set by main.go
 	// via SetTransportServer before app.Run() so Shutdown can drain
@@ -434,6 +448,14 @@ type App struct {
 type session struct {
 	provider string
 	token    string
+	// credentialGeneration is the provider account generation this process
+	// started against. Claude can adopt a new generation without restart;
+	// Codex is safely reconnected before the next send.
+	credentialGeneration uint64
+	// credentialAccountID attributes provider-pushed quota events to the
+	// account that authenticated this process. This matters after a wholesale
+	// switch while older Codex turns are still finishing.
+	credentialAccountID string
 	// Exactly one of these is non-nil.
 	claude    *claude.Session
 	codex     *codex.Session

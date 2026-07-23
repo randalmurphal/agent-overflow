@@ -359,11 +359,13 @@ func (a *App) spawnProviderSession(
 	// guarantees a future third provider can't forget the field and
 	// silently end up immune to the idle reaper.
 	liveness := newSessionLiveness(time.Now())
+	accountSelection := a.captureProviderAccountSelection(t.Provider)
 
 	switch t.Provider {
 	case string(provider.Claude):
 		cfg := claude.ConfigFromOptions(opts)
 		cfg.Binary = a.providerBinaryPath(t.Provider)
+		cfg.Env = mergeProviderEnv(cfg.Env, accountSelection.Env)
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
 		sess, err := claude.NewSession(context.Background(), threadID, cfg, onEvent)
@@ -371,16 +373,19 @@ func (a *App) spawnProviderSession(
 			return session{}, err
 		}
 		return session{
-			provider:   string(provider.Claude),
-			token:      sessionToken,
-			claude:     sess,
-			launchOpts: opts,
-			liveness:   liveness,
+			provider:             string(provider.Claude),
+			token:                sessionToken,
+			credentialGeneration: accountSelection.Generation,
+			credentialAccountID:  accountSelection.AccountID,
+			claude:               sess,
+			launchOpts:           opts,
+			liveness:             liveness,
 		}, nil
 
 	case string(provider.Codex):
 		cfg := codex.ConfigFromOptions(opts)
 		cfg.Binary = a.providerBinaryPath(t.Provider)
+		cfg.Env = accountSelection.Env
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
@@ -403,11 +408,13 @@ func (a *App) spawnProviderSession(
 			a.handleCodexMCPStartupUpdate(u)
 		})
 		return session{
-			provider:   string(provider.Codex),
-			token:      sessionToken,
-			codex:      sess,
-			launchOpts: opts,
-			liveness:   liveness,
+			provider:             string(provider.Codex),
+			token:                sessionToken,
+			credentialGeneration: accountSelection.Generation,
+			credentialAccountID:  accountSelection.AccountID,
+			codex:                sess,
+			launchOpts:           opts,
+			liveness:             liveness,
 		}, nil
 
 	case string(provider.ClaudeTUI):

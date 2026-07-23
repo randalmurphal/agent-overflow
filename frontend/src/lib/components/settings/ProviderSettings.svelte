@@ -26,6 +26,7 @@
   } from '../../stores/providerModels.svelte';
   import ToggleSwitch from '../shared/ToggleSwitch.svelte';
   import ProviderContextSettings from './ProviderContextSettings.svelte';
+  import ProviderAccountsSettings from './ProviderAccountsSettings.svelte';
   import ProviderModelChips from './ProviderModelChips.svelte';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -202,6 +203,8 @@
           <ProviderModelChips provider={provider.id} {models} />
         </SettingsField>
       </div>
+
+      <ProviderAccountsSettings provider={provider.id} providerLabel={provider.label} />
 
       <div class="mt-5">
         <ProviderContextSettings provider={provider.id} />

@@ -28,6 +28,16 @@ func WriteJSON(path string, v any) error {
 	if err != nil {
 		return fmt.Errorf("atomicfile: marshal: %w", err)
 	}
+	return Write(path, data)
+}
+
+// Write atomically replaces path with data using private file and directory
+// permissions. It is the byte-oriented counterpart to WriteJSON for sensitive
+// provider-owned files whose schema Agent Overflow must preserve verbatim.
+func Write(path string, data []byte) error {
+	if path == "" {
+		return errors.New("atomicfile: empty path")
+	}
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, dirMode); err != nil {
