@@ -213,8 +213,8 @@ func TestUpdateThreadModelNormalizesAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateThreadModel(opus): %v", err)
 	}
-	if updated.Model != "claude-opus-4-8" {
-		t.Fatalf("Model = %q, want claude-opus-4-8", updated.Model)
+	if updated.Model != "claude-opus-5" {
+		t.Fatalf("Model = %q, want claude-opus-5", updated.Model)
 	}
 }
 

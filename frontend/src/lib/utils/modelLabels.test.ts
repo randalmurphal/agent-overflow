@@ -4,6 +4,7 @@ import { displayModelLabel, displayUsageModelLabel } from './modelLabels';
 
 describe('displayModelLabel', () => {
   it('formats Claude slugs as provider-free display names', () => {
+    expect(displayModelLabel('claude', 'claude-opus-5')).toBe('Opus 5');
     expect(displayModelLabel('claude', 'claude-opus-4-7')).toBe('Opus 4.7');
     expect(displayModelLabel('claude', 'claude-sonnet-5')).toBe('Sonnet 5');
     expect(displayModelLabel('claude', 'claude-sonnet-4-6')).toBe('Sonnet 4.6');
@@ -56,6 +57,7 @@ describe('displayUsageModelLabel', () => {
     expect(displayUsageModelLabel('claude-fable-5')).toBe('Fable 5');
     expect(displayUsageModelLabel('claude-sonnet-5')).toBe('Sonnet 5');
     expect(displayUsageModelLabel('claude-sonnet-5[1m]')).toBe('Sonnet 5 [1m]');
+    expect(displayUsageModelLabel('claude-opus-5[1m]')).toBe('Opus 5 [1m]');
     expect(displayUsageModelLabel('claude-opus-4-8[1m]')).toBe('Opus 4.8 [1m]');
     expect(displayUsageModelLabel('claude-haiku-4-5-20251001')).toBe('Haiku 4.5');
   });

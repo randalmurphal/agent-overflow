@@ -61,6 +61,19 @@ var ClaudeModels = []ModelInfo{
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
+		// Same capability shape as Opus 4.8 — fast-mode capable, 1M
+		// extended context ([1m] wire tier), effort low through max
+		// including xhigh — per the claude 2.1.219 binary's API
+		// capability table (effort/max_effort/xhigh_effort/fast_mode
+		// on the claude-opus-5 entry).
+		Slug:             "claude-opus-5",
+		Name:             "Claude Opus 5",
+		Provider:         "claude",
+		Capabilities:     []string{ModelCapabilityFastMode},
+		ContextWindows:   claudeExtendedContextOptions(),
+		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
+	},
+	{
 		Slug:             "claude-opus-4-8",
 		Name:             "Claude Opus 4.8",
 		Provider:         "claude",
@@ -256,7 +269,9 @@ func NormalizeModelSlug(providerName, model string) string {
 		switch model {
 		case "fable", "fable-5":
 			return "claude-fable-5"
-		case "opus", "opus-4.8", "claude-opus-4.8":
+		case "opus", "opus-5":
+			return "claude-opus-5"
+		case "opus-4.8", "claude-opus-4.8":
 			return "claude-opus-4-8"
 		case "opus-4.7", "claude-opus-4.7":
 			return "claude-opus-4-7"

@@ -85,8 +85,8 @@ func TestModelsForProvider_ClaudeTUI(t *testing.T) {
 
 func TestClaudeTUIResolvesLikeClaude(t *testing.T) {
 	// Alias normalization is shared with claude.
-	if got := NormalizeModelSlug(string(ClaudeTUI), "opus"); got != "claude-opus-4-8" {
-		t.Errorf("NormalizeModelSlug(claude-tui, opus) = %q, want claude-opus-4-8", got)
+	if got := NormalizeModelSlug(string(ClaudeTUI), "opus"); got != "claude-opus-5" {
+		t.Errorf("NormalizeModelSlug(claude-tui, opus) = %q, want claude-opus-5", got)
 	}
 	if _, found := FindModel(string(ClaudeTUI), "claude-opus-4-8"); !found {
 		t.Error("FindModel(claude-tui, claude-opus-4-8) not found")
@@ -129,6 +129,7 @@ func TestClaudeFastModeAndContextCapabilities(t *testing.T) {
 		windows  int
 	}{
 		{"claude-fable-5", false, 2},
+		{"claude-opus-5", true, 2},
 		{"claude-opus-4-8", true, 2},
 		{"claude-opus-4-7", true, 2},
 		{"claude-opus-4-6", true, 2},
@@ -223,6 +224,24 @@ func TestSonnetAliasResolvesToSonnet5(t *testing.T) {
 	}
 }
 
+func TestOpusAliasResolvesToOpus5(t *testing.T) {
+	// The bare "opus" alias must resolve to the Opus 5 catalog entry
+	// (with its capabilities), not just normalize at the string level.
+	model, found := FindModel("claude", "opus")
+	if !found {
+		t.Fatal(`FindModel("claude", "opus") not found`)
+	}
+	if model.Slug != "claude-opus-5" {
+		t.Fatalf(`FindModel("claude", "opus").Slug = %q, want claude-opus-5`, model.Slug)
+	}
+	if !slices.Contains(model.Capabilities, ModelCapabilityFastMode) {
+		t.Error(`fast mode should be supported via the "opus" alias (Opus 5)`)
+	}
+	if got := DefaultReasoningEffortForModel("claude", "claude-opus-5", DefaultReasoningEffort); got != EffortXHigh {
+		t.Errorf("default effort for claude-opus-5 = %q, want xhigh", got)
+	}
+}
+
 func TestCodexModelCapabilitiesAndContextWindows(t *testing.T) {
 	cases := []struct {
 		model    string
@@ -314,7 +333,10 @@ func TestNormalizeModelSlugClaudeAliases(t *testing.T) {
 		"fable":                      "claude-fable-5",
 		"fable-5":                    "claude-fable-5",
 		"claude-fable-5":             "claude-fable-5",
-		"opus":                       "claude-opus-4-8",
+		"opus":                       "claude-opus-5",
+		"opus-5":                     "claude-opus-5",
+		"claude-opus-5":              "claude-opus-5",
+		"opus-4.8":                   "claude-opus-4-8",
 		"claude-opus-4.8":            "claude-opus-4-8",
 		"opus-4.7":                   "claude-opus-4-7",
 		"claude-opus-4.7":            "claude-opus-4-7",
