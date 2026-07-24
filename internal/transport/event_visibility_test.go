@@ -13,6 +13,7 @@ func TestEventVisibleToOrigin(t *testing.T) {
 		"provider:background_task_state",
 		"provider:user_input",
 		"provider:account",
+		"provider:session_account",
 		"provider:account_usage_error",
 		"terminal:exit",
 		"terminal:output",

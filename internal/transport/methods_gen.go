@@ -207,6 +207,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RegisterQueueItem", ID: 1034543696},              // main.App.RegisterQueueItem
 	{Name: "RemoveOtherWorktree", ID: 2899196344},            // main.App.RemoveOtherWorktree
 	{Name: "RemoveOtherWorktreeForProject", ID: 574548500},   // main.App.RemoveOtherWorktreeForProject
+	{Name: "RemoveProviderAccount", ID: 684418419},           // main.App.RemoveProviderAccount
 	{Name: "RenameProject", ID: 3728890856},                  // main.App.RenameProject
 	{Name: "RenameThread", ID: 727416435},                    // main.App.RenameThread
 	{Name: "ReplyToPRThread", ID: 446243420},                 // main.App.ReplyToPRThread

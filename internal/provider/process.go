@@ -49,7 +49,7 @@ type Process struct {
 	eventLogRedactor EventLogRedactor
 	threadID         string
 	provider         string
-	stderrTail *stderrTee
+	stderrTail       *stderrTee
 	// killOnce guards the one-shot kill triggered on oversized lines so
 	// concurrent ReadLine failures (should never happen but defense in
 	// depth) do not double-signal the process group.
@@ -66,6 +66,7 @@ type SpawnConfig struct {
 	Args             []string
 	Dir              string
 	Env              map[string]string
+	UnsetEnv         []string
 	EventLogger      *logging.Logger
 	EventLogRedactor EventLogRedactor
 	ThreadID         string
@@ -89,18 +90,7 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	// children on Windows (the WSL-side Linux backend does).
 	applySysProcAttr(cmd)
 
-	// Build env: inherit current env + overrides.
-	// PATH is treated as additive (prepend to existing PATH) rather than replacing it.
-	env := os.Environ()
-	for k, v := range cfg.Env {
-		if strings.ToUpper(k) == "PATH" {
-			if existing := os.Getenv("PATH"); existing != "" {
-				v = v + string(os.PathListSeparator) + existing
-			}
-		}
-		env = append(env, k+"="+v)
-	}
-	cmd.Env = env
+	cmd.Env = BuildEnvironment(cfg.Env, cfg.UnsetEnv...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -200,6 +190,54 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	}()
 
 	return p, nil
+}
+
+// BuildEnvironment returns the current process environment with the requested
+// variables removed and explicit overrides applied. PATH overrides are
+// additive so provider-specific binary directories do not hide the user's
+// normal command search path.
+func BuildEnvironment(overrides map[string]string, unset ...string) []string {
+	removed := make([]string, 0, len(unset)+len(overrides))
+	removed = append(removed, unset...)
+	for key := range overrides {
+		removed = append(removed, key)
+	}
+	env := FilterEnvironment(nil, removed...)
+	for key, value := range overrides {
+		if strings.EqualFold(key, "PATH") {
+			if existing := os.Getenv("PATH"); existing != "" {
+				value += string(os.PathListSeparator) + existing
+			}
+		}
+		env = append(env, key+"="+value)
+	}
+	return env
+}
+
+// FilterEnvironment removes named variables from env. An empty env means
+// inherit the current process environment, matching exec.Cmd's default and the
+// previous fetcher behavior. Matching is case-insensitive so this helper is
+// also safe for Windows-style environments.
+func FilterEnvironment(env []string, unset ...string) []string {
+	if len(env) == 0 {
+		env = os.Environ()
+	}
+	if len(unset) == 0 {
+		return append([]string(nil), env...)
+	}
+	removed := make(map[string]struct{}, len(unset))
+	for _, key := range unset {
+		removed[strings.ToUpper(strings.TrimSpace(key))] = struct{}{}
+	}
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, found := strings.Cut(entry, "=")
+		if _, shouldRemove := removed[strings.ToUpper(key)]; found && shouldRemove {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 // WriteLine writes a line to stdin (appends newline).

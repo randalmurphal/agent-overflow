@@ -286,6 +286,87 @@ describe('<RateLimitMeter>', () => {
     expect(await screen.findByText('Plan: Claude Max')).toBeTruthy();
   });
 
+  it('renders the live thread account instead of the newly selected account', async () => {
+    setProviderAccount(
+      'codex',
+      { email: 'new@example.com', subscriptionType: 'plus' },
+      'account-new',
+    );
+    setProviderRateLimits({
+      provider: 'codex',
+      accountId: 'account-old',
+      limits: [{
+        limitId: 'codex',
+        limitName: '5h',
+        usedPercent: 17,
+        windowMins: 300,
+        resetsAt: NOW_SEC + 3600,
+      }],
+      updatedAt: NOW_SEC,
+    });
+    setProviderRateLimits({
+      provider: 'codex',
+      accountId: 'account-new',
+      limits: [{
+        limitId: 'codex',
+        limitName: '5h',
+        usedPercent: 83,
+        windowMins: 300,
+        resetsAt: NOW_SEC + 3600,
+      }],
+      updatedAt: NOW_SEC,
+    });
+
+    const { getByLabelText } = render(RateLimitMeter, {
+      props: {
+        windowMins: 300,
+        provider: 'codex' as const,
+        accountId: 'account-old',
+        accountEmail: 'old@example.com',
+        subscriptionType: 'pro',
+      },
+    });
+    await fireEvent.mouseEnter(getByLabelText(/5-hour limit: 17% used/i));
+
+    expect(await screen.findByText('17% used')).toBeTruthy();
+    expect(screen.getByText('Plan: pro')).toBeTruthy();
+    expect(screen.getByText('Account: old@example.com')).toBeTruthy();
+    expect(screen.queryByText('83% used')).toBeNull();
+  });
+
+  it('does not label an explicit session account with selected-account metadata', async () => {
+    setProviderAccount(
+      'codex',
+      { email: 'selected@example.com', subscriptionType: 'pro' },
+      'selected-account',
+    );
+    setProviderRateLimits({
+      provider: 'codex',
+      accountId: 'session-account',
+      limits: [{
+        limitId: 'codex',
+        limitName: '5h',
+        usedPercent: 12,
+        windowMins: 300,
+        resetsAt: NOW_SEC + 3600,
+      }],
+      updatedAt: NOW_SEC,
+    });
+
+    const { getByLabelText } = render(RateLimitMeter, {
+      props: {
+        windowMins: 300,
+        provider: 'codex' as const,
+        accountId: 'session-account',
+      },
+    });
+    await fireEvent.mouseEnter(getByLabelText(/5-hour limit: 12% used/i));
+
+    expect(await screen.findByText('12% used')).toBeTruthy();
+    expect(screen.queryByText('Plan: pro')).toBeNull();
+    expect(screen.queryByText('Account: selected@example.com')).toBeNull();
+  });
+
   it('omits the plan label when provider is supplied but accountInfo has no subscriptionType', async () => {
     setProviderAccount('codex', { apiProvider: 'openai' }); // no subscriptionType
     seedProviderEntry('codex', {

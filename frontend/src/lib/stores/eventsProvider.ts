@@ -6,6 +6,7 @@ import type {
   ApprovalEvent,
   ModelFallbackEvent,
   ProviderAccountEvent,
+  ProviderSessionAccountEvent,
   TodoUpdateEvent,
   ProviderStatusEvent,
   SessionDiedEvent,
@@ -15,12 +16,12 @@ import type {
   UsageEvent,
   UserInputEvent,
 } from '../types/events';
-import { setProviderAccount } from './accountInfo.svelte';
+import { clearProviderAccount, setProviderAccount } from './accountInfo.svelte';
 import { asProviderID } from '../types/providers';
 import { invalidateProviderModels } from './providerModels.svelte';
 import { iterPanes } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
-import { setProviderRateLimits } from './rateLimitsInfo.svelte';
+import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo.svelte';
 import { addToast } from './toast.svelte';
 import {
   projectApprovalRequest,
@@ -135,6 +136,12 @@ export function applyUsageEvent(evt: UsageEvent): void {
     setProviderRateLimits(evt.rateLimits);
     return;
   }
+  if (evt.action === 'rate_limits_removed') {
+    const provider = asProviderID(evt.rateLimits?.provider);
+    const accountId = evt.rateLimits?.accountId;
+    if (provider && accountId) clearProviderRateLimits(provider, accountId);
+    return;
+  }
 
   // Context-window updates require a threadId because they target a
   // specific pane's ring.
@@ -239,10 +246,23 @@ export function applyProviderStatus(evt: ProviderStatusEvent): void {
 }
 
 export function applyProviderAccount(evt: ProviderAccountEvent): void {
-  if (!evt || typeof evt.account !== 'object' || evt.account === null) return;
+  if (!evt) return;
   const provider = asProviderID(evt.provider);
   if (!provider) return;
-  setProviderAccount(provider, evt.account, evt.accountId);
+  if (evt.cleared) {
+    clearProviderAccount(provider, evt.generation);
+    return;
+  }
+  if (typeof evt.account !== 'object' || evt.account === null) return;
+  setProviderAccount(provider, evt.account, evt.accountId, evt.generation);
+}
+
+export function applyProviderSessionAccount(evt: ProviderSessionAccountEvent): void {
+  if (!evt?.threadId) return;
+  for (const pane of iterPanes()) {
+    if (pane.threadId !== evt.threadId) continue;
+    pane.setProviderSessionAccount(evt.connected ? evt : null);
+  }
 }
 
 /**

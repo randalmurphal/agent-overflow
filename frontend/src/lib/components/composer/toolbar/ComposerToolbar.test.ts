@@ -3,6 +3,10 @@ import { render, waitFor } from '@testing-library/svelte';
 
 import ComposerToolbar from './ComposerToolbar.svelte';
 import { createThreadPane, type ThreadPane } from '../../../stores/thread.svelte';
+import {
+  resetForTest as resetProviderAccounts,
+  setProviderAccount,
+} from '../../../stores/accountInfo.svelte';
 import { resetBindingMocks } from '../../../../test/mocks/bindings-app';
 import type { Thread } from '../../../types/models';
 import type { SendButtonAction } from './sendButtonTypes';
@@ -89,6 +93,7 @@ describe('<ComposerToolbar>', () => {
 
   beforeEach(() => {
     resetBindingMocks();
+    resetProviderAccounts();
     const frame = vi.spyOn(window, 'requestAnimationFrame')
       .mockImplementation((callback: FrameRequestCallback) => {
         callback(0);
@@ -102,6 +107,7 @@ describe('<ComposerToolbar>', () => {
   });
 
   afterEach(() => {
+    resetProviderAccounts();
     restoreDimensions?.();
     restoreDimensions = undefined;
     restoreAnimationFrame?.();
@@ -154,6 +160,77 @@ describe('<ComposerToolbar>', () => {
     expect(queryByTestId('composer-agent-mode-toggle')).toBeNull();
     // The model + effort pickers stay — claude-tui reuses claude's catalog.
     expect(queryByTestId('composer-effort-trigger')).not.toBeNull();
+  });
+
+  it('keeps the account serving the live session out of the toolbar label', () => {
+    setProviderAccount(
+      'codex',
+      { email: 'new@example.com', subscriptionType: 'pro' },
+      'new-account',
+    );
+    const pane = createThreadPane();
+    pane.replaceThread(makeThread({ provider: 'codex', model: 'gpt-5.3-codex' }));
+    pane.upsertItems([{
+      id: 'user-1',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      status: 'completed',
+      summary: 'Hello',
+      createdAt: 1,
+      updatedAt: 1,
+    }]);
+    pane.setProviderSessionAccount({
+      threadId: 'thread-1',
+      provider: 'codex',
+      accountId: 'old-account',
+      account: { email: 'old@example.com', subscriptionType: 'plus' },
+      connected: true,
+    });
+
+    const { queryByTestId, queryByText } = render(ComposerToolbar, {
+      props: toolbarProps(pane),
+    });
+    expect(queryByTestId('composer-provider-account')).toBeNull();
+    expect(queryByText('old@example.com')).toBeNull();
+    expect(queryByText('new@example.com')).toBeNull();
+  });
+
+  it('does not expose selected-account metadata beside the usage rings', () => {
+    setProviderAccount(
+      'codex',
+      { email: 'fresh@example.com', subscriptionType: 'pro' },
+      'same-account',
+    );
+    const pane = createThreadPane();
+    pane.replaceThread(makeThread({ provider: 'codex', model: 'gpt-5.3-codex' }));
+    pane.upsertItems([{
+      id: 'user-1',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      status: 'completed',
+      summary: 'Hello',
+      createdAt: 1,
+      updatedAt: 1,
+    }]);
+    pane.setProviderSessionAccount({
+      threadId: 'thread-1',
+      provider: 'codex',
+      accountId: 'same-account',
+      account: { email: 'stale@example.com', subscriptionType: 'plus' },
+      connected: true,
+    });
+
+    const { queryByTestId, queryByText } = render(ComposerToolbar, {
+      props: toolbarProps(pane),
+    });
+    expect(queryByTestId('composer-provider-account')).toBeNull();
+    expect(queryByText('fresh@example.com')).toBeNull();
   });
 
   it('remeasures when toolbar text changes without a container resize', async () => {

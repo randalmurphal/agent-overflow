@@ -9,7 +9,7 @@ one closest to what you're touching.
 | Package | Role |
 |---|---|
 | `provider/` | Provider process lifecycle and stdio protocols. Has its own subarea guide. |
-| `provideraccounts/` | Non-secret multi-account metadata, last-known account quota snapshots, provider-native credential profiles, and atomic active-credential switching. |
+| `provideraccounts/` | Non-secret multi-account metadata, last-known account quota snapshots, opaque provider-native credential slots, ephemeral login/probe homes, and atomic active-credential switching. |
 | `triage/` | Event classification. Decides what goes to the frontend vs SQLite. |
 | `store/` | SQLite access, migrations, schema. |
 | `usagecost/` | Hardcoded per-million-token USD rate table with progressive family-prefix matching (exact match, then trim trailing `-`/`.` segments). Prices `usage_ledger` rows whose wire carries no cost (Codex, claudetui) at query time — `app_usage.go`'s `GetUsageStats` is the only caller. Stdlib-only; estimates are computed fresh per query and never persisted, so a rate-table update reprices all history. |

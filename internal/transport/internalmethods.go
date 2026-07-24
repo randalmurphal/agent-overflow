@@ -305,6 +305,7 @@ var LocalOnlyMethods = map[string]bool{
 	"ListProviderAccounts":          true,
 	"LoginProviderAccount":          true,
 	"SwitchProviderAccount":         true,
+	"RemoveProviderAccount":         true,
 	"RefreshProviderAccountUsage":   true,
 
 	// claude-tui take-control: Attach arms raw-output fan-out and Replay

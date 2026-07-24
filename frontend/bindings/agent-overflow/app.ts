@@ -2292,6 +2292,16 @@ export function RemoveOtherWorktreeForProject(projectID: string, currentWorkspac
 }
 
 /**
+ * RemoveProviderAccount deletes one saved native login. Removing the selected
+ * account activates the next card in display order; removing the final account
+ * clears the provider's canonical credential. Existing Codex processes retain
+ * their in-memory authentication until the normal safe reconnect-on-send gate.
+ */
+export function RemoveProviderAccount(providerName: string, accountID: string): $CancellablePromise<void> {
+    return $Call.ByID(684418419, providerName, accountID);
+}
+
+/**
  * RenameProject updates the display name. Path is immutable.
  */
 export function RenameProject(id: string, name: string): $CancellablePromise<store$0.Project> {

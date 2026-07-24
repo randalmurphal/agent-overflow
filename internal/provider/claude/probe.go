@@ -60,10 +60,11 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 	defer cancel()
 
 	proc, err := provider.Spawn(probeCtx, provider.SpawnConfig{
-		Binary: binary,
-		Args:   buildProbeArgs(),
-		Dir:    cfg.WorkDir,
-		Env:    cfg.Env,
+		Binary:   binary,
+		Args:     buildProbeArgs(),
+		Dir:      cfg.WorkDir,
+		Env:      cfg.Env,
+		UnsetEnv: []string{"CLAUDE_CONFIG_DIR"},
 	})
 	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("claude: probe spawn: %w", err)

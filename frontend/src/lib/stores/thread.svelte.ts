@@ -8,6 +8,7 @@ import type {
   ItemMetaEvent,
   ItemPatchEvent,
   TodoStep,
+  ProviderSessionAccountEvent,
   ProviderStatusEvent,
   SubagentNotificationEvent,
   UserInputRequest,
@@ -235,13 +236,21 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   const pendingInteractiveState = createThreadPendingInteractiveState();
   let contextWindow: ContextWindow | null = $state(null);
   // Rate-limit snapshots live in the global `rateLimitsInfo.svelte.ts`
-  // store keyed by provider — they are an account property, not a
-  // thread property. Components read via `getProviderRateLimit(provider,
-  // windowMins)` directly. Keeping them out of per-pane state means
-  // they survive thread switches, turn completions, and metadata
-  // updates with no defensive logic on the pane side.
+  // store keyed by provider and account — they are account cache state,
+  // not thread state. Keeping them out of each pane means they survive
+  // thread switches, turn completions, and metadata updates. The pane
+  // only tracks which account its live provider session should select.
   let providerBanner: ProviderStatusEvent | null | undefined =
     $state(undefined);
+  let providerSessionAccount: ProviderSessionAccountEvent | null =
+    $state(null);
+  let providerSessionAccountRevision = 0;
+  function updateProviderSessionAccount(
+    account: ProviderSessionAccountEvent | null,
+  ): void {
+    providerSessionAccount = account?.connected ? account : null;
+    providerSessionAccountRevision += 1;
+  }
   // generalError is the grab-bag pane-level error slot surfaced by
   // ProviderStatusBanner for non-wire failures: thread load failures,
   // composer send failures, git action failures, reconnect failures.
@@ -334,6 +343,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getSwitchGeneration: () => switchGeneration,
     pendingInteractiveState,
     liveTodoState,
+    getProviderSessionAccountRevision: () => providerSessionAccountRevision,
+    hydrateProviderAccount: (account, expectedMutationRevision) => {
+      if (providerSessionAccountRevision !== expectedMutationRevision) return;
+      updateProviderSessionAccount(account);
+    },
     getEffectiveModelRevision: () => effectiveModelRevision,
     hydrateEffectiveModel: (model, backendRevision, expectedMutationRevision) => {
       if (effectiveModelRevision !== expectedMutationRevision) return;
@@ -771,6 +785,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     pendingInteractiveState.clear();
     contextWindow = seedContextWindow(newThread);
     providerBanner = undefined;
+    updateProviderSessionAccount(null);
     generalError = null;
     generalErrorKind = null;
     sendInFlight = false;
@@ -1215,6 +1230,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get providerBanner() {
       return providerBanner;
     },
+    get providerSessionAccount() {
+      return providerSessionAccount;
+    },
     get generalError() {
       return generalError;
     },
@@ -1586,6 +1604,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       pendingInteractiveState.clear();
       contextWindow = null;
       providerBanner = undefined;
+      updateProviderSessionAccount(null);
       generalError = null;
       generalErrorKind = null;
       loading = false;
@@ -2249,6 +2268,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     setProviderBanner(status: ProviderStatusEvent | null | undefined): void {
       providerBanner = status;
+    },
+
+    setProviderSessionAccount(account: ProviderSessionAccountEvent | null): void {
+      updateProviderSessionAccount(account);
     },
 
     // --- Turn lifecycle mutations ---

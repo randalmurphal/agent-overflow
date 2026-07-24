@@ -8,6 +8,7 @@ import { getProviderAccount } from './accountInfo.svelte';
 
 const LEGACY_ACCOUNT = '__active__';
 const MAX_TIMER_DELAY = 2_147_000_000;
+const RESET_JITTER_TOLERANCE_SECONDS = 60;
 
 type LimitMap = Map<string, RateLimitEntry>;
 type AccountMap = Map<string, LimitMap>;
@@ -41,18 +42,28 @@ export function setProviderRateLimits(snapshot: RateLimitsSnapshot): void {
     if (entry.windowMins < 0 || !entry.limitId?.trim()) continue;
     const key = entryKey(entry);
     const prior = merged.get(key);
-    if (prior && prior.resetsAt > entry.resetsAt) continue;
-    if (
-      prior
-      && prior.resetsAt === entry.resetsAt
-      && Number.isFinite(prior.usedPercent)
-      && Number.isFinite(entry.usedPercent)
-      && prior.usedPercent > entry.usedPercent
-    ) {
-      continue;
+    let candidate = entry;
+    if (prior) {
+      const resetDelta = entry.resetsAt - prior.resetsAt;
+      if (resetDelta < -RESET_JITTER_TOLERANCE_SECONDS) continue;
+      const sameWindow = Math.abs(resetDelta) <= RESET_JITTER_TOLERANCE_SECONDS;
+      if (
+        sameWindow
+        && Number.isFinite(prior.usedPercent)
+        && Number.isFinite(entry.usedPercent)
+        && prior.usedPercent > entry.usedPercent
+      ) {
+        continue;
+      }
+      if (sameWindow) {
+        // Claude's endpoint can move an otherwise identical reset boundary by
+        // a few seconds. Stabilize it so the UI accepts rising usage without
+        // churning on every periodic probe.
+        candidate = { ...entry, resetsAt: prior.resetsAt };
+      }
     }
-    if (prior && rateLimitEntriesEqual(prior, entry)) continue;
-    merged.set(key, { ...entry });
+    if (prior && rateLimitEntriesEqual(prior, candidate)) continue;
+    merged.set(key, { ...candidate });
     changed = true;
   }
   if (!changed) return;
@@ -80,7 +91,9 @@ function activeAccountKey(provider: ProviderID): string {
 function limitsForAccount(provider: ProviderID, accountId?: string): LimitMap | undefined {
   const accounts = limitsByProvider.get(provider);
   if (!accounts) return undefined;
-  const key = accountId || activeAccountKey(provider);
+  const explicitAccount = accountId?.trim();
+  if (explicitAccount) return accounts.get(explicitAccount);
+  const key = activeAccountKey(provider);
   return accounts.get(key) ?? (key !== LEGACY_ACCOUNT ? accounts.get(LEGACY_ACCOUNT) : undefined);
 }
 
@@ -125,9 +138,10 @@ export function rateLimitDisplayName(
 export function getProviderRateLimit(
   provider: ProviderID | undefined,
   windowMins: number,
+  accountId?: string,
 ): RateLimitEntry | null {
   if (!provider || windowMins <= 0) return null;
-  const candidates = [...(limitsForAccount(provider)?.values() ?? [])]
+  const candidates = [...(limitsForAccount(provider, accountId)?.values() ?? [])]
     .filter((entry) => entry.windowMins === windowMins);
   return defaultLimit(provider, candidates);
 }
@@ -144,9 +158,10 @@ export interface RateLimitWindowGroup {
 export function getProviderRateLimitsForWindow(
   provider: ProviderID | undefined,
   windowMins: number,
+  accountId?: string,
 ): RateLimitWindowGroup {
   if (!provider || windowMins <= 0) return { primary: null, limits: [] };
-  const candidates = [...(limitsForAccount(provider)?.values() ?? [])]
+  const candidates = [...(limitsForAccount(provider, accountId)?.values() ?? [])]
     .filter((entry) => entry.windowMins === windowMins);
   const primary = defaultLimit(provider, candidates);
   const primaryKey = primary ? entryKey(primary) : '';
@@ -166,6 +181,21 @@ export function getProviderRateLimits(
   return [...(limitsForAccount(provider, accountId)?.values() ?? [])]
     .sort((a, b) => a.windowMins - b.windowMins
       || rateLimitDisplayName(a).localeCompare(rateLimitDisplayName(b)));
+}
+
+export function clearProviderRateLimits(provider: ProviderID, accountId: string): void {
+  const providerAccounts = limitsByProvider.get(provider);
+  if (!providerAccounts?.has(accountId)) return;
+  const nextAccounts = new Map(providerAccounts);
+  nextAccounts.delete(accountId);
+  const next = new Map(limitsByProvider);
+  if (nextAccounts.size > 0) {
+    next.set(provider, nextAccounts);
+  } else {
+    next.delete(provider);
+  }
+  limitsByProvider = next;
+  scheduleExpiry();
 }
 
 function normalizeExpired(entry: RateLimitEntry | null): RateLimitEntry | null {

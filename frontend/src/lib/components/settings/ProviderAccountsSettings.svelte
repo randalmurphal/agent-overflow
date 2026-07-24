@@ -1,16 +1,23 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import Trash2 from 'lucide-svelte/icons/trash-2';
   import Icon from '../primitives/Icon.svelte';
+  import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import {
     ListProviderAccounts,
     LoginProviderAccount,
+    RemoveProviderAccount,
     RefreshProviderAccountUsage,
     SwitchProviderAccount,
   } from '../../stores/bindings';
   import type { ManagedProviderAccount } from '../../stores/bindings';
-  import { setProviderAccount } from '../../stores/accountInfo.svelte';
   import {
+    clearProviderAccount,
+    setProviderAccount,
+  } from '../../stores/accountInfo.svelte';
+  import {
+    clearProviderRateLimits,
     getProviderRateLimits,
     rateLimitDisplayName,
     setProviderRateLimits,
@@ -34,6 +41,8 @@
   let loggingIn = $state(false);
   let switchingID = $state('');
   let refreshingID = $state('');
+  let removingID = $state('');
+  let pendingRemoval = $state<ManagedProviderAccount | null>(null);
 
   onMount(() => {
     void loadAccounts();
@@ -43,12 +52,15 @@
     try {
       const all = await ListProviderAccounts();
       accounts = all.filter((account) => account.provider === provider);
+      let foundActive = false;
       for (const account of accounts) {
         if (account.rateLimits) setProviderRateLimits(account.rateLimits);
         if (account.active) {
-          setProviderAccount(provider, account, account.id);
+          foundActive = true;
+          setProviderAccount(provider, account, account.id, account.generation);
         }
       }
+      if (!foundActive) clearProviderAccount(provider);
     } catch (error) {
       console.error(`Failed to load ${providerLabel} accounts:`, error);
       addToast('error', `Failed to load ${providerLabel} accounts.`);
@@ -100,6 +112,62 @@
     } finally {
       refreshingID = '';
     }
+  }
+
+  function requestRemoval(account: ManagedProviderAccount): void {
+    if (removingID) return;
+    pendingRemoval = account;
+  }
+
+  async function confirmRemoval(): Promise<void> {
+    const account = pendingRemoval;
+    if (!account) return;
+    pendingRemoval = null;
+    removingID = account.id;
+    try {
+      await RemoveProviderAccount(provider, account.id);
+      clearProviderRateLimits(provider, account.id);
+      projectRemovedAccount(account);
+      await loadAccounts();
+      addToast('success', `${providerLabel} account removed.`);
+    } catch (error) {
+      console.error(`${providerLabel} account removal failed:`, error);
+      addToast(
+        'error',
+        `${providerLabel} account was not removed. ${userFacingError(error, 'Try again.')}`,
+      );
+    } finally {
+      removingID = '';
+    }
+  }
+
+  function projectRemovedAccount(account: ManagedProviderAccount): void {
+    const removedIndex = accounts.findIndex((candidate) => candidate.id === account.id);
+    const remaining = accounts.filter((candidate) => candidate.id !== account.id);
+    if (!account.active || remaining.length === 0) {
+      accounts = remaining;
+      if (account.active) clearProviderAccount(provider);
+      return;
+    }
+
+    const nextIndex = removedIndex >= remaining.length ? 0 : Math.max(0, removedIndex);
+    const replacementID = remaining[nextIndex].id;
+    accounts = remaining.map((candidate) => ({
+      ...candidate,
+      active: candidate.id === replacementID,
+    }));
+    const replacement = accounts[nextIndex];
+    setProviderAccount(provider, replacement, replacement.id, replacement.generation);
+  }
+
+  function removalDescription(account: ManagedProviderAccount): string {
+    if (!account.active) {
+      return `Remove ${accountName(account)} from saved accounts? You’ll need to log in again to use it.`;
+    }
+    if (accounts.length === 1) {
+      return `Remove ${accountName(account)} and sign out of ${providerLabel}? You’ll need to log in again to use it.`;
+    }
+    return `Remove ${accountName(account)}? The next saved ${providerLabel} account will become active.`;
   }
 
   function accountName(account: ManagedProviderAccount): string {
@@ -186,21 +254,33 @@
               {/if}
             </button>
 
-            <button
-              type="button"
-              class={GHOST_BUTTON_CLASS}
-              disabled={!!refreshingID}
-              onclick={() => void refreshUsage(account)}
-              title="Refresh usage limits"
-              aria-label={`Refresh usage for ${accountName(account)}`}
-            >
-              <Icon
-                icon={RefreshCw}
-                size={12}
-                strokeWidth={1.75}
-                class={refreshingID === account.id ? 'animate-spin' : ''}
-              />
-            </button>
+            <div class="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                class={GHOST_BUTTON_CLASS}
+                disabled={!!refreshingID || !!removingID}
+                onclick={() => void refreshUsage(account)}
+                title="Refresh usage limits"
+                aria-label={`Refresh usage for ${accountName(account)}`}
+              >
+                <Icon
+                  icon={RefreshCw}
+                  size={12}
+                  strokeWidth={1.75}
+                  class={refreshingID === account.id ? 'animate-spin' : ''}
+                />
+              </button>
+              <button
+                type="button"
+                class="{GHOST_BUTTON_CLASS} hover:text-error"
+                disabled={!!removingID || !!switchingID}
+                onclick={() => requestRemoval(account)}
+                title="Remove saved account"
+                aria-label={`Remove ${accountName(account)}`}
+              >
+                <Icon icon={Trash2} size={12} strokeWidth={1.75} />
+              </button>
+            </div>
           </div>
 
           {#if limits.length > 0}
@@ -233,3 +313,15 @@
     </div>
   {/if}
 </div>
+
+<ConfirmDialog
+  open={pendingRemoval !== null}
+  title={`Remove ${providerLabel} account?`}
+  description={pendingRemoval ? removalDescription(pendingRemoval) : ''}
+  confirmLabel="Remove"
+  destructive
+  onConfirm={() => void confirmRemoval()}
+  onCancel={() => {
+    pendingRemoval = null;
+  }}
+/>

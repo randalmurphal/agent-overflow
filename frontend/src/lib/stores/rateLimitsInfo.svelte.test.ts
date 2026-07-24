@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  clearProviderRateLimits,
   getProviderRateLimit,
   getProviderRateLimits,
   getProviderRateLimitsForWindow,
@@ -44,6 +45,21 @@ describe('rateLimitsInfo', () => {
     expect(got).not.toBeNull();
     expect(got?.usedPercent).toBe(42);
     expect(got?.resetsAt).toBe(1776283200);
+  });
+
+  it('does not fall back to another account when an explicit account is unseeded', () => {
+    setProviderRateLimits({
+      provider: 'codex',
+      limits: [
+        { limitId: 'codex', limitName: '5h', usedPercent: 64, windowMins: 300, resetsAt: 1776283200 },
+      ],
+      updatedAt: 1776283000,
+    });
+
+    expect(getProviderRateLimit('codex', 300, 'different-account')).toBeNull();
+    expect(
+      getProviderRateLimitsForWindow('codex', 300, 'different-account'),
+    ).toEqual({ primary: null, limits: [] });
   });
 
   // Claude wires emit ONE window per `rate_limit_event` (5h XOR 7d).
@@ -251,6 +267,70 @@ describe('rateLimitsInfo', () => {
     expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
   });
 
+  it('accepts higher usage when the provider jitters a reset boundary by seconds', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'active',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 0, windowMins: 300, resetsAt: 1784841601 },
+      ],
+      updatedAt: 1784823000,
+    });
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'active',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 8, windowMins: 300, resetsAt: 1784841599 },
+      ],
+      updatedAt: 1784827200,
+    });
+
+    const limit = getProviderRateLimits('claude', 'active')[0];
+    expect(limit?.usedPercent).toBe(8);
+    expect(limit?.resetsAt).toBe(1784841601);
+  });
+
+  it('does not churn or regress usage for reset timestamp jitter alone', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'equal',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 8, windowMins: 300, resetsAt: 1784841601 },
+      ],
+      updatedAt: 1784823000,
+    });
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'lower',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 8, windowMins: 300, resetsAt: 1784841601 },
+      ],
+      updatedAt: 1784823000,
+    });
+    const equalBefore = getProviderRateLimits('claude', 'equal')[0];
+    const lowerBefore = getProviderRateLimits('claude', 'lower')[0];
+
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'equal',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 8, windowMins: 300, resetsAt: 1784841599 },
+      ],
+      updatedAt: 1784827200,
+    });
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'lower',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 7, windowMins: 300, resetsAt: 1784841599 },
+      ],
+      updatedAt: 1784827200,
+    });
+
+    expect(getProviderRateLimits('claude', 'equal')[0]).toBe(equalBefore);
+    expect(getProviderRateLimits('claude', 'lower')[0]).toBe(lowerBefore);
+  });
+
   // Delayed probe/notification races can replay an older lower reading
   // for the same reset boundary after a fresher one. Keep the higher
   // value until the reset boundary advances.
@@ -338,6 +418,30 @@ describe('rateLimitsInfo', () => {
 
     expect(getProviderRateLimits('codex', 'first')[0]?.usedPercent).toBe(91);
     expect(getProviderRateLimits('codex', 'second')[0]?.usedPercent).toBe(12);
+  });
+
+  it('clears only the removed account limits', () => {
+    for (const [accountId, usedPercent] of [['first', 91], ['second', 12]] as const) {
+      setProviderRateLimits({
+        provider: 'codex',
+        accountId,
+        limits: [
+          {
+            limitId: 'codex',
+            limitName: 'Codex',
+            usedPercent,
+            windowMins: 300,
+            resetsAt: 1776283200,
+          },
+        ],
+        updatedAt: 1776283000,
+      });
+    }
+
+    clearProviderRateLimits('codex', 'first');
+
+    expect(getProviderRateLimits('codex', 'first')).toEqual([]);
+    expect(getProviderRateLimit('codex', 300, 'second')?.usedPercent).toBe(12);
   });
 
   it('retains multiple dynamic buckets for the same window', () => {

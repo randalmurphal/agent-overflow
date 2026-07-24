@@ -94,9 +94,9 @@ func ProbeRateLimits(ctx context.Context, httpClient *http.Client) (provider.Rat
 	)
 }
 
-// ProbeRateLimitsFromCredentialPath is the profile-aware form used for active
-// and inactive managed accounts. Credential contents stay local and are used
-// only as the bearer on the HTTPS request.
+// ProbeRateLimitsFromCredentialPath reads one native credential file.
+// Credential contents stay local and are used only as the bearer on the HTTPS
+// request.
 func ProbeRateLimitsFromCredentialPath(ctx context.Context, httpClient *http.Client, credentialPath string) (provider.RateLimitsSnapshot, error) {
 	data, err := readCredentialFile(credentialPath)
 	if err != nil {

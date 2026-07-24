@@ -23,15 +23,23 @@
   let {
     windowMins,
     provider,
+    accountId,
+    accountEmail,
+    subscriptionType,
   }: {
     windowMins: number;
     provider?: ProviderID;
+    accountId?: string;
+    accountEmail?: string;
+    subscriptionType?: string;
   } = $props();
 
   // The recognized provider-wide default remains the sole source for the
   // ring. Additional entries only enrich the hover card, so a scoped
   // Fable/Spark quota can never make the account-wide ring look exhausted.
-  let limitGroup = $derived(getProviderRateLimitsForWindow(provider, windowMins));
+  let limitGroup = $derived(
+    getProviderRateLimitsForWindow(provider, windowMins, accountId),
+  );
   let entries = $derived(limitGroup.limits);
   let entry = $derived(limitGroup.primary);
 
@@ -97,9 +105,17 @@
   // `getProviderAccount` inside `$derived` re-runs when the underlying
   // Map identity flips on `setProviderAccount`.
   let planLabel = $derived.by(() => {
+    if (subscriptionType) return subscriptionType;
+    if (accountId) return '';
     if (!provider) return '';
     const acc = getProviderAccount(provider);
     return acc?.subscriptionType ?? '';
+  });
+  let emailLabel = $derived.by(() => {
+    if (accountEmail) return accountEmail;
+    if (accountId) return '';
+    if (!provider) return '';
+    return getProviderAccount(provider)?.email ?? '';
   });
 </script>
 
@@ -153,6 +169,11 @@
         {/if}
         {#if planLabel}
           <p class="mt-1.5 text-fg-hint">Plan: {planLabel}</p>
+        {/if}
+        {#if emailLabel}
+          <p class="mt-0.5 max-w-[250px] truncate text-fg-hint" title={emailLabel}>
+            Account: {emailLabel}
+          </p>
         {/if}
       </div>
     </div>

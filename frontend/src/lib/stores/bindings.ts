@@ -69,6 +69,7 @@ export {
   ListProviderAccounts,
   LoginProviderAccount,
   SwitchProviderAccount,
+  RemoveProviderAccount,
   RefreshProviderAccountUsage,
 
   // Per-client UI view state (ui_state table) behind stores/appStorage.ts.

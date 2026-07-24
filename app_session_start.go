@@ -2,9 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
-
-	"agent-overflow/internal/provider"
 )
 
 type sessionStart struct {
@@ -40,23 +37,5 @@ func (a *App) closeProviderSession(threadID string, sess session) error {
 	// abandoned-but-still-alive subprocess must still be reaped if the app
 	// later dies.
 	a.releaseSessionProcess(pgid)
-	if err := a.reconcileClosedProviderProfile(sess); err != nil {
-		return fmt.Errorf("share %s account state after closing thread %s: %w", sess.provider, threadID, err)
-	}
 	return nil
-}
-
-func (a *App) reconcileClosedProviderProfile(sess session) error {
-	if sess.provider != string(provider.Codex) ||
-		sess.credentialAccountID == "" ||
-		a.providerCredentials == nil {
-		return nil
-	}
-	return a.providerCredentials.ReconcileProfile(sess.provider, sess.credentialAccountID)
-}
-
-func (a *App) logReconcileExitedProviderProfile(threadID string, sess session) {
-	if err := a.reconcileClosedProviderProfile(sess); err != nil {
-		log.Printf("app: share %s account state after thread %s exited: %v", sess.provider, threadID, err)
-	}
 }

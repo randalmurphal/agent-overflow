@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,7 +22,8 @@ import (
 
 type ManagedProviderAccount struct {
 	provideraccounts.Account
-	Active bool `json:"active"`
+	Active     bool   `json:"active"`
+	Generation uint64 `json:"generation"`
 }
 
 func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
@@ -35,10 +36,12 @@ func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
 	var out []ManagedProviderAccount
 	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
 		active, hasActive := a.providerAccounts.Active(providerName, now)
+		generation := a.providerAccounts.Generation(providerName)
 		for _, account := range a.providerAccounts.List(providerName, now) {
 			out = append(out, ManagedProviderAccount{
-				Account: account,
-				Active:  hasActive && active.ID == account.ID,
+				Account:    account,
+				Active:     hasActive && active.ID == account.ID,
+				Generation: generation,
 			})
 		}
 	}
@@ -48,10 +51,12 @@ func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
 	return out, nil
 }
 
-// LoginProviderAccount runs the provider's native browser login in an
-// isolated native home, verifies the resulting identity, atomically activates
-// it, and registers only non-secret metadata with Agent Overflow.
-func (a *App) LoginProviderAccount(providerName string) (ManagedProviderAccount, error) {
+// LoginProviderAccount runs the provider's native browser login in a
+// short-lived isolated home, retains only the resulting native credential,
+// atomically activates it, and registers non-secret metadata.
+func (a *App) LoginProviderAccount(
+	providerName string,
+) (_ ManagedProviderAccount, retErr error) {
 	if a.shuttingDown.Load() {
 		return ManagedProviderAccount{}, ErrShuttingDown
 	}
@@ -63,26 +68,30 @@ func (a *App) LoginProviderAccount(providerName string) (ManagedProviderAccount,
 	}
 
 	binary := a.providerBinaryPath(providerName)
+	reconcileMu := a.providerCredentialReconcileMutex(providerName)
+	reconcileMu.Lock()
 	a.providerAccountMu.Lock()
 	if err := a.adoptCanonicalProviderAccountLocked(providerName, binary); err != nil {
 		a.providerAccountMu.Unlock()
+		reconcileMu.Unlock()
 		return ManagedProviderAccount{}, fmt.Errorf("preserve current %s account: %w", providerName, err)
 	}
 	a.providerAccountMu.Unlock()
+	reconcileMu.Unlock()
 
-	candidateID := uuid.NewString()
-	keepCandidate := false
-	defer func() {
-		if !keepCandidate {
-			if cleanupErr := a.providerCredentials.RemoveProfile(providerName, candidateID); cleanupErr != nil {
-				log.Printf("provider accounts: clean transient %s login profile: %v", providerName, cleanupErr)
-			}
-		}
-	}()
-	loginHome, err := a.providerCredentials.PrepareLoginHome(providerName, candidateID)
+	loginHome, err := a.providerCredentials.NewEphemeralHome(providerName)
 	if err != nil {
 		return ManagedProviderAccount{}, fmt.Errorf("prepare %s login: %w", providerName, err)
 	}
+	defer func() {
+		if cleanupErr := loginHome.Cleanup(); cleanupErr != nil {
+			retErr = errors.Join(
+				retErr,
+				fmt.Errorf("clean temporary %s login home: %w", providerName, cleanupErr),
+			)
+		}
+	}()
+
 	switch providerName {
 	case string(provider.Claude):
 		executable, err := os.Executable()
@@ -91,7 +100,7 @@ func (a *App) LoginProviderAccount(providerName string) (ManagedProviderAccount,
 		}
 		if err := claude.Login(a.lifeCtx(), claude.LoginConfig{
 			Binary:            binary,
-			ConfigDir:         loginHome,
+			ConfigDir:         loginHome.Path,
 			BrowserExecutable: executable,
 		}); err != nil {
 			return ManagedProviderAccount{}, err
@@ -99,7 +108,7 @@ func (a *App) LoginProviderAccount(providerName string) (ManagedProviderAccount,
 	case string(provider.Codex):
 		if err := codex.Login(a.lifeCtx(), codex.LoginConfig{
 			Binary: binary,
-			Env:    map[string]string{"CODEX_HOME": loginHome},
+			Env:    map[string]string{"CODEX_HOME": loginHome.Path},
 			OpenURL: func(rawURL string) error {
 				return externalurl.Open(context.Background(), rawURL)
 			},
@@ -107,19 +116,34 @@ func (a *App) LoginProviderAccount(providerName string) (ManagedProviderAccount,
 			return ManagedProviderAccount{}, err
 		}
 	}
-	if err := a.providerCredentials.ReconcileProfile(providerName, candidateID); err != nil {
-		return ManagedProviderAccount{}, fmt.Errorf("share %s login state: %w", providerName, err)
-	}
 
-	info, err := a.probeProviderAccountAtHome(providerName, binary, loginHome)
+	info, err := a.probeProviderAccountAtHome(providerName, binary, loginHome.Path)
 	if err != nil {
 		return ManagedProviderAccount{}, fmt.Errorf("verify %s login: %w", providerName, err)
 	}
-	if err := a.providerCredentials.ReconcileProfile(providerName, candidateID); err != nil {
-		return ManagedProviderAccount{}, fmt.Errorf("share %s account state: %w", providerName, err)
-	}
 	if providerName == string(provider.Claude) && providerstatus.ClaudeUnauthenticated(info) {
 		return ManagedProviderAccount{}, errors.New("Claude login completed without an authenticated account")
+	}
+	loginCredential, err := a.providerCredentials.ReadEphemeralCredential(loginHome)
+	if err != nil {
+		return ManagedProviderAccount{}, fmt.Errorf("capture %s login credentials: %w", providerName, err)
+	}
+	if err := loginHome.Cleanup(); err != nil {
+		return ManagedProviderAccount{}, fmt.Errorf("clean temporary %s login home: %w", providerName, err)
+	}
+	reconcileMu.Lock()
+	reconcileLocked := true
+	defer func() {
+		if reconcileLocked {
+			reconcileMu.Unlock()
+		}
+	}()
+	if err := a.reconcileExternalProviderAccountWithMutexHeld(providerName); err != nil {
+		return ManagedProviderAccount{}, fmt.Errorf(
+			"check current %s account before activation: %w",
+			providerName,
+			err,
+		)
 	}
 
 	a.providerAccountMu.Lock()
@@ -129,42 +153,126 @@ func (a *App) LoginProviderAccount(providerName string) (ManagedProviderAccount,
 			a.providerAccountMu.Unlock()
 		}
 	}()
-	targetID := candidateID
+
+	targetID := uuid.NewString()
+	var previousTarget *provideraccounts.CredentialSnapshot
 	if existing, ok := a.providerAccounts.FindByEmail(providerName, info.Email); ok {
 		targetID = existing.ID
-		if targetID != candidateID {
-			if err := a.providerCredentials.CopyProfile(providerName, candidateID, targetID); err != nil {
-				return ManagedProviderAccount{}, err
-			}
+		snapshot, readErr := a.providerCredentials.ReadCredentialSnapshot(
+			providerName,
+			targetID,
+			false,
+		)
+		if readErr == nil {
+			previousTarget = &snapshot
+		} else if !provideraccounts.IsCredentialMissing(readErr) {
+			return ManagedProviderAccount{}, fmt.Errorf(
+				"capture existing %s account credentials: %w",
+				providerName,
+				readErr,
+			)
 		}
 	}
+	if err := a.providerCredentials.WriteAccountCredential(
+		providerName,
+		targetID,
+		loginCredential.Data,
+	); err != nil {
+		return ManagedProviderAccount{}, fmt.Errorf("save %s login credentials: %w", providerName, err)
+	}
+	restoreTarget := func() error {
+		if previousTarget != nil {
+			return a.providerCredentials.WriteAccountCredential(
+				providerName,
+				targetID,
+				previousTarget.Data,
+			)
+		}
+		return a.providerCredentials.RemoveAccount(providerName, targetID)
+	}
+
 	current, hasCurrent := a.providerAccounts.Active(providerName, time.Now())
 	currentID := ""
 	if hasCurrent {
 		currentID = current.ID
 	}
-	if err := a.providerCredentials.Activate(providerName, currentID, targetID); err != nil {
-		return ManagedProviderAccount{}, fmt.Errorf("activate %s account: %w", providerName, err)
-	}
-
-	account, err := a.providerAccounts.UpsertAndActivate(accountFromInfo(targetID, providerName, info))
+	currentCredential, err := a.reconciledActiveCredentialLocked(
+		providerName,
+		currentID,
+		targetID,
+	)
 	if err != nil {
-		if rollbackErr := a.rollbackProviderAccountActivation(providerName, currentID); rollbackErr != nil {
-			return ManagedProviderAccount{}, fmt.Errorf("%w (credential rollback also failed: %v)", err, rollbackErr)
+		if restoreErr := restoreTarget(); restoreErr != nil {
+			return ManagedProviderAccount{}, fmt.Errorf(
+				"%w (saved credential rollback also failed: %v)",
+				err,
+				restoreErr,
+			)
 		}
 		return ManagedProviderAccount{}, err
 	}
-	keepCandidate = targetID == candidateID
+	if err := a.providerCredentials.ActivateWithSnapshot(
+		providerName,
+		currentID,
+		targetID,
+		currentCredential,
+	); err != nil {
+		if restoreErr := restoreTarget(); restoreErr != nil {
+			return ManagedProviderAccount{}, fmt.Errorf(
+				"activate %s account: %w (saved credential rollback also failed: %v)",
+				providerName,
+				err,
+				restoreErr,
+			)
+		}
+		return ManagedProviderAccount{}, fmt.Errorf("activate %s account: %w", providerName, err)
+	}
+	if err := a.verifyCanonicalProviderCredentialLocked(
+		providerName,
+		loginCredential.Data,
+	); err != nil {
+		if restoreErr := restoreTarget(); restoreErr != nil {
+			return ManagedProviderAccount{}, errors.Join(err, restoreErr)
+		}
+		return ManagedProviderAccount{}, err
+	}
+
+	account, err := a.providerAccounts.UpsertAndActivateCredential(
+		accountFromInfo(targetID, providerName, info),
+	)
+	if err != nil {
+		var rollbackErrs []error
+		if restoreErr := restoreTarget(); restoreErr != nil {
+			rollbackErrs = append(rollbackErrs, restoreErr)
+		}
+		if rollbackErr := a.rollbackProviderAccountActivation(providerName, currentID); rollbackErr != nil {
+			rollbackErrs = append(rollbackErrs, rollbackErr)
+		}
+		if len(rollbackErrs) > 0 {
+			return ManagedProviderAccount{}, fmt.Errorf(
+				"%w (credential rollback also failed: %v)",
+				err,
+				errors.Join(rollbackErrs...),
+			)
+		}
+		return ManagedProviderAccount{}, err
+	}
+
 	a.invalidateProviderAccountProbe(providerName, binary)
+	a.rememberProviderCredentialFingerprintLocked(providerName, loginCredential.Data)
+	generation := a.providerAccounts.Generation(providerName)
 	a.providerAccountMu.Unlock()
 	accountLocked = false
-	a.emitProviderAccount(providerName, account, info)
+	reconcileMu.Unlock()
+	reconcileLocked = false
+	a.emitProviderAccount(providerName, account, info, generation)
+	a.applyProviderAccountSelectionToSessions(providerName, generation, account.ID)
 	if err := a.RefreshProviderAccountUsage(providerName, account.ID); err != nil {
 		// Login and activation succeeded. Quota refresh is independently
 		// retryable from Settings and must not roll the account back.
 		a.emitProviderAccountUsageRefreshError(providerName, account.ID, err)
 	}
-	return ManagedProviderAccount{Account: account, Active: true}, nil
+	return ManagedProviderAccount{Account: account, Active: true, Generation: generation}, nil
 }
 
 func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProviderAccount, error) {
@@ -177,6 +285,17 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 	if a.providerAccounts == nil || a.providerCredentials == nil {
 		return ManagedProviderAccount{}, errors.New("provider account storage is unavailable")
 	}
+	reconcileMu := a.providerCredentialReconcileMutex(providerName)
+	reconcileMu.Lock()
+	reconcileLocked := true
+	defer func() {
+		if reconcileLocked {
+			reconcileMu.Unlock()
+		}
+	}()
+	if err := a.reconcileExternalProviderAccountWithMutexHeld(providerName); err != nil {
+		return ManagedProviderAccount{}, fmt.Errorf("check current %s account before switch: %w", providerName, err)
+	}
 
 	a.providerAccountMu.Lock()
 	accountLocked := true
@@ -187,17 +306,52 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 	}()
 	current, hasCurrent := a.providerAccounts.Active(providerName, time.Now())
 	if hasCurrent && current.ID == accountID {
-		return ManagedProviderAccount{Account: current, Active: true}, nil
+		return ManagedProviderAccount{
+			Account:    current,
+			Active:     true,
+			Generation: a.providerAccounts.Generation(providerName),
+		}, nil
 	}
 	if _, exists := a.providerAccounts.Get(providerName, accountID, time.Now()); !exists {
 		return ManagedProviderAccount{}, fmt.Errorf("%s account %q is not saved", providerName, accountID)
+	}
+	targetCredential, err := a.providerCredentials.ReadCredentialSnapshot(
+		providerName,
+		accountID,
+		false,
+	)
+	if err != nil {
+		return ManagedProviderAccount{}, fmt.Errorf(
+			"read selected %s credentials: %w",
+			providerName,
+			err,
+		)
 	}
 	currentID := ""
 	if hasCurrent {
 		currentID = current.ID
 	}
-	if err := a.providerCredentials.Activate(providerName, currentID, accountID); err != nil {
+	currentCredential, err := a.reconciledActiveCredentialLocked(
+		providerName,
+		currentID,
+		accountID,
+	)
+	if err != nil {
+		return ManagedProviderAccount{}, err
+	}
+	if err := a.providerCredentials.ActivateWithSnapshot(
+		providerName,
+		currentID,
+		accountID,
+		currentCredential,
+	); err != nil {
 		return ManagedProviderAccount{}, fmt.Errorf("switch %s account: %w", providerName, err)
+	}
+	if err := a.verifyCanonicalProviderCredentialLocked(
+		providerName,
+		targetCredential.Data,
+	); err != nil {
+		return ManagedProviderAccount{}, err
 	}
 	account, err := a.providerAccounts.Activate(providerName, accountID)
 	if err != nil {
@@ -208,100 +362,58 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 	}
 	binary := a.providerBinaryPath(providerName)
 	a.invalidateProviderAccountProbe(providerName, binary)
+	a.rememberProviderCredentialFingerprintLocked(providerName, targetCredential.Data)
+	generation := a.providerAccounts.Generation(providerName)
 	a.providerAccountMu.Unlock()
 	accountLocked = false
-	info := provider.AccountInfo{
-		Email:            account.Email,
-		DisplayName:      account.DisplayName,
-		SubscriptionType: account.SubscriptionType,
-		TokenSource:      account.TokenSource,
-		APIProvider:      account.APIProvider,
-	}
-	a.emitProviderAccount(providerName, account, info)
-	return ManagedProviderAccount{Account: account, Active: true}, nil
+	info := providerAccountInfo(account)
+	a.emitProviderAccount(providerName, account, info, generation)
+	a.applyProviderAccountSelectionToSessions(providerName, generation, account.ID)
+	reconcileMu.Unlock()
+	reconcileLocked = false
+	return ManagedProviderAccount{Account: account, Active: true, Generation: generation}, nil
 }
 
-func (a *App) RefreshProviderAccountUsage(providerName, accountID string) error {
-	if err := validateManagedProvider(providerName); err != nil {
-		return err
+// reconciledActiveCredentialLocked captures the credential value already
+// associated with currentAccountID. The caller holds providerAccountMu after a
+// successful external-login reconciliation. Passing this exact snapshot into
+// activation prevents a concurrent native login from being preserved under
+// the stale account ID.
+func (a *App) reconciledActiveCredentialLocked(
+	providerName string,
+	currentAccountID string,
+	targetAccountID string,
+) (*provideraccounts.CredentialSnapshot, error) {
+	if currentAccountID == "" || currentAccountID == targetAccountID {
+		return nil, nil
 	}
-	a.providerAccountMu.Lock()
-	defer a.providerAccountMu.Unlock()
-	return a.refreshProviderAccountUsageLocked(providerName, accountID)
+	snapshot, err := a.verifiedActiveCredentialLocked(providerName)
+	if err != nil {
+		return nil, err
+	}
+	return &snapshot, nil
 }
 
-func (a *App) refreshProviderAccountUsageLocked(providerName, accountID string) error {
-	if a.providerAccounts == nil || a.providerCredentials == nil {
-		return errors.New("provider account storage is unavailable")
+func (a *App) verifiedActiveCredentialLocked(
+	providerName string,
+) (provideraccounts.CredentialSnapshot, error) {
+	snapshot, err := a.providerCredentials.ReadCredentialSnapshot(providerName, "", true)
+	if err != nil {
+		return provideraccounts.CredentialSnapshot{}, fmt.Errorf(
+			"capture current %s credentials before account change: %w",
+			providerName,
+			err,
+		)
 	}
-	if _, exists := a.providerAccounts.Get(providerName, accountID, time.Now()); !exists {
-		return fmt.Errorf("%s account %q is not saved", providerName, accountID)
+	fingerprint := sha256.Sum256(snapshot.Data)
+	known, ok := a.providerCredentialFingerprints[providerName]
+	if !ok || known != fingerprint {
+		return provideraccounts.CredentialSnapshot{}, fmt.Errorf(
+			"%s credentials changed while updating accounts; retry",
+			providerName,
+		)
 	}
-	active, isActive := a.providerAccounts.Active(providerName, time.Now())
-	isSelected := isActive && active.ID == accountID
-	var providerHome string
-	if isSelected {
-		providerHome = a.providerAccountSelectionLocked(providerName).Home
-	} else {
-		var err error
-		providerHome, err = a.providerCredentials.PrepareLoginHome(providerName, accountID)
-		if err != nil {
-			return err
-		}
-	}
-	var (
-		snapshot provider.RateLimitsSnapshot
-		err      error
-	)
-	switch providerName {
-	case string(provider.Claude):
-		var credentialPath string
-		if isSelected {
-			credentialPath = a.providerAccountSelectionLocked(providerName).CredentialPath
-		} else {
-			var err error
-			credentialPath, err = a.providerCredentials.ProfileCredentialPath(providerName, accountID)
-			if err != nil {
-				return err
-			}
-		}
-		selection := providerAccountSelection{
-			AccountID:        accountID,
-			Home:             providerHome,
-			CredentialPath:   credentialPath,
-			CredentialActive: isSelected,
-		}
-		if !isSelected {
-			selection.Env = map[string]string{"CLAUDE_CONFIG_DIR": providerHome}
-		}
-		snapshot, err = a.probeClaudeRateLimitsForSelection(a.lifeCtx(), selection)
-		if err != nil {
-			return err
-		}
-		if !isSelected {
-			if err := a.providerCredentials.ReconcileProfile(providerName, accountID); err != nil {
-				return fmt.Errorf("share Claude account state after usage refresh: %w", err)
-			}
-		}
-	case string(provider.Codex):
-		_, err := codex.ProbeAccount(a.lifeCtx(), codex.ProbeConfig{
-			Binary: a.providerBinaryPath(providerName),
-			Env:    map[string]string{"CODEX_HOME": providerHome},
-			OnSnapshot: func(value provider.RateLimitsSnapshot) {
-				snapshot = value
-			},
-		})
-		if err != nil {
-			return err
-		}
-		if len(snapshot.Limits) == 0 {
-			return errors.New("Codex did not return usage limits")
-		}
-	}
-	snapshot.Provider = providerName
-	snapshot.AccountID = accountID
-	a.emitRateLimitsSnapshot(snapshot)
-	return nil
+	return snapshot, nil
 }
 
 func (a *App) probeProviderAccountAtHome(providerName, binary, home string) (provider.AccountInfo, error) {
@@ -330,81 +442,102 @@ func (a *App) invalidateProviderAccountProbe(providerName, binary string) {
 	}
 }
 
-func (a *App) adoptCurrentProviderAccount(providerName string, info provider.AccountInfo) (provideraccounts.Account, bool) {
+func (a *App) adoptCurrentProviderAccount(
+	providerName string,
+	info provider.AccountInfo,
+	credential *provideraccounts.CredentialSnapshot,
+) (provideraccounts.Account, bool, error) {
 	a.providerAccountMu.Lock()
 	defer a.providerAccountMu.Unlock()
 	if a.providerAccounts == nil || a.providerCredentials == nil {
-		return provideraccounts.Account{}, false
+		return provideraccounts.Account{}, false, nil
 	}
-	if account, ok := a.providerAccounts.Active(providerName, time.Now()); ok {
-		return account, true
+	if credential == nil {
+		return provideraccounts.Account{}, false, nil
 	}
-	accountID := uuid.NewString()
-	if _, err := a.providerCredentials.PrepareLoginHome(providerName, accountID); err != nil {
-		log.Printf("provider accounts: prepare adoption profile for %s: %v", providerName, err)
-		return provideraccounts.Account{}, false
+	if err := a.verifyCanonicalProviderCredentialLocked(
+		providerName,
+		credential.Data,
+	); err != nil {
+		return provideraccounts.Account{}, false, err
 	}
-	if err := a.providerCredentials.ImportActive(providerName, accountID); err != nil {
-		if !provideraccounts.IsCredentialMissing(err) {
-			log.Printf("provider accounts: snapshot existing %s login: %v", providerName, err)
+	if _, hasActive := a.providerAccounts.Active(providerName, time.Now()); !hasActive &&
+		strings.TrimSpace(info.Email) == "" {
+		accountID := uuid.NewString()
+		if err := a.providerCredentials.WriteAccountCredential(
+			providerName,
+			accountID,
+			credential.Data,
+		); err != nil {
+			return provideraccounts.Account{}, false, fmt.Errorf(
+				"save existing %s credentials: %w",
+				providerName,
+				err,
+			)
 		}
-		if cleanupErr := a.providerCredentials.RemoveProfile(providerName, accountID); cleanupErr != nil {
-			log.Printf("provider accounts: clean unused %s adoption profile: %v", providerName, cleanupErr)
+		account, err := a.providerAccounts.UpsertAndActivate(
+			accountFromInfo(accountID, providerName, info),
+		)
+		if err != nil {
+			cleanupErr := a.providerCredentials.RemoveAccount(providerName, accountID)
+			return provideraccounts.Account{}, false, errors.Join(err, cleanupErr)
 		}
-		return provideraccounts.Account{}, false
+		a.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
+		return account, true, nil
 	}
-	account, err := a.providerAccounts.UpsertAndActivate(accountFromInfo(accountID, providerName, info))
+	account, changed, err := a.reconcileObservedAccountLocked(
+		providerName,
+		info,
+		*credential,
+	)
 	if err != nil {
-		log.Printf("provider accounts: register existing %s login: %v", providerName, err)
-		if cleanupErr := a.providerCredentials.RemoveProfile(providerName, accountID); cleanupErr != nil {
-			log.Printf("provider accounts: clean failed %s adoption profile: %v", providerName, cleanupErr)
-		}
-		return provideraccounts.Account{}, false
+		return provideraccounts.Account{}, false, err
 	}
-	return account, true
+	a.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
+	return account, changed, nil
 }
 
 func (a *App) adoptCanonicalProviderAccountLocked(providerName, binary string) error {
 	if _, ok := a.providerAccounts.Active(providerName, time.Now()); ok {
 		return nil
 	}
-	if _, err := a.providerCredentials.ReadCredential(providerName, "", true); provideraccounts.IsCredentialMissing(err) {
-		return nil
-	} else if err != nil {
-		return err
+	probe := func(ctx context.Context) (provider.AccountInfo, error) {
+		if providerName == string(provider.Claude) {
+			return claude.ProbeAccount(ctx, claude.ProbeConfig{Binary: binary})
+		}
+		return codex.ProbeIdentity(ctx, codex.ProbeConfig{Binary: binary})
 	}
-	activePath, err := a.providerCredentials.ActiveCredentialPath(providerName)
+	info, credential, err := a.runStableAccountProbe(providerName, probe)
 	if err != nil {
 		return err
 	}
-
-	var info provider.AccountInfo
-	var probeErr error
-	if providerName == string(provider.Claude) {
-		info, probeErr = claude.ProbeAccount(a.lifeCtx(), claude.ProbeConfig{Binary: binary})
-	} else {
-		info, probeErr = a.probeProviderAccountAtHome(providerName, binary, filepath.Dir(activePath))
+	if credential == nil {
+		return nil
 	}
-	if probeErr != nil {
-		log.Printf("provider accounts: identify existing %s login before switch: %v", providerName, probeErr)
-		info.DisplayName = "Previous account"
-	}
-	accountID := uuid.NewString()
-	if _, err := a.providerCredentials.PrepareLoginHome(providerName, accountID); err != nil {
+	if err := a.verifyCanonicalProviderCredentialLocked(
+		providerName,
+		credential.Data,
+	); err != nil {
 		return err
 	}
-	if err := a.providerCredentials.ImportActive(providerName, accountID); err != nil {
-		if cleanupErr := a.providerCredentials.RemoveProfile(providerName, accountID); cleanupErr != nil {
-			log.Printf("provider accounts: clean failed adoption profile: %v", cleanupErr)
+	accountID := uuid.NewString()
+	if err := a.providerCredentials.WriteAccountCredential(
+		providerName,
+		accountID,
+		credential.Data,
+	); err != nil {
+		if cleanupErr := a.providerCredentials.RemoveAccount(providerName, accountID); cleanupErr != nil {
+			log.Printf("provider accounts: clean failed adoption credential: %v", cleanupErr)
 		}
 		return err
 	}
 	if _, err := a.providerAccounts.UpsertAndActivate(accountFromInfo(accountID, providerName, info)); err != nil {
-		if cleanupErr := a.providerCredentials.RemoveProfile(providerName, accountID); cleanupErr != nil {
-			log.Printf("provider accounts: clean failed adoption profile: %v", cleanupErr)
+		if cleanupErr := a.providerCredentials.RemoveAccount(providerName, accountID); cleanupErr != nil {
+			log.Printf("provider accounts: clean failed adoption credential: %v", cleanupErr)
 		}
 		return err
 	}
+	a.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
 	return nil
 }
 
@@ -424,6 +557,16 @@ func accountFromInfo(accountID, providerName string, info provider.AccountInfo) 
 		SubscriptionType: strings.TrimSpace(info.SubscriptionType),
 		TokenSource:      strings.TrimSpace(info.TokenSource),
 		APIProvider:      strings.TrimSpace(info.APIProvider),
+	}
+}
+
+func providerAccountInfo(account provideraccounts.Account) provider.AccountInfo {
+	return provider.AccountInfo{
+		Email:            account.Email,
+		DisplayName:      account.DisplayName,
+		SubscriptionType: account.SubscriptionType,
+		TokenSource:      account.TokenSource,
+		APIProvider:      account.APIProvider,
 	}
 }
 

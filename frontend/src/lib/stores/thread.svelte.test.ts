@@ -2077,6 +2077,49 @@ describe('createThreadPane', () => {
     expect(pane.activeModel).toBe('claude-opus-4-8');
   });
 
+  it('does not let delayed live-state hydration overwrite a newer session account event', async () => {
+    const pane = createThreadPane();
+    let releaseSnapshot!: (value: unknown) => void;
+    setBindingMock(
+      'GetThreadLiveState',
+      () =>
+        new Promise((resolve) => {
+          releaseSnapshot = resolve;
+        }),
+    );
+
+    const switching = pane.switchThread(makeThread({
+      id: 'thread-account-race',
+      provider: 'codex',
+    }));
+    await Promise.resolve();
+    pane.setProviderSessionAccount({
+      threadId: 'thread-account-race',
+      provider: 'codex',
+      accountId: 'new-account',
+      account: { email: 'new@example.com' },
+      connected: true,
+    });
+    releaseSnapshot({
+      threadId: 'thread-account-race',
+      providerAccount: {
+        threadId: 'thread-account-race',
+        provider: 'codex',
+        accountId: 'old-account',
+        account: { email: 'old@example.com' },
+        connected: true,
+      },
+      activeTurn: null,
+      queueItems: [],
+      interactive: { approvals: [], userInputs: [] },
+      todo: null,
+    });
+    await switching;
+
+    expect(pane.providerSessionAccount?.accountId).toBe('new-account');
+    expect(pane.providerSessionAccount?.account.email).toBe('new@example.com');
+  });
+
   it('does not let an older live-state hydration apply after a newer one completed', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-hydration-order' }));

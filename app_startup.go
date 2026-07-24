@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/settings"
@@ -201,6 +202,19 @@ func (a *App) initStores() (string, *store.Store, error) {
 			fmt.Errorf("failed to initialize provider credentials: %w", err),
 			errorsx.WrapLifecycle("close store after provider credential initialization failure", closeErr),
 		)
+	}
+	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+		keep := make(map[string]bool)
+		for _, account := range a.providerAccounts.List(providerName, time.Now()) {
+			keep[account.ID] = true
+		}
+		if err := a.providerCredentials.PruneOrphanedAccounts(providerName, keep); err != nil {
+			closeErr := st.Close()
+			return "", nil, errors.Join(
+				fmt.Errorf("clean orphaned %s account credentials: %w", providerName, err),
+				errorsx.WrapLifecycle("close store after provider credential cleanup failure", closeErr),
+			)
+		}
 	}
 	a.hydratePersistedAccountRateLimits()
 	// Seed the git Core's GitLab self-hosted host snapshot from the

@@ -207,7 +207,7 @@ export interface RateLimitsSnapshot {
 }
 
 export interface UsageEvent {
-  action: 'usage' | 'reset' | 'rate_limits';
+  action: 'usage' | 'reset' | 'rate_limits' | 'rate_limits_removed';
   threadId: string;
   usedTokens?: number;
   maxTokens?: number;
@@ -296,6 +296,8 @@ export interface ProviderStatusEvent {
 export interface ProviderAccountEvent {
   provider: ProviderID;
   accountId?: string;
+  generation?: number;
+  cleared?: boolean;
   account: {
     email?: string;
     displayName?: string;
@@ -303,6 +305,12 @@ export interface ProviderAccountEvent {
     tokenSource?: string;
     apiProvider?: string;
   };
+}
+
+/** Account currently attached to one live provider process/thread. */
+export interface ProviderSessionAccountEvent extends ProviderAccountEvent {
+  threadId: string;
+  connected: boolean;
 }
 
 export interface ProviderAccountUsageErrorEvent {

@@ -20,9 +20,9 @@ import (
 var rateLimitProbeHTTPClient = &http.Client{}
 
 // probeClaudeRateLimits runs one rate-limit probe and emits the
-// snapshot on the `provider:usage` channel. Rate-limit data is
-// account-wide so the event carries no threadId — the frontend
-// rate-limits store keys by provider only.
+// snapshot on the `provider:usage` channel. Rate-limit data is account-wide
+// so the event carries no threadId — the frontend store keys it by provider,
+// account, limit ID, and duration.
 //
 // Returns silently on ErrNoCredentials — the user simply hasn't run
 // `claude login` yet and there's nothing useful to do until they do.
@@ -36,21 +36,29 @@ func (a *App) probeClaudeRateLimits(ctx context.Context) {
 	if a.shuttingDown.Load() {
 		return
 	}
-	a.providerAccountMu.RLock()
-	selection := a.providerAccountSelectionLocked(string(provider.Claude))
+	if err := a.reconcileExternalProviderAccount(string(provider.Claude)); err != nil {
+		log.Printf("claude: reconcile external account before rate-limit probe: %v", err)
+		return
+	}
+	selection := a.captureProviderAccountSelection(string(provider.Claude))
+	if selection.AccountID != "" {
+		if err := a.refreshProviderAccountUsage(
+			ctx,
+			string(provider.Claude),
+			selection.AccountID,
+		); err != nil {
+			if errors.Is(err, claude.ErrNoCredentials) {
+				return
+			}
+			log.Printf("claude: rate-limit probe: %v", err)
+		}
+		return
+	}
 	var (
 		snap provider.RateLimitsSnapshot
 		err  error
 	)
-	if selection.CredentialPath != "" {
-		snap, err = a.probeClaudeRateLimitsForSelection(ctx, selection)
-	} else {
-		snap, err = claude.ProbeRateLimits(ctx, a.rateLimitProbeClient())
-	}
-	if err == nil {
-		snap.AccountID = selection.AccountID
-	}
-	a.providerAccountMu.RUnlock()
+	snap, err = claude.ProbeRateLimits(ctx, a.rateLimitProbeClient())
 	if err != nil {
 		if errors.Is(err, claude.ErrNoCredentials) {
 			return
@@ -63,33 +71,24 @@ func (a *App) probeClaudeRateLimits(ctx context.Context) {
 
 func (a *App) probeClaudeRateLimitsForSelection(
 	ctx context.Context,
-	selection providerAccountSelection,
-) (provider.RateLimitsSnapshot, error) {
-	var snapshot provider.RateLimitsSnapshot
-	var err error
-	if a.providerCredentials != nil && selection.AccountID != "" {
-		var data []byte
-		data, err = a.providerCredentials.ReadCredential(
-			string(provider.Claude),
-			selection.AccountID,
-			selection.CredentialActive,
-		)
-		if err == nil {
-			snapshot, err = claude.ProbeRateLimitsFromCredentialData(
-				ctx,
-				a.rateLimitProbeClient(),
-				data,
-			)
-		}
-	} else {
-		snapshot, err = claude.ProbeRateLimitsFromCredentialPath(
-			ctx,
-			a.rateLimitProbeClient(),
-			selection.CredentialPath,
+	selection claudeRateLimitSelection,
+) (provider.RateLimitsSnapshot, []byte, error) {
+	if a.providerCredentials == nil || selection.EphemeralHome == nil {
+		return provider.RateLimitsSnapshot{}, nil, errors.New(
+			"Claude rate-limit probe requires temporary credentials",
 		)
 	}
-	if !errors.Is(err, claude.ErrOAuthUnauthorized) || selection.Home == "" {
-		return snapshot, err
+	data, err := a.readClaudeSelectionCredential(selection)
+	if err != nil {
+		return provider.RateLimitsSnapshot{}, nil, err
+	}
+	snapshot, err := claude.ProbeRateLimitsFromCredentialData(
+		ctx,
+		a.rateLimitProbeClient(),
+		data,
+	)
+	if !errors.Is(err, claude.ErrOAuthUnauthorized) {
+		return snapshot, nil, err
 	}
 
 	// Let Claude own refresh-token rotation exactly as it does before a
@@ -101,23 +100,28 @@ func (a *App) probeClaudeRateLimitsForSelection(
 		Env:    selection.Env,
 	})
 	if refreshErr != nil {
-		return provider.RateLimitsSnapshot{}, fmt.Errorf("refresh Claude credentials: %w", refreshErr)
+		return provider.RateLimitsSnapshot{}, nil, fmt.Errorf("refresh Claude credentials: %w", refreshErr)
 	}
 	if providerstatus.ClaudeUnauthenticated(info) {
-		return provider.RateLimitsSnapshot{}, errors.New("Claude credentials expired; log in again")
+		return provider.RateLimitsSnapshot{}, nil, errors.New("Claude credentials expired; log in again")
 	}
-	if a.providerCredentials != nil && selection.AccountID != "" {
-		data, readErr := a.providerCredentials.ReadCredential(
-			string(provider.Claude),
-			selection.AccountID,
-			selection.CredentialActive,
-		)
-		if readErr != nil {
-			return provider.RateLimitsSnapshot{}, readErr
-		}
-		return claude.ProbeRateLimitsFromCredentialData(ctx, a.rateLimitProbeClient(), data)
+	data, readErr := a.readClaudeSelectionCredential(selection)
+	if readErr != nil {
+		return provider.RateLimitsSnapshot{}, nil, readErr
 	}
-	return claude.ProbeRateLimitsFromCredentialPath(ctx, a.rateLimitProbeClient(), selection.CredentialPath)
+	snapshot, retryErr := claude.ProbeRateLimitsFromCredentialData(
+		ctx,
+		a.rateLimitProbeClient(),
+		data,
+	)
+	return snapshot, data, retryErr
+}
+
+func (a *App) readClaudeSelectionCredential(
+	selection claudeRateLimitSelection,
+) ([]byte, error) {
+	snapshot, err := a.providerCredentials.ReadEphemeralCredential(selection.EphemeralHome)
+	return snapshot.Data, err
 }
 
 // rateLimitProbeClient returns the HTTP client used by the probe.

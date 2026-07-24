@@ -87,16 +87,48 @@ func (m sessionManager) updateCredentials(
 	threadID, sessionToken string,
 	generation uint64,
 	accountID string,
+	account provider.AccountInfo,
 ) {
 	m.app.mu.Lock()
 	defer m.app.mu.Unlock()
 	current, ok := m.app.sessions[threadID]
-	if !ok || current.token != sessionToken {
+	if !ok || current.token != sessionToken || current.credentialGeneration > generation {
 		return
 	}
 	current.credentialGeneration = generation
 	current.credentialAccountID = accountID
+	current.credentialAccount = account
 	m.app.sessions[threadID] = current
+}
+
+// updateProviderCredentials applies a provider-wide hot credential switch to
+// every matching live session and returns the affected thread IDs for event
+// emission after releasing the session map lock. Claude is the only production
+// caller: Codex app-servers retain their cached account until reconnect.
+func (m sessionManager) updateProviderCredentials(
+	providerName string,
+	generation uint64,
+	accountID string,
+	account provider.AccountInfo,
+) []string {
+	m.app.mu.Lock()
+	defer m.app.mu.Unlock()
+
+	threadIDs := make([]string, 0)
+	for threadID, current := range m.app.sessions {
+		if current.provider != providerName {
+			continue
+		}
+		if current.credentialGeneration > generation {
+			continue
+		}
+		current.credentialGeneration = generation
+		current.credentialAccountID = accountID
+		current.credentialAccount = account
+		m.app.sessions[threadID] = current
+		threadIDs = append(threadIDs, threadID)
+	}
+	return threadIDs
 }
 
 // unregister removes the session for threadID iff it still carries

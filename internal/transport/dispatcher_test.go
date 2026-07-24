@@ -803,6 +803,7 @@ func (p *privilegedApp) TriggerMcpAuth() string         { return "ok" }
 func (p *privilegedApp) ListProviderAccounts() string        { return "ok" }
 func (p *privilegedApp) LoginProviderAccount() string        { return "ok" }
 func (p *privilegedApp) SwitchProviderAccount() string       { return "ok" }
+func (p *privilegedApp) RemoveProviderAccount() string       { return "ok" }
 func (p *privilegedApp) RefreshProviderAccountUsage() string { return "ok" }
 
 // 10. In-app self-update (network + local-FS + host-process control).

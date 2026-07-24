@@ -46,6 +46,7 @@ export {
     PayloadChunk,
     PayloadContent,
     PayloadPreview,
+    ProviderSessionAccountEvent,
     ProviderTerminalHandle,
     QueueFlushedItem,
     QueuedItem,

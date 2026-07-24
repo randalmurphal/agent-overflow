@@ -23,6 +23,7 @@ var loopbackOnlyEventChannels = map[string]bool{
 	// apiProvider. This is account, auth-model, and billing identity in one
 	// frame, so it remains loopback-only.
 	"provider:account":             true,
+	"provider:session_account":     true,
 	"provider:account_usage_error": true,
 
 	// provider:usage (token counts, context %, rate limits) and

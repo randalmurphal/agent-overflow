@@ -120,7 +120,7 @@ func TestCodexAccountSwitchWaitsForBackgroundWork(t *testing.T) {
 	}
 }
 
-func TestCodexIdleAccountSwitchReconnectsToSelectedProfile(t *testing.T) {
+func TestCodexIdleAccountSwitchReconnectsToSelectedAccount(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("codex-account-idle")
 	thread.Provider = string(provider.Codex)
@@ -183,18 +183,12 @@ func TestCodexAccountSwitchRejectsSendWhenReconnectGateIsOwned(t *testing.T) {
 	}
 }
 
-func TestCodexAccountSelectionPinsProfileHome(t *testing.T) {
+func TestCodexAccountSelectionTracksSelectedIdentityOnly(t *testing.T) {
 	app := newTestAppWithStore(t)
 	installTestProviderAccounts(t, app, string(provider.Codex))
 	selection := app.captureProviderAccountSelection(string(provider.Codex))
-	wantHome, err := app.providerCredentials.ProfileHome(string(provider.Codex), "second")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selection.AccountID != "second" ||
-		selection.Home != wantHome ||
-		selection.Env["CODEX_HOME"] != wantHome {
-		t.Fatalf("selection = %+v, want second account at %s", selection, wantHome)
+	if selection.AccountID != "second" {
+		t.Fatalf("selection = %+v, want second account", selection)
 	}
 }
 

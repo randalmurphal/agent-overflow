@@ -91,6 +91,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:usage')).toBe(1);
     expect(wailsListenerCount('provider:model_fallback')).toBe(1);
     expect(wailsListenerCount('provider:status')).toBe(1);
+    expect(wailsListenerCount('provider:session_account')).toBe(1);
     expect(wailsListenerCount('provider:account_usage_error')).toBe(1);
     expect(wailsListenerCount('provider:item_event')).toBe(1);
     expect(wailsListenerCount('provider:turn_started')).toBe(1);
@@ -104,6 +105,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:usage')).toBe(0);
     expect(wailsListenerCount('provider:model_fallback')).toBe(0);
     expect(wailsListenerCount('provider:status')).toBe(0);
+    expect(wailsListenerCount('provider:session_account')).toBe(0);
     expect(wailsListenerCount('provider:account_usage_error')).toBe(0);
     expect(wailsListenerCount('provider:item_event')).toBe(0);
     expect(wailsListenerCount('provider:turn_started')).toBe(0);
@@ -2161,6 +2163,76 @@ describe('setupEventListeners', () => {
     expect(accountInfo.getProviderAccount('claude')?.subscriptionType).toBe('Claude Max');
 
     accountInfo.resetForTest();
+  });
+
+  it('clears selected account state from a provider:account removal event', async () => {
+    const accountInfo = await import('./accountInfo.svelte');
+    accountInfo.resetForTest();
+    accountInfo.setProviderAccount('claude', { subscriptionType: 'Claude Max' }, 'account-one');
+
+    emitWailsEvent('provider:account', {
+      provider: 'claude',
+      account: {},
+      cleared: true,
+    });
+
+    expect(accountInfo.getProviderAccount('claude')).toBeNull();
+    accountInfo.resetForTest();
+  });
+
+  it('clears retired account limits from provider:usage', async () => {
+    const rateLimits = await import('./rateLimitsInfo.svelte');
+    rateLimits.resetForTest();
+    rateLimits.setProviderRateLimits({
+      provider: 'codex',
+      accountId: 'retired',
+      limits: [{
+        limitId: 'codex',
+        limitName: 'All models',
+        usedPercent: 80,
+        windowMins: 300,
+        resetsAt: 1776283200,
+      }],
+      updatedAt: 1776283000,
+    });
+
+    emitWailsEvent('provider:usage', {
+      action: 'rate_limits_removed',
+      rateLimits: {
+        provider: 'codex',
+        accountId: 'retired',
+        limits: [],
+        updatedAt: 0,
+      },
+    });
+
+    expect(rateLimits.getProviderRateLimits('codex', 'retired')).toEqual([]);
+    rateLimits.resetForTest();
+  });
+
+  it('routes provider session identity only to the matching thread pane', async () => {
+    const paneA = await buildPane(makeThread({ id: 'thread-a', provider: 'codex' }), [], 'a');
+    const paneB = await buildPane(makeThread({ id: 'thread-b', provider: 'codex' }), [], 'b');
+
+    emitWailsEvent('provider:session_account', {
+      threadId: 'thread-a',
+      provider: 'codex',
+      accountId: 'account-old',
+      account: { email: 'old@example.com', subscriptionType: 'pro' },
+      connected: true,
+    });
+
+    expect(paneA.providerSessionAccount?.account.email).toBe('old@example.com');
+    expect(paneB.providerSessionAccount).toBeNull();
+
+    emitWailsEvent('provider:session_account', {
+      threadId: 'thread-a',
+      provider: 'codex',
+      account: {},
+      connected: false,
+    });
+
+    expect(paneA.providerSessionAccount).toBeNull();
   });
 
   it('drops malformed provider:account events before hitting the store', async () => {

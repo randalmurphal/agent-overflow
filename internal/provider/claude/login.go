@@ -3,12 +3,12 @@ package claude
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
 
 	"agent-overflow/internal/externalurl"
+	"agent-overflow/internal/provider"
 )
 
 const defaultLoginTimeout = 10 * time.Minute
@@ -37,14 +37,12 @@ func Login(ctx context.Context, cfg LoginConfig) error {
 	defer cancel()
 
 	cmd := exec.CommandContext(loginCtx, binary, "auth", "login", "--claudeai")
-	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+cfg.ConfigDir)
+	env := map[string]string{"CLAUDE_CONFIG_DIR": cfg.ConfigDir}
 	if cfg.BrowserExecutable != "" {
-		cmd.Env = append(
-			cmd.Env,
-			"BROWSER="+cfg.BrowserExecutable,
-			externalurl.BrowserHelperEnvironment+"="+externalurl.BrowserHelperValue,
-		)
+		env["BROWSER"] = cfg.BrowserExecutable
+		env[externalurl.BrowserHelperEnvironment] = externalurl.BrowserHelperValue
 	}
+	cmd.Env = provider.BuildEnvironment(env, "CLAUDE_CONFIG_DIR")
 	if err := cmd.Run(); err != nil {
 		if loginCtx.Err() != nil {
 			return fmt.Errorf("claude: login: %w", loginCtx.Err())

@@ -76,6 +76,34 @@ func TestProbeAccountWaitsBrieflyForOutOfOrderAccountIdentity(t *testing.T) {
 	}
 }
 
+func TestProbeIdentityReadsAccountWithoutRateLimitRequest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mock-codex-identity")
+	script := "#!/bin/bash\n" +
+		"read -r _ || true\nread -r _ || true\nread -r _ || true\n" +
+		`printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"v2"}}'` + "\n" +
+		`printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"account":{"type":"chatgpt","email":"identity@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'` + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := ProbeIdentity(context.Background(), ProbeConfig{Binary: path})
+	if err != nil {
+		t.Fatalf("ProbeIdentity: %v", err)
+	}
+	if info.Email != "identity@example.com" || info.SubscriptionType != "pro" {
+		t.Fatalf("info = %+v", info)
+	}
+}
+
+func TestTryParseIdentityResponseSurfacesRPCError(t *testing.T) {
+	_, matched, err := tryParseIdentityResponse(
+		[]byte(`{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"not found"}}`),
+	)
+	if !matched || err == nil {
+		t.Fatalf("matched=%v err=%v", matched, err)
+	}
+}
+
 func TestProbeAccountExtractsPlanType(t *testing.T) {
 	binary := writeMockCodexAppServerScript(t, t.TempDir(),
 		`{"rateLimits":{"limitId":"codex","planType":"pro","primary":{},"secondary":{}}}`,
@@ -163,12 +191,10 @@ func TestProbeAccountSurfacesError(t *testing.T) {
 
 func TestProbeAccountBuildsAppServerArgs(t *testing.T) {
 	args := buildProbeArgs()
-	// Pin the exact args. Any future flag added here is suspect — the
-	// probe is one-shot, no thread, no inference. A zero-token guarantee
-	// equivalent to Claude's `--max-turns 0` requires the args list
-	// stay minimal: nothing here should cause a thread to start, a
-	// model call to fire, or persistent state to be written.
-	want := []string{"app-server"}
+	// Pin the exact args. The config override only selects Codex's native file
+	// credential store; app-server still starts no thread and performs no
+	// inference.
+	want := []string{"-c", `cli_auth_credentials_store="file"`, "app-server"}
 	if len(args) != len(want) {
 		t.Fatalf("probe args: got %v, want exactly %v", args, want)
 	}

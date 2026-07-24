@@ -26,7 +26,7 @@ type LoginConfig struct {
 // Login starts a short-lived app-server, asks it to perform native ChatGPT
 // OAuth, opens the returned authorization URL through the host browser, and
 // waits for the matching completion notification. Credential storage remains
-// entirely inside Codex under the supplied CODEX_HOME.
+// entirely inside Codex as auth.json under the supplied CODEX_HOME.
 func Login(ctx context.Context, cfg LoginConfig) error {
 	binary := strings.TrimSpace(cfg.Binary)
 	if binary == "" {
@@ -43,10 +43,11 @@ func Login(ctx context.Context, cfg LoginConfig) error {
 	defer cancel()
 
 	proc, err := provider.Spawn(loginCtx, provider.SpawnConfig{
-		Binary: binary,
-		Args:   []string{"app-server"},
-		Dir:    cfg.WorkDir,
-		Env:    cfg.Env,
+		Binary:   binary,
+		Args:     codexAppServerArgs(),
+		Dir:      cfg.WorkDir,
+		Env:      cfg.Env,
+		UnsetEnv: []string{"CODEX_HOME"},
 	})
 	if err != nil {
 		return fmt.Errorf("codex: login spawn: %w", err)

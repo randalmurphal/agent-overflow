@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -11,6 +12,9 @@ import (
 // at the last safe moment before a new user turn. The caller holds the
 // thread-action lock.
 func (a *App) ensureProviderAccountReadyForSendLocked(thread store.Thread) error {
+	if err := a.reconcileExternalProviderAccount(thread.Provider); err != nil {
+		return fmt.Errorf("check %s account before send: %w", thread.Provider, err)
+	}
 	selection := a.captureProviderAccountSelection(thread.Provider)
 	return a.ensureProviderAccountSelectionReadyForSendLocked(thread, selection)
 }
@@ -21,7 +25,9 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 ) error {
 	generation := selection.Generation
 	sess, ok := a.sessionManager().get(thread.ID)
-	if !ok || sess.credentialGeneration == generation {
+	if !ok ||
+		(sess.credentialGeneration == generation &&
+			sess.credentialAccountID == selection.AccountID) {
 		return nil
 	}
 
@@ -35,7 +41,9 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 			sess.token,
 			generation,
 			selection.AccountID,
+			selection.Account,
 		)
+		a.emitProviderSessionAccount(thread.ID)
 		return nil
 	case string(provider.Codex):
 		if sess.liveness != nil && sess.liveness.activeTurns.Load() > 0 {
@@ -60,6 +68,39 @@ func (a *App) ensureProviderAccountSelectionReadyForSendLocked(
 		return nil
 	default:
 		return nil
+	}
+}
+
+// applyProviderAccountSelectionToSessions projects a successful provider-wide
+// account activation onto live sessions whose credential behavior changes
+// immediately. Claude rereads the canonical native store without a process
+// restart; Codex app-servers intentionally retain their cached account until
+// the safe reconnect-on-send gate.
+func (a *App) applyProviderAccountSelectionToSessions(
+	providerName string,
+	generation uint64,
+	accountID string,
+) {
+	if providerName != string(provider.Claude) {
+		return
+	}
+	var accountInfo provider.AccountInfo
+	if accountID != "" && a.providerAccounts != nil {
+		if account, ok := a.providerAccounts.Get(providerName, accountID, time.Now()); ok {
+			accountInfo = providerAccountInfo(account)
+		}
+	}
+	for _, threadID := range a.sessionManager().updateProviderCredentials(
+		providerName,
+		generation,
+		accountID,
+		accountInfo,
+	) {
+		if accountID == "" {
+			a.emitProviderSessionDisconnected(threadID, providerName)
+		} else {
+			a.emitProviderSessionAccount(threadID)
+		}
 	}
 }
 

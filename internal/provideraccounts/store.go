@@ -156,6 +156,21 @@ func (s *Store) FindByEmail(providerName, email string) (Account, bool) {
 // within the provider, and makes it current. The caller owns credential-file
 // activation and must call this only after that succeeds.
 func (s *Store) UpsertAndActivate(account Account) (Account, error) {
+	return s.upsertAndActivate(account, false)
+}
+
+// UpsertAndActivateCredential is UpsertAndActivate for a verified canonical
+// credential replacement. It advances the selection generation even when the
+// provider identity is unchanged so auth-caching processes (Codex app-server)
+// reconnect before their next turn.
+func (s *Store) UpsertAndActivateCredential(account Account) (Account, error) {
+	return s.upsertAndActivate(account, true)
+}
+
+func (s *Store) upsertAndActivate(
+	account Account,
+	credentialChanged bool,
+) (Account, error) {
 	if err := validateAccount(account); err != nil {
 		return Account{}, err
 	}
@@ -189,7 +204,7 @@ func (s *Store) UpsertAndActivate(account Account) (Account, error) {
 	} else {
 		state.Accounts = append(state.Accounts, cloneAccount(account))
 	}
-	if state.ActiveAccountID != account.ID {
+	if credentialChanged || state.ActiveAccountID != account.ID {
 		state.Generation++
 	}
 	state.ActiveAccountID = account.ID
@@ -223,6 +238,148 @@ func (s *Store) Activate(providerName, accountID string) (Account, error) {
 		return cloneAccount(state.Accounts[i]), nil
 	}
 	return Account{}, fmt.Errorf("provideraccounts: account %q not found for %s", accountID, providerName)
+}
+
+// AdvanceActiveCredential records that the selected account's canonical
+// credential changed without changing the selected account. Auth-caching
+// provider processes use the generation to reconnect before their next turn.
+func (s *Store) AdvanceActiveCredential(providerName, accountID string) (Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	previous, existed := s.state.Providers[providerName]
+	state := cloneProviderState(previous)
+	if state.ActiveAccountID != accountID {
+		return Account{}, fmt.Errorf(
+			"provideraccounts: account %q is not active for %s",
+			accountID,
+			providerName,
+		)
+	}
+	for i := range state.Accounts {
+		if state.Accounts[i].ID != accountID {
+			continue
+		}
+		state.Generation++
+		s.state.Providers[providerName] = state
+		if err := s.saveLocked(); err != nil {
+			restoreProviderState(s.state.Providers, providerName, previous, existed)
+			return Account{}, err
+		}
+		return cloneAccount(state.Accounts[i]), nil
+	}
+	return Account{}, fmt.Errorf(
+		"provideraccounts: active account %q not found for %s",
+		accountID,
+		providerName,
+	)
+}
+
+// Remove deletes one saved account and, when that account is active, moves the
+// selection to replacementAccountID. An empty replacement is valid only when
+// the removed account is the provider's final saved account. Credential
+// activation/deletion is owned by the caller and must complete first.
+func (s *Store) Remove(providerName, accountID, replacementAccountID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	previous, existed := s.state.Providers[providerName]
+	state := cloneProviderState(previous)
+	index := -1
+	for i := range state.Accounts {
+		if state.Accounts[i].ID == accountID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return fmt.Errorf("provideraccounts: account %q not found for %s", accountID, providerName)
+	}
+
+	removingActive := state.ActiveAccountID == accountID
+	if !removingActive && replacementAccountID != "" {
+		return errors.New("provideraccounts: replacement account is only valid when removing the active account")
+	}
+	if removingActive {
+		replacementIndex := -1
+		for i := range state.Accounts {
+			if state.Accounts[i].ID == replacementAccountID {
+				replacementIndex = i
+				break
+			}
+		}
+		switch {
+		case len(state.Accounts) == 1 && replacementAccountID != "":
+			return errors.New("provideraccounts: final account cannot have a replacement")
+		case len(state.Accounts) > 1 && (replacementIndex < 0 || replacementIndex == index):
+			return fmt.Errorf(
+				"provideraccounts: replacement account %q not found for %s",
+				replacementAccountID,
+				providerName,
+			)
+		}
+		state.ActiveAccountID = replacementAccountID
+		state.Generation++
+		if replacementIndex >= 0 {
+			state.Accounts[replacementIndex].LastUsedAt = time.Now().UnixMilli()
+		}
+	}
+
+	state.Accounts = append(state.Accounts[:index], state.Accounts[index+1:]...)
+	s.state.Providers[providerName] = state
+	if err := s.saveLocked(); err != nil {
+		restoreProviderState(s.state.Providers, providerName, previous, existed)
+		return err
+	}
+	return nil
+}
+
+// UpdateMetadata enriches one saved account without changing the active
+// selection, generation, timestamps, or cached rate limits. It is used when a
+// newer provider account/read response supplies identity fields that were
+// absent in legacy metadata.
+func (s *Store) UpdateMetadata(account Account) (Account, error) {
+	if err := validateAccount(account); err != nil {
+		return Account{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, existed := s.state.Providers[account.Provider]
+	state := cloneProviderState(previous)
+	index := -1
+	for i := range state.Accounts {
+		if state.Accounts[i].ID != account.ID &&
+			account.Email != "" &&
+			strings.EqualFold(state.Accounts[i].Email, account.Email) {
+			return Account{}, fmt.Errorf(
+				"provideraccounts: email %q already belongs to account %q for %s",
+				account.Email,
+				state.Accounts[i].ID,
+				account.Provider,
+			)
+		}
+		if state.Accounts[i].ID == account.ID {
+			index = i
+		}
+	}
+	if index < 0 {
+		return Account{}, fmt.Errorf(
+			"provideraccounts: account %q not found for %s",
+			account.ID,
+			account.Provider,
+		)
+	}
+	existing := state.Accounts[index]
+	account.AddedAt = existing.AddedAt
+	account.LastUsedAt = existing.LastUsedAt
+	account.RateLimits = existing.RateLimits
+	state.Accounts[index] = cloneAccount(account)
+	s.state.Providers[account.Provider] = state
+	if err := s.saveLocked(); err != nil {
+		restoreProviderState(s.state.Providers, account.Provider, previous, existed)
+		return Account{}, err
+	}
+	return cloneAccount(account), nil
 }
 
 func (s *Store) RememberRateLimits(providerName, accountID string, snapshot provider.RateLimitsSnapshot) error {

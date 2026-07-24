@@ -24,6 +24,7 @@ import type {
   ModelFallbackEvent,
   ProviderAccountEvent,
   ProviderAccountUsageErrorEvent,
+  ProviderSessionAccountEvent,
   SystemStatsEvent,
   TodoUpdateEvent,
   ProviderStatusEvent,
@@ -69,6 +70,7 @@ import {
   applyUsageEvent,
   applyProviderStatus,
   applyProviderAccount,
+  applyProviderSessionAccount,
   applyTurnStarted,
   applyTurnCompleted,
   applySessionDied,
@@ -170,6 +172,10 @@ export function setupEventListeners(): () => void {
   const cancelProviderAccount = wailsEventOn<ProviderAccountEvent>(
     'provider:account',
     applyProviderAccount,
+  );
+  const cancelProviderSessionAccount = wailsEventOn<ProviderSessionAccountEvent>(
+    'provider:session_account',
+    applyProviderSessionAccount,
   );
   const cancelProviderAccountUsageError = wailsEventOn<ProviderAccountUsageErrorEvent>(
     'provider:account_usage_error',
@@ -367,6 +373,7 @@ export function setupEventListeners(): () => void {
     cancelModelFallback();
     cancelProviderStatus();
     cancelProviderAccount();
+    cancelProviderSessionAccount();
     cancelProviderAccountUsageError();
     cancelSystemStats();
     cancelTurnStarted();

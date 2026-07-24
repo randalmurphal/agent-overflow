@@ -24,19 +24,57 @@ func (a *App) probeCodexRateLimits(ctx context.Context) {
 	}
 	defer a.codexRateLimitProbeRunning.Store(false)
 
+	if err := a.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+		log.Printf("codex: reconcile external account before rate-limit probe: %v", err)
+		return
+	}
 	binary := a.providerBinaryPath(string(provider.Codex))
 	selection := a.captureProviderAccountSelection(string(provider.Codex))
-	_, err := codex.ProbeAccount(ctx, codex.ProbeConfig{
+	if selection.AccountID != "" {
+		if err := a.refreshProviderAccountUsage(
+			ctx,
+			string(provider.Codex),
+			selection.AccountID,
+		); err != nil {
+			log.Printf("codex: rate-limit probe: %v", err)
+		}
+		return
+	}
+	var observedSnapshot *provider.RateLimitsSnapshot
+	info, err := codex.ProbeAccount(ctx, codex.ProbeConfig{
 		Binary: binary,
-		Env:    selection.Env,
 		OnSnapshot: func(snapshot provider.RateLimitsSnapshot) {
-			snapshot.AccountID = selection.AccountID
-			a.emitRateLimitsSnapshot(snapshot)
+			// Attribution waits until account/read has been merged into the
+			// probe result below. Emitting here would blindly stamp the
+			// selected metadata account onto externally replaced credentials.
+			observedSnapshot = &snapshot
 		},
 	})
 	if err != nil {
 		log.Printf("codex: rate-limit probe: %v", err)
+		return
 	}
+	if observedSnapshot == nil {
+		return
+	}
+	accountID, updated, err := a.accountIDForObservedIdentity(
+		string(provider.Codex),
+		selection.AccountID,
+		info,
+	)
+	if err != nil {
+		log.Printf("codex: rate-limit identity: %v", err)
+		return
+	}
+	if updated != nil {
+		a.emitProviderAccountIfCurrent(
+			string(provider.Codex),
+			*updated,
+			providerAccountInfo(*updated),
+		)
+	}
+	observedSnapshot.AccountID = accountID
+	a.emitRateLimitsSnapshot(*observedSnapshot)
 }
 
 // startCodexRateLimitProbeLoop re-probes Codex limits every

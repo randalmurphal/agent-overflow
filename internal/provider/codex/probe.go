@@ -91,10 +91,11 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 	defer cancel()
 
 	proc, err := provider.Spawn(probeCtx, provider.SpawnConfig{
-		Binary: binary,
-		Args:   buildProbeArgs(),
-		Dir:    cfg.WorkDir,
-		Env:    cfg.Env,
+		Binary:   binary,
+		Args:     buildProbeArgs(),
+		Dir:      cfg.WorkDir,
+		Env:      cfg.Env,
+		UnsetEnv: []string{"CODEX_HOME"},
 	})
 	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("codex: probe spawn: %w", err)
@@ -156,7 +157,7 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 // Kept as a function so a test can verify the invocation shape
 // without spinning up a real binary.
 func buildProbeArgs() []string {
-	return []string{"app-server"}
+	return codexAppServerArgs()
 }
 
 // writeJSONRPC marshals v as a single NDJSON line and writes it.
@@ -288,21 +289,14 @@ func tryParseAccountResponse(line []byte) (provider.AccountInfo, bool) {
 	if err != nil || id != probeAccountID {
 		return provider.AccountInfo{}, false
 	}
-	var result struct {
-		Account *struct {
-			Type     string `json:"type"`
-			Email    string `json:"email"`
-			PlanType string `json:"planType"`
-		} `json:"account"`
-	}
-	if err := json.Unmarshal(envelope.Result, &result); err != nil || result.Account == nil {
+	info, err := decodeAccountInfo(envelope.Result)
+	if err != nil {
 		return provider.AccountInfo{APIProvider: "openai"}, true
 	}
-	return provider.AccountInfo{
-		Email:            result.Account.Email,
-		SubscriptionType: result.Account.PlanType,
-		APIProvider:      "openai",
-	}, true
+	if info.APIProvider == "" {
+		info.APIProvider = "openai"
+	}
+	return info, true
 }
 
 // tryParseRateLimitsResponse classifies one NDJSON frame.

@@ -21,6 +21,7 @@ type ThreadLiveState struct {
 	FlushedItems           []QueueFlushedItem                  `json:"flushedItems"`
 	Interactive            provider.PendingInteractiveRequests `json:"interactive"`
 	Todo                   *LiveStateTodo                      `json:"todo,omitempty"`
+	ProviderAccount        *ProviderSessionAccountEvent        `json:"providerAccount,omitempty"`
 }
 
 type LiveStateActiveTurn struct {
@@ -67,6 +68,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	if _, err := a.store.GetThread(threadID); err != nil {
 		return state, fmt.Errorf("get thread live state: %w", err)
 	}
+	state.ProviderAccount = a.providerSessionAccount(threadID)
 	if a.triage == nil {
 		return state, nil
 	}

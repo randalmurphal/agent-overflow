@@ -63,18 +63,13 @@ func resetClaudeProbeCacheForTest() {
 func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	binary := a.providerBinaryPath(string(provider.Claude))
 	selection := a.captureProviderAccountSelection(string(provider.Claude))
-	cacheKey := binary + "\x00account=" + selection.AccountID
-	if selection.AccountID == "" {
-		cacheKey = binary + "\x00account=unmanaged"
-	}
 	return a.runAccountProbe(providerProbeRunner{
 		providerName: string(provider.Claude),
 		cache:        claudeAccountProbeCache(),
-		binary:       cacheKey,
+		binary:       providerProbeCacheKeyForAccount(binary, selection.AccountID),
 		probe: func(ctx context.Context) (provider.AccountInfo, error) {
 			return claude.ProbeAccount(ctx, claude.ProbeConfig{
 				Binary: binary,
-				Env:    selection.Env,
 			})
 		},
 		unauthenticated: providerstatus.ClaudeUnauthenticated,

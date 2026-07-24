@@ -288,10 +288,15 @@ func (a *App) ingestClaudeInitMCPStatus(meta json.RawMessage) {
 }
 
 func (a *App) unregisterSession(threadID, sessionToken string) {
+	current, exists := a.sessionManager().get(threadID)
+	if !exists || current.token != sessionToken {
+		return
+	}
 	removed, ok := a.sessionManager().unregister(threadID, sessionToken)
 	if !ok {
 		return
 	}
+	a.emitProviderSessionDisconnected(threadID, removed.provider)
 
 	// Self-exit teardown bypasses closeProviderSession (the subprocess is
 	// already dead — see attemptAutoReconnect), so release its group from
@@ -302,7 +307,6 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 	if ps := removed.providerSession(); ps != nil {
 		a.releaseSessionProcess(ps.PID())
 	}
-	a.logReconcileExitedProviderProfile(threadID, removed)
 	if a.triage != nil {
 		a.triage.ClearEffectiveModel(threadID)
 	}

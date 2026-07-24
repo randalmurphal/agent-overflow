@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -224,6 +225,35 @@ func TestSpawnInvalidBinary(t *testing.T) {
 	_, err := Spawn(ctx, SpawnConfig{Binary: "/nonexistent/binary"})
 	if err == nil {
 		t.Fatal("expected error for nonexistent binary, got nil")
+	}
+}
+
+func TestBuildEnvironmentRemovesInheritedProviderHomeAndAppliesOverride(t *testing.T) {
+	t.Setenv("CODEX_HOME", "/tmp/inherited-codex-home")
+	t.Setenv("AGENT_OVERFLOW_ENV_TEST", "inherited")
+
+	env := BuildEnvironment(
+		map[string]string{"AGENT_OVERFLOW_ENV_TEST": "override"},
+		"CODEX_HOME",
+	)
+	values := make(map[string]string, len(env))
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+
+	if _, exists := values["CODEX_HOME"]; exists {
+		t.Fatal("CODEX_HOME remained in filtered environment")
+	}
+	if got := values["AGENT_OVERFLOW_ENV_TEST"]; got != "override" {
+		t.Fatalf("AGENT_OVERFLOW_ENV_TEST = %q, want override", got)
+	}
+
+	inherited := FilterEnvironment([]string{}, "CODEX_HOME")
+	if !slices.Contains(inherited, "AGENT_OVERFLOW_ENV_TEST=inherited") {
+		t.Fatal("empty explicit environment did not preserve inherited values")
 	}
 }
 

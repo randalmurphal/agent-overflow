@@ -1332,6 +1332,7 @@ export class ManagedProviderAccount {
     "lastUsedAt": number;
     "rateLimits"?: provider$0.RateLimitsSnapshot | null;
     "active": boolean;
+    "generation": number;
 
     /** Creates a new ManagedProviderAccount instance. */
     constructor($$source: Partial<ManagedProviderAccount> = {}) {
@@ -1349,6 +1350,9 @@ export class ManagedProviderAccount {
         }
         if (!("active" in $$source)) {
             this["active"] = false;
+        }
+        if (!("generation" in $$source)) {
+            this["generation"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -1721,6 +1725,51 @@ export class PayloadPreview {
 }
 
 /**
+ * ProviderSessionAccountEvent is the account a live provider process is
+ * currently using for one thread. It is deliberately separate from the
+ * provider-global selected account: an active Codex process can keep using the
+ * old account while the newly selected account waits for its safe reconnect.
+ */
+export class ProviderSessionAccountEvent {
+    "threadId": string;
+    "provider": string;
+    "accountId"?: string;
+    "account": provider$0.AccountInfo;
+    "generation"?: number;
+    "connected": boolean;
+
+    /** Creates a new ProviderSessionAccountEvent instance. */
+    constructor($$source: Partial<ProviderSessionAccountEvent> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("account" in $$source)) {
+            this["account"] = (new provider$0.AccountInfo());
+        }
+        if (!("connected" in $$source)) {
+            this["connected"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProviderSessionAccountEvent instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProviderSessionAccountEvent {
+        const $$createField3_0 = $$createType28;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("account" in $$parsedSource) {
+            $$parsedSource["account"] = $$createField3_0($$parsedSource["account"]);
+        }
+        return new ProviderSessionAccountEvent($$parsedSource as Partial<ProviderSessionAccountEvent>);
+    }
+}
+
+/**
  * ProviderTerminalHandle is what attaching to a provider PTY returns: the
  * terminal id (for routing output + replay) plus its current summary (winsize)
  * so the frontend can size an xterm to the last-drawn frame before writing the
@@ -1750,7 +1799,7 @@ export class ProviderTerminalHandle {
      * Creates a new ProviderTerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): ProviderTerminalHandle {
-        const $$createField2_0 = $$createType28;
+        const $$createField2_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -1923,7 +1972,7 @@ export class SendDiffReviewCommentsInput {
      * Creates a new SendDiffReviewCommentsInput instance from a string or object.
      */
     static createFrom($$source: any = {}): SendDiffReviewCommentsInput {
-        const $$createField0_0 = $$createType30;
+        const $$createField0_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pr" in $$parsedSource) {
             $$parsedSource["pr"] = $$createField0_0($$parsedSource["pr"]);
@@ -1963,7 +2012,7 @@ export class SendMessageOptions {
         const $$createField2_0 = $$createType8;
         const $$createField3_0 = $$createType8;
         const $$createField4_0 = $$createType4;
-        const $$createField5_0 = $$createType32;
+        const $$createField5_0 = $$createType33;
         const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
@@ -2128,7 +2177,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType28;
+        const $$createField2_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -2272,6 +2321,7 @@ export class ThreadLiveState {
     "flushedItems": QueueFlushedItem[];
     "interactive": provider$0.PendingInteractiveRequests;
     "todo"?: LiveStateTodo | null;
+    "providerAccount"?: ProviderSessionAccountEvent | null;
 
     /** Creates a new ThreadLiveState instance. */
     constructor($$source: Partial<ThreadLiveState> = {}) {
@@ -2295,11 +2345,12 @@ export class ThreadLiveState {
      * Creates a new ThreadLiveState instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadLiveState {
-        const $$createField3_0 = $$createType34;
-        const $$createField4_0 = $$createType36;
-        const $$createField5_0 = $$createType38;
-        const $$createField6_0 = $$createType39;
-        const $$createField7_0 = $$createType41;
+        const $$createField3_0 = $$createType35;
+        const $$createField4_0 = $$createType37;
+        const $$createField5_0 = $$createType39;
+        const $$createField6_0 = $$createType40;
+        const $$createField7_0 = $$createType42;
+        const $$createField8_0 = $$createType44;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("activeTurn" in $$parsedSource) {
             $$parsedSource["activeTurn"] = $$createField3_0($$parsedSource["activeTurn"]);
@@ -2315,6 +2366,9 @@ export class ThreadLiveState {
         }
         if ("todo" in $$parsedSource) {
             $$parsedSource["todo"] = $$createField7_0($$parsedSource["todo"]);
+        }
+        if ("providerAccount" in $$parsedSource) {
+            $$parsedSource["providerAccount"] = $$createField8_0($$parsedSource["providerAccount"]);
         }
         return new ThreadLiveState($$parsedSource as Partial<ThreadLiveState>);
     }
@@ -2422,7 +2476,7 @@ export class VerifyEditDiffsRequest {
      * Creates a new VerifyEditDiffsRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): VerifyEditDiffsRequest {
-        const $$createField2_0 = $$createType43;
+        const $$createField2_0 = $$createType46;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField2_0($$parsedSource["files"]);
@@ -2487,7 +2541,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType45;
+        const $$createField0_0 = $$createType48;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -2615,21 +2669,24 @@ const $$createType24 = git$0.ReviewThread.createFrom;
 const $$createType25 = $Create.Array($$createType24);
 const $$createType26 = PatchSpanSeed.createFrom;
 const $$createType27 = $Create.Array($$createType26);
-const $$createType28 = terminal$0.SessionSummary.createFrom;
-const $$createType29 = store$0.DiffReviewPRContext.createFrom;
-const $$createType30 = $Create.Nullable($$createType29);
-const $$createType31 = store$0.DiffReviewSourceRef.createFrom;
-const $$createType32 = $Create.Nullable($$createType31);
-const $$createType33 = LiveStateActiveTurn.createFrom;
-const $$createType34 = $Create.Nullable($$createType33);
-const $$createType35 = flushqueue$0.QueuedItem.createFrom;
-const $$createType36 = $Create.Array($$createType35);
-const $$createType37 = QueueFlushedItem.createFrom;
-const $$createType38 = $Create.Array($$createType37);
-const $$createType39 = provider$0.PendingInteractiveRequests.createFrom;
-const $$createType40 = LiveStateTodo.createFrom;
-const $$createType41 = $Create.Nullable($$createType40);
-const $$createType42 = EditDiffVerifyFile.createFrom;
-const $$createType43 = $Create.Array($$createType42);
-const $$createType44 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType45 = $Create.Array($$createType44);
+const $$createType28 = provider$0.AccountInfo.createFrom;
+const $$createType29 = terminal$0.SessionSummary.createFrom;
+const $$createType30 = store$0.DiffReviewPRContext.createFrom;
+const $$createType31 = $Create.Nullable($$createType30);
+const $$createType32 = store$0.DiffReviewSourceRef.createFrom;
+const $$createType33 = $Create.Nullable($$createType32);
+const $$createType34 = LiveStateActiveTurn.createFrom;
+const $$createType35 = $Create.Nullable($$createType34);
+const $$createType36 = flushqueue$0.QueuedItem.createFrom;
+const $$createType37 = $Create.Array($$createType36);
+const $$createType38 = QueueFlushedItem.createFrom;
+const $$createType39 = $Create.Array($$createType38);
+const $$createType40 = provider$0.PendingInteractiveRequests.createFrom;
+const $$createType41 = LiveStateTodo.createFrom;
+const $$createType42 = $Create.Nullable($$createType41);
+const $$createType43 = ProviderSessionAccountEvent.createFrom;
+const $$createType44 = $Create.Nullable($$createType43);
+const $$createType45 = EditDiffVerifyFile.createFrom;
+const $$createType46 = $Create.Array($$createType45);
+const $$createType47 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType48 = $Create.Array($$createType47);

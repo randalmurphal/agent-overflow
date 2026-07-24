@@ -16,6 +16,14 @@ import (
 // probe fires while at least one matching session is alive.
 const rateLimitProbeInterval = 2 * time.Minute
 
+// rateLimitResetJitterTolerance treats small provider-side timestamp drift as
+// the same quota window. Claude's OAuth usage endpoint has been observed
+// moving one session boundary by a few seconds between consecutive reads; an
+// exact comparison would mistake the slightly later timestamp for a newer
+// window and reject every subsequent increase carrying the slightly earlier
+// timestamp.
+const rateLimitResetJitterTolerance = time.Minute
+
 type rateLimitProbeLoop struct {
 	probeImmediately bool
 	hasActiveSession func() bool
@@ -98,9 +106,14 @@ func mergeRateLimitsSnapshot(current, incoming provider.RateLimitsSnapshot) (pro
 		entryKey := rateLimitEntryKey(entry)
 		if index, exists := indexByWindow[entryKey]; exists {
 			prior := merged.Limits[index]
-			if prior.ResetsAt > entry.ResetsAt ||
-				(prior.ResetsAt == entry.ResetsAt && prior.UsedPercent > entry.UsedPercent) {
+			resetOrder := compareRateLimitResetBoundaries(prior.ResetsAt, entry.ResetsAt)
+			if resetOrder < 0 || (resetOrder == 0 && prior.UsedPercent > entry.UsedPercent) {
 				continue
+			}
+			if resetOrder == 0 {
+				// Keep the first observed boundary stable so harmless endpoint
+				// jitter does not produce a changed snapshot every probe.
+				entry.ResetsAt = prior.ResetsAt
 			}
 			if prior == entry {
 				continue
@@ -128,8 +141,36 @@ func mergeRateLimitsSnapshot(current, incoming provider.RateLimitsSnapshot) (pro
 	return merged, true
 }
 
+// compareRateLimitResetBoundaries returns -1 when candidate is from an older
+// quota window, 1 when it is from a newer window, and 0 when the timestamps
+// identify the same window within the provider-jitter tolerance.
+func compareRateLimitResetBoundaries(prior, candidate int64) int {
+	toleranceSeconds := int64(rateLimitResetJitterTolerance / time.Second)
+	switch {
+	case candidate < prior-toleranceSeconds:
+		return -1
+	case candidate > prior+toleranceSeconds:
+		return 1
+	default:
+		return 0
+	}
+}
+
 func rateLimitsCacheKey(providerName, accountID string) string {
 	return providerName + "\x00" + accountID
+}
+
+func (a *App) forgetRateLimitsSnapshot(providerName, accountID string) {
+	a.rateLimitsMu.Lock()
+	delete(a.rateLimitsByProvider, rateLimitsCacheKey(providerName, accountID))
+	a.rateLimitsMu.Unlock()
+	a.emit("provider:usage", provider.UsageEvent{
+		Action: "rate_limits_removed",
+		RateLimits: &provider.RateLimitsSnapshot{
+			Provider:  providerName,
+			AccountID: accountID,
+		},
+	})
 }
 
 func rateLimitEntryKey(entry provider.RateLimitEntry) string {

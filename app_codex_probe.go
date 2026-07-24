@@ -73,18 +73,13 @@ func (a *App) ProbeCodexAccount() (provider.AccountInfo, error) {
 	binary := a.providerBinaryPath(string(provider.Codex))
 	selection := a.captureProviderAccountSelection(string(provider.Codex))
 	var observedSnapshot *provider.RateLimitsSnapshot
-	cacheKey := binary + "\x00account=" + selection.AccountID
-	if selection.AccountID == "" {
-		cacheKey = binary + "\x00account=unmanaged"
-	}
 	return a.runAccountProbe(providerProbeRunner{
 		providerName: string(provider.Codex),
 		cache:        codexAccountProbeCache(),
-		binary:       cacheKey,
+		binary:       providerProbeCacheKeyForAccount(binary, selection.AccountID),
 		probe: func(ctx context.Context) (provider.AccountInfo, error) {
 			return codex.ProbeAccount(ctx, codex.ProbeConfig{
 				Binary: binary,
-				Env:    selection.Env,
 				OnSnapshot: func(snapshot provider.RateLimitsSnapshot) {
 					copy := cloneRateLimitsSnapshot(snapshot)
 					observedSnapshot = &copy
