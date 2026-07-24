@@ -599,10 +599,20 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 // degenerates to DeleteConversationFromTurn's. Codex reverts keep the
 // turn-granular delete: thread/fork cuts provider history at a turn boundary,
 // and SQLite must match it.
-func (s *Store) DeleteConversationFromItem(threadID, itemID string) error {
+//
+// Returns the ids of the anchor turn's SURVIVING items, in item order.
+// The `user_message:reverted` event carries this kept-set so the
+// frontend can mirror the cut exactly — the promoted-row predicate
+// below removes a non-contiguous slice of the anchor turn, which no
+// boundary comparison can express, and duplicating the predicate in UI
+// code would fork it. Survivors are persisted rows by definition, so
+// "everything in the anchor turn NOT in this list" is a complete
+// removal instruction even for pane-only rows SQLite never saw. Empty
+// when the anchor opened its turn (the common case: whole turn gone).
+func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: begin delete conversation from item tx: %w", err)
+		return nil, fmt.Errorf("store: begin delete conversation from item tx: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -612,14 +622,14 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) error {
 		`SELECT turn_index, item_index, meta FROM items WHERE thread_id = ? AND id = ?`,
 		threadID, itemID,
 	).Scan(&turnIndex, &itemIndex, &meta); err != nil {
-		return fmt.Errorf("store: delete conversation from item lookup %s/%s: %w", threadID, itemID, err)
+		return nil, fmt.Errorf("store: delete conversation from item lookup %s/%s: %w", threadID, itemID, err)
 	}
 	promotion, err := itemmeta.DecodePromotionState(meta)
 	if err != nil {
 		// Corrupt anchor meta means the provider-order cut is undecidable;
 		// failing beats silently degrading to a display-order cut that the
 		// session slice would disagree with.
-		return fmt.Errorf("store: delete conversation from item %s/%s: %w", threadID, itemID, err)
+		return nil, fmt.Errorf("store: delete conversation from item %s/%s: %w", threadID, itemID, err)
 	}
 
 	// deletedTurnContent: does this cut remove same-turn NON-USER rows?
@@ -658,15 +668,39 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) error {
 			  WHERE thread_id = ? AND turn_index = ? AND (role != 'user' OR parent_id != '') AND `+contentPredicate+`)`,
 			contentArgs...,
 		).Scan(&deletedTurnContent); err != nil {
-			return fmt.Errorf("store: probe deleted turn content for thread %s: %w", threadID, err)
+			return nil, fmt.Errorf("store: probe deleted turn content for thread %s: %w", threadID, err)
 		}
 	}
 	if _, err := tx.Exec(
 		`DELETE FROM items WHERE thread_id = ? AND (`+itemPredicate+`)`,
 		itemArgs...,
 	); err != nil {
-		return fmt.Errorf("store: delete items from item for thread %s: %w", threadID, err)
+		return nil, fmt.Errorf("store: delete items from item for thread %s: %w", threadID, err)
 	}
+
+	// The anchor turn's kept-set, read AFTER the delete so it reflects
+	// exactly what the predicate left standing.
+	keptRows, err := tx.Query(
+		`SELECT id FROM items WHERE thread_id = ? AND turn_index = ? ORDER BY item_index`,
+		threadID, turnIndex,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list surviving anchor-turn items for thread %s: %w", threadID, err)
+	}
+	var keptAnchorTurnItemIDs []string
+	for keptRows.Next() {
+		var id string
+		if err := keptRows.Scan(&id); err != nil {
+			keptRows.Close()
+			return nil, fmt.Errorf("store: scan surviving anchor-turn item for thread %s: %w", threadID, err)
+		}
+		keptAnchorTurnItemIDs = append(keptAnchorTurnItemIDs, id)
+	}
+	if err := keptRows.Err(); err != nil {
+		keptRows.Close()
+		return nil, fmt.Errorf("store: iterate surviving anchor-turn items for thread %s: %w", threadID, err)
+	}
+	keptRows.Close()
 
 	// The anchor turn keeps its turn row while any items survive in it:
 	// the remaining prefix still happened.
@@ -677,7 +711,7 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) error {
 		                 WHERE thread_id = ? AND turn_index = turns.turn_index)`,
 		threadID, turnIndex, threadID,
 	); err != nil {
-		return fmt.Errorf("store: delete turns from item for thread %s: %w", threadID, err)
+		return nil, fmt.Errorf("store: delete turns from item for thread %s: %w", threadID, err)
 	}
 
 	// A surviving anchor turn that just lost streamed content ends at its
@@ -692,16 +726,16 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) error {
 	// settlement.
 	if deletedTurnContent {
 		if err := trimTurnSettleToSurvivorsTx(tx, threadID, turnIndex); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	// Like DeleteConversationFromTurn: truncation is a structural change,
 	// not a fresh interaction — no MarkThreadActivity bump.
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit delete conversation from item tx: %w", err)
+		return nil, fmt.Errorf("store: commit delete conversation from item tx: %w", err)
 	}
-	return nil
+	return keptAnchorTurnItemIDs, nil
 }
 
 // trimTurnSettleToSurvivorsTx rewrites a surviving turn row whose settle

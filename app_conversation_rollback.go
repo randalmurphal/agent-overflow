@@ -35,6 +35,14 @@ type rollbackConversationLockedArgs struct {
 	// interrupts a live turn, so there is an in-flight turn-complete
 	// to flag.
 	markReverted bool
+	// clearRunningBackgroundTasks terminates and hides still-running
+	// background tray work as part of the rollback. Set only when the
+	// user explicitly confirmed killing that work (the message-keyed
+	// revert path); the un-send path declines the revert instead when
+	// background tasks are live. Claude relies on stopSession's
+	// process-group close; Codex uses its thread-wide
+	// background-terminal clean RPC before the session stops.
+	clearRunningBackgroundTasks bool
 }
 
 // rollbackConversationLocked is the destructive tail of a conversation
@@ -65,14 +73,37 @@ type rollbackConversationLockedArgs struct {
 //     matching thread/fork's turn-boundary cut); Claude deletes from
 //     the user item itself (DeleteConversationFromItem, matching the
 //     session slice at the message uuid).
-func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) error {
+//
+// Returns the anchor turn's surviving item ids (empty for the Codex
+// whole-turn cut and whenever the anchor opened its turn) so the
+// caller's `user_message:reverted` event can tell the frontend exactly
+// which anchor-turn rows to keep — the item-granular cut is decided by
+// DeleteConversationFromItem's promoted-row predicate, which must not
+// be re-derived in UI code.
+func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (keptAnchorTurnItemIDs []string, err error) {
 	if args.markReverted && a.triage != nil {
 		a.triage.MarkTurnReverted(args.thread.ID)
 	}
 
+	// Confirmed background-task kill runs before the provider rollback:
+	// the Codex terminal-clean RPC needs the session still live, and the
+	// tray rows flip inactive immediately after provider-owned work is
+	// terminated so killed work never stays advertised as running if a
+	// later step fails.
+	if args.clearRunningBackgroundTasks {
+		if err := a.cleanRunningBackgroundTasksBeforeProviderRevert(args.thread, args.errorPrefix); err != nil {
+			return nil, err
+		}
+	}
+
 	if args.thread.Provider == string(provider.Codex) {
+		if args.clearRunningBackgroundTasks {
+			if err := a.markConfirmedBackgroundTasksInactiveAfterProviderCleanup(args.thread.ID, args.errorPrefix); err != nil {
+				return nil, err
+			}
+		}
 		if err := a.rollbackCodexThreadToMessage(args.thread, args.anchor); err != nil {
-			return fmt.Errorf("%s: %w", args.errorPrefix, err)
+			return nil, fmt.Errorf("%s: %w", args.errorPrefix, err)
 		}
 	} else if args.thread.Provider == string(provider.ClaudeTUI) {
 		// The interactive TUI reverts the just-sent prompt natively when it
@@ -88,10 +119,15 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) er
 		// restored can't fuse with the re-send.
 	} else {
 		if err := a.stopSession(args.thread.ID); err != nil {
-			return fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
+			return nil, fmt.Errorf("%s: stop session: %w", args.errorPrefix, err)
+		}
+		if args.clearRunningBackgroundTasks {
+			if err := a.markConfirmedBackgroundTasksInactiveAfterProviderCleanup(args.thread.ID, args.errorPrefix); err != nil {
+				return nil, err
+			}
 		}
 		if err := a.rollbackProviderConversationToMessage(args.thread, args.anchor, args.userItem); err != nil {
-			return fmt.Errorf("%s: %w", args.errorPrefix, err)
+			return nil, fmt.Errorf("%s: %w", args.errorPrefix, err)
 		}
 	}
 
@@ -103,7 +139,7 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) er
 	// against the already-cut transcript (the already-cut detector clones
 	// it whole) and this upsert is idempotent (round-4 review, CT4-4).
 	if err := a.store.UpsertThreadDraft(args.promptDraft); err != nil {
-		return fmt.Errorf("%s: restore prompt draft: %w", args.errorPrefix, err)
+		return nil, fmt.Errorf("%s: restore prompt draft: %w", args.errorPrefix, err)
 	}
 
 	// Truncation granularity must match the provider rollback above. Codex
@@ -118,14 +154,15 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) er
 	// branch can move to a message-granular cut.
 	if args.thread.Provider == string(provider.Codex) {
 		if _, err := a.store.DeleteConversationFromTurn(args.thread.ID, args.userItem.TurnIndex); err != nil {
-			return fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
+			return nil, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
 		}
-	} else {
-		if err := a.store.DeleteConversationFromItem(args.thread.ID, args.userItem.ID); err != nil {
-			return fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
-		}
+		return nil, nil
 	}
-	return nil
+	keptAnchorTurnItemIDs, err = a.store.DeleteConversationFromItem(args.thread.ID, args.userItem.ID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
+	}
+	return keptAnchorTurnItemIDs, nil
 }
 
 func (a *App) rollbackProviderConversationToMessage(thread store.Thread, anchor store.MessageAnchor, userItem store.Item) error {

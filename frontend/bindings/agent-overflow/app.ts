@@ -1855,9 +1855,9 @@ export function ListWSLDistros(): $CancellablePromise<wsllauncher$0.Distro[]> {
 }
 
 /**
- * LoginProviderAccount runs the provider's native browser login in an
- * isolated native home, verifies the resulting identity, atomically activates
- * it, and registers only non-secret metadata with Agent Overflow.
+ * LoginProviderAccount runs the provider's native browser login in a
+ * short-lived isolated home, retains only the resulting native credential,
+ * atomically activates it, and registers non-secret metadata.
  */
 export function LoginProviderAccount(providerName: string): $CancellablePromise<$models.ManagedProviderAccount> {
     return $Call.ByID(1520009058, providerName).then(($result: any) => {
@@ -2225,6 +2225,12 @@ export function RefreshMcpServerStatus(providerName: string): $CancellablePromis
     });
 }
 
+/**
+ * RefreshProviderAccountUsage probes one saved account without changing the
+ * provider-wide selection. Every probe runs in a short-lived home seeded with
+ * only that account's credential. A rotated selected credential reaches the
+ * canonical home only after selection and fingerprint validation.
+ */
 export function RefreshProviderAccountUsage(providerName: string, accountID: string): $CancellablePromise<void> {
     return $Call.ByID(2539237007, providerName, accountID);
 }
@@ -2295,7 +2301,7 @@ export function RemoveOtherWorktreeForProject(projectID: string, currentWorkspac
  * RemoveProviderAccount deletes one saved native login. Removing the selected
  * account activates the next card in display order; removing the final account
  * clears the provider's canonical credential. Existing Codex processes retain
- * their in-memory authentication until the normal safe reconnect-on-send gate.
+ * cached authentication until the normal safe reconnect-on-send gate.
  */
 export function RemoveProviderAccount(providerName: string, accountID: string): $CancellablePromise<void> {
     return $Call.ByID(684418419, providerName, accountID);
@@ -2386,6 +2392,48 @@ export function RestartTerminal(terminalID: string): $CancellablePromise<$models
  */
 export function RestartToUpdate(): $CancellablePromise<void> {
     return $Call.ByID(3141913084);
+}
+
+/**
+ * RevertConversationToMessage rolls a thread back to the selected user
+ * message IN PLACE: the provider session is cut before that message,
+ * every later turn is truncated from SQLite, and the reverted prompt is
+ * restored to the composer draft. It is the message-keyed, idle-thread
+ * counterpart to the two existing rollback entry points:
+ * 
+ *   - InterruptAndRevertIfClean un-sends the LATEST message while its
+ *     turn is still live (Stop button); it interrupts the turn first.
+ *   - ForkThreadFromMessage clones the kept prefix into a NEW thread and
+ *     leaves the source thread untouched.
+ * 
+ * This one mutates the current thread and keeps it — the "revert to
+ * here" affordance on a past user message. It shares the entire
+ * destructive tail (provider rollback -> draft restore -> truncate) with
+ * InterruptAndRevertIfClean through rollbackConversationLocked and emits
+ * the same `user_message:reverted` event, so the frontend truncates the
+ * timeline and rehydrates the composer through one code path.
+ * 
+ * Reverting stops the provider session, which kills any background work
+ * it owns (Claude background tasks, Codex background terminals /
+ * subagents). killRunningBackgroundTasks is the caller's explicit
+ * consent to that: false refuses the revert while background tasks are
+ * live (re-checked under the thread lock — the frontend preflights the
+ * count to decide whether to show its confirmation dialog, but this
+ * check is what makes an unconsented kill impossible); true additionally
+ * runs the provider-appropriate cleanup and flips the persisted
+ * "running" tray rows inactive so dead work doesn't survive the rollback
+ * as stale spinners. Mirrors the un-send path's posture, which declines
+ * the revert outright to preserve background work.
+ * 
+ * Only claude and codex reach this: claude-tui has fork:false in the UI
+ * capability matrix, so its per-message affordances live inside the TUI
+ * (take-control) and the button is never wired for it. That keeps the
+ * claude-tui branch of rollbackConversationLocked — which assumes a
+ * native Esc-revert was already delivered for a LIVE turn — unreachable
+ * from this idle-thread path.
+ */
+export function RevertConversationToMessage(threadID: string, userItemID: string, killRunningBackgroundTasks: boolean): $CancellablePromise<void> {
+    return $Call.ByID(250090428, threadID, userItemID, killRunningBackgroundTasks);
 }
 
 /**

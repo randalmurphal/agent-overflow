@@ -218,6 +218,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RespondToUserInput", ID: 1071592868},             // main.App.RespondToUserInput
 	{Name: "RestartTerminal", ID: 4152403588},                // main.App.RestartTerminal
 	{Name: "RestartToUpdate", ID: 3141913084},                // main.App.RestartToUpdate
+	{Name: "RevertConversationToMessage", ID: 250090428},     // main.App.RevertConversationToMessage
 	{Name: "SaveDraft", ID: 3025273299},                      // main.App.SaveDraft
 	{Name: "SavePRCIJobLog", ID: 1537914193},                 // main.App.SavePRCIJobLog
 	{Name: "SavePayloadToFile", ID: 3576148797},              // main.App.SavePayloadToFile

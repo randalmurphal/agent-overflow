@@ -349,15 +349,23 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
      * Undo the local-only optimistic restore when the backend declines
      * or fails the revert. If the user has edited meanwhile, preserve
      * that newer composer state.
+     *
+     * Returns true when the untouched restore was cleared back to the
+     * empty baseline — the caller may then safely repaint whatever the
+     * composer held before the optimistic apply (the explicit
+     * revert-to-message path restores the user's pre-revert draft).
+     * Returns false when the user's newer edits were preserved (or the
+     * store has moved to another thread) and repainting would clobber
+     * them.
      */
-    clearOptimisticRestoredDraft(id: string, snapshot: ComposerDraftSnapshot): void {
-      if (threadId !== id) return;
+    clearOptimisticRestoredDraft(id: string, snapshot: ComposerDraftSnapshot): boolean {
+      if (threadId !== id) return false;
       if (
         optimisticRestoredDraftDirty
         || !draftSnapshotMatchesPersistedState(buildSnapshot(), snapshot)
       ) {
         clearOptimisticRestoredDraftMarker();
-        return;
+        return false;
       }
       clearOptimisticRestoredDraftMarker();
       clearDebounce();
@@ -365,6 +373,7 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       applySnapshot(emptySnapshot());
       forgetDraftSnapshot(id);
       hasPendingSave = false;
+      return true;
     },
 
     // ---- content mutations ----

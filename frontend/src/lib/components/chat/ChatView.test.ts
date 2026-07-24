@@ -227,6 +227,252 @@ describe('<ChatView>', () => {
     });
   });
 
+  it('reverts to a user message directly when nothing else would be destroyed', async () => {
+    const thread = seedThread();
+    const userItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Update one of the lines',
+    });
+    const pane = await buildPane(thread, [userItem]);
+    mockDrafts(new Map([[thread.id, '']]));
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    const revert = setBindingMock('RevertConversationToMessage', async () => undefined);
+
+    const { getByLabelText, queryByText } = render(ChatView, { props: { pane } });
+    await fireEvent.click(getByLabelText('Revert to this message'));
+
+    await waitFor(() => {
+      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, false);
+    });
+    expect(queryByText('Revert to this message?')).toBeNull();
+  });
+
+  it('gates revert behind a kill confirmation when background tasks are running', async () => {
+    const thread = seedThread();
+    const userItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Update one of the lines',
+    });
+    const pane = await buildPane(thread, [userItem]);
+    mockDrafts(new Map([[thread.id, '']]));
+    setBindingMock('CountRunningBackgroundTasks', async () => 2);
+    const revert = setBindingMock('RevertConversationToMessage', async () => undefined);
+
+    const { getByLabelText, getByText, findByText } = render(ChatView, { props: { pane } });
+    await fireEvent.click(getByLabelText('Revert to this message'));
+
+    // Confirmation dialog opens instead of reverting; the count is in the copy.
+    await findByText('Revert to this message?');
+    expect(getByText(/kills 2 running background tasks/)).toBeInTheDocument();
+    expect(revert).not.toHaveBeenCalled();
+
+    await fireEvent.click(getByText('Revert'));
+    await waitFor(() => {
+      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, true);
+    });
+  });
+
+  it('gates revert behind a draft-replace confirmation when the composer holds unsent work', async () => {
+    const thread = seedThread();
+    const userItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Update one of the lines',
+    });
+    const pane = await buildPane(thread, [userItem]);
+    mockDrafts(new Map([[thread.id, 'half-typed follow-up']]));
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    const revert = setBindingMock('RevertConversationToMessage', async () => undefined);
+
+    const { getByLabelText, getByText, findByText } = render(ChatView, { props: { pane } });
+    // Wait for the draft hydration to land in the composer so the click
+    // observes the non-empty state.
+    await waitFor(() => {
+      expect(getByLabelText('Message Input')).toHaveValue('half-typed follow-up');
+    });
+    await fireEvent.click(getByLabelText('Revert to this message'));
+
+    await findByText('Revert to this message?');
+    expect(getByText(/unsent draft will be replaced/)).toBeInTheDocument();
+    expect(revert).not.toHaveBeenCalled();
+
+    // No background tasks were involved, so confirming must NOT consent
+    // to a background kill.
+    await fireEvent.click(getByText('Revert'));
+    await waitFor(() => {
+      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, false);
+    });
+  });
+
+  it('cancelling the revert confirmation leaves the thread untouched', async () => {
+    const thread = seedThread();
+    const userItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Update one of the lines',
+    });
+    const pane = await buildPane(thread, [userItem]);
+    mockDrafts(new Map([[thread.id, '']]));
+    setBindingMock('CountRunningBackgroundTasks', async () => 1);
+    const revert = setBindingMock('RevertConversationToMessage', async () => undefined);
+
+    const { getByLabelText, getByText, findByText, queryByText } = render(ChatView, {
+      props: { pane },
+    });
+    await fireEvent.click(getByLabelText('Revert to this message'));
+    await findByText('Revert to this message?');
+
+    await fireEvent.click(getByText('Cancel'));
+    await waitFor(() => {
+      expect(queryByText('Revert to this message?')).toBeNull();
+    });
+    expect(revert).not.toHaveBeenCalled();
+  });
+
+  it('locks every revert button for the whole flow, starting at preflight', async () => {
+    const thread = seedThread();
+    const userA = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'first prompt',
+    });
+    const userB = makeItem({
+      id: 'user:2',
+      threadId: thread.id,
+      turnIndex: 2,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'second prompt',
+    });
+    const pane = await buildPane(thread, [userA, userB]);
+    mockDrafts(new Map([[thread.id, '']]));
+    // Deferred count keeps the flow parked in 'preflight' so the test
+    // can observe the lock during the window where the old shape
+    // (busy id set only at execute time) silently swallowed clicks.
+    let resolveCount: (n: number) => void = () => {};
+    setBindingMock(
+      'CountRunningBackgroundTasks',
+      () => new Promise<number>((resolve) => { resolveCount = resolve; }),
+    );
+    const revert = setBindingMock('RevertConversationToMessage', async () => undefined);
+
+    const { getAllByLabelText } = render(ChatView, { props: { pane } });
+    const buttons = getAllByLabelText('Revert to this message');
+    expect(buttons).toHaveLength(2);
+    await fireEvent.click(buttons[0]);
+
+    // Both rows lock while the first flow's preflight is in flight —
+    // a second click can't start an overlapping flow.
+    expect(buttons[0]).toBeDisabled();
+    expect(buttons[1]).toBeDisabled();
+    await fireEvent.click(buttons[1]);
+
+    resolveCount(0);
+    await waitFor(() => {
+      expect(revert).toHaveBeenCalledWith(thread.id, userA.id, false);
+    });
+    expect(revert).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(buttons[0]).not.toBeDisabled();
+    });
+  });
+
+  it('self-dismisses the revert confirmation when the anchor row disappears', async () => {
+    const thread = seedThread();
+    const userItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Update one of the lines',
+    });
+    const pane = await buildPane(thread, [userItem]);
+    mockDrafts(new Map([[thread.id, '']]));
+    setBindingMock('CountRunningBackgroundTasks', async () => 1);
+    const revert = setBindingMock('RevertConversationToMessage', async () => undefined);
+
+    const { getByLabelText, findByText, queryByText } = render(ChatView, { props: { pane } });
+    await fireEvent.click(getByLabelText('Revert to this message'));
+    await findByText('Revert to this message?');
+
+    // The anchor is removed by another path (un-send / a concurrent
+    // revert reflected from a second pane) while the dialog is parked.
+    pane.removeRevertedItems(userItem.turnIndex, []);
+    await waitFor(() => {
+      expect(queryByText('Revert to this message?')).toBeNull();
+    });
+    expect(revert).not.toHaveBeenCalled();
+  });
+
+  it('paints the reverted prompt during the RPC and restores the pre-revert draft on failure', async () => {
+    const thread = seedThread();
+    const userItem = makeItem({
+      id: 'user:1',
+      threadId: thread.id,
+      turnIndex: 1,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'Update one of the lines',
+    });
+    const pane = await buildPane(thread, [userItem]);
+    mockDrafts(new Map([[thread.id, 'half-typed follow-up']]));
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    let rejectRevert: (err: Error) => void = () => {};
+    setBindingMock(
+      'RevertConversationToMessage',
+      () => new Promise<void>((_resolve, reject) => { rejectRevert = reject; }),
+    );
+
+    const { getByLabelText, getByText, findByText } = render(ChatView, { props: { pane } });
+    await waitFor(() => {
+      expect(getByLabelText('Message Input')).toHaveValue('half-typed follow-up');
+    });
+    await fireEvent.click(getByLabelText('Revert to this message'));
+    await findByText('Revert to this message?');
+    await fireEvent.click(getByText('Revert'));
+
+    // While the destructive RPC is in flight the composer already shows
+    // the reverted prompt (the un-send path's optimistic-restore
+    // choreography) — typing here lands on top of it instead of being
+    // clobbered by the later event-driven reload.
+    await waitFor(() => {
+      expect(getByLabelText('Message Input')).toHaveValue(userItem.summary);
+    });
+
+    // Backend refuses: nothing was truncated, so the user's pre-revert
+    // draft comes back instead of an emptied (or reverted) composer.
+    rejectRevert(new Error('refused'));
+    await waitFor(() => {
+      expect(getByLabelText('Message Input')).toHaveValue('half-typed follow-up');
+    });
+  });
+
   it('does not render design preview inside ChatView after explicit toggle', async () => {
     setBindingMock('EnsureDesignWorkdir', async () => {});
     setBindingMock('LatestDesignOptionSet', async () => null);

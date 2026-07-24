@@ -268,6 +268,134 @@ describe('<UserMessage>', () => {
     expect(queryByLabelText('Fork from this message')).toBeNull();
   });
 
+  it('shows the revert action for an inactive user message when the handler is available', () => {
+    const pane = makeActionsPane();
+    const actions: UserMessageActions = {
+      onRevertMessage: vi.fn(),
+    };
+
+    const { getByLabelText } = render(UserMessage, {
+      props: {
+        pane,
+        actions,
+        item: makeItem({
+          id: 'user:1',
+          threadId: 'thread-1',
+          turnIndex: 1,
+          kind: 'user_text',
+          role: 'user',
+          summary: 'revertable',
+        }),
+      },
+    });
+
+    expect(getByLabelText('Revert to this message')).toBeInTheDocument();
+  });
+
+  it('requests message revert through the parent-owned handler', async () => {
+    const pane = makeActionsPane();
+    const item = makeItem({
+      id: 'user:1',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'revertable',
+    });
+    const onRevertMessage = vi.fn(async () => {});
+    const actions: UserMessageActions = { onRevertMessage };
+
+    const { getByLabelText } = render(UserMessage, {
+      props: { pane, item, actions },
+    });
+
+    await fireEvent.click(getByLabelText('Revert to this message'));
+    await waitFor(() => expect(onRevertMessage).toHaveBeenCalledWith(item));
+  });
+
+  it('disables the revert action during an active turn and blocks activation', async () => {
+    const pane = makeActionsPane();
+    const item = makeItem({
+      id: 'user:1',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'revertable',
+    });
+    const onRevertMessage = vi.fn(async () => {});
+    const actions: UserMessageActions = { onRevertMessage };
+
+    const { getByLabelText } = render(UserMessage, {
+      props: { pane, item, actions },
+    });
+
+    const revertButton = getByLabelText('Revert to this message');
+    expect(revertButton).not.toBeDisabled();
+
+    projectTurnStarted('thread-1', 'turn-1', 1, 1000);
+    await tick();
+
+    expect(revertButton).toBeDisabled();
+    await fireEvent.click(revertButton);
+    expect(onRevertMessage).not.toHaveBeenCalled();
+
+    projectTurnCompleted('thread-1', 'turn-1');
+    await tick();
+    expect(revertButton).not.toBeDisabled();
+  });
+
+  it('disables the revert action while ANOTHER message\'s revert flow is active', async () => {
+    const pane = makeActionsPane();
+    const item = makeItem({
+      id: 'user:1',
+      threadId: 'thread-1',
+      turnIndex: 1,
+      kind: 'user_text',
+      role: 'user',
+      summary: 'revertable',
+    });
+    const onRevertMessage = vi.fn(async () => {});
+    // revertingItemId points at a different row: one revert flow at a
+    // time, so this row's button locks too instead of swallowing the
+    // click in ChatView's flow guard.
+    const actions: UserMessageActions = { onRevertMessage, revertingItemId: 'user:other' };
+
+    const { getByLabelText } = render(UserMessage, {
+      props: { pane, item, actions },
+    });
+
+    const revertButton = getByLabelText('Revert to this message');
+    expect(revertButton).toBeDisabled();
+    await fireEvent.click(revertButton);
+    expect(onRevertMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not show the revert action for wire-only user messages', () => {
+    const pane = makeActionsPane();
+    const actions: UserMessageActions = {
+      onRevertMessage: vi.fn(),
+    };
+
+    const { queryByLabelText } = render(UserMessage, {
+      props: {
+        pane,
+        actions,
+        item: makeItem({
+          id: 'user:1',
+          threadId: 'thread-1',
+          turnIndex: 1,
+          kind: 'user_text',
+          role: 'user',
+          summary: 'wire only',
+          meta: JSON.stringify({ wire_only: true }),
+        }),
+      },
+    });
+
+    expect(queryByLabelText('Revert to this message')).toBeNull();
+  });
+
   it('renders image attachments from item metadata and expands them', async () => {
     const onImageExpand = vi.fn();
     const { getByLabelText, getByText } = render(UserMessage, {

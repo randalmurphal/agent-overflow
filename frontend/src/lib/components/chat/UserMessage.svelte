@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
   import GitFork from 'lucide-svelte/icons/git-fork';
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
@@ -40,6 +41,13 @@
 
   const userMeta = $derived(parseUserMessageMeta(item.meta));
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
+  const canRequestRevert = $derived(typeof actions?.onRevertMessage === 'function');
+  // ANY active revert flow locks every revert button, not just the
+  // anchor row's: only one revert can run at a time, and a disabled
+  // control beats a click that ChatView's flow guard would silently
+  // swallow (the flow spans preflight and the confirm dialog, not just
+  // the destructive RPC).
+  const revertLocked = $derived((actions?.revertingItemId ?? null) !== null);
   const canRequestFork = $derived(typeof actions?.onForkMessage === 'function');
   const forkBusy = $derived(actions?.forkingItemId === item.id);
 
@@ -92,6 +100,11 @@
   // timestamps for turn accounting live on the pane, not on user text.
   const time = $derived(formatTimeOfDay(item.createdAt));
   const isoTime = $derived(new Date(item.createdAt).toISOString());
+
+  async function requestRevert(): Promise<void> {
+    if (!canRequestRevert || revertLocked || actionsTurnLocked) return;
+    await actions?.onRevertMessage?.(item);
+  }
 
   async function requestFork(): Promise<void> {
     if (!canRequestFork || forkBusy || actionsTurnLocked) return;
@@ -156,6 +169,21 @@
     </div>
     <div class="mt-1 flex items-center justify-end gap-1.5 pr-1 text-[0.625rem] text-fg-hint">
       {#if showMessageActions && pane}
+        {#if canRequestRevert}
+          <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+            <IconButton
+              label="Revert to this message"
+              size="sm"
+              variant="ghost"
+              disabled={revertLocked || actionsTurnLocked}
+              onClick={() => void requestRevert()}
+            >
+              {#snippet children()}
+                <Icon icon={RotateCcw} size={13} strokeWidth={2.2} />
+              {/snippet}
+            </IconButton>
+          </span>
+        {/if}
         {#if canRequestFork}
           <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
             <IconButton

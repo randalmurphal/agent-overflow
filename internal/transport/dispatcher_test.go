@@ -732,6 +732,7 @@ func (p *privilegedApp) UpdateNewThreadDefaults() string        { return "ok" }
 func (p *privilegedApp) StartTerminal() string                  { return "ok" }
 func (p *privilegedApp) ForkThread() string                     { return "ok" }
 func (p *privilegedApp) ForkThreadFromMessage() string          { return "ok" }
+func (p *privilegedApp) RevertConversationToMessage() string    { return "ok" }
 func (p *privilegedApp) StopClaudeTask() string                 { return "ok" }
 func (p *privilegedApp) CleanCodexBackgroundTerminals() string  { return "ok" }
 func (p *privilegedApp) GetProviderStatuses() string            { return "ok" }

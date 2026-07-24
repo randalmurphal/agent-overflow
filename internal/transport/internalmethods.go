@@ -294,6 +294,10 @@ var LocalOnlyMethods = map[string]bool{
 	"StartTerminal":         true,
 	"ForkThread":            true,
 	"ForkThreadFromMessage": true,
+	// RevertConversationToMessage cuts the provider session (Claude JSONL
+	// slice / Codex thread/fork) and truncates SQLite in place — same
+	// session-control + FS class as the fork variants above.
+	"RevertConversationToMessage": true,
 	// Background-task control terminates host subprocesses.
 	"StopClaudeTask":                true,
 	"CleanCodexBackgroundTerminals": true,

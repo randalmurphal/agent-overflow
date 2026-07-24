@@ -6,22 +6,23 @@ import { iterPanes } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { projectThreadReverted } from './threadStatuses.svelte';
 
-// `user_message:reverted` fires after InterruptAndRevertIfClean rolls
-// back the most-recent user message. Backend truncates SQLite via
-// `DeleteConversationFromTurn(threadId, turnIndex)` — inclusive — so
-// synthetic siblings on the same turn (thinking, api_retry, error,
-// notification, terminal_interaction waits) all go with the user row.
-// This handler mirrors that truncate on the frontend: removing only
-// the user item would strand orphans in `pane.items` that no longer
-// back any SQLite row, surviving until thread switch / cache evict.
+// `user_message:reverted` fires after a successful conversation revert
+// (Stop/Esc un-send, or the explicit revert-to-message button). The
+// backend has truncated SQLite; this handler mirrors that cut exactly:
+// every turn after the anchor turn goes, and within the anchor turn
+// only the event's `keptAnchorTurnItemIds` survive (empty = whole turn
+// gone — the common case; non-empty = Claude's item-granular cut to a
+// mid-turn anchor kept the turn's prefix). Removing only the user item
+// would strand orphans in `pane.items` that no longer back any SQLite
+// row; removing the whole anchor turn unconditionally would hide rows
+// SQLite kept.
 //
-// Responsibilities: (1) idempotently remove every pane item at
-// `>= turnIndex` for any pane viewing the thread (matches backend
-// truncate; defends against a stale optimistic miss / cross-pane
-// reflection); (2) refresh the composer draft from disk so the
-// user's typed text reappears in the input. `reloadFromBackend` is
-// a no-op when the draft store is not pointed at this thread, so we
-// just fire it for every active draft.
+// Responsibilities: (1) idempotently apply the cut for any pane viewing
+// the thread (confirms the un-send path's optimistic removal; defends
+// against a stale optimistic miss / cross-pane reflection); (2) refresh
+// the composer draft from disk so the reverted text reappears in the
+// input. `reloadFromBackend` is a no-op when the draft store is not
+// pointed at this thread, so we just fire it for every active draft.
 export function applyUserMessageReverted(payload: UserMessageRevertedEvent | null): void {
   if (!payload?.threadId || !payload.userItemId) return;
   if (typeof payload.turnIndex !== 'number') return;
@@ -33,7 +34,7 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
   projectThreadReverted(payload.threadId);
   for (const pane of iterPanes()) {
     if (pane.threadId !== payload.threadId) continue;
-    pane.removeItemsFromTurn(payload.turnIndex);
+    pane.removeRevertedItems(payload.turnIndex, payload.keptAnchorTurnItemIds ?? []);
     const draft = getComposerDraftForPane(pane.paneId);
     if (draft) {
       void draft.reloadFromBackend(payload.threadId);
