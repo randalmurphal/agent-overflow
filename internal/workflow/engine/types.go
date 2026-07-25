@@ -112,6 +112,11 @@ type HumanIntervention struct {
 	Note     string        `json:"note,omitempty"`
 }
 
+// TakeoverInterventionKind is the persisted marker that distinguishes an
+// attempt detached for human steering from a human gate decision, which shares
+// the intervention column.
+const TakeoverInterventionKind = "taken-over"
+
 type TakeoverIntervention struct {
 	Kind string `json:"kind"`
 	At   int64  `json:"at"`

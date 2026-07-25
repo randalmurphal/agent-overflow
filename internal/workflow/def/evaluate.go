@@ -61,8 +61,9 @@ func GateEdgeKey(phaseID string, routeIndex int) string {
 }
 
 // EvaluateGate evaluates phase routes in order with first-match and
-// short-circuit semantics. loopCounts contains the number of prior selected
-// loop decisions for each GateEdgeKey.
+// short-circuit semantics. loopCounts holds each GateEdgeKey's spend against
+// its bound: the traversals its caller attributes to the current entry of the
+// loop's target phase, not to the run's whole lifetime (spec §4).
 func EvaluateGate(phase Phase, vars map[string]any, loopCounts map[string]int) (RouteDecision, GateTrace, error) {
 	trace := GateTrace{Predicates: make([]PredicateTrace, 0)}
 	exhaustedLoop := false

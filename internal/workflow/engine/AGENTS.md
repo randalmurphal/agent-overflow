@@ -60,6 +60,23 @@ resource semaphores, and startup recovery.
 - `RerunFailed` is the only `failed → running` edge. It re-stamps the run start
   before the transition and carries the previous attempt's failure feedback into
   the new one; the attempt begins immediately, subject to resources and pause.
+- Loop bounds are per fresh entry, not per item lifetime. `loopCounts` derives
+  each edge's spend from the persisted attempt rows alone — a loop edge counts
+  its traversals since its target phase was last entered from *outside* the
+  cycle. Only a non-loop entry into that target refills the budget (a forward
+  advance, the run's first attempt, a rerun after `failed`, a human `Resume`
+  aimed at another phase); a loop traversal never resets anything, not even a
+  sibling edge sharing its target — if it did, two edges aimed at one phase
+  would clear each other every lap and iterate forever under their bounds.
+  Continuations of the same attempt (an `Answer`, a resume in place, a takeover
+  finalize) are not entries and refill nothing, and taken-over attempts are
+  skipped outright. Unclassifiable history is treated as a continuation, so the
+  derivation can only under-refill, never unbind. The walk assumes attempt rows
+  arrive in insertion order, which is why every path that re-enters a
+  non-resident item seeds the engine clock from its persisted timestamps first.
+  This holds only because `def` rejects cycles closed by forward routes
+  (`gate.unbounded-cycle`) and requires a loop target to strictly dominate its
+  source (`gate.loop-ancestor`).
 - Done-item disposition parking is an item lifecycle action in
   `item_actions.go` and stays serialized through the command loop.
 - Per-item budgets are checked before every phase attempt. Item overrides win

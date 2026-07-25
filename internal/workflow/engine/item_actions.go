@@ -78,6 +78,12 @@ func (e *Engine) rerunFailed(itemID string) error {
 	if err != nil {
 		return fmt.Errorf("rerun failed item %q output envelope: %w", itemID, err)
 	}
+	// A failed item is not resident after a restart, so the engine clock has
+	// never seen its timestamps. Seed them before stamping anything new: the
+	// rerun's attempts must sort after the ones they follow even if the wall
+	// clock moved backwards, because attempt order is how phase history is
+	// read back (loop counts, current attempt).
+	e.observeItemTimestamps(stored)
 	// Re-stamp the run start before the transition. If the transition then
 	// fails the row stays `failed` with only a bumped started_at, which the
 	// next rerun overwrites; the reverse order could leave a running item the

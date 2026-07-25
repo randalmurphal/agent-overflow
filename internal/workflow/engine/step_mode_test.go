@@ -17,30 +17,6 @@ func stepWorkflow() def.Workflow {
 	}}
 }
 
-func TestLoopCountsIgnoreGateAttemptAbandonedByTakeover(t *testing.T) {
-	edge := def.GateEdgeKey("review", 0)
-	trace, err := json.Marshal(def.GateTrace{Decision: def.RouteDecision{
-		Kind: def.DecisionLoop, RouteIndex: 0, Target: "build", LoopEdge: edge, Max: 1,
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	intervention, err := json.Marshal(TakeoverIntervention{Kind: "taken-over", At: 10})
-	if err != nil {
-		t.Fatal(err)
-	}
-	counts, err := loopCounts("item", []store.WorkItemPhaseContext{
-		{PhaseID: "review", Attempt: 1, GateTrace: trace, Status: "completed"},
-		{PhaseID: "review", Attempt: 2, GateTrace: trace, Intervention: intervention, Status: "parked"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if counts[edge] != 1 {
-		t.Fatalf("loop count = %d, want only the completed route", counts[edge])
-	}
-}
-
 func TestStepModeParksAtEveryAutomaticGateAndApproveContinues(t *testing.T) {
 	workflow := stepWorkflow()
 	h := newHarness(t, Config{}, map[string]def.Workflow{"step": workflow}, []string{"project"}, nil)

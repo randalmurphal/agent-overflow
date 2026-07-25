@@ -42,7 +42,7 @@ func (e *Engine) takeOver(itemID string) error {
 			item.runnerActive = false
 		}
 	}
-	intervention, err := json.Marshal(TakeoverIntervention{Kind: "taken-over", At: e.timestamp()})
+	intervention, err := json.Marshal(TakeoverIntervention{Kind: TakeoverInterventionKind, At: e.timestamp()})
 	if err != nil {
 		return fmt.Errorf("take over item %q: encode intervention: %w", itemID, err)
 	}
