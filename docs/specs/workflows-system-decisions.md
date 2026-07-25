@@ -600,3 +600,93 @@ a notes file per job, not a memory subsystem (the §12 exclusion stands).
 - **Standing mandate:** polish, efficiency, and implementation-quality
   improvements are always in scope for future packets — flag them in
   reports, don't sit on them.
+
+## Rev-2 rulings (user decisions, 2026-07-24)
+
+Spec revision 2 (`workflows-system.md`) re-centers the system on
+directly-started background runs. The rulings below supersede where noted;
+everything else above stands.
+
+- **D16. The queue is removed** (supersedes D3.1 and its M4 per-project
+  amendment; queue portions of D4/D7). Runs start immediately through one
+  start path shared by the overlay, the `ao` CLI, phase grants, and the
+  scheduler. No `queued` state exists — contention is a *phase* waiting on
+  resource capacity. Bounded parallelism moves to an **implicit
+  `provider:<name>` resource** every agent phase/unit acquires, capacity in
+  the project profile, read live at each acquisition. One **global pause**
+  survives as the kill switch (no new phase starts; in-flight turns finish) —
+  it carries no ordering and no per-project variant. Scheduler actions start
+  runs directly with **skip-if-running** overlap policy, recorded per
+  automation. Drain summaries die with the queue.
+- **D17. CLI everywhere; thread binding + wake** (supersedes the M4 D4.5
+  chat-enqueue MCP tool and the P5.0 proposal/confirm flow; extends D15 to
+  interactive threads). Interactive threads use the same `ao` CLI as phases,
+  under normal bash approval — no MCP server, no proposal card, no pre-start
+  confirmation. Context is injected on demand by the **`/workflow` composer
+  command** (binary path, project workflow dir, command cheat-sheet, active
+  runs) — nothing workflow-shaped sits in context until invoked. Every root
+  run records an optional **bound thread**: agent-started runs bind their
+  origin thread and **wake it** on every resting state via the existing
+  queued-user-message path (tool-boundary delivery); unbound runs surface in
+  the overlay, where **open-in-thread** (seeded, then bound) or binding an
+  existing thread upgrades them to the same wake behavior. Child runs never
+  bind and never notify.
+- **D18. Call phases** (supersedes "sub-workflow — post-v1"). A phase may
+  invoke a workflow by **static id** (never a variable — the dry-run
+  validates the whole call graph). The child is a **real run** — own item,
+  phases, counters, record — linked into the parent's tree. **Workspace
+  flows down the call stack**: children execute in the caller's workspace;
+  isolation is introduced only by fan-out. Cyclic call graphs require
+  `max_depth`; budgets are enforced against the **root** item across the
+  tree. Each invocation freezes the child's definition at call time.
+  Recursion with an exit condition is the sanctioned batch-loop shape: fresh
+  child per iteration, fresh loop counters by construction.
+- **D19. Fan-out executes** (was parsed-but-rejected). Units: static list or
+  **dynamic `over:` an array variable with `as:` binding**. Per-unit
+  provider/model/access (mixed-provider fan-outs are intended). Each unit =
+  own thread; writing units = own sub-worktree on a real branch, registered
+  in the run record. **Unit failure**: stop launching, let in-flight units
+  finish, park `needs-human(unit-failed)` with the failed unit's thread +
+  narrative; recovery = retry unit / drop unit (join proceeds over
+  survivors, recorded) / take over. Dry-run **reports** a static fan-out
+  wider than the binding profile's provider capacity.
+- **D20. Two join patterns; no silent merge** (relaxes rev 1's "the join
+  never git-merges"). Synthesis join (explore-and-synthesize) unchanged.
+  **Merge join**: a tool phase git-merges unit branches into the item's
+  branch, emitting typed outputs (`clean`, `conflicts[]`); its gate routes
+  conflicts to a resolution **agent** phase, bounded, then human. Explicit
+  user ruling: **no path-ownership metadata, no join-owned file
+  declarations** — enumerating no-touch files is unmaintainable and actively
+  harmful; the agent resolution loop is the design. Disposition remains the
+  only place the project's base branch is touched.
+- **D21. Loop bounds are per fresh entry** (supersedes cumulative per-item
+  counting). A loop edge's counter counts consecutive traversals since its
+  target was last entered from outside the cycle; derived from persisted gate
+  traces, nothing new stored. Takeover attempts still don't consume budget.
+- **D22. `access` is enforced** (was derivation-only). `read-only` maps to
+  the provider's restricted runtime mode; `write` gets full access inside
+  its own isolated workspace. A read-only phase physically cannot dirty the
+  project root.
+- **D23. Pause / discard / shutdown join the teardown contract.** Pause =
+  interrupt in-flight turn(s) → teardown → park `needs-human(paused)`;
+  resume = next attempt on the same provider thread (question-answer
+  mechanics). Graceful quit pauses every active run; a crash parks
+  `needs-human(interrupted)` — same resume, distinct reason. **Discard
+  shows a loss preview first** (per worktree in the tree: branch, dirty
+  files, unmerged commits) — the preview is the consent. Teardown is
+  **tree-aware**: children and in-flight units always come down with the
+  root.
+- **D2a amendment (2026-07-24).** Envelope schemas must be provider-legal
+  under both CLIs' strict modes; the rules live in
+  `internal/providerschema` (each with its observed CLI rejection), the
+  generator obeys them, and the mock provider enforces them so the harness
+  cannot drift from reality. Branch rules the engine enforces are stated
+  verbatim in the prompt suffix. The envelope-validation retry count is a
+  **profile knob (default 1)**, no longer a hardcoded bool.
+- **D11 amendment — the overlay replaces the pane + sidebar section.** The
+  workflows surface is a full-surface **overlay rendered as a sibling of the
+  pane host** — panes never unmount (explicitly not the settings pattern).
+  One workflows button in the sidebar footer carries the needs-attention
+  badge. No per-project sidebar section, no workflows pane, no deep-link
+  pane machinery; OS notifications deep-link into the overlay. Surface
+  detail: `workflows-system-ui/UI-SPEC.md` rev 2.

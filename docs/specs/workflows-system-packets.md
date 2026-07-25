@@ -190,3 +190,103 @@ surface spec; the decisions log wins where they disagree.
 Automation-driven chrome (Scheduled section, next-run banner, enable/disable,
 Run now) ships with inert data paths — M5's scheduler populates them; the
 components render only when automation data exists.
+
+---
+
+## Rev-2 campaign (M6) — direct-start, fan-out, calls, overlay
+
+> Implements spec **rev 2** (2026-07-24) per decisions D16–D23 + the rev-2
+> D11 amendment. Same execution model as prior campaigns: isolated lanes,
+> WIP-commit on return, scope/assumptions/gaming audits, independent gate
+> re-runs before merge. Every packet inherits the cross-milestone
+> invariants above. Detailed lane packet files (`P6.x-*.md`) are authored
+> per wave from this outline.
+
+Sequencing note: W1 unblocks everything; W2–W4 are the go-port critical
+path (fan-out first, per user priority); W7 rides in parallel after W1;
+W10 is the visibility layer and can start its deletion half early.
+
+**W1 — Queue removal + direct start (engine + RPC).** Delete drain,
+`SetQueue`/process-N, reorder, per-project queue configs and their RPCs
+(methodgen + `LocalOnlyMethods` sweep). `WorkflowStartRun` starts an item
+immediately; the `queued` state is removed (migration: any resident
+`queued` rows park `needs-human(interrupted)` — dev-branch data only, but
+the migration stays principled). Global pause flag (no new phase starts;
+in-flight finishes). Implicit `provider:<name>` resource acquisition for
+agent phases; capacities from the live profile (already live-read).
+Engine AGENTS.md invariants rewritten in-change.
+
+**W2 — Tool driver execution.** The runner executes `driver: tool`:
+profile-bound command, envelope capture (system-provided output path;
+engine post-validation identical to agent envelopes), no provider-capacity
+acquisition, teardown/watchdog coverage. Unblocks merge-joins and
+deterministic gates.
+
+**W3 — `access` → runtime mode.** `read-only` maps to the provider's
+restricted mode, `write` to full access in its isolated workspace;
+enforced at session start for phases and units; harness coverage on both
+provider mocks. (D22 — closes the inert-access hole.)
+
+**W4 — Fan-out execution.** Two waves: **W4a** engine — unit scheduling
+under the phase FSM, static + dynamic `over:`/`as:` expansion, unit
+persistence/linkage in the run record, unit-failure policy (stop
+launching, in-flight finishes, park `unit-failed`), retry/drop/take-over
+actions, dry-run width-vs-capacity report; **W4b** runner/workspace — unit
+threads, sub-worktrees on real branches cut from the item branch,
+registration for discard preview, join-as-final-unit over rested units,
+per-unit provider/model. (D19.)
+
+**W5 — Call phases.** def: `call` shape, static target resolution,
+call-graph validation (reachability, `max_depth` on cycles, write-need
+propagation); engine: child item creation + parent park, tree linkage,
+root-item budget enforcement across the tree, tree-aware teardown and
+crash rebuild; workspace-flows-down (child executes in caller's
+workspace; snapshot frozen per child at call time). (D18.)
+
+**W6 — Per-entry loop counters.** Counter derivation counts consecutive
+loop-edge traversals since the target was last entered from outside the
+cycle; tests over transitions (fresh entry → reset; takeover skip
+unchanged). (D21.)
+
+**W7 — Thread binding, wake, pause/resume/discard.** `origin_thread_id`
+on root items; wake composer (state + typed reason + outputs + narrative/
+artifact/unit-thread refs) delivered via the existing queued-message
+path; bind/open-in-thread RPCs (open-in-thread seeds via the intent-seed
+pattern); pause (interrupt → teardown → `paused`), graceful-quit
+pause-all, resume as continue-attempt on the same provider thread;
+discard-preview RPC (per-worktree branch/dirty/unmerged) + tree teardown
++ unlanded-branch removal. (D17, D23.)
+
+**W8 — Scheduler / automations on the start path.** Discovery-first
+packet: audit what §11 machinery exists, then build/refit — cron +
+internal-event triggers, run-if conditions, **skip-if-running** with
+recorded skips, Run now, job continuity notes as reserved seed, unbound
+results surfacing through §5 binding. Actions call the one start path.
+
+**W9 — `ao` CLI execution surface + `/workflow` context.** `run / status
+/ result / list-runs / pause / resume / cancel / rerun / retry-unit`;
+`AO_THREAD_ID` injected into provider session env so CLI calls carry
+thread identity without MCP; per-phase grant scoping per §5; the Go RPC
+returning the `/workflow` context block. Delete the chat-enqueue MCP
+server + proposal flow (`app_workflow_chat.go`, proposal item kind,
+confirm-card rendering) in the same packet — replaced, not orphaned.
+
+**W10 — Frontend: teardown + overlay.** Two waves: **W10a** deletion —
+the `'workflows'` pane kind + PaneHost branch + pane persistence,
+`workflowsPane`/`workflowsSidebar` stores, `WorkflowsSection` + sidebar
+wiring, pane-stack chrome, queue surfaces, proposal card, deep-link pane
+machinery, and their tests/e2e; **W10b** overlay per UI-SPEC rev 2 —
+sibling-of-PaneHost frame (panes never unmount), home, run-detail tree
+(units + child runs), sweep, intake (`Start`), discard preview,
+pause/resume/bind actions, footer button, `/workflow` composer command,
+e2e suite rewritten against the overlay.
+
+**W11 — Real-provider smoke gate.** Tagged, manually-run test driving one
+trivial workflow through the **real** `claude` and `codex` binaries:
+schema acceptance, envelope round-trip, branch-rule conformance. Closes
+the gap that let five schema defects survive a green harness; run before
+any release and after provider CLI upgrades.
+
+**W12 — Ratification sweep.** invariants.md, schema.md, engine/def/
+runner AGENTS.md, harness scenario docs, LEDGER campaign entry; delete
+rev-1-only spec references; `make verify` green.

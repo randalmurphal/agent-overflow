@@ -1,502 +1,371 @@
-# Workflows System — UI Specification
+# Workflows System — UI Specification (rev 2)
 
-> Implementation-facing spec for the M3 surfaces, extracted from the approved mockup
-> (`synthesis.html`) and bound by `../workflows-system-decisions.md` (D3, D4, D11 +
-> amendments, D12, D13, D14, D15). Where mockup and log disagree, **the log wins** —
-> divergences applied here are listed in §14. The mockup is direction, not chrome:
-> implement with native components, tokens, and theme (D11 amendment 3).
+> Implementation-facing spec for the workflows surface, bound by
+> `../workflows-system.md` **rev 2** and `../workflows-system-decisions.md`
+> (D16–D23 + the rev-2 D11 amendment). Rev 2 replaces rev 1's pane + sidebar
+> section with a **full-surface overlay**; the queue surfaces (toggle, Queues
+> section, drag priority, drain summaries) and the chat-enqueue confirm card
+> are **deleted**, not restyled. Rev 1's run-state grammar, evidence blocks,
+> sweep, and keyboard vocabulary survive and are restated here where they
+> still bind. The `synthesis.html` mockup remains direction for row/receipt
+> tone only — its pane frame is superseded.
 
-Vocabulary (code/spec, per D11 amendment 2): **workflow** = definition, **run** =
-execution (`work_items` row), **phase** = a step of a run. Surface copy stays plain
-("Runs", "History", "Needs you"); the surface is always called **Workflows**, never
-"jobs" (D11 amendment 1).
+Vocabulary (code/spec): **workflow** = definition, **run** = execution
+(`work_items` row), **phase** = a step of a run, **unit** = one fan-out member
+of a phase, **child run** = a call phase's invoked run. Surface copy stays
+plain ("Runs", "History", "Needs you"); the surface is always called
+**Workflows**, never "jobs".
 
 ---
 
 ## 1. Normative rules (every surface)
 
 - **R1 — Two-hue attention.** Amber (`--warning`) ONLY for states a human must
-  unblock (`needs-human` gate/question and their roll-ups). Red (`--error`) ONLY for
-  `failed`. Everything else (running, queued, done, cancelled, scheduled) is
-  typographic — no colored dot, no badge. Done-awaiting-disposition counts neutrally,
-  MUST NOT turn amber, and has no time-based escalation (D11 amendment 1). A row
-  shows at most one signal (dot + label); amber rows reuse the existing
-  `status-glow-warning` ring + pulse conventions (`threadStatusPill.ts` / `app.css`).
-- **R2 — No internals.** Variables, envelopes, JSON, schemas, gate traces never
-  render on any human surface (D11). Human evidence = narrative digest, diff, checks,
-  cost. The word "variables" MUST NOT appear in UI copy — typed seeds render as plain
-  form fields (D11 amendment 1).
-- **R3 — Only threads break out.** The workflows surface is one pane with internal
-  stacked navigation; any thread (phase, triage, studio) opens as a normal thread
-  pane beside it, never inside it (D11 amendment 2).
+  unblock (`needs-human` in all its typed reasons — gate, question, stuck,
+  paused, interrupted, unit-failed, disposition — and their roll-ups). Red
+  (`--error`) ONLY for `failed`. Everything else (running, done, cancelled,
+  scheduled) is typographic — no colored dot, no badge.
+  Done-awaiting-disposition counts neutrally, MUST NOT turn amber, and has no
+  time-based escalation. A row shows at most one signal (dot + label); amber
+  rows reuse the existing `status-glow-warning` ring + pulse conventions
+  (`threadStatusPill.ts` / `app.css`).
+- **R2 — No internals.** Variables, envelopes, JSON, schemas, gate traces
+  never render on any human surface. Human evidence = narrative digest, diff,
+  checks, cost. The word "variables" MUST NOT appear in UI copy — typed seeds
+  render as plain form fields.
+- **R3 — Only threads break out.** The overlay owns all workflow navigation
+  internally; any thread (phase, unit, triage, studio) opens as a **normal
+  thread pane**, never inside the overlay. Opening a thread **closes the
+  overlay** (the pane tree underneath was never unmounted, so this is
+  instant); reopening the overlay restores its stack.
 - **R4 — Copy tone.** Terse, human, past-tense receipts ("Merged to main —
-  fast-forward 3af92c1 · worktree cleaned"); metadata as `·`-separated fragments
-  ("parked 7h", "2/5 · 14m · $1.84"). No exclamations, no emoji.
+  fast-forward 3af92c1 · worktree cleaned"); metadata as `·`-separated
+  fragments ("parked 7h", "2/5 · 14m · $1.84"). No exclamations, no emoji.
 
 ---
 
-## 2. The workflows pane
+## 2. The overlay
 
-### 2.1 Pane kind + lifecycle
+### 2.1 Frame + lifecycle
 
-- New `PaneLayoutKind` `'workflows'` in `stores/paneLayout.svelte.ts` — a first-class
-  pane (NOT a companion, no `sourcePaneId`), mounted by a new branch in
-  `PaneHost.svelte`, normal width/divider/density behavior.
-- **Singleton.** At most one workflows pane in the layout. Every entry point (sidebar
-  rows, footer badge, notifications, deep links) MUST reuse it — retarget its stack,
-  `revealPane`, focus — never open a second. If none exists, append at the right end
-  of the pane row and focus.
-- Closes like any pane (`×`, `Ctrl/Cmd+W`). Closing never affects runs — the engine
-  is the source of truth.
-- **Persistence.** Pane + navigation stack persist via `paneLayoutPersistence.ts`. On
-  restore, stack entries whose target no longer exists are dropped from the top
-  (overview is always valid).
-- Navigation state lives in a new `stores/workflowsPane.svelte.ts` (stack, filter,
-  sweep cursor). Data rides a new typed `workflow:*` event channel (D7) via a new
-  `eventsWorkflow.ts` fanned out from `events.ts`; RPCs through `stores/bindings.ts`.
+- Rendered in `App.svelte` as a **sibling of `<PaneHost>`**, layered above it
+  — never passed into PaneHost, never a `globalSurface`, never a pane kind.
+  **The pane tree stays mounted and untouched while the overlay is open**
+  (explicitly not the settings pattern); closing is a pure unmount of the
+  overlay layer — zero pane rebuild, zero virtualizer resync.
+- **Entry points**: the workflows footer button (§6), OS notifications (§9),
+  and the command palette. All open the one overlay; deep links retarget its
+  stack.
+- **Dismissal**: `Esc` at home depth, clicking the scrim edge, the footer
+  button again, or any thread break-out (R3). Closing never affects runs.
+- **Persistence.** The stack (and sweep cursor) persists across overlay
+  close/reopen within a session and across restarts via the existing app
+  storage; restored entries whose target no longer exists drop from the top
+  (home is always valid).
+- Navigation state lives in `stores/workflowsOverlay.svelte.ts` (stack,
+  project filter, sweep cursor). Data rides the typed `workflow:*` event
+  channel via `stores/eventsWorkflow.ts`; RPCs through `stores/bindings.ts`.
 
-### 2.2 Stacked navigation
+### 2.2 Stack
 
-Stack: `overview` › `workflow detail` › `run detail` (plus a terminal `all-clear`
-level reachable only by finishing the sweep, §5.4).
+Two levels: **home** › **run detail** (plus the terminal **all-clear** level
+reachable only by finishing the sweep, §4.4). Rev 1's intermediate
+workflow-detail level is folded into home — a workflow's runs and history
+expand in place; there is no third navigation depth.
 
-- **Header chrome.** Depth 0: pane title "Workflows" + overview controls (§3.1).
-  Depth > 0: back chevron `‹` (tooltip "Back (esc)"), clickable breadcrumbs for each
-  ancestor (`Workflows › build-and-validate`), `›` separators, current level's label
-  as pane title. Crumb click pops to that level.
-- **Back semantics.** Back button, `Esc`, and `Backspace` pop one level; at depth 0
-  they do nothing (MUST NOT close the pane). `Esc` first consumes transient state:
-  armed cancel confirm → open dialog → pop. Keys apply only while the pane is focused
-  and never while a text field has focus (typing guards in `keybindings.svelte.ts`).
-- **Transitions.** Pushed levels slide in (~200ms ease-out, translateX + fade); honor
-  `prefers-reduced-motion`. Level changes reset transient state (expanded diff files,
-  armed confirms, PR sub-views).
-- **Deep-link targets** (all reuse-or-create per §2.1, seeding the full stack so
-  back/crumbs work): sidebar run row → run detail (`overview › workflow › run`);
-  footer badge and sidebar section header → overview; amber "N need you" on a
-  workflow row → sweep (§5.4) at that workflow's oldest parked run; per-item OS
-  notification → that run's detail (§10); drain-summary OS notification → the triage
-  agent thread pane (§10), not the workflows pane.
+- **Header chrome.** Home: title "Workflows" + header controls (§3.1). Run
+  detail: back chevron `‹` (tooltip "Back (esc)"), breadcrumb
+  (`Workflows › <run title>`), state word.
+- **Back semantics.** Back, `Esc`, and `Backspace` pop to home; at home,
+  `Esc` closes the overlay. `Esc` first consumes transient state: armed
+  confirm → open dialog → pop/close. Keys are suppressed while a text field
+  has focus (typing guards in `keybindings.svelte.ts`).
+- Level changes reset transient state (expanded diffs, armed confirms).
 
 ---
 
-## 3. Level 1 — Overview
+## 3. Home — projects, workflows, runs
 
-Workflow-centric (D11 amendment 1): lists **workflows** with aggregate state; runs
-are subordinate. Single-column list at every width.
+Project-grouped, single column at every width. Groups ordered by project
+name; a project renders only if it has workflow definitions, runs, or
+automations.
 
-### 3.1 Header controls (depth 0 only)
+### 3.1 Header controls
 
 | Control | Behavior |
 |---|---|
-| Queue toggle | `❚❚ Active` / `▶ Paused`; tooltip "Pause stops new starts; running items finish" (D3.1). Toast on toggle: "Queue active — draining by priority" / "Paused — running items finish; nothing new starts". |
-| Slots | Dots + `n/m` concurrency slots in use (tooltip "2 of 3 concurrency slots in use"). Read-only. |
-| Project filter | All projects → each project. Filters workflow rows (shared-scope always visible) and Up-next rows. |
+| Pause all | The §6 global kill switch: `❚❚` / `▶`. Tooltip "Pause stops new phase starts everywhere; in-flight turns finish". Toast on toggle. Not a queue — no ordering, no counts. |
+| Project filter | All projects → each project. Filters groups and the sweep set. |
 | `+ New run` | Opens intake (§7). |
-| `+ New workflow` | Opens a **studio thread** as a normal thread pane (D4.1 gap 1). No editor surface. |
-| Triage | Opens/resumes the **triage agent** thread as a normal thread pane (D4.9, D4.1 gap 3). |
+| `+ New workflow` | Opens a **studio thread** as a normal thread pane (closes the overlay, R3). |
+| Triage | Opens/resumes the **triage agent** thread pane. |
 
-At narrow widths, controls past the queue toggle collapse into a `⋯` overflow menu;
-row metadata truncates end-first. No other layout change — the single-column list
-satisfies the ratified narrow-width flag by construction.
+At narrow widths, controls past Pause-all collapse into `⋯`; row metadata
+truncates end-first.
 
-### 3.2 Sections + workflow row anatomy
+### 3.2 Project group anatomy
 
-Sections in order, uppercase headers with counts: **Active** (any live run),
-**Scheduled** (automation-driven, D3.2), **Idle**. A workflow appears in exactly one.
+Within a group, in order:
 
-Row (card-bordered, whole row clickable → workflow detail):
+1. **Needs attention** — parked runs (amber, oldest first), then failed
+   (red). Row: signal dot + "Needs you"/"Failed" + title + right meta
+   (`review gate · parked 7h`, `unit 3/5 failed · 2h`, `paused · yesterday`,
+   `interrupted · app restarted`). Click → run detail (§4), landing inside
+   the sweep.
+2. **Running** — live runs: title + right meta `phase 3/5 · port-sections
+   4 running · 2 waiting on provider:codex · 14m · $1.84`; the waiting-on
+   fragment renders only when a phase/unit is blocked on capacity (§6 of the
+   WHAT-spec). Live-activity line below in italic hint tone. Hover cancel
+   `✕` arms to `stop this run?`; second click cancels; Esc disarms.
+3. **Workflows** — the project's definitions (and shared ones, marked
+   `shared`): name + chain summary (`plan → port ⇉ merge → validate ↺`) +
+   **Edit** (studio thread). Automations render inline on their workflow
+   row: `every 6h · next in 3h 40m · 2 skipped` + enable/disable + **Run
+   now**. A definition failing dry-run validation renders its first error
+   inline, hint-toned.
+4. **Recent** — collapsed by default (`▶ Recent · 12`): terminal runs, most
+   recent first, receipt meta (`merged · 2d · $1.75`, `cancelled · worktree
+   kept`, `discarded — branch dropped, record kept`). Rows open historical
+   run detail (§4.6).
 
-- Line 1: workflow name + right-aligned aggregate: amber `N need you` (bold,
-  clickable → sweep §5.4) prefixed when N > 0, then neutral fragments
-  `2 running · 1 queued · 1 to dispose` or `idle`. Scheduled: `next run today 18:02`
-  (+ `· N queued`). Idle: `idle · last run 3d ago`.
-- Line 2 (hint-toned): `scope · meta · chain`, e.g. `shared · 5 phases · 1 human gate
-  · plan → implement → check → review → docs`; automations: `project · automation ·
-  every 6h · in 3h 40m`.
-
-### 3.3 Queues section (per-project queues; M4 rulings amendment)
-
-Below the sections when ≥1 project has queued **or running** runs; hidden when
-empty. Renders as a **list of per-project queues** ("Queues · N", one group per
-project, ordered by project name) per the M4 ruling — queues are per project,
-each startable/stoppable with its own concurrency limit.
-
-- **Group header**: project color dot + name, `running/effective-cap` slots
-  (effective cap = min(project cap or global, global concurrency)),
-  `Pause`/`Resume` toggle, and a concurrency select (`Global` = inherit, 1–32).
-  A running-only project still renders — the header is its control surface.
-- Row (within a group): hover-revealed drag grip, `#position`, title, right meta
-  `workflow · queued 3h` / `spawned 6m ago` (automation), `· held` while the
-  global queue **or the project** is paused. Click opens the run's detail.
-- **Drag-reorder** sets priority within the project (`sort_position`, D8): drop
-  indicator above/below, persists immediately, toast "Priority reordered — the
-  drain picks it up immediately". No cross-project drag.
-
-### 3.4 Overview states
-
-| State | Rendering |
-|---|---|
-| No workflows defined | Empty state: short line + `+ New workflow` (studio). |
-| All idle, queue empty | Sections render; Queues hidden; no amber anywhere. |
-| Attention pending | Amber count on the owning workflow row only (R1). |
-| Queue paused | Toggle `▶ Paused`; queued rows append `held`. |
-| Remote | Identical rendering; mutating controls disabled (§12). |
+**Continuity notes** (jobs that declare them): one collapsed line on the
+workflow row, expanding to the editable markdown block — unchanged from
+rev 1.
 
 ---
 
-## 4. Level 2 — Workflow detail
+## 4. Run detail
 
-Sub-line under the header: `scope · meta · chain` (§3.2 line 2). Header affordance
-**Edit** opens/resumes the workflow's studio thread as a normal thread pane (D4.1
-amendment).
+The resolution surface. Everything from rev 1's run detail survives except
+queue rows; the phase list becomes a **tree**.
 
-### 4.1 Content, top to bottom
+### 4.1 Header block
 
-1. **Next-run banner** (automations only): `◷ Next run today 18:02 · in 3h 40m` +
-   **enable/disable** toggle + **Run now** button (D4.1 gap 2). Run now enqueues
-   through the normal queue. Anything richer (cron, seeds, conditions) is studio
-   work — no forms.
-2. **Runs** — every live run of this workflow (§4.2).
-3. **History** — terminal runs, most recent first: title + receipt meta (`merged ·
-   2d · $1.75`, `cancelled · yesterday · worktree kept`, automation spawns `ran 12:02
-   · spawned the queued run · $0.14`). History rows are receipts over the persisted
-   run record and are **openable**: click pushes that run's detail in its historical
-   terminal state, from which every phase attempt's thread opens (§5.6, D11
-   amendment 3).
-4. **Continuity notes** (D12) — only when the workflow declares them; one collapsed
-   line `▶ Continuity notes — carried across runs · rewritten after last run`,
-   expanding to an editable markdown block (saved on blur/debounce), hint "editable —
-   the next run reads this; a terminal phase may rewrite it". Notes live on the
-   workflow, never per run.
+- Row 1: project chip · **state word** (amber "Review gate" / "Question" /
+  "Paused" / "Interrupted" / "Unit failed"; red "Failed"; neutral "Done" /
+  "Running" / "Cancelled") · sweep counter when parked (§4.4).
+- Row 2: run title. Row 3 (hint): `workflow · phase 4/5 · parked 7h · $3.10`
+  — cost is the **root-tree total** (children included); automation runs add
+  `spawned by jira-poll · every 6h`; a bound run adds `→ <thread title>`
+  (click opens the thread, R3).
 
-### 4.2 Run row anatomy + states
+### 4.2 The run tree
 
-Row: project dot · [signal] · title · right meta · [hover affordance]. One signal max
-(R1). Click → run detail.
+Ordered phases; two node kinds expand:
 
-| Run state | Signal | Meta (right) | Extra |
-|---|---|---|---|
-| gate | amber pulse dot + "Needs you" | `review gate · +34 −12 · checks ✓ · parked 7h` | glow ring |
-| question | amber pulse dot + "Needs you" | `asks — <short question> · parked 9h` | glow ring |
-| failed | red dot + "Failed" | `check ×3 · genuine · 11h` | |
-| running | none | `implement · 2/5 · 14m · $1.84` | live-activity line below in italic hint tone (D4.6); hover cancel `✕` arms to `stop this run?`, second click cancels, Esc disarms |
-| queued | none (dim) | `queued · #2` (+ `· spawned 6m ago`) | |
-| done | none (dim) | `done · to dispose · $0.92 · 2h` | |
-| cancelled | none (dim) | `cancelled · worktree kept` | |
+- **Fan-out phase** — expands to its units: `✓ port-auth · 12m · $0.84` /
+  `● port-catalog · <live activity>` / `○ port-search · waiting on
+  provider:codex` / red `✗ port-vuln ×2`. Every unit row with a thread is
+  openable (R3). The join renders as the phase's final unit row.
+- **Call phase** — expands to the **child run** inline (its own phase rows,
+  recursively). The child's header row shows its workflow name + state +
+  cost; a `↳ depth 2` fragment appears past depth 1. Child runs have no
+  bind/notify affordances (D18) — resolution actions on a parked child
+  render inside the parent's tree.
 
-Cancel performs engine teardown (D9); toast "Teardown — turn stopped, locks released,
-worktree kept". Empty list renders `no live runs` in hint tone.
+Retried phases render one row per attempt (`check · attempt 2`); historical
+attempts stay openable (§4.6).
 
----
+### 4.3 Per-state digest, evidence, actions
 
-## 5. Level 3 — Run detail
+The two-row digest (`WHAT HAPPENED` / `WHAT IT NEEDS`) opens every state.
+Action row is a fixed footer, primary first; keys per §8.
 
-The resolution surface; absorbs the stepper (D11 amendment 2).
-
-### 5.1 Header block
-
-- Row 1: project chip (dot + name) · **state word** (amber "Review gate" /
-  "Question"; red "Failed"; neutral "Done" / "Queued" / "Running" / "Cancelled") ·
-  sweep counter when parked (§5.4): `2 of 4` + progress dots (current highlighted,
-  resolved green) + `j` `k` hints.
-- Row 2: run title. Row 3 (hint): `workflow · phase 4/5 · parked 7h · $3.10`;
-  automation runs add `spawned by jira-poll · every 6h`; done shows `finished 2h ago`.
-
-### 5.2 Digest
-
-Every state opens with the two-row generated digest (D4.3): `WHAT HAPPENED` / `WHAT
-IT NEEDS` label-value pairs, the ask stated plainly ("A human eye on the store-shape
-change before docs runs — the review gate always parks for you." / "Nothing.").
-
-### 5.3 Per-state evidence + action row
-
-Action row is a fixed footer, primary first; keys `a` (advance/approve), `r`
-(reject/discard), `t` (thread — take over / hand off) are constant across states
-(§9).
-
-| State | Evidence block | Action row |
+| State | Evidence | Action row |
 |---|---|---|
-| **gate** | Checks row (`✓ build 9s ✓ test 21s …`); diff file list, each row `path +a −d` expanding hunks in place; leads with the diff (D4.4). Full review → the real ReviewPane (§5.7). | `Approve → <next-phase>` (a, primary) · `Request changes` (r — reveals an inline optional-note input, Enter commits; note rides as loop feedback per D5) · `Take over` (t) |
-| **question** | Question as a quote block; suggested answers as buttons with digit hints lifted from the question; answer input (placeholder "Answer — the phase resumes where it yielded") + Send. Answering resumes the yielded turn — no restart (WHAT-spec §7). | `Take over instead` (t). Digits pick + send a suggestion; `a` focuses the input; Enter sends. |
-| **failed** | Failing check line `✗ go test ./internal/triage — TestParallelDispatch ×3 · genuine`; latest diagnosis as italic quote (`diagnosis #3: "…"`). | `Continue with agent` (t, primary — §8.2) · `Re-enqueue with guidance` (a — requeues with the diagnosis as feedback) · `Discard` (r, danger) |
-| **done** | Checks row; disposition (D3.3): manual view offers merge/PR/discard. After Create PR: PR block (`⎇ PR #214 · branch · open ↗`, `Review comments (N)` + `Discuss this PR` → the run's linked thread, §5.7; M4 rulings D11 amendment). Auto-merge projects show a **receipt** instead: green `✓ Merged automatically · today 06:12` + kv rows merge (`branch → main · fast-forward · sha`), policy ("project opted in; a conflict or dirty base parks for you instead"), undo (`git revert <sha>`). | Manual: `Merge to main` (a, primary) · `Create PR` · `Continue with agent ↗` (t) · `Discard` (r, danger). Auto-merge/PR views: `Continue with agent ↗` only. |
-| **running** | Phase list: `✓ name · duration` (done), `● name · <live activity>` (running), `○ name` (waiting). Retried phases render one row per attempt (`check · attempt 2`); every attempt row with a thread is openable (§5.6). | `Open phase thread` · `Stop this run` (danger, teardown) |
-| **queued** | Digest + queue position. | `Remove from queue` (danger); toast notes automation runs get re-proposed next cycle. |
-| **cancelled** | Receipt `cancelled · worktree kept`. | `Discard worktree` (danger, guarded — §5.8) · `Back` |
-| **resolved (this session)** | Digest + green receipt line ("Approved — routing to docs", "Answered — '<answer>' · the phase resumes its turn", "Re-enqueued with the diagnosis as guidance — position 3", "Merged to main — fast-forward 3af92c1 · worktree cleaned", "Discarded — branch dropped, record kept"). | `Back` (esc) |
+| **gate** | Checks row; diff file list expanding hunks in place; full review → the real ReviewPane (§4.7). | `Approve → <next>` (a, primary) · `Request changes` (r — inline optional note, Enter commits; rides as loop feedback) · `Take over` (t) |
+| **question** | Question quote block; suggested answers as digit-hinted buttons; answer input ("Answer — the phase resumes where it yielded") + Send. | `Take over instead` (t). Digits pick + send; `a` focuses input; Enter sends. |
+| **stuck / failed** | Failing check line; latest diagnosis quote. | `Continue with agent` (t, primary) · `Rerun with guidance` (a — new attempt seeded with the diagnosis as feedback) · `Discard` (r, danger, §4.5) |
+| **paused / interrupted** | Receipt line (`paused by you · yesterday` / `interrupted — the app was restarted`); partial-envelope digest if one was captured. | `Resume` (a, primary — next attempt, same provider thread, continue message) · `Take over` (t) · `Discard` (r, danger, §4.5) |
+| **unit-failed** | The failed unit's row highlighted in the tree; its failing check/diagnosis inline; survivors' states visible above. | `Retry unit` (a, primary) · `Drop unit — join proceeds without it` (recorded in the gate trace) · `Take over unit` (t) · `Discard` (r, danger, §4.5) |
+| **done** | Checks row; disposition block (manual: merge / PR / discard; auto-merge projects show the receipt + policy + undo line). After Create PR: the PR block with `Review comments (N)` + `Discuss this PR` riding the linked thread (§4.7). Outputs block (§4.8). | Manual: `Merge to main` (a, primary) · `Create PR` · `Continue with agent ↗` (t) · `Discard` (r, danger, §4.5). Unbound runs add `Open in thread` (seeds + binds, D17); any run adds `Bind to thread…` in the `⋯` menu. |
+| **running** | The run tree, live. | `Pause` (interrupt in-flight turns → park paused) · `Open phase thread` · `Stop this run` (danger, teardown → cancelled) |
+| **cancelled** | Receipt `cancelled · worktree kept`. | `Discard` (danger, §4.5) · `Back` |
+| **resolved (this session)** | Digest + green receipt ("Approved — routing to docs", "Resumed — the phase continues its session", "Unit dropped — join proceeds over 4 of 5"). | `Back` (esc) |
 
-Merge MUST refuse on conflict/dirty base and park `needs-human(disposition)` — never
-forced, never silent (D3.3).
+Merge MUST refuse on conflict/dirty base and park `needs-human(disposition)`
+— never forced, never silent.
 
-### 5.4 Needs-attention sweep (j/k)
+### 4.4 Needs-attention sweep (j/k)
 
-- **Sweep set:** all parked runs — gate, question, failed, **plus
-  done-awaiting-disposition** (D11 amendment 1) — app-wide (respecting the overview
-  project filter), oldest-parked first, wrapping.
-- While run detail shows a member, `j`/`→`/`↓` steps next, `k`/`←`/`↑` previous; each
-  step retargets the full stack (crumbs follow the new run's workflow). Resolved runs
-  stay in the cycle this session (receipt renders) but are skipped on auto-advance.
-- Acting shows the receipt in place, then (~650ms) auto-advances to the next
-  unresolved member. When none remain, the pane pushes **all-clear**: centered green
-  ✓, "Nothing needs you", summary (`4 resolved — 1 approved · 1 answered · 1 handed
-  off · 1 merged · $11.54 reviewed`), `Back to workflows` (esc → overview).
-- Entry points: amber counts (workflow row, sidebar roll-up) and per-item
-  notifications land inside the sweep with the counter visible.
+Unchanged from rev 1 except the set: all parked runs — every `needs-human`
+reason including paused/interrupted/unit-failed — **plus
+done-awaiting-disposition**, app-wide (respecting the project filter),
+oldest-parked first, wrapping. `j`/`k` step; acting shows the receipt then
+auto-advances (~650ms); exhaustion pushes **all-clear** (centered ✓,
+"Nothing needs you", session summary, `Back` → home). Child-run parks appear
+as their **root** run (one sweep stop per tree); the tree opens at the
+parked node.
 
-### 5.5 Outputs / deliverables (D13)
+### 4.5 Discard — preview is consent (D23)
 
-Runs whose workflow declares outputs render an **Outputs** block above the action row
-on terminal states: named values as kv rows; artifact files as rows opening on click
-— markdown/HTML in the app's preview surface, everything else via the system opener.
-Artifacts come from the per-run artifact store and stay openable after worktree
-discard (D14).
+Discard on any resting run opens a **loss preview** dialog before anything
+is destroyed: one row per worktree in the run's tree (primary,
+sub-worktrees, child worktrees) — `branch · N dirty files · M unmerged
+commits` — and the artifact note ("artifacts already captured survive").
+Confirm tears the tree down through the teardown contract and drops
+run-created branches whose commits never landed; the run record is kept.
+Toast: "Discarded — 3 worktrees removed, record kept". There is no
+un-previewed destructive path anywhere on the surface.
 
-### 5.6 Historical phase threads (D11 amendment 3)
+### 4.6 Historical runs and threads
 
-Run detail for ANY run — live or historical — exposes the thread of every phase
-attempt (completed, failed, superseded retries) via the phase list; clicking opens it
-as a normal thread pane. Thread ids come from the denormalized
-`work_item_phases.thread_id`.
+Any terminal run opens in its historical state; every phase/unit/child
+attempt's thread (completed, failed, superseded) opens from the tree
+(`work_item_phases.thread_id`). History rows on home (§3.2) push the same
+view.
 
-### 5.7 PR follow-ups (M4 rulings D11 amendment)
+### 4.7 PR follow-ups + full review
 
-PR follow-ups become threads — the bespoke send-comments-back-to-the-run loop is
-dropped. The PR block carries two buttons riding the done→thread hand-off
-(`WorkflowOpenTriageThread` machinery, one linked thread per run — reuse, never
-duplicate):
+Unchanged from rev 1: `Review comments (N)` (lazy count, single-flight,
+untrusted quoting) and `Discuss this PR` ride the run's one linked thread;
+"open full review" opens the **real ReviewPane** as a normal pane (overlay
+closes, R3). No parallel diff renderer.
 
-- **`Review comments (N)`** (`wf-pr-review-comments`) — N is the unresolved
-  review-thread count, fetched lazily when the PR block renders (single-flight per
-  item, cached for the pane visit; fetch failure disables the button with the error
-  as its title). Clicking sends the fetched review threads into the run's linked
-  thread as one user message — every forge-sourced string quoted as untrusted data —
-  and lands the user in that thread pane. `(0)` stays actionable: the thread receives
-  the explicit no-unresolved-threads result.
-- **`Discuss this PR`** (`wf-pr-discuss`) — opens/reuses the same linked thread
-  seeded with PR context (title, ref, review decision, check summary) plus the run's
-  intent context (goal + digest), asking the agent to prepare discussion topics.
-  Never includes the diff (hand-off context ruling, F4.4).
+### 4.8 Outputs / deliverables
 
-Both are Local-only in view-only sessions. Any "open full review" affordance (gate
-state, §5.3) still opens the **real ReviewPane** as its own pane — the existing
-review companion (`reviewPane.svelte.ts` → `openCompanion(paneId, 'review')`) with
-the workflows pane as `sourcePaneId`. No parallel diff renderer; the inline gate file
-list (§5.3) stays the lightweight in-place skim.
+Runs whose workflow declares outputs render an **Outputs** block above the
+action row on terminal states: named values as kv rows; artifact files open
+on click — markdown/HTML in the app preview, else the system opener. A call
+phase's outputs render on the child; the root's declared outputs are the
+run's deliverables. Artifacts survive worktree discard.
 
-### 5.8 Discard worktree
+---
 
-Failed/cancelled/done states include a discard affordance wired to the existing
-guarded worktree-removal flow (D4.1 gap 7): drops branch + worktree, keeps the run
-record; artifacts (§5.5) survive. No janitor surface in v1.
+## 5. Intake
+
+### 5.1 New-run dialog
+
+Modal-primitive dialog, unchanged fields except the footer: Project · Goal ·
+Workflow picker (invalid definitions greyed with first error) · Base branch ·
+typed seed inputs as plain fields · step-mode checkbox. Footer: primary
+**`Start`** (the run starts immediately — no position, no prediction) ·
+`Cancel`. Toast: "Started — <workflow> on <project>".
+
+### 5.2 From chat — deleted surface
+
+Rev 1's proposal confirm card (§7.2) and its MCP plumbing are **removed**.
+Agents start runs through the `ao` CLI under normal bash approval (D17); the
+`/workflow` composer command injects the context block on demand. The only
+run-shaped UI in a chat timeline is the **wake message** a bound run
+delivers, which is an ordinary user-role message — no custom card.
 
 ---
 
 ## 6. Sidebar integration
 
-### 6.1 Per-project workflows section
+**One footer button, nothing else.** `WorkflowsFooter.svelte` directly above
+`SettingsFooter.svelte`: icon + "Workflows" + the single global
+needs-attention count (amber, only when > 0). Click toggles the overlay.
+Rev 1's per-project sidebar section (`WorkflowsSection.svelte`) is
+**deleted** — runs are not sidebar citizens.
 
-A new `components/sidebar/WorkflowsSection.svelte`, mounted from `ProjectItem.svelte`
-below the project's thread list; hidden entirely for projects with no workflows and
-no runs.
-
-- **Header row**: chevron + uppercase "Workflows", hint-toned. Right roll-up:
-  collapsed with attention → amber dot + amber count; collapsed without → neutral run
-  count; quiet → hint-toned count only; expanded → none. Click toggles expansion.
-- **Run rows** (expanded): same skeleton/behaviors as `ThreadRow.svelte`; signal
-  vocabulary reuses `threadStatusPill.ts` conventions (dot + label + pulse +
-  `status-glow-warning`) restricted to the two workflow hues: amber "Needs you"
-  (gate/question, pulse + glow), red "Failed". All else typographic: running
-  `2/5 · 14m`, queued `queued` (dim), done `done` (dim); cancelled not listed. Order:
-  needs-you (oldest first), failed, running, queued, done.
-- Row click → workflows pane at that run's detail (§2.2); the row matching the pane's
-  current run gets the active highlight.
-- No drag-to-pane, no context menu in v1 (runs are not threads).
-
-### 6.2 Global footer badge (D11 amendment 3)
-
-A `WorkflowsFooter.svelte` row in `Sidebar.svelte` directly **above**
-`SettingsFooter.svelte`: icon + "Workflows" + the single global needs-attention count
-(amber, only when > 0; none when quiet). Click → workflows pane at overview. Always
-visible — the global entry point.
-
-### 6.3 Thread-list exclusion (new thread modes)
-
-Phase threads (`workflow`), studio threads (`workflow-studio`), and triage threads —
-the D4.9 triage agent AND D4.2/hand-off item triage threads (`workflow-triage`) —
-carry new `threads.mode` values (D7) and MUST NEVER appear in normal thread lists,
-search results, or thread pickers. Exclusion is principled by mode in
-`utils/sidebarTree.ts` / `ProjectThreadList.svelte` / `UnifiedThreadPicker.svelte`,
-never by title convention. They are reachable only from workflow surfaces (§3.1,
-§5.6, §8) and, once open, behave as completely normal thread panes (`Thread.mode`
-union in `types/models.ts` widens accordingly).
+**Thread-list exclusion stands**: phase/unit (`workflow`), studio
+(`workflow-studio`), and triage (`workflow-triage`) threads carry their
+`threads.mode` values and MUST NEVER appear in normal thread lists, search,
+or pickers — excluded by mode in `utils/sidebarTree.ts` /
+`ProjectThreadList.svelte` / `UnifiedThreadPicker.svelte`, never by title.
+Once opened (from the overlay or a wake message reference) they behave as
+completely normal thread panes. **Exception by design**: a thread a run is
+*bound to* (§4.1) is a normal user thread that was never mode-excluded —
+binding never hides a thread.
 
 ---
 
-## 7. Intake
+## 7. OS notifications + deep links
 
-### 7.1 New-run dialog
-
-Opened by `+ New run`. A dialog on the existing Modal primitive
-(`components/primitives/`) — the removed modal (D11 amendment 2) is the *inspection*
-modal; form dialogs follow existing app convention (`AddProjectModal`,
-`ThreadFromPRDialog`). Fields, in order (one run shape from every producer):
-
-1. **Project** — segmented control (dot + name).
-2. **Goal** — multi-line text (`work_items.goal`).
-3. **Workflow** — picker cards: name, chain, meta (`5 phases · 1 human gate`).
-   Definitions failing dry-run validation render greyed-out with their first
-   validation error; selection blocked (D4.1 gap 6).
-4. **Base branch** — text, prefilled from the project profile.
-5. **Typed seed inputs** — the workflow's declared inputs as plain form fields (R2),
-   two-column where they fit: string → text (multi-line → textarea), enum → select,
-   boolean → checkbox, number → number field; `format: path` gets a file-pick
-   affordance. Optional inputs labeled `optional`.
-6. **Pause at every gate** — step-mode checkbox (D4.7), default from the workflow
-   definition (D4.1 gap 4).
-
-Footer: primary `Queue — position N` (predicted) · `Cancel`. Submit toast "Queued —
-position N · starts when a slot frees". Esc closes.
-
-### 7.2 Enqueue from chat (D4.5)
-
-An agent in any interactive thread may propose a run; the proposal renders as a
-**confirm card** in that thread's timeline (never in the workflows pane): heading
-"Queue this run?", one summary line (project dot · project · title · workflow ·
-base), actions `Queue it` (primary) / `Edit` (opens §7.1 prefilled) / `Dismiss`. Chat
-NEVER enqueues silently — the card is the commit point. Chat-queued runs are
-identical queue citizens (`source: agent`).
+- A run entering **`needs-human`** (any typed reason) or **`failed`** fires
+  one OS notification — title = run title, body = the one-line "what it
+  needs". Click → app foreground, overlay at that run's detail, inside the
+  sweep. Thread-bound runs also wake their thread (D17); the notification
+  still fires and the badge stays authoritative.
+- `done` / `running` never notify. Rev 1's coalesced drain summary is
+  **deleted** with the queue.
+- Child runs never notify (D18) — the root run carries the tree's attention.
 
 ---
 
-## 8. Thread break-outs
+## 8. Keyboard bindings
 
-### 8.1 Phase thread (watch/steer)
-
-Opening a phase thread (§5.3 running, §5.6 historical) opens a normal thread pane —
-same status pill, tool rows, composer; zero workflow-flavored chrome. Watching is
-passive; sending a message takes over the turn (WHAT-spec §7). Take-over from a
-gate/question action row does the same and toasts the mechanic ("Turn interrupted —
-the review thread is yours to steer").
-
-### 8.2 Hand-off ("Continue with agent")
-
-One click on failed/done creates a triage thread (mode `workflow-triage`) in the
-run's worktree, pre-seeded with run record, envelopes, diff, and typed reason (D4.2)
-— surfaced as a single context chip (`⛁ flaky-test-hunt — run record · diff · 3
-diagnoses`), never raw internals (R2). The seeded kickoff message sends immediately;
-the agent starts; the thread opens as a new focused thread pane. The run resolves in
-place: "Continuing with agent — thread opened in the run's worktree". The triage
-agent (D4.9) can spawn the same threads from conversation; they surface as openable
-cards in its chat.
-
----
-
-## 9. Keyboard bindings
-
-Registered through the existing keybinding/command registries, scoped to the focused
-workflows pane; suppressed while any text field has focus (Esc blurs the field
-first).
+Registered through the existing keybinding/command registries, scoped to the
+open overlay; suppressed while a text field has focus.
 
 | Key | Context | Action |
 |---|---|---|
-| `Esc` | any depth | disarm confirm → close dialog → pop one level (no-op at overview; never closes the pane) |
-| `Backspace` | any depth | pop one level |
-| `j` / `→` / `↓` | run detail, parked set | next needs-attention run (wraps) |
-| `k` / `←` / `↑` | run detail, parked set | previous needs-attention run (wraps) |
-| `a` | gate | approve → next phase |
-| `a` | question | focus the answer input |
-| `a` | failed | re-enqueue with guidance |
-| `a` | done (manual) | merge to main |
-| `r` | gate | request changes (reveal note input; Enter commits) |
-| `r` | failed / done | discard |
-| `t` | gate / question | take over the phase thread |
-| `t` | failed / done | continue with agent (hand-off) |
+| `Esc` | run detail | disarm confirm → close dialog → back to home |
+| `Esc` | home | close the overlay |
+| `Backspace` | run detail | back to home |
+| `j`/`→`/`↓` · `k`/`←`/`↑` | run detail, parked set | next / previous needs-attention run (wraps) |
+| `a` | gate / question / failed / paused / unit-failed / done | primary action (approve / focus answer / rerun / resume / retry unit / merge) |
+| `r` | gate / failed / done / paused | request changes / discard (opens the §4.5 preview) |
+| `t` | any parked state | thread action (take over / continue with agent) |
 | `1`–`9` | question | pick + send the nth suggested answer |
-| `Enter` | gate | toggle the first diff file's hunks |
-| `Enter` | question input focused | send the answer |
-| `Ctrl/Cmd+W` | pane focused | close the workflows pane (standard pane close) |
+| `Enter` | gate / question input | toggle first diff file / send answer |
 
 ---
 
-## 10. OS notifications + deep links
+## 9. Empty + quiet states
 
-- **Per-item**: a run entering `needs-human` (any typed reason) or `failed` fires one
-  OS notification — title = run title, body = the one-line "what it needs". Click →
-  app foreground, workflows pane at that run's detail, inside the sweep.
-- **Coalesced drain summary** (D3.1): on drain-to-empty and on pause — one
-  notification summarizing outcomes ("4 finished · 2 need you · 1 failed"). Click →
-  the **triage agent** thread pane (D4.9).
-- Done-awaiting-disposition alone does NOT notify (R1); it rides the drain summary.
-
----
-
-## 11. Empty + quiet states
-
-- **Quiet sidebar** (nothing needs anyone): each project's workflows section
-  collapses to the single hint-toned header line with a neutral count — no color, no
-  badge; the footer badge shows no count. The normal-view test: workflows are
-  invisible until they have a reason not to be.
-- Overview with no workflows → §3.4 empty state. No live runs → `no live runs` hint.
-  No queued or running runs in any project → Queues hidden (§3.3). Sweep entered
-  empty → all-clear directly.
+- Nothing defined anywhere → single empty state: short line + `+ New
+  workflow`. A project with definitions but no runs → its Workflows list
+  only. No parked runs → footer badge shows no count; sweep entered empty →
+  all-clear directly.
+- The normal-view test stands: **workflows are invisible until they have a
+  reason not to be** — a quiet system is one footer row.
 
 ---
 
-## 12. Remote posture (v1)
+## 10. Remote posture
 
-Remote browsers get **view-only** workflows (D4.1 gap 5): all levels render; every
-mutating affordance (queue toggle, reorder, intake, action rows, notes editing, Run
-now, enable/disable, discard) is disabled with tooltip "Local only". Mutation RPCs
-classify `LocalOnlyMethods` in `internal/transport/internalmethods.go`. Remote
-gate-approval is explicitly not v1.
-
----
-
-## 13. Non-goals (normative)
-
-- NO variables / envelope / JSON / schema / gate-trace rendering on any human-facing
-  surface — those exist for agents (studio, triage, `ao` CLI).
-- NO kanban board page or global work surface — the overview pane is the only
-  aggregate view.
-- NO inspection modal / slide-over — resolution lives in run detail (D11
-  amendment 2). Form dialogs per §7.1 are permitted.
-- NO workflow-settings forms beyond §4.1's toggle/Run-now and notes — everything
-  richer is studio-agent work over files.
-- NO silent enqueue from chat (confirm card always).
-- NO remote mutation of any kind (view-only v1).
+Remote browsers get **view-only** workflows: the overlay renders fully;
+every mutating affordance (pause-all, intake, action rows, notes, Run now,
+enable/disable, discard, bind) is disabled with tooltip "Local only".
+Mutation RPCs classify `LocalOnlyMethods` in
+`internal/transport/internalmethods.go`. Remote gate-approval is explicitly
+out.
 
 ---
 
-## 14. Log-over-mockup divergences applied
+## 11. Non-goals (normative)
 
-1. History rows open historical run detail with openable phase-attempt threads (D11
-   amendment 3); the mockup rendered them inert.
-2. Global sidebar footer badge (D11 amendment 3); absent from the mockup.
-3. Outputs/deliverables block in run detail (D13); absent from the mockup.
-4. Discard-worktree on cancelled/failed (D4.1 gap 7); mockup showed "worktree kept"
-   with no action.
-5. Step-mode checkbox + greyed-out invalid workflows in intake (D4.1 gaps 4/6);
-   absent from the mockup.
-6. `+ New workflow`, Edit-in-studio, triage-agent entry, automation enable/disable +
-   Run now (D4.1 gaps 1–3); absent from the mockup.
-7. The hand-off triage thread does NOT appear in the normal thread list (D4.1
-   amendment); the mockup showed it as a normal sidebar thread row.
-8. Gate "Request changes" collects an optional feedback note (D5); the mockup
-   rejected without one.
+- NO variables / envelope / JSON / schema / gate-trace rendering on any
+  human surface — those exist for agents (studio, triage, `ao` CLI).
+- NO queue surfaces: no toggle, no Queues section, no drag priority, no
+  position predictions, no drain summaries.
+- NO workflows pane, NO per-project sidebar section, NO pane-kind or
+  pane-persistence integration — the overlay is the only surface and panes
+  never unmount beneath it.
+- NO chat proposal cards — agents use the CLI; the wake message is a plain
+  message.
+- NO kanban / global work board; NO inspection modal; NO workflow-settings
+  forms beyond enable/disable + Run now + notes (everything richer is studio
+  work over files).
+- NO un-previewed destructive action (§4.5).
+- NO remote mutation of any kind.
 
-## 15. Integration point map
+---
+
+## 12. Integration point map
 
 | Concern | Where |
 |---|---|
-| Pane kind + layout | `stores/paneLayout.svelte.ts` (`PaneLayoutKind` + `'workflows'`), `components/panes/PaneHost.svelte` mount branch |
-| Pane persistence | `stores/paneLayoutPersistence.ts` (kind + stack snapshot) |
-| Navigation/store | new `stores/workflowsPane.svelte.ts` |
-| Events / RPC | new `stores/eventsWorkflow.ts` via `events.ts`; `stores/bindings.ts`; typed `workflow:*` channel (D7) |
-| Sidebar section | new `components/sidebar/WorkflowsSection.svelte` from `ProjectItem.svelte`; pill/glow conventions from `utils/threadStatusPill.ts` |
-| Footer badge | new `components/sidebar/WorkflowsFooter.svelte` in `Sidebar.svelte`, above `SettingsFooter.svelte` |
-| Thread exclusion | `Thread.mode` union (`types/models.ts`), `utils/sidebarTree.ts`, `components/sidebar/ProjectThreadList.svelte`, `components/palette/UnifiedThreadPicker.svelte` |
-| PR review | `stores/reviewPane.svelte.ts` + `stores/companionPanes.svelte.ts` (`openCompanion(workflowsPaneId, 'review')`) |
-| Keyboard | `stores/keybindings.svelte.ts`, `stores/commandRegistry.svelte.ts` (pane-scoped, palette-target rules apply) |
-| Intake dialog | `components/primitives/` Modal shell, sibling to `AddProjectModal.svelte` |
+| Overlay frame | new `components/workflows/WorkflowsOverlay.svelte`, mounted in `App.svelte` as a sibling of `<PaneHost>` (never via `globalSurface`) |
+| Navigation/store | new `stores/workflowsOverlay.svelte.ts` (stack, filter, sweep cursor; session + restart persistence via app storage) |
+| Events / RPC | `stores/eventsWorkflow.ts` via `events.ts`; `stores/bindings.ts`; typed `workflow:*` channel |
+| Run detail content | reuse rev-1 components where they survive: `WorkflowRunDetail` / `WorkflowDiff` / `WorkflowOutputs` / `WorkflowFailureEvidence` / `WorkflowJobNotes` (adapted into the overlay; pane framing stripped) |
+| Footer button | `components/sidebar/WorkflowsFooter.svelte` in `Sidebar.svelte`, above `SettingsFooter.svelte` |
+| Thread exclusion | `Thread.mode` union (`types/models.ts`), `utils/sidebarTree.ts`, `ProjectThreadList.svelte`, `UnifiedThreadPicker.svelte` |
+| PR review | `stores/reviewPane.svelte.ts` companion flow (overlay closes; ReviewPane opens as a pane) |
+| `/workflow` command | composer command registry (`stores/builtinCommands.svelte.ts`) + a Go RPC returning the context block |
+| Keyboard | `stores/keybindings.svelte.ts`, `stores/commandRegistry.svelte.ts` (overlay-scoped) |
+| Intake dialog | `components/primitives/` Modal shell |
 | Toasts | `stores/toast.svelte.ts` |
+
+**Deleted with rev 2** (remove, don't orphan): the `'workflows'`
+`PaneLayoutKind` + PaneHost mount branch + pane persistence entries,
+`stores/workflowsPane.svelte.ts`, `stores/workflowsSidebar.svelte.ts`,
+`WorkflowsSection.svelte` + sidebar wiring, `WorkflowsPane.svelte` and the
+pane-stack chrome (`WorkflowOverview*`, `WorkflowQueue*`, breadcrumbs), the
+intake queue-position footer, the proposal-card component + its
+`workflow_proposal` item rendering, deep-link pane machinery, and their
+tests/e2e specs (replaced by overlay equivalents).

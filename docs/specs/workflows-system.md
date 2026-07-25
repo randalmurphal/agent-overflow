@@ -203,7 +203,11 @@ referenced resource is bindable by ≥1 project profile; every variable
 reference resolves; every `over:` reference names an array-typed variable.**
 Each failure **names the offending element** ("gate G routes to phase X, which
 does not exist"), so a miswired workflow fails fast with a precise message
-instead of mid-run.
+instead of mid-run. The dry-run also **reports** (informational, not a
+failure) a static fan-out wider than a binding profile's provider capacity —
+the run would throttle to capacity (§6), and you should learn that from
+validation, not from watching units wait. A dynamic `over:` width is a runtime
+fact; its throttling surfaces as waiting-on markers in run detail (§10).
 
 **Validation principle (anti-theater).** Deterministic project checks play two
 roles: (a) the agent is **given them to validate its own changes as it
@@ -378,9 +382,11 @@ level, on resources**:
 - **Workflow declares needs; the project profile declares capacities.**
   `live-stack` capacity 1 is an environment fact for a project, not part of
   the workflow — a workflow stays portable across projects. **Capacities are
-  per-project instances**: the same resource name in two projects never
-  contends (an app-wide global resource is a possible later addition, not
-  now).
+  read live at each acquisition** — editing `profile.yaml` (including the
+  `provider:<name>` limits) takes effect on the next phase/unit start, no
+  restart, no re-run. **Capacities are per-project instances**: the same
+  resource name in two projects never contends (an app-wide global resource
+  is a possible later addition, not now).
 - (Impl note) multi-resource acquisition uses a canonical order /
   all-or-nothing to avoid deadlock; freed capacity goes to the longest-waiting
   phase.
@@ -666,10 +672,12 @@ them.
   join is a **tool phase that git-merges unit branches into the item's
   branch**, emitting typed outputs (`clean`, `conflicts[]`, check results).
   Its gate routes conflicts to a **resolution agent phase** (write access,
-  conflict state in its variables) and loops bounded (§4), then parks. Shared
-  registries (a lockfile, a divergence log) that every unit would touch are
-  declared join-owned: units emit their entries as envelope outputs; the join
-  applies them — the one structural conflict-avoidance rule worth having.
+  conflict state in its variables) and loops bounded (§4), then parks.
+  Conflict handling is **agentic by design**: there is deliberately no
+  declared path-ownership metadata, no per-file no-touch lists (enumerating
+  what units must avoid is unmaintainable and rots into active harm). The
+  merge is attempted deterministically, conflicts arrive typed, and an agent
+  resolves them with the full conflict state — bounded, then human.
 
 **The system never merges silently** (rev 1's "the join never git-merges"
 relaxes to this): every merge is an explicit tool phase whose result is typed,
