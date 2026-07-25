@@ -2417,6 +2417,267 @@ export class VerifyEditDiffsResult {
 }
 
 /**
+ * WorkflowAgentNotesResult is `ao notes set`.
+ */
+export class WorkflowAgentNotesResult {
+    "automationId": string;
+    "skipped"?: boolean;
+
+    /** Creates a new WorkflowAgentNotesResult instance. */
+    constructor($$source: Partial<WorkflowAgentNotesResult> = {}) {
+        if (!("automationId" in $$source)) {
+            this["automationId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentNotesResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentNotesResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentNotesResult($$parsedSource as Partial<WorkflowAgentNotesResult>);
+    }
+}
+
+/**
+ * WorkflowAgentRunOutputs is `ao run output`: the run's declared outputs plus
+ * the artifact file names it produced.
+ */
+export class WorkflowAgentRunOutputs {
+    "itemId": string;
+    "state": string;
+    "reason"?: string;
+    "resting": boolean;
+    "outputs": { [_ in string]?: any };
+    "artifacts": string[];
+
+    /** Creates a new WorkflowAgentRunOutputs instance. */
+    constructor($$source: Partial<WorkflowAgentRunOutputs> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("resting" in $$source)) {
+            this["resting"] = false;
+        }
+        if (!("outputs" in $$source)) {
+            this["outputs"] = {};
+        }
+        if (!("artifacts" in $$source)) {
+            this["artifacts"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentRunOutputs instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentRunOutputs {
+        const $$createField4_0 = $$createType42;
+        const $$createField5_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("outputs" in $$parsedSource) {
+            $$parsedSource["outputs"] = $$createField4_0($$parsedSource["outputs"]);
+        }
+        if ("artifacts" in $$parsedSource) {
+            $$parsedSource["artifacts"] = $$createField5_0($$parsedSource["artifacts"]);
+        }
+        return new WorkflowAgentRunOutputs($$parsedSource as Partial<WorkflowAgentRunOutputs>);
+    }
+}
+
+/**
+ * WorkflowAgentRunView is the compact run projection `ao run status` and
+ * `ao run list` render. It deliberately excludes envelopes, snapshots, and
+ * worktree paths: an agent asking "where is this run" does not need a run's
+ * whole history crossing into its context.
+ */
+export class WorkflowAgentRunView {
+    "itemId": string;
+    "workflowId": string;
+    "goal": string;
+    "state": string;
+    "reason"?: string;
+    "currentPhaseId"?: string;
+    "currentPhaseOrdinal"?: number;
+    "phaseCount"?: number;
+    "parentItemId"?: string;
+    "resting": boolean;
+    "startedAt"?: number;
+    "endedAt"?: number;
+
+    /** Creates a new WorkflowAgentRunView instance. */
+    constructor($$source: Partial<WorkflowAgentRunView> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("workflowId" in $$source)) {
+            this["workflowId"] = "";
+        }
+        if (!("goal" in $$source)) {
+            this["goal"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("resting" in $$source)) {
+            this["resting"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentRunView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentRunView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentRunView($$parsedSource as Partial<WorkflowAgentRunView>);
+    }
+}
+
+/**
+ * WorkflowAgentScheduleInput is `ao schedule`.
+ */
+export class WorkflowAgentScheduleInput {
+    "workflowId": string;
+    "scope"?: string;
+    "name"?: string;
+    "cron": string;
+    "seeds"?: json$0.RawMessage;
+
+    /** Creates a new WorkflowAgentScheduleInput instance. */
+    constructor($$source: Partial<WorkflowAgentScheduleInput> = {}) {
+        if (!("workflowId" in $$source)) {
+            this["workflowId"] = "";
+        }
+        if (!("cron" in $$source)) {
+            this["cron"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentScheduleInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentScheduleInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentScheduleInput($$parsedSource as Partial<WorkflowAgentScheduleInput>);
+    }
+}
+
+/**
+ * WorkflowAgentScheduleResult names the automation, skipped on a replay.
+ */
+export class WorkflowAgentScheduleResult {
+    "automationId": string;
+    "name": string;
+    "cron": string;
+    "skipped"?: boolean;
+
+    /** Creates a new WorkflowAgentScheduleResult instance. */
+    constructor($$source: Partial<WorkflowAgentScheduleResult> = {}) {
+        if (!("automationId" in $$source)) {
+            this["automationId"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("cron" in $$source)) {
+            this["cron"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentScheduleResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentScheduleResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentScheduleResult($$parsedSource as Partial<WorkflowAgentScheduleResult>);
+    }
+}
+
+/**
+ * WorkflowAgentStartInput is `ao run start`. Scope is optional — omitted, the
+ * workflow id resolves by §8 precedence (project scope wins over shared),
+ * exactly as a call phase's static target does.
+ */
+export class WorkflowAgentStartInput {
+    "workflowId": string;
+    "scope"?: string;
+    "goal"?: string;
+    "seeds"?: json$0.RawMessage;
+    "baseBranch"?: string;
+    "stepMode"?: boolean;
+
+    /** Creates a new WorkflowAgentStartInput instance. */
+    constructor($$source: Partial<WorkflowAgentStartInput> = {}) {
+        if (!("workflowId" in $$source)) {
+            this["workflowId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentStartInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentStartInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentStartInput($$parsedSource as Partial<WorkflowAgentStartInput>);
+    }
+}
+
+/**
+ * WorkflowAgentStartResult is what `ao run start` prints. Skipped marks a
+ * surface-and-skip replay: the phase asked for something it had already done,
+ * so nothing new started and ItemID names the original run.
+ */
+export class WorkflowAgentStartResult {
+    "itemId": string;
+    "workflowId": string;
+    "workflowScope": string;
+    "state": string;
+    "skipped"?: boolean;
+    "boundThreadId"?: string;
+    "bindingWarning"?: string;
+
+    /** Creates a new WorkflowAgentStartResult instance. */
+    constructor($$source: Partial<WorkflowAgentStartResult> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("workflowId" in $$source)) {
+            this["workflowId"] = "";
+        }
+        if (!("workflowScope" in $$source)) {
+            this["workflowScope"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAgentStartResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAgentStartResult {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAgentStartResult($$parsedSource as Partial<WorkflowAgentStartResult>);
+    }
+}
+
+/**
  * WorkflowArtifact is one app-managed file deliverable copied from a phase
  * workspace. Files are discovered from the deterministic per-item directory.
  */
@@ -2609,7 +2870,7 @@ export class WorkflowDefinitionCatalog {
      * Creates a new WorkflowDefinitionCatalog instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionCatalog {
-        const $$createField1_0 = $$createType43;
+        const $$createField1_0 = $$createType44;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("workflows" in $$parsedSource) {
             $$parsedSource["workflows"] = $$createField1_0($$parsedSource["workflows"]);
@@ -2646,7 +2907,7 @@ export class WorkflowDefinitionInput {
      * Creates a new WorkflowDefinitionInput instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionInput {
-        const $$createField3_0 = $$createType44;
+        const $$createField3_0 = $$createType45;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("enum" in $$parsedSource) {
             $$parsedSource["enum"] = $$createField3_0($$parsedSource["enum"]);
@@ -2708,8 +2969,8 @@ export class WorkflowDefinitionListing {
      * Creates a new WorkflowDefinitionListing instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionListing {
-        const $$createField5_0 = $$createType46;
-        const $$createField6_0 = $$createType48;
+        const $$createField5_0 = $$createType47;
+        const $$createField6_0 = $$createType49;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField5_0($$parsedSource["phases"]);
@@ -2787,7 +3048,7 @@ export class WorkflowDiscardPreview {
     static createFrom($$source: any = {}): WorkflowDiscardPreview {
         const $$createField1_0 = $$createType4;
         const $$createField2_0 = $$createType4;
-        const $$createField3_0 = $$createType50;
+        const $$createField3_0 = $$createType51;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("members" in $$parsedSource) {
             $$parsedSource["members"] = $$createField1_0($$parsedSource["members"]);
@@ -2956,7 +3217,7 @@ export class WorkflowDiscardWorktree {
      */
     static createFrom($$source: any = {}): WorkflowDiscardWorktree {
         const $$createField7_0 = $$createType4;
-        const $$createField9_0 = $$createType52;
+        const $$createField9_0 = $$createType53;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("dirtyFiles" in $$parsedSource) {
             $$parsedSource["dirtyFiles"] = $$createField7_0($$parsedSource["dirtyFiles"]);
@@ -3004,7 +3265,7 @@ export class WorkflowDispositionReceipt {
      * Creates a new WorkflowDispositionReceipt instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDispositionReceipt {
-        const $$createField6_0 = $$createType54;
+        const $$createField6_0 = $$createType55;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("discarded" in $$parsedSource) {
             $$parsedSource["discarded"] = $$createField6_0($$parsedSource["discarded"]);
@@ -3115,12 +3376,12 @@ export class WorkflowItemDetailView {
      * Creates a new WorkflowItemDetailView instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowItemDetailView {
-        const $$createField0_0 = $$createType55;
+        const $$createField0_0 = $$createType56;
         const $$createField1_0 = $$createType4;
-        const $$createField2_0 = $$createType57;
-        const $$createField3_0 = $$createType59;
-        const $$createField4_0 = $$createType61;
-        const $$createField5_0 = $$createType62;
+        const $$createField2_0 = $$createType58;
+        const $$createField3_0 = $$createType60;
+        const $$createField4_0 = $$createType62;
+        const $$createField5_0 = $$createType42;
         const $$createField6_0 = $$createType64;
         const $$createField7_0 = $$createType65;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
@@ -3537,27 +3798,27 @@ const $$createType38 = LiveStateTodo.createFrom;
 const $$createType39 = $Create.Nullable($$createType38);
 const $$createType40 = EditDiffVerifyFile.createFrom;
 const $$createType41 = $Create.Array($$createType40);
-const $$createType42 = WorkflowDefinitionListing.createFrom;
-const $$createType43 = $Create.Array($$createType42);
-const $$createType44 = $Create.Array($Create.Any);
-const $$createType45 = WorkflowDefinitionPhase.createFrom;
-const $$createType46 = $Create.Array($$createType45);
-const $$createType47 = WorkflowDefinitionInput.createFrom;
-const $$createType48 = $Create.Array($$createType47);
-const $$createType49 = WorkflowDiscardWorktree.createFrom;
-const $$createType50 = $Create.Array($$createType49);
-const $$createType51 = gitdiff$0.Commit.createFrom;
-const $$createType52 = $Create.Array($$createType51);
-const $$createType53 = WorkflowDiscardResult.createFrom;
-const $$createType54 = $Create.Nullable($$createType53);
-const $$createType55 = WorkflowItemView.createFrom;
-const $$createType56 = WorkflowItemPhaseView.createFrom;
-const $$createType57 = $Create.Array($$createType56);
-const $$createType58 = WorkflowItemUnitView.createFrom;
-const $$createType59 = $Create.Array($$createType58);
-const $$createType60 = WorkflowItemChildView.createFrom;
-const $$createType61 = $Create.Array($$createType60);
-const $$createType62 = $Create.Map($Create.Any, $Create.Any);
+const $$createType42 = $Create.Map($Create.Any, $Create.Any);
+const $$createType43 = WorkflowDefinitionListing.createFrom;
+const $$createType44 = $Create.Array($$createType43);
+const $$createType45 = $Create.Array($Create.Any);
+const $$createType46 = WorkflowDefinitionPhase.createFrom;
+const $$createType47 = $Create.Array($$createType46);
+const $$createType48 = WorkflowDefinitionInput.createFrom;
+const $$createType49 = $Create.Array($$createType48);
+const $$createType50 = WorkflowDiscardWorktree.createFrom;
+const $$createType51 = $Create.Array($$createType50);
+const $$createType52 = gitdiff$0.Commit.createFrom;
+const $$createType53 = $Create.Array($$createType52);
+const $$createType54 = WorkflowDiscardResult.createFrom;
+const $$createType55 = $Create.Nullable($$createType54);
+const $$createType56 = WorkflowItemView.createFrom;
+const $$createType57 = WorkflowItemPhaseView.createFrom;
+const $$createType58 = $Create.Array($$createType57);
+const $$createType59 = WorkflowItemUnitView.createFrom;
+const $$createType60 = $Create.Array($$createType59);
+const $$createType61 = WorkflowItemChildView.createFrom;
+const $$createType62 = $Create.Array($$createType61);
 const $$createType63 = WorkflowArtifact.createFrom;
 const $$createType64 = $Create.Array($$createType63);
 const $$createType65 = store$0.WorkItemUsage.createFrom;

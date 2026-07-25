@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -159,8 +160,9 @@ func (a *App) WorkflowListItemCosts(projectID string) (map[string]float64, error
 }
 
 // WorkflowRerunItem starts a failed run's last phase again immediately,
-// carrying its latest diagnosis as guidance for the new attempt.
-func (a *App) WorkflowRerunItem(itemID string) error {
+// carrying its latest diagnosis, plus the caller's optional guidance, into the
+// new attempt.
+func (a *App) WorkflowRerunItem(ctx context.Context, itemID, guidance string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return err
@@ -169,5 +171,8 @@ func (a *App) WorkflowRerunItem(itemID string) error {
 	if itemID == "" {
 		return fmt.Errorf("rerun workflow item: item id is required")
 	}
-	return workflowEngine.RerunFailed(itemID)
+	if err := a.authorizeScopedRunAction(ctx, itemID, "rerun workflow run"); err != nil {
+		return err
+	}
+	return workflowEngine.RerunFailed(itemID, guidance)
 }

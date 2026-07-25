@@ -47,6 +47,19 @@ headless, isolated data dir, mocked providers. Full harness guide:
   minute, so tick arithmetic is unit-tested against a fake clock in
   `internal/workflow/scheduler` instead of costing a minute of wall clock per
   assertion.
+- `tests/workflows-cli.spec.ts` — the `ao` execution surface (§5, D15/D17) driven
+  by the REAL `bin/ao` binary as a subprocess: an interactive session starting a
+  run that binds to its thread, `run wait` / `run output` / `run list`, one-shot
+  `run start --wait`, and the credential dying with its session. Then a phase
+  holding `grants: [start-run, introspect]` starting a child run, the identical
+  call surfacing the prior start instead of firing twice, a row-level refusal on
+  a run it did not start, a typed `grant_required` refusal for `ao schedule`, and
+  `ListThreads` coming back `method_not_found` for a scoped token. The mock
+  provider has no exec step and cannot shell out, so the spec reads the AO_*
+  environment of a LIVE session via `HarnessSessionEnv` (a read of the token
+  registry, never a mint) and spawns `ao` with exactly that env — everything past
+  the process boundary is production code. Requires `bin/ao`; `make e2e` builds
+  it.
 - `tests/workflows-helpers.ts` — shared workflow seeds, mock-provider scenarios,
   direct start (`WorkflowStartRun`), the global-pause switch, state waits,
   result envelopes, and compact workflow definitions.

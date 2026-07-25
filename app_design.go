@@ -56,7 +56,6 @@ type designSessionConfig struct {
 	Prompt          string
 	MCPServers      map[string]any
 	MergeMCPServers bool
-	WorkflowChatMCP bool
 }
 
 // designSessionConfig is split into two phases so the watcher + MCP

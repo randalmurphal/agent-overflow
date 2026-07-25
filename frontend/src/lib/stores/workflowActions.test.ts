@@ -43,7 +43,7 @@ describe('workflow action dispatch', () => {
     const deps = bindings();
     const failed = { id: 'run', projectId: 'p' } as WorkItem;
     const receipt = await dispatchWorkflowAction(failed, { kind: 'rerun' }, 2, deps);
-    expect(deps.rerunItem).toHaveBeenCalledWith('run');
+    expect(deps.rerunItem).toHaveBeenCalledWith('run', '');
     expect(receipt?.kind).toBe('restarted');
     expect(receipt?.message).toBe('Restarted with the diagnosis as guidance');
   });

@@ -22,43 +22,63 @@ const (
 	exitError    = 2
 )
 
-// Run executes one ao command and returns its process exit code.
+// Run executes one ao command and returns its process exit code. Environment
+// lookup is injected so the execution commands are testable without mutating
+// process state; os.LookupEnv is the production reader.
 func Run(args []string, stdout, stderr io.Writer) int {
+	return RunWithEnv(args, os.LookupEnv, stdout, stderr)
+}
+
+// RunWithEnv is Run against a supplied environment.
+func RunWithEnv(args []string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 	root := flag.NewFlagSet("ao", flag.ContinueOnError)
 	root.SetOutput(io.Discard)
 	configRoot := root.String("config-root", "", "override the Agent Overflow config root")
 	if err := root.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			if writeErr := writeRootUsage(stdout); writeErr != nil {
+			if writeErr := writeOutput(stdout, rootUsage); writeErr != nil {
 				return operationalError(stderr, writeErr)
 			}
 			return exitOK
 		}
 		fmt.Fprintf(stderr, "ao: %v\n", err)
-		_ = writeRootUsage(stderr)
+		_ = writeOutput(stderr, rootUsage)
 		return exitError
 	}
 
 	rest := root.Args()
 	if len(rest) == 0 {
-		_ = writeRootUsage(stderr)
+		_ = writeOutput(stderr, rootUsage)
 		return exitError
 	}
-	if rest[0] != "workflow" {
+	switch rest[0] {
+	case "help":
+		if err := writeOutput(stdout, rootUsage); err != nil {
+			return operationalError(stderr, err)
+		}
+		return exitOK
+	case "workflow":
+		return runWorkflow(rest[1:], *configRoot, stdout, stderr)
+	case "run":
+		return runCommand(rest[1:], lookupEnv, stdout, stderr)
+	case "notes":
+		return notesCommand(rest[1:], lookupEnv, stdout, stderr)
+	case "schedule":
+		return scheduleCommand.run(rest[1:], lookupEnv, stdout, stderr)
+	default:
 		fmt.Fprintf(stderr, "ao: unknown command %q\n", rest[0])
-		_ = writeRootUsage(stderr)
+		_ = writeOutput(stderr, rootUsage)
 		return exitError
 	}
-	return runWorkflow(rest[1:], *configRoot, stdout, stderr)
 }
 
 func runWorkflow(args []string, configRoot string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_ = writeWorkflowUsage(stderr)
+		_ = writeOutput(stderr, workflowUsage)
 		return exitError
 	}
 	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		if err := writeWorkflowUsage(stdout); err != nil {
+		if err := writeOutput(stdout, workflowUsage); err != nil {
 			return operationalError(stderr, err)
 		}
 		return exitOK
@@ -70,11 +90,39 @@ func runWorkflow(args []string, configRoot string, stdout, stderr io.Writer) int
 		return runValidate(args[1:], configRoot, stdout, stderr)
 	case "list":
 		return runList(args[1:], configRoot, stdout, stderr)
+	case "schema":
+		return runSchema(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "ao workflow: unknown command %q\n", args[0])
-		_ = writeWorkflowUsage(stderr)
+		_ = writeOutput(stderr, workflowUsage)
 		return exitError
 	}
+}
+
+// runSchema prints the embedded authoring schema. It takes no flags and no
+// config root: the schema is a property of the binary, not of an installation.
+func runSchema(args []string, stdout, stderr io.Writer) int {
+	for _, arg := range args {
+		if arg == "help" || arg == "--help" || arg == "-h" {
+			if err := writeOutput(stdout, schemaUsage); err != nil {
+				return operationalError(stderr, err)
+			}
+			return exitOK
+		}
+	}
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "ao workflow schema: unexpected arguments")
+		_ = writeOutput(stderr, schemaUsage)
+		return exitError
+	}
+	schema := def.AuthoringSchema()
+	if len(schema) == 0 || schema[len(schema)-1] != '\n' {
+		schema = append(schema, '\n')
+	}
+	if err := writeOutput(stdout, string(schema)); err != nil {
+		return operationalError(stderr, err)
+	}
+	return exitOK
 }
 
 func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Writer) int {
@@ -84,19 +132,19 @@ func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Wr
 	id := flags.String("id", "", "resolve and validate a workflow by id")
 	projectSlug := flags.String("project", "", "include workflows for the project slug")
 	jsonOutput := flags.Bool("json", false, "write the typed validation result as JSON")
-	if err := flags.Parse(args); err != nil {
+	paths, err := parsePermuted(flags, args)
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			if writeErr := writeValidateUsage(stdout); writeErr != nil {
+			if writeErr := writeOutput(stdout, validateUsage); writeErr != nil {
 				return operationalError(stderr, writeErr)
 			}
 			return exitOK
 		}
 		fmt.Fprintf(stderr, "ao workflow validate: %v\n", err)
-		_ = writeValidateUsage(stderr)
+		_ = writeOutput(stderr, validateUsage)
 		return exitError
 	}
 
-	paths := flags.Args()
 	if (*id == "" && len(paths) != 1) || (*id != "" && len(paths) != 0) {
 		fmt.Fprintln(stderr, "ao workflow validate: provide exactly one path or --id <id>")
 		return exitError
@@ -194,13 +242,13 @@ func runList(args []string, inheritedConfigRoot string, stdout, stderr io.Writer
 	jsonOutput := flags.Bool("json", false, "write the resolved workflow list as JSON")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			if writeErr := writeListUsage(stdout); writeErr != nil {
+			if writeErr := writeOutput(stdout, listUsage); writeErr != nil {
 				return operationalError(stderr, writeErr)
 			}
 			return exitOK
 		}
 		fmt.Fprintf(stderr, "ao workflow list: %v\n", err)
-		_ = writeListUsage(stderr)
+		_ = writeOutput(stderr, listUsage)
 		return exitError
 	}
 	if flags.NArg() != 0 {
@@ -287,6 +335,19 @@ func configuredSources(configRoot, projectSlug string) ([]def.Source, error) {
 		sources = append(sources, source)
 	}
 	return sources, nil
+}
+
+// WorkflowSourceDirs names the two directories workflow definitions are read
+// from, whether or not they exist yet. Callers that only want to tell a human
+// where definitions go use this; callers that want the definitions themselves
+// use ResolveConfigured, which skips absent directories. The project directory
+// is empty when there is no project.
+func WorkflowSourceDirs(configRoot, projectSlug string) (shared, projectDir string) {
+	shared = filepath.Join(configRoot, "workflows")
+	if projectSlug != "" {
+		projectDir = filepath.Join(project.ConfigDir(configRoot, projectSlug), "workflows")
+	}
+	return shared, projectDir
 }
 
 // ResolveConfigured returns workflows from the same shared/project discovery
@@ -425,20 +486,4 @@ func writeOutput(output io.Writer, value string) error {
 func operationalError(stderr io.Writer, err error) int {
 	fmt.Fprintf(stderr, "ao: %v\n", err)
 	return exitError
-}
-
-func writeRootUsage(output io.Writer) error {
-	return writeOutput(output, "Usage: ao [--config-root <path>] workflow <command> [options]\n\nCommands:\n  workflow new       Scaffold a workflow definition\n  workflow validate  Validate a workflow definition\n  workflow list      List resolved workflow definitions\n")
-}
-
-func writeWorkflowUsage(output io.Writer) error {
-	return writeOutput(output, "Usage: ao workflow <command> [options]\n\nCommands:\n  new       Scaffold a workflow definition\n  validate  Validate a workflow definition\n  list      List resolved workflow definitions\n")
-}
-
-func writeValidateUsage(output io.Writer) error {
-	return writeOutput(output, "Usage: ao workflow validate [options] <path>\n       ao workflow validate [options] --id <id>\n\nOptions:\n  --config-root <path>  override the Agent Overflow config root\n  --id <id>             resolve and validate a workflow by id\n  --json                write the typed validation result as JSON\n  --project <slug>      include workflows for the project slug\n")
-}
-
-func writeListUsage(output io.Writer) error {
-	return writeOutput(output, "Usage: ao workflow list [options]\n\nOptions:\n  --config-root <path>  override the Agent Overflow config root\n  --json                write the resolved workflow list as JSON\n  --project <slug>      include workflows for the project slug\n")
 }

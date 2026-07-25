@@ -375,7 +375,7 @@ func (h *Harness) prepareWorkflowReset() (func() error, error) {
 		return resume, fmt.Errorf("reset workflows: list running items: %w", err)
 	}
 	for _, item := range running {
-		if err := h.app.WorkflowCancelItem(item.ID); err != nil {
+		if err := h.app.WorkflowCancelItem(context.Background(), item.ID); err != nil {
 			return resume, fmt.Errorf("reset workflows: cancel running item %s: %w", item.ID, err)
 		}
 	}

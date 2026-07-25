@@ -217,13 +217,6 @@ func (a *App) reconcileClaudeMCPLive(thread store.Thread) error {
 		}
 		target[srv.Name] = spec
 	}
-	if sess.workflowChatMCP {
-		spec, err := a.workflowChatMCPServerSpec(thread)
-		if err != nil {
-			return err
-		}
-		target[workflowChatMCPServerName] = spec
-	}
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveReconcileTimeout)
 	defer cancel()
 	diff, err := sess.claude.SetMCPServers(ctx, target)

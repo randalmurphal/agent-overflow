@@ -80,12 +80,18 @@ func TestWorkItemPhaseAttemptsAndEffects(t *testing.T) {
 	if err := s.RecordWorkItemEffect(duplicate); err != nil {
 		t.Fatalf("record duplicate effect: %v", err)
 	}
-	gotEffect, err := s.GetWorkItemEffect("item", "build", "report", "sha256")
-	if err != nil {
-		t.Fatalf("get effect: %v", err)
+	gotEffect, found, err := s.GetWorkItemEffect("item", "build", "report", "sha256")
+	if err != nil || !found {
+		t.Fatalf("get effect: found=%t err=%v", found, err)
 	}
 	if string(gotEffect.Payload) != string(effect.Payload) || gotEffect.CreatedAt != 50 {
 		t.Fatalf("duplicate replaced original effect: %#v", gotEffect)
+	}
+	// A different payload hash is a different effect, and an unrecorded one is
+	// a plain miss rather than an error — that distinction is what lets the
+	// surface-and-skip check run on every invocation.
+	if _, found, err := s.GetWorkItemEffect("item", "build", "report", "other-hash"); err != nil || found {
+		t.Fatalf("unrecorded effect = found:%t err:%v, want false/nil", found, err)
 	}
 	if err := s.CompleteWorkItemPhase("missing", "build", 1, output, trace, "completed", 1); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("missing phase completion error = %v, want sql.ErrNoRows", err)

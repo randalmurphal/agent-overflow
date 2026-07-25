@@ -139,8 +139,7 @@ export type ItemKind =
   | "terminal_interaction"
   | "notification"
   | "api_retry"
-  | "api_error"
-  | "workflow_proposal";
+  | "api_error";
 
 /**
  * One validated file-path reference for the chat surface's auto

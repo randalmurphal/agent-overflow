@@ -134,7 +134,7 @@ func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 			}
 			if test.name == "exit" {
 				writeWorkspaceProfile(t, configRoot, projectRow.Slug, "\nbase_branch: main\nreliability:\n  watchdog: 1h\n  backoff: [5ms]\nworktree_setup:\n  timeout: 2s\n")
-				if err := app.WorkflowResumeItem(item.ID, ""); err != nil {
+				if err := app.WorkflowResumeItem(context.Background(), item.ID, ""); err != nil {
 					t.Fatal(err)
 				}
 				item = waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
@@ -198,7 +198,7 @@ func TestWorkflowResumeWithMissingWorktreeParksSetupFailed(t *testing.T) {
 	if err := app.gitCore().RemoveWorktreeForce(repo, item.WorktreePath, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.WorkflowResumeItem(item.ID, ""); err == nil {
+	if err := app.WorkflowResumeItem(context.Background(), item.ID, ""); err == nil {
 		t.Fatal("resume with missing worktree succeeded")
 	}
 	got := waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonSetupFailed)

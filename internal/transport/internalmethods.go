@@ -267,8 +267,6 @@ var LocalOnlyMethods = map[string]bool{
 	// The pure workflow reads live in methods_gen_test.go's wireSafeMethods
 	// so remote workflow surfaces can render without gaining mutation access.
 	"WorkflowStartRun":                     true,
-	"WorkflowQueueChatProposal":            true,
-	"WorkflowDismissChatProposal":          true,
 	"WorkflowCancelItem":                   true,
 	"WorkflowResumeItem":                   true,
 	"WorkflowAnswerQuestion":               true,
@@ -315,6 +313,23 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowRetryUnit":    true,
 	"WorkflowDropUnit":     true,
 	"WorkflowTakeOverUnit": true,
+	// The `ao` CLI surface. Every one of these is reachable only with a scoped
+	// token minted for a local provider session (see scopedtoken.go), and the
+	// scoped route is loopback-only in its own right — but they are classified
+	// here too, because the classification is what governs the WebSocket, and a
+	// remote peer must not reach the agent surface just because the SPA can.
+	// The reads are as privileged as the writes here: they name a project's runs
+	// and a workflow's outputs, and they exist for a process on this machine.
+	"WorkflowAgentStartRun":  true,
+	"WorkflowAgentRunStatus": true,
+	"WorkflowAgentRunOutput": true,
+	"WorkflowAgentListRuns":  true,
+	"WorkflowAgentSchedule":  true,
+	"WorkflowAgentGetNotes":  true,
+	"WorkflowAgentSetNotes":  true,
+	// The /workflow composer block reads local workflow-config directory paths
+	// and reports whether a local session holds a credential.
+	"WorkflowComposerContext": true,
 	// ConcludeDiscussion is lifecycle control over the deliberation's
 	// provider-session turn loop — same class as PostChannelMessage: it
 	// removes the in-memory FSM (a.deliberations) and can race an

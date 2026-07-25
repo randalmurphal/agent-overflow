@@ -52,6 +52,10 @@
         "commands": {"type": "array", "items": {"type": "string"}},
         "capabilities": {"type": "array", "items": {"type": "string"}},
         "mcp": {"type": "array", "items": {"type": "string"}},
+        "grants": {
+          "type": "array", "uniqueItems": true,
+          "items": {"enum": ["start-run", "schedule", "update-notes", "introspect"]}
+        },
         "access": {"enum": ["read-only", "write"]},
         "fan_out": {"type": "array", "items": {"$ref": "#/$defs/unit"}},
         "over": {"type": "string"}, "as": {"type": "string", "pattern": "^[a-z0-9-]+$"},
@@ -82,7 +86,7 @@
               {"required": ["prompt"]}, {"required": ["watchdog"]}, {"required": ["inputs"]},
               {"required": ["outputs"]}, {"required": ["check"]}, {"required": ["command"]},
               {"required": ["resources"]}, {"required": ["commands"]}, {"required": ["capabilities"]},
-              {"required": ["mcp"]}, {"required": ["access"]}, {"required": ["fan_out"]},
+              {"required": ["mcp"]}, {"required": ["grants"]}, {"required": ["access"]}, {"required": ["fan_out"]},
               {"required": ["over"]}, {"required": ["as"]}, {"required": ["unit"]}, {"required": ["join"]}
             ]}
           },

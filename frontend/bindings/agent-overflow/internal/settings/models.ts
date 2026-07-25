@@ -430,11 +430,8 @@ export class Settings {
      * WorkflowPaused is the global workflow kill switch: while set, no
      * workflow phase starts anywhere and in-flight turns finish. It is
      * persisted so a paused engine stays paused across a restart.
-     * WorkflowChatEnqueue controls whether newly started interactive
-     * provider sessions receive the first-party proposal tool.
      */
     "workflowPaused": boolean;
-    "workflowChatEnqueue": boolean;
 
     /**
      * Window stores the desktop window placement (position, size, and
@@ -554,9 +551,6 @@ export class Settings {
         if (!("workflowPaused" in $$source)) {
             this["workflowPaused"] = false;
         }
-        if (!("workflowChatEnqueue" in $$source)) {
-            this["workflowChatEnqueue"] = false;
-        }
         if (!("window" in $$source)) {
             this["window"] = (new windowgeom$0.Geometry());
         }
@@ -576,7 +570,7 @@ export class Settings {
         const $$createField34_0 = $$createType3;
         const $$createField35_0 = $$createType0;
         const $$createField36_0 = $$createType5;
-        const $$createField41_0 = $$createType6;
+        const $$createField40_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
@@ -603,7 +597,7 @@ export class Settings {
             $$parsedSource["remoteEndpoints"] = $$createField36_0($$parsedSource["remoteEndpoints"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField41_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField40_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

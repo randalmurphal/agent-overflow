@@ -279,7 +279,7 @@ func TestRerunAfterFailureRestoresLoopBudget(t *testing.T) {
 		}
 	}
 	requireItemState(t, h.store, item.ID, StateFailed, ReasonCheckFailedGenuine)
-	if err := h.engine.RerunFailed(item.ID); err != nil {
+	if err := h.engine.RerunFailed(item.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, ok := range []bool{true, true} {

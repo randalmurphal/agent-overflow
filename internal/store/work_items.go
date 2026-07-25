@@ -163,23 +163,6 @@ func (s *Store) GetWorkItem(id string) (WorkItem, error) {
 	return item, nil
 }
 
-// GetWorkItemBySourceRef resolves an idempotency/provenance key. Agent-created
-// chat proposals use this to recover if the run row committed before the
-// proposal card receipt did.
-func (s *Store) GetWorkItemBySourceRef(source, sourceRef string) (WorkItem, bool, error) {
-	item, err := scanWorkItem(s.db.QueryRow(
-		`SELECT `+workItemColumns+` FROM work_items WHERE source = ? AND source_ref = ? LIMIT 1`,
-		source, sourceRef,
-	), false)
-	if errors.Is(err, sql.ErrNoRows) {
-		return WorkItem{}, false, nil
-	}
-	if err != nil {
-		return WorkItem{}, false, fmt.Errorf("store: get work item by source ref %s/%s: %w", source, sourceRef, err)
-	}
-	return item, true, nil
-}
-
 // GetWorkItemAttentionContext loads only the fields needed for an attention
 // digest and notification. SQLite extracts the current phase's check binding
 // from the snapshot so the multi-megabyte snapshot never crosses into Go on
@@ -234,6 +217,28 @@ func (s *Store) GetWorkItemByPhaseThread(threadID string) (WorkItem, error) {
 		return WorkItem{}, fmt.Errorf("store: get work item for phase thread %s: %w", threadID, err)
 	}
 	return item, nil
+}
+
+// GetWorkItemBySourceRef resolves a run by its provenance key. For agent-source
+// runs that key is unique (idx_work_items_agent_source_ref), which makes this
+// the durable backstop behind the workflow effect ledger: a run that committed
+// before its ledger entry did is still found here, so re-entering the phase
+// surfaces the original rather than starting a second one. Absence is the
+// ordinary first-run answer and is reported as found=false, not as an error.
+func (s *Store) GetWorkItemBySourceRef(source, sourceRef string) (WorkItem, bool, error) {
+	item, err := scanWorkItem(s.db.QueryRow(
+		`SELECT `+workItemColumns+` FROM work_items
+		 WHERE source = ? AND source_ref = ? AND source_ref <> ''
+		 ORDER BY created_at ASC, id ASC LIMIT 1`,
+		source, sourceRef,
+	), false)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkItem{}, false, nil
+	}
+	if err != nil {
+		return WorkItem{}, false, fmt.Errorf("store: get work item by source ref %s/%s: %w", source, sourceRef, err)
+	}
+	return item, true, nil
 }
 
 // ListWorkItemChildren returns the runs one item called, oldest-first. Children
@@ -300,6 +305,21 @@ func (s *Store) ListWorkItems(filter WorkItemListFilter) ([]WorkItem, error) {
 // seeds, or budget payloads. GetWorkItem is the detail path for those fields.
 func (s *Store) ListWorkItemSummaries(filter WorkItemListFilter) ([]WorkItem, error) {
 	return s.listWorkItems(filter, workItemSummaryListColumns, true)
+}
+
+// GetWorkItemSummary is the single-row form of ListWorkItemSummaries: the same
+// projection including phase progress, and the same omission of the snapshot,
+// seeds, and budget payloads. `ao run status` polls this, so it must stay a
+// one-row read that never drags a run's snapshot along.
+func (s *Store) GetWorkItemSummary(id string) (WorkItem, error) {
+	item, err := scanWorkItem(s.db.QueryRow(
+		`SELECT `+workItemSummaryListColumns+workItemSummaryProgressColumns+
+			` FROM work_items AS w`+workItemSummaryProgressJoin+` WHERE w.id = ?`, id,
+	), true)
+	if err != nil {
+		return WorkItem{}, fmt.Errorf("store: get work item summary %s: %w", id, err)
+	}
+	return item, nil
 }
 
 func (s *Store) listWorkItems(filter WorkItemListFilter, columns string, includeProgress bool) ([]WorkItem, error) {

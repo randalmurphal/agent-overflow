@@ -273,17 +273,24 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UploadAttachment", ID: 2485473713},                     // main.App.UploadAttachment
 	{Name: "VerifyEditDiffs", ID: 3907724148},                      // main.App.VerifyEditDiffs
 	{Name: "Version", ID: 2431199839},                              // main.App.Version
+	{Name: "WorkflowAgentGetNotes", ID: 864025136},                 // main.App.WorkflowAgentGetNotes
+	{Name: "WorkflowAgentListRuns", ID: 717593283},                 // main.App.WorkflowAgentListRuns
+	{Name: "WorkflowAgentRunOutput", ID: 315193175},                // main.App.WorkflowAgentRunOutput
+	{Name: "WorkflowAgentRunStatus", ID: 49502656},                 // main.App.WorkflowAgentRunStatus
+	{Name: "WorkflowAgentSchedule", ID: 3469145856},                // main.App.WorkflowAgentSchedule
+	{Name: "WorkflowAgentSetNotes", ID: 8517788},                   // main.App.WorkflowAgentSetNotes
+	{Name: "WorkflowAgentStartRun", ID: 1060823172},                // main.App.WorkflowAgentStartRun
 	{Name: "WorkflowAnswerQuestion", ID: 4150249282},               // main.App.WorkflowAnswerQuestion
 	{Name: "WorkflowBindThread", ID: 1931806823},                   // main.App.WorkflowBindThread
 	{Name: "WorkflowCancelItem", ID: 4158962817},                   // main.App.WorkflowCancelItem
 	{Name: "WorkflowCompleteTakeover", ID: 3393508470},             // main.App.WorkflowCompleteTakeover
+	{Name: "WorkflowComposerContext", ID: 3805024085},              // main.App.WorkflowComposerContext
 	{Name: "WorkflowCreateAutomation", ID: 3011758347},             // main.App.WorkflowCreateAutomation
 	{Name: "WorkflowCreateItemPR", ID: 1792283305},                 // main.App.WorkflowCreateItemPR
 	{Name: "WorkflowDeleteAutomation", ID: 1133480652},             // main.App.WorkflowDeleteAutomation
 	{Name: "WorkflowDiscardItem", ID: 2163033761},                  // main.App.WorkflowDiscardItem
 	{Name: "WorkflowDiscardPreview", ID: 2659721862},               // main.App.WorkflowDiscardPreview
 	{Name: "WorkflowDiscussPR", ID: 1236472344},                    // main.App.WorkflowDiscussPR
-	{Name: "WorkflowDismissChatProposal", ID: 1877476344},          // main.App.WorkflowDismissChatProposal
 	{Name: "WorkflowDropUnit", ID: 1005356607},                     // main.App.WorkflowDropUnit
 	{Name: "WorkflowFetchPRReviewComments", ID: 819019128},         // main.App.WorkflowFetchPRReviewComments
 	{Name: "WorkflowGetEngineState", ID: 2130001947},               // main.App.WorkflowGetEngineState
@@ -300,7 +307,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowOpenTriageAgent", ID: 1552981489},              // main.App.WorkflowOpenTriageAgent
 	{Name: "WorkflowOpenTriageThread", ID: 3525577760},             // main.App.WorkflowOpenTriageThread
 	{Name: "WorkflowPauseItem", ID: 3764767257},                    // main.App.WorkflowPauseItem
-	{Name: "WorkflowQueueChatProposal", ID: 2517836963},            // main.App.WorkflowQueueChatProposal
 	{Name: "WorkflowRerunItem", ID: 1986594501},                    // main.App.WorkflowRerunItem
 	{Name: "WorkflowResolveGate", ID: 3348479803},                  // main.App.WorkflowResolveGate
 	{Name: "WorkflowResumeItem", ID: 3138507556},                   // main.App.WorkflowResumeItem

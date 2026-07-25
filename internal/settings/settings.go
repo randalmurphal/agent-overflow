@@ -239,10 +239,7 @@ type Settings struct {
 	// WorkflowPaused is the global workflow kill switch: while set, no
 	// workflow phase starts anywhere and in-flight turns finish. It is
 	// persisted so a paused engine stays paused across a restart.
-	// WorkflowChatEnqueue controls whether newly started interactive
-	// provider sessions receive the first-party proposal tool.
-	WorkflowPaused      bool `json:"workflowPaused"`
-	WorkflowChatEnqueue bool `json:"workflowChatEnqueue"`
+	WorkflowPaused bool `json:"workflowPaused"`
 
 	// Per-client UI view state (pane layout, collapsed projects,
 	// sidebar width, …) deliberately does NOT live here: it moved to
@@ -304,11 +301,10 @@ var DefaultSettings = Settings{
 	ObservabilityEventLogEnabled: false,
 	// 30 days is the default retention window. The cleanup loop reads
 	// this on every tick, so toggling it doesn't require a restart.
-	Retention:           RetentionSettings{Days: 30},
-	ProjectSortMode:     "lastActivity",
-	UsagePeriod:         "month",
-	WorkflowPaused:      false,
-	WorkflowChatEnqueue: true,
+	Retention:       RetentionSettings{Days: 30},
+	ProjectSortMode: "lastActivity",
+	UsagePeriod:     "month",
+	WorkflowPaused:  false,
 }
 
 // HiddenModelsForProvider returns the hidden-model slug list for the

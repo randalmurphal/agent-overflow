@@ -711,8 +711,6 @@ func (p *privilegedApp) StartDiscussionByID() string           { return "ok" }
 func (p *privilegedApp) PostChannelMessage() string            { return "ok" }
 func (p *privilegedApp) ConcludeDiscussion() string            { return "ok" }
 func (p *privilegedApp) WorkflowStartRun() string              { return "ok" }
-func (p *privilegedApp) WorkflowQueueChatProposal() string     { return "ok" }
-func (p *privilegedApp) WorkflowDismissChatProposal() string   { return "ok" }
 func (p *privilegedApp) WorkflowCancelItem() string            { return "ok" }
 func (p *privilegedApp) WorkflowResumeItem() string            { return "ok" }
 func (p *privilegedApp) WorkflowAnswerQuestion() string        { return "ok" }
@@ -741,6 +739,14 @@ func (p *privilegedApp) WorkflowRerunItem() string              { return "ok" }
 func (p *privilegedApp) WorkflowRetryUnit() string              { return "ok" }
 func (p *privilegedApp) WorkflowDropUnit() string               { return "ok" }
 func (p *privilegedApp) WorkflowTakeOverUnit() string           { return "ok" }
+func (p *privilegedApp) WorkflowAgentStartRun() string          { return "ok" }
+func (p *privilegedApp) WorkflowAgentRunStatus() string         { return "ok" }
+func (p *privilegedApp) WorkflowAgentRunOutput() string         { return "ok" }
+func (p *privilegedApp) WorkflowAgentListRuns() string          { return "ok" }
+func (p *privilegedApp) WorkflowAgentSchedule() string          { return "ok" }
+func (p *privilegedApp) WorkflowAgentGetNotes() string          { return "ok" }
+func (p *privilegedApp) WorkflowAgentSetNotes() string          { return "ok" }
+func (p *privilegedApp) WorkflowComposerContext() string        { return "ok" }
 func (p *privilegedApp) WorkflowPauseItem() string              { return "ok" }
 func (p *privilegedApp) WorkflowBindThread() string             { return "ok" }
 func (p *privilegedApp) WorkflowUnbindThread() string           { return "ok" }

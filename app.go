@@ -104,9 +104,6 @@ type App struct {
 	workflowAutoDisposition serialQueue
 	workflowWake            serialQueue
 	workflowSchedulerQueue  serialQueue
-	// workflowChatProposalMu serializes start/dismiss decisions for persisted
-	// chat proposal cards so two local clicks cannot start one proposal twice.
-	workflowChatProposalMu sync.Mutex
 	// workflowDigestMu guards the lazily allocated digest-generator slots.
 	workflowDigestMu         sync.Mutex
 	workflowDigestSlots      chan struct{}
@@ -240,6 +237,11 @@ type App struct {
 	appCancel context.CancelFunc
 	mu        sync.Mutex
 	sessions  map[string]session // threadID → active session
+	// aoTokens is the `ao` CLI credential registry: scoped token → the
+	// authority it carries. It is mutated only from the session-map
+	// mutators in app_session_manager.go (under mu), so an entry exists
+	// exactly while its session does. See app_ao_session.go.
+	aoTokens map[string]transport.CallerScope
 	// orphanReaper is the macOS sidecar process that kills provider
 	// process groups if this app dies ungracefully; orphanRegistry is the
 	// durable backstop the next launch sweeps. Both stay nil on
@@ -499,10 +501,14 @@ type session struct {
 	// reconciler diffs it against the thread row's current options to
 	// decide between live apply and restart (app_session_config.go).
 	launchOpts provider.SessionOptions
-	// workflowChatMCP records the launch-time setting snapshot. Live Claude
-	// MCP reconciliation preserves the tool for this process even if Settings
-	// changes; the toggle applies on the next session start.
-	workflowChatMCP bool
+	// aoToken / aoScope / aoEnv are the `ao` CLI credential this session's
+	// process was spawned with (app_ao_session.go). The token is registered
+	// when the session enters a.sessions and revoked when it leaves, so a
+	// credential can never outlive the process holding it. Empty for sessions
+	// the CLI cannot be scoped to (no transport server, no project).
+	aoToken string
+	aoScope transport.CallerScope
+	aoEnv   map[string]string
 	// liveness is the heap-allocated sibling that carries activity-tracking
 	// atomics. Never nil for registered sessions — spawnProviderSession sets
 	// it on construction. Stored behind a pointer so the value-type session
@@ -570,6 +576,7 @@ func (s session) providerSession() provider.Session {
 func NewApp() *App {
 	app := &App{
 		sessions:               make(map[string]session),
+		aoTokens:               make(map[string]transport.CallerScope),
 		threadActionLocks:      newKeyedLocks(),
 		startingSessions:       make(map[string]*sessionStart),
 		reconnectingThreads:    make(map[string]bool),

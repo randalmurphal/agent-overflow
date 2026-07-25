@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -200,13 +201,13 @@ func TestWorkflowStartRunResolvesBaseBranchAndCancelKeepsTheRecord(t *testing.T)
 	if override.BaseBranch != "release/v2" {
 		t.Fatalf("override start base branch = %q", override.BaseBranch)
 	}
-	if err := app.WorkflowCancelItem(override.ID); err != nil {
+	if err := app.WorkflowCancelItem(context.Background(), override.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.WorkflowStartRun(projectRow.ID, "workspace-flow", "shared", "invalid base", json.RawMessage(`{}`), nil, "--base", false); err == nil {
 		t.Fatal("invalid base branch override succeeded")
 	}
-	if err := app.WorkflowCancelItem(item.ID); err != nil {
+	if err := app.WorkflowCancelItem(context.Background(), item.ID); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := app.store.GetWorkItem(item.ID)
@@ -216,7 +217,7 @@ func TestWorkflowStartRunResolvesBaseBranchAndCancelKeepsTheRecord(t *testing.T)
 	if stored.State != string(engine.StateCancelled) || stored.WorktreePath != "" {
 		t.Fatalf("cancelled item = %+v", stored)
 	}
-	if err := app.WorkflowCancelItem(item.ID); err == nil {
+	if err := app.WorkflowCancelItem(context.Background(), item.ID); err == nil {
 		t.Fatal("second cancellation unexpectedly succeeded")
 	}
 }

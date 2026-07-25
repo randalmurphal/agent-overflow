@@ -284,11 +284,12 @@ func (a *App) startWorkflowRun(projectID, workflowID, workflowScope, goal string
 	}
 	workflow := resolved.Workflow
 	normalizedSeeds := append(json.RawMessage(nil), seeds...)
-	// Chat proposals are untrusted agent-produced input and must be checked at
-	// both proposal time and the approval commit point (the user may edit it).
-	// Preserve the established manual/harness start contract, whose callers
-	// may intentionally let the workflow runner derive values from Goal.
-	if source == "agent" {
+	// Agent-supplied seeds are untrusted input and are validated against the
+	// workflow's declared inputs before anything starts, whether they came from
+	// a conversation's `ao run start` or a granted phase's. The manual/harness
+	// contract is preserved as-is: those callers may intentionally let the
+	// workflow runner derive values from Goal.
+	if source == workflowSourceAgent {
 		seedValues, encodedSeeds, err := decodeWorkflowSeeds(seeds)
 		if err != nil {
 			return store.WorkItem{}, fmt.Errorf("start workflow run: %w", err)
@@ -334,9 +335,12 @@ func decodeWorkflowSeeds(seeds json.RawMessage) (map[string]any, json.RawMessage
 	return values, normalized, nil
 }
 
-func (a *App) WorkflowCancelItem(itemID string) error {
+func (a *App) WorkflowCancelItem(ctx context.Context, itemID string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
+		return err
+	}
+	if err := a.authorizeScopedRunAction(ctx, itemID, "cancel workflow run"); err != nil {
 		return err
 	}
 	return workflowEngine.Cancel(itemID)
@@ -348,9 +352,12 @@ func (a *App) WorkflowCancelItem(itemID string) error {
 // whole tree with it, while every other reason re-enters the phase with a fresh
 // attempt. Naming a target phase is always a fresh entry — that is what
 // choosing a different phase means.
-func (a *App) WorkflowResumeItem(itemID, targetPhase string) error {
+func (a *App) WorkflowResumeItem(ctx context.Context, itemID, targetPhase string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
+		return err
+	}
+	if err := a.authorizeScopedRunAction(ctx, itemID, "resume workflow run"); err != nil {
 		return err
 	}
 	item, itemErr := a.store.GetWorkItem(itemID)

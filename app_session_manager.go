@@ -6,6 +6,11 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+// sessionManager is the ONLY mutator of App.sessions, which is what lets the
+// `ao` scoped-token registry (App.aoTokens) be maintained here rather than at
+// every spawn/teardown call site: a token is registered exactly when its
+// session enters the map and revoked exactly when it leaves, so no path can
+// leave a live credential behind a dead process. See app_ao_session.go.
 type sessionManager struct {
 	app *App
 }
@@ -23,7 +28,14 @@ func (m sessionManager) get(threadID string) (session, bool) {
 
 func (m sessionManager) put(threadID string, sess session) {
 	m.app.mu.Lock()
+	if displaced, ok := m.app.sessions[threadID]; ok {
+		// Defensive: every caller stops the prior session first, so this should
+		// find nothing. If a future path ever replaces in place, the displaced
+		// session's credential must not survive it.
+		m.app.revokeAOTokenLocked(displaced)
+	}
 	m.app.sessions[threadID] = sess
+	m.app.registerAOTokenLocked(sess)
 	m.app.mu.Unlock()
 }
 
@@ -33,6 +45,7 @@ func (m sessionManager) take(threadID string) (session, bool) {
 	sess, ok := m.app.sessions[threadID]
 	if ok {
 		delete(m.app.sessions, threadID)
+		m.app.revokeAOTokenLocked(sess)
 	}
 	return sess, ok
 }
@@ -97,6 +110,7 @@ func (m sessionManager) unregister(threadID, sessionToken string) (session, bool
 		return session{}, false
 	}
 	delete(m.app.sessions, threadID)
+	m.app.revokeAOTokenLocked(current)
 	return current, true
 }
 
@@ -169,6 +183,7 @@ func (m sessionManager) takeIdle(threadID string, cutoffNano int64) (session, bo
 		}
 	}
 	delete(m.app.sessions, threadID)
+	m.app.revokeAOTokenLocked(sess)
 	return sess, true
 }
 
@@ -179,6 +194,7 @@ func (m sessionManager) snapshotAndClear() map[string]session {
 	sessions := make(map[string]session, len(m.app.sessions))
 	for threadID, sess := range m.app.sessions {
 		sessions[threadID] = sess
+		m.app.revokeAOTokenLocked(sess)
 	}
 	m.app.sessions = make(map[string]session)
 	return sessions

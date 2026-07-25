@@ -49,7 +49,7 @@ type Process struct {
 	eventLogRedactor EventLogRedactor
 	threadID         string
 	provider         string
-	stderrTail *stderrTee
+	stderrTail       *stderrTee
 	// killOnce guards the one-shot kill triggered on oversized lines so
 	// concurrent ReadLine failures (should never happen but defense in
 	// depth) do not double-signal the process group.
@@ -77,6 +77,28 @@ type SpawnConfig struct {
 // log entry.
 type EventLogRedactor func(direction string, data []byte) []byte
 
+// EnvironWith returns this process's environment with overrides applied, in the
+// form exec.Cmd.Env wants. PATH is additive (the override is prepended to the
+// inherited value) rather than replacing it, because an override exists to add
+// a lookup location, never to hide the user's own toolchain.
+//
+// Exported so the providers whose Config carries a full []string environment
+// (claudetui, which launches a real TUI) apply the same rule as the ones whose
+// Config carries an override map. Two different env rules across providers is
+// exactly how an injected variable goes missing on one of them.
+func EnvironWith(overrides map[string]string) []string {
+	env := os.Environ()
+	for k, v := range overrides {
+		if strings.ToUpper(k) == "PATH" {
+			if existing := os.Getenv("PATH"); existing != "" {
+				v = v + string(os.PathListSeparator) + existing
+			}
+		}
+		env = append(env, k+"="+v)
+	}
+	return env
+}
+
 // Spawn starts a subprocess with stdin/stdout pipes and process group isolation.
 // The context is associated with the command — canceling it will kill the process.
 // Prefer Close() for graceful shutdown.
@@ -89,18 +111,7 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	// children on Windows (the WSL-side Linux backend does).
 	applySysProcAttr(cmd)
 
-	// Build env: inherit current env + overrides.
-	// PATH is treated as additive (prepend to existing PATH) rather than replacing it.
-	env := os.Environ()
-	for k, v := range cfg.Env {
-		if strings.ToUpper(k) == "PATH" {
-			if existing := os.Getenv("PATH"); existing != "" {
-				v = v + string(os.PathListSeparator) + existing
-			}
-		}
-		env = append(env, k+"="+v)
-	}
-	cmd.Env = env
+	cmd.Env = EnvironWith(cfg.Env)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

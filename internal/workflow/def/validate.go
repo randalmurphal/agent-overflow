@@ -91,6 +91,7 @@ func validateWorkflow(resolved ResolvedWorkflow, bindings Bindings, calls CallRe
 		if phase.Access != "" && phase.Access != AccessReadOnly && phase.Access != AccessWrite {
 			add(finding("phase.access", phaseElement, "access must be read-only or write"))
 		}
+		add(validateGrants(phase, phaseElement)...)
 		add(validateFanOut(workflow, phase, phaseElement)...)
 		if phase.Driver == DriverAgent && phase.Prompt == "" {
 			add(finding("phase.prompt", phaseElement, "agent driver requires a prompt file"))

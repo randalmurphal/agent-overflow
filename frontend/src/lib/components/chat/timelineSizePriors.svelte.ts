@@ -61,7 +61,6 @@ const ROW_KIND_ESTIMATE_PX: Readonly<Record<string, number>> = {
   error: 42,
   notification: 24,
   api_retry: 24,
-  workflow_proposal: 92,
   read_group: 20,
   group: 36,
   wait_group: 36,

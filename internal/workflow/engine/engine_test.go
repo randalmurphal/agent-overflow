@@ -35,7 +35,7 @@ func TestRerunFailedStartsImmediatelyWithDiagnosisFeedback(t *testing.T) {
 	if failed.State != string(StateFailed) {
 		t.Fatalf("failed item state = %q", failed.State)
 	}
-	if err := h.engine.RerunFailed(item.ID); err != nil {
+	if err := h.engine.RerunFailed(item.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
@@ -102,7 +102,7 @@ func TestRerunFailedWaitsForProviderCapacity(t *testing.T) {
 	if err := h.engine.StartItem(holder); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.RerunFailed(item.ID); err != nil {
+	if err := h.engine.RerunFailed(item.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, item.ID, StateRunning, "")
@@ -134,7 +134,7 @@ func TestRerunFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
 		if err := h.store.CreateWorkItem(item); err != nil {
 			t.Fatal(err)
 		}
-		if err := h.engine.RerunFailed(item.ID); err == nil || !strings.Contains(err.Error(), "invalid state "+string(state)) {
+		if err := h.engine.RerunFailed(item.ID, ""); err == nil || !strings.Contains(err.Error(), "invalid state "+string(state)) {
 			t.Fatalf("%s rerun error = %v", state, err)
 		}
 	}
@@ -145,7 +145,7 @@ func TestRerunFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
 	if err := h.store.CreateWorkItem(broken); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.RerunFailed(broken.ID); err == nil || !strings.Contains(err.Error(), "snapshot") {
+	if err := h.engine.RerunFailed(broken.ID, ""); err == nil || !strings.Contains(err.Error(), "snapshot") {
 		t.Fatalf("broken snapshot rerun error = %v", err)
 	}
 
@@ -156,7 +156,7 @@ func TestRerunFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
 	if err := h.store.CreateWorkItem(discarded); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.RerunFailed(discarded.ID); err == nil || !strings.Contains(err.Error(), "discarded") {
+	if err := h.engine.RerunFailed(discarded.ID, ""); err == nil || !strings.Contains(err.Error(), "discarded") {
 		t.Fatalf("discarded rerun error = %v", err)
 	}
 }

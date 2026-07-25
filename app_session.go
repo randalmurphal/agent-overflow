@@ -176,19 +176,14 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 			designCfg.MCPServers = servers
 		}
 	}
-	if designServers == nil {
-		chatServer, enabled, err := a.workflowChatMCPServerConfig(t)
-		if err != nil {
-			return fmt.Errorf("start session: %w", err)
-		}
-		if enabled {
-			if designCfg.MCPServers == nil {
-				designCfg.MCPServers = map[string]any{}
-			}
-			designCfg.MCPServers[workflowChatMCPServerName] = chatServer
-			designCfg.WorkflowChatMCP = true
-			designCfg.MergeMCPServers = t.Provider == string(provider.Claude)
-		}
+	// The `ao` credential is minted here, before the spawn, because the
+	// process env is what carries it. It only becomes usable when the session
+	// is registered (sessionManager.put), so a failed spawn leaves nothing
+	// behind. See app_ao_session.go.
+	credential, err := a.mintAOCredential(t)
+	if err != nil {
+		a.teardownDesignThread(threadID)
+		return fmt.Errorf("start session: %w", err)
 	}
 
 	// Flip any persisted `is_background=running` rows for a Codex thread
@@ -208,7 +203,7 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 		a.flipCodexGhostBackgroundRowsOnStart(threadID)
 	}
 
-	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, designCfg, onEvent)
+	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, designCfg, credential, onEvent)
 	if err != nil {
 		a.teardownDesignThread(threadID)
 		a.emitProviderStatusOnSessionStartError(t.Provider)
@@ -357,18 +352,29 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	return err
 }
 
-// mergeProviderEnv folds providerExtraEnv into a session config's Env
-// map, allocating only when there is something to merge. Extra env wins
-// on key conflicts — it exists precisely to override for this boot mode.
-func (a *App) mergeProviderEnv(env map[string]string) map[string]string {
-	if len(a.providerExtraEnv) == 0 {
+// sessionProcessEnv is the ONE place a provider subprocess's environment is
+// assembled, so anything the app injects reaches Claude and Codex identically:
+// the boot-mode overrides (providerExtraEnv — the harness's mock-control
+// credentials) and the session's `ao` credential (AO_ENDPOINT / AO_TOKEN /
+// AO_THREAD_ID, plus AO_RUN_ID / AO_PHASE_ID for a workflow phase).
+//
+// Precedence is provider config < boot-mode overrides < AO credential. The AO
+// names are the app's own contract with the CLI, so nothing may shadow them.
+// The contract itself — which variable is set for which kind of session, and
+// what the CLI does when one is missing — lives in internal/aocli/AGENTS.md,
+// next to the code that reads it.
+func (a *App) sessionProcessEnv(env map[string]string, credential aoSessionCredential) map[string]string {
+	if len(a.providerExtraEnv) == 0 && len(credential.env) == 0 {
 		return env
 	}
-	merged := make(map[string]string, len(env)+len(a.providerExtraEnv))
+	merged := make(map[string]string, len(env)+len(a.providerExtraEnv)+len(credential.env))
 	for k, v := range env {
 		merged[k] = v
 	}
 	for k, v := range a.providerExtraEnv {
+		merged[k] = v
+	}
+	for k, v := range credential.env {
 		merged[k] = v
 	}
 	return merged
@@ -384,6 +390,7 @@ func (a *App) spawnProviderSession(
 	t store.Thread,
 	opts provider.SessionOptions,
 	designCfg designSessionConfig,
+	credential aoSessionCredential,
 	onEvent func(provider.ProviderEvent),
 ) (session, error) {
 	// liveness is initialized once and attached to whichever provider
@@ -403,7 +410,7 @@ func (a *App) spawnProviderSession(
 			cfg.OutputSchema = string(workflowSchema)
 		}
 		cfg.Binary = a.providerBinaryPath(t.Provider)
-		cfg.Env = a.mergeProviderEnv(cfg.Env)
+		cfg.Env = a.sessionProcessEnv(cfg.Env, credential)
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
 		cfg.MergeMCPServers = designCfg.MergeMCPServers
@@ -412,18 +419,20 @@ func (a *App) spawnProviderSession(
 			return session{}, err
 		}
 		return session{
-			provider:        string(provider.Claude),
-			token:           sessionToken,
-			claude:          sess,
-			launchOpts:      opts,
-			workflowChatMCP: designCfg.WorkflowChatMCP,
-			liveness:        liveness,
+			provider:   string(provider.Claude),
+			token:      sessionToken,
+			claude:     sess,
+			launchOpts: opts,
+			aoToken:    credential.token,
+			aoScope:    credential.scope,
+			aoEnv:      credential.env,
+			liveness:   liveness,
 		}, nil
 
 	case string(provider.Codex):
 		cfg := codex.ConfigFromOptions(opts)
 		cfg.Binary = a.providerBinaryPath(t.Provider)
-		cfg.Env = a.mergeProviderEnv(cfg.Env)
+		cfg.Env = a.sessionProcessEnv(cfg.Env, credential)
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
@@ -446,12 +455,14 @@ func (a *App) spawnProviderSession(
 			a.handleCodexMCPStartupUpdate(u)
 		})
 		return session{
-			provider:        string(provider.Codex),
-			token:           sessionToken,
-			codex:           sess,
-			launchOpts:      opts,
-			workflowChatMCP: designCfg.WorkflowChatMCP,
-			liveness:        liveness,
+			provider:   string(provider.Codex),
+			token:      sessionToken,
+			codex:      sess,
+			launchOpts: opts,
+			aoToken:    credential.token,
+			aoScope:    credential.scope,
+			aoEnv:      credential.env,
+			liveness:   liveness,
 		}, nil
 
 	case string(provider.ClaudeTUI):
@@ -459,6 +470,11 @@ func (a *App) spawnProviderSession(
 		// The interactive provider drives the same `claude` binary as the
 		// headless one; there is no separate TUI binary setting.
 		cfg.Binary = a.providerBinaryPath(string(provider.Claude))
+		// claudetui's Config carries a whole environment rather than an
+		// override map, so the shared rule is applied here instead of inside
+		// the provider package. Skipping this branch would leave one provider
+		// silently without the boot-mode overrides and the ao credential.
+		cfg.Env = provider.EnvironWith(a.sessionProcessEnv(nil, credential))
 		cfg.EventLogger = a.logger
 		sess, err := claudetui.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
@@ -469,6 +485,9 @@ func (a *App) spawnProviderSession(
 			token:      sessionToken,
 			claudetui:  sess,
 			launchOpts: opts,
+			aoToken:    credential.token,
+			aoScope:    credential.scope,
+			aoEnv:      credential.env,
 			liveness:   liveness,
 		}, nil
 

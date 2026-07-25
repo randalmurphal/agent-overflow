@@ -29,7 +29,7 @@ export interface WorkflowActionBindings {
   mergeItem: (itemId: string) => Promise<{ base?: string; mode?: string; sha?: string; cleanupFailed?: boolean }>;
   resolveGate: (itemId: string, decision: string, note: string) => Promise<void>;
   resumeItem: (itemId: string, targetPhase: string) => Promise<void>;
-  rerunItem: (itemId: string) => Promise<void>;
+  rerunItem: (itemId: string, guidance: string) => Promise<void>;
 }
 
 const liveBindings: WorkflowActionBindings = {
@@ -64,7 +64,9 @@ export async function dispatchWorkflowAction(
       await bindings.answerQuestion(item.id, action.answer);
       return { itemId: item.id, kind: 'answered', message: `Answered — “${action.answer}” · the phase resumes its turn`, costUsd };
     case 'rerun':
-      await bindings.rerunItem(item.id);
+      // The overlay has no guidance field yet (W10b); `ao run rerun --guidance`
+      // is the caller that supplies one.
+      await bindings.rerunItem(item.id, '');
       return { itemId: item.id, kind: 'restarted', message: 'Restarted with the diagnosis as guidance', costUsd };
     case 'resume':
       await bindings.resumeItem(item.id, '');

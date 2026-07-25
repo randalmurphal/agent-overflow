@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"agent-overflow/internal/store"
@@ -15,9 +16,12 @@ import (
 // WorkflowRetryUnit re-runs one failed or taken-over unit of a parked fan-out
 // attempt. The note explains the retry in the run record and reaches the unit's
 // next try as feedback.
-func (a *App) WorkflowRetryUnit(itemID, unitID, note string) error {
+func (a *App) WorkflowRetryUnit(ctx context.Context, itemID, unitID, note string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
+		return err
+	}
+	if err := a.authorizeScopedRunAction(ctx, itemID, "retry workflow unit"); err != nil {
 		return err
 	}
 	// Read the row before the engine reopens it: a retry supersedes any steering

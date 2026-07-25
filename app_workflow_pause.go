@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -15,9 +16,12 @@ import (
 //
 // LocalOnly: pausing interrupts local provider processes and releases the
 // worktrees they hold.
-func (a *App) WorkflowPauseItem(itemID string) error {
+func (a *App) WorkflowPauseItem(ctx context.Context, itemID string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
+		return err
+	}
+	if err := a.authorizeScopedRunAction(ctx, itemID, "pause workflow run"); err != nil {
 		return err
 	}
 	return workflowEngine.PauseItem(itemID)

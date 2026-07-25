@@ -38,8 +38,9 @@ type parkDispositionCommand struct {
 	reply  chan response
 }
 type rerunFailedCommand struct {
-	itemID string
-	reply  chan response
+	itemID   string
+	guidance string
+	reply    chan response
 }
 type resolveDispositionCommand struct {
 	itemID string
@@ -294,7 +295,7 @@ func (e *Engine) loop() {
 			e.commandStarts = nil
 			command.reply <- response{err: err}
 		case rerunFailedCommand:
-			err = e.rerunFailed(command.itemID)
+			err = e.rerunFailed(command.itemID, command.guidance)
 			command.reply <- e.itemCommandResponse(command.itemID, err)
 		case resolveDispositionCommand:
 			err = e.resolveDisposition(command.itemID)

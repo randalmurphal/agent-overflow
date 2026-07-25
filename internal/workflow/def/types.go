@@ -66,16 +66,21 @@ type Phase struct {
 	Commands     []string            `yaml:"commands,omitempty" json:"commands,omitempty"`
 	Capabilities []string            `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 	MCP          []string            `yaml:"mcp,omitempty" json:"mcp,omitempty"`
-	Access       Access              `yaml:"access,omitempty" json:"access,omitempty"`
-	FanOut       []Unit              `yaml:"fan_out,omitempty" json:"fanOut,omitempty"`
-	Over         string              `yaml:"over,omitempty" json:"over,omitempty"`
-	As           string              `yaml:"as,omitempty" json:"as,omitempty"`
-	Unit         *Unit               `yaml:"unit,omitempty" json:"unit,omitempty"`
-	Join         *Unit               `yaml:"join,omitempty" json:"join,omitempty"`
-	Call         string              `yaml:"call,omitempty" json:"call,omitempty"`
-	Args         map[string]string   `yaml:"args,omitempty" json:"args,omitempty"`
-	MaxDepth     int                 `yaml:"max_depth,omitempty" json:"maxDepth,omitempty"`
-	Gate         Gate                `yaml:"gate" json:"gate"`
+	// Grants are the first-party `ao` capabilities this phase's agent may use
+	// (§5). They are frozen into the run snapshot with everything else, so a
+	// phase re-entered after the definition changed keeps the authority the run
+	// started with.
+	Grants   []string          `yaml:"grants,omitempty" json:"grants,omitempty"`
+	Access   Access            `yaml:"access,omitempty" json:"access,omitempty"`
+	FanOut   []Unit            `yaml:"fan_out,omitempty" json:"fanOut,omitempty"`
+	Over     string            `yaml:"over,omitempty" json:"over,omitempty"`
+	As       string            `yaml:"as,omitempty" json:"as,omitempty"`
+	Unit     *Unit             `yaml:"unit,omitempty" json:"unit,omitempty"`
+	Join     *Unit             `yaml:"join,omitempty" json:"join,omitempty"`
+	Call     string            `yaml:"call,omitempty" json:"call,omitempty"`
+	Args     map[string]string `yaml:"args,omitempty" json:"args,omitempty"`
+	MaxDepth int               `yaml:"max_depth,omitempty" json:"maxDepth,omitempty"`
+	Gate     Gate              `yaml:"gate" json:"gate"`
 }
 
 // EffectiveShape resolves the phase's declared shape, defaulting to single.

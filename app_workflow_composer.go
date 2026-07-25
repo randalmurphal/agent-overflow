@@ -1,0 +1,78 @@
+package main
+
+import (
+	"fmt"
+	"strings"
+
+	"agent-overflow/internal/aocli"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/workflow/engine"
+)
+
+// The `/workflow` composer context (spec §5, D15). Selecting `/workflow` in a
+// chat composer inserts a text block telling the agent that `ao` exists, that
+// its credentials are already in the environment, which workflows this project
+// has, and what is already running.
+//
+// The block's format is owned by internal/aocli (pure, unit-tested); this method
+// resolves the live data behind it.
+
+// WorkflowComposerContext renders the `/workflow` block for one thread.
+//
+// LocalOnly: it reads the app's workflow config directories off local disk and
+// reports whether a live provider session holds a credential.
+func (a *App) WorkflowComposerContext(threadID string) (string, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return "", fmt.Errorf("workflow composer context: thread id is required")
+	}
+	if a.store == nil {
+		return "", fmt.Errorf("workflow composer context: store unavailable")
+	}
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return "", err
+	}
+	context := aocli.ComposerContext{SessionReady: len(a.sessionAOEnv(threadID)) > 0}
+	slug := ""
+	if strings.TrimSpace(thread.ProjectID) != "" {
+		projectRow, err := a.store.GetProject(thread.ProjectID)
+		if err != nil {
+			return "", err
+		}
+		context.ProjectName = projectRow.Name
+		slug = projectRow.Slug
+	}
+	context.SharedDir, context.ProjectDir = aocli.WorkflowSourceDirs(a.workflowDataRoot(), slug)
+
+	resolved, err := aocli.ResolveConfigured(a.workflowDataRoot(), slug)
+	if err != nil {
+		return "", fmt.Errorf("workflow composer context: %w", err)
+	}
+	context.Workflows = make([]aocli.ComposerWorkflow, 0, len(resolved))
+	for _, workflow := range resolved {
+		context.Workflows = append(context.Workflows, aocli.ComposerWorkflow{
+			ID: workflow.Workflow.ID, Name: workflow.Workflow.Name, Scope: string(workflow.Scope),
+		})
+	}
+
+	if thread.ProjectID != "" {
+		runs, err := a.store.ListWorkItemSummaries(store.WorkItemListFilter{
+			ProjectID: thread.ProjectID,
+			States:    []string{string(engine.StateRunning), string(engine.StateNeedsHuman)},
+		})
+		if err != nil {
+			return "", err
+		}
+		// Newest first: a composer block is read top-down, and the run someone is
+		// about to ask about is almost always the most recent one.
+		context.Runs = make([]aocli.ComposerRun, 0, len(runs))
+		for i := len(runs) - 1; i >= 0; i-- {
+			context.Runs = append(context.Runs, aocli.ComposerRun{
+				ItemID: runs[i].ID, WorkflowID: runs[i].WorkflowID, State: runs[i].State,
+				Reason: runs[i].Reason, PhaseID: runs[i].CurrentPhaseID,
+			})
+		}
+	}
+	return aocli.RenderComposerContext(context), nil
+}

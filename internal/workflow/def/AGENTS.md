@@ -98,6 +98,31 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   caller's workspace and never provisions one — the root is the only place a
   worktree can be cut.
 
+## Phase grants
+
+- A phase may declare `grants:`, the first-party `ao` capabilities its agent is
+  allowed to exercise (spec §5). The set is CLOSED — `start-run`, `schedule`,
+  `update-notes`, `introspect` — and lives in `grants.go`. An unknown name is a
+  finding rather than an ignored line, because a typo would otherwise read as
+  "this phase deliberately has no authority".
+- Grants require an agent driver. A `driver: tool` phase runs a command, not a
+  session that could hold the credentials, so `grants:` on one is a finding.
+  A call phase grants nothing either: the child workflow's own phases declare
+  what they may do.
+- Grants are frozen into the run snapshot with everything else. A phase
+  re-entered after the definition was edited keeps the authority the run
+  started with — widening a running phase's authority by editing a file is
+  exactly what freezing exists to prevent. `frozenPhaseGrants` (repo root,
+  `app_ao_session.go`) reads them back and drops any name this build does not
+  recognize, so an old snapshot cannot hand out authority the code cannot
+  enforce.
+- **`report-back` is deliberately NOT in the v1 set** even though spec §5 lists
+  it. The other four map onto CLI commands that already exist; `report-back`
+  does not yet have a defined destination or payload contract, and shipping a
+  grant name that authorizes nothing would be a promise the enforcement layer
+  cannot keep. It stays out until it is ratified with a contract; §5 is
+  unchanged and the orchestrator owns surfacing the gap.
+
 ## Unit and join envelopes
 
 - `EnvelopeContract` is the one thing schema generation and post-validation are
@@ -133,6 +158,7 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
 | `parse.go` | Strict single-document YAML parsing. |
 | `resolve.go` | Ordered scoped-directory resolution. |
 | `schema.go` | JSON-Schema fragments and embedded authoring schema. |
+| `grants.go` | The closed `ao` grant set and the phase-level grant checks. |
 | `envelope.go` | Generated control schema and payload post-validation. |
 | `tool.go` | The tool driver's implicit outputs and the merged `PhaseOutputs` contract. |
 | `interpolate.go` | Single-pass prompt interpolation and template checks. |

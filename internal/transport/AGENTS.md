@@ -48,6 +48,46 @@ A reverse proxy on the same host makes remote peers appear loopback and
 defeats `LocalOnlyMethods` locality; proxy from a different host, or do not
 front privileged use with a same-host proxy.
 
+## Scoped tokens (the `ao` CLI surface)
+
+`scopedtoken.go` + `httprpc.go` add a SECOND, strictly narrower credential
+class for the `ao` CLI (spec §5, D15). It is not a second API: the same
+dispatcher, frame types, and method table serve it.
+
+- **Route.** `POST /rpc` (`ScopedRPCPath`), `Authorization: Bearer <token>`,
+  one `ClientFrame` in and one `ServerFrame` out. A CLI process makes one call
+  and exits, so it gets a POST rather than a WebSocket with a replay ring.
+  Loopback-only, and a non-loopback peer gets a 404 so the route stays
+  unfingerprintable. The server's own session token is **not** honoured here —
+  this surface can never be wider than the table below, however it is reached.
+- **Registry.** The app owns it (`App.aoTokens`, mutated only from the session
+  map in `app_session_manager.go`); this package consults it through the narrow
+  `ScopedTokens` interface. A token exists exactly as long as the provider
+  session it was minted for, so a resolved scope always names a live session.
+  An unknown token and a revoked one are both a bare 401, by design.
+- **Scope.** `CallerScope` travels on the request context
+  (`WithCallerScope` / `CallerScopeFrom`), never as a parameter the caller
+  could supply. `interactive` is a human-driven thread whose every invocation
+  passes the provider's own bash-approval UX; `phase` is an unattended workflow
+  phase carrying the grants its workflow FROZE at start.
+- **Method table.** `ScopedTokenMethods` is a closed allow-list mapping method
+  name to the grants that admit it. Anything absent — every non-workflow RPC,
+  every `LocalOnly` method outside the table — is `method_not_found` for a
+  scoped token, exactly as an unregistered method would be. An interactive
+  scope may call everything listed; a phase scope needs one of the listed
+  grants, and gets the typed `grant_required` refusal (`ErrCodeGrantRequired`)
+  naming what to add. That refusal is deliberately distinct from
+  `method_not_found`: the route is loopback-only and the caller is our own CLI,
+  so naming the grant leaks nothing while making a misconfigured workflow
+  fixable.
+- **What this layer does NOT decide.** Row-level scoping ("which runs may this
+  phase touch") depends on the run record, not the method name. The bound
+  methods enforce it from the scope on their context — see `app_workflow_cli.go`.
+
+Adding a method to `ScopedTokenMethods` widens what a compromised agent session
+can do. Do it only for methods whose row-level authorization is enforced from
+`CallerScopeFrom`, and add it to `LocalOnlyMethods` too.
+
 ## Additional receivers
 
 `Dispatcher.Register` accepts more than one receiver. The only second

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -60,7 +61,7 @@ func TestWorkflowUnitFailureParksAndRetryCompletesTheRun(t *testing.T) {
 		t.Fatal("WorkflowTakeOverUnit accepted a unit whose run already ended")
 	}
 
-	if err := app.WorkflowRetryUnit(item.ID, "beta", "the merge script is fixed"); err != nil {
+	if err := app.WorkflowRetryUnit(context.Background(), item.ID, "beta", "the merge script is fixed"); err != nil {
 		t.Fatal(err)
 	}
 	item = waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
@@ -228,7 +229,7 @@ reliability:
 	}
 	unsubscribe()
 
-	if err := app.WorkflowRetryUnit(item.ID, "beta", "steered by hand; run it again"); err != nil {
+	if err := app.WorkflowRetryUnit(context.Background(), item.ID, "beta", "steered by hand; run it again"); err != nil {
 		t.Fatal(err)
 	}
 	item = waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")

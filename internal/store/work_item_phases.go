@@ -234,6 +234,28 @@ func (s *Store) GetLatestWorkItemPhase(itemID string) (WorkItemPhase, bool, erro
 	return phase, true, nil
 }
 
+// GetWorkItemPhaseByThread resolves the phase attempt an AO thread is running.
+// A phase thread is reused across attempts of the same phase, so the newest row
+// is the answer; what the caller needs from it — which (item, phase) the thread
+// belongs to — is identical on every attempt.
+func (s *Store) GetWorkItemPhaseByThread(threadID string) (WorkItemPhase, bool, error) {
+	if threadID == "" {
+		return WorkItemPhase{}, false, nil
+	}
+	phase, err := scanWorkItemPhase(s.db.QueryRow(
+		`SELECT `+workItemPhaseColumns+` FROM work_item_phases
+		 WHERE thread_id = ? ORDER BY started_at DESC, attempt DESC LIMIT 1`,
+		threadID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkItemPhase{}, false, nil
+	}
+	if err != nil {
+		return WorkItemPhase{}, false, fmt.Errorf("store: get work item phase for thread %s: %w", threadID, err)
+	}
+	return phase, true, nil
+}
+
 // GetCurrentWorkItemPhase returns the highest attempt number for a phase.
 func (s *Store) GetCurrentWorkItemPhase(itemID, phaseID string) (WorkItemPhase, error) {
 	phase, err := scanWorkItemPhase(s.db.QueryRow(

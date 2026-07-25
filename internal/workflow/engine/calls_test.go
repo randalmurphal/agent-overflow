@@ -217,7 +217,7 @@ func TestCallChildFailedFailsParentPhaseAndRerunCallsAgain(t *testing.T) {
 
 	// A rerun makes a fresh call: the failed child is history, not something to
 	// resume.
-	if err := h.engine.RerunFailed(parent); err != nil {
+	if err := h.engine.RerunFailed(parent, ""); err != nil {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, parent, StateRunning, "")

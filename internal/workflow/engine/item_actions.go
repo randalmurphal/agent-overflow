@@ -13,9 +13,12 @@ func (e *Engine) ParkDisposition(itemID string) error {
 }
 
 // RerunFailed rebuilds a failed item from its frozen snapshot and starts the
-// failed phase again immediately, carrying its diagnosis as guidance.
-func (e *Engine) RerunFailed(itemID string) error {
-	return e.request(rerunFailedCommand{itemID: itemID})
+// failed phase again immediately, carrying its diagnosis as guidance. Optional
+// guidance from whoever asked for the rerun is appended to that diagnosis, the
+// same way RetryUnit's note rides a unit retry — a human or an agent re-running
+// a failure usually knows something the diagnosis does not.
+func (e *Engine) RerunFailed(itemID, guidance string) error {
+	return e.request(rerunFailedCommand{itemID: itemID, guidance: guidance})
 }
 
 // ResolveDisposition returns a disposition-parked item to done after its
@@ -40,7 +43,7 @@ func (e *Engine) parkDisposition(itemID string) error {
 	return nil
 }
 
-func (e *Engine) rerunFailed(itemID string) error {
+func (e *Engine) rerunFailed(itemID, guidance string) error {
 	stored, err := e.store.GetWorkItem(itemID)
 	if err != nil {
 		return fmt.Errorf("rerun failed item %q: %w", itemID, err)
@@ -76,7 +79,7 @@ func (e *Engine) rerunFailed(itemID string) error {
 	// The guidance seed is process-local; the diagnosis it distils stays
 	// durable in the phase history, so a crash before the attempt lands loses
 	// only the convenience copy.
-	runtime.feedback, err = failedAttemptFeedback(Reason(stored.Reason), latest.PhaseID, latest.OutputEnvelope)
+	runtime.feedback, err = failedAttemptFeedback(Reason(stored.Reason), latest.PhaseID, latest.OutputEnvelope, guidance)
 	if err != nil {
 		return fmt.Errorf("rerun failed item %q output envelope: %w", itemID, err)
 	}
@@ -122,7 +125,11 @@ func (e *Engine) resolveDisposition(itemID string) error {
 	return nil
 }
 
-func failedAttemptFeedback(reason Reason, phaseID string, payload []byte) (*Feedback, error) {
+// failedAttemptFeedback distils the failed attempt's diagnosis into the note the
+// next attempt reads, then appends the guidance whoever asked for the rerun
+// supplied. Guidance comes last so it reads as a correction to the diagnosis
+// above it rather than as part of it.
+func failedAttemptFeedback(reason Reason, phaseID string, payload []byte, guidance string) (*Feedback, error) {
 	note := string(reason)
 	var envelope struct {
 		Outputs map[string]any `json:"outputs"`
@@ -148,6 +155,9 @@ func failedAttemptFeedback(reason Reason, phaseID string, payload []byte) (*Feed
 		if diagnosis := strings.TrimSpace(*envelope.Reason); diagnosis != "" {
 			note += ": " + diagnosis
 		}
+	}
+	if trimmed := strings.TrimSpace(guidance); trimmed != "" {
+		note += "\nGuidance for this rerun: " + trimmed
 	}
 	feedback.Note = note
 	if len(feedback.Values) == 0 {

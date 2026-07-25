@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -52,7 +53,7 @@ func TestWorkflowToolPhaseCancelKillsTheProcessGroup(t *testing.T) {
 	item := fixture.start(t, "cancel")
 
 	pids := waitForRecordedPIDs(t, pidPath)
-	if err := fixture.app.WorkflowCancelItem(item.ID); err != nil {
+	if err := fixture.app.WorkflowCancelItem(context.Background(), item.ID); err != nil {
 		t.Fatal(err)
 	}
 	waitForWorkflowItem(t, fixture.app, item.ID, engine.StateCancelled, engine.ReasonInterrupted)

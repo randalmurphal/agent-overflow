@@ -78,7 +78,7 @@ one closest to what you're touching.
 | `workflow/scheduler/` | Automations (§11): typed cron / internal-event triggers, run-if conditions evaluated through `def`, skip-if-running with recorded skips, and the reserved `trigger` / `job-notes` seeds. One goroutine and one timer; robfig/cron is used for `ParseStandard` + `Next` only, never its runner. Never imports the engine — the app feeds it run transitions and supplies the one start callback. |
 | `workflow/profile/` | Pure per-project workflow profile loading/validation, binding lookup, and explicit env/file secret resolution with child-process env rendering and masking. |
 | `workflow/starters/` | Embedded workflow definition sets used as sources by `ao workflow new`; never an engine-visible built-in tier. |
-| `aocli/` | Offline `ao` command routing, config-root discovery, workflow validation/listing, and human/JSON presentation. |
+| `aocli/` | The `ao` binary's two halves: offline command routing (config-root discovery, workflow validation/listing/scaffolding) and the execution surface (the AO_* session contract, the scoped HTTP RPC client behind `ao run` / `ao notes` / `ao schedule`, and the pure `/workflow` composer-block renderer). |
 | `appdirs/` | The single UserConfigDir→UserHomeDir→`/agent-overflow` fallback chain locating the app-managed directory root; shared by `main.go` boot reads and the `ao` CLI so discovery never drifts. |
 | `highlight/` | Theme-independent syntax-highlight span metadata (tree-sitter via cgo). Whole-document parsing returns class ids over byte ranges — metadata like `PathRef[]`, never HTML. Has its own subarea guide. |
 

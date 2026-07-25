@@ -342,7 +342,10 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// and iframe loads falling through to the SPA shell with
 		// X-Frame-Options: DENY.
 		DesignHandler: appService.DesignServer,
-		MCPToolCall:   appService.handleWorkflowMCPToolCall,
+		// The `ao` CLI's scoped-token registry. The App owns it because a
+		// token's lifetime is a provider session's lifetime; the transport
+		// only asks what a presented token is allowed to do.
+		ScopedTokens: appService,
 		// Diagnostic cross-origin isolation so the renderer exposes
 		// measureUserAgentSpecificMemory. Opt-in: COEP breaks remote
 		// subresources (chat-markdown images, design-preview assets).

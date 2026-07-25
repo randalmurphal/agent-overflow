@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -33,7 +35,12 @@ func (s *Store) RecordWorkItemEffect(effect WorkItemEffect) error {
 	return nil
 }
 
-func (s *Store) GetWorkItemEffect(itemID, phaseID, tool, payloadHash string) (WorkItemEffect, error) {
+// GetWorkItemEffect answers the surface-and-skip question: has this (item,
+// phase) already produced this exact effect? "No" is the ordinary first-run
+// answer, so absence is reported as found=false rather than as an error —
+// otherwise every caller would have to unwrap sql.ErrNoRows to tell a fresh
+// invocation apart from a broken database.
+func (s *Store) GetWorkItemEffect(itemID, phaseID, tool, payloadHash string) (WorkItemEffect, bool, error) {
 	var effect WorkItemEffect
 	var payload string
 	err := s.db.QueryRow(
@@ -45,10 +52,13 @@ func (s *Store) GetWorkItemEffect(itemID, phaseID, tool, payloadHash string) (Wo
 		&effect.ItemID, &effect.PhaseID, &effect.Tool, &effect.PayloadHash,
 		&payload, &effect.CreatedAt,
 	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkItemEffect{}, false, nil
+	}
 	if err != nil {
-		return WorkItemEffect{}, fmt.Errorf("store: get work item effect %s/%s/%s/%s: %w",
+		return WorkItemEffect{}, false, fmt.Errorf("store: get work item effect %s/%s/%s/%s: %w",
 			itemID, phaseID, tool, payloadHash, err)
 	}
 	effect.Payload = json.RawMessage(payload)
-	return effect, nil
+	return effect, true, nil
 }

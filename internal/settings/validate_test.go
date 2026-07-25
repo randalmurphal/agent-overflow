@@ -313,31 +313,41 @@ func TestRetentionDefaultIsThirtyDays(t *testing.T) {
 
 func TestWorkflowSettingsDefaultsAndValidation(t *testing.T) {
 	got := NewService(t.TempDir()).Get()
-	if got.WorkflowPaused || !got.WorkflowChatEnqueue {
-		t.Fatalf("workflow defaults = paused:%t chat-enqueue:%t, want false/true", got.WorkflowPaused, got.WorkflowChatEnqueue)
+	if got.WorkflowPaused {
+		t.Fatalf("workflow defaults = paused:%t, want false", got.WorkflowPaused)
 	}
 	svc := NewService(t.TempDir())
-	updated, err := svc.Update(map[string]any{"workflowPaused": true, "workflowChatEnqueue": false})
+	updated, err := svc.Update(map[string]any{"workflowPaused": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !updated.WorkflowPaused || updated.WorkflowChatEnqueue {
+	if !updated.WorkflowPaused {
 		t.Fatalf("workflow settings update = %+v", updated)
 	}
-	for field, value := range map[string]any{"workflowPaused": "yes", "workflowChatEnqueue": "yes"} {
-		if _, err := svc.Update(map[string]any{field: value}); err == nil {
-			t.Errorf("non-boolean %s succeeded", field)
-		}
+	if _, err := svc.Update(map[string]any{"workflowPaused": "yes"}); err == nil {
+		t.Error("non-boolean workflowPaused succeeded")
 	}
-	// A settings file written before the queue was removed still loads: the
-	// dropped keys are ignored and the pause flag takes its default.
+	// A settings file written before the queue and the chat-enqueue MCP were
+	// removed still loads: the dropped keys decode to nothing (the typed
+	// struct no longer declares them) and the surviving flags take their
+	// defaults. Unknown keys are preserved on disk by design — an older build
+	// must not delete a newer one's settings — so this asserts on the decoded
+	// value, not on the file.
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "settings.json"),
-		[]byte(`{"workflowQueueActive":false,"workflowConcurrency":99}`), 0o600); err != nil {
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path,
+		[]byte(`{"workflowQueueActive":false,"workflowConcurrency":99,"workflowChatEnqueue":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if legacy := NewService(dir).Get(); legacy.WorkflowPaused != DefaultSettings.WorkflowPaused {
-		t.Fatalf("legacy queue settings file yielded paused = %t, want %t", legacy.WorkflowPaused, DefaultSettings.WorkflowPaused)
+	legacy := NewService(dir)
+	if loaded := legacy.Get(); loaded.WorkflowPaused != DefaultSettings.WorkflowPaused {
+		t.Fatalf("legacy settings file yielded paused = %t, want %t", loaded.WorkflowPaused, DefaultSettings.WorkflowPaused)
+	}
+	if _, err := legacy.Update(map[string]any{"workflowPaused": true}); err != nil {
+		t.Fatalf("update over a legacy settings file: %v", err)
+	}
+	if reloaded := NewService(dir).Get(); !reloaded.WorkflowPaused {
+		t.Fatalf("legacy settings file did not accept an update: %+v", reloaded)
 	}
 }
 
