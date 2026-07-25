@@ -13,10 +13,14 @@ type testBindings struct {
 	// declared overrides the capacity a bound resource reports. Absent names
 	// fall back to 1, which is enough for the bindability checks.
 	declared map[string]int
+	// maxFanOutWidth is 0 by default, which is what a profile declaring no
+	// ceiling reports — the fixtures then validate against DefaultMaxFanOutWidth.
+	maxFanOutWidth int
 }
 
 func (b testBindings) HasCheck(name string) bool   { return b.checks[name] }
 func (b testBindings) HasCommand(name string) bool { return b.commands[name] }
+func (b testBindings) DeclaredMaxFanOutWidth() int { return b.maxFanOutWidth }
 
 func (b testBindings) Capacity(name string) (int, bool) {
 	if capacity, ok := b.declared[name]; ok {

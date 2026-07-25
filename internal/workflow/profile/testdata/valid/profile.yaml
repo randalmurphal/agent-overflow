@@ -3,6 +3,7 @@ checks:
   test: [make, test]
 capacities:
   live-stack: 1
+max_fan_out_width: 15
 commands:
   report-issue: [gh, issue, create, --title, "{{ title }}"]
 reliability:

@@ -13,6 +13,23 @@ import (
 // actually get.
 const DefaultProviderCapacity = 2
 
+// DefaultMaxFanOutWidth is the absolute ceiling on the units one fan-out phase
+// attempt may expand to when the project profile declares none. It lives beside
+// DefaultProviderCapacity for the same reason: the dry-run (which refuses a
+// static list wider than it) and the engine (which refuses an expansion wider
+// than it) must read one number.
+//
+// It is NOT a capacity. Capacity throttles work that all still runs; this is a
+// refusal, so the number is chosen as "past here, the width is an accident
+// rather than a plan". 32 sits comfortably above any hand-authored `fan_out:`
+// list — the widest anywhere in the shipped starters and the spec's examples is
+// single digits — and above the realistic dynamic case of one unit per section
+// of a plan. Past it, a width is almost always a query that did not filter, and
+// 32 units is already 32 sub-worktrees, 32 branches, and 32 provider sessions'
+// worth of subscription spend for one phase. A project that genuinely wants 50
+// writes 50 in its profile; nothing is unbounded.
+const DefaultMaxFanOutWidth = 32
+
 const providerResourcePrefix = "provider:"
 
 // ProviderResource names the implicit resource every agent-driver phase and

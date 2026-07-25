@@ -29,6 +29,13 @@ func (b documentedBindings) Capacity(name string) (int, bool) {
 	return 1, true
 }
 
+// DeclaredMaxFanOutWidth reports 0 — no declared ceiling — for the same reason
+// Capacity reports 1: a starter documents the names a project must bind, never
+// the width that project chooses to allow. Starters are therefore held to
+// def.DefaultMaxFanOutWidth, which is the ceiling a project with no profile of
+// its own gets.
+func (b documentedBindings) DeclaredMaxFanOutWidth() int { return 0 }
+
 func TestEmbeddedStartersAreCompleteAndValid(t *testing.T) {
 	if got, want := List(), []string{"build-and-validate", "multi-lens-review", "poll-jira-and-start"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("List() = %v, want %v", got, want)

@@ -36,7 +36,9 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
 - `Bindings` is intentionally narrow; profile loading implements it elsewhere.
   It answers `Capacity(name)` rather than a bare "is it declared", because the
   dry-run's width report needs the number the engine will actually schedule
-  against.
+  against. `DeclaredMaxFanOutWidth()` has no "is it bound" half for the opposite
+  reason: the ceiling always exists, so 0 means undeclared and
+  `EffectiveMaxFanOutWidth` is the single place that resolves it.
 
 ## Fan-out authoring
 
@@ -68,7 +70,20 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   one run and twenty on the next. Validation therefore checks the *shape* of a
   dynamic fan-out (the `over` variable resolves, is in scope, and is
   array-typed; `as` is a valid identifier that collides with nothing) and never
-  the width — only a static list has a width to report on.
+  the width — only a static list has a width to check here.
+- **The project's fan-out ceiling is the one width rule that does apply
+  statically** (D29). `EffectiveMaxFanOutWidth(bindings)` resolves the profile's
+  `max_fan_out_width`, defaulting to `DefaultMaxFanOutWidth` (32) when the
+  profile declares none *or when no profile resolved at all* — the run-start
+  path loads `profile.Default()` for a project with no `profile.yaml` and
+  enforces exactly that number, so skipping on nil bindings would let a
+  definition validate clean and be refused at its first expansion.
+  A static list over it is a blocking `fan-out.max-width` **Finding**, not a
+  Report: this width never runs, so it is wrong with the definition rather than
+  a description of how it will behave. The `fan-out.width` capacity Report is a
+  different statement and both survive — inside the ceiling but over capacity is
+  pacing, over the ceiling is a refusal. A dynamic width is refused by the
+  engine at expansion, where the number first exists.
 - `UnitDefinition(phase, unitID, join)` resolves the frozen definition behind
   one persisted unit id without the variable context an expansion needs, for
   the recovery paths that hold a row rather than an attempt. A dynamic phase

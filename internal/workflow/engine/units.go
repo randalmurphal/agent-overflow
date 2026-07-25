@@ -141,6 +141,14 @@ func (e *Engine) startPhaseWork(item *runtimeItem, phase def.Phase, vars map[str
 // unit's branch and sub-worktree have to be registrable the moment they exist,
 // and an attempt whose width lived only in memory could not be recovered after
 // a crash.
+//
+// It is also the one seam every unit that will ever exist passes through, so it
+// is where the project's fan-out ceiling is enforced — before the first row,
+// worktree, or provider session. The dry-run refuses a static list over the
+// ceiling at authoring time; this refuses everything, static and dynamic alike,
+// because a frozen snapshot is decoded and never re-validated (a run whose
+// definition predates the rule, or whose project lowered its ceiling since,
+// reaches here with no finding behind it).
 func (e *Engine) expandFanOut(item *runtimeItem, phase def.Phase, vars map[string]any) error {
 	if phase.Join == nil {
 		return e.parkFanOutSetup(item, ReasonWiringError,
@@ -152,6 +160,21 @@ func (e *Engine) expandFanOut(item *runtimeItem, phase def.Phase, vars map[strin
 		// definition and the live context failing to produce runnable work.
 		return e.parkFanOutSetup(item, ReasonWiringError,
 			fmt.Errorf("expand fan-out %s/%s/%d: %w", item.item.ID, phase.ID, item.attempt, err))
+	}
+	maxWidth, err := e.maxFanOutWidth(item.item.ProjectID)
+	if err != nil {
+		return e.parkFanOutSetup(item, ReasonSetupFailed,
+			fmt.Errorf("expand fan-out %s/%s/%d: %w", item.item.ID, phase.ID, item.attempt, err))
+	}
+	if len(expanded) > maxWidth {
+		// A wiring error, for the same reason the non-array `over` above is one:
+		// the frozen definition and the live project together could not produce
+		// runnable work. Nothing has started and nothing can be retried unit by
+		// unit — the answer is to raise the ceiling or narrow the data.
+		return e.parkFanOutSetup(item, ReasonWiringError, fmt.Errorf(
+			"fan-out phase %q of item %q expands to %d units, above the project maximum fan-out width of %d; raise max_fan_out_width in the project profile or fan out over fewer units",
+			phase.ID, item.item.ID, len(expanded), maxWidth,
+		))
 	}
 	fan := &fanOutRun{vars: vars, units: make([]*unitRun, 0, len(expanded))}
 	for _, unit := range expanded {
@@ -181,12 +204,29 @@ func (e *Engine) expandFanOut(item *runtimeItem, phase def.Phase, vars map[strin
 	return nil
 }
 
+// maxFanOutWidth is the ceiling this project's next expansion gets, read from
+// the live profile like every other bound (§6). It is deliberately not frozen
+// into the run snapshot: lowering the ceiling has to take effect on the next
+// expansion, including the next attempt of a run that is already going.
+func (e *Engine) maxFanOutWidth(projectID string) (int, error) {
+	projectProfile, err := e.liveProfile(projectID)
+	if err != nil {
+		return 0, err
+	}
+	return def.EffectiveMaxFanOutWidth(projectProfile), nil
+}
+
 // parkFanOutSetup parks an attempt that could not be expanded at all. Nothing
 // has started, so this is a phase-level park with the phase-level reason rather
-// than the unit-failure policy.
+// than the unit-failure policy. The cause is written onto the attempt as its
+// envelope: no unit ran to author one, and the cause is the only place the
+// resolved width or the unusable `over:` value is stated.
 func (e *Engine) parkFanOutSetup(item *runtimeItem, reason Reason, cause error) error {
 	return errors.Join(
-		e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason}),
+		e.teardown(item, teardownRequest{
+			output:      parkCauseEnvelope(cause),
+			phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason,
+		}),
 		cause,
 	)
 }

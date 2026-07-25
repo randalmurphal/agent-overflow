@@ -241,6 +241,11 @@ type Bindings interface {
 	HasCheck(name string) bool
 	Capacity(name string) (int, bool)
 	HasCommand(name string) bool
+	// DeclaredMaxFanOutWidth is the project's absolute fan-out ceiling, or 0
+	// when it declares none. Unlike Capacity there is no "is it bound" half:
+	// the ceiling always exists, and an undeclared one resolves to
+	// DefaultMaxFanOutWidth through EffectiveMaxFanOutWidth.
+	DeclaredMaxFanOutWidth() int
 }
 
 type BindingStatus string

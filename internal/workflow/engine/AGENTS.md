@@ -25,9 +25,11 @@ resource semaphores, and startup recovery.
   capacity, never an item waiting in line. `waiting` is one FIFO list of held
   starts — phase attempts and fan-out units alike — so freed capacity goes to
   the longest-waiting piece of work regardless of which kind it is.
-- Resource capacity comes from the live project profile at acquisition time.
-  Acquisitions are sorted and all-or-nothing; names never contend across
-  projects.
+- Resource capacity comes from the live project profile at acquisition time
+  (`liveProfile`, the one read both acquisition and fan-out expansion go
+  through). Acquisitions are sorted and all-or-nothing; names never contend
+  across projects. A profile source that answers nil without an error is a
+  broken source, not an unbounded project, and is refused as such.
 - Every agent-driver phase implicitly acquires `provider:<provider>` on top of
   its declared resources — the bound on concurrent CLI sessions. Capacity comes
   from the project profile like any other resource and falls back to
@@ -152,6 +154,22 @@ resource semaphores, and startup recovery.
   `over:` variable that is missing or not an array at runtime is a
   `wiring-error` park, not a crash. Every unit row is persisted `pending`
   before any unit starts.
+- **`expandFanOut` is where the project's fan-out ceiling is enforced** (D29),
+  between `def.ExpandUnits` and `CreateWorkItemUnits`, so a refusal leaves no
+  unit row, no sub-worktree, and no provider session. It **refuses, never
+  truncates**: an expansion wider than `def.EffectiveMaxFanOutWidth` of the
+  *live* profile parks `needs-human(wiring-error)` — the same reason the
+  unusable `over:` above takes, because a width the project forbids is again
+  the frozen definition and the live context failing to produce runnable work.
+  It applies to static lists too, not just dynamic ones: a frozen snapshot is
+  decoded and never re-validated, so a run predating the rule or a project that
+  lowered its ceiling mid-flight reaches here with no dry-run finding behind
+  it. A profile that cannot be read parks `setup-failed` rather than expanding
+  unbounded. `parkFanOutSetup` writes the cause into the attempt's envelope
+  (`parkCauseEnvelope`), since no unit ran to author one and the resolved width
+  is stated nowhere else. `restoreFanOut` deliberately does **not** re-check:
+  lowering a ceiling must not make an attempt whose rows already exist
+  unrecoverable.
 - Whether an attempt may still launch is derived from its unit statuses
   (`fanOutRun.blocked`), never latched into a flag, so an attempt rebuilt from
   its rows blocks for exactly the reason the live one did. A unit resting

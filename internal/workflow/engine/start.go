@@ -139,7 +139,7 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 		if argsErr != nil {
 			return errors.Join(
 				e.teardown(item, teardownRequest{
-					output:      callParkEnvelope(argsErr),
+					output:      parkCauseEnvelope(argsErr),
 					phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError,
 				}),
 				fmt.Errorf("call %s/%s: %w", item.item.ID, phase.ID, argsErr),

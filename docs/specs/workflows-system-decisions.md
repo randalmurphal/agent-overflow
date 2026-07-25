@@ -881,3 +881,75 @@ verdict it now is, with what the first attempt got wrong.
   comment next to the target so it is discoverable from the thing it governs.
   **Ratified: cadence is the gate; no CI automation of a token-spending
   test.**
+
+## Fan-out ceiling (user ruling, 2026-07-25)
+
+- **D29. Fan-out width has an absolute per-project ceiling, and it refuses
+  rather than truncates.** The project profile gains `max_fan_out_width`
+  (`internal/workflow/profile/types.go`), the maximum number of units one
+  fan-out phase attempt may expand to. Before this there was no bound of any
+  kind: the only width check was the dry-run's informational capacity *report*
+  (`fanOutWidthReports`), which explicitly skipped dynamic fan-outs because "a
+  dynamic `over:` width is a runtime fact". A workflow fanning out over a
+  500-element array therefore validated clean and started 500 units against
+  subscriptions that cannot pay for them.
+
+  **It is a project setting, not a workflow one.** A workflow that could raise
+  its own ceiling would not be a ceiling — the number is a fact about what
+  *this* project's provider subscriptions can absorb, not about what the
+  portable graph wants, which is the same reason capacities live in the profile
+  (§6). There is no workflow-level override and none is planned.
+
+  **It refuses; it never truncates.** Running the first N of a wider expansion
+  would hand the join a set nobody chose and record the rest nowhere. A refusal
+  is loud, recoverable (raise the ceiling, or narrow the data, then rerun), and
+  cannot quietly ship a partial campaign as if it were the whole one.
+
+  **Both shapes are checked before anything starts.** A static `fan_out:` list
+  over the ceiling is a blocking dry-run **Finding** (`fan-out.max-width`,
+  `internal/workflow/def/validate_fanout.go`), naming the phase, the width, the
+  maximum, and the profile key — so `app_workflow.go`'s existing "findings
+  refuse a start" gate stops it at the call. The capacity **Report** stays a
+  Report and both survive: inside the ceiling but over capacity is pacing, over
+  the ceiling is a refusal, and confusing them would make one of the two
+  sentences useless. A dynamic `over:` width only exists once the attempt's
+  variables resolve, so the engine checks it in `expandFanOut`
+  (`internal/workflow/engine/units.go`) — the one seam every unit passes
+  through — between `def.ExpandUnits` and `CreateWorkItemUnits`, so a refusal
+  leaves no unit row, no sub-worktree, and no provider session. The engine
+  check covers static lists too, deliberately: a frozen snapshot is decoded and
+  never re-validated, so a run whose definition predates this rule, or whose
+  project lowered its ceiling mid-flight, reaches expansion with no finding
+  behind it.
+
+  **The park reason is `wiring-error`, reusing an existing one.** Its immediate
+  neighbour in the same function — an `over:` variable that is missing or not
+  an array at runtime — is already `wiring-error`, documented as "the frozen
+  definition and the live context failing to produce runnable work", which is
+  exactly what a width refusal is once the live project profile is part of the
+  context. `setup-failed` means provisioning (worktree, hooks, secrets, a
+  process that would not start) and nothing was provisioned. Adding a reason
+  would have cost a `work_items.reason` migration, a frontend signal row, and
+  an `ao` mapping to say something an existing reason already says honestly.
+  A profile the engine cannot read at expansion parks `setup-failed`, matching
+  what a failed resource acquisition does — never an unbounded start.
+
+  **Default 32 when unset; minimum 1; no unlimited setting.** 32 is comfortably
+  above any hand-authored `fan_out:` list (the widest in the shipped starters
+  and the spec's examples is single digits) and above the realistic dynamic
+  case of one unit per section of a plan, while still being a real stop: 32
+  units is 32 sub-worktrees, 32 branches, and 32 sessions' worth of
+  subscription spend for one phase. Past it a width is almost always a query
+  that did not filter. The field is a pointer so "absent" is distinguishable
+  from "authored zero": absent resolves to the default through the single
+  `def.EffectiveMaxFanOutWidth`, and an authored `0` or negative is a profile
+  finding rather than a silently ignored line — a zero ceiling would forbid
+  every fan-out, which nobody means, and treating it as "unlimited" would make
+  the one setting that exists to bound spend the one that removes the bound.
+  A dry-run with **no profile resolved** gets the default rather than a skip:
+  the run-start path loads `profile.Default()` for a project with no
+  `profile.yaml` and enforces the same number, so skipping would let a
+  definition validate clean offline and be refused at its first expansion.
+  The ceiling is read live at each expansion (§6), never frozen into the run
+  snapshot, so lowering it takes effect on the next attempt of a run already
+  under way.

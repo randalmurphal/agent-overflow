@@ -37,6 +37,7 @@ func validateWorkflow(resolved ResolvedWorkflow, bindings Bindings, calls CallRe
 	}
 	result := ValidationResult{BindingStatus: status}
 	add := func(findings ...Finding) { result.Findings = append(result.Findings, findings...) }
+	maxFanOutWidth := EffectiveMaxFanOutWidth(bindings)
 	element := "workflow " + quoted(workflow.ID)
 	if !idPattern.MatchString(workflow.ID) {
 		add(finding("workflow.id", element, "id must match [a-z0-9-]+"))
@@ -92,7 +93,7 @@ func validateWorkflow(resolved ResolvedWorkflow, bindings Bindings, calls CallRe
 			add(validatePhaseExecution(phase, phaseElement)...)
 		}
 		add(validateGrants(phase, phaseElement)...)
-		add(validateFanOut(workflow, phase, phaseElement)...)
+		add(validateFanOut(workflow, phase, phaseElement, maxFanOutWidth)...)
 		if phase.Watchdog != "" {
 			duration, err := time.ParseDuration(phase.Watchdog)
 			if err != nil {

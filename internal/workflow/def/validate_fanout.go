@@ -14,10 +14,15 @@ const (
 )
 
 // validateFanOut checks one phase's fan-out authoring: that the shape and the
-// declared form agree, that exactly one form is used, that every unit carries a
-// runnable binding, and that a join exists. Variable-level checks on `over:`
-// live with the other reference resolution in validate_vars.go.
-func validateFanOut(workflow Workflow, phase Phase, phaseElement string) []Finding {
+// declared form agree, that exactly one form is used, that a static list is
+// inside the project's fan-out ceiling, that every unit carries a runnable
+// binding, and that a join exists. Variable-level checks on `over:` live with
+// the other reference resolution in validate_vars.go.
+//
+// maxWidth is the project's absolute ceiling (EffectiveMaxFanOutWidth); it is
+// passed as the resolved number rather than as Bindings because the ceiling is
+// the only binding fact this function needs and it never varies per phase.
+func validateFanOut(workflow Workflow, phase Phase, phaseElement string, maxWidth int) []Finding {
 	var findings []Finding
 	add := func(code, element, message string) {
 		findings = append(findings, finding(code, element, message))
@@ -34,6 +39,16 @@ func validateFanOut(workflow Workflow, phase Phase, phaseElement string) []Findi
 		add("phase.fan-out", phaseElement, "a fan-out declares either a static fan_out list or a dynamic over/as/unit template, not both")
 	case len(phase.FanOut) == 0 && !dynamic:
 		add("phase.fan-out", phaseElement, "fan-out shape requires a static fan_out list or a dynamic over/as/unit template")
+	}
+	// The ceiling is a refusal, not the capacity throttle fanOutWidthReports
+	// describes: a list this wide never starts, so it is a Finding and the
+	// workflow is invalid. A dynamic width has nothing static to check here; the
+	// engine refuses it at expansion, where the number first exists.
+	if len(phase.FanOut) > maxWidth {
+		add("fan-out.max-width", phaseElement, fmt.Sprintf(
+			"%d units exceed the project maximum fan-out width of %d; raise max_fan_out_width in the project profile or fan out over fewer units",
+			len(phase.FanOut), maxWidth,
+		))
 	}
 	if phase.Join == nil {
 		add("phase.fan-out", phaseElement, "fan-out shape requires a join")
@@ -191,6 +206,13 @@ func validateUnitOutputs(unit Unit, element, role string) []Finding {
 // fan-out wider than the provider capacity it will bind to still runs, it just
 // throttles, and you should learn that from validation instead of from watching
 // units wait. A dynamic `over:` width is a runtime fact and is never reported.
+//
+// This is a different statement from the `fan-out.max-width` finding above and
+// the two coexist: inside the ceiling but over capacity is a note about pacing,
+// over the ceiling is a refusal to run at all. Reports are skipped entirely
+// when no profile resolved, because "you will throttle to capacity N" is a
+// claim only a real profile can make — the ceiling, which always has a default,
+// is checked either way.
 func fanOutWidthReports(workflow Workflow, bindings Bindings) []Finding {
 	if bindings == nil {
 		return nil
@@ -245,4 +267,28 @@ func EffectiveProviderCapacity(bindings Bindings, provider string) int {
 		}
 	}
 	return DefaultProviderCapacity
+}
+
+// EffectiveMaxFanOutWidth is the absolute ceiling one fan-out phase attempt
+// actually gets: the project profile's declared maximum, or
+// DefaultMaxFanOutWidth when it declares none. A declared non-positive maximum
+// is a profile finding of its own, so it resolves to the default here rather
+// than to a ceiling that would refuse every fan-out.
+//
+// Nil bindings — a dry-run with no project resolved (`ao workflow validate`
+// with no `--project`, a project with no profile.yaml) — get the default
+// rather than a skip. Unset means the default everywhere else, and "no profile
+// at all" is the most unset a project can be: the run-start path loads
+// profile.Default() for exactly that project and enforces 32, so skipping here
+// would let a definition validate clean and then be refused at its first
+// expansion. The cost is that a project which raised its own ceiling sees a
+// finding when validated without its profile; the message names the profile key
+// to set, and erring toward the ceiling is the safe direction.
+func EffectiveMaxFanOutWidth(bindings Bindings) int {
+	if bindings != nil {
+		if declared := bindings.DeclaredMaxFanOutWidth(); declared > 0 {
+			return declared
+		}
+	}
+	return DefaultMaxFanOutWidth
 }

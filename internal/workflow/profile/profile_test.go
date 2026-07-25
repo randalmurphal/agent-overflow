@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/workflow/def"
 )
 
 func TestParseValidFixture(t *testing.T) {
@@ -33,6 +35,9 @@ func TestParseValidFixture(t *testing.T) {
 	capacity, bound := got.Capacity("live-stack")
 	if !got.HasCheck("test") || !bound || capacity != 1 || !got.HasCommand("report-issue") {
 		t.Fatalf("profile does not expose expected bindings: %+v", got)
+	}
+	if got.DeclaredMaxFanOutWidth() != 15 {
+		t.Fatalf("declared fan-out ceiling = %d, want the fixture's 15", got.DeclaredMaxFanOutWidth())
 	}
 	if _, bound := got.Capacity("missing"); got.HasCheck("missing") || bound || got.HasCommand("missing") {
 		t.Fatal("profile reports an undeclared binding")
@@ -92,6 +97,60 @@ func TestCapacityNameProviderNamespace(t *testing.T) {
 		result := Validate(Profile{Disposition: DispositionManual, Capacities: map[string]int{name: 1}})
 		if len(result.Findings) != 1 || result.Findings[0].Code != "capacity.name" {
 			t.Errorf("capacity %q findings = %+v, want one capacity.name finding", name, result.Findings)
+		}
+	}
+}
+
+// TestMaxFanOutWidthIsBoundedAndHasNoUnlimitedSetting pins the three states the
+// ceiling has: absent (the default applies), a positive number (the project's
+// own), and an authored non-positive (a finding — there is no value meaning
+// unlimited, and a zero ceiling would forbid every fan-out).
+func TestMaxFanOutWidthIsBoundedAndHasNoUnlimitedSetting(t *testing.T) {
+	defaulted := Default()
+	if defaulted.MaxFanOutWidth != nil {
+		t.Fatalf("Default declares a ceiling = %v; absent is what resolves to the default", defaulted.MaxFanOutWidth)
+	}
+	if got := defaulted.DeclaredMaxFanOutWidth(); got != 0 {
+		t.Fatalf("Default declared ceiling = %d, want 0 (undeclared)", got)
+	}
+	if got := def.EffectiveMaxFanOutWidth(&defaulted); got != def.DefaultMaxFanOutWidth {
+		t.Fatalf("effective ceiling of the absent-profile default = %d, want %d", got, def.DefaultMaxFanOutWidth)
+	}
+	var nilProfile *Profile
+	if got := nilProfile.DeclaredMaxFanOutWidth(); got != 0 {
+		t.Fatalf("nil profile declared ceiling = %d, want 0", got)
+	}
+
+	absent, err := ParseBytes([]byte("base_branch: main\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absent.MaxFanOutWidth != nil || !Validate(absent).Valid() {
+		t.Fatalf("omitted max_fan_out_width = %v, findings %+v", absent.MaxFanOutWidth, Validate(absent).Findings)
+	}
+	if got := def.EffectiveMaxFanOutWidth(&absent); got != def.DefaultMaxFanOutWidth {
+		t.Fatalf("effective ceiling with no declaration = %d, want %d", got, def.DefaultMaxFanOutWidth)
+	}
+
+	declared, err := ParseBytes([]byte("max_fan_out_width: 15\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Validate(declared).Valid() {
+		t.Fatalf("declared ceiling findings = %+v", Validate(declared).Findings)
+	}
+	if got := def.EffectiveMaxFanOutWidth(&declared); got != 15 {
+		t.Fatalf("effective ceiling = %d, want the declared 15", got)
+	}
+
+	for _, authored := range []string{"max_fan_out_width: 0\n", "max_fan_out_width: -1\n"} {
+		parsed, err := ParseBytes([]byte(authored))
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := Validate(parsed)
+		if len(result.Findings) != 1 || result.Findings[0].Code != "fan-out.max-width" {
+			t.Fatalf("%q findings = %+v, want one fan-out.max-width finding", authored, result.Findings)
 		}
 	}
 }

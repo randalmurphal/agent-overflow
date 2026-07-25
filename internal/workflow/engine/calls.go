@@ -119,23 +119,11 @@ func callSourceRef(item *runtimeItem, phase def.Phase) string {
 func (e *Engine) parkCallSetup(item *runtimeItem, reason Reason, cause error) error {
 	return errors.Join(
 		e.teardown(item, teardownRequest{
-			output:      callParkEnvelope(cause),
+			output:      parkCauseEnvelope(cause),
 			phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason,
 		}),
 		cause,
 	)
-}
-
-// callParkEnvelope is the partial envelope a failed call invocation leaves on
-// its phase attempt. A call phase has no agent to write one, so the engine
-// writes the reason itself — including the call chain of a depth refusal, which
-// is the only place that fact survives.
-func callParkEnvelope(cause error) json.RawMessage {
-	envelope, err := json.Marshal(controlEnvelope{Status: "stuck", Outputs: map[string]any{}, Reason: cause.Error()})
-	if err != nil {
-		return nil
-	}
-	return envelope
 }
 
 // callChainStep is one edge of the ancestry that produced the current item: the

@@ -20,6 +20,20 @@ type controlEnvelope struct {
 	Reason  string         `json:"reason,omitempty"`
 }
 
+// parkCauseEnvelope is the partial envelope the engine writes onto a phase
+// attempt it parked before anything ran a turn — a call invocation that could
+// not be made, a fan-out that could not be expanded. There is no agent to write
+// one, and the cause carries the only statement of what went wrong (the call
+// chain of a depth refusal, the resolved width of a ceiling refusal), so
+// without this the run record would park with a typed reason and no sentence.
+func parkCauseEnvelope(cause error) json.RawMessage {
+	envelope, err := json.Marshal(controlEnvelope{Status: "stuck", Outputs: map[string]any{}, Reason: cause.Error()})
+	if err != nil {
+		return nil
+	}
+	return envelope
+}
+
 func (e *Engine) variableContext(item *runtimeItem, current json.RawMessage) (map[string]any, []store.WorkItemPhaseContext, error) {
 	vars := make(map[string]any)
 	if len(item.item.Seeds) > 0 {

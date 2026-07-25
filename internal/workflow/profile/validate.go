@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/workflow/def"
 )
 
 var namePattern = regexp.MustCompile(`^[a-z0-9-]+$`)
@@ -37,6 +39,15 @@ func Validate(profile Profile) ValidationResult {
 		if capacity < 1 {
 			add("capacity.value", element, "capacity must be at least 1")
 		}
+	}
+	// The ceiling is a count of units, so an authored 0 or negative is not
+	// "unlimited" — a zero ceiling would forbid every fan-out, which nobody
+	// means. Someone who wants a wider bound writes the wider number; there is
+	// no escape hatch, because a ceiling with one is not a ceiling. Omitting the
+	// key is the only way to say "whatever the default is".
+	if profile.MaxFanOutWidth != nil && *profile.MaxFanOutWidth < 1 {
+		add("fan-out.max-width", "profile max_fan_out_width",
+			fmt.Sprintf("must be at least 1; omit it for the default of %d, there is no unlimited setting", def.DefaultMaxFanOutWidth))
 	}
 	validateArgvMap("command", profile.Commands, &findings)
 	validateReliability(profile.Reliability, &findings)

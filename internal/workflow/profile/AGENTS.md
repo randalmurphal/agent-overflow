@@ -22,6 +22,15 @@ resolution for the workflow system.
   accepts `provider:<name>`, the reserved namespace for the implicit
   per-provider resource every agent phase acquires. No other colon-bearing
   capacity name validates, so the namespace cannot be squatted.
+- `max_fan_out_width` is a **ceiling, not a capacity** (D29): a capacity paces
+  work that all still runs, this refuses a fan-out attempt outright. It is a
+  `*int` so "absent" is distinguishable from an authored zero — absent resolves
+  to `def.DefaultMaxFanOutWidth` through the single `def.EffectiveMaxFanOutWidth`,
+  and an authored `0` or negative is a finding rather than an ignored line.
+  There is deliberately **no value meaning unlimited**: a project that wants a
+  wider bound writes the wider number. `Default()` leaves it unset for the same
+  reason — one implementation of "unset means the default", not two that could
+  drift.
 
 ## Files
 

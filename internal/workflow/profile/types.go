@@ -21,15 +21,29 @@ const (
 
 // Profile is the complete per-project workflow profile authoring format.
 type Profile struct {
-	BaseBranch    string              `yaml:"base_branch,omitempty" json:"baseBranch,omitempty"`
-	Checks        map[string][]string `yaml:"checks,omitempty" json:"checks,omitempty"`
-	Capacities    map[string]int      `yaml:"capacities,omitempty" json:"capacities,omitempty"`
-	Commands      map[string][]string `yaml:"commands,omitempty" json:"commands,omitempty"`
-	Reliability   ReliabilityDefaults `yaml:"reliability,omitempty" json:"reliability,omitempty"`
-	Disposition   Disposition         `yaml:"disposition,omitempty" json:"disposition"`
-	Secrets       map[string]Secret   `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	MCPServers    []string            `yaml:"mcp_servers,omitempty" json:"mcpServers,omitempty"`
-	WorktreeSetup WorktreeSetup       `yaml:"worktree_setup,omitempty" json:"worktreeSetup,omitempty"`
+	BaseBranch string              `yaml:"base_branch,omitempty" json:"baseBranch,omitempty"`
+	Checks     map[string][]string `yaml:"checks,omitempty" json:"checks,omitempty"`
+	Capacities map[string]int      `yaml:"capacities,omitempty" json:"capacities,omitempty"`
+	// MaxFanOutWidth is the project's absolute ceiling on the units one fan-out
+	// phase attempt may expand to. It is not a capacity: a capacity throttles
+	// work that will still all run, while this refuses the attempt outright.
+	// It lives on the project rather than on the workflow precisely because a
+	// definition that could raise its own ceiling would not be a ceiling —
+	// the number is a fact about what this project's provider subscriptions can
+	// absorb, and only the project gets to state it.
+	//
+	// It is a pointer for the same reason a Budget's fields are: absent has to
+	// be distinguishable from an authored zero. Absent means
+	// def.DefaultMaxFanOutWidth; an authored zero or negative is a finding,
+	// because a zero ceiling would forbid every fan-out and nobody means that.
+	// There is deliberately no value that means unlimited.
+	MaxFanOutWidth *int                `yaml:"max_fan_out_width,omitempty" json:"maxFanOutWidth,omitempty"`
+	Commands       map[string][]string `yaml:"commands,omitempty" json:"commands,omitempty"`
+	Reliability    ReliabilityDefaults `yaml:"reliability,omitempty" json:"reliability,omitempty"`
+	Disposition    Disposition         `yaml:"disposition,omitempty" json:"disposition"`
+	Secrets        map[string]Secret   `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	MCPServers     []string            `yaml:"mcp_servers,omitempty" json:"mcpServers,omitempty"`
+	WorktreeSetup  WorktreeSetup       `yaml:"worktree_setup,omitempty" json:"worktreeSetup,omitempty"`
 }
 
 // ReliabilityDefaults supplies project-level watchdog and runaway ceilings.
@@ -61,7 +75,12 @@ type WorktreeSetup struct {
 	Timeout Duration   `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 }
 
-// Default returns the documented profile used when profile.yaml is absent.
+// Default returns the documented profile used when profile.yaml is absent. It
+// leaves MaxFanOutWidth unset rather than stamping the default in: "unset means
+// def.DefaultMaxFanOutWidth" then has exactly one implementation
+// (def.EffectiveMaxFanOutWidth) instead of two that could drift, and a project
+// with no profile at all is bounded by the same code path as one whose profile
+// simply omits the key.
 func Default() Profile {
 	return Profile{
 		Disposition:   DispositionManual,
@@ -109,6 +128,18 @@ func (p *Profile) HasCommand(name string) bool {
 	}
 	_, ok := p.Commands[name]
 	return ok
+}
+
+// DeclaredMaxFanOutWidth returns the project's own fan-out ceiling, or 0 when
+// it declares none. Validate refuses a declared value below 1, so a 0 from here
+// only ever means "undeclared"; def.EffectiveMaxFanOutWidth is the one place
+// that resolves it to the default, so the dry-run and the engine cannot
+// disagree about the number.
+func (p *Profile) DeclaredMaxFanOutWidth() int {
+	if p == nil || p.MaxFanOutWidth == nil {
+		return 0
+	}
+	return *p.MaxFanOutWidth
 }
 
 var _ def.Bindings = (*Profile)(nil)

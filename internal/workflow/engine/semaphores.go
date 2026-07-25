@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/workflow/def"
+	"agent-overflow/internal/workflow/profile"
 )
 
 // phaseResources is the canonical, sorted set a phase acquires: everything it
@@ -101,16 +102,28 @@ func (e *Engine) acquireUnitResources(projectID string, unit def.Unit) ([]string
 	return e.acquireResources(projectID, names)
 }
 
+// liveProfile is the one read of a project's profile the scheduler makes at
+// decision time (spec §6: bounds are read live, so editing profile.yaml takes
+// effect on the next start or expansion — no restart, no re-run). A source that
+// answers nil without an error is a broken source, not an unbounded project.
+func (e *Engine) liveProfile(projectID string) (*profile.Profile, error) {
+	projectProfile, err := e.profiles.Profile(e.ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("load live profile for project %q: %w", projectID, err)
+	}
+	if projectProfile == nil {
+		return nil, fmt.Errorf("load live profile for project %q: nil profile", projectID)
+	}
+	return projectProfile, nil
+}
+
 func (e *Engine) acquireResources(projectID string, names []string) ([]string, bool, error) {
 	if len(names) == 0 {
 		return nil, true, nil
 	}
-	projectProfile, err := e.profiles.Profile(e.ctx, projectID)
+	projectProfile, err := e.liveProfile(projectID)
 	if err != nil {
-		return nil, false, fmt.Errorf("load live profile for project %q: %w", projectID, err)
-	}
-	if projectProfile == nil {
-		return nil, false, fmt.Errorf("load live profile for project %q: nil profile", projectID)
+		return nil, false, err
 	}
 	for _, name := range names {
 		capacity, err := resourceCapacity(projectProfile.Capacities, projectID, name)

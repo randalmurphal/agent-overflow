@@ -1,6 +1,7 @@
 package def
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -439,6 +440,118 @@ func TestFanOutWidthIsReportedNotFailed(t *testing.T) {
 	}
 	if reports := Validate(resolved, nil, nil).Reports; len(reports) != 0 {
 		t.Fatalf("unchecked bindings reported width: %s", formatFindings(reports))
+	}
+}
+
+// widthFanOutWorkflow is a static fan-out of `width` tool units. Tool units
+// take no provider capacity, so a width assertion here can never be confused
+// with the capacity report, which counts only agent units.
+func widthFanOutWorkflow(width int) Workflow {
+	workflow := staticFanOutWorkflow()
+	units := make([]Unit, 0, width)
+	for index := 0; index < width; index++ {
+		units = append(units, Unit{ID: fmt.Sprintf("unit-%d", index), Command: "report"})
+	}
+	workflow.Phases[1].FanOut = units
+	return workflow
+}
+
+// findingByCode returns the finding itself, for the assertions that check what
+// a message says rather than only that it fired.
+func findingByCode(findings []Finding, code string) *Finding {
+	for index := range findings {
+		if findings[index].Code == code {
+			return &findings[index]
+		}
+	}
+	return nil
+}
+
+// The project's fan-out ceiling is an absolute refusal, so it lands in Findings
+// and makes the workflow invalid — unlike the capacity report, which describes
+// a run that still happens. Checked at the boundary in both directions.
+func TestStaticFanOutOverTheProjectCeilingIsABlockingFinding(t *testing.T) {
+	bindings := validBindings().(testBindings)
+	bindings.maxFanOutWidth = 4
+
+	atCeiling := Validate(fanOutFixture(t, widthFanOutWorkflow(4), fanOutPrompts()), bindings, nil)
+	if !atCeiling.Valid() {
+		t.Fatalf("a fan-out exactly at the ceiling was refused:\n%s", formatFindings(atCeiling.Findings))
+	}
+
+	over := Validate(fanOutFixture(t, widthFanOutWorkflow(5), fanOutPrompts()), bindings, nil)
+	if over.Valid() {
+		t.Fatal("a fan-out over the project ceiling validated clean")
+	}
+	finding := findingByCode(over.Findings, "fan-out.max-width")
+	if finding == nil {
+		t.Fatalf("no fan-out.max-width finding:\n%s", formatFindings(over.Findings))
+	}
+	// The finding has to be actionable on its own: which phase, how wide it is,
+	// what the ceiling is, and where the ceiling is set.
+	for _, want := range []string{"5 units", "maximum fan-out width of 4", "max_fan_out_width"} {
+		if !strings.Contains(finding.Message, want) {
+			t.Fatalf("finding message %q does not state %q", finding.Message, want)
+		}
+	}
+	if !strings.Contains(finding.Element, `phase "port"`) {
+		t.Fatalf("finding element = %q, want the offending phase named", finding.Element)
+	}
+	if len(over.Reports) != 0 {
+		t.Fatalf("a refusal was also reported as a note: %s", formatFindings(over.Reports))
+	}
+}
+
+// With no profile resolved the ceiling still applies, at its default. Skipping
+// it would let a definition validate clean offline and then be refused at its
+// first expansion — the run-start path always loads a profile, and a project
+// without a profile.yaml gets profile.Default(), which declares no ceiling and
+// therefore lands on exactly this number.
+func TestFanOutCeilingAppliesWithNoProfileResolved(t *testing.T) {
+	atCeiling := Validate(fanOutFixture(t, widthFanOutWorkflow(DefaultMaxFanOutWidth), fanOutPrompts()), nil, nil)
+	if !atCeiling.Valid() {
+		t.Fatalf("default ceiling refused a fan-out at it:\n%s", formatFindings(atCeiling.Findings))
+	}
+	if atCeiling.BindingStatus != BindingsUnchecked {
+		t.Fatalf("binding status = %q, want the width check not to claim bindings were checked", atCeiling.BindingStatus)
+	}
+	over := Validate(fanOutFixture(t, widthFanOutWorkflow(DefaultMaxFanOutWidth+1), fanOutPrompts()), nil, nil)
+	if finding := findingByCode(over.Findings, "fan-out.max-width"); finding == nil || over.Valid() {
+		t.Fatalf("a fan-out over the default ceiling passed an unchecked dry-run:\n%s", formatFindings(over.Findings))
+	}
+}
+
+// The ceiling refusal and the capacity note are two statements about the same
+// phase and both have to survive, each in its own channel: one blocks, one does
+// not, and the codes differ so a reader can tell them apart.
+func TestFanOutCeilingFindingAndCapacityReportCoexist(t *testing.T) {
+	workflow := staticFanOutWorkflow()
+	units := make([]Unit, 0, 5)
+	for index := 0; index < 5; index++ {
+		units = append(units, Unit{
+			ID: fmt.Sprintf("unit-%d", index), Provider: "claude", Model: "sonnet", Prompt: "unit.md",
+		})
+	}
+	workflow.Phases[1].FanOut = units
+	prompts := fanOutPrompts()
+	prompts["unit.md"] = "port"
+
+	bindings := validBindings().(testBindings)
+	bindings.maxFanOutWidth = 3
+	bindings.declared = map[string]int{ProviderResource("claude"): 2}
+
+	result := Validate(fanOutFixture(t, workflow, prompts), bindings, nil)
+	if result.Valid() {
+		t.Fatal("the ceiling finding did not block the workflow")
+	}
+	if findingByCode(result.Findings, "fan-out.max-width") == nil {
+		t.Fatalf("ceiling finding missing:\n%s", formatFindings(result.Findings))
+	}
+	if len(result.Reports) != 1 || result.Reports[0].Code != "fan-out.width" {
+		t.Fatalf("capacity report was swallowed by the refusal: %s", formatFindings(result.Reports))
+	}
+	if findingByCode(result.Findings, "fan-out.width") != nil {
+		t.Fatal("the capacity report leaked into the blocking findings")
 	}
 }
 

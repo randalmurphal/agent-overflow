@@ -146,6 +146,20 @@ func (f *fakeProfiles) setCapacity(projectID, name string, capacity int) {
 	f.profiles[projectID].Capacities[name] = capacity
 }
 
+func (f *fakeProfiles) setMaxFanOutWidth(projectID string, width int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.profiles[projectID].MaxFanOutWidth = &width
+}
+
+// remove makes the source fail for one project, which is what a profile that
+// cannot be read looks like to the engine.
+func (f *fakeProfiles) remove(projectID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.profiles, projectID)
+}
+
 // fakeRunner records every start and lets a test complete one by key. The
 // per-run maps accept either a whole run key (`item/phase/attempt[/unit]`) or a
 // bare item id, so a phase-level test can stay item-scoped while a fan-out test
@@ -582,6 +596,13 @@ func (h *testHarness) requireNoHeldResources(t *testing.T) {
 // DefaultProviderCapacity.
 func (h *testHarness) limitProviderCapacity(projectID string, capacity int) {
 	h.profiles.setCapacity(projectID, ProviderResource(testProvider), capacity)
+}
+
+// limitFanOutWidth pins the project's absolute fan-out ceiling so a test can
+// exercise the refusal at a small width instead of depending on
+// def.DefaultMaxFanOutWidth.
+func (h *testHarness) limitFanOutWidth(projectID string, width int) {
+	h.profiles.setMaxFanOutWidth(projectID, width)
 }
 
 func doneEnvelope(ok bool) json.RawMessage {

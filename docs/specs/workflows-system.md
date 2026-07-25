@@ -133,6 +133,19 @@ and that output also becomes the variables the next phase consumes.
   once for the attempt, its watchdog, and the grants every unit's session is
   scoped by. Unit semantics:
   - units run in parallel, bounded by resources (§6);
+  - **width is bounded absolutely by the project profile** (`max_fan_out_width`,
+    §8 — default 32, no unlimited setting). This is *not* the §6 capacity
+    bound, which throttles work that all still runs: a fan-out wider than the
+    ceiling **refuses**, it never truncates. Silently dropping units would
+    leave the join consolidating a set nobody chose. A static list over the
+    ceiling is a **dry-run finding** (blocking, naming the phase, the width,
+    the maximum, and the profile key); a dynamic `over:` width is only known at
+    expansion, so the engine refuses it there — before any unit row,
+    sub-worktree, or provider session exists — and parks
+    `needs-human(wiring-error)` with the resolved width in the attempt's
+    envelope. The ceiling is per project, never per workflow: a definition that
+    could raise its own ceiling would not be one. It is read live at each
+    expansion, like every other bound (D29);
   - each unit runs on its **own AO thread** (§7 — inspectable like any phase)
     and, when writing, in its **own sub-worktree** (§9);
   - **unit failure policy:** a unit that exhausts its §12 retries stops the
@@ -223,7 +236,9 @@ every phase is reachable from start; every loop-back declares its §4 bound;
 every call edge resolves to a validatable workflow and every call cycle
 declares `max_depth`; write-need propagates through the call graph (§9); every
 referenced resource is bindable by ≥1 project profile; every variable
-reference resolves; every `over:` reference names an array-typed variable.**
+reference resolves; every `over:` reference names an array-typed variable;
+every static fan-out list is inside the binding profile's `max_fan_out_width`
+(§3, §8).**
 Each failure **names the offending element** ("gate G routes to phase X, which
 does not exist"), so a miswired workflow fails fast with a precise message
 instead of mid-run. The dry-run also **reports** (informational, not a
@@ -231,6 +246,13 @@ failure) a static fan-out wider than a binding profile's provider capacity —
 the run would throttle to capacity (§6), and you should learn that from
 validation, not from watching units wait. A dynamic `over:` width is a runtime
 fact; its throttling surfaces as waiting-on markers in run detail (§10).
+The capacity report and the `max_fan_out_width` finding are different
+statements about the same phase and both stand: inside the ceiling but over
+capacity is pacing, over the ceiling is a refusal to run at all. The width
+finding applies even when no profile resolved — a project without a
+`profile.yaml` still gets the default ceiling at run start, so skipping it
+would let a definition validate clean and then be refused at its first
+expansion.
 
 **Validation principle (anti-theater).** Deterministic project checks play two
 roles: (a) the agent is **given them to validate its own changes as it
@@ -406,11 +428,18 @@ level, on resources**:
 - A resource lock is **phase-scoped**: acquired on phase entry, released on
   exit — including on failure, park, or pause (never leaked). An item holds
   `live-stack` only during the phase that needs it, not its whole run.
+- **A capacity is not a ceiling.** Capacity paces work that all still runs;
+  the profile's `max_fan_out_width` (§3, §8) refuses a fan-out attempt outright
+  before any unit starts. A fan-out inside the ceiling but over provider
+  capacity simply throttles, which is what the dry-run's width *report*
+  describes; a fan-out over the ceiling never runs, which is a *finding* and a
+  runtime refusal.
 - **Workflow declares needs; the project profile declares capacities.**
   `live-stack` capacity 1 is an environment fact for a project, not part of
   the workflow — a workflow stays portable across projects. **Capacities are
   read live at each acquisition** — editing `profile.yaml` (including the
-  `provider:<name>` limits) takes effect on the next phase/unit start, no
+  `provider:<name>` limits and `max_fan_out_width`) takes effect on the next
+  phase/unit start or fan-out expansion, no
   restart, no re-run. **Capacities are per-project instances**: the same
   resource name in two projects never contends (an app-wide global resource
   is a possible later addition, not now).
@@ -595,7 +624,11 @@ A **project profile** is an app-managed per-project **`profile.yaml`** (same
 never-in-repo rule) holding the per-project **bindings**: the base branch, the
 concrete **check commands** (the deterministic build/test/lint of §3), the
 **tool-driver command bindings** (§3), the **resource capacities** (`live-stack`
-= 1, the `provider:<name>` capacities — §6), the **report-back / query-source
+= 1, the `provider:<name>` capacities — §6), the **maximum fan-out width**
+(`max_fan_out_width` — the absolute ceiling on the units one fan-out phase
+attempt may expand to, §3; default 32 when omitted, minimum 1, and deliberately
+**no unlimited setting** — a project that wants 50 writes 50), the
+**report-back / query-source
 command bindings** (§5, §11), the **MCP / tool configs**, the **reliability
 defaults** (the §12 inactivity timeout, envelope-retry count, optional
 per-item budget), **secret references**, a **worktree setup** step (files
