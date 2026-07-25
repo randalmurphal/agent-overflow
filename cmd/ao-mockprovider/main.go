@@ -21,6 +21,7 @@ import (
 
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
+	"agent-overflow/internal/providerschema"
 )
 
 func main() {
@@ -49,6 +50,14 @@ func main() {
 	if protocol == scenario.ProviderClaude && isClaudeProbeInvocation(args) {
 		runClaudeProbe(cwd)
 		return
+	}
+
+	// Both real CLIs validate a structured-output schema before the turn runs
+	// and exit non-zero when it breaks strict mode. Mirroring that here is what
+	// keeps the harness honest: a mock that accepts any schema lets a workflow
+	// suite pass green while every real provider run would fail at spawn.
+	if schema := flagValue(args, "--json-schema"); schema != "" {
+		rejectInvalidOutputSchema("--json-schema", []byte(schema))
 	}
 
 	resumeRef := flagValue(args, "--resume")
@@ -101,6 +110,20 @@ func main() {
 // flag for MaxTurns > 0), so the pair is an unambiguous discriminator.
 func isClaudeProbeInvocation(args []string) bool {
 	return flagValue(args, "--max-turns") == "0"
+}
+
+// rejectInvalidOutputSchema exits the way a real CLI does when it is handed a
+// structured-output schema it cannot accept, naming every broken rule so the
+// harness failure points at the generator instead of at a mystery timeout.
+func rejectInvalidOutputSchema(source string, schema []byte) {
+	violations := providerschema.Validate(schema)
+	if len(violations) == 0 {
+		return
+	}
+	for _, violation := range violations {
+		log.Printf("%s is not a valid provider schema: %s", source, violation.Error())
+	}
+	log.Fatalf("%s broke %d provider schema rule(s); a real provider would reject this turn", source, len(violations))
 }
 
 // flagValue returns the argument following the given flag, or "".

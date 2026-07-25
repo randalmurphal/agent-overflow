@@ -22,22 +22,19 @@ func EnvelopeSchema(phase Phase) ([]byte, error) {
 		if findings := validateSchemaDefinition(output.Schema, fmt.Sprintf("phase %q output %q", phase.ID, name)); len(findings) > 0 {
 			return nil, fmt.Errorf("%s", findings[0].Error())
 		}
-		property, err := schemaMap(output.Schema)
-		if err != nil {
-			return nil, fmt.Errorf("encode phase %q output %q schema: %w", phase.ID, name, err)
-		}
+		property := providerSchema(output.Schema)
 		if output.Optional {
-			property["type"] = []string{output.Schema.Type, "null"}
-			if enum, ok := property["enum"].([]any); ok {
-				property["enum"] = append(enum, nil)
-			}
+			nullable(property, output.Schema.Type)
 		}
 		outputProperties[name] = property
 		outputRequired = append(outputRequired, name)
 	}
 	sort.Strings(outputRequired)
+	// No "$schema" declaration: Claude's CLI validator has no draft 2020-12
+	// meta-schema registered and rejects the whole schema if the URI names one
+	// ("no schema with key or ref ..."), which fails the phase before its
+	// session starts. Both providers accept the vocabulary below without it.
 	schema := map[string]any{
-		"$schema":              "https://json-schema.org/draft/2020-12/schema",
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
@@ -60,16 +57,84 @@ func EnvelopeSchema(phase Phase) ([]byte, error) {
 	return encoded, nil
 }
 
-func schemaMap(schema JSONSchema) (map[string]any, error) {
-	encoded, err := json.Marshal(schema)
-	if err != nil {
-		return nil, fmt.Errorf("marshal schema: %w", err)
+// providerSchema converts one authored variable schema into the provider-facing
+// JSON Schema vocabulary.
+//
+// This is an explicit allow-list rather than a marshal of JSONSchema, because
+// both providers validate in strict mode and reject unknown keywords: an
+// authoring-only hint such as `multiline` reaching the wire fails the phase
+// ("strict mode: unknown keyword"). Building the output keyword by keyword
+// means a field added to JSONSchema later cannot leak onto the wire by merely
+// existing — it has to be opted in here.
+//
+// Object subschemas are always closed and always require every declared
+// property. Codex enforces both ('additionalProperties' is required to be
+// supplied and to be false; 'required' ... including every key in properties),
+// and a property the author left out of `required` is widened to accept null,
+// which is the only way strict mode can express an optional field.
+func providerSchema(schema JSONSchema) map[string]any {
+	property := map[string]any{"type": schema.Type}
+	if len(schema.Enum) > 0 {
+		property["enum"] = append([]any(nil), schema.Enum...)
 	}
-	var result map[string]any
-	if err := json.Unmarshal(encoded, &result); err != nil {
-		return nil, fmt.Errorf("decode marshaled schema: %w", err)
+	if schema.Format != "" {
+		property["format"] = schema.Format
 	}
-	return result, nil
+	if schema.Description != "" {
+		property["description"] = schema.Description
+	}
+	if schema.Minimum != nil {
+		property["minimum"] = *schema.Minimum
+	}
+	if schema.Maximum != nil {
+		property["maximum"] = *schema.Maximum
+	}
+	if schema.MinLength != nil {
+		property["minLength"] = *schema.MinLength
+	}
+	if schema.MaxLength != nil {
+		property["maxLength"] = *schema.MaxLength
+	}
+	if schema.MinItems != nil {
+		property["minItems"] = *schema.MinItems
+	}
+	if schema.MaxItems != nil {
+		property["maxItems"] = *schema.MaxItems
+	}
+	if schema.Type == "array" && schema.Items != nil {
+		property["items"] = providerSchema(*schema.Items)
+	}
+	if schema.Type == "object" {
+		required := make(map[string]bool, len(schema.Required))
+		for _, name := range schema.Required {
+			required[name] = true
+		}
+		properties := make(map[string]any, len(schema.Properties))
+		names := make([]string, 0, len(schema.Properties))
+		for name, child := range schema.Properties {
+			encoded := providerSchema(child)
+			if !required[name] {
+				nullable(encoded, child.Type)
+			}
+			properties[name] = encoded
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		property["properties"] = properties
+		property["required"] = names
+		property["additionalProperties"] = false
+	}
+	return property
+}
+
+// nullable widens an encoded schema so a provider may answer null for it. An
+// enum must admit null explicitly: null would satisfy the widened `type` and
+// still fail the enum check.
+func nullable(encoded map[string]any, baseType string) {
+	encoded["type"] = []string{baseType, "null"}
+	if enum, ok := encoded["enum"].([]any); ok {
+		encoded["enum"] = append(enum, nil)
+	}
 }
 
 // EnvelopeFinding is a feedback-ready payload error.

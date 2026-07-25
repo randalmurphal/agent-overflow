@@ -166,6 +166,15 @@ func validateJSONValue(schema JSONSchema, value any, path string) []string {
 				}
 				continue
 			}
+			if child == nil {
+				// A null here is either a required property, already reported
+				// once by the loop above, or an optional one. Optional object
+				// properties arrive as null rather than absent because strict
+				// mode makes providers emit every declared key, so null is how
+				// they spell "absent" — matching how optional top-level outputs
+				// are read in ValidateEnvelope.
+				continue
+			}
 			errors = append(errors, validateJSONValue(property, child, path+"."+name)...)
 		}
 	}

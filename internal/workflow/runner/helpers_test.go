@@ -35,11 +35,20 @@ func TestBuildPromptSuffixShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Goal: ship\n\n<workflow-system-instructions>\n" +
+	// The envelope rules must reach the model verbatim: def.ValidateEnvelope
+	// enforces them and cannot express them in the schema, so a silent drop
+	// here costs every phase its one envelope retry.
+	const envelopeRules = "Your final message must satisfy the attached schema; status must be done, question, or stuck.\n" +
+		"Exactly one branch may be populated, and the other two fields must be null:\n" +
+		"- status done: outputs must be non-null; question and reason must both be null.\n" +
+		"- status question: question must be a non-empty string; outputs and reason must both be null.\n" +
+		"- status stuck: reason must be a non-empty string; outputs and question must both be null.\n"
+	header := "Goal: ship\n\n<workflow-system-instructions>\n" +
 		"Write a concise narrative of the work performed, decisions made, and validation results to this file:\n" + narrative +
-		"\nThe narrative is for human inspection and is not part of the control envelope.\n" +
+		"\nThe narrative is for human inspection and is not part of the control envelope.\n"
+	want := header +
 		"<workflow-feedback>\nNote:\naddress review\nValues:\n```json\n{\n  \"review.ok\": false\n}\n```\n</workflow-feedback>\n" +
-		"Your final message must satisfy the attached schema; status must be done, question, or stuck.\n" +
+		envelopeRules +
 		"</workflow-system-instructions>"
 	if got != want {
 		t.Fatalf("BuildPrompt() =\n%s\nwant:\n%s", got, want)
@@ -48,11 +57,7 @@ func TestBuildPromptSuffixShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantWithoutFeedback := "Goal: ship\n\n<workflow-system-instructions>\n" +
-		"Write a concise narrative of the work performed, decisions made, and validation results to this file:\n" + narrative +
-		"\nThe narrative is for human inspection and is not part of the control envelope.\n" +
-		"Your final message must satisfy the attached schema; status must be done, question, or stuck.\n" +
-		"</workflow-system-instructions>"
+	wantWithoutFeedback := header + envelopeRules + "</workflow-system-instructions>"
 	if withoutFeedback != wantWithoutFeedback {
 		t.Fatalf("BuildPrompt() without feedback =\n%s\nwant:\n%s", withoutFeedback, wantWithoutFeedback)
 	}

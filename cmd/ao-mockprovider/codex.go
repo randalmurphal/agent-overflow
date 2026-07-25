@@ -93,6 +93,11 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		}
 		a.respond(id, method, a.e.currentVars())
 	case "turn/start":
+		// The app-server validates outputSchema per turn rather than at spawn,
+		// so the check lands here; see rejectInvalidOutputSchema.
+		if schema := readParamRaw(params, "outputSchema"); len(schema) > 0 {
+			rejectInvalidOutputSchema("outputSchema", schema)
+		}
 		// Response first (real server order), then the turn's steps
 		// stream as notifications from the engine goroutine.
 		n, vars := a.e.beginTurn()
@@ -245,13 +250,19 @@ func approvalCommandString(step *scenario.ApprovalStep, vars scenario.Vars) stri
 }
 
 func readParamString(params json.RawMessage, key string) string {
-	var m map[string]json.RawMessage
-	if json.Unmarshal(params, &m) != nil {
-		return ""
-	}
 	var s string
-	if json.Unmarshal(m[key], &s) != nil {
+	if json.Unmarshal(readParamRaw(params, key), &s) != nil {
 		return ""
 	}
 	return s
+}
+
+// readParamRaw returns one request parameter undecoded, for values whose shape
+// is not a scalar.
+func readParamRaw(params json.RawMessage, key string) json.RawMessage {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(params, &m) != nil {
+		return nil
+	}
+	return m[key]
 }

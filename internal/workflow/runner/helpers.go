@@ -82,7 +82,17 @@ func PromptSuffix(narrativePath string, feedback *engine.Feedback) (string, erro
 		prompt.Write(encoded)
 		prompt.WriteString("\n```\n</workflow-feedback>\n")
 	}
+	// The branch rules below are enforced by def.ValidateEnvelope but cannot be
+	// expressed in the schema itself (discriminated unions are not portable
+	// across providers — D2a), so they have to be stated. Without them both
+	// providers routinely attach a courtesy `reason` to a done envelope, which
+	// fails post-validation and burns the single envelope retry on a mistake
+	// the phase was never warned about.
 	prompt.WriteString("Your final message must satisfy the attached schema; status must be done, question, or stuck.\n")
+	prompt.WriteString("Exactly one branch may be populated, and the other two fields must be null:\n")
+	prompt.WriteString("- status done: outputs must be non-null; question and reason must both be null.\n")
+	prompt.WriteString("- status question: question must be a non-empty string; outputs and reason must both be null.\n")
+	prompt.WriteString("- status stuck: reason must be a non-empty string; outputs and question must both be null.\n")
 	prompt.WriteString("</workflow-system-instructions>")
 	return prompt.String(), nil
 }

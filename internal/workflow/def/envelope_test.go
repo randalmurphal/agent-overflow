@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/providerschema"
 )
 
 func envelopePhase() Phase {
@@ -12,6 +14,65 @@ func envelopePhase() Phase {
 		"count": {Schema: JSONSchema{Type: "number"}},
 		"note":  {Schema: JSONSchema{Type: "string"}, Optional: true},
 	}}
+}
+
+// A generated schema has to survive both CLIs' strict-mode validation or the
+// phase fails before its first turn. providerschema owns those rules and the
+// observed failures behind them; this pins the generator to them using the
+// nastiest phase the authoring surface allows.
+func TestEnvelopeSchemaObeysProviderStrictMode(t *testing.T) {
+	closed := false
+	phase := Phase{ID: "strict", Outputs: map[string]Variable{
+		"body": {Schema: JSONSchema{Type: "string", Multiline: true}},
+		"open": {Schema: JSONSchema{
+			Type:       "object",
+			Properties: map[string]JSONSchema{"a": {Type: "string"}, "b": {Type: "number"}},
+			Required:   []string{"a"},
+		}},
+		"rows": {Schema: JSONSchema{Type: "array", Items: &JSONSchema{
+			Type:                 "object",
+			Properties:           map[string]JSONSchema{"path": {Type: "string"}},
+			Required:             []string{"path"},
+			AdditionalProperties: &closed,
+		}}},
+	}}
+	encoded, err := EnvelopeSchema(phase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, violation := range providerschema.Validate(encoded) {
+		t.Errorf("generated envelope schema breaks a provider rule — %s", violation.Error())
+	}
+}
+
+// An object property the author left out of `required` still has to reach the
+// wire as required-but-nullable, since strict mode has no other way to say
+// "optional". ValidateEnvelope reads that null back as absent.
+func TestEnvelopeSchemaWidensOptionalObjectProperty(t *testing.T) {
+	phase := Phase{ID: "widen", Outputs: map[string]Variable{
+		"meta": {Schema: JSONSchema{
+			Type:       "object",
+			Properties: map[string]JSONSchema{"kept": {Type: "string"}, "loose": {Type: "number"}},
+			Required:   []string{"kept"},
+		}},
+	}}
+	encoded, err := EnvelopeSchema(phase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(encoded, &schema); err != nil {
+		t.Fatal(err)
+	}
+	meta := schema["properties"].(map[string]any)["outputs"].(map[string]any)["properties"].(map[string]any)["meta"].(map[string]any)
+	properties := meta["properties"].(map[string]any)
+	if got := properties["kept"].(map[string]any)["type"]; got != "string" {
+		t.Errorf("required property type = %v, want string", got)
+	}
+	loose := properties["loose"].(map[string]any)["type"].([]any)
+	if len(loose) != 2 || loose[0] != "number" || loose[1] != "null" {
+		t.Errorf("optional property type = %v, want [number null]", loose)
+	}
 }
 
 func TestEnvelopeSchemaMakesOptionalEnumNullable(t *testing.T) {
@@ -98,17 +159,41 @@ func TestValidateEnvelope(t *testing.T) {
 	}
 }
 
-func TestValidateEnvelopeRejectsNullNestedProperty(t *testing.T) {
+func TestValidateEnvelopeRejectsNullRequiredNestedProperty(t *testing.T) {
 	closed := false
 	phase := Phase{ID: "object", Outputs: map[string]Variable{
 		"result": {Schema: JSONSchema{
 			Type:                 "object",
 			Properties:           map[string]JSONSchema{"detail": {Type: "string"}},
+			Required:             []string{"detail"},
 			AdditionalProperties: &closed,
 		}},
 	}}
 	payload := `{"status":"done","outputs":{"result":{"detail":null}},"question":null,"reason":null}`
-	if err := ValidateEnvelope(phase, []byte(payload)); err == nil || !strings.Contains(err.Error(), "must not be null") {
-		t.Fatalf("nested null error = %v", err)
+	if err := ValidateEnvelope(phase, []byte(payload)); err == nil || !strings.Contains(err.Error(), "is required") {
+		t.Fatalf("nested required null error = %v", err)
+	}
+}
+
+// A property the author left out of `required` may answer null. Strict-mode
+// providers must emit every declared key (EnvelopeSchema widens those keys to
+// accept null for exactly that reason), so null is how they report an absent
+// optional value.
+func TestValidateEnvelopeAcceptsNullOptionalNestedProperty(t *testing.T) {
+	closed := false
+	phase := Phase{ID: "object", Outputs: map[string]Variable{
+		"result": {Schema: JSONSchema{
+			Type: "object",
+			Properties: map[string]JSONSchema{
+				"detail": {Type: "string"},
+				"note":   {Type: "string"},
+			},
+			Required:             []string{"detail"},
+			AdditionalProperties: &closed,
+		}},
+	}}
+	payload := `{"status":"done","outputs":{"result":{"detail":"ok","note":null}},"question":null,"reason":null}`
+	if err := ValidateEnvelope(phase, []byte(payload)); err != nil {
+		t.Fatalf("nested optional null error = %v", err)
 	}
 }

@@ -12,6 +12,20 @@ sniffs argv to pick a mode:
 - `--version` → a string satisfying both providers' version gates
   (`version.go`).
 
+## Structured-output schemas are validated, not accepted
+
+A structured-output schema is checked against `internal/providerschema`
+and an invalid one exits non-zero, matching what the real CLIs do —
+Claude validates `--json-schema` at spawn, the Codex app-server validates
+`outputSchema` on each `turn/start`.
+
+This is deliberate strictness. A mock that accepts any schema lets the
+workflow suite pass green while every real provider run dies at spawn,
+which is precisely how five schema defects survived a fully green harness
+(no `$schema` draft handling, a leaked `multiline` keyword, open nested
+objects, partial `required` lists). If a scenario now fails here, fix the
+generator — do not relax the check.
+
 ## How a session runs
 
 `scenario_source.go` acquires the script, in priority order: control
