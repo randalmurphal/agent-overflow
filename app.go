@@ -244,7 +244,7 @@ type App struct {
 	// threadActionLocks serializes per-thread workflows that must observe a
 	// stable thread timeline or workspace while they run.
 	threadActionLocksOnce sync.Once
-	threadActionLocks     *threadActionLockRegistry
+	threadActionLocks     *keyedLockRegistry
 	// flushDispatchQueues serializes queued-message flush batches per
 	// thread. Triage decides whether the drain is boundary or immediate;
 	// App owns the asynchronous provider writes so sequence allocation and
@@ -563,7 +563,7 @@ func (s session) providerSession() provider.Session {
 func NewApp() *App {
 	app := &App{
 		sessions:               make(map[string]session),
-		threadActionLocks:      newThreadActionLocks(),
+		threadActionLocks:      newKeyedLocks(),
 		startingSessions:       make(map[string]*sessionStart),
 		reconnectingThreads:    make(map[string]bool),
 		autoReconnectAttempted: make(map[string]bool),

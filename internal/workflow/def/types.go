@@ -119,13 +119,21 @@ const (
 )
 
 // Unit configures one fan-out worker or its required join.
+//
+// Outputs is the unit's own envelope contract, declared exactly like a phase's
+// and never merged with one: a unit reports to its join, not to the gate. A
+// unit that declares none returns the control-only envelope (status, question,
+// reason), which is all a join reading branches and worktrees needs. The join
+// itself declares none — its envelope IS the phase's, so it answers the
+// phase's `outputs:` and declaring its own is a validation finding.
 type Unit struct {
-	ID       string `yaml:"id" json:"id"`
-	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
-	Model    string `yaml:"model,omitempty" json:"model,omitempty"`
-	Prompt   string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
-	Command  string `yaml:"command,omitempty" json:"command,omitempty"`
-	Access   Access `yaml:"access,omitempty" json:"access,omitempty"`
+	ID       string              `yaml:"id" json:"id"`
+	Provider string              `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Model    string              `yaml:"model,omitempty" json:"model,omitempty"`
+	Prompt   string              `yaml:"prompt,omitempty" json:"prompt,omitempty"`
+	Command  string              `yaml:"command,omitempty" json:"command,omitempty"`
+	Access   Access              `yaml:"access,omitempty" json:"access,omitempty"`
+	Outputs  map[string]Variable `yaml:"outputs,omitempty" json:"outputs,omitempty"`
 }
 
 // EffectiveDriver resolves how a unit executes. Units never declare `driver`:

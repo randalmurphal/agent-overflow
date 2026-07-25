@@ -286,6 +286,13 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowDiscussPR":                    true,
 	"WorkflowSetJobNotes":                  true,
 	"WorkflowRerunItem":                    true,
+	// Fan-out unit recovery is the same control plane one unit down: a retry
+	// starts a provider session or a local command, a drop rewrites what the
+	// join consolidates, and a takeover restarts a session schema-less so a
+	// human can steer it.
+	"WorkflowRetryUnit":    true,
+	"WorkflowDropUnit":     true,
+	"WorkflowTakeOverUnit": true,
 	// ConcludeDiscussion is lifecycle control over the deliberation's
 	// provider-session turn loop — same class as PostChannelMessage: it
 	// removes the in-memory FSM (a.deliberations) and can race an

@@ -13,8 +13,14 @@ import (
 // AttemptDir returns the absolute system-owned directory holding one phase
 // attempt's app-managed files. The caller owns directory creation.
 func AttemptDir(dataRoot, itemID, phaseID string, attempt int) (string, error) {
-	if strings.TrimSpace(dataRoot) == "" || itemID == "" || phaseID == "" || attempt < 1 {
-		return "", fmt.Errorf("workflow attempt directory: data root, item id, phase id, and positive attempt are required")
+	if strings.TrimSpace(dataRoot) == "" || attempt < 1 {
+		return "", fmt.Errorf("workflow attempt directory: data root and positive attempt are required")
+	}
+	if err := pathSegment(itemID, "item id"); err != nil {
+		return "", fmt.Errorf("workflow attempt directory: %w", err)
+	}
+	if err := pathSegment(phaseID, "phase id"); err != nil {
+		return "", fmt.Errorf("workflow attempt directory: %w", err)
 	}
 	path := filepath.Join(dataRoot, "workflow-runs", itemID, fmt.Sprintf("%s.%d", phaseID, attempt))
 	absolute, err := filepath.Abs(path)
@@ -22,6 +28,59 @@ func AttemptDir(dataRoot, itemID, phaseID string, attempt int) (string, error) {
 		return "", fmt.Errorf("workflow attempt directory: %w", err)
 	}
 	return absolute, nil
+}
+
+// UnitAttemptDir returns the absolute system-owned directory holding one
+// fan-out unit try's app-managed files, nested under its phase attempt's
+// directory so a run's files stay one tree per attempt. `unitAttempt` is in the
+// name because a retried unit reuses its row but must not reuse its narrative:
+// the previous try's account of what it did is evidence, not scratch space.
+func UnitAttemptDir(dataRoot, itemID, phaseID string, attempt int, unitID string, unitAttempt int) (string, error) {
+	dir, err := AttemptDir(dataRoot, itemID, phaseID, attempt)
+	if err != nil {
+		return "", err
+	}
+	if err := pathSegment(unitID, "unit id"); err != nil {
+		return "", fmt.Errorf("workflow unit directory: %w", err)
+	}
+	if unitAttempt < 1 {
+		return "", fmt.Errorf("workflow unit directory: positive unit attempt is required")
+	}
+	return filepath.Join(dir, "units", fmt.Sprintf("%s.%d", unitID, unitAttempt)), nil
+}
+
+// UnitNarrativePath returns the absolute system-owned narrative path for one
+// fan-out unit try. The caller owns directory creation.
+func UnitNarrativePath(dataRoot, itemID, phaseID string, attempt int, unitID string, unitAttempt int) (string, error) {
+	dir, err := UnitAttemptDir(dataRoot, itemID, phaseID, attempt, unitID, unitAttempt)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "narrative.md"), nil
+}
+
+// UnitEnvelopePath returns the absolute path a tool unit's command may write
+// its control envelope to. The runner exports it as AO_ENVELOPE.
+func UnitEnvelopePath(dataRoot, itemID, phaseID string, attempt int, unitID string, unitAttempt int) (string, error) {
+	dir, err := UnitAttemptDir(dataRoot, itemID, phaseID, attempt, unitID, unitAttempt)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "envelope.json"), nil
+}
+
+// pathSegment refuses any identifier that would not stay one directory level
+// down. Ids reaching here are pattern-validated definitions or app-minted
+// uuids, so this can only ever fire on a bug — which is exactly why it lives in
+// the path builder instead of in every caller.
+func pathSegment(value, name string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+	if value != filepath.Base(value) || value == "." || value == ".." || strings.ContainsRune(value, filepath.Separator) {
+		return fmt.Errorf("%s %q is not a single path segment", name, value)
+	}
+	return nil
 }
 
 // NarrativePath returns the absolute system-owned narrative path for one phase
@@ -45,21 +104,41 @@ func EnvelopePath(dataRoot, itemID, phaseID string, attempt int) (string, error)
 	return filepath.Join(dir, "envelope.json"), nil
 }
 
-// BuildPrompt interpolates an inlined runtime prompt and appends the
+// BuildPrompt interpolates an inlined runtime phase prompt and appends the
 // system-owned workflow instructions shared by both providers.
 func BuildPrompt(phase def.Phase, vars map[string]any, narrativePath string, feedback *engine.Feedback) (string, error) {
-	body, err := def.Interpolate(phase.Prompt, phase.Inputs, vars)
+	prompt, err := buildPrompt(phase.Prompt, phase.Inputs, vars, narrativePath, feedback)
 	if err != nil {
 		return "", fmt.Errorf("build workflow prompt for phase %q: %w", phase.ID, err)
+	}
+	return prompt, nil
+}
+
+// BuildUnitPrompt is BuildPrompt for one fan-out unit. Declarations differ per
+// role — a work unit reads the phase's inputs plus its element binding, a join
+// reads the phase's inputs plus the reserved `units` results — so the caller
+// supplies them from def rather than this package re-deriving them.
+func BuildUnitPrompt(unit def.Unit, declarations map[string]def.Variable, vars map[string]any, narrativePath string, feedback *engine.Feedback) (string, error) {
+	prompt, err := buildPrompt(unit.Prompt, declarations, vars, narrativePath, feedback)
+	if err != nil {
+		return "", fmt.Errorf("build workflow prompt for unit %q: %w", unit.ID, err)
+	}
+	return prompt, nil
+}
+
+func buildPrompt(body string, declarations map[string]def.Variable, vars map[string]any, narrativePath string, feedback *engine.Feedback) (string, error) {
+	interpolated, err := def.Interpolate(body, declarations, vars)
+	if err != nil {
+		return "", err
 	}
 	suffix, err := PromptSuffix(narrativePath, feedback)
 	if err != nil {
 		return "", err
 	}
-	if body == "" {
+	if interpolated == "" {
 		return suffix, nil
 	}
-	return strings.TrimRight(body, "\n") + "\n\n" + suffix, nil
+	return strings.TrimRight(interpolated, "\n") + "\n\n" + suffix, nil
 }
 
 // BuildTakeoverFinalizePrompt asks the existing phase session to summarize the

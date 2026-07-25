@@ -1412,6 +1412,18 @@ CREATE INDEX idx_work_item_units_worktree
 		SQL:     rebuildWorkItemsUnitFailedReasonV36SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 37,
+		Name:    "work_item_unit_thread_index",
+		// Steering a taken-over fan-out unit starts from its thread, not from its
+		// run: the human is looking at a thread and sends into it. That lookup runs
+		// on every send to a workflow-mode thread, so it gets an index. Partial,
+		// because a unit only has a thread once its runner created one — pending
+		// units and every tool unit carry the empty default.
+		SQL: `CREATE INDEX idx_work_item_units_thread
+  ON work_item_units(thread_id)
+  WHERE thread_id <> '';`,
+	},
 }
 
 // rebuildWorkItemsUnitFailedReasonV36SQL widens the typed park reason set with

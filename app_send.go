@@ -399,6 +399,17 @@ func (a *App) prepareWorkflowTakeoverSend(thread store.Thread) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// A fan-out unit thread resolves to a unit, not to a phase attempt. It is
+	// checked first because a unit's thread is never also a phase's, and because
+	// taking over one unit must not park the whole item the way taking over a
+	// phase does.
+	unit, isUnit, err := a.store.GetWorkItemUnitByThread(thread.ID)
+	if err != nil {
+		return "", fmt.Errorf("workflow takeover: %w", err)
+	}
+	if isUnit {
+		return a.prepareWorkflowUnitTakeoverSend(workflowEngine, thread, unit)
+	}
 	item, err := a.store.GetWorkItemByPhaseThread(thread.ID)
 	if err != nil {
 		return "", fmt.Errorf("workflow takeover: %w", err)
@@ -427,6 +438,43 @@ func (a *App) prepareWorkflowTakeoverSend(thread store.Thread) (string, error) {
 	}
 	if err := workflowEngine.TakeOver(item.ID); err != nil {
 		return "", fmt.Errorf("workflow takeover: detach item: %w", err)
+	}
+	if err := a.workflowRunner.registerTakeover(item.ID, thread.ID); err != nil {
+		return "", fmt.Errorf("workflow takeover: register schema-less steering: %w", err)
+	}
+	return item.ID, nil
+}
+
+// prepareWorkflowUnitTakeoverSend is prepareWorkflowTakeoverSend for one fan-out
+// unit's thread: a send into a running unit detaches that unit for steering, and
+// a send into an already-detached one re-registers it. The unit's siblings are
+// untouched — they keep running, and the attempt parks once they rest.
+func (a *App) prepareWorkflowUnitTakeoverSend(
+	workflowEngine *engine.Engine, thread store.Thread, unit store.WorkItemUnit,
+) (string, error) {
+	item, err := a.store.GetWorkItem(unit.ItemID)
+	if err != nil {
+		return "", fmt.Errorf("workflow takeover: %w", err)
+	}
+	if unit.Status == store.WorkItemUnitTakenOver {
+		if _, active, activeErr := a.store.GetActiveTurn(thread.ID); activeErr != nil {
+			return "", fmt.Errorf("workflow takeover: inspect steering turn: %w", activeErr)
+		} else if active {
+			return "", fmt.Errorf("workflow takeover: the prior turn must yield before steering again")
+		}
+		if err := a.workflowRunner.registerTakeover(item.ID, thread.ID); err != nil {
+			return "", err
+		}
+		return item.ID, nil
+	}
+	if unit.Status != store.WorkItemUnitRunning {
+		return "", fmt.Errorf(
+			"workflow takeover: unit %q of item %s is %s; only a running unit can be taken over",
+			unit.UnitID, item.ID, unit.Status,
+		)
+	}
+	if err := workflowEngine.TakeOverUnit(item.ID, unit.UnitID); err != nil {
+		return "", fmt.Errorf("workflow takeover: detach unit %q: %w", unit.UnitID, err)
 	}
 	if err := a.workflowRunner.registerTakeover(item.ID, thread.ID); err != nil {
 		return "", fmt.Errorf("workflow takeover: register schema-less steering: %w", err)

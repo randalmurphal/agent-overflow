@@ -146,6 +146,19 @@ resource semaphores, and startup recovery.
   no unit is left blocking it. A unit that cannot *start* is not a unit failure
   — it parks the attempt under the same sentinel-mapped reason a single-shape
   phase would, because nothing runnable was ever produced.
+- A phase-level continuation of a fan-out attempt is a continuation of its
+  **join**, because the join's envelope is the phase's: `Answer` and
+  `CompleteTakeover` route through `continueFanOutJoin`, which re-runs only the
+  join (a fresh try on the thread the attempt parked on, carrying the answer as
+  feedback) instead of re-entering the phase and re-expanding every unit. The
+  work units keep the results the join exists to consolidate. It is refused
+  when the join never ran ("repair its units instead") or while any unit is
+  still blocking, because there would be nothing coherent to consolidate.
+  `item.priorThreadID` / `takeoverFinalize` are consumed by the join alone;
+  a work unit never inherits them, so a continuation cannot leak into the next
+  phase's first attempt. The app runner is what makes this resolvable at all —
+  it stamps the join's thread onto the phase attempt row (`AttachWorkItemPhaseRun`)
+  the moment the join's thread exists.
 
 ## Boundaries
 

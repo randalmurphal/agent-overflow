@@ -10,13 +10,6 @@ import (
 	"agent-overflow/internal/workflow/def"
 )
 
-// joinUnitsVariable is the name a join's variable context binds its units'
-// results under. It is reserved inside a join's context only: no other phase,
-// unit, or gate sees it, and the engine binds it last so a workflow that
-// happens to carry a variable of the same name cannot shadow the results the
-// join exists to consolidate.
-const joinUnitsVariable = "units"
-
 // fanOutRun is the live state of one fan-out phase attempt: the units it
 // expanded and the join that follows them. It exists only while the attempt is
 // resident; every field is reconstructible from persistence (restoreFanOut),
@@ -306,7 +299,17 @@ func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 		},
 		Item: item.item, Workflow: item.workflow, Phase: phase,
 		Unit: &definition, UnitIndex: unit.index, UnitKind: unit.kind,
-		Vars: vars, Feedback: cloneFeedback(unit.feedback),
+		UnitAttempt: unit.attempt,
+		Vars:        vars, Feedback: cloneFeedback(unit.feedback),
+	}
+	if unit.kind == UnitJoin {
+		// A fan-out's phase-level continuation is always the join's: it is the
+		// only unit whose envelope is the phase's. Consumed here exactly as
+		// startRunner consumes it, so a continuation can never leak into the
+		// phase that follows.
+		request.PriorThreadID = item.priorThreadID
+		request.FinalizeTakeover = item.takeoverFinalize
+		item.priorThreadID = ""
 	}
 	startCtx, cancel := context.WithCancel(e.ctx)
 	future := &runnerStartFuture{key: request.Key, done: make(chan response, 1)}
@@ -357,7 +360,10 @@ func (e *Engine) unitVars(item *runtimeItem, unit *unitRun) (map[string]any, err
 	if err != nil {
 		return nil, err
 	}
-	vars[joinUnitsVariable] = results
+	// Bound last, and under the name def declares to the prompt validator, so a
+	// workflow variable of the same name can never shadow the results the join
+	// exists to consolidate.
+	vars[def.UnitsVariable] = results
 	return vars, nil
 }
 

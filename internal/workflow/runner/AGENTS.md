@@ -16,6 +16,27 @@ Pure helper functions for app-owned workflow phase execution.
   before reporting a successful phase completion. Cleanup remains inert until
   disposition support lands; unlanded worktrees are never discarded.
 
+## Fan-out units
+
+- A unit's app-managed files nest under its phase attempt's directory
+  (`UnitAttemptDir` → `<phase>.<attempt>/units/<unit>.<try>`), so a run stays
+  one tree per attempt. The try number is in the path because a retried unit
+  reuses its row but must not reuse its narrative: the previous try's account of
+  what it did is evidence a human retries or drops on, not scratch space.
+  `UnitNarrativePath` / `UnitEnvelopePath` are the unit-scoped counterparts of
+  `NarrativePath` / `EnvelopePath` and refuse any id that would not stay one
+  path segment down.
+- `BuildUnitPrompt` takes its declarations from the caller rather than deriving
+  them, because they differ by role: a work unit reads the phase's inputs plus
+  its `as:` element binding (`def.ResolveUnitDeclarations`), a join reads the
+  phase's inputs plus the reserved `units` results (`def.JoinDeclarations`).
+  Both then get the same system-owned suffix — narrative instruction, feedback
+  block, and envelope branch rules — as a phase prompt.
+- `ToolReport` carries `UnitID`/`UnitAttempt` so a tool unit's narrative names
+  the unit it belongs to and its envelope guidance says "unit" where a phase's
+  says "phase". Everything else about the tool contract below is identical for
+  a unit, a join, and a phase.
+
 ## Tool-driver execution contract
 
 `app_workflow_tool.go` owns the process; this package owns the pure shape of

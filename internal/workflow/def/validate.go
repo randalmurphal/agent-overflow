@@ -95,7 +95,7 @@ func Validate(resolved ResolvedWorkflow, bindings Bindings) ValidationResult {
 			if !idPattern.MatchString(name) {
 				add(finding("output.name", outputElement, "name must match [a-z0-9-]+"))
 			}
-			if phase.Driver == DriverTool && ReservedToolOutput(name) {
+			if PhaseProducesToolEnvelope(phase) && ReservedToolOutput(name) {
 				add(finding("output.reserved", outputElement, "the tool driver always supplies this output; remove the declaration"))
 			}
 			add(validateSchemaDefinition(output.Schema, outputElement)...)
@@ -104,7 +104,7 @@ func Validate(resolved ResolvedWorkflow, bindings Bindings) ValidationResult {
 	graph := buildGraph(workflow, phaseIndex, &result.Findings)
 	add(validateVariables(workflow, phaseIndex, graph)...)
 	add(validateWorkflowOutputs(workflow, phaseIndex)...)
-	add(validatePrompts(resolved, phaseIndex)...)
+	add(validatePrompts(resolved)...)
 	add(validateBindings(workflow, bindings)...)
 	result.Reports = fanOutWidthReports(workflow, bindings)
 	sort.SliceStable(result.Findings, func(i, j int) bool {
@@ -142,7 +142,7 @@ func validateWorkflowOutputs(workflow Workflow, phaseIndex map[string]int) []Fin
 	return findings
 }
 
-func validatePrompts(resolved ResolvedWorkflow, phaseIndex map[string]int) []Finding {
+func validatePrompts(resolved ResolvedWorkflow) []Finding {
 	var findings []Finding
 	base := filepath.Dir(resolved.Path)
 	for _, phase := range resolved.Workflow.Phases {
@@ -172,15 +172,10 @@ func validatePrompts(resolved ResolvedWorkflow, phaseIndex map[string]int) []Fin
 			}
 		}
 		// A unit's prompt may read the phase's declared inputs and, in a dynamic
-		// fan-out, the element binding. Resolving the element schema here is what
-		// lets `{{section.path}}` validate against the array's item schema
-		// instead of reporting an undeclared reference.
-		element, hasElement := overElement(resolved.Workflow, phaseIndex, phase)
-		var elementDeclaration *Variable
-		if hasElement {
-			elementDeclaration = &element
-		}
-		declarations := UnitDeclarations(phase, elementDeclaration)
+		// fan-out, the element binding. Resolving the element schema is what lets
+		// `{{section.path}}` validate against the array's item schema instead of
+		// reporting an undeclared reference.
+		declarations := ResolveUnitDeclarations(resolved.Workflow, phase)
 		role := unitRoleStatic
 		if phase.DynamicFanOut() {
 			role = unitRoleTemplate
@@ -189,8 +184,9 @@ func validatePrompts(resolved ResolvedWorkflow, phaseIndex map[string]int) []Fin
 			findings = append(findings, validateUnitPrompt(resolved.Workflow.ID, phase, unit, base, declarations, role)...)
 		}
 		if phase.Join != nil {
-			// The join runs after every unit rests and never binds an element.
-			findings = append(findings, validateUnitPrompt(resolved.Workflow.ID, phase, *phase.Join, base, phase.Inputs, unitRoleJoin)...)
+			// The join runs after every unit rests: it never binds an element, and
+			// it reads their results under the reserved `units` name instead.
+			findings = append(findings, validateUnitPrompt(resolved.Workflow.ID, phase, *phase.Join, base, JoinDeclarations(phase), unitRoleJoin)...)
 		}
 	}
 	return findings

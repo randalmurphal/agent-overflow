@@ -91,14 +91,7 @@ func (e *Engine) completeTakeover(itemID string) error {
 	if !ok || current.ThreadID == "" {
 		return fmt.Errorf("complete takeover %q: parked attempt thread is missing", itemID)
 	}
-	if err := e.transition(item, StateRunning, ""); err != nil {
-		return err
-	}
-	item.priorThreadID = current.ThreadID
-	item.takeoverFinalize = true
-	item.attempt = 0
-	e.items[itemID] = item
-	return e.enterPhase(item)
+	return e.continueParkedAttempt(item, current.ThreadID, nil, true)
 }
 
 func (e *Engine) answer(itemID, answer string) error {
@@ -123,14 +116,77 @@ func (e *Engine) answer(itemID, answer string) error {
 	if !ok || current.ThreadID == "" {
 		return fmt.Errorf("answer question %q: parked attempt thread is missing", itemID)
 	}
+	return e.continueParkedAttempt(item, current.ThreadID, &Feedback{Note: answer}, false)
+}
+
+// continueParkedAttempt resumes a parked run on the provider session it parked
+// on. A single-shape phase re-enters with a fresh attempt. A fan-out instead
+// re-runs its join on the existing attempt: the join is the only unit whose
+// envelope is the phase's, so a phase-level continuation is always the join's,
+// and the work units already produced the results the join exists to
+// consolidate — replacing the attempt would throw every one of them away and
+// redo it.
+func (e *Engine) continueParkedAttempt(item *runtimeItem, threadID string, feedback *Feedback, finalize bool) error {
+	phase, ok := findPhase(item.workflow, item.phaseID)
+	if !ok {
+		return fmt.Errorf("continue item %q: phase %q is absent from snapshot", item.item.ID, item.phaseID)
+	}
+	if phase.EffectiveShape() == def.ShapeFanOut {
+		return e.continueFanOutJoin(item, threadID, feedback, finalize)
+	}
 	if err := e.transition(item, StateRunning, ""); err != nil {
 		return err
 	}
-	item.feedback = &Feedback{Note: answer}
-	item.priorThreadID = current.ThreadID
+	item.feedback = feedback
+	item.priorThreadID = threadID
+	item.takeoverFinalize = finalize
 	item.attempt = 0
-	e.items[itemID] = item
+	e.items[item.item.ID] = item
 	return e.enterPhase(item)
+}
+
+// continueFanOutJoin reopens a parked fan-out attempt and returns its join to
+// pending so it runs again on the thread it parked on. It repairs the attempt
+// rather than replacing it, the same contract RetryUnit follows.
+//
+// A fan-out that parked before its join ever ran, or whose work units still rest
+// failed or taken over, is refused: there is nothing for a join to consolidate
+// yet, and the units are what a human has to decide about first.
+func (e *Engine) continueFanOutJoin(item *runtimeItem, threadID string, feedback *Feedback, finalize bool) error {
+	action := "answer question"
+	if finalize {
+		action = "complete takeover"
+	}
+	if err := e.restoreFanOut(item); err != nil {
+		return fmt.Errorf("%s %q: %w", action, item.item.ID, err)
+	}
+	join := item.fan.join
+	if join.status == store.WorkItemUnitPending {
+		return fmt.Errorf(
+			"%s %q: the fan-out parked before its join ran; repair its units instead",
+			action, item.item.ID,
+		)
+	}
+	if reason, _ := item.fan.blocked(); reason != "" {
+		return fmt.Errorf(
+			"%s %q: units of the parked attempt rest %s; retry or drop them first",
+			action, item.item.ID, reason,
+		)
+	}
+	if err := e.store.RetryWorkItemUnit(item.item.ID, item.phaseID, item.attempt, join.id); err != nil {
+		return fmt.Errorf("%s %q: reopen join: %w", action, item.item.ID, err)
+	}
+	join.status = store.WorkItemUnitPending
+	join.attempt++
+	join.envelope = nil
+	join.feedback = feedback
+	item.fan.joinStarted = false
+	// Consumed by startUnitRunner when it launches the join, exactly as
+	// startRunner consumes them for a single-shape phase.
+	item.priorThreadID = threadID
+	item.takeoverFinalize = finalize
+	e.emitUnitState(item, join)
+	return e.resumeRepairedFanOut(item)
 }
 
 func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note string) error {

@@ -38,6 +38,13 @@ func validateFanOut(workflow Workflow, phase Phase, phaseElement string) []Findi
 	if phase.Join == nil {
 		add("phase.fan-out", phaseElement, "fan-out shape requires a join")
 	}
+	// A fan-out phase runs no turn of its own — its units and its join carry the
+	// bindings — so a phase-level `driver: tool` would demand a check/command the
+	// phase can never run, and would make "what produces this phase's envelope"
+	// (PhaseProducesToolEnvelope) ambiguous between the phase and its join.
+	if phase.Driver == DriverTool {
+		add("phase.fan-out", phaseElement, "a fan-out phase runs no command of its own; its units and join carry the bindings, so driver must be agent")
+	}
 	if dynamic {
 		if strings.TrimSpace(phase.Over) == "" {
 			add("phase.fan-out", phaseElement, "a dynamic fan-out requires over: an array-typed variable reference")
@@ -56,21 +63,21 @@ func validateFanOut(workflow Workflow, phase Phase, phaseElement string) []Findi
 			add("phase.fan-out-unit", unitElement, "unit id is duplicated")
 		}
 		unitIDs[unit.ID] = true
-		findings = append(findings, validateUnitDefinition(unit, unitElement)...)
+		findings = append(findings, validateUnitDefinition(unit, unitElement, unitRoleStatic)...)
 	}
 	if phase.Unit != nil {
 		unitElement := fmt.Sprintf("%s %s %q", phaseElement, unitRoleTemplate, phase.Unit.ID)
 		if !idPattern.MatchString(phase.Unit.ID) {
 			add("phase.fan-out-unit", phaseElement, "unit template id must match [a-z0-9-]+")
 		}
-		findings = append(findings, validateUnitDefinition(*phase.Unit, unitElement)...)
+		findings = append(findings, validateUnitDefinition(*phase.Unit, unitElement, unitRoleTemplate)...)
 	}
 	if phase.Join != nil {
 		joinElement := phaseElement + " " + unitRoleJoin
 		if !idPattern.MatchString(phase.Join.ID) {
 			add("phase.fan-out-unit", joinElement, "join id must match [a-z0-9-]+")
 		}
-		findings = append(findings, validateUnitDefinition(*phase.Join, joinElement)...)
+		findings = append(findings, validateUnitDefinition(*phase.Join, joinElement, unitRoleJoin)...)
 	}
 	return findings
 }
@@ -101,10 +108,11 @@ func validateElementBinding(workflow Workflow, phase Phase, phaseElement string)
 }
 
 // validateUnitDefinition enforces that a unit carries exactly one runnable
-// binding. A unit has no `driver:` field — the binding it declares is the
+// binding and that whatever it declares as outputs is a contract a provider can
+// be held to. A unit has no `driver:` field — the binding it declares is the
 // discriminator behind Unit.EffectiveDriver, so a unit with both or neither
 // would make the driver a guess.
-func validateUnitDefinition(unit Unit, element string) []Finding {
+func validateUnitDefinition(unit Unit, element, role string) []Finding {
 	var findings []Finding
 	if unit.Access != "" && unit.Access != AccessReadOnly && unit.Access != AccessWrite {
 		findings = append(findings, finding("phase.access", element, "access must be read-only or write"))
@@ -116,6 +124,35 @@ func validateUnitDefinition(unit Unit, element string) []Finding {
 		findings = append(findings, finding("phase.fan-out-unit", element, "a unit declares a command or provider/model/prompt, not both"))
 	case command == "" && (strings.TrimSpace(unit.Provider) == "" || strings.TrimSpace(unit.Model) == "" || unit.Prompt == ""):
 		findings = append(findings, finding("phase.fan-out-unit", element, "an agent unit requires provider, model, and prompt; a tool unit requires a command"))
+	}
+	return append(findings, validateUnitOutputs(unit, element, role)...)
+}
+
+// validateUnitOutputs applies the phase-output rules to a unit's own contract:
+// the same name grammar, the same schema vocabulary, and the same refusal to
+// redeclare an output the tool driver always supplies.
+//
+// A join declares none at all. Its envelope IS the phase's envelope, so the
+// only contract it can answer is the phase's `outputs:` — a second declaration
+// would name outputs the gate never reads.
+func validateUnitOutputs(unit Unit, element, role string) []Finding {
+	if role == unitRoleJoin {
+		if len(unit.Outputs) > 0 {
+			return []Finding{finding("phase.fan-out-unit", element,
+				"a join answers the phase's outputs; remove its own outputs declaration")}
+		}
+		return nil
+	}
+	var findings []Finding
+	for name, output := range unit.Outputs {
+		outputElement := fmt.Sprintf("%s output %q", element, name)
+		if !idPattern.MatchString(name) {
+			findings = append(findings, finding("output.name", outputElement, "name must match [a-z0-9-]+"))
+		}
+		if unit.EffectiveDriver() == DriverTool && ReservedToolOutput(name) {
+			findings = append(findings, finding("output.reserved", outputElement, "the tool driver always supplies this output; remove the declaration"))
+		}
+		findings = append(findings, validateSchemaDefinition(output.Schema, outputElement)...)
 	}
 	return findings
 }

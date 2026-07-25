@@ -6,7 +6,7 @@ import (
 )
 
 func TestThreadActionLocksSerializeOneThread(t *testing.T) {
-	locks := newThreadActionLocks()
+	locks := newKeyedLocks()
 	unlock := locks.Lock("thread-1")
 
 	attempting := make(chan struct{})
@@ -37,7 +37,7 @@ func TestThreadActionLocksSerializeOneThread(t *testing.T) {
 }
 
 func TestThreadActionLocksAllowDifferentThreads(t *testing.T) {
-	locks := newThreadActionLocks()
+	locks := newKeyedLocks()
 	unlock := locks.Lock("thread-1")
 	defer unlock()
 
@@ -46,7 +46,7 @@ func TestThreadActionLocksAllowDifferentThreads(t *testing.T) {
 }
 
 func TestThreadActionLocksForgetDropsUnusedEntry(t *testing.T) {
-	locks := newThreadActionLocks()
+	locks := newKeyedLocks()
 	unlock := locks.Lock("thread-1")
 	unlock()
 
@@ -60,7 +60,7 @@ func TestThreadActionLocksForgetDropsUnusedEntry(t *testing.T) {
 }
 
 func TestThreadActionLocksForgetWaitsForHolderAndWaiter(t *testing.T) {
-	locks := newThreadActionLocks()
+	locks := newKeyedLocks()
 	unlock := locks.Lock("thread-1")
 
 	waiting := make(chan struct{})
@@ -89,7 +89,7 @@ func TestThreadActionLocksForgetWaitsForHolderAndWaiter(t *testing.T) {
 	}
 }
 
-func waitForThreadLockRefs(t *testing.T, locks *threadActionLockRegistry, threadID string, want int) {
+func waitForThreadLockRefs(t *testing.T, locks *keyedLockRegistry, threadID string, want int) {
 	t.Helper()
 
 	deadline := time.Now().Add(time.Second)

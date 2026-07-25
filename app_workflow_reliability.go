@@ -162,7 +162,7 @@ func (r *workflowAppRunner) timerFired(runKey string) {
 	}
 	// Codex identifies the next sub-attempt with EventTurnStart. Until it
 	// arrives, ignore a delayed terminal event from the preceding turn.
-	attempt.awaitingRetryStart = attempt.phase.Provider == string(provider.Codex)
+	attempt.awaitingRetryStart = attempt.provider == string(provider.Codex)
 	message := attempt.currentPrompt
 	schema := append(json.RawMessage(nil), attempt.schema...)
 	r.mu.Unlock()

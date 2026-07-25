@@ -738,6 +738,9 @@ func (p *privilegedApp) WorkflowGetEngineState() string         { return "ok" }
 func (p *privilegedApp) WorkflowSetJobNotes() string            { return "ok" }
 func (p *privilegedApp) WorkflowListDefinitions() string        { return "ok" }
 func (p *privilegedApp) WorkflowRerunItem() string              { return "ok" }
+func (p *privilegedApp) WorkflowRetryUnit() string              { return "ok" }
+func (p *privilegedApp) WorkflowDropUnit() string               { return "ok" }
+func (p *privilegedApp) WorkflowTakeOverUnit() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadMode() string               { return "ok" }
 func (p *privilegedApp) UpdateThreadProvider() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadModel() string              { return "ok" }

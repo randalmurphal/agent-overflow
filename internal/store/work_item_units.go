@@ -146,14 +146,32 @@ func (s *Store) RetryWorkItemUnit(itemID, phaseID string, attempt int, unitID st
 	return requireRowsAffected(result, fmt.Sprintf("store: retry work item unit %s/%s/%d/%s", itemID, phaseID, attempt, unitID))
 }
 
-// AttachWorkItemUnitRun records the AO thread, sub-worktree, branch, and
-// system-owned narrative path the runner provisioned for a unit.
-func (s *Store) AttachWorkItemUnitRun(itemID, phaseID string, attempt int, unitID, threadID, branch, worktreePath, narrativePath string) error {
+// AttachWorkItemUnitWorkspace records the branch and sub-worktree a unit was
+// provisioned with. It is deliberately separate from AttachWorkItemUnitRun:
+// isolation exists before the session does, and the row has to say so from the
+// moment the worktree is on disk — a crash in between is exactly the case that
+// would otherwise strand it. Clearing the worktree path (empty string) while
+// keeping the branch is how consumed sub-worktrees are retired.
+func (s *Store) AttachWorkItemUnitWorkspace(itemID, phaseID string, attempt int, unitID, branch, worktreePath string) error {
 	result, err := s.db.Exec(
-		`UPDATE work_item_units
-		 SET thread_id = ?, branch = ?, worktree_path = ?, narrative_path = ?
+		`UPDATE work_item_units SET branch = ?, worktree_path = ?
 		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
-		threadID, branch, worktreePath, narrativePath, itemID, phaseID, attempt, unitID,
+		branch, worktreePath, itemID, phaseID, attempt, unitID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: attach work item unit workspace %s/%s/%d/%s: %w", itemID, phaseID, attempt, unitID, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: attach work item unit workspace %s/%s/%d/%s", itemID, phaseID, attempt, unitID))
+}
+
+// AttachWorkItemUnitRun records the AO thread and system-owned narrative path
+// the runner created for a unit. It leaves branch and worktree alone — those
+// were registered earlier by AttachWorkItemUnitWorkspace.
+func (s *Store) AttachWorkItemUnitRun(itemID, phaseID string, attempt int, unitID, threadID, narrativePath string) error {
+	result, err := s.db.Exec(
+		`UPDATE work_item_units SET thread_id = ?, narrative_path = ?
+		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
+		threadID, narrativePath, itemID, phaseID, attempt, unitID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: attach work item unit run %s/%s/%d/%s: %w", itemID, phaseID, attempt, unitID, err)
@@ -223,6 +241,31 @@ func (s *Store) ListWorkItemPhaseUnits(itemID, phaseID string, attempt int) ([]W
 		return nil, fmt.Errorf("store: list work item phase units %s/%s/%d: %w", itemID, phaseID, attempt, err)
 	}
 	return collectWorkItemUnits(rows, fmt.Sprintf("store: list work item phase units %s/%s/%d", itemID, phaseID, attempt))
+}
+
+// GetWorkItemUnitByThread resolves the unit row that owns an AO thread. A unit
+// thread belongs to exactly one unit of one attempt, so this is the inverse of
+// AttachWorkItemUnitRun and the lookup every thread-first entry point (a human
+// steering a taken-over unit) starts from. The newest row wins if a thread was
+// somehow reused, matching how phase threads resolve.
+func (s *Store) GetWorkItemUnitByThread(threadID string) (WorkItemUnit, bool, error) {
+	if threadID == "" {
+		return WorkItemUnit{}, false, nil
+	}
+	unit, err := scanWorkItemUnit(s.db.QueryRow(
+		`SELECT `+workItemUnitColumns+` FROM work_item_units
+		 WHERE thread_id = ?
+		 ORDER BY started_at DESC, attempt DESC
+		 LIMIT 1`,
+		threadID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkItemUnit{}, false, nil
+	}
+	if err != nil {
+		return WorkItemUnit{}, false, fmt.Errorf("store: get work item unit for thread %s: %w", threadID, err)
+	}
+	return unit, true, nil
 }
 
 // GetWorkItemUnit returns one unit row.

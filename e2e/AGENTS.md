@@ -25,6 +25,11 @@ headless, isolated data dir, mocked providers. Full harness guide:
   subprocesses: a green check routing its gate into an agent phase, a red check
   looping back and then parking (a non-zero exit is `passed: false`, not a
   failure), and a command writing its own envelope to `AO_ENVELOPE`.
+- `tests/workflows-fanout.spec.ts` — fan-out phases: a static two-unit fan-out
+  where each writing unit is isolated on its own branch and the join drives the
+  gate, a dynamic `over:` fan-out whose width comes from a prior phase's array
+  (claude plan phase, codex units), and a mixed-provider fan-out whose failed
+  unit parks the run until `WorkflowRetryUnit` repairs it in place.
 - `tests/workflows-helpers.ts` — shared workflow seeds, mock-provider scenarios,
   direct start (`WorkflowStartRun`), the global-pause switch, state waits,
   result envelopes, and compact workflow definitions.
@@ -32,7 +37,10 @@ headless, isolated data dir, mocked providers. Full harness guide:
   git repository, which is how a tool fixture ships the script its profile
   binding names. Profile bindings are argv arrays pointing at real binaries or
   committed scripts — never shell strings, because the runner does not use a
-  shell.
+  shell. `setCodexScenario` / `sessionConfigs` / `mockSessions` are the shared
+  mock-observation surface: a scenario reaches only the mocks that register
+  after it is set, which is how a spec stages one behaviour for a run and a
+  different one for the session a recovery action starts.
 - `tests/notifications.spec.ts` — OS-notification pipe: `HarnessNotify`'s
   typed degraded send error, cold activation through transport replay and
   the pre-hydration queue, and the `none`-target no-op log.

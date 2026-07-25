@@ -3092,6 +3092,14 @@ export function WorkflowDismissChatProposal(threadID: string, proposalID: string
 }
 
 /**
+ * WorkflowDropUnit accepts a failed or taken-over unit's absence. The unit is
+ * recorded `dropped`, its join sees it as such, and the attempt resumes.
+ */
+export function WorkflowDropUnit(itemID: string, unitID: string, note: string): $CancellablePromise<void> {
+    return $Call.ByID(1005356607, itemID, unitID, note);
+}
+
+/**
  * WorkflowFetchPRReviewComments returns the PR's review conversations that
  * have not been explicitly resolved. Conversation comments without a forge
  * resolution state remain visible.
@@ -3234,6 +3242,15 @@ export function WorkflowResumeItem(itemID: string, targetPhase: string): $Cancel
 }
 
 /**
+ * WorkflowRetryUnit re-runs one failed or taken-over unit of a parked fan-out
+ * attempt. The note explains the retry in the run record and reaches the unit's
+ * next try as feedback.
+ */
+export function WorkflowRetryUnit(itemID: string, unitID: string, note: string): $CancellablePromise<void> {
+    return $Call.ByID(1648002260, itemID, unitID, note);
+}
+
+/**
  * WorkflowSendPRReviewCommentsToThread opens or reuses the run's linked
  * thread, then sends the current unresolved review comments through the
  * normal user-message path.
@@ -3270,6 +3287,16 @@ export function WorkflowStartRun(projectID: string, workflowID: string, workflow
     return $Call.ByID(1009082601, projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode).then(($result: any) => {
         return $$createType110($result);
     });
+}
+
+/**
+ * WorkflowTakeOverUnit detaches one live fan-out unit from engine control so a
+ * human can steer its thread directly. The unit's session stays alive and is
+ * re-registered schema-less, exactly as a taken-over phase thread is; its
+ * siblings keep running and the attempt parks once they rest.
+ */
+export function WorkflowTakeOverUnit(itemID: string, unitID: string): $CancellablePromise<void> {
+    return $Call.ByID(1931942299, itemID, unitID);
 }
 
 /**

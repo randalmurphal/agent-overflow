@@ -8,15 +8,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
-	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	workflowrunner "agent-overflow/internal/workflow/runner"
@@ -28,26 +23,54 @@ type workflowAppRunner struct {
 	profiles engine.ProfileSource
 	now      func() time.Time
 	newTimer func(time.Duration, func()) workflowTimer
+	// workspaceLocks serializes primary-workspace provisioning per work item.
+	// It is its own registry rather than the App's thread locks because the key
+	// space is item ids, and the two must never contend.
+	workspaceLocks *keyedLockRegistry
 
 	mu        sync.Mutex
 	runs      map[string]*workflowAttempt
 	tools     map[string]*workflowToolAttempt
 	schemas   map[string]json.RawMessage
 	takeovers map[string]workflowTakeover
-	// workItems attributes usage only while a phase thread can emit a live
-	// turn. Startup crash recovery parks orphan attempts before any session
+	// workItems attributes usage only while a phase or unit thread can emit a
+	// live turn. Startup crash recovery parks orphan attempts before any session
 	// resumes, so no durable thread-to-item registry is needed after restart.
 	workItems map[string]string
 }
 
+// workflowCompletion identifies one piece of engine work and carries everything
+// the runner still owes the run once that work reports done. Both execution
+// paths — a provider turn and a deterministic command — embed it, so artifact
+// capture and sub-worktree retirement happen for a tool join exactly as they do
+// for an agent one.
+type workflowCompletion struct {
+	key         engine.RunKey
+	unitKind    engine.UnitKind
+	workflow    def.Workflow
+	workspace   string
+	projectPath string
+}
+
+// producesPhaseEnvelope reports whether this work's envelope is the phase's own
+// — true for a single-shape phase and for a fan-out's join, false for a work
+// unit, whose outputs reach the gate only through its join.
+func (c workflowCompletion) producesPhaseEnvelope() bool {
+	return c.key.UnitID == "" || c.unitKind == engine.UnitJoin
+}
+
+// workflowAttempt is one live provider-backed workflow turn: a single-shape
+// phase attempt, a fan-out unit, or a fan-out's join. `contract` rather than
+// `phase` decides what its envelope must satisfy, because a work unit answers
+// its own declaration while a join answers the phase's.
 type workflowAttempt struct {
+	workflowCompletion
 	sendMu               sync.Mutex
-	key                  engine.RunKey
 	threadID             string
 	schema               json.RawMessage
+	contract             def.EnvelopeContract
+	provider             string
 	phase                def.Phase
-	workflow             def.Workflow
-	workspace            string
 	complete             func(engine.Outcome)
 	unsubscribe          func()
 	envelopeRetryUsed    bool
@@ -71,7 +94,8 @@ func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSour
 		newTimer: func(delay time.Duration, callback func()) workflowTimer {
 			return time.AfterFunc(delay, callback)
 		},
-		runs: make(map[string]*workflowAttempt), tools: make(map[string]*workflowToolAttempt),
+		workspaceLocks: newKeyedLocks(),
+		runs:           make(map[string]*workflowAttempt), tools: make(map[string]*workflowToolAttempt),
 		schemas:   make(map[string]json.RawMessage),
 		takeovers: make(map[string]workflowTakeover),
 		workItems: make(map[string]string),
@@ -91,21 +115,17 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 			}
 		}()
 	}
-	// Fan-out execution is an engine capability the app runner does not
-	// implement yet: units need their own threads and sub-worktrees. Refusing by
-	// sentinel parks the run as a wiring error — the frozen definition and this
-	// build cannot produce runnable work — instead of blaming the agent.
-	if request.Phase.EffectiveShape() != def.ShapeSingle {
-		return errors.Join(engine.ErrWiringFailed, fmt.Errorf(
-			"workflow runner: phase %q uses shape %q; only single is available in this build",
-			request.Phase.ID, request.Phase.EffectiveShape(),
-		))
-	}
 	if request.Key.UnitID != "" {
-		return errors.Join(engine.ErrWiringFailed, fmt.Errorf(
-			"workflow runner: phase %q unit %q cannot run; fan-out units are not available in this build",
-			request.Phase.ID, request.Key.UnitID,
-		))
+		return r.startUnit(ctx, request, complete)
+	}
+	// A fan-out phase runs no turn of its own: the engine drives its units and
+	// its join, and only they reach a runner. A phase key arriving here for one
+	// is a scheduling bug, not a definition problem.
+	if request.Phase.EffectiveShape() != def.ShapeSingle {
+		return fmt.Errorf(
+			"workflow runner: phase %q has shape %q and cannot run as one attempt",
+			request.Phase.ID, request.Phase.EffectiveShape(),
+		)
 	}
 	switch request.Phase.Driver {
 	case def.DriverTool:
@@ -117,7 +137,8 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 	default:
 		return fmt.Errorf("workflow runner: phase %q uses unsupported driver %q; agent and tool are available", request.Phase.ID, request.Phase.Driver)
 	}
-	schema, err := def.EnvelopeSchema(request.Phase)
+	contract := def.PhaseEnvelope(request.Phase)
+	schema, err := contract.Schema()
 	if err != nil {
 		return fmt.Errorf("workflow runner: build phase %q envelope schema: %w", request.Phase.ID, err)
 	}
@@ -141,16 +162,22 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 		return fmt.Errorf("workflow runner: create narrative directory: %w", err)
 	}
 
+	spec := workflowThreadSpec{
+		itemID: request.Key.ItemID, label: fmt.Sprintf("phase %q", request.Phase.ID),
+		title:        workflowThreadTitle(request.Phase.Name, request.Phase.ID),
+		providerName: request.Phase.Provider, model: request.Phase.Model,
+		access: request.Phase.EffectiveAccess(), workspace: preparedWorkspace,
+	}
 	threadID := request.PriorThreadID
 	createdThread := false
 	if threadID == "" {
-		thread, createErr := r.app.createWorkflowThread(request, workspace, preparedWorkspace.project)
+		thread, createErr := r.app.createWorkflowThread(spec)
 		if createErr != nil {
 			return createErr
 		}
 		threadID = thread.ID
 		createdThread = true
-	} else if err := r.validatePriorThread(request, threadID, workspace); err != nil {
+	} else if err := r.validatePriorThread(spec, threadID); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
@@ -178,33 +205,56 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 		return err
 	}
 
-	restartClaudeWithSchema := false
 	if request.FinalizeTakeover && request.Phase.Provider == string(provider.Claude) {
-		r.mu.Lock()
-		takeover, registered := r.takeovers[threadID]
-		restartClaudeWithSchema = registered && !takeover.schemaAttached
-		if restartClaudeWithSchema {
-			r.schemas[threadID] = append(json.RawMessage(nil), schema...)
-		}
-		r.mu.Unlock()
-		if restartClaudeWithSchema {
-			if err := r.app.StopSession(threadID); err != nil {
-				r.removeTemporarySchema(threadID)
-				return fmt.Errorf("workflow runner: stop schema-less takeover session: %w", err)
-			}
-			if err := r.app.StartSession(threadID); err != nil {
-				r.removeTemporarySchema(threadID)
-				return fmt.Errorf("workflow runner: restart takeover session with schema: %w", err)
-			}
+		if err := r.restartClaudeTakeoverWithSchema(threadID, schema); err != nil {
+			return err
 		}
 	}
 	attempt := &workflowAttempt{
-		key: request.Key, threadID: threadID,
-		schema: append(json.RawMessage(nil), schema...), phase: request.Phase, complete: complete,
-		workflow: request.Workflow, workspace: workspace,
+		workflowCompletion: workflowCompletion{
+			key: request.Key, workflow: request.Workflow,
+			workspace: workspace, projectPath: preparedWorkspace.project.Path,
+		},
+		threadID: threadID,
+		schema:   append(json.RawMessage(nil), schema...), contract: contract,
+		provider: request.Phase.Provider, phase: request.Phase, complete: complete,
 		currentPrompt: prompt, watchdog: watchdog, backoff: backoff,
 	}
-	key := workflowRunKey(request.Key)
+	return r.installAttempt(ctx, attempt, createdThread)
+}
+
+// restartClaudeTakeoverWithSchema re-launches a Claude session that was started
+// for human steering without `--json-schema`. The finalize turn has to produce a
+// validated envelope, and Claude only attaches a schema at process start.
+func (r *workflowAppRunner) restartClaudeTakeoverWithSchema(threadID string, schema json.RawMessage) error {
+	r.mu.Lock()
+	takeover, registered := r.takeovers[threadID]
+	restart := registered && !takeover.schemaAttached
+	if restart {
+		r.schemas[threadID] = append(json.RawMessage(nil), schema...)
+	}
+	r.mu.Unlock()
+	if !restart {
+		return nil
+	}
+	if err := r.app.StopSession(threadID); err != nil {
+		r.removeTemporarySchema(threadID)
+		return fmt.Errorf("workflow runner: stop schema-less takeover session: %w", err)
+	}
+	if err := r.app.StartSession(threadID); err != nil {
+		r.removeTemporarySchema(threadID)
+		return fmt.Errorf("workflow runner: restart takeover session with schema: %w", err)
+	}
+	return nil
+}
+
+// installAttempt registers a fully provisioned attempt and sends its opening
+// prompt. Every agent-backed workflow turn — phase, unit, and join — ends here,
+// so registration, observer wiring, the cancellation window, and the send-failure
+// outcome are written once.
+func (r *workflowAppRunner) installAttempt(ctx context.Context, attempt *workflowAttempt, createdThread bool) error {
+	key := workflowRunKey(attempt.key)
+	threadID := attempt.threadID
 	attempt.unsubscribe = r.app.subscribeThreadTurnObserver(threadID, func(_ string, event provider.ProviderEvent) {
 		r.observe(key, event)
 	})
@@ -214,9 +264,9 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 		attempt.unsubscribe()
 		return fmt.Errorf("workflow runner: attempt %s is already active", key)
 	}
-	r.schemas[threadID] = append(json.RawMessage(nil), schema...)
+	r.schemas[threadID] = append(json.RawMessage(nil), attempt.schema...)
 	r.runs[key] = attempt
-	r.workItems[threadID] = request.Key.ItemID
+	r.workItems[threadID] = attempt.key.ItemID
 	delete(r.takeovers, threadID)
 	r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -227,7 +277,8 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 		return fmt.Errorf("workflow runner: startup cancelled: %w", err)
 	}
 
-	if _, err := r.sendIfActive(key, prompt, schema); err != nil {
+	schema := append(json.RawMessage(nil), attempt.schema...)
+	if _, err := r.sendIfActive(key, attempt.currentPrompt, schema); err != nil {
 		r.finish(key, engine.Outcome{Kind: engine.OutcomeExecutionFailure})
 	}
 	return nil
@@ -252,220 +303,6 @@ func (r *workflowAppRunner) Stop(_ context.Context, key engine.RunKey) (json.Raw
 	return nil, nil
 }
 
-func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent) {
-	r.mu.Lock()
-	attempt := r.runs[runKey]
-	if attempt == nil {
-		r.mu.Unlock()
-		return
-	}
-	if attempt.timerMode == workflowTimerBackoff {
-		r.mu.Unlock()
-		return
-	}
-	if attempt.awaitingRetryStart {
-		if event.Kind == provider.EventSessionStatus && strings.TrimSpace(event.Content) == "error" {
-			attempt.awaitingRetryStart = false
-			attempt.pendingSessionDeath = true
-			r.mu.Unlock()
-			return
-		}
-		if !workflowProviderTurnStarted(attempt.phase.Provider, event) {
-			r.mu.Unlock()
-			return
-		}
-		attempt.awaitingRetryStart = false
-	}
-	if workflowProviderTurnStarted(attempt.phase.Provider, event) {
-		attempt.turnStarted = true
-		attempt.pendingTransient = false
-		attempt.claudeTransientRetry = false
-		r.armWatchdogLocked(runKey, attempt)
-		r.mu.Unlock()
-		return
-	}
-	if attempt.turnStarted {
-		r.resetWatchdogLocked(attempt)
-	}
-	if event.Kind == provider.EventSessionStatus {
-		content := strings.TrimSpace(event.Content)
-		if content == "error" {
-			r.disarmTimerLocked(attempt)
-			attempt.turnStarted = false
-			attempt.pendingSessionDeath = true
-			r.mu.Unlock()
-			return
-		}
-		if content == "disconnected" {
-			if attempt.pendingSessionDeath {
-				r.mu.Unlock()
-				return
-			}
-			r.mu.Unlock()
-			r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure})
-			return
-		}
-	}
-	if event.Kind == provider.EventAPIRetry && attempt.phase.Provider == string(provider.Claude) {
-		if workflowClaudeTransientAPIRetry(event) {
-			attempt.claudeTransientRetry = true
-		}
-		r.mu.Unlock()
-		return
-	}
-	if event.Kind == provider.EventError {
-		transient, waitsForCompletion := workflowTransientError(
-			attempt.phase.Provider, event, attempt.claudeTransientRetry,
-		)
-		if transient && waitsForCompletion {
-			attempt.pendingTransient = true
-			r.mu.Unlock()
-			return
-		}
-		if transient {
-			exhausted := r.scheduleTransientLocked(runKey, attempt)
-			r.mu.Unlock()
-			if exhausted {
-				r.stopAndFinish(runKey, engine.Outcome{Kind: engine.OutcomeTransientExhausted})
-			}
-			return
-		}
-		if workflowTurnErrorIsTerminal(event.Meta) {
-			r.mu.Unlock()
-			r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure})
-			return
-		}
-	}
-	if event.Kind != provider.EventTurnComplete {
-		r.mu.Unlock()
-		return
-	}
-	r.disarmTimerLocked(attempt)
-	attempt.turnStarted = false
-	attempt.claudeTransientRetry = false
-	payload := append(json.RawMessage(nil), event.StructuredOutput...)
-	if len(payload) == 0 && (attempt.pendingTransient || workflowTransientTurnComplete(attempt.phase.Provider, event)) {
-		attempt.pendingTransient = false
-		exhausted := r.scheduleTransientLocked(runKey, attempt)
-		r.mu.Unlock()
-		if exhausted {
-			r.stopAndFinish(runKey, engine.Outcome{Kind: engine.OutcomeTransientExhausted})
-		}
-		return
-	}
-	attempt.pendingTransient = false
-	if len(payload) == 0 && workflowTurnCompletedWithError(event) {
-		r.mu.Unlock()
-		r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure})
-		return
-	}
-	validationErr := def.ValidateEnvelope(attempt.phase, payload)
-	if validationErr == nil {
-		r.mu.Unlock()
-		outcome, err := workflowrunner.OutcomeFromEnvelope(payload)
-		if err != nil {
-			r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Envelope: payload})
-			return
-		}
-		r.finish(runKey, outcome)
-		return
-	}
-	if attempt.envelopeRetryUsed {
-		r.mu.Unlock()
-		r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Envelope: payload})
-		return
-	}
-	attempt.envelopeRetryUsed = true
-	schema := append(json.RawMessage(nil), attempt.schema...)
-	attempt.currentPrompt = workflowrunner.RetryMessage(findingsForEnvelopeError(validationErr))
-	message := attempt.currentPrompt
-	r.mu.Unlock()
-	go func() {
-		sent, err := r.sendIfActive(runKey, message, schema)
-		if sent && err != nil {
-			r.finish(runKey, engine.Outcome{Kind: engine.OutcomeExecutionFailure, Envelope: payload})
-		}
-	}()
-}
-
-// sessionDisconnected advances subprocess-death retry only after the dead
-// session has been removed from App's registry. That ordering prevents a
-// millisecond harness backoff from sending into the session being reaped.
-func (r *workflowAppRunner) sessionDisconnected(threadID string) {
-	var exhaustedKey string
-	r.mu.Lock()
-	for runKey, attempt := range r.runs {
-		if attempt.threadID != threadID || !attempt.pendingSessionDeath {
-			continue
-		}
-		attempt.pendingSessionDeath = false
-		if r.scheduleTransientLocked(runKey, attempt) {
-			exhaustedKey = runKey
-		}
-		break
-	}
-	r.mu.Unlock()
-	if exhaustedKey != "" {
-		r.stopAndFinish(exhaustedKey, engine.Outcome{Kind: engine.OutcomeTransientExhausted})
-	}
-}
-
-func workflowProviderTurnStarted(providerName string, event provider.ProviderEvent) bool {
-	if event.Kind == provider.EventTurnStart {
-		return true
-	}
-	return providerName == string(provider.Claude) && event.Kind == provider.EventInit
-}
-
-// sendIfActive serializes sends with Stop and rechecks ownership after taking
-// the per-attempt lock. A retry queued before cancellation therefore cannot
-// start a new provider turn after Stop has removed the attempt.
-func (r *workflowAppRunner) sendIfActive(runKey, message string, schema json.RawMessage) (bool, error) {
-	r.mu.Lock()
-	attempt := r.runs[runKey]
-	r.mu.Unlock()
-	if attempt == nil {
-		return false, nil
-	}
-
-	attempt.sendMu.Lock()
-	defer attempt.sendMu.Unlock()
-	r.mu.Lock()
-	active := r.runs[runKey] == attempt
-	r.mu.Unlock()
-	if !active {
-		return false, nil
-	}
-	err := r.app.sendWorkflowMessage(attempt.threadID, message, schema)
-	if err != nil || attempt.phase.Provider != string(provider.Claude) {
-		return true, err
-	}
-
-	// Claude has no per-turn EventTurnStart. A successful send is therefore
-	// the start signal when an existing session emits no fresh EventInit (for
-	// example, the envelope-feedback turn and a transient sub-attempt).
-	r.mu.Lock()
-	if r.runs[runKey] == attempt && !attempt.turnStarted && !attempt.pendingSessionDeath && attempt.timerMode != workflowTimerBackoff {
-		attempt.turnStarted = true
-		attempt.pendingTransient = false
-		attempt.claudeTransientRetry = false
-		r.armWatchdogLocked(runKey, attempt)
-	}
-	r.mu.Unlock()
-	return true, nil
-}
-
-func workflowTurnErrorIsTerminal(meta json.RawMessage) bool {
-	if len(meta) == 0 {
-		return false
-	}
-	var flags struct {
-		Fatal              bool `json:"fatal"`
-		ExpectTurnComplete bool `json:"expect_turn_complete"`
-	}
-	return json.Unmarshal(meta, &flags) == nil && flags.Fatal && !flags.ExpectTurnComplete
-}
-
 func (r *workflowAppRunner) finish(runKey string, outcome engine.Outcome) {
 	attempt, ok := r.detach(runKey)
 	if !ok {
@@ -475,7 +312,7 @@ func (r *workflowAppRunner) finish(runKey string, outcome engine.Outcome) {
 	attempt.sendMu.Unlock()
 	if outcome.Kind == engine.OutcomeDone {
 		go func() {
-			r.captureArtifacts(attempt, outcome.Envelope)
+			r.settleDone(attempt.workflowCompletion, outcome.Envelope)
 			attempt.complete(outcome)
 		}()
 		return
@@ -519,88 +356,6 @@ func findingsForEnvelopeError(err error) []def.EnvelopeFinding {
 		return envelopeErr.Findings
 	}
 	return []def.EnvelopeFinding{{Path: "$", Message: err.Error()}}
-}
-
-func (r *workflowAppRunner) validatePriorThread(request engine.RunRequest, threadID, workspace string) error {
-	thread, err := r.app.store.GetThread(threadID)
-	if err != nil {
-		return fmt.Errorf("workflow runner: load prior thread %q: %w", threadID, err)
-	}
-	if thread.Mode != "workflow" {
-		return fmt.Errorf("workflow runner: prior thread %q has mode %q, want workflow", threadID, thread.Mode)
-	}
-	if thread.Provider != request.Phase.Provider || thread.Model != provider.NormalizeModelSlug(request.Phase.Provider, request.Phase.Model) {
-		return fmt.Errorf("workflow runner: prior thread %q provider/model no longer matches phase %s/%s", threadID, request.Phase.Provider, request.Phase.Model)
-	}
-	if !filepath.IsAbs(workspace) || !filepath.IsAbs(thread.WorkspacePath) || !gitops.SameFilesystemPath(thread.WorkspacePath, workspace) {
-		return fmt.Errorf("workflow runner: prior thread %q workspace %q no longer matches item workspace %q", threadID, thread.WorkspacePath, workspace)
-	}
-	return nil
-}
-
-func (a *App) createWorkflowThread(request engine.RunRequest, workspace string, project store.Project) (store.Thread, error) {
-	access := request.Phase.EffectiveAccess()
-	if !provider.CapabilitiesForProvider(request.Phase.Provider).EnforcesRuntimeMode {
-		// The phase declares an access level the provider's session config
-		// cannot apply. Refusing here is the point: starting anyway would run
-		// an unattended phase with its `access` declaration silently inert,
-		// which is the exact hole D22 closes. Typed as a wiring error — the
-		// frozen definition and the runtime cannot produce the work it
-		// describes — so the item parks with an actionable reason.
-		return store.Thread{}, fmt.Errorf(
-			"%w: workflow runner: phase %q declares access %q but provider %q does not enforce runtime modes",
-			engine.ErrWiringFailed, request.Phase.ID, access, request.Phase.Provider,
-		)
-	}
-	seed := a.seedChatModelProfile(request.Phase.Provider, request.Phase.Model)
-	now := time.Now().UnixMilli()
-	title := request.Phase.Name
-	if strings.TrimSpace(title) == "" {
-		title = request.Phase.ID
-	}
-	thread := store.Thread{
-		ID: uuid.NewString(), ProjectID: project.ID, ProjectPath: project.Path,
-		Title: "Workflow: " + title, Provider: request.Phase.Provider,
-		Model:         provider.NormalizeModelSlug(request.Phase.Provider, request.Phase.Model),
-		WorkspacePath: workspace, Mode: "workflow",
-		ReasoningEffort: seed.ReasoningEffort, FastMode: seed.FastMode,
-		ContextWindow: seed.ContextWindow,
-		RuntimeMode:   string(workflowPhaseRuntimeMode(access)),
-		CreatedAt:     now, UpdatedAt: now,
-	}
-	if !gitops.SameFilesystemPath(workspace, project.Path) {
-		thread.WorktreePath = workspace
-		current, err := a.store.GetWorkItem(request.Key.ItemID)
-		if err != nil {
-			return store.Thread{}, fmt.Errorf("workflow runner: reload item workspace: %w", err)
-		}
-		thread.Branch = current.Branch
-	}
-	// sanitizeThreadModelSettings does not touch RuntimeMode (see its doc
-	// comment), so the phase's access mapping set above survives it.
-	thread = a.sanitizeThreadModelSettings(thread)
-	thread.DisabledMcpServers = a.snapshotDisabledMcpServers(thread.Provider, thread.WorkspacePath)
-	if err := a.store.CreateThread(thread); err != nil {
-		return store.Thread{}, fmt.Errorf("workflow runner: create phase thread: %w", err)
-	}
-	return a.store.GetThread(thread.ID)
-}
-
-// workflowPhaseRuntimeMode maps a phase's effective access declaration onto
-// the provider session's runtime mode (decision D22, spec §9). This is the
-// single translation point: the thread row it feeds is the source of truth
-// that ThreadView → SessionOptions derives from, so restarts, resumes, and
-// Answer-continuations all inherit the phase's access without re-deriving it.
-//
-// `write` gets full access rather than a supervised tier because a writing
-// phase already runs inside its own isolated workspace and there is nobody
-// present to answer a prompt; `read-only` gets the restricted mode, which
-// denies mutations outright instead of asking about them.
-func workflowPhaseRuntimeMode(access def.Access) provider.RuntimeMode {
-	if access == def.AccessWrite {
-		return provider.RuntimeFullAccess
-	}
-	return provider.RuntimeReadOnly
 }
 
 // workflowRunKey is the app runner's map key for one live piece of engine work.

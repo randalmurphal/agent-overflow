@@ -221,9 +221,9 @@ func TestFanOutJoinReceivesUnitResultsAndDrivesTheGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	join := h.runner.startFor(t, unitKey(item, "work", 1, "work-join"))
-	results, ok := join.Vars[joinUnitsVariable].([]any)
+	results, ok := join.Vars[def.UnitsVariable].([]any)
 	if !ok || len(results) != 2 {
-		t.Fatalf("join units variable = %#v, want two unit results", join.Vars[joinUnitsVariable])
+		t.Fatalf("join units variable = %#v, want two unit results", join.Vars[def.UnitsVariable])
 	}
 	for index, entry := range results {
 		result, ok := entry.(map[string]any)
@@ -345,8 +345,8 @@ func TestDynamicFanOutOverEmptyArrayRunsTheJoinImmediately(t *testing.T) {
 		t.Fatalf("started units = %v, want only the join for a zero-width fan-out", got)
 	}
 	join := h.runner.startFor(t, unitKey(item.ID, "work", 1, "work-join"))
-	if results, ok := join.Vars[joinUnitsVariable].([]any); !ok || len(results) != 0 {
-		t.Fatalf("join units variable = %#v, want an empty list", join.Vars[joinUnitsVariable])
+	if results, ok := join.Vars[def.UnitsVariable].([]any); !ok || len(results) != 0 {
+		t.Fatalf("join units variable = %#v, want an empty list", join.Vars[def.UnitsVariable])
 	}
 	h.runner.completeRun(t, unitKey(item.ID, "work", 1, "work-join"), Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
 	if err := h.engine.Sync(); err != nil {
@@ -377,4 +377,99 @@ func TestDynamicFanOutOverNonArrayParksWiringError(t *testing.T) {
 			h.requireNoHeldResources(t)
 		})
 	}
+}
+
+// A fan-out attempt's phase-level continuations belong to its join: the join's
+// envelope is the phase's, so the join's thread is what the phase attempt row
+// carries and what Answer/CompleteTakeover resume on. The attempt is repaired
+// rather than replaced, so the work units keep the results the join consolidates
+// instead of every one of them re-running.
+func TestAnswerOnFanOutRerunsOnlyTheJoinOnItsThread(t *testing.T) {
+	h := newFanOutHarness(t, 2)
+	item := startFanOut(t, h, "fan")
+	for index := 0; index < 2; index++ {
+		h.runner.completeRun(t, unitKey(item, "work", 1, fmt.Sprintf("work-unit-%d", index)),
+			Outcome{Kind: OutcomeDone, Envelope: unitDoneEnvelope(fmt.Sprintf("v%d", index))})
+	}
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	// The app runner stamps the join's thread onto the phase attempt row the
+	// moment it creates it. Without that, a fan-out that parks on a question has
+	// no thread to answer on and Answer refuses outright.
+	if err := h.store.AttachWorkItemPhaseRun(item, "work", 1, "join-thread", ""); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-join"),
+		Outcome{Kind: OutcomeQuestion, Envelope: questionEnvelope()})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonQuestion)
+
+	if err := h.engine.Answer(item, "use the second one"); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateRunning, "")
+	if got := h.runner.startedUnitIDs(); !reflect.DeepEqual(got, []string{
+		"work-unit-0", "work-unit-1", "work-join", "work-join",
+	}) {
+		t.Fatalf("started units = %v, want only the join re-run", got)
+	}
+	// The attempt was reopened, not replaced: the same attempt number, the same
+	// unit rows, and the finished work units still carrying their results.
+	h.requireUnitStatuses(t, item, "work", 1, map[string]string{
+		"work-unit-0": store.WorkItemUnitDone,
+		"work-unit-1": store.WorkItemUnitDone,
+		"work-join":   store.WorkItemUnitRunning,
+	})
+	rerun := h.runner.startFor(t, unitKey(item, "work", 1, "work-join"))
+	if rerun.PriorThreadID != "join-thread" {
+		t.Fatalf("join prior thread = %q, want the thread the attempt parked on", rerun.PriorThreadID)
+	}
+	if rerun.Feedback == nil || rerun.Feedback.Note != "use the second one" {
+		t.Fatalf("join feedback = %+v, want the human's answer", rerun.Feedback)
+	}
+	if rerun.UnitAttempt != 2 {
+		t.Fatalf("join try = %d, want a fresh try so its narrative is not overwritten", rerun.UnitAttempt)
+	}
+	if rerun.FinalizeTakeover {
+		t.Fatal("an answered question is not a takeover finalize")
+	}
+	units, ok := rerun.Vars[def.UnitsVariable].([]any)
+	if !ok || len(units) != 2 {
+		t.Fatalf("join units binding = %#v, want the two consolidated results", rerun.Vars[def.UnitsVariable])
+	}
+
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-join"), Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateDone, "")
+	h.requireNoHeldResources(t)
+}
+
+// A continuation is refused while the attempt still has units a human has not
+// decided about: there is nothing coherent for a join to consolidate, and
+// resuming would run it against results that are about to change.
+func TestAnswerOnFanOutRefusesWhileUnitsRestFailed(t *testing.T) {
+	h := newFanOutHarness(t, 2)
+	item := startFanOut(t, h, "fan")
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-unit-0"),
+		Outcome{Kind: OutcomeDone, Envelope: unitDoneEnvelope("v0")})
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-unit-1"),
+		Outcome{Kind: OutcomeStuck, Envelope: failureEnvelope("no")})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonUnitFailed)
+	if err := h.store.AttachWorkItemPhaseRun(item, "work", 1, "join-thread", ""); err != nil {
+		t.Fatal(err)
+	}
+	// The park reason is unit-failed, not question, so Answer refuses on the
+	// reason check before it ever reaches the join.
+	if err := h.engine.Answer(item, "carry on"); err == nil {
+		t.Fatal("Answer accepted a run parked on a failed unit")
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonUnitFailed)
 }

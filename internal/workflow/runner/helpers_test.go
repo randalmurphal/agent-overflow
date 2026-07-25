@@ -97,3 +97,98 @@ func TestRetryMessage(t *testing.T) {
 		t.Fatalf("absent RetryMessage = %q", got)
 	}
 }
+
+// A unit try's files nest under its phase attempt so a run stays one tree, and
+// the try number is in the directory name because a retried unit reuses its row
+// but must not overwrite the previous try's narrative — that account of what the
+// unit did is the evidence a human retries or drops on.
+func TestUnitAttemptPathsNestUnderThePhaseAttempt(t *testing.T) {
+	narrative, err := UnitNarrativePath("/data", "item", "port", 2, "port-1", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/data/workflow-runs/item/port.2/units/port-1.3/narrative.md"; narrative != want {
+		t.Fatalf("unit narrative path = %q, want %q", narrative, want)
+	}
+	envelope, err := UnitEnvelopePath("/data", "item", "port", 2, "port-1", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/data/workflow-runs/item/port.2/units/port-1.3/envelope.json"; envelope != want {
+		t.Fatalf("unit envelope path = %q, want %q", envelope, want)
+	}
+	dir, err := UnitAttemptDir("/data", "item", "port", 2, "port-1", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(narrative) != dir || filepath.Dir(envelope) != dir {
+		t.Fatalf("unit files escaped the try directory %q", dir)
+	}
+	if first, err := UnitNarrativePath("/data", "item", "port", 2, "port-1", 1); err != nil || first == narrative {
+		t.Fatalf("try 1 narrative = %q err=%v, want a path distinct from try 3", first, err)
+	}
+	for _, tc := range []struct {
+		name        string
+		unitID      string
+		unitAttempt int
+	}{
+		{"blank unit id", "  ", 1},
+		{"traversing unit id", "../escape", 1},
+		{"separator in unit id", "port/1", 1},
+		{"zero try", "port-1", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if path, err := UnitNarrativePath("/data", "item", "port", 2, tc.unitID, tc.unitAttempt); err == nil {
+				t.Fatalf("unusable unit identity produced %q", path)
+			}
+		})
+	}
+}
+
+// A unit's prompt is built from the declarations its role gets, so the same
+// builder renders a work unit's element binding and a join's reserved results
+// without either being able to read the other's.
+func TestBuildUnitPromptRendersRoleDeclarations(t *testing.T) {
+	work := def.Unit{ID: "port-0", Provider: "claude", Model: "sonnet", Prompt: "port {{section.path}}"}
+	prompt, err := BuildUnitPrompt(work,
+		map[string]def.Variable{"section": {Schema: def.JSONSchema{
+			Type:       "object",
+			Properties: map[string]def.JSONSchema{"path": {Type: "string"}},
+			Required:   []string{"path"},
+		}}},
+		map[string]any{"section": map[string]any{"path": "internal/a"}},
+		"/data/workflow-runs/item/port.1/units/port-0.1/narrative.md", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(prompt, "port internal/a\n\n<workflow-system-instructions>") {
+		t.Fatalf("work unit prompt = %q", prompt)
+	}
+	if !strings.Contains(prompt, "/units/port-0.1/narrative.md") {
+		t.Fatalf("work unit prompt does not name its own narrative: %q", prompt)
+	}
+
+	join := def.Unit{ID: "merge", Provider: "claude", Model: "sonnet", Prompt: "merge {{units}}"}
+	joined, err := BuildUnitPrompt(join,
+		def.JoinDeclarations(def.Phase{ID: "port"}),
+		map[string]any{def.UnitsVariable: []any{
+			map[string]any{"id": "port-0", "index": 0, "status": "done", "outputs": map[string]any{"file": "a.go"}},
+		}},
+		"/data/workflow-runs/item/port.1/units/merge.1/narrative.md",
+		&engine.Feedback{Note: "prefer the second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(joined, `"id":"port-0"`) || !strings.Contains(joined, `"file":"a.go"`) {
+		t.Fatalf("join prompt did not render the units binding: %q", joined)
+	}
+	if !strings.Contains(joined, "prefer the second") {
+		t.Fatalf("join prompt dropped its feedback: %q", joined)
+	}
+
+	// An undeclared reference fails the build rather than reaching a provider as
+	// a literal `{{...}}` the model would try to interpret.
+	if _, err := BuildUnitPrompt(work, nil, nil, "/data/n.md", nil); err == nil {
+		t.Fatal("a unit prompt with an undeclared reference built successfully")
+	}
+}

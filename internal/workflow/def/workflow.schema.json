@@ -73,7 +73,8 @@
       "type": "object", "additionalProperties": false, "required": ["id"],
       "properties": {
         "id": {"type": "string", "pattern": "^[a-z0-9-]+$"}, "provider": {"type": "string"}, "model": {"type": "string"},
-        "prompt": {"type": "string"}, "command": {"type": "string"}, "access": {"enum": ["read-only", "write"]}
+        "prompt": {"type": "string"}, "command": {"type": "string"}, "access": {"enum": ["read-only", "write"]},
+        "outputs": {"$ref": "#/$defs/variables"}
       }
     },
     "gate": {

@@ -46,6 +46,40 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   dynamic fan-out (the `over` variable resolves, is in scope, and is
   array-typed; `as` is a valid identifier that collides with nothing) and never
   the width — only a static list has a width to report on.
+- `UnitDefinition(phase, unitID, join)` resolves the frozen definition behind
+  one persisted unit id without the variable context an expansion needs, for
+  the recovery paths that hold a row rather than an attempt. A dynamic phase
+  only answers for ids its own template could have stamped
+  (`<prefix>-<index>`); anything else — the join's id, a typo — is not found,
+  because fabricating a unit from the template for an arbitrary id would run a
+  real turn on a wrong contract.
+
+## Unit and join envelopes
+
+- `EnvelopeContract` is the one thing schema generation and post-validation are
+  written against, so a unit cannot drift from the rules a phase is held to.
+  `PhaseEnvelope(phase)` and `UnitEnvelope(unit)` differ only in the
+  declarations they carry and the element name diagnostics blame.
+  `EnvelopeSchema` / `ValidateEnvelope` remain the phase-level shorthands.
+- A unit may declare its own `outputs:`, validated by the same name grammar,
+  schema vocabulary, and reserved-tool-output rules a phase's are. A unit that
+  declares none gets the control-only envelope: `status`, `question`, `reason`,
+  and `outputs` present but empty — the run still has to learn done/question/
+  stuck from it.
+- A **join** declares none at all: its envelope IS the phase's, so the only
+  contract it can answer is the phase's `outputs:`, and a second declaration
+  would name outputs the gate never reads. That also means what produces a
+  phase's envelope follows the join — `PhaseProducesToolEnvelope` reports true
+  for a fan-out whose join is a command, so `PhaseOutputs` merges `passed` /
+  `exit-code` exactly as it does for a `driver: tool` phase and the synthesized
+  tool envelope validates against its own phase contract.
+- A fan-out phase runs no turn of its own, so `driver: tool` on the phase is a
+  finding: the command would never run, and "what produces this phase's
+  envelope" would be ambiguous between the phase and its join.
+- `JoinDeclarations(phase)` binds the reserved `units` name last so a phase
+  input can never shadow the results a join exists to consolidate. The
+  reference grammar has no indexing, so `{{units}}` — the whole array rendered
+  as JSON — is the supported form in a join prompt or command.
 
 ## Files
 

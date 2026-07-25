@@ -2,6 +2,7 @@ import { test, expect } from './fixtures.js';
 import {
   doneResult,
   seedWorkflowProject,
+  sessionConfigs,
   setClaudeScenario,
   start,
   waitForWorkflowState,
@@ -20,19 +21,6 @@ import {
 // both phases execute in it, so the two sessions cannot be told apart by
 // workspace: any difference in their launch config came from `access`.
 // Phases run sequentially, so mock registration order is phase order.
-
-interface MockSessionConfig {
-  permissionMode?: string;
-  disallowedTools?: string[];
-  sandbox?: string;
-  approvalPolicy?: string;
-}
-
-interface MockInfo {
-  mockId: string;
-  registration: { protocol: string; cwd: string };
-  sessionConfig?: MockSessionConfig;
-}
 
 const phase = (id: string, provider: string, access: string, next: string) =>
   `  - id: ${id}
@@ -59,31 +47,6 @@ inputs:
 phases:
 ${phase('survey', provider, 'read-only', 'apply')}${phase('apply', provider, 'write', 'done')}cleanup: manual
 `;
-
-// sessionConfigs returns each agent session's observed launch config in
-// registration order, waiting until every expected session has reported one.
-// Polling rather than event-waiting is deliberate: the config is observable
-// before a session's first turn, so a listener started after the run begins
-// can legitimately miss the event, while the latched value cannot be missed.
-async function sessionConfigs(
-  harness: { rpc: <T>(method: string, ...args: unknown[]) => Promise<T> },
-  protocol: string,
-  expected: number,
-): Promise<MockSessionConfig[]> {
-  const deadline = Date.now() + 15_000;
-  let seen: MockSessionConfig[] = [];
-  while (Date.now() < deadline) {
-    const mocks = await harness.rpc<MockInfo[]>('HarnessListMocks');
-    seen = mocks
-      .filter((mock) => mock.registration.protocol === protocol && mock.sessionConfig)
-      .map((mock) => mock.sessionConfig as MockSessionConfig);
-    if (seen.length >= expected) return seen;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(
-    `expected ${expected} ${protocol} session configs, saw ${seen.length}: ${JSON.stringify(seen)}`,
-  );
-}
 
 test('claude phases launch with the permission config their access declares', async ({
   harness,

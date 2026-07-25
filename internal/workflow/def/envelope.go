@@ -11,16 +11,46 @@ import (
 
 const DefaultEnvelopeSizeCap = 64 * 1024
 
-// EnvelopeSchema generates the provider-compatible flat control schema.
-func EnvelopeSchema(phase Phase) ([]byte, error) {
-	declared := PhaseOutputs(phase)
-	outputProperties := make(map[string]any, len(declared))
-	outputRequired := make([]string, 0, len(declared))
-	for name, output := range declared {
+// EnvelopeContract is what one control envelope must satisfy: the declared
+// outputs, plus the element name diagnostics blame. A phase attempt and a
+// fan-out unit produce the same envelope shape from different declarations, so
+// schema generation and post-validation are written once against this and never
+// twice — a unit cannot drift from the rules a phase is held to.
+type EnvelopeContract struct {
+	owner   string
+	outputs map[string]Variable
+}
+
+// PhaseEnvelope is the contract a phase attempt's envelope answers. A fan-out
+// phase's join answers it too: the join's envelope IS the phase's.
+func PhaseEnvelope(phase Phase) EnvelopeContract {
+	return EnvelopeContract{owner: fmt.Sprintf("phase %q", phase.ID), outputs: PhaseOutputs(phase)}
+}
+
+// UnitEnvelope is the contract one fan-out work unit's envelope answers. A unit
+// that declares no outputs gets the control-only envelope: status, question,
+// and reason, with `outputs` present but always null.
+func UnitEnvelope(unit Unit) EnvelopeContract {
+	return EnvelopeContract{owner: fmt.Sprintf("unit %q", unit.ID), outputs: UnitOutputs(unit)}
+}
+
+// Outputs returns the declared outputs. The map is read-only, exactly as
+// PhaseOutputs' is — callers read a contract, they never edit one.
+func (c EnvelopeContract) Outputs() map[string]Variable { return c.outputs }
+
+// EnvelopeSchema generates the provider-compatible flat control schema for a
+// phase. It is the phase-level shorthand for PhaseEnvelope(phase).Schema().
+func EnvelopeSchema(phase Phase) ([]byte, error) { return PhaseEnvelope(phase).Schema() }
+
+// Schema generates the provider-compatible flat control schema.
+func (c EnvelopeContract) Schema() ([]byte, error) {
+	outputProperties := make(map[string]any, len(c.outputs))
+	outputRequired := make([]string, 0, len(c.outputs))
+	for name, output := range c.outputs {
 		if !idPattern.MatchString(name) {
-			return nil, fmt.Errorf("phase %q output %q has invalid name", phase.ID, name)
+			return nil, fmt.Errorf("%s output %q has invalid name", c.owner, name)
 		}
-		if findings := validateSchemaDefinition(output.Schema, fmt.Sprintf("phase %q output %q", phase.ID, name)); len(findings) > 0 {
+		if findings := validateSchemaDefinition(output.Schema, fmt.Sprintf("%s output %q", c.owner, name)); len(findings) > 0 {
 			return nil, fmt.Errorf("%s", findings[0].Error())
 		}
 		property := providerSchema(output.Schema)
@@ -53,7 +83,7 @@ func EnvelopeSchema(phase Phase) ([]byte, error) {
 	}
 	encoded, err := json.Marshal(schema)
 	if err != nil {
-		return nil, fmt.Errorf("encode envelope schema for phase %q: %w", phase.ID, err)
+		return nil, fmt.Errorf("encode envelope schema for %s: %w", c.owner, err)
 	}
 	return encoded, nil
 }
@@ -157,9 +187,16 @@ func (e *EnvelopeValidationError) Error() string {
 	return strings.Join(parts, "; ")
 }
 
-// ValidateEnvelope applies structural, value, branch, and size validation.
-// The optional sizeCap overrides DefaultEnvelopeSizeCap.
+// ValidateEnvelope applies structural, value, branch, and size validation to a
+// phase attempt's envelope. It is the phase-level shorthand for
+// PhaseEnvelope(phase).Validate(payload, sizeCap...).
 func ValidateEnvelope(phase Phase, payload []byte, sizeCap ...int) error {
+	return PhaseEnvelope(phase).Validate(payload, sizeCap...)
+}
+
+// Validate applies structural, value, branch, and size validation.
+// The optional sizeCap overrides DefaultEnvelopeSizeCap.
+func (c EnvelopeContract) Validate(payload []byte, sizeCap ...int) error {
 	capBytes := DefaultEnvelopeSizeCap
 	if len(sizeCap) > 1 {
 		return &EnvelopeValidationError{Findings: []EnvelopeFinding{{Path: "$", Message: "at most one size cap may be supplied"}}}
@@ -214,7 +251,7 @@ func ValidateEnvelope(phase Phase, payload []byte, sizeCap ...int) error {
 			findings = append(findings, EnvelopeFinding{Path: "$.outputs", Message: "must be an object or null"})
 		}
 	}
-	declaredOutputs := PhaseOutputs(phase)
+	declaredOutputs := c.outputs
 	if outputs != nil {
 		for name := range outputs {
 			if _, ok := declaredOutputs[name]; !ok {

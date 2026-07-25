@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/workflow/def"
+	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workspacepath"
 )
 
@@ -24,40 +25,55 @@ type WorkflowArtifact struct {
 	ModTime int64  `json:"mtime"`
 }
 
-func (r *workflowAppRunner) captureArtifacts(attempt *workflowAttempt, envelope json.RawMessage) {
+// settleDone runs the post-success work every done outcome owes the run,
+// whatever produced it. Both execution paths call it, so a tool phase and a tool
+// join get the artifact capture and the worktree retirement an agent one gets.
+func (r *workflowAppRunner) settleDone(done workflowCompletion, envelope json.RawMessage) {
+	// Artifacts are declared against phase outputs, so only the envelope that
+	// *is* the phase's can carry one. A work unit's outputs reach the workflow
+	// through its join, which captures them when it completes.
+	if done.producesPhaseEnvelope() {
+		r.captureArtifacts(done, envelope)
+	}
+	if done.unitKind == engine.UnitJoin {
+		r.retireUnitWorktrees(done)
+	}
+}
+
+func (r *workflowAppRunner) captureArtifacts(done workflowCompletion, envelope json.RawMessage) {
 	var control struct {
 		Outputs map[string]any `json:"outputs"`
 	}
 	if err := json.Unmarshal(envelope, &control); err != nil {
-		log.Printf("workflow artifact capture %s: decode validated envelope: %v", attempt.key.ItemID, err)
+		log.Printf("workflow artifact capture %s: decode validated envelope: %v", done.key.ItemID, err)
 		r.app.emit("workflow:error", map[string]any{
-			"itemId": attempt.key.ItemID,
+			"itemId": done.key.ItemID,
 			"error":  "workflow artifact capture could not decode the validated envelope; inspect local diagnostics",
 		})
 		return
 	}
 	vars := make(map[string]any, len(control.Outputs))
 	for name, value := range control.Outputs {
-		vars[attempt.phase.ID+"."+name] = value
+		vars[done.key.PhaseID+"."+name] = value
 	}
-	names := make([]string, 0, len(attempt.workflow.Outputs))
-	for name := range attempt.workflow.Outputs {
+	names := make([]string, 0, len(done.workflow.Outputs))
+	for name := range done.workflow.Outputs {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		output := attempt.workflow.Outputs[name]
-		if !output.Artifact || !strings.HasPrefix(output.From, attempt.phase.ID+".") {
+		output := done.workflow.Outputs[name]
+		if !output.Artifact || !strings.HasPrefix(output.From, done.key.PhaseID+".") {
 			continue
 		}
 		value, ok := def.LookupVariable(vars, output.From)
 		path, stringOK := value.(string)
 		if !ok || !stringOK {
-			r.emitArtifactError(attempt.key.ItemID, name, fmt.Errorf("source %q did not produce a string path", output.From))
+			r.emitArtifactError(done.key.ItemID, name, fmt.Errorf("source %q did not produce a string path", output.From))
 			continue
 		}
-		if err := captureWorkflowArtifact(r.dataRoot, attempt.key.ItemID, name, attempt.workspace, path); err != nil {
-			r.emitArtifactError(attempt.key.ItemID, name, err)
+		if err := captureWorkflowArtifact(r.dataRoot, done.key.ItemID, name, done.workspace, path); err != nil {
+			r.emitArtifactError(done.key.ItemID, name, err)
 		}
 	}
 }

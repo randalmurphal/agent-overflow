@@ -135,9 +135,9 @@ func TestDropUnitLetsTheJoinProceedWithTheDroppedResult(t *testing.T) {
 		"work-join":   store.WorkItemUnitRunning,
 	})
 	join := h.runner.startFor(t, unitKey(item, "work", 1, "work-join"))
-	results, ok := join.Vars[joinUnitsVariable].([]any)
+	results, ok := join.Vars[def.UnitsVariable].([]any)
 	if !ok || len(results) != 2 {
-		t.Fatalf("join units variable = %#v, want both units including the dropped one", join.Vars[joinUnitsVariable])
+		t.Fatalf("join units variable = %#v, want both units including the dropped one", join.Vars[def.UnitsVariable])
 	}
 	dropped, ok := results[0].(map[string]any)
 	if !ok || dropped["status"] != store.WorkItemUnitDropped {

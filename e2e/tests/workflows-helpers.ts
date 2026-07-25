@@ -15,10 +15,25 @@ export interface WorkflowPhase {
   status: string;
 }
 
+// WorkflowUnit is one fan-out unit (or the join) of one phase attempt. Branch
+// and worktree are populated for a unit the runner isolated; the join never has
+// them, and a consumed unit's worktree is cleared once the join is done.
+export interface WorkflowUnit {
+  unitId: string;
+  unitIndex: number;
+  kind: string;
+  status: string;
+  threadId?: string;
+  branch?: string;
+  worktreePath?: string;
+  unitAttempt: number;
+}
+
 export interface WorkflowDetail {
-  item: WorkflowItem;
+  item: WorkflowItem & { worktreePath?: string; branch?: string };
   checkPhaseIds: string[];
   phases: WorkflowPhase[];
+  units: WorkflowUnit[];
 }
 
 export interface WorkflowStateEvent {
@@ -271,4 +286,107 @@ phases:
           to: failed
         - to: done
 `;
+}
+
+export function stuckResult(reason: string): string {
+  return JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    structured_output: {
+      status: 'stuck',
+      outputs: null,
+      question: null,
+      reason,
+    },
+  });
+}
+
+// setCodexScenario stages the app-server JSON-RPC frames one Codex turn
+// produces. `text` is the agent message the app reads the control envelope
+// from, so a caller passes the envelope it wants that turn to answer with.
+export async function setCodexScenario(
+  harness: HarnessApp,
+  name: string,
+  envelope: Record<string, unknown>,
+): Promise<void> {
+  const text = JSON.stringify(JSON.stringify(envelope));
+  await harness.rpc('HarnessSetScenario', {
+    scenario: {
+      version: 1,
+      name,
+      provider: 'codex',
+      turns: [
+        {
+          steps: [
+            {
+              emit: {
+                lines: [
+                  '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}',
+                  `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"\${THREAD_ID}","turnId":"\${TURN_ID}","item":{"type":"agentMessage","id":"msg-\${TURN}","status":"completed","text":${text}}}}`,
+                  '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}","status":"completed"}}}',
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      afterTurns: 'repeatLast',
+    },
+  });
+}
+
+export function doneEnvelope(outputs: Record<string, unknown>): Record<string, unknown> {
+  return { status: 'done', outputs, question: null, reason: null };
+}
+
+export function stuckEnvelope(reason: string): Record<string, unknown> {
+  return { status: 'stuck', outputs: null, question: null, reason };
+}
+
+export interface MockSessionConfig {
+  permissionMode?: string;
+  disallowedTools?: string[];
+  sandbox?: string;
+  approvalPolicy?: string;
+}
+
+export interface MockInfo {
+  mockId: string;
+  registration: { protocol: string; cwd: string };
+  sessionConfig?: MockSessionConfig;
+}
+
+// mockSessions returns every mock of one protocol that has reported a launch
+// config, in registration order, once at least `expected` have. Polling rather
+// than event-waiting is deliberate: the config is observable before a session's
+// first turn, so a listener started after the run begins can legitimately miss
+// the event, while the latched value cannot be missed.
+export async function mockSessions(
+  harness: HarnessApp,
+  protocol: string,
+  expected: number,
+): Promise<MockInfo[]> {
+  const deadline = Date.now() + 15_000;
+  let seen: MockInfo[] = [];
+  while (Date.now() < deadline) {
+    const mocks = await harness.rpc<MockInfo[]>('HarnessListMocks');
+    seen = mocks.filter(
+      (mock) => mock.registration.protocol === protocol && mock.sessionConfig,
+    );
+    if (seen.length >= expected) return seen;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `expected ${expected} ${protocol} session configs, saw ${seen.length}: ${JSON.stringify(seen)}`,
+  );
+}
+
+export async function sessionConfigs(
+  harness: HarnessApp,
+  protocol: string,
+  expected: number,
+): Promise<MockSessionConfig[]> {
+  const mocks = await mockSessions(harness, protocol, expected);
+  return mocks.map((mock) => mock.sessionConfig as MockSessionConfig);
 }

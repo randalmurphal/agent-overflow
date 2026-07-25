@@ -166,6 +166,13 @@ func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispo
 		receipt.SHA = sha
 		receipt.Base = baseBranch
 	case workflowDispositionDiscard:
+		// Fan-out sub-worktrees are part of the tree being discarded. They are
+		// removed first because they were cut from the item's branch: taking the
+		// item's own worktree away while its units still hold checkouts of
+		// branches descended from it leaves a tree nothing points at.
+		if err := a.removeWorkflowUnitWorktrees(item); err != nil {
+			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s discard: %w", item.ID, err)
+		}
 		if removeWorktree {
 			if _, err := a.RemoveOtherWorktreeForProject(item.ProjectID, "", item.WorktreePath, true); err != nil {
 				return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s discard: %w", item.ID, err)
@@ -185,7 +192,9 @@ func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispo
 	}
 	cleanupErr := error(nil)
 	if cleanupAuto {
-		if _, err := a.RemoveOtherWorktreeForProject(item.ProjectID, "", item.WorktreePath, false); err != nil {
+		if err := a.removeWorkflowUnitWorktrees(item); err != nil {
+			cleanupErr = fmt.Errorf("workflow disposition %s landed but automatic cleanup failed: %w", item.ID, err)
+		} else if _, err := a.RemoveOtherWorktreeForProject(item.ProjectID, "", item.WorktreePath, false); err != nil {
 			cleanupErr = fmt.Errorf("workflow disposition %s landed but automatic cleanup failed: %w", item.ID, err)
 		} else if err := a.store.UpdateWorkItemWorkspace(item.ID, "", "", ""); err != nil {
 			cleanupErr = err

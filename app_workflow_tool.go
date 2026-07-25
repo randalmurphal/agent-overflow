@@ -38,23 +38,36 @@ const (
 	workflowToolTornDown
 )
 
-// workflowToolAttempt is one live `driver: tool` phase attempt. It holds no
-// provider session and no AO thread: the phase is a subprocess, and the run
-// record's narrative is where a human reads what it did.
-type workflowToolAttempt struct {
-	key           engine.RunKey
-	phase         def.Phase
+// workflowToolRun is one deterministic command the runner is asked to execute:
+// everything that differs between a `driver: tool` phase attempt and a fan-out
+// unit whose binding is a `command:`. Resolving it is the caller's job; running
+// it, watching it, and reporting it is startToolRun's, so the two shapes cannot
+// drift in how a command is supervised.
+type workflowToolRun struct {
+	workflowCompletion
+	// label names the element in diagnostics — `phase "build"`, `unit "port-0"`.
+	label string
+	// contract is what the command's envelope must satisfy: the phase's for a
+	// phase attempt and for a join, the unit's own for a work unit.
+	contract      def.EnvelopeContract
+	unitAttempt   int
 	binding       string
 	argv          []string
-	workspace     string
 	narrativePath string
 	envelopePath  string
 	secrets       profile.ResolvedSecrets
-	output        *workflowTailBuffer
-	complete      func(engine.Outcome)
-	cancel        context.CancelFunc
 	watchdog      time.Duration
-	started       time.Time
+}
+
+// workflowToolAttempt is one live `driver: tool` phase attempt or tool fan-out
+// unit try. It holds no provider session and no AO thread: the work is a
+// subprocess, and the run record's narrative is where a human reads what it did.
+type workflowToolAttempt struct {
+	workflowToolRun
+	output   *workflowTailBuffer
+	complete func(engine.Outcome)
+	cancel   context.CancelFunc
+	started  time.Time
 
 	// lastOutput is nanoseconds since the epoch, written by the output writer
 	// on every chunk and read by the watchdog timer.
@@ -65,9 +78,9 @@ type workflowToolAttempt struct {
 	stop  workflowToolStop
 }
 
-// startToolPhase runs a phase's profile-bound command. It returns once the
-// process is running; the reaping goroutine reports the outcome.
+// startToolPhase resolves a phase's profile-bound command and runs it.
 func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.RunRequest, complete func(engine.Outcome)) error {
+	label := fmt.Sprintf("phase %q", request.Phase.ID)
 	projectProfile, err := r.projectProfile(ctx, request.Item.ProjectID)
 	if err != nil {
 		return err
@@ -78,18 +91,25 @@ func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.R
 	}
 	binding, argv, err := workflowToolCommand(projectProfile, request.Phase, request.Vars)
 	if err != nil {
-		return errors.Join(engine.ErrWiringFailed, fmt.Errorf("workflow runner: resolve tool phase %q command: %w", request.Phase.ID, err))
+		return errors.Join(engine.ErrWiringFailed, fmt.Errorf("workflow runner: resolve tool %s command: %w", label, err))
 	}
 	secrets, err := projectProfile.ResolveSecrets()
 	if err != nil {
-		return errors.Join(engine.ErrSetupFailed, fmt.Errorf("workflow runner: resolve tool phase %q secrets: %w", request.Phase.ID, err))
+		return errors.Join(engine.ErrSetupFailed, fmt.Errorf("workflow runner: resolve tool %s secrets: %w", label, err))
 	}
 	prepared, err := r.prepareWorkspace(ctx, request)
 	if err != nil {
 		return errors.Join(engine.ErrSetupFailed, err)
 	}
-	narrativePath, envelopePath, err := r.prepareToolAttemptFiles(request.Key)
+	narrativePath, err := workflowrunner.NarrativePath(r.dataRoot, request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt)
 	if err != nil {
+		return errors.Join(engine.ErrSetupFailed, err)
+	}
+	envelopePath, err := workflowrunner.EnvelopePath(r.dataRoot, request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt)
+	if err != nil {
+		return errors.Join(engine.ErrSetupFailed, err)
+	}
+	if err := prepareWorkflowToolFiles(narrativePath, envelopePath); err != nil {
 		return errors.Join(engine.ErrSetupFailed, err)
 	}
 	if err := r.app.store.AttachWorkItemPhaseRun(
@@ -97,6 +117,23 @@ func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.R
 	); err != nil {
 		return fmt.Errorf("workflow runner: attach tool phase run: %w", err)
 	}
+	return r.startToolRun(ctx, workflowToolRun{
+		workflowCompletion: workflowCompletion{
+			key: request.Key, workflow: request.Workflow,
+			workspace: prepared.path, projectPath: prepared.project.Path,
+		},
+		label: label, contract: def.PhaseEnvelope(request.Phase),
+		binding: binding, argv: argv,
+		narrativePath: narrativePath, envelopePath: envelopePath,
+		secrets: secrets, watchdog: watchdog,
+	}, complete)
+}
+
+// startToolRun launches a resolved command and returns once the process is
+// running; the reaping goroutine reports the outcome. Phase attempts and tool
+// fan-out units share it, so process supervision — the watchdog, the kill path,
+// the narrative on a failed start — is written exactly once.
+func (r *workflowAppRunner) startToolRun(ctx context.Context, run workflowToolRun, complete func(engine.Outcome)) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("workflow runner: startup cancelled: %w", err)
 	}
@@ -106,22 +143,21 @@ func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.R
 	// shutdown still tears the process down through the life context.
 	processCtx, cancel := context.WithCancel(r.app.lifeCtx())
 	attempt := &workflowToolAttempt{
-		key: request.Key, phase: request.Phase, binding: binding, argv: argv,
-		workspace: prepared.path, narrativePath: narrativePath, envelopePath: envelopePath,
-		secrets: secrets, output: newWorkflowTailBuffer(workflowToolOutputTailBytes),
-		complete: complete, cancel: cancel, watchdog: watchdog, started: r.now(),
+		workflowToolRun: run,
+		output:          newWorkflowTailBuffer(workflowToolOutputTailBytes),
+		complete:        complete, cancel: cancel, started: r.now(),
 	}
 	attempt.lastOutput.Store(attempt.started.UnixNano())
 
-	command := exec.CommandContext(processCtx, argv[0], argv[1:]...)
-	command.Dir = prepared.path
-	command.Env = append(append(os.Environ(), secrets.Environ()...), "AO_ENVELOPE="+envelopePath)
+	command := exec.CommandContext(processCtx, run.argv[0], run.argv[1:]...)
+	command.Dir = run.workspace
+	command.Env = append(append(os.Environ(), run.secrets.Environ()...), "AO_ENVELOPE="+run.envelopePath)
 	writer := &workflowToolWriter{attempt: attempt, now: r.now}
 	command.Stdout = writer
 	command.Stderr = writer
 	configureWorkflowCommand(command)
 
-	runKey := workflowRunKey(request.Key)
+	runKey := workflowRunKey(run.key)
 	r.mu.Lock()
 	if _, exists := r.tools[runKey]; exists {
 		r.mu.Unlock()
@@ -133,7 +169,7 @@ func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.R
 
 	if err := command.Start(); err != nil {
 		r.stopToolAttempt(runKey, workflowToolTornDown)
-		startErr := fmt.Errorf("workflow runner: start tool phase %q command %s: %w", request.Phase.ID, workflowrunner.FormatArgv(argv), err)
+		startErr := fmt.Errorf("workflow runner: start tool %s command %s: %w", run.label, workflowrunner.FormatArgv(run.argv), err)
 		r.writeToolNarrative(attempt, workflowrunner.ToolReport{
 			Outcome:  "the command could not be started: " + err.Error(),
 			Envelope: workflowrunner.ToolEnvelopeAbsent,
@@ -142,7 +178,7 @@ func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.R
 	}
 	r.mu.Lock()
 	if r.tools[runKey] == attempt {
-		attempt.timer = r.newTimer(watchdog, func() { r.toolWatchdogFired(runKey) })
+		attempt.timer = r.newTimer(run.watchdog, func() { r.toolWatchdogFired(runKey) })
 	}
 	r.mu.Unlock()
 
@@ -166,8 +202,6 @@ func (r *workflowAppRunner) awaitToolPhase(runKey string, attempt *workflowToolA
 	stop := r.detachToolAttempt(runKey, attempt)
 
 	report := workflowrunner.ToolReport{
-		PhaseID: attempt.key.PhaseID, Attempt: attempt.key.Attempt,
-		Binding: attempt.binding, Argv: attempt.argv, Workspace: attempt.workspace,
 		Duration: r.now().Sub(attempt.started), Envelope: workflowrunner.ToolEnvelopeAbsent,
 	}
 	exitCode, exited := workflowToolExitStatus(waitErr)
@@ -200,7 +234,7 @@ func (r *workflowAppRunner) awaitToolPhase(runKey string, attempt *workflowToolA
 		attempt.complete(engine.Outcome{Kind: engine.OutcomeExecutionFailure})
 		return
 	}
-	if validationErr := def.ValidateEnvelope(attempt.phase, payload); validationErr != nil {
+	if validationErr := attempt.contract.Validate(payload); validationErr != nil {
 		report.Findings = findingsForEnvelopeError(validationErr)
 		r.writeToolNarrative(attempt, report)
 		// A deterministic command has no feedback turn to correct itself, so
@@ -216,9 +250,12 @@ func (r *workflowAppRunner) awaitToolPhase(runKey string, attempt *workflowToolA
 	r.writeToolNarrative(attempt, report)
 	outcome, err := workflowrunner.OutcomeFromEnvelope(payload)
 	if err != nil {
-		log.Printf("workflow runner: tool phase %s: %v", runKey, err)
+		log.Printf("workflow runner: tool run %s: %v", runKey, err)
 		attempt.complete(engine.Outcome{Kind: engine.OutcomeExecutionFailure, Envelope: payload})
 		return
+	}
+	if outcome.Kind == engine.OutcomeDone {
+		r.settleDone(attempt.workflowCompletion, outcome.Envelope)
 	}
 	attempt.complete(outcome)
 }
@@ -234,7 +271,7 @@ func (r *workflowAppRunner) readToolEnvelope(attempt *workflowToolAttempt, exitC
 	if present {
 		return workflowrunner.ApplyToolOutputs(written, exitCode), workflowrunner.ToolEnvelopeWritten, nil
 	}
-	synthesized, err := workflowrunner.SynthesizedToolEnvelope(attempt.phase, exitCode)
+	synthesized, err := workflowrunner.SynthesizedToolEnvelope(attempt.contract, exitCode)
 	if err != nil {
 		return nil, workflowrunner.ToolEnvelopeAbsent, err
 	}
@@ -267,33 +304,27 @@ func readWorkflowToolEnvelopeFile(path string) (payload []byte, present bool, re
 	return data, true, nil
 }
 
-// prepareToolAttemptFiles creates the attempt directory and clears any envelope
+// prepareWorkflowToolFiles creates the run's directory and clears any envelope
 // left by a prior process at the same path, so "the command wrote one" is an
 // unambiguous fact rather than an inherited one.
-func (r *workflowAppRunner) prepareToolAttemptFiles(key engine.RunKey) (narrativePath, envelopePath string, err error) {
-	narrativePath, err = workflowrunner.NarrativePath(r.dataRoot, key.ItemID, key.PhaseID, key.Attempt)
-	if err != nil {
-		return "", "", err
-	}
-	envelopePath, err = workflowrunner.EnvelopePath(r.dataRoot, key.ItemID, key.PhaseID, key.Attempt)
-	if err != nil {
-		return "", "", err
-	}
+func prepareWorkflowToolFiles(narrativePath, envelopePath string) error {
 	if err := os.MkdirAll(filepath.Dir(narrativePath), appPrivateDirPerm); err != nil {
-		return "", "", fmt.Errorf("workflow runner: create tool phase directory: %w", err)
+		return fmt.Errorf("workflow runner: create tool run directory: %w", err)
 	}
 	if err := os.Remove(envelopePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return "", "", fmt.Errorf("workflow runner: clear stale tool envelope: %w", err)
+		return fmt.Errorf("workflow runner: clear stale tool envelope: %w", err)
 	}
-	return narrativePath, envelopePath, nil
+	return nil
 }
 
 // writeToolNarrative persists the human-facing record of one tool attempt: the
 // command, how it ended, and its masked output tail. Failing to write it is
-// visible, never silent, but never changes the phase's outcome.
+// visible, never silent, but never changes the run's outcome.
 func (r *workflowAppRunner) writeToolNarrative(attempt *workflowToolAttempt, report workflowrunner.ToolReport) {
 	report.PhaseID = attempt.key.PhaseID
 	report.Attempt = attempt.key.Attempt
+	report.UnitID = attempt.key.UnitID
+	report.UnitAttempt = attempt.unitAttempt
 	report.Binding = attempt.binding
 	report.Argv = attempt.argv
 	report.Workspace = attempt.workspace
@@ -306,7 +337,7 @@ func (r *workflowAppRunner) writeToolNarrative(attempt *workflowToolAttempt, rep
 		log.Printf("workflow runner: write tool narrative %s: %v", attempt.narrativePath, err)
 		r.app.emit("workflow:error", map[string]any{
 			"itemId": attempt.key.ItemID,
-			"error":  "workflow tool phase narrative could not be written; inspect local diagnostics",
+			"error":  "workflow tool narrative could not be written; inspect local diagnostics",
 		})
 	}
 }
@@ -325,9 +356,8 @@ func workflowToolExitStatus(waitErr error) (int, bool) {
 	return 0, false
 }
 
-// workflowToolCommand resolves the phase's argv from the live project profile
-// and interpolates the phase's variables into every element. Bindings are argv
-// arrays in the profile, never shell strings, so nothing here is parsed.
+// workflowToolCommand resolves a tool phase's argv from the live project
+// profile and interpolates the phase's variables into every element.
 func workflowToolCommand(projectProfile *profile.Profile, phase def.Phase, vars map[string]any) (string, []string, error) {
 	var binding string
 	var template []string
@@ -344,24 +374,55 @@ func workflowToolCommand(projectProfile *profile.Profile, phase def.Phase, vars 
 	default:
 		return "", nil, fmt.Errorf("phase declares neither a check nor a command binding")
 	}
+	argv, err := interpolateToolArgv(binding, template, bound, phase.Inputs, vars)
+	return binding, argv, err
+}
+
+// workflowUnitToolCommand resolves a fan-out unit's argv from the live project
+// profile. A unit binds only `command:` — `check:` is a phase-level gate
+// contract — so there is one discriminator here and no ambiguity to reject.
+// Declarations come from the caller because they differ by role: a work unit
+// reads the phase's inputs plus its element binding, a join the reserved unit
+// results.
+func workflowUnitToolCommand(
+	projectProfile *profile.Profile, unit def.Unit,
+	declarations map[string]def.Variable, vars map[string]any,
+) (string, []string, error) {
+	name := strings.TrimSpace(unit.Command)
+	if name == "" {
+		return "", nil, fmt.Errorf("unit declares no command binding")
+	}
+	binding := fmt.Sprintf("command %q", name)
+	template, bound := projectProfile.Commands[name]
+	argv, err := interpolateToolArgv(binding, template, bound, declarations, vars)
+	return binding, argv, err
+}
+
+// interpolateToolArgv turns one profile binding into the argv a process is
+// started with. Bindings are argv arrays in the profile, never shell strings, so
+// nothing here is parsed.
+func interpolateToolArgv(
+	binding string, template []string, bound bool,
+	declarations map[string]def.Variable, vars map[string]any,
+) ([]string, error) {
 	if !bound {
-		return "", nil, fmt.Errorf("the project profile no longer binds %s", binding)
+		return nil, fmt.Errorf("the project profile no longer binds %s", binding)
 	}
 	if len(template) == 0 || strings.TrimSpace(template[0]) == "" {
-		return "", nil, fmt.Errorf("%s binds no executable", binding)
+		return nil, fmt.Errorf("%s binds no executable", binding)
 	}
 	argv := make([]string, len(template))
 	for index, argument := range template {
-		interpolated, err := def.Interpolate(argument, phase.Inputs, vars)
+		interpolated, err := def.Interpolate(argument, declarations, vars)
 		if err != nil {
-			return "", nil, fmt.Errorf("%s argument %d: %w", binding, index, err)
+			return nil, fmt.Errorf("%s argument %d: %w", binding, index, err)
 		}
 		argv[index] = interpolated
 	}
 	if strings.TrimSpace(argv[0]) == "" {
-		return "", nil, fmt.Errorf("%s resolved to an empty executable", binding)
+		return nil, fmt.Errorf("%s resolved to an empty executable", binding)
 	}
-	return binding, argv, nil
+	return argv, nil
 }
 
 // workflowToolWriter is the process's combined stdout/stderr sink. Every chunk

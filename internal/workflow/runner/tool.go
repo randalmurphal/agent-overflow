@@ -26,20 +26,21 @@ const (
 	ToolEnvelopeAbsent ToolEnvelopeSource = "absent"
 )
 
-// SynthesizedToolEnvelope is the envelope a tool phase gets when its command
-// exits without writing one. A non-zero exit is deliberately not a phase
-// failure: it is `passed: false`, and the phase's gate decides what that means.
+// SynthesizedToolEnvelope is the envelope a tool phase or tool fan-out unit
+// gets when its command exits without writing one. A non-zero exit is
+// deliberately not a failure: it is `passed: false`, and the gate (or, for a
+// unit, its join) decides what that means.
 //
 // Beyond the two system outputs it can only fill in the author's *optional*
 // outputs, as null — the declared way to say "no value". A required authored
 // output has no honest synthesized value, so the envelope fails post-validation
-// and the phase parks telling the human its command must write AO_ENVELOPE.
-func SynthesizedToolEnvelope(phase def.Phase, exitCode int) (json.RawMessage, error) {
+// and the run parks telling the human its command must write AO_ENVELOPE.
+func SynthesizedToolEnvelope(contract def.EnvelopeContract, exitCode int) (json.RawMessage, error) {
 	outputs := map[string]any{
 		def.ToolOutputPassed:   exitCode == 0,
 		def.ToolOutputExitCode: exitCode,
 	}
-	for name, declaration := range def.PhaseOutputs(phase) {
+	for name, declaration := range contract.Outputs() {
 		if _, system := outputs[name]; system || !declaration.Optional {
 			continue
 		}
@@ -104,16 +105,20 @@ func ApplyToolOutputs(payload json.RawMessage, exitCode int) json.RawMessage {
 	return encoded
 }
 
-// ToolReport is everything the system knows about one tool phase attempt after
-// its process is gone. It renders to the phase narrative — the human-facing
-// record of what ran, how it ended, and what it printed.
+// ToolReport is everything the system knows about one tool phase attempt — or
+// one tool fan-out unit try — after its process is gone. It renders to that
+// element's narrative: the human-facing record of what ran, how it ended, and
+// what it printed. UnitID and UnitAttempt are set exactly when the run was a
+// unit's, and are what the heading reads to name it.
 type ToolReport struct {
-	PhaseID   string
-	Attempt   int
-	Binding   string
-	Argv      []string
-	Workspace string
-	Duration  time.Duration
+	PhaseID     string
+	Attempt     int
+	UnitID      string
+	UnitAttempt int
+	Binding     string
+	Argv        []string
+	Workspace   string
+	Duration    time.Duration
 	// Outcome is a one-line summary owned by the caller ("exited", "killed by
 	// the inactivity watchdog", ...). Exited/ExitCode carry the process status
 	// when the process ran to completion.
@@ -126,12 +131,13 @@ type ToolReport struct {
 	Truncated bool
 }
 
-// ToolNarrative renders the system-written narrative for one tool phase
-// attempt. Agent phases write their own; a tool phase has no author, so the
-// runner writes this instead — same file, same read paths.
+// ToolNarrative renders the system-written narrative for one tool phase attempt
+// or tool unit try. Agent-driven work writes its own; a command has no author,
+// so the runner writes this instead — same file, same read paths.
 func ToolNarrative(report ToolReport) string {
 	var narrative strings.Builder
-	fmt.Fprintf(&narrative, "# Tool phase %s (attempt %d)\n\n", report.PhaseID, report.Attempt)
+	narrative.WriteString(toolReportHeading(report))
+	narrative.WriteString("\n\n")
 	if report.Binding != "" {
 		fmt.Fprintf(&narrative, "- Binding: %s\n", report.Binding)
 	}
@@ -152,7 +158,7 @@ func ToolNarrative(report ToolReport) string {
 			fmt.Fprintf(&narrative, "- %s: %s\n", finding.Path, finding.Message)
 		}
 		narrative.WriteString("\n")
-		narrative.WriteString(toolEnvelopeGuidance(report.Envelope))
+		narrative.WriteString(toolEnvelopeGuidance(report))
 		narrative.WriteString("\n")
 	}
 
@@ -176,6 +182,20 @@ func ToolNarrative(report ToolReport) string {
 	return narrative.String()
 }
 
+// toolReportHeading names the element the narrative belongs to. A unit's try
+// number is part of the heading because a retried unit reuses its row while
+// each try writes its own narrative file — without it, two files would claim to
+// describe the same run.
+func toolReportHeading(report ToolReport) string {
+	if report.UnitID == "" {
+		return fmt.Sprintf("# Tool phase %s (attempt %d)", report.PhaseID, report.Attempt)
+	}
+	return fmt.Sprintf(
+		"# Tool unit %s of phase %s (attempt %d, try %d)",
+		report.UnitID, report.PhaseID, report.Attempt, report.UnitAttempt,
+	)
+}
+
 func toolEnvelopeDescription(source ToolEnvelopeSource) string {
 	switch source {
 	case ToolEnvelopeWritten:
@@ -187,13 +207,17 @@ func toolEnvelopeDescription(source ToolEnvelopeSource) string {
 	}
 }
 
-func toolEnvelopeGuidance(source ToolEnvelopeSource) string {
-	if source == ToolEnvelopeSynthesized {
+func toolEnvelopeGuidance(report ToolReport) string {
+	element := "phase"
+	if report.UnitID != "" {
+		element = "unit"
+	}
+	if report.Envelope == ToolEnvelopeSynthesized {
 		return "The command exited without writing the file named by the AO_ENVELOPE environment variable, " +
-			"so only the exit status was available. This phase declares outputs an exit status cannot supply: " +
+			"so only the exit status was available. This " + element + " declares outputs an exit status cannot supply: " +
 			"the command must write a control envelope to that path."
 	}
-	return "The control envelope the command wrote to AO_ENVELOPE does not satisfy this phase's contract. " +
+	return "The control envelope the command wrote to AO_ENVELOPE does not satisfy this " + element + "'s contract. " +
 		"A deterministic command gets no feedback turn, so the run parks here for a human."
 }
 

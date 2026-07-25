@@ -92,9 +92,10 @@ const (
 )
 
 // RunRequest contains the immutable workflow snapshot plus phase-local input.
-// Unit, UnitIndex, and UnitKind are set exactly when Key.UnitID is: they carry
-// the stamped unit definition a fan-out attempt expanded, and Vars already
-// includes the element binding a dynamic expansion bound to it.
+// Unit, UnitIndex, UnitKind, and UnitAttempt are set exactly when Key.UnitID
+// is: they carry the stamped unit definition a fan-out attempt expanded and the
+// try number it is on, and Vars already includes the element binding a dynamic
+// expansion bound to it (or, for a join, the units it consolidates).
 type RunRequest struct {
 	Key              RunKey         `json:"key"`
 	Item             store.WorkItem `json:"item"`
@@ -103,6 +104,7 @@ type RunRequest struct {
 	Unit             *def.Unit      `json:"unit,omitempty"`
 	UnitIndex        int            `json:"unitIndex,omitempty"`
 	UnitKind         UnitKind       `json:"unitKind,omitempty"`
+	UnitAttempt      int            `json:"unitAttempt,omitempty"`
 	Vars             map[string]any `json:"vars"`
 	Feedback         *Feedback      `json:"feedback,omitempty"`
 	PriorThreadID    string         `json:"priorThreadId,omitempty"`

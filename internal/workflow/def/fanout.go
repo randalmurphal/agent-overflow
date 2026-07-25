@@ -92,11 +92,95 @@ func ExpandUnits(phase Phase, vars map[string]any) ([]ExpandedUnit, error) {
 	return units, nil
 }
 
+// UnitDefinition resolves the frozen definition behind one unit id of a fan-out
+// phase, without needing the variable context an expansion requires. A static
+// fan-out names its units directly; a dynamic one stamps ids onto a single
+// template, so every unit of it shares that template's provider, access, and
+// output contract — only the id differs, and it is restored here.
+//
+// It exists for the recovery paths that hold a persisted unit row and need the
+// contract that row ran under: re-expanding would mean reloading and decoding
+// the attempt's whole input envelope to learn something the id already implies.
+func UnitDefinition(phase Phase, unitID string, join bool) (Unit, bool) {
+	if join {
+		if phase.Join == nil || phase.Join.ID != unitID {
+			return Unit{}, false
+		}
+		return *phase.Join, true
+	}
+	if phase.DynamicFanOut() {
+		if phase.Unit == nil || !stampedUnitID(phase, unitID) {
+			return Unit{}, false
+		}
+		unit := *phase.Unit
+		unit.ID = unitID
+		return unit, true
+	}
+	for _, unit := range phase.FanOut {
+		if unit.ID == unitID {
+			return unit, true
+		}
+	}
+	return Unit{}, false
+}
+
+// stampedUnitID reports whether an id is one ExpandUnits could have produced for
+// this dynamic phase: the template prefix and a non-negative index. Without the
+// check a dynamic phase would answer UnitDefinition for *any* id — including its
+// join's, or a typo — by fabricating a unit from the template, and a caller
+// holding a wrong id would run a real turn instead of failing.
+func stampedUnitID(phase Phase, unitID string) bool {
+	prefix := strings.TrimSpace(phase.Unit.ID)
+	if prefix == "" {
+		prefix = phase.ID
+	}
+	index, ok := strings.CutPrefix(unitID, prefix+"-")
+	if !ok || index == "" {
+		return false
+	}
+	for _, digit := range index {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// UnitsVariable is the reserved name a join's variable context binds its units'
+// results under. It is reserved inside a join only: no other phase, unit, or
+// gate sees it. The engine binds the values and this package declares their
+// shape, so the prompt validator and the runtime context cannot disagree about
+// what `{{units}}` renders.
+const UnitsVariable = "units"
+
+// unitsDeclaration is the shape one entry of the reserved `units` binding has.
+// `outputs` is an open object because each unit answers its own declared
+// contract; the join reads it as JSON rather than by declared path.
+func unitsDeclaration() Variable {
+	return Variable{Schema: JSONSchema{
+		Type:        "array",
+		Description: "Results of the units this join consolidates.",
+		Items: &JSONSchema{
+			Type: "object",
+			Properties: map[string]JSONSchema{
+				"id":       {Type: "string"},
+				"index":    {Type: "number"},
+				"status":   {Type: "string"},
+				"branch":   {Type: "string"},
+				"worktree": {Type: "string"},
+				"thread":   {Type: "string"},
+				"outputs":  {Type: "object"},
+			},
+			Required: []string{"id", "index", "status"},
+		},
+	}}
+}
+
 // UnitDeclarations returns the variables a unit's prompt or command may
 // reference: everything the phase declares as an input, plus the element
-// binding a dynamic fan-out provides. elementSchema is the resolved item schema
-// of the `over:` array; an unresolvable `over:` reference is reported by
-// variable validation and contributes no declaration here.
+// binding a dynamic fan-out provides. element is the resolved item schema of
+// the `over:` array; an unresolvable `over:` reference is reported by variable
+// validation and contributes no declaration here.
 func UnitDeclarations(phase Phase, element *Variable) map[string]Variable {
 	declarations := make(map[string]Variable, len(phase.Inputs)+1)
 	for name, variable := range phase.Inputs {
@@ -106,4 +190,39 @@ func UnitDeclarations(phase Phase, element *Variable) map[string]Variable {
 		declarations[strings.TrimSpace(phase.As)] = *element
 	}
 	return declarations
+}
+
+// ResolveUnitDeclarations is UnitDeclarations with the element schema resolved
+// from the workflow itself. Validation and the runtime prompt builder both go
+// through it, so a template that validated at authoring time cannot fail to
+// interpolate at run time.
+func ResolveUnitDeclarations(workflow Workflow, phase Phase) map[string]Variable {
+	element, ok := overElement(workflow, phaseIndexes(workflow), phase)
+	if !ok {
+		return UnitDeclarations(phase, nil)
+	}
+	return UnitDeclarations(phase, &element)
+}
+
+// JoinDeclarations returns the variables a join's prompt or command may
+// reference: the phase's declared inputs plus the reserved `units` results. The
+// reserved name is bound last for the same reason the engine binds it last —
+// the results a join exists to consolidate can never be shadowed.
+func JoinDeclarations(phase Phase) map[string]Variable {
+	declarations := make(map[string]Variable, len(phase.Inputs)+1)
+	for name, variable := range phase.Inputs {
+		declarations[name] = variable
+	}
+	declarations[UnitsVariable] = unitsDeclaration()
+	return declarations
+}
+
+func phaseIndexes(workflow Workflow) map[string]int {
+	indexes := make(map[string]int, len(workflow.Phases))
+	for index, phase := range workflow.Phases {
+		if _, duplicate := indexes[phase.ID]; !duplicate {
+			indexes[phase.ID] = index
+		}
+	}
+	return indexes
 }

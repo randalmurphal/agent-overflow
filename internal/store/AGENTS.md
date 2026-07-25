@@ -207,6 +207,11 @@ baseline:
 - The v36 rebuild widens the `work_items.reason` CHECK with `unit-failed`, the
   typed park reason a fan-out attempt takes when a unit does not complete. It
   recreates every `work_items` index, like the earlier work-item rebuilds.
+- Migration v37 adds `idx_work_item_units_thread` on non-empty
+  `work_item_units(thread_id)`, backing `GetWorkItemUnitByThread` — the inverse
+  of `AttachWorkItemUnitRun` that every thread-first entry point (a human
+  steering one taken-over unit) resolves through. It is the unit-side mirror of
+  `idx_work_item_phases_thread`.
 
 ## Extension points
 

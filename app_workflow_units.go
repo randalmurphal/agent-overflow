@@ -1,0 +1,383 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/workflow/def"
+	"agent-overflow/internal/workflow/engine"
+	workflowrunner "agent-overflow/internal/workflow/runner"
+)
+
+// Execution of one fan-out unit. A unit is a piece of its phase attempt, not a
+// phase of its own: it shares the reliability timers, envelope-retry, narrative,
+// and masked-output machinery, and differs only in what its envelope must
+// satisfy and where it runs.
+//
+// The join is an ordinary unit here with two exceptions, both consequences of
+// one rule — its envelope IS the phase's: it answers the phase's contract, and
+// it runs in the item's primary workspace rather than a sub-worktree, because
+// the result it produces is the phase's result.
+
+// workflowUnitPlan is one unit's resolved execution context: what its envelope
+// must satisfy, what its prompt or command may reference, where it runs, and
+// where its files live. Resolving it is separate from running it so the agent
+// and tool paths cannot answer those questions differently.
+type workflowUnitPlan struct {
+	kind        engine.UnitKind
+	label       string
+	unitAttempt int
+	// contract is the phase's for a join and the unit's own for a work unit.
+	contract      def.EnvelopeContract
+	declarations  map[string]def.Variable
+	workspace     preparedWorkflowWorkspace
+	narrativePath string
+	envelopePath  string
+}
+
+func (r *workflowAppRunner) startUnit(ctx context.Context, request engine.RunRequest, complete func(engine.Outcome)) error {
+	if request.Unit == nil {
+		return fmt.Errorf(
+			"workflow runner: unit %q of phase %q arrived without its stamped definition",
+			request.Key.UnitID, request.Key.PhaseID,
+		)
+	}
+	if request.Phase.EffectiveShape() != def.ShapeFanOut {
+		return fmt.Errorf(
+			"workflow runner: phase %q has shape %q and runs no units",
+			request.Phase.ID, request.Phase.EffectiveShape(),
+		)
+	}
+	unit := *request.Unit
+	plan, err := r.planUnit(ctx, request, unit)
+	if err != nil {
+		return err
+	}
+	if unit.EffectiveDriver() == def.DriverTool {
+		if request.FinalizeTakeover {
+			return fmt.Errorf("workflow runner: tool %s cannot finalize a takeover", plan.label)
+		}
+		return r.startToolUnit(ctx, request, unit, plan, complete)
+	}
+	return r.startAgentUnit(ctx, request, unit, plan, complete)
+}
+
+// planUnit resolves everything a unit needs before anything is started, and
+// provisions the sub-worktree a writing unit runs in.
+func (r *workflowAppRunner) planUnit(ctx context.Context, request engine.RunRequest, unit def.Unit) (workflowUnitPlan, error) {
+	plan := workflowUnitPlan{
+		kind:        request.UnitKind,
+		label:       fmt.Sprintf("unit %q of phase %q", request.Key.UnitID, request.Key.PhaseID),
+		unitAttempt: request.UnitAttempt,
+	}
+	if plan.unitAttempt < 1 {
+		return workflowUnitPlan{}, fmt.Errorf("workflow runner: %s arrived without a try number", plan.label)
+	}
+	// Kind decides which contract the unit's envelope answers and whether it is
+	// isolated, so an unrecognized one must not fall through to the work-unit
+	// branch: that would run a real turn against the wrong contract.
+	switch plan.kind {
+	case engine.UnitWork, engine.UnitJoin:
+	default:
+		return workflowUnitPlan{}, fmt.Errorf(
+			"workflow runner: %s arrived with unknown unit kind %q", plan.label, plan.kind,
+		)
+	}
+	if plan.kind == engine.UnitJoin {
+		plan.contract = def.PhaseEnvelope(request.Phase)
+		plan.declarations = def.JoinDeclarations(request.Phase)
+	} else {
+		plan.contract = def.UnitEnvelope(unit)
+		plan.declarations = def.ResolveUnitDeclarations(request.Workflow, request.Phase)
+	}
+	primary, err := r.prepareWorkspace(ctx, request)
+	if err != nil {
+		return workflowUnitPlan{}, errors.Join(engine.ErrSetupFailed, err)
+	}
+	plan.workspace = primary
+	// A writing work unit gets its own sub-worktree on its own branch (spec §9):
+	// siblings run at the same time and would otherwise fight over one checkout.
+	// The join never gets one — it consolidates the units' branches, and the
+	// result it produces is the phase's, which belongs on the item's branch.
+	if plan.kind != engine.UnitJoin && unit.EffectiveAccess() == def.AccessWrite {
+		sub, err := r.provisionUnitWorktree(ctx, request, primary)
+		if err != nil {
+			return workflowUnitPlan{}, errors.Join(engine.ErrSetupFailed, err)
+		}
+		plan.workspace = sub
+	}
+	plan.narrativePath, err = workflowrunner.UnitNarrativePath(
+		r.dataRoot, request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt,
+		request.Key.UnitID, plan.unitAttempt,
+	)
+	if err != nil {
+		return workflowUnitPlan{}, err
+	}
+	plan.envelopePath, err = workflowrunner.UnitEnvelopePath(
+		r.dataRoot, request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt,
+		request.Key.UnitID, plan.unitAttempt,
+	)
+	if err != nil {
+		return workflowUnitPlan{}, err
+	}
+	return plan, nil
+}
+
+// startAgentUnit runs one unit as a provider turn on its own AO thread.
+func (r *workflowAppRunner) startAgentUnit(
+	ctx context.Context, request engine.RunRequest, unit def.Unit,
+	plan workflowUnitPlan, complete func(engine.Outcome),
+) error {
+	if strings.TrimSpace(unit.Provider) == "" {
+		return errors.Join(engine.ErrWiringFailed, fmt.Errorf(
+			"workflow runner: %s runs an agent turn but declares no provider", plan.label,
+		))
+	}
+	schema, err := plan.contract.Schema()
+	if err != nil {
+		return fmt.Errorf("workflow runner: build %s envelope schema: %w", plan.label, err)
+	}
+	watchdog, backoff, err := r.reliability(ctx, request)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(plan.narrativePath), appPrivateDirPerm); err != nil {
+		return fmt.Errorf("workflow runner: create %s narrative directory: %w", plan.label, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("workflow runner: startup cancelled: %w", err)
+	}
+
+	spec := workflowThreadSpec{
+		itemID: request.Key.ItemID, label: plan.label,
+		title:        workflowUnitThreadTitle(request.Phase, request.Key.UnitID),
+		providerName: unit.Provider, model: unit.Model,
+		access: unit.EffectiveAccess(), workspace: plan.workspace,
+	}
+	threadID := request.PriorThreadID
+	createdThread := false
+	if threadID == "" {
+		thread, createErr := r.app.createWorkflowThread(spec)
+		if createErr != nil {
+			return createErr
+		}
+		threadID = thread.ID
+		createdThread = true
+	} else if err := r.validatePriorThread(spec, threadID); err != nil {
+		return err
+	}
+	discardThread := func(cause error) error {
+		if !createdThread {
+			return cause
+		}
+		return errors.Join(cause, r.app.store.DeleteThread(threadID))
+	}
+	if err := ctx.Err(); err != nil {
+		return discardThread(fmt.Errorf("workflow runner: startup cancelled: %w", err))
+	}
+	if err := r.attachUnitRun(request.Key, plan, threadID); err != nil {
+		return discardThread(err)
+	}
+
+	var prompt string
+	if request.FinalizeTakeover {
+		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(plan.narrativePath)
+	} else {
+		prompt, err = workflowrunner.BuildUnitPrompt(
+			unit, plan.declarations, request.Vars, plan.narrativePath, request.Feedback,
+		)
+	}
+	if err != nil {
+		return discardThread(err)
+	}
+	if request.FinalizeTakeover && unit.Provider == string(provider.Claude) {
+		if err := r.restartClaudeTakeoverWithSchema(threadID, schema); err != nil {
+			return err
+		}
+	}
+	attempt := &workflowAttempt{
+		workflowCompletion: workflowCompletion{
+			key: request.Key, unitKind: plan.kind, workflow: request.Workflow,
+			workspace: plan.workspace.path, projectPath: plan.workspace.project.Path,
+		},
+		threadID: threadID,
+		schema:   append(json.RawMessage(nil), schema...), contract: plan.contract,
+		provider: unit.Provider, phase: request.Phase, complete: complete,
+		currentPrompt: prompt, watchdog: watchdog, backoff: backoff,
+	}
+	return r.installAttempt(ctx, attempt, createdThread)
+}
+
+// startToolUnit runs one unit as a deterministic command through the same
+// process supervision a tool phase gets.
+func (r *workflowAppRunner) startToolUnit(
+	ctx context.Context, request engine.RunRequest, unit def.Unit,
+	plan workflowUnitPlan, complete func(engine.Outcome),
+) error {
+	projectProfile, err := r.projectProfile(ctx, request.Item.ProjectID)
+	if err != nil {
+		return err
+	}
+	// A unit has no watchdog field of its own: the phase's inactivity window
+	// bounds every piece of work the attempt runs.
+	watchdog, _, err := workflowReliability(projectProfile, request.Phase)
+	if err != nil {
+		return err
+	}
+	binding, argv, err := workflowUnitToolCommand(projectProfile, unit, plan.declarations, request.Vars)
+	if err != nil {
+		return errors.Join(engine.ErrWiringFailed, fmt.Errorf(
+			"workflow runner: resolve tool %s command: %w", plan.label, err,
+		))
+	}
+	secrets, err := projectProfile.ResolveSecrets()
+	if err != nil {
+		return errors.Join(engine.ErrSetupFailed, fmt.Errorf(
+			"workflow runner: resolve tool %s secrets: %w", plan.label, err,
+		))
+	}
+	if err := prepareWorkflowToolFiles(plan.narrativePath, plan.envelopePath); err != nil {
+		return errors.Join(engine.ErrSetupFailed, err)
+	}
+	if err := r.attachUnitRun(request.Key, plan, ""); err != nil {
+		return err
+	}
+	return r.startToolRun(ctx, workflowToolRun{
+		workflowCompletion: workflowCompletion{
+			key: request.Key, unitKind: plan.kind, workflow: request.Workflow,
+			workspace: plan.workspace.path, projectPath: plan.workspace.project.Path,
+		},
+		label: plan.label, contract: plan.contract, unitAttempt: plan.unitAttempt,
+		binding: binding, argv: argv,
+		narrativePath: plan.narrativePath, envelopePath: plan.envelopePath,
+		secrets: secrets, watchdog: watchdog,
+	}, complete)
+}
+
+// attachUnitRun records where a unit's work can be read from the moment it
+// exists. A join additionally stamps its thread and narrative onto the phase
+// attempt row: the join's envelope IS the phase's, so every phase-level
+// continuation (Answer, CompleteTakeover) looks for a thread there. Without it a
+// fan-out attempt could park on a question with nothing to answer it on.
+func (r *workflowAppRunner) attachUnitRun(key engine.RunKey, plan workflowUnitPlan, threadID string) error {
+	if err := r.app.store.AttachWorkItemUnitRun(
+		key.ItemID, key.PhaseID, key.Attempt, key.UnitID, threadID, plan.narrativePath,
+	); err != nil {
+		return fmt.Errorf("workflow runner: attach %s run: %w", plan.label, err)
+	}
+	if plan.kind != engine.UnitJoin {
+		return nil
+	}
+	if err := r.app.store.AttachWorkItemPhaseRun(
+		key.ItemID, key.PhaseID, key.Attempt, threadID, plan.narrativePath,
+	); err != nil {
+		return fmt.Errorf("workflow runner: attach %s to its phase attempt: %w", plan.label, err)
+	}
+	return nil
+}
+
+// retireUnitWorktrees removes the sub-worktrees of a fan-out attempt whose join
+// finished successfully. A unit's worktree is an input the join has now
+// consumed; leaving N of them per fan-out on disk is how a run's checkouts
+// become unmanageable.
+//
+// The branches are deliberately kept. They are the durable record of what each
+// unit produced — a human comparing units, or recovering work a join summarized
+// badly, has nothing else to look at — and removing a worktree does not touch
+// the branch it was checked out on. Every non-done ending (park, failure,
+// takeover) keeps both: the work is still live, or still evidence.
+//
+// A dropped unit is retired with the rest. The attempt reached a done join, so
+// no checkout is still being worked in, and the drop decision is already
+// recorded — its branch keeps whatever it committed.
+//
+// A removal failure is reported and never changes the phase's outcome: the join
+// is done, and an undeleted directory is not a reason to fail a run.
+func (r *workflowAppRunner) retireUnitWorktrees(done workflowCompletion) {
+	units, err := r.app.store.ListWorkItemPhaseUnits(done.key.ItemID, done.key.PhaseID, done.key.Attempt)
+	if err != nil {
+		r.reportUnitCleanupFailure(done.key.ItemID, fmt.Errorf("list units: %w", err))
+		return
+	}
+	for _, unit := range units {
+		if unit.Kind == store.WorkItemUnitKindJoin || strings.TrimSpace(unit.WorktreePath) == "" {
+			continue
+		}
+		if err := r.app.gitCore().RemoveWorktreeForce(done.projectPath, unit.WorktreePath, true); err != nil {
+			r.reportUnitCleanupFailure(done.key.ItemID, fmt.Errorf(
+				"remove unit %q worktree %q: %w", unit.UnitID, unit.WorktreePath, err,
+			))
+			continue
+		}
+		// The row keeps its branch and loses only the path, which is exactly what
+		// is no longer true about the unit.
+		if err := r.app.store.AttachWorkItemUnitWorkspace(
+			unit.ItemID, unit.PhaseID, unit.Attempt, unit.UnitID, unit.Branch, "",
+		); err != nil {
+			r.reportUnitCleanupFailure(done.key.ItemID, fmt.Errorf(
+				"clear unit %q worktree path: %w", unit.UnitID, err,
+			))
+		}
+	}
+}
+
+// removeWorkflowUnitWorktrees removes every sub-worktree a run's fan-out units
+// still hold, and clears the paths from their rows. It is the item-teardown
+// counterpart of retireUnitWorktrees: that one runs when a join consumed its
+// units, this one when the whole tree is going away.
+//
+// Branches are kept here too. Discarding a run removes checkouts, not history;
+// the branches go with the repository's own branch hygiene, which is where a
+// human can still find what a unit produced.
+func (a *App) removeWorkflowUnitWorktrees(item store.WorkItem) error {
+	units, err := a.store.ListWorkItemUnits(item.ID)
+	if err != nil {
+		return fmt.Errorf("list fan-out units: %w", err)
+	}
+	held := false
+	for _, unit := range units {
+		if strings.TrimSpace(unit.WorktreePath) != "" {
+			held = true
+			break
+		}
+	}
+	if !held {
+		return nil
+	}
+	project, err := a.store.GetProject(item.ProjectID)
+	if err != nil {
+		return fmt.Errorf("load project: %w", err)
+	}
+	var errs []error
+	for _, unit := range units {
+		if strings.TrimSpace(unit.WorktreePath) == "" {
+			continue
+		}
+		if err := a.gitCore().RemoveWorktreeForce(project.Path, unit.WorktreePath, true); err != nil {
+			errs = append(errs, fmt.Errorf("remove unit %q worktree %q: %w", unit.UnitID, unit.WorktreePath, err))
+			continue
+		}
+		if err := a.store.AttachWorkItemUnitWorkspace(
+			unit.ItemID, unit.PhaseID, unit.Attempt, unit.UnitID, unit.Branch, "",
+		); err != nil {
+			errs = append(errs, fmt.Errorf("clear unit %q worktree path: %w", unit.UnitID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (r *workflowAppRunner) reportUnitCleanupFailure(itemID string, cause error) {
+	log.Printf("workflow unit worktree cleanup %s: %v", itemID, cause)
+	r.app.emit("workflow:error", map[string]any{
+		"itemId": itemID,
+		"error":  "workflow fan-out unit worktrees could not be cleaned up; inspect local diagnostics",
+	})
+}

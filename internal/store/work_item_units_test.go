@@ -33,7 +33,10 @@ func TestWorkItemUnitLifecycle(t *testing.T) {
 	if err := s.StartWorkItemUnit("item", "port", 1, "port-0", 1, "", 100); err != nil {
 		t.Fatalf("start unit: %v", err)
 	}
-	if err := s.AttachWorkItemUnitRun("item", "port", 1, "port-0", "thread-0", "ao/port-0", "/wt/port-0", "/runs/port-0/narrative.md"); err != nil {
+	if err := s.AttachWorkItemUnitWorkspace("item", "port", 1, "port-0", "ao/port-0", "/wt/port-0"); err != nil {
+		t.Fatalf("attach unit workspace: %v", err)
+	}
+	if err := s.AttachWorkItemUnitRun("item", "port", 1, "port-0", "thread-0", "/runs/port-0/narrative.md"); err != nil {
 		t.Fatalf("attach unit run: %v", err)
 	}
 	envelope := json.RawMessage(`{"status":"done","outputs":{"ok":true}}`)
@@ -59,7 +62,8 @@ func TestWorkItemUnitLifecycle(t *testing.T) {
 		func() error {
 			return s.CompleteWorkItemUnit("item", "port", 1, "absent", WorkItemUnitDone, nil, "", 1)
 		},
-		func() error { return s.AttachWorkItemUnitRun("item", "port", 1, "absent", "t", "b", "w", "n") },
+		func() error { return s.AttachWorkItemUnitRun("item", "port", 1, "absent", "t", "n") },
+		func() error { return s.AttachWorkItemUnitWorkspace("item", "port", 1, "absent", "b", "w") },
 	} {
 		if err := missing(); err == nil {
 			t.Fatal("update of an absent unit row reported success")

@@ -15,7 +15,7 @@ func TestSynthesizedToolEnvelopeCarriesTheExitStatus(t *testing.T) {
 		"required": {Schema: def.JSONSchema{Type: "string"}},
 	}}
 	for _, exitCode := range []int{0, 3} {
-		payload, err := SynthesizedToolEnvelope(phase, exitCode)
+		payload, err := SynthesizedToolEnvelope(def.PhaseEnvelope(phase), exitCode)
 		if err != nil {
 			t.Fatal(err)
 		}

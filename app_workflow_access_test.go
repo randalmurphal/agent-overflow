@@ -204,17 +204,20 @@ func TestCreateWorkflowThreadRejectsProviderThatCannotEnforceAccess(t *testing.T
 	repo := testutil.InitGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 
-	request := engine.RunRequest{
-		Key: engine.RunKey{ItemID: "item-access", PhaseID: "survey", Attempt: 1},
-		Phase: def.Phase{
-			ID:       "survey",
-			Driver:   def.DriverAgent,
-			Provider: string(provider.ClaudeTUI),
-			Model:    "claude-opus-4-7",
-			Access:   def.AccessReadOnly,
-		},
+	phase := def.Phase{
+		ID:       "survey",
+		Driver:   def.DriverAgent,
+		Provider: string(provider.ClaudeTUI),
+		Model:    "claude-opus-4-7",
+		Access:   def.AccessReadOnly,
 	}
-	_, err := app.createWorkflowThread(request, repo, projectRow)
+	_, err := app.createWorkflowThread(workflowThreadSpec{
+		itemID: "item-access", label: `phase "survey"`,
+		title:        workflowThreadTitle(phase.Name, phase.ID),
+		providerName: phase.Provider, model: phase.Model,
+		access:    phase.EffectiveAccess(),
+		workspace: preparedWorkflowWorkspace{path: repo, project: projectRow},
+	})
 	if err == nil {
 		t.Fatal("createWorkflowThread accepted a provider that cannot enforce runtime modes")
 	}

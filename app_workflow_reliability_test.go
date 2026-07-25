@@ -83,7 +83,8 @@ func TestFailedTakeoverStopRestoresBackoffTimer(t *testing.T) {
 	deadline := now.Add(45 * time.Second)
 	originalTimer := &fakeWorkflowTimer{active: true}
 	attempt := &workflowAttempt{
-		key: key, threadID: "thread", schema: json.RawMessage(`{"type":"object"}`),
+		workflowCompletion: workflowCompletion{key: key},
+		threadID:           "thread", schema: json.RawMessage(`{"type":"object"}`),
 		watchdog: time.Minute, timer: originalTimer, timerMode: workflowTimerBackoff,
 		timerDeadline: deadline, unsubscribe: func() {},
 	}
@@ -178,7 +179,8 @@ func TestWorkflowWatchdogArmsResetsAndTripsDeterministically(t *testing.T) {
 	runKey := workflowRunKey(key)
 	outcomes := make(chan engine.Outcome, 1)
 	runner.runs[runKey] = &workflowAttempt{
-		key: key, threadID: "thread", watchdog: 10 * time.Second,
+		workflowCompletion: workflowCompletion{key: key},
+		threadID:           "thread", watchdog: 10 * time.Second,
 		phase: def.Phase{ID: "phase"}, complete: func(outcome engine.Outcome) { outcomes <- outcome },
 	}
 	runner.schemas["thread"] = json.RawMessage(`{}`)
@@ -233,7 +235,8 @@ func TestWorkflowStopDuringBackoffDisarmsRetry(t *testing.T) {
 	runKey := workflowRunKey(key)
 	completed := false
 	runner.runs[runKey] = &workflowAttempt{
-		key: key, threadID: "thread", backoff: []time.Duration{time.Second},
+		workflowCompletion: workflowCompletion{key: key},
+		threadID:           "thread", backoff: []time.Duration{time.Second},
 		complete: func(engine.Outcome) { completed = true },
 	}
 	runner.schemas["thread"] = json.RawMessage(`{}`)
@@ -269,7 +272,7 @@ func TestWorkflowTransientRetryExhaustionCleansAttempt(t *testing.T) {
 	runKey := workflowRunKey(key)
 	outcomes := make(chan engine.Outcome, 1)
 	runner.runs[runKey] = &workflowAttempt{
-		key: key, threadID: "thread",
+		workflowCompletion: workflowCompletion{key: key}, threadID: "thread",
 		complete: func(outcome engine.Outcome) { outcomes <- outcome },
 	}
 	runner.schemas["thread"] = json.RawMessage(`{}`)
@@ -297,7 +300,7 @@ func TestWorkflowCodexRetryIgnoresPriorTerminalUntilTurnStarts(t *testing.T) {
 	runKey := workflowRunKey(key)
 	outcomes := make(chan engine.Outcome, 1)
 	runner.runs[runKey] = &workflowAttempt{
-		key: key, threadID: "thread", awaitingRetryStart: true,
+		workflowCompletion: workflowCompletion{key: key}, threadID: "thread", awaitingRetryStart: true,
 		phase:    def.Phase{ID: "phase", Provider: string(provider.Codex)},
 		complete: func(outcome engine.Outcome) { outcomes <- outcome },
 	}

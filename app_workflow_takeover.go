@@ -130,6 +130,16 @@ func (r *workflowAppRunner) interruptAndWaitForYield(ctx context.Context, runKey
 	}
 }
 
+// workflowTakeoverElement is the piece of a run one thread belongs to: a phase
+// attempt, or one fan-out unit of one. Registration needs exactly two facts
+// about it — the provider whose session must be restarted schema-less, and the
+// contract that session will have to answer again if the takeover is finalized.
+type workflowTakeoverElement struct {
+	description string
+	provider    string
+	contract    def.EnvelopeContract
+}
+
 func (r *workflowAppRunner) registerTakeover(itemID, threadID string) error {
 	r.mu.Lock()
 	if existing, ok := r.takeovers[threadID]; ok && existing.itemID == itemID {
@@ -146,39 +156,16 @@ func (r *workflowAppRunner) registerTakeover(itemID, threadID string) error {
 	if err != nil {
 		return fmt.Errorf("workflow runner: load takeover item: %w", err)
 	}
-	if item.State != string(engine.StateNeedsHuman) || item.Reason != string(engine.ReasonTakenOver) {
-		return fmt.Errorf("workflow runner: item %s is %s(%s), want needs-human(taken-over)", itemID, item.State, item.Reason)
-	}
 	var snapshot engine.Snapshot
 	if err := json.Unmarshal(item.Snapshot, &snapshot); err != nil {
 		return fmt.Errorf("workflow runner: decode takeover snapshot: %w", err)
 	}
-	phases, err := r.app.store.ListWorkItemPhases(itemID)
+	element, err := r.takeoverElement(item, snapshot.Workflow, threadID)
 	if err != nil {
-		return fmt.Errorf("workflow runner: list takeover phases: %w", err)
+		return err
 	}
-	var current store.WorkItemPhase
-	for index := len(phases) - 1; index >= 0; index-- {
-		if phases[index].ThreadID == threadID {
-			current = phases[index]
-			break
-		}
-	}
-	if current.ThreadID == "" {
-		return fmt.Errorf("workflow runner: thread %s is not attached to item %s", threadID, itemID)
-	}
-	var phase def.Phase
-	for _, candidate := range snapshot.Workflow.Phases {
-		if candidate.ID == current.PhaseID {
-			phase = candidate
-			break
-		}
-	}
-	if phase.ID == "" {
-		return fmt.Errorf("workflow runner: phase %s is absent from item %s snapshot", current.PhaseID, itemID)
-	}
-	if _, err := def.EnvelopeSchema(phase); err != nil {
-		return fmt.Errorf("workflow runner: takeover phase schema: %w", err)
+	if _, err := element.contract.Schema(); err != nil {
+		return fmt.Errorf("workflow runner: takeover %s schema: %w", element.description, err)
 	}
 	_, sessionAlive := r.app.sessionManager().get(threadID)
 	r.mu.Lock()
@@ -191,7 +178,7 @@ func (r *workflowAppRunner) registerTakeover(itemID, threadID string) error {
 	r.workItems[threadID] = itemID
 	delete(r.schemas, threadID)
 	r.mu.Unlock()
-	if phase.Provider == string(provider.Claude) && sessionAlive {
+	if element.provider == string(provider.Claude) && sessionAlive {
 		if err := r.app.stopSession(threadID); err != nil {
 			return fmt.Errorf("workflow runner: stop schema-attached takeover session: %w", err)
 		}
@@ -200,6 +187,87 @@ func (r *workflowAppRunner) registerTakeover(itemID, threadID string) error {
 		}
 	}
 	return nil
+}
+
+// takeoverElement resolves the thread to the phase attempt or fan-out unit it
+// belongs to, and refuses one that is not actually under human control.
+//
+// The two shapes are checked against different state because they *are*
+// different state: taking over a phase parks the whole item, while taking over
+// one unit leaves the item running until its siblings rest. Checking the item's
+// state for a unit would refuse exactly the case unit takeover exists for.
+func (r *workflowAppRunner) takeoverElement(
+	item store.WorkItem, workflow def.Workflow, threadID string,
+) (workflowTakeoverElement, error) {
+	phases, err := r.app.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		return workflowTakeoverElement{}, fmt.Errorf("workflow runner: list takeover phases: %w", err)
+	}
+	for index := len(phases) - 1; index >= 0; index-- {
+		if phases[index].ThreadID != threadID {
+			continue
+		}
+		if item.State != string(engine.StateNeedsHuman) || item.Reason != string(engine.ReasonTakenOver) {
+			return workflowTakeoverElement{}, fmt.Errorf(
+				"workflow runner: item %s is %s(%s), want needs-human(taken-over)",
+				item.ID, item.State, item.Reason,
+			)
+		}
+		phase, ok := findWorkflowPhase(workflow, phases[index].PhaseID)
+		if !ok {
+			return workflowTakeoverElement{}, fmt.Errorf(
+				"workflow runner: phase %s is absent from item %s snapshot", phases[index].PhaseID, item.ID,
+			)
+		}
+		return workflowTakeoverElement{
+			description: fmt.Sprintf("phase %q", phase.ID),
+			provider:    phase.Provider, contract: def.PhaseEnvelope(phase),
+		}, nil
+	}
+	row, found, err := r.app.store.GetWorkItemUnitByThread(threadID)
+	if err != nil {
+		return workflowTakeoverElement{}, fmt.Errorf("workflow runner: resolve takeover unit: %w", err)
+	}
+	if !found || row.ItemID != item.ID {
+		return workflowTakeoverElement{}, fmt.Errorf("workflow runner: thread %s is not attached to item %s", threadID, item.ID)
+	}
+	if row.Status != store.WorkItemUnitTakenOver {
+		return workflowTakeoverElement{}, fmt.Errorf(
+			"workflow runner: unit %q of item %s is %s, want %s",
+			row.UnitID, item.ID, row.Status, store.WorkItemUnitTakenOver,
+		)
+	}
+	phase, ok := findWorkflowPhase(workflow, row.PhaseID)
+	if !ok {
+		return workflowTakeoverElement{}, fmt.Errorf(
+			"workflow runner: phase %s is absent from item %s snapshot", row.PhaseID, item.ID,
+		)
+	}
+	unit, ok := def.UnitDefinition(phase, row.UnitID, row.Kind == store.WorkItemUnitKindJoin)
+	if !ok {
+		return workflowTakeoverElement{}, fmt.Errorf(
+			"workflow runner: unit %q is absent from phase %q of item %s snapshot", row.UnitID, row.PhaseID, item.ID,
+		)
+	}
+	element := workflowTakeoverElement{
+		description: fmt.Sprintf("unit %q of phase %q", unit.ID, phase.ID),
+		provider:    unit.Provider, contract: def.UnitEnvelope(unit),
+	}
+	if row.Kind == store.WorkItemUnitKindJoin {
+		// A join answers the phase's contract, so a finalize turn on its thread
+		// has to be held to the phase's schema, not to an empty unit one.
+		element.contract = def.PhaseEnvelope(phase)
+	}
+	return element, nil
+}
+
+func findWorkflowPhase(workflow def.Workflow, phaseID string) (def.Phase, bool) {
+	for _, candidate := range workflow.Phases {
+		if candidate.ID == phaseID {
+			return candidate, true
+		}
+	}
+	return def.Phase{}, false
 }
 
 func (r *workflowAppRunner) beginTakeoverTransition(itemID, threadID string) error {
@@ -224,6 +292,22 @@ func (r *workflowAppRunner) cancelTakeoverTransition(itemID, threadID string) {
 	if ok && takeover.itemID == itemID {
 		takeover.transitioning = false
 		r.takeovers[threadID] = takeover
+	}
+}
+
+// clearTakeoverThread drops one thread's steering registration. Unit recovery
+// uses it: retrying or dropping a taken-over unit ends that thread's role in the
+// run, while the item's other takeovers (a sibling unit, the phase) stay live.
+func (r *workflowAppRunner) clearTakeoverThread(threadID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	takeover, ok := r.takeovers[threadID]
+	if !ok {
+		return
+	}
+	delete(r.takeovers, threadID)
+	if r.workItems[threadID] == takeover.itemID {
+		delete(r.workItems, threadID)
 	}
 }
 

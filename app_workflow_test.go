@@ -658,7 +658,7 @@ func TestWorkflowRunnerRejectsUnsupportedPhasesAndStopsUnknownRuns(t *testing.T)
 	runKey := workflowRunKey(key)
 	unsubscribed := false
 	runner.runs[runKey] = &workflowAttempt{
-		key: key, threadID: "workflow-thread", unsubscribe: func() { unsubscribed = true },
+		workflowCompletion: workflowCompletion{key: key}, threadID: "workflow-thread", unsubscribe: func() { unsubscribed = true },
 	}
 	runner.schemas["workflow-thread"] = json.RawMessage(`{"type":"object"}`)
 	if _, err := runner.Stop(context.Background(), key); err != nil {
