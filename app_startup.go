@@ -18,6 +18,8 @@ import (
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -91,12 +93,11 @@ func (a *App) Start(ctx context.Context) error {
 	// via the `provider:account` event.
 	go a.probeStartupAccountInfo()
 
-	// Start the Claude rate-limit probe loop. Fires once at startup,
-	// then every 2 mins while at least one Claude session is alive;
-	// turn-complete is wired separately in sessionEventHandler. The
-	// probe reads `anthropic-ratelimit-unified-*` response headers from
-	// a minimal Messages API call — see internal/provider/claude/
-	// ratelimits_probe.go for the rationale.
+	// Start the Claude rate-limit probe loop. Startup account adoption runs
+	// the first usage read; this loop refreshes every 2 mins while at least
+	// one Claude session is alive, and turn-complete is wired separately in
+	// sessionEventHandler. The probe reads the dynamic OAuth usage endpoint
+	// with legacy unified headers as a compatibility fallback.
 	a.startClaudeRateLimitProbeLoop()
 
 	// Start the Codex rate-limit probe loop. Startup hydration is already
@@ -178,6 +179,44 @@ func (a *App) initStores() (string, *store.Store, error) {
 		WatchRootsFn: a.git.WatchRoots,
 	})
 	a.settings = settings.NewService(dbDir)
+	a.providerAccounts, err = provideraccounts.NewStore(dbDir)
+	if err != nil {
+		closeErr := st.Close()
+		return "", nil, errors.Join(
+			fmt.Errorf("failed to initialize provider accounts: %w", err),
+			errorsx.WrapLifecycle("close store after provider account initialization failure", closeErr),
+		)
+	}
+	userHome, homeErr := os.UserHomeDir()
+	if homeErr != nil {
+		closeErr := st.Close()
+		return "", nil, errors.Join(
+			fmt.Errorf("failed to locate provider credential home: %w", homeErr),
+			errorsx.WrapLifecycle("close store after provider credential initialization failure", closeErr),
+		)
+	}
+	a.providerCredentials, err = provideraccounts.NewCredentials(userHome)
+	if err != nil {
+		closeErr := st.Close()
+		return "", nil, errors.Join(
+			fmt.Errorf("failed to initialize provider credentials: %w", err),
+			errorsx.WrapLifecycle("close store after provider credential initialization failure", closeErr),
+		)
+	}
+	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+		keep := make(map[string]bool)
+		for _, account := range a.providerAccounts.List(providerName, time.Now()) {
+			keep[account.ID] = true
+		}
+		if err := a.providerCredentials.PruneOrphanedAccounts(providerName, keep); err != nil {
+			closeErr := st.Close()
+			return "", nil, errors.Join(
+				fmt.Errorf("clean orphaned %s account credentials: %w", providerName, err),
+				errorsx.WrapLifecycle("close store after provider credential cleanup failure", closeErr),
+			)
+		}
+	}
+	a.hydratePersistedAccountRateLimits()
 	// Seed the git Core's GitLab self-hosted host snapshot from the
 	// persisted settings before any Status / DetectForge call sees a
 	// stale empty list. The settings service is lazy-loaded on first

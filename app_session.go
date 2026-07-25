@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/triage"
@@ -34,6 +36,7 @@ import (
 // after a session start. Runs in a background goroutine; the user
 // has already seen the session come up.
 const codexReopenReconcileTimeout = 30 * time.Second
+const codexAccountReadTimeout = 8 * time.Second
 
 // StartSession is the Wails-bound entry point for "bring this thread's
 // provider subprocess up." The sendMessage path also calls
@@ -211,6 +214,7 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	}
 
 	a.sessionManager().put(threadID, newSess)
+	a.emitProviderSessionAccount(threadID)
 
 	// Register the freshly-spawned process group with the orphan reaper so
 	// it's torn down if the app dies before the session closes cleanly
@@ -327,6 +331,7 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	if !ok {
 		return nil
 	}
+	a.emitProviderSessionDisconnected(threadID, existing.provider)
 
 	// Thread-scoped design state must be torn down alongside the session
 	// so a restart doesn't leak the prior turn's MCP registration.
@@ -402,6 +407,7 @@ func (a *App) spawnProviderSession(
 	if err != nil {
 		return session{}, err
 	}
+	accountSelection := a.captureProviderAccountSelection(t.Provider)
 
 	switch t.Provider {
 	case string(provider.Claude):
@@ -419,14 +425,17 @@ func (a *App) spawnProviderSession(
 			return session{}, err
 		}
 		return session{
-			provider:   string(provider.Claude),
-			token:      sessionToken,
-			claude:     sess,
-			launchOpts: opts,
-			aoToken:    credential.token,
-			aoScope:    credential.scope,
-			aoEnv:      credential.env,
-			liveness:   liveness,
+			provider:             string(provider.Claude),
+			token:                sessionToken,
+			credentialGeneration: accountSelection.Generation,
+			credentialAccountID:  accountSelection.AccountID,
+			credentialAccount:    accountSelection.Account,
+			claude:               sess,
+			launchOpts:           opts,
+			aoToken:              credential.token,
+			aoScope:              credential.scope,
+			aoEnv:                credential.env,
+			liveness:             liveness,
 		}, nil
 
 	case string(provider.Codex):
@@ -438,6 +447,50 @@ func (a *App) spawnProviderSession(
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			return session{}, err
+		}
+		if accountSelection.AccountID != "" {
+			accountCtx, cancelAccountRead := context.WithTimeout(
+				a.lifeCtx(),
+				codexAccountReadTimeout,
+			)
+			accountInfo, accountErr := sess.AccountInfo(accountCtx)
+			cancelAccountRead()
+			if accountErr == nil {
+				var observedAccountID string
+				var updatedAccount *provideraccounts.Account
+				observedAccountID, updatedAccount, accountErr = a.accountIDForObservedIdentity(
+					string(provider.Codex),
+					accountSelection.AccountID,
+					accountInfo,
+				)
+				if accountErr == nil && updatedAccount != nil {
+					a.emitProviderAccountIfCurrent(
+						string(provider.Codex),
+						*updatedAccount,
+						providerAccountInfo(*updatedAccount),
+					)
+				}
+				if accountErr == nil && observedAccountID != accountSelection.AccountID {
+					accountErr = fmt.Errorf(
+						"codex app-server authenticated as account %q instead of selected account %q",
+						observedAccountID,
+						accountSelection.AccountID,
+					)
+				}
+				if accountErr == nil && a.providerAccounts != nil {
+					if account, ok := a.providerAccounts.Get(
+						string(provider.Codex),
+						accountSelection.AccountID,
+						time.Now(),
+					); ok {
+						accountSelection.Account = providerAccountInfo(account)
+					}
+				}
+			}
+			if accountErr != nil {
+				closeErr := sess.Close()
+				return session{}, errors.Join(accountErr, closeErr)
+			}
 		}
 		// Wire the OAuth-completion observer before any RPC can fly so
 		// the first `mcpServer/oauthLogin/completed` notification has a
@@ -455,14 +508,17 @@ func (a *App) spawnProviderSession(
 			a.handleCodexMCPStartupUpdate(u)
 		})
 		return session{
-			provider:   string(provider.Codex),
-			token:      sessionToken,
-			codex:      sess,
-			launchOpts: opts,
-			aoToken:    credential.token,
-			aoScope:    credential.scope,
-			aoEnv:      credential.env,
-			liveness:   liveness,
+			provider:             string(provider.Codex),
+			token:                sessionToken,
+			credentialGeneration: accountSelection.Generation,
+			credentialAccountID:  accountSelection.AccountID,
+			credentialAccount:    accountSelection.Account,
+			codex:                sess,
+			launchOpts:           opts,
+			aoToken:              credential.token,
+			aoScope:              credential.scope,
+			aoEnv:                credential.env,
+			liveness:             liveness,
 		}, nil
 
 	case string(provider.ClaudeTUI):
@@ -474,7 +530,7 @@ func (a *App) spawnProviderSession(
 		// override map, so the shared rule is applied here instead of inside
 		// the provider package. Skipping this branch would leave one provider
 		// silently without the boot-mode overrides and the ao credential.
-		cfg.Env = provider.EnvironWith(a.sessionProcessEnv(nil, credential))
+		cfg.Env = provider.BuildEnvironment(a.sessionProcessEnv(nil, credential))
 		cfg.EventLogger = a.logger
 		sess, err := claudetui.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
@@ -835,6 +891,7 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 	if !ok {
 		return
 	}
+	a.emitProviderSessionDisconnected(threadID, sess.provider)
 	a.teardownDesignThread(threadID)
 	if a.triage != nil {
 		// Restore before cleanup: the sweep's clearFlushQueueLocked
@@ -887,6 +944,9 @@ func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 		a.triage.CleanupThread(threadID)
 	}
 	err := a.closeProviderSession(threadID, sess)
+	if sess.provider != "" {
+		a.emitProviderSessionDisconnected(threadID, sess.provider)
+	}
 	// After the provider process is closed no flush tick can re-register
 	// seeder state; a thread killed mid-stream would otherwise strand
 	// its entries (no final tick ever arrives to clear them).

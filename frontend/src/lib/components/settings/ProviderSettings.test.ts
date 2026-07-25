@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { render, fireEvent } from "@testing-library/svelte";
+import { render, fireEvent, waitFor } from "@testing-library/svelte";
 import ProviderSettings from "./ProviderSettings.svelte";
 import { loadSettings } from "../../stores/settings.svelte";
 import { getToasts } from "../../stores/toast.svelte";
@@ -22,6 +22,7 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   });
   setBindingMock("GetProviderStatuses", async () => []);
   setBindingMock("GetModelsForProvider", async () => []);
+  setBindingMock("ListProviderAccounts", async () => []);
   await loadSettings();
   return merged;
 }
@@ -91,6 +92,130 @@ describe("<ProviderSettings> — model visibility toggles", () => {
     expect(
       getToasts().some((toast) => toast.message.includes("At least one model must stay visible")),
     ).toBe(true);
+  });
+});
+
+describe("<ProviderSettings> — provider accounts", () => {
+  it("renders dynamic account-scoped usage buckets", async () => {
+    await seed();
+    setBindingMock("ListProviderAccounts", async () => [{
+      id: "codex-secondary",
+      provider: "codex",
+      email: "second@example.com",
+      subscriptionType: "pro",
+      addedAt: 1,
+      lastUsedAt: 2,
+      active: true,
+      rateLimits: {
+        provider: "codex",
+        accountId: "codex-secondary",
+        updatedAt: 3,
+        limits: [
+          {
+            limitId: "spark",
+            limitName: "GPT-5.3-Codex-Spark",
+            usedPercent: 46,
+            windowMins: 300,
+            resetsAt: Math.floor(Date.now() / 1000) + 3600,
+          },
+        ],
+      },
+    }]);
+
+    const { findByTestId, findByText } = render(ProviderSettings);
+    expect(await findByTestId("provider-account-codex-secondary")).toBeTruthy();
+    expect(await findByText("second@example.com")).toBeTruthy();
+    expect(await findByText("GPT-5.3-Codex-Spark · 5h")).toBeTruthy();
+    expect(await findByText("46%")).toBeTruthy();
+  });
+
+  it("states clearly that a failed switch did not happen", async () => {
+    await seed();
+    setBindingMock("ListProviderAccounts", async () => [{
+      id: "claude-secondary",
+      provider: "claude",
+      email: "second@example.com",
+      addedAt: 1,
+      lastUsedAt: 2,
+      active: false,
+    }]);
+    setBindingMock("SwitchProviderAccount", async () => {
+      throw new Error("credential file is unavailable");
+    });
+
+    const { findByRole } = render(ProviderSettings);
+    await fireEvent.click(await findByRole("button", { name: "Switch to second@example.com" }));
+
+    expect(
+      getToasts().some((toast) => toast.message.includes("Claude account did not switch")),
+    ).toBe(true);
+  });
+
+  it("removes the active account and shows that the next saved account becomes active", async () => {
+    await seed();
+    let accounts = [
+      {
+        id: "claude-active",
+        provider: "claude",
+        email: "active@example.com",
+        addedAt: 2,
+        lastUsedAt: 2,
+        active: true,
+      },
+      {
+        id: "claude-next",
+        provider: "claude",
+        email: "next@example.com",
+        addedAt: 1,
+        lastUsedAt: 1,
+        active: false,
+      },
+    ];
+    setBindingMock("ListProviderAccounts", async () => accounts);
+    setBindingMock("RemoveProviderAccount", async () => {
+      accounts = [{ ...accounts[1], active: true }];
+    });
+
+    const { findByRole, findByText } = render(ProviderSettings);
+    await fireEvent.click(await findByRole("button", { name: "Remove active@example.com" }));
+    expect(await findByText(/next saved Claude account will become active/i)).toBeTruthy();
+    await fireEvent.click(await findByRole("button", { name: "Remove" }));
+
+    await waitFor(() => {
+      expect(getBindingMock("RemoveProviderAccount")?.mock.calls[0]).toEqual([
+        "claude",
+        "claude-active",
+      ]);
+    });
+    expect(await findByRole("button", { name: "next@example.com is active" })).toBeTruthy();
+  });
+
+  it("allows removing the final saved account with an explicit sign-out confirmation", async () => {
+    await seed();
+    let accounts = [{
+      id: "codex-only",
+      provider: "codex",
+      email: "only@example.com",
+      addedAt: 1,
+      lastUsedAt: 1,
+      active: true,
+    }];
+    setBindingMock("ListProviderAccounts", async () => accounts);
+    setBindingMock("RemoveProviderAccount", async () => {
+      accounts = [];
+    });
+
+    const { findByRole, findByText } = render(ProviderSettings);
+    await fireEvent.click(await findByRole("button", { name: "Remove only@example.com" }));
+    expect(await findByText(/sign out of Codex/i)).toBeTruthy();
+    await fireEvent.click(await findByRole("button", { name: "Remove" }));
+
+    await waitFor(() => {
+      expect(getBindingMock("RemoveProviderAccount")?.mock.calls[0]).toEqual([
+        "codex",
+        "codex-only",
+      ]);
+    });
   });
 });
 

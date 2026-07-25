@@ -40,6 +40,9 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// — via the HTTP MCP server registered through --mcp-config.
 		// No event-side dispatch is required.
 
+		if evt.Kind == provider.EventRateLimits {
+			evt = a.attributeSessionRateLimits(evt, threadID, sessionToken)
+		}
 		a.recordSessionActivity(threadID, sessionToken, evt.Kind, evt.Content)
 
 		// EventInit carries Claude's `system/init.mcp_servers` array
@@ -119,6 +122,28 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			}
 		}
 	}
+}
+
+func (a *App) attributeSessionRateLimits(
+	evt provider.ProviderEvent,
+	threadID, sessionToken string,
+) provider.ProviderEvent {
+	sess, ok := a.sessionManager().get(threadID)
+	if !ok || sess.token != sessionToken || sess.credentialAccountID == "" || len(evt.Meta) == 0 {
+		return evt
+	}
+	var snapshot provider.RateLimitsSnapshot
+	if err := json.Unmarshal(evt.Meta, &snapshot); err != nil || snapshot.AccountID != "" {
+		return evt
+	}
+	snapshot.AccountID = sess.credentialAccountID
+	meta, err := json.Marshal(snapshot)
+	if err != nil {
+		log.Printf("provider events: attribute rate limits for thread %s: %v", threadID, err)
+		return evt
+	}
+	evt.Meta = meta
+	return evt
 }
 
 // attemptAutoReconnect is the recovery hook fired after the read loop
@@ -268,10 +293,15 @@ func (a *App) ingestClaudeInitMCPStatus(meta json.RawMessage) {
 }
 
 func (a *App) unregisterSession(threadID, sessionToken string) {
+	current, exists := a.sessionManager().get(threadID)
+	if !exists || current.token != sessionToken {
+		return
+	}
 	removed, ok := a.sessionManager().unregister(threadID, sessionToken)
 	if !ok {
 		return
 	}
+	a.emitProviderSessionDisconnected(threadID, removed.provider)
 
 	// Self-exit teardown bypasses closeProviderSession (the subprocess is
 	// already dead — see attemptAutoReconnect), so release its group from

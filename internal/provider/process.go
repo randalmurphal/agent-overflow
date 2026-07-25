@@ -66,6 +66,7 @@ type SpawnConfig struct {
 	Args             []string
 	Dir              string
 	Env              map[string]string
+	UnsetEnv         []string
 	EventLogger      *logging.Logger
 	EventLogRedactor EventLogRedactor
 	ThreadID         string
@@ -76,28 +77,6 @@ type SpawnConfig struct {
 // written to the optional raw provider-event log. Returning nil skips that
 // log entry.
 type EventLogRedactor func(direction string, data []byte) []byte
-
-// EnvironWith returns this process's environment with overrides applied, in the
-// form exec.Cmd.Env wants. PATH is additive (the override is prepended to the
-// inherited value) rather than replacing it, because an override exists to add
-// a lookup location, never to hide the user's own toolchain.
-//
-// Exported so the providers whose Config carries a full []string environment
-// (claudetui, which launches a real TUI) apply the same rule as the ones whose
-// Config carries an override map. Two different env rules across providers is
-// exactly how an injected variable goes missing on one of them.
-func EnvironWith(overrides map[string]string) []string {
-	env := os.Environ()
-	for k, v := range overrides {
-		if strings.ToUpper(k) == "PATH" {
-			if existing := os.Getenv("PATH"); existing != "" {
-				v = v + string(os.PathListSeparator) + existing
-			}
-		}
-		env = append(env, k+"="+v)
-	}
-	return env
-}
 
 // Spawn starts a subprocess with stdin/stdout pipes and process group isolation.
 // The context is associated with the command — canceling it will kill the process.
@@ -111,7 +90,7 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	// children on Windows (the WSL-side Linux backend does).
 	applySysProcAttr(cmd)
 
-	cmd.Env = EnvironWith(cfg.Env)
+	cmd.Env = BuildEnvironment(cfg.Env, cfg.UnsetEnv...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -211,6 +190,64 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 	}()
 
 	return p, nil
+}
+
+// BuildEnvironment returns the current process environment with the requested
+// variables removed and explicit overrides applied. PATH overrides are
+// additive so provider-specific binary directories do not hide the user's
+// normal command search path.
+//
+// This is the ONE env rule every provider process gets, and it is exported for
+// that reason: providers whose Config carries an override map reach it through
+// Spawn, and the ones whose Config carries a full []string environment
+// (claudetui, which launches a real TUI) call it directly. Two different env
+// rules across providers is exactly how an injected variable goes missing on
+// one of them — which is why an override also *replaces* the inherited value
+// rather than being appended after it. Appending happens to work under
+// exec.Cmd's last-wins rule and does not under every consumer of a []string
+// environment, so the duplicate never gets to exist.
+func BuildEnvironment(overrides map[string]string, unset ...string) []string {
+	removed := make([]string, 0, len(unset)+len(overrides))
+	removed = append(removed, unset...)
+	for key := range overrides {
+		removed = append(removed, key)
+	}
+	env := FilterEnvironment(nil, removed...)
+	for key, value := range overrides {
+		if strings.EqualFold(key, "PATH") {
+			if existing := os.Getenv("PATH"); existing != "" {
+				value += string(os.PathListSeparator) + existing
+			}
+		}
+		env = append(env, key+"="+value)
+	}
+	return env
+}
+
+// FilterEnvironment removes named variables from env. An empty env means
+// inherit the current process environment, matching exec.Cmd's default and the
+// previous fetcher behavior. Matching is case-insensitive so this helper is
+// also safe for Windows-style environments.
+func FilterEnvironment(env []string, unset ...string) []string {
+	if len(env) == 0 {
+		env = os.Environ()
+	}
+	if len(unset) == 0 {
+		return append([]string(nil), env...)
+	}
+	removed := make(map[string]struct{}, len(unset))
+	for _, key := range unset {
+		removed[strings.ToUpper(strings.TrimSpace(key))] = struct{}{}
+	}
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, found := strings.Cut(entry, "=")
+		if _, shouldRemove := removed[strings.ToUpper(key)]; found && shouldRemove {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 // WriteLine writes a line to stdin (appends newline).

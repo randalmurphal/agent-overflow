@@ -703,12 +703,6 @@ export function createUseStickToBottomController(
       pauseDepth,
     }));
     writeScrollTop(decision.write.caller, decision.write.value);
-    // The compensation moved the whole scroll range (scrollHeight and
-    // the written offset shifted together): translate the spring's
-    // growth-rate feedforward frame so the shift doesn't read as
-    // content delivery (a +290px background-completion patch would
-    // otherwise spike the rate EMA and burst the drain follow).
-    spring.noteExternalTargetShift(compensation.delta);
     return true;
   }
 

@@ -848,10 +848,11 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	if err := a.ensureClaudeContextReadyForUserSendLocked(thread); err != nil {
 		return QueueFlushedItem{}, false, requeue, err
 	}
-	sess, ok := a.sessionManager().get(threadID)
-	if !ok {
-		return QueueFlushedItem{}, false, requeue, fmt.Errorf("no active session for thread %s", threadID)
+	sess, unlockAccount, err := a.lockProviderAccountForSendLocked(thread)
+	if err != nil {
+		return QueueFlushedItem{}, false, requeue, err
 	}
+	defer unlockAccount()
 
 	responseTurnIndex, activeAtResolution, err := a.resolveFlushTurnPlacement(threadID, sess)
 	if err != nil {

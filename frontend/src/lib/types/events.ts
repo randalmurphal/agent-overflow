@@ -201,12 +201,13 @@ export type ItemStreamEvent =
  */
 export interface RateLimitsSnapshot {
   provider: string;
+  accountId?: string;
   limits: RateLimitEntry[];
   updatedAt: number;
 }
 
 export interface UsageEvent {
-  action: 'usage' | 'reset' | 'rate_limits';
+  action: 'usage' | 'reset' | 'rate_limits' | 'rate_limits_removed';
   threadId: string;
   usedTokens?: number;
   maxTokens?: number;
@@ -294,11 +295,28 @@ export interface ProviderStatusEvent {
  */
 export interface ProviderAccountEvent {
   provider: ProviderID;
+  accountId?: string;
+  generation?: number;
+  cleared?: boolean;
   account: {
+    email?: string;
+    displayName?: string;
     subscriptionType?: string;
     tokenSource?: string;
     apiProvider?: string;
   };
+}
+
+/** Account currently attached to one live provider process/thread. */
+export interface ProviderSessionAccountEvent extends ProviderAccountEvent {
+  threadId: string;
+  connected: boolean;
+}
+
+export interface ProviderAccountUsageErrorEvent {
+  provider: ProviderID;
+  accountId: string;
+  message?: string;
 }
 
 export interface RateLimitEntry {

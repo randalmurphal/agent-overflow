@@ -15,6 +15,7 @@ import (
 type ProbeConfig struct {
 	Binary  string // default: "claude"
 	WorkDir string
+	Env     map[string]string
 	Timeout time.Duration // default: 8s
 }
 
@@ -59,9 +60,11 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 	defer cancel()
 
 	proc, err := provider.Spawn(probeCtx, provider.SpawnConfig{
-		Binary: binary,
-		Args:   buildProbeArgs(),
-		Dir:    cfg.WorkDir,
+		Binary:   binary,
+		Args:     buildProbeArgs(),
+		Dir:      cfg.WorkDir,
+		Env:      cfg.Env,
+		UnsetEnv: []string{"CLAUDE_CONFIG_DIR"},
 	})
 	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("claude: probe spawn: %w", err)
@@ -202,6 +205,7 @@ func extractAccountInfoFromInitResponse(payload json.RawMessage) provider.Accoun
 	}
 	var inner struct {
 		Account struct {
+			Email            string `json:"email"`
 			SubscriptionType string `json:"subscriptionType"`
 			TokenSource      string `json:"tokenSource"`
 			APIProvider      string `json:"apiProvider"`
@@ -211,6 +215,7 @@ func extractAccountInfoFromInitResponse(payload json.RawMessage) provider.Accoun
 		return provider.AccountInfo{}
 	}
 	return provider.AccountInfo{
+		Email:            inner.Account.Email,
 		SubscriptionType: inner.Account.SubscriptionType,
 		TokenSource:      inner.Account.TokenSource,
 		APIProvider:      inner.Account.APIProvider,

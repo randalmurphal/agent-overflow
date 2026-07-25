@@ -40,13 +40,14 @@ func rollbackToMessage(app *App, threadID, userItemID string) error {
 		return err
 	}
 	anchor := app.resolveMessageAnchor("test rollback", threadID, item)
-	return app.rollbackConversationLocked(rollbackConversationLockedArgs{
+	_, err = app.rollbackConversationLocked(rollbackConversationLockedArgs{
 		thread:      thread,
 		userItem:    item,
 		anchor:      anchor,
 		promptDraft: promptDraft,
 		errorPrefix: "test rollback",
 	})
+	return err
 }
 
 func TestConversationRollbackDeletesSelectedPromptAndRestoresDraft(t *testing.T) {

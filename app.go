@@ -30,6 +30,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -146,6 +147,28 @@ type App struct {
 	telemetry        *obsotel.Provider
 	replay           *replay.Manager
 	configDir        string
+	// providerAccounts persists account labels, the active selection, and
+	// last-known quota snapshots. providerCredentials keeps credential bytes
+	// in provider-native homes and treats them as opaque. Both are initialized
+	// with the store in ServiceStartup; tests that do not exercise accounts may
+	// leave them nil.
+	providerAccounts    *provideraccounts.Store
+	providerCredentials *provideraccounts.Credentials
+	// providerAccountMu serializes login and activation so two settings
+	// clients cannot interleave active-credential snapshots and overwrite a
+	// freshly selected account.
+	providerAccountMu sync.RWMutex
+	// providerCredentialFingerprints tracks the provider-native active
+	// credential value last reconciled with providerAccounts. Digests are
+	// process-local only: they are never persisted, emitted, or logged. A
+	// changed digest is the cheap trigger for the zero-token identity probe
+	// that recognizes logins completed in another Claude/Codex process.
+	providerCredentialFingerprints map[string][32]byte
+	// Provider-specific reconciliation locks coalesce concurrent sends and
+	// polling ticks after one native credential change. They stay separate so
+	// a slow Claude identity probe never delays an unrelated Codex send.
+	claudeCredentialReconcileMu sync.Mutex
+	codexCredentialReconcileMu  sync.Mutex
 	// uiTracer is the dev-only JSONL render-trace appender. It's lazily
 	// constructed from configDir the first time AppendUIRenderTraceBatch
 	// runs so tests that build a bare App{configDir: t.TempDir()} stay
@@ -182,7 +205,9 @@ type App struct {
 	// event bus is only a bounded replay buffer and a first connection has no
 	// prior channel sequence to request, so event-only ownership could leave
 	// the 5h/7d rings blank even after a successful startup probe.
-	rateLimitsMu         sync.RWMutex
+	rateLimitsMu sync.RWMutex
+	// Keys are provider + account ID. The empty account ID is retained for
+	// unmanaged/legacy sessions.
 	rateLimitsByProvider map[string]provider.RateLimitsSnapshot
 	// transportServer is the Phase C HTTP+WS transport. Set by main.go
 	// via SetTransportServer before app.Run() so Shutdown can drain
@@ -491,6 +516,18 @@ type App struct {
 type session struct {
 	provider string
 	token    string
+	// credentialGeneration is the provider account generation this process
+	// started against. Claude can adopt a new generation without restart;
+	// Codex is safely reconnected before the next send.
+	credentialGeneration uint64
+	// credentialAccountID attributes provider-pushed quota events to the
+	// account that authenticated this process. This matters after a wholesale
+	// switch while older Codex turns are still finishing.
+	credentialAccountID string
+	// credentialAccount retains the verified, non-secret identity attached at
+	// process start so a removed-but-still-running Codex session remains
+	// attributable after its provider-wide metadata card is deleted.
+	credentialAccount provider.AccountInfo
 	// Exactly one of these is non-nil.
 	claude    *claude.Session
 	codex     *codex.Session
@@ -575,17 +612,18 @@ func (s session) providerSession() provider.Session {
 
 func NewApp() *App {
 	app := &App{
-		sessions:               make(map[string]session),
-		aoTokens:               make(map[string]transport.CallerScope),
-		threadActionLocks:      newKeyedLocks(),
-		startingSessions:       make(map[string]*sessionStart),
-		reconnectingThreads:    make(map[string]bool),
-		autoReconnectAttempted: make(map[string]bool),
-		turnObservers:          make(map[string]map[uint64]turnObserver),
-		threadSystemPrompts:    make(map[string]string),
-		deliberations:          make(map[string]*discussion.Deliberation),
-		gitWatchPumps:          make(map[string]*gitWatchPump),
-		prUpdatePumps:          make(map[string]*prUpdatePump),
+		sessions:                       make(map[string]session),
+		aoTokens:                       make(map[string]transport.CallerScope),
+		threadActionLocks:              newKeyedLocks(),
+		startingSessions:               make(map[string]*sessionStart),
+		reconnectingThreads:            make(map[string]bool),
+		autoReconnectAttempted:         make(map[string]bool),
+		turnObservers:                  make(map[string]map[uint64]turnObserver),
+		threadSystemPrompts:            make(map[string]string),
+		deliberations:                  make(map[string]*discussion.Deliberation),
+		gitWatchPumps:                  make(map[string]*gitWatchPump),
+		prUpdatePumps:                  make(map[string]*prUpdatePump),
+		providerCredentialFingerprints: make(map[string][32]byte),
 	}
 	app.installDiscussionTurnObserver()
 	return app

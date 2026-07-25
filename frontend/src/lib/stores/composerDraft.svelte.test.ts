@@ -124,7 +124,9 @@ describe('composerDraft store', () => {
     };
 
     store.applyOptimisticRestoredDraft('thread-1', snapshot);
-    store.clearOptimisticRestoredDraft('thread-1', snapshot);
+    // true = cleared to the empty baseline; the caller may safely
+    // repaint the pre-revert draft (the revert-to-message failure path).
+    expect(store.clearOptimisticRestoredDraft('thread-1', snapshot)).toBe(true);
 
     expect(store.content).toBe('');
     expect(store.attachments).toEqual([]);
@@ -165,7 +167,9 @@ describe('composerDraft store', () => {
 
     store.applyOptimisticRestoredDraft('thread-1', snapshot);
     store.setContent('edited prompt');
-    store.clearOptimisticRestoredDraft('thread-1', snapshot);
+    // false = the user's newer edits were preserved; repainting the
+    // pre-revert draft over them would clobber their typing.
+    expect(store.clearOptimisticRestoredDraft('thread-1', snapshot)).toBe(false);
 
     expect(store.content).toBe('edited prompt');
     await store.flushPending();

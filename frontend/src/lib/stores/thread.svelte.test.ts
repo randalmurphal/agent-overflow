@@ -2077,6 +2077,49 @@ describe('createThreadPane', () => {
     expect(pane.activeModel).toBe('claude-opus-4-8');
   });
 
+  it('does not let delayed live-state hydration overwrite a newer session account event', async () => {
+    const pane = createThreadPane();
+    let releaseSnapshot!: (value: unknown) => void;
+    setBindingMock(
+      'GetThreadLiveState',
+      () =>
+        new Promise((resolve) => {
+          releaseSnapshot = resolve;
+        }),
+    );
+
+    const switching = pane.switchThread(makeThread({
+      id: 'thread-account-race',
+      provider: 'codex',
+    }));
+    await Promise.resolve();
+    pane.setProviderSessionAccount({
+      threadId: 'thread-account-race',
+      provider: 'codex',
+      accountId: 'new-account',
+      account: { email: 'new@example.com' },
+      connected: true,
+    });
+    releaseSnapshot({
+      threadId: 'thread-account-race',
+      providerAccount: {
+        threadId: 'thread-account-race',
+        provider: 'codex',
+        accountId: 'old-account',
+        account: { email: 'old@example.com' },
+        connected: true,
+      },
+      activeTurn: null,
+      queueItems: [],
+      interactive: { approvals: [], userInputs: [] },
+      todo: null,
+    });
+    await switching;
+
+    expect(pane.providerSessionAccount?.accountId).toBe('new-account');
+    expect(pane.providerSessionAccount?.account.email).toBe('new@example.com');
+  });
+
   it('does not let an older live-state hydration apply after a newer one completed', async () => {
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-hydration-order' }));
@@ -8277,5 +8320,55 @@ describe('size-priors eviction on item mutation', () => {
     setThreadSizePriors('t', { ...seedEntry });
     await pane.switchThread(makeThread({ id: 't' }));
     expect(peekThreadSizePriorsForTest('t')).toBeUndefined();
+  });
+});
+
+describe('removeRevertedItems', () => {
+  // Mirrors the `user_message:reverted` contract: turns after the anchor
+  // turn always go; within the anchor turn only the event's kept-set
+  // survives. See eventsMessageRevert.ts and DeleteConversationFromItem.
+  const revertItems = (threadId: string) => [
+    makeItem({ id: 'u0', threadId, turnIndex: 0, itemIndex: 0, kind: 'user_text', role: 'user' }),
+    makeItem({ id: 'a0', threadId, turnIndex: 0, itemIndex: 1 }),
+    makeItem({ id: 'prompt', threadId, turnIndex: 1, itemIndex: 0, kind: 'user_text', role: 'user' }),
+    makeItem({ id: 'pre', threadId, turnIndex: 1, itemIndex: 1 }),
+    makeItem({ id: 'anchor', threadId, turnIndex: 1, itemIndex: 2, kind: 'user_text', role: 'user' }),
+    makeItem({ id: 'tail', threadId, turnIndex: 1, itemIndex: 3 }),
+    makeItem({ id: 'u2', threadId, turnIndex: 2, itemIndex: 0, kind: 'user_text', role: 'user' }),
+  ];
+
+  it('degenerates to whole-turn removal when the kept-set is empty', async () => {
+    const pane = await buildPane(makeThread({ id: 't-rr-empty' }), revertItems('t-rr-empty'));
+    const removed = pane.removeRevertedItems(1, []);
+    expect(removed.map((it) => it.id)).toEqual(['prompt', 'pre', 'anchor', 'tail', 'u2']);
+    expect(pane.items.map((it) => it.id)).toEqual(['u0', 'a0']);
+  });
+
+  it('keeps exactly the listed anchor-turn survivors and drops later turns', async () => {
+    const pane = await buildPane(makeThread({ id: 't-rr-kept' }), revertItems('t-rr-kept'));
+    // Non-contiguous kept-set — the promoted-anchor shape: prompt + the
+    // interrupted tail survive, the anchor between them goes.
+    const removed = pane.removeRevertedItems(1, ['prompt', 'pre', 'tail']);
+    expect(removed.map((it) => it.id)).toEqual(['anchor', 'u2']);
+    expect(pane.items.map((it) => it.id)).toEqual(['u0', 'a0', 'prompt', 'pre', 'tail']);
+  });
+
+  it('removes pane-only anchor-turn rows absent from the kept-set', async () => {
+    // A streamed row the backend never persisted (e.g. an in-flight
+    // thinking block) cannot appear in any backend enumeration; the
+    // kept-set formulation still removes it.
+    const pane = await buildPane(makeThread({ id: 't-rr-ephemeral' }), [
+      ...revertItems('t-rr-ephemeral'),
+      makeItem({ id: 'ephemeral', threadId: 't-rr-ephemeral', turnIndex: 1, itemIndex: 4, kind: 'thinking' }),
+    ]);
+    const removed = pane.removeRevertedItems(1, ['prompt', 'pre']);
+    expect(removed.map((it) => it.id)).toEqual(['anchor', 'tail', 'ephemeral', 'u2']);
+    expect(pane.items.map((it) => it.id)).toEqual(['u0', 'a0', 'prompt', 'pre']);
+  });
+
+  it('is idempotent: a second application removes nothing', async () => {
+    const pane = await buildPane(makeThread({ id: 't-rr-idem' }), revertItems('t-rr-idem'));
+    pane.removeRevertedItems(1, ['prompt']);
+    expect(pane.removeRevertedItems(1, ['prompt'])).toEqual([]);
   });
 });

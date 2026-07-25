@@ -150,6 +150,11 @@ export const GetPayloadData = dispatch('GetPayloadData');
 export const ListItems = dispatch('ListItems');
 export const ListPayloadMetas = dispatch('ListPayloadMetas');
 export const GetRateLimitsSnapshots = dispatch('GetRateLimitsSnapshots');
+export const ListProviderAccounts = dispatch('ListProviderAccounts');
+export const LoginProviderAccount = dispatch('LoginProviderAccount');
+export const SwitchProviderAccount = dispatch('SwitchProviderAccount');
+export const RemoveProviderAccount = dispatch('RemoveProviderAccount');
+export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage');
 
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
@@ -403,6 +408,7 @@ export const HighlightCode = dispatch('HighlightCode');
 export const HighlightPatch = dispatch('HighlightPatch');
 export const HighlightPatchWithContext = dispatch('HighlightPatchWithContext');
 export const ForkThreadFromMessage = dispatch('ForkThreadFromMessage');
+export const RevertConversationToMessage = dispatch('RevertConversationToMessage');
 
 // Thread runtime mode
 export const GetThreadRuntimeMode = dispatch('GetThreadRuntimeMode');

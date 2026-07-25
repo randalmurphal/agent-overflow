@@ -298,6 +298,9 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	if err := a.ensureClaudeContextReadyForUserSendLocked(thread); err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
+	if err := a.ensureProviderAccountReadyForSendLocked(thread); err != nil {
+		return store.Item{}, fmt.Errorf("send message: %w", err)
+	}
 	hasPriorItems, err := a.store.HasItems(threadID)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: check prior items: %w", err)
@@ -364,6 +367,16 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 			return store.Item{}, fmt.Errorf("send message: %w", err)
 		}
 	}
+	// A cold session can finish starting while the user switches accounts in
+	// Settings. Its immutable credential snapshot is intentionally allowed to
+	// finish, but it must be rechecked before this first turn is dispatched.
+	sess, unlockAccount, accountErr := a.lockProviderAccountForSendLocked(thread)
+	if accountErr != nil {
+		err = accountErr
+		a.recordSendFailureAndCompleteTurn(threadID, turnIndex, err)
+		return store.Item{}, fmt.Errorf("send message: %w", err)
+	}
+	defer unlockAccount()
 
 	// Register the pending-send marker BEFORE sendToProvider writes to
 	// stdin. The wire-init from Claude (or wire turn/started from Codex)

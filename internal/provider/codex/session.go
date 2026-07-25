@@ -277,9 +277,10 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 
 	proc, err := provider.Spawn(childCtx, provider.SpawnConfig{
 		Binary:           binary,
-		Args:             []string{"app-server"},
+		Args:             codexAppServerArgs(),
 		Dir:              cfg.WorkDir,
 		Env:              cfg.Env,
+		UnsetEnv:         []string{"CODEX_HOME"},
 		EventLogger:      cfg.EventLogger,
 		EventLogRedactor: newCodexProviderEventLogRedactor(),
 		ThreadID:         threadID,

@@ -643,8 +643,8 @@ func TestClassifyRateLimitsUpdated(t *testing.T) {
 	if snapshot.UpdatedAt == 0 {
 		t.Fatal("expected UpdatedAt to be populated")
 	}
-	if len(snapshot.Limits) != 2 {
-		t.Fatalf("limits len: got %d, want 2 (codex primary + secondary; spark dropped, top-level fallback skipped)", len(snapshot.Limits))
+	if len(snapshot.Limits) != 4 {
+		t.Fatalf("limits len: got %d, want 4 (codex and spark primary + secondary)", len(snapshot.Limits))
 	}
 	if snapshot.Limits[0].LimitID != "codex" || snapshot.Limits[0].WindowMins != 300 {
 		t.Errorf("limits[0]: got %+v", snapshot.Limits[0])
@@ -657,6 +657,12 @@ func TestClassifyRateLimitsUpdated(t *testing.T) {
 	}
 	if snapshot.Limits[1].UsedPercent != 91 {
 		t.Errorf("limits[1].UsedPercent: got %v, want 91 (codex bucket value, NOT spark's 22 nor top-level's 2)", snapshot.Limits[1].UsedPercent)
+	}
+	if snapshot.Limits[2].LimitID != "spark" || snapshot.Limits[2].UsedPercent != 46 {
+		t.Errorf("limits[2]: got %+v, want spark primary at 46", snapshot.Limits[2])
+	}
+	if snapshot.Limits[3].LimitID != "spark" || snapshot.Limits[3].UsedPercent != 22 {
+		t.Errorf("limits[3]: got %+v, want spark secondary at 22", snapshot.Limits[3])
 	}
 }
 
@@ -731,11 +737,10 @@ func TestClassifyRateLimitsDefaultsMissingLimitId(t *testing.T) {
 	}
 }
 
-// A standalone notification for a non-canonical bucket (e.g. `spark`)
-// must not leak into the rate-limit snapshot. The frontend store keys
-// by (provider, windowMins) only and would let spark overwrite codex
-// at the same window slot.
-func TestClassifyRateLimitsFiltersNonCodexBucket(t *testing.T) {
+// A standalone notification for an additional bucket must stay available.
+// The frontend keys by account, limit ID, and window, so it cannot overwrite
+// the provider's default allowance.
+func TestClassifyRateLimitsRetainsDynamicBucket(t *testing.T) {
 	params := json.RawMessage(`{
 		"rateLimits": {
 			"limitId": "spark",
@@ -748,15 +753,17 @@ func TestClassifyRateLimitsFiltersNonCodexBucket(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	// extractCodexRateLimitEntries returns empty, so
-	// buildRateLimitsSnapshot reports ok=false and normalizeRateLimitsMeta
-	// falls back to the raw params (no normalized snapshot). The event
-	// still fires, but the Meta must NOT decode to a populated
-	// RateLimitsSnapshot — otherwise the triage router would emit it
-	// onto provider:usage and poison the store.
 	var snapshot provider.RateLimitsSnapshot
-	if err := json.Unmarshal(events[0].Meta, &snapshot); err == nil && len(snapshot.Limits) > 0 {
-		t.Fatalf("non-canonical bucket leaked into snapshot: %+v", snapshot)
+	if err := json.Unmarshal(events[0].Meta, &snapshot); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if len(snapshot.Limits) != 2 {
+		t.Fatalf("limits len: got %d, want 2", len(snapshot.Limits))
+	}
+	for _, limit := range snapshot.Limits {
+		if limit.LimitID != "spark" || limit.LimitName != "GPT-5.3-Codex-Spark" {
+			t.Errorf("dynamic bucket: got %+v", limit)
+		}
 	}
 }
 

@@ -265,8 +265,8 @@ func TestSessionProcessEnvPrecedence(t *testing.T) {
 }
 
 // The provider env helper is shared, so pin that it merges rather than replaces.
-func TestEnvironWithMergesOverrides(t *testing.T) {
-	env := provider.EnvironWith(map[string]string{"AO_TEST_ONLY": "1"})
+func TestBuildEnvironmentMergesOverrides(t *testing.T) {
+	env := provider.BuildEnvironment(map[string]string{"AO_TEST_ONLY": "1"})
 	var found bool
 	for _, entry := range env {
 		if entry == "AO_TEST_ONLY=1" {
@@ -274,9 +274,9 @@ func TestEnvironWithMergesOverrides(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("EnvironWith() dropped the override")
+		t.Fatal("BuildEnvironment() dropped the override")
 	}
 	if len(env) <= 1 {
-		t.Fatal("EnvironWith() replaced the process environment instead of extending it")
+		t.Fatal("BuildEnvironment() replaced the process environment instead of extending it")
 	}
 }

@@ -11,6 +11,7 @@ export {
   DeleteThread,
   ForkThread,
   ForkThreadFromMessage,
+  RevertConversationToMessage,
   GetThread,
   ListArchivedThreads,
   ListThreads,
@@ -66,6 +67,11 @@ export {
   // claude-tui — see internal/usagecost).
   GetUsageStats,
   GetRateLimitsSnapshots,
+  ListProviderAccounts,
+  LoginProviderAccount,
+  SwitchProviderAccount,
+  RemoveProviderAccount,
+  RefreshProviderAccountUsage,
 
   // Per-client UI view state (ui_state table) behind stores/appStorage.ts.
   GetUIState,
@@ -386,6 +392,7 @@ export {
   RemoteEndpoint,
 } from '../../../bindings/agent-overflow/internal/settings/models.js';
 export {
+  ManagedProviderAccount,
   ContextSettingsProfile,
   EditorInfo,
   GeneratedCommitMessage,

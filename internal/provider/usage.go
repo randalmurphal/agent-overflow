@@ -51,6 +51,8 @@ type MCPServer struct {
 // Empty SubscriptionType + empty TokenSource are the unauthenticated
 // signal; consumers branch on that.
 type AccountInfo struct {
+	Email            string `json:"email,omitempty"`
+	DisplayName      string `json:"displayName,omitempty"`
 	SubscriptionType string `json:"subscriptionType,omitempty"`
 	TokenSource      string `json:"tokenSource,omitempty"`
 	APIProvider      string `json:"apiProvider,omitempty"`
@@ -187,6 +189,7 @@ type RateLimitEntry struct {
 // RateLimitsSnapshot is a point-in-time view of all rate limits.
 type RateLimitsSnapshot struct {
 	Provider  string           `json:"provider"`
+	AccountID string           `json:"accountId,omitempty"`
 	Limits    []RateLimitEntry `json:"limits"`
 	UpdatedAt int64            `json:"updatedAt"`
 }

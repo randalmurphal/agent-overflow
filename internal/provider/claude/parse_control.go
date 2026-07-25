@@ -129,10 +129,10 @@ func parseAskUserQuestions(input json.RawMessage) []provider.UserInputQuestion {
 // Claude only emits `utilization` once you cross the warning band — the
 // "allowed" events that fire during normal usage have no usable
 // percentage. The steady-state rings are populated out-of-band via the
-// HTTP-header probe in `ratelimits_probe.go`, which reads
-// `anthropic-ratelimit-unified-*` response headers from a minimal
-// Haiku request. Drop wire snapshots that lack `utilization` so the
-// probe's real percentages aren't clobbered by a stale 0%.
+// OAuth usage endpoint in `ratelimits_probe.go`; legacy unified response
+// headers remain a compatibility fallback. Drop wire snapshots that lack
+// `utilization` so the probe's real percentages aren't clobbered by a stale
+// 0%.
 func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
 	infoRaw, ok := raw["rate_limit_info"]
 	if !ok {
@@ -152,16 +152,15 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 		return nil, nil
 	}
 
-	windowMins := windowMinsForRateLimitType(info.RateLimitType)
-	if windowMins == 0 {
+	descriptor, known := rateLimitDescriptorForType(info.RateLimitType)
+	if !known {
 		return nil, nil
 	}
-
 	entry := provider.RateLimitEntry{
-		LimitID:     info.RateLimitType,
-		LimitName:   info.RateLimitType,
+		LimitID:     descriptor.limitID,
+		LimitName:   descriptor.limitName,
 		UsedPercent: *info.Utilization * 100,
-		WindowMins:  windowMins,
+		WindowMins:  descriptor.windowMins,
 		ResetsAt:    info.ResetsAt,
 	}
 
@@ -178,20 +177,4 @@ func parseRateLimitEvent(threadID string, raw map[string]json.RawMessage, now ti
 		Meta:      meta,
 		Timestamp: now,
 	}}, nil
-}
-
-// windowMinsForRateLimitType maps Claude's `rateLimitType` enum onto
-// the window length so RateLimitEntry.WindowMins matches the Codex
-// shape (where the wire carries `windowDurationMins` directly).
-// Returns 0 for unknown types; the parser drops the event before
-// constructing a snapshot, so 0 never reaches the global store.
-func windowMinsForRateLimitType(rateLimitType string) int {
-	switch rateLimitType {
-	case "five_hour":
-		return 300
-	case "seven_day":
-		return 10080
-	default:
-		return 0
-	}
 }

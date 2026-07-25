@@ -1,5 +1,8 @@
 import type { Thread } from '../types/models';
-import type { PendingInteractiveRequests } from '../types/events';
+import type {
+  PendingInteractiveRequests,
+  ProviderSessionAccountEvent,
+} from '../types/events';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import { GetThreadLiveState, ListPendingInteractiveRequests } from './bindings';
 import type { LiveStateHydrationGuard } from './threadPaneShared';
@@ -32,6 +35,11 @@ export interface ThreadLiveStateHydrationOptions {
   pendingInteractiveState: ThreadPendingInteractiveState;
   /** The pane's createLiveTodoState instance. */
   liveTodoState: LiveTodoState;
+  getProviderSessionAccountRevision(): number;
+  hydrateProviderAccount(
+    account: ProviderSessionAccountEvent | null,
+    expectedMutationRevision: number,
+  ): void;
   getEffectiveModelRevision(): number;
   hydrateEffectiveModel(
     model: string,
@@ -145,6 +153,10 @@ export function createThreadLiveStateHydration(
       threadID,
       guard.liveTodoRevisionAtRequest,
     );
+    options.hydrateProviderAccount(
+      (snapshot.providerAccount as ProviderSessionAccountEvent | undefined) ?? null,
+      guard.providerSessionAccountRevisionAtRequest,
+    );
     options.hydrateEffectiveModel(
       snapshot.effectiveModel ?? '',
       snapshot.effectiveModelRevision ?? 0,
@@ -163,6 +175,8 @@ export function createThreadLiveStateHydration(
       activeTurnAtRequest: getActiveTurn(threadID),
       queueRevisionAtRequest: getQueueRevisionForThread(threadID),
       liveTodoRevisionAtRequest: options.liveTodoState.revision,
+      providerSessionAccountRevisionAtRequest:
+        options.getProviderSessionAccountRevision(),
       effectiveModelRevisionAtRequest: options.getEffectiveModelRevision(),
     };
     try {

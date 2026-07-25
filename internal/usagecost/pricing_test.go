@@ -23,6 +23,7 @@ func TestPrice_AllFamiliesInputOutputOnly(t *testing.T) {
 		wantCostUSD float64
 	}{
 		{"claude-fable-5", 60.00},    // 10 + 50
+		{"claude-opus-5", 30.00},     // 5 + 25 (family)
 		{"claude-opus-4-6", 30.00},   // 5 + 25
 		{"claude-sonnet-5", 12.00},   // 2 + 10 (intro, exact)
 		{"claude-sonnet-4-6", 18.00}, // 3 + 15 (family)

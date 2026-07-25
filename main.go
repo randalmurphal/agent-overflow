@@ -24,6 +24,7 @@ import (
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/diagenv"
+	"agent-overflow/internal/externalurl"
 	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/provider/claudetui"
@@ -75,6 +76,12 @@ var nativeMode = "prod"
 var dataDirRoot string
 
 func main() {
+	if os.Getenv(externalurl.BrowserHelperEnvironment) == externalurl.BrowserHelperValue && len(os.Args) == 2 {
+		if err := externalurl.Open(context.Background(), os.Args[1]); err != nil {
+			fatalf("open URL: %v", err)
+		}
+		return
+	}
 	// The orphan-reaper sidecar (macOS) re-execs this binary with the
 	// __reap subcommand. Short-circuit before any other startup — flag
 	// parsing, shell-env sync, Wails — so the sidecar stays a tiny pipe

@@ -107,9 +107,10 @@ type modelListClient struct {
 func newModelListClient(ctx context.Context, binary, workDir string, env map[string]string) (*modelListClient, error) {
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 		Binary:   binary,
-		Args:     []string{"app-server"},
+		Args:     codexAppServerArgs(),
 		Dir:      workDir,
 		Env:      env,
+		UnsetEnv: []string{"CODEX_HOME"},
 		Provider: string(provider.Codex),
 	})
 	if err != nil {

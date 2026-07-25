@@ -2,8 +2,10 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provideraccounts"
 )
 
 func TestGetRateLimitsSnapshotsHydratesMissedUsageEvents(t *testing.T) {
@@ -80,15 +82,15 @@ func TestGetRateLimitsSnapshotsRejectsStaleWindowUpdates(t *testing.T) {
 	app := &App{}
 	fresh := provider.RateLimitsSnapshot{
 		Provider: "codex",
-		Limits:   []provider.RateLimitEntry{{WindowMins: 300, UsedPercent: 60, ResetsAt: 500}},
+		Limits:   []provider.RateLimitEntry{{LimitID: "codex", WindowMins: 300, UsedPercent: 60, ResetsAt: 500}},
 	}
 	olderReset := provider.RateLimitsSnapshot{
 		Provider: "codex",
-		Limits:   []provider.RateLimitEntry{{WindowMins: 300, UsedPercent: 90, ResetsAt: 400}},
+		Limits:   []provider.RateLimitEntry{{LimitID: "codex", WindowMins: 300, UsedPercent: 90, ResetsAt: 400}},
 	}
 	olderReading := provider.RateLimitsSnapshot{
 		Provider: "codex",
-		Limits:   []provider.RateLimitEntry{{WindowMins: 300, UsedPercent: 50, ResetsAt: 500}},
+		Limits:   []provider.RateLimitEntry{{LimitID: "codex", WindowMins: 300, UsedPercent: 50, ResetsAt: 500}},
 	}
 	for _, snapshot := range []*provider.RateLimitsSnapshot{&fresh, &olderReset, &olderReading} {
 		app.emit("provider:usage", provider.UsageEvent{Action: "rate_limits", RateLimits: snapshot})
@@ -97,5 +99,49 @@ func TestGetRateLimitsSnapshotsRejectsStaleWindowUpdates(t *testing.T) {
 	got := app.GetRateLimitsSnapshots()
 	if len(got) != 1 || len(got[0].Limits) != 1 || got[0].Limits[0].UsedPercent != 60 {
 		t.Fatalf("stale update regressed snapshot: %+v", got)
+	}
+}
+
+func TestHydratePersistedAccountRateLimitsRepairsClaudeAliases(t *testing.T) {
+	configDir := t.TempDir()
+	accounts, err := provideraccounts.NewStore(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := accounts.UpsertAndActivate(provideraccounts.Account{
+		ID:       "claude-one",
+		Provider: string(provider.Claude),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := provider.RateLimitsSnapshot{
+		Provider:  string(provider.Claude),
+		AccountID: account.ID,
+		Limits: []provider.RateLimitEntry{
+			{LimitID: "seven_day", LimitName: "seven_day", WindowMins: 10080, UsedPercent: 50, ResetsAt: time.Now().Add(time.Hour).Unix()},
+			{LimitID: "weekly_all", LimitName: "All models", WindowMins: 10080, UsedPercent: 50, ResetsAt: time.Now().Add(time.Hour).Unix()},
+		},
+	}
+	if err := accounts.RememberRateLimits(string(provider.Claude), account.ID, snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{providerAccounts: accounts}
+	app.hydratePersistedAccountRateLimits()
+
+	reloaded, err := provideraccounts.NewStore(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reloaded.Active(string(provider.Claude), time.Now())
+	if !ok || got.RateLimits == nil {
+		t.Fatalf("Active() = %+v, %v", got, ok)
+	}
+	if len(got.RateLimits.Limits) != 1 {
+		t.Fatalf("persisted Limits len = %d, want 1: %+v", len(got.RateLimits.Limits), got.RateLimits.Limits)
+	}
+	if limit := got.RateLimits.Limits[0]; limit.LimitID != "weekly_all" || limit.LimitName != "All models" {
+		t.Fatalf("persisted canonical limit = %+v", limit)
 	}
 }

@@ -14,8 +14,11 @@ import (
 // via probeStartupProviderStatuses and we don't want two banners
 // fighting for the same condition.
 type ProviderAccountEvent struct {
-	Provider string               `json:"provider"`
-	Account  provider.AccountInfo `json:"account"`
+	Provider   string               `json:"provider"`
+	AccountID  string               `json:"accountId,omitempty"`
+	Account    provider.AccountInfo `json:"account"`
+	Generation uint64               `json:"generation,omitempty"`
+	Cleared    bool                 `json:"cleared,omitempty"`
 }
 
 // probeStartupAccountInfo runs ProbeClaudeAccount and ProbeCodexAccount
@@ -34,6 +37,10 @@ func (a *App) probeStartupAccountInfo() {
 		return
 	}
 
-	go func() { _, _ = a.ProbeClaudeAccount() }()
+	go func() {
+		if _, err := a.ProbeClaudeAccount(); err == nil {
+			a.probeClaudeRateLimits(a.lifeCtx())
+		}
+	}()
 	go func() { _, _ = a.ProbeCodexAccount() }()
 }

@@ -24,6 +24,7 @@
   import { asProviderID } from '../../../types/providers';
   import { providerSupports } from '../../../providers/catalog';
   import { measureComposerToolbarCompact } from './composerToolbarDensity';
+  import { getProviderAccount } from '../../../stores/accountInfo.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -75,12 +76,40 @@
   // Rate-limit rings appear once the thread is "locked in" — the
   // user has sent at least one message and the provider/model
   // selection is committed. The data itself lives in the global
-  // `rateLimitsInfo.svelte.ts` store keyed by provider, so a freshly
-  // locked thread immediately reflects the most recent observation
-  // for that account (5h/7d limits don't reset on thread switch or
-  // turn completion).
+  // `rateLimitsInfo.svelte.ts` store keyed by provider and account, so
+  // a freshly locked thread immediately reflects the most recent
+  // observation for the account serving its live session (5h/7d limits
+  // don't reset on thread switch or turn completion).
   let showLimitRings = $derived(pane.isLocked && !!pane.thread?.provider);
   let providerID = $derived(asProviderID(pane.thread?.provider));
+  let selectedAccount = $derived.by(() =>
+    providerID ? getProviderAccount(providerID) : null,
+  );
+  let sessionAccount = $derived(pane.providerSessionAccount);
+  let sessionUsesSelectedAccount = $derived(
+    !!sessionAccount?.connected
+      && !!selectedAccount?.accountId
+      && sessionAccount.accountId === selectedAccount.accountId,
+  );
+  let currentAccountID = $derived(
+    sessionAccount?.connected ? sessionAccount.accountId : selectedAccount?.accountId,
+  );
+  let currentAccountEmail = $derived(
+    sessionAccount?.connected
+      ? sessionUsesSelectedAccount
+        ? (selectedAccount?.email || sessionAccount.account.email || '')
+        : (sessionAccount.account.email ?? '')
+      : (selectedAccount?.email ?? ''),
+  );
+  let currentAccountPlan = $derived(
+    sessionAccount?.connected
+      ? sessionUsesSelectedAccount
+        ? (selectedAccount?.subscriptionType
+          || sessionAccount.account.subscriptionType
+          || '')
+        : (sessionAccount.account.subscriptionType ?? '')
+      : (selectedAccount?.subscriptionType ?? ''),
+  );
   // Provider capability gates. claude-tui drives the real TUI, so the
   // AO-mediated runtime-mode, plan, and MCP affordances are omitted — the
   // human reaches them inside the terminal via take-control.
@@ -166,12 +195,18 @@
         <RateLimitMeter
           windowMins={300}
           provider={providerID ?? undefined}
+          accountId={currentAccountID}
+          accountEmail={currentAccountEmail}
+          subscriptionType={currentAccountPlan}
         />
       </div>
       <div class="shrink-0 flex items-center" data-testid="composer-rate-limit-7d">
         <RateLimitMeter
           windowMins={10080}
           provider={providerID ?? undefined}
+          accountId={currentAccountID}
+          accountEmail={currentAccountEmail}
+          subscriptionType={currentAccountPlan}
         />
       </div>
     {/if}

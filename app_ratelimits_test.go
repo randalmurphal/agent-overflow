@@ -15,6 +15,175 @@ import (
 	"agent-overflow/internal/settings"
 )
 
+func TestMergeRateLimitsSnapshotKeepsAccountAndDynamicBuckets(t *testing.T) {
+	incoming := provider.RateLimitsSnapshot{
+		Provider:  string(provider.Codex),
+		AccountID: "account-one",
+		UpdatedAt: 10,
+		Limits: []provider.RateLimitEntry{
+			{LimitID: "codex", LimitName: "Codex", WindowMins: 300, UsedPercent: 100, ResetsAt: 1000},
+			{LimitID: "spark", LimitName: "Spark", WindowMins: 300, UsedPercent: 46, ResetsAt: 1000},
+		},
+	}
+	got, changed := mergeRateLimitsSnapshot(provider.RateLimitsSnapshot{}, incoming)
+	if !changed {
+		t.Fatal("merge reported unchanged")
+	}
+	if got.AccountID != "account-one" {
+		t.Fatalf("AccountID = %q, want account-one", got.AccountID)
+	}
+	if len(got.Limits) != 2 {
+		t.Fatalf("Limits len = %d, want 2", len(got.Limits))
+	}
+}
+
+func TestMergeRateLimitsSnapshotCollapsesClaudeLegacyAliases(t *testing.T) {
+	current := provider.RateLimitsSnapshot{
+		Provider:  string(provider.Claude),
+		AccountID: "account-one",
+		Limits: []provider.RateLimitEntry{
+			{LimitID: "seven_day", LimitName: "seven_day", WindowMins: 10080, UsedPercent: 50, ResetsAt: 1000},
+			{LimitID: "weekly_all", LimitName: "All models", WindowMins: 10080, UsedPercent: 49, ResetsAt: 1000},
+			{LimitID: "weekly_scoped:fable", LimitName: "Fable", WindowMins: 10080, UsedPercent: 99, ResetsAt: 1000},
+		},
+	}
+	incoming := provider.RateLimitsSnapshot{
+		Provider:  string(provider.Claude),
+		AccountID: "account-one",
+		Limits: []provider.RateLimitEntry{
+			{LimitID: "weekly_all", LimitName: "All models", WindowMins: 10080, UsedPercent: 50, ResetsAt: 1000},
+		},
+	}
+
+	got, changed := mergeRateLimitsSnapshot(current, incoming)
+	if !changed {
+		t.Fatal("merge reported unchanged")
+	}
+	if len(got.Limits) != 2 {
+		t.Fatalf("Limits len = %d, want canonical weekly plus Fable: %+v", len(got.Limits), got.Limits)
+	}
+	if got.Limits[0].LimitID != "weekly_all" || got.Limits[0].LimitName != "All models" {
+		t.Fatalf("canonical weekly limit = %+v", got.Limits[0])
+	}
+	if got.Limits[0].UsedPercent != 50 {
+		t.Fatalf("canonical weekly utilization = %v, want 50", got.Limits[0].UsedPercent)
+	}
+	if got.Limits[1].LimitID != "weekly_scoped:fable" {
+		t.Fatalf("scoped limit was changed: %+v", got.Limits[1])
+	}
+}
+
+func TestMergeRateLimitsSnapshotAcceptsHigherUsageAcrossResetTimestampJitter(t *testing.T) {
+	current := provider.RateLimitsSnapshot{
+		Provider:  string(provider.Claude),
+		AccountID: "account-one",
+		UpdatedAt: 10,
+		Limits: []provider.RateLimitEntry{{
+			LimitID: "session", LimitName: "Current session",
+			WindowMins: 300, UsedPercent: 0, ResetsAt: 1784841601,
+		}},
+	}
+	incoming := provider.RateLimitsSnapshot{
+		Provider:  string(provider.Claude),
+		AccountID: "account-one",
+		UpdatedAt: 20,
+		Limits: []provider.RateLimitEntry{{
+			LimitID: "session", LimitName: "Current session",
+			WindowMins: 300, UsedPercent: 8, ResetsAt: 1784841599,
+		}},
+	}
+
+	got, changed := mergeRateLimitsSnapshot(current, incoming)
+	if !changed {
+		t.Fatal("merge rejected a higher reading from the same jittered window")
+	}
+	if got.Limits[0].UsedPercent != 8 {
+		t.Fatalf("UsedPercent = %v, want 8", got.Limits[0].UsedPercent)
+	}
+	if got.Limits[0].ResetsAt != 1784841601 {
+		t.Fatalf("ResetsAt = %d, want stable boundary 1784841601", got.Limits[0].ResetsAt)
+	}
+}
+
+func TestMergeRateLimitsSnapshotIgnoresJitterWithoutFresherUsage(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		incomingPercent float64
+	}{
+		{name: "equal usage", incomingPercent: 8},
+		{name: "lower usage", incomingPercent: 7},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			current := provider.RateLimitsSnapshot{
+				Provider: string(provider.Claude),
+				Limits: []provider.RateLimitEntry{{
+					LimitID: "session", LimitName: "Current session",
+					WindowMins: 300, UsedPercent: 8, ResetsAt: 1784841601,
+				}},
+			}
+			incoming := provider.RateLimitsSnapshot{
+				Provider: string(provider.Claude),
+				Limits: []provider.RateLimitEntry{{
+					LimitID: "session", LimitName: "Current session",
+					WindowMins: 300, UsedPercent: test.incomingPercent, ResetsAt: 1784841599,
+				}},
+			}
+
+			got, changed := mergeRateLimitsSnapshot(current, incoming)
+			if changed {
+				t.Fatalf("merge changed on jitter with %s: %+v", test.name, got.Limits)
+			}
+		})
+	}
+}
+
+func TestMergeRateLimitsSnapshotAcceptsLowerUsageInNewQuotaWindow(t *testing.T) {
+	current := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude),
+		Limits: []provider.RateLimitEntry{{
+			LimitID: "session", LimitName: "Current session",
+			WindowMins: 300, UsedPercent: 95, ResetsAt: 1784823600,
+		}},
+	}
+	incoming := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude),
+		Limits: []provider.RateLimitEntry{{
+			LimitID: "session", LimitName: "Current session",
+			WindowMins: 300, UsedPercent: 5, ResetsAt: 1784841600,
+		}},
+	}
+
+	got, changed := mergeRateLimitsSnapshot(current, incoming)
+	if !changed {
+		t.Fatal("merge rejected a lower reading from a new quota window")
+	}
+	if got.Limits[0].UsedPercent != 5 || got.Limits[0].ResetsAt != 1784841600 {
+		t.Fatalf("new-window limit = %+v, want 5%% at 1784841600", got.Limits[0])
+	}
+}
+
+func TestMergeRateLimitsSnapshotStillRejectsOlderQuotaWindow(t *testing.T) {
+	current := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude),
+		Limits: []provider.RateLimitEntry{{
+			LimitID: "session", LimitName: "Current session", WindowMins: 300,
+			UsedPercent: 5, ResetsAt: 1784841600,
+		}},
+	}
+	incoming := provider.RateLimitsSnapshot{
+		Provider: string(provider.Claude),
+		Limits: []provider.RateLimitEntry{{
+			LimitID: "session", LimitName: "Current session", WindowMins: 300,
+			UsedPercent: 95, ResetsAt: 1784823600,
+		}},
+	}
+
+	got, changed := mergeRateLimitsSnapshot(current, incoming)
+	if changed {
+		t.Fatalf("merge accepted an older quota window: %+v", got.Limits)
+	}
+}
+
 // TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel pins Step 1b's wiring
 // into the probe loop: a regression that swapped a.lifeCtx() back to
 // context.Background() (or dropped the <-ctx.Done() select arm) would

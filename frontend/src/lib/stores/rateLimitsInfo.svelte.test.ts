@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  clearProviderRateLimits,
   getProviderRateLimit,
+  getProviderRateLimits,
+  getProviderRateLimitsForWindow,
+  rateLimitDisplayName,
   resetForTest,
   setProviderRateLimits,
 } from './rateLimitsInfo.svelte';
@@ -43,6 +47,21 @@ describe('rateLimitsInfo', () => {
     expect(got?.resetsAt).toBe(1776283200);
   });
 
+  it('does not fall back to another account when an explicit account is unseeded', () => {
+    setProviderRateLimits({
+      provider: 'codex',
+      limits: [
+        { limitId: 'codex', limitName: '5h', usedPercent: 64, windowMins: 300, resetsAt: 1776283200 },
+      ],
+      updatedAt: 1776283000,
+    });
+
+    expect(getProviderRateLimit('codex', 300, 'different-account')).toBeNull();
+    expect(
+      getProviderRateLimitsForWindow('codex', 300, 'different-account'),
+    ).toEqual({ primary: null, limits: [] });
+  });
+
   // Claude wires emit ONE window per `rate_limit_event` (5h XOR 7d).
   // The store must merge new windows alongside existing ones rather
   // than replacing — otherwise toggling between 5h and 7d events
@@ -72,8 +91,8 @@ describe('rateLimitsInfo', () => {
     setProviderRateLimits({
       provider: 'codex',
       limits: [
-        { limitId: 'primary', limitName: '5h', usedPercent: 25, windowMins: 300, resetsAt: 1776283200 },
-        { limitId: 'secondary', limitName: '7d', usedPercent: 60, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'codex', limitName: '5h', usedPercent: 25, windowMins: 300, resetsAt: 1776283200 },
+        { limitId: 'codex', limitName: '7d', usedPercent: 60, windowMins: 10080, resetsAt: 1776981600 },
       ],
       updatedAt: 1776283000,
     });
@@ -118,7 +137,7 @@ describe('rateLimitsInfo', () => {
     setProviderRateLimits({
       provider: 'codex',
       limits: [
-        { limitId: 'primary', limitName: '5h', usedPercent: 88, windowMins: 300, resetsAt: 1776283200 },
+        { limitId: 'codex', limitName: '5h', usedPercent: 88, windowMins: 300, resetsAt: 1776283200 },
       ],
       updatedAt: 1776283500,
     });
@@ -127,12 +146,10 @@ describe('rateLimitsInfo', () => {
     expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(88);
   });
 
-  // windowMins=0 is the parser's signal for "unrecognised window length"
-  // (Claude's `windowMinsForRateLimitType` fallback). The store must
-  // drop those entries — the toolbar reads `(provider, 300)` and
-  // `(provider, 10080)` only, so a stray 0-keyed slot would just leak
-  // memory forever.
-  it('filters out windowMins=0 entries to avoid unrenderable slots', () => {
+  // A new provider bucket can arrive before its duration is known locally.
+  // Keep it for the dynamic Settings list without exposing it as a toolbar
+  // duration slot.
+  it('retains windowMins=0 entries for settings but not toolbar lookups', () => {
     setProviderRateLimits({
       provider: 'claude',
       limits: [
@@ -144,6 +161,7 @@ describe('rateLimitsInfo', () => {
 
     expect(getProviderRateLimit('claude', 0)).toBeNull();
     expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
+    expect(getProviderRateLimits('claude').map((entry) => entry.limitId)).toContain('thirty_day');
   });
 
   // Empty snapshots are no-ops — the store is "last value wins until a
@@ -249,6 +267,70 @@ describe('rateLimitsInfo', () => {
     expect(getProviderRateLimit('claude', 300)?.usedPercent).toBe(42);
   });
 
+  it('accepts higher usage when the provider jitters a reset boundary by seconds', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'active',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 0, windowMins: 300, resetsAt: 1784841601 },
+      ],
+      updatedAt: 1784823000,
+    });
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'active',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 8, windowMins: 300, resetsAt: 1784841599 },
+      ],
+      updatedAt: 1784827200,
+    });
+
+    const limit = getProviderRateLimits('claude', 'active')[0];
+    expect(limit?.usedPercent).toBe(8);
+    expect(limit?.resetsAt).toBe(1784841601);
+  });
+
+  it('does not churn or regress usage for reset timestamp jitter alone', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'equal',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 8, windowMins: 300, resetsAt: 1784841601 },
+      ],
+      updatedAt: 1784823000,
+    });
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'lower',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 8, windowMins: 300, resetsAt: 1784841601 },
+      ],
+      updatedAt: 1784823000,
+    });
+    const equalBefore = getProviderRateLimits('claude', 'equal')[0];
+    const lowerBefore = getProviderRateLimits('claude', 'lower')[0];
+
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'equal',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 8, windowMins: 300, resetsAt: 1784841599 },
+      ],
+      updatedAt: 1784827200,
+    });
+    setProviderRateLimits({
+      provider: 'claude',
+      accountId: 'lower',
+      limits: [
+        { limitId: 'session', limitName: 'Current session', usedPercent: 7, windowMins: 300, resetsAt: 1784841599 },
+      ],
+      updatedAt: 1784827200,
+    });
+
+    expect(getProviderRateLimits('claude', 'equal')[0]).toBe(equalBefore);
+    expect(getProviderRateLimits('claude', 'lower')[0]).toBe(lowerBefore);
+  });
+
   // Delayed probe/notification races can replay an older lower reading
   // for the same reset boundary after a fresher one. Keep the higher
   // value until the reset boundary advances.
@@ -314,5 +396,113 @@ describe('rateLimitsInfo', () => {
     });
     expect(getProviderRateLimit('claude', 300)).toBeNull();
     expect(getProviderRateLimit('codex', 300)).toBeNull();
+  });
+
+  it('isolates two accounts on the same provider', () => {
+    setProviderRateLimits({
+      provider: 'codex',
+      accountId: 'first',
+      limits: [
+        { limitId: 'codex', limitName: 'Codex', usedPercent: 91, windowMins: 300, resetsAt: 1776283200 },
+      ],
+      updatedAt: 1776283000,
+    });
+    setProviderRateLimits({
+      provider: 'codex',
+      accountId: 'second',
+      limits: [
+        { limitId: 'codex', limitName: 'Codex', usedPercent: 12, windowMins: 300, resetsAt: 1776283200 },
+      ],
+      updatedAt: 1776283000,
+    });
+
+    expect(getProviderRateLimits('codex', 'first')[0]?.usedPercent).toBe(91);
+    expect(getProviderRateLimits('codex', 'second')[0]?.usedPercent).toBe(12);
+  });
+
+  it('clears only the removed account limits', () => {
+    for (const [accountId, usedPercent] of [['first', 91], ['second', 12]] as const) {
+      setProviderRateLimits({
+        provider: 'codex',
+        accountId,
+        limits: [
+          {
+            limitId: 'codex',
+            limitName: 'Codex',
+            usedPercent,
+            windowMins: 300,
+            resetsAt: 1776283200,
+          },
+        ],
+        updatedAt: 1776283000,
+      });
+    }
+
+    clearProviderRateLimits('codex', 'first');
+
+    expect(getProviderRateLimits('codex', 'first')).toEqual([]);
+    expect(getProviderRateLimit('codex', 300, 'second')?.usedPercent).toBe(12);
+  });
+
+  it('retains multiple dynamic buckets for the same window', () => {
+    setProviderRateLimits({
+      provider: 'codex',
+      accountId: 'one',
+      limits: [
+        { limitId: 'codex', limitName: 'Codex', usedPercent: 100, windowMins: 300, resetsAt: 1776283200 },
+        { limitId: 'spark', limitName: 'GPT-5.3-Codex-Spark', usedPercent: 46, windowMins: 300, resetsAt: 1776283200 },
+      ],
+      updatedAt: 1776283000,
+    });
+
+    const limits = getProviderRateLimits('codex', 'one');
+    expect(limits.map((entry) => entry.limitId)).toEqual(['codex', 'spark']);
+    expect(limits.map((entry) => entry.usedPercent)).toEqual([100, 46]);
+  });
+
+  it('groups composer details by duration with the provider default first', () => {
+    setProviderRateLimits({
+      provider: 'claude',
+      limits: [
+        { limitId: 'weekly_scoped:fable', limitName: 'Fable', usedPercent: 99, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'weekly_all', limitName: 'All models', usedPercent: 52, windowMins: 10080, resetsAt: 1776981600 },
+        { limitId: 'monthly_other', limitName: 'Monthly other', usedPercent: 80, windowMins: 43200, resetsAt: 1779000000 },
+      ],
+      updatedAt: 1776283000,
+    });
+
+    const group = getProviderRateLimitsForWindow('claude', 10080);
+    expect(group.primary?.limitId).toBe('weekly_all');
+    expect(group.limits.map((entry) => entry.limitId)).toEqual([
+      'weekly_all',
+      'weekly_scoped:fable',
+    ]);
+    expect(group.limits.map((entry) => entry.usedPercent)).toEqual([52, 99]);
+  });
+
+  it('keeps scoped-only composer details separate from the account-wide primary', () => {
+    setProviderRateLimits({
+      provider: 'codex',
+      limits: [
+        { limitId: 'spark', limitName: 'GPT-5.3-Codex-Spark', usedPercent: 99, windowMins: 300, resetsAt: 1776981600 },
+      ],
+      updatedAt: 1776283000,
+    });
+
+    const group = getProviderRateLimitsForWindow('codex', 300);
+    expect(group.primary).toBeNull();
+    expect(group.limits.map((entry) => entry.limitId)).toEqual(['spark']);
+    expect(getProviderRateLimit('codex', 300)).toBeNull();
+  });
+
+  it('provides readable names for unnamed provider limits', () => {
+    expect(rateLimitDisplayName({
+      limitId: 'codex',
+      limitName: '',
+    })).toBe('All models');
+    expect(rateLimitDisplayName({
+      limitId: 'weekly_scoped:fable',
+      limitName: '',
+    })).toBe('Fable');
   });
 });

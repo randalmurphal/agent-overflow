@@ -24,6 +24,8 @@ import type {
   ItemStreamEvent,
   ModelFallbackEvent,
   ProviderAccountEvent,
+  ProviderAccountUsageErrorEvent,
+  ProviderSessionAccountEvent,
   SystemStatsEvent,
   TodoUpdateEvent,
   ProviderStatusEvent,
@@ -69,6 +71,7 @@ import {
   applyUsageEvent,
   applyProviderStatus,
   applyProviderAccount,
+  applyProviderSessionAccount,
   applyTurnStarted,
   applyTurnCompleted,
   applySessionDied,
@@ -128,6 +131,7 @@ import {
   applyWorkflowItemStateEvent,
   applyWorkflowPhaseStateEvent,
 } from './eventsWorkflow';
+import { addToast } from './toast.svelte';
 
 /**
  * Frontend custom DOM event names live in `./eventNames` so consumers
@@ -194,6 +198,18 @@ export function setupEventListeners(): () => void {
   const cancelProviderAccount = wailsEventOn<ProviderAccountEvent>(
     'provider:account',
     applyProviderAccount,
+  );
+  const cancelProviderSessionAccount = wailsEventOn<ProviderSessionAccountEvent>(
+    'provider:session_account',
+    applyProviderSessionAccount,
+  );
+  const cancelProviderAccountUsageError = wailsEventOn<ProviderAccountUsageErrorEvent>(
+    'provider:account_usage_error',
+    (evt) => {
+      if (!evt?.provider || !evt.accountId) return;
+      const label = evt.provider === 'claude' ? 'Claude' : 'Codex';
+      addToast('warning', evt.message || `${label} connected, but usage could not be refreshed.`);
+    },
   );
 
   // system:stats — periodic host CPU + memory snapshot (~2s cadence)
@@ -404,6 +420,8 @@ export function setupEventListeners(): () => void {
     cancelModelFallback();
     cancelProviderStatus();
     cancelProviderAccount();
+    cancelProviderSessionAccount();
+    cancelProviderAccountUsageError();
     cancelSystemStats();
     cancelTurnStarted();
     cancelTurnCompleted();

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
 
 import {
+  clearProviderAccount,
   getProviderAccount,
   resetForTest,
   setProviderAccount,
@@ -32,6 +33,26 @@ describe('accountInfo store', () => {
     setProviderAccount('claude', { subscriptionType: 'second' });
 
     expect(getProviderAccount('claude')?.subscriptionType).toBe('second');
+  });
+
+  it('clears one provider without disturbing the other', () => {
+    setProviderAccount('claude', { subscriptionType: 'Claude Max' });
+    setProviderAccount('codex', { subscriptionType: 'pro' });
+
+    clearProviderAccount('claude');
+
+    expect(getProviderAccount('claude')).toBeNull();
+    expect(getProviderAccount('codex')?.subscriptionType).toBe('pro');
+  });
+
+  it('rejects account events older than the latest selection generation', () => {
+    setProviderAccount('claude', { subscriptionType: 'new' }, 'new', 2);
+    setProviderAccount('claude', { subscriptionType: 'old' }, 'old', 1);
+    expect(getProviderAccount('claude')?.accountId).toBe('new');
+
+    clearProviderAccount('claude', 3);
+    setProviderAccount('claude', { subscriptionType: 'stale' }, 'stale', 2);
+    expect(getProviderAccount('claude')).toBeNull();
   });
 
   it('resetForTest clears every entry', () => {

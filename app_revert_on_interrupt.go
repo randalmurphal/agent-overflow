@@ -37,13 +37,26 @@ type InterruptAndRevertResult struct {
 
 // UserMessageRevertedEvent is the wire payload for the
 // `user_message:reverted` event emitted at the end of a successful
-// revert-on-interrupt. The frontend consumes this to confirm the
-// optimistic timeline removal it already performed. Idempotent on the
-// frontend: a removal of an already-absent id is a no-op.
+// conversation revert (Stop/Esc un-send and the explicit
+// revert-to-message). The frontend consumes this to truncate its
+// timeline to match the SQLite cut. Idempotent on the frontend: a
+// removal of an already-absent id is a no-op.
 type UserMessageRevertedEvent struct {
 	ThreadID   string `json:"threadId"`
 	UserItemID string `json:"userItemId"`
 	TurnIndex  int    `json:"turnIndex"`
+	// KeptAnchorTurnItemIDs lists the anchor turn's SURVIVING items.
+	// Turns after TurnIndex are always fully removed; within the anchor
+	// turn the frontend keeps exactly these ids and drops everything
+	// else — including pane-only rows that were never persisted. Empty
+	// (the common case) means the whole anchor turn is gone: Codex cuts
+	// are always turn-granular, and a Claude anchor that opens its turn
+	// keeps nothing. Non-empty only for Claude item-granular cuts to a
+	// mid-turn anchor (a queued/steered message sharing its turn with an
+	// earlier prompt), where the kept prefix is decided by
+	// DeleteConversationFromItem's promoted-row predicate — carried here
+	// as data so the frontend never re-derives it.
+	KeptAnchorTurnItemIDs []string `json:"keptAnchorTurnItemIds,omitempty"`
 }
 
 // InterruptAndRevertIfClean is the unified Stop-button entry point.
@@ -123,7 +136,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 	// TurnIndex plus the provider ids the item meta already carries.
 	anchor := a.resolveMessageAnchor("interrupt-and-revert", threadID, userItem)
 
-	err = a.rollbackConversationLocked(rollbackConversationLockedArgs{
+	keptAnchorTurnItemIDs, err := a.rollbackConversationLocked(rollbackConversationLockedArgs{
 		thread:       thread,
 		userItem:     userItem,
 		anchor:       anchor,
@@ -139,9 +152,10 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 	}
 
 	a.emit("user_message:reverted", UserMessageRevertedEvent{
-		ThreadID:   threadID,
-		UserItemID: userItem.ID,
-		TurnIndex:  userItem.TurnIndex,
+		ThreadID:              threadID,
+		UserItemID:            userItem.ID,
+		TurnIndex:             userItem.TurnIndex,
+		KeptAnchorTurnItemIDs: keptAnchorTurnItemIDs,
 	})
 
 	return InterruptAndRevertResult{

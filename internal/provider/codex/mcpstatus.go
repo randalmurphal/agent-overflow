@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/mcpstatus"
+	"agent-overflow/internal/provider"
 )
 
 // MCPStatusFetcher runs `codex app-server`, performs the standard
@@ -29,7 +30,7 @@ import (
 // fixture script.
 type MCPStatusFetcher struct {
 	Binary  string
-	Args    []string // optional override; defaults to ["app-server"]
+	Args    []string // optional override; defaults to codexAppServerArgs
 	Env     []string
 	Cwd     string
 	Timeout time.Duration // 0 → DefaultMCPStatusTimeout
@@ -56,15 +57,13 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 
 	args := f.Args
 	if len(args) == 0 {
-		args = []string{"app-server"}
+		args = codexAppServerArgs()
 	}
 	cmd := exec.CommandContext(ctx, f.Binary, args...)
 	if f.Cwd != "" {
 		cmd.Dir = f.Cwd
 	}
-	if len(f.Env) > 0 {
-		cmd.Env = f.Env
-	}
+	cmd.Env = provider.FilterEnvironment(f.Env, "CODEX_HOME")
 	// Bound the post-cancel wait when grandchildren hold our stdout
 	// pipe open (mirrors the Claude fetcher rationale).
 	cmd.WaitDelay = 500 * time.Millisecond

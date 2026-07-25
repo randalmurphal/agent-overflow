@@ -32,6 +32,21 @@ func TestWriteThenReadRoundTrips(t *testing.T) {
 	}
 }
 
+func TestWriteBytesRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "credential.bin")
+	want := []byte{0, 1, 2, 255, '\n'}
+	if err := Write(path, want); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("ReadFile() = %v, want %v", got, want)
+	}
+}
+
 func TestReadMissingFileIsNotFoundNotError(t *testing.T) {
 	var got sample
 	found, err := ReadJSON(filepath.Join(t.TempDir(), "absent.json"), &got)

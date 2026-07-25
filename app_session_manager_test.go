@@ -75,6 +75,50 @@ func TestPreInitTeardownTokenGuard(t *testing.T) {
 	}
 }
 
+func TestDirectSessionRemovalEmitsAccountDisconnect(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		remove func(*App) error
+	}{
+		{
+			name: "replacement",
+			remove: func(app *App) error {
+				return app.stopExistingSessionLocked("thread")
+			},
+		},
+		{
+			name: "pre-init failure",
+			remove: func(app *App) error {
+				app.teardownDeadPreInitSession("thread", "token")
+				return nil
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app := &App{
+				sessions: map[string]session{
+					"thread": {provider: string(provider.Codex), token: "token"},
+				},
+			}
+			var disconnected int
+			app.testEmitHook = func(name string, data any) {
+				event, ok := data.(ProviderSessionAccountEvent)
+				if name == "provider:session_account" && ok && !event.Connected {
+					disconnected++
+				}
+			}
+
+			if err := test.remove(app); err != nil {
+				t.Fatal(err)
+			}
+
+			if disconnected != 1 {
+				t.Fatalf("disconnect events = %d, want 1", disconnected)
+			}
+		})
+	}
+}
+
 func TestSessionManagerSnapshotAndClear(t *testing.T) {
 	app := &App{
 		sessions: map[string]session{

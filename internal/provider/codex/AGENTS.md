@@ -10,6 +10,14 @@ over stdio.
   state struct.
 - `jsonrpc.go` — JSON-RPC request/response/notification writes,
   pending response correlation, read loop, and raw line dispatch.
+- `account.go` — shared `account/read` decoding plus the cached app-server
+  identity used to verify which saved login a live process is serving.
+- `identity_probe.go` — fresh-process `account/read` probe used to detect
+  native credential changes without a rate-limit request or model turn.
+- `launch.go` — shared app-server CLI arguments. Agent Overflow pins Codex to
+  its native `auth.json` credential store so account switching is a
+  deterministic atomic file replacement even where Codex `auto` mode would
+  otherwise choose an OS keyring.
 - `session_notifications.go` — notification pre-processing, child
   routing, classifier invocation, event enrichment, turn-state tracking,
   and final event emission.

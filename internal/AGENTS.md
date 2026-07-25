@@ -9,6 +9,7 @@ one closest to what you're touching.
 | Package | Role |
 |---|---|
 | `provider/` | Provider process lifecycle and stdio protocols. Has its own subarea guide. |
+| `provideraccounts/` | Non-secret multi-account metadata, last-known account quota snapshots, opaque provider-native credential slots, ephemeral login/probe homes, and atomic active-credential switching. |
 | `triage/` | Event classification. Decides what goes to the frontend vs SQLite. |
 | `store/` | SQLite access, migrations, schema. |
 | `usagecost/` | Hardcoded per-million-token USD rate table with progressive family-prefix matching (exact match, then trim trailing `-`/`.` segments). Prices `usage_ledger` rows whose wire carries no cost (Codex, claudetui) at query time — `app_usage.go`'s `GetUsageStats` is the only caller. Stdlib-only; estimates are computed fresh per query and never persisted, so a rate-table update reprices all history. |
@@ -23,7 +24,7 @@ one closest to what you're touching.
 | `screenshot/` | Headless-Chromium-driven full-page capture (chrome-headless-shell + chromedp) backing the design `read_screenshot` MCP tool. |
 | `attachment/` | Message attachment storage (metadata in store, bytes on disk). |
 | `settings/` | Persistent settings JSON with validation. |
-| `atomicfile/` | Crash-safe small-JSON state files: `WriteJSON` (temp + fsync + rename, 0600/0700) and `ReadJSON` (absent → not-found, not error). Backs `wsldistro`'s `wsl.json` and the launcher's `window.json`. Stdlib-only. |
+| `atomicfile/` | Crash-safe private state files: byte-oriented `Write`, JSON `WriteJSON`, and `ReadJSON` (temp + fsync + rename, 0600/0700). Backs provider-account credentials/metadata, `wsldistro`, and launcher window state. Stdlib-only. |
 | `logging/` | Structured NDJSON provider-event logging. |
 | `observability/` | Opt-in OpenTelemetry tracing + NDJSON replay writer. |
 | `diagenv/` | Names of the opt-in diagnostic env vars (`AGENT_OVERFLOW_PPROF`, `AGENT_OVERFLOW_RENDERER_DIAG`) plus the `Passthrough()` list the WSL-boundary launchers forward via WSLENV. Names only, stdlib-only; the behaviors live in `observability/pprofserve` and the transport server. |

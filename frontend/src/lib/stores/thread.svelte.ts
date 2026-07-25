@@ -8,6 +8,7 @@ import type {
   ItemMetaEvent,
   ItemPatchEvent,
   TodoStep,
+  ProviderSessionAccountEvent,
   ProviderStatusEvent,
   SubagentNotificationEvent,
   UserInputRequest,
@@ -235,13 +236,21 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   const pendingInteractiveState = createThreadPendingInteractiveState();
   let contextWindow: ContextWindow | null = $state(null);
   // Rate-limit snapshots live in the global `rateLimitsInfo.svelte.ts`
-  // store keyed by provider — they are an account property, not a
-  // thread property. Components read via `getProviderRateLimit(provider,
-  // windowMins)` directly. Keeping them out of per-pane state means
-  // they survive thread switches, turn completions, and metadata
-  // updates with no defensive logic on the pane side.
+  // store keyed by provider and account — they are account cache state,
+  // not thread state. Keeping them out of each pane means they survive
+  // thread switches, turn completions, and metadata updates. The pane
+  // only tracks which account its live provider session should select.
   let providerBanner: ProviderStatusEvent | null | undefined =
     $state(undefined);
+  let providerSessionAccount: ProviderSessionAccountEvent | null =
+    $state(null);
+  let providerSessionAccountRevision = 0;
+  function updateProviderSessionAccount(
+    account: ProviderSessionAccountEvent | null,
+  ): void {
+    providerSessionAccount = account?.connected ? account : null;
+    providerSessionAccountRevision += 1;
+  }
   // generalError is the grab-bag pane-level error slot surfaced by
   // ProviderStatusBanner for non-wire failures: thread load failures,
   // composer send failures, git action failures, reconnect failures.
@@ -334,6 +343,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getSwitchGeneration: () => switchGeneration,
     pendingInteractiveState,
     liveTodoState,
+    getProviderSessionAccountRevision: () => providerSessionAccountRevision,
+    hydrateProviderAccount: (account, expectedMutationRevision) => {
+      if (providerSessionAccountRevision !== expectedMutationRevision) return;
+      updateProviderSessionAccount(account);
+    },
     getEffectiveModelRevision: () => effectiveModelRevision,
     hydrateEffectiveModel: (model, backendRevision, expectedMutationRevision) => {
       if (effectiveModelRevision !== expectedMutationRevision) return;
@@ -771,6 +785,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     pendingInteractiveState.clear();
     contextWindow = seedContextWindow(newThread);
     providerBanner = undefined;
+    updateProviderSessionAccount(null);
     generalError = null;
     generalErrorKind = null;
     sendInFlight = false;
@@ -1062,6 +1077,32 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     return { liveStateHydrationConsumed };
   }
 
+  // Shared removal core for the conversation-truncation methods
+  // (removeItemsFromTurn / removeRevertedItems): split the timeline on
+  // the predicate, then run the full disposal choreography — smoother
+  // teardown, row-UI-state disposal, reveal recompute, and cache/prior
+  // eviction so a thread-switch restore can't resurrect removed rows.
+  // Returns the removed items in their previous order; [] when nothing
+  // matched (idempotent).
+  function removeMatchedItems(shouldRemove: (item: Item) => boolean): Item[] {
+    const removed: Item[] = [];
+    const kept: Item[] = [];
+    for (const it of items) {
+      if (shouldRemove(it)) removed.push(it);
+      else kept.push(it);
+    }
+    if (removed.length === 0) return removed;
+    replaceTimelineItems(kept);
+    for (const r of removed) streamingReveal.disposeSmootherFor(r.id);
+    rowUiState.disposeItems(removed);
+    streamingReveal.recomputeReveal();
+    if (thread) {
+      threadItemCache.evict(thread.id);
+      clearThreadSizePriors(thread.id);
+    }
+    return removed;
+  }
+
   return {
     // --- Getters (reactive reads) ---
     get paneId() {
@@ -1214,6 +1255,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
     get providerBanner() {
       return providerBanner;
+    },
+    get providerSessionAccount() {
+      return providerSessionAccount;
     },
     get generalError() {
       return generalError;
@@ -1586,6 +1630,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       pendingInteractiveState.clear();
       contextWindow = null;
       providerBanner = undefined;
+      updateProviderSessionAccount(null);
       generalError = null;
       generalErrorKind = null;
       loading = false;
@@ -1929,22 +1974,29 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     removeItemsFromTurn(fromTurnIndex: number): Item[] {
       if (!Number.isFinite(fromTurnIndex)) return [];
-      const removed: Item[] = [];
-      const kept: Item[] = [];
-      for (const it of items) {
-        if (it.turnIndex >= fromTurnIndex) removed.push(it);
-        else kept.push(it);
+      return removeMatchedItems((it) => it.turnIndex >= fromTurnIndex);
+    },
+
+    /**
+     * Mirror a backend conversation revert exactly: remove every item
+     * with `turnIndex > turnIndex`, and within the anchor turn itself
+     * remove everything NOT named in `keptAnchorTurnItemIds` — the
+     * survivor list the `user_message:reverted` event carries from
+     * `DeleteConversationFromItem`. The kept-set formulation (rather
+     * than a removed-set) is load-bearing: pane-only rows that were
+     * never persisted are absent from any backend enumeration, and a
+     * kept-set removes them for free. An empty list degenerates to
+     * `removeItemsFromTurn(turnIndex)`. Idempotent like its sibling.
+     */
+    removeRevertedItems(turnIndex: number, keptAnchorTurnItemIds: string[]): Item[] {
+      if (!Number.isFinite(turnIndex)) return [];
+      if (keptAnchorTurnItemIds.length === 0) {
+        return removeMatchedItems((it) => it.turnIndex >= turnIndex);
       }
-      if (removed.length === 0) return removed;
-      replaceTimelineItems(kept);
-      for (const r of removed) streamingReveal.disposeSmootherFor(r.id);
-      rowUiState.disposeItems(removed);
-      streamingReveal.recomputeReveal();
-      if (thread) {
-        threadItemCache.evict(thread.id);
-        clearThreadSizePriors(thread.id);
-      }
-      return removed;
+      const kept = new Set(keptAnchorTurnItemIds);
+      return removeMatchedItems(
+        (it) => it.turnIndex > turnIndex || (it.turnIndex === turnIndex && !kept.has(it.id)),
+      );
     },
 
     /**
@@ -2249,6 +2301,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     setProviderBanner(status: ProviderStatusEvent | null | undefined): void {
       providerBanner = status;
+    },
+
+    setProviderSessionAccount(account: ProviderSessionAccountEvent | null): void {
+      updateProviderSessionAccount(account);
     },
 
     // --- Turn lifecycle mutations ---

@@ -370,6 +370,10 @@ var LocalOnlyMethods = map[string]bool{
 	"StartTerminal":         true,
 	"ForkThread":            true,
 	"ForkThreadFromMessage": true,
+	// RevertConversationToMessage cuts the provider session (Claude JSONL
+	// slice / Codex thread/fork) and truncates SQLite in place — same
+	// session-control + FS class as the fork variants above.
+	"RevertConversationToMessage": true,
 	// Background-task control terminates host subprocesses.
 	"StopClaudeTask":                true,
 	"CleanCodexBackgroundTerminals": true,
@@ -378,6 +382,11 @@ var LocalOnlyMethods = map[string]bool{
 	"ProbeCodexAccount":             true,
 	"RecheckClaudeAccount":          true,
 	"RecheckCodexAccount":           true,
+	"ListProviderAccounts":          true,
+	"LoginProviderAccount":          true,
+	"SwitchProviderAccount":         true,
+	"RemoveProviderAccount":         true,
+	"RefreshProviderAccountUsage":   true,
 
 	// claude-tui take-control: Attach arms raw-output fan-out and Replay
 	// returns the PTY frame buffer; Input/Resize/Refresh/SetControl steer the

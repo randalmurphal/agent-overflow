@@ -3,25 +3,15 @@ package codex
 import (
 	"encoding/json"
 	"sort"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
 )
 
-// canonicalCodexLimitID mirrors the Codex TUI's hardcoded status-line
-// bucket (codex-rs/tui/src/chatwidget.rs:2891 + the status-line readers
-// at :6927/:6963). Codex emits one rate-limit notification per bucket
-// (`codex`, `codex_other`, `spark`, ...); the frontend store is keyed
-// by (provider, windowMins) only, so a non-canonical bucket would
-// overwrite the canonical 5h/7d data in the same slot. The TUI avoids
-// this by reading only the `"codex"` bucket and defaulting a missing
-// `limit_id` to it.
-//
-// The value is intentionally derived from `provider.Codex` — the two
-// strings happen to coincide today, and tying them together means a
-// future rename of the `ProviderKind` constant prompts a review of
-// this filter (and vice versa).
+// canonicalCodexLimitID is the fallback for the legacy single-bucket view.
+// Modern responses can carry additional named buckets (Spark today, future
+// model/surface quotas later); every bucket is preserved and keyed by
+// (limitId, windowMins) downstream.
 const canonicalCodexLimitID = string(provider.Codex)
 
 func normalizeRateLimitsMeta(params json.RawMessage, now time.Time) json.RawMessage {
@@ -63,10 +53,7 @@ func buildRateLimitsSnapshot(params json.RawMessage, updatedAt int64) (provider.
 // extractFlatRateLimitEntries handles a self-describing
 // `{"limits":[{...RateLimitEntry...}]}` envelope — our own normalized
 // shape, used when a previously-emitted snapshot is replayed through
-// the parser (e.g. for tests round-tripping the wire). Codex never
-// emits this shape itself, but the function must still apply the
-// canonical-bucket filter so a future caller can't bypass the same
-// invariant that the wire path enforces.
+// the parser (e.g. for tests round-tripping the wire).
 func extractFlatRateLimitEntries(params json.RawMessage) []provider.RateLimitEntry {
 	var payload struct {
 		Limits []provider.RateLimitEntry `json:"limits"`
@@ -80,9 +67,6 @@ func extractFlatRateLimitEntries(params json.RawMessage) []provider.RateLimitEnt
 		if entry.LimitID == "" {
 			entry.LimitID = canonicalCodexLimitID
 		}
-		if !strings.EqualFold(entry.LimitID, canonicalCodexLimitID) {
-			continue
-		}
 		limits = append(limits, entry)
 	}
 	return limits
@@ -92,12 +76,8 @@ func extractFlatRateLimitEntries(params json.RawMessage) []provider.RateLimitEnt
 // `account/rateLimits/read` response carries BOTH a top-level
 // `rateLimits` (the "backward-compatible single-bucket view") AND a
 // per-bucket `rateLimitsByLimitId` map; `account/rateLimits/updated`
-// notifications carry only `rateLimits`. We mirror the TUI's
-// status-line behavior exactly (chatwidget.rs:6927/6963 →
-// `rate_limit_snapshots_by_limit_id.get("codex")`): when the
-// multi-bucket map is present, take ONLY its `"codex"` entry; never
-// iterate the map. That way a future bucket name change upstream
-// can't sneak through.
+// notifications carry one bucket in `rateLimits`. Preserve every map entry so
+// account settings can render provider-added quotas without a client release.
 func extractCodexRateLimitEntries(params json.RawMessage) []provider.RateLimitEntry {
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(params, &payload); err != nil {
@@ -107,10 +87,17 @@ func extractCodexRateLimitEntries(params json.RawMessage) []provider.RateLimitEn
 	if byID, ok := payload["rateLimitsByLimitId"]; ok {
 		var entries map[string]json.RawMessage
 		if err := json.Unmarshal(byID, &entries); err == nil {
-			if entry, ok := entries[canonicalCodexLimitID]; ok {
-				if limits := flattenRateLimitEntry(entry); len(limits) > 0 {
-					return limits
-				}
+			keys := make([]string, 0, len(entries))
+			for key := range entries {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			var limits []provider.RateLimitEntry
+			for _, key := range keys {
+				limits = append(limits, flattenRateLimitEntryWithDefault(entries[key], key)...)
+			}
+			if len(limits) > 0 {
+				return limits
 			}
 		}
 	}
@@ -125,10 +112,13 @@ func extractCodexRateLimitEntries(params json.RawMessage) []provider.RateLimitEn
 // flattenRateLimitEntry expands one RateLimitSnapshot envelope into
 // per-window entries. Codex's wire `limit_id` is Option<String>; the
 // default-bucket case arrives as `"limitId": null`. The TUI defaults
-// missing values to "codex" (chatwidget.rs:2891) — we mirror that AND
-// drop any explicit non-canonical bucket, since the frontend store is
-// keyed by (provider, windowMins) only and can't distinguish buckets.
+// missing values to "codex" (chatwidget.rs:2891); explicit named buckets
+// stay distinct downstream.
 func flattenRateLimitEntry(raw json.RawMessage) []provider.RateLimitEntry {
+	return flattenRateLimitEntryWithDefault(raw, canonicalCodexLimitID)
+}
+
+func flattenRateLimitEntryWithDefault(raw json.RawMessage, defaultLimitID string) []provider.RateLimitEntry {
 	var payload struct {
 		LimitID   string          `json:"limitId"`
 		LimitName string          `json:"limitName"`
@@ -141,10 +131,10 @@ func flattenRateLimitEntry(raw json.RawMessage) []provider.RateLimitEntry {
 
 	limitID := payload.LimitID
 	if limitID == "" {
-		limitID = canonicalCodexLimitID
+		limitID = defaultLimitID
 	}
-	if !strings.EqualFold(limitID, canonicalCodexLimitID) {
-		return nil
+	if limitID == "" {
+		limitID = canonicalCodexLimitID
 	}
 
 	var limits []provider.RateLimitEntry

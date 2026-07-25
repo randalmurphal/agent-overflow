@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/settings"
 )
 
 // TestHasActiveClaudeSession_Empty returns false when no sessions are
@@ -180,6 +181,52 @@ func TestProbeClaudeRateLimits_RespectsShuttingDownGate(t *testing.T) {
 	}
 	if emits.Load() != 0 {
 		t.Errorf("expected 0 emits with shutdown set, got %d", emits.Load())
+	}
+}
+
+func TestProbeClaudeRateLimits_StopsWhenExternalAccountIdentityFails(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Claude),
+		"first",
+		"first@example.com",
+		[]byte(`{"claudeAiOauth":{"accessToken":"first"}}`),
+	)
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": filepath.Join(t.TempDir(), "missing-claude"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		activePath,
+		[]byte(`{"claudeAiOauth":{"accessToken":"unknown"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	srvURL, _ := url.Parse(srv.URL)
+	app.rateLimitProbeClientOverride = &http.Client{
+		Transport: redirectRoundTripper{target: srvURL, inner: http.DefaultTransport},
+	}
+
+	app.probeClaudeRateLimits(context.Background())
+
+	if hits.Load() != 0 {
+		t.Fatalf("usage endpoint hits = %d, want 0 after identity failure", hits.Load())
 	}
 }
 

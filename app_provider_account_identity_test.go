@@ -1,0 +1,491 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provideraccounts"
+	"agent-overflow/internal/settings"
+)
+
+func installIdentityTestAccount(
+	t *testing.T,
+	app *App,
+	providerName string,
+	accountID string,
+	email string,
+	credential []byte,
+) {
+	t.Helper()
+	accounts, err := provideraccounts.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	credentials, err := provideraccounts.NewCredentials(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.WriteAccountCredential(providerName, accountID, credential); err != nil {
+		t.Fatal(err)
+	}
+	activePath, err := credentials.ActiveCredentialPath(providerName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(activePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activePath, credential, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accounts.UpsertAndActivate(provideraccounts.Account{
+		ID:       accountID,
+		Provider: providerName,
+		Email:    email,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.providerAccounts = accounts
+	app.providerCredentials = credentials
+	app.providerAccountMu.Lock()
+	app.rememberProviderCredentialFingerprintLocked(providerName, credential)
+	app.providerAccountMu.Unlock()
+}
+
+func writeCodexIdentityProbeBinary(t *testing.T, email string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "mock-codex")
+	script := "#!/bin/bash\n" +
+		"read -r _ || true\n" +
+		"read -r _ || true\n" +
+		"read -r _ || true\n" +
+		"printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"v2\"}}'\n" +
+		"printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":\"" + email + "\",\"planType\":\"pro\"},\"requiresOpenaiAuth\":true}}'\n" +
+		"exit 0\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestExternalClaudeLoginReconcilesMetadataAndLiveSessions(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Claude),
+		"first",
+		"first@example.com",
+		[]byte(`{"claudeAiOauth":{"accessToken":"first"}}`),
+	)
+	app.sessions["thread"] = session{
+		provider:             string(provider.Claude),
+		token:                "claude-process",
+		credentialGeneration: app.providerAccounts.Generation(string(provider.Claude)),
+		credentialAccountID:  "first",
+		liveness:             newSessionLiveness(time.Now()),
+	}
+
+	binary := writeProbeMockBinary(
+		t,
+		`{"email":"second@example.com","subscriptionType":"Claude Max","tokenSource":"oauth","apiProvider":"firstParty"}`,
+	)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		activePath,
+		[]byte(`{"claudeAiOauth":{"accessToken":"second"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var events struct {
+		sync.Mutex
+		account int
+		session int
+	}
+	app.testEmitHook = func(name string, _ any) {
+		events.Lock()
+		defer events.Unlock()
+		switch name {
+		case "provider:account":
+			events.account++
+		case "provider:session_account":
+			events.session++
+		}
+	}
+
+	if err := app.reconcileExternalProviderAccount(string(provider.Claude)); err != nil {
+		t.Fatalf("reconcileExternalProviderAccount: %v", err)
+	}
+	active, ok := app.providerAccounts.Active(string(provider.Claude), time.Now())
+	if !ok || active.Email != "second@example.com" {
+		t.Fatalf("active account = %+v, ok=%v", active, ok)
+	}
+	if got := app.sessions["thread"].credentialAccountID; got != active.ID {
+		t.Fatalf("live Claude session account = %q, want %q", got, active.ID)
+	}
+	events.Lock()
+	defer events.Unlock()
+	if events.account != 1 || events.session != 1 {
+		t.Fatalf("events = account:%d session:%d, want 1/1", events.account, events.session)
+	}
+}
+
+func TestExternalCodexLoginLeavesRunningSessionOnCachedAccount(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Codex),
+		"first",
+		"first@example.com",
+		[]byte(`{"tokens":{"access_token":"first"}}`),
+	)
+	app.sessions["thread"] = session{
+		provider:             string(provider.Codex),
+		token:                "codex-process",
+		credentialGeneration: app.providerAccounts.Generation(string(provider.Codex)),
+		credentialAccountID:  "first",
+		liveness:             newSessionLiveness(time.Now()),
+	}
+
+	binary := writeCodexIdentityProbeBinary(t, "second@example.com")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Codex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		activePath,
+		[]byte(`{"tokens":{"access_token":"second"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+		t.Fatalf("reconcileExternalProviderAccount: %v", err)
+	}
+	active, ok := app.providerAccounts.Active(string(provider.Codex), time.Now())
+	if !ok || active.Email != "second@example.com" {
+		t.Fatalf("active account = %+v, ok=%v", active, ok)
+	}
+	if got := app.sessions["thread"].credentialAccountID; got != "first" {
+		t.Fatalf("running Codex session account = %q, want cached account first", got)
+	}
+}
+
+func TestExternalCodexTokenRotationUpdatesSavedAccountCredential(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Codex),
+		"first",
+		"first@example.com",
+		[]byte(`{"tokens":{"access_token":"initial"}}`),
+	)
+	generation := app.providerAccounts.Generation(string(provider.Codex))
+
+	accountPath, err := app.providerCredentials.AccountCredentialPath(
+		string(provider.Codex),
+		"first",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		accountPath,
+		[]byte(`{"tokens":{"access_token":"managed-old"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(accountPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Codex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		activePath,
+		[]byte(`{"tokens":{"access_token":"external-refresh"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	binary := writeCodexIdentityProbeBinary(t, "first@example.com")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+		t.Fatalf("reconcileExternalProviderAccount: %v", err)
+	}
+
+	got, err := os.ReadFile(accountPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const externalCredential = `{"tokens":{"access_token":"external-refresh"}}`
+	if string(got) != externalCredential {
+		t.Fatalf("saved account credential = %s, want %s", got, externalCredential)
+	}
+	if got := app.providerAccounts.Generation(string(provider.Codex)); got != generation+1 {
+		t.Fatalf("credential generation = %d, want %d", got, generation+1)
+	}
+}
+
+func TestExternalCodexReconciliationUsesCanonicalCredentialAsTruth(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Codex),
+		"first",
+		"first@example.com",
+		[]byte(`{"tokens":{"access_token":"initial"}}`),
+	)
+
+	accountPath, err := app.providerCredentials.AccountCredentialPath(
+		string(provider.Codex),
+		"first",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const managedCredential = `{"tokens":{"access_token":"managed-refresh"}}`
+	if err := os.WriteFile(accountPath, []byte(managedCredential), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Codex))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		activePath,
+		[]byte(`{"tokens":{"access_token":"external-old"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(activePath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	binary := writeCodexIdentityProbeBinary(t, "first@example.com")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.reconcileExternalProviderAccount(string(provider.Codex)); err != nil {
+		t.Fatalf("reconcileExternalProviderAccount: %v", err)
+	}
+
+	got, err := os.ReadFile(accountPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const canonicalCredential = `{"tokens":{"access_token":"external-old"}}`
+	if string(got) != canonicalCredential {
+		t.Fatalf("saved account credential = %s, want %s", got, canonicalCredential)
+	}
+}
+
+func TestManagedClaudeSwitchUpdatesLiveSessionsImmediately(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Claude),
+		"first",
+		"first@example.com",
+		[]byte(`{"claudeAiOauth":{"accessToken":"first"}}`),
+	)
+	if err := app.providerCredentials.WriteAccountCredential(
+		string(provider.Claude),
+		"second",
+		[]byte(`{"claudeAiOauth":{"accessToken":"second"}}`),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.providerAccounts.UpsertAndActivate(provideraccounts.Account{
+		ID:       "second",
+		Provider: string(provider.Claude),
+		Email:    "second@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.providerAccounts.Activate(string(provider.Claude), "first"); err != nil {
+		t.Fatal(err)
+	}
+	app.sessions["thread"] = session{
+		provider:             string(provider.Claude),
+		token:                "claude-process",
+		credentialGeneration: app.providerAccounts.Generation(string(provider.Claude)),
+		credentialAccountID:  "first",
+		liveness:             newSessionLiveness(time.Now()),
+	}
+
+	var sessionEvents int
+	app.testEmitHook = func(name string, _ any) {
+		if name == "provider:session_account" {
+			sessionEvents++
+		}
+	}
+	if _, err := app.SwitchProviderAccount(string(provider.Claude), "second"); err != nil {
+		t.Fatalf("SwitchProviderAccount: %v", err)
+	}
+
+	got := app.sessions["thread"]
+	if got.credentialAccountID != "second" {
+		t.Fatalf("live Claude session account = %q, want second", got.credentialAccountID)
+	}
+	if got.credentialGeneration != app.providerAccounts.Generation(string(provider.Claude)) {
+		t.Fatalf(
+			"live Claude session generation = %d, want %d",
+			got.credentialGeneration,
+			app.providerAccounts.Generation(string(provider.Claude)),
+		)
+	}
+	if sessionEvents != 1 {
+		t.Fatalf("provider session account events = %d, want 1", sessionEvents)
+	}
+}
+
+func TestUnchangedCredentialFingerprintSkipsIdentityProbe(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Claude),
+		"first",
+		"first@example.com",
+		[]byte(`{"claudeAiOauth":{"accessToken":"unchanged"}}`),
+	)
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": filepath.Join(t.TempDir(), "must-not-run"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.reconcileExternalProviderAccount(string(provider.Claude)); err != nil {
+		t.Fatalf("unchanged credential unexpectedly probed: %v", err)
+	}
+}
+
+func TestObservedIdentityEnrichesLegacyAccountWithoutCreatingDuplicate(t *testing.T) {
+	app := newTestAppWithStore(t)
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Codex),
+		"legacy",
+		"",
+		[]byte(`{"tokens":{"access_token":"legacy"}}`),
+	)
+
+	type identityResult struct {
+		accountID string
+		updated   *provideraccounts.Account
+		err       error
+	}
+	result := make(chan identityResult, 1)
+	app.providerAccountMu.Lock()
+	go func() {
+		accountID, updated, err := app.accountIDForObservedIdentity(
+			string(provider.Codex),
+			"legacy",
+			provider.AccountInfo{
+				Email:            "legacy@example.com",
+				SubscriptionType: "pro",
+				APIProvider:      "openai",
+			},
+		)
+		result <- identityResult{
+			accountID: accountID,
+			updated:   updated,
+			err:       err,
+		}
+	}()
+	var got identityResult
+	select {
+	case got = <-result:
+		app.providerAccountMu.Unlock()
+	case <-time.After(time.Second):
+		app.providerAccountMu.Unlock()
+		<-result
+		t.Fatal("identity reconciliation blocked while caller held providerAccountMu")
+	}
+	accountID, updated, err := got.accountID, got.updated, got.err
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated == nil || updated.Email != "legacy@example.com" {
+		t.Fatalf("updated account = %+v, want enriched metadata", updated)
+	}
+	if accountID != "legacy" {
+		t.Fatalf("account ID = %q, want legacy", accountID)
+	}
+	accounts := app.providerAccounts.List(string(provider.Codex), time.Now())
+	if len(accounts) != 1 || accounts[0].Email != "legacy@example.com" {
+		t.Fatalf("accounts = %+v, want one enriched legacy account", accounts)
+	}
+}
+
+func TestThreadLiveStateIncludesCurrentSessionAccount(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-account-live-state")
+	thread.Provider = string(provider.Codex)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Codex),
+		"first",
+		"first@example.com",
+		[]byte(`{"tokens":{"access_token":"first"}}`),
+	)
+	app.sessions[thread.ID] = session{
+		provider:            string(provider.Codex),
+		token:               "codex-process",
+		credentialAccountID: "first",
+		liveness:            newSessionLiveness(time.Now()),
+	}
+
+	state, err := app.GetThreadLiveState(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ProviderAccount == nil ||
+		state.ProviderAccount.AccountID != "first" ||
+		state.ProviderAccount.Account.Email != "first@example.com" {
+		t.Fatalf("provider account = %+v", state.ProviderAccount)
+	}
+}
