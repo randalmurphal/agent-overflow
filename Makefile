@@ -153,13 +153,18 @@ dev:
 # Debug env has two WSLENV hops in this target:
 #   1. WSL shell -> Windows launcher (.exe launched through interop).
 #   2. Windows launcher -> WSL backend (wsl.exe child).
-# The launcher already handles hop 2, but hop 1 must be whitelisted here
-# or Windows never receives AGENT_OVERFLOW_DEBUG in the first place.
+# The launcher already handles hop 2 (its own vars directly, the
+# diagnostic set via internal/diagenv Passthrough), but hop 1 must be
+# whitelisted here or Windows never receives the vars in the first
+# place. DEV_WSL_FWD_VARS is that hop-1 list:
 # AGENT_OVERFLOW_WEBVIEW_LOG (opt-in chrome_debug.log; spawns a console
-# window — closing it kills the app, WebView2Feedback #3192) only needs
-# hop 1: it is consumed by the Windows launcher itself.
+# window — closing it kills the app, WebView2Feedback #3192) and
 # AGENT_OVERFLOW_WEBVIEW_SOFTWARE (opt-in --disable-gpu software
-# rendering, desktop-stutter diagnostics) likewise only needs hop 1.
+# rendering, desktop-stutter diagnostics) only need hop 1: they are
+# consumed by the Windows launcher itself. AGENT_OVERFLOW_PPROF and
+# AGENT_OVERFLOW_RENDERER_DIAG (internal/diagenv) ride both hops to
+# reach the WSL backend.
+DEV_WSL_FWD_VARS := AGENT_OVERFLOW_DEBUG AGENT_OVERFLOW_WEBVIEW_LOG AGENT_OVERFLOW_WEBVIEW_SOFTWARE AGENT_OVERFLOW_PPROF AGENT_OVERFLOW_RENDERER_DIAG
 dev-wsl:
 	@if [ -z "$$WSL_DISTRO_NAME" ]; then \
 		echo "ERROR: WSL_DISTRO_NAME is unset. Run this target from inside a WSL shell."; \
@@ -180,25 +185,15 @@ dev-wsl:
 	cp bin/agent-overflow.exe "$$WIN_DEV_EXE_LINUX"; \
 	echo "Launching $$WIN_DEV_EXE_LINUX --distro $$WSL_DISTRO_NAME"; \
 	FWD_WSLENV="$$WSLENV"; \
-	if [ -n "$(AGENT_OVERFLOW_DEBUG)" ]; then \
+	for spec in $(foreach v,$(DEV_WSL_FWD_VARS),"$(v)=$($(v))"); do \
+		name=$${spec%%=*}; \
+		[ -n "$${spec#*=}" ] || continue; \
 		case ":$$FWD_WSLENV:" in \
-			*:AGENT_OVERFLOW_DEBUG:*) ;; \
-			*) FWD_WSLENV="AGENT_OVERFLOW_DEBUG$${FWD_WSLENV:+:$$FWD_WSLENV}" ;; \
+			*:$$name:*) ;; \
+			*) FWD_WSLENV="$$name$${FWD_WSLENV:+:$$FWD_WSLENV}" ;; \
 		esac; \
-	fi; \
-	if [ -n "$(AGENT_OVERFLOW_WEBVIEW_LOG)" ]; then \
-		case ":$$FWD_WSLENV:" in \
-			*:AGENT_OVERFLOW_WEBVIEW_LOG:*) ;; \
-			*) FWD_WSLENV="AGENT_OVERFLOW_WEBVIEW_LOG$${FWD_WSLENV:+:$$FWD_WSLENV}" ;; \
-		esac; \
-	fi; \
-	if [ -n "$(AGENT_OVERFLOW_WEBVIEW_SOFTWARE)" ]; then \
-		case ":$$FWD_WSLENV:" in \
-			*:AGENT_OVERFLOW_WEBVIEW_SOFTWARE:*) ;; \
-			*) FWD_WSLENV="AGENT_OVERFLOW_WEBVIEW_SOFTWARE$${FWD_WSLENV:+:$$FWD_WSLENV}" ;; \
-		esac; \
-	fi; \
-	WSLENV="$$FWD_WSLENV" AGENT_OVERFLOW_DEBUG="$(AGENT_OVERFLOW_DEBUG)" AGENT_OVERFLOW_WEBVIEW_LOG="$(AGENT_OVERFLOW_WEBVIEW_LOG)" AGENT_OVERFLOW_WEBVIEW_SOFTWARE="$(AGENT_OVERFLOW_WEBVIEW_SOFTWARE)" "$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"
+	done; \
+	WSLENV="$$FWD_WSLENV" $(foreach v,$(DEV_WSL_FWD_VARS),$(v)="$($(v))") "$$WIN_DEV_EXE_LINUX" --distro "$$WSL_DISTRO_NAME"
 
 # build-wsl: cross-compiles the Linux ELF backend + Windows .exe launcher
 # without running. Use this when you want to hand the .exe off (e.g.

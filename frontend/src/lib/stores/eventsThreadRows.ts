@@ -7,10 +7,11 @@
 // setupEventListeners.
 import type { TurnCompletedEvent } from '../types/events';
 import type { Item, Thread } from '../types/models';
+import { ListThreads } from './bindings';
 import { findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { addToast } from './toast.svelte';
-import { getThreadById, getThreads, refreshThreads, replaceThread, touchThreadActivity } from './threads.svelte';
+import { getThreadById, getThreads, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { parseJsonObject } from '../utils/parseJsonObject';
 
 /**
@@ -35,7 +36,15 @@ export interface RuntimeModeChangedPayload {
   needsReconnect: boolean;
 }
 
-function syncThreadRow(updated: Thread): Thread {
+/**
+ * Merge a backend/wire thread row with newer local state. Read markers,
+ * latest-turn completion, and activity timestamps only move forward
+ * locally (ChatView's read-mark effect patches lastReadAt ahead of the
+ * debounced MarkThreadRead persist), so a row snapshotted before that
+ * persist landed must not drag them backward. Explicit unread (0) still
+ * wins — see mergeReadMarkersPreservingUnread.
+ */
+function mergeThreadRowWithLocal(updated: Thread): Thread {
   const readMarkers = [updated.lastReadAt];
   const latestCompletions = [updated.latestTurnCompletedAt];
   const activityMarkers = [updated.updatedAt];
@@ -66,7 +75,11 @@ function syncThreadRow(updated: Thread): Thread {
   const lastReadAt = mergeReadMarkersPreservingUnread(readMarkers);
   const latestTurnCompletedAt = mergeLatestTurnCompletedAt(latestCompletions);
   const updatedAt = mergeLatestActivityAt(activityMarkers);
-  const merged = { ...updated, updatedAt, lastReadAt, latestTurnCompletedAt };
+  return { ...updated, updatedAt, lastReadAt, latestTurnCompletedAt };
+}
+
+export function syncThreadRow(updated: Thread): Thread {
+  const merged = mergeThreadRowWithLocal(updated);
   syncThread(merged);
   return merged;
 }
@@ -113,8 +126,44 @@ export function userTextCountsAsActivity(item: Item): boolean {
   return true;
 }
 
+/**
+ * Mid-session sidebar resync (transport-gap recovery). Unlike
+ * refreshThreads' wholesale replacement — fine at boot, where no local
+ * state exists yet — a resync races live local state in two directions:
+ *
+ *   - the snapshot's lastReadAt can predate the debounced MarkThreadRead
+ *     persist for a read-mark the UI already applied, reverting a row
+ *     the focused pane just cleared;
+ *   - the snapshot can carry a completion (latestTurnCompletedAt) whose
+ *     turn_completed event fell into the gap, which no pane ever saw.
+ *
+ * Rows therefore go through the same local-state merge as pushed
+ * thread:updated rows, and panes showing a thread converge on the merged
+ * copy. The pane fan-out is load-bearing: ChatView's read-mark effect
+ * keys off pane.thread, so without it a gap-lost completion leaves the
+ * sidebar "Completed" pill stuck on a thread the user is viewing.
+ */
+async function resyncThreadRows(): Promise<void> {
+  let rows: Thread[];
+  try {
+    rows = await ListThreads() as Thread[];
+  } catch (err) {
+    console.error('Failed to resync threads after transport gap:', err);
+    addToast('error', 'Failed to load threads');
+    return;
+  }
+  const merged = rows.map((row) => mergeThreadRowWithLocal(row));
+  replaceAllThreads(merged);
+  const mergedById = new Map(merged.map((thread) => [thread.id, thread]));
+  for (const pane of iterPanes()) {
+    if (!pane.threadId || !pane.thread) continue;
+    const row = mergedById.get(pane.threadId);
+    if (row) pane.replaceThread(row);
+  }
+}
+
 export function refreshSidebarProjections(): void {
-  void refreshThreads();
+  void resyncThreadRows();
   void refreshProjects();
 }
 

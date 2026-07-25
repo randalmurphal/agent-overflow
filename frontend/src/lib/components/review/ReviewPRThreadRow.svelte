@@ -49,7 +49,7 @@
       replying = false;
       return;
     }
-    if (event.key === 'Enter' && event.ctrlKey) {
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       void onSendReply();
     }

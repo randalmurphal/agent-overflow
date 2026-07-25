@@ -170,11 +170,10 @@ describe('<ChatView>', () => {
     expect(getByTestId('composer-workspace-strip')).toBeInTheDocument();
   });
 
-  it('hides the revert and fork message actions for a claude-tui thread', async () => {
-    // Same checkpointed-user-message setup as the revert test below, but on a
-    // claude-tui thread. The ready checkpoint makes the actions eligible to
-    // render (showMessageActions); only the provider capability gate keeps them
-    // off — so dropping the gate brings both buttons back and fails this test.
+  it('hides the fork message action for a claude-tui thread', async () => {
+    // Same user-message setup as the fork test below, but on a claude-tui
+    // thread. Only the provider capability gate keeps the button off — so
+    // dropping the gate brings it back and fails this test.
     const thread: Thread = { ...seedThread(), provider: 'claude-tui' };
     const userItem = makeItem({
       id: 'user:1',
@@ -186,255 +185,11 @@ describe('<ChatView>', () => {
       summary: 'Update one of the lines',
     });
     const pane = await buildPane(thread, [userItem]);
-    pane.checkpoints.setCheckpoints([{
-      id: 'checkpoint-1',
-      threadId: thread.id,
-      userItemId: userItem.id,
-      turnIndex: userItem.turnIndex,
-      status: 'ready',
-      files: [],
-      capturedAt: 1,
-    }]);
     mockDrafts(new Map([[thread.id, '']]));
 
     const { queryByLabelText } = render(ChatView, { props: { pane } });
 
-    expect(queryByLabelText('Revert to this message')).toBeNull();
     expect(queryByLabelText('Fork from this message')).toBeNull();
-  });
-
-  it.each([
-    ['conversation-and-files', 'revert-conversation-and-files'] as const,
-    ['conversation-only', 'revert-conversation-only'] as const,
-  ])('opens the message revert popover from a user-message action and applies %s', async (mode, actionTestId) => {
-    const thread = seedThread();
-    const userItem = makeItem({
-      id: 'user:1',
-      threadId: thread.id,
-      turnIndex: 1,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'Update one of the lines',
-    });
-    const pane = await buildPane(thread, [userItem]);
-    pane.checkpoints.setCheckpoints([{
-      id: 'checkpoint-1',
-      threadId: thread.id,
-      userItemId: userItem.id,
-      turnIndex: userItem.turnIndex,
-      status: 'ready',
-      files: [],
-      capturedAt: 1,
-    }]);
-    const preview = setBindingMock('GetMessageCheckpointRevertDiff', async () => `diff --git a/scratch.txt b/scratch.txt
---- a/scratch.txt
-+++ b/scratch.txt
-@@ -1 +1 @@
--old
-+new
-`);
-    const draftContent = mockDrafts(new Map([[thread.id, '']]));
-    const revert = setBindingMock('RevertToMessageCheckpointWithOptions', async () => {
-      draftContent.set(thread.id, userItem.summary);
-    });
-
-    const { getByLabelText, findByTestId, getByTestId } = render(ChatView, { props: { pane } });
-    await fireEvent.click(getByLabelText('Revert to this message'));
-
-    expect(await findByTestId('user-message-revert-popover')).toBeInTheDocument();
-    expect(preview).toHaveBeenCalledWith(thread.id, userItem.id);
-    expect(getByTestId('revert-conversation-and-files')).toHaveTextContent('+1');
-    expect(getByTestId('revert-conversation-and-files')).toHaveTextContent('-1');
-
-    await fireEvent.click(getByTestId(actionTestId));
-    await waitFor(() => {
-      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, mode, {
-        killRunningBackgroundTasks: false,
-      });
-      expect(getByLabelText('Message Input')).toHaveValue(userItem.summary);
-    });
-  });
-
-  it('drops a pending message revert target when the pane switches threads', async () => {
-    const thread = seedThread();
-    const userItem = makeItem({
-      id: 'user:1',
-      threadId: thread.id,
-      turnIndex: 1,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'Update one of the lines',
-    });
-    const pane = await buildPane(thread, [userItem]);
-    pane.checkpoints.setCheckpoints([{
-      id: 'checkpoint-1',
-      threadId: thread.id,
-      userItemId: userItem.id,
-      turnIndex: userItem.turnIndex,
-      status: 'ready',
-      files: [],
-      capturedAt: 1,
-    }]);
-    setBindingMock('GetMessageCheckpointRevertDiff', async () => 'diff --git a/scratch.txt b/scratch.txt\n');
-
-    const { getByLabelText, findByTestId, queryByTestId } = render(ChatView, { props: { pane } });
-    await fireEvent.click(getByLabelText('Revert to this message'));
-    expect(await findByTestId('user-message-revert-popover')).toBeInTheDocument();
-
-    const otherThread = { ...thread, id: 'thread-2', title: 'Other thread' };
-    setBindingMock('SwitchThread', async () => otherThread);
-    await pane.switchThread(otherThread);
-    await tick();
-
-    expect(queryByTestId('user-message-revert-popover')).toBeNull();
-  });
-
-  it('clears the open message revert target before loading a different preview', async () => {
-    const thread = seedThread();
-    const firstItem = makeItem({
-      id: 'user:1',
-      threadId: thread.id,
-      turnIndex: 1,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'First update',
-    });
-    const secondItem = makeItem({
-      id: 'user:2',
-      threadId: thread.id,
-      turnIndex: 2,
-      itemIndex: 1,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'Second update',
-    });
-    const pane = await buildPane(thread, [firstItem, secondItem]);
-    pane.checkpoints.setCheckpoints([
-      {
-        id: 'checkpoint-1',
-        threadId: thread.id,
-        userItemId: firstItem.id,
-        turnIndex: firstItem.turnIndex,
-        status: 'ready',
-        files: [],
-        capturedAt: 1,
-      },
-      {
-        id: 'checkpoint-2',
-        threadId: thread.id,
-        userItemId: secondItem.id,
-        turnIndex: secondItem.turnIndex,
-        status: 'ready',
-        files: [],
-        capturedAt: 2,
-      },
-    ]);
-    let rejectSecondPreview: (err: Error) => void = () => {};
-    const secondPreview = new Promise<string>((_, reject) => {
-      rejectSecondPreview = reject;
-    });
-    const preview = setBindingMock('GetMessageCheckpointRevertDiff', async (_threadId: string, itemId: string) => {
-      if (itemId === firstItem.id) return 'diff --git a/first.txt b/first.txt\n';
-      return secondPreview;
-    });
-    const revert = setBindingMock('RevertToMessageCheckpointWithOptions', async () => {});
-
-    const { getAllByLabelText, findByTestId, queryByTestId } = render(ChatView, { props: { pane } });
-    const revertButtons = getAllByLabelText('Revert to this message');
-
-    await fireEvent.click(revertButtons[0]);
-    expect(await findByTestId('user-message-revert-popover')).toBeInTheDocument();
-
-    await fireEvent.click(revertButtons[1]);
-    await waitFor(() => {
-      expect(preview).toHaveBeenCalledWith(thread.id, secondItem.id);
-    });
-    expect(queryByTestId('user-message-revert-popover')).toBeNull();
-
-    rejectSecondPreview(new Error('preview failed'));
-    await waitFor(() => {
-      expect(queryByTestId('user-message-revert-popover')).toBeNull();
-    });
-    expect(revert).not.toHaveBeenCalled();
-  });
-
-  it('closes an open message revert popover when the thread starts working', async () => {
-    const thread = seedThread();
-    const userItem = makeItem({
-      id: 'user:1',
-      threadId: thread.id,
-      turnIndex: 1,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'Update one of the lines',
-    });
-    const pane = await buildPane(thread, [userItem]);
-    pane.checkpoints.setCheckpoints([{
-      id: 'checkpoint-1',
-      threadId: thread.id,
-      userItemId: userItem.id,
-      turnIndex: userItem.turnIndex,
-      status: 'ready',
-      files: [],
-      capturedAt: 1,
-    }]);
-    setBindingMock('GetMessageCheckpointRevertDiff', async () => 'diff --git a/scratch.txt b/scratch.txt\n');
-    const revert = setBindingMock('RevertToMessageCheckpointWithOptions', async () => {});
-
-    const { getByLabelText, findByTestId, queryByTestId } = render(ChatView, { props: { pane } });
-    await fireEvent.click(getByLabelText('Revert to this message'));
-    expect(await findByTestId('user-message-revert-popover')).toBeInTheDocument();
-
-    projectTurnStarted(thread.id, 'turn-active', 2, Date.now());
-    await tick();
-
-    expect(queryByTestId('user-message-revert-popover')).toBeNull();
-    expect(revert).not.toHaveBeenCalled();
-  });
-
-  it('confirms before reverting when background tray tasks are running', async () => {
-    const thread = seedThread();
-    const userItem = makeItem({
-      id: 'user:1',
-      threadId: thread.id,
-      turnIndex: 1,
-      itemIndex: 0,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'Update one of the lines',
-    });
-    const pane = await buildPane(thread, [userItem]);
-    pane.checkpoints.setCheckpoints([{
-      id: 'checkpoint-1',
-      threadId: thread.id,
-      userItemId: userItem.id,
-      turnIndex: userItem.turnIndex,
-      status: 'ready',
-      files: [],
-      capturedAt: 1,
-    }]);
-    setBindingMock('GetMessageCheckpointRevertDiff', async () => 'diff --git a/scratch.txt b/scratch.txt\n');
-    setBindingMock('CountRunningBackgroundTasks', async () => 1);
-    const revert = setBindingMock('RevertToMessageCheckpointWithOptions', async () => {});
-
-    const { getByLabelText, getByRole, getByTestId, findByText } = render(ChatView, { props: { pane } });
-    await fireEvent.click(getByLabelText('Revert to this message'));
-    expect(getByTestId('revert-conversation-only')).toBeInTheDocument();
-
-    await fireEvent.click(getByTestId('revert-conversation-only'));
-    expect(await findByText('This will kill 1 running background task, then revert the conversation. This cannot be undone.')).toBeInTheDocument();
-    expect(revert).not.toHaveBeenCalled();
-
-    await fireEvent.click(getByRole('button', { name: 'Kill and revert' }));
-    await waitFor(() => {
-      expect(revert).toHaveBeenCalledWith(thread.id, userItem.id, 'conversation-only', {
-        killRunningBackgroundTasks: true,
-      });
-    });
   });
 
   it('forks from a user-message action through the chat-level handler', async () => {
@@ -449,15 +204,6 @@ describe('<ChatView>', () => {
       summary: 'Update one of the lines',
     });
     const pane = await buildPane(thread, [userItem]);
-    pane.checkpoints.setCheckpoints([{
-      id: 'checkpoint-1',
-      threadId: thread.id,
-      userItemId: userItem.id,
-      turnIndex: userItem.turnIndex,
-      status: 'ready',
-      files: [],
-      capturedAt: 1,
-    }]);
     const forked = {
       ...thread,
       id: 'fork-1',
@@ -548,9 +294,10 @@ describe('<ChatView>', () => {
     setBindingMock('GetTerminalReplay', async () => '');
     const pane = await buildPane({ ...seedThread(), mode: 'terminal' });
     const { getByTestId, queryByTestId, container } = render(ChatView, { props: { pane } });
-    await tick();
-
-    expect(container.querySelector('[data-ui-surface="terminal"]')).not.toBeNull();
+    // TerminalView mounts through a lazy import, so wait for it to land.
+    await waitFor(() => {
+      expect(container.querySelector('[data-ui-surface="terminal"]')).not.toBeNull();
+    });
     expect(getByTestId('terminal-pane-close')).toBeInTheDocument();
     // The chat machinery must be absent — proves the branch replaces, not overlays.
     expect(queryByTestId('chat-header')).toBeNull();
@@ -782,6 +529,78 @@ describe('<ChatView>', () => {
 
     expect(getThreads()[0]?.lastReadAt).toBe(1_500);
     expect(markRead).not.toHaveBeenCalled();
+  });
+
+  it('re-marks read when a stale thread replace reverts the read marker', async () => {
+    vi.useFakeTimers();
+    try {
+      const thread = { ...seedThread(), latestTurnCompletedAt: 1_000, lastReadAt: 1_500 };
+      setBindingMock('ListThreads', async () => [thread]);
+      await refreshThreads();
+      const pane = await buildPane(thread);
+      const markRead = setBindingMock('MarkThreadRead', async () => {});
+
+      vi.setSystemTime(2_000);
+      render(ChatView, { props: { pane } });
+      await tick();
+      expect(markRead).not.toHaveBeenCalled();
+
+      // A wholesale replace from a stale backend snapshot drags
+      // lastReadAt behind the completion again. The completion state is
+      // unchanged, so a dedup marker keyed only on completions would
+      // skip this revert forever and the "Completed" pill would stick
+      // on the focused pane.
+      pane.replaceThread({ ...pane.thread!, lastReadAt: 500 });
+      await tick();
+
+      expect(markRead).toHaveBeenCalledTimes(1);
+      expect(markRead).toHaveBeenLastCalledWith('thread-1');
+      expect(pane.thread?.lastReadAt).toBe(2_000);
+      expect(getThreads()[0]?.lastReadAt).toBe(2_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('marks read from the settled turn when the thread row completion is stale', async () => {
+    vi.useFakeTimers();
+    try {
+      const thread = { ...seedThread(), latestTurnCompletedAt: 1_000, lastReadAt: 1_500 };
+      setBindingMock('ListThreads', async () => [thread]);
+      await refreshThreads();
+      const pane = await buildPane(thread);
+      const markRead = setBindingMock('MarkThreadRead', async () => {});
+
+      vi.setSystemTime(2_500);
+      render(ChatView, { props: { pane } });
+      await tick();
+      expect(markRead).not.toHaveBeenCalled();
+
+      // Transport-gap recovery: the final turn_completed fell into the
+      // gap, so pane.thread.latestTurnCompletedAt is stale while
+      // refreshFromBackend rehydrated the settled turn with the real
+      // completion. The read target must follow the newest completion
+      // knowledge, not prefer the defined-but-stale thread row value.
+      pane.settleTurn({
+        turnId: 'turn-missed',
+        turnIndex: 3,
+        startedAt: 1_900,
+        completedAt: 2_000,
+        stopReason: 'end_turn',
+        assistantMessageId: null,
+        tokenUsage: null,
+        aborted: false,
+        errorMessage: '',
+      });
+      await tick();
+
+      expect(markRead).toHaveBeenCalledTimes(1);
+      expect(markRead).toHaveBeenLastCalledWith('thread-1');
+      expect(pane.thread?.lastReadAt).toBe(2_500);
+      expect(getThreads()[0]?.lastReadAt).toBe(2_500);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('clears a stale sidebar error status once the thread is open', async () => {

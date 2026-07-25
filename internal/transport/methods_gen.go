@@ -65,6 +65,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetBranchBaseDiff", ID: 1342635161},                    // main.App.GetBranchBaseDiff
 	{Name: "GetChannelMessages", ID: 3595031866},                   // main.App.GetChannelMessages
 	{Name: "GetChannelState", ID: 3664812883},                      // main.App.GetChannelState
+	{Name: "GetCommitDiff", ID: 3399370629},                        // main.App.GetCommitDiff
 	{Name: "GetContextSettings", ID: 3416004963},                   // main.App.GetContextSettings
 	{Name: "GetDesignWorkdirInfo", ID: 2179885147},                 // main.App.GetDesignWorkdirInfo
 	{Name: "GetDiffContextLines", ID: 1590634674},                  // main.App.GetDiffContextLines
@@ -76,12 +77,11 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetKeybindings", ID: 3015840904},                       // main.App.GetKeybindings
 	{Name: "GetMcpServerStatus", ID: 4139359668},                   // main.App.GetMcpServerStatus
 	{Name: "GetMergeConflictFile", ID: 3176695009},                 // main.App.GetMergeConflictFile
-	{Name: "GetMessageCheckpointDiff", ID: 1151360951},             // main.App.GetMessageCheckpointDiff
-	{Name: "GetMessageCheckpointRevertDiff", ID: 1106129437},       // main.App.GetMessageCheckpointRevertDiff
 	{Name: "GetModelsForProvider", ID: 1632984917},                 // main.App.GetModelsForProvider
 	{Name: "GetNetworkSettings", ID: 1026796858},                   // main.App.GetNetworkSettings
 	{Name: "GetPRCIJobLog", ID: 2411810578},                        // main.App.GetPRCIJobLog
 	{Name: "GetPRCIJobs", ID: 2370852281},                          // main.App.GetPRCIJobs
+	{Name: "GetPRCommitDiff", ID: 1737292419},                      // main.App.GetPRCommitDiff
 	{Name: "GetPRDetail", ID: 2443547196},                          // main.App.GetPRDetail
 	{Name: "GetPRDiff", ID: 1867413234},                            // main.App.GetPRDiff
 	{Name: "GetPRMergeConflicts", ID: 106351482},                   // main.App.GetPRMergeConflicts
@@ -92,7 +92,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetQueueState", ID: 3079581691},                        // main.App.GetQueueState
 	{Name: "GetRateLimitsSnapshots", ID: 3325141610},               // main.App.GetRateLimitsSnapshots
 	{Name: "GetRemoteEndpointToken", ID: 3604571249},               // main.App.GetRemoteEndpointToken
-	{Name: "GetSessionAgentDiff", ID: 2631559849},                  // main.App.GetSessionAgentDiff
 	{Name: "GetSettings", ID: 2554697378},                          // main.App.GetSettings
 	{Name: "GetTerminalReplay", ID: 2329592604},                    // main.App.GetTerminalReplay
 	{Name: "GetThread", ID: 1098302047},                            // main.App.GetThread
@@ -100,6 +99,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetThreadItem", ID: 1969869112},                        // main.App.GetThreadItem
 	{Name: "GetThreadLiveState", ID: 70226550},                     // main.App.GetThreadLiveState
 	{Name: "GetThreadRuntimeMode", ID: 2573491630},                 // main.App.GetThreadRuntimeMode
+	{Name: "GetTurnEditsDiff", ID: 2905371438},                     // main.App.GetTurnEditsDiff
 	{Name: "GetUIRenderTracePath", ID: 1009213933},                 // main.App.GetUIRenderTracePath
 	{Name: "GetUIState", ID: 3380106838},                           // main.App.GetUIState
 	{Name: "GetUsageStats", ID: 3135466533},                        // main.App.GetUsageStats
@@ -130,6 +130,11 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitSyncBranchForProject", ID: 3862053920},              // main.App.GitSyncBranchForProject
 	{Name: "GitWorktreeStatus", ID: 1333748060},                    // main.App.GitWorktreeStatus
 	{Name: "GitWorktreeStatusForProject", ID: 71861776},            // main.App.GitWorktreeStatusForProject
+	{Name: "HighlightClassNames", ID: 2772816619},                  // main.App.HighlightClassNames
+	{Name: "HighlightCode", ID: 4080150350},                        // main.App.HighlightCode
+	{Name: "HighlightPatch", ID: 834878499},                        // main.App.HighlightPatch
+	{Name: "HighlightPatchWithContext", ID: 3722752402},            // main.App.HighlightPatchWithContext
+	{Name: "HighlightSchemaVersion", ID: 2896867980},               // main.App.HighlightSchemaVersion
 	{Name: "IngestDiagnosticBatch", ID: 2606775930},                // main.App.IngestDiagnosticBatch
 	{Name: "InterruptAndRevertIfClean", ID: 753394581},             // main.App.InterruptAndRevertIfClean
 	{Name: "InterruptTurn", ID: 850013031},                         // main.App.InterruptTurn
@@ -138,6 +143,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListArchivedThreads", ID: 2451527188},                  // main.App.ListArchivedThreads
 	{Name: "ListAttachments", ID: 1730798413},                      // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234},                 // main.App.ListAvailableEditors
+	{Name: "ListBranchCommits", ID: 352990129},                     // main.App.ListBranchCommits
 	{Name: "ListChatBarFavorites", ID: 2114948965},                 // main.App.ListChatBarFavorites
 	{Name: "ListDesignOptions", ID: 3070635863},                    // main.App.ListDesignOptions
 	{Name: "ListDiffReviewComments", ID: 3057473088},               // main.App.ListDiffReviewComments
@@ -153,6 +159,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListMcpServers", ID: 1105613677},                       // main.App.ListMcpServers
 	{Name: "ListMcpServersForNewThread", ID: 3030514258},           // main.App.ListMcpServersForNewThread
 	{Name: "ListMcpServersForThread", ID: 2790948120},              // main.App.ListMcpServersForThread
+	{Name: "ListPRCommits", ID: 4110818691},                        // main.App.ListPRCommits
 	{Name: "ListPRReviewThreads", ID: 763649720},                   // main.App.ListPRReviewThreads
 	{Name: "ListPayloadMetas", ID: 1007133701},                     // main.App.ListPayloadMetas
 	{Name: "ListPendingInteractiveRequests", ID: 4186874978},       // main.App.ListPendingInteractiveRequests
@@ -164,7 +171,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListRemoteEndpoints", ID: 3443007043},                  // main.App.ListRemoteEndpoints
 	{Name: "ListSubagentDescendants", ID: 1299118478},              // main.App.ListSubagentDescendants
 	{Name: "ListTerminals", ID: 2445206506},                        // main.App.ListTerminals
-	{Name: "ListThreadCheckpoints", ID: 1853132444},                // main.App.ListThreadCheckpoints
+	{Name: "ListThreadEditDiffs", ID: 2243533007},                  // main.App.ListThreadEditDiffs
 	{Name: "ListThreadProposedPlans", ID: 2485050629},              // main.App.ListThreadProposedPlans
 	{Name: "ListThreadSliceAround", ID: 4176102096},                // main.App.ListThreadSliceAround
 	{Name: "ListThreads", ID: 1090132042},                          // main.App.ListThreads
@@ -208,8 +215,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RespondToUserInput", ID: 1071592868},                   // main.App.RespondToUserInput
 	{Name: "RestartTerminal", ID: 4152403588},                      // main.App.RestartTerminal
 	{Name: "RestartToUpdate", ID: 3141913084},                      // main.App.RestartToUpdate
-	{Name: "RevertToMessageCheckpoint", ID: 263750815},             // main.App.RevertToMessageCheckpoint
-	{Name: "RevertToMessageCheckpointWithOptions", ID: 4144907731}, // main.App.RevertToMessageCheckpointWithOptions
 	{Name: "SaveDraft", ID: 3025273299},                            // main.App.SaveDraft
 	{Name: "SavePRCIJobLog", ID: 1537914193},                       // main.App.SavePRCIJobLog
 	{Name: "SavePayloadToFile", ID: 3576148797},                    // main.App.SavePayloadToFile
@@ -266,6 +271,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UpdateThreadRuntimeMode", ID: 325190827},               // main.App.UpdateThreadRuntimeMode
 	{Name: "UpdateThreadWorkspace", ID: 3875142865},                // main.App.UpdateThreadWorkspace
 	{Name: "UploadAttachment", ID: 2485473713},                     // main.App.UploadAttachment
+	{Name: "VerifyEditDiffs", ID: 3907724148},                      // main.App.VerifyEditDiffs
 	{Name: "Version", ID: 2431199839},                              // main.App.Version
 	{Name: "WorkflowAnswerQuestion", ID: 4150249282},               // main.App.WorkflowAnswerQuestion
 	{Name: "WorkflowCancelItem", ID: 4158962817},                   // main.App.WorkflowCancelItem

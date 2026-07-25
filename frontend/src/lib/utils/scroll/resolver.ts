@@ -418,12 +418,7 @@ export function resolveContentDelivery(
 // (TimelineVirtualizer `onCompensation` → the controller's
 // `applyEngineCompensation`): this resolver decides what to do with each
 // observation, keeping the controller the single scrollTop writer during
-// follow by construction. The tiers carry their provenance from the
-// virtua era they were built in — same failure shapes, same outcomes —
-// with one structural simplification: a decline needs no model re-sync.
-// The engine's scroll offset follows real scroll events, so an unapplied
-// compensation cannot desync anything; the content simply shifts under
-// the stationary viewport.
+// follow by construction.
 //
 // Decision order (each tier's provenance):
 // - head-splice verbatim: head mutations (load-older prepend, paged
@@ -440,19 +435,31 @@ export function resolveContentDelivery(
 //   cold-thread-switch flicker, 8bf8b97f); redirect to the controller's
 //   own bottom target so the two writers cannot disagree on where the
 //   bottom is.
-// - width-reflow window: the paired contentRO delivery sync-pins rather
-//   than spring-chases, so the compensation lands in the same paint.
-// - spring chase in flight, small delta: decline — the spring is the
-//   single writer mid-chase; a 1-2 line compensation snap pre-empts its
-//   interpolation (the original settle-flicker mid-stream snap).
-// - spring chase in flight, delta larger than the viewport: a fresh-mount
-//   estimate→measure pass or late async-typesetting reflow, not streamed
-//   content — write it so it snaps in one paint instead of leaving the
-//   spring to chase the whole delta (bug-report-20260622T041049Z's +2276px
-//   suppressed write → ~1s visible chase).
-// - otherwise (no chase): nothing to protect — write it
-//   (bug-report-20260524T200233Z: suppressing with no chase running
-//   produced the thread-switch flicker on streaming threads).
+// - otherwise: apply verbatim — mid-chase included. The compensation is
+//   an exact coordinate shift: layout moved everything under the
+//   viewport by delta, and the write moves the viewport by the same
+//   delta in the same post-flush moment, before paint, so the visual
+//   field holds still. The spring re-reads el.scrollTop every tick, so
+//   an applied write mid-chase just relocates the chase — the remaining
+//   gap (target − scrollTop) is unchanged and the glide continues
+//   seamlessly (same reason writes larger than the viewport were always
+//   applied: bug-report-20260622T041049Z's +2276px suppressed write →
+//   ~1s visible chase; and no-chase suppression produced the
+//   thread-switch flicker, bug-report-20260524T200233Z).
+//
+// There is deliberately NO mid-chase decline tier. The virtua-era gate
+// declined sub-viewport compensations while a spring chase was in
+// flight ("the spring is the single writer mid-chase", eb99de2e) — but
+// declining an exact compensation is what CAUSED the visible jump: the
+// content shifted under the stationary viewport by the full delta
+// (e.g. a background completion patching its collapsed tool row above
+// the viewport into its settled height), then the spring re-chased the
+// same distance. Design symmetry, not an incident, motivated the
+// decline; the settle-flicker snap it nominally guarded was root-caused
+// to margin divergence and is fixed structurally (flow-root row
+// containment + the timeline.margin.diverge oracle). A decline needs no
+// model re-sync (the engine's offset follows real scroll events), but
+// "safe to decline" was never "right to decline".
 //
 // Deliberate deviation from the legacy gate: there is no animationMode
 // tier. The gate passed writes whenever mode read 'instant', which made
@@ -476,19 +483,16 @@ export interface EngineCompensationObservation {
   scrollTop: number;
   /** The controller's own bottom pin target (scrollHeight - clientHeight). */
   bottomTarget: number;
-  clientHeight: number;
-  /** Width-reflow settle window active (contentReflowSettleUntil > now). */
-  widthReflowActive: boolean;
 }
 
 export interface EngineCompensationDecision {
   /**
    * The one write this delivery makes, through the controller chokepoint
-   * (tagged like every controller write); null declines — safe without
-   * follow-up, because the engine re-reads the DOM offset from the next
-   * scroll event.
+   * (tagged like every controller write). Every delivery writes — the
+   * only choice is the value (verbatim target vs anchor-redirect to the
+   * controller's bottom target).
    */
-  write: { caller: EngineWriteCaller; value: number } | null;
+  write: { caller: EngineWriteCaller; value: number };
 }
 
 export function resolveEngineCompensation(
@@ -507,12 +511,6 @@ export function resolveEngineCompensation(
     obs.bottomTarget - obs.target > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
   if (domAlreadyPinned && movesAwayFromBottom) {
     return { write: { caller: 'engine.anchorRedirect', value: obs.bottomTarget } };
-  }
-  if (obs.widthReflowActive) {
-    return { write: { caller: 'engine.compensation', value: obs.target } };
-  }
-  if (state.springActive && Math.abs(obs.target - obs.scrollTop) <= obs.clientHeight) {
-    return { write: null };
   }
   return { write: { caller: 'engine.compensation', value: obs.target } };
 }

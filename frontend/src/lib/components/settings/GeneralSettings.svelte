@@ -183,7 +183,7 @@
 
       <SettingsField
         label="Low power mode"
-        hint="Minimize rendering work: instant scroll placement, chunked text reveal, no shimmer. For weaker machines or when running GPU-heavy apps alongside."
+        hint="Minimize rendering work: instant scroll placement, chunked text reveal, static working indicator. For weaker machines or when running GPU-heavy apps alongside."
       >
         <ToggleSwitch
           checked={settings.lowPowerMode}
@@ -290,7 +290,7 @@
         label="Retention (days)"
         hint={settings.retention.days === 0
           ? 'Automatic cleanup is disabled. Nothing will be removed automatically.'
-          : 'Threads (with their attachments, design workdirs, replay logs, and checkpoint git refs), provider-event logs, and bug-report bookmarks older than this are cleaned up automatically. Set to 0 to disable.'}
+          : 'Threads (with their attachments, design workdirs, and replay logs), provider-event logs, and bug-report bookmarks older than this are cleaned up automatically. Set to 0 to disable.'}
         htmlFor="retention-days"
       >
         <input

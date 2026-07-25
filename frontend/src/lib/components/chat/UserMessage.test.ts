@@ -3,7 +3,6 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { createThreadCheckpointState } from '../../stores/threadCheckpoints.svelte';
 import {
   projectTurnCompleted,
   projectTurnStarted,
@@ -31,22 +30,11 @@ describe('<UserMessage>', () => {
     resetThreadStatuses();
   });
 
-  function makeCheckpointedPane(userItemId = 'user:1'): ThreadPane {
-    const checkpoints = createThreadCheckpointState();
-    checkpoints.setCheckpoints([{
-      id: 'checkpoint-1',
-      threadId: 'thread-1',
-      userItemId,
-      turnIndex: 1,
-      status: 'ready',
-      files: [],
-      capturedAt: 1,
-    }]);
+  function makeActionsPane(): ThreadPane {
     return {
       threadId: 'thread-1',
       paneId: 'pane-1',
       thread: makeThread({ id: 'thread-1' }),
-      checkpoints,
       attachmentCacheFor: () => undefined,
     } as unknown as ThreadPane;
   }
@@ -161,10 +149,9 @@ describe('<UserMessage>', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('visible body'));
   });
 
-  it('shows revert and fork actions for a checkpointed inactive user message when handlers are available', () => {
-    const pane = makeCheckpointedPane();
+  it('shows the fork action for an inactive user message when the handler is available', () => {
+    const pane = makeActionsPane();
     const actions: UserMessageActions = {
-      onRevertMessage: vi.fn(),
       onForkMessage: vi.fn(),
     };
 
@@ -178,12 +165,11 @@ describe('<UserMessage>', () => {
           turnIndex: 1,
           kind: 'user_text',
           role: 'user',
-          summary: 'revertable',
+          summary: 'forkable',
         }),
       },
     });
 
-    expect(getByLabelText('Revert to this message')).toBeInTheDocument();
     expect(getByLabelText('Fork from this message')).toBeInTheDocument();
   });
 
@@ -195,7 +181,7 @@ describe('<UserMessage>', () => {
     // via the IconButton disabled styling — so the footer is invariant
     // across turn boundaries and race prevention comes from the native
     // disabled attribute blocking activation.
-    const pane = makeCheckpointedPane();
+    const pane = makeActionsPane();
     const item = makeItem({
       id: 'user:1',
       threadId: 'thread-1',
@@ -204,154 +190,36 @@ describe('<UserMessage>', () => {
       role: 'user',
       summary: 'commit',
     });
-    const onRevertMessage = vi.fn(async () => {});
+    const onForkMessage = vi.fn(async () => {});
     const actions: UserMessageActions = {
-      onRevertMessage,
-      onForkMessage: vi.fn(),
+      onForkMessage,
     };
 
     const { container, getByLabelText } = render(UserMessage, {
       props: { pane, item, actions },
     });
 
-    const reviewButton = getByLabelText('Open checkpoint in review pane');
-    const revertButton = getByLabelText('Revert to this message');
     const forkButton = getByLabelText('Fork from this message');
-    expect(reviewButton).not.toBeDisabled();
-    expect(revertButton).not.toBeDisabled();
     expect(forkButton).not.toBeDisabled();
 
     projectTurnStarted('thread-1', 'turn-1', 1, 1000);
     await tick();
 
-    expect(container.contains(revertButton)).toBe(true);
     expect(container.contains(forkButton)).toBe(true);
-    expect(reviewButton).toBeDisabled();
-    expect(revertButton).toBeDisabled();
     expect(forkButton).toBeDisabled();
 
-    await fireEvent.click(revertButton);
-    expect(onRevertMessage).not.toHaveBeenCalled();
+    await fireEvent.click(forkButton);
+    expect(onForkMessage).not.toHaveBeenCalled();
 
     projectTurnCompleted('thread-1', 'turn-1');
     await tick();
 
-    expect(container.contains(revertButton)).toBe(true);
     expect(container.contains(forkButton)).toBe(true);
-    expect(reviewButton).not.toBeDisabled();
-    expect(revertButton).not.toBeDisabled();
     expect(forkButton).not.toBeDisabled();
   });
 
-  it('requests message revert through the parent-owned handler', async () => {
-    const pane = makeCheckpointedPane();
-    const item = makeItem({
-      id: 'user:1',
-      threadId: 'thread-1',
-      turnIndex: 1,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'revertable',
-    });
-    const onRevertMessage = vi.fn(async () => {});
-    const actions: UserMessageActions = { onRevertMessage };
-
-    const { getByLabelText, queryByTestId } = render(UserMessage, {
-      props: {
-        pane,
-        item,
-        actions,
-      },
-    });
-
-    await fireEvent.click(getByLabelText('Revert to this message'));
-    await waitFor(() => expect(onRevertMessage).toHaveBeenCalledWith(item));
-    expect(queryByTestId('user-message-revert-popover')).toBeNull();
-  });
-
-  it('renders the revert choice popover with file totals and confirms the selected mode', async () => {
-    const pane = makeCheckpointedPane();
-    const item = makeItem({
-      id: 'user:1',
-      threadId: 'thread-1',
-      turnIndex: 1,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'revertable',
-    });
-    const onConfirmRevertMessage = vi.fn(async () => {});
-    const onCancelRevertMessage = vi.fn();
-    const actions: UserMessageActions = {
-      onRevertMessage: vi.fn(),
-      onConfirmRevertMessage,
-      onCancelRevertMessage,
-      revertTargetItemId: item.id,
-      revertAffectedFiles: [
-        { path: 'notes.txt', kind: 'modified', additions: 3, deletions: 1, lines: [] },
-        { path: 'scratch.txt', kind: 'modified', additions: 2, deletions: 4, lines: [] },
-      ],
-    };
-
-    const { getByTestId, getByText } = render(UserMessage, {
-      props: {
-        pane,
-        item,
-        actions,
-      },
-    });
-
-    const trigger = getByText('Conversation & files').closest('[role="menu"]')
-      ?? getByTestId('user-message-revert-popover').parentElement;
-    expect(getByTestId('user-message-revert-popover')).toBeInTheDocument();
-    expect(trigger).toHaveAttribute('role', 'menu');
-    expect(document.querySelector('[aria-label="Revert to this message"]')).toHaveAttribute('aria-expanded', 'true');
-    expect(getByText('+5')).toBeInTheDocument();
-    expect(getByText('-5')).toBeInTheDocument();
-
-    await fireEvent.click(getByTestId('revert-conversation-only'));
-    expect(onConfirmRevertMessage).toHaveBeenCalledWith('conversation-only');
-  });
-
-  it('closes the revert choice popover on Escape and outside mousedown', async () => {
-    const pane = makeCheckpointedPane();
-    const item = makeItem({
-      id: 'user:1',
-      threadId: 'thread-1',
-      turnIndex: 1,
-      kind: 'user_text',
-      role: 'user',
-      summary: 'revertable',
-    });
-    const onCancelRevertMessage = vi.fn();
-    const actions: UserMessageActions = {
-      onRevertMessage: vi.fn(),
-      onConfirmRevertMessage: vi.fn(),
-      onCancelRevertMessage,
-      revertTargetItemId: item.id,
-      revertAffectedFiles: [],
-    };
-
-    const { getByTestId } = render(UserMessage, {
-      props: {
-        pane,
-        item,
-        actions,
-      },
-    });
-
-    expect(getByTestId('user-message-revert-popover')).toBeInTheDocument();
-    await fireEvent.keyDown(document, { key: 'Escape' });
-    expect(onCancelRevertMessage).toHaveBeenCalledTimes(1);
-
-    const outside = document.createElement('button');
-    document.body.appendChild(outside);
-    await fireEvent.mouseDown(outside);
-    expect(onCancelRevertMessage).toHaveBeenCalledTimes(2);
-    outside.remove();
-  });
-
   it('requests message fork through the parent-owned handler', async () => {
-    const pane = makeCheckpointedPane();
+    const pane = makeActionsPane();
     const item = makeItem({
       id: 'user:1',
       threadId: 'thread-1',
@@ -375,10 +243,9 @@ describe('<UserMessage>', () => {
     await waitFor(() => expect(onForkMessage).toHaveBeenCalledWith(item));
   });
 
-  it('does not show revert and fork actions for wire-only user messages', () => {
-    const pane = makeCheckpointedPane();
+  it('does not show the fork action for wire-only user messages', () => {
+    const pane = makeActionsPane();
     const actions: UserMessageActions = {
-      onRevertMessage: vi.fn(),
       onForkMessage: vi.fn(),
     };
 
@@ -398,7 +265,6 @@ describe('<UserMessage>', () => {
       },
     });
 
-    expect(queryByLabelText('Revert to this message')).toBeNull();
     expect(queryByLabelText('Fork from this message')).toBeNull();
   });
 

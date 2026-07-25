@@ -59,6 +59,19 @@ internal `-Embedding` COM-server switch. The parser accepts it so a click can
 cold-start the launcher and register the notification callback; it is not a
 user-facing option and does not alter distro selection.
 
+## Minimised-window memory trim
+
+`webviewtrim.go` suspends the WebView2 (via the pinned wails fork's
+`SuspendWebview` / `ResumeWebview`, branch `ao-webview2-memory-trim`)
+after the window has been minimised for 30s, and resumes it on
+un-minimise. A parked 4-pane session holds ~500MB of renderer + GPU
+working set that suspension releases; nothing user-observable runs
+while minimised (no OS notifications, no taskbar-title mutation), and
+the transport's replay ring + seq-gap refetch reconstruct anything
+missed on restore. The suspend side re-checks the minimised state on
+the main thread, so a timer racing an un-minimise can never hide the
+webview under a visible window.
+
 ## Diagnostics: where the logs are
 
 Nothing from the Windows side reaches the dev terminal — the launcher

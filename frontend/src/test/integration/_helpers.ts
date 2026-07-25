@@ -101,6 +101,11 @@ export function installAppDefaults(): void {
   setBindingMock('GetUIState', async () => ({}));
   setBindingMock('SetUIState', async () => null);
   setBindingMock('DeleteUIState', async () => null);
+  // App boot warms the highlight schema-version + class-name tables
+  // (warmHighlightTables) so history rows' persisted-span ingest can
+  // seed synchronously.
+  setBindingMock('HighlightSchemaVersion', async () => 'hv-integration');
+  setBindingMock('HighlightClassNames', async () => ['none']);
 }
 
 /**
@@ -184,7 +189,6 @@ export function installThreadViewDefaults(): void {
   }));
   setBindingMock('GitStatusUnsubscribe', async () => {});
   setBindingMock('GitListBranches', async () => []);
-  setBindingMock('ListThreadCheckpoints', async () => []);
   // Thread-wide aggregate surfaces (PlanSidebar / ActivityRail) fetch
   // these bindings on mount / thread-switch.
   // Default to empty lists so tests that don't assert on those

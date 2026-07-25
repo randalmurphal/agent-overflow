@@ -71,9 +71,9 @@ user sends use `LastTurnIndex(threadID) + 1`. It never decreases within
 a thread's history.
 
 **Rationale.** Turn ordering is how we group items, order message
-checkpoints, and scope the interrupt queue. A non-monotonic turn_index
+anchors, and scope the interrupt queue. A non-monotonic turn_index
 would either group unrelated items into one turn (rollback drift) or
-split one turn into two (orphan items, orphan message checkpoint).
+split one turn into two (orphan items, orphan message anchor).
 
 **Enforcement.** `App.SendMessage` in `app_send.go` holds the
 per-thread action lock (`a.threadLocks().Lock(threadID)`) while
@@ -236,8 +236,9 @@ thread.
 
 **Rationale.** If child events inherited the parent thread's
 current turn_index, the turn the user is actively typing into would
-get polluted by background subagent output, and the revert-modes
-would restore the wrong baseline.
+get polluted by background subagent output, and message-boundary
+rollback (fork-from-message, revert-on-interrupt) would slice
+provider history at the wrong turn.
 
 **Enforcement.** The Codex child-event re-emission path (in
 `internal/provider/codex/session.go`) stamps the subagent card's

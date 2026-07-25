@@ -372,17 +372,21 @@ export const GetKeybindings = dispatch('GetKeybindings');
 export const UpdateKeybindings = dispatch('UpdateKeybindings');
 export const ResetKeybindings = dispatch('ResetKeybindings');
 
-// Checkpoints
-export const GetMessageCheckpointDiff = dispatch('GetMessageCheckpointDiff');
-export const GetMessageCheckpointRevertDiff = dispatch('GetMessageCheckpointRevertDiff');
+// Review pane diffs
 export const GetBranchBaseDiff = dispatch('GetBranchBaseDiff');
-export const GetSessionAgentDiff = dispatch('GetSessionAgentDiff');
 export const GetWorkspaceCurrentDiff = dispatch('GetWorkspaceCurrentDiff');
+export const ListBranchCommits = dispatch('ListBranchCommits');
+export const GetCommitDiff = dispatch('GetCommitDiff');
+export const ListThreadEditDiffs = dispatch('ListThreadEditDiffs');
+export const GetTurnEditsDiff = dispatch('GetTurnEditsDiff');
 export const GetDiffContextLines = dispatch('GetDiffContextLines');
-export const RevertToMessageCheckpoint = dispatch('RevertToMessageCheckpoint');
-export const RevertToMessageCheckpointWithOptions = dispatch('RevertToMessageCheckpointWithOptions');
+export const VerifyEditDiffs = dispatch('VerifyEditDiffs');
+export const HighlightClassNames = dispatch('HighlightClassNames');
+export const HighlightSchemaVersion = dispatch('HighlightSchemaVersion');
+export const HighlightCode = dispatch('HighlightCode');
+export const HighlightPatch = dispatch('HighlightPatch');
+export const HighlightPatchWithContext = dispatch('HighlightPatchWithContext');
 export const ForkThreadFromMessage = dispatch('ForkThreadFromMessage');
-export const ListThreadCheckpoints = dispatch('ListThreadCheckpoints');
 
 // Thread runtime mode
 export const GetThreadRuntimeMode = dispatch('GetThreadRuntimeMode');
@@ -435,6 +439,8 @@ export const MarkDiffReviewCommentsSent = dispatch('MarkDiffReviewCommentsSent')
 export const SendDiffReviewComments = dispatch('SendDiffReviewComments');
 export const GetPRDetail = dispatch('GetPRDetail');
 export const GetPRDiff = dispatch('GetPRDiff');
+export const ListPRCommits = dispatch('ListPRCommits');
+export const GetPRCommitDiff = dispatch('GetPRCommitDiff');
 export const GetPRMergeConflicts = dispatch('GetPRMergeConflicts');
 export const GetMergeConflictFile = dispatch('GetMergeConflictFile');
 export const GetPRCIJobs = dispatch('GetPRCIJobs');

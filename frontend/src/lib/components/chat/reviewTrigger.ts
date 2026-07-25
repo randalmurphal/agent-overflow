@@ -8,20 +8,21 @@ import type { ThreadPane } from '../../stores/thread.svelte';
 import { openReviewCompanion } from '../../stores/reviewPane.svelte';
 
 export interface OpenReviewForItemOpts {
-  turnIndex: number;
   filePath?: string;
+  /** The edit tool call whose diff should open. Routes to edits scope
+   * pinned at that item — the persisted historical change, correct
+   * even after commits or later edits moved the workspace on. Without
+   * it the current workspace diff opens. */
+  editItemId?: string;
 }
 
-export function openReviewForItem(pane: ThreadPane, opts: OpenReviewForItemOpts): void {
+export function openReviewForItem(pane: ThreadPane, opts: OpenReviewForItemOpts = {}): void {
   const threadId = pane.threadId;
   if (!threadId) return;
-  const checkpoint = pane.checkpoints.checkpoints.find(
-    (candidate) => candidate.turnIndex === opts.turnIndex,
-  );
-  if (checkpoint) {
+  if (opts.editItemId) {
     void openReviewCompanion(pane.paneId, threadId, {
-      scope: 'turn',
-      checkpointUserItemId: checkpoint.userItemId,
+      scope: 'edits',
+      editItemId: opts.editItemId,
       filePath: opts.filePath,
     });
     return;

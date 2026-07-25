@@ -404,9 +404,9 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// per-round `provider:turn_completed` emission at the top of this
 	// handler.
 	//
-	// Checkpoint capture does NOT happen here. Message checkpoints are
-	// captured by app_send.go before provider stdin/RPC dispatch so the
-	// snapshot maps directly to "before this user message".
+	// Anchor recording does NOT happen here. Message anchors are
+	// recorded by app_send.go before provider stdin/RPC dispatch so
+	// the anchor maps directly to "before this user message".
 	r.settleTurnRow(evt, turnIndex, now, meta, persistErr)
 
 	r.clearOpenTurn(evt.ThreadID)
@@ -737,6 +737,20 @@ func (r *Router) openTurnIndex(threadID string) (int, bool) {
 	return turnIndex, ok
 }
 
+// OpenTurnIndex returns the currently-open logical turn for threadID,
+// or -1 when none is in flight. Interrupt paths sample this BEFORE
+// awaiting the provider's interrupt ack and pass the value to
+// EagerPersistDeferredFlushSends: the ack wait processes wire events,
+// so the turn the user cut can settle during it, and a post-ack sample
+// would report -1 for exactly that turn — its echo would then settle
+// it "end_turn" instead of "interrupted" (round-5, R5-4).
+func (r *Router) OpenTurnIndex(threadID string) int {
+	if turnIndex, ok := r.openTurnIndex(threadID); ok {
+		return turnIndex
+	}
+	return -1
+}
+
 // hasInFlightTurnOrRound reports whether the router still has any
 // turn or wire-round state for threadID worth synthesizing a
 // truncated turn-complete against. Used by CleanupThread and
@@ -776,6 +790,181 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 	// there and the second complete returns early.
 	delete(r.settledTurns, settledTurnKey(threadID, turnIndex))
 	r.mu.Unlock()
+}
+
+// openQueuedEchoTurn establishes logical turn `turnIndex` when a queued
+// user message's wire echo lands without any init having opened it.
+// Claude's CLI can consume a queued stdin envelope mid-loop (persisted
+// in its transcript as a `queued_command` attachment) instead of at
+// turn pickup — no system.init, no EventTurnStart — so the deferred
+// user_text persists at the dispatcher-stamped index while the router
+// still carries the previous turn (or no turn at all, in the
+// task-notification cascade case). Everything keyed on the turn
+// boundary then drifts: no turns row (0s settled duration, missing
+// durable history), the frontend active-turn registry keeps the old
+// index (its response-pill active-turn exclusion misses every new
+// assistant text — the 2026-07-12 moving-RESPONSE-pill bug), and the
+// revert flow's active-turn guard reads idle mid-stream.
+//
+// This is the wire-echo twin of handleTurnStart: turns row, open-turn
+// bookkeeping, turn span, fresh wire-round snapshot, and the
+// `provider:turn_started` emission — WITHOUT setOpenTurn's thread-wide
+// streaming sweeps. Those sweeps are keyed to "a brand-new wire
+// conversation is starting"; here the previous turn's tail can still
+// be settling on the same live round, and `turnIndex` is a fresh index
+// with no stale state of its own to clear (the counter seeds below are
+// exactly the fresh-index subset of setOpenTurn). This is NOT the
+// forbidden re-round setOpenTurn (see maybeReopenSettledRound): a
+// re-round reuses the SAME index whose counters must survive; this
+// opens a NEW index.
+//
+// No-op when `turnIndex` is already the open logical turn: the queue
+// consumed at turn pickup with a real system.init (handleTurnStart
+// already ran, in either order relative to the echo — upsertTurnRow
+// and the counter seeds are idempotent), and every Codex steer (the
+// deferred row persists at the active turn's own index). Also refuses
+// to roll the open turn BACKWARD or reopen a settled turn — rows are
+// already persisted under those indexes and a reopen would reset their
+// id-allocating context (the same hazard invariant 27 forbids for
+// re-rounds). Both guards protect the attachProviderItemIDToUserRow
+// caller, which fires on every WasDeferred echo including replays.
+//
+// When an UNSETTLED earlier turn is open — a second queued message
+// consumed in the same wire round, or an interrupt that raced the CLI's
+// queue drain — that predecessor will never receive a wire completion
+// of its own (the round's single `result` settles only the last open
+// turn), so it is settled here before the new turn replaces it.
+// interruptedTurnIndex names the ONE turn a user interrupt provably cut
+// short (the turn open when the interrupt was issued — stamped onto
+// the pending entry pre-ack by MarkFlushSendsInterrupted and
+// again by the eager persist; -1 when none): the settle records
+// "interrupted" only when the predecessor IS that turn, "end_turn"
+// otherwise — including the sibling case where one interrupt
+// eager-persisted several deferred rows and a later echo settles an
+// earlier queued message's turn, which ended naturally as the CLI
+// drained the next message. The settlement claim blocks the eventual
+// wire result from correcting the reason later, so it must be right
+// here.
+func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt int64, interruptedTurnIndex int) {
+	r.mu.Lock()
+	open, hasOpen := r.openTurns[threadID]
+	if hasOpen && open == turnIndex {
+		r.mu.Unlock()
+		return
+	}
+	if hasOpen && turnIndex < open {
+		r.mu.Unlock()
+		log.Printf("triage: queued echo turn %s/%d ignored — open turn %d is already past it", threadID, turnIndex, open)
+		return
+	}
+	if _, settled := r.settledTurns[settledTurnKey(threadID, turnIndex)]; settled {
+		r.mu.Unlock()
+		log.Printf("triage: queued echo turn %s/%d ignored — turn already settled", threadID, turnIndex)
+		return
+	}
+	r.openTurns[threadID] = turnIndex
+	key := scopeCounterKey(threadID, turnIndex, "")
+	if _, ok := r.segmentIndexByScope[key]; !ok {
+		r.segmentIndexByScope[key] = -1
+	}
+	if _, ok := r.blockIndexByScope[key]; !ok {
+		r.blockIndexByScope[key] = -1
+	}
+	delete(r.settledTurns, settledTurnKey(threadID, turnIndex))
+	// The thread-level mark list covers the entry the per-entry stamp
+	// structurally cannot: one POPPED from the FIFO just before
+	// MarkFlushSendsInterrupted ran, whose echo is settling here with
+	// its retained -1 stamp (round-10, R10-6). Within a session a mark
+	// lingering after a SUCCESSFUL interrupt matches only the turn that
+	// really was cut — and once that turn settles, the claim below
+	// makes any re-match a no-op. MarkThreadActive clears the list, so
+	// a replacement session's reused turn indexes (revert paths) never
+	// meet a dead session's marks (round-11, CT11-2).
+	markedInterruptTurn := -1
+	if marks := r.interruptMarks[threadID]; len(marks) > 0 {
+		markedInterruptTurn = marks[len(marks)-1].turn
+	}
+	r.mu.Unlock()
+
+	if hasOpen {
+		reason := "end_turn"
+		if open == interruptedTurnIndex || open == markedInterruptTurn {
+			reason = "interrupted"
+		}
+		r.settleQueuedEchoPredecessor(threadID, open, startedAt, reason)
+	}
+
+	// Same deterministic id shape resolveTurnID synthesizes for Claude
+	// turns (this path never has a wire-supplied turn id). Idempotent:
+	// if a racing system.init inserted the row first, the existing
+	// started_at is preserved.
+	r.upsertTurnRow(store.Turn{
+		TurnID:    fmt.Sprintf("%s:%d", threadID, turnIndex),
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		StartedAt: startedAt,
+	})
+	r.openTurnSpan(provider.ProviderEvent{ThreadID: threadID}, turnIndex)
+
+	// Re-mint the wire round under the new logical turn. The frontend
+	// replaces its active-turn entry on the fresh TurnID, so the pill
+	// exclusion, elapsed timer, and Stop button all track the queued
+	// message's turn; the eventual wire turn-complete takes THIS
+	// snapshot via takeOpenRound and clears it.
+	snapshot := ActiveTurnSnapshot{
+		ThreadID:  threadID,
+		TurnID:    uuid.NewString(),
+		TurnIndex: turnIndex,
+		StartedAt: startedAt,
+	}
+	r.setOpenRoundSnapshot(snapshot)
+	r.emit("provider:turn_started", TurnStartedEvent(snapshot))
+}
+
+// settleQueuedEchoPredecessor closes the logical turn a queued echo is
+// replacing. A deliberate SUBSET of handleTurnComplete's settle path:
+// streaming rows settle as completed (or flip errored+stopped when the
+// turn was cut) and the turns row closes at the successor's start time
+// with the caller-supplied stop reason — "end_turn" when the model's
+// response to that message ended naturally as the CLI drained the next
+// queued message, "interrupted" when a user interrupt provably cut the
+// predecessor short (the caller decides; see openQueuedEchoTurn). No frontend emission (the successor's
+// provider:turn_started replaces the round snapshot in place), no usage
+// fold (the round's single `result` carries round-cumulative usage that
+// lands on the final turn, same as the re-round fold), and no orphan
+// tool-call force-close (the CLI drains its queue between API
+// iterations, after the prior iteration's tool results — a tool
+// completion that hasn't arrived yet still will, and belongs to the row
+// it opened). claimTurnSettlement both gates a duplicate settle (a soft
+// round close may have beaten us) and routes any later wire result for
+// this index into persistLateTurnPayload instead of the orphan-error
+// path.
+func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, completedAt int64, stopReason string) {
+	if !r.claimTurnSettlement(threadID, turnIndex) {
+		return
+	}
+	if stopReason == "interrupted" {
+		// A user interrupt provably cut this turn: its in-flight rows are
+		// partial output and must carry the errored + " — stopped" state
+		// the interrupt spec promises. The flip must run BEFORE the
+		// streaming settle — the settlement claim above routes the later
+		// truncated wire result away from the normal interrupt cleanup,
+		// so completing these rows here would permanently display partial
+		// text as a finished answer (round-10, R10-4). The settle below
+		// still runs to drain the in-memory streaming slots; it skips
+		// rows the flip already moved out of streaming status.
+		if err := r.flipTurnItemsErrored(threadID, turnIndex, completedAt, stoppedSummary); err != nil {
+			log.Printf("triage: flip interrupted queued-echo predecessor rows %s/%d: %v", threadID, turnIndex, err)
+		}
+	}
+	if err := r.settleTurnStreaming(threadID, turnIndex, statusCompleted); err != nil {
+		log.Printf("triage: settle queued-echo predecessor streaming %s/%d: %v", threadID, turnIndex, err)
+	}
+	turnID := r.persistedTurnID(provider.ProviderEvent{ThreadID: threadID}, turnIndex)
+	if err := r.store.UpdateTurnCompleted(turnID, completedAt, stopReason, "", "", ""); err != nil {
+		log.Printf("triage: settle queued-echo predecessor turn %s: %v", turnID, err)
+	}
+	r.closeTurnSpan(threadID, nil)
 }
 
 func (r *Router) clearActiveStreamBlocksForTurnLocked(threadID string, turnIndex int) {
@@ -965,7 +1154,6 @@ func (r *Router) clearOpenTurn(threadID string) {
 				delete(r.pendingCommandDiffs, key)
 			}
 		}
-		deleteByPrefix(r.pendingToolPaths, threadID+"|")
 		// pendingApprovals / pendingApprovalItems / pendingUserInputs
 		// are keyed by `<threadID>:<requestID-or-itemID>`. Approvals are
 		// inherently mid-turn — the model issues a control_request, the
@@ -1101,20 +1289,44 @@ func (r *Router) RecoverCrashedTurns() (int, error) {
 }
 
 // MarkUserInterrupt is the public chokepoint for the app-layer
-// interrupt flow. It flips every streaming/running item in the current
-// turn to errored with a " — stopped" suffix and records a new
-// "Stopped by user" system error row so the timeline carries the
+// interrupt flow. It flips every streaming/running item in the
+// interrupted turn to errored with a " — stopped" suffix and records a
+// new "Stopped by user" system error row so the timeline carries the
 // explicit user-facing signal.
+//
+// sampledTurnIndex is the caller's PRE-ACK OpenTurnIndex sample (-1
+// when none was open) — the turn the user actually cut. It must not be
+// re-resolved here: a queued echo consumed during the ack wait opens
+// the queued message's turn, and a post-ack "current turn" read would
+// land the stopped flips and the error row on that new turn, which
+// drains naturally (round-11, C11-1). A negative sample is a no-op —
+// no turn was open, so nothing was cut (round-12, CT12-1). The flip is idempotent against
+// the echo path's own interrupted-predecessor flip (R10-4): rows it
+// already moved out of streaming/running are skipped. tok fences the
+// whole call against session replacement, like the rest of the
+// post-ack block (round-11, CT11-1).
 //
 // Returns the error id that was persisted so the caller can surface
 // diagnostics or correlate with downstream emissions; empty string
-// when the thread has no open turn.
-func (r *Router) MarkUserInterrupt(threadID string) (string, error) {
-	turnIndex, err := r.currentTurnIndex(threadID)
-	if err != nil {
-		// Nothing to stop if we can't resolve a turn.
+// when no turn could be resolved or the session was replaced.
+func (r *Router) MarkUserInterrupt(threadID string, sampledTurnIndex int, tok FlushStampToken) (string, error) {
+	r.mu.Lock()
+	stale := r.threadEpochs[threadID] != tok.threadEpoch
+	r.mu.Unlock()
+	if stale {
 		return "", nil
 	}
+	if sampledTurnIndex < 0 {
+		// No turn was open at the pre-ack sample: nothing was cut. The
+		// UI only offers Stop while a turn shows active, and the router
+		// opens the turn before that emission — so a -1 sample means the
+		// turn completed in the click-to-sample race and the interrupt
+		// ack'd an idle CLI. Resolving a fallback here would relabel
+		// completed history (LastTurnIndex) or a queued echo's freshly
+		// opened turn as "Stopped by user" (round-12, CT12-1).
+		return "", nil
+	}
+	turnIndex := sampledTurnIndex
 	now := time.Now().UnixMilli()
 	if err := r.flipTurnItemsErrored(threadID, turnIndex, now, stoppedSummary); err != nil {
 		return "", err
@@ -1242,6 +1454,16 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		log.Printf("triage: cleanup flush stream buffers for thread %s: %v", threadID, err)
 	}
 
+	// The pending-send sweep below must be total: an echo whose store
+	// write is in flight holds the anchor lock and, on failure, reinserts
+	// its popped entry — a sweep that ran between the pop and the
+	// reinsert would lose to it, resurrecting a stale entry into the
+	// replacement session (round-5, R5-2). Anchor before r.mu, per the
+	// lock order.
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
+
 	r.mu.Lock()
 	if requireEpoch != nil && r.threadEpochs[threadID] != *requireEpoch {
 		r.mu.Unlock()
@@ -1266,7 +1488,6 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 			delete(r.pendingCommandDiffs, key)
 		}
 	}
-	deleteByPrefix(r.pendingToolPaths, threadID+"|")
 	approvalPrefix := threadID + ":"
 	deleteByPrefix(r.pendingApprovals, approvalPrefix)
 	deleteByPrefix(r.pendingApprovalItems, approvalPrefix)
@@ -1407,6 +1628,14 @@ func (r *Router) MarkThreadActive(threadID string) {
 		effectiveModelRevision = r.nextEffectiveModelRevisionLocked(threadID)
 	}
 	r.threadEpochs[threadID]++
+	// Interrupt marks are session-scoped: an in-flight echo cannot
+	// survive the session whose read loop carries it, and a replacement
+	// session after revert REUSES turn indexes — a lingering mark would
+	// settle a reused-index predecessor "interrupted" with no new
+	// interrupt (round-11, CT11-2). Deletion is safe here (unlike the
+	// epoch maps): mark entries are keyed by router-unique seqs, so a
+	// stale restore's removal against the fresh list finds nothing.
+	delete(r.interruptMarks, threadID)
 	r.mu.Unlock()
 	if hadEffectiveModel {
 		r.emit("provider:model_fallback", ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})

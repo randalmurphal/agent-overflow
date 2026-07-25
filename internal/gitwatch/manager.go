@@ -15,8 +15,10 @@ import (
 type StatusFn func(cwd string) (gitops.GitStatus, error)
 
 // WatchRootsFn returns the filesystem roots that should trigger status
-// refreshes for cwd. The first root should be cwd; extra roots cover git
-// metadata that can live outside linked worktree directories.
+// refreshes for cwd: the pruned workspace subtrees and their ancestors,
+// plus git metadata and global-ignore directories that can live outside
+// cwd (linked worktrees keep commit/index/ref state under the main
+// repo's .git). Normalization always adds cwd itself as a backstop.
 type WatchRootsFn func(cwd string) ([]gitops.WatchRoot, error)
 
 // ManagerConfig names the optional status/watch hooks so tests and app startup
@@ -154,7 +156,11 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 		}
 		return sub, nil
 	}
-	w := newWorkspaceWatcher(canon, m.statusFn, initial, watchRoots)
+	// The rebuild closure re-runs the full compute+normalize pipeline so
+	// a boundary change (.gitignore edit, new directory beside a pruned
+	// subtree) yields roots in exactly the shape the initial install used.
+	rootsFn := func() ([]gitops.WatchRoot, error) { return m.watchRoots(canon) }
+	w := newWorkspaceWatcher(canon, m.statusFn, initial, watchRoots, rootsFn)
 	w.start(m.installFn)
 	m.watchers[canon] = w
 	sub := w.addSubscriber(initial)

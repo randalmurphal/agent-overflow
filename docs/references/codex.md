@@ -99,3 +99,19 @@ change. The tray ships with thread-wide "Stop all" only until Codex
 exposes a `thread/backgroundTerminals/killOne { thread_id, process_id }`
 RPC or equivalent. Issue request drafted; contributions are invitation-only per
 [Codex's contributing guide](https://github.com/openai/codex/blob/main/docs/contributing.md).
+
+**History truncation via `thread/fork` is turn-granular only.**
+Source-verified at rust-v0.144.5 and rust-v0.145.0-alpha.23
+(2026-07-17): `ThreadForkParams`'s only cut is `last_turn_id`
+(`truncate_rollout_after_turn_id`). codex-rs core already has a
+message-granular fork cut — `ForkSnapshot::TruncateBeforeNthUserMessage`
+slices the rollout strictly before the nth user message, mid-turn
+steers included, and it is what the Codex TUI's Esc-Esc backtrack uses
+via `thread/rollback` (whose `num_turns` counts user-message
+boundaries, not wire turns) — but that RPC replies "thread/rollback is
+deprecated and will be removed soon" and mutates the source thread in
+place instead of forking. **Consequence for agent-overflow**: Codex
+revert-to-message drops the whole anchor turn (Claude's session-file
+slice is message-granular); parity lands when `thread/fork` exposes a
+message-granular anchor. See the granularity note on
+`codex.Session.ForkAt`.

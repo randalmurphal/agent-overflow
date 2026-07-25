@@ -333,6 +333,219 @@ func TestWriteForkFileFullTranscript_HappyPath(t *testing.T) {
 	}
 }
 
+// queuedCommandJSONL mirrors the shape claude 2.1.205 persists when it
+// consumes a queued message MID-LOOP (queued while a turn was running):
+// a `type:"attachment"` entry with a CLI-minted uuid; the AO-minted send
+// uuid survives only as `attachment.source_uuid`. The follow-up
+// assistant entry parents to the attachment entry — it sits on the
+// active branch. (Consumption at turn pickup instead persists a real
+// `type:"user"` entry carrying the AO uuid verbatim, like u2 here.)
+const queuedCommandJSONL = `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"first reply"}]}}
+{"type":"attachment","uuid":"qc1","parentUuid":"a1","sessionId":"src","isSidechain":false,"attachment":{"type":"queued_command","prompt":[{"type":"text","text":"queued follow-up"}],"source_uuid":"ao-queued-1","commandMode":"prompt","timestamp":"2026-01-01T00:00:03.000Z"}}
+{"type":"assistant","uuid":"a2","parentUuid":"qc1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"queued reply"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a2","sessionId":"src","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a3","parentUuid":"u2","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"second reply"}]}}
+`
+
+// TestWriteForkFileForUserMessageUUID_QueuedCommandAttachment — reverting
+// to a queued message the CLI consumed mid-loop. The AO uuid never
+// appears as a `type:"user"` entry, only as the queued_command
+// attachment's source_uuid; the slice must anchor there and keep
+// exactly the rows before the attachment entry.
+func TestWriteForkFileForUserMessageUUID_QueuedCommandAttachment(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "src.jsonl")
+	if err := os.WriteFile(srcPath, []byte(queuedCommandJSONL), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	newID, newPath, uuidMap, err := WriteForkFileForUserMessageUUID(srcPath, "ao-queued-1", "")
+	if err != nil {
+		t.Fatalf("WriteForkFileForUserMessageUUID: %v", err)
+	}
+	if newID == "" || newPath == "" {
+		t.Fatalf("newID=%q newPath=%q, want both non-empty", newID, newPath)
+	}
+
+	data, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatalf("read fork: %v", err)
+	}
+	var kept []string
+	for i, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var e map[string]any
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("line %d: %v", i, err)
+		}
+		ff, _ := e["forkedFrom"].(map[string]any)
+		if oldID, _ := ff["messageUuid"].(string); oldID != "" {
+			kept = append(kept, oldID)
+		}
+	}
+	if strings.Join(kept, ",") != "u1,a1" {
+		t.Fatalf("kept entries = %v, want [u1 a1] (everything before the queued_command attachment)", kept)
+	}
+	if _, ok := uuidMap["qc1"]; ok {
+		t.Error("attachment entry survived the slice; it should be dropped with the queued message")
+	}
+}
+
+// TestParentUUIDForUserMessageUUID_MatchPreference — a direct
+// `type:"user"` match wins over a queued_command attachment carrying
+// the same source_uuid, and attachment types other than queued_command
+// never match.
+func TestParentUUIDForUserMessageUUID_MatchPreference(t *testing.T) {
+	transcript := []map[string]any{
+		{"type": "user", "uuid": "u1", "parentUuid": ""},
+		{"type": "attachment", "uuid": "at1", "parentUuid": "u1",
+			"attachment": map[string]any{"type": "queued_command", "source_uuid": "shared"}},
+		{"type": "attachment", "uuid": "at2", "parentUuid": "at1",
+			"attachment": map[string]any{"type": "other_kind", "source_uuid": "other-ao"}},
+		{"type": "user", "uuid": "shared", "parentUuid": "at2"},
+	}
+
+	parent, err := parentUUIDForUserMessageUUIDInTranscript(transcript, "shared")
+	if err != nil {
+		t.Fatalf("shared: %v", err)
+	}
+	if parent != "at2" {
+		t.Errorf("shared parent = %q, want at2 (the real user entry, not the attachment)", parent)
+	}
+	if _, err := parentUUIDForUserMessageUUIDInTranscript(transcript, "other-ao"); !errors.Is(err, ErrMessageNotFound) {
+		t.Errorf("non-queued_command attachment matched: err=%v, want ErrMessageNotFound", err)
+	}
+}
+
+// TestWriteForkFileThroughUUID — the already-cut retry re-slice must
+// keep everything through the identified entry INCLUSIVE (cutting rows
+// appended after a failed revert, round-5 R5-6), match ANY entry
+// type's uuid (a checkpoint's parent uuid is usually an ASSISTANT
+// entry), and fail loudly on absent or empty ids.
+func TestWriteForkFileThroughUUID(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "src.jsonl")
+	if err := os.WriteFile(srcPath, []byte(queuedCommandJSONL), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	keptProvenance := func(t *testing.T, path string) []string {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read fork: %v", err)
+		}
+		var kept []string
+		for i, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			var e map[string]any
+			if err := json.Unmarshal([]byte(line), &e); err != nil {
+				t.Fatalf("line %d: %v", i, err)
+			}
+			ff, _ := e["forkedFrom"].(map[string]any)
+			if oldID, _ := ff["messageUuid"].(string); oldID != "" {
+				kept = append(kept, oldID)
+			}
+		}
+		return kept
+	}
+
+	// Keep through the assistant entry a1: the shape of the already-cut
+	// retry, where a1 was the cut-away anchor's parent. Rows after a1
+	// (the attachment and both later turns) must NOT survive.
+	_, throughPath, _, err := WriteForkFileThroughUUID(srcPath, "a1", "")
+	if err != nil {
+		t.Fatalf("through a1: %v", err)
+	}
+	if got := keptProvenance(t, throughPath); strings.Join(got, ",") != "u1,a1" {
+		t.Fatalf("kept entries = %v, want [u1 a1] (inclusive through the parent, later rows cut)", got)
+	}
+
+	if _, _, _, err := WriteForkFileThroughUUID(srcPath, "nope", ""); !errors.Is(err, ErrMessageNotFound) {
+		t.Fatalf("absent uuid: err=%v, want ErrMessageNotFound", err)
+	}
+	if _, _, _, err := WriteForkFileThroughUUID(srcPath, "", ""); err == nil {
+		t.Fatal("empty uuid must error")
+	}
+
+	// Fork provenance (CT4-5): after a slice remints every uuid, a
+	// PRE-fork id must still resolve via forkedFrom.messageUuid — the
+	// state a failed remap (or a crash between the SessionRef update and
+	// the remap) leaves stored checkpoint ids in. Re-slicing the fork
+	// through pre-fork "a1" keeps the fork's remints of [u1 a1].
+	_, forkPath, uuidMap, err := WriteForkFileForUserMessageUUID(srcPath, "u2", "")
+	if err != nil {
+		t.Fatalf("fork at u2: %v", err)
+	}
+	_, secondPath, _, err := WriteForkFileThroughUUID(forkPath, "a1", "")
+	if err != nil {
+		t.Fatalf("through pre-fork a1 on the fork: %v", err)
+	}
+	want := []string{uuidMap["u1"], uuidMap["a1"]}
+	if got := keptProvenance(t, secondPath); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("provenance re-slice kept %v, want the fork's remints of [u1 a1] = %v", got, want)
+	}
+	// The cut-away anchor's id maps to nothing on the fork — the
+	// already-cut detector relies on that asymmetry.
+	if _, _, _, err := WriteForkFileThroughUUID(forkPath, "u2", ""); !errors.Is(err, ErrMessageNotFound) {
+		t.Fatalf("cut-away uuid on fork: err=%v, want ErrMessageNotFound", err)
+	}
+}
+
+// TestWriteForkFileForUserMessageUUID_ForkedFromProvenance pins the
+// CT4-5 anchor half: slicing an already-forked transcript by a
+// PRE-fork user uuid — the id a failed remap leaves on AO rows and
+// checkpoints — anchors on the kept row whose forkedFrom.messageUuid
+// matches, cutting at exactly the same message as a current-uuid
+// slice would.
+func TestWriteForkFileForUserMessageUUID_ForkedFromProvenance(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "src.jsonl")
+	src := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"first reply"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"src","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"second reply"}]}}
+{"type":"user","uuid":"u3","parentUuid":"a2","sessionId":"src","message":{"role":"user","content":"third"}}
+{"type":"assistant","uuid":"a3","parentUuid":"u3","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"third reply"}]}}
+`
+	if err := os.WriteFile(srcPath, []byte(src), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	// First slice: keep everything before u3. Every kept row remints
+	// with forkedFrom provenance; assume the remap of stored ids FAILED.
+	_, forkPath, uuidMap, err := WriteForkFileForUserMessageUUID(srcPath, "u3", "")
+	if err != nil {
+		t.Fatalf("first slice: %v", err)
+	}
+
+	// Second slice keyed by the PRE-fork uuid "u2": must anchor via
+	// provenance and keep exactly the rows before u2 — the fork's
+	// remints of u1 and a1.
+	_, secondPath, _, err := WriteForkFileForUserMessageUUID(forkPath, "u2", "")
+	if err != nil {
+		t.Fatalf("second slice by pre-fork uuid: %v", err)
+	}
+	data, err := os.ReadFile(secondPath)
+	if err != nil {
+		t.Fatalf("read second fork: %v", err)
+	}
+	var keptProvenance []string
+	for i, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var e map[string]any
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("line %d: %v", i, err)
+		}
+		ff, _ := e["forkedFrom"].(map[string]any)
+		if oldID, _ := ff["messageUuid"].(string); oldID != "" {
+			keptProvenance = append(keptProvenance, oldID)
+		}
+	}
+	want := []string{uuidMap["u1"], uuidMap["a1"]}
+	if strings.Join(keptProvenance, ",") != strings.Join(want, ",") {
+		t.Fatalf("second slice kept %v, want the first fork's remints of [u1 a1] = %v", keptProvenance, want)
+	}
+}
+
 func TestBuildForkLines_RejectsEmptyUUID(t *testing.T) {
 	// An entry with empty uuid would collide in the uuid map. Verify
 	// it's silently dropped rather than corrupting the chain.

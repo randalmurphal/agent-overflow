@@ -1818,7 +1818,7 @@ func taskIDFromItemMeta(metaJSON string) string {
 // background completion router when the adapter's in-memory
 // task_id ↔ tool_use_id map has been lost (reconnect with a fresh
 // parser). Delegates to the store's indexed query (partial expression
-// index from migration v17) so the lookup is O(log N) instead of the
+// index idx_items_meta_task_id) so the lookup is O(log N) instead of the
 // former O(items) scan + per-row JSON unmarshal.
 //
 // The store query does not filter by kind — the partial index already

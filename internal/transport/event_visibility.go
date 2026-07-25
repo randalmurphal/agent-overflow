@@ -46,9 +46,64 @@ var loopbackOnlyEventChannels = map[string]bool{
 	// read.
 }
 
+// remoteOnlyEventChannels are the inverse cut: frames that exist to
+// hide WAN round-trip latency and are pure waste on a local pipe.
+var remoteOnlyEventChannels = map[string]bool{
+	// highlight:seed pushes syntax-span metadata alongside streaming
+	// text so a remote client colors code without a highlight RPC per
+	// growth step. Loopback clients get faster spans from the RPC path
+	// (sub-ms round trip), so these frames carry nothing they'd use.
+	// Producer side is gated too (Server.HasRemoteClient) — this
+	// filter is what keeps the frames off loopback pipes while a
+	// remote viewer has the producer running.
+	//
+	// highlight:diff_seed is deliberately NOT here anymore: its seeds
+	// can be parse-primed with the just-edited workspace file — better
+	// spans than what the loopback RPC path recomputes for a persisted
+	// diff — so local clients consume them as in-place upgrades rather
+	// than redundant warmers. Its producer gate was dropped alongside.
+	"highlight:seed": true,
+}
+
+// ephemeralEventChannels are never retained in the replay ring:
+// point-in-time cache warmers whose replay after a reconnect would be
+// useless (the client re-requests over RPC on demand) and whose frames
+// are large (span arrays + hash chains per streaming flush window) —
+// ring retention would hold up to DefaultRingCapacity superseded
+// frames per channel. Emit still assigns sequence numbers; Replay
+// finds an empty ring and returns nothing (no gap marker, so clients
+// never try to "recover" frames that were never history).
+var ephemeralEventChannels = map[string]bool{
+	"highlight:seed":      true,
+	"highlight:diff_seed": true,
+}
+
+// latestOnlyEventChannels get a capacity-1 replay ring: unkeyed
+// channels where every frame carries the COMPLETE current state, so
+// the newest frame fully supersedes all prior ones. A default-depth
+// ring would retain up to DefaultRingCapacity superseded frames
+// forever (system:stats emits every 2s, so its ring held ~33 minutes
+// of stale CPU samples) and replay them all on reconnect just to be
+// overwritten by the last one. Replay for these channels delivers the
+// single newest frame and never a gap marker — "missed" frames are not
+// lost history, they're superseded state, so there is no gap to
+// recover from.
+//
+// Membership rule: the channel must be UNKEYED — one global state, not
+// per-thread / per-workspace / per-server payloads multiplexed on one
+// channel. Keyed channels (git:status, provider:usage,
+// discussion:state, mcp:status) must NOT go here: capacity 1 would
+// evict other keys' latest frames and turn their reconnect replay into
+// data loss.
+var latestOnlyEventChannels = map[string]bool{
+	// Host CPU + memory sample for the sidebar footer; a fresh sample
+	// lands every 2s regardless (app_sysstat.go).
+	"system:stats": true,
+}
+
 func eventVisibleToOrigin(channel string, isLoopback bool) bool {
 	if isLoopback {
-		return true
+		return !remoteOnlyEventChannels[channel]
 	}
 	return !loopbackOnlyEventChannels[channel]
 }

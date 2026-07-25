@@ -41,10 +41,18 @@ import type { ScrollWriteCaller, WarmReason } from './types';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import type { ContentGeometrySample } from '../virtual/types';
 
-// ResizeObserver width jitter below half a CSS pixel is usually rounding
-// noise. Wider changes mean the content column reflowed; any paired height
-// delta is layout correction, not new live transcript content.
-const CONTENT_REFLOW_WIDTH_EPSILON_PX = 0.5;
+// ResizeObserver width jitter at or below ~1 CSS px is measurement noise,
+// not a reflow: fractional-DPR displays report single-device-pixel wobble
+// (1 device px at 125%/150% scaling ≈ 0.8/0.67 CSS px), and fractional
+// flex distribution can shift a pane's content box by similar amounts
+// without the column meaningfully rewrapping. Every change this window
+// exists for — pane resize, sidebar toggle, Mermaid useMaxWidth — moves
+// width by tens of pixels, so nothing legitimate lives below this
+// threshold. Misclassifying sub-threshold noise as a reflow is the
+// expensive failure: it opens the settle window below and converts live
+// streaming follow into 250ms of instant stepped pins (was 0.5px, which
+// fractional-DPR wobble cleared).
+const CONTENT_REFLOW_WIDTH_EPSILON_PX = 2;
 // Width and height can arrive in separate ResizeObserver deliveries. Keep
 // the layout-correction classification alive briefly so a width-only fire
 // followed by renderer height settle still sync-pins.
@@ -185,8 +193,6 @@ export interface ContentObserver {
   sampleResizeCorrelation(): boolean;
   /** Raw resizeDifference read for trace payloads only. */
   resizeDifferenceNow(): number;
-  /** True while the width-reflow settle window is open (engine-compensation input). */
-  widthReflowActive(): boolean;
   /**
    * Stamp a synthetic RO-correlation before an out-of-content instant
    * pin (composer/host geometry), so the resulting scroll event is
@@ -341,9 +347,9 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     const settled = deps.getQuietContextSignal()?.() ?? false;
     const haveTimer = quietTimer !== null;
     const warm = deps.warm();
-    let outcome: 'armed' | 'rearmed' | 'noop_warm' | 'noop_no_ro' | 'noop_signal_falsy';
+    let outcome: 'armed' | 'rearmed' | 'disarmed' | 'noop_warm' | 'noop_no_ro' | 'noop_signal_falsy';
     if (warm) outcome = 'noop_warm';
-    else if (!settled) outcome = 'noop_signal_falsy';
+    else if (!settled) outcome = haveTimer ? 'disarmed' : 'noop_signal_falsy';
     else if (!haveTimer && !hasFirstContentRO) outcome = 'noop_no_ro';
     else if (haveTimer) outcome = 'rearmed';
     else outcome = 'armed';
@@ -353,6 +359,17 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       haveTimer,
       warm,
     }));
+    if (outcome === 'disarmed') {
+      // The signal was withdrawn while a quiet timer was armed. This
+      // happens with presence-based signals (a ChatMarkdown mounted after
+      // the timer armed): the armed window was licensed by "no late
+      // typesetting wave is coming" and the mount revoked that license.
+      // Only geometry-quiet-with-signal (or the failsafe) may open the
+      // gate now.
+      if (quietTimer) clearTimeout(quietTimer);
+      quietTimer = null;
+      return;
+    }
     if (outcome === 'noop_warm' || outcome === 'noop_no_ro' || outcome === 'noop_signal_falsy') return;
     // Engine-source settle evidence supersedes the quiet wait: everything
     // mounted has measured within epsilon of its estimate (priors-hit
@@ -630,7 +647,6 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       return correlated;
     },
     resizeDifferenceNow: () => resizeDifference,
-    widthReflowActive: () => contentReflowSettleUntil > nowMs(),
     stampSyntheticResizeCorrelation: () => {
       // Stamp resizeDifference BEFORE the caller writes scrollTop so the
       // resulting scroll event is treated as RO-correlated, not

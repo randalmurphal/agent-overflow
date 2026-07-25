@@ -20,14 +20,31 @@ root `CLAUDE.md` principle 3.
 - `threads.go` / `thread_view.go` / `thread_forks.go` — threads table
   plus the `ThreadView` translation layer that hydrates `SessionOptions`
   for the provider packages.
-- `projects.go` — projects table (v13 introduces `project_id` FK).
+- `projects.go` — projects table (threads carry a `project_id` FK).
 - `channels.go` / `discussions.go` / `discussion_types.go` —
   multi-agent discussion persistence.
 - `attachments.go` — attachment metadata (bytes on disk are the
   `internal/attachment` package's problem).
-- `checkpoints.go` — message-checkpoint row/ref bookkeeping plus
-  `thread_tracked_files`; the ref-level mechanics live in
-  `internal/checkpoint`.
+- `message_anchors.go` — per-real-user-message provider correlation
+  rows (`turn_index` + Claude wire uuids) backing fork-from-message
+  and revert-on-interrupt. Pure SQLite; no git side.
+- `edit_diff_items.go` — read surfaces behind the review pane's Edits
+  scope: `ListEditDiffItems` (metadata-only rows for items whose
+  payload carries a unified diff — `tool_result` and legacy `diff`
+  kinds), `ListTurnEditDiffPatches` (one turn's payload-id + diff-blob
+  pairs in item order — the id lets the app attach that payload's
+  persisted span seeds), and `ListTurnUserSummaries` (selector group
+  labels).
+- `edit_file_snapshots.go` — per-edit new-side file snapshots
+  (migration v24) behind the Edits scope's snapshot-first expansion
+  and priming. Keyed `(payload_id, path)`, cascade with `payloads`,
+  gzip encode/decode owned by the accessors: `PutEditFileSnapshot`
+  (payload-existence guarded in-statement — a deletion race surfaces
+  as wrapped `sql.ErrNoRows`, not an FK violation),
+  `GetEditFileSnapshot`, and `GetLatestTurnEditFileSnapshot` (the
+  turn's last edit of a path in item order, matching the whole-turn
+  concatenation). Misses return `found=false` — an expected state
+  (pre-feature history), not an error.
 - `drafts.go` — composer drafts per thread.
 - `chat_bar.go` — composer favorites and last-used model profile seeds.
 - `search.go` — case-insensitive substring search across thread titles
@@ -59,13 +76,13 @@ root `CLAUDE.md` principle 3.
   alone always reports `UnpricedRows=0` — that field is populated by
   `GetUsageStats` after merging in the rate-table lookup, and now means
   "rows whose model the rate table doesn't recognize" rather than
-  "rows with no wire cost." Migration v23 adds denormalized
+  "rows with no wire cost." Migration v26 adds denormalized
   `work_item_id`; `QueryWorkItemUsage` supplies the raw token and
   wire-cost sum used for workflow budget checks, while
   `QueryWorkItemUsageDetail` groups the same rows by model/cost source so the
   app can add query-time `usagecost` estimates for rows without wire cost.
 - `work_items.go` / `work_item_phases.go` / `work_item_effects.go` — bare
-  workflow run-record CRUD (migration v23). Project, thread, and item ids
+  workflow run-record CRUD (migration v26). Project, thread, and item ids
   are intentionally denormalized without FKs so run history survives
   deletion. State-machine validation and scheduling belong to
   `internal/workflow`, not this package.
@@ -107,52 +124,70 @@ root `CLAUDE.md` principle 3.
 If you're tempted to add a new table, first check whether the provider
 session already has the answer.
 
-## Recent schema changes (v13)
+## Schema notes (v1 baseline)
+
+The migration chain was squashed into the v1 `initial_schema` baseline
+(`schema_v1.go`); the chain in `migrate.go` counts up from there. Facts
+older docs attributed to individual migrations that now live in the
+baseline:
 
 - `projects` is a first-class table. Each thread carries a `project_id`
   FK; a project is the user-level grouping (root dir + name + color)
   above individual threads.
-- `interaction_mode` was renamed to `mode` with a new canonical default
-  of `"chat"` (was `"default"`). The CHECK constraint was rewritten in
-  the same migration; older values are normalised in place.
-- Composer-context columns landed on the threads table:
-  `reasoning_effort` (provider-specific; Codex currently accepts
-  none/minimal/low/medium/high/xhigh/max/ultra), `fast_mode` (bool),
-  `context_window`. The per-thread row is the source of truth;
-  `SessionOptions` in `thread_view.go` translates it for the provider.
-
-## Recent schema changes (v34) — context settings
-
-- `context_window` now accepts any positive provider/model-supported token
-  count instead of a fixed 200k/1m check.
-- `threads` and `chat_model_profiles` carry
+- Threads carry `mode` (canonical default `"chat"`) plus the
+  composer-context columns: `reasoning_effort` (provider-specific;
+  Codex currently accepts none/minimal/low/medium/high/xhigh/max/ultra),
+  `fast_mode` (bool), and `context_window` (any positive
+  provider/model-supported token count). The per-thread row is the
+  source of truth; `SessionOptions` in `thread_view.go` translates it
+  for the provider. `threads` and `chat_model_profiles` also carry
   `auto_compact_standard_percent` and `auto_compact_extended_percent`
   (0 = provider default/inherited setting, otherwise 1..90).
+- Raw content is canonical: there are no `highlighted_content` render
+  caches. `AppendItemSummary(threadID, id, delta, updatedAt)` is the
+  raw append helper, called from triage's stream persistence buffer
+  rather than for every provider token. Payload bindings return raw
+  data; rendering is a frontend projection based on item/payload kind.
 
-## Recent schema changes (v25) — raw chat content
+## Recent schema changes (v24) — edit file snapshots
 
-- `items.highlighted_content` and `channel_messages.highlighted_content`
-  were removed. Store raw `summary`, channel `content`, and payload `data`
-  only.
-- `AppendItemSummary(threadID, id, delta, updatedAt)` remains the raw
-  append helper, but triage calls it from the stream persistence buffer
-  rather than for every provider token. No render cache is written.
-- Payload bindings return raw data only. Rendering is a frontend projection
-  based on item/payload kind.
+- `edit_file_snapshots` (see `edit_file_snapshots.go` above): the
+  gzip-compressed new-side file content of each edit diff payload,
+  captured at the app layer's diff persist tap when the workspace file
+  still provably matched the patch. A pure cache riding the payload
+  lifecycle — payload GC cascades here, an upsert that replaces a
+  payload row (INSERT OR REPLACE deletes + re-inserts) drops its
+  snapshots with it, and readers always re-verify content against the
+  request's patch, so a stale row can never serve.
 
-## Recent schema changes (v23-v25) — workflow persistence
+## Recent schema changes (v22) — persisted highlight spans
+
+- `payloads` gains `preview_spans` and `spans` TEXT columns (default
+  `''` = not computed). Both hold version-stamped span blobs whose
+  shape is owned by the app layer (`app_highlight_diff_seed.go`);
+  empty or version-stale blobs are inert — the frontend falls back to
+  the highlight RPCs.
+- `preview_spans` (small, size-capped) is joined into item list reads
+  as `Item.PayloadPreviewSpans`; `spans` (full patch spans) is read
+  only by explicit payload loads via `GetPayloadSpans`.
+- `UpdatePayloadSpans` writes both columns. `ReplacePayloadData` and
+  item upserts (INSERT OR REPLACE) reset them to `''`;
+  `AppendPayloadData` deliberately retains them — blobs are
+  content-addressed per file, so still-valid segments stay valid.
+
+## Recent schema changes (v26-v29) — workflow persistence
 
 - `work_items`, `work_item_phases`, and `work_item_effects` persist workflow
   run history without project/thread/item FKs; `automations` and
   `automation_cursors` persist trigger definitions and watermarks.
 - `usage_ledger.work_item_id` attributes phase-thread usage to a run and is
   indexed for budget sums.
-- `threads.mode` accepts `workflow` for phase threads. The v24 rebuild
+- `threads.mode` accepts `workflow` for phase threads. The v27 rebuild
   preserves every existing thread column and index.
-- The v25 rebuild adds `workflow-studio` / `workflow-triage`, extends typed
+- The v28 rebuild adds `workflow-studio` / `workflow-triage`, extends typed
   work-item reasons with `taken-over`, and persists item hand-off ownership in
   `work_items.triage_thread_id`.
-- Migration v26 adds JSON-checked `work_items.disposition` receipts and
+- Migration v29 adds JSON-checked `work_items.disposition` receipts and
   `work_items.digest` human-facing run summaries.
 
 ## Extension points

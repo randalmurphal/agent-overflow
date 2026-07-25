@@ -13,7 +13,7 @@ one closest to what you're touching.
 | `store/` | SQLite access, migrations, schema. |
 | `usagecost/` | Hardcoded per-million-token USD rate table with progressive family-prefix matching (exact match, then trim trailing `-`/`.` segments). Prices `usage_ledger` rows whose wire carries no cost (Codex, claudetui) at query time — `app_usage.go`'s `GetUsageStats` is the only caller. Stdlib-only; estimates are computed fresh per query and never persisted, so a rate-table update reprices all history. |
 | `itemmeta/` | Shaping helpers for the persisted `items.meta` JSON column, shared by the triage write path and the store migration chain (which cannot import each other). Stdlib-only. |
-| `checkpoint/` | Message-keyed git-ref snapshots, diffs, and restore helpers. |
+| `gitdiff/` | Review-pane diff sources via `git` subprocesses: workspace-vs-HEAD, branch-base-to-worktree (temp-index snapshot, no clean filters), per-commit patches, and commit lists. |
 | `git/` | Git and `gh` operations (branches, worktrees, commit, push, PR). |
 | `project/` | Project-row lifecycle helpers that bridge git repository roots and `store.Project`. |
 | `gitwatch/` | Live git status streams per workspace (recursive fs watch + polling fallback). |
@@ -26,6 +26,7 @@ one closest to what you're touching.
 | `atomicfile/` | Crash-safe small-JSON state files: `WriteJSON` (temp + fsync + rename, 0600/0700) and `ReadJSON` (absent → not-found, not error). Backs `wsldistro`'s `wsl.json` and the launcher's `window.json`. Stdlib-only. |
 | `logging/` | Structured NDJSON provider-event logging. |
 | `observability/` | Opt-in OpenTelemetry tracing + NDJSON replay writer. |
+| `diagenv/` | Names of the opt-in diagnostic env vars (`AGENT_OVERFLOW_PPROF`, `AGENT_OVERFLOW_RENDERER_DIAG`) plus the `Passthrough()` list the WSL-boundary launchers forward via WSLENV. Names only, stdlib-only; the behaviors live in `observability/pprofserve` and the transport server. |
 | `platform/` | Runtime-environment probes shared by host-specific packages, such as WSL detection. |
 | `sysstat/` | Host CPU + memory sampler (gopsutil wrapper) backing the sidebar system-stats footer. Pure read-only; cadence + emission owned by `app_sysstat.go`. |
 | `workspacefiles/` | Workspace-scoped file search for @-mention completion. |
@@ -76,6 +77,7 @@ one closest to what you're touching.
 | `workflow/starters/` | Embedded workflow definition sets used as sources by `ao workflow new`; never an engine-visible built-in tier. |
 | `aocli/` | Offline `ao` command routing, config-root discovery, workflow validation/listing, and human/JSON presentation. |
 | `appdirs/` | The single UserConfigDir→UserHomeDir→`/agent-overflow` fallback chain locating the app-managed directory root; shared by `main.go` boot reads and the `ao` CLI so discovery never drifts. |
+| `highlight/` | Theme-independent syntax-highlight span metadata (tree-sitter via cgo). Whole-document parsing returns class ids over byte ranges — metadata like `PathRef[]`, never HTML. Has its own subarea guide. |
 
 ## Responsibility boundary
 

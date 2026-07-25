@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachment"
-	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
@@ -24,7 +22,7 @@ import (
 )
 
 // setupCascadeApp builds an App wired up with every subsystem a delete path
-// touches: attachments, drafts, terminals, checkpoints, discussion registry.
+// touches: attachments, drafts, terminals, message anchors, discussion registry.
 // Unlike setupE2EApp, this flavour turns on every real component so that a
 // DeleteThread exercises the full cascade.
 func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
@@ -51,7 +49,6 @@ func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
 	}
 	app.triage = triage.NewRouter(st, bus.emit)
 	app.triage.SetEventHook(bus.observeRouterEvent)
-	app.checkpoints = checkpoint.NewStore()
 	app.registry = discussion.NewRegistry(st)
 	app.channels = discussion.NewChannelService(st)
 	app.terminals = terminal.NewManager(nil, nil)
@@ -152,9 +149,9 @@ func TestCascade_DeleteThreadRemovesAllDependents(t *testing.T) {
 
 	attachmentPaths := populateThreadForCascade(t, app, thread)
 
-	// 2 captured checkpoints with real git refs.
+	// 2 user items with message anchors.
 	for turn := 0; turn < 2; turn++ {
-		userItemID := fmt.Sprintf("checkpoint-user:%d", turn)
+		userItemID := fmt.Sprintf("anchor-user:%d", turn)
 		if err := app.store.InsertItem(store.Item{
 			ID:        userItemID,
 			ThreadID:  thread.ID,
@@ -162,27 +159,12 @@ func TestCascade_DeleteThreadRemovesAllDependents(t *testing.T) {
 			ItemIndex: 100 + turn,
 			Kind:      "user_text",
 			Role:      "user",
-			Summary:   fmt.Sprintf("checkpoint user %d", turn),
+			Summary:   fmt.Sprintf("anchored user %d", turn),
 			CreatedAt: time.Now().UnixMilli(),
 		}); err != nil {
-			t.Fatalf("Insert checkpoint user item %d: %v", turn, err)
+			t.Fatalf("Insert anchored user item %d: %v", turn, err)
 		}
-		ref, err := app.checkpoints.CaptureBaseline(context.Background(), workspace, thread.ID, turn)
-		if err != nil {
-			t.Fatalf("CaptureBaseline turn %d: %v", turn, err)
-		}
-		cp := store.Checkpoint{
-			ID:            uuid.NewString(),
-			ThreadID:      thread.ID,
-			UserItemID:    userItemID,
-			TurnIndex:     turn,
-			RefName:       ref,
-			CapturedAt:    time.Now().UnixMilli(),
-			WorkspacePath: workspace,
-		}
-		if err := app.store.SaveCheckpoint(cp); err != nil {
-			t.Fatalf("SaveCheckpoint: %v", err)
-		}
+		seedMessageAnchor(t, app.store, thread.ID, userItemID, turn, "", "")
 	}
 
 	// 2 open terminals.
@@ -211,8 +193,8 @@ func TestCascade_DeleteThreadRemovesAllDependents(t *testing.T) {
 	if _, ok, _ := app.store.GetThreadDraft(thread.ID); !ok {
 		t.Fatal("pre: draft missing")
 	}
-	if cps, _ := app.store.ListCheckpoints(thread.ID); len(cps) != 2 {
-		t.Fatalf("pre: checkpoints = %d, want 2", len(cps))
+	if anchors, _ := app.store.ListMessageAnchors(thread.ID); len(anchors) != 2 {
+		t.Fatalf("pre: message anchors = %d, want 2", len(anchors))
 	}
 
 	// Act.
@@ -233,20 +215,12 @@ func TestCascade_DeleteThreadRemovesAllDependents(t *testing.T) {
 	if _, ok, _ := app.store.GetThreadDraft(thread.ID); ok {
 		t.Fatal("post: draft still present")
 	}
-	if cps, _ := app.store.ListCheckpoints(thread.ID); len(cps) != 0 {
-		t.Fatalf("post: checkpoints = %d, want 0", len(cps))
+	if anchors, _ := app.store.ListMessageAnchors(thread.ID); len(anchors) != 0 {
+		t.Fatalf("post: message anchors = %d, want 0 (FK CASCADE)", len(anchors))
 	}
 	// Terminals closed.
 	if got := len(app.terminals.List(thread.ID)); got != 0 {
 		t.Fatalf("post: terminals = %d, want 0", got)
-	}
-	// Checkpoint git refs removed.
-	for turn := 0; turn < 2; turn++ {
-		refName := checkpoint.RefForThreadTurn(thread.ID, turn)
-		err := testutil.RunGitAllowError(workspace, "rev-parse", "--verify", refName)
-		if err == nil {
-			t.Fatalf("post: checkpoint ref %s still present", refName)
-		}
 	}
 	// On-disk attachment files are swept alongside the DB cascade.
 	for _, p := range attachmentPaths {

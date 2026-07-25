@@ -383,8 +383,8 @@ func TestDeleteThreadTreePropagatesStoreErrors(t *testing.T) {
 // ANY step of the cascade fails, the parent row must remain in the DB so
 // a subsequent DeleteThread call can retry idempotently. Before A4, the
 // recursive path halted early and the parent was preserved — but the
-// flat step-by-step path (stop → terminals → deliberation → checkpoints
-// → attachments) would still run even after a failure in one of them
+// flat step-by-step path (stop → terminals → deliberation →
+// attachments) would still run even after a failure in one of them
 // and could race to partially clean state.
 func TestDeleteThreadKeepsRowWhenChildFails(t *testing.T) {
 	app := newTestAppWithStore(t)

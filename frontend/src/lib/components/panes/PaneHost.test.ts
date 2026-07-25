@@ -26,9 +26,11 @@ import {
   getFocusedPaneId,
   registerPaneForTest,
   resetPanesForTest,
+  revealPane,
 } from '../../stores/panes.svelte';
 import {
   addPaneLayoutItem,
+  applyPaneBoundaryDrag,
   getPaneLayoutItems,
   movePaneLayoutItem,
   removePaneLayoutItem,
@@ -333,7 +335,7 @@ describe('PaneHost', () => {
     }
   });
 
-  it('renders a plan companion layout item through CompanionPane', () => {
+  it('renders a plan companion layout item through CompanionPane', async () => {
     registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
     setPaneLayoutItemsForTest([
       { id: 'source', paneId: 'source', kind: 'thread', widthPx: 1 },
@@ -347,9 +349,58 @@ describe('PaneHost', () => {
 
     expect(companion).toBeInTheDocument();
     expect(review).toBeInTheDocument();
-    expect(rendered.getAllByTestId('stub-companion-panel')).toHaveLength(2);
+    // Panel bodies mount through CompanionPane's lazy loader map.
+    await waitFor(() => {
+      expect(rendered.getAllByTestId('stub-companion-panel')).toHaveLength(2);
+    });
     expect(companion.closest('[data-pane-id="plan-source"]')).toHaveAttribute('data-pane-kind', 'plan');
     expect(review.closest('[data-pane-id="review-source"]')).toHaveAttribute('data-pane-kind', 'review');
+  });
+
+  // Regression: CompanionPane called its lazy loader inside the {#await}
+  // expression. Svelte re-runs an await block whenever any dependency of
+  // its expression invalidates — and a divider drag replaces the pane's
+  // layout item (hence the `kind` prop's source) every frame — so each
+  // frame minted a fresh import() promise, flashed the pending branch,
+  // and remounted the panel body: a full review reload plus scroll reset
+  // from simply resizing the pane.
+  it('keeps a companion panel body mounted through divider width churn', async () => {
+    registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
+    setPaneLayoutItemsForTest([
+      { id: 'source', paneId: 'source', kind: 'thread', widthPx: 800 },
+      { id: 'review-source', paneId: 'review-source', kind: 'review', widthPx: 800, sourcePaneId: 'source' },
+    ]);
+
+    const rendered = render(PaneHost);
+    await waitFor(() => {
+      expect(rendered.getByTestId('stub-companion-panel')).toBeInTheDocument();
+    });
+    const body = rendered.getByTestId('stub-companion-panel');
+
+    const startWidths = new Map([
+      ['source', 800],
+      ['review-source', 800],
+    ]);
+    for (const deltaPx of [-30, -60, -90, -120]) {
+      applyPaneBoundaryDrag({
+        leftPaneId: 'source',
+        rightPaneId: 'review-source',
+        startWidths,
+        deltaPx,
+        minPaneWidth: 560,
+        overflowPx: 0,
+        zeroSum: false,
+      });
+      await tick();
+      // Drain the await block's pending-vs-resolved microtask window: an
+      // unstable promise identity swaps the body out right here.
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+
+    expect(getPaneLayoutItems().map((item) => item.widthPx)).toEqual([680, 920]);
+    expect(body.isConnected).toBe(true);
+    expect(rendered.getByTestId('stub-companion-panel')).toBe(body);
   });
 
   it('renders an explicit broken state for a companion whose source pane is missing', () => {
@@ -455,6 +506,10 @@ describe('PaneHost', () => {
     if (!b || !c) throw new Error('expected panes b and c');
     stubPaneOffsets(b, 400, 400);
     stubPaneOffsets(c, 800, 400);
+    // Drain the mount-frame snap request first: user reveals arrive frames
+    // after mount as fresh (gliding) requests, never coalesced into the
+    // instant mount frame.
+    pump.frame();
 
     // Reveal 'b' and let the glide advance partway (deferred reveal frame,
     // then one animation step).
@@ -694,6 +749,8 @@ describe('PaneHost', () => {
       get: () => getPaneLayoutItems().findIndex((item) => item.paneId === 'c') * 600,
     });
     Object.defineProperty(c, 'offsetWidth', { configurable: true, get: () => 600 });
+    // Drain the mount-frame snap request first (see the chained-reveals test).
+    pump.frame();
 
     // Start toward C at 1200..1800: right-edge alignment targets 800.
     await fireEvent.pointerDown(c);
@@ -766,6 +823,8 @@ describe('PaneHost', () => {
     const right = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
     if (!right) throw new Error('expected right pane');
     stubPaneOffsets(right, 800, 800);
+    // Drain the mount-frame snap request first (see the chained-reveals test).
+    pump.frame();
 
     await fireEvent.pointerDown(right);
     pump.frame();
@@ -781,6 +840,133 @@ describe('PaneHost', () => {
     pump.pumpUntilIdle();
     expect(geometry.scrollLeft()).toBe(0);
     expect(geometry.scrollLeftWrites()).toBe(writesAfterClamp);
+  });
+
+  // The strip (re)appears at scrollLeft 0 — first mount after layout
+  // restore, and a global surface (settings) closing — regardless of which
+  // pane holds logical focus. Both must align the focused pane instantly:
+  // there is no prior position worth gliding from, and DOM focus
+  // restoration is preventScroll'd, so nothing else brings it into view.
+  it('snaps the focused pane into view instantly on first mount', async () => {
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 600 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 600 },
+    ]);
+    focusPane('right');
+
+    const pump = installFramePump();
+    const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const scrollLeftOf = stubStripGeometry(host, 400, 1200);
+    const right = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
+    if (!right) throw new Error('expected right pane');
+    stubPaneOffsets(right, 600, 600);
+
+    // One frame runs the deferred snap, which right-edge aligns the focused
+    // pane (600..1200 in a 400 viewport → 800) in a single write. No glide
+    // frames follow — idle pumping must not move the strip further.
+    pump.frame();
+    expect(scrollLeftOf()).toBe(800);
+    pump.pumpUntilIdle();
+    expect(scrollLeftOf()).toBe(800);
+  });
+
+  it('does not snap on global-surface open and re-snaps the focused pane on close', async () => {
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 600 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 600 },
+    ]);
+    focusPane('right');
+    const globalSurface = createRawSnippet(() => ({
+      render: () => '<div data-testid="test-global-surface">Settings</div>',
+    }));
+
+    const pump = installFramePump();
+    const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const geometry = stubMutableStripGeometry(host, {
+      clientWidth: 400,
+      scrollWidth: () => host.querySelector('[data-testid="global-pane-surface"]') ? 400 : 1200,
+      scrollLeft: 0,
+    });
+    // Pane sections are recreated on each panes-mode entry, so offsets are
+    // re-stubbed on the fresh element after every reappearance.
+    const stubRightOffsets = () => {
+      const right = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
+      if (!right) throw new Error('expected right pane');
+      stubPaneOffsets(right, 600, 600);
+    };
+    stubRightOffsets();
+    pump.frame();
+    expect(geometry.scrollLeft()).toBe(800);
+
+    // Opening the surface clamps to the shrunken strip and must NOT snap.
+    await rendered.rerender({ globalSurface });
+    expect(geometry.scrollLeft()).toBe(0);
+    pump.pumpUntilIdle();
+    expect(geometry.scrollLeft()).toBe(0);
+
+    // Closing it is a strip reappearance: snap the focused pane back in.
+    await rendered.rerender({ globalSurface: undefined });
+    stubRightOffsets();
+    pump.frame();
+    expect(geometry.scrollLeft()).toBe(800);
+  });
+
+  it('a reveal landing in the snap frame stays instant and takes the latest target', async () => {
+    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
+    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
+    setPaneLayoutItemsForTest([
+      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 600 },
+      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 600 },
+    ]);
+    focusPane('left');
+
+    const pump = installFramePump();
+    const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const scrollLeftOf = stubStripGeometry(host, 400, 1200);
+    const left = rendered.container.querySelector<HTMLElement>('[data-pane-id="left"]');
+    const right = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
+    if (!left || !right) throw new Error('expected both panes');
+    stubPaneOffsets(left, 0, 600);
+    stubPaneOffsets(right, 600, 600);
+
+    // The mount snap (targeting focused 'left') is pending; a reveal for
+    // 'right' coalesces into the same frame. Latest target wins but the
+    // frame keeps instant mode — the strip starts from an unseen position,
+    // so a glide would animate from nowhere. One frame, one write, done.
+    revealPane('right');
+    pump.frame();
+    expect(scrollLeftOf()).toBe(800);
+    pump.pumpUntilIdle();
+    expect(scrollLeftOf()).toBe(800);
+  });
+
+  it('snaps a focused companion pane into view on first mount', async () => {
+    registerPaneForTest('source', createThreadPane({ paneId: 'source' }));
+    setPaneLayoutItemsForTest([
+      { id: 'source', paneId: 'source', kind: 'thread', widthPx: 600 },
+      { id: 'review-source', paneId: 'review-source', kind: 'review', widthPx: 600, sourcePaneId: 'source' },
+    ]);
+    // The snap resolves the RAW focused id — a restored focused companion
+    // aligns the companion section itself, not its source pane.
+    focusPane('review-source');
+
+    const pump = installFramePump();
+    const rendered = render(PaneHost);
+    const host = rendered.getByTestId('pane-host');
+    const scrollLeftOf = stubStripGeometry(host, 400, 1200);
+    const companion = rendered.container.querySelector<HTMLElement>('[data-pane-id="review-source"]');
+    if (!companion) throw new Error('expected companion pane');
+    stubPaneOffsets(companion, 600, 600);
+
+    pump.frame();
+    expect(scrollLeftOf()).toBe(800);
   });
 
   it('clamps after host widening and completed pane equalization', async () => {

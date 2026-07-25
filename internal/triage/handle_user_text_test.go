@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // seedUserTextRow inserts a `user_text` row with the same shape app_send.go
@@ -66,16 +67,13 @@ func TestHandleUserText_PendingSendMatch_StampsProviderItemID(t *testing.T) {
 
 	router.RegisterPendingSend("t1", "user:0", 0)
 	seedUserTextRow(t, st, "t1", 0, "hello world", "")
-	if err := st.SaveCheckpoint(store.Checkpoint{
-		ID:            "checkpoint-user-0",
-		ThreadID:      "t1",
-		UserItemID:    "user:0",
-		TurnIndex:     0,
-		RefName:       "refs/agent-overflow/checkpoints/dDE/message/user-0",
-		CapturedAt:    time.Now().UnixMilli(),
-		WorkspacePath: t.TempDir(),
+	if err := st.UpsertMessageAnchor(store.MessageAnchor{
+		ThreadID:   "t1",
+		UserItemID: "user:0",
+		TurnIndex:  0,
+		CreatedAt:  time.Now().UnixMilli(),
 	}); err != nil {
-		t.Fatalf("seed checkpoint: %v", err)
+		t.Fatalf("seed anchor: %v", err)
 	}
 
 	// Reset emissions captured during the seed so the assertion below
@@ -106,13 +104,20 @@ func TestHandleUserText_PendingSendMatch_StampsProviderItemID(t *testing.T) {
 	if id, _ := meta["provider_item_id"].(string); id != "msg_xyz" {
 		t.Fatalf("meta.provider_item_id = %v, want msg_xyz (full meta: %s)", meta["provider_item_id"], persisted.Meta)
 	}
-	checkpoint, ok, err := st.GetCheckpointByUserItemID("t1", "user:0")
-	if err != nil || !ok {
-		t.Fatalf("checkpoint missing after provider id stamp: ok=%v err=%v", ok, err)
+	// The parent uuid stamps into item meta in the SAME write as the
+	// item id (round-5, R5-8): the anchor's copy below is a separate
+	// follow-up that can fail, and the already-cut rollback retry needs
+	// a durable parent it can slice through.
+	if p, _ := meta["provider_parent_uuid"].(string); p != "parent-abc" {
+		t.Fatalf("meta.provider_parent_uuid = %v, want parent-abc (full meta: %s)", meta["provider_parent_uuid"], persisted.Meta)
 	}
-	if checkpoint.ProviderUserMessageID != "msg_xyz" || checkpoint.ProviderParentUUID != "parent-abc" {
-		t.Fatalf("checkpoint provider ids = %q/%q, want msg_xyz/parent-abc",
-			checkpoint.ProviderUserMessageID, checkpoint.ProviderParentUUID)
+	anchor, ok, err := st.GetMessageAnchor("t1", "user:0")
+	if err != nil || !ok {
+		t.Fatalf("anchor missing after provider id stamp: ok=%v err=%v", ok, err)
+	}
+	if anchor.ProviderUserMessageID != "msg_xyz" || anchor.ProviderParentUUID != "parent-abc" {
+		t.Fatalf("anchor provider ids = %q/%q, want msg_xyz/parent-abc",
+			anchor.ProviderUserMessageID, anchor.ProviderParentUUID)
 	}
 
 	// No new row should be minted under user:wire:msg_xyz when the
@@ -227,8 +232,8 @@ func TestHandleUserText_InterruptPromotedFlush_EchoDoesNotRebump(t *testing.T) {
 	router.RegisterPendingQuietFlushSend("t1", "queue:m1", flushRow, 4, now, "")
 
 	// User interrupt → the promote anchors the row at the turn tail.
-	if promoted := router.PromoteQuietFlushSends("t1"); promoted != 1 {
-		t.Fatalf("PromoteQuietFlushSends: got %d, want 1", promoted)
+	if promoted := promoteQuietForTest(router, "t1"); len(promoted) != 1 {
+		t.Fatalf("PromoteQuietFlushSends: got %d, want 1", len(promoted))
 	}
 
 	// The interrupted turn's post-interrupt tail: a thinking block Claude
@@ -313,7 +318,7 @@ func TestHandleUserText_EagerPersistedDeferredFlush_EchoDoesNotRebump(t *testing
 	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:m1", flushRow, now, "")
 
 	// User interrupt → the deferred row is eagerly persisted at the tail.
-	persisted := router.EagerPersistDeferredFlushSends("t1")
+	persisted := eagerPersistForTest(router, "t1", router.OpenTurnIndex("t1"))
 	if len(persisted) != 1 {
 		t.Fatalf("EagerPersistDeferredFlushSends: got %d rows, want 1", len(persisted))
 	}
@@ -713,33 +718,31 @@ func TestHandleUserText_PendingSendMatch_DuplicateProviderItemID_NoLog(t *testin
 	}
 }
 
-// TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUIDWithoutReEmit
-// pins the common direct-send success path: app_send.go pre-stamps the
-// minted uuid on the row + checkpoint, Claude honours it and echoes that
-// exact id back plus the parentUuid it assigned. The no-op-merge branch
-// must (1) fold the echo-only parent_uuid into the checkpoint, and (2)
-// skip the redundant upsert — the row is byte-identical, so re-emitting
-// would be a wasted frontend mutation. The row is emitted once at persist
-// (not exercised here; the seed is reset), never again on the echo.
-func TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUIDWithoutReEmit(t *testing.T) {
+// TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUID pins
+// the common direct-send success path: app_send.go pre-stamps the
+// minted uuid on the row + anchor, Claude honours it and echoes
+// that exact id back plus the parentUuid it assigned. The echo must
+// fold the echo-only parent_uuid into BOTH the item meta — the same
+// write as the id key, so the already-cut retry has a durable parent
+// the anchor follow-up can't lose (round-5, R5-8) — and the
+// anchor. Since the parent is new, the meta write is not a no-op:
+// exactly one upsert re-emits with the enriched meta.
+func TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUID(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
 	router.RegisterPendingSend("t1", "user:0", 0)
-	// Row + checkpoint carry the honoured send uuid; the checkpoint has no
+	// Row + anchor carry the honoured send uuid; the anchor has no
 	// parent_uuid yet (Claude assigns parentUuid, unknown at pre-stamp).
 	seedUserTextRow(t, st, "t1", 0, "ship it", `{"provider_item_id":"p"}`)
-	if err := st.SaveCheckpoint(store.Checkpoint{
-		ID:                    "checkpoint-user-0",
+	if err := st.UpsertMessageAnchor(store.MessageAnchor{
 		ThreadID:              "t1",
 		UserItemID:            "user:0",
 		TurnIndex:             0,
 		ProviderUserMessageID: "p",
-		RefName:               "refs/agent-overflow/checkpoints/dDE/message/user-0",
-		CapturedAt:            time.Now().UnixMilli(),
-		WorkspacePath:         t.TempDir(),
+		CreatedAt:             time.Now().UnixMilli(),
 	}); err != nil {
-		t.Fatalf("seed checkpoint: %v", err)
+		t.Fatalf("seed anchor: %v", err)
 	}
 	emissions.reset()
 
@@ -767,26 +770,50 @@ func TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUIDWithoutReEmit(
 	}
 
 	// parent_uuid — known only from the echo — must be folded into the
-	// checkpoint even though the message id is unchanged.
-	cp, ok, err := st.GetCheckpointByUserItemID("t1", "user:0")
+	// anchor even though the message id is unchanged.
+	anchor, ok, err := st.GetMessageAnchor("t1", "user:0")
 	if err != nil || !ok {
-		t.Fatalf("checkpoint missing: ok=%v err=%v", ok, err)
+		t.Fatalf("anchor missing: ok=%v err=%v", ok, err)
 	}
-	if cp.ProviderUserMessageID != "p" || cp.ProviderParentUUID != "parent-honored" {
-		t.Fatalf("checkpoint provider ids = %q/%q, want p/parent-honored (fold in the echoed parent_uuid)",
-			cp.ProviderUserMessageID, cp.ProviderParentUUID)
+	if anchor.ProviderUserMessageID != "p" || anchor.ProviderParentUUID != "parent-honored" {
+		t.Fatalf("anchor provider ids = %q/%q, want p/parent-honored (fold in the echoed parent_uuid)",
+			anchor.ProviderUserMessageID, anchor.ProviderParentUUID)
 	}
 
-	// The row meta is byte-identical, so no upsert should re-emit.
-	if upserts := itemUpsertEmissionsForID(emissions.snapshot(), "t1", "user:0"); len(upserts) != 0 {
-		t.Fatalf("honoured-id path re-emitted %d upserts for user:0, want 0", len(upserts))
+	// The parent is new to the row meta, so exactly one upsert re-emits
+	// with the enriched meta (R5-8).
+	upserts := itemUpsertEmissionsForID(emissions.snapshot(), "t1", "user:0")
+	if len(upserts) != 1 {
+		t.Fatalf("honoured-id path emitted %d upserts for user:0, want 1 (the parent-enriched meta)", len(upserts))
 	}
 	persisted, found, err := st.GetThreadItem("t1", "user:0")
 	if err != nil || !found {
 		t.Fatalf("expected user:0 to exist: found=%v err=%v", found, err)
 	}
-	if persisted.Meta != `{"provider_item_id":"p"}` {
-		t.Fatalf("row meta mutated: got %q, want unchanged", persisted.Meta)
+	if usermessage.ReadProviderItemID(persisted.Meta) != "p" {
+		t.Fatalf("row provider_item_id mutated: %q", persisted.Meta)
+	}
+	if usermessage.ReadProviderParentUUID(persisted.Meta) != "parent-honored" {
+		t.Fatalf("row meta missing the echoed parent (R5-8): %q", persisted.Meta)
+	}
+	if upserts[0].Meta != persisted.Meta {
+		t.Fatalf("emitted upsert meta %q != persisted meta %q", upserts[0].Meta, persisted.Meta)
+	}
+
+	// A REPLAYED echo (both ids already stored) is a true no-op: no
+	// further write, no re-emit.
+	emissions.reset()
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "ship it",
+		Meta:      json.RawMessage(`{"provider_item_id":"p","parent_uuid":"parent-honored"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("replayed echo: %v", err)
+	}
+	if replays := itemUpsertEmissionsForID(emissions.snapshot(), "t1", "user:0"); len(replays) != 0 {
+		t.Fatalf("replayed echo re-emitted %d upserts, want 0", len(replays))
 	}
 }
 
@@ -796,7 +823,7 @@ func TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUIDWithoutReEmit(
 // top-level uuid; Claude is expected to echo that exact id back. If the
 // echo carries a DIFFERENT id (Claude did not honour the supplied uuid
 // — a binary-contract drift), attachProviderItemIDToUserRow must
-// overwrite the row + checkpoint to the echoed id (the real transcript
+// overwrite the row + anchor to the echoed id (the real transcript
 // uuid, the correct slice anchor) and log loudly so the regression is
 // observable instead of silently falling back to the ordinal walk.
 func TestHandleUserText_PreStampedIDDrift_OverwritesAndLogs(t *testing.T) {
@@ -804,19 +831,16 @@ func TestHandleUserText_PreStampedIDDrift_OverwritesAndLogs(t *testing.T) {
 	createTestThread(t, st, "t1")
 
 	router.RegisterPendingSend("t1", "user:0", 0)
-	// Row + checkpoint carry the minted send uuid (the pre-stamp).
+	// Row + anchor carry the minted send uuid (the pre-stamp).
 	seedUserTextRow(t, st, "t1", 0, "fix the bug", `{"provider_item_id":"minted-uuid"}`)
-	if err := st.SaveCheckpoint(store.Checkpoint{
-		ID:                    "checkpoint-user-0",
+	if err := st.UpsertMessageAnchor(store.MessageAnchor{
 		ThreadID:              "t1",
 		UserItemID:            "user:0",
 		TurnIndex:             0,
 		ProviderUserMessageID: "minted-uuid",
-		RefName:               "refs/agent-overflow/checkpoints/dDE/message/user-0",
-		CapturedAt:            time.Now().UnixMilli(),
-		WorkspacePath:         t.TempDir(),
+		CreatedAt:             time.Now().UnixMilli(),
 	}); err != nil {
-		t.Fatalf("seed checkpoint: %v", err)
+		t.Fatalf("seed anchor: %v", err)
 	}
 	emissions.reset()
 
@@ -848,13 +872,13 @@ func TestHandleUserText_PreStampedIDDrift_OverwritesAndLogs(t *testing.T) {
 		t.Fatalf("row provider_item_id = %q, want claude-real-uuid (overwrite to the echoed id)", got)
 	}
 
-	cp, ok, err := st.GetCheckpointByUserItemID("t1", "user:0")
+	anchor, ok, err := st.GetMessageAnchor("t1", "user:0")
 	if err != nil || !ok {
-		t.Fatalf("checkpoint missing: ok=%v err=%v", ok, err)
+		t.Fatalf("anchor missing: ok=%v err=%v", ok, err)
 	}
-	if cp.ProviderUserMessageID != "claude-real-uuid" || cp.ProviderParentUUID != "parent-xyz" {
-		t.Fatalf("checkpoint provider ids = %q/%q, want claude-real-uuid/parent-xyz (self-heal to the echoed id)",
-			cp.ProviderUserMessageID, cp.ProviderParentUUID)
+	if anchor.ProviderUserMessageID != "claude-real-uuid" || anchor.ProviderParentUUID != "parent-xyz" {
+		t.Fatalf("anchor provider ids = %q/%q, want claude-real-uuid/parent-xyz (self-heal to the echoed id)",
+			anchor.ProviderUserMessageID, anchor.ProviderParentUUID)
 	}
 
 	upserts := itemUpsertEmissionsForID(emissions.snapshot(), "t1", "user:0")
@@ -1390,5 +1414,124 @@ func TestHandleUserText_MismatchedEchoDoesNotPersistDeferredFlush(t *testing.T) 
 	}
 	if id, _ := meta["provider_item_id"].(string); id != "uuid-mine" {
 		t.Fatalf("meta.provider_item_id = %v, want uuid-mine", meta["provider_item_id"])
+	}
+}
+
+// TestHandleUserText_FlushConfirmedHook_EagerQuietRows pins the
+// checkpoint-capture moments for flush rows (2026-07-16, revised for
+// round-7 R7-1): the confirmed hook fires once per quiet flush echo —
+// after the turn-tail bump and provider-id stamp — and never for
+// direct sends (captured at send time in app_send.go).
+// Interrupt-anchored rows capture TWICE: once at promote time (the
+// baseline, in case the session dies before the echo) and again at the
+// echo (the consumption-boundary refresh — the interrupt-time snapshot
+// predates the interrupted tail's and sibling queued messages'
+// responses, which the conversation cut keeps). Before the echo hook
+// existed at all, quiet flush rows never got a checkpoint, so a
+// message queued into an active Claude turn was permanently
+// non-revertable.
+func TestHandleUserText_FlushConfirmedHook_EagerQuietRows(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 3)
+
+	var hookCalls []store.Item
+	router.SetFlushUserTextConfirmedHook(func(threadID string, item store.Item) {
+		if threadID != "t1" {
+			t.Fatalf("hook threadID = %q, want t1", threadID)
+		}
+		hookCalls = append(hookCalls, item)
+	})
+
+	now := time.Now().UnixMilli()
+
+	// Direct send: pre-persisted row, no queue item id. The echo stamps
+	// but must NOT fire the hook.
+	seedUserTextRow(t, st, "t1", 3, "direct send", "")
+	router.RegisterPendingSendExpecting("t1", "user:3", 3, "uuid-direct")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: "t1", Content: "direct send",
+		Meta:      json.RawMessage(`{"provider_item_id":"uuid-direct"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("direct echo: %v", err)
+	}
+	if len(hookCalls) != 0 {
+		t.Fatalf("hook fired for a direct send (%d calls) — direct checkpoints are captured at send time", len(hookCalls))
+	}
+
+	// Eager quiet flush row: the echo bump+stamp is its capture moment.
+	quietRow := store.Item{
+		ID: "user:3:flush:0", ThreadID: "t1", TurnIndex: 3,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "queued mid-turn", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := router.PersistItemQuiet(quietRow, nil); err != nil {
+		t.Fatalf("quiet persist: %v", err)
+	}
+	router.RegisterPendingQuietFlushSend("t1", "queue:m1", quietRow, 4, now, "uuid-quiet")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: "t1", Content: "queued mid-turn",
+		Meta:      json.RawMessage(`{"provider_item_id":"uuid-quiet"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("quiet echo: %v", err)
+	}
+	if len(hookCalls) != 1 {
+		t.Fatalf("hook calls after quiet echo = %d, want 1", len(hookCalls))
+	}
+	if hookCalls[0].ID != "user:3:flush:0" {
+		t.Fatalf("hook item = %s, want user:3:flush:0", hookCalls[0].ID)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(hookCalls[0].Meta), &meta); err != nil {
+		t.Fatalf("decode hook item meta: %v", err)
+	}
+	if id, _ := meta["provider_item_id"].(string); id != "uuid-quiet" {
+		t.Fatalf("hook must receive the STAMPED row (provider_item_id %v, want uuid-quiet) — the checkpoint mirrors this id at capture", meta["provider_item_id"])
+	}
+
+	// Interrupt-anchored quiet row: the promote captures the baseline;
+	// the echo must re-fire the hook so the checkpoint refreshes at the
+	// consumption boundary (round-7, R7-1).
+	anchoredRow := store.Item{
+		ID: "user:3:flush:1", ThreadID: "t1", TurnIndex: 3,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "queued then interrupted", CreatedAt: now + 1, UpdatedAt: now + 1,
+	}
+	if err := router.PersistItemQuiet(anchoredRow, nil); err != nil {
+		t.Fatalf("quiet persist anchored: %v", err)
+	}
+	router.RegisterPendingQuietFlushSend("t1", "queue:m2", anchoredRow, 4, now+1, "uuid-anchored")
+	if promoted := promoteQuietForTest(router, "t1"); len(promoted) != 1 {
+		t.Fatalf("promote: got %d, want 1", len(promoted))
+	}
+	// The promote is the anchored row's baseline capture, INSIDE the
+	// anchor-lock-held call — before the mutex releases, so an echo in
+	// the gap can never find the checkpoint missing (round-4, CT4-1).
+	if len(hookCalls) != 2 {
+		t.Fatalf("hook calls after promote = %d, want 2 (promote captures the anchored row)", len(hookCalls))
+	}
+	if hookCalls[1].ID != "user:3:flush:1" {
+		t.Fatalf("promote hook item = %s, want user:3:flush:1", hookCalls[1].ID)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: "t1", Content: "queued then interrupted",
+		Meta:      json.RawMessage(`{"provider_item_id":"uuid-anchored"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("anchored echo: %v", err)
+	}
+	if len(hookCalls) != 3 {
+		t.Fatalf("hook calls after anchored echo = %d, want 3 (echo refreshes the anchored row's checkpoint at the consumption boundary — round-7, R7-1)", len(hookCalls))
+	}
+	if hookCalls[2].ID != "user:3:flush:1" {
+		t.Fatalf("echo refresh hook item = %s, want user:3:flush:1", hookCalls[2].ID)
+	}
+	if err := json.Unmarshal([]byte(hookCalls[2].Meta), &meta); err != nil {
+		t.Fatalf("decode echo refresh item meta: %v", err)
+	}
+	if id, _ := meta["provider_item_id"].(string); id != "uuid-anchored" {
+		t.Fatalf("echo refresh must receive the STAMPED row (provider_item_id %v, want uuid-anchored) — the replacement checkpoint mirrors this id at capture", meta["provider_item_id"])
 	}
 }

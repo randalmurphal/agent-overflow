@@ -1,0 +1,139 @@
+package store
+
+import "fmt"
+
+// EditDiffItem is one tool call whose persisted payload carries a
+// unified diff — an Edit/Write/apply_patch or captured command inline
+// diff (payload kind `tool_result`), or a legacy Claude EventDiff
+// attach (kind `diff`). Metadata only: the diff bytes load on
+// selection via GetPayloadData, keeping the review pane's edit list
+// as cheap as the commit list.
+type EditDiffItem struct {
+	ItemID      string
+	PayloadID   string
+	TurnIndex   int
+	ItemIndex   int
+	CreatedAt   int64
+	PayloadKind string
+	PayloadMeta string
+}
+
+// ListEditDiffItems returns every edit-diff tool call of a thread in
+// timeline order, including subagent children — a subagent's edit is
+// as real as the parent's.
+func (s *Store) ListEditDiffItems(threadID string) ([]EditDiffItem, error) {
+	rows, err := s.db.Query(`
+		SELECT items.id, items.payload_id, items.turn_index, items.item_index,
+		       items.created_at, payloads.kind, payloads.meta
+		  FROM items
+		  JOIN payloads ON payloads.id = items.payload_id
+		 WHERE items.thread_id = ?
+		   AND payloads.kind IN ('tool_result', 'diff')
+		   AND length(payloads.data) > 0
+		 ORDER BY items.turn_index ASC, items.item_index ASC`,
+		threadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list edit diff items for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	var entries []EditDiffItem
+	for rows.Next() {
+		var entry EditDiffItem
+		if err := rows.Scan(
+			&entry.ItemID, &entry.PayloadID, &entry.TurnIndex, &entry.ItemIndex,
+			&entry.CreatedAt, &entry.PayloadKind, &entry.PayloadMeta,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan edit diff item for %s: %w", threadID, err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate edit diff items for %s: %w", threadID, err)
+	}
+	return entries, nil
+}
+
+// TurnEditDiffPatch is one edit payload's diff bytes plus the payload
+// id, so callers can pair the patch with its persisted span blob.
+type TurnEditDiffPatch struct {
+	PayloadID string
+	Data      []byte
+}
+
+// ListTurnEditDiffPatches returns the diff payloads of one turn's
+// edit-diff tool calls in item order — the sequential story of what
+// the turn changed. Callers concatenate; nothing here is merged or
+// deduplicated (the same file edited twice yields two patch sections).
+func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnEditDiffPatch, error) {
+	rows, err := s.db.Query(`
+		SELECT payloads.id, payloads.data
+		  FROM items
+		  JOIN payloads ON payloads.id = items.payload_id
+		 WHERE items.thread_id = ?
+		   AND items.turn_index = ?
+		   AND payloads.kind IN ('tool_result', 'diff')
+		   AND length(payloads.data) > 0
+		 ORDER BY items.item_index ASC`,
+		threadID, turnIndex,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list turn edit diff patches for %s/%d: %w", threadID, turnIndex, err)
+	}
+	defer rows.Close()
+
+	var patches []TurnEditDiffPatch
+	for rows.Next() {
+		var patch TurnEditDiffPatch
+		if err := rows.Scan(&patch.PayloadID, &patch.Data); err != nil {
+			return nil, fmt.Errorf("store: scan turn edit diff patch for %s/%d: %w", threadID, turnIndex, err)
+		}
+		patches = append(patches, patch)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate turn edit diff patches for %s/%d: %w", threadID, turnIndex, err)
+	}
+	return patches, nil
+}
+
+// TurnUserSummary labels a turn with its first user prompt's summary,
+// for grouping the edit selector by turn.
+type TurnUserSummary struct {
+	TurnIndex int
+	Summary   string
+}
+
+// ListTurnUserSummaries returns each turn's first user_text summary.
+// Turns without a user row (rare recovery shapes) are simply absent.
+func (s *Store) ListTurnUserSummaries(threadID string) ([]TurnUserSummary, error) {
+	// SQLite resolves the bare summary column against the row that
+	// carries MIN(item_index) — the first prompt of the turn (a steer
+	// or queued flush lands later in the same turn).
+	rows, err := s.db.Query(`
+		SELECT turn_index, summary, MIN(item_index)
+		  FROM items
+		 WHERE thread_id = ? AND kind = 'user_text'
+		 GROUP BY turn_index
+		 ORDER BY turn_index ASC`,
+		threadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list turn user summaries for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	var summaries []TurnUserSummary
+	for rows.Next() {
+		var entry TurnUserSummary
+		var minIndex int
+		if err := rows.Scan(&entry.TurnIndex, &entry.Summary, &minIndex); err != nil {
+			return nil, fmt.Errorf("store: scan turn user summary for %s: %w", threadID, err)
+		}
+		summaries = append(summaries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate turn user summaries for %s: %w", threadID, err)
+	}
+	return summaries, nil
+}

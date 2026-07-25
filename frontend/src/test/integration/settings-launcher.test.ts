@@ -23,10 +23,13 @@ describe('App integration — settings launcher', () => {
 
     await fireEvent.click(rendered.getByTestId('sidebar-settings-button'));
 
+    // SettingsView is a lazy import; its first-ever load in a suite run
+    // pays the on-demand transform, which can exceed waitFor's default
+    // 1s under full-suite load.
     await waitFor(() => {
       expect(rendered.getByRole('tab', { name: 'General' })).toBeInTheDocument();
       expect(rendered.getByTestId('global-pane-surface')).toBeInTheDocument();
-    });
+    }, { timeout: 5000 });
 
     await fireEvent.click(rendered.getByRole('button', { name: 'Close Settings' }));
 

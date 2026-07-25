@@ -61,7 +61,6 @@
     payloadId={presentation.payloadId}
     threadId={item.threadId}
     itemId={item.id}
-    turnIndex={item.turnIndex}
     workspacePath={paneWorkspacePath(pane)}
     toolName={item.toolName}
     createdAt={item.createdAt}
@@ -77,7 +76,6 @@
     file={presentation.file}
     threadId={item.threadId}
     itemId={item.id}
-    turnIndex={item.turnIndex}
     workspacePath={paneWorkspacePath(pane)}
     toolName={item.toolName}
     createdAt={item.createdAt}

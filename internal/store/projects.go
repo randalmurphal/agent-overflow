@@ -26,7 +26,7 @@ type ProjectWithCounts struct {
 }
 
 // projectColumns omits the dead workflow_queue_paused / workflow_concurrency
-// columns (migration v29). The work queue was removed in workflows rev 2; the
+// columns (migration v32). The work queue was removed in workflows rev 2; the
 // columns survive only because SQLite refuses DROP COLUMN on a CHECK-bearing
 // column and rebuilding the FK-parent projects table to delete two unread
 // integers is not worth the blast radius. Nothing reads or writes them.

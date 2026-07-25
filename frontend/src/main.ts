@@ -4,6 +4,7 @@ import { appTitleForEnv } from './appTitle';
 import { installBrowserHistoryGuard } from './lib/utils/browserHistoryGuard';
 import { installFrontendErrorCapture } from './lib/utils/frontendErrorCapture';
 import { maybeInstallZombieMintProbe } from './lib/utils/zombieMintProbe';
+import type { MemoryReport } from './lib/utils/memoryReport';
 
 // Self-hosted fonts. Four weights of each family covers every surface
 // the app uses today (body/medium/semibold/bold). Loaded before the
@@ -30,5 +31,10 @@ installBrowserHistoryGuard();
 // VITE_AGENT_OVERFLOW_ZOMBIE_MINT_PROBE=1 when re-rolling the Svelte
 // patch or investigating a suspected regression.
 maybeInstallZombieMintProbe();
+// On-demand memory accounting for console / CDP probes. The stub keeps
+// the collector chunk out of the startup graph entirely; the dynamic
+// import resolves from the module cache on every call after the first.
+(window as Window & { __aoMemoryReport?: () => Promise<MemoryReport> }).__aoMemoryReport = () =>
+  import('./lib/utils/memoryReport').then((m) => m.collectMemoryReport());
 
 mount(App, { target: document.getElementById('app')! });

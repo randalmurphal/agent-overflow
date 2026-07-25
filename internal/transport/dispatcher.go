@@ -298,13 +298,13 @@ func (d *Dispatcher) Invoke(ctx context.Context, m *Method, params []json.RawMes
 	return d.InvokeForOrigin(ctx, m, params, false)
 }
 
-// InvokeForOrigin runs the dispatch with caller-origin context.
-// `exposeErrors` should mirror the per-connection loopback flag: a
-// loopback peer is the same machine as the backend, so leaking a
-// method-returned error string adds no information beyond what the
-// server-side log already contains. A LAN peer must continue to see
-// the redacted "method failed (id: <cid>)" envelope.
-func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []json.RawMessage, exposeErrors bool) (result json.RawMessage, frameErr *FrameError) {
+// InvokeForOrigin runs the dispatch with the caller's origin known.
+// `isLoopback` is the per-connection loopback flag and drives error
+// exposure: a loopback peer is the same machine as the backend, so
+// leaking a method-returned error string adds no information beyond
+// what the server-side log already contains, while a LAN peer must
+// continue to see the redacted "method failed (id: <cid>)" envelope.
+func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []json.RawMessage, isLoopback bool) (result json.RawMessage, frameErr *FrameError) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("transport: panic in %s: %v", m.FQN, r)
@@ -337,7 +337,7 @@ func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []js
 	} else {
 		results = m.fn.Call(args)
 	}
-	return d.processResults(m, results, exposeErrors)
+	return d.processResults(m, results, isLoopback)
 }
 
 // buildArgs decodes the json-encoded params array into reflect.Values

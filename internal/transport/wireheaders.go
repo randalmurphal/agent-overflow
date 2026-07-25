@@ -24,6 +24,22 @@ func WriteSecurityHeaders(h http.Header) {
 	h.Set("Referrer-Policy", "no-referrer")
 }
 
+// WriteCrossOriginIsolationHeaders opts the response into cross-origin
+// isolation so the SPA runs with `crossOriginIsolated === true` and
+// performance.measureUserAgentSpecificMemory becomes available.
+// Diagnostic mode only (Config.CrossOriginIsolate, set via
+// AGENT_OVERFLOW_RENDERER_DIAG): COEP require-corp blocks subresources
+// that don't send CORP, which breaks remote images in chat markdown
+// and remote assets in design previews. CORP: same-origin is included
+// on every response because COEP applies to nested documents too — the
+// design-preview iframe fails to load under the isolated shell without
+// it.
+func WriteCrossOriginIsolationHeaders(h http.Header) {
+	h.Set("Cross-Origin-Opener-Policy", "same-origin")
+	h.Set("Cross-Origin-Embedder-Policy", "require-corp")
+	h.Set("Cross-Origin-Resource-Policy", "same-origin")
+}
+
 // IsLoopbackHost reports whether the request's Host header names a
 // loopback interface. Used by the DNS-rebinding defence in both the
 // embedded-webview server (server.go) and the --connect stub

@@ -156,7 +156,7 @@ func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item,
 // task_id ↔ tool_use_id map has been dropped.
 //
 // The query is O(log N) thanks to the partial expression index
-// idx_items_meta_task_id (migration v17) which materialises
+// idx_items_meta_task_id which materialises
 // json_extract(meta, '$.task_id') for the narrow subset of rows that
 // actually carry a task_id. The kind filter stays in Go-space rather
 // than the index because every row this function cares about is a
@@ -395,4 +395,23 @@ func (s *Store) LatestToolCallByName(threadID string, turnIndex int, toolNames [
 		return Item{}, false, fmt.Errorf("store: latest tool_call thread %s turn %d: %w", threadID, turnIndex, err)
 	}
 	return it, true, nil
+}
+
+// MaxItemIndexForTurn returns the highest item_index currently persisted
+// for (threadID, turnIndex), with ok=false when the turn holds no items.
+// The echo handler uses it to stamp a promoted row's provider-order
+// boundary: every row at or below this index existed before the echo, so
+// it precedes the queued message in the provider transcript.
+func (s *Store) MaxItemIndexForTurn(threadID string, turnIndex int) (int, bool, error) {
+	var maxIndex sql.NullInt64
+	if err := s.db.QueryRow(
+		`SELECT MAX(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
+		threadID, turnIndex,
+	).Scan(&maxIndex); err != nil {
+		return 0, false, fmt.Errorf("store: max item index for %s/%d: %w", threadID, turnIndex, err)
+	}
+	if !maxIndex.Valid {
+		return 0, false, nil
+	}
+	return int(maxIndex.Int64), true, nil
 }

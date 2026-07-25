@@ -3,6 +3,7 @@ import { makeItem } from '../../test/helpers/chat';
 import {
   applyItemUpsertsToWindow,
   compareItemsByTimelinePosition,
+  cursorIsValid,
   itemsForThread,
   mergeItemsById,
   mergeMissingItemsById,
@@ -21,6 +22,16 @@ function applyWindowUpserts(
     ...options,
   });
 }
+
+describe('cursorIsValid', () => {
+  it('accepts head-healed negative item indexes but rejects the empty sentinel', () => {
+    expect(cursorIsValid({ turnIndex: 1, itemIndex: -1 })).toBe(true);
+    expect(cursorIsValid({ turnIndex: 0, itemIndex: 0 })).toBe(true);
+    expect(cursorIsValid({ turnIndex: -1, itemIndex: -1 })).toBe(false);
+    expect(cursorIsValid(null)).toBe(false);
+    expect(cursorIsValid({ turnIndex: Number.NaN, itemIndex: 0 })).toBe(false);
+  });
+});
 
 describe('threadItems', () => {
   it('sorts by turn index and item index', () => {
@@ -189,6 +200,32 @@ describe('threadItems', () => {
 
     expect(next?.items.map((item) => item.id)).toEqual(['existing']);
     expect(next?.items[0]).toBe(corrected);
+  });
+
+  it('accepts head-healed negative-index rows of the oldest loaded turn under the fallback floor', () => {
+    // The turn-index fallback floor must sit BELOW every possible index:
+    // head-healed prompts persist at negative indexes, and a floor at
+    // itemIndex 0 would silently drop their upsert as below-window.
+    const current = [
+      makeItem({ id: 'response', threadId: 'thread-1', turnIndex: 2, itemIndex: 0 }),
+    ];
+    const healed = makeItem({
+      id: 'healed-prompt',
+      threadId: 'thread-1',
+      turnIndex: 2,
+      itemIndex: -1,
+    });
+
+    const next = applyWindowUpserts({
+      current,
+      incoming: [healed],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 2,
+      hasMoreHistory: true,
+    });
+
+    expect(next?.items.map((item) => item.id)).toContain('healed-prompt');
   });
 
   it('drops new rows below the loaded floor cursor inside the same turn', () => {

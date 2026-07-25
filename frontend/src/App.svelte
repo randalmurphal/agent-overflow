@@ -23,12 +23,12 @@
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyTheme } from './lib/utils/theme';
   import { applyFonts } from './lib/utils/fonts';
+  import { startAmbientTicker } from './lib/utils/ambientTicker';
   import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import PaneHost from './lib/components/panes/PaneHost.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
   import TransportStatusBanner from './lib/components/shared/TransportStatusBanner.svelte';
-  import SettingsView from './lib/components/settings/SettingsView.svelte';
   import DiscussionStartFlow from './lib/components/discussion/DiscussionStartFlow.svelte';
   import CommandPalette from './lib/components/palette/CommandPalette.svelte';
   import KeybindingsCheatSheet from './lib/components/palette/KeybindingsCheatSheet.svelte';
@@ -49,6 +49,7 @@
   import { clearCommandRegistry, listCommands, type CommandContext } from './lib/stores/commandRegistry.svelte';
   import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
+  import { warmHighlightTables } from './lib/utils/syntaxSpans';
   import { dispatchTextEditing } from './lib/utils/textEditingKeymap';
   import { installExternalLinkDelegate } from './lib/utils/externalLinks';
   import { getVisibleSidebarThreadIds } from './lib/stores/sidebarThreadOrder';
@@ -279,6 +280,14 @@
     // hydration (offline backend) leaves the same-session cache in
     // charge, which is the correct degraded behavior.
     const appStorageReady = hydrateAppStorage();
+    // Highlight schema-version + class-name tables, warmed in parallel
+    // with the layout restore and awaited (bounded) before PaneHost
+    // mounts, so the first history rows' persisted-span ingest seeds
+    // synchronously (utils/persistedSpans.ts) instead of deferring past
+    // their children's cache reads and RPCing anyway. Never rejects;
+    // the race deadline keeps a hung backend from holding boot hostage
+    // (past it, the first rows fall back to the RPC path).
+    const highlightTablesWarm = warmHighlightTables();
     void (async () => {
       let threadRegistryHydrated = false;
       try {
@@ -290,6 +299,10 @@
         await loadPersistedPaneLayout(threads);
         installPaneLayoutPersistence();
         installCompanionPanes();
+        await Promise.race([
+          highlightTablesWarm,
+          new Promise((resolve) => setTimeout(resolve, 1500)),
+        ]);
       } catch (err) {
         console.error('Failed to restore pane layout:', err);
         setPaneLayoutItems([]);
@@ -368,7 +381,12 @@
     window.addEventListener('beforeunload', flushPaneLayout);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    // Shared wall-clock driver for all ambient indicator visuals
+    // (pulse dots, working-LED chase, status glows, stepped spinners).
+    const stopAmbientTicker = startAmbientTicker();
+
     return () => {
+      stopAmbientTicker();
       flushPaneLayout();
       cleanupEvents();
       cleanupUpdates();
@@ -390,11 +408,21 @@
 </script>
 
 {#snippet settingsSurface()}
-  <SettingsView
-    initialSection={settingsSection}
-    contextTarget={settingsContextTarget}
-    onClose={() => showSettings = false}
-  />
+  <!-- Lazy: the settings surface only exists while open, so its chunk
+       stays out of the eager startup graph. -->
+  {#await import('./lib/components/settings/SettingsView.svelte')}
+    <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading settings...</div>
+  {:then { default: SettingsView }}
+    <SettingsView
+      initialSection={settingsSection}
+      contextTarget={settingsContextTarget}
+      onClose={() => showSettings = false}
+    />
+  {:catch err}
+    <div class="flex h-full items-center justify-center text-xs text-error" data-testid="settings-load-error">
+      Failed to load settings: {err instanceof Error ? err.message : String(err)}
+    </div>
+  {/await}
 {/snippet}
 
 <main class="app-shell relative h-screen w-screen overflow-hidden text-text-primary flex flex-col">

@@ -315,19 +315,20 @@ func buildArgs(opts SpawnOptions) []string {
 		}
 		target := opts.Path + ":" + strconv.Itoa(opts.Line) + ":" + strconv.Itoa(col)
 		return []string{"--goto", target}
-	case LaunchStyleLineColumn:
-		// `subl --line N --column N path`. Each flag is independent —
-		// pass only the ones the caller supplied so we don't force a
-		// "column 1" jump for callers that only know the line.
-		args := make([]string, 0, 5)
+	case LaunchStylePathLineColumn:
+		// `subl path:line:col` / `zed path:line:col` — the position
+		// rides on the path itself; neither editor has --line/--column
+		// flags (see the constant's doc for the upstream references).
+		// Append only the pieces the caller supplied: `:line` alone is
+		// valid for both, and a column without a line is meaningless.
+		target := opts.Path
 		if opts.Line > 0 {
-			args = append(args, "--line", strconv.Itoa(opts.Line))
+			target += ":" + strconv.Itoa(opts.Line)
+			if opts.Column > 0 {
+				target += ":" + strconv.Itoa(opts.Column)
+			}
 		}
-		if opts.Column > 0 {
-			args = append(args, "--column", strconv.Itoa(opts.Column))
-		}
-		args = append(args, opts.Path)
-		return args
+		return []string{target}
 	default:
 		return []string{opts.Path}
 	}

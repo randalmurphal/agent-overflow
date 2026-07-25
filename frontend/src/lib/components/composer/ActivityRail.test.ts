@@ -75,37 +75,49 @@ describe('<ActivityRail>', () => {
     expect(await findByTestId('activity-rail-working')).toBeInTheDocument();
     expect(await findByTestId('activity-rail-working-elapsed')).toBeInTheDocument();
     expect(queryByTestId('activity-rail-working-bridge')).toBeNull();
-    // Shimmer mounts whenever a turn is active.
-    expect(await findByTestId('activity-rail-shimmer')).toBeInTheDocument();
+    // Hairline + LED chase mount whenever a turn is active.
+    expect(await findByTestId('activity-rail-hairline')).toBeInTheDocument();
+    const leds = await findByTestId('activity-rail-working-leds');
+    expect(leds.classList.contains('working-leds')).toBe(true);
+    expect(leds.querySelectorAll('.working-led')).toHaveLength(3);
   });
 
-  it('mounts the shimmer in the bridge state too (queue item, no active turn)', async () => {
+  it('mounts the hairline and LEDs in the bridge state too (queue item, no active turn)', async () => {
     const pane = await buildPane();
     enqueueSimple(pane.threadId!, 'queued bridge');
     const { findByTestId } = render(ActivityRail, { props: { pane } });
     await tick();
-    expect(await findByTestId('activity-rail-shimmer')).toBeInTheDocument();
+    expect(await findByTestId('activity-rail-hairline')).toBeInTheDocument();
+    expect(await findByTestId('activity-rail-working-leds')).toBeInTheDocument();
   });
 
-  it('suppresses the shimmer in low power mode (working chip still shows)', async () => {
+  it('renders static LEDs in low power mode (hairline still shows — it never animates)', async () => {
+    // The LED chase is the working segment's only standing animation;
+    // low-power mode drops the chase class so the LEDs rest at base
+    // opacity. The hairline is static CSS, so unlike the old shimmer
+    // it is NOT suppressed by low-power mode.
     getSettings().lowPowerMode = true;
     const pane = await buildPane();
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId } = render(ActivityRail, { props: { pane } });
     await tick();
     expect(await findByTestId('activity-rail-working')).toBeInTheDocument();
-    expect(queryByTestId('activity-rail-shimmer')).toBeNull();
+    expect(await findByTestId('activity-rail-hairline')).toBeInTheDocument();
+    const leds = await findByTestId('activity-rail-working-leds');
+    expect(leds.classList.contains('working-leds')).toBe(false);
+    expect(leds.querySelectorAll('.working-led')).toHaveLength(3);
   });
 
-  it('does not mount the shimmer when only todos are visible (rail visible, isWorking false)', async () => {
-    // Guards against a regression that hangs the shimmer off
+  it('does not mount the hairline when only todos are visible (rail visible, isWorking false)', async () => {
+    // Guards against a regression that hangs the working indicator off
     // `railVisible` instead of the stricter `isWorking` predicate.
     const pane = await buildPane();
     pane.setLiveTodo([{ step: 'one', status: 'inProgress' }]);
     const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
     await tick();
     expect(await findByTestId('activity-rail')).toBeInTheDocument();
-    expect(queryByTestId('activity-rail-shimmer')).toBeNull();
+    expect(queryByTestId('activity-rail-hairline')).toBeNull();
+    expect(queryByTestId('activity-rail-working-leds')).toBeNull();
   });
 
   it('shows the Todos toggle and counts when a liveTodo snapshot is present', async () => {
@@ -144,6 +156,48 @@ describe('<ActivityRail>', () => {
     const { findByTestId } = render(ActivityRail, { props: { pane } });
     await tick();
     expect((await findByTestId('activity-rail-todos-count')).textContent?.trim()).toBe('3/3');
+  });
+
+  it('renders the stepped spinner (not animate-spin) on the in-progress row only', async () => {
+    // The in-progress indicator is a standing animation — it lives for
+    // the whole todo, not a transient loading flash — so it must be the
+    // spoked steps(12) spinner, never a continuous animate-spin (see
+    // primitives/SteppedSpinner.svelte and the app.css --animate-pulse
+    // note for the frame-production incident behind this).
+    const pane = await buildPane();
+    pane.setLiveTodo([
+      { step: 'active', status: 'inProgress' },
+      { step: 'queued', status: 'pending' },
+      { step: 'done', status: 'completed' },
+    ]);
+    const { container, findByTestId, queryAllByTestId } = render(ActivityRail, {
+      props: { pane },
+    });
+    await tick();
+    await fireEvent.click(await findByTestId('activity-rail-todos-toggle'));
+    await tick();
+
+    const spinners = queryAllByTestId('stepped-spinner');
+    expect(spinners).toHaveLength(1);
+    expect(spinners[0].classList.contains('stepped-spin')).toBe(true);
+    expect(container.querySelector('.animate-spin')).toBeNull();
+  });
+
+  it('renders the in-progress spinner static in low power mode', async () => {
+    // Same contract as the working-LED chase: low-power mode drops
+    // standing animations. The glyph stays (the row still reads as
+    // active); only the rotation stops.
+    getSettings().lowPowerMode = true;
+    const pane = await buildPane();
+    pane.setLiveTodo([{ step: 'active', status: 'inProgress' }]);
+    const { findByTestId, queryAllByTestId } = render(ActivityRail, { props: { pane } });
+    await tick();
+    await fireEvent.click(await findByTestId('activity-rail-todos-toggle'));
+    await tick();
+
+    const spinners = queryAllByTestId('stepped-spinner');
+    expect(spinners).toHaveLength(1);
+    expect(spinners[0].classList.contains('stepped-spin')).toBe(false);
   });
 
   it('renders the owner badge only on Task* rows that were claimed', async () => {
@@ -645,6 +699,6 @@ describe('<ActivityRail>', () => {
 
     expect(getByTestId('activity-rail-input-toggle')).toBeTruthy();
     expect(queryByTestId('activity-rail-working')).toBeNull();
-    expect(queryByTestId('activity-rail-shimmer')).toBeNull();
+    expect(queryByTestId('activity-rail-hairline')).toBeNull();
   });
 });

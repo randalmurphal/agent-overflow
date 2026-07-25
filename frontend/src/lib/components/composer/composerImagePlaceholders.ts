@@ -6,6 +6,7 @@ import {
   removeImagePlaceholderByAttachmentId,
   removeImagePlaceholderForKey,
 } from '../../utils/imagePlaceholders';
+import { composerRootFor } from './composerFocus';
 import type { UploadInsertionPoint } from './composerUploads.svelte';
 
 interface ComposerImagePlaceholderOptions {
@@ -40,7 +41,18 @@ export function createComposerImagePlaceholders(opts: ComposerImagePlaceholderOp
   function replaceTextareaContent(content: string, cursor: number): boolean {
     const textarea = opts.getTextarea();
     if (!textarea) return false;
-    textarea.focus();
+    // execCommand needs the textarea to own DOM focus, but this path also
+    // runs from async upload completion — after the user may have moved to
+    // another pane, where grabbing focus scrolls the pane strip back and
+    // (via PaneHost's focusin handler) clobbers pane focus. Only take
+    // focus when it already sits inside this composer (the textarea, or a
+    // control like an attachment chip's remove button); otherwise report
+    // failure so callers use the bulk state update — costing one undo step
+    // in a pane the user isn't typing in.
+    const root = composerRootFor(textarea);
+    const active = document.activeElement;
+    if (!root || !active || !root.contains(active)) return false;
+    textarea.focus({ preventScroll: true });
     textarea.setSelectionRange(0, textarea.value.length);
     document.execCommand('insertText', false, content);
     textarea.setSelectionRange(cursor, cursor);
@@ -73,9 +85,10 @@ export function createComposerImagePlaceholders(opts: ComposerImagePlaceholderOp
     opts.addAttachment(attachment);
 
     if (!replaceTextareaContent(insertion.content, insertion.cursor)) {
-      // No DOM textarea available (composer unmounted mid-upload). Fall
-      // back to the bulk state update so the next mount hydrates the new
-      // placeholder + attachment.
+      // Composer unmounted mid-upload, or focus has left this composer
+      // (upload finished after the user moved on). Fall back to the bulk
+      // state update so the placeholder + attachment land without
+      // stealing focus.
       opts.setContentAndAttachments(insertion.content, [...attachments, attachment]);
       setTextareaCursor(insertion.cursor);
     }

@@ -3,6 +3,8 @@ package store
 import (
 	"fmt"
 	"testing"
+
+	"agent-overflow/internal/itemmeta"
 )
 
 // TestCloneThreadItemsRespectsThroughTurnIndex pins the fork-at-point
@@ -451,5 +453,250 @@ func TestCloneThreadTurnsSynthesizesIDsAndPreservesProviderTurnID(t *testing.T) 
 	}
 	if src.TurnID != "wire-turn-0" {
 		t.Errorf("source turn 0 id = %q, want wire-turn-0", src.TurnID)
+	}
+}
+
+// cloneHistoryFixture seeds a source thread with three settled turns whose
+// middle turn mixes a prompt, a partial reply, two queued flush user rows,
+// and the interrupted round's persisted tail — the layout behind the
+// item-granular fork tests below.
+func cloneHistoryFixture(t *testing.T, s *Store, src, dst string, promotedAnchors bool) {
+	t.Helper()
+	now := int64(1_000)
+	for _, id := range []string{src, dst} {
+		if err := s.CreateThread(Thread{
+			ID: id, ProjectID: defaultTestProjectID, Title: "T",
+			Provider: "claude", WorkspacePath: "/tmp",
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("create thread %s: %v", id, err)
+		}
+	}
+	anchorMeta := ""
+	if promotedAnchors {
+		var err error
+		if anchorMeta, err = itemmeta.MarkPromotedAtInterrupt(""); err != nil {
+			t.Fatalf("mark promoted: %v", err)
+		}
+	}
+	rows := []Item{
+		{ID: "u0", TurnIndex: 0, ItemIndex: 0, Kind: "user_text", Role: "user", CreatedAt: now},
+		{ID: "a0", TurnIndex: 0, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", CreatedAt: now + 1},
+		{ID: "prompt", TurnIndex: 1, ItemIndex: 0, Kind: "user_text", Role: "user", CreatedAt: now + 10},
+		{ID: "pre", TurnIndex: 1, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", CreatedAt: now + 11},
+		{ID: "anchor", TurnIndex: 1, ItemIndex: 2, Kind: "user_text", Role: "user", Meta: anchorMeta, CreatedAt: now + 12},
+		{ID: "queued2", TurnIndex: 1, ItemIndex: 3, Kind: "user_text", Role: "user", Meta: anchorMeta, CreatedAt: now + 13},
+		{ID: "tail", TurnIndex: 1, ItemIndex: 4, Kind: "assistant_text", Role: "assistant", CreatedAt: now + 14},
+		{ID: "u2", TurnIndex: 2, ItemIndex: 0, Kind: "user_text", Role: "user", CreatedAt: now + 20},
+		{ID: "a2", TurnIndex: 2, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", CreatedAt: now + 21},
+	}
+	for _, it := range rows {
+		it.ThreadID = src
+		if err := s.InsertItem(it); err != nil {
+			t.Fatalf("insert %s: %v", it.ID, err)
+		}
+	}
+	for turn := 0; turn <= 2; turn++ {
+		if err := s.InsertTurn(Turn{
+			TurnID: fmt.Sprintf("%s:%d", src, turn), ThreadID: src,
+			TurnIndex: turn, StartedAt: now + int64(turn*10),
+		}); err != nil {
+			t.Fatalf("insert turn %d: %v", turn, err)
+		}
+		if err := s.UpdateTurnCompleted(
+			fmt.Sprintf("%s:%d", src, turn), now+int64(turn*10)+100,
+			"end_turn", fmt.Sprintf("am-%d", turn), `{"in":5}`, "",
+		); err != nil {
+			t.Fatalf("settle turn %d: %v", turn, err)
+		}
+	}
+}
+
+// TestCloneThreadHistoryBeforeItemPlainAnchorKeepsPrefix — a plain anchor's
+// clone keeps earlier turns plus the anchor turn's strict prefix, clones
+// turn rows only where items survive, and trims the anchor turn's cloned
+// settle metadata (completed_at back to the anchor, assistant_message_id
+// cleared, token usage and stop reason kept). The source is untouched.
+func TestCloneThreadHistoryBeforeItemPlainAnchorKeepsPrefix(t *testing.T) {
+	s := newTestStore(t)
+	cloneHistoryFixture(t, s, "t-hist-src", "t-hist-dst", false)
+
+	idMap, err := s.CloneThreadHistoryBeforeItem("t-hist-src", "t-hist-dst", "anchor")
+	if err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	dst, err := s.ListItems("t-hist-dst")
+	if err != nil {
+		t.Fatalf("list dst: %v", err)
+	}
+	var got []string
+	for _, it := range dst {
+		got = append(got, fmt.Sprintf("%d:%d", it.TurnIndex, it.ItemIndex))
+	}
+	want := []string{"0:0", "0:1", "1:0", "1:1"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("cloned positions = %v, want %v", got, want)
+	}
+	if len(idMap) != 4 {
+		t.Errorf("idMap size = %d, want 4", len(idMap))
+	}
+	if _, ok := idMap["anchor"]; ok {
+		t.Error("anchor itself must not be cloned")
+	}
+
+	assertTurnsRemaining(t, s, "t-hist-dst", []int{0, 1})
+	turn1, ok, err := s.GetTurnByThreadIndex("t-hist-dst", 1)
+	if err != nil || !ok {
+		t.Fatalf("dst turn 1: ok=%v err=%v", ok, err)
+	}
+	if turn1.CompletedAt == nil || *turn1.CompletedAt != 1_011 {
+		t.Errorf("dst turn 1 completed_at = %v, want last cloned row's created_at 1011", turn1.CompletedAt)
+	}
+	if turn1.AssistantMessageID != "" {
+		t.Errorf("dst turn 1 assistant_message_id = %q, want cleared", turn1.AssistantMessageID)
+	}
+	if turn1.TokenUsageJSON != `{"in":5}` || turn1.StopReason != "end_turn" {
+		t.Errorf("dst turn 1 usage/stop rewritten: %+v", turn1)
+	}
+	turn0, ok, err := s.GetTurnByThreadIndex("t-hist-dst", 0)
+	if err != nil || !ok {
+		t.Fatalf("dst turn 0: ok=%v err=%v", ok, err)
+	}
+	if turn0.CompletedAt == nil || *turn0.CompletedAt != 1_100 || turn0.AssistantMessageID != "am-0" {
+		t.Errorf("dst turn 0 settle metadata should copy verbatim: %+v", turn0)
+	}
+
+	srcTurn1, ok, err := s.GetTurnByThreadIndex("t-hist-src", 1)
+	if err != nil || !ok {
+		t.Fatalf("src turn 1: ok=%v err=%v", ok, err)
+	}
+	if srcTurn1.CompletedAt == nil || *srcTurn1.CompletedAt != 1_110 || srcTurn1.AssistantMessageID != "am-1" {
+		t.Errorf("source turn 1 must stay untouched: %+v", srcTurn1)
+	}
+	srcItems, err := s.ListItems("t-hist-src")
+	if err != nil {
+		t.Fatalf("list src: %v", err)
+	}
+	if len(srcItems) != 9 {
+		t.Errorf("source items = %d, want 9 untouched", len(srcItems))
+	}
+}
+
+// TestCloneThreadHistoryBeforeItemPromotedAnchorKeepsTail — an
+// interrupt-promoted anchor's clone keeps the anchor turn's non-user
+// successors (the interrupted round's tail, which precedes the promoted
+// message in the provider transcript), drops same-turn user successors,
+// and leaves the anchor turn's cloned settle metadata alone.
+func TestCloneThreadHistoryBeforeItemPromotedAnchorKeepsTail(t *testing.T) {
+	s := newTestStore(t)
+	cloneHistoryFixture(t, s, "t-hist-psrc", "t-hist-pdst", true)
+
+	if _, err := s.CloneThreadHistoryBeforeItem("t-hist-psrc", "t-hist-pdst", "anchor"); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	dst, err := s.ListItems("t-hist-pdst")
+	if err != nil {
+		t.Fatalf("list dst: %v", err)
+	}
+	var got []string
+	for _, it := range dst {
+		got = append(got, fmt.Sprintf("%d:%d:%s", it.TurnIndex, it.ItemIndex, it.Role))
+	}
+	want := []string{"0:0:user", "0:1:assistant", "1:0:user", "1:1:assistant", "1:4:assistant"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("cloned rows = %v, want %v", got, want)
+	}
+
+	assertTurnsRemaining(t, s, "t-hist-pdst", []int{0, 1})
+	turn1, ok, err := s.GetTurnByThreadIndex("t-hist-pdst", 1)
+	if err != nil || !ok {
+		t.Fatalf("dst turn 1: ok=%v err=%v", ok, err)
+	}
+	if turn1.CompletedAt == nil || *turn1.CompletedAt != 1_110 || turn1.AssistantMessageID != "am-1" {
+		t.Errorf("promoted clone must copy turn 1 settle metadata verbatim: %+v", turn1)
+	}
+}
+
+// TestCloneThreadHistoryBeforeItemPromotedBoundaryCutsResponse — a promoted
+// anchor whose echo stamped a provider-order boundary keeps the interrupted
+// tail (non-user successors at or below the boundary) but excludes the
+// response rows past it, and — because same-turn content was excluded —
+// trims the cloned turn's settle metadata to the last cloned row.
+func TestCloneThreadHistoryBeforeItemPromotedBoundaryCutsResponse(t *testing.T) {
+	s := newTestStore(t)
+	cloneHistoryFixture(t, s, "t-hist-bsrc", "t-hist-bdst", true)
+
+	// Echo consumed the anchor mid-loop after the tail (idx 4) and a
+	// parented subagent prompt (idx 5, user-role but nested content):
+	// stamp the boundary there and add the response that streamed below.
+	if _, _, err := s.UpdateItemMetaMerge("t-hist-bsrc", "anchor", func(raw string) (string, error) {
+		return itemmeta.MarkPromotedEchoBoundary(raw, 5)
+	}, 2_000); err != nil {
+		t.Fatalf("stamp boundary: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "subprompt", ThreadID: "t-hist-bsrc", TurnIndex: 1, ItemIndex: 5,
+		Kind: "user_text", Role: "user", ParentID: "pre", CreatedAt: 1_015,
+	}); err != nil {
+		t.Fatalf("insert subprompt: %v", err)
+	}
+	for i, id := range []string{"resp1", "resp2"} {
+		if err := s.InsertItem(Item{
+			ID: id, ThreadID: "t-hist-bsrc", TurnIndex: 1, ItemIndex: 6 + i,
+			Kind: "assistant_text", Role: "assistant", CreatedAt: 1_016 + int64(i),
+		}); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+
+	if _, err := s.CloneThreadHistoryBeforeItem("t-hist-bsrc", "t-hist-bdst", "anchor"); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	dst, err := s.ListItems("t-hist-bdst")
+	if err != nil {
+		t.Fatalf("list dst: %v", err)
+	}
+	var got []string
+	for _, it := range dst {
+		got = append(got, fmt.Sprintf("%d:%d:%s", it.TurnIndex, it.ItemIndex, it.Role))
+	}
+	want := []string{"0:0:user", "0:1:assistant", "1:0:user", "1:1:assistant", "1:4:assistant", "1:5:user"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("cloned rows = %v, want %v (parented subprompt kept, response past boundary excluded)", got, want)
+	}
+
+	turn1, ok, err := s.GetTurnByThreadIndex("t-hist-bdst", 1)
+	if err != nil || !ok {
+		t.Fatalf("dst turn 1: ok=%v err=%v", ok, err)
+	}
+	if turn1.CompletedAt == nil || *turn1.CompletedAt != 1_015 {
+		t.Errorf("dst turn 1 completed_at = %v, want last cloned row's created_at 1015", turn1.CompletedAt)
+	}
+	if turn1.AssistantMessageID != "" {
+		t.Errorf("dst turn 1 assistant_message_id = %q, want cleared (response excluded)", turn1.AssistantMessageID)
+	}
+}
+
+// TestCloneThreadHistoryBeforeItemTurnOpeningAnchor — an anchor that opens
+// turn 0 keeps nothing; a missing anchor errors instead of silently cloning
+// everything.
+func TestCloneThreadHistoryBeforeItemTurnOpeningAnchor(t *testing.T) {
+	s := newTestStore(t)
+	cloneHistoryFixture(t, s, "t-hist-zsrc", "t-hist-zdst", false)
+
+	idMap, err := s.CloneThreadHistoryBeforeItem("t-hist-zsrc", "t-hist-zdst", "u0")
+	if err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	if len(idMap) != 0 {
+		t.Errorf("turn-0-opening anchor cloned %d items, want 0", len(idMap))
+	}
+	assertTurnsRemaining(t, s, "t-hist-zdst", nil)
+
+	if _, err := s.CloneThreadHistoryBeforeItem("t-hist-zsrc", "t-hist-zdst", "no-such-item"); err == nil {
+		t.Fatal("expected error for missing anchor")
 	}
 }

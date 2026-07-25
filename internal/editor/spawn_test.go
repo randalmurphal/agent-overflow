@@ -66,42 +66,94 @@ func TestBuildArgs_GotoWithoutLineDropsFlag(t *testing.T) {
 	}
 }
 
-func TestBuildArgs_LineColumn(t *testing.T) {
+func TestBuildArgs_PathLineColumn(t *testing.T) {
 	opts := SpawnOptions{
-		Editor: &Editor{LaunchStyle: LaunchStyleLineColumn},
+		Editor: &Editor{LaunchStyle: LaunchStylePathLineColumn},
 		Path:   "/tmp/foo.go",
 		Line:   12,
 		Column: 3,
 	}
 	got := buildArgs(opts)
-	want := []string{"--line", "12", "--column", "3", "/tmp/foo.go"}
+	// Sublime and Zed take the position as a `:line:column` suffix on
+	// the path — they have no --line/--column flags, so passing flags
+	// here opened bogus paths (or errored) instead of placing the
+	// cursor. See LaunchStylePathLineColumn's doc for the upstream
+	// references.
+	want := []string{"/tmp/foo.go:12:3"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildArgs line-column:\n got: %v\nwant: %v", got, want)
+		t.Fatalf("buildArgs path-line-column:\n got: %v\nwant: %v", got, want)
 	}
 }
 
-func TestBuildArgs_LineColumnLineOnly(t *testing.T) {
+func TestBuildArgs_PathLineColumnLineOnly(t *testing.T) {
 	opts := SpawnOptions{
-		Editor: &Editor{LaunchStyle: LaunchStyleLineColumn},
+		Editor: &Editor{LaunchStyle: LaunchStylePathLineColumn},
 		Path:   "/tmp/foo.go",
 		Line:   12,
 	}
 	got := buildArgs(opts)
-	want := []string{"--line", "12", "/tmp/foo.go"}
+	want := []string{"/tmp/foo.go:12"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildArgs line-column line-only:\n got: %v\nwant: %v", got, want)
+		t.Fatalf("buildArgs path-line-column line-only:\n got: %v\nwant: %v", got, want)
 	}
 }
 
-func TestBuildArgs_LineColumnNoCursor(t *testing.T) {
+func TestBuildArgs_PathLineColumnColumnWithoutLine(t *testing.T) {
 	opts := SpawnOptions{
-		Editor: &Editor{LaunchStyle: LaunchStyleLineColumn},
+		Editor: &Editor{LaunchStyle: LaunchStylePathLineColumn},
+		Path:   "/tmp/foo.go",
+		Column: 3,
+	}
+	got := buildArgs(opts)
+	// A column with no line is meaningless (`path::3` is not a valid
+	// suffix for either editor) — drop the position entirely.
+	want := []string{"/tmp/foo.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildArgs path-line-column column-only:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestBuildArgs_PathLineColumnNoCursor(t *testing.T) {
+	opts := SpawnOptions{
+		Editor: &Editor{LaunchStyle: LaunchStylePathLineColumn},
 		Path:   "/tmp/foo.go",
 	}
 	got := buildArgs(opts)
 	want := []string{"/tmp/foo.go"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("buildArgs line-column no cursor:\n got: %v\nwant: %v", got, want)
+		t.Fatalf("buildArgs path-line-column no cursor:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+// Pins each catalog editor to the argv its real CLI accepts. The style
+// enum tests above only prove buildArgs emits each style's shape — this
+// table is what catches an editor pointed at the WRONG style (the bug
+// that shipped Sublime/Zed with --line/--column flags neither supports).
+func TestBuildArgs_PerCatalogEditor(t *testing.T) {
+	want := map[string][]string{
+		// VS Code family: `--goto path:line:col`
+		// (code.visualstudio.com/docs/editor/command-line).
+		"code":          {"--goto", "/tmp/foo.go:12:3"},
+		"code-insiders": {"--goto", "/tmp/foo.go:12:3"},
+		"cursor":        {"--goto", "/tmp/foo.go:12:3"},
+		"windsurf":      {"--goto", "/tmp/foo.go:12:3"},
+		"codium":        {"--goto", "/tmp/foo.go:12:3"},
+		// Positional suffix form, no flags: Sublime
+		// (sublimetext.com/docs/command_line.html) and Zed
+		// (zed crates/cli "Use `path:line:column` syntax").
+		"subl": {"/tmp/foo.go:12:3"},
+		"zed":  {"/tmp/foo.go:12:3"},
+	}
+	for _, ed := range EditorCatalog() {
+		expected, ok := want[ed.ID]
+		if !ok {
+			t.Errorf("catalog editor %q has no expected argv in this table — add it with a reference to its CLI docs", ed.ID)
+			continue
+		}
+		got := buildArgs(SpawnOptions{Editor: &ed, Path: "/tmp/foo.go", Line: 12, Column: 3})
+		if !reflect.DeepEqual(got, expected) {
+			t.Errorf("buildArgs for %s:\n got: %v\nwant: %v", ed.ID, got, expected)
+		}
 	}
 }
 

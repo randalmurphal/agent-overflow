@@ -1,21 +1,25 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import {
   GetBranchBaseDiff,
+  GetCommitDiff,
   GetDiffContextLines,
   GetGitStatus,
-  GetMessageCheckpointDiff,
   GetMergeConflictFile,
   GetPRCIJobLog,
   GetPRCIJobs,
+  GetPRCommitDiff,
   GetPRDetail,
   GetPRDiff,
   GetPRMergeConflicts,
+  GetPayloadData,
   GetThread,
+  GetTurnEditsDiff,
   SavePRCIJobLog,
-  GetSessionAgentDiff,
   GetWorkspaceCurrentDiff,
   GitListBranches,
-  ListThreadCheckpoints,
+  ListBranchCommits,
+  ListPRCommits,
+  ListThreadEditDiffs,
   ListPRReviewThreads,
   MarkDiffReviewCommentsSent,
   ReplyToPRThread,
@@ -25,6 +29,7 @@ import {
   SetPRUpdatesActive,
   SubscribePRUpdates,
   UnsubscribePRUpdates,
+  VerifyEditDiffs,
 } from './bindings';
 import { appStorageGet, appStorageSet } from './appStorage';
 import { openCompanion } from './companionPanes.svelte';
@@ -39,8 +44,7 @@ import {
 } from './diffReviewComments.svelte';
 import { getSettings } from './settings.svelte';
 import { getActiveTurn } from './threadStatuses.svelte';
-import type { Checkpoint } from '../types/checkpoint';
-import type { GitBranch } from '../types/git';
+import type { BranchCommit, GitBranch } from '../types/git';
 import type {
   CIJob,
   CIJobLogResult,
@@ -54,6 +58,7 @@ import type {
   Thread,
 } from '../types/models';
 import { diffSourceKey } from '../utils/diffSourceKey';
+import { seedPayloadPatchSpans, type PatchScopeContext } from '../utils/diffSpanCache.svelte';
 import { conflictPatchFile } from '../utils/conflictFile';
 import { hunkExcerptForComment } from '../utils/prHunkExcerpt';
 import { prRefFromThread, prRefFromUrl, prScopeLabel, type PRRef } from '../utils/prReference';
@@ -66,6 +71,7 @@ import {
 } from '../utils/diffContextExpansion';
 import {
   filePatchDisplayRows,
+  mergePatchFilesByPathCached,
   parsePatchFilesCached,
   type DiffGap,
   type PatchFile,
@@ -75,6 +81,31 @@ import { sortFilesTreeOrder } from '../utils/reviewTree';
 import type { CommentListItem } from '../utils/reviewComments';
 
 export type ReviewScope = DiffReviewScope;
+
+/** One edit tool call in the Edits selector — metadata only, the diff
+ * loads on selection. Mirrors the ListThreadEditDiffs wire entry. */
+export interface EditDiffEntryView {
+  itemId: string;
+  payloadId: string;
+  turnIndex: number;
+  title: string;
+  paths: string[];
+  insertions: number;
+  deletions: number;
+  createdAt: number;
+}
+
+/** Edits-scope selection: one tool call's diff, or a whole turn's
+ * edits concatenated in order. */
+export type EditSelection =
+  | { kind: 'item'; itemId: string; payloadId: string }
+  | { kind: 'turn'; turnIndex: number };
+
+/** Selector `<option>` value encoding for an EditSelection. */
+export function editSelectionKey(selection: EditSelection | null): string | null {
+  if (!selection) return null;
+  return selection.kind === 'item' ? `item:${selection.itemId}` : `turn:${selection.turnIndex}`;
+}
 
 export interface ReviewPaneState {
   /** Thread this state was created for — the registry's staleness check. */
@@ -89,8 +120,21 @@ export interface ReviewPaneState {
   readonly comments: readonly DiffReviewComment[];
   readonly drafts: readonly DiffReviewComment[];
   readonly openEditors: readonly CommentAnchor[];
-  readonly checkpoints: readonly Checkpoint[];
-  selectedCheckpointUserItemId: string | null;
+  /** Commits the branch/PR carries (newest first); empty outside those
+   * scopes and for non-git workspaces. Feeds the commit selector. */
+  readonly commits: readonly BranchCommit[];
+  /** Selected single commit, or null for the full-range diff. */
+  readonly selectedCommitSHA: string | null;
+  /** Edit tool calls of the thread (timeline order); populated in
+   * edits scope only. Feeds the turn-grouped edit selector. */
+  readonly edits: readonly EditDiffEntryView[];
+  /** Turn index → first user prompt summary, for selector group labels. */
+  readonly editTurnLabels: ReadonlyMap<number, string>;
+  /** Current edits-scope selection (never null once loaded with edits). */
+  readonly selectedEditKey: string | null;
+  /** Edit tool call to select on the next edits-scope load — set by
+   * the inline-diff affordance before setScope('edits'). */
+  pendingEditItemID: string | null;
   pendingJumpFilePath: string | null;
   /** Diff row key to jump to (comments-list click); consumed by the diff body. */
   readonly pendingJumpRowKey: string | null;
@@ -100,6 +144,9 @@ export interface ReviewPaneState {
   readonly prDetail: PRDetail | null;
   readonly prThreads: readonly ReviewThread[];
   readonly prHeadSHA: string;
+  /** Scope fields for parse-priming span requests — the same triple
+   * the diff-context expansion sends (`app_diff_context.go` scopes). */
+  readonly spanContext: PatchScopeContext;
   readonly prStale: boolean;
   readonly refreshingPRData: boolean;
   readonly conflictView: boolean;
@@ -118,6 +165,10 @@ export interface ReviewPaneState {
   readonly ciLogError: string | null;
   readonly ciLogSavedPath: string | null;
   readonly submitTarget: 'agent' | 'pr';
+  /** submitTarget with single-commit view forced to 'agent': drafts on a
+   * commit diff carry that diff's line numbers, which the forge would
+   * misanchor against the PR head diff. */
+  readonly effectiveSubmitTarget: 'agent' | 'pr';
   readonly verdict: 'comment' | 'approve' | 'request-changes';
   readonly summaryBody: string;
   readonly submitError: string | null;
@@ -129,7 +180,11 @@ export interface ReviewPaneState {
   readonly viewMode: 'stacked' | 'split';
   readonly wordWrap: boolean;
   setScope(scope: ReviewScope, opts?: { baseBranch?: string }): Promise<void>;
-  selectCheckpoint(userItemId: string | null): Promise<void>;
+  /** Switch the loaded diff to a single commit (null → full range). */
+  selectCommit(sha: string | null): Promise<void>;
+  /** Switch the edits-scope diff (selector value encoding: `item:<id>`
+   * or `turn:<n>`; null → default, the latest turn). */
+  selectEdit(key: string | null): Promise<void>;
   reload(): Promise<void>;
   consumePendingJumpFilePath(): void;
   /** Jump the diff body to a comment row: leaves conflict/CI-log views,
@@ -205,12 +260,6 @@ interface PRMergeConflictsView {
 }
 
 const statesBySourcePane = new Map<string, ReviewPaneState>();
-export interface ReviewCompanionTarget {
-  threadId: string;
-  thread: Thread | null;
-  workspacePath?: string;
-}
-let companionTargetsBySourcePane: Map<string, ReviewCompanionTarget> = $state(new Map());
 const prStatesBySubscription = new Map<string, { applyPRUpdate(event: PRUpdatedEvent): void }>();
 
 export interface PRUpdatedEvent {
@@ -288,14 +337,6 @@ export function disposeReviewStateForPane(sourcePaneId: string, expectedThreadId
   if (expectedThreadId && current?.threadId !== expectedThreadId) return;
   current?.dispose?.();
   statesBySourcePane.delete(sourcePaneId);
-  if (companionTargetsBySourcePane.has(sourcePaneId)) {
-    companionTargetsBySourcePane = new Map(companionTargetsBySourcePane);
-    companionTargetsBySourcePane.delete(sourcePaneId);
-  }
-}
-
-export function getReviewCompanionTarget(sourcePaneId: string): ReviewCompanionTarget | null {
-  return companionTargetsBySourcePane.get(sourcePaneId) ?? null;
 }
 
 export async function openReviewCompanion(
@@ -303,39 +344,27 @@ export async function openReviewCompanion(
   threadId: string,
   opts: {
     scope?: ReviewScope;
-    checkpointUserItemId?: string | null;
     filePath?: string;
-    workspacePath?: string;
-    baseBranch?: string;
+    /** Edits scope: the edit tool call to pin on load. */
+    editItemId?: string;
   } = {},
 ): Promise<ReviewPaneState | null> {
-  companionTargetsBySourcePane = new Map(companionTargetsBySourcePane).set(sourcePaneId, {
-    threadId,
-    thread: null,
-    workspacePath: opts.workspacePath,
-  });
   const companion = openCompanion(sourcePaneId, 'review');
-  if (!companion) {
-    companionTargetsBySourcePane = new Map(companionTargetsBySourcePane);
-    companionTargetsBySourcePane.delete(sourcePaneId);
-    return null;
-  }
-  const hasExplicitSelection = opts.scope !== undefined || opts.checkpointUserItemId !== undefined;
+  if (!companion) return null;
+  const hasExplicitSelection = opts.scope !== undefined || opts.editItemId !== undefined;
   const state = reviewStateForPane(sourcePaneId, threadId, null, { deferInitialLoad: hasExplicitSelection });
   if (opts.filePath) {
     state.pendingJumpFilePath = opts.filePath;
   }
+  if (opts.editItemId) {
+    state.pendingEditItemID = opts.editItemId;
+  }
   if (opts.scope) {
-    if (opts.scope === 'turn') {
-      state.selectedCheckpointUserItemId = opts.checkpointUserItemId ?? null;
-      await state.setScope('turn');
-    } else if (opts.scope === 'branch') {
-      await state.setScope('branch', { baseBranch: opts.baseBranch });
-    } else {
-      await state.setScope(opts.scope);
-    }
-  } else if (opts.checkpointUserItemId !== undefined) {
-    await state.selectCheckpoint(opts.checkpointUserItemId);
+    await state.setScope(opts.scope);
+  } else if (opts.editItemId) {
+    // A pinned edit implies edits scope; setScope reloads even when the
+    // pane already sits there, which is what consumes the pending pin.
+    await state.setScope('edits');
   }
   return state;
 }
@@ -387,8 +416,15 @@ function createReviewPaneState(
   const replyErrors = new SvelteMap<string, string>();
   const sendingReplyIds: SvelteSet<string> = $state(new SvelteSet<string>());
   let expandedPRThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
-  let selectedCheckpointUserItemId: string | null = $state(null);
-  let checkpoints: Checkpoint[] = $state([]);
+  let commits: BranchCommit[] = $state([]);
+  let selectedCommitSHA: string | null = $state(null);
+  let edits: EditDiffEntryView[] = $state([]);
+  let editTurnLabels: ReadonlyMap<number, string> = $state(new Map());
+  let selectedEdit: EditSelection | null = $state(null);
+  let pendingEditItemID: string | null = null;
+  const effectiveSubmitTarget = $derived<'agent' | 'pr'>(
+    scope === 'pr' && !selectedCommitSHA ? submitTarget : 'agent',
+  );
   let pendingJumpFilePath: string | null = $state(null);
   let pendingJumpRowKey: string | null = $state(null);
   let patchText = $state('');
@@ -399,10 +435,6 @@ function createReviewPaneState(
   // is the sole reactive signal the `files` derived reads.
   const contextExpansions = new Map<string, ContextExpansionState>();
   let contextExpansionVersion = $state(0);
-  // The checkpoint userItemId the loaded turn diff actually targets —
-  // "Latest" leaves selectedCheckpointUserItemId null, but expansion
-  // must read the same commit the diff was computed against.
-  let turnCheckpointUserItemId: string | null = null;
   let sendingComments = $state(false);
   let openEditors: CommentAnchor[] = $state([]);
   // Draft-editor text lives HERE, not in the row component: editor rows
@@ -421,8 +453,31 @@ function createReviewPaneState(
   const collapseOverrides = new Map<string, boolean>();
   let viewMode: 'stacked' | 'split' = $state('stacked');
   let wordWrap = $state(getSettings().diffWordWrap);
+  // Edits-scope files whose expansion attempt was refused (workspace
+  // drifted from the historical diff): their gap rows retire for this
+  // load. Cleared with the expansions on every reload.
+  const unexpandableEditPaths = new SvelteSet<string>();
+  // Edits-scope files the backend verified servable at load time
+  // (VerifyEditDiffs) — the POSITIVE gate for gap arrows: a file's gaps
+  // render only once its path lands here, so an arrow that can't serve
+  // never appears. Cleared with the expansions on every reload.
+  const editExpandablePaths = new SvelteSet<string>();
   let loadSeq = 0;
   const sourceKey = $derived.by(() => {
+    if (scope === 'edits') {
+      // An edit payload is immutable, so its id is the stable identity;
+      // a whole-turn view keys by the turn (its edit set only grows
+      // while the turn is still streaming).
+      if (!selectedEdit) return '';
+      return selectedEdit.kind === 'item'
+        ? `edit:${selectedEdit.payloadId}`
+        : `edit-turn:${selectedEdit.turnIndex}`;
+    }
+    if (selectedCommitSHA) {
+      // A single commit's content is immutable — the SHA itself is the
+      // stable identity, in both branch and pr scope.
+      return `commit:${selectedCommitSHA}`;
+    }
     if (scope === 'pr' && prRef) {
       // Stable across PR head movement: drafts must survive pushes; each
       // draft's commitSha records the head SHA it was anchored to.
@@ -437,7 +492,36 @@ function createReviewPaneState(
   // expansions overlay per file, keyed by the version counter.
   const files = $derived.by(() => {
     void contextExpansionVersion;
-    const parsed = sortFilesTreeOrder(parsePatchFilesCached(patchText));
+    let parsed: PatchFile[];
+    if (scope === 'edits') {
+      // A whole-turn concatenation repeats a path when a file was edited
+      // more than once in the turn — merge those sections into one
+      // renumbered file-ordered section per path (the review surface
+      // keys rows/tree/collapse by path; see mergePatchFilesByPath).
+      // The merge runs BEFORE tree sorting and through the identity
+      // cache: this derived re-runs per expansion click, and only a
+      // stable merged lines array keeps the expansion rebuild memo and
+      // the span cache's predecessor fallback working — a fresh array
+      // per run flashes the whole file plain for a round trip.
+      // Gap arrows are verification-gated (merged files included): a
+      // file's gaps render only after the load-time VerifyEditDiffs
+      // pass proved an expansion request would be served (persisted
+      // edit snapshot first, verified workspace file as the
+      // pre-snapshot fallback), so no arrow is ever dead-on-arrival —
+      // absolute paths outside the workspace, drifted pre-snapshot
+      // files, and remote clients all simply never verify. A
+      // click-time refusal (rare race) still retires the path via
+      // unexpandableEditPaths. Copies, not mutation: the parse cache
+      // is shared across panes and scopes.
+      parsed = sortFilesTreeOrder(mergePatchFilesByPathCached(parsePatchFilesCached(patchText))).map(
+        (file) =>
+          editExpandablePaths.has(file.path) && !unexpandableEditPaths.has(file.path)
+            ? file
+            : { ...file, suppressGaps: true },
+      );
+    } else {
+      parsed = sortFilesTreeOrder(parsePatchFilesCached(patchText));
+    }
     if (contextExpansions.size === 0) return parsed;
     return parsed.map((file) => applyContextExpansion(file, contextExpansions.get(file.path)));
   });
@@ -569,7 +653,8 @@ function createReviewPaneState(
   }
 
   async function setScope(nextScope: ReviewScope, opts?: { baseBranch?: string }): Promise<void> {
-    if (nextScope !== scope) {
+    const scopeChanged = nextScope !== scope;
+    if (scopeChanged) {
       resetConflictState();
       resetCIState();
     }
@@ -587,8 +672,13 @@ function createReviewPaneState(
     baseBranch = nextScope === 'branch'
       ? (opts?.baseBranch?.trim() || baseBranch || await defaultBaseBranch(threadId))
       : null;
-    if (nextScope !== 'turn') {
-      selectedCheckpointUserItemId = null;
+    // Back to "latest" on scope entry — the previous selection belongs
+    // to another commit range. A base-branch change within branch scope
+    // keeps it; reload's validation drops a selection that left the new
+    // range.
+    if (scopeChanged) {
+      selectedCommitSHA = null;
+      selectedEdit = null;
     }
     openEditors = [];
     draftBodies.clear();
@@ -597,43 +687,71 @@ function createReviewPaneState(
     await reload();
   }
 
-  async function selectCheckpoint(userItemId: string | null): Promise<void> {
-    selectedCheckpointUserItemId = userItemId;
+  async function selectCommit(sha: string | null): Promise<void> {
+    if (sha === selectedCommitSHA) return;
+    selectedCommitSHA = sha;
+    openEditors = [];
+    draftBodies.clear();
     collapseOverrides.clear();
-    resetConflictState();
-    if (scope === 'pr') await unsubscribePR();
-    if (scope !== 'turn') scope = 'turn';
-    persistScope(threadId, scope, baseBranch);
-    await reload();
+    await reload({ selectionOnly: true });
   }
 
-  async function reload(): Promise<void> {
+  async function selectEdit(key: string | null): Promise<void> {
+    const next = editSelectionFromKey(key, edits);
+    if (editSelectionKey(next) === editSelectionKey(selectedEdit)) return;
+    selectedEdit = next;
+    openEditors = [];
+    draftBodies.clear();
+    collapseOverrides.clear();
+    await reload({ selectionOnly: true });
+  }
+
+  async function reload(opts?: { selectionOnly?: boolean }): Promise<void> {
+    // A commit/edit selection changes only which diff is shown — the
+    // selector list, PR detail, and subscription are all still valid,
+    // so reuse them and fetch just the diff. Only when a previous full
+    // load actually populated them; otherwise fall through to a full
+    // load.
+    const selectionOnly = opts?.selectionOnly === true
+      && (scope === 'edits'
+        ? edits.length > 0
+        : commits.length > 0 && (scope !== 'pr' || subscriptionId !== null));
+    // The inline-diff affordance pins an edit for the NEXT load;
+    // consumed here so a later manual reload doesn't re-pin it.
+    const pinnedEditItemID = pendingEditItemID;
+    pendingEditItemID = null;
     const seq = loadSeq + 1;
     loadSeq = seq;
     loading = true;
     error = null;
-    // Unconditionally, not just in pr scope: scope can change mid-load
-    // (the selector stays enabled while a PR loads), and an in-flight
-    // pr load that resolved during setScope's awaits may have
-    // registered a subscription after the scope flipped. No-op when
-    // none is held.
-    await unsubscribePR();
+    if (!selectionOnly) {
+      // Unconditionally, not just in pr scope: scope can change mid-load
+      // (the selector stays enabled while a PR loads), and an in-flight
+      // pr load that resolved during setScope's awaits may have
+      // registered a subscription after the scope flipped. No-op when
+      // none is held.
+      await unsubscribePR();
+    }
     try {
-      if (scope === 'pr' && !prRef) {
-        // Persisted 'pr' scope restores before the thread/git status is at
-        // hand; resolve the reference here instead of failing the load.
-        await ensurePRRef();
-      } else {
-        // Fire-and-forget: a PR opened after this pane mounted becomes
-        // selectable on the next reload without blocking the diff load.
-        probePRRef();
+      if (!selectionOnly) {
+        if (scope === 'pr' && !prRef) {
+          // Persisted 'pr' scope restores before the thread/git status is at
+          // hand; resolve the reference here instead of failing the load.
+          await ensurePRRef();
+        } else {
+          // Fire-and-forget: a PR opened after this pane mounted becomes
+          // selectable on the next reload without blocking the diff load.
+          probePRRef();
+        }
       }
       const loaded = await loadPatch(
         threadId,
         scope,
         baseBranch,
-        selectedCheckpointUserItemId,
+        selectedCommitSHA,
         prRef,
+        { pinnedItemId: pinnedEditItemID, current: selectedEdit },
+        selectionOnly ? { commits, prDetail, edits, editTurnLabels } : undefined,
       );
       if (seq !== loadSeq || disposed) {
         // A newer load or dispose superseded this one — the subscription it
@@ -641,9 +759,14 @@ function createReviewPaneState(
         if (loaded.subscriptionId) void UnsubscribePRUpdates(loaded.subscriptionId);
         return;
       }
-      if (loaded.checkpoints) checkpoints = loaded.checkpoints;
-      if (loaded.selectedCheckpointUserItemId !== undefined) {
-        selectedCheckpointUserItemId = loaded.selectedCheckpointUserItemId;
+      commits = loaded.commits ?? [];
+      edits = loaded.edits ?? [];
+      editTurnLabels = loaded.editTurnLabels ?? new Map();
+      if (loaded.selectedEdit !== undefined) {
+        selectedEdit = loaded.selectedEdit;
+      }
+      if (loaded.selectedCommitSHA !== undefined) {
+        selectedCommitSHA = loaded.selectedCommitSHA;
       }
       if (loaded.prDetail) prDetail = loaded.prDetail;
       if (loaded.prThreads) prThreads = loaded.prThreads;
@@ -652,9 +775,12 @@ function createReviewPaneState(
         subscriptionId = loaded.subscriptionId;
         registerPRReviewState(subscriptionId, { applyPRUpdate });
       }
-      turnCheckpointUserItemId = loaded.turnCheckpointUserItemId ?? null;
       clearContextExpansions();
       patchText = loaded.patchText;
+      // Fire-and-forget: arrows appear when verification lands; the
+      // diff itself renders immediately (gaps just aren't expandable
+      // yet).
+      if (scope === 'edits') void verifyEditExpandability(seq);
       // Fresh defaults for the new patch, with the user's explicit
       // collapse/expand choices layered back on top.
       const nextCollapsed = defaultCollapsedPaths(parsePatchFilesCached(loaded.patchText));
@@ -665,11 +791,13 @@ function createReviewPaneState(
       collapsedPaths = nextCollapsed;
       if (scope === 'pr') {
         prStale = false;
-        void loadCIJobs();
+        // The fast path didn't refresh the PR snapshot, so CI state
+        // hasn't moved either — the subscription pump covers it.
+        if (!selectionOnly) void loadCIJobs();
       }
-      const nextSourceKey = scope === 'pr'
-        ? sourceKey
-        : (loaded.patchText ? diffSourceKey(loaded.patchText) : '');
+      // patchText and selectedCommitSHA are already updated above, so
+      // the derived reflects this load — no need to re-derive by hand.
+      const nextSourceKey = sourceKey;
       if (!nextSourceKey) {
         openEditors = [];
         draftBodies.clear();
@@ -688,7 +816,6 @@ function createReviewPaneState(
       }
     } catch (err) {
       if (seq !== loadSeq) return;
-      turnCheckpointUserItemId = null;
       clearContextExpansions();
       patchText = '';
       openEditors = [];
@@ -704,9 +831,95 @@ function createReviewPaneState(
   if (!deferInitialLoad) void reload();
 
   function clearContextExpansions(): void {
+    unexpandableEditPaths.clear();
+    editExpandablePaths.clear();
     if (contextExpansions.size === 0) return;
     contextExpansions.clear();
     contextExpansionVersion += 1;
+  }
+
+  // The scope triple GetDiffContextLines / HighlightPatchWithContext
+  // use to resolve new-side file content (`app_diff_context.go`). A
+  // selected commit in branch scope reads through 'commit' scope; pr
+  // scope reads the local PR clone, at the selected commit when one is
+  // set (falling back to the head).
+  function patchScopeContext(): PatchScopeContext {
+    if (scope === 'pr') {
+      return { scope: 'pr', commitSHA: selectedCommitSHA ?? '', headSHA: prHeadSHA };
+    }
+    if (selectedCommitSHA) {
+      return { scope: 'commit', commitSHA: selectedCommitSHA, headSHA: '' };
+    }
+    if (scope === 'edits') {
+      // The edit selection routes the backend to that edit's persisted
+      // file snapshots (workspace file as pre-snapshot fallback), and
+      // content is served only after it verifies against the historical
+      // patch (the request carries the patch as VerifyPatch); a drifted
+      // file degrades to unprimed spans, never to wrong colors.
+      return {
+        scope,
+        commitSHA: '',
+        headSHA: '',
+        editPayloadId: selectedEdit?.kind === 'item' ? selectedEdit.payloadId : '',
+        editTurnIndex: selectedEdit?.kind === 'turn' ? selectedEdit.turnIndex : -1,
+      };
+    }
+    return { scope, commitSHA: '', headSHA: '' };
+  }
+
+  // One file's patch text, serialized from its merged lines — the ONLY
+  // way an edits-scope verifyPatch is built. The load-time verification
+  // batch and the click-time expansion request both call this, so the
+  // two verdicts compare the same bytes by construction.
+  function filePatchText(file: PatchFile): string {
+    return file.lines.map((line) => line.content).join('\n');
+  }
+
+  // The historical patch text of one edits-scope file, for the
+  // backend's has-the-file-drifted verification. Empty for unknown
+  // paths (the backend then refuses, which is the safe direction).
+  function editVerifyPatch(path: string): string {
+    if (scope !== 'edits') return '';
+    const file = files.find((candidate) => candidate.path === path);
+    if (!file) return '';
+    return filePatchText(file);
+  }
+
+  // Load-time expandability pass for the edits scope: one batch RPC
+  // proves which files an expansion click would actually serve, and
+  // only those get gap arrows (editExpandablePaths gates the files
+  // derived). Candidates come from the unsuppressed merge, NOT the
+  // files derived — that one already suppresses everything still
+  // unverified. Any failure (remote client's LocalOnly rejection
+  // included) just leaves paths unverified: no arrows, no error
+  // banner, exactly what clicking would have found out the hard way.
+  async function verifyEditExpandability(seq: number): Promise<void> {
+    if (scope !== 'edits' || !patchText) return;
+    const merged = mergePatchFilesByPathCached(parsePatchFilesCached(patchText));
+    // Added files are fully present — no gaps to gate, so no reason to
+    // resolve them.
+    const candidates = merged.filter(
+      (file) => !file.suppressGaps && file.kind !== 'added' && !file.path.startsWith('/'),
+    );
+    if (candidates.length === 0) return;
+    const context = patchScopeContext();
+    try {
+      const result = await VerifyEditDiffs(threadId, {
+        editPayloadId: context.editPayloadId ?? '',
+        editTurnIndex: context.editTurnIndex ?? -1,
+        files: candidates.map((file) => ({
+          path: file.path,
+          verifyPatch: filePatchText(file),
+        })),
+      });
+      if (seq !== loadSeq || disposed) return;
+      for (const path of result.expandablePaths ?? []) {
+        editExpandablePaths.add(path);
+      }
+    } catch {
+      if (seq !== loadSeq || disposed) return;
+      // Unverified stays unexpandable — the honest degrade.
+    }
   }
 
   async function expandDiffContext(path: string, gap: DiffGap, dir: ExpandDirection): Promise<void> {
@@ -714,13 +927,17 @@ function createReviewPaneState(
     if (!range) return;
     const seq = loadSeq;
     try {
+      const context = patchScopeContext();
       const result = await GetDiffContextLines(threadId, {
-        scope,
-        userItemId: scope === 'turn' ? (turnCheckpointUserItemId ?? '') : '',
-        headSHA: scope === 'pr' ? prHeadSHA : '',
+        scope: context.scope,
+        commitSHA: context.commitSHA,
+        headSHA: context.headSHA,
         path,
         startLine: range.start,
         endLine: range.end,
+        verifyPatch: editVerifyPatch(path),
+        editPayloadId: context.editPayloadId ?? '',
+        editTurnIndex: context.editTurnIndex ?? -1,
       });
       // The diff reloaded underneath the fetch — its line numbering may
       // no longer be the one this slice was addressed against.
@@ -738,6 +955,14 @@ function createReviewPaneState(
       error = null;
     } catch (err) {
       if (seq !== loadSeq || disposed) return;
+      if (scope === 'edits') {
+        // The workspace file has drifted from this historical edit (or
+        // is gone) — expansion can't be offered truthfully. Retire the
+        // file's gap affordances instead of raising an error banner:
+        // the diff itself is still fully valid.
+        unexpandableEditPaths.add(path);
+        return;
+      }
       error = userFacingError(err);
     }
   }
@@ -763,7 +988,7 @@ function createReviewPaneState(
       await createDiffReviewComment(threadId, {
         scope,
         sourceKey,
-        commitSha: scope === 'pr' ? prHeadSHA : undefined,
+        commitSha: selectedCommitSHA ?? (scope === 'pr' ? prHeadSHA : undefined),
         filePath: anchor.filePath,
         oldLine: anchor.oldLine,
         newLine: anchor.newLine,
@@ -830,7 +1055,11 @@ function createReviewPaneState(
   }
 
   async function submitPRReview(): Promise<void> {
-    if (scope !== 'pr' || !prRef || !sourceKey || sendingComments) return;
+    // A single-commit view's drafts carry line numbers from that commit's
+    // diff, which SubmitPRReview would anchor against the PR head diff —
+    // wrong lines or hard failures. The UI hides the 'pr' target there;
+    // this guard backs it up.
+    if (scope !== 'pr' || selectedCommitSHA || !prRef || !sourceKey || sendingComments) return;
     const orphaned = orphanedDraftIds();
     const submitDrafts = drafts.filter((comment) => !orphaned.has(comment.id));
     // A bare Approve is a valid review; comment and request-changes need
@@ -1188,9 +1417,13 @@ function createReviewPaneState(
     get comments() { return comments; },
     get drafts() { return drafts; },
     get openEditors() { return openEditors; },
-    get checkpoints() { return checkpoints; },
-    get selectedCheckpointUserItemId() { return selectedCheckpointUserItemId; },
-    set selectedCheckpointUserItemId(value: string | null) { selectedCheckpointUserItemId = value; },
+    get commits() { return commits; },
+    get selectedCommitSHA() { return selectedCommitSHA; },
+    get edits() { return edits; },
+    get editTurnLabels() { return editTurnLabels; },
+    get selectedEditKey() { return editSelectionKey(selectedEdit); },
+    get pendingEditItemID() { return pendingEditItemID; },
+    set pendingEditItemID(value: string | null) { pendingEditItemID = value; },
     get pendingJumpFilePath() { return pendingJumpFilePath; },
     set pendingJumpFilePath(value: string | null) { pendingJumpFilePath = value; },
     get pendingJumpRowKey() { return pendingJumpRowKey; },
@@ -1200,6 +1433,9 @@ function createReviewPaneState(
     get prDetail() { return prDetail; },
     get prThreads() { return prThreads; },
     get prHeadSHA() { return prHeadSHA; },
+    get spanContext(): PatchScopeContext {
+      return patchScopeContext();
+    },
     get prStale() { return prStale; },
     get refreshingPRData() { return refreshingPRData; },
     get conflictView() { return conflictView; },
@@ -1218,6 +1454,7 @@ function createReviewPaneState(
     get ciLogError() { return ciLogError; },
     get ciLogSavedPath() { return ciLogSavedPath; },
     get submitTarget() { return submitTarget; },
+    get effectiveSubmitTarget() { return effectiveSubmitTarget; },
     get verdict() { return verdict; },
     get summaryBody() { return summaryBody; },
     get submitError() { return submitError; },
@@ -1229,7 +1466,8 @@ function createReviewPaneState(
     get wordWrap() { return wordWrap; },
 
     setScope,
-    selectCheckpoint,
+    selectCommit,
+    selectEdit,
     reload,
     consumePendingJumpFilePath(): void {
       pendingJumpFilePath = null;
@@ -1324,59 +1562,177 @@ function createReviewPaneState(
 
 interface LoadedPatch {
   patchText: string;
-  checkpoints?: Checkpoint[];
-  selectedCheckpointUserItemId?: string | null;
-  /** Turn scope: the checkpoint the diff was actually computed against
-   * ("Latest" resolves to a concrete checkpoint here). */
-  turnCheckpointUserItemId?: string;
+  /** Commit selector rows for the loaded range; omitted → empty. */
+  commits?: BranchCommit[];
+  /** The commit the diff was actually computed for — a stale selection
+   * that left the range resolves back to null (full range). */
+  selectedCommitSHA?: string | null;
+  /** Edit selector rows (edits scope); omitted → empty. */
+  edits?: EditDiffEntryView[];
+  editTurnLabels?: ReadonlyMap<number, string>;
+  /** The edit selection the diff was actually computed for — a pinned
+   * or stale selection resolves against the fresh list. */
+  selectedEdit?: EditSelection | null;
   prDetail?: PRDetail;
   prThreads?: ReviewThread[];
   prHeadSHA?: string;
   subscriptionId?: string;
 }
 
+/** The edits-scope selection reload should aim for: a freshly pinned
+ * tool call (inline-diff affordance) wins over the current selection. */
+interface EditDesire {
+  pinnedItemId: string | null;
+  current: EditSelection | null;
+}
+
+/** State a selection-only reload reuses instead of refetching: the
+ * commit/edit lists are unchanged by picking an entry, and in pr scope
+ * the live subscription already holds the detail. */
+interface ExistingLoad {
+  commits: BranchCommit[];
+  prDetail: PRDetail | null;
+  edits: EditDiffEntryView[];
+  editTurnLabels: ReadonlyMap<number, string>;
+}
+
+/** Decode a selector value (`item:<id>` / `turn:<n>`) against the
+ * current entries; unknown or null values resolve to the default. */
+function editSelectionFromKey(key: string | null, entries: readonly EditDiffEntryView[]): EditSelection | null {
+  if (key) {
+    if (key.startsWith('item:')) {
+      const itemId = key.slice('item:'.length);
+      const entry = entries.find((candidate) => candidate.itemId === itemId);
+      if (entry) return { kind: 'item', itemId: entry.itemId, payloadId: entry.payloadId };
+    } else if (key.startsWith('turn:')) {
+      const turnIndex = Number(key.slice('turn:'.length));
+      if (entries.some((candidate) => candidate.turnIndex === turnIndex)) {
+        return { kind: 'turn', turnIndex };
+      }
+    }
+  }
+  return defaultEditSelection(entries);
+}
+
+/** Default edits-scope selection: the latest turn's whole set. */
+function defaultEditSelection(entries: readonly EditDiffEntryView[]): EditSelection | null {
+  if (entries.length === 0) return null;
+  return { kind: 'turn', turnIndex: entries[entries.length - 1].turnIndex };
+}
+
+/** Validate a desired selection against the fresh list: a pinned tool
+ * call wins; a stale selection falls back to the default. */
+function resolveEditSelection(desire: EditDesire, entries: readonly EditDiffEntryView[]): EditSelection | null {
+  if (desire.pinnedItemId) {
+    const pinned = entries.find((candidate) => candidate.itemId === desire.pinnedItemId);
+    if (pinned) return { kind: 'item', itemId: pinned.itemId, payloadId: pinned.payloadId };
+  }
+  const current = desire.current;
+  if (current?.kind === 'item' && entries.some((candidate) => candidate.itemId === current.itemId)) {
+    return current;
+  }
+  if (current?.kind === 'turn' && entries.some((candidate) => candidate.turnIndex === current.turnIndex)) {
+    return current;
+  }
+  return defaultEditSelection(entries);
+}
+
+/** Validate a selection against the fresh list, not just the diff call:
+ * after a rebase, base change, or force-push the selected SHA can vanish
+ * — fall back to the full range instead of erroring. */
+function resolveSelectedCommit(
+  selectedCommitSHA: string | null,
+  commits: readonly BranchCommit[],
+): string | null {
+  if (selectedCommitSHA && commits.some((commit) => commit.sha === selectedCommitSHA)) {
+    return selectedCommitSHA;
+  }
+  return null;
+}
+
 async function loadPatch(
   threadId: string,
   scope: ReviewScope,
   baseBranch: string | null,
-  selectedCheckpointUserItemId: string | null,
+  selectedCommitSHA: string | null,
   prRef: PRRef | null,
+  editDesire: EditDesire,
+  existing?: ExistingLoad,
 ): Promise<LoadedPatch> {
   switch (scope) {
     case 'pr': {
       if (!prRef) throw new Error('No PR or MR is available for this thread.');
-      return loadPRPatch(threadId, prRef);
+      if (existing) return loadPRPatchCommitOnly(threadId, prRef, selectedCommitSHA, existing);
+      return loadPRPatch(threadId, prRef, selectedCommitSHA);
     }
-    case 'turn': {
-      const checkpoints = sortedCheckpoints(
-        ((await ListThreadCheckpoints(threadId)) ?? []) as Checkpoint[],
-      );
-      const selected = selectedCheckpointUserItemId
-        ? checkpoints.find((checkpoint) => checkpoint.userItemId === selectedCheckpointUserItemId) ?? null
-        : null;
-      const checkpoint = selected ?? latestCheckpoint(checkpoints);
-      if (!checkpoint) {
-        return { patchText: '', checkpoints, selectedCheckpointUserItemId: null };
-      }
-      return {
-        patchText: ((await GetMessageCheckpointDiff(threadId, checkpoint.userItemId)) ?? '') as string,
-        checkpoints,
-        selectedCheckpointUserItemId: selected ? selected.userItemId : null,
-        turnCheckpointUserItemId: checkpoint.userItemId,
-      };
-    }
-    case 'session':
-      return { patchText: ((await GetSessionAgentDiff(threadId)) ?? '') as string };
     case 'workspace':
       return { patchText: ((await GetWorkspaceCurrentDiff(threadId)) ?? '') as string };
+    case 'edits': {
+      let entries = existing?.edits;
+      let turnLabels = existing?.editTurnLabels;
+      if (!entries || !turnLabels) {
+        const list = await ListThreadEditDiffs(threadId);
+        entries = (list?.entries ?? []).map((entry) => ({
+          itemId: String(entry.itemId),
+          payloadId: String(entry.payloadId),
+          turnIndex: Number(entry.turnIndex),
+          title: String(entry.title ?? ''),
+          paths: (entry.paths ?? []).map(String),
+          insertions: Number(entry.insertions ?? 0),
+          deletions: Number(entry.deletions ?? 0),
+          createdAt: Number(entry.createdAt ?? 0),
+        }));
+        turnLabels = new Map((list?.turnLabels ?? []).map((label) => [Number(label.turnIndex), String(label.label ?? '')]));
+      }
+      const selection = resolveEditSelection(editDesire, entries);
+      let patchText = '';
+      if (selection?.kind === 'item') {
+        const payload = await GetPayloadData(threadId, selection.payloadId);
+        patchText = String(payload?.data ?? '');
+        // Persist-time spans travel with the data (primed when the file
+        // still matched at edit time) — seed them so the first paint is
+        // colored without the RPC path. Fire-and-forget cache warmer.
+        void seedPayloadPatchSpans(threadId, payload?.patchSpans);
+      } else if (selection) {
+        const turnDiff = await GetTurnEditsDiff(threadId, selection.turnIndex);
+        patchText = String(turnDiff?.data ?? '');
+        void seedPayloadPatchSpans(threadId, turnDiff?.patchSpans);
+      }
+      return { patchText, edits: entries, editTurnLabels: turnLabels, selectedEdit: selection };
+    }
     case 'branch': {
       const branch = baseBranch?.trim() || await defaultBaseBranch(threadId);
-      return { patchText: ((await GetBranchBaseDiff(threadId, branch)) ?? '') as string };
+      if (existing) {
+        const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
+        const patchText = commitSHA
+          ? ((await GetCommitDiff(threadId, commitSHA)) ?? '') as string
+          : ((await GetBranchBaseDiff(threadId, branch)) ?? '') as string;
+        return { patchText, commits: existing.commits, selectedCommitSHA: commitSHA };
+      }
+      if (selectedCommitSHA) {
+        // Sequenced: the selection must be validated against the fresh
+        // list before deciding which diff to fetch.
+        const commits = ((await ListBranchCommits(threadId, branch)) ?? []) as BranchCommit[];
+        const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
+        const patchText = commitSHA
+          ? ((await GetCommitDiff(threadId, commitSHA)) ?? '') as string
+          : ((await GetBranchBaseDiff(threadId, branch)) ?? '') as string;
+        return { patchText, commits, selectedCommitSHA: commitSHA };
+      }
+      const [commits, patchText] = await Promise.all([
+        ListBranchCommits(threadId, branch).then((rows) => (rows ?? []) as BranchCommit[]),
+        GetBranchBaseDiff(threadId, branch).then((patch) => (patch ?? '') as string),
+      ]);
+      return { patchText, commits, selectedCommitSHA: null };
     }
   }
 }
 
-async function loadPRPatch(threadId: string, ref: PRRef): Promise<LoadedPatch> {
+async function loadPRPatch(
+  threadId: string,
+  ref: PRRef,
+  selectedCommitSHA: string | null,
+): Promise<LoadedPatch> {
   const pr = prReference(ref);
   // The subscription resolves the PR detail, whose baseRefName the diff
   // needs to compute a local three-dot diff (gh/glab's PR-diff API caps at
@@ -1385,18 +1741,49 @@ async function loadPRPatch(threadId: string, ref: PRRef): Promise<LoadedPatch> {
   const subResult = await SubscribePRUpdates(threadId, pr);
   try {
     const detail = subResult.detail as PRDetail;
-    const patchText = String((await GetPRDiff(threadId, pr, detail?.baseRefName ?? '')) ?? '');
+    const baseRef = detail?.baseRefName ?? '';
+    const headSHA = String(subResult.headSHA ?? detail?.headSHA ?? '');
+    // Per-commit PR review needs the local clone; without one the backend
+    // returns an empty list and the selector stays hidden. The known head
+    // SHA lets the backend skip its fetch when the objects are local.
+    const commits = baseRef
+      ? (((await ListPRCommits(threadId, pr, baseRef, headSHA)) ?? []) as BranchCommit[])
+      : [];
+    const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
+    const patchText = commitSHA
+      ? String((await GetPRCommitDiff(threadId, pr, commitSHA)) ?? '')
+      : String((await GetPRDiff(threadId, pr, baseRef)) ?? '');
     return {
       patchText,
+      commits,
+      selectedCommitSHA: commitSHA,
       prDetail: detail,
       prThreads: (subResult.threads ?? []) as ReviewThread[],
-      prHeadSHA: String(subResult.headSHA ?? detail?.headSHA ?? ''),
+      prHeadSHA: headSHA,
       subscriptionId: String(subResult.id),
     };
   } catch (err) {
     await UnsubscribePRUpdates(String(subResult.id ?? ''));
     throw err;
   }
+}
+
+/** Commit-selection fast path: the caller's PR subscription stays live,
+ * so only the diff itself is refetched — no re-subscribe, no detail or
+ * commit-list round-trips. Returns no subscriptionId on purpose. */
+async function loadPRPatchCommitOnly(
+  threadId: string,
+  ref: PRRef,
+  selectedCommitSHA: string | null,
+  existing: ExistingLoad,
+): Promise<LoadedPatch> {
+  const pr = prReference(ref);
+  const baseRef = existing.prDetail?.baseRefName ?? '';
+  const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
+  const patchText = commitSHA
+    ? String((await GetPRCommitDiff(threadId, pr, commitSHA)) ?? '')
+    : String((await GetPRDiff(threadId, pr, baseRef)) ?? '');
+  return { patchText, commits: existing.commits, selectedCommitSHA: commitSHA };
 }
 
 function prReference(ref: PRRef): Parameters<typeof GetPRDiff>[1] {
@@ -1406,18 +1793,6 @@ function prReference(ref: PRRef): Parameters<typeof GetPRDiff>[1] {
     Repo: ref.repo,
     Number: ref.number,
   };
-}
-
-function sortedCheckpoints(checkpoints: readonly Checkpoint[]): Checkpoint[] {
-  return [...checkpoints].sort((a, b) => a.turnIndex - b.turnIndex);
-}
-
-export function latestCheckpoint(checkpoints: readonly Checkpoint[]): Checkpoint | null {
-  let latest: Checkpoint | null = null;
-  for (const checkpoint of checkpoints) {
-    if (!latest || checkpoint.turnIndex > latest.turnIndex) latest = checkpoint;
-  }
-  return latest;
 }
 
 async function defaultBaseBranch(threadId: string): Promise<string> {
@@ -1500,7 +1875,7 @@ function persistScope(threadId: string, scope: ReviewScope, baseBranch: string |
 }
 
 function isReviewScope(value: unknown): value is ReviewScope {
-  return value === 'turn' || value === 'session' || value === 'workspace' || value === 'branch' || value === 'pr';
+  return value === 'workspace' || value === 'branch' || value === 'pr' || value === 'edits';
 }
 
 function userFacingError(err: unknown): string {
@@ -1511,7 +1886,6 @@ function userFacingError(err: unknown): string {
 
 export function __resetReviewPaneStateForTest(): void {
   statesBySourcePane.clear();
-  companionTargetsBySourcePane = new Map();
   prStatesBySubscription.clear();
 }
 

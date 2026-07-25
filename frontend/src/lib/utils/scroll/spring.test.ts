@@ -8,7 +8,12 @@
 // tests pin HOW a chase advances, driven through a fake deps harness.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSpringChase, type ArrivalReadback, type SpringChaseDeps } from './spring';
+import {
+  createSpringChase,
+  fusionFloorPxPerFrame,
+  type ArrivalReadback,
+  type SpringChaseDeps,
+} from './spring';
 import { setDocumentResumeAtForTest } from './documentResume';
 import { ARRIVAL_DISTANCE_PX } from './resolver';
 import {
@@ -51,7 +56,9 @@ interface Harness {
  * the kinematic tests leave it off so their long-glide assertions stay
  * exact.
  */
-function makeHarness(opts: { quantize?: boolean; clientHeight?: number } = {}): Harness {
+function makeHarness(
+  opts: { quantize?: boolean; clientHeight?: number; dpr?: number } = {},
+): Harness {
   let scrollTop = 0;
   let target = 0;
   let animationMode: 'spring' | 'instant' = 'spring';
@@ -101,8 +108,11 @@ function makeHarness(opts: { quantize?: boolean; clientHeight?: number } = {}): 
     settleGlideResidue: () => {
       residueSettles += 1;
     },
-    // Matches the controller's derivation at dpr 1 (1.1/1, clamped).
-    glideFusionFloorPxPerFrame: () => 1.1,
+    // Display input to the refresh-aware fusion floor; the derivation
+    // itself is unit-tested directly (fusionFloorPxPerFrame below). At
+    // dpr 1 and the harness's default 16.67ms cadence the floor is the
+    // 60Hz phase lock: 1.0 px per frame.
+    devicePixelRatio: () => opts.dpr ?? 1,
   };
 
   return {
@@ -263,6 +273,24 @@ describe('chase-distance clamp', () => {
 
     frame();
     expect(catchupJumps(h)[0]?.value).toBe(4400);
+  });
+
+  it('stops clamping a fresh chase once the resume window has passed', () => {
+    // The resume clamp treats every fresh >viewport chase within
+    // RESUME_CLAMP_WINDOW_MS (2000ms) of a visibilitychange→visible as
+    // tab-return backlog and cuts it to one viewport — a deliberate
+    // tradeoff that also cuts a legitimate large structural mount (big
+    // diff card) landing in that window. This pins the window's EDGE:
+    // past 2000ms the same chase is a real mount again and must glide
+    // from its true start with no cut.
+    const h = makeHarness({ clientHeight: 600 });
+    setDocumentResumeAtForTest(now);
+    now += 2001; // idle past the window, no spring running
+    h.setTarget(5000);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    frame();
+    expect(catchupJumps(h)).toHaveLength(0);
   });
 
   it('never engages on a sub-viewport backlog even under a stall gap', () => {
@@ -426,9 +454,10 @@ describe('glide shaping (decel envelope + fractional tail)', () => {
       expect(moves[i]).toBeLessThanOrEqual(moves[i - 1] + 0.01);
     }
     expect(moves[moves.length - 1]).toBeLessThanOrEqual(1.55);
-    // Fusion-floor hold: the deceleration parks at the floor (1.1 in
-    // this harness) instead of decaying through it.
-    const floorHold = moves.filter((m) => m > 1.09 && m < 1.12);
+    // Fusion-floor hold: the deceleration parks at the floor (the 60Hz
+    // phase lock — 1.0 device px per frame at this harness's dpr 1 and
+    // 16.67ms cadence) instead of decaying through it.
+    const floorHold = moves.filter((m) => m > 0.98 && m < 1.02);
     expect(floorHold.length).toBeGreaterThanOrEqual(2);
     // THE regression assertion: a decelerating glide never DWELLS in
     // the visible-breathing speed band (sub-floor but still moving) —
@@ -482,6 +511,75 @@ describe('glide shaping (decel envelope + fractional tail)', () => {
     for (let i = 1; i < glideWrites.length; i++) {
       expect(glideWrites[i]).toBeGreaterThanOrEqual(glideWrites[i - 1]);
     }
+  });
+});
+
+describe('fusionFloorPxPerFrame (refresh-aware derivation)', () => {
+  // The quantity the rule targets: floor advance in DEVICE px per
+  // DISPLAYED frame — the lock ratio r = 1/k from the constant block.
+  // (floor is px per 60Hz-equivalent frame; × dtFrames × dpr converts.)
+  function devicePxPerDisplayedFrame(dpr: number, intervalMs: number): number {
+    return fusionFloorPxPerFrame(dpr, intervalMs) * (intervalMs / (1000 / 60)) * dpr;
+  }
+
+  it('phase-locks sub-120Hz displays at one device pixel per frame (zero breathing)', () => {
+    expect(devicePxPerDisplayedFrame(1, 1000 / 60)).toBeCloseTo(1, 5);
+    expect(devicePxPerDisplayedFrame(1.1, 1000 / 60)).toBeCloseTo(1, 5);
+    expect(devicePxPerDisplayedFrame(1, 1000 / 90)).toBeCloseTo(1, 5);
+  });
+
+  it('half-locks 120–179Hz so the alternation patterns at or above fusion', () => {
+    // 144Hz: alternation at 72Hz — the refresh-blind floor's ~12Hz
+    // second-harmonic beat on this refresh is the bug this fixes.
+    expect(devicePxPerDisplayedFrame(1.1, 1000 / 144)).toBeCloseTo(0.5, 5);
+    expect(devicePxPerDisplayedFrame(1.1, 1000 / 165)).toBeCloseTo(0.5, 5);
+    expect(devicePxPerDisplayedFrame(2, 1000 / 120)).toBeCloseTo(0.5, 5);
+  });
+
+  it('keeps descending the ladder at very high refresh', () => {
+    expect(devicePxPerDisplayedFrame(1, 1000 / 240)).toBeCloseTo(0.25, 5);
+  });
+
+  it('falls back to the 60Hz assumption until cadence is measured', () => {
+    expect(fusionFloorPxPerFrame(1.1, null)).toBeCloseTo(
+      fusionFloorPxPerFrame(1.1, 1000 / 60),
+      5,
+    );
+  });
+
+  it('clamps degenerate inputs', () => {
+    // 3× retina: a one-pixel lock is a meaningless 20px/s hold — min binds.
+    expect(fusionFloorPxPerFrame(3, 1000 / 60)).toBeCloseTo(0.4, 5);
+    // dpr < 1 (zoomed-out webview) at 100Hz would demand ~3.3px/frame —
+    // max binds at the envelope's lower cap.
+    expect(fusionFloorPxPerFrame(0.5, 1000 / 100)).toBeCloseTo(1.6, 5);
+    // Unmeasurable dpr guards to 1.
+    expect(fusionFloorPxPerFrame(0, 1000 / 60)).toBeCloseTo(1, 5);
+  });
+
+  it('adapts a live chase to measured cadence: a 165Hz chase plateaus at the half lock', () => {
+    const h = makeHarness({ dpr: 1.1 });
+    // Park at 165Hz cadence so the frame-interval EMA converges there.
+    h.setTarget(100);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 300; i++) frame(1000 / 165);
+    expect(Math.abs(h.getScrollTop() - 100)).toBeLessThanOrEqual(ARRIVAL_DISTANCE_PX);
+
+    h.setTarget(160);
+    h.spring.markTargetChanged();
+    const moves: number[] = [];
+    for (let i = 0; i < 400 && Math.abs(h.getScrollTop() - 160) > 1; i++) {
+      const before = h.getScrollTop();
+      frame(1000 / 165);
+      moves.push(h.getScrollTop() - before);
+    }
+    expect(Math.abs(h.getScrollTop() - 160)).toBeLessThanOrEqual(1);
+    // Floor = 0.5 device px per displayed frame = 0.5/1.1 ≈ 0.4545 CSS
+    // px — NOT the 60Hz-derived value the old refresh-blind floor
+    // would hold (1.0/1.1 ≈ 0.909/frame60 → 0.33/frame at 165Hz).
+    const floorHold = moves.filter((m) => m > 0.448 && m < 0.462);
+    expect(floorHold.length).toBeGreaterThanOrEqual(4);
   });
 });
 

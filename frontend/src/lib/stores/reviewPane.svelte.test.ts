@@ -10,7 +10,6 @@ import {
   applyPRUpdatedEvent,
   draftAnchorExists,
   disposeReviewStateForPane,
-  getReviewCompanionTarget,
   openReviewCompanion,
   reviewStateForPane,
   reviewLineCommentForDraft,
@@ -20,9 +19,10 @@ import { registerComposerDraft, resetComposerDraftRegistryForTest } from './comp
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import type { DiffReviewComment, PRDetail, Thread } from '../types/models';
 import { diffSourceKey } from '../utils/diffSourceKey';
+import { expansionPredecessor } from '../utils/diffContextExpansion';
 import { filePatchDisplayRows, parsePatchFilesCached } from '../utils/patchFiles';
 import { buildReviewRows } from '../utils/reviewRows';
-import { setBindingMock } from '../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 
 function patchFor(path: string, lines: number): string {
   return [
@@ -48,10 +48,11 @@ function installDefaultMocks(): void {
   setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/tmp/ws' }) as Thread);
   setBindingMock('GetGitStatus', async () => ({}));
   setBindingMock('GetWorkspaceCurrentDiff', async () => '');
-  setBindingMock('GetSessionAgentDiff', async () => '');
   setBindingMock('GetBranchBaseDiff', async () => '');
-  setBindingMock('GetMessageCheckpointDiff', async () => '');
-  setBindingMock('ListThreadCheckpoints', async () => []);
+  setBindingMock('ListBranchCommits', async () => []);
+  setBindingMock('GetCommitDiff', async () => '');
+  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('GetPRCommitDiff', async () => '');
   setBindingMock('GitListBranches', async () => [{ name: 'develop', isCurrent: false, isDefault: true }]);
   setBindingMock('ListDiffReviewComments', async () => []);
   setBindingMock('CreateDiffReviewComment', async () => ({}));
@@ -122,12 +123,10 @@ describe('reviewPane store', () => {
 
   it('loads the binding for each scope', async () => {
     const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => 'workspace patch');
-    const session = setBindingMock('GetSessionAgentDiff', async () => 'session patch');
     const branch = setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
-    const message = setBindingMock('GetMessageCheckpointDiff', async () => 'turn patch');
-    setBindingMock('ListThreadCheckpoints', async () => [
-      { userItemId: 'old', turnIndex: 1 },
-      { userItemId: 'latest', turnIndex: 3 },
+    setBindingMock('ListBranchCommits', async () => [
+      { sha: 'a'.repeat(40), shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
+      { sha: 'b'.repeat(40), shortSha: 'bbbbbbb', subject: 'second', author: 'r', authoredAt: 2 },
     ]);
     setBindingMock('GitListBranches', async () => [
       { name: 'develop', isCurrent: false, isDefault: true },
@@ -137,19 +136,12 @@ describe('reviewPane store', () => {
     await waitLoaded(state);
     expect(workspace).toHaveBeenCalledWith('thread-1');
 
-    await state.setScope('session');
-    expect(session).toHaveBeenCalledWith('thread-1');
-    expect(state.patchText).toBe('session patch');
-
-    await state.setScope('turn');
-    expect(message).toHaveBeenCalledWith('thread-1', 'latest');
-    expect(state.patchText).toBe('turn patch');
-    expect(state.checkpoints.map((checkpoint) => checkpoint.userItemId)).toEqual(['old', 'latest']);
-
     await state.setScope('branch');
     expect(branch).toHaveBeenCalledWith('thread-1', 'develop');
     expect(state.baseBranch).toBe('develop');
     expect(state.patchText).toBe('branch patch');
+    expect(state.commits.map((commit) => commit.shortSha)).toEqual(['aaaaaaa', 'bbbbbbb']);
+    expect(state.selectedCommitSHA).toBeNull();
   });
 
   it('persists and restores last-used scope per thread', async () => {
@@ -183,70 +175,88 @@ describe('reviewPane store', () => {
     expect(workspace).toHaveBeenCalledTimes(1);
   });
 
-  it('selects a specific turn checkpoint and falls back to latest when invalid', async () => {
-    const message = setBindingMock(
-      'GetMessageCheckpointDiff',
-      async (_threadId: string, userItemId: string) => `patch ${userItemId}`,
-    );
-    setBindingMock('ListThreadCheckpoints', async () => [
-      { userItemId: 'old', turnIndex: 1 },
-      { userItemId: 'latest', turnIndex: 3 },
+  it('selects a single commit in branch scope and keys comments by its SHA', async () => {
+    const sha = 'a'.repeat(40);
+    setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
+    setBindingMock('ListBranchCommits', async () => [
+      { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
+    const commitDiff = setBindingMock('GetCommitDiff', async () => 'commit patch');
 
     const state = reviewStateForPane('pane-1', 'thread-1');
     await waitLoaded(state);
+    await state.setScope('branch');
 
-    await state.selectCheckpoint('old');
-    expect(state.scope).toBe('turn');
-    expect(state.selectedCheckpointUserItemId).toBe('old');
-    expect(state.patchText).toBe('patch old');
-    expect(message).toHaveBeenLastCalledWith('thread-1', 'old');
+    await state.selectCommit(sha);
+    expect(state.scope).toBe('branch');
+    expect(state.selectedCommitSHA).toBe(sha);
+    expect(state.patchText).toBe('commit patch');
+    expect(state.sourceKey).toBe(`commit:${sha}`);
+    expect(commitDiff).toHaveBeenLastCalledWith('thread-1', sha);
 
-    await state.selectCheckpoint('missing');
-    expect(state.selectedCheckpointUserItemId).toBeNull();
-    expect(state.patchText).toBe('patch latest');
-    expect(message).toHaveBeenLastCalledWith('thread-1', 'latest');
+    // Back to the full range.
+    await state.selectCommit(null);
+    expect(state.selectedCommitSHA).toBeNull();
+    expect(state.patchText).toBe('branch patch');
   });
 
-  it('openReviewCompanion applies scope, checkpoint, and pending jump target', async () => {
-    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
-    setBindingMock('GetMessageCheckpointDiff', async () => 'turn patch');
-    setBindingMock('ListThreadCheckpoints', async () => [
-      { userItemId: 'u1', turnIndex: 1 },
-      { userItemId: 'u2', turnIndex: 2 },
+  it('drops a selected commit that left the range and reloads the full diff', async () => {
+    const sha = 'a'.repeat(40);
+    setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
+    setBindingMock('ListBranchCommits', async () => [
+      { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
     ]);
+    setBindingMock('GetCommitDiff', async () => 'commit patch');
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('branch');
+    await state.selectCommit(sha);
+    expect(state.patchText).toBe('commit patch');
+
+    // Rebase: the SHA is gone from base..HEAD.
+    setBindingMock('ListBranchCommits', async () => []);
+    await state.reload();
+    expect(state.selectedCommitSHA).toBeNull();
+    expect(state.patchText).toBe('branch patch');
+  });
+
+  it('resets the selected commit when the scope changes', async () => {
+    const sha = 'a'.repeat(40);
+    setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
+    setBindingMock('ListBranchCommits', async () => [
+      { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    setBindingMock('GetCommitDiff', async () => 'commit patch');
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('branch');
+    await state.selectCommit(sha);
+    expect(state.selectedCommitSHA).toBe(sha);
+
+    await state.setScope('workspace');
+    expect(state.selectedCommitSHA).toBeNull();
+  });
+
+  it('openReviewCompanion applies scope and pending jump target', async () => {
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
+    setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
 
     const state = await openReviewCompanion('pane-1', 'thread-1', {
-      scope: 'turn',
-      checkpointUserItemId: 'u1',
+      scope: 'branch',
       filePath: 'src/app.ts',
     });
 
     expect(state).not.toBeNull();
     await waitLoaded(state!);
-    expect(state!.scope).toBe('turn');
-    expect(state!.selectedCheckpointUserItemId).toBe('u1');
+    expect(state!.scope).toBe('branch');
     expect(state!.pendingJumpFilePath).toBe('src/app.ts');
 
     const same = reviewStateForPane('pane-1', 'thread-1');
     expect(same.pendingJumpFilePath).toBe('src/app.ts');
     same.consumePendingJumpFilePath();
     expect(same.pendingJumpFilePath).toBeNull();
-  });
-
-  it('records a render target for a source pane without a ThreadPane', async () => {
-    setPaneLayoutItemsForTest([{ id: 'unregistered', paneId: 'unregistered', kind: 'thread', widthPx: 500 }]);
-    const state = await openReviewCompanion('unregistered', 'thread-1', {
-      scope: 'branch',
-      baseBranch: 'release',
-      workspacePath: '/tmp/run',
-    });
-    expect(state).not.toBeNull();
-    expect(getReviewCompanionTarget('unregistered')).toEqual({
-      threadId: 'thread-1', thread: null, workspacePath: '/tmp/run',
-    });
-    expect(state?.scope).toBe('branch');
-    expect(state?.baseBranch).toBe('release');
   });
 
   it('collapses lockfile-ish and large files once per load', async () => {
@@ -352,14 +362,27 @@ describe('reviewPane store', () => {
   });
 
   it('restores a persisted scope before the first load', async () => {
-    appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'session', baseBranch: null }));
-    const session = setBindingMock('GetSessionAgentDiff', async () => 'session patch');
+    appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'branch', baseBranch: 'develop' }));
+    const branch = setBindingMock('GetBranchBaseDiff', async () => 'branch patch');
 
     const state = reviewStateForPane('pane-1', 'thread-1');
     await waitLoaded(state);
 
-    expect(state.scope).toBe('session');
-    expect(session).toHaveBeenCalledWith('thread-1');
+    expect(state.scope).toBe('branch');
+    expect(branch).toHaveBeenCalledWith('thread-1', 'develop');
+  });
+
+  it('falls back to workspace scope for a persisted scope that no longer exists', async () => {
+    // 'turn' and 'session' were removed with the checkpoint machinery;
+    // stale persisted entries must not wedge the pane.
+    appStorageSet('reviewScope:thread-1', JSON.stringify({ scope: 'turn', baseBranch: null }));
+    const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => 'workspace patch');
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+
+    expect(state.scope).toBe('workspace');
+    expect(workspace).toHaveBeenCalledWith('thread-1');
   });
 
   it('refreshes comments and records the active diff source after loading a patch', async () => {
@@ -445,7 +468,7 @@ describe('reviewPane store', () => {
     expect(state.consumeDraftEditorFocus(anchor)).toBe(true);
 
     state.setDraftBody(anchor, 'stale text');
-    await state.setScope('session');
+    await state.setScope('branch');
     expect(state.draftBodyFor(anchor)).toBe('');
   });
 
@@ -548,6 +571,117 @@ describe('reviewPane store — PR scope', () => {
     await state.setScope('workspace');
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     expect(unsubscribe).toHaveBeenCalledWith('sub-1');
+  });
+
+  it('selects a single PR commit and keys comments by its SHA', async () => {
+    const sha = 'b'.repeat(40);
+    installPRMocks();
+    const list = setBindingMock('ListPRCommits', async () => [
+      { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    const commitDiff = setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
+
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    // The known head SHA rides along so the backend can skip its fetch
+    // when the objects are already in the local clone.
+    expect(list).toHaveBeenCalledWith('thread-1', expect.objectContaining({ Number: 5 }), 'main', 'sha-a');
+    expect(state.commits.map((commit) => commit.sha)).toEqual([sha]);
+    expect(state.sourceKey).toBe(PR_SOURCE_KEY);
+
+    await state.selectCommit(sha);
+    expect(state.selectedCommitSHA).toBe(sha);
+    expect(state.sourceKey).toBe(`commit:${sha}`);
+    expect(commitDiff).toHaveBeenLastCalledWith('thread-1', expect.objectContaining({ Number: 5 }), sha);
+
+    // Back to the whole PR.
+    await state.selectCommit(null);
+    expect(state.selectedCommitSHA).toBeNull();
+    expect(state.sourceKey).toBe(PR_SOURCE_KEY);
+  });
+
+  it('commit selection reuses the live subscription and commit list (fast path)', async () => {
+    const sha = 'b'.repeat(40);
+    const { subscribe, unsubscribe } = installPRMocks();
+    const list = setBindingMock('ListPRCommits', async () => [
+      { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
+
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
+
+    await state.selectCommit(sha);
+    await state.selectCommit(null);
+    // Picking a commit only refetches the diff — no re-subscribe, no
+    // commit-list round-trip, and the pump stays live throughout.
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it('single-commit view forces the agent target and blocks PR submission', async () => {
+    const sha = 'b'.repeat(40);
+    installPRMocks();
+    setBindingMock('ListPRCommits', async () => [
+      { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
+    const submit = setBindingMock('SubmitPRReview', async () => ({ postedReview: true, postedFileComments: 0 }));
+
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    state.setSubmitTarget('pr');
+    state.setSummaryBody('looks good');
+    expect(state.effectiveSubmitTarget).toBe('pr');
+
+    await state.selectCommit(sha);
+    // Drafts on a commit diff carry that diff's line numbers — the forge
+    // would anchor them against the PR head diff, so PR submission is off.
+    expect(state.effectiveSubmitTarget).toBe('agent');
+    await state.submitPRReview();
+    expect(submit).not.toHaveBeenCalled();
+
+    await state.selectCommit(null);
+    expect(state.effectiveSubmitTarget).toBe('pr');
+  });
+
+  it('drops a selected PR commit that left the range (force-push) and reloads the full diff', async () => {
+    const sha = 'b'.repeat(40);
+    installPRMocks();
+    setBindingMock('ListPRCommits', async () => [
+      { sha, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    setBindingMock('GetPRCommitDiff', async () => patchFor('src/app.ts', 2));
+    const fullDiff = setBindingMock('GetPRDiff', async () => patchFor('src/app.ts', 3));
+
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    await state.selectCommit(sha);
+    expect(state.selectedCommitSHA).toBe(sha);
+
+    setBindingMock('ListPRCommits', async () => []);
+    await state.reload();
+    expect(state.selectedCommitSHA).toBeNull();
+    expect(state.sourceKey).toBe(PR_SOURCE_KEY);
+    expect(fullDiff).toHaveBeenCalled();
+  });
+
+  it('shows no PR commit selector without a local clone (empty commit list)', async () => {
+    installPRMocks(); // default ListPRCommits mock resolves []
+    const state = reviewStateForPane('pane-1', 'thread-1', prThreadStub());
+    await waitLoaded(state);
+    await state.setScope('pr');
+
+    expect(state.commits).toEqual([]);
+    expect(state.selectedCommitSHA).toBeNull();
+    expect(state.files.length).toBe(1);
   });
 
   it('switching scope away mid-PR-load lands on the new scope and closes the late subscription', async () => {
@@ -1331,8 +1465,8 @@ describe('collapse overrides across reloads', () => {
     expect(state.collapsedPaths.has('go.sum')).toBe(false); // override held
 
     // Scope switch is a new subject: overrides reset, defaults return.
-    await state.setScope('session');
-    setBindingMock('GetSessionAgentDiff', async () => patchFor('go.sum', 2));
+    setBindingMock('GetBranchBaseDiff', async () => patchFor('go.sum', 2));
+    await state.setScope('branch');
     await state.reload();
     expect(state.collapsedPaths.has('go.sum')).toBe(true);
   });
@@ -1380,5 +1514,330 @@ describe('comments-only PR refresh', () => {
     await waitLoaded(state);
     await state.refreshPRThreads();
     expect(detail).not.toHaveBeenCalled();
+  });
+});
+
+describe('reviewPane store — edits scope', () => {
+  // A patch whose first hunk starts mid-file: workspace scope would emit
+  // a leading hunk-gap row for it, edits scope must not.
+  function gappyPatch(): string {
+    return [
+      'diff --git a/x.go b/x.go',
+      'index 1111111..2222222 100644',
+      '--- a/x.go',
+      '+++ b/x.go',
+      '@@ -5,3 +5,3 @@',
+      ' ctx',
+      '-old',
+      '+new',
+    ].join('\n');
+  }
+
+  function installEditMocks() {
+    const entries = [
+      { itemId: 'tool:1', payloadId: 'pl-1', turnIndex: 1, title: 'Edited parser.go', paths: ['parser.go'], insertions: 1, deletions: 0, createdAt: 1 },
+      { itemId: 'tool:2a', payloadId: 'pl-2a', turnIndex: 2, title: 'Edited lexer.go', paths: ['lexer.go'], insertions: 2, deletions: 1, createdAt: 2 },
+      { itemId: 'tool:2b', payloadId: 'pl-2b', turnIndex: 2, title: 'Edited lexer.go', paths: ['lexer.go'], insertions: 1, deletions: 1, createdAt: 3 },
+    ];
+    const list = setBindingMock('ListThreadEditDiffs', async () => ({
+      entries,
+      turnLabels: [
+        { turnIndex: 1, label: 'fix the parser' },
+        { turnIndex: 2, label: 'now the lexer' },
+      ],
+    }));
+    const payload = setBindingMock('GetPayloadData', async () => ({ data: gappyPatch() }));
+    const turnDiff = setBindingMock('GetTurnEditsDiff', async () => ({ data: gappyPatch() }));
+    // Load-time expandability pass: by default every candidate verifies,
+    // so gap arrows appear once the (fire-and-forget) result lands.
+    const verify = setBindingMock('VerifyEditDiffs', async (_threadId, req) => ({
+      expandablePaths: (req as { files: { path: string }[] }).files.map((file) => file.path),
+    }));
+    return { list, payload, turnDiff, verify };
+  }
+
+  // The verification pass is fire-and-forget off the load; assertions on
+  // gap affordances wait for its result to land.
+  async function waitGapsVerified(state: ReturnType<typeof reviewStateForPane>, path: string): Promise<void> {
+    await vi.waitFor(() => {
+      expect(state.files.find((file) => file.path === path)?.suppressGaps).toBeUndefined();
+    });
+  }
+
+  it('defaults to the latest turn and keys comments by turn', async () => {
+    const { turnDiff } = installEditMocks();
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+
+    await state.setScope('edits');
+    expect(state.scope).toBe('edits');
+    expect(state.edits.length).toBe(3);
+    expect(state.editTurnLabels.get(2)).toBe('now the lexer');
+    expect(state.selectedEditKey).toBe('turn:2');
+    expect(state.sourceKey).toBe('edit-turn:2');
+    expect(turnDiff).toHaveBeenCalledWith('thread-1', 2);
+    expect(state.files.length).toBe(1);
+  });
+
+  it('emits gap rows for single-section edit files and verifies expansion', async () => {
+    installEditMocks();
+    const contextLines = setBindingMock('GetDiffContextLines', async () => ({
+      lines: ['top 1', 'top 2', 'top 3', 'top 4'],
+      startLine: 1,
+      eof: false,
+      totalLines: 20,
+    }));
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+
+    await state.setScope('edits');
+    // A single-section historical diff offers hunk-gap expansion like
+    // any live scope — once the load-time verification pass proves the
+    // backend can serve it (snapshot or still-matching workspace).
+    await waitGapsVerified(state, 'x.go');
+    const gapRow = filePatchDisplayRows(state.files[0]).find((row) => row.gap);
+    expect(gapRow).toBeDefined();
+
+    await state.expandDiffContext('x.go', gapRow!.gap!, 'up');
+    expect(contextLines).toHaveBeenCalledWith('thread-1', expect.objectContaining({
+      scope: 'edits',
+      path: 'x.go',
+      // The historical patch rides along for drift verification.
+      verifyPatch: expect.stringContaining('@@ -5,3 +5,3 @@'),
+    }));
+    expect(state.error).toBeNull();
+  });
+
+  it('retires a file\'s gaps when edits-scope expansion is refused', async () => {
+    installEditMocks();
+    setBindingMock('GetDiffContextLines', async () => {
+      throw new Error('x.go has changed since this edit');
+    });
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('edits');
+    await waitGapsVerified(state, 'x.go');
+
+    const gapRow = filePatchDisplayRows(state.files[0]).find((row) => row.gap);
+    expect(gapRow).toBeDefined();
+
+    await state.expandDiffContext('x.go', gapRow!.gap!, 'up');
+    // A click-time refusal (the rare load-to-click race): the file's
+    // gap affordances retire quietly — the historical diff itself is
+    // still fully valid, so no banner.
+    expect(state.error).toBeNull();
+    expect(state.files[0].suppressGaps).toBe(true);
+    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(false);
+  });
+
+  it('gates gap arrows on load-time verification', async () => {
+    const { verify } = installEditMocks();
+    setBindingMock('VerifyEditDiffs', async () => ({ expandablePaths: [] }));
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('edits');
+
+    // Nothing verified → no arrows, ever: an unservable expansion
+    // affordance must never render (drifted pre-snapshot history,
+    // remote clients whose LocalOnly RPC rejects).
+    expect(state.files[0].suppressGaps).toBe(true);
+    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(false);
+    // The batch carried the edit selection and per-file verify patch.
+    expect(verify).not.toHaveBeenCalled();
+    const batch = getBindingMock('VerifyEditDiffs')!.mock.calls.at(-1);
+    expect(batch?.[0]).toBe('thread-1');
+    expect(batch?.[1]).toMatchObject({
+      editPayloadId: '',
+      editTurnIndex: 2,
+      files: [
+        { path: 'x.go', verifyPatch: expect.stringContaining('@@ -5,3 +5,3 @@') },
+      ],
+    });
+  });
+
+  it('opens pinned to the clicked edit and keys comments by payload id', async () => {
+    setPaneLayoutItemsForTest([{ id: 'pane-1', paneId: 'pane-1', kind: 'thread', widthPx: 1 }]);
+    const { payload } = installEditMocks();
+
+    const state = await openReviewCompanion('pane-1', 'thread-1', {
+      editItemId: 'tool:2a',
+      filePath: 'lexer.go',
+    });
+    expect(state).not.toBeNull();
+    await waitLoaded(state!);
+
+    expect(state!.scope).toBe('edits');
+    expect(state!.selectedEditKey).toBe('item:tool:2a');
+    expect(state!.sourceKey).toBe('edit:pl-2a');
+    expect(payload).toHaveBeenCalledWith('thread-1', 'pl-2a');
+    expect(state!.pendingJumpFilePath).toBe('lexer.go');
+  });
+
+  it('selection changes reuse the loaded list (fast path)', async () => {
+    const { list, payload, turnDiff } = installEditMocks();
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('edits');
+    expect(list).toHaveBeenCalledTimes(1);
+
+    await state.selectEdit('item:tool:1');
+    expect(state.selectedEditKey).toBe('item:tool:1');
+    expect(state.sourceKey).toBe('edit:pl-1');
+    expect(payload).toHaveBeenCalledWith('thread-1', 'pl-1');
+
+    await state.selectEdit('turn:1');
+    expect(state.selectedEditKey).toBe('turn:1');
+    expect(turnDiff).toHaveBeenLastCalledWith('thread-1', 1);
+
+    // Unknown keys resolve to the default (latest turn) instead of erroring.
+    await state.selectEdit('item:gone');
+    expect(state.selectedEditKey).toBe('turn:2');
+
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it('merges same-path sections of a whole-turn diff into one file', async () => {
+    // A file edited twice in one turn appears as two sections in the
+    // concatenated whole-turn diff. Duplicate paths crash the review
+    // surface's path-keyed each blocks (svelte each_key_duplicate), so
+    // the store must collapse them into a single PatchFile.
+    installEditMocks();
+    const twiceEdited = [
+      'diff --git a/x.go b/x.go',
+      '--- a/x.go',
+      '+++ b/x.go',
+      '@@ -5,3 +5,3 @@',
+      ' ctx',
+      '-old',
+      '+new',
+      'diff --git a/x.go b/x.go',
+      '--- a/x.go',
+      '+++ b/x.go',
+      '@@ -9,2 +9,3 @@',
+      ' ctx2',
+      '+later',
+    ].join('\n');
+    setBindingMock('GetTurnEditsDiff', async () => ({ data: twiceEdited }));
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('edits');
+
+    expect(state.files.map((file) => file.path)).toEqual(['x.go']);
+    expect(state.files[0].additions).toBe(2);
+    expect(state.files[0].deletions).toBe(1);
+    // Disjoint sections renumber into ONE coherent section — a single
+    // meta block with hunks in final-file order — so the merged file
+    // verifies, primes, and gap-expands like a single-section diff.
+    await waitGapsVerified(state, 'x.go');
+    expect(filePatchDisplayRows(state.files[0]).some((row) => row.gap)).toBe(true);
+    const contents = state.files[0].lines.map((line) => line.content);
+    expect(contents.filter((content) => content.startsWith('diff --git'))).toHaveLength(1);
+    expect(contents.filter((content) => content.startsWith('@@'))).toEqual([
+      '@@ -5,2 +5,2 @@',
+      '@@ -9,1 +9,2 @@',
+    ]);
+    expect(contents).toContain('+new');
+    expect(contents).toContain('+later');
+    expect(contents.indexOf('+new')).toBeLessThan(contents.indexOf('+later'));
+  });
+
+  it('retires gap arrows up front for edits outside the workspace', async () => {
+    installEditMocks();
+    const outsideEdit = [
+      'diff --git a//home/user/.claude/memory/notes.md b//home/user/.claude/memory/notes.md',
+      '--- a//home/user/.claude/memory/notes.md',
+      '+++ b//home/user/.claude/memory/notes.md',
+      '@@ -5,2 +5,2 @@',
+      ' ctx',
+      '-old',
+      '+new',
+      'diff --git a/x.go b/x.go',
+      '--- a/x.go',
+      '+++ b/x.go',
+      '@@ -5,2 +5,2 @@',
+      ' ctx',
+      '-old',
+      '+new',
+    ].join('\n');
+    setBindingMock('GetTurnEditsDiff', async () => ({ data: outsideEdit }));
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('edits');
+
+    // The absolute-path edit renders but can never expand (the backend
+    // only resolves workspace-relative paths): it is never even sent
+    // for verification — no dead arrows.
+    await waitGapsVerified(state, 'x.go');
+    const outside = state.files.find((file) => file.path.startsWith('/'));
+    expect(outside).toBeDefined();
+    expect(outside!.suppressGaps).toBe(true);
+    expect(filePatchDisplayRows(outside!).some((row) => row.gap)).toBe(false);
+    const verifyBatch = getBindingMock('VerifyEditDiffs')!.mock.calls.at(-1)?.[1] as {
+      files: { path: string }[];
+    };
+    expect(verifyBatch.files.map((file) => file.path)).toEqual(['x.go']);
+    // Workspace-relative files keep their gap affordances.
+    const inside = state.files.find((file) => file.path === 'x.go');
+    expect(inside!.suppressGaps).toBeUndefined();
+    expect(filePatchDisplayRows(inside!).some((row) => row.gap)).toBe(true);
+  });
+
+  it('keeps merged-file lines identity stable across expansion rebuilds', async () => {
+    installEditMocks();
+    const twiceEdited = [
+      'diff --git a/x.go b/x.go',
+      '--- a/x.go',
+      '+++ b/x.go',
+      '@@ -5,3 +5,3 @@',
+      ' ctx',
+      '-old',
+      '+new',
+      'diff --git a/x.go b/x.go',
+      '--- a/x.go',
+      '+++ b/x.go',
+      '@@ -9,2 +9,3 @@',
+      ' ctx2',
+      '+later',
+    ].join('\n');
+    setBindingMock('GetTurnEditsDiff', async () => ({ data: twiceEdited }));
+    setBindingMock('GetDiffContextLines', async () => ({
+      lines: ['l1', 'l2', 'l3', 'l4'],
+      startLine: 1,
+      eof: false,
+      totalLines: 20,
+    }));
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('edits');
+    await waitGapsVerified(state, 'x.go');
+
+    const baseLines = state.files[0].lines;
+    const gapRow = filePatchDisplayRows(state.files[0]).find((row) => row.gap);
+    expect(gapRow?.gap?.location).toBe('leading');
+    await state.expandDiffContext('x.go', gapRow!.gap!, 'all');
+
+    // The rebuilt array must record the EXACT array it superseded: the
+    // span cache walks this chain to keep serving the pre-expansion
+    // spans while the expanded file's own highlight request is in
+    // flight. When the merge minted a fresh base array on every derived
+    // re-run, the chain pointed at an unregistered array and the whole
+    // file flashed plain on every expansion click.
+    const expandedLines = state.files[0].lines;
+    expect(expandedLines).not.toBe(baseLines);
+    expect(expansionPredecessor(expandedLines)).toBe(baseLines);
+  });
+
+  it('shows an empty surface for a thread with no edits', async () => {
+    setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+
+    await state.setScope('edits');
+    expect(state.edits.length).toBe(0);
+    expect(state.selectedEditKey).toBeNull();
+    expect(state.sourceKey).toBe('');
+    expect(state.files.length).toBe(0);
+    expect(state.error).toBeNull();
   });
 });

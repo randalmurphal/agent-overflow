@@ -93,12 +93,14 @@ func FromParts(
 	}, nil
 }
 
-// MergeParts appends restored draft parts onto an existing thread draft.
-// Existing draft content stays first, restored messages follow in their
-// caller-provided order separated by blank lines. Attachment IDs are deduped
-// while preserving first occurrence. If the existing draft already carries a
-// pending plan implementation, it wins; otherwise a common source plan across
-// restored parts is preserved.
+// MergeParts merges restored draft parts into an existing thread draft.
+// Restored messages come first in their caller-provided order, the
+// existing draft content last, separated by blank lines — chronological
+// order, matching the Codex TUI's composer restore (the restored
+// messages were typed before whatever is sitting in the composer now).
+// Attachment IDs are deduped while preserving first occurrence. If the
+// existing draft already carries a pending plan implementation, it wins;
+// otherwise a common source plan across restored parts is preserved.
 func MergeParts(
 	targetThreadID string,
 	current store.ThreadDraft,
@@ -106,22 +108,24 @@ func MergeParts(
 	updatedAt int64,
 ) (store.ThreadDraft, error) {
 	contentParts := make([]string, 0, len(parts)+1)
-	if strings.TrimSpace(current.Content) != "" {
-		contentParts = append(contentParts, strings.TrimSpace(current.Content))
-	}
 	for _, part := range parts {
 		if strings.TrimSpace(part.Content) != "" {
 			contentParts = append(contentParts, strings.TrimSpace(part.Content))
 		}
 	}
+	if strings.TrimSpace(current.Content) != "" {
+		contentParts = append(contentParts, strings.TrimSpace(current.Content))
+	}
 
-	attachmentIDs, err := decodeAttachmentIDs(current.Attachments)
+	currentIDs, err := decodeAttachmentIDs(current.Attachments)
 	if err != nil {
 		return store.ThreadDraft{}, err
 	}
+	var attachmentIDs []string
 	for _, part := range parts {
 		attachmentIDs = appendUniqueStrings(attachmentIDs, part.AttachmentIDs)
 	}
+	attachmentIDs = appendUniqueStrings(attachmentIDs, currentIDs)
 	attachmentsJSON, err := json.Marshal(attachmentIDs)
 	if err != nil {
 		return store.ThreadDraft{}, fmt.Errorf("encode attachment ids: %w", err)

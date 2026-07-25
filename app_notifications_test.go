@@ -71,8 +71,14 @@ func TestTransportNotificationSenderPublishesTypedPayload(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("replayed events = %d, want 1", len(events))
 	}
+	// Replayed events carry the pre-encoded wire frame only (the ring
+	// drops Data to avoid double retention) — decode through the frame.
+	var frame transport.ServerFrame
+	if err := json.Unmarshal(events[0].WireBytes, &frame); err != nil {
+		t.Fatalf("decode notification wire frame: %v", err)
+	}
 	var got notify.Send
-	if err := json.Unmarshal(events[0].Data, &got); err != nil {
+	if err := json.Unmarshal(frame.Data, &got); err != nil {
 		t.Fatalf("decode notification send: %v", err)
 	}
 	if got.ID == "" || got.Title != "Ready" || got.Body != "Open the finished thread" {

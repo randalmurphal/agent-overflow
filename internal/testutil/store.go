@@ -10,7 +10,7 @@ import (
 )
 
 // EnsureProject inserts a project row with the given path, returning the
-// created row. Threads in v13+ require a project_id FK; tests that used
+// created row. Threads require a project_id FK; tests that used
 // to manually construct store.Thread values need a project to hang them
 // off of first. Using a stable id-per-path lookup means the helper is
 // idempotent: calling it twice with the same path returns the existing

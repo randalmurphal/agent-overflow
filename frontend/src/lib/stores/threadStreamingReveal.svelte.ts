@@ -2,10 +2,7 @@ import type { Item, ItemKind } from '../types/models';
 import type { ItemPatchEvent } from '../types/events';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import { SvelteMap } from 'svelte/reactivity';
-import {
-  FAST_DRAIN_SNAP_LAG_CHARS,
-  PerItemSmoother,
-} from '../markdown/smoothing/PerItemSmoother';
+import { PerItemSmoother } from '../markdown/smoothing/PerItemSmoother';
 import {
   THINKING_TAIL_RUNES,
   getSmoothingClockForTest,
@@ -32,7 +29,8 @@ export interface ThreadStreamingRevealOptions {
   setItemAt(index: number, item: Item): void;
   /** Stamp the live-content latch (pane's stampLiveContent). */
   stampLiveContent(): void;
-  /** Arm the structural-append spring (pane's armStructuralSpring — pane owns all its gates). */
+  /** Arm the structural-append spring and stamp the live-content latch
+   *  (pane's armLiveContentAppendSpring — pane owns all its gates). */
   armStructuralSpring(): void;
   /** rowUiState.appendLivePayloadDeltaForItem — live reasoning-tail payload append. */
   appendLivePayloadDeltaForItem(
@@ -105,7 +103,15 @@ export function createThreadStreamingReveal(
   // thinking); disposed on row removal, status snap, or pane clear.
   // Sibling to itemIndexById / rowUiState so all three life-cycle
   // ride the same clear paths.
-  const itemSmoothers: Map<string, ItemSmoothing> = new Map();
+  // SvelteMap so `isSmoothing` is reactive across create/dispose:
+  // AssistantMessage derives its rendered streaming mode from it
+  // (status flips to terminal at WIRE settle, while the drain keeps
+  // revealing for seconds — the render must stay in streaming mode
+  // until the smoother disposes, or the volatile-tail markdown guards
+  // drop while text is still growing). The map mutates per smoother
+  // LIFECYCLE (create/dispose), never per reveal frame, so the
+  // reactive wrapper costs nothing on the hot path.
+  const itemSmoothers: SvelteMap<string, ItemSmoothing> = new SvelteMap();
   // Live full revealed text for streaming thinking rows, keyed by item
   // id. Sibling to `itemSmoothers`: written from every onReveal and
   // deleted on every smoother dispose path. Decouples the collapsed
@@ -219,8 +225,9 @@ export function createThreadStreamingReveal(
    *     start when their turn comes rather than snapping in text that streamed
    *     while hidden, and resumes the frontier,
    *   - fast-drains the frontier when any later top-level row is already
-   *     waiting, so the next row appears within ~200ms instead of stalling
-   *     behind a long (often collapsed) thinking block.
+   *     waiting, so the next row appears quickly (rate-ceilinged — see
+   *     FAST_DRAIN_MAX_CHARS_PER_SEC) instead of stalling behind a long
+   *     (often collapsed) thinking block.
    *
    * The frontier is the earliest top-level (`!parentId`) item whose smoother
    * is still revealing. Subagent children are excluded so a streaming child
@@ -233,12 +240,12 @@ export function createThreadStreamingReveal(
    * `applyItemPatch`, `upsertItemsBatch`, `onReveal` (on catch-up), and the
    * item-removal paths; `disposeAll` clears the boundary directly.
    *
-   * Reentrancy: the oversized-backlog snap below fires `onReveal`
-   * synchronously, whose catch-up branch calls back into this function.
-   * The guard collapses the nested call into a re-run after the current
-   * pass — without it, the outer pass would overwrite the boundary and
-   * pause/resume decisions the nested pass just computed from fresher
-   * state.
+   * Reentrancy: defensive guard against any synchronous `onReveal` fired
+   * from within a pass calling back into this function (historically the
+   * oversized-backlog snap did exactly that; today's pass only schedules
+   * async work, but the guard is cheap and the corruption mode — the
+   * outer pass overwriting the boundary and pause/resume decisions the
+   * nested pass computed from fresher state — is silent).
    */
   let recomputingReveal = false;
   let recomputeRevealAgain = false;
@@ -298,17 +305,15 @@ export function createThreadStreamingReveal(
         else entry.smoother.resume();
       }
       if (hasSuccessor) {
-        const frontierSmoother = itemSmoothers.get(f.id)?.smoother;
-        // A backlog too large to rush through at the drain cap would
-        // hold the waiting successor for whole seconds — snap it in one
-        // deliberate burst instead. Below the threshold, drain at the
-        // elevated (finite) per-tick cap so the finish reads as motion
-        // without a single-frame mega re-parse.
-        if (frontierSmoother && frontierSmoother.getLag() > FAST_DRAIN_SNAP_LAG_CHARS) {
-          frontierSmoother.snap();
-        } else {
-          frontierSmoother?.requestFastDrain();
-        }
+        // Drain at the elevated (finite) per-tick cap so the finish
+        // reads as motion. Deliberately NO snap valve for oversized
+        // backlogs: a wholesale reveal is a single giant re-parse plus
+        // a multi-viewport layout jump, and the successor waiting a few
+        // extra seconds behind a rate-ceilinged drain is the better
+        // trade (the drain rate is bounded by
+        // FAST_DRAIN_MAX_CHARS_PER_SEC, so even an essay-sized backlog
+        // reveals as fast intentional streaming).
+        itemSmoothers.get(f.id)?.smoother.requestFastDrain();
       }
     } else {
       // Nothing is gating — make sure no smoother is left paused (the
@@ -325,13 +330,15 @@ export function createThreadStreamingReveal(
       // A boundary change that releases withheld rows mounts them via
       // MessageTimeline's reveal slice — rows already in `pane.items`, so
       // no wire upsert lands in that flush and `applyProviderItemUpserts`'s
-      // arm never sees it. Arm the structural-append spring here,
-      // synchronously with the release. `prev !== null` skips the gate
-      // ENGAGING (which only withholds); `boundaryChangeReleasesRows`
-      // skips drops that mount nothing (lone row drained, tail removed).
-      // In practice the latch is usually spring-fresh here (onReveal
-      // stamps every revealed frame), so this mostly matters for releases
-      // landing after a >500ms reveal gap.
+      // arm never sees it. Arm the structural-append spring (and stamp
+      // the live-content latch — mounting withheld rows IS content
+      // advancing) here, synchronously with the release. `prev !== null`
+      // skips the gate ENGAGING (which only withholds);
+      // `boundaryChangeReleasesRows` skips drops that mount nothing
+      // (lone row drained, tail removed). In practice the latch is
+      // usually spring-fresh here (onReveal stamps every revealed
+      // frame), so this mostly matters for releases landing after a
+      // >500ms reveal gap.
       if (prev !== null && boundaryChangeReleasesRows(prev, next)) {
         options.armStructuralSpring();
       }
@@ -514,28 +521,49 @@ export function createThreadStreamingReveal(
       // the patch's summary wins cleanly.
       const received = smoothing.smoother.getReceived();
       const patchSummary = patch.summary;
-      if (patchSummary !== received && patchSummary.startsWith(received)) {
+      // Reasoning-tail rows (thinking + compaction_reasoning) persist —
+      // and settle with — the tail-trimmed preview, not the full text
+      // (triage's thinkingSummaryPreview; both sides trim to the last
+      // THINKING_TAIL_RUNES code points with no marker, so the strings
+      // are byte-identical). A settle patch whose summary equals the
+      // trimmed received text is a re-assert of what the smoother
+      // already has, NOT an overwrite; treating it as a mismatch would
+      // snap+dispose mid-drain and dump the unrevealed backlog
+      // wholesale (the Codex thinking completion shape, and the
+      // completion patch from persistCompletedBlockEmitStreaming).
+      const item = options.getItemById(itemId);
+      const summaryMatchesReceived =
+        patchSummary === received ||
+        (item !== undefined &&
+          isReasoningTailKind(item.kind) &&
+          patchSummary === trimToTailRunes(received, THINKING_TAIL_RUNES));
+      if (summaryMatchesReceived) {
+        if (
+          nextStatus !== undefined &&
+          nextStatus !== 'streaming' &&
+          smoothing.smoother.isCaughtUp()
+        ) {
+          // Terminal status AND nothing left to reveal. No further rAF
+          // tick will fire, so the onReveal auto-cleanup can't dispose
+          // — do it here or the smoother (and its itemLiveThinkingTail
+          // entry) leaks until the next thread switch. This is the
+          // completion shape wherever content-block-stop carries
+          // ContentPresent=true (Codex always; Claude recovered
+          // blocks): the settle re-asserts the summary the smoother
+          // already received. The bare-status branch below only covers
+          // the case where that equal summary is OMITTED from the
+          // patch. A not-yet-caught-up smoother keeps draining and
+          // disposes via onReveal once it catches up (applyItemPatch
+          // skips the direct summary write while it lives).
+          disposeSmootherFor(itemId);
+        }
+      } else if (patchSummary.startsWith(received)) {
         if (patch.updatedAt !== undefined) {
           smoothing.setLatestUpdatedAt(patch.updatedAt);
         }
         smoothing.smoother.appendDelta(patchSummary.slice(received.length));
-      } else if (patchSummary !== received) {
+      } else {
         smoothing.smoother.snap();
-        disposeSmootherFor(itemId);
-      } else if (
-        nextStatus !== undefined &&
-        nextStatus !== 'streaming' &&
-        smoothing.smoother.isCaughtUp()
-      ) {
-        // patchSummary === received AND a terminal status AND nothing
-        // left to reveal. No further rAF tick will fire, so the
-        // onReveal auto-cleanup can't dispose — do it here or the
-        // smoother (and its itemLiveThinkingTail entry) leaks until the
-        // next thread switch. This is the Codex completion shape:
-        // content-block-stop carries ContentPresent=true, so
-        // doSettleStreamingText re-asserts the full summary (== what the
-        // smoother received). The bare-status branch below only covers
-        // the case where that equal summary is OMITTED from the patch.
         disposeSmootherFor(itemId);
       }
     } else if (

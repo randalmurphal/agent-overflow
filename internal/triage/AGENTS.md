@@ -61,13 +61,11 @@ none fits.
   storing stdin bytes.
 - `tool_result_file_change.go` — `file_change` tool-result normalisation
   (inline diff projection, unified patch assembly).
-- `tool_paths.go` — per-turn agent-touched-path tracking. Extracts paths
-  from Claude `Edit`/`Write`/`MultiEdit`/`NotebookEdit` tool args and
-  Codex `fileChange` items, normalises to workspace-relative form, and
-  persists them to `thread_tracked_files`. Message checkpoints are
-  captured before user sends in `app_checkpoint.go`; the tracked-path
-  table scopes conversation-and-files revert and agent-only diff
-  previews. Bash side effects are intentionally untracked.
+- `tool_paths.go` — file-tool predicates and path normalisers shared by
+  the `file_change` tool-result dispatch and the command inline-diff
+  pipeline: recognises Claude `Edit`/`Write`/`MultiEdit`/`NotebookEdit`
+  and Codex `fileChange` items and normalises their paths to
+  workspace-relative form.
 - `tool_result_diff_upgrade.go` — late-arriving diff upgrades that
   attach a richer payload onto a previously persisted tool result.
 - `command_inline_diff_capture.go` / `command_inline_diff_parser.go` /
@@ -266,6 +264,47 @@ lands as one payload append plus one row upsert (the upsert's
 split streaming text across separate UI event channels, and do not add
 another rendered cache column or a server-side kind-to-renderer
 dispatch table.
+
+Top-level text/thinking blocks recovered from a never-streamed
+assistant snapshot (CLI-internal retry) persist as completed rows but
+reuse the streaming wire shape — upsert(streaming, blank summary) →
+delta(full content) → patch(completed) — so they animate instead of
+mounting wholesale (`persistCompletedBlockEmitStreaming`); subagent
+recoveries keep the single completed upsert.
+
+## App-layer observers and enrichers
+
+The router exposes two optional observers plus one enricher
+(nil-disabled function fields, wired by `newTriageRouter` in
+`app_flush_queue.go` — every router construction site must go through
+it). All may fire on the provider read loop, so implementations must
+not block:
+
+- `SetAssistantTextStreamObserver` — a streaming assistant_text row's
+  full accumulated summary at each persistence flush window
+  (final=false) and once at settle with the final model text
+  (final=true). Backs the remote-client highlight seed push
+  (`app_highlight_seed.go`).
+- `SetDiffPayloadObserver` — a just-persisted diff-bearing payload with
+  COMPLETE content: tool results (`persistToolResult` and the
+  summary_only→exact upgrade) carry payloadID + preview patches + the
+  full unified patch; diff-kind payload full writes carry payloadID +
+  patch (the append branch never notifies — its content is a delta).
+  Backs highlight span persistence (`payloads.preview_spans` /
+  `payloads.spans` columns) and the remote diff seed push
+  (`app_highlight_diff_seed.go`).
+
+The observers are observation taps, not routing decisions: they must
+never influence what triage persists or emits. (The diff payload
+observer's app-side worker writes span columns back through the store,
+but asynchronously and never through router state.)
+
+- `SetCodeSpanEnricher` (`code_spans.go`) is the one deliberate
+  enrichment contract: a settled assistant text's fence spans, merged
+  into `items.meta` under `codeSpans` at every assistant_text persist
+  site — the same version-keyed derived-metadata precedent as
+  `pathRefs`. It must remain a pure function of the text: no router
+  state, no influence on any other routing decision.
 
 ## Extension points
 

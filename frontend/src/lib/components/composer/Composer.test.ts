@@ -39,6 +39,7 @@ import {
   notifyTerminalFocus,
   resetTerminalFocusForTest,
 } from '../terminal/terminalStore.svelte';
+import { focusPane, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 
@@ -151,6 +152,11 @@ describe('<Composer>', () => {
     resetSendQueueForTest();
     resetThreadStatuses();
     resetTerminalFocusForTest();
+    // The initial-focus gate compares against the panes store's focused
+    // pane id ('main' after reset) — without this, any test that moves
+    // logical focus would silently change which composers may take
+    // initial focus for every later test in the file.
+    resetPanesForTest();
     resetPaneLayoutForTest();
     resetCompanionPanesForTest();
     installDraftMocks();
@@ -2565,6 +2571,33 @@ describe('<Composer>', () => {
       // macrotask, after Svelte's effect flush). The control proves the effect
       // calls focusTextareaAtEnd at this point absent a focused terminal.
       await waitFor(() => expect(textarea.disabled).toBe(false));
+      await tick();
+      expect(focusSpy).not.toHaveBeenCalled();
+    } finally {
+      focusSpy.mockRestore();
+    }
+  });
+
+  // Startup restore / settings-close remount every pane's composer, and each
+  // one runs the initial-focus pass as its draft hydrates. Only the pane
+  // holding logical focus may take DOM focus — a background pane grabbing it
+  // scrolled the pane strip and clobbered the restored pane focus. The
+  // control above proves the pass fires for the focused pane ('main', the
+  // panes store default) under the same setup.
+  it('does not steal focus when its pane does not hold logical pane focus', async () => {
+    const pane = await buildPane(makeTestThread(), [], 'side');
+    const draft = await buildDraft();
+    const focusSpy = vi.spyOn(composerKeyboard, 'focusTextareaAtEnd');
+    try {
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      await waitFor(() => expect(textarea.disabled).toBe(false));
+      await tick();
+      expect(focusSpy).not.toHaveBeenCalled();
+      // The skipped pass consumed its one-shot: focusing the pane later
+      // must not retro-trigger the initial focus (the gate reads focus
+      // untracked, so this transition must stay inert).
+      focusPane('side');
       await tick();
       expect(focusSpy).not.toHaveBeenCalled();
     } finally {

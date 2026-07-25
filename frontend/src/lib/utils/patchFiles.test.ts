@@ -6,6 +6,9 @@ import {
   buildPatchDisplayRows,
   buildSplitDisplayRows,
   extractPatchFile,
+  filePatchDisplayRows,
+  mergePatchFilesByPath,
+  mergePatchFilesByPathCached,
   parsePatchFileSummaries,
   parsePatchFiles,
   parsePatchFilesCached,
@@ -367,5 +370,451 @@ deleted file mode 100644
     const splitRows = buildSplitDisplayRows(buildPatchDisplayRows(file.lines));
     const gapPair = splitRows.find((pair) => pair.left?.gap);
     expect(gapPair?.right).toBe(gapPair?.left);
+  });
+});
+
+describe('mergePatchFilesByPath', () => {
+  function section(path: string, opts: { adds?: number; dels?: number; kind?: string } = {}) {
+    const patch = [
+      `diff --git a/${path} b/${path}`,
+      ...(opts.kind === 'added' ? ['new file mode 100644'] : []),
+      ...(opts.kind === 'deleted' ? ['deleted file mode 100644'] : []),
+      `--- ${opts.kind === 'added' ? '/dev/null' : `a/${path}`}`,
+      `+++ ${opts.kind === 'deleted' ? '/dev/null' : `b/${path}`}`,
+      '@@ -1,2 +1,2 @@',
+      ...Array.from({ length: opts.dels ?? 1 }, (_, i) => `-old ${i}`),
+      ...Array.from({ length: opts.adds ?? 1 }, (_, i) => `+new ${i}`),
+    ].join('\n');
+    const [file] = parsePatchFiles(patch);
+    return file;
+  }
+
+  function sectionFrom(lines: string[]) {
+    const [file] = parsePatchFiles(lines.join('\n'));
+    return file;
+  }
+
+  it('renumbers disjoint sections into one file-ordered section', () => {
+    // Edit 1 replaces a line at 10-12; edit 2 (later, ABOVE it) inserts
+    // a line at 4, shifting edit 1's real position down by one in the
+    // final file.
+    const first = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -10,3 +10,3 @@ function outer() {',
+      ' ctx1',
+      '-old',
+      '+new',
+      ' ctx2',
+    ]);
+    const second = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -3,2 +3,3 @@',
+      ' top',
+      '+inserted',
+      ' bottom',
+    ]);
+    const merged = mergePatchFilesByPath([first, second]);
+
+    expect(merged).toHaveLength(1);
+    // One coherent section: single meta block, hunks interleaved in
+    // final-file order, the earlier edit renumbered by the later
+    // insertion's net delta. Header suffixes survive the rewrite.
+    expect(merged[0].lines.map((line) => line.content)).toEqual([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -3,2 +3,3 @@',
+      ' top',
+      '+inserted',
+      ' bottom',
+      '@@ -11,3 +11,3 @@ function outer() {',
+      ' ctx1',
+      '-old',
+      '+new',
+      ' ctx2',
+    ]);
+    expect(merged[0].suppressGaps).toBeUndefined();
+    expect(merged[0].additions).toBe(2);
+    expect(merged[0].deletions).toBe(1);
+    // Shared parse results are never mutated.
+    expect(first.lines.map((line) => line.content)).toContain('@@ -10,3 +10,3 @@ function outer() {');
+  });
+
+  it('keeps positions for a later section editing below', () => {
+    const first = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -5,3 +5,3 @@',
+      ' ctx',
+      '-old',
+      '+new',
+      ' ctx2',
+    ]);
+    const second = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -9,2 +9,3 @@',
+      ' ctx3',
+      '+later',
+      ' ctx4',
+    ]);
+    const merged = mergePatchFilesByPath([first, second]);
+    const contents = merged[0].lines.map((line) => line.content);
+    expect(contents.filter((content) => content.startsWith('@@'))).toEqual([
+      '@@ -5,3 +5,3 @@',
+      '@@ -9,2 +9,3 @@',
+    ]);
+    expect(merged[0].suppressGaps).toBeUndefined();
+  });
+
+  it('accumulates shifts across three chronological sections', () => {
+    const bottom = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -30,2 +30,2 @@',
+      ' c1',
+      '-b old',
+      '+b new',
+    ]);
+    const middle = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -10,1 +10,2 @@',
+      ' c2',
+      '+m add',
+    ]);
+    const top = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -3,1 +3,3 @@',
+      ' c3',
+      '+t add 1',
+      '+t add 2',
+    ]);
+    const merged = mergePatchFilesByPath([bottom, middle, top]);
+    // bottom shifts +1 (middle) then +2 (top); middle shifts +2 (top).
+    expect(merged[0].lines.map((line) => line.content).filter((content) => content.startsWith('@@'))).toEqual([
+      '@@ -3,1 +3,3 @@',
+      '@@ -12,1 +12,2 @@',
+      '@@ -33,2 +33,2 @@',
+    ]);
+  });
+
+  it('places an insertion immediately after an earlier edit without shifting it', () => {
+    // git's `-N,0` convention: a zero-old-count hunk inserts AFTER old
+    // line N. Inserting right after a line an earlier section modified
+    // must land BELOW it, not shift it.
+    const modified = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -2,1 +2,1 @@',
+      '-old b',
+      '+new b',
+    ]);
+    const inserted = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -2,0 +3,1 @@',
+      '+after b',
+    ]);
+    const merged = mergePatchFilesByPath([modified, inserted]);
+    expect(merged[0].suppressGaps).toBeUndefined();
+    expect(merged[0].lines.map((line) => line.content).filter((content) => content.startsWith('@@'))).toEqual([
+      '@@ -2,1 +2,1 @@',
+      '@@ -2,0 +3,1 @@',
+    ]);
+  });
+
+  it('shifts an earlier hunk up when a later section deletes lines above it', () => {
+    const below = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -30,2 +30,2 @@',
+      ' ctx',
+      '-x',
+      '+y',
+    ]);
+    const deletion = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -10,3 +10,1 @@',
+      ' ctx2',
+      '-gone 1',
+      '-gone 2',
+    ]);
+    const merged = mergePatchFilesByPath([below, deletion]);
+    // Net -2 above: the earlier hunk's final position moves UP.
+    expect(merged[0].lines.map((line) => line.content).filter((content) => content.startsWith('@@'))).toEqual([
+      '@@ -10,3 +10,1 @@',
+      '@@ -28,2 +28,2 @@',
+    ]);
+  });
+
+  it('pins adjacency: a hunk touching-above shifts, touching-below does not', () => {
+    // Earlier hunk occupies new lines [10, 13). The later section's
+    // first hunk ends exactly at 10 (oldEnd == pos: still "above", so
+    // it shifts); its second starts exactly at 13 (oldStart ==
+    // pos + newCount: "below", no shift, no overlap bail).
+    const earlier = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -10,3 +10,3 @@',
+      ' c1',
+      '-a',
+      '+b',
+      ' c2',
+    ]);
+    const touching = sectionFrom([
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -7,3 +7,4 @@',
+      ' t',
+      '-u',
+      '+v',
+      '+w',
+      ' z',
+      '@@ -13,2 +13,2 @@',
+      ' c3',
+      '-p',
+      '+q',
+    ]);
+    const merged = mergePatchFilesByPath([earlier, touching]);
+    expect(merged[0].suppressGaps).toBeUndefined();
+    expect(merged[0].lines.map((line) => line.content).filter((content) => content.startsWith('@@'))).toEqual([
+      '@@ -7,3 +7,4 @@',
+      '@@ -11,3 +11,3 @@',
+      '@@ -13,2 +13,2 @@',
+    ]);
+  });
+
+  it('falls back to suppressed-gap concatenation when sections overlap', () => {
+    const a1 = section('a.go', { adds: 2, dels: 1 });
+    const b = section('b.go');
+    const a2 = section('a.go', { adds: 1, dels: 3 });
+    const merged = mergePatchFilesByPath([a1, b, a2]);
+
+    expect(merged.map((file) => file.path)).toEqual(['a.go', 'b.go']);
+    expect(merged[0].additions).toBe(3);
+    expect(merged[0].deletions).toBe(4);
+    // Overlapping regions can't be renumbered: both sections' rows
+    // render as consecutive hunks in edit order, and gap rows retire
+    // (their coordinates describe different moments of the file).
+    expect(merged[0].lines).toEqual([...a1.lines, ...a2.lines]);
+    expect(merged[0].suppressGaps).toBe(true);
+    // Unmerged files pass through by identity.
+    expect(merged[1]).toBe(b);
+    expect(merged[1].suppressGaps).toBeUndefined();
+    // Shared parse results are never mutated.
+    expect(a1.additions).toBe(2);
+    expect(a1.lines.length).toBeLessThan(merged[0].lines.length);
+  });
+
+  it('composes a created-then-edited file into one final-content added section', () => {
+    const created = sectionFrom([
+      'diff --git a/z.ts b/z.ts',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/z.ts',
+      '@@ -0,0 +1,4 @@',
+      '+alpha',
+      '+beta',
+      '+gamma',
+      '+delta',
+    ]);
+    const edited = sectionFrom([
+      'diff --git a/z.ts b/z.ts',
+      '--- a/z.ts',
+      '+++ b/z.ts',
+      '@@ -2,2 +2,3 @@',
+      ' beta',
+      '-gamma',
+      '+gamma prime',
+      '+gamma extra',
+    ]);
+    const prepended = sectionFrom([
+      'diff --git a/z.ts b/z.ts',
+      '--- a/z.ts',
+      '+++ b/z.ts',
+      '@@ -0,0 +1,1 @@',
+      '+header',
+    ]);
+    const merged = mergePatchFilesByPath([created, edited, prepended]);
+
+    // Real composition: later hunks applied to the creation content,
+    // emitted as ONE clean added-file section of end-of-turn content.
+    expect(merged).toHaveLength(1);
+    expect(merged[0].kind).toBe('added');
+    expect(merged[0].additions).toBe(6);
+    expect(merged[0].deletions).toBe(0);
+    expect(merged[0].suppressGaps).toBeUndefined();
+    expect(merged[0].lines.map((line) => line.content)).toEqual([
+      'diff --git a/z.ts b/z.ts',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/z.ts',
+      '@@ -0,0 +1,6 @@',
+      '+header',
+      '+alpha',
+      '+beta',
+      '+gamma prime',
+      '+gamma extra',
+      '+delta',
+    ]);
+    // An added file is fully present — no gap rows to expand.
+    expect(filePatchDisplayRows(merged[0]).some((row) => row.gap)).toBe(false);
+    // Shared parse results are never mutated.
+    expect(created.lines.map((line) => line.content)).toContain('@@ -0,0 +1,4 @@');
+  });
+
+  it('composes a multi-hunk later section with cumulative offsets', () => {
+    // One MultiEdit payload = one section with several hunks; later
+    // hunks' coordinates must shift by the earlier hunks' net delta
+    // within the same section.
+    const created = sectionFrom([
+      'diff --git a/z.ts b/z.ts',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/z.ts',
+      '@@ -0,0 +1,6 @@',
+      '+l1',
+      '+l2',
+      '+l3',
+      '+l4',
+      '+l5',
+      '+l6',
+    ]);
+    const multiEdit = sectionFrom([
+      'diff --git a/z.ts b/z.ts',
+      '--- a/z.ts',
+      '+++ b/z.ts',
+      '@@ -2,1 +2,3 @@',
+      '-l2',
+      '+l2a',
+      '+l2b',
+      '+l2c',
+      '@@ -5,2 +7,1 @@',
+      ' l5',
+      '-l6',
+    ]);
+    const merged = mergePatchFilesByPath([created, multiEdit]);
+    expect(merged[0].suppressGaps).toBeUndefined();
+    expect(merged[0].lines.map((line) => line.content).slice(4)).toEqual([
+      '@@ -0,0 +1,7 @@',
+      '+l1',
+      '+l2a',
+      '+l2b',
+      '+l2c',
+      '+l3',
+      '+l4',
+      '+l5',
+    ]);
+  });
+
+  it('falls back to concatenation when an edit mismatches the created content', () => {
+    const created = sectionFrom([
+      'diff --git a/z.ts b/z.ts',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/z.ts',
+      '@@ -0,0 +1,2 @@',
+      '+alpha',
+      '+beta',
+    ]);
+    const edited = sectionFrom([
+      'diff --git a/z.ts b/z.ts',
+      '--- a/z.ts',
+      '+++ b/z.ts',
+      '@@ -1,1 +1,1 @@',
+      '-not alpha',
+      '+changed',
+    ]);
+    const merged = mergePatchFilesByPath([created, edited]);
+    // The old side doesn't match what the creation built — composing
+    // would fabricate content, so the sections concatenate instead.
+    expect(merged[0].kind).toBe('added');
+    expect(merged[0].suppressGaps).toBe(true);
+    expect(merged[0].lines).toEqual([...created.lines, ...edited.lines]);
+  });
+
+  it('falls back when the created file is later deleted', () => {
+    const created = sectionFrom([
+      'diff --git a/z.ts b/z.ts',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/z.ts',
+      '@@ -0,0 +1,2 @@',
+      '+alpha',
+      '+beta',
+    ]);
+    const deleted = sectionFrom([
+      'diff --git a/z.ts b/z.ts',
+      'deleted file mode 100644',
+      '--- a/z.ts',
+      '+++ /dev/null',
+      '@@ -1,2 +0,0 @@',
+      '-alpha',
+      '-beta',
+    ]);
+    const merged = mergePatchFilesByPath([created, deleted]);
+    // The end state isn't an added file; deletion wins the kind and the
+    // sections render in edit order.
+    expect(merged[0].kind).toBe('deleted');
+    expect(merged[0].suppressGaps).toBe(true);
+  });
+
+  it('keeps the first section kind unless a later section deletes the file', () => {
+    const added = mergePatchFilesByPath([section('a.go', { kind: 'added' }), section('a.go')]);
+    expect(added[0].kind).toBe('added');
+
+    const deleted = mergePatchFilesByPath([section('a.go'), section('a.go', { kind: 'deleted' })]);
+    expect(deleted[0].kind).toBe('deleted');
+  });
+
+  it('is identity-preserving when no path repeats', () => {
+    const a = section('a.go');
+    const b = section('b.go');
+    expect(mergePatchFilesByPath([a, b])).toEqual([a, b]);
+  });
+
+  it('mergePatchFilesByPathCached returns the identical array per input identity', () => {
+    const parsed = parsePatchFiles(
+      [
+        'diff --git a/a.ts b/a.ts',
+        '--- a/a.ts',
+        '+++ b/a.ts',
+        '@@ -5,2 +5,2 @@',
+        ' ctx',
+        '-old',
+        '+new',
+        'diff --git a/a.ts b/a.ts',
+        '--- a/a.ts',
+        '+++ b/a.ts',
+        '@@ -9,1 +9,2 @@',
+        ' ctx2',
+        '+later',
+      ].join('\n'),
+    );
+    const mergedOnce = mergePatchFilesByPathCached(parsed);
+    // Identity, not just equality: downstream memos (expansion rebuild
+    // cache, span-cache predecessor chains) key on the lines array.
+    expect(mergePatchFilesByPathCached(parsed)).toBe(mergedOnce);
+    // A different input array (same content) misses — the memo is
+    // keyed on the parse-cache result's identity.
+    expect(mergePatchFilesByPathCached([...parsed])).not.toBe(mergedOnce);
   });
 });

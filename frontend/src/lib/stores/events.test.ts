@@ -281,7 +281,14 @@ describe('setupEventListeners', () => {
     expect(pane.lastLiveContentAt).toBeLessThanOrEqual(after);
   });
 
-  it('does not stamp lastLiveContentAt for new Bash rows', async () => {
+  it('does not stamp lastLiveContentAt through the events predicate for new Bash rows', async () => {
+    // Scope: the per-row predicate (providerUpsertAdvancesLiveContent)
+    // stamps inserts only for text-like kinds. Non-text appends stamp
+    // through the pane's gated arm site instead
+    // (armLiveContentAppendSpring — requires an attached scroll
+    // controller, absent here; see 'stamps lastLiveContentAt when a
+    // background completion batch lands post-turn' below and the
+    // structural-append describe in thread.svelte.test.ts).
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
     expect(pane.lastLiveContentAt).toBe(0);
 
@@ -493,15 +500,19 @@ describe('setupEventListeners', () => {
     expect(pane.lastLiveContentAt).toBeGreaterThan(0);
   });
 
-  it('does not stamp lastLiveContentAt for a same-batch tool row insert plus completion', async () => {
+  it('does not stamp lastLiveContentAt through the events predicate for a same-batch tool row insert plus completion', async () => {
     // Both upserts compare against the pre-batch snapshot, so the
     // completion still resolves down the insert path — correct, because a
     // row that mounted this flush is in its estimate phase for the whole
     // flush. Pins the once-per-batch snapshot: a refactor to per-upsert
-    // lookup would silently start stamping these bursts. (This test is
-    // also why buildPane owns pane registration: registering the same
-    // pane under a second key made iterPanes() apply value-different
-    // batches twice, and the re-application stamped spuriously.)
+    // lookup would silently start stamping these bursts through the
+    // UNGATED events predicate. In production the append itself stamps
+    // via the pane's gated arm site (no controller is attached here, so
+    // that path stays closed — see the post-turn background-completion
+    // test below). (This test is also why buildPane owns pane
+    // registration: registering the same pane under a second key made
+    // iterPanes() apply value-different batches twice, and the
+    // re-application stamped spuriously.)
     const pane = await buildPane(makeThread({ id: 'thread-a' }));
     expect(pane.lastLiveContentAt).toBe(0);
 
@@ -536,6 +547,84 @@ describe('setupEventListeners', () => {
 
     expect(pane.items[0].status).toBe('completed');
     expect(pane.lastLiveContentAt).toBe(0);
+  });
+
+  it('stamps lastLiveContentAt when a background completion batch lands post-turn', async () => {
+    // The reported regression: a backgrounded task completing after the
+    // turn ended arrives as NEW rows (task-notification + tool_completion
+    // sibling, with same-batch enrichment resolving down the insert
+    // path), so the per-row predicate never stamped and the rows
+    // teleported in once the structural one-shot lapsed — while the
+    // identical rows arriving mid-turn glided (streaming kept the latch
+    // fresh). With a scroll controller attached (a mounted timeline),
+    // the pane's append arm must stamp the latch AND open the one-shot
+    // so the completion spring-scrolls in exactly like it does while
+    // the agent is working.
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [
+      makeItem({ id: 'seed', threadId: 'thread-a', turnIndex: 0, itemIndex: 0 }),
+    ]);
+    const markStructuralContentPending = vi.fn();
+    pane.attachScrollController({
+      pauseAutoScroll: () => () => {},
+      observe: () => {},
+      markStructuralContentPending,
+      preserveScrollAnchor: () => Promise.resolve(),
+    });
+    expect(pane.lastLiveContentAt).toBe(0);
+
+    const notification = makeItem({
+      id: 'task-notification:task-1',
+      threadId: 'thread-a',
+      turnIndex: 0,
+      itemIndex: 1,
+      kind: 'notification',
+      role: 'system',
+      status: 'completed',
+      summary: 'Background task completed',
+      meta: JSON.stringify({ task_id: 'task-1', source: 'task_notification', output_file_state: 'loading' }),
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: notification,
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: makeItem({
+        id: 'bash-1:completion',
+        threadId: 'thread-a',
+        turnIndex: 0,
+        itemIndex: 2,
+        kind: 'tool_completion',
+        role: 'assistant',
+        status: 'completed',
+        toolName: 'Bash',
+        summary: 'Background command finished',
+        completionOf: 'bash-1',
+        meta: JSON.stringify({ task_id: 'task-1', status_source: 'task_notification' }),
+      }),
+    });
+    // Enrichment re-upsert of the notification in the same batch — still
+    // resolves down the insert path against the pre-batch snapshot.
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'thread-a',
+      item: {
+        ...notification,
+        meta: JSON.stringify({ task_id: 'task-1', source: 'task_notification', output_file_state: 'loaded' }),
+        updatedAt: notification.updatedAt + 1,
+      },
+    });
+    await nextFrame();
+
+    expect(pane.items.map((item) => item.id)).toEqual([
+      'seed',
+      'task-notification:task-1',
+      'bash-1:completion',
+    ]);
+    expect(markStructuralContentPending).toHaveBeenCalled();
+    expect(pane.lastLiveContentAt).toBeGreaterThan(0);
   });
 
   it('does not let off-window new rows stamp over a visible no-op bump', async () => {
@@ -706,7 +795,6 @@ describe('setupEventListeners', () => {
       releaseSnapshot = resolve;
     }));
     setBindingMock('ListRecentTurns', async () => []);
-    setBindingMock('ListThreadCheckpoints', async () => []);
 
     const pane = createThreadPane();
     registerPaneForTest('main', pane);
@@ -1909,6 +1997,107 @@ describe('setupEventListeners', () => {
     expect(getProviderRateLimit('codex', 10080)?.usedPercent).toBe(28);
   });
 
+  it('does not revert local read state when a provider:usage gap refreshes the thread row', async () => {
+    const local = makeThread({
+      id: 'thread-usage-read',
+      lastReadAt: 2_000,
+      latestTurnCompletedAt: 1_000,
+    });
+    const pane = await buildPane(local);
+    const freshUsage = JSON.stringify({ usedTokens: 1_000, maxTokens: 200_000, contextPercent: 0.5 });
+    // The re-fetched row's job is lastTokenUsage; its read marker can
+    // predate the debounced MarkThreadRead persist and must merge
+    // forward, not revert the pane copy.
+    setBindingMock('GetThread', async () => ({
+      ...local,
+      lastReadAt: 500,
+      lastTokenUsage: freshUsage,
+    }));
+
+    emitWailsEvent(transportGapChannel, {
+      channel: 'provider:usage',
+      seq: 8,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(pane.thread?.lastTokenUsage).toBe(freshUsage);
+    expect(pane.thread?.lastReadAt).toBe(2_000);
+  });
+
+  it('preserves a newer local read marker across a transport-gap thread resync', async () => {
+    // ChatView marks a thread read locally and debounces the
+    // MarkThreadRead persist; a gap-triggered ListThreads snapshot can
+    // be read before that persist lands. Replacing rows verbatim would
+    // revert lastReadAt and resurrect a "Completed" pill the focused
+    // pane already cleared — and could never clear again, because the
+    // read-mark effect keys off the (still-read) pane copy.
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 2_000, latestTurnCompletedAt: 1_000 }),
+    ]);
+    await refreshThreads();
+
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 500, latestTurnCompletedAt: 1_000 }),
+    ]);
+    emitWailsEvent(transportGapChannel, {
+      channel: 'thread:updated',
+      seq: 3,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getThreads()[0]?.lastReadAt).toBe(2_000);
+    expect(getThreads()[0]?.latestTurnCompletedAt).toBe(1_000);
+  });
+
+  it('preserves an explicit unread marker across a transport-gap thread resync', async () => {
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 0, latestTurnCompletedAt: 300 }),
+    ]);
+    await refreshThreads();
+
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', lastReadAt: 500, latestTurnCompletedAt: 300 }),
+    ]);
+    emitWailsEvent(transportGapChannel, {
+      channel: 'thread:updated',
+      seq: 4,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getThreads()[0]?.lastReadAt).toBe(0);
+  });
+
+  it('converges pane thread rows on completions backfilled by a transport-gap resync', async () => {
+    // The final turn_completed fell into the gap: the backend snapshot
+    // carries the completion but no pane ever saw the event. The resync
+    // must fan the merged row out to panes — ChatView's read-mark
+    // effect keys off pane.thread, so a pane left on the stale copy
+    // can never clear the sidebar "Completed" pill.
+    const stale = makeThread({
+      id: 'thread-gap',
+      lastReadAt: 350,
+      latestTurnCompletedAt: 300,
+    });
+    const pane = await buildPane(stale);
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-gap', lastReadAt: 350, latestTurnCompletedAt: 900 }),
+    ]);
+
+    emitWailsEvent(transportGapChannel, {
+      channel: 'provider:turn_completed',
+      seq: 11,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getThreads().find((t) => t.id === 'thread-gap')?.latestTurnCompletedAt).toBe(900);
+    expect(pane.thread?.latestTurnCompletedAt).toBe(900);
+    expect(pane.thread?.lastReadAt).toBe(350);
+  });
+
   it('preserves an explicit unread marker when thread:updated is stale', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({
@@ -2603,6 +2792,38 @@ describe('setupEventListeners', () => {
       turnIndex: Number.NaN,
     });
     expect(pane.items).toHaveLength(1);
+  });
+
+  // provider:queue_restored reports queued messages whose store rows
+  // the backend deleted when it restored their content to the composer
+  // draft (failed Codex resend, session death). Rows the event names
+  // must leave the mounted timeline — without this, a deleted store
+  // row keeps a ghost row on screen until the next full reload — and
+  // rows it does not name must stay.
+  it('removes only the restored rows from the timeline on provider:queue_restored', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-q' }));
+    pane.upsertItems([
+      makeItem({ id: 'u:keep', threadId: 'thread-q', turnIndex: 0, kind: 'user_text', role: 'user' }),
+      makeItem({ id: 'user:1:flush:1', threadId: 'thread-q', turnIndex: 1, kind: 'user_text', role: 'user' }),
+      makeItem({ id: 'user:1:flush:2', threadId: 'thread-q', turnIndex: 1, kind: 'user_text', role: 'user' }),
+    ]);
+
+    emitWailsEvent('provider:queue_restored', {
+      threadId: 'thread-q',
+      reason: 'resend_failed',
+      userItemIds: ['user:1:flush:1', 'user:1:flush:2'],
+    });
+
+    expect(pane.items.map((it) => it.id)).toEqual(['u:keep']);
+
+    // Absent ids are a no-op, not an error (the session-death restore
+    // can name rows that were never promoted into the timeline).
+    emitWailsEvent('provider:queue_restored', {
+      threadId: 'thread-q',
+      reason: 'session_died',
+      userItemIds: ['user:9:flush:9'],
+    });
+    expect(pane.items.map((it) => it.id)).toEqual(['u:keep']);
   });
   // ===== flushItemEventQueue per-item batching =====
   // A tool burst arrives on the wire as upserts, patches, and deltas of

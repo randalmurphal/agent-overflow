@@ -425,3 +425,37 @@ func TestCleanupThread_IsolatedPerThread(t *testing.T) {
 		t.Errorf("t2 queue should NOT be affected by t1 cleanup")
 	}
 }
+
+// TestTryFlushQueue_BatchStaysCountedAcrossHandoff pins the round-14
+// close-out fix for the boundary-drain handoff window (C14-1): between
+// deleting a batch from queuedFlushItems and the App dispatcher
+// recording it in-flight, the batch must still be visible to the
+// revert-on-interrupt predicate through QueuedFlushItemCount (the
+// claim count). Without it, a Stop click landing inside the dispatcher
+// callback sees zero pending flush work on a turn with no durable
+// agent rows and wrongly reverts the turn-starting prompt while the
+// follow-up is delivered.
+func TestTryFlushQueue_BatchStaysCountedAcrossHandoff(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	router.RegisterQueueItem("t1", QueuedFlushItem{ID: "queue:q1", Message: "one"})
+	router.RegisterQueueItem("t1", QueuedFlushItem{ID: "queue:q2", Message: "two"})
+
+	var duringHandoff int
+	router.SetFlushDispatcher(func(threadID string, items []QueuedFlushItem) {
+		// The predicate's triage read, taken while the batch is neither
+		// in the queue map nor yet recorded in-flight by the App layer.
+		duringHandoff = router.QueuedFlushItemCount(threadID)
+	})
+
+	if !router.FlushQueuedItems("t1") {
+		t.Fatal("FlushQueuedItems did not dispatch the queued batch")
+	}
+	if duringHandoff != 2 {
+		t.Fatalf("QueuedFlushItemCount during handoff = %d, want 2 — a Stop in this window would see the batch as no pending work", duringHandoff)
+	}
+	if after := router.QueuedFlushItemCount("t1"); after != 0 {
+		t.Fatalf("QueuedFlushItemCount after handoff = %d, want 0 — the claim must drop once the dispatcher returns", after)
+	}
+}

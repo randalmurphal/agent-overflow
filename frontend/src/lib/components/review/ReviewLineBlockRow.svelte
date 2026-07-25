@@ -1,17 +1,12 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import DiffLineContent from '../chat/DiffLineContent.svelte';
-  import { dispatchInlineFileTokens } from '../chat/diffInlineTokenize';
-  import { getDiffTheme } from '../../stores/diffTheme.svelte';
   import type { CommentAnchor } from '../../stores/reviewPane.svelte';
   import { DIFF_CONTEXT_EXPAND_STEP, type ExpandDirection } from '../../utils/diffContextExpansion';
-  import type { DiffTheme } from '../../utils/diffHighlighterPool';
-  import { languageFromPath } from '../../utils/diffLanguage';
   import { gutterTintClass, lineTintClass } from '../../utils/diffLineTint';
-  import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type PatchLine, type SplitDisplayRow } from '../../utils/patchFiles';
+  import { diffSpanCacheGeneration, getSpansForLine, requestFileSpans, type PatchScopeContext } from '../../utils/diffSpanCache.svelte';
+  import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type PatchFile, type SplitDisplayRow } from '../../utils/patchFiles';
   import { REVIEW_LINE_HEIGHT_PX } from '../../utils/reviewRows';
-  import type { LineToken } from '../../utils/tokenCache';
-  import { getCachedTokensForLine } from '../../utils/tokenCacheReactive.svelte';
 
   // One review line block (≤ REVIEW_LINE_BLOCK_MAX_LINES display rows).
   //
@@ -21,16 +16,24 @@
   // rows.length × 20 and no ResizeObserver is attached. With word wrap
   // ON lines wrap freely and the virtualizer measures the block.
   //
-  // Tokenization mirrors DiffFileBlock: one fire-and-forget Shiki batch
-  // per block; the shared reactive token cache re-renders lines as
-  // tokens land, plain tinted text until then.
+  // Highlighting mirrors DiffFileBlock: one fire-and-forget file-level
+  // span request per block (the shared cache dedupes across the file's
+  // blocks); rows re-render as spans land, plain tinted text until
+  // then. Gap expansion produces a new lines-array identity → new
+  // content key → re-request; the backend's cache absorbs the overlap.
 
   interface Props {
     rows: PatchDisplayRow[];
     /** Present in split view mode (precomputed by buildReviewRows). */
     splitRows?: SplitDisplayRow[];
+    /** The owning file — span requests are file-level. */
+    file: PatchFile;
     path: string;
     threadId: string;
+    /** Diff view: scope fields for parse-priming file content above
+     * each hunk (HighlightPatchWithContext). Absent on the conflict
+     * surface, whose pseudo-files have no file behind them. */
+    spanContext?: PatchScopeContext | null;
     wordWrap: boolean;
     /** Line-number gutter width in ch, per file (max line number). */
     gutterCh: number;
@@ -41,25 +44,21 @@
     onExpandGap?: (path: string, gap: DiffGap, dir: ExpandDirection) => void;
   }
 
-  let { rows, splitRows, path, threadId, wordWrap, gutterCh, onAddComment, onExpandFold, onExpandGap }: Props = $props();
-
-  let theme: DiffTheme = $derived(getDiffTheme());
-  let lang = $derived(languageFromPath(path));
+  let { rows, splitRows, file, path, threadId, spanContext = null, wordWrap, gutterCh, onAddComment, onExpandFold, onExpandGap }: Props = $props();
 
   $effect(() => {
-    const t = theme;
-    const l = lang;
+    // Generation dependency: an eviction (LRU pressure, same-thread
+    // reload) re-runs this effect so mounted rows re-request instead
+    // of staying plain; on a cache hit the re-run is a cheap Map
+    // lookup.
+    diffSpanCacheGeneration();
+    const fileNow = file;
+    const context = spanContext;
     const id = threadId;
-    // Marker/fold/gap rows render plain — no point queueing them for Shiki.
-    const lines = rows.filter((row) => row.line.type !== 'marker' && !row.gap).map((row) => row.line);
     untrack(() => {
-      void dispatchInlineFileTokens(lines, id, l, t);
+      void requestFileSpans(fileNow, id, context);
     });
   });
-
-  function getTokens(line: PatchLine): LineToken[] | null {
-    return getCachedTokensForLine(line, threadId, theme, lang);
-  }
 
   // Heights come from the shared constant, not rem-based Tailwind
   // classes, so the estimate table and the rendered geometry cannot
@@ -218,14 +217,14 @@
           {#if pair.left}
             {@render actionCell(sideAnchor(pair.left, 'old'), 'old-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.left.line.type)}">{@render gutter(pair.left.oldLine)}</span>
-            <span class="min-w-0 flex-1 {contentClass} pl-2 pr-2"><DiffLineContent line={pair.left.line} tokens={getTokens(pair.left.line)} intraline={pair.left.intraline ?? null} /></span>
+            <span class="min-w-0 flex-1 {contentClass} pl-2 pr-2"><DiffLineContent line={pair.left.line} spans={getSpansForLine(file, pair.left.line, threadId, spanContext)} intraline={pair.left.intraline ?? null} /></span>
           {/if}
         </div>
         <div class="group relative flex w-1/2 min-w-0 border-l border-border-subtle before:pointer-events-none before:absolute before:inset-0 before:content-[''] hover:before:bg-fg/[0.04] {pair.right ? lineTintClass(pair.right.line.type) : 'bg-surface-0/40'}">
           {#if pair.right}
             {@render actionCell(sideAnchor(pair.right, 'new'), 'new-line')}
             <span class="flex shrink-0 {gutterTintClass(pair.right.line.type)}">{@render gutter(pair.right.newLine)}</span>
-            <span class="min-w-0 flex-1 {contentClass} pl-2 pr-2"><DiffLineContent line={pair.right.line} tokens={getTokens(pair.right.line)} intraline={pair.right.intraline ?? null} /></span>
+            <span class="min-w-0 flex-1 {contentClass} pl-2 pr-2"><DiffLineContent line={pair.right.line} spans={getSpansForLine(file, pair.right.line, threadId, spanContext)} intraline={pair.right.intraline ?? null} /></span>
           {/if}
         </div>
       </div>
@@ -247,7 +246,7 @@
             {@render gutter(row.oldLine)}
             {@render gutter(row.newLine)}
           </span>
-          <span class="min-w-0 flex-1 {contentClass} pl-2 pr-3"><DiffLineContent line={row.line} tokens={getTokens(row.line)} intraline={row.intraline ?? null} /></span>
+          <span class="min-w-0 flex-1 {contentClass} pl-2 pr-3"><DiffLineContent line={row.line} spans={getSpansForLine(file, row.line, threadId, spanContext)} intraline={row.intraline ?? null} /></span>
         </div>
       {/if}
     {/each}

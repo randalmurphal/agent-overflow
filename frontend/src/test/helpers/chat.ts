@@ -98,7 +98,6 @@ export function installPaneMocks(items: Item[] = []): void {
   // override this via setBindingMock('ListRecentTurns', ...) after calling
   // buildPane / installPaneMocks.
   setBindingMock('ListRecentTurns', async () => []);
-  setBindingMock('ListThreadCheckpoints', async () => []);
   // UsageChip queries the lifetime usage bucket on mount. Default to "no
   // usage yet" so buildPane-based tests that don't care about the usage
   // chip don't have to stub it; tests exercising usage data override this.
@@ -139,7 +138,12 @@ export async function buildPane(
 ): Promise<ThreadPane> {
   installPaneMocks(items);
   setBindingMock('SwitchThread', async () => thread);
-  const pane = createThreadPane();
+  // The pane's own id matches the registry key: production panes are always
+  // registered under their paneId, and pane-focus-gated behavior (the
+  // composer's initial-focus pass checks getFocusedPaneId() === paneId)
+  // depends on the ids lining up — the panes store focuses 'main' by
+  // default, so the default paneKey yields a logically focused pane.
+  const pane = createThreadPane({ paneId: paneKey });
   await pane.switchThread(thread);
   // Register so syncThread (and any other panes-iterating helper) can
   // reach this pane. Production code goes through ensureMainPane() which

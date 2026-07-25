@@ -119,7 +119,7 @@ func TestStartupRebuildRestoresPersistedPause(t *testing.T) {
 }
 
 // TestStartupRebuildParksRunningRowWithNoSnapshot covers the row shape a
-// pre-rev-2 database produces after the v30 migration turns an unstarted run
+// pre-rev-2 database produces after the direct-start migration turns an unstarted run
 // into a parked one and any stale running row keeps no frozen workflow: it is
 // unrunnable, so it parks with a typed reason instead of being resumed blind.
 func TestStartupRebuildParksRunningRowWithNoSnapshot(t *testing.T) {

@@ -7,13 +7,16 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as checkpoint$0 from "./internal/checkpoint/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
 import * as flushqueue$0 from "./internal/flushqueue/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as git$0 from "./internal/git/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as gitdiff$0 from "./internal/gitdiff/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as highlight$0 from "./internal/highlight/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as provider$0 from "./internal/provider/models.js";
@@ -64,6 +67,18 @@ export class AttachmentThumbnail {
         return new AttachmentThumbnail($$parsedSource as Partial<AttachmentThumbnail>);
     }
 }
+
+/**
+ * BranchCommit is the wire shape of one row in the review pane's
+ * per-commit selector.
+ */
+export const BranchCommit = gitdiff$0.Commit;
+
+/**
+ * BranchCommit is the wire shape of one row in the review pane's
+ * per-commit selector.
+ */
+export type BranchCommit = gitdiff$0.Commit;
 
 /**
  * ChannelParticipantState is one entry in ChannelStatePayload's
@@ -177,24 +192,6 @@ export class ChannelStatePayload {
         return new ChannelStatePayload($$parsedSource as Partial<ChannelStatePayload>);
     }
 }
-
-/**
- * CheckpointView is the wire shape returned by ListMessageCheckpoints
- * and friends. Canonical declaration (plus the field-subset projection
- * rule) lives in internal/checkpoint; main keeps the alias so the
- * Wails binding generator still emits it under the agent-overflow
- * namespace the frontend imports from.
- */
-export const CheckpointView = checkpoint$0.View;
-
-/**
- * CheckpointView is the wire shape returned by ListMessageCheckpoints
- * and friends. Canonical declaration (plus the field-subset projection
- * rule) lives in internal/checkpoint; main keeps the alias so the
- * Wails binding generator still emits it under the agent-overflow
- * namespace the frontend imports from.
- */
-export type CheckpointView = checkpoint$0.View;
 
 export class ContextSettingsProfile {
     "provider": string;
@@ -457,13 +454,13 @@ export class DesignWorkdirInfo {
  * NEW side (expanded context is unchanged on both sides, so the new
  * side is the only source needed). Scope mirrors the review pane's
  * scope selector; the extra fields disambiguate the new-side source
- * where the scope alone can't: UserItemID for turn scope (the
- * checkpoint the loaded diff targets), HeadSHA for pr scope (the
- * fetched head commit).
+ * where the scope alone can't: CommitSHA for commit scope (a selected
+ * commit in the workspace repo), HeadSHA for pr scope (the fetched
+ * head commit).
  */
 export class DiffContextRequest {
     "scope": string;
-    "userItemId": string;
+    "commitSHA": string;
     "headSHA": string;
     "path": string;
 
@@ -473,13 +470,34 @@ export class DiffContextRequest {
     "startLine": number;
     "endLine": number;
 
+    /**
+     * VerifyPatch (edits scope only): the file's historical patch text.
+     * A snapshot or workspace file is served only when every new-side
+     * patch line still byte-matches it — a drifted file must never
+     * masquerade as historical context. Live scopes ignore the field
+     * (their content IS the diff's source by construction).
+     */
+    "verifyPatch"?: string;
+
+    /**
+     * Edit selection (edits scope only): which edit's persisted file
+     * snapshot resolves this path. EditPayloadID selects one edit's
+     * snapshot; when it is empty EditTurnIndex selects the whole turn,
+     * whose LAST snapshot of Path is the state the merged section
+     * describes. Snapshots are still verified against VerifyPatch, and
+     * an absent snapshot (pre-feature history) falls back to workspace
+     * verification.
+     */
+    "editPayloadId": string;
+    "editTurnIndex": number;
+
     /** Creates a new DiffContextRequest instance. */
     constructor($$source: Partial<DiffContextRequest> = {}) {
         if (!("scope" in $$source)) {
             this["scope"] = "";
         }
-        if (!("userItemId" in $$source)) {
-            this["userItemId"] = "";
+        if (!("commitSHA" in $$source)) {
+            this["commitSHA"] = "";
         }
         if (!("headSHA" in $$source)) {
             this["headSHA"] = "";
@@ -492,6 +510,12 @@ export class DiffContextRequest {
         }
         if (!("endLine" in $$source)) {
             this["endLine"] = 0;
+        }
+        if (!("editPayloadId" in $$source)) {
+            this["editPayloadId"] = "";
+        }
+        if (!("editTurnIndex" in $$source)) {
+            this["editTurnIndex"] = 0;
         }
 
         Object.assign(this, $$source);
@@ -607,6 +631,155 @@ export class Draft {
 }
 
 /**
+ * EditDiffEntry is one edit tool call in the review pane's Edits
+ * selector: an Edit/Write/apply_patch, or a command execution whose
+ * inline diff was captured. Metadata only — the diff itself loads on
+ * selection via GetPayloadData.
+ */
+export class EditDiffEntry {
+    "itemId": string;
+    "payloadId": string;
+    "turnIndex": number;
+    "title": string;
+    "paths": string[];
+    "insertions": number;
+    "deletions": number;
+    "createdAt": number;
+
+    /** Creates a new EditDiffEntry instance. */
+    constructor($$source: Partial<EditDiffEntry> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("payloadId" in $$source)) {
+            this["payloadId"] = "";
+        }
+        if (!("turnIndex" in $$source)) {
+            this["turnIndex"] = 0;
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+        if (!("paths" in $$source)) {
+            this["paths"] = [];
+        }
+        if (!("insertions" in $$source)) {
+            this["insertions"] = 0;
+        }
+        if (!("deletions" in $$source)) {
+            this["deletions"] = 0;
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EditDiffEntry instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EditDiffEntry {
+        const $$createField4_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("paths" in $$parsedSource) {
+            $$parsedSource["paths"] = $$createField4_0($$parsedSource["paths"]);
+        }
+        return new EditDiffEntry($$parsedSource as Partial<EditDiffEntry>);
+    }
+}
+
+export class EditDiffList {
+    "entries": EditDiffEntry[];
+    "turnLabels": EditDiffTurnLabel[];
+
+    /** Creates a new EditDiffList instance. */
+    constructor($$source: Partial<EditDiffList> = {}) {
+        if (!("entries" in $$source)) {
+            this["entries"] = [];
+        }
+        if (!("turnLabels" in $$source)) {
+            this["turnLabels"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EditDiffList instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EditDiffList {
+        const $$createField0_0 = $$createType10;
+        const $$createField1_0 = $$createType12;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("entries" in $$parsedSource) {
+            $$parsedSource["entries"] = $$createField0_0($$parsedSource["entries"]);
+        }
+        if ("turnLabels" in $$parsedSource) {
+            $$parsedSource["turnLabels"] = $$createField1_0($$parsedSource["turnLabels"]);
+        }
+        return new EditDiffList($$parsedSource as Partial<EditDiffList>);
+    }
+}
+
+/**
+ * EditDiffTurnLabel captions a selector turn group with the turn's
+ * first user prompt.
+ */
+export class EditDiffTurnLabel {
+    "turnIndex": number;
+    "label": string;
+
+    /** Creates a new EditDiffTurnLabel instance. */
+    constructor($$source: Partial<EditDiffTurnLabel> = {}) {
+        if (!("turnIndex" in $$source)) {
+            this["turnIndex"] = 0;
+        }
+        if (!("label" in $$source)) {
+            this["label"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EditDiffTurnLabel instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EditDiffTurnLabel {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EditDiffTurnLabel($$parsedSource as Partial<EditDiffTurnLabel>);
+    }
+}
+
+/**
+ * EditDiffVerifyFile is one candidate file of a VerifyEditDiffs batch.
+ */
+export class EditDiffVerifyFile {
+    "path": string;
+    "verifyPatch": string;
+
+    /** Creates a new EditDiffVerifyFile instance. */
+    constructor($$source: Partial<EditDiffVerifyFile> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("verifyPatch" in $$source)) {
+            this["verifyPatch"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EditDiffVerifyFile instance from a string or object.
+     */
+    static createFrom($$source: any = {}): EditDiffVerifyFile {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new EditDiffVerifyFile($$parsedSource as Partial<EditDiffVerifyFile>);
+    }
+}
+
+/**
  * EditorInfo is the wire shape of an editor row exposed to the
  * frontend by ListAvailableEditors. We deliberately publish a subset
  * of editor.Editor — ResolvedPath stays internal because it would
@@ -700,7 +873,7 @@ export class GitStatusSubscriptionResult {
      * Creates a new GitStatusSubscriptionResult instance from a string or object.
      */
     static createFrom($$source: any = {}): GitStatusSubscriptionResult {
-        const $$createField1_0 = $$createType9;
+        const $$createField1_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("status" in $$parsedSource) {
             $$parsedSource["status"] = $$createField1_0($$parsedSource["status"]);
@@ -732,6 +905,177 @@ export class GitWorkspaceState {
     static createFrom($$source: any = {}): GitWorkspaceState {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new GitWorkspaceState($$parsedSource as Partial<GitWorkspaceState>);
+    }
+}
+
+/**
+ * HighlightCodeRequest carries raw text (markdown code blocks, any
+ * free-standing source) plus its language name (markdown fence info
+ * string or canonical name; unknown names render plain).
+ */
+export class HighlightCodeRequest {
+    "lang": string;
+    "source": string;
+
+    /** Creates a new HighlightCodeRequest instance. */
+    constructor($$source: Partial<HighlightCodeRequest> = {}) {
+        if (!("lang" in $$source)) {
+            this["lang"] = "";
+        }
+        if (!("source" in $$source)) {
+            this["source"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HighlightCodeRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): HighlightCodeRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new HighlightCodeRequest($$parsedSource as Partial<HighlightCodeRequest>);
+    }
+}
+
+/**
+ * HighlightPatchContextRequest is HighlightPatchRequest plus the
+ * review-pane scope fields (same shape as DiffContextRequest) that
+ * resolve the new-side file content used to prime parsing above each
+ * hunk.
+ */
+export class HighlightPatchContextRequest {
+    "scope": string;
+    "commitSHA": string;
+    "headSHA": string;
+    "path": string;
+    "patch": string;
+
+    /**
+     * Edit selection (edits scope only) — see DiffContextRequest.
+     */
+    "editPayloadId": string;
+    "editTurnIndex": number;
+
+    /** Creates a new HighlightPatchContextRequest instance. */
+    constructor($$source: Partial<HighlightPatchContextRequest> = {}) {
+        if (!("scope" in $$source)) {
+            this["scope"] = "";
+        }
+        if (!("commitSHA" in $$source)) {
+            this["commitSHA"] = "";
+        }
+        if (!("headSHA" in $$source)) {
+            this["headSHA"] = "";
+        }
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("patch" in $$source)) {
+            this["patch"] = "";
+        }
+        if (!("editPayloadId" in $$source)) {
+            this["editPayloadId"] = "";
+        }
+        if (!("editTurnIndex" in $$source)) {
+            this["editTurnIndex"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HighlightPatchContextRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): HighlightPatchContextRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new HighlightPatchContextRequest($$parsedSource as Partial<HighlightPatchContextRequest>);
+    }
+}
+
+/**
+ * HighlightPatchRequest carries one file's unified diff exactly as the
+ * frontend's patch parser splits it; Path drives language detection.
+ */
+export class HighlightPatchRequest {
+    "path": string;
+    "patch": string;
+
+    /** Creates a new HighlightPatchRequest instance. */
+    constructor($$source: Partial<HighlightPatchRequest> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("patch" in $$source)) {
+            this["patch"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HighlightPatchRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): HighlightPatchRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new HighlightPatchRequest($$parsedSource as Partial<HighlightPatchRequest>);
+    }
+}
+
+/**
+ * HighlightResult is the span payload. Lines align 1:1 with the input
+ * text's newline-split lines (for patches: the patch text's own line
+ * sequence, meta lines plain). Each line's runs are flat
+ * [byteLen, classId, ...] pairs over the line's UTF-8 bytes; empty
+ * runs mean a plain line. Truncated flags inputs past the size cap
+ * (the overflow renders plain). Incomplete flags transient degradation
+ * (parse timeout, patch budget) — the backend cache skips these so a
+ * retry can succeed, and frontend caches must apply the same
+ * transient-vs-permanent distinction instead of memoizing the partial
+ * result for the session.
+ */
+export class HighlightResult {
+    "lang": string;
+    "lines": highlight$0.EncodedLine[];
+    "truncated": boolean;
+    "incomplete": boolean;
+
+    /**
+     * Primed: spans were computed with real file content above each
+     * hunk. The frontend span cache treats primed entries as strictly
+     * better than unprimed ones for the same content (monotonic
+     * upgrade, never downgrade).
+     */
+    "primed"?: boolean;
+
+    /** Creates a new HighlightResult instance. */
+    constructor($$source: Partial<HighlightResult> = {}) {
+        if (!("lang" in $$source)) {
+            this["lang"] = "";
+        }
+        if (!("lines" in $$source)) {
+            this["lines"] = [];
+        }
+        if (!("truncated" in $$source)) {
+            this["truncated"] = false;
+        }
+        if (!("incomplete" in $$source)) {
+            this["incomplete"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HighlightResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): HighlightResult {
+        const $$createField1_0 = $$createType15;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("lines" in $$parsedSource) {
+            $$parsedSource["lines"] = $$createField1_0($$parsedSource["lines"]);
+        }
+        return new HighlightResult($$parsedSource as Partial<HighlightResult>);
     }
 }
 
@@ -843,7 +1187,7 @@ export class LiveStateTodo {
      * Creates a new LiveStateTodo instance from a string or object.
      */
     static createFrom($$source: any = {}): LiveStateTodo {
-        const $$createField1_0 = $$createType11;
+        const $$createField1_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("steps" in $$parsedSource) {
             $$parsedSource["steps"] = $$createField1_0($$parsedSource["steps"]);
@@ -963,8 +1307,8 @@ export class MCPServer {
      */
     static createFrom($$source: any = {}): MCPServer {
         const $$createField5_0 = $$createType4;
-        const $$createField6_0 = $$createType12;
-        const $$createField8_0 = $$createType12;
+        const $$createField6_0 = $$createType18;
+        const $$createField8_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("args" in $$parsedSource) {
             $$parsedSource["args"] = $$createField5_0($$parsedSource["args"]);
@@ -1097,7 +1441,7 @@ export class PRMergeConflictsResult {
      */
     static createFrom($$source: any = {}): PRMergeConflictsResult {
         const $$createField4_0 = $$createType4;
-        const $$createField5_0 = $$createType13;
+        const $$createField5_0 = $$createType19;
         const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("paths" in $$parsedSource) {
@@ -1149,9 +1493,9 @@ export class PRUpdateSubscriptionResult {
      * Creates a new PRUpdateSubscriptionResult instance from a string or object.
      */
     static createFrom($$source: any = {}): PRUpdateSubscriptionResult {
-        const $$createField2_0 = $$createType14;
-        const $$createField3_0 = $$createType15;
-        const $$createField4_0 = $$createType17;
+        const $$createField2_0 = $$createType20;
+        const $$createField3_0 = $$createType21;
+        const $$createField4_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pr" in $$parsedSource) {
             $$parsedSource["pr"] = $$createField2_0($$parsedSource["pr"]);
@@ -1163,6 +1507,55 @@ export class PRUpdateSubscriptionResult {
             $$parsedSource["threads"] = $$createField4_0($$parsedSource["threads"]);
         }
         return new PRUpdateSubscriptionResult($$parsedSource as Partial<PRUpdateSubscriptionResult>);
+    }
+}
+
+/**
+ * PatchSpanSeed is one file's precomputed diff spans. ContentKey is the
+ * frontend `contentKey(patch text)` string; together with Path it is
+ * exactly the diffSpanCache base key, so the frontend can insert
+ * without recomputing or re-verifying anything (a stale/mismatched key
+ * simply never gets looked up).
+ */
+export class PatchSpanSeed {
+    "path": string;
+    "contentKey": string;
+    "lines": highlight$0.EncodedLine[];
+
+    /**
+     * Primed: computed with real file content above each hunk (see
+     * HighlightResult.Primed). Persist-time seeds are primed when the
+     * just-edited workspace file still matched the patch at compute
+     * time — the only moment historical-diff spans can be primed
+     * correctly, since the file drifts afterward.
+     */
+    "primed"?: boolean;
+
+    /** Creates a new PatchSpanSeed instance. */
+    constructor($$source: Partial<PatchSpanSeed> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("contentKey" in $$source)) {
+            this["contentKey"] = "";
+        }
+        if (!("lines" in $$source)) {
+            this["lines"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PatchSpanSeed instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PatchSpanSeed {
+        const $$createField2_0 = $$createType15;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("lines" in $$parsedSource) {
+            $$parsedSource["lines"] = $$createField2_0($$parsedSource["lines"]);
+        }
+        return new PatchSpanSeed($$parsedSource as Partial<PatchSpanSeed>);
     }
 }
 
@@ -1210,6 +1603,11 @@ export class PayloadChunk {
 export class PayloadContent {
     "data": string;
 
+    /**
+     * PatchSpans: see PayloadPreview.PatchSpans.
+     */
+    "patchSpans"?: PatchSpanSeed[];
+
     /** Creates a new PayloadContent instance. */
     constructor($$source: Partial<PayloadContent> = {}) {
         if (!("data" in $$source)) {
@@ -1223,7 +1621,11 @@ export class PayloadContent {
      * Creates a new PayloadContent instance from a string or object.
      */
     static createFrom($$source: any = {}): PayloadContent {
+        const $$createField1_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("patchSpans" in $$parsedSource) {
+            $$parsedSource["patchSpans"] = $$createField1_0($$parsedSource["patchSpans"]);
+        }
         return new PayloadContent($$parsedSource as Partial<PayloadContent>);
     }
 }
@@ -1233,6 +1635,15 @@ export class PayloadPreview {
     "nextOffset": number;
     "totalSize": number;
     "isComplete": boolean;
+
+    /**
+     * PatchSpans carries the persisted highlight spans of a diff-kind
+     * payload (computed once at persist time, stored beside the row).
+     * Keys are content-addressed per file, so spans for a file the
+     * served text truncates simply never match and that file falls back
+     * to the RPC path. See app_highlight_diff_seed.go.
+     */
+    "patchSpans"?: PatchSpanSeed[];
 
     /** Creates a new PayloadPreview instance. */
     constructor($$source: Partial<PayloadPreview> = {}) {
@@ -1256,7 +1667,11 @@ export class PayloadPreview {
      * Creates a new PayloadPreview instance from a string or object.
      */
     static createFrom($$source: any = {}): PayloadPreview {
+        const $$createField4_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("patchSpans" in $$parsedSource) {
+            $$parsedSource["patchSpans"] = $$createField4_0($$parsedSource["patchSpans"]);
+        }
         return new PayloadPreview($$parsedSource as Partial<PayloadPreview>);
     }
 }
@@ -1291,7 +1706,7 @@ export class ProviderTerminalHandle {
      * Creates a new ProviderTerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): ProviderTerminalHandle {
-        const $$createField2_0 = $$createType18;
+        const $$createField2_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -1451,24 +1866,6 @@ export const RemoteEndpointSummary = settings$0.RemoteEndpointSummary;
  */
 export type RemoteEndpointSummary = settings$0.RemoteEndpointSummary;
 
-export class RevertToMessageCheckpointOptions {
-    "killRunningBackgroundTasks"?: boolean;
-
-    /** Creates a new RevertToMessageCheckpointOptions instance. */
-    constructor($$source: Partial<RevertToMessageCheckpointOptions> = {}) {
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new RevertToMessageCheckpointOptions instance from a string or object.
-     */
-    static createFrom($$source: any = {}): RevertToMessageCheckpointOptions {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new RevertToMessageCheckpointOptions($$parsedSource as Partial<RevertToMessageCheckpointOptions>);
-    }
-}
-
 export class SendDiffReviewCommentsInput {
     "pr"?: store$0.DiffReviewPRContext | null;
 
@@ -1482,7 +1879,7 @@ export class SendDiffReviewCommentsInput {
      * Creates a new SendDiffReviewCommentsInput instance from a string or object.
      */
     static createFrom($$source: any = {}): SendDiffReviewCommentsInput {
-        const $$createField0_0 = $$createType20;
+        const $$createField0_0 = $$createType28;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pr" in $$parsedSource) {
             $$parsedSource["pr"] = $$createField0_0($$parsedSource["pr"]);
@@ -1522,7 +1919,7 @@ export class SendMessageOptions {
         const $$createField2_0 = $$createType8;
         const $$createField3_0 = $$createType8;
         const $$createField4_0 = $$createType4;
-        const $$createField5_0 = $$createType22;
+        const $$createField5_0 = $$createType30;
         const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
@@ -1687,7 +2084,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType18;
+        const $$createField2_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -1854,11 +2251,11 @@ export class ThreadLiveState {
      * Creates a new ThreadLiveState instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadLiveState {
-        const $$createField3_0 = $$createType24;
-        const $$createField4_0 = $$createType26;
-        const $$createField5_0 = $$createType28;
-        const $$createField6_0 = $$createType29;
-        const $$createField7_0 = $$createType31;
+        const $$createField3_0 = $$createType32;
+        const $$createField4_0 = $$createType34;
+        const $$createField5_0 = $$createType36;
+        const $$createField6_0 = $$createType37;
+        const $$createField7_0 = $$createType39;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("activeTurn" in $$parsedSource) {
             $$parsedSource["activeTurn"] = $$createField3_0($$parsedSource["activeTurn"]);
@@ -1876,6 +2273,40 @@ export class ThreadLiveState {
             $$parsedSource["todo"] = $$createField7_0($$parsedSource["todo"]);
         }
         return new ThreadLiveState($$parsedSource as Partial<ThreadLiveState>);
+    }
+}
+
+/**
+ * TurnEditsDiff is a whole turn's concatenated edit diffs plus the
+ * constituent payloads' persisted highlight spans. Per-file content
+ * addressing makes the span union safe: a file edited once in the turn
+ * keys identically to its payload's section and paints primed; a file
+ * edited twice renders merged (different text, different key) and
+ * falls back to the RPC path.
+ */
+export class TurnEditsDiff {
+    "data": string;
+    "patchSpans"?: PatchSpanSeed[];
+
+    /** Creates a new TurnEditsDiff instance. */
+    constructor($$source: Partial<TurnEditsDiff> = {}) {
+        if (!("data" in $$source)) {
+            this["data"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TurnEditsDiff instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TurnEditsDiff {
+        const $$createField1_0 = $$createType25;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("patchSpans" in $$parsedSource) {
+            $$parsedSource["patchSpans"] = $$createField1_0($$parsedSource["patchSpans"]);
+        }
+        return new TurnEditsDiff($$parsedSource as Partial<TurnEditsDiff>);
     }
 }
 
@@ -1914,6 +2345,74 @@ export class UpdateAvailability {
     static createFrom($$source: any = {}): UpdateAvailability {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new UpdateAvailability($$parsedSource as Partial<UpdateAvailability>);
+    }
+}
+
+/**
+ * VerifyEditDiffsRequest carries one edits-scope load's candidate files
+ * for batch expandability verification. The edit selection mirrors
+ * DiffContextRequest; each file's VerifyPatch is its merged historical
+ * patch text.
+ */
+export class VerifyEditDiffsRequest {
+    "editPayloadId": string;
+    "editTurnIndex": number;
+    "files": EditDiffVerifyFile[];
+
+    /** Creates a new VerifyEditDiffsRequest instance. */
+    constructor($$source: Partial<VerifyEditDiffsRequest> = {}) {
+        if (!("editPayloadId" in $$source)) {
+            this["editPayloadId"] = "";
+        }
+        if (!("editTurnIndex" in $$source)) {
+            this["editTurnIndex"] = 0;
+        }
+        if (!("files" in $$source)) {
+            this["files"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new VerifyEditDiffsRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): VerifyEditDiffsRequest {
+        const $$createField2_0 = $$createType41;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("files" in $$parsedSource) {
+            $$parsedSource["files"] = $$createField2_0($$parsedSource["files"]);
+        }
+        return new VerifyEditDiffsRequest($$parsedSource as Partial<VerifyEditDiffsRequest>);
+    }
+}
+
+/**
+ * VerifyEditDiffsResult lists the paths whose expansion requests would
+ * be served — the positive gate for rendering gap arrows.
+ */
+export class VerifyEditDiffsResult {
+    "expandablePaths": string[];
+
+    /** Creates a new VerifyEditDiffsResult instance. */
+    constructor($$source: Partial<VerifyEditDiffsResult> = {}) {
+        if (!("expandablePaths" in $$source)) {
+            this["expandablePaths"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new VerifyEditDiffsResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): VerifyEditDiffsResult {
+        const $$createField0_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("expandablePaths" in $$parsedSource) {
+            $$parsedSource["expandablePaths"] = $$createField0_0($$parsedSource["expandablePaths"]);
+        }
+        return new VerifyEditDiffsResult($$parsedSource as Partial<VerifyEditDiffsResult>);
     }
 }
 
@@ -1974,7 +2473,7 @@ export class WorkflowDefinitionCatalog {
      * Creates a new WorkflowDefinitionCatalog instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionCatalog {
-        const $$createField1_0 = $$createType33;
+        const $$createField1_0 = $$createType43;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("workflows" in $$parsedSource) {
             $$parsedSource["workflows"] = $$createField1_0($$parsedSource["workflows"]);
@@ -2011,7 +2510,7 @@ export class WorkflowDefinitionInput {
      * Creates a new WorkflowDefinitionInput instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionInput {
-        const $$createField3_0 = $$createType34;
+        const $$createField3_0 = $$createType44;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("enum" in $$parsedSource) {
             $$parsedSource["enum"] = $$createField3_0($$parsedSource["enum"]);
@@ -2073,8 +2572,8 @@ export class WorkflowDefinitionListing {
      * Creates a new WorkflowDefinitionListing instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionListing {
-        const $$createField5_0 = $$createType36;
-        const $$createField6_0 = $$createType38;
+        const $$createField5_0 = $$createType46;
+        const $$createField6_0 = $$createType48;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField5_0($$parsedSource["phases"]);
@@ -2179,12 +2678,12 @@ export class WorkflowItemDetailView {
      * Creates a new WorkflowItemDetailView instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowItemDetailView {
-        const $$createField0_0 = $$createType39;
+        const $$createField0_0 = $$createType49;
         const $$createField1_0 = $$createType4;
-        const $$createField2_0 = $$createType41;
-        const $$createField3_0 = $$createType42;
-        const $$createField4_0 = $$createType44;
-        const $$createField5_0 = $$createType45;
+        const $$createField2_0 = $$createType51;
+        const $$createField3_0 = $$createType52;
+        const $$createField4_0 = $$createType54;
+        const $$createField5_0 = $$createType55;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
@@ -2343,7 +2842,7 @@ export class WorkflowPRReviewComments {
      * Creates a new WorkflowPRReviewComments instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowPRReviewComments {
-        const $$createField1_0 = $$createType17;
+        const $$createField1_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("threads" in $$parsedSource) {
             $$parsedSource["threads"] = $$createField1_0($$parsedSource["threads"]);
@@ -2379,7 +2878,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType47;
+        const $$createField0_0 = $$createType57;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -2488,42 +2987,52 @@ const $$createType5 = TerminalChip.createFrom;
 const $$createType6 = $Create.Array($$createType5);
 const $$createType7 = store$0.ProposedPlanSourceRef.createFrom;
 const $$createType8 = $Create.Nullable($$createType7);
-const $$createType9 = git$0.GitStatus.createFrom;
-const $$createType10 = LiveStateTodoStep.createFrom;
-const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = $Create.Map($Create.Any, $Create.Any);
-const $$createType13 = $Create.Map($Create.Any, $$createType4);
-const $$createType14 = git$0.PRReference.createFrom;
-const $$createType15 = git$0.PRDetail.createFrom;
-const $$createType16 = git$0.ReviewThread.createFrom;
+const $$createType9 = EditDiffEntry.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = EditDiffTurnLabel.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = git$0.GitStatus.createFrom;
+const $$createType14 = highlight$0.EncodedLine.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = LiveStateTodoStep.createFrom;
 const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = terminal$0.SessionSummary.createFrom;
-const $$createType19 = store$0.DiffReviewPRContext.createFrom;
-const $$createType20 = $Create.Nullable($$createType19);
-const $$createType21 = store$0.DiffReviewSourceRef.createFrom;
-const $$createType22 = $Create.Nullable($$createType21);
-const $$createType23 = LiveStateActiveTurn.createFrom;
-const $$createType24 = $Create.Nullable($$createType23);
-const $$createType25 = flushqueue$0.QueuedItem.createFrom;
-const $$createType26 = $Create.Array($$createType25);
-const $$createType27 = QueueFlushedItem.createFrom;
-const $$createType28 = $Create.Array($$createType27);
-const $$createType29 = provider$0.PendingInteractiveRequests.createFrom;
-const $$createType30 = LiveStateTodo.createFrom;
-const $$createType31 = $Create.Nullable($$createType30);
-const $$createType32 = WorkflowDefinitionListing.createFrom;
-const $$createType33 = $Create.Array($$createType32);
-const $$createType34 = $Create.Array($Create.Any);
-const $$createType35 = WorkflowDefinitionPhase.createFrom;
+const $$createType18 = $Create.Map($Create.Any, $Create.Any);
+const $$createType19 = $Create.Map($Create.Any, $$createType4);
+const $$createType20 = git$0.PRReference.createFrom;
+const $$createType21 = git$0.PRDetail.createFrom;
+const $$createType22 = git$0.ReviewThread.createFrom;
+const $$createType23 = $Create.Array($$createType22);
+const $$createType24 = PatchSpanSeed.createFrom;
+const $$createType25 = $Create.Array($$createType24);
+const $$createType26 = terminal$0.SessionSummary.createFrom;
+const $$createType27 = store$0.DiffReviewPRContext.createFrom;
+const $$createType28 = $Create.Nullable($$createType27);
+const $$createType29 = store$0.DiffReviewSourceRef.createFrom;
+const $$createType30 = $Create.Nullable($$createType29);
+const $$createType31 = LiveStateActiveTurn.createFrom;
+const $$createType32 = $Create.Nullable($$createType31);
+const $$createType33 = flushqueue$0.QueuedItem.createFrom;
+const $$createType34 = $Create.Array($$createType33);
+const $$createType35 = QueueFlushedItem.createFrom;
 const $$createType36 = $Create.Array($$createType35);
-const $$createType37 = WorkflowDefinitionInput.createFrom;
-const $$createType38 = $Create.Array($$createType37);
-const $$createType39 = WorkflowItemView.createFrom;
-const $$createType40 = WorkflowItemPhaseView.createFrom;
+const $$createType37 = provider$0.PendingInteractiveRequests.createFrom;
+const $$createType38 = LiveStateTodo.createFrom;
+const $$createType39 = $Create.Nullable($$createType38);
+const $$createType40 = EditDiffVerifyFile.createFrom;
 const $$createType41 = $Create.Array($$createType40);
-const $$createType42 = $Create.Map($Create.Any, $Create.Any);
-const $$createType43 = WorkflowArtifact.createFrom;
-const $$createType44 = $Create.Array($$createType43);
-const $$createType45 = store$0.WorkItemUsage.createFrom;
-const $$createType46 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType47 = $Create.Array($$createType46);
+const $$createType42 = WorkflowDefinitionListing.createFrom;
+const $$createType43 = $Create.Array($$createType42);
+const $$createType44 = $Create.Array($Create.Any);
+const $$createType45 = WorkflowDefinitionPhase.createFrom;
+const $$createType46 = $Create.Array($$createType45);
+const $$createType47 = WorkflowDefinitionInput.createFrom;
+const $$createType48 = $Create.Array($$createType47);
+const $$createType49 = WorkflowItemView.createFrom;
+const $$createType50 = WorkflowItemPhaseView.createFrom;
+const $$createType51 = $Create.Array($$createType50);
+const $$createType52 = $Create.Map($Create.Any, $Create.Any);
+const $$createType53 = WorkflowArtifact.createFrom;
+const $$createType54 = $Create.Array($$createType53);
+const $$createType55 = store$0.WorkItemUsage.createFrom;
+const $$createType56 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType57 = $Create.Array($$createType56);

@@ -6,6 +6,7 @@
   import { createReviewScrollOwner, reviewScrollKey } from './reviewScroll';
   import type { DiffReviewComment, ReviewThread } from '../../types/models';
   import type { ExpandDirection } from '../../utils/diffContextExpansion';
+  import type { PatchScopeContext } from '../../utils/diffSpanCache.svelte';
   import type { DiffGap, PatchFile } from '../../utils/patchFiles';
   import {
     captureReadingAnchor,
@@ -66,6 +67,9 @@
     onExpandFold?: (path: string, foldId: number) => void;
     /** Diff view only: fetches a hunk gap's hidden context lines. */
     onExpandGap?: (path: string, gap: DiffGap, dir: ExpandDirection) => void;
+    /** Diff view only: scope fields for parse-priming span requests
+     * (HighlightPatchWithContext). Omitted on the conflict surface. */
+    spanContext?: PatchScopeContext | null;
     jumpToFilePath?: string | null;
     onJumpConsumed?: () => void;
     /** Row-key jump (comments list): scrolls to the exact row and
@@ -93,6 +97,7 @@
     onAddComment,
     onExpandFold,
     onExpandGap,
+    spanContext = null,
     jumpToFilePath = null,
     onJumpConsumed,
     jumpToRowKey = null,
@@ -354,25 +359,28 @@
     }
   }
 
-  // Per-file gutter width (ch) from the file's max line number. Line
-  // numbers are monotonic within a file, so the file's LAST numbered
-  // row carries the max; the backwards scan hits it first. Conflict
-  // files can end on unnumbered marker/fold rows, so keep scanning past
-  // rows without a line number.
+  // Per-file gutter width (ch) from the file's max line number — a
+  // true max over every row, not the last numbered row: a merged
+  // edits-scope file whose sections couldn't be renumbered (overlap
+  // fallback in mergePatchFilesByPath) renders sections in edit order,
+  // where numbering is non-monotonic and the last row can carry a
+  // smaller number than rows above it — sizing from it cramps every
+  // wider number.
   const gutterChars = $derived.by(() => {
-    const byFile = new Map<number, number>();
-    for (let i = built.rows.length - 1; i >= 0; i -= 1) {
-      const row = built.rows[i];
-      if (row.kind !== 'line-block' || byFile.has(row.fileIndex)) continue;
-      let maxLine = 0;
-      for (let j = row.rows.length - 1; j >= 0 && maxLine === 0; j -= 1) {
-        const displayRow = row.rows[j];
-        maxLine = Math.max(displayRow?.oldLine ?? 0, displayRow?.newLine ?? 0);
+    const maxByFile = new Map<number, number>();
+    for (const row of built.rows) {
+      if (row.kind !== 'line-block') continue;
+      let maxLine = maxByFile.get(row.fileIndex) ?? 0;
+      for (const displayRow of row.rows) {
+        maxLine = Math.max(maxLine, displayRow.oldLine, displayRow.newLine);
       }
-      if (maxLine === 0) continue;
-      byFile.set(row.fileIndex, Math.max(2, String(maxLine).length));
+      if (maxLine > 0) maxByFile.set(row.fileIndex, maxLine);
     }
-    return byFile;
+    const widths = new Map<number, number>();
+    for (const [fileIndex, maxLine] of maxByFile) {
+      widths.set(fileIndex, Math.max(2, String(maxLine).length));
+    }
+    return widths;
   });
 </script>
 
@@ -437,8 +445,10 @@
             <ReviewLineBlockRow
               rows={row.rows}
               splitRows={row.splitRows}
+              {file}
               path={file.path}
               {threadId}
+              {spanContext}
               {wordWrap}
               gutterCh={gutterChars.get(row.fileIndex) ?? 2}
               {onAddComment}

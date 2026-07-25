@@ -1622,3 +1622,118 @@ func waitFor(cond func() bool, timeout time.Duration) bool {
 	}
 	return cond()
 }
+
+func TestServer_CrossOriginIsolationHeaders(t *testing.T) {
+	design := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("design"))
+	})
+	d := NewDispatcher()
+	srv, err := New(Config{
+		Dispatcher:         d,
+		EventBus:           NewEventBus(20),
+		Token:              "test-token",
+		DesignHandler:      func() http.Handler { return design },
+		CrossOriginIsolate: true,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		_ = srv.Shutdown(ctx)
+	})
+
+	// COEP applies to nested documents, so BOTH the SPA shell route and
+	// the design-preview route must carry the full header set — a miss
+	// on /design/ breaks the preview iframe under the isolated shell.
+	for _, path := range []string{"/", "/design/some-thread/main/"} {
+		resp, err := http.Get("http://" + srv.Addr() + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_, _ = readAllAndClose(resp)
+		for header, want := range map[string]string{
+			"Cross-Origin-Opener-Policy":   "same-origin",
+			"Cross-Origin-Embedder-Policy": "require-corp",
+			"Cross-Origin-Resource-Policy": "same-origin",
+		} {
+			if got := resp.Header.Get(header); got != want {
+				t.Errorf("GET %s: %s = %q, want %q", path, header, got, want)
+			}
+		}
+	}
+}
+
+func TestServer_CrossOriginIsolationOffByDefault(t *testing.T) {
+	f := newServerFixture(t)
+	resp, err := http.Get("http://" + f.srv.Addr() + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	_, _ = readAllAndClose(resp)
+	for _, header := range []string{
+		"Cross-Origin-Opener-Policy",
+		"Cross-Origin-Embedder-Policy",
+		"Cross-Origin-Resource-Policy",
+	} {
+		if got := resp.Header.Get(header); got != "" {
+			t.Errorf("GET /: %s = %q, want unset (isolation is diagnostic opt-in)", header, got)
+		}
+	}
+}
+
+func TestWithAssetHeadersCachePolicy(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h := withAssetHeaders(inner)
+	cases := []struct {
+		name       string
+		path       string
+		remoteAddr string
+		want       string
+	}{
+		// Loopback peers are the embedded webview: it never renavigates,
+		// so caching can't pay off but WOULD pin decoded script text in
+		// the renderer's in-memory HTTP cache.
+		{"loopback asset v4", "/assets/index-abc.js", "127.0.0.1:54321", "no-store"},
+		{"loopback asset v6", "/assets/index-abc.js", "[::1]:54321", "no-store"},
+		// Remote clients reload across sessions; hashed assets are
+		// content-addressed forever.
+		{"remote asset", "/assets/index-abc.js", "192.168.1.50:54321", "public, max-age=31536000, immutable"},
+		// The SPA shell must never be shadowed by a stale copy.
+		{"shell root", "/", "127.0.0.1:54321", "no-cache, must-revalidate"},
+		{"shell index", "/index.html", "192.168.1.50:54321", "no-cache, must-revalidate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, tc.path, nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.RemoteAddr = tc.remoteAddr
+			rec := newHeaderRecorder()
+			h.ServeHTTP(rec, req)
+			if got := rec.Header().Get("Cache-Control"); got != tc.want {
+				t.Errorf("Cache-Control = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// headerRecorder is the minimal ResponseWriter these header tests need;
+// the full httptest.ResponseRecorder would work too but the package
+// currently doesn't import net/http/httptest.
+type headerRecorder struct {
+	h http.Header
+}
+
+func newHeaderRecorder() *headerRecorder             { return &headerRecorder{h: make(http.Header)} }
+func (r *headerRecorder) Header() http.Header        { return r.h }
+func (r *headerRecorder) Write(b []byte) (int, error) { return len(b), nil }
+func (r *headerRecorder) WriteHeader(int)             {}

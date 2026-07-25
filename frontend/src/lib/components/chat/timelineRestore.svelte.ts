@@ -73,7 +73,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
   let scrollSnapshotThreadId: string | null = $state(null);
   // Last observed `pane.switchGeneration`. Paired with
   // `scrollSnapshotThreadId` so the restore-effect.pre reset path fires
-  // on same-thread re-switch (the revert-to-checkpoint flow calls
+  // on same-thread re-switch (a forced reload calls
   // `pane.switchThread(currentThread)` to reload items in place; the
   // thread id doesn't change but the generation counter bumps). Without
   // this discriminator, revert leaves `restoredThreadId === threadId`
@@ -143,7 +143,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
   // already keep the outgoing thread's snapshot fresh — the most recent
   // user scroll IS the snapshot.
   function handleSwitchEdgePre(nextThreadId: string | null, nextSwitchGeneration: number): void {
-    // Same-thread re-switch (revert-to-checkpoint flow) keeps
+    // Same-thread re-switch (forced in-place reload) keeps
     // `pane.threadId` constant but bumps `pane.switchGeneration`. We
     // need the reset path to run in that case too — otherwise
     // `restoredThreadId` stays equal to `threadId`, the restore

@@ -105,7 +105,7 @@ func FromItem(item store.Item) (Meta, error) {
 // EncodeDraftSource returns the JSON encoding of a source-proposed-plan
 // ref suitable for ThreadDraft.PendingPlanImplementation. A nil ref or
 // a ref with an empty ItemID returns ("", nil) so the draft stores SQL
-// NULL — keeping the partial index introduced in store migration v31
+// NULL — keeping the partial index idx_thread_drafts_pending_plan_impl
 // selective.
 func EncodeDraftSource(ref *store.ProposedPlanSourceRef) (string, error) {
 	if ref == nil || ref.ItemID == "" {
@@ -144,6 +144,32 @@ func ReadProviderItemID(metaJSON string) string {
 	return id
 }
 
+// ReadProviderParentUUID returns the transcript parent uuid stamped
+// onto the user_text item's Meta alongside `provider_item_id` (the
+// parentUuid the Claude echo reported for the consumed message). Empty
+// when the row predates the field, the meta is malformed, or the value
+// isn't a string. Like the item id, it rides as a top-level JSON key —
+// internal correlation, not UI-facing content.
+//
+// The durable parent uuid also lives on the message anchor row
+// (`provider_parent_uuid`), but that copy is written by a separate
+// follow-up UPDATE that can fail after the item-meta stamp committed;
+// this copy is stamped in the SAME transaction as `provider_item_id`
+// (round-5, R5-8) so the already-cut revert retry — which slices
+// through the parent — has a fallback the anchor write can't lose.
+func ReadProviderParentUUID(metaJSON string) string {
+	trimmed := strings.TrimSpace(metaJSON)
+	if trimmed == "" {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(trimmed), &m) != nil {
+		return ""
+	}
+	id, _ := m["provider_parent_uuid"].(string)
+	return id
+}
+
 // MergeProviderItemID returns a JSON-encoded meta blob that preserves
 // every key in `existing` and sets `provider_item_id` to
 // providerItemID. Empty providerItemID returns the original meta
@@ -153,7 +179,19 @@ func ReadProviderItemID(metaJSON string) string {
 // triage's `handle_user_text` flow (folds the echoed id onto the user
 // row). All call it directly — there is no intermediate delegate.
 func MergeProviderItemID(existing, providerItemID string) (string, error) {
-	if providerItemID == "" {
+	return MergeProviderIDs(existing, providerItemID, "")
+}
+
+// MergeProviderIDs returns a JSON-encoded meta blob that preserves
+// every key in `existing` and sets `provider_item_id` /
+// `provider_parent_uuid` to the given values in ONE encode — the echo
+// stamp writes both in the same store transaction so the parent uuid
+// can never be lost to a failed follow-up write (round-5, R5-8). An
+// empty value leaves the corresponding key untouched (never blanks a
+// stored id); when neither value changes anything the original string
+// is returned unchanged so callers can cheaply detect the no-op.
+func MergeProviderIDs(existing, providerItemID, parentUUID string) (string, error) {
+	if providerItemID == "" && parentUUID == "" {
 		return existing, nil
 	}
 	merged := map[string]any{}
@@ -166,10 +204,22 @@ func MergeProviderItemID(existing, providerItemID string) (string, error) {
 			merged = map[string]any{}
 		}
 	}
-	if cur, ok := merged["provider_item_id"].(string); ok && cur == providerItemID {
+	changed := false
+	if providerItemID != "" {
+		if cur, ok := merged["provider_item_id"].(string); !ok || cur != providerItemID {
+			merged["provider_item_id"] = providerItemID
+			changed = true
+		}
+	}
+	if parentUUID != "" {
+		if cur, ok := merged["provider_parent_uuid"].(string); !ok || cur != parentUUID {
+			merged["provider_parent_uuid"] = parentUUID
+			changed = true
+		}
+	}
+	if !changed {
 		return existing, nil
 	}
-	merged["provider_item_id"] = providerItemID
 	encoded, err := json.Marshal(merged)
 	if err != nil {
 		return "", fmt.Errorf("encode merged meta: %w", err)

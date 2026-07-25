@@ -1,0 +1,85 @@
+/* Syntax-highlight palette.
+ *
+ * The backend returns theme-independent class ids; syntaxSpans.ts maps
+ * id N to `syntax-<name>` (names from the HighlightClassNames RPC —
+ * internal/highlight/classids.go is the authoritative list). Colors
+ * approximate github-dark / github-light per semantic family. Classes
+ * with no rule here (variable, parameter, operator, punctuation,
+ * embedded) deliberately inherit the surrounding text color — GitHub's
+ * themes leave plain identifiers and operators unstyled, and helix
+ * queries capture every identifier as @variable.
+ *
+ * Theme flip is pure CSS: html.light overrides the variables, no
+ * re-request, no new spans. */
+
+:root {
+  --syntax-keyword: #ff7b72;
+  --syntax-string: #a5d6ff;
+  --syntax-string-special: #79c0ff;
+  --syntax-comment: #8b949e;
+  --syntax-number: #79c0ff;
+  --syntax-function: #d2a8ff;
+  --syntax-type: #ffa657;
+  --syntax-variable-builtin: #ff7b72;
+  --syntax-property: #79c0ff;
+  --syntax-constant: #79c0ff;
+  --syntax-tag: #7ee787;
+  --syntax-attribute: #79c0ff;
+  --syntax-namespace: #ffa657;
+  --syntax-label: #79c0ff;
+  --syntax-markup-heading: #79c0ff;
+  --syntax-markup-link: #a5d6ff;
+  --syntax-markup-raw: #a5d6ff;
+  --syntax-markup-list: #ffa657;
+  --syntax-markup-quote: #8b949e;
+  --syntax-added: #7ee787;
+  --syntax-removed: #ff7b72;
+}
+
+html.light {
+  --syntax-keyword: #cf222e;
+  --syntax-string: #0a3069;
+  --syntax-string-special: #0550ae;
+  --syntax-comment: #6e7781;
+  --syntax-number: #0550ae;
+  --syntax-function: #8250df;
+  --syntax-type: #953800;
+  --syntax-variable-builtin: #cf222e;
+  --syntax-property: #0550ae;
+  --syntax-constant: #0550ae;
+  --syntax-tag: #116329;
+  --syntax-attribute: #0550ae;
+  --syntax-namespace: #953800;
+  --syntax-label: #0550ae;
+  --syntax-markup-heading: #0550ae;
+  --syntax-markup-link: #0a3069;
+  --syntax-markup-raw: #0a3069;
+  --syntax-markup-list: #953800;
+  --syntax-markup-quote: #6e7781;
+  --syntax-added: #116329;
+  --syntax-removed: #cf222e;
+}
+
+.syntax-keyword { color: var(--syntax-keyword); }
+.syntax-string { color: var(--syntax-string); }
+.syntax-string-special { color: var(--syntax-string-special); }
+.syntax-comment { color: var(--syntax-comment); }
+.syntax-number { color: var(--syntax-number); }
+.syntax-function { color: var(--syntax-function); }
+.syntax-type { color: var(--syntax-type); }
+.syntax-variable-builtin { color: var(--syntax-variable-builtin); }
+.syntax-property { color: var(--syntax-property); }
+.syntax-constant { color: var(--syntax-constant); }
+.syntax-tag { color: var(--syntax-tag); }
+.syntax-attribute { color: var(--syntax-attribute); }
+.syntax-namespace { color: var(--syntax-namespace); }
+.syntax-label { color: var(--syntax-label); }
+.syntax-markup-heading { color: var(--syntax-markup-heading); font-weight: 600; }
+.syntax-markup-bold { font-weight: 600; }
+.syntax-markup-italic { font-style: italic; }
+.syntax-markup-link { color: var(--syntax-markup-link); }
+.syntax-markup-raw { color: var(--syntax-markup-raw); }
+.syntax-markup-list { color: var(--syntax-markup-list); }
+.syntax-markup-quote { color: var(--syntax-markup-quote); }
+.syntax-added { color: var(--syntax-added); }
+.syntax-removed { color: var(--syntax-removed); }

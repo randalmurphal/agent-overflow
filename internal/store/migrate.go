@@ -428,11 +428,11 @@ BEGIN
 END;
 `
 
-// rebuildItemsWorkflowProposalV28SQL widens only the items.kind CHECK from
+// rebuildItemsWorkflowProposalV31SQL widens only the items.kind CHECK from
 // the proven v11 rebuild. Keeping the complete rebuild mechanically derived
 // preserves every column, index, trigger, and FK-safety property of that
 // migration while admitting the persisted chat confirmation card.
-var rebuildItemsWorkflowProposalV28SQL = strings.Replace(
+var rebuildItemsWorkflowProposalV31SQL = strings.Replace(
 	rebuildItemsV11SQL,
 	"        'compaction_reasoning',",
 	"        'compaction_reasoning',\n        'workflow_proposal',",
@@ -634,10 +634,10 @@ ALTER TABLE chat_model_profiles_new RENAME TO chat_model_profiles;
 CREATE INDEX idx_chat_model_profiles_updated ON chat_model_profiles(updated_at DESC);
 `
 
-// rebuildThreadsWorkflowModeV24SQL extends threads.mode with the workflow
+// rebuildThreadsWorkflowModeV27SQL extends threads.mode with the workflow
 // value used by phase threads. It preserves the complete v22 table shape and
 // recreates every threads index dropped with the old table.
-const rebuildThreadsWorkflowModeV24SQL = `
+const rebuildThreadsWorkflowModeV27SQL = `
 CREATE TABLE threads_new (
     id                       TEXT    PRIMARY KEY,
     project_id               TEXT    REFERENCES projects(id) ON DELETE CASCADE,
@@ -707,21 +707,21 @@ CREATE INDEX idx_threads_project     ON threads(project_id, updated_at DESC);
 CREATE INDEX idx_threads_updated     ON threads(updated_at DESC);
 `
 
-// rebuildThreadsWorkflowModesV25SQL preserves the complete v24 rebuild text
-// and changes only the enumerated mode CHECK. Deriving it from the shipped v24
+// rebuildThreadsWorkflowModesV28SQL preserves the complete v27 rebuild text
+// and changes only the enumerated mode CHECK. Deriving it from the shipped v27
 // SQL makes accidental column/index drift impossible.
-var rebuildThreadsWorkflowModesV25SQL = strings.Replace(
-	rebuildThreadsWorkflowModeV24SQL,
+var rebuildThreadsWorkflowModesV28SQL = strings.Replace(
+	rebuildThreadsWorkflowModeV27SQL,
 	"CHECK(mode IN ('chat','plan','design','discussion','terminal','workflow'))",
 	"CHECK(mode IN ('chat','plan','design','discussion','terminal','workflow','workflow-studio','workflow-triage'))",
 	1,
 )
 
-// rebuildWorkItemsTakeoverTriageV25SQL adds the durable triage-thread link and
+// rebuildWorkItemsTakeoverTriageV28SQL adds the durable triage-thread link and
 // extends the typed reason CHECK for takeover parks. SQLite cannot alter a
 // CHECK constraint in place, so the established table-rebuild pattern is
 // required. Run-record tables intentionally have no work_items foreign keys.
-const rebuildWorkItemsTakeoverTriageV25SQL = `
+const rebuildWorkItemsTakeoverTriageV28SQL = `
 CREATE TABLE work_items_new (
     id               TEXT    PRIMARY KEY,
     project_id       TEXT    NOT NULL,
@@ -776,7 +776,7 @@ CREATE INDEX idx_work_item_phases_thread
   WHERE thread_id <> '';
 `
 
-// rebuildWorkItemsDirectStartV30SQL removes the work queue from the run
+// rebuildWorkItemsDirectStartV33SQL removes the work queue from the run
 // record. It (a) drops `queued` from the state CHECK — a run starts running
 // and contention is a phase waiting on resource capacity, not an item waiting
 // in a line — and (b) drops the `sort_position` queue-order column. SQLite can
@@ -788,7 +788,7 @@ CREATE INDEX idx_work_item_phases_thread
 // crash produces — so the morning-after view explains them and the ordinary
 // resume path continues them. After this migration `queued` is unrepresentable,
 // which is why the engine's startup rebuild carries no legacy-queued branch.
-const rebuildWorkItemsDirectStartV30SQL = `
+const rebuildWorkItemsDirectStartV33SQL = `
 CREATE TABLE work_items_new (
     id               TEXT    PRIMARY KEY,
     project_id       TEXT    NOT NULL,
@@ -1061,12 +1061,94 @@ UPDATE turns SET provider_turn_id = turn_id WHERE turn_id NOT LIKE '%:%';`,
 	},
 	{
 		Version: 22,
+		Name:    "payload_highlight_spans",
+		// Version-stamped, content-addressed highlight span blobs
+		// persisted beside the payload they describe (JSON, shape owned
+		// by the app layer — PersistedPatchSpans). preview_spans covers
+		// the per-file inline-diff preview patches and rides item list
+		// reads via the itemColumns join; spans covers the full payload
+		// data and is read only by the on-demand payload loads. Empty
+		// string means "not computed" — readers fall back to the
+		// highlight RPC path.
+		SQL: `ALTER TABLE payloads ADD COLUMN preview_spans TEXT NOT NULL DEFAULT '';
+ALTER TABLE payloads ADD COLUMN spans TEXT NOT NULL DEFAULT '';`,
+	},
+	{
+		Version: 23,
+		Name:    "message_anchors_replace_checkpoints",
+		// The per-message git-checkpoint machinery is gone. What fork-
+		// from-message and revert-on-interrupt still need from the old
+		// thread_checkpoints row is pure provider correlation — turn
+		// index + Claude wire uuids — so the table slims into
+		// message_anchors and the git-side columns (ref_name,
+		// baseline_sha, status, files, workspace_path) drop with the
+		// snapshots themselves. thread_tracked_files backed only the
+		// removed session-diff/files-revert paths. Review comments
+		// scoped to the removed 'turn'/'session' diff sources are
+		// orphaned (their diffs can never load again) and go too; the
+		// scope CHECK constraint keeps the legacy values because
+		// rebuilding the table to tighten it buys nothing. Leftover
+		// refs/agent-overflow/* refs in workspaces are cleaned up
+		// manually if at all (see docs/architecture/schema.md) —
+		// migrations don't run subprocesses.
+		SQL: `CREATE TABLE message_anchors (
+    thread_id                TEXT    NOT NULL,
+    user_item_id             TEXT    NOT NULL,
+    turn_index               INTEGER NOT NULL,
+    provider_user_message_id TEXT    NOT NULL DEFAULT '',
+    provider_parent_uuid     TEXT    NOT NULL DEFAULT '',
+    created_at               INTEGER NOT NULL,
+    PRIMARY KEY (thread_id, user_item_id),
+    FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+    FOREIGN KEY (thread_id, user_item_id) REFERENCES items(thread_id, id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_message_anchors_thread_turn
+    ON message_anchors(thread_id, turn_index);
+
+INSERT INTO message_anchors (
+	thread_id, user_item_id, turn_index,
+	provider_user_message_id, provider_parent_uuid, created_at
+)
+SELECT thread_id, user_item_id, turn_index,
+       provider_user_message_id, provider_parent_uuid, captured_at
+  FROM thread_checkpoints;
+
+DROP TABLE thread_checkpoints;
+
+DROP TABLE thread_tracked_files;
+
+DELETE FROM diff_review_comments WHERE scope IN ('turn', 'session');`,
+	},
+	{
+		Version: 24,
+		Name:    "edit_file_snapshots",
+		// Per-edit new-side file snapshots backing the review pane's
+		// Edits scope: gzip-compressed full file content captured at
+		// diff persist time, the one moment the just-edited workspace
+		// file provably matches the patch. Hunk-gap expansion and span
+		// priming resolve against the snapshot first, so a historical
+		// edit stays expandable after later turns drift the workspace
+		// file. Rows ride the payload lifecycle (the payload GC
+		// triggers cascade here); absent rows — pre-feature history or
+		// size-capped writes — degrade to the workspace-verify
+		// fallback. No backfill: old edits simply have no snapshot.
+		SQL: `CREATE TABLE edit_file_snapshots (
+    payload_id TEXT    NOT NULL REFERENCES payloads(id) ON DELETE CASCADE,
+    path       TEXT    NOT NULL,
+    content    BLOB    NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (payload_id, path)
+);`,
+	},
+	{
+		Version: 25,
 		Name:    "project_slugs",
 		SQL:     `ALTER TABLE projects ADD COLUMN slug TEXT NOT NULL DEFAULT '';`,
 		Fix:     backfillProjectSlugsFixup,
 	},
 	{
-		Version: 23,
+		Version: 26,
 		Name:    "workflow_persistence",
 		SQL: `CREATE TABLE work_items (
     id             TEXT    PRIMARY KEY,
@@ -1157,19 +1239,19 @@ CREATE INDEX idx_usage_ledger_work_item
   ON usage_ledger(work_item_id, created_at);`,
 	},
 	{
-		Version: 24,
+		Version: 27,
 		Name:    "thread_workflow_mode",
-		SQL:     rebuildThreadsWorkflowModeV24SQL,
+		SQL:     rebuildThreadsWorkflowModeV27SQL,
 		Rebuild: true,
 	},
 	{
-		Version: 25,
+		Version: 28,
 		Name:    "thread_workflow_modes_takeover_triage",
-		SQL:     rebuildThreadsWorkflowModesV25SQL + rebuildWorkItemsTakeoverTriageV25SQL,
+		SQL:     rebuildThreadsWorkflowModesV28SQL + rebuildWorkItemsTakeoverTriageV28SQL,
 		Rebuild: true,
 	},
 	{
-		Version: 26,
+		Version: 29,
 		Name:    "work_item_disposition_digest",
 		SQL: `ALTER TABLE work_items ADD COLUMN disposition TEXT NOT NULL DEFAULT ''
 CHECK(disposition = '' OR json_valid(disposition));
@@ -1181,23 +1263,23 @@ CREATE INDEX idx_work_items_state_sort
   ON work_items(state, sort_position, created_at, id);`,
 	},
 	{
-		Version: 27,
+		Version: 30,
 		Name:    "usage_ledger_project_work_item",
 		SQL: `CREATE INDEX idx_usage_ledger_project_work_item
   ON usage_ledger(project_id, work_item_id)
   WHERE work_item_id <> '';`,
 	},
 	{
-		Version: 28,
+		Version: 31,
 		Name:    "workflow_proposal_item_kind",
-		SQL: rebuildItemsWorkflowProposalV28SQL + `
+		SQL: rebuildItemsWorkflowProposalV31SQL + `
 CREATE UNIQUE INDEX idx_work_items_agent_source_ref
   ON work_items(source_ref)
   WHERE source = 'agent' AND source_ref <> '';`,
 		Rebuild: true,
 	},
 	{
-		Version: 29,
+		Version: 32,
 		Name:    "project_workflow_queue_settings",
 		SQL: `ALTER TABLE projects ADD COLUMN workflow_queue_paused INTEGER NOT NULL DEFAULT 0
 CHECK(workflow_queue_paused IN (0,1));
@@ -1206,9 +1288,9 @@ ALTER TABLE projects ADD COLUMN workflow_concurrency INTEGER NOT NULL DEFAULT 0
 CHECK(workflow_concurrency BETWEEN 0 AND 32);`,
 	},
 	{
-		Version: 30,
+		Version: 33,
 		Name:    "work_items_direct_start",
-		SQL:     rebuildWorkItemsDirectStartV30SQL,
+		SQL:     rebuildWorkItemsDirectStartV33SQL,
 		Rebuild: true,
 	},
 }

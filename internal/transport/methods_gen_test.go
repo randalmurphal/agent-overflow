@@ -36,6 +36,15 @@ import (
 // failure message names the method and reminds the developer to pick
 // one branch — never default by silence.
 var wireSafeMethods = map[string]bool{
+	// Syntax-highlight span metadata: pure text-in/metadata-out over
+	// content the caller already holds. The scope-resolving variant
+	// (HighlightPatchWithContext) reads local file content and lives in
+	// LocalOnlyMethods.
+	"HighlightClassNames":    true,
+	"HighlightSchemaVersion": true,
+	"HighlightCode":          true,
+	"HighlightPatch":         true,
+
 	// Project lifecycle (CRUD, sort, archive). User-driven UI surface
 	// the remote browser must reach.
 	"ArchiveProject":             true,
@@ -96,6 +105,11 @@ var wireSafeMethods = map[string]bool{
 	"GetPayloadChunk":   true,
 	"GetPayloadData":    true,
 	"ListPayloadMetas":  true,
+
+	// Edits-scope review reads: SQLite-only projections of persisted
+	// tool-call diff payloads (no FS, no git, no provider session).
+	"ListThreadEditDiffs": true,
+	"GetTurnEditsDiff":    true,
 
 	// Live-state counts (the per-thread surface is LocalOnly in
 	// category 2 because it leaks composer drafts; these are

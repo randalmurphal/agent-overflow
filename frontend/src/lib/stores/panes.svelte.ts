@@ -51,6 +51,11 @@ function requestPanePersistence(): void {
  * call this. DOM `focusin` must never reach it — window re-activation and
  * focus-trap restores re-fire focus events, and revealing on those yanked
  * the strip away from wherever the user had scrolled.
+ *
+ * One reveal lives outside this event: PaneHost itself snaps the focused
+ * pane into view when the strip (re)appears (startup restore, global
+ * settings surface closing) — it cannot route through here because
+ * PaneHost mounts after the restore flow runs, so no listener exists yet.
  */
 export function revealPane(paneId: string): void {
   if (typeof window === 'undefined' || !paneId) return;

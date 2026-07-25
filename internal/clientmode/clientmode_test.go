@@ -328,10 +328,12 @@ func TestServe_ServesStaticAssets(t *testing.T) {
 	if !strings.Contains(string(body), "fake spa entry") {
 		t.Fatalf("asset body unexpected: %s", body)
 	}
-	// Asset responses must carry the long-cache header — Vite hashes
-	// content into the filename, so they can be cached for a year.
-	if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "max-age=31536000") {
-		t.Fatalf("Cache-Control %q does not include long max-age", got)
+	// Asset responses must be no-store: the stub only serves the local
+	// embedded webview, which loads the SPA once per process, and a
+	// cacheable script pins its decoded text in the renderer's
+	// in-memory HTTP cache for the page's lifetime.
+	if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Fatalf("Cache-Control %q does not include no-store", got)
 	}
 }
 

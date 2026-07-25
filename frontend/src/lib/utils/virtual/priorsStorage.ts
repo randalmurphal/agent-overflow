@@ -104,12 +104,15 @@ function scheduleFlush(): void {
 
 /**
  * Writes one key, retrying once after evicting the single oldest stored
- * thread if the browser reports the write as over quota. Returns whether
- * the value is now durably stored.
+ * thread if the browser reports the write as over quota. `serialize` is
+ * re-invoked for the retry: eviction mutates `indexOrder`, so a value
+ * derived from it (the index write) must be re-serialized post-eviction
+ * or the persisted index would still list the evicted thread. Returns
+ * whether the value is now durably stored.
  */
-function writeItem(key: string, value: string): boolean {
+function writeItem(key: string, serialize: () => string): boolean {
   try {
-    localStorage.setItem(key, value);
+    localStorage.setItem(key, serialize());
     return true;
   } catch (err) {
     const oldest = indexOrder.shift();
@@ -117,7 +120,7 @@ function writeItem(key: string, value: string): boolean {
       indexDirty = true;
       localStorage.removeItem(entryKey(oldest));
       try {
-        localStorage.setItem(key, value);
+        localStorage.setItem(key, serialize());
         return true;
       } catch {
         // Falls through to the disable path below.
@@ -150,11 +153,19 @@ function flush(): void {
       expansionSig: entry.expansionSig,
       rows: Array.from(entry.rows.entries()),
     };
-    if (!writeItem(entryKey(threadId), JSON.stringify(stored))) {
+    const value = JSON.stringify(stored);
+    if (!writeItem(entryKey(threadId), () => value)) {
       // writeItem already warned/disabled; drop the rest of this batch
       // rather than hammering a storage that just proved unwritable.
       pendingEntries.clear();
       return;
+    }
+    // Quota eviction inside writeItem picks the oldest indexed thread,
+    // which can be this very thread — its entry is now durably stored, so
+    // it must stay indexed or the LRU cap could never evict it.
+    if (!indexOrder.includes(threadId)) {
+      indexOrder.push(threadId);
+      indexDirty = true;
     }
   }
   pendingEntries.clear();
@@ -166,7 +177,7 @@ function flush(): void {
     indexDirty = true;
   }
 
-  if (indexDirty && writeItem(INDEX_KEY, JSON.stringify(indexOrder))) {
+  if (indexDirty && writeItem(INDEX_KEY, () => JSON.stringify(indexOrder))) {
     indexDirty = false;
   }
 }

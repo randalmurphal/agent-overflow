@@ -11,10 +11,11 @@
 //   - eventsDesign.ts        — design preview/options throttled reload
 //   - eventsTerminal.ts      — backgrounded-terminal output/exit
 //   - eventsQueue.ts         — send-queue mirror (state/flushed/restored)
-//   - eventsCheckpoint.ts    — checkpoint capture/revert + message revert
+//   - eventsMessageRevert.ts — user-message revert (Stop/Esc un-send)
 //   - eventsTransportGap.ts  — missed-seq resync
 //   - eventsDiscussion.ts    — discussion:message / discussion:state push
 //   - eventsNotification.ts  — OS activation routing + cold-start queue
+//   - eventsHighlight.ts     — highlight:seed span ingest (remote clients)
 //
 // This file itself stays a thin fan-in: channel names, generics, and the
 // teardown order live here; the reaction logic lives in the domain modules.
@@ -37,13 +38,7 @@ import type {
   TerminalExitEventPayload,
   TerminalOutputEventPayload,
 } from '../types/terminal';
-import type {
-  CheckpointCapturedEvent,
-  CheckpointErrorEvent,
-  CheckpointRevertedEvent,
-  CheckpointUnavailableEvent,
-  UserMessageRevertedEvent,
-} from '../types/checkpoint';
+import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { setSystemStats } from './systemStats.svelte';
 import { transportGapChannel } from '../transport/wsClient';
 // wailsEventOn lives in a leaf module so low-level stores can subscribe to
@@ -99,13 +94,7 @@ import {
   type QueueFlushedPayload,
   type QueueRestoredPayload,
 } from './eventsQueue';
-import {
-  applyCheckpointCaptured,
-  applyCheckpointUnavailable,
-  applyCheckpointError,
-  applyCheckpointReverted,
-  applyUserMessageReverted,
-} from './eventsCheckpoint';
+import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
 import {
   applyDiscussionMessage,
@@ -114,6 +103,12 @@ import {
   type DiscussionStateEvent,
 } from './eventsDiscussion';
 import { applyPRReviewUpdated } from './eventsPRReview';
+import {
+  applyHighlightSeed,
+  applyHighlightDiffSeed,
+  type HighlightSeedEvent,
+  type HighlightDiffSeedEvent,
+} from './eventsHighlight';
 import { clearAllDiscussionLiveTail } from './discussionLiveTail';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import {
@@ -271,22 +266,6 @@ export function setupEventListeners(): () => void {
     applyQueueRestored,
   );
 
-  const cancelCheckpointCaptured = wailsEventOn<CheckpointCapturedEvent | null>(
-    'checkpoint:captured',
-    applyCheckpointCaptured,
-  );
-  const cancelCheckpointUnavailable = wailsEventOn<CheckpointUnavailableEvent | null>(
-    'checkpoint:unavailable',
-    applyCheckpointUnavailable,
-  );
-  const cancelCheckpointError = wailsEventOn<CheckpointErrorEvent | null>(
-    'checkpoint:error',
-    applyCheckpointError,
-  );
-  const cancelCheckpointReverted = wailsEventOn<CheckpointRevertedEvent | null>(
-    'checkpoint:reverted',
-    applyCheckpointReverted,
-  );
   const cancelUserMessageReverted = wailsEventOn<UserMessageRevertedEvent | null>(
     'user_message:reverted',
     applyUserMessageReverted,
@@ -375,6 +354,18 @@ export function setupEventListeners(): () => void {
     'workflow:error', applyWorkflowErrorEvent,
   );
 
+  // highlight:seed — backend-pushed syntax spans for streaming code
+  // fences. Remote-only by transport filtering; loopback clients never
+  // see this channel (they highlight via the local RPC round trip).
+  const cancelHighlightSeed = wailsEventOn<HighlightSeedEvent>(
+    'highlight:seed',
+    applyHighlightSeed,
+  );
+  const cancelHighlightDiffSeed = wailsEventOn<HighlightDiffSeedEvent>(
+    'highlight:diff_seed',
+    applyHighlightDiffSeed,
+  );
+
   return () => {
     cancelItemEvent();
     flushItemEventQueue();
@@ -396,10 +387,6 @@ export function setupEventListeners(): () => void {
     cancelQueueStateChanged();
     cancelQueueFlushed();
     cancelQueueRestored();
-    cancelCheckpointCaptured();
-    cancelCheckpointUnavailable();
-    cancelCheckpointError();
-    cancelCheckpointReverted();
     cancelUserMessageReverted();
     cancelThreadUpdated();
     cancelDefaultSwapped();
@@ -412,6 +399,8 @@ export function setupEventListeners(): () => void {
     cancelDiscussionState();
     cancelPRUpdated();
     cancelWorkflowError();
+    cancelHighlightSeed();
+    cancelHighlightDiffSeed();
     clearAllDesignThrottles();
     clearAllDiscussionLiveTail();
   };

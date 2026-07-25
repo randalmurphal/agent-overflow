@@ -1,0 +1,5 @@
+*/src/parser.c linguist-generated -diff
+*/src/scanner.c linguist-vendored
+*/src/htmlx/** linguist-vendored
+*/src/tree_sitter/* linguist-vendored
+*/src/tag.h linguist-vendored

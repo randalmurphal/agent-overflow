@@ -13,8 +13,9 @@ export interface ReasoningBodyTextInput {
   summary: string;
   /**
    * The per-pane live smoother tail for this item, or null once the stream
-   * settles and the smoother disposes. Grows monotonically, so the CSS clip
-   * can scroll older lines off the top without re-wrapping a sliding window.
+   * settles and the smoother disposes. Grows monotonically — TailClampedText
+   * scrolls it off the top via CSS clip and bounds its layout cost with a
+   * wrap-stable window, both of which rely on append-only growth.
    */
   liveTail: string | null;
   /** Full payload loaded on expand (empty until the user expands). */

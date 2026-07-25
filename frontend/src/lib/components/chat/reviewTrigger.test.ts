@@ -11,12 +11,6 @@ function makeFakePane(): ThreadPane {
   return {
     paneId: 'pane-1',
     threadId: 'thread-1',
-    checkpoints: {
-      checkpoints: [
-        { userItemId: 'user-1', turnIndex: 1 },
-        { userItemId: 'user-3', turnIndex: 3 },
-      ],
-    },
   } as unknown as ThreadPane;
 }
 
@@ -25,22 +19,21 @@ describe('reviewTrigger', () => {
     vi.mocked(openReviewCompanion).mockClear();
   });
 
-  it('opens the matching turn checkpoint with a file target', () => {
-    openReviewForItem(makeFakePane(), { turnIndex: 3, filePath: 'src/foo.ts' });
-
-    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
-      scope: 'turn',
-      checkpointUserItemId: 'user-3',
-      filePath: 'src/foo.ts',
-    });
-  });
-
-  it('falls back to workspace scope when the turn has no checkpoint', () => {
-    openReviewForItem(makeFakePane(), { turnIndex: 2, filePath: 'src/foo.ts' });
+  it('opens workspace scope with a file target', () => {
+    openReviewForItem(makeFakePane(), { filePath: 'src/foo.ts' });
 
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
       scope: 'workspace',
       filePath: 'src/foo.ts',
+    });
+  });
+
+  it('opens workspace scope without a file target', () => {
+    openReviewForItem(makeFakePane());
+
+    expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
+      scope: 'workspace',
+      filePath: undefined,
     });
   });
 

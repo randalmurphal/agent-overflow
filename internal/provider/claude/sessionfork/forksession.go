@@ -67,7 +67,7 @@ var ErrMessageNotFound = errors.New("sessionfork: upToMessageUUID not found in s
 //
 // The uuidMap powers the fork-time remap in
 // `app_thread_fork.go::remapClaudeProviderIDs`, which refreshes AO
-// `items.meta` and `thread_checkpoints` rows so a subsequent revert
+// `items.meta` and `message_anchors` rows so a subsequent revert
 // lookup in the forked session JSONL finds the cloned user message
 // by its current UUID — preserving the invariant "stored
 // provider_item_id always matches the active session's UUID."
@@ -144,27 +144,30 @@ func WriteForkFileFullTranscript(
 // <newID>.jsonl. This is the structural fix for the ordinal-walk
 // off-by-N bug — by matching on the Claude-assigned user message
 // UUID stored on the AO `user_text` row's `meta.provider_item_id`
-// (or its checkpoint's `provider_user_message_id`), the slice point
+// (or its anchor's `provider_user_message_id`), the slice point
 // is immune to any number of synthetic user-role entries between
-// real prompts.
+// real prompts. The uuid matches a real `type:"user"` entry, a user
+// entry's `forkedFrom.messageUuid` fork provenance (heals a stored id
+// one remap generation stale), or a `queued_command` attachment's
+// `source_uuid` — the shape the CLI persists for a queued message it
+// consumed mid-loop (see parentUUIDForUserMessageUUIDInTranscript).
 //
 // Returns the old→new uuid remap so the calling fork pipeline can
-// refresh AO-stored wire ids on cloned items / checkpoints
+// refresh AO-stored wire ids on cloned items / anchors
 // (`app_thread_fork.go::remapClaudeProviderIDs`); revert callers
 // that aren't forking can discard it.
 //
-// Returns `ErrMessageNotFound` when upToUserMessageUUID does not
-// appear in the source transcript (e.g. the AO row's stored UUID is
-// stale relative to the current session JSONL — most often because
-// the session was forked but the remap didn't propagate). Callers
-// should treat that as a hard error rather than silently falling
-// back to the ordinal walk; a wrong-source revert is worse than no
-// revert.
+// Returns `ErrMessageNotFound` when upToUserMessageUUID appears in
+// none of those shapes (the stored UUID is more than one remap
+// generation stale, or the session pre-dates the wire-id stamp).
+// Callers should treat that as a hard error rather than silently
+// falling back to the ordinal walk; a wrong-source revert is worse
+// than no revert.
 //
 // Returns `ErrSessionEmpty` when the message is the very first real
 // prompt in the transcript — mirrors `SliceUUIDForLastKeptTurn(-1)`
 // so `revertClaudeThreadToMessage` can route through its
-// "checkpoint.TurnIndex == 0" branch identically.
+// "anchor.TurnIndex == 0" branch identically.
 func WriteForkFileForUserMessageUUID(
 	srcPath string,
 	upToUserMessageUUID string,
@@ -183,6 +186,60 @@ func WriteForkFileForUserMessageUUID(
 		}
 		return upToParentUUID, nil
 	})
+}
+
+// WriteForkFileThroughUUID opens srcPath ONCE, parses the transcript
+// in memory, and writes a new <newID>.jsonl keeping everything through
+// the entry identified by lastKeptUUID INCLUSIVE. The uuid matches an
+// entry's own uuid or its `forkedFrom.messageUuid` fork provenance
+// (a stored id one remap generation stale — the same healing as
+// WriteForkFileForUserMessageUUID); the matched entry's CURRENT uuid
+// is the slice point. The last-kept row may be ANY transcript type —
+// a queued message's parent is usually an assistant entry.
+//
+// Used by the already-cut revert retry: the anchor row is gone (a
+// prior slice cut exactly at it) but its anchored PARENT survives.
+// Keeping through the parent — rather than cloning the file whole —
+// also cuts any rows appended after the failed revert, which a whole
+// clone would silently resurrect into the resumed session (round-5,
+// R5-6).
+//
+// Returns ErrMessageNotFound when lastKeptUUID matches nothing —
+// callers treat that as remap drift and fail loudly rather than guess.
+func WriteForkFileThroughUUID(
+	srcPath string,
+	lastKeptUUID string,
+	customTitle string,
+) (newSessionID string, newPath string, uuidMap map[string]string, err error) {
+	if lastKeptUUID == "" {
+		return "", "", nil, fmt.Errorf("sessionfork: empty last-kept uuid")
+	}
+	return writeForkFileFromTranscript(srcPath, customTitle, func(transcript []map[string]any) (string, error) {
+		return currentUUIDForEntryUUID(transcript, lastKeptUUID)
+	})
+}
+
+// currentUUIDForEntryUUID resolves messageUUID — an entry's own uuid,
+// or a uuid one remap generation stale matched via its
+// `forkedFrom.messageUuid` provenance — to the entry's CURRENT uuid in
+// this transcript. A direct uuid match wins over a provenance match.
+func currentUUIDForEntryUUID(transcript []map[string]any, messageUUID string) (string, error) {
+	forkedFromCurrent := ""
+	forkedFromFound := false
+	for _, entry := range transcript {
+		u, _ := entry["uuid"].(string)
+		if u == messageUUID {
+			return u, nil
+		}
+		if !forkedFromFound && entryForkedFromUUID(entry) == messageUUID {
+			forkedFromCurrent = u
+			forkedFromFound = true
+		}
+	}
+	if forkedFromFound {
+		return forkedFromCurrent, nil
+	}
+	return "", fmt.Errorf("%w: entry uuid %q", ErrMessageNotFound, messageUUID)
 }
 
 // writeForkFileFromTranscript is the shared open/parse/build/write
@@ -267,37 +324,94 @@ func writeForkOutput(srcPath, newID string, lines []string) (string, string, err
 }
 
 // parentUUIDForUserMessageUUIDInTranscript walks an already-parsed
-// transcript and returns the parentUuid of the user prompt whose
-// `uuid` matches messageUUID. It operates on the in-memory transcript
-// slice so the fork pipeline doesn't re-open the file.
+// transcript and returns the parentUuid of the entry carrying the user
+// message identified by messageUUID. It operates on the in-memory
+// transcript slice so the fork pipeline doesn't re-open the file.
 //
-// Matches on (uuid, type:"user") only — no `isRealUserPrompt`
-// filter. The caller supplies a specific UUID stamped by triage on
-// the AO `user_text` row, so by construction it's a real prompt;
-// re-applying the synthetic-flag filter would be redundant.
-// Matching by UUID is also why this path is structurally immune to
-// the synthetic-entry over-count bug that motivated the fix —
-// counting plays no role.
+// The CLI persists a queued message under one of two shapes depending
+// on WHEN it consumed it (claude-wire.md §"Queued-message consumption"):
 //
-// Returns ErrMessageNotFound when messageUUID is not present in the
-// transcript (most often: the AO row's stored UUID is stale relative
-// to the current session JSONL — either a remap regression or a
-// session that pre-dates the wire-id stamp).
+//   - Consumed at turn pickup — a real `type:"user"` entry whose
+//     top-level `uuid` is the AO-minted send uuid verbatim.
+//   - Consumed mid-loop (queued while a turn was running) — a
+//     `type:"attachment"` entry with a CLI-minted uuid; the AO uuid
+//     survives only as `attachment.source_uuid` on the
+//     `queued_command` attachment body.
+//
+// A third shape covers a transcript that has been forked/reverted since
+// the id was stored: the slice remints every entry uuid but stamps the
+// source uuid as `forkedFrom.messageUuid` provenance, so a user entry
+// whose provenance matches is the SAME message one remap generation
+// stale (a failed remapClaudeProviderIDs, or a crash between the
+// SessionRef update and the remap — round-4 review, CT4-5). Anchoring
+// on it heals one generation of drift; attachment source_uuids survive
+// the remint verbatim and need no such fallback.
+//
+// Match priority: direct user-entry uuid, then user-entry forkedFrom
+// provenance, then queued_command attachment source_uuid. Either way
+// the matched entry's own parentUuid (always a CURRENT uuid) is the
+// last kept row — no `isRealUserPrompt` filter, and no counting, so
+// this path stays structurally immune to the synthetic-entry
+// over-count bug that motivated it.
+//
+// Returns ErrMessageNotFound when messageUUID appears in none of the
+// shapes (most often: the AO row's stored UUID is more than one remap
+// generation stale, or the session pre-dates the wire-id stamp).
 func parentUUIDForUserMessageUUIDInTranscript(transcript []map[string]any, messageUUID string) (string, error) {
 	if messageUUID == "" {
 		return "", fmt.Errorf("sessionfork: empty user message uuid")
 	}
+	forkedFromParent := ""
+	forkedFromFound := false
+	attachmentParent := ""
+	attachmentFound := false
 	for _, entry := range transcript {
-		if u, _ := entry["uuid"].(string); u != messageUUID {
-			continue
+		switch t, _ := entry["type"].(string); t {
+		case "user":
+			if u, _ := entry["uuid"].(string); u == messageUUID {
+				parent, _ := entry["parentUuid"].(string)
+				return parent, nil
+			}
+			if !forkedFromFound && entryForkedFromUUID(entry) == messageUUID {
+				forkedFromParent, _ = entry["parentUuid"].(string)
+				forkedFromFound = true
+			}
+		case "attachment":
+			if attachmentFound {
+				continue
+			}
+			att, ok := entry["attachment"].(map[string]any)
+			if !ok {
+				continue
+			}
+			if at, _ := att["type"].(string); at != "queued_command" {
+				continue
+			}
+			if su, _ := att["source_uuid"].(string); su == messageUUID {
+				attachmentParent, _ = entry["parentUuid"].(string)
+				attachmentFound = true
+			}
 		}
-		if t, _ := entry["type"].(string); t != "user" {
-			continue
-		}
-		parent, _ := entry["parentUuid"].(string)
-		return parent, nil
+	}
+	if forkedFromFound {
+		return forkedFromParent, nil
+	}
+	if attachmentFound {
+		return attachmentParent, nil
 	}
 	return "", fmt.Errorf("%w: user message uuid %q", ErrMessageNotFound, messageUUID)
+}
+
+// entryForkedFromUUID extracts the fork-provenance source uuid the
+// slice transform stamps on every kept row (`forkedFrom.messageUuid`),
+// or "" when the entry carries none.
+func entryForkedFromUUID(entry map[string]any) string {
+	ff, ok := entry["forkedFrom"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	u, _ := ff["messageUuid"].(string)
+	return u
 }
 
 // sliceUUIDInTranscript walks an already-parsed transcript and returns

@@ -548,8 +548,6 @@ describe('resolveContentDelivery — structural invariants', () => {
 
 // ===== resolveEngineCompensation (routed engine compensation) =====
 
-const CLIENT_HEIGHT = 600;
-
 // Baseline: warm, bottom-following, pinned exactly at the bottom, the engine
 // requesting a small same-place compensation. Tests override exactly the
 // inputs their tier decides over.
@@ -559,8 +557,6 @@ function comp(overrides: Partial<EngineCompensationObservation> = {}): EngineCom
     target: TARGET,
     scrollTop: TARGET,
     bottomTarget: TARGET,
-    clientHeight: CLIENT_HEIGHT,
-    widthReflowActive: false,
     ...overrides,
   };
 }
@@ -599,7 +595,7 @@ describe('resolveEngineCompensation — anchor redirect', () => {
     expect(decision.write).toEqual({ caller: 'engine.anchorRedirect', value: TARGET });
   });
 
-  it('redirect outranks the mid-chase decline: a sentinel-gap shrink compensation never snaps up', () => {
+  it('redirect outranks the verbatim apply: a sentinel-gap shrink compensation never snaps up', () => {
     // The wire-round-gap failure shape: pinned at the bottom between
     // chunks (sentinel alive), an above-viewport row shrinks, the engine
     // requests an offset above the bottom. Legacy needed the mode latch +
@@ -629,41 +625,36 @@ describe('resolveEngineCompensation — anchor redirect', () => {
   });
 });
 
-describe('resolveEngineCompensation — mid-chase arbitration', () => {
-  it('declines a small compensation while a spring chase is in flight (spring stays the single writer)', () => {
+describe('resolveEngineCompensation — mid-chase apply', () => {
+  // Regression (2026-07-21): a backgrounded task completes while the
+  // smoother drains its last lines, patching its collapsed tool row
+  // ABOVE the viewport into settled height. The engine reports an exact
+  // remeasure-above compensation; a spring chase is in flight (drain
+  // follow). The legacy tier DECLINED sub-viewport compensations here
+  // ("spring stays the single writer", eb99de2e), which was the visible
+  // jump — content shifted under the stationary viewport by the row's
+  // height delta, then the spring re-chased the same distance. The
+  // compensation is a coordinate shift (spring re-reads scrollTop each
+  // tick, gap unchanged), so it must apply.
+  it('applies a small remeasure-above compensation while a spring chase is in flight', () => {
     const decision = resolveEngineCompensation(
       state({ springActive: true }),
-      // Mid-chase: DOM is short of the bottom target, the engine nudges near it.
+      // Mid-chase: DOM is short of the bottom target, an above-viewport
+      // row grew by 290px.
       comp({ target: 990, scrollTop: 700, bottomTarget: 1000 }),
-    );
-    expect(decision.write).toBeNull();
-  });
-
-  it('writes a correction larger than the viewport even mid-chase (20260622T041049Z)', () => {
-    const decision = resolveEngineCompensation(
-      state({ springActive: true }),
-      comp({ target: 700 + CLIENT_HEIGHT + 1, scrollTop: 700, bottomTarget: 2000 }),
-    );
-    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 700 + CLIENT_HEIGHT + 1 });
-  });
-
-  it('the viewport threshold is inclusive: exactly clientHeight still declines', () => {
-    const decision = resolveEngineCompensation(
-      state({ springActive: true }),
-      comp({ target: 700 + CLIENT_HEIGHT, scrollTop: 700, bottomTarget: 2000 }),
-    );
-    expect(decision.write).toBeNull();
-  });
-
-  it('a width-reflow window overrides the mid-chase decline (paired contentRO sync-pins)', () => {
-    const decision = resolveEngineCompensation(
-      state({ springActive: true }),
-      comp({ target: 990, scrollTop: 700, bottomTarget: 1000, widthReflowActive: true }),
     );
     expect(decision.write).toEqual({ caller: 'engine.compensation', value: 990 });
   });
 
-  it('writes when no chase is in flight (20260524T200233Z: nothing to protect)', () => {
+  it('applies a correction larger than the viewport mid-chase (20260622T041049Z)', () => {
+    const decision = resolveEngineCompensation(
+      state({ springActive: true }),
+      comp({ target: 1301, scrollTop: 700, bottomTarget: 2000 }),
+    );
+    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 1301 });
+  });
+
+  it('applies when no chase is in flight (20260524T200233Z: suppression caused the thread-switch flicker)', () => {
     const decision = resolveEngineCompensation(
       state({ springActive: false }),
       comp({ target: 990, scrollTop: 700, bottomTarget: 1000 }),
@@ -680,7 +671,7 @@ describe('resolveEngineCompensation — structural invariants', () => {
       [TARGET, TARGET, TARGET],                       // pinned no-op
       [600, TARGET, TARGET],                          // pinned, moves away
       [990, 700, TARGET],                             // mid-chase small
-      [700 + CLIENT_HEIGHT + 50, 700, 2000],          // mid-chase big
+      [1350, 700, 2000],                              // mid-chase big
       [600, 700, TARGET],                             // short of bottom, small
       [TARGET - AUTO_FOLLOW_BOTTOM_EPSILON_PX, TARGET, TARGET], // epsilon band
     ] as const;
@@ -692,41 +683,31 @@ describe('resolveEngineCompensation — structural invariants', () => {
           for (const escaped of bools) {
             for (const paused of bools) {
               for (const springActive of bools) {
-                for (const widthReflowActive of bools) {
-                  for (const [target, scrollTop, bottomTarget] of geometries) {
-                    const decision = resolveEngineCompensation(
-                      state({ warm, isAtBottom, escaped, paused, springActive }),
-                      comp({ kind, target, scrollTop, bottomTarget, widthReflowActive }),
-                    );
-                    checked += 1;
-                    const engaged = warm && isAtBottom && !escaped && !paused
-                      && kind !== 'head-splice';
-                    const pinned = bottomTarget - scrollTop <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
-                    const movesAway = bottomTarget - target > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
-                    const smallJump = Math.abs(target - scrollTop) <= CLIENT_HEIGHT;
-                    // Every write is either the requested target or the
-                    // controller's bottom target — never a third value.
-                    if (decision.write) {
-                      if (decision.write.caller === 'engine.anchorRedirect') {
-                        expect(decision.write.value).toBe(bottomTarget);
-                      } else {
-                        expect(decision.write.value).toBe(target);
-                      }
-                    }
+                for (const [target, scrollTop, bottomTarget] of geometries) {
+                  const decision = resolveEngineCompensation(
+                    state({ warm, isAtBottom, escaped, paused, springActive }),
+                    comp({ kind, target, scrollTop, bottomTarget }),
+                  );
+                  checked += 1;
+                  const engaged = warm && isAtBottom && !escaped && !paused
+                    && kind !== 'head-splice';
+                  const pinned = bottomTarget - scrollTop <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+                  const movesAway = bottomTarget - target > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
+                  // Every delivery writes — a compensation is a coordinate
+                  // shift; declining one shifts content under the
+                  // stationary viewport (the background-completion jump).
+                  // The write is either the requested target or the
+                  // controller's bottom target — never a third value.
+                  if (decision.write.caller === 'engine.anchorRedirect') {
+                    expect(decision.write.value).toBe(bottomTarget);
                     // A redirect happens ONLY on pinned-DOM + moves-away
                     // while fully engaged.
-                    if (decision.write?.caller === 'engine.anchorRedirect') {
-                      expect(engaged && pinned && movesAway).toBe(true);
-                    }
-                    // Declines happen ONLY in the one protected window:
-                    // engaged, chase in flight, no reflow, small jump, and
-                    // not the pinned/moves-away redirect case.
-                    const expectDecline = engaged
-                      && springActive
-                      && !widthReflowActive
-                      && smallJump
-                      && !(pinned && movesAway);
-                    expect(decision.write === null).toBe(expectDecline);
+                    expect(engaged && pinned && movesAway).toBe(true);
+                  } else {
+                    expect(decision.write.value).toBe(target);
+                    // And it ALWAYS happens there — the two branches
+                    // partition the space exactly.
+                    expect(engaged && pinned && movesAway).toBe(false);
                   }
                 }
               }
@@ -735,6 +716,6 @@ describe('resolveEngineCompensation — structural invariants', () => {
         }
       }
     }
-    expect(checked).toBe(2 * 2 * 2 * 2 * 2 * 2 * 2 * 6);
+    expect(checked).toBe(2 * 2 * 2 * 2 * 2 * 2 * 6);
   });
 });

@@ -53,6 +53,7 @@
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
   import { getActiveTurn, isSendInFlight, isThreadWorking } from '../../stores/threadStatuses.svelte';
+  import { getFocusedPaneId } from '../../stores/panes.svelte';
   import { getTerminalFocused } from '../terminal/terminalStore.svelte';
   import { errString } from '../../utils/errors';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
@@ -355,6 +356,15 @@
     // this adds no dependency — it's a point-in-time check at the moment focus
     // would otherwise move.
     if (getTerminalFocused(pane.paneId)) return;
+    // Only the composer of the pane that holds LOGICAL focus may take DOM
+    // focus on thread entry — startup restore and a global-surface close
+    // run this pass in EVERY pane, and a background grab scrolls the strip
+    // and re-fires focusin into focusPane. Raw focus id on purpose: when a
+    // companion pane is focused, focusing its source's composer would fire
+    // focusin on the source section and demote the companion. Untracked
+    // point-in-time check like the terminal guard above — the one-shot is
+    // already consumed, so later focus changes must not re-arm it.
+    if (untrack(getFocusedPaneId) !== pane.paneId) return;
     focusTextareaAtEnd(node);
   });
 
@@ -510,6 +520,10 @@
       updatedAt: now,
     };
     pane.trackOptimisticItem(optimisticId);
+    // Arm the one-shot structural spring window before the upsert so the
+    // just-sent message glides in instead of sync-pinning (the arm must
+    // precede the flush that mounts the row; see armStructuralSpring).
+    pane.armStructuralSpring();
     pane.upsertItems([optimisticItem]);
 
     try {

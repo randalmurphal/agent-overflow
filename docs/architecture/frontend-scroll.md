@@ -61,10 +61,16 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     `rotate(0.0001deg)` defeats WebKit's compositor pixel alignment
     (which would round the sub-pixel translate to whole device pixels
     and oscillate around the trajectory), and the spring holds a
-    DPR-derived "fusion floor" (~1.1/dpr px per 60Hz frame) while
-    decelerating so bilinear-resample breathing on thin rows cycles
-    above flicker fusion (~60Hz) instead of inside the visible 5–40Hz
-    band. The residue is a render detail, not a second scroll
+    refresh-aware "fusion floor" while decelerating: derived from
+    devicePixelRatio plus the spring's measured rAF cadence so the
+    glide advances 1/k device pixels per displayed frame
+    (k = ⌊refresh/60⌋). Every harmonic of the bilinear-resample
+    breathing on thin rows then either phase-locks (constant resample
+    weights — invisible) or patterns at ≥60Hz, above flicker fusion;
+    sub-120Hz displays get the full one-pixel-per-frame lock (zero
+    breathing). A refresh-blind floor aliased into a visible ~12Hz
+    beat on 144Hz panels — see `fusionFloorPxPerFrame` in spring.ts
+    for the derivation. The residue is a render detail, not a second scroll
     writer — it never changes `scrollTop` and fires no scroll events.
     Release rules: a clear that accompanies a real write (any
     non-spring caller, or detach) is instant; a release with no write
@@ -130,7 +136,7 @@ viewport-sized slice with `App.ListThreadSliceAround(threadID,
 anchorItemID, SLICE_AROUND_ITEM_BUDGET)`.
 
 The switch runs `SwitchThread`, live-state hydration, recent-turn fetch,
-checkpoint refresh, and the initial slice under one `Promise.allSettled`.
+and the initial slice under one `Promise.allSettled`.
 There is no second wider-window load on switch. Older history pages in
 lazily through `pane.loadOlder()` when the user scrolls near the top, with
 the manual "Load older messages" button as the explicit fallback. The
@@ -297,6 +303,18 @@ guess at how long the cascade takes. This lengthens the hidden window for
 genuinely cascading threads (the ones that would have flickered) by the
 minimum needed; `FAILSAFE_MS` still caps the worst case.
 
+The signal MessageTimeline supplies is composed:
+`anyMarkdownSettledSinceArm || mountedMarkdownCount === 0`. The second
+term is **settled-by-absence** — a mounted window containing zero
+`ChatMarkdown` rows (all tool output / terminals / images) has no async
+typesetting coming, so it must not sit behind the conservative window
+until the failsafe. Presence is a live count registered through
+`CHAT_MARKDOWN_PRESENCE_CONTEXT`, which makes the signal *withdrawable*:
+a markdown row mounting after the quiet timer armed flips the signal
+back to falsy, and `notifyQuietContextSignalChanged` then DISARMS the
+armed timer — the settled-by-absence license is gone, and only an earned
+settle (or the failsafe) may open the gate.
+
 The geometry gate only ever masks the cascade — it cannot prevent it,
 because the cascade settles in bursts spaced wider than any safe quiet
 window (trace `bug-report-20260622T225817Z`: a final +200–500px burst
@@ -425,22 +443,25 @@ documented at the function):
   the at/below-fold growth that pushed the bottom down, so letting the
   requested value land paints one frame short of bottom — the cold
   thread-switch flicker.
-- **width-reflow pass** — during the width-reflow settle window the paired
-  contentRO sync-pins, so the compensation lands in the same paint.
-- **mid-chase decline** — a spring is in flight (or sentinel-alive) and
-  the jump is within one viewport: decline. A decline needs no follow-up:
-  the engine's scroll offset syncs from real scroll events, so an
-  unapplied compensation cannot desync its model — the content simply
-  shifts under the stationary viewport. Larger jumps are bulk layout
-  corrections (fresh-mount estimate→measure, late shiki/katex/mermaid
-  typesetting) and fall through to the final pass so they snap in one
-  paint instead of becoming a multi-hundred-px spring chase.
-- **pass** — anything else applies verbatim.
+- **pass** — anything else applies verbatim, mid-chase included. The
+  compensation is an exact coordinate shift: layout moved the content
+  under the viewport by `delta`, and the write moves the viewport by the
+  same `delta` before paint, holding the visual field stationary. The
+  spring re-reads `el.scrollTop` every tick, so an applied write
+  mid-chase just relocates the chase — the remaining gap is unchanged
+  and the glide continues seamlessly.
 
-There is deliberately no `animationMode` tier: keying the decline on
-`springActive` alone makes mode-latch timing irrelevant to compensation
-handling, which is what retired the `SPRING_MODE_HOLD_MS >
-RETAIN_ANIMATION_DURATION_MS` cross-file invariant.
+There is deliberately no **mid-chase decline** tier. The virtua-era gate
+declined sub-viewport compensations while a spring chase was in flight,
+but declining an exact compensation is what *caused* the visible jump: a
+background completion patching its collapsed tool row above the viewport
+shifted the content under a stationary viewport by the row's height
+delta, then the spring re-chased the same distance (2026-07-21). Nor is
+there an `animationMode` tier: the resolver's engaged tiers key on
+observed geometry (`pinned` + `moves-away`), which makes mode-latch and
+spring-lifecycle timing irrelevant to compensation handling — what
+retired the `SPRING_MODE_HOLD_MS > RETAIN_ANIMATION_DURATION_MS`
+cross-file invariant.
 
 Routed writes are controller writes: attributed (`engine.compensation` /
 `engine.anchorRedirect` in the `scroll.write` trace) and self-tagged for
@@ -455,36 +476,48 @@ adapter seam (delivery timing, windowing, measurement) in
 
 Chat chooses animation mode with a content-keyed latch. `ThreadPane`
 stamps `lastLiveContentAt` whenever live timeline content advances:
-assistant prose, thinking, compaction reasoning, direct text patches, and
+assistant prose, thinking, compaction reasoning, direct text patches,
 visible-field updates to already mounted rows — a running tool row growing
 its output preview per flush window, or running→completed result chrome
-landing. `MessageTimeline` returns `spring` for `SPRING_MODE_HOLD_MS`
-after that stamp and `instant` otherwise.
+landing — and wire appends / reveal-gate releases entering the loaded
+tail (via `armLiveContentAppendSpring`, below). `MessageTimeline` returns
+`spring` for `SPRING_MODE_HOLD_MS` after that stamp and `instant`
+otherwise.
 
 The spring is keyed on content arrival, not provider turn state. It
 therefore covers end-of-turn smoother drains and text-stream gaps, while
-tool row INSERTS (whose estimate→remeasure churn would spring-chase
-transient targets) and late Streamdown typesetting on settled content
-sync-pin invisibly by default. The stamp is window-wide, not
-viewport-local: a rendered-field change anywhere in the loaded window
-opens the hold, so an unrelated bottom reflow landing within it springs
-instead of pinning — accepted bleed, since the window is short and keyed
-to real content changes. The 500ms hold is pure tuning — the historical
-requirement that it outlast the spring sentinel retain duration died with
-the descriptor gate (see Engine Compensation Routing).
+late Streamdown typesetting on settled content sync-pins invisibly by
+default. The stamp is window-wide, not viewport-local: a rendered-field
+change anywhere in the loaded window opens the hold, so an unrelated
+bottom reflow landing within it springs instead of pinning — accepted
+bleed, since the window is short and keyed to real content changes. The
+500ms hold is pure tuning — the historical requirement that it outlast
+the spring sentinel retain duration died with the descriptor gate (see
+Engine Compensation Routing).
 
-Structural transcript appends have a narrower override:
+Structural transcript appends additionally have a one-shot override:
 `markStructuralContentPending()` makes the next near-term command/tool row
 growth spring-eligible even when the content latch currently returns
-`instant`. This is intentionally one-shot. After the structural append
-spring arrives it cancels instead of entering the streaming sentinel, so
-routed engine compensations are not declined after the append settles.
+`instant`. When a chase starts from the one-shot alone (latch instant),
+it cancels on arrival instead of entering the streaming sentinel, so
+later negative geometry corrections sync-pin invisibly instead of
+deferring to a dead chase after the append settles.
 
-The pane data layer is the sole owner of the arm
-(`armStructuralSpring` in `thread.svelte.ts`), with two call sites:
+The pane data layer is the sole owner of the arm, with two arm shapes in
+`thread.svelte.ts`: `armLiveContentAppendSpring` (arm + latch stamp) for
 `applyProviderItemUpserts` (a wire append to the loaded tail) and
 `recomputeRevealPass` (the reveal gate releasing withheld rows — rows
-already in `pane.items` mount without any upsert in that flush). Both run
+already in `pane.items` mount without any upsert in that flush), and bare
+`armStructuralSpring` (arm only, no stamp) for the composer's optimistic
+user-send. The stamp is what keeps a post-turn append animating through
+its whole settle: the one-shot covers only the first growth delivery, and
+a background-task completion sibling landing minutes after turn end used
+to mount with a brief chase and then teleport when its payload preview /
+markdown / highlight spans settled past the 250ms window — while the
+identical rows arriving mid-stream glided, because streaming kept the
+latch fresh. Stamping at the arm site gives both cases the same
+`SPRING_MODE_HOLD_MS` rolling window (refreshed by the completion's
+follow-up enrichment upserts through the update path). All arm sites run
 synchronously with the data change, strictly before the Svelte flush in
 which the virtualizer measures the new/released rows and delivers their
 geometry sample. An effect-based arm (MessageTimeline's former
@@ -875,5 +908,6 @@ controller path.
 
 Nested row overflow is allowed for large subagent, wait-group, and command
 output bodies. Focus can jump to `<body>` when the windowing unmounts the
-focused row. Shiki remains a frontend dependency through `svelte-streamdown`
-for assistant markdown and a few payload expansions.
+focused row. Syntax highlighting is backend span metadata
+(`internal/highlight`); the frontend renders spans over text it already
+holds.

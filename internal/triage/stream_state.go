@@ -173,6 +173,16 @@ func (r *Router) maybeDeferOrPersist(threadID string, item store.Item, payload *
 	return nil
 }
 
+// hasQueuedInterruptItems reports whether any deferred persists are
+// queued for threadID. The promoted-echo boundary path uses it to
+// decide whether a drain (and a re-bump of the promoted row) is needed
+// before sampling the turn's max item_index (round-6, R6-2).
+func (r *Router) hasQueuedInterruptItems(threadID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.interruptQueue[threadID]) > 0
+}
+
 func (r *Router) drainInterruptQueueIfIdle(threadID string) {
 	if r.hasActiveStreamingItem(threadID) {
 		return
@@ -185,12 +195,36 @@ func (r *Router) drainInterruptQueueIfIdle(threadID string) {
 	}
 }
 
-// drainInterruptQueue persists every queued item for the thread. The
-// queue is handed off before iteration (cleared from the map under the
-// lock), so an early return on persist failure would silently strand
-// the remaining items. We log each failure and return the first error
-// once the full queue has been attempted.
+// drainLock returns threadID's drain mutex, creating it on first use.
+// Entries are never deleted (see the drainLocks field doc).
+func (r *Router) drainLock(threadID string) *sync.Mutex {
+	r.drainLocksMu.Lock()
+	defer r.drainLocksMu.Unlock()
+	mu, ok := r.drainLocks[threadID]
+	if !ok {
+		mu = &sync.Mutex{}
+		r.drainLocks[threadID] = mu
+	}
+	return mu
+}
+
+// drainInterruptQueue persists every queued item for the thread, under
+// the thread's drain lock so the pop-to-persisted span is atomic
+// against the promoted-echo boundary sample (round-7, R7-3).
 func (r *Router) drainInterruptQueue(threadID string, forceErrored bool) error {
+	lock := r.drainLock(threadID)
+	lock.Lock()
+	defer lock.Unlock()
+	return r.drainInterruptQueueLocked(threadID, forceErrored)
+}
+
+// drainInterruptQueueLocked is the drain body; the caller must hold the
+// thread's drain lock. The queue is handed off before iteration
+// (cleared from the map under r.mu), so an early return on persist
+// failure would silently strand the remaining items. We log each
+// failure and return the first error once the full queue has been
+// attempted.
+func (r *Router) drainInterruptQueueLocked(threadID string, forceErrored bool) error {
 	r.mu.Lock()
 	queue := r.interruptQueue[threadID]
 	delete(r.interruptQueue, threadID)
@@ -406,11 +440,27 @@ func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalCon
 		pathRefSource = finalContent
 		item.Summary = finalContent
 	}
+	// Final observer tick with the row's final MODEL text
+	// (pathRefSource — before the interrupted-summary decoration; the
+	// decorated text differs from what streamed, and for a stream cut
+	// mid-fence the suffix would land inside the fence, so seeds for
+	// either version can only prefix-match. The undecorated text at
+	// least matches every fence the model actually closed). The
+	// observer pushes final highlight seeds and drops its per-row
+	// state.
+	if r.assistantTextStream != nil {
+		r.assistantTextStream(threadID, itemID, pathRefSource, true)
+	}
 	if status == statusErrored {
 		item.Summary = interruptedSummary(item.Summary)
 	}
 	now := time.Now().UnixMilli()
 	r.enrichPathRefsFromTexts(threadID, &item, pathRefSource)
+	// Persist highlight spans keyed to the FINAL summary (after the
+	// interrupted decoration above — the spans must match exactly what
+	// the frontend renders; for a stream cut mid-fence the decorated
+	// open fence is the rendered content).
+	r.enrichCodeSpans(&item)
 	if finalContentPresent && item.PayloadID != "" {
 		metaJSON := buildPayloadMeta(itemKindAssistantText, provider.ProviderEvent{
 			ThreadID:  threadID,
@@ -512,10 +562,20 @@ func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int
 			if item.Status != statusStreaming && item.Status != statusCompleted {
 				return nil
 			}
+			if item.Status == statusCompleted && item.Summary == content {
+				// Idempotent re-assert (duplicate content-present stop):
+				// the row already holds exactly this settled content.
+				// Re-emitting the completed upsert would dispose a
+				// frontend smoother mid-drain (terminal upserts dispose
+				// without snap), turning the rest of a still-revealing
+				// row into a wholesale jump.
+				return nil
+			}
 			item.Summary = content
 			item.Status = statusCompleted
 			item.UpdatedAt = time.Now().UnixMilli()
 			r.enrichPathRefsFromTexts(threadID, &item, content)
+			r.enrichCodeSpans(&item)
 			payload := assistantTextPayload(threadID, item.ID, content, item.UpdatedAt)
 			return r.persistItem(item, &payload)
 		}
@@ -541,7 +601,21 @@ func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope,
 		UpdatedAt: now,
 	}
 	r.enrichPathRefsFromTexts(threadID, &item, content)
+	r.enrichCodeSpans(&item)
 	payload := assistantTextPayload(threadID, item.ID, content, now)
+	if scope == "" {
+		// Top-level recovery lands in the live transcript mid-view;
+		// stream the wire projection so it reveals instead of mounting
+		// wholesale, and leave a breadcrumb (rare: a CLI-internal API
+		// retry delivered the reply snapshot-only). Subagent-scoped
+		// blocks keep the single completed upsert: recovery is their
+		// NORMAL delivery path (the CLI emits no partial stream events
+		// for subagent messages), they render inside cards, and the
+		// settle patch would race the fold eviction in the frontend's
+		// applyItemPatch before the reveal wrote any text.
+		log.Printf("triage: recovered never-streamed text block %s on thread %s (%d bytes)", itemID, threadID, len(content))
+		return r.persistCompletedBlockEmitStreaming(item, &payload, content)
+	}
 	return r.persistItem(item, &payload)
 }
 
@@ -717,8 +791,8 @@ func (r *Router) workspacePathFor(threadID string) string {
 
 // mergePathRefsIntoMeta returns the item.Meta JSON string with a
 // `pathRefs` key set to the supplied slice, preserving any other
-// existing top-level keys (e.g. `task_id` — its partial index in
-// migration v17 must keep working). An empty / whitespace-only input
+// existing top-level keys (e.g. `task_id` — its partial index
+// idx_items_meta_task_id must keep working). An empty / whitespace-only input
 // is treated as `{}`. Existing values that aren't JSON objects are
 // replaced — that's a corruption state the store shouldn't produce,
 // but the helper degrades cleanly rather than refusing to persist.
@@ -793,24 +867,6 @@ func (r *Router) takeFirstActiveThinkingBlock(threadID string, turnIndex int, sc
 		if ref.threadID == threadID && ref.turnIndex == turnIndex && ref.scope == scope && r.activeThinkingBlocks[key] {
 			delete(r.activeThinkingBlocks, key)
 			delete(r.activeThinkingBlockRefs, key)
-			return ref.itemID, true
-		}
-	}
-	return "", false
-}
-
-func (r *Router) activeThinkingItemID(threadID string, turnIndex int, scope, providerItemID string) (string, bool) {
-	key := activeStreamKey(threadID, turnIndex, scope, providerItemID)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if ref, ok := r.activeThinkingBlockRefs[key]; ok && r.activeThinkingBlocks[key] {
-		return ref.itemID, true
-	}
-	if providerItemID != "" {
-		return "", false
-	}
-	for key, ref := range r.activeThinkingBlockRefs {
-		if ref.threadID == threadID && ref.turnIndex == turnIndex && ref.scope == scope && r.activeThinkingBlocks[key] {
 			return ref.itemID, true
 		}
 	}
@@ -928,6 +984,14 @@ func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex
 			if item.Status != statusStreaming && item.Status != statusCompleted {
 				return nil
 			}
+			if item.Status == statusCompleted && item.Summary == thinkingSummaryPreview(content) {
+				// Idempotent re-assert (duplicate content-present stop):
+				// same rationale as the text branch above. The preview is
+				// the trailing 400 runes, so for a same-provider-item-id
+				// re-assert a matching tail means the same content — skip
+				// the payload rewrite along with the upsert.
+				return nil
+			}
 			item.Summary = thinkingSummaryPreview(content)
 			item.Status = statusCompleted
 			item.UpdatedAt = time.Now().UnixMilli()
@@ -966,6 +1030,13 @@ func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, sc
 		Meta:      buildPayloadMeta(itemKindThinking, provider.ProviderEvent{ThreadID: threadID, Content: content, Timestamp: time.Now()}),
 		Data:      []byte(content),
 		CreatedAt: now,
+	}
+	if scope == "" {
+		// Same top-level-only streaming projection as the text branch —
+		// see persistCompletedTextItem for the rationale and the
+		// subagent carve-out.
+		log.Printf("triage: recovered never-streamed thinking block %s on thread %s (%d bytes)", itemID, threadID, len(content))
+		return r.persistCompletedBlockEmitStreaming(item, &payload, content)
 	}
 	return r.persistItem(item, &payload)
 }

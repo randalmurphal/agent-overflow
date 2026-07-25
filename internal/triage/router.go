@@ -44,13 +44,107 @@ type TurnMetrics struct {
 
 // Router classifies provider events and routes them.
 type Router struct {
-	store                   *store.Store
-	emit                    func(eventName string, data any) // wraps app.Event.Emit
-	usageResolverMu         sync.RWMutex
-	usageWorkItemResolver   func(threadID string) string
-	tracer                  trace.Tracer
-	metrics                 TurnMetrics
-	mu                      sync.Mutex
+	store *store.Store
+	emit  func(eventName string, data any) // wraps app.Event.Emit
+	// usageWorkItemResolver attributes phase-thread usage rows to a
+	// workflow run at append time; the app installs it once the
+	// workflow engine is wired (SetUsageWorkItemResolver).
+	usageResolverMu       sync.RWMutex
+	usageWorkItemResolver func(threadID string) string
+	tracer                trace.Tracer
+	metrics               TurnMetrics
+	mu                    sync.Mutex
+	// flushAnchorLocks serializes, PER THREAD, every mutation of that
+	// thread's pending-send state that pairs with a store write: the
+	// echo-time pop + attach/deferred-persist (handleUserText), the
+	// interrupt-time bump-and-mark / transition-and-persist (+ in-lock
+	// anchor record) in PromoteQuietFlushSends and
+	// EagerPersistDeferredFlushSends, the session-death drain
+	// (DrainUnconfirmedFlushItems), and the pending-send sweeps
+	// (cleanupThread, ClearPendingSendsByItemIDs,
+	// ClearPendingSendForFailure). r.mu alone cannot do this: the
+	// interrupt paths must release it before their store writes, and an
+	// echo popping in that window reads a pendingSend snapshot whose
+	// AnchoredAtInterrupt claim is not yet — or never becomes — durable
+	// (round-3 review, cold-1/2/3); a sweep in the same window loses to
+	// the echo-failure reinsert (round-5, R5-2). Holding the anchor lock
+	// across pop AND write makes every popped snapshot truthful, and
+	// sweeps total.
+	//
+	// Per-thread — NOT router-wide — because the confirmed hook
+	// (message anchor record) runs inside the lock: one thread's slow
+	// record must not block every other thread's echoes, interrupts,
+	// and teardowns (round-5, R5-1). Lock order: the anchor lock is
+	// always taken BEFORE r.mu, never while holding it. Entries are
+	// never deleted — a deleted entry would hand a fresh acquirer a NEW
+	// mutex while a waiter still holds the old one, silently splitting
+	// the serialization domain (same never-delete reasoning as
+	// threadEpochs). One pointer per thread ever seen.
+	flushAnchorLocks   map[string]*sync.Mutex
+	flushAnchorLocksMu sync.Mutex
+	// drainLocks serializes, PER THREAD, an interrupt-queue drain's
+	// full pop + persist span. r.mu alone covers only the map pop: a
+	// settle-goroutine drain releases it before persisting the
+	// handed-off rows, and the promoted-echo boundary path checking
+	// hasQueuedInterruptItems in that window sees an empty queue while
+	// rows are still uncommitted — they then land above the sampled
+	// boundary and a revert cuts them as "response" although the
+	// session slice keeps them (round-7, R7-3). Queue APPENDS need no
+	// covering: they happen only on the serial provider read loop,
+	// which is busy running the echo. Lock order: taken after the
+	// thread's flush anchor (echo path), before r.mu; never deleted
+	// (same reasoning as flushAnchorLocks).
+	drainLocks   map[string]*sync.Mutex
+	drainLocksMu sync.Mutex
+	// flushStampEpochs (guarded by r.mu) counts, per thread, the
+	// MarkFlushSendsInterrupted calls that stamped at least one entry.
+	// Interrupt paths are not serialized against each other (a stop
+	// press can race the revert path's interrupt), so a failed
+	// interrupt's RestoreFlushSendsInterrupted only applies while its
+	// own epoch is still current — a newer Mark's live stamp must not
+	// be clobbered by an older call's failure. Never deleted: a
+	// CleanupThread reset would let a stale pre-cleanup token match a
+	// fresh epoch (same never-delete reasoning as threadEpochs).
+	flushStampEpochs map[string]uint64
+	// flushStampUnwinds (guarded by r.mu) parks, per thread by epoch, a
+	// restore token that arrived while a newer Mark's stamp was live.
+	// An applied restore chains down through parked epochs so
+	// overlapping interrupts that ALL fail unwind fully regardless of
+	// failure order; an unwind parked under an epoch whose interrupt
+	// succeeded is permanently unreachable — the succeeded stamp stays,
+	// which is correct — and its entry is the map's only (negligible)
+	// growth. Parked tokens from before a session replacement are
+	// dropped when the chain reaches them (thread epoch mismatch).
+	flushStampUnwinds map[string]map[uint64]FlushStampToken
+	// flushStampSeq (guarded by r.mu) gives each stamping
+	// MarkFlushSendsInterrupted call a router-unique identity. Stamp
+	// epochs alone can't provide one: an applied restore steps the
+	// epoch back down, so a later Mark reuses the number and a
+	// duplicate restore of an already-applied token would park under
+	// — and later clobber — the new call's live stamp.
+	flushStampSeq uint64
+	// flushStampApplied (guarded by r.mu) records the seq of every
+	// restore token that has applied, so duplicate restores are
+	// rejected instead of parked. Never deleted (same reasoning as
+	// flushStampEpochs); one struct{} per FAILED interrupt ever, so
+	// growth is negligible.
+	flushStampApplied map[uint64]struct{}
+	// interruptMarks (guarded by r.mu) records, per thread, every live
+	// MarkFlushSendsInterrupted call as {seq, interrupted turn} in call
+	// order. The per-entry stamp cannot cover an echo whose pending
+	// entry was POPPED before the mark ran but is still persisting —
+	// openQueuedEchoTurn reads the newest entry's turn so that
+	// in-flight echo still settles the cut turn "interrupted"
+	// (round-10, R10-6). Appended even when the mark stamped no FIFO
+	// entries (the popped entry is exactly why the FIFO can be empty).
+	// A failed interrupt's restore removes ITS entry wherever it sits
+	// (seq-keyed, so overlapping failures unwind correctly in any
+	// order — round-11, R11-3); a succeeded interrupt's entry lingers
+	// until MarkThreadActive clears the thread's list — an in-flight
+	// echo cannot survive session replacement, and a replacement after
+	// revert REUSES turn indexes, so a cross-session record would
+	// mislabel a reused index (round-11, CT11-2).
+	interruptMarks          map[string][]interruptMark
 	pendingCommandDiffs     map[string]pendingCommandInlineDiff
 	pendingApprovals        map[string]pendingApprovalState
 	pendingApprovalOrder    map[string][]string
@@ -98,10 +192,9 @@ type Router struct {
 	// `type:"user"` envelope from a task_notification → second `result`
 	// envelope) or the synthetic-truncate-then-real race; in either
 	// case the second handler invocation is a persistence no-op so
-	// the checkpoint isn't captured twice and the turns row isn't
-	// re-stamped. Cleared by setOpenTurn (so a re-init can re-settle
-	// the same turn) and CleanupThread (session teardown). Key =
-	// threadID|turnIndex.
+	// the turns row isn't re-stamped. Cleared by setOpenTurn (so a
+	// re-init can re-settle the same turn) and CleanupThread (session
+	// teardown). Key = threadID|turnIndex.
 	//
 	// Note: this gate operates at LOGICAL-TURN granularity. The
 	// frontend-facing `provider:turn_completed` emission is gated
@@ -206,12 +299,6 @@ type Router struct {
 	// when persisting a running row; cleared after the flip completes
 	// or when the turn closes via clearOpenTurn / CleanupThread.
 	openAPIRetryRows map[string]bool
-	// pendingToolPaths stages workspace paths from mutating tool starts until
-	// the matching successful completion arrives. Keyed by
-	// `<threadID>|<itemID>`. Failed/denied tools drop their staged paths so a
-	// later conversation+files revert does not restore files the agent never
-	// successfully changed.
-	pendingToolPaths map[string][]string
 	// eventHook is a test-only seam: when set, the Router invokes it for
 	// every Handle call AFTER the routing switch runs. Production code
 	// never sets a hook (the call site in Handle is nil-checked so the
@@ -256,17 +343,29 @@ type Router struct {
 	// turn boundaries by design, so NOT swept by clearOpenTurn — only
 	// by CleanupThread on session teardown. See flush_queue.go.
 	queuedFlushItems map[string][]QueuedFlushItem
+	// claimedFlushItems counts batch items mid-handoff between the
+	// queue delete in tryFlushQueue and the dispatcher's synchronous
+	// in-flight record. Folded into QueuedFlushItemCount so the
+	// revert-on-interrupt predicate sees a draining batch as queued →
+	// claimed → in-flight, never invisible (round-14 close-out, C14-1).
+	// Held only across the dispatcher callback; not swept by
+	// CleanupThread — tryFlushQueue's deferred drop always runs.
+	claimedFlushItems map[string]int
 	// dispatchFlush is the app-layer callback invoked when the queue
 	// drains. Wired via SetFlushDispatcher; nil disables dispatch. Triage
 	// releases r.mu before invoking, and the callback must return quickly;
 	// provider writes belong behind the app-layer async/FIFO dispatcher.
 	// See flush_queue.go.
 	dispatchFlush FlushDispatcher
-	// deferredUserTextConfirmed is an app-layer callback invoked after a
-	// deferred queued user_text row has been persisted from a provider
-	// echo. Used for side effects that require the row to exist, such
-	// as message checkpoint capture.
-	deferredUserTextConfirmed func(threadID string, item store.Item)
+	// flushUserTextConfirmed is an app-layer callback invoked after a
+	// flush-queued user_text row is confirmed by its provider echo —
+	// the deferred persist (persistDeferredUserText) and the eager
+	// quiet row's stamp (attachProviderItemIDToUserRow, non-interrupt-
+	// anchored only). Used for side effects that require the row to
+	// exist at its final position with provider ids stamped, such as
+	// message anchor recording. Direct sends never fire it — their
+	// anchor is recorded at send time in app_send.go.
+	flushUserTextConfirmed func(threadID string, item store.Item)
 	// workspacePathByThread is a small read-through cache for the
 	// thread row's WorkspacePath, populated lazily by enrichPathRefs
 	// (the only hot caller). A thread's workspace is set at create
@@ -303,6 +402,68 @@ type Router struct {
 	// CleanupThread so the final reading always reaches the frontend.
 	// Keyed by threadID.
 	usageEmitThrottles map[string]*usageEmitThrottle
+	// assistantTextStream is an app-layer observer of a streaming
+	// assistant_text row's full accumulated text: called with
+	// final=false at each persistence flush window (the same cadence
+	// as the live pathRefs enrichment, possibly on the provider read
+	// loop — implementations must not block) and once with final=true
+	// from the settle path with the row's final model text. Wired via
+	// SetAssistantTextStreamObserver at router construction; nil
+	// disables it. Backs the highlight seed push.
+	assistantTextStream func(threadID, itemID, text string, final bool)
+	// diffPayloadPersisted is an app-layer observer of a just-persisted
+	// diff-bearing payload with COMPLETE content: tool results
+	// (persistToolResult and the summary_only→exact upgrade) carry
+	// their per-file preview patches plus the full unified patch;
+	// diff-kind payload full writes carry the patch alone. payloadID is
+	// the persisted payloads row, so the observer can write derived
+	// span blobs back against it. May run on the provider read loop —
+	// implementations must not block. Wired via SetDiffPayloadObserver
+	// at router construction; nil disables it. Backs highlight span
+	// persistence and the remote diff seed push.
+	diffPayloadPersisted func(threadID, payloadID string, previews []string, patch string)
+	// codeSpanEnricher builds the persisted `codeSpans` meta value for
+	// a settled assistant text (see code_spans.go). Wired via
+	// SetCodeSpanEnricher at router construction; nil disables it.
+	codeSpanEnricher func(text string) json.RawMessage
+}
+
+// SetAssistantTextStreamObserver wires the streaming-text observer
+// (see the assistantTextStream field). Call before the router handles
+// events — it is read without synchronization on the streaming paths.
+func (r *Router) SetAssistantTextStreamObserver(fn func(threadID, itemID, text string, final bool)) {
+	r.assistantTextStream = fn
+}
+
+// SetDiffPayloadObserver wires the diff payload observer (see the
+// diffPayloadPersisted field). Call before the router handles events —
+// it is read without synchronization on the persist paths.
+func (r *Router) SetDiffPayloadObserver(fn func(threadID, payloadID string, previews []string, patch string)) {
+	r.diffPayloadPersisted = fn
+}
+
+// notifyDiffPayloadPersisted forwards a just-persisted diff-bearing
+// payload to the observer: the per-file preview patches from meta (the
+// exact strings the frontend's diff cards parse and render) plus the
+// full unified patch that landed in the payload's data blob. Callers
+// must pass complete content — never a streaming delta, whose spans
+// would key to text no reader ever holds.
+func (r *Router) notifyDiffPayloadPersisted(threadID, payloadID string, meta ToolResultMeta, patch string) {
+	if r.diffPayloadPersisted == nil || payloadID == "" {
+		return
+	}
+	var previews []string
+	if meta.InlineDiff != nil {
+		for _, file := range meta.InlineDiff.Files {
+			if file.PreviewPatch != "" {
+				previews = append(previews, file.PreviewPatch)
+			}
+		}
+	}
+	if len(previews) == 0 && patch == "" {
+		return
+	}
+	r.diffPayloadPersisted(threadID, payloadID, previews, patch)
 }
 
 // SetUsageWorkItemResolver wires live workflow thread attribution. The app
@@ -367,10 +528,16 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		codexBackground:            make(map[string]*codexBackgroundState),
 		terminalInteractionSeq:     make(map[string]int),
 		openAPIRetryRows:           make(map[string]bool),
-		pendingToolPaths:           make(map[string][]string),
 		pendingByThread:            make(map[string][]pendingSend),
+		flushAnchorLocks:           make(map[string]*sync.Mutex),
+		drainLocks:                 make(map[string]*sync.Mutex),
+		flushStampEpochs:           make(map[string]uint64),
+		flushStampUnwinds:          make(map[string]map[uint64]FlushStampToken),
+		flushStampApplied:          make(map[uint64]struct{}),
+		interruptMarks:             make(map[string][]interruptMark),
 		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
 		queuedFlushItems:           make(map[string][]QueuedFlushItem),
+		claimedFlushItems:          make(map[string]int),
 		workspacePathByThread:      make(map[string]string),
 		streamingPathRefsLast:      make(map[string]string),
 		revertedTurns:              make(map[string]struct{}),
@@ -635,7 +802,6 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	// content, turn boundaries, terminal interactions, or matching command
 	// completion.
 	if r.observeCodexToolStart(evt) {
-		r.stageToolPaths(evt)
 		return r.emitInline(evt)
 	}
 	// Lifecycle row first so the file-change / command-mutation helpers
@@ -651,7 +817,6 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	if err := r.capturePendingCommandInlineDiff(evt); err != nil {
 		return err
 	}
-	r.stageToolPaths(evt)
 	return r.emitInline(evt)
 }
 
@@ -696,75 +861,8 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	if err := r.observeCodexToolComplete(evt); err != nil {
 		return err
 	}
-	r.settleToolPaths(evt)
 	r.maybeFlushQueueAtBoundary(evt.ThreadID)
 	return r.emitInline(evt)
-}
-
-// stageToolPaths records candidate paths from a mutating tool start. The paths
-// are only made durable after the matching successful completion, which avoids
-// restoring denied/failed edits on a later conversation+files revert.
-func (r *Router) stageToolPaths(evt provider.ProviderEvent) {
-	raw := extractToolPaths(evt)
-	if len(raw) == 0 || evt.ItemID == "" {
-		return
-	}
-	r.mu.Lock()
-	r.pendingToolPaths[evt.ThreadID+"|"+evt.ItemID] = raw
-	r.mu.Unlock()
-}
-
-func (r *Router) settleToolPaths(evt provider.ProviderEvent) {
-	if evt.ItemID == "" {
-		return
-	}
-	key := evt.ThreadID + "|" + evt.ItemID
-	r.mu.Lock()
-	raw := r.pendingToolPaths[key]
-	delete(r.pendingToolPaths, key)
-	r.mu.Unlock()
-	if !toolCallSucceeded(evt) {
-		return
-	}
-	if len(raw) == 0 && isCodexFileChangeItem(evt.ItemType) {
-		raw = extractToolPaths(evt)
-	}
-	if len(raw) == 0 {
-		return
-	}
-	thread, err := r.store.GetThread(evt.ThreadID)
-	if err != nil {
-		log.Printf("triage: track tool paths load thread %s: %v", evt.ThreadID, err)
-		turnIndex, _ := r.currentTurnIndex(evt.ThreadID)
-		r.emit("checkpoint:error", map[string]any{
-			"threadId":  evt.ThreadID,
-			"turnIndex": turnIndex,
-			"error":     err.Error(),
-		})
-		return
-	}
-	paths := normalizeWorkspaceRelativePaths(raw, thread.WorkspacePath)
-	if len(paths) == 0 {
-		return
-	}
-	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
-	if err != nil {
-		log.Printf("triage: track tool paths current turn thread=%s item=%s: %v", evt.ThreadID, evt.ItemID, err)
-		r.emit("checkpoint:error", map[string]any{
-			"threadId":  evt.ThreadID,
-			"turnIndex": 0,
-			"error":     err.Error(),
-		})
-		return
-	}
-	if err := r.store.UpsertTrackedFiles(evt.ThreadID, turnIndex, paths); err != nil {
-		log.Printf("triage: track tool paths thread=%s item=%s: %v", evt.ThreadID, evt.ItemID, err)
-		r.emit("checkpoint:error", map[string]any{
-			"threadId":  evt.ThreadID,
-			"turnIndex": turnIndex,
-			"error":     err.Error(),
-		})
-	}
 }
 
 // handleInit reacts to a wire `system/init` envelope (Claude only — Codex
@@ -1323,6 +1421,32 @@ func (r *Router) persistItemQuiet(item store.Item, payload *store.Payload) error
 // struct, or the emitted row would carry item_index 0 and mis-sort.
 func (r *Router) persistItemQuietReturning(item store.Item, payload *store.Payload) (store.Item, error) {
 	return r.persistItemWithEmit(item, payload, nil, false)
+}
+
+// persistUserPromptAtTurnHead persists a deferred flush prompt at the
+// HEAD of its turn (store.UpsertItemAtTurnHead) and emits the upsert.
+// Callers gate on the turn having been EMPTY at the prompt's first
+// echo (pendingSend.EchoTurnWasEmpty) — the turn is then the prompt's
+// own, so on the first echo head placement equals the normal append
+// (index 0), while a replay retry or session-death self-heal after a
+// failed first persist finds the RESPONSE at 0..n, where a MAX+1
+// append would sort the prompt after its own response and a revert at
+// the prompt would keep response rows the session slice removes
+// (round-7, R7-4). Steer-shape prompts sharing an occupied turn must
+// use the normal append instead.
+func (r *Router) persistUserPromptAtTurnHead(item store.Item) (store.Item, error) {
+	persisted, err := r.store.UpsertItemAtTurnHead(item)
+	if err != nil {
+		return store.Item{}, err
+	}
+	countsAsActivity := userTextCountsAsThreadActivity(item)
+	if countsAsActivity {
+		r.bumpThreadActivity(persisted.ThreadID, persisted.UpdatedAt, "user_text persist")
+	}
+	r.emitItemUpsertWithActivity(persisted, countsAsActivity)
+	r.metrics.ItemsPersisted.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("kind", persisted.Kind)))
+	return persisted, nil
 }
 
 // persistItemWithInputPayload is the two-payload variant of persistItem used

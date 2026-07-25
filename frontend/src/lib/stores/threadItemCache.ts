@@ -79,6 +79,9 @@ export interface ThreadItemCache {
   /** Test/diagnostic only — exposes current entry count without
    *  unfreezing the LRU contract. */
   readonly size: number;
+  /** Diagnostic accounting (memoryReport): entry/item counts and the
+   *  tracked char budget. Does not touch LRU order. */
+  stats(): { threads: number; items: number; chars: number };
 }
 
 export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): ThreadItemCache {
@@ -155,6 +158,12 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
 
     get size() {
       return byThread.size;
+    },
+
+    stats() {
+      let items = 0;
+      for (const entry of byThread.values()) items += entry.snapshot.items.length;
+      return { threads: byThread.size, items, chars: cachedChars };
     },
   };
 }

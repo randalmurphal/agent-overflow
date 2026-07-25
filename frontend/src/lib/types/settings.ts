@@ -58,8 +58,8 @@ export interface Settings {
   timestampFormat: "locale" | "12-hour" | "24-hour";
   /**
    * Sans typeface for the `--font-sans` CSS variable. Default `geist`
-   * is eagerly bundled; `hack-nerd` lazy-loads a separate woff2 chunk;
-   * `system` uses the OS fallback chain.
+   * is eagerly bundled; `hack-nerd` lazy-loads its unicode-range woff2
+   * slices on demand; `system` uses the OS fallback chain.
    */
   sansFont: SansFont;
   /**
@@ -143,7 +143,7 @@ export interface Settings {
    * Retention TTL window for the background cleanup sweep. Threads
    * whose updated_at is older than retention.days days are removed
    * along with their on-disk side effects (attachments, design
-   * workdirs, replay logs, checkpoint git refs in the user's repo).
+   * workdirs, replay logs).
    * Dated provider-event log files and bug-report bookmark files are
    * pruned on the same cutoff. 0 disables the sweep entirely.
    */

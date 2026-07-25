@@ -6,7 +6,10 @@
   } from '../../stores/thread.svelte';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
   import { latchedSpringMode, SPRING_MODE_HOLD_MS } from '../../utils/springAnimationLatch';
-  import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
+  import {
+    CHAT_MARKDOWN_PRESENCE_CONTEXT,
+    CHAT_MARKDOWN_SETTLED_CONTEXT,
+  } from './markdownSettledContext';
   import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
   import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
   import { timelineNodeKey, type TimelineNode } from '../../utils/subagentGrouping';
@@ -31,37 +34,59 @@
   import { createTimelineRowUiPrune } from './timelineRowUiPrune';
   import { coldLoadPriors, coldLoadWarmEdge } from '../../utils/coldLoadTrace';
 
-  // Extra buffer rendered above + below the viewport. Sized for two viewports
-  // worth of rows on each side so fast scrolls (trackpad fling, scrollbar
-  // drag) don't outrun the rendered window — that was the source of the
-  // "text disappears under the composer then reappears" flicker. Each
-  // ~56px row × 1800px = ~32 extra rows per side. Trade a few MB of mounted
-  // DOM/component state for the smoother scroll. Revisit only if it's
-  // ever measured to hurt mount-time on first-open.
-  const BUFFER_SIZE_PX = 1800;
+  // Extra buffer rendered above + below the viewport so fast scrolls
+  // (trackpad fling, scrollbar drag) don't outrun the rendered window —
+  // that was the source of the "text disappears under the composer then
+  // reappears" flicker. Mechanically the window recenters on every
+  // scroll event (any landing point mounts same-frame), so the buffer
+  // only bridges the compositor-vs-main-thread gap: 1-2 frames of
+  // scroll velocity in the steady state, plus main-thread stall bursts
+  // (streaming markdown parse, highlight ingest — tens of ms) at fling
+  // speed. It also lets row-size estimate corrections and async row
+  // content (images, first-visit mermaid/katex/spans) settle offscreen
+  // instead of at the visible edge.
+  //
+  // NOT a memory dial. The 1800 -> 1200 trim (2026-07-21) was tried as
+  // a tile-memory cut and measured ~nothing (86.4 -> 89.9MB renderer
+  // cc/tile_memory, within noise): parked-at-bottom panes only fill
+  // the above-side buffer, and layer overheads dominated. The real
+  // tile win was the content-layer promotion lease
+  // (utils/scroll/index.svelte.ts) + the launcher AA flags — after
+  // which parked panes raster NONE of the buffer (demoted panes have
+  // no layer; buffered rows cost DOM only, ~10 rows/pane parked, with
+  // transient raster only on the actively-promoted pane). Shrinking
+  // below ~800px starts exposing the stall x fling blanking scenarios
+  // above for low-single-digit-MB DOM savings; 1200 ≈ a viewport of
+  // stall insurance. Keep in sync with TimelineVirtualizer's
+  // DEFAULT_BUFFER_PX.
+  const BUFFER_SIZE_PX = 1200;
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
   const BOTTOM_PAD_PX = 16;
   // Soft fade at the top of the scroll viewport: content dissolves under
-  // the chat header instead of meeting a hard gap. Paint-only mask, so
-  // (unlike padding or a spacer) it never changes
-  // scrollHeight/clientHeight/scrollTop and never fires the content
-  // ResizeObserver — it stays entirely clear of the scroll controller.
+  // the chat header instead of meeting a hard gap. Implemented as a
+  // gradient OVERLAY (surface color -> transparent, painted over the
+  // content), NOT a mask on the scroller. The two are pixel-identical
+  // here because the backdrop the old mask revealed is the flat
+  // .chat-surface-ground color (verified live 2026-07-21, max channel
+  // delta 2/255) — but their compositor cost is wildly different: a
+  // mask on the scroller rasterizes as a full viewport-sized texture
+  // whenever the pane's content layer is lease-promoted (~4.5MB
+  // renderer + the same again in the GPU-process mirror, per streaming
+  // pane — it was the single largest paint in the promoted scroller's
+  // layer stack) and re-applies on the raster path of every streaming
+  // repaint. The overlay is a 32px strip that paints once. Like the
+  // mask, it is paint-only: no effect on scrollHeight/clientHeight/
+  // scrollTop and no content-RO traffic, so it stays entirely clear of
+  // the scroll controller.
   //
-  // Two mask layers composited as a union: layer 1 is the fade over the
-  // content column; layer 2 is a solid strip that keeps the right
-  // SCROLLBAR_SAFE_PX fully opaque so the SCROLLBAR itself never fades at
-  // the top (a single full-width gradient would fade the scrollbar too,
-  // since it's part of this element's paint). SCROLLBAR_SAFE_PX is an
-  // approximate scrollbar width — overshooting just leaves a thin unfaded
-  // margin on the right, where the centered content never reaches anyway.
-  // Tune either number to taste.
+  // The overlay stops SCROLLBAR_SAFE_PX short of the right edge so the
+  // scrollbar never gets tinted at the top (the old mask kept an
+  // always-opaque strip there for the same reason). Overshooting just
+  // leaves a thin unfaded margin on the right, where the centered
+  // content never reaches anyway. Tune either number to taste.
   const TOP_FADE_PX = 32;
   const SCROLLBAR_SAFE_PX = 16;
-  const TOP_FADE_MASK =
-    `linear-gradient(to bottom, transparent 0, #000 ${TOP_FADE_PX}px) ` +
-    `left top / calc(100% - ${SCROLLBAR_SAFE_PX}px) 100% no-repeat, ` +
-    `linear-gradient(#000, #000) right top / ${SCROLLBAR_SAFE_PX}px 100% no-repeat`;
   const TARGET_FLASH_MS = 900;
   // happy-dom returns 0 for clientHeight/clientWidth, which makes the
   // windowing engine mount zero rows. In happy-dom test runs we mount
@@ -143,16 +168,30 @@
   // lifts, and that defense is no longer needed once we know
   // typesetting is done.
   let anyMarkdownSettledSinceArm = $state(false);
+  // Live count of ChatMarkdown instances mounted in this timeline tree
+  // (registered via CHAT_MARKDOWN_PRESENCE_CONTEXT). Zero means the
+  // mounted window has nothing to typeset, so the quiet signal reports
+  // settled-by-absence — without this, a thread whose visible tail has
+  // no markdown rows (all tool output / terminals / images) never flips
+  // the settled boolean and the warm gate holds hidden content until
+  // the 2.5s failsafe.
+  //
+  // Deliberately NOT $state: registrations mutate it from child mount /
+  // teardown effects (an unsafe-mutation context for reactive state),
+  // and its only reader is the controller's imperative
+  // quietContextSignal getter — no template or $derived tracks it.
+  let mountedMarkdownCount = 0;
 
   // Spring while live content advanced within SPRING_MODE_HOLD_MS, else
   // sync-pin. The pane stamps `lastLiveContentAt` on prose/reasoning
-  // reveals, direct text patches, new text-like provider rows, and
+  // reveals, direct text patches, new text-like provider rows,
   // visible-field updates to already mounted rows (tool output previews,
-  // running→completed result chrome), so during a stream the latch reads
-  // 'spring' continuously and falls to 'instant' ~SPRING_MODE_HOLD_MS
-  // after the last advance. New tool rows deliberately do not stamp;
-  // their virtual estimates often remeasure almost immediately, and
-  // sync-pinning those corrections is smoother than spring-chasing them.
+  // running→completed result chrome), and gated wire appends / reveal
+  // releases (armLiveContentAppendSpring), so during a stream the latch
+  // reads 'spring' continuously and falls to 'instant'
+  // ~SPRING_MODE_HOLD_MS after the last advance — and a post-turn append
+  // (background-task completion sibling) gets the same window as the
+  // identical rows arriving mid-stream.
   // The 500ms hold is pure tuning; see springAnimationLatch.ts.
   function animationModeForScroll(): 'spring' | 'instant' {
     return latchedSpringMode(performance.now(), pane.lastLiveContentAt, SPRING_MODE_HOLD_MS);
@@ -160,7 +199,7 @@
 
   const stick = createUseStickToBottomController({
     animationMode: animationModeForScroll,
-    quietContextSignal: () => anyMarkdownSettledSinceArm,
+    quietContextSignal: () => anyMarkdownSettledSinceArm || mountedMarkdownCount === 0,
     // The virtualizer is the content-geometry source (its spacer height
     // IS the content height) — the controller creates no contentEl RO;
     // samples arrive through `onContentGeometry` below.
@@ -173,6 +212,25 @@
     stick.notifyQuietContextSignalChanged();
   }
   setContext(CHAT_MARKDOWN_SETTLED_CONTEXT, markMarkdownSettled);
+
+  // Presence registration (see mountedMarkdownCount above). The 0↔1
+  // transitions can flip the composed quietContextSignal in either
+  // direction — a first markdown mounting after the quiet timer armed
+  // must DISARM it (typesetting is now possible; the settled-by-absence
+  // license is withdrawn), which the controller handles on notify.
+  function registerMarkdownPresence(): () => void {
+    mountedMarkdownCount += 1;
+    if (mountedMarkdownCount === 1 && !anyMarkdownSettledSinceArm) {
+      stick.notifyQuietContextSignalChanged();
+    }
+    return () => {
+      mountedMarkdownCount -= 1;
+      if (mountedMarkdownCount === 0 && !anyMarkdownSettledSinceArm) {
+        stick.notifyQuietContextSignalChanged();
+      }
+    };
+  }
+  setContext(CHAT_MARKDOWN_PRESENCE_CONTEXT, registerMarkdownPresence);
 
   function armWarmupWithReset(): void {
     anyMarkdownSettledSinceArm = false;
@@ -399,16 +457,18 @@
     });
   });
 
-  // Structural-append spring arming and the post-flush 'live-content'
-  // nudge are owned entirely by the pane data layer
-  // (thread.svelte.ts `armStructuralSpring`): `applyProviderItemUpserts`
-  // arms for wire appends and `recomputeRevealPass` arms when the reveal
-  // gate releases withheld rows. Both run synchronously with the data
+  // Structural-append spring arming, the live-content latch stamp for
+  // appends, and the post-flush 'live-content' nudge are owned entirely
+  // by the pane data layer (thread.svelte.ts
+  // `armLiveContentAppendSpring`): `applyProviderItemUpserts` arms for
+  // wire appends and `recomputeRevealPass` arms when the reveal gate
+  // releases withheld rows. Both run synchronously with the data
   // change, so they cannot lose the ordering race an effect here had
   // against the virtualizer's same-flush geometry delivery
   // (bug-report-20260702T193212Z), and neither is keyed on an active
-  // turn, so post-turn appends (interrupt echo, force-closed tool rows)
-  // arm too. Sidebar/host layout nudges keep using the instant
+  // turn, so post-turn appends (interrupt echo, force-closed tool rows,
+  // background-task completion siblings) arm and stamp too.
+  // Sidebar/host layout nudges keep using the instant
   // 'content'/'host-layout' paths; ChatView composer geometry observes as
   // 'composer-geometry' so activity-rail changes during streaming can
   // continue the spring.
@@ -560,12 +620,14 @@
      totalSize — padding changes don't move it, so they could never
      re-pin through that seam. ChatView's composer-overlay RO
      calls `observe('composer-geometry')` to handle that case explicitly.
-     The top `mask` fades the first TOP_FADE_PX of content as it rises
-     under the header (replacing the old hard top padding), while a solid
-     mask layer over the right SCROLLBAR_SAFE_PX keeps the scrollbar from
-     fading with it. It's a paint-only effect, so like the padding-bottom
-     above it never changes scrollHeight/clientHeight/scrollTop and stays
-     clear of the controller.
+     The top-fade OVERLAY (sibling after the scroller) fades the first
+     TOP_FADE_PX of content as it rises under the header (replacing the
+     old hard top padding), stopping SCROLLBAR_SAFE_PX short of the
+     right edge so the scrollbar never tints. It's a paint-only effect,
+     so like the padding-bottom above it never changes
+     scrollHeight/clientHeight/scrollTop and stays clear of the
+     controller. See the TOP_FADE_PX comment for why it is not a mask
+     on this element.
      `scrollbar-gutter: stable both-edges` keeps the centered
      `mx-auto max-w-[62rem]` rows aligned with ChatView's composer overlay.
      The styled `::-webkit-scrollbar` (app.css) is a classic, space-consuming
@@ -590,8 +652,6 @@
     style:overflow-anchor="none"
     style:scrollbar-gutter="stable both-edges"
     style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
-    style:mask={TOP_FADE_MASK}
-    style:-webkit-mask={TOP_FADE_MASK}
     tabindex="-1"
     data-testid="message-timeline-scroll"
     role="log"
@@ -652,14 +712,17 @@
            mismatch the estimate degrades per-row to the kind table /
            flat default. See utils/virtual/priors.ts and
            docs/architecture/frontend-scroll.md. -->
-      <!-- will-change-transform: the scroll controller composites the spring's
-           sub-pixel remainder onto this element as a translateY (glide
-           residue). Keeping the layer promotion permanent avoids the
-           subpixel-AA repaint blink that layer creation/destruction would
-           cause at every chase start/end. -->
+      <!-- Layer promotion (will-change: transform, for the spring's
+           sub-pixel translateY glide residue) is controller-owned: the
+           scroll controller writes it inline as a scroll-activity lease
+           and demotes after idle, because a permanent hint here kept a
+           full-content-height composited layer plus composited-scrolling
+           machinery alive per parked pane (~15-18MB of tile memory each;
+           see the lease section in utils/scroll/index.svelte.ts). Do not
+           re-add a static will-change class — it would defeat the lease
+           and silently re-tax every pane. -->
       <div
         bind:this={contentEl}
-        class="will-change-transform"
         style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}
       >
         {#key pane.threadId}
@@ -824,6 +887,18 @@
       </div>
     {/if}
   </div>
+
+  <!-- Top-fade overlay (see the TOP_FADE_PX comment for why this is an
+       overlay and not a mask on the scroller). Sits after the scroller
+       in source order so it paints above content, before the
+       jump-to-latest chip so the chip stays on top. -->
+  <div
+    aria-hidden="true"
+    class="pointer-events-none absolute top-0 left-0"
+    style:right={`${SCROLLBAR_SAFE_PX}px`}
+    style:height={`${TOP_FADE_PX}px`}
+    style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
+  ></div>
 
   <!-- Visible when the user has escaped or is no longer near the bottom.
        Wiring this to `!isSticky` would also pop the chip during sidebar/

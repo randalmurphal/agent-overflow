@@ -47,17 +47,17 @@ const SPRING_MAX_CATCHUP_STEPS = 3;
 // animationMode is still 'spring', the spring enters sentinel mode
 // (re-rAFs without writing, keeping springToken non-zero) so
 // `springActive` stays true across gaps > 350ms (async shiki loads,
-// parseIncompleteMarkdown rebalances) for the two resolver decisions
-// that key on it: the engine-compensation decline tier
-// (resolveEngineCompensation) and the negative-delta mid-chase spring
-// carve-out (resolveContentDelivery). The sentinel cancels on the next
-// tick where animationMode flips to 'instant' (no live content advanced
-// within the consumer's hold window — see MessageTimeline's
-// content-keyed latch). No ordering between that hold window and this
-// constant is required for correctness: a compensation arriving after
-// the sentinel died resolves through the pass/redirect tiers, both safe
-// (the historical HOLD > RETAIN cross-file invariant died with the
-// descriptor gate — see resolveEngineCompensation's provenance notes).
+// parseIncompleteMarkdown rebalances) for the springActive-keyed
+// resolver behavior — chiefly the negative-delta mid-chase carve-out,
+// plus resolveContentDelivery's overshoot and idle-deadband clauses.
+// The sentinel cancels on the next tick where
+// animationMode flips to 'instant' (no live content advanced within the
+// consumer's hold window — see MessageTimeline's content-keyed latch).
+// No ordering between that hold window and this constant is required
+// for correctness: a compensation arriving after the sentinel died
+// resolves through the pass/redirect tiers, both safe (the historical
+// HOLD > RETAIN cross-file invariant died with the descriptor gate —
+// see resolveEngineCompensation's provenance notes).
 export const RETAIN_ANIMATION_DURATION_MS = 350;
 // Spring arrival: within the shared ARRIVAL_DISTANCE_PX band
 // (scroll/resolver.ts) AND velocity below 0.5 px-per-60fps-frame means
@@ -98,13 +98,16 @@ const SPRING_CARRY_VELOCITY_CEILING = 4;
 // jump), trading a few hundred ms of extra follow latency for motion
 // that stays readable.
 //
-// INVARIANT: this cap must stay comfortably ABOVE the peak reveal-driven
-// content growth rate (~900 px/s — the end-of-stream drain under
+// INVARIANT: this cap must stay comfortably ABOVE the peak STEADY
+// reveal-driven content growth rate (~1070 px/s — catch-up under
 // MAX_ADAPTIVE_CHARS_PER_SEC, markdown/smoothing/PerItemSmoother.ts).
 // The follower being faster than the growth is what keeps steady-state
 // follow lag-free at ANY wire speed — reveal rate-limits rendered
 // height, not the wire. Raising reveal rates requires raising this in
-// step.
+// step. The successor-waiting fast-drain (FAST_DRAIN_MAX_CHARS_PER_SEC)
+// deliberately exceeds this cap: it is a bounded burst, and the
+// viewport trailing it at cap speed then closing the gap is intended
+// catch-up motion, not broken follow.
 const SPRING_MAX_VELOCITY_PX_PER_FRAME = 27;
 // Bound on how far a RESUMED chase may animate, in viewports. When a
 // tick finds the target more than one viewport away AND one of the
@@ -156,14 +159,13 @@ const RESUME_CLAMP_WINDOW_MS = 2000;
 // continuously through the fractional glide residue (the controller
 // rides the sub-CSS-pixel remainder of each spring write on a
 // contentEl translateY — see writeScrollTop), bounded below by the
-// fusion floor (see the deps.glideFusionFloorPxPerFrame call site):
-// position is exact, but bilinear resampling makes thin features
-// (1px separators, glyph stems) breathe between sharp and dim as the
-// fractional offset sweeps each device pixel. The breathing rate is
-// speed ÷ device quantum; above ~60 cycles/s flicker fusion hides it,
-// while a 2026-07-04T2026 capture measured 49% of glide time at
+// fusion floor (see fusionFloorPxPerFrame below): position is exact,
+// but bilinear resampling makes thin features (1px separators, glyph
+// stems) breathe between sharp and dim as the fractional offset
+// sweeps each device pixel. The breathing rate is speed ÷ device
+// quantum; a 2026-07-04T2026 capture measured 49% of glide time at
 // 5–40px/s — squarely visible. The floor keeps a decelerating glide's
-// breathing above fusion; it replaces the historical anti-judder
+// breathing invisible; it replaces the historical anti-judder
 // floor/taper (integer-quantized scrollTop rendering slow tails as
 // 1px steps), which the residue made obsolete.
 const SPRING_DECEL_ENVELOPE_RATIO = 0.11;
@@ -184,6 +186,152 @@ const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
 // there). Raising this further trades landing softness back into
 // perceptible breathing.
 const SPRING_FUSION_FLOOR_RELEASE_PX = 3;
+
+// ===== Growth-rate feedforward (drain-band smoothing) =====
+// The deceleration envelope keys chase speed to REMAINING distance with
+// no knowledge of how fast the target is growing. Under sustained
+// line-quantized growth — the end-of-turn smoother drain delivers a
+// wrapped line (~26px) every ~100ms at the adaptive ceiling — remaining
+// distance sawtooths at the quantum cadence, so envelope-shaped speed
+// sawtooths with it: a ~1.5× sharp-attack/exponential-decay pulse per
+// line, squarely in the 8–16Hz judder-sensitive band (characterized in
+// spring.drainProfile.test.ts; investigation 2026-07-21). The SAME
+// average growth delivered continuously follows at constant speed —
+// delivery shape was the motion shape.
+//
+// The feedforward measures the target's sustained growth rate (EMA over
+// growth observations seen by the tick loop) and, while growth is
+// sustained, holds chase speed at EXACTLY that rate inside the cruise
+// band (envelope speed ≤ CATCHUP_BAND × the rate). Speed = growth rate
+// is the unique fixed point that conserves backlog: the sawtooth's
+// remaining-distance oscillation stops mapping into speed, and the
+// glide runs at the delivery's average rate — fast but smooth, which is
+// the goal (fast is fine; discontinuities are not). Pinning to the rate
+// (not just flooring at it) matters: a floor alone leaves each
+// quantum's first frames running at envelope speed while the standing
+// backlog sits above the envelope's equilibrium, and that excess burns
+// off so slowly that a residual ~1.17× pulse persists for many quanta
+// (measured in the drainProfile harness). Cruising at the rate freezes
+// the backlog wherever engagement found it — a constant ~1-2 line
+// follow lag that the landing glide absorbs — in exchange for zero
+// speed modulation.
+//
+// Everything outside the cruise band keeps envelope kinematics: a
+// backlog large enough that envelope speed exceeds CATCHUP_BAND × rate
+// (a genuine catch-up — the viewport is meaningfully behind the bottom)
+// closes at envelope speed until it re-enters the band; the landing
+// releases inside SPRING_FEEDFORWARD_RELEASE_PX, handing the last
+// stretch to the envelope + fusion-floor cradle; and engagement
+// requires MIN_EVENTS growth observations with inter-event gaps within
+// MAX_EVENT_GAP_MS, so a single structural append, slow prose (a line
+// every ~375ms at the 160cps base), and isolated corrections keep
+// their existing ease-out kinematics. Disengagement is passive — one
+// gap beyond MAX_EVENT_GAP_MS and the next engagement check fails,
+// restarting the warmup. Two non-delivery target movements are kept
+// out of the rate: applied engine compensations are coordinate shifts
+// (the controller translates the detector's frame via
+// noteExternalTargetShift), and transient shrinks are absorbed by the
+// high-water mark (see the detector state comment) so net delivery is
+// measured peak-to-peak.
+//
+// The gap ceiling (250ms) sits between the adaptive-catch-up cadence
+// (~6 frames/quantum ≈ 100ms, up to ~1000cps) and the base-rate reveal
+// (~375ms/line at 160cps): the drain band engages, calm streaming does
+// not. The rate is capped at the hard velocity ceiling; a spuriously
+// high EMA (burst quanta) just crosses the target early, where the
+// cross-target clamp lands it and the caught-up branch's carry ceiling
+// re-bounds the kept momentum — the existing snap-safety story.
+const SPRING_FEEDFORWARD_MIN_EVENTS = 3;
+const SPRING_FEEDFORWARD_MAX_EVENT_GAP_MS = 250;
+const SPRING_FEEDFORWARD_EMA_ALPHA = 0.35;
+// Cruise-band width: while envelope speed ≤ this × the delivery rate,
+// speed pins to the rate; beyond it the envelope closes the backlog.
+// Wide enough that the steady drain's backlog peaks (engagement leaves
+// ~1.7 quanta standing; each arrival adds one) stay inside the band,
+// narrow enough that a real catch-up still closes promptly. Entering
+// the band from a catch-up steps speed down from ~1.5× rate to rate in
+// one frame — once, at the hand-off, versus every quantum without the
+// pin.
+const SPRING_FEEDFORWARD_CATCHUP_BAND = 1.5;
+// Release the floor near the target so landings keep the envelope's
+// ease-out instead of stopping flat from cruise speed. Sized well below
+// the steady-drain backlog trough (~half a line quantum) so the floor
+// never flickers mid-drain.
+const SPRING_FEEDFORWARD_RELEASE_PX = 8;
+
+// ===== Fusion-floor derivation (display physics) =====
+// The glide renders fractionally (scrollTop + the controller's
+// translateY residue), and bilinear resampling makes thin features
+// breathe sharp↔dim once per DEVICE pixel crossed — a modulation at
+// (speed ÷ device quantum) cycles/s. The floor keeps a decelerating
+// chase fast enough that this modulation stays invisible.
+//
+// "Above flicker fusion (~60Hz)" is necessary but NOT sufficient: the
+// display samples the modulation at its refresh rate, and any harmonic
+// landing near a multiple of the refresh aliases down into a slow,
+// fully visible beat. The historical refresh-blind floor (1.1/dpr px
+// per 60Hz frame ⇒ ~66 cycles/s at 1.1 dpr) hit all three regimes on
+// real hardware (2026-07-18 report): clean on a 165Hz panel (0.4
+// cycles/frame — well sampled), shimmering on a 144Hz panel (the
+// spiky waveform's 2nd harmonic at 0.917 cycles/frame aliases to
+// 0.083 ⇒ a ~12Hz beat), and worst at 60Hz (1.1 cycles/frame aliases
+// to 0.1 ⇒ ~6Hz full-amplitude pulsing).
+//
+// Refresh-aware rule: hold the floor at r = 1/k device pixels per
+// DISPLAYED frame, k = ⌊refresh / 60⌋. Every harmonic m·r then either
+// phase-locks (m a multiple of k ⇒ constant resample weights, zero
+// modulation) or patterns at refresh/k ≥ 60Hz — above fusion by
+// construction. Sub-120Hz displays get k = 1, a FULL phase lock: one
+// device pixel per frame, no breathing at all — 60Hz panels become
+// the best case rather than the worst. 120–179Hz get the half lock
+// (alternation at refresh/2 ≥ 60Hz), 180Hz+ the third, and so on.
+// The +0.05 rung tolerance keeps a display reporting 119.9Hz on the
+// k=2 rung instead of flapping to a needlessly stiff k=1 floor.
+const FLICKER_FUSION_HZ = 60;
+const REFRESH_LADDER_TOLERANCE = 0.05;
+// Clamps: never slower than 0.4 (a 3×-retina one-pixel lock would be
+// a meaningless 20px/s hold — and at that quantum the breathing
+// amplitude is negligible anyway) and never stiffer than the
+// deceleration envelope's own lower cap (1.6) so the floor always
+// fits under the envelope.
+const FUSION_FLOOR_MIN_PX_PER_FRAME = 0.4;
+const FUSION_FLOOR_MAX_PX_PER_FRAME = 1.6;
+
+// Pure derivation, exported for tests. `frameIntervalMs` is the
+// spring's measured rAF cadence (null until first measured — falls
+// back to the 60Hz assumption, whose k=1 phase-locked floor is also
+// the safe transient choice). Returns px per 60Hz-equivalent frame,
+// the spring's velocity unit; the frame-rate-independent integration
+// (velocity · dtFrames) is what converts a held floor back into
+// exactly 1/k device pixels per displayed frame.
+export function fusionFloorPxPerFrame(
+  devicePixelRatio: number,
+  frameIntervalMs: number | null,
+): number {
+  const dpr = devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const deviceQuantumCssPx = 1 / dpr;
+  const refreshHz =
+    frameIntervalMs !== null && frameIntervalMs > 0
+      ? 1000 / frameIntervalMs
+      : FLICKER_FUSION_HZ;
+  const k = Math.max(1, Math.floor(refreshHz / FLICKER_FUSION_HZ + REFRESH_LADDER_TOLERANCE));
+  const floorCssPxPerSecond = (deviceQuantumCssPx * refreshHz) / k;
+  return Math.min(
+    FUSION_FLOOR_MAX_PX_PER_FRAME,
+    Math.max(FUSION_FLOOR_MIN_PX_PER_FRAME, floorCssPxPerSecond / 60),
+  );
+}
+
+// Cadence input to the derivation above: EMA over real tick gaps,
+// bounded to plausible single-frame intervals so a missed frame or a
+// background stall never reads as a slow display. The EMA persists
+// across chases (cadence is a display property, not a chase property)
+// and re-converges within ~20 frames after the window moves to a
+// monitor with a different refresh rate.
+const FRAME_INTERVAL_EMA_ALPHA = 0.15;
+const FRAME_INTERVAL_SAMPLE_MIN_MS = 3;
+const FRAME_INTERVAL_SAMPLE_MAX_MS = 21;
+
 // How long a structural-append mark (markStructuralAppend, the
 // controller's markStructuralContentPending) keeps near-term content
 // growth spring-eligible while animationMode is 'instant'.
@@ -296,17 +444,12 @@ export interface SpringChaseDeps {
    */
   settleGlideResidue(): void;
   /**
-   * Minimum glide speed (px per 60Hz frame) a DECELERATING chase may
-   * not fall below until the last SPRING_FUSION_FLOOR_RELEASE_PX.
-   * Display-aware: bilinear resampling of the fractional residue makes
-   * thin features breathe between sharp and dim at (speed ÷ device
-   * quantum) cycles/s; the controller derives this floor from
-   * devicePixelRatio so the breathing stays above flicker fusion
-   * (~60Hz) on every display. Engages only after the chase has
-   * exceeded it (per quantum), so gentle sub-line growths keep their
-   * natural soft entry.
+   * Live devicePixelRatio (zoom and monitor moves change it between —
+   * and during — chases). One of the two inputs to the refresh-aware
+   * fusion-floor derivation (fusionFloorPxPerFrame); the spring
+   * supplies the other, its measured rAF cadence.
    */
-  glideFusionFloorPxPerFrame(): number;
+  devicePixelRatio(): number;
 }
 
 export interface SpringChase {
@@ -335,6 +478,18 @@ export interface SpringChase {
    * arrive-and-stop between chunks.
    */
   markTargetChanged(): void;
+  /**
+   * An external coordinate shift moved the whole scroll range by
+   * `deltaPx` — an applied engine compensation (above-viewport
+   * remeasure, head splice) that changed scrollHeight and scrollTop by
+   * the same amount. Translates the feedforward detector's frame so
+   * the shift does NOT read as content delivery: without this, a
+   * background completion patching a +290px tool row above the
+   * viewport mid-drain would spike the rate EMA ~5× and the cruise pin
+   * would burst-chase at the inflated rate for several quanta —
+   * re-introducing the pulse train the feedforward exists to kill.
+   */
+  noteExternalTargetShift(deltaPx: number): void;
   /** Open the one-shot structural-append spring-eligibility window. */
   markStructuralAppend(): void;
   structuralAppendPending(): boolean;
@@ -352,9 +507,28 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   let lastTickAt: number | null = null;
   // True once the CURRENT quantum's glide has exceeded the fusion
   // floor — only then does the floor hold the deceleration up (see
-  // glideFusionFloorPxPerFrame). Reset at every catch-up and on
+  // fusionFloorPxPerFrame). Reset at every catch-up and on
   // cancel, so each growth's entry ramp stays natural.
   let fusionFloorEngaged = false;
+  // Growth-rate feedforward detector state (see the constant block).
+  // The target HIGH-WATER mark in the current coordinate frame (-1 =
+  // none observed this chase), the timestamp of the last observed
+  // growth, the EMA'd growth rate, and how many consecutive in-window
+  // growth observations have landed. High-water (not last-seen): a
+  // transient shrink (parseIncompleteMarkdown rebalance, fence seal)
+  // leaves the mark in place, so net delivery is measured
+  // peak-to-peak — the dip and its re-growth cancel in the rate
+  // instead of cold-resetting the warmup (which would re-run the
+  // envelope sawtooth for MIN_EVENTS quanta after every rebalance) or
+  // inflating the EMA with re-grown content. External coordinate
+  // shifts translate the mark via noteExternalTargetShift.
+  let feedforwardHighWaterTarget = -1;
+  let feedforwardLastGrowthAt = 0;
+  let feedforwardRatePxPerMs: number | null = null;
+  let feedforwardGrowthEvents = 0;
+  // Measured rAF cadence for the fusion-floor derivation. Deliberately
+  // NOT reset in cancel() — see the constant block.
+  let frameIntervalEmaMs: number | null = null;
   // Monotonic counter (cheaper than `Symbol('spring')` per start). 0 means
   // no spring in flight; positive values identify the current spring run.
   let springToken = 0;
@@ -466,6 +640,15 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       // Bucket bounds documented at CHASE_GAP_BUCKET_BOUNDS_MS:
       // [<9, 9–13, 13–18, 18–26, 26–42, >42] ms.
       gapBuckets: stats.gapBuckets,
+      // The rAF cadence the spring is actually being driven at (the
+      // fusion-floor EMA). On mixed-refresh multi-monitor setups
+      // Chromium can pace rAF to the WRONG monitor's clock — compare
+      // this against the refresh rate of the monitor the window is on:
+      // a 6.06ms EMA while sitting on a 144Hz (6.94ms) panel means
+      // ~21 frames/s are being dropped at presentation, visible as
+      // pixel-skips at any glide speed.
+      cadenceEmaMs:
+        frameIntervalEmaMs === null ? null : Math.round(frameIntervalEmaMs * 100) / 100,
       catchupClamps: stats.catchupClamps,
       distanceJumps: stats.distanceJumps,
       targetChanges: stats.targetChanges,
@@ -484,6 +667,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     velocity = 0;
     accumulated = 0;
     fusionFloorEngaged = false;
+    feedforwardHighWaterTarget = -1;
+    feedforwardLastGrowthAt = 0;
+    feedforwardRatePxPerMs = null;
+    feedforwardGrowthEvents = 0;
     lastTickAt = null;
     deps.arrival.clear();
     springStartedFromStructuralAppend = false;
@@ -506,7 +693,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   // consume `sentinelEntryTarget` so the OTHER site's snap no-ops for this
   // same oscillation. `springToken` is intentionally left untouched: the
   // spring stays sentinel-alive so `springActive` keeps engaging the
-  // resolver's decline tier and negative-delta carve-out. Shared so the
+  // resolver's negative-delta carve-out. Shared so the
   // two sites can't drift — the same reason `gateOpen()` is shared.
   //
   // FOOTGUN — this is a one-shot CLAMP RECOVERY, not an oscillation source. If
@@ -589,6 +776,18 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const previousTickAt = lastTickAt;
       const dtFrames = previousTickAt === null ? 1 : (now - previousTickAt) / SIXTY_FPS_INTERVAL_MS;
       lastTickAt = now;
+      if (previousTickAt !== null) {
+        const frameGapMs = now - previousTickAt;
+        if (
+          frameGapMs >= FRAME_INTERVAL_SAMPLE_MIN_MS
+          && frameGapMs <= FRAME_INTERVAL_SAMPLE_MAX_MS
+        ) {
+          frameIntervalEmaMs =
+            frameIntervalEmaMs === null
+              ? frameGapMs
+              : frameIntervalEmaMs + (frameGapMs - frameIntervalEmaMs) * FRAME_INTERVAL_EMA_ALPHA;
+        }
+      }
       if (chaseTelemetry) recordChaseFrame(now, previousTickAt, dtFrames);
       const integrationFrames = Math.min(Math.max(dtFrames, 0), SPRING_MAX_CATCHUP_STEPS);
 
@@ -598,6 +797,44 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const target = deps.targetScrollTop();
       let current = el.scrollTop;
       deps.arrival.invalidateStale(target);
+
+      // Growth-rate feedforward detector (see the constant block): fold
+      // each target advance past the high-water mark into the rate EMA;
+      // an out-of-window gap restarts the warmup so only genuinely
+      // sustained delivery engages the floor. Targets below the mark
+      // (transient shrinks) leave it in place — see the state comment.
+      if (feedforwardHighWaterTarget < 0) {
+        feedforwardHighWaterTarget = target;
+      } else if (target > feedforwardHighWaterTarget) {
+        const growthGapMs = now - feedforwardLastGrowthAt;
+        if (
+          feedforwardGrowthEvents > 0
+          && growthGapMs > 0
+          && growthGapMs <= SPRING_FEEDFORWARD_MAX_EVENT_GAP_MS
+        ) {
+          const instantRate = (target - feedforwardHighWaterTarget) / growthGapMs;
+          feedforwardRatePxPerMs =
+            feedforwardRatePxPerMs === null
+              ? instantRate
+              : feedforwardRatePxPerMs
+                + (instantRate - feedforwardRatePxPerMs) * SPRING_FEEDFORWARD_EMA_ALPHA;
+          feedforwardGrowthEvents += 1;
+        } else {
+          feedforwardGrowthEvents = 1;
+          feedforwardRatePxPerMs = null;
+        }
+        feedforwardLastGrowthAt = now;
+        feedforwardHighWaterTarget = target;
+      }
+      const feedforwardFloorPxPerFrame =
+        feedforwardRatePxPerMs !== null
+        && feedforwardGrowthEvents >= SPRING_FEEDFORWARD_MIN_EVENTS
+        && now - feedforwardLastGrowthAt <= SPRING_FEEDFORWARD_MAX_EVENT_GAP_MS
+          ? Math.min(
+              feedforwardRatePxPerMs * SIXTY_FPS_INTERVAL_MS,
+              SPRING_MAX_VELOCITY_PX_PER_FRAME,
+            )
+          : 0;
 
       // Reduced motion (OS preference or the app's low-power setting)
       // flipped on mid-chase: land exactly and stop. The gate is
@@ -738,7 +975,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               // the constant block). Applies only to velocity already
               // pointing at the target; reversals decelerate through
               // zero naturally.
-              const fusionFloor = deps.glideFusionFloorPxPerFrame();
+              const fusionFloor = fusionFloorPxPerFrame(
+                deps.devicePixelRatio(),
+                frameIntervalEmaMs,
+              );
               if (Math.abs(velocity) >= fusionFloor) {
                 fusionFloorEngaged = true;
               } else if (
@@ -749,6 +989,31 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
                   velocity = fusionFloor;
                 } else if (stepDiff < 0 && velocity < 0) {
                   velocity = -fusionFloor;
+                }
+              }
+              // Growth-rate feedforward: while sustained growth is
+              // engaged, pin an upward chase to the delivery rate
+              // inside the cruise band so line-quantized backlog
+              // oscillation stops mapping into speed (the drain-band
+              // sawtooth — see the constant block). Overrides the
+              // envelope by design (the envelope has no rate
+              // knowledge); beyond the band the envelope closes real
+              // backlog, never below the rate; releases near the
+              // target so the landing keeps its ease-out. Applies only
+              // to velocity already pointing at (or resting toward)
+              // the target — shrink-follow and reversals keep pure
+              // envelope kinematics and turn through zero naturally.
+              if (
+                feedforwardFloorPxPerFrame > 0
+                && stepDiff > 0
+                && velocity >= 0
+                && remaining > SPRING_FEEDFORWARD_RELEASE_PX
+              ) {
+                const withinCruiseBand =
+                  remaining * SPRING_DECEL_ENVELOPE_RATIO
+                  <= feedforwardFloorPxPerFrame * SPRING_FEEDFORWARD_CATCHUP_BAND;
+                if (withinCruiseBand || velocity < feedforwardFloorPxPerFrame) {
+                  velocity = feedforwardFloorPxPerFrame;
                 }
               }
               accumulated += velocity * stepFraction;
@@ -853,13 +1118,14 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           // Streaming active but no target change within the retain
           // window (async shiki load, inter-chunk gap, parseIncomplete
           // Markdown rebalance). Keep the spring sentinel-alive so
-          // `springActive` stays true for the resolver decisions that
-          // key on it: resolveEngineCompensation's decline tier and
-          // resolveContentDelivery's negative-delta carve-out. Without
-          // this, cancel() sets springToken=0 and the dead window
-          // lets a routed engine compensation or a negative contentRO
-          // sync-pin land instantly — visible as 1-2 lines of instant
-          // jump mid-stream. The next positive contentRO delta bumps
+          // `springActive` stays true for the springActive-keyed
+          // resolver behavior — chiefly resolveContentDelivery's
+          // negative-delta carve-out (plus its overshoot and
+          // idle-deadband clauses). Without this, cancel() sets
+          // springToken=0 and the dead window lets a negative
+          // contentRO sync-pin land instantly — visible as 1-2 lines
+          // of instant jump mid-stream. The next positive contentRO
+          // delta bumps
           // lastTargetChangedAt and the chase resumes on the following
           // tick.
           //
@@ -919,6 +1185,11 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     stopRequested: () => springStopRequested,
     markTargetChanged: () => {
       lastTargetChangedAt = nowMs();
+    },
+    noteExternalTargetShift: (deltaPx: number) => {
+      if (feedforwardHighWaterTarget >= 0) {
+        feedforwardHighWaterTarget += deltaPx;
+      }
     },
     markStructuralAppend: () => {
       structuralAppendSpringUntil = nowMs() + STRUCTURAL_APPEND_SPRING_WINDOW_MS;

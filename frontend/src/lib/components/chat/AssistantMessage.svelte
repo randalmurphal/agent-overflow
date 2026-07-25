@@ -7,11 +7,39 @@
   import { getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { formatTimeOfDay } from '../../utils/format';
   import { getSettings } from '../../stores/settings.svelte';
+  import { ingestPersistedCodeSpans } from '../../utils/persistedSpans';
   import { splitAtBoundary } from '../../markdown/boundary/split';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
-  const streaming = $derived(item.status === 'streaming');
+  // Warm the code span cache from the row's persisted fence spans
+  // (items.meta `codeSpans`, written at settle). The init call is the
+  // cold-mount path: it seeds synchronously (tables memoized) BEFORE
+  // ChatMarkdown's code hosts mount, so their first cache reads hit and
+  // no highlight RPC fires. The initial-value capture is the point —
+  // the $effect below covers meta arriving later (settle mid-session,
+  // virtualized item replacement). Streaming rows have no codeSpans key
+  // yet and no-op cheaply.
+  // svelte-ignore state_referenced_locally
+  ingestPersistedCodeSpans(item.meta);
+  $effect(() => {
+    ingestPersistedCodeSpans(item.meta);
+  });
+
+  // Rendered streaming mode. Status alone is NOT the signal: the wire
+  // settles `status` to a terminal value while the per-item smoother is
+  // still draining the reveal (often for seconds on a long final
+  // message), and flipping ChatMarkdown to settled mode mid-drain drops
+  // the volatile-tail split and its incomplete-markdown guards while the
+  // text is still visibly growing — a half-arrived nested bullet then
+  // parses as a setext underline and balloons the line above into an
+  // <h2> for a frame (the end-of-turn per-line reflow glitch). Hold
+  // streaming rendering until the smoother disposes (reactive via the
+  // pane's SvelteMap-backed `isItemSmoothing`); panes are absent on
+  // non-timeline surfaces, which only ever render settled items.
+  const streaming = $derived(
+    item.status === 'streaming' || (pane?.isItemSmoothing(item.id) ?? false),
+  );
   const time = $derived(formatTimeOfDay(item.createdAt));
   const isoTime = $derived(new Date(item.createdAt).toISOString());
 
@@ -48,16 +76,18 @@
     if (!hasVisibleBody && bodyIsVisible()) hasVisibleBody = true;
   });
 
-  // Path-link allowlist for assistant prose. The settle hook in
-  // `internal/triage/stream_state.go` writes a `pathRefs` array onto
-  // `Item.meta` for every assistant_text row; here we surface it to
+  // Path-link allowlist for assistant prose. Triage validates paths on
+  // every streaming text flush and pushes the resulting `pathRefs` onto
+  // `Item.meta` mid-stream (`internal/triage` → `applyItemMeta`), with a
+  // final authoritative set on settle; here we surface it to
   // ChatMarkdown so only Go-validated paths get wrapped. Falling back
   // to `[]` (not `undefined`) for rows without pathRefs is
   // intentional: pre-pathlinks history rows render plain rather than
   // falling through to the local regex, which is the bug we're fixing.
-  // While the row is streaming, settle hasn't fired yet and meta is
-  // empty — leave it empty until completion. After settle, meta gains
-  // pathRefs and the $derived reads them.
+  // `getPathRefsFromMeta` is memoized on the meta string, so this
+  // derived keeps a stable array identity across the per-frame item
+  // replacements of a streaming row — a fresh identity per frame would
+  // rebuild ChatMarkdown's marked extension and re-lex every block.
   const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? []);
 </script>
 

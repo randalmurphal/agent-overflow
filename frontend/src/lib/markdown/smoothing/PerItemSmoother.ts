@@ -42,25 +42,31 @@ export const ADAPTIVE_CATCHUP_MS = 500;
 // Default window for `requestFastDrain`: the reveal sequencer calls it on
 // a top-level item the instant a successor row is waiting behind it, so the
 // predecessor finishes animating quickly instead of stalling the queue for
-// seconds. Bounded so a long collapsed thinking block can't delay a live
-// tool call by more than a moment, while still reading as motion rather than
-// an instant snap. Fast-drain raises the per-tick cap to
+// seconds. Fast-drain raises the per-tick cap to
 // FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS instead of lifting it: an unbounded
 // drain used to reveal the whole lag in one rAF tick, and that single giant
 // markdown re-parse + DOM mutation was visible as a hitch exactly at row
 // boundaries (the moment a tool row lands behind a streaming text frontier).
 export const FAST_DRAIN_MS = 200;
-// Per-tick reveal cap while fast-draining. 4× the steady-state cap:
-// ~3360 cps at 60Hz — clearly "rushing to finish" motion, while keeping
-// each frame's markdown re-parse bounded. A lag of ~1200 chars drains in
-// ~21 ticks (≈350ms); callers that consider a lag too large to animate
-// at all snap instead (see FAST_DRAIN_SNAP_LAG_CHARS).
+// Per-tick reveal cap while fast-draining: the per-frame WORK bound (one
+// tick's markdown re-parse + DOM mutation), sized so the drain rate
+// ceiling stays reachable at the slowest throttled cadence (48Hz
+// processed: 2400/48 = 50 ≤ 56).
 export const FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS = 56;
-// Caller policy, not mechanism: above this lag a "finish the predecessor"
-// fast-drain would still take >~350ms of sustained per-frame re-parse
-// work, so callers snap outright — one deliberate burst, same cost the
-// unbounded drain used to pay, reserved for the outlier case.
-export const FAST_DRAIN_SNAP_LAG_CHARS = 1200;
+// Ceiling on the fast-drain RATE. The deadline math below wants
+// `lag / msLeft` — unbounded in the lag — so without a ceiling a large
+// backlog (a reconnect replay, a fat burst right before a tool row)
+// dumps as an unreadable blur even though each tick stays bounded.
+// Clamped, any backlog drains at a constant, deliberately-fast pace and
+// simply takes as long as it takes (an essay-sized backlog reveals in
+// seconds, at streaming speed, rather than as one wholesale write —
+// the reveal never snaps the whole buffer in a single frame).
+// This exceeds the scroll spring's follow cap (~1620 px/s,
+// scroll/spring.ts SPRING_MAX_VELOCITY_PX_PER_FRAME), which is fine for
+// a bounded drain: the viewport trails at its own cap and closes the
+// gap when the drain ends — deliberate catch-up motion, not steady-state
+// follow (the spring invariant governs the STEADY reveal ceiling below).
+export const FAST_DRAIN_MAX_CHARS_PER_SEC = 2400;
 // Reveal processing is decoupled from display refresh. rAF fires at
 // panel rate, and during catch-up a 165Hz panel would re-parse
 // markdown, mutate the DOM, force layout, and re-raster the content
@@ -84,17 +90,22 @@ export const MIN_REVEAL_TICK_INTERVAL_MS = 15;
 // display refresh it allowed cap × Hz chars/sec: ~840 cps on the
 // 60Hz panel the cap was sized against, but ~2310 cps on a 165Hz
 // panel (2026-07-04 report: "catches up by speeding up a ton...too
-// fast at its peak"). 840 preserves the originally intended ceiling
-// on every display; lower it to slow peak catch-up everywhere.
-export const MAX_ADAPTIVE_CHARS_PER_SEC = 840;
+// fast at its peak"). Originally 840 (the intended 60Hz ceiling);
+// raised to 1000 in 2026-07 alongside the removal of the oversized-
+// backlog reveal snap — with no snap valve, catch-up leans on this
+// ceiling alone, and the bump keeps it brisk. The scroll spring's
+// follow cap must stay comfortably above the px/s this implies
+// (~1070 px/s; see scroll/spring.ts SPRING_MAX_VELOCITY_PX_PER_FRAME)
+// — raise the two in step.
+export const MAX_ADAPTIVE_CHARS_PER_SEC = 1000;
 // Hard cap on how many characters the smoother may reveal in a single
 // PROCESSED tick, regardless of accumulated budget. With the rate
 // ceiling above owning speed, this is purely the per-frame WORK
 // bound: one tick's markdown re-parse + DOM mutation stays bounded
 // even right after a stalled frame (where dt, and so the tick's
-// budget, is large). Sized so the 840cps ceiling stays reachable at
+// budget, is large). Sized so the 1000cps ceiling stays reachable at
 // the slowest throttled cadence (144Hz panels process every third
-// frame ≈ 48Hz: 840/48 ≈ 17.5 → 18; ~3 short words per processed
+// frame ≈ 48Hz: 1000/48 ≈ 20.8 → 21; ~3 short words per processed
 // tick). Excess budget is clamped after each tick (not rolled over)
 // so a stall can't burst a multi-tick chunk; the backlog drains at
 // the elevated fast-drain cap only when a successor row is waiting. A
@@ -103,7 +114,7 @@ export const MAX_ADAPTIVE_CHARS_PER_SEC = 840;
 // removed 2026-07) that rushed it, and the rushed motion read as
 // jank; a long final message finishing a few seconds after the wire
 // settles is the accepted trade for uniform reveal speed.
-export const MAX_ADVANCE_PER_TICK_CHARS = 18;
+export const MAX_ADVANCE_PER_TICK_CHARS = 21;
 
 export interface PerItemSmootherOptions {
   /** Seed for the received buffer (mid-flight resume). */
@@ -293,14 +304,19 @@ export class PerItemSmoother {
 
     const lag = this.received.length - this.revealed.length;
     // Fast-drain mode: size the rate to clear the remaining lag by the
-    // deadline. Floor the window at ~one frame so the rate stays finite,
-    // and once the deadline has passed the lag/16ms rate reveals the
-    // remainder in a single tick (a hard finish).
+    // deadline, clamped to the drain ceiling. Floor the window at ~one
+    // frame so the deadline math stays finite; small lags finish by the
+    // deadline, large ones ride the ceiling for as long as they take —
+    // a bounded rush, never a wholesale reveal (see
+    // FAST_DRAIN_MAX_CHARS_PER_SEC).
     const draining = this.fastDrainEndsAt !== null;
     let charsPerSec = BASE_CHARS_PER_SEC;
     if (draining) {
       const msLeft = Math.max(16, (this.fastDrainEndsAt as number) - now);
-      charsPerSec = Math.max(charsPerSec, (lag * 1000) / msLeft);
+      charsPerSec = Math.min(
+        FAST_DRAIN_MAX_CHARS_PER_SEC,
+        Math.max(charsPerSec, (lag * 1000) / msLeft),
+      );
     } else if (lag > ADAPTIVE_TRIGGER_CHARS) {
       // Rate-clamped: the target-500ms drain math is a lower bound on
       // urgency, MAX_ADAPTIVE_CHARS_PER_SEC an upper bound on speed —

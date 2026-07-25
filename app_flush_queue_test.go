@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -31,7 +32,7 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 
 	thread := testThread("flush-codex-ok")
 	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -95,13 +96,13 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 	if flushRow.Summary != "drained" {
 		t.Errorf("flush row summary: got %q, want %q", flushRow.Summary, "drained")
 	}
-	checkpoint, ok, err := app.store.GetCheckpointByUserItemID(thread.ID, "user:3:flush:1")
+	anchor, ok, err := app.store.GetMessageAnchor(thread.ID, "user:3:flush:1")
 	if err != nil || !ok {
-		t.Fatalf("checkpoint for flushed user item missing after echo: ok=%v err=%v", ok, err)
+		t.Fatalf("anchor for flushed user item missing after echo: ok=%v err=%v", ok, err)
 	}
-	if checkpoint.ProviderUserMessageID != "wire-user-1" || checkpoint.ProviderParentUUID != "parent-wire-1" {
-		t.Fatalf("checkpoint provider ids = %q/%q, want wire-user-1/parent-wire-1",
-			checkpoint.ProviderUserMessageID, checkpoint.ProviderParentUUID)
+	if anchor.ProviderUserMessageID != "wire-user-1" || anchor.ProviderParentUUID != "parent-wire-1" {
+		t.Fatalf("anchor provider ids = %q/%q, want wire-user-1/parent-wire-1",
+			anchor.ProviderUserMessageID, anchor.ProviderParentUUID)
 	}
 }
 
@@ -122,7 +123,7 @@ func TestDispatchFlush_EchoLandsAfterRowsThatArrivedFirst(t *testing.T) {
 
 	thread := testThread("flush-echo-insert-position")
 	thread.Provider = string(provider.Codex)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -551,12 +552,15 @@ func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 	if app.triage.HasPendingSendForThread(thread.ID) {
 		t.Errorf("pending-send marker live after failed dispatch")
 	}
+	// The FAILING item requeues ahead of the unattempted tail (round-13,
+	// CT13-1): dropping it would leave the message in no state at all.
 	requeued := app.triage.QueuedFlushItems(thread.ID)
-	if len(requeued) != 2 {
-		t.Fatalf("requeued items: got %d, want 2", len(requeued))
+	if len(requeued) != 3 {
+		t.Fatalf("requeued items: got %d, want 3 (failing item + unattempted tail)", len(requeued))
 	}
-	if requeued[0].ID != "queue:1" || requeued[1].ID != "queue:2" {
-		t.Fatalf("requeued order: got [%s, %s], want [queue:1, queue:2]", requeued[0].ID, requeued[1].ID)
+	if requeued[0].ID != "queue:0" || requeued[1].ID != "queue:1" || requeued[2].ID != "queue:2" {
+		t.Fatalf("requeued order: got [%s, %s, %s], want [queue:0, queue:1, queue:2]",
+			requeued[0].ID, requeued[1].ID, requeued[2].ID)
 	}
 }
 
@@ -601,9 +605,11 @@ func TestDispatchFlush_FailedItemDoesNotEmitQueueFlushed(t *testing.T) {
 	if len(states) == 0 {
 		t.Fatalf("queue_state_changed events: got %d, want at least 1", len(states))
 	}
+	// The failed item requeues (round-13, CT13-1) — the final
+	// queue_state_changed must show it back in Zone 1, not vanished.
 	last := states[len(states)-1]
-	if len(last.Items) != 0 {
-		t.Fatalf("last queue_state_changed items = %+v, want empty for failed single-item dispatch", last.Items)
+	if len(last.Items) != 1 || last.Items[0].ID != "queue:failed" {
+		t.Fatalf("last queue_state_changed items = %+v, want the failed item requeued", last.Items)
 	}
 }
 
@@ -1222,7 +1228,7 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 
 	thread := testThread("flush-claude-eager")
 	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -1361,12 +1367,21 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 			t.Errorf("flush row not at turn tail after echo: %s at index %d >= flush index %d", it.ID, it.ItemIndex, stamped.ItemIndex)
 		}
 	}
-	// Eagerly-persisted flush messages at a shared turn must NOT capture a
-	// checkpoint — the original user:3 checkpoint already covers the same
-	// workspace state, and DeleteConversationFromTurn(3) would incorrectly
-	// delete the original prompt if the flush message had its own checkpoint.
-	if _, ok, _ := app.store.GetCheckpointByUserItemID(thread.ID, flushRow.ID); ok {
-		t.Error("eagerly-persisted flush at active turn should not capture a checkpoint")
+	// The echo confirms the CLI consumed the message, so the flush row gets
+	// its own message anchor — that row is now an un-send/fork target like
+	// any other user message. Rolling back to it is safe at a shared turn
+	// because Claude truncation is item-granular
+	// (DeleteConversationFromItem): the original user:3 prompt and the
+	// agent work before the queued send survive.
+	anchor, ok, err := app.store.GetMessageAnchor(thread.ID, flushRow.ID)
+	if err != nil || !ok {
+		t.Fatalf("eagerly-persisted flush row has no anchor after echo (ok=%v err=%v)", ok, err)
+	}
+	if anchor.TurnIndex != 3 {
+		t.Errorf("flush anchor turn_index: got %d, want 3 (the shared turn)", anchor.TurnIndex)
+	}
+	if anchor.ProviderUserMessageID != echoID {
+		t.Errorf("flush anchor provider_user_message_id: got %q, want %q", anchor.ProviderUserMessageID, echoID)
 	}
 }
 
@@ -1382,7 +1397,7 @@ func TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho(t *
 
 	thread := testThread("flush-claude-reposition")
 	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -1522,7 +1537,7 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 
 	thread := testThread("flush-claude-interrupt")
 	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -1585,13 +1600,16 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 		t.Fatalf("expected 2 flush rows at turn 3, got %d", len(flushIndices))
 	}
 
-	// Simulate MarkUserInterrupt — persists "Stopped by user" after the
-	// flush messages. We need an open turn in triage for this to work.
+	// Simulate the interrupt sequence — pre-ack sample + mark, then the
+	// post-ack bookkeeping persists "Stopped by user" after the flush
+	// messages. We need an open turn in triage for this to work.
 	app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnStart, ThreadID: thread.ID,
 		TurnIndex: 3, Timestamp: time.Now(),
 	})
-	stoppedID, err := app.triage.MarkUserInterrupt(thread.ID)
+	interruptedTurn := app.triage.OpenTurnIndex(thread.ID)
+	stampToken := app.triage.MarkFlushSendsInterrupted(thread.ID, interruptedTurn)
+	stoppedID, err := app.triage.MarkUserInterrupt(thread.ID, interruptedTurn, stampToken)
 	if err != nil {
 		t.Fatalf("MarkUserInterrupt: %v", err)
 	}
@@ -1613,9 +1631,9 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 	rec.reset()
 
 	// Promote — should bump flush messages after "Stopped by user".
-	promoted := app.triage.PromoteQuietFlushSends(thread.ID)
-	if promoted != 2 {
-		t.Errorf("promoted: got %d, want 2", promoted)
+	promoted := app.triage.PromoteQuietFlushSends(thread.ID, stampToken)
+	if len(promoted) != 2 {
+		t.Errorf("promoted: got %d, want 2", len(promoted))
 	}
 
 	// provider:item_event must have been emitted for promoted items.
@@ -1648,7 +1666,7 @@ func TestDispatchFlush_Claude_NoActiveTurn_DefersLikeCodex(t *testing.T) {
 
 	thread := testThread("flush-claude-no-active")
 	thread.Provider = string(provider.Claude)
-	thread.WorkspacePath = initCheckpointRepo(t)
+	thread.WorkspacePath = initGitRepo(t)
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -2150,6 +2168,544 @@ func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
 	}
 }
 
+// TestDispatchFlush_StaleRowCleanupBeforePersist pins R11-1 (round
+// 11): a requeued item carrying StaleUserItemID — a quiet row from a
+// previous dispatch whose session-death cleanup failed — must have
+// that row removed before the redispatch persists a fresh one.
+// Without the retry, the timeline shows the message twice: the stale
+// unconsumed row plus the new dispatch's row.
+func TestDispatchFlush_StaleRowCleanupBeforePersist(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-stale-cleanup")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = initGitRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	// The stale row a dead session's failed cleanup left behind, on an
+	// earlier turn than the fresh dispatch will target — the redispatch
+	// mints its row on the ACTIVE turn (3), so the stale id stays
+	// distinguishable from the fresh one.
+	if _, err := app.store.AppendItem(store.Item{
+		ID: "user:0:flush:1", ThreadID: thread.ID, TurnIndex: 0,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "retry me", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed stale row: %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID: "turn-3", ThreadID: thread.ID, TurnIndex: 3, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(), thread.ID,
+		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("claude.NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		claude:   sess,
+		liveness: newSessionLiveness(time.Now()),
+	}
+
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+		ID: "queue:retry", Message: "retry me", Payload: json.RawMessage(`{}`),
+		StaleUserItemID: "user:0:flush:1",
+	}})
+
+	if _, found, err := app.store.GetThreadItem(thread.ID, "user:0:flush:1"); err != nil {
+		t.Fatalf("GetThreadItem stale: %v", err)
+	} else if found {
+		t.Error("stale flush row survived the redispatch cleanup")
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	count := 0
+	for _, it := range items {
+		if it.Kind == "user_text" && it.Summary == "retry me" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("rows with the message = %d, want exactly 1 (stale row cleaned, fresh row persisted)", count)
+	}
+}
+
+// TestDispatchFlush_FailedDispatchKeepsStaleRow pins R12-1 (round 12):
+// the stale-row cleanup retry must run AFTER every failure-prone
+// resolution step (envelope, thread load, session lookup, turn
+// placement). When dispatch aborts before reaching the persist — here,
+// no live session — the stale row is the message's only durable copy
+// and must survive for the next retry; a cleanup at the top of the
+// dispatch would delete it and then fail, losing the message entirely.
+func TestDispatchFlush_FailedDispatchKeepsStaleRow(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-stale-keep")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if _, err := app.store.AppendItem(store.Item{
+		ID: "user:0:flush:1", ThreadID: thread.ID, TurnIndex: 0,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "keep me", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed stale row: %v", err)
+	}
+
+	// No session registered: dispatch fails at session resolution.
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+		ID: "queue:keep", Message: "keep me", Payload: json.RawMessage(`{}`),
+		StaleUserItemID: "user:0:flush:1",
+	}})
+
+	if _, found, err := app.store.GetThreadItem(thread.ID, "user:0:flush:1"); err != nil {
+		t.Fatalf("GetThreadItem stale: %v", err)
+	} else if !found {
+		t.Error("failed dispatch deleted the stale flush row — the message's only durable copy is gone")
+	}
+	// The failing item requeues with its stale marker intact (round-13,
+	// CT13-1): the session-lookup failure happened BEFORE the cleanup
+	// ran, so the retry obligation must survive for the next dispatch.
+	requeued := app.triage.QueuedFlushItems(thread.ID)
+	if len(requeued) != 1 {
+		t.Fatalf("requeued items: got %d, want 1 (the failing item)", len(requeued))
+	}
+	if requeued[0].ID != "queue:keep" || requeued[0].StaleUserItemID != "user:0:flush:1" {
+		t.Fatalf("requeued item = %+v, want queue:keep with StaleUserItemID user:0:flush:1", requeued[0])
+	}
+}
+
+// TestDispatchFlush_PostPersistFailureRequeuesWithFreshRowMarker pins
+// the marker-transition half of R13-1 (round 13): when the stale-row
+// cleanup succeeds and the eager quiet persist lands but the provider
+// send then fails, the requeued item must carry StaleUserItemID = the
+// FRESH row id — the redispatch's cleanup then removes that quiet row
+// before persisting again, so the timeline never shows the message
+// twice. Requeuing with the old marker (row already deleted) or no
+// marker (fresh row left behind) both duplicate.
+func TestDispatchFlush_PostPersistFailureRequeuesWithFreshRowMarker(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-postpersist-marker")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = initGitRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if _, err := app.store.AppendItem(store.Item{
+		ID: "user:0:flush:1", ThreadID: thread.ID, TurnIndex: 0,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "retry me", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed stale row: %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID: "turn-3", ThreadID: thread.ID, TurnIndex: 3, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	// A registered session whose subprocess is already closed: session
+	// resolution and the quiet persist succeed, the stdin write fails.
+	sess, err := claude.NewSession(
+		context.Background(), thread.ID,
+		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("claude.NewSession: %v", err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		claude:   sess,
+		liveness: newSessionLiveness(time.Now()),
+	}
+
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+		ID: "queue:retry", Message: "retry me", Payload: json.RawMessage(`{}`),
+		StaleUserItemID: "user:0:flush:1",
+	}})
+
+	if _, found, err := app.store.GetThreadItem(thread.ID, "user:0:flush:1"); err != nil {
+		t.Fatalf("GetThreadItem stale: %v", err)
+	} else if found {
+		t.Error("stale flush row survived a dispatch that reached the persist")
+	}
+	fresh, found, err := app.store.GetThreadItem(thread.ID, "user:3:flush:1")
+	if err != nil || !found {
+		t.Fatalf("fresh quiet row user:3:flush:1: found=%v err=%v", found, err)
+	}
+	if fresh.Summary != "retry me" {
+		t.Fatalf("fresh row summary = %q, want the message", fresh.Summary)
+	}
+	requeued := app.triage.QueuedFlushItems(thread.ID)
+	if len(requeued) != 1 {
+		t.Fatalf("requeued items: got %d, want 1", len(requeued))
+	}
+	if requeued[0].StaleUserItemID != "user:3:flush:1" {
+		t.Fatalf("requeued StaleUserItemID = %q, want the fresh row id user:3:flush:1", requeued[0].StaleUserItemID)
+	}
+}
+
+// TestCodexResendAfterInterrupt_FailedSendRequeuesWithStaleMarkers
+// pins R13-2 (round 13): the Codex resend-after-interrupt clears the
+// pending entries (their echoes never come — Codex discards steered
+// pending_input at turn/interrupt) and re-sends; when that send FAILS,
+// the eagerly-persisted rows would otherwise sit in the timeline
+// looking delivered while no recovery path knows about them. The
+// failure must requeue each message with StaleUserItemID = its row id
+// so the redispatch cleans the eager row before re-persisting.
+// TestCodexResendAfterInterrupt_FailedSendRestoresDraft pins the
+// Codex-TUI-parity recovery for a definite resend failure: input the
+// model never consumed goes back to the composer (eager row + its
+// anchor deleted, content restored to the draft, queue_restored
+// emitted), never stays in the timeline looking sent and never
+// requeues (the TUI restores unconsumed input to the composer; the
+// queue path was the pre-parity behavior, round-13 CT13-2).
+func TestCodexResendAfterInterrupt_FailedSendRestoresDraft(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("codex-resend-requeue")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = initGitRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	sess := installSteerTestSession(t, app, thread, "ok")
+	if err := sess.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	appSess := session{
+		provider: string(provider.Codex),
+		token:    "tok",
+		codex:    sess,
+		liveness: newSessionLiveness(time.Now()),
+	}
+	app.sessions[thread.ID] = appSess
+
+	deferred := store.Item{
+		ID: "user:1:flush:1", ThreadID: thread.ID, TurnIndex: 1,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "resend me",
+	}
+	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:q1", deferred, 10, "")
+	tok := app.triage.MarkFlushSendsInterrupted(thread.ID, -1)
+
+	app.eagerPersistFlushSendsOnInterrupt(thread.ID, appSess, -1, tok)
+
+	// The eager row is deleted — the timeline must not show a message
+	// the provider never received...
+	if _, found, err := app.store.GetThreadItem(thread.ID, "user:1:flush:1"); err != nil {
+		t.Fatalf("GetThreadItem: %v", err)
+	} else if found {
+		t.Error("eager row survived the failed resend — the timeline shows a message the provider never received")
+	}
+	// ...its message anchor went with it (FK cascade)...
+	if _, ok, err := app.store.GetMessageAnchor(thread.ID, "user:1:flush:1"); err != nil {
+		t.Fatalf("GetMessageAnchor: %v", err)
+	} else if ok {
+		t.Error("anchor for the deleted eager row survived")
+	}
+	// ...the dead-send pending entry is gone...
+	if app.triage.HasPendingSendForThread(thread.ID) {
+		t.Error("pending-send entry live after failed resend — its echo can never arrive")
+	}
+	// ...nothing is requeued...
+	if requeued := app.triage.QueuedFlushItems(thread.ID); len(requeued) != 0 {
+		t.Fatalf("requeued items = %+v, want none — recovery is the composer draft", requeued)
+	}
+	// ...the content is back in the composer draft...
+	draft, _, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadDraft: %v", err)
+	}
+	if draft.Content != "resend me" {
+		t.Fatalf("draft content = %q, want %q", draft.Content, "resend me")
+	}
+	// ...and the frontend was told which rows to drop.
+	restored := emittedQueueRestored(rec)
+	if len(restored) != 1 {
+		t.Fatalf("queue restored events = %+v, want one", restored)
+	}
+	if restored[0].Reason != "resend_failed" {
+		t.Errorf("restore reason = %q, want resend_failed", restored[0].Reason)
+	}
+	if strings.Join(restored[0].UserItemIDs, ",") != "user:1:flush:1" {
+		t.Errorf("restored user ids = %+v, want [user:1:flush:1]", restored[0].UserItemIDs)
+	}
+}
+
+// TestCodexResendAfterInterrupt_DraftMergeFailureRequeues pins the
+// fallback inside restoreEagerPersistedFlushesToDraft: when the draft
+// write fails after the eager rows are already deleted, the messages
+// must keep a delivery vehicle — requeued with their queue identity —
+// and the row removal must still reach the frontend so no ghost
+// timeline row outlives its deleted store row.
+func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("codex-resend-draft-fail")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = initGitRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	// A draft whose attachments blob cannot decode makes MergeParts —
+	// and therefore the restore's draft write — fail deterministically
+	// while every store read/write still works.
+	if err := app.store.UpsertThreadDraft(store.ThreadDraft{
+		ThreadID:    thread.ID,
+		Content:     "half-typed draft",
+		Attachments: "corrupt",
+		UpdatedAt:   time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("UpsertThreadDraft: %v", err)
+	}
+	sess := installSteerTestSession(t, app, thread, "ok")
+	if err := sess.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	appSess := session{
+		provider: string(provider.Codex),
+		token:    "tok",
+		codex:    sess,
+		liveness: newSessionLiveness(time.Now()),
+	}
+	app.sessions[thread.ID] = appSess
+
+	deferred := store.Item{
+		ID: "user:1:flush:1", ThreadID: thread.ID, TurnIndex: 1,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "resend me",
+	}
+	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:q1", deferred, 10, "")
+	tok := app.triage.MarkFlushSendsInterrupted(thread.ID, -1)
+
+	app.eagerPersistFlushSendsOnInterrupt(thread.ID, appSess, -1, tok)
+
+	// The row deletion happened before the draft write failed...
+	if _, found, err := app.store.GetThreadItem(thread.ID, "user:1:flush:1"); err != nil {
+		t.Fatalf("GetThreadItem: %v", err)
+	} else if found {
+		t.Error("eager row survived — cleanup runs before the draft write")
+	}
+	// ...so the message falls back to the queue with its identity intact...
+	requeued := app.triage.QueuedFlushItems(thread.ID)
+	if len(requeued) != 1 {
+		t.Fatalf("requeued items: got %d, want 1", len(requeued))
+	}
+	got := requeued[0]
+	if got.ID != "queue:q1" || got.Message != "resend me" || got.EnqueuedAt != 10 {
+		t.Errorf("requeued identity = %+v, want queue:q1/resend me/enqueued 10", got)
+	}
+	if got.StaleUserItemID != "user:1:flush:1" {
+		// The marker resolves as already-cleaned at redispatch (the row
+		// is gone); carrying it is what makes a partial delete retry-safe.
+		t.Errorf("requeued StaleUserItemID = %q, want user:1:flush:1", got.StaleUserItemID)
+	}
+	// ...and the frontend still learns the row is gone.
+	restored := emittedQueueRestored(rec)
+	if len(restored) != 1 {
+		t.Fatalf("queue restored events = %+v, want one", restored)
+	}
+	if restored[0].Reason != "resend_failed" {
+		t.Errorf("restore reason = %q, want resend_failed", restored[0].Reason)
+	}
+	if strings.Join(restored[0].UserItemIDs, ",") != "user:1:flush:1" {
+		t.Errorf("restored user ids = %+v, want [user:1:flush:1]", restored[0].UserItemIDs)
+	}
+}
+
+// TestStartSession_FlushesRequeuedItems pins R12-2 (round 12): a
+// session-death restore can REQUEUE a message instead of restoring it
+// to the draft (failed stale-row cleanup, R11-1). Every other drain
+// trigger needs a live session (RegisterQueueItem) or wire traffic
+// (the boundary drains) — an idle replacement session fires none of
+// them, so without the start-funnel flush the requeued message would
+// sit in the queue indefinitely. StartSession must drain the queue
+// once the new session can accept sends.
+func TestStartSession_FlushesRequeuedItems(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-on-start")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = initGitRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeClaudePassthroughBinary(t)}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	// Requeued by a prior session's death drain; no session is live.
+	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
+		ID: "queue:idle", Message: "flush me", Payload: json.RawMessage(`{}`),
+		EnqueuedAt: 10,
+	})
+
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	t.Cleanup(func() { _ = app.StopSession(thread.ID) })
+
+	// The start-funnel flush hands the batch to the dispatch worker,
+	// which serializes behind the thread action lock StartSession holds.
+	// With no active turn the dispatch takes the DEFERRED path — the
+	// user row persists only at the provider echo, which a passthrough
+	// binary never sends — so the observable success is the drained
+	// queue plus the provider:queue_flushed emission (the Zone 1 → Zone
+	// 2 transition for the dispatched message).
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if !app.triage.HasQueuedFlushItems(thread.ID) {
+			for _, c := range rec.snapshot() {
+				if c.Channel != "provider:queue_flushed" {
+					continue
+				}
+				evt, ok := c.Data.(QueueFlushedEvent)
+				if !ok {
+					t.Fatalf("provider:queue_flushed payload is %T, want QueueFlushedEvent", c.Data)
+				}
+				for _, it := range evt.Items {
+					if it.QueueItemID == "queue:idle" {
+						return
+					}
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("queued item was not flushed after StartSession — an idle replacement session strands requeued messages")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestSessionDeathRetriesStaleRowCleanupForQueuedItem pins the
+// death-drain half of R11-1: a requeued item caught STILL QUEUED by a
+// later session death carries StaleUserItemID through the drain, and
+// the drain retries the cleanup — the message restores to the draft
+// only once the stale row is gone.
+func TestSessionDeathRetriesStaleRowCleanupForQueuedItem(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
+
+	thread := testThread("death-stale-retry")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItem(store.Item{
+		ID: "user:0:flush:1", ThreadID: thread.ID, TurnIndex: 0,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "survived one death", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed stale row: %v", err)
+	}
+	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
+		ID: "queue:stale", Message: "survived one death",
+		Payload: json.RawMessage(`{}`), EnqueuedAt: 10,
+		StaleUserItemID: "user:0:flush:1",
+	})
+
+	app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
+
+	if _, found, err := app.store.GetThreadItem(thread.ID, "user:0:flush:1"); err != nil {
+		t.Fatalf("GetThreadItem stale: %v", err)
+	} else if found {
+		t.Error("stale flush row survived the death-drain cleanup retry")
+	}
+	if app.triage.HasQueuedFlushItems(thread.ID) {
+		t.Fatal("queued flush items still live after restore")
+	}
+	draft, _, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadDraft: %v", err)
+	}
+	if draft.Content != "survived one death" {
+		t.Fatalf("draft content = %q, want the restored message", draft.Content)
+	}
+}
+
+// TestTeardownDeadPreInitSession_KeepsRequeuedItems pins R13-3 (round
+// 13, D13-1): the pre-init death teardown restores the queue BEFORE
+// CleanupThreadIfEpoch, but a cleanup-failed item is REQUEUED by that
+// restore — into exactly the map the cleanup's clearFlushQueueLocked
+// then wipes. The teardown must re-register requeued items after the
+// cleanup so the replacement session's start-funnel flush (R12-2)
+// still finds them. The store is closed to make the stale-row cleanup
+// fail, which is the production shape that produces a requeue.
+func TestTeardownDeadPreInitSession_KeepsRequeuedItems(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
+
+	thread := testThread("preinit-requeue")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
+		ID: "queue:survivor", Message: "keep me", Payload: json.RawMessage(`{}`),
+		EnqueuedAt: 10, StaleUserItemID: "user:0:flush:1",
+	})
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "preinit-tok",
+	}
+	if err := app.store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	app.teardownDeadPreInitSession(thread.ID, "preinit-tok")
+
+	requeued := app.triage.QueuedFlushItems(thread.ID)
+	if len(requeued) != 1 {
+		t.Fatalf("queued items after pre-init teardown: got %d, want 1 — the cleanup sweep wiped the requeued message", len(requeued))
+	}
+	if requeued[0].ID != "queue:survivor" || requeued[0].StaleUserItemID != "user:0:flush:1" {
+		t.Fatalf("surviving item = %+v, want queue:survivor with its stale marker", requeued[0])
+	}
+}
+
+// TestQueuedFlushItemFromUnconfirmed_CarriesStaleMarker pins the
+// conversion plumbing of R11-1: a failed-cleanup item's requeue must
+// keep StaleUserItemID so the redispatch (or the next death drain)
+// still knows about the stale row.
+func TestQueuedFlushItemFromUnconfirmed_CarriesStaleMarker(t *testing.T) {
+	queued, ok := queuedFlushItemFromUnconfirmed(triage.UnconfirmedFlushItem{
+		QueueItemID:     "queue:x",
+		Message:         "still stale",
+		EnqueuedAt:      10,
+		StaleUserItemID: "user:2:flush:1",
+	})
+	if !ok {
+		t.Fatal("conversion rejected a message-bearing item")
+	}
+	if queued.StaleUserItemID != "user:2:flush:1" {
+		t.Fatalf("StaleUserItemID = %q, want carried through", queued.StaleUserItemID)
+	}
+}
+
 func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 	app, rec := newAppForFlushQueueRPC(t)
 
@@ -2416,3 +2972,239 @@ var (
 	_ = codex.ErrNoActiveTurn
 	_ = fmt.Sprintf
 )
+
+// TestCodexResendAfterInterrupt_AmbiguousTimeoutKeepsPendingConfirmation
+// pins R14-1 (round 14, D14-2): a turn/start JSON-RPC timeout on the
+// interrupt resend is delivery-ambiguous — the request was written and
+// the turn (with its user-message echo) may already be running. The old
+// failure path cleared the pending marker and requeued, so a flush after
+// a merely-slow ack re-sent content Codex had already consumed. The
+// resend must instead leave the pending confirmation for the echo.
+func TestCodexResendAfterInterrupt_AmbiguousTimeoutKeepsPendingConfirmation(t *testing.T) {
+	app, _ := newAppForFlushQueueRPC(t)
+
+	thread := testThread("codex-resend-ambiguous")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = initGitRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	sess := installSteerTestSession(t, app, thread, "start-timeout")
+	codex.SetRequestTimeoutForTest(sess, 25*time.Millisecond)
+	appSess := session{
+		provider: string(provider.Codex),
+		token:    "tok",
+		codex:    sess,
+		liveness: newSessionLiveness(time.Now()),
+	}
+	app.sessions[thread.ID] = appSess
+
+	deferred := store.Item{
+		ID: "user:1:flush:1", ThreadID: thread.ID, TurnIndex: 1,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "resend me",
+	}
+	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:q1", deferred, 10, "")
+	tok := app.triage.MarkFlushSendsInterrupted(thread.ID, -1)
+
+	app.eagerPersistFlushSendsOnInterrupt(thread.ID, appSess, -1, tok)
+
+	if _, found, err := app.store.GetThreadItem(thread.ID, "user:1:flush:1"); err != nil || !found {
+		t.Fatalf("eager row user:1:flush:1: found=%v err=%v", found, err)
+	}
+	// The pending confirmation survives the ambiguous timeout...
+	if !app.triage.HasPendingSendForThread(thread.ID) {
+		t.Fatal("pending-send marker cleared on ambiguous turn/start timeout — a late echo can no longer settle it")
+	}
+	// ...and nothing is requeued: a redispatch would double-send.
+	if requeued := app.triage.QueuedFlushItems(thread.ID); len(requeued) != 0 {
+		t.Fatalf("requeued items = %+v, want none on ambiguous timeout", requeued)
+	}
+}
+
+// TestCodexResendAfterInterrupt_MissingAttachmentRestoresDraft pins
+// R14-3 (round 14, CT14-2) under the composer-restore recovery: the
+// interrupt resend must deliver the persisted rows' attachments, not
+// silently send text-only. An attachment that no longer resolves
+// aborts the resend into the draft restore — content and attachment
+// ref both land back in the composer instead of degrading.
+func TestCodexResendAfterInterrupt_MissingAttachmentRestoresDraft(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	attStore, err := attachment.NewStore(attachment.Config{
+		RootDir: filepath.Join(t.TempDir(), "attachments"),
+	}, app.store)
+	if err != nil {
+		t.Fatalf("attachment.NewStore: %v", err)
+	}
+	app.attachments = attStore
+
+	thread := testThread("codex-resend-missing-att")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = initGitRepo(t)
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	sess := installSteerTestSession(t, app, thread, "ok")
+	appSess := session{
+		provider: string(provider.Codex),
+		token:    "tok",
+		codex:    sess,
+		liveness: newSessionLiveness(time.Now()),
+	}
+	app.sessions[thread.ID] = appSess
+
+	deferred := store.Item{
+		ID: "user:1:flush:1", ThreadID: thread.ID, TurnIndex: 1,
+		Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "resend with image",
+		Meta:    `{"attachments":[{"id":"att-gone","threadId":"` + thread.ID + `","filename":"x.png","mimeType":"image/png","size":1}]}`,
+	}
+	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:q1", deferred, 10, "")
+	tok := app.triage.MarkFlushSendsInterrupted(thread.ID, -1)
+
+	app.eagerPersistFlushSendsOnInterrupt(thread.ID, appSess, -1, tok)
+
+	// The unresolvable attachment must abort into the draft restore,
+	// not produce a successful text-only send.
+	if _, found, err := app.store.GetThreadItem(thread.ID, "user:1:flush:1"); err != nil {
+		t.Fatalf("GetThreadItem: %v", err)
+	} else if found {
+		t.Error("eager row survived the aborted resend")
+	}
+	if requeued := app.triage.QueuedFlushItems(thread.ID); len(requeued) != 0 {
+		t.Fatalf("requeued items = %+v, want none — recovery is the composer draft", requeued)
+	}
+	if app.triage.HasPendingSendForThread(thread.ID) {
+		t.Error("pending-send entry live after aborted resend — its echo can never arrive")
+	}
+	draft, _, err := app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadDraft: %v", err)
+	}
+	if draft.Content != "resend with image" {
+		t.Fatalf("draft content = %q, want %q", draft.Content, "resend with image")
+	}
+	if draft.Attachments != `["att-gone"]` {
+		t.Fatalf("draft attachments = %s, want the restored ref", draft.Attachments)
+	}
+	restored := emittedQueueRestored(rec)
+	if len(restored) != 1 || restored[0].Reason != "resend_failed" {
+		t.Fatalf("queue restored events = %+v, want one with reason resend_failed", restored)
+	}
+}
+
+// TestDispatchFlush_CodexTurnStartTimeoutKeepsPendingConfirmation is
+// the turn/start twin of the steer-timeout test above (round 14,
+// D14-2): when the steer loses the NoActiveTurn race and the fallback
+// Send's turn/start ack times out after the write, the dispatch must
+// treat delivery as ambiguous — keep the re-registered pending entry,
+// persist no error row, and requeue nothing.
+func TestDispatchFlush_CodexTurnStartTimeoutKeepsPendingConfirmation(t *testing.T) {
+	app, rec := newAppForFlushQueueRPC(t)
+
+	thread := testThread("flush-start-timeout")
+	thread.Provider = string(provider.Codex)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-0",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	sess := installSteerTestSession(t, app, thread, "no-active-turn+start-timeout")
+	codex.SetRequestTimeoutForTest(sess, 25*time.Millisecond)
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex),
+		token:    "flush-token",
+		codex:    sess,
+	}
+
+	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+		{ID: "queue:start-timeout", Message: "eventually accepted"},
+	})
+
+	if flushed := emittedQueueFlushed(rec); len(flushed) != 1 {
+		t.Fatalf("ambiguous timeout should still enter Zone 2, queue_flushed=%+v", flushed)
+	}
+	if !app.triage.HasPendingSendForThread(thread.ID) {
+		t.Fatal("pending-send marker cleared on ambiguous Codex turn/start timeout")
+	}
+	if requeued := app.triage.QueuedFlushItems(thread.ID); len(requeued) != 0 {
+		t.Fatalf("requeued items = %+v, want none on ambiguous timeout", requeued)
+	}
+	for _, turnIndex := range []int{0, 1} {
+		items, err := app.store.ListItemsForTurn(thread.ID, turnIndex)
+		if err != nil {
+			t.Fatalf("ListItemsForTurn(%d): %v", turnIndex, err)
+		}
+		for _, it := range items {
+			if it.Kind == "error" {
+				t.Fatalf("ambiguous turn/start timeout persisted error row: %+v", it)
+			}
+		}
+	}
+}
+
+// TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs pins R14-3
+// (round 14, CT14-4): the requeue payload is rebuilt from a persisted
+// row whose content ALREADY carries the revision comment excerpts the
+// original dispatch appended. Carrying the comment-ID lists again would
+// make the redispatch append the excerpts a second time — the rebuilt
+// payload keeps the source refs (provenance) and attachment ids but
+// drops the comment IDs.
+func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
+	meta := `{
+		"attachments":[{"id":"att-1","threadId":"t1","filename":"a.png","mimeType":"image/png","size":9}],
+		"sourceProposedPlan":{"itemId":"plan-src"},
+		"revisionSourceProposedPlan":{"itemId":"plan-rev"},
+		"revisionSourceCommentIds":["c1","c2"],
+		"revisionSourceDiffCommentIds":["d1"]
+	}`
+	raw, err := flushPayloadFromUserMeta(meta)
+	if err != nil {
+		t.Fatalf("flushPayloadFromUserMeta: %v", err)
+	}
+	var payload flushQueuePayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload.AttachmentIDs) != 1 || payload.AttachmentIDs[0] != "att-1" {
+		t.Errorf("AttachmentIDs = %v, want [att-1]", payload.AttachmentIDs)
+	}
+	if payload.SourceProposedPlan == nil || payload.SourceProposedPlan.ItemID != "plan-src" {
+		t.Errorf("SourceProposedPlan = %+v, want plan-src ref", payload.SourceProposedPlan)
+	}
+	if payload.RevisionSourceProposedPlan == nil || payload.RevisionSourceProposedPlan.ItemID != "plan-rev" {
+		t.Errorf("RevisionSourceProposedPlan = %+v, want plan-rev ref", payload.RevisionSourceProposedPlan)
+	}
+	if len(payload.RevisionSourceCommentIDs) != 0 {
+		t.Errorf("RevisionSourceCommentIDs = %v, want none — excerpts are already baked into the content", payload.RevisionSourceCommentIDs)
+	}
+	if len(payload.RevisionSourceDiffCommentIDs) != 0 {
+		t.Errorf("RevisionSourceDiffCommentIDs = %v, want none — excerpts are already baked into the content", payload.RevisionSourceDiffCommentIDs)
+	}
+}
+
+// TestFlushUserMetaHelpers_RejectNullMeta pins the round-14 strictness
+// guard (C14-5): a persisted meta of literal JSON null unmarshals into
+// the zero struct without error, which would silently drop attachments
+// and provenance. Both decode helpers must fail loudly instead.
+func TestFlushUserMetaHelpers_RejectNullMeta(t *testing.T) {
+	if _, err := flushPayloadFromUserMeta("null"); err == nil {
+		t.Error("flushPayloadFromUserMeta(null) = nil error, want corrupt-meta failure")
+	}
+	if _, err := attachmentIDsFromUserMeta("null"); err == nil {
+		t.Error("attachmentIDsFromUserMeta(null) = nil error, want corrupt-meta failure")
+	}
+	if _, err := flushPayloadFromUserMeta(""); err != nil {
+		t.Errorf("flushPayloadFromUserMeta(empty) = %v, want nil — absent meta is legitimate", err)
+	}
+}

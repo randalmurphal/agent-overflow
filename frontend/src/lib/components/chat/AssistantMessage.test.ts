@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
+import type { ThreadPane } from '../../stores/thread.svelte';
 import AssistantMessage from './AssistantMessage.svelte';
 
 describe('<AssistantMessage>', () => {
@@ -74,6 +75,48 @@ describe('<AssistantMessage>', () => {
       expect(body.textContent).toContain('done body text.');
       expect(body.textContent).toContain('still in progress');
     });
+  });
+
+  it('holds streaming rendering through the post-completion drain (pane still smoothing)', async () => {
+    // The wire settles status to 'completed' while the per-item smoother
+    // is still draining the reveal. Rendered streaming mode must key off
+    // `status === 'streaming' || pane.isItemSmoothing(id)` — flipping to
+    // settled mode mid-drain drops the volatile-tail split (and its
+    // incomplete-markdown guards) while text is still growing.
+    const smoothingPane = {
+      isItemSmoothing: () => true,
+    } as unknown as ThreadPane;
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        pane: smoothingPane,
+        item: makeItem({ status: 'completed', summary: SPLIT_FIXTURE }),
+      },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      expect(body.textContent).toContain('done body text.');
+    });
+    // Still in streaming mode: the two-instance split is live.
+    expect(body.querySelector('.md-volatile')).not.toBeNull();
+  });
+
+  it('renders settled once the drain finishes (pane no longer smoothing)', async () => {
+    const settledPane = {
+      isItemSmoothing: () => false,
+    } as unknown as ThreadPane;
+    const { getByTestId } = render(AssistantMessage, {
+      props: {
+        pane: settledPane,
+        item: makeItem({ status: 'completed', summary: SPLIT_FIXTURE }),
+      },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      expect(body.textContent).toContain('still in progress');
+    });
+    // Settled mode: single committed instance, no volatile tail.
+    expect(body.querySelector('.md-volatile')).toBeNull();
+    expect(body.querySelector('.md-committed')).not.toBeNull();
   });
 
   it('hides the timestamp/meta row until the first block commits (streaming disabled)', async () => {

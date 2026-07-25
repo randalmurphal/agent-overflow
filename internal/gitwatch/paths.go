@@ -3,6 +3,7 @@ package gitwatch
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -97,24 +98,62 @@ func normalizeWatchRoots(cwd string, roots []gitops.WatchRoot) ([]gitops.WatchRo
 
 	candidates := make([]gitops.WatchRoot, 0, len(roots)+1)
 	indexByPath := make(map[string]int, len(roots)+1)
-	for _, root := range append([]gitops.WatchRoot{{Path: cwd, Recursive: true}}, roots...) {
+	// cwd itself is always a candidate so the workspace is watched even
+	// if the roots list omits it — but non-recursively: when ignored-
+	// subtree pruning is active, the supplied roots deliberately watch
+	// cwd non-recursively, and forcing Recursive here would drag every
+	// pruned subtree back in via the OR-merge below.
+	for i, root := range append([]gitops.WatchRoot{{Path: cwd, Recursive: false}}, roots...) {
 		path := strings.TrimSpace(root.Path)
 		if path == "" {
 			continue
 		}
 		abs, canon, err := canonicalize(path)
 		if err != nil {
-			return nil, err
+			// cwd (index 0) failing is fatal — there is no workspace to
+			// watch. A pruned child root can legitimately vanish between
+			// WatchRoots computing it and this normalization (an agent
+			// deleting a directory); dropping it is correct — its parent
+			// ancestor root sees the deletion and triggers a refresh.
+			if i == 0 {
+				return nil, err
+			}
+			continue
 		}
 		if err := rejectSystemPath(abs, canon); err != nil {
-			return nil, err
+			if i == 0 {
+				return nil, err
+			}
+			// Unlike a vanished dir, this drop is a policy decision, and
+			// dropping a trigger-bearing root (e.g. an excludes file
+			// directly under a refused path) silently reopens the
+			// staleness hole its triggers exist to close — say so.
+			if root.Kind != gitops.KindSubtree || root.TriggerFile != "" {
+				log.Printf("gitwatch: dropping trigger-bearing watch root %s for %s: %v", path, cwd, err)
+			}
+			continue
 		}
 		if index, ok := indexByPath[canon]; ok {
 			candidates[index].Recursive = candidates[index].Recursive || root.Recursive
+			// Kinds are ordered by trigger surface (each kind's rebuild
+			// triggers are a superset of the previous one's), so taking
+			// the max preserves every trigger of both duplicates.
+			// TriggerFile is orthogonal: keep the first non-empty (one
+			// WatchRoots output never carries two different trigger
+			// files for the same directory).
+			candidates[index].Kind = max(candidates[index].Kind, root.Kind)
+			if candidates[index].TriggerFile == "" {
+				candidates[index].TriggerFile = root.TriggerFile
+			}
 			continue
 		}
 		indexByPath[canon] = len(candidates)
-		candidates = append(candidates, gitops.WatchRoot{Path: canon, Recursive: root.Recursive})
+		candidates = append(candidates, gitops.WatchRoot{
+			Path:        canon,
+			Recursive:   root.Recursive,
+			Kind:        root.Kind,
+			TriggerFile: root.TriggerFile,
+		})
 	}
 	if len(candidates) == 0 {
 		return nil, errors.New("gitwatch: no valid watch roots")
@@ -132,7 +171,16 @@ func normalizeWatchRoots(cwd string, roots []gitops.WatchRoot) ([]gitops.WatchRo
 
 	pruned := make([]gitops.WatchRoot, 0, len(candidates))
 	for _, candidate := range candidates {
-		if isCoveredByAnyRoot(candidate, pruned) {
+		// Only plain-content roots are dropped when a recursive root
+		// already covers them. Trigger-bearing roots (ancestor, git
+		// metadata, global-ignore dir) must survive coverage: the
+		// watcher matches rebuild triggers against root paths, so
+		// dropping one silences its triggers even though the covering
+		// root still delivers the raw events. The duplicate watchpoint
+		// costs one extra watch and some double-delivered events the
+		// debounce absorbs.
+		if candidate.Kind == gitops.KindSubtree && candidate.TriggerFile == "" &&
+			isCoveredByAnyRoot(candidate, pruned) {
 			continue
 		}
 		pruned = append(pruned, candidate)

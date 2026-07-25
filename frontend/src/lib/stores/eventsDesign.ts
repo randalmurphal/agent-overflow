@@ -18,6 +18,21 @@ const DESIGN_RELOAD_THROTTLE_MS = 500;
 const designReloadLastFireAt: Map<string, number> = new Map();
 const designReloadPending: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
+/**
+ * Cap on the per-thread last-fire maps. Entries are only meaningful
+ * within their throttle window (≤500ms), but without a cap the maps
+ * would accrete one timestamp per design thread ever seen for the
+ * session's lifetime. Insertion order approximates recency; evicting
+ * the oldest entry at worst lets one reload through un-throttled.
+ */
+const THROTTLE_MAP_CAP = 64;
+
+function capThrottleMap(map: Map<string, number>): void {
+  if (map.size <= THROTTLE_MAP_CAP) return;
+  const oldest = map.keys().next();
+  if (!oldest.done) map.delete(oldest.value);
+}
+
 export interface DesignReloadMainPayload {
   threadId: string;
 }
@@ -33,6 +48,7 @@ function dispatchDomEvent(name: string, detail: unknown): void {
 
 function fireReloadMain(threadId: string): void {
   designReloadLastFireAt.set(threadId, Date.now());
+  capThrottleMap(designReloadLastFireAt);
   dispatchDomEvent(DESIGN_RELOAD_MAIN_EVENT, { threadId });
 }
 
@@ -87,6 +103,7 @@ function fireThrottled(
       state.pending.delete(threadId);
     }
     state.lastFire.set(threadId, Date.now());
+    capThrottleMap(state.lastFire);
     fire();
     return;
   }
@@ -95,6 +112,7 @@ function fireThrottled(
   const handle = setTimeout(() => {
     state.pending.delete(threadId);
     state.lastFire.set(threadId, Date.now());
+    capThrottleMap(state.lastFire);
     fire();
   }, delay);
   state.pending.set(threadId, handle);

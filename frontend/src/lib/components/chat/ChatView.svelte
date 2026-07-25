@@ -7,30 +7,19 @@
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
-  import TerminalView from '../terminal/TerminalView.svelte';
-  import DiscussionView from '../discussion/DiscussionView.svelte';
   import DesignClarificationPicker from '../design/DesignClarificationPicker.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
-  import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { createComposerDraftStore } from '../../stores/composerDraft.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
-  import {
-    ForkThreadFromMessage,
-    CountRunningBackgroundTasks,
-    GetMessageCheckpointRevertDiff,
-    MarkThreadRead,
-    RevertToMessageCheckpointWithOptions,
-  } from '../../stores/bindings';
+  import { ForkThreadFromMessage, MarkThreadRead } from '../../stores/bindings';
   import { prependThread, updateThreadReadState } from '../../stores/threads.svelte';
   import { getFocusedThreadPaneId, openThreadInPane } from '../../stores/panes.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
   import type { Item, Thread } from '../../types/models';
-  import type { RevertMode } from '../../types/checkpoint';
-  import { parsePatchFiles, type PatchFile } from '../../utils/patchFiles';
   import { userFacingError } from '../../utils/userFacingError';
   import type { UserMessageActions } from './userMessageActions';
   import { providerSupports } from '../../providers/catalog';
@@ -68,41 +57,15 @@
   // ResizeObserver below refines this within one frame.
   let composerHeight = $state(120);
   let expandedImagePreview: ExpandedImagePreview | null = $state(null);
-  interface RevertMessageTarget {
-    thread: Thread;
-    itemId: string;
-    turnIndex: number;
-    provider: string;
-  }
-
-  let revertMessageTarget: RevertMessageTarget | null = $state(null);
-  let revertAffectedFiles = $state<PatchFile[]>([]);
-  let revertPreviewItemId: string | null = $state(null);
-  let revertPreviewRequestId = 0;
-  let revertingMessage = $state(false);
-  let pendingBackgroundRevert:
-    | { target: RevertMessageTarget; mode: RevertMode; runningCount: number }
-    | null = $state(null);
   let forkingMessageItemId: string | null = $state(null);
-  const activeRevertTargetItemId = $derived.by(() => {
-    const target = revertMessageTarget;
-    return target ? target.itemId : null;
-  });
-  // Revert-to-checkpoint and fork-from-message are AO-mediated affordances that
-  // claude-tui doesn't support — leaving the handlers undefined makes
-  // UserMessage drop the buttons (it derives `canRequest*` from
-  // `typeof on*Message === 'function'`), so the gate lands on every rendered
-  // user message from this single point.
-  const supportsRevert = $derived(providerSupports(pane.thread?.provider, 'revert'));
+  // Fork-from-message is an AO-mediated affordance that claude-tui
+  // doesn't support — leaving the handler undefined makes UserMessage
+  // drop the button (it derives `canRequestFork` from
+  // `typeof onForkMessage === 'function'`), so the gate lands on every
+  // rendered user message from this single point.
   const supportsFork = $derived(providerSupports(pane.thread?.provider, 'fork'));
   const userMessageActions = $derived<UserMessageActions>({
-    onRevertMessage: supportsRevert ? openUserMessageRevert : undefined,
-    onConfirmRevertMessage: supportsRevert ? revertToUserMessage : undefined,
-    onCancelRevertMessage: supportsRevert ? cancelUserMessageRevert : undefined,
     onForkMessage: supportsFork ? forkFromUserMessage : undefined,
-    revertTargetItemId: activeRevertTargetItemId,
-    revertAffectedFiles,
-    revertingItemId: revertPreviewItemId ?? (revertingMessage ? activeRevertTargetItemId : null),
     forkingItemId: forkingMessageItemId,
   });
 
@@ -250,8 +213,13 @@
     // the effect re-runs (and can fire the read-mark) the moment the
     // user focuses this pane.
     if (getFocusedThreadPaneId() !== pane.paneId) return;
+    // `lastReadAt` belongs in the marker: a wholesale thread replace
+    // (transport-gap resync, stale backend snapshot) can move it
+    // BACKWARD, and that revert must re-enter the effect body instead
+    // of deduping against a run that handled the same completion state.
     const marker = [
       thread.id,
+      thread.lastReadAt ?? '',
       thread.latestTurnCompletedAt ?? '',
       thread.hasIncompleteTurn ? 'interrupted' : '',
       pane.timelineRevision,
@@ -260,9 +228,20 @@
     if (marker === lastReadMarker) return;
     lastReadMarker = marker;
     const shouldClearInterrupted = thread.hasIncompleteTurn === true;
-    const readTarget = thread.latestTurnCompletedAt
-      ?? pane.latestSettledTurn?.completedAt
-      ?? (shouldClearInterrupted ? Date.now() : undefined);
+    // Completion knowledge lives in two places that advance
+    // independently: the thread row (turn_completed push / sidebar
+    // resync) and the pane's settled-turn record (refreshFromBackend).
+    // Take the max — preferring a defined-but-stale row value over a
+    // fresher settled turn left the read target behind a completion the
+    // user was looking at, so the sidebar "Completed" pill could never
+    // clear after the final turn_completed fell into a transport gap.
+    const completions = [
+      thread.latestTurnCompletedAt,
+      pane.latestSettledTurn?.completedAt,
+    ].filter((value): value is number => value !== undefined);
+    const readTarget = completions.length > 0
+      ? Math.max(...completions)
+      : (shouldClearInterrupted ? Date.now() : undefined);
     if (readTarget === undefined) {
       return;
     }
@@ -351,117 +330,6 @@
     expandedImagePreview = null;
   }
 
-  async function openUserMessageRevert(item: Item): Promise<void> {
-    const thread = pane.thread;
-    if (!thread || revertingMessage) return;
-    if (getActiveTurn(thread.id) !== null) {
-      addToast('error', 'Interrupt or wait for the current turn before reverting.');
-      return;
-    }
-    const requestId = ++revertPreviewRequestId;
-    revertMessageTarget = null;
-    revertAffectedFiles = [];
-    revertPreviewItemId = item.id;
-    try {
-      const patch = ((await GetMessageCheckpointRevertDiff(thread.id, item.id)) ?? '') as string;
-      if (
-        requestId !== revertPreviewRequestId
-        || pane.thread?.id !== thread.id
-        || getActiveTurn(thread.id) !== null
-      ) return;
-      revertAffectedFiles = parsePatchFiles(patch);
-      revertMessageTarget = {
-        thread,
-        itemId: item.id,
-        turnIndex: item.turnIndex,
-        provider: thread.provider,
-      };
-    } catch (err) {
-      if (requestId !== revertPreviewRequestId) return;
-      addToast('error', `Failed to load revert preview: ${userFacingError(err)}`);
-      revertAffectedFiles = [];
-    } finally {
-      if (requestId === revertPreviewRequestId) revertPreviewItemId = null;
-    }
-  }
-
-  async function revertToUserMessage(mode: RevertMode): Promise<void> {
-    const target = revertMessageTarget;
-    if (!target || revertingMessage) return;
-    if (!canRunRevertForTarget(target)) return;
-
-    try {
-      const runningCount = Number(await CountRunningBackgroundTasks(target.thread.id));
-      if (runningCount > 0) {
-        pendingBackgroundRevert = { target, mode, runningCount };
-        return;
-      }
-    } catch (err) {
-      addToast('error', `Failed to check background tasks: ${userFacingError(err)}`);
-      return;
-    }
-
-    await executeRevertToUserMessage(target, mode, false);
-  }
-
-  function canRunRevertForTarget(target: RevertMessageTarget): boolean {
-    if (pane.thread?.id !== target.thread.id) {
-      cancelUserMessageRevert();
-      return false;
-    }
-    if (getActiveTurn(target.thread.id) !== null) {
-      cancelUserMessageRevert();
-      addToast('error', 'Interrupt or wait for the current turn before reverting.');
-      return false;
-    }
-    return true;
-  }
-
-  async function executeRevertToUserMessage(
-    target: RevertMessageTarget,
-    mode: RevertMode,
-    killRunningBackgroundTasks: boolean,
-  ): Promise<void> {
-    if (!canRunRevertForTarget(target)) return;
-    revertingMessage = true;
-    try {
-      await draft.prepareForExternalDraftReplace(target.thread.id);
-      await RevertToMessageCheckpointWithOptions(target.thread.id, target.itemId, mode, {
-        killRunningBackgroundTasks,
-      });
-      revertMessageTarget = null;
-      revertAffectedFiles = [];
-      pendingBackgroundRevert = null;
-      addToast('success', mode === 'conversation-only' ? 'Conversation reverted' : 'Conversation and files reverted');
-      await pane.switchThread(target.thread);
-      await draft.reloadFromBackend(target.thread.id);
-    } catch (err) {
-      addToast('error', `Revert failed: ${userFacingError(err)}`);
-    } finally {
-      revertingMessage = false;
-    }
-  }
-
-  function confirmBackgroundRevert(): void {
-    const pending = pendingBackgroundRevert;
-    if (!pending || revertingMessage) return;
-    void executeRevertToUserMessage(pending.target, pending.mode, true);
-  }
-
-  function cancelBackgroundRevert(): void {
-    if (revertingMessage) return;
-    pendingBackgroundRevert = null;
-  }
-
-  function cancelUserMessageRevert(): void {
-    if (revertingMessage) return;
-    pendingBackgroundRevert = null;
-    revertPreviewRequestId++;
-    revertPreviewItemId = null;
-    revertMessageTarget = null;
-    revertAffectedFiles = [];
-  }
-
   async function forkFromUserMessage(item: Item): Promise<void> {
     const thread = pane.thread;
     if (!thread || forkingMessageItemId) return;
@@ -479,30 +347,6 @@
       if (forkingMessageItemId === item.id) forkingMessageItemId = null;
     }
   }
-
-  $effect(() => {
-    const currentThreadId = pane.thread?.id ?? null;
-    if (revertMessageTarget && currentThreadId !== revertMessageTarget.thread.id && !revertingMessage) {
-      cancelUserMessageRevert();
-    }
-    if (pendingBackgroundRevert && currentThreadId !== pendingBackgroundRevert.target.thread.id && !revertingMessage) {
-      pendingBackgroundRevert = null;
-    }
-  });
-
-  $effect(() => {
-    const target = revertMessageTarget;
-    if (!target || revertingMessage) return;
-    if (getActiveTurn(target.thread.id) !== null) {
-      cancelUserMessageRevert();
-    }
-  });
-
-  const pendingBackgroundRevertDescription = $derived.by(() => {
-    const count = pendingBackgroundRevert?.runningCount ?? 0;
-    const noun = count === 1 ? 'background task' : 'background tasks';
-    return `This will kill ${count} running ${noun}, then revert the conversation. This cannot be undone.`;
-  });
 
   onDestroy(() => {
     releaseComposerDraft?.();
@@ -566,9 +410,32 @@
 {/snippet}
 
 {#if pane.thread && inDiscussionMode}
-  <DiscussionView {pane} />
+  <!-- Lazy for the same reason as TerminalView below: the discussion
+       surface (ChannelView + editor) is mode-gated, so its chunk stays
+       out of the eager startup graph. -->
+  {#await import('../discussion/DiscussionView.svelte')}
+    <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading discussion...</div>
+  {:then { default: DiscussionView }}
+    <DiscussionView {pane} />
+  {:catch err}
+    <div class="flex h-full items-center justify-center text-xs text-error" data-testid="discussion-load-error">
+      Failed to load discussion: {err instanceof Error ? err.message : String(err)}
+    </div>
+  {/await}
 {:else if pane.thread && inTerminalMode}
-  <TerminalView {pane} {onPaneDragStart} />
+  <!-- Lazy: TerminalView pulls the xterm stack (terminal-vendor +
+       TerminalSurface chunks, ~900KB). A static import here would put
+       them back in the eager startup graph that LazyThreadTerminalDrawer
+       exists to keep them out of. -->
+  {#await import('../terminal/TerminalView.svelte')}
+    <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading terminal...</div>
+  {:then { default: TerminalView }}
+    <TerminalView {pane} {onPaneDragStart} />
+  {:catch err}
+    <div class="flex h-full items-center justify-center text-xs text-error" data-testid="terminal-pane-load-error">
+      Failed to load terminal: {err instanceof Error ? err.message : String(err)}
+    </div>
+  {/await}
 {:else if pane.thread}
   <!-- Standard chat surface. Companion panes mount through PaneHost. -->
   <div bind:this={chatRoot} data-ui-surface="chat" data-thread-id={pane.thread.id} class="relative flex h-full min-h-0 overflow-hidden">
@@ -576,15 +443,6 @@
     {#if expandedImagePreview}
       <ExpandedImageDialog preview={expandedImagePreview} onClose={closeImagePreview} />
     {/if}
-    <ConfirmDialog
-      open={pendingBackgroundRevert !== null}
-      title="Kill background tasks?"
-      description={pendingBackgroundRevertDescription}
-      confirmLabel="Kill and revert"
-      destructive={true}
-      onConfirm={confirmBackgroundRevert}
-      onCancel={cancelBackgroundRevert}
-    />
   </div>
 {:else}
   <!-- No thread loaded → no project context. The user picks a project

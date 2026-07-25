@@ -11,7 +11,7 @@ the test that needs them.
   the full provider + triage + store pipeline without a real CLI.
 - `git.go` — `InitGitRepo` / `RunGit` / `CanonicalPath`. Spins up a
   temp repo with an initial commit on `main`.
-- `store.go` — `EnsureProject` helper (threads in v13+ require a
+- `store.go` — `EnsureProject` helper (threads require a
   `project_id` FK; this idempotently inserts a project row per path).
 
 ## Responsibility boundary

@@ -76,6 +76,7 @@ func (r *Router) upgradeSummaryOnlyToolResults(threadID string, turnIndex int, t
 		if err := r.persistItem(candidate.item, &payload); err != nil {
 			return false, fmt.Errorf("persist upgraded tool result item: %w", err)
 		}
+		r.notifyDiffPayloadPersisted(threadID, candidate.payloadID, candidate.meta, filtered)
 		upgradedAny = true
 	}
 

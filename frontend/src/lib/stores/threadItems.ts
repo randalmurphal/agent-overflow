@@ -34,12 +34,15 @@ export function cursorFromItem(item: Item): TimelineCursorLike {
   };
 }
 
+// Validity keys on turnIndex alone: turn indexes are never negative,
+// but item indexes can be (head-healed prompts persist at negative
+// indexes), and a page bounded by one must keep paging. The backend's
+// empty sentinel is turnIndex -1.
 export function cursorIsValid(cursor: TimelineCursorLike | null | undefined): cursor is TimelineCursorLike {
   if (!cursor) return false;
   return Number.isFinite(cursor.turnIndex)
     && Number.isFinite(cursor.itemIndex)
-    && cursor.turnIndex >= 0
-    && cursor.itemIndex >= 0;
+    && cursor.turnIndex >= 0;
 }
 
 /**
@@ -247,10 +250,14 @@ export function applyItemUpsertsToWindow({
   let needsSort = false;
   let structureChanged = false;
   let droppedNewerItems = false;
+  // MIN_SAFE_INTEGER, not 0: head-healed prompts sit at NEGATIVE item
+  // indexes, so 0 is not the start of a turn — a fallback floor at 0
+  // would misclassify those rows as below the loaded window (mirror of
+  // the ceiling's MAX_SAFE_INTEGER).
   const floorCursor = oldestLoadedCursor
     ?? (oldestLoadedTurnIndex === null || oldestLoadedTurnIndex === undefined
       ? null
-      : { turnIndex: oldestLoadedTurnIndex, itemIndex: 0 });
+      : { turnIndex: oldestLoadedTurnIndex, itemIndex: Number.MIN_SAFE_INTEGER });
   const ceilingCursor = newestLoadedCursor
     ?? (newestLoadedTurnIndex === null || newestLoadedTurnIndex === undefined
       ? null

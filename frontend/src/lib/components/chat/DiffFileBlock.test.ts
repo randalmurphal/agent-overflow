@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { tick } from 'svelte';
 import { fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import DiffFileBlock from './DiffFileBlock.svelte';
-import { dispatchInlineFileTokens } from './diffInlineTokenize';
+import { requestFileSpans } from '../../utils/diffSpanCache.svelte';
 import type { PatchFile, PatchLine } from '../../utils/patchFiles';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -20,9 +20,11 @@ import { formatTimeOfDay } from '../../utils/format';
 import { openReviewCompanion } from '../../stores/reviewPane.svelte';
 
 // Mocked so the collapse tests can assert that collapsed cards skip
-// the Shiki batch dispatch; line-tint rendering does not depend on it.
-vi.mock('./diffInlineTokenize', () => ({
-  dispatchInlineFileTokens: vi.fn(async () => {}),
+// the span request; line-tint rendering does not depend on it.
+vi.mock('../../utils/diffSpanCache.svelte', () => ({
+  requestFileSpans: vi.fn(async () => {}),
+  getSpansForLine: vi.fn(() => null),
+  diffSpanCacheGeneration: vi.fn(() => 0),
 }));
 
 vi.mock('../../stores/reviewPane.svelte', () => ({
@@ -123,9 +125,6 @@ function fakePane(): Partial<ThreadPane> {
   return {
     paneId: 'pane-1',
     threadId: 'thread-1',
-    checkpoints: {
-      checkpoints: [{ userItemId: 'user-1', turnIndex: 1 }],
-    },
     thread: { id: 'thread-1', workspacePath: '/tmp/workspace' } as ThreadPane['thread'],
   } as Partial<ThreadPane>;
 }
@@ -232,7 +231,7 @@ describe('<DiffFileBlock>', () => {
     const pane = fakePane() as ThreadPane;
     const file = makeLongPatchFile(16);
     const { getByTestId } = render(DiffFileBlock, {
-      props: { pane, file, payloadId: 'p-long', threadId: 'thread-1', turnIndex: 1 },
+      props: { pane, file, payloadId: 'p-long', threadId: 'thread-1' },
     });
     expect(getByTestId('diff-file-fade')).toBeInTheDocument();
     const cta = getByTestId('diff-file-show-full');
@@ -243,8 +242,7 @@ describe('<DiffFileBlock>', () => {
     expect(bodyText).not.toContain('line 16;');
     await fireEvent.click(cta);
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
-      scope: 'turn',
-      checkpointUserItemId: 'user-1',
+      scope: 'workspace',
       filePath: 'src/big.ts',
     });
   });
@@ -285,16 +283,15 @@ describe('<DiffFileBlock>', () => {
     expect(queryByTestId('diff-file-show-full')).toBeNull();
   });
 
-  it('clicking the review trigger opens the turn checkpoint with filePath', async () => {
+  it('clicking the review trigger opens workspace review with filePath', async () => {
     const pane = fakePane() as ThreadPane;
     const file = makePatchFile();
     const { getByTestId } = render(DiffFileBlock, {
-      props: { pane, file, payloadId: 'p-1', threadId: 'thread-1', turnIndex: 1 },
+      props: { pane, file, payloadId: 'p-1', threadId: 'thread-1' },
     });
     await fireEvent.click(getByTestId('diff-file-open-sidebar'));
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
-      scope: 'turn',
-      checkpointUserItemId: 'user-1',
+      scope: 'workspace',
       filePath: 'src/foo.ts',
     });
   });
@@ -303,12 +300,11 @@ describe('<DiffFileBlock>', () => {
     const pane = fakePane() as ThreadPane;
     const file = makeLongPatchFile(500, 'src/long.ts');
     const { getByTestId } = render(DiffFileBlock, {
-      props: { pane, file, payloadId: 'p-2', threadId: 'thread-1', turnIndex: 1 },
+      props: { pane, file, payloadId: 'p-2', threadId: 'thread-1' },
     });
     await fireEvent.click(getByTestId('diff-file-show-full'));
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
-      scope: 'turn',
-      checkpointUserItemId: 'user-1',
+      scope: 'workspace',
       filePath: 'src/long.ts',
     });
   });
@@ -317,12 +313,11 @@ describe('<DiffFileBlock>', () => {
     const pane = fakePane() as ThreadPane;
     const file = makePatchFile();
     const { getByTestId } = render(DiffFileBlock, {
-      props: { pane, file, payloadId: 'p-3', threadId: 'thread-1', turnIndex: 1 },
+      props: { pane, file, payloadId: 'p-3', threadId: 'thread-1' },
     });
     await fireEvent.click(getByTestId('diff-file-header'), { metaKey: true });
     expect(openReviewCompanion).toHaveBeenCalledWith('pane-1', 'thread-1', {
-      scope: 'turn',
-      checkpointUserItemId: 'user-1',
+      scope: 'workspace',
       filePath: 'src/foo.ts',
     });
   });
@@ -331,7 +326,7 @@ describe('<DiffFileBlock>', () => {
     const pane = fakePane() as ThreadPane;
     const file = makePatchFile();
     const { getByTestId } = render(DiffFileBlock, {
-      props: { pane, file, payloadId: 'p-4', threadId: 'thread-1', turnIndex: 1 },
+      props: { pane, file, payloadId: 'p-4', threadId: 'thread-1' },
     });
     await fireEvent.click(getByTestId('diff-file-header'));
     expect(openReviewCompanion).not.toHaveBeenCalled();
@@ -418,7 +413,6 @@ describe('<DiffFileBlock>', () => {
         file: makePatchFile(),
         payloadId: 'p-time',
         threadId: 'thread-1',
-        turnIndex: 1,
         toolName: 'Edit',
         createdAt,
       },
@@ -538,7 +532,7 @@ describe('<DiffFileBlock>', () => {
       const pane = fakePane() as ThreadPane;
       const file = makeLongPatchFile(16);
       const { getByTestId, queryByTestId } = render(DiffFileBlock, {
-        props: { pane, file, payloadId: 'p-expand', threadId: 'thread-1', turnIndex: 1 },
+        props: { pane, file, payloadId: 'p-expand', threadId: 'thread-1' },
       });
       expect(queryByTestId('diff-file-body')).toBeNull();
 
@@ -578,7 +572,7 @@ describe('<DiffFileBlock>', () => {
       const pane = fakePane() as ThreadPane;
       const file = makePatchFile();
       const { getByTestId } = render(DiffFileBlock, {
-        props: { pane, file, payloadId: 'p-mod-toggle', threadId: 'thread-1', turnIndex: 1 },
+        props: { pane, file, payloadId: 'p-mod-toggle', threadId: 'thread-1' },
       });
 
       await fireEvent.click(getByTestId('diff-file-toggle'), { metaKey: true });
@@ -586,8 +580,7 @@ describe('<DiffFileBlock>', () => {
       // One promote (the toggle bails and lets the wrapper handle it),
       // and the card stays expanded.
       expect(openReviewCompanion).toHaveBeenCalledExactlyOnceWith('pane-1', 'thread-1', {
-        scope: 'turn',
-        checkpointUserItemId: 'user-1',
+        scope: 'workspace',
         filePath: 'src/foo.ts',
       });
       expect(getByTestId('diff-file-body')).toBeInTheDocument();
@@ -616,20 +609,20 @@ describe('<DiffFileBlock>', () => {
       expect(second.getByTestId('diff-file-toggle').getAttribute('aria-expanded')).toBe('false');
     });
 
-    it('skips the Shiki dispatch while collapsed and dispatches on expand', async () => {
+    it('skips the span request while collapsed and requests on expand', async () => {
       await enableCollapseSetting();
-      const dispatch = vi.mocked(dispatchInlineFileTokens);
-      dispatch.mockClear();
+      const request = vi.mocked(requestFileSpans);
+      request.mockClear();
       const file = makePatchFile();
       const { getByTestId } = render(DiffFileBlock, {
         props: { file, threadId: 'thread-1' },
       });
 
       await tick();
-      expect(dispatch).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
 
       await fireEvent.click(getByTestId('diff-file-toggle'));
-      await waitFor(() => expect(dispatch).toHaveBeenCalled());
+      await waitFor(() => expect(request).toHaveBeenCalledWith(file, 'thread-1'));
     });
 
     it('follows live setting flips for untouched cards while user-expanded cards stay pinned', async () => {

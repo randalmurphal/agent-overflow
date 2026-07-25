@@ -6,15 +6,15 @@
   // diagram, etc. is its own keyed Svelte child. The DOM is reactive but
   // node identity is preserved across content updates, so:
   //   - text selection survives streaming chunks
-  //   - shiki-highlighted code blocks don't flash back to plain text
+  //   - highlighted code blocks don't flash back to plain text
   //     between updates
   //   - mermaid SVGs render once and stay mounted
   //   - katex output isn't re-typeset on every chunk
   //
   // Replaces the legacy `marked → DOMPurify → {@html}` wholesale-replace
   // pipeline plus our hand-rolled `enhanceMarkdown` post-processor for
-  // shiki / mermaid / katex / copy buttons. The library handles all four
-  // natively as opt-in components.
+  // highlight / mermaid / katex / copy buttons. The library handles all
+  // four natively as opt-in components.
   //
   // **Path linkification** is now part of the initial markdown parse:
   // `pathLinkExtension.ts` builds a marked inline extension that turns
@@ -31,8 +31,11 @@
 
   import { getContext } from 'svelte';
   import { Streamdown } from 'svelte-streamdown';
-  import { CHAT_MARKDOWN_SETTLED_CONTEXT } from './markdownSettledContext';
-  import { chatMarkdownTheme, extraShikiLanguages } from './markdown/streamdownTheme';
+  import {
+    CHAT_MARKDOWN_PRESENCE_CONTEXT,
+    CHAT_MARKDOWN_SETTLED_CONTEXT,
+  } from './markdownSettledContext';
+  import { chatMarkdownTheme } from './markdown/streamdownTheme';
   import {
     STREAMDOWN_ALLOWED_IMAGE_PREFIXES,
     STREAMDOWN_CONTROLS,
@@ -88,6 +91,16 @@
   const handleSettled = (): void => {
     markSettled?.();
   };
+
+  // Live presence registration for the warm gate: while at least one
+  // ChatMarkdown is mounted in the timeline, async typesetting may still
+  // be coming and the settled signal must be earned via `onsettled`;
+  // with none mounted the timeline reports settled-by-absence. The
+  // $effect cleanup unregisters on unmount.
+  const registerPresence = getContext<(() => () => void) | undefined>(
+    CHAT_MARKDOWN_PRESENCE_CONTEXT,
+  );
+  $effect(() => registerPresence?.());
 
   let root: HTMLDivElement | undefined = $state();
 
@@ -178,8 +191,8 @@
   diagram in the tail never enters typesetting mid-chunk. Without this,
   per-chunk KaTeX re-renders produced contentRO height deltas the
   stick-to-bottom spring chased across the viewport. Code and prose
-  still stream live (code blocks keep their reactive shiki path, prose
-  keeps incremental markdown).
+  still stream live (code blocks keep their throttled backend-span
+  path, prose keeps incremental markdown).
 
   `wrapperClass` (`md-committed` / `md-volatile`) marks each Streamdown's
   root div so the `:has()`-gated seam rule in app.css can re-establish the
@@ -199,7 +212,6 @@
     {parseIncompleteMarkdown}
     baseTheme="tailwind"
     theme={chatMarkdownTheme}
-    shikiLanguages={extraShikiLanguages}
     {allowedLinkPrefixes}
     allowedImagePrefixes={STREAMDOWN_ALLOWED_IMAGE_PREFIXES}
     renderHtml={false}

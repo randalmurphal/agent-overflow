@@ -99,13 +99,14 @@
   // settle, and reload until the user opts in.
   const expanded = $derived(expansion.expanded);
 
-  // Body text source. The per-pane live smoother tail grows monotonically, so
-  // the 3-line CSS clip in TailClampedText scrolls older lines off the top
-  // without re-wrapping a sliding-window string (`item.summary` is trimmed to
-  // THINKING_TAIL_RUNES for memory — reading it directly reintroduces the
-  // "5 words appear at once past 400 runes" symptom). The live-tail map is
-  // non-null only while the smoother runs; once it settles we fall back to the
-  // trimmed summary / loaded payload. See reasoningTailSource for the merge.
+  // Body text source. The per-pane live smoother tail grows monotonically —
+  // TailClampedText requires that: its 3-line clip scrolls older lines off
+  // the top, and its wrap-stable layout window assumes append-only growth
+  // (`item.summary` is trimmed to THINKING_TAIL_RUNES for memory — reading
+  // it directly reintroduces the "5 words appear at once past 400 runes"
+  // symptom). The live-tail map is non-null only while the smoother runs;
+  // once it settles we fall back to the trimmed summary / loaded payload.
+  // See reasoningTailSource for the merge.
   const bodyText = $derived(
     reasoningBodyText({
       summary: item.summary ?? '',

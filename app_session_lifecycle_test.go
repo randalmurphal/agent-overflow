@@ -150,7 +150,7 @@ func TestServiceShutdownTreatsSubprocessExitAsCleanClose(t *testing.T) {
 // Pre-fix, the exit error bubbled out of startSessionNow as "close
 // claude session for thread <id>: exit status 1" — visible as
 // "Revert failed: Exit status 1" when the same start-replacement
-// flow ran under RevertToMessageCheckpoint after an interrupt. The
+// flow ran under a conversation rollback after an interrupt. The
 // replacement also never started, so the user had to retry. Post-fix,
 // the replacement starts on the first attempt and the previous
 // subprocess's non-zero exit is treated as the clean teardown it
@@ -192,8 +192,42 @@ func TestStartSessionProceedsWhenPriorSubprocessExitsNonZero(t *testing.T) {
 		claude:   existing,
 	}
 
+	// A stream killed by replacement never delivers the final tick that
+	// clears its highlight-seeder state; stopExistingSessionLocked must
+	// purge it (unregisterSession can't — the token is taken before the
+	// close, so its callback no-ops for this path).
+	app.remoteClientProbeFn = func() bool { return true }
+	app.observeAssistantTextStream(thread.ID, "stranded-item", "```python\npass", false)
+	waitForSeedStates(t, app, 1)
+
+	// A delta still sitting in the triage stream-persist buffer is the
+	// other re-registration path: its 250ms flush fires the observer
+	// AFTER the purge unless stopExistingSessionLocked drains the
+	// buffers first (the replacement path has no CleanupThread to do
+	// it). Two deltas: the first creates the streaming row, the second
+	// buffers and arms the timer.
+	app.ensureTriageRouter()
+	for _, content := range []string{"```python\npending", " = 1"} {
+		if err := app.triage.Handle(provider.ProviderEvent{
+			Kind: provider.EventTextDelta, ThreadID: thread.ID,
+			Content: content, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("Handle(text delta) error = %v", err)
+		}
+	}
+
 	if err := app.startSessionNow(thread.ID); err != nil {
 		t.Fatalf("startSessionNow() error = %v, want nil (prior subprocess exit is not a close failure)", err)
+	}
+
+	if got := app.seedStateCount(); got != 0 {
+		t.Fatalf("replacement start must purge stranded seeder states, got %d", got)
+	}
+	// Past the stream-persist flush window: a timer the drain missed
+	// would have re-registered the old stream's state by now.
+	time.Sleep(500 * time.Millisecond)
+	if got := app.seedStateCount(); got != 0 {
+		t.Fatalf("delayed stream flush re-registered purged seeder state: %d", got)
 	}
 
 	// The marker write happens inside the shell script before `cat`
@@ -289,4 +323,41 @@ func writeClaudeMarkerBinary(t *testing.T, markerPath string) string {
 
 func shellQuote(path string) string {
 	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
+}
+
+// TestInterruptTurn_SerializesWithThreadLock pins R12-5 (round 12):
+// the whole interrupt — session capture, pre-ack Mark, ack wait,
+// post-ack bookkeeping — runs under the thread action lock, the same
+// lock the session-start funnel holds across MarkThreadActive + spawn,
+// the death drain holds across its restore, and the dispatch worker
+// holds per batch. Without it, an interrupt could capture a session,
+// then act on a thread a replacement start had already reactivated;
+// the in-triage epoch fences alone cannot cover the Codex resend or
+// the session capture itself.
+func TestInterruptTurn_SerializesWithThreadLock(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-interrupt-lock")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	unlock := app.threadLocks().Lock(thread.ID)
+	done := make(chan error, 1)
+	go func() { done <- app.InterruptTurn(thread.ID) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("InterruptTurn returned (%v) while the thread action lock was held — it must block on the lock", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("InterruptTurn() error = %v, want nil (no session registered)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("InterruptTurn did not return after the thread action lock was released")
+	}
 }

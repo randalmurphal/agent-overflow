@@ -8,7 +8,7 @@ import {
   type TimelineWindowAnchorOperation,
 } from './thread.svelte';
 import {
-  FAST_DRAIN_SNAP_LAG_CHARS,
+  FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS,
   MAX_ADVANCE_PER_TICK_CHARS,
   type SmoothingClock,
 } from '../markdown/smoothing/PerItemSmoother';
@@ -933,7 +933,7 @@ describe('createThreadPane', () => {
     });
 
     it('keeps companions open on a same-thread re-switch', async () => {
-      // The revert-to-checkpoint flow reloads items in place via
+      // A forced in-place reload (same-thread re-switch) reloads items via
       // switchThread(currentThread); an open plan/review pane must
       // survive that.
       const pane = createThreadPane();
@@ -2569,9 +2569,9 @@ describe('createThreadPane', () => {
 
     it('requestScrollToItem carries flash option', () => {
       const pane = createThreadPane();
-      pane.requestScrollToItem('checkpoint-user-message', { flash: true });
+      pane.requestScrollToItem('revert-target-user-message', { flash: true });
 
-      expect(pane.scrollToItemRequest.itemId).toBe('checkpoint-user-message');
+      expect(pane.scrollToItemRequest.itemId).toBe('revert-target-user-message');
       expect(pane.scrollToItemRequest.flash).toBe(true);
     });
 
@@ -3662,7 +3662,6 @@ describe('createThreadPane', () => {
       const pane = createThreadPane();
       const sliceCalls: Array<{ anchor: unknown; budget: unknown }> = [];
       setBindingMock('AutoResumeThread', async () => {});
-      setBindingMock('ListThreadCheckpoints', async () => []);
       setBindingMock(
         'ListThreadSliceAround',
         async (_threadId, anchor, budget) => {
@@ -4787,7 +4786,7 @@ describe('createThreadPane', () => {
     });
 
     it('bumps switchGeneration on every switchThread (including same-thread re-switch)', async () => {
-      // The revert-to-checkpoint flow calls pane.switchThread(currentThread).
+      // A forced in-place reload calls pane.switchThread(currentThread).
       // pane.threadId does not change on that path, so MessageTimeline's
       // restore $effect.pre would miss the event if it keyed only on
       // pane.threadId. Exposing switchGeneration gives the timeline a
@@ -4939,23 +4938,21 @@ describe('createThreadPane', () => {
       setBindingMock('GetThreadLiveState', stamp('GetThreadLiveState'));
       setBindingMock('ListThreadSliceAround', stamp('ListThreadSliceAround'));
       setBindingMock('ListRecentTurns', stamp('ListRecentTurns'));
-      setBindingMock('ListThreadCheckpoints', stamp('ListThreadCheckpoints'));
 
       // Don't await — every mock hangs intentionally.
       void pane.switchThread(makeThread({ id: 't' }));
 
-      // Yield enough microtasks for all five Promise constructors to
+      // Yield enough microtasks for all four Promise constructors to
       // run (each one assigns its slot synchronously inside the
       // `() => new Promise(() => {})` body).
       for (let i = 0; i < 8; i++) await Promise.resolve();
 
-      // All five must have started. The exact ordering between them
+      // All four must have started. The exact ordering between them
       // is non-deterministic by design; we only assert that no fetch
       // is missing — which it would be under serialisation.
       expect(Object.keys(startedAt).sort()).toEqual([
         'GetThreadLiveState',
         'ListRecentTurns',
-        'ListThreadCheckpoints',
         'ListThreadSliceAround',
         'SwitchThread',
       ]);
@@ -6103,6 +6100,80 @@ describe('createThreadPane', () => {
       }
     });
 
+    it('keeps draining when the completion patch carries the trimmed tail preview', async () => {
+      // Thinking rows persist the tail-trimmed preview as their summary
+      // (Go thinkingSummaryPreview mirrors THINKING_TAIL_RUNES), so a
+      // content-present settle patch re-asserts the TRIMMED text — not
+      // the full received stream. Mid-drain, past 400 runes, that patch
+      // summary neither equals nor extends the smoother's received text;
+      // treating it as an overwrite snap+disposes the smoother and dumps
+      // the unrevealed backlog wholesale (the Codex thinking completion
+      // shape, and the recovered-block settle patch on Claude). The
+      // patch must instead read as a re-assert: smoother survives, keeps
+      // draining at the capped rate, and auto-disposes at catch-up.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-think-settle' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-think-settle',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
+        // > 400 runes so the trimmed preview provably differs from the
+        // received text, delivered as one delta so the smoother holds a
+        // large backlog when the settle patch lands.
+        const full = buildWords(80).join(' ') + ' '; // 560 chars
+        expect(full.length).toBeGreaterThan(400);
+        pane.applyItemDelta({
+          threadId: 'thread-think-settle',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: full,
+          updatedAt: 2,
+        });
+        // A couple of frames in: genuinely mid-drain.
+        clock.tickFrame(16);
+        clock.tickFrame(16);
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+        const midDrain = pane.items[0].summary;
+        expect(midDrain.length).toBeLessThan(full.length);
+
+        // The settle patch as Go emits it: completed + trimmed preview.
+        pane.applyItemPatch({
+          threadId: 'thread-think-settle',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', summary: full.slice(-400), updatedAt: 3 },
+        });
+
+        // Smoother survives; the patch neither snapped the reveal nor
+        // wrote the trimmed preview over the mid-drain summary.
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+        expect(pane.items[0].summary).toBe(midDrain);
+        expect(pane.items[0].status).toBe('completed');
+
+        // Drain to completion: converges on the trimmed tail and the
+        // onReveal auto-cleanup disposes the smoother.
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) {
+          clock.tickFrame(16);
+        }
+        expect(pane.items[0].summary).toBe(full.slice(-400));
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(clock.pendingCount()).toBe(0);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
     it('exposes a monotonically-growing live tail past 400 runes for the collapsed view', async () => {
       // Regression guard for the user-reported "5 words appear at once
       // past 400 runes" symptom. The collapsed ThinkingBlock renders a
@@ -7152,7 +7223,7 @@ describe('createThreadPane', () => {
       expect(pane.revealBoundary).toBeNull();
     });
 
-    it('snaps the frontier outright when its backlog exceeds the snap threshold', async () => {
+    it('fast-drains an oversized backlog in bounded per-frame chunks — never a wholesale snap', async () => {
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);
       try {
@@ -7170,12 +7241,12 @@ describe('createThreadPane', () => {
             updatedAt: 2,
           }),
         );
-        // Backlog comfortably above the snap threshold: even at the
-        // elevated drain cap this would hold the waiting successor for
-        // whole seconds, so the sequencer snaps it in one burst instead.
-        const text = 'word '.repeat(
-          Math.ceil((FAST_DRAIN_SNAP_LAG_CHARS + 200) / 5),
-        );
+        // Backlog well above what the old snap threshold covered. The
+        // sequencer used to reveal this in one wholesale write (a giant
+        // re-parse + multi-viewport layout jump); now it rate-ceilinged
+        // fast-drains, so the successor waits a moment longer and every
+        // frame's reveal stays bounded.
+        const text = 'word '.repeat(400); // 2000 chars
         pane.applyItemDelta({
           threadId: 't',
           itemId: 'text:0:0',
@@ -7185,10 +7256,6 @@ describe('createThreadPane', () => {
         });
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
 
-        // The successor upsert runs the sequencer synchronously: the
-        // oversized backlog snaps with no clock ticks, and the gate
-        // clears via the reentrancy-guarded recompute re-run (the snap's
-        // own onReveal recomputes against the caught-up smoother).
         pane.upsertItem(
           makeItem({
             id: 'tool:0:1',
@@ -7202,10 +7269,93 @@ describe('createThreadPane', () => {
             updatedAt: 4,
           }),
         );
+        // No synchronous wholesale reveal: the successor upsert leaves
+        // the frontier mid-drain and the gate in place.
+        const summaryAfterUpsert =
+          pane.items.find((i) => i.id === 'text:0:0')?.summary ?? '';
+        expect(summaryAfterUpsert.length).toBeLessThan(text.length);
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+
+        // Drain to completion, asserting every frame's advance stays
+        // within the fast-drain per-tick cap (+trailing-whitespace slack
+        // for the word-unit rounding).
+        let previousLength = summaryAfterUpsert.length;
+        let frames = 0;
+        while (pane.revealBoundary !== null && frames < 400) {
+          clock.tickFrame(16);
+          frames++;
+          const summary =
+            pane.items.find((i) => i.id === 'text:0:0')?.summary ?? '';
+          expect(summary.length - previousLength).toBeLessThanOrEqual(
+            FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS,
+          );
+          previousLength = summary.length;
+        }
         expect(pane.items.find((i) => i.id === 'text:0:0')?.summary).toBe(
           text,
         );
         expect(pane.revealBoundary).toBeNull();
+        // Bounded rate means the drain genuinely took multiple frames.
+        expect(frames).toBeGreaterThan(5);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('keeps isItemSmoothing true through the post-completion drain, false once caught up', async () => {
+      // The wire settles status to 'completed' while the smoother is
+      // still revealing. Render code derives its streaming mode from
+      // `status === 'streaming' || isItemSmoothing`, so this signal must
+      // hold through the drain tail and clear exactly at catch-up —
+      // otherwise ChatMarkdown drops its volatile-tail markdown guards
+      // while the text is still visibly growing.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 't',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 0,
+            summary: '',
+            updatedAt: 2,
+          }),
+        );
+        const text = 'word '.repeat(60); // 300 chars
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: text,
+          updatedAt: 3,
+        });
+        pane.applyItemPatch({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          patch: { status: 'completed', summary: text, updatedAt: 4 },
+        });
+
+        const item = () => pane.items.find((i) => i.id === 'text:0:0');
+        // Status settles immediately; the reveal (and the smoothing
+        // signal) keeps draining.
+        expect(item()?.status).toBe('completed');
+        expect(pane.isItemSmoothing('text:0:0')).toBe(true);
+        expect((item()?.summary ?? text).length).toBeLessThan(text.length);
+
+        let frames = 0;
+        while (pane.isItemSmoothing('text:0:0') && frames < 500) {
+          clock.tickFrame(16);
+          frames++;
+        }
+        expect(frames).toBeGreaterThan(1);
+        expect(item()?.summary).toBe(text);
+        expect(pane.isItemSmoothing('text:0:0')).toBe(false);
       } finally {
         __setSmoothingClockForTest(undefined);
       }
@@ -7325,6 +7475,62 @@ describe('createThreadPane', () => {
       expect(markStructuralContentPending).toHaveBeenCalledTimes(1);
     });
 
+    it('stamps the live-content latch alongside the wire-append arm', async () => {
+      // A wire append entering the loaded tail is live content: besides
+      // the 250ms one-shot, it must open the full SPRING_MODE_HOLD_MS
+      // rolling window so the appended rows' follow-up growth (payload
+      // preview, markdown, highlight spans) keeps spring-chasing. The
+      // one-shot alone covered only the first growth delivery — a
+      // background-task completion sibling landing after turn end
+      // mounted with a brief chase and then teleported once its settle
+      // outlived the 250ms window, while the identical rows arriving
+      // mid-stream glided (streaming kept the latch fresh).
+      const thread = makeThread({ id: 'thread-arm-stamp' });
+      const pane = await buildPane(thread, [
+        makeItem({ id: 'seed', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
+      ]);
+      attachMockScrollController(pane);
+      expect(pane.lastLiveContentAt).toBe(0);
+
+      const before = performance.now();
+      pane.applyProviderItemUpserts([
+        makeItem({
+          id: 'bash-1:completion',
+          threadId: thread.id,
+          turnIndex: 0,
+          itemIndex: 1,
+          kind: 'tool_completion',
+          role: 'assistant',
+          status: 'completed',
+          toolName: 'Bash',
+          summary: 'Background command finished',
+          completionOf: 'bash-1',
+        }),
+      ]);
+      const after = performance.now();
+
+      // Stamped synchronously with the apply, on the same
+      // performance.now() timebase the MessageTimeline latch reads.
+      expect(pane.lastLiveContentAt).toBeGreaterThanOrEqual(before);
+      expect(pane.lastLiveContentAt).toBeLessThanOrEqual(after);
+    });
+
+    it('pane.armStructuralSpring (composer optimistic send) arms without stamping', async () => {
+      // The composer's send is deliberately a one-shot: one append wants
+      // one spring window, not 500ms of spring eligibility for
+      // unrelated reflows.
+      const thread = makeThread({ id: 'thread-arm-composer' });
+      const pane = await buildPane(thread, [
+        makeItem({ id: 'seed', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
+      ]);
+      const { markStructuralContentPending } = attachMockScrollController(pane);
+
+      pane.armStructuralSpring();
+
+      expect(markStructuralContentPending).toHaveBeenCalledTimes(1);
+      expect(pane.lastLiveContentAt).toBe(0);
+    });
+
     it('does not arm for update-only batches', async () => {
       const thread = makeThread({ id: 'thread-arm-upd' });
       const seed = makeItem({
@@ -7397,16 +7603,18 @@ describe('createThreadPane', () => {
       await Promise.resolve();
       expect(pane.loading).toBe(true);
 
-      // A streaming upsert arriving mid-load must not arm: the whole
-      // switch+load settle is a restore, not an in-turn append
+      // A streaming upsert arriving mid-load must not arm — and must not
+      // stamp the latch either (the stamp shares the arm's gates): the
+      // whole switch+load settle is a restore, not an in-turn append
       // (bug-report-20260622T041049Z class).
       pane.applyProviderItemUpserts([bItem]);
       expect(markStructuralContentPending).not.toHaveBeenCalled();
+      expect(pane.lastLiveContentAt).toBe(0);
 
       releaseSlice({ items: [bItem], oldestTurnIndex: 0, hasMore: false });
       await switching;
 
-      // A genuine append to the settled window arms again.
+      // A genuine append to the settled window arms (and stamps) again.
       pane.applyProviderItemUpserts([
         makeItem({
           id: 'b-1',
@@ -7421,6 +7629,7 @@ describe('createThreadPane', () => {
         }),
       ]);
       expect(markStructuralContentPending).toHaveBeenCalledTimes(1);
+      expect(pane.lastLiveContentAt).toBeGreaterThan(0);
     });
 
     it("schedules the post-flush 'live-content' nudge alongside the arm", async () => {
@@ -7570,8 +7779,11 @@ describe('createThreadPane', () => {
 
       // The chat timeline is swapped out for ChannelView in discussion
       // mode, so the registered controller watches channel messages —
-      // arming it would spring unrelated channel growth for 250ms.
+      // arming it would spring unrelated channel growth for 250ms. The
+      // append stamp shares the gate (the pane's timeline latch has no
+      // reader on this surface).
       expect(markStructuralContentPending).not.toHaveBeenCalled();
+      expect(pane.lastLiveContentAt).toBe(0);
       // Outwait the nudge's flush + frame (and its hidden-window timeout
       // fallback) so a skipped mark that still scheduled the observe
       // would be caught.

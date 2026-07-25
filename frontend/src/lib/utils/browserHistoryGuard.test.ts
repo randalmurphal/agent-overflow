@@ -9,6 +9,7 @@ describe('installBrowserHistoryGuard', () => {
     cleanup();
     cleanup = () => {};
     for (const remove of removeListeners.splice(0)) remove();
+    Reflect.deleteProperty(window.navigator, 'platform');
     vi.restoreAllMocks();
   });
 
@@ -17,7 +18,13 @@ describe('installBrowserHistoryGuard', () => {
     removeListeners.push(() => document.removeEventListener(type, listener));
   }
 
+  // Own-property shadow over the prototype getter; removed in afterEach.
+  function stubPlatform(value: string): void {
+    Object.defineProperty(window.navigator, 'platform', { value, configurable: true });
+  }
+
   it('consumes Alt+ArrowLeft and Alt+ArrowRight before app listeners see them', () => {
+    stubPlatform('Win32');
     cleanup = installBrowserHistoryGuard();
     const seen = vi.fn();
     on('keydown', seen);
@@ -34,6 +41,58 @@ describe('installBrowserHistoryGuard', () => {
       expect(event.defaultPrevented).toBe(true);
     }
     expect(seen).not.toHaveBeenCalled();
+  });
+
+  it('leaves Alt+Arrow alone on macOS, where it is word navigation, not a history gesture', () => {
+    stubPlatform('MacIntel');
+    cleanup = installBrowserHistoryGuard();
+
+    const textarea = document.createElement('textarea');
+    document.body.append(textarea);
+
+    try {
+      for (const target of [textarea, document.body]) {
+        const seen = vi.fn();
+        on('keydown', seen);
+        const event = new KeyboardEvent('keydown', {
+          bubbles: true,
+          cancelable: true,
+          altKey: true,
+          key: 'ArrowLeft',
+        });
+
+        expect(target.dispatchEvent(event)).toBe(true);
+        expect(event.defaultPrevented).toBe(false);
+        expect(seen).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      textarea.remove();
+    }
+  });
+
+  it('consumes Alt+Arrow on Windows/Linux even with a text caret focused', () => {
+    stubPlatform('Win32');
+    cleanup = installBrowserHistoryGuard();
+    const seen = vi.fn();
+    on('keydown', seen);
+
+    const textarea = document.createElement('textarea');
+    document.body.append(textarea);
+
+    try {
+      const event = new KeyboardEvent('keydown', {
+        bubbles: true,
+        cancelable: true,
+        altKey: true,
+        key: 'ArrowLeft',
+      });
+
+      expect(textarea.dispatchEvent(event)).toBe(false);
+      expect(event.defaultPrevented).toBe(true);
+      expect(seen).not.toHaveBeenCalled();
+    } finally {
+      textarea.remove();
+    }
   });
 
   it('leaves ordinary keys alone', () => {

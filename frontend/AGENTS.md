@@ -125,6 +125,22 @@ stable `<pre>` with Idiomorph so selection survives streaming updates.
   the template.
 - Do NOT call `window.runtime` directly. Use `stores/bindings.ts`.
 - Do NOT preload heavy payloads.
+- Do NOT statically import conditional feature surfaces from eager code.
+  Settings, review/plan/design companion panels, discussion mode, the
+  terminal surfaces, and the git/usage overlays all mount lazily
+  (`{#await import(...)}` at replace-surface branches;
+  `primitives/LazyOverlay.svelte` for modals/drawers with exit
+  transitions) so their chunks stay out of the startup graph. One static
+  import from an eagerly-loaded module silently drags the whole feature
+  chunk back into startup — check `dist/index.html`'s modulepreload list
+  when touching these boundaries. An `{#await}` input must be a promise
+  with STABLE identity — never a reactive expression that constructs one
+  (`{#await loaders[kind]()}`): the block re-runs on ANY dependency
+  invalidation with no promise-identity cutoff, so unrelated churn (e.g.
+  per-frame layout-item replacement during a divider drag) re-pends the
+  block and remounts the mounted surface. Capture the promise once at
+  init (see `CompanionPane.svelte`); regression:
+  `PaneHost.test.ts` "divider width churn".
 - Do NOT add visible in-app explanatory text for internal mechanics,
   shortcuts, or implementation details.
 
@@ -150,7 +166,7 @@ directly; packages are hardlinked from the pnpm store, so direct edits
 corrupt every project on the machine. Use
 `pnpm patch <pkg>@<version> --edit-dir <dir>` + `pnpm patch-commit`.
 
-- `svelte@5.56.3.patch` — three hunks with different drop rules:
+- `svelte@5.56.3.patch` — four hunks with different drop rules:
   1. **zombie-mint fix** — reactivity leak where deriveds read during
      component init are force-connected and never released (upstream
      [sveltejs/svelte#18420](https://github.com/sveltejs/svelte/issues/18420)).
@@ -166,6 +182,16 @@ corrupt every project on the machine. Use
      `src/lib/utils/zombieMintProbe.ts`) that fires if a future svelte
      re-introduces the hunk-1 shape. Keep while hunk 1 exists; drop
      alongside it.
+  4. **event-slot-release** — svelte's delegated-event dispatcher pins
+     every event in a module slot (`last_propagated_event`, a Firefox
+     GC workaround) and never clears it, so `event.target` anchors the
+     last-clicked component's detached subtree — a whole closed pane —
+     until the next delegated event. The hunk schedules a macrotask
+     clear after each dispatch (strictly after propagation settles, so
+     the Firefox window is preserved). Unreported upstream as of
+     2026-07 (upstream `main` still never clears). Drop when
+     `svelte-patch-event-slot.test.ts` passes on an unpatched release;
+     `chatview-dom-retention.test.ts` also relies on the clear.
 - `svelte-streamdown@3.1.2.patch` — markdown-pipeline fixes, grouped by
   concern. Behavior is held across version bumps: re-roll by
   `git apply --reject`-ing the prior patch into a clean `pnpm patch`
@@ -183,13 +209,16 @@ corrupt every project on the machine. Use
      split the GFM text rule's leading ``[`~]+`` run so a `~` cannot
      swallow an adjacent backtick. Composes with upstream's
      bottom-of-file options cache + incremental `parseBlocks`.
-  3. **deferred-typesetting hosts** (`Elements/{Code,Math,Mermaid}`,
+  3. **deferred-typesetting hosts** (`Elements/{Math,Mermaid}`,
      `context`, `Streamdown`) — `registerAsyncResource` /
      `pendingAsyncCount` / `onsettled` let a Streamdown signal when its
-     async work (shiki, katex, mermaid) has settled, so the
-     committed-prefix vs volatile-tail two-instance split in
+     async work (katex, mermaid, backend highlight spans) has settled,
+     so the committed-prefix vs volatile-tail two-instance split in
      `ChatMarkdown.svelte` defers math/mermaid typesetting off the
-     streaming tail. Orthogonal to upstream's parse cache — they stack.
+     streaming tail. Our own `StreamdownCodeHost` participates through
+     the same context hooks (no `Code.svelte` hunk needed — the
+     library's shiki Code component is unused and tree-shaken).
+     Orthogonal to upstream's parse cache — they stack.
   4. **completion-disable** (`utils/parse-incomplete-markdown.js`) — a
      trailing `.filter` drops the 10 inline emphasis/code/math
      speculative completers (they mis-close on lone delimiters
@@ -241,16 +270,16 @@ corrupt every project on the machine. Use
      starts to render then turns back into raw markdown"). Closing `$$`
      must be followed by newline/end-of-string so adjacent same-line
      inline `$$X$$` pairs still take the single-line alternative.
-  9. **typeset/highlight caches** (`Elements/Math.svelte`,
-     `Elements/Mermaid.svelte`, `utils/hightlighter.svelte.js`) —
-     module-level KaTeX HTML cache (deterministic output, LRU cap 500);
-     Mermaid SVG cache keyed on `(theme, sanitized source)` with a
-     per-insertion uniqueId rewrite so two in-DOM instances of the same
-     diagram can't collide on document-scoped `url(#…)`/`xlink:href`
-     ids (LRU cap 100); Shiki per-line token cache so streaming code
-     blocks only tokenize new/changed lines. All three exist because
-     the committed-prefix/volatile-tail split remounts each settled
-     block once — the caches make that migration free. Perf-only: each
+  9. **typeset caches** (`Elements/Math.svelte`,
+     `Elements/Mermaid.svelte`) — module-level KaTeX HTML cache
+     (deterministic output, LRU cap 500); Mermaid SVG cache keyed on
+     `(theme, sanitized source)` with a per-insertion uniqueId rewrite
+     so two in-DOM instances of the same diagram can't collide on
+     document-scoped `url(#…)`/`xlink:href` ids (LRU cap 100). Both
+     exist because the committed-prefix/volatile-tail split remounts
+     each settled block once — the caches make that migration free.
+     (Code blocks get the same treatment from our own
+     `markdown/codeSpanCache.ts`, outside the patch.) Perf-only: each
      can be dropped independently if upstream grows an equivalent.
   10. **relative-reference links** (`Elements/Link.svelte`) — the
       blocked-link branch drops its " [blocked]" suffix for schemeless

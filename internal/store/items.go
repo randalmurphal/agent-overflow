@@ -20,6 +20,7 @@ var ErrItemSettled = errors.New("store: item is no longer streaming")
 const itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), COALESCE(payloads.kind, ''), COALESCE(payloads.meta, ''),
+    COALESCE(payloads.preview_spans, ''),
     COALESCE(items.input_payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
     items.tool_name, items.decision, items.meta, items.created_at, items.updated_at`
@@ -44,6 +45,7 @@ func scanItemRow(scanner interface{ Scan(...any) error }) (Item, error) {
 		&it.ID, &it.ThreadID, &it.TurnIndex, &it.ItemIndex,
 		&it.Kind, &it.Role, &it.Status, &it.Summary,
 		&it.PayloadID, &it.PayloadKind, &it.PayloadMeta,
+		&it.PayloadPreviewSpans,
 		&it.InputPayloadID,
 		&it.ParentID, &isBackground, &it.CompletionOf,
 		&it.ToolName, &it.Decision, &it.Meta, &it.CreatedAt, &it.UpdatedAt,
@@ -100,6 +102,27 @@ func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (
 		return 0, nil
 	}
 	return int(maxIndex.Int64) + 1, nil
+}
+
+// headItemIndexTx mirrors nextItemIndexTx at the turn's HEAD:
+// MIN(item_index)-1, or 0 for an empty turn (identical to
+// nextItemIndexTx's empty-turn result, so head and tail placement only
+// diverge once the turn has rows). Negative indexes are valid — every
+// ordering read sorts by (turn_index, item_index), and the mid-turn
+// anchor predicate (ItemIndex > 0) correctly treats a head-inserted
+// row as turn-initial.
+func headItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
+	var minIndex sql.NullInt64
+	if err := tx.QueryRow(
+		`SELECT MIN(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
+		threadID, turnIndex,
+	).Scan(&minIndex); err != nil {
+		return 0, fmt.Errorf("%s: %w", label, err)
+	}
+	if !minIndex.Valid {
+		return 0, nil
+	}
+	return int(minIndex.Int64) - 1, nil
 }
 
 func insertItemTx(exec sqlExecutor, item Item, label string) error {

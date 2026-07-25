@@ -569,7 +569,7 @@ export function projectTurnCompleted(
 
 /**
  * Settle every live-status signal for a thread after a successful
- * revert (`user_message:reverted` / `checkpoint:reverted`). A revert
+ * revert (`user_message:reverted`). A revert
  * means "that send never happened": the backend stopped or rolled the
  * provider session, truncated SQLite, and put the message back in the
  * composer — so nothing on this thread is working, queued, or awaiting

@@ -28,6 +28,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Restore before reset: a test that failed mid-body leaves its throwing
+  // setItem mock installed, which would poison every later test.
+  vi.restoreAllMocks();
   __resetSizePriorsStorageForTest();
   vi.useRealTimers();
 });
@@ -174,6 +177,66 @@ describe('index LRU cap', () => {
 });
 
 describe('quota exceeded', () => {
+  const quotaError = () => new DOMException('quota exceeded', 'QuotaExceededError');
+
+  it('persists the post-eviction index when the index write itself hits quota', () => {
+    setThreadSizePriors('t1', entry());
+    vi.advanceTimersByTime(1000);
+    setThreadSizePriors('t2', entry());
+    vi.advanceTimersByTime(1000);
+    // Stored index is now [t1, t2].
+
+    // Next flush: t3's entry write succeeds, the index write hits quota
+    // once (evicting t1), and the retried index write must reflect the
+    // eviction — not the pre-eviction serialization.
+    const originalSetItem = localStorage.setItem.bind(localStorage);
+    let threw = false;
+    const setItemSpy = vi
+      .spyOn(localStorage, 'setItem')
+      .mockImplementation((key: string, value: string) => {
+        if (key === `${V1_PREFIX}index` && !threw) {
+          threw = true;
+          throw quotaError();
+        }
+        originalSetItem(key, value);
+      });
+
+    setThreadSizePriors('t3', entry());
+    vi.advanceTimersByTime(1000);
+
+    expect(localStorage.getItem(`${V1_PREFIX}t1`)).toBeNull();
+    const index = JSON.parse(localStorage.getItem(`${V1_PREFIX}index`) as string);
+    expect(index).toEqual(['t2', 't3']);
+  });
+
+  it('keeps the write-target thread indexed when quota eviction lands on itself', () => {
+    setThreadSizePriors('t1', entry());
+    vi.advanceTimersByTime(1000);
+    // Stored index is now [t1] — the only evictable thread is t1 itself.
+
+    const originalSetItem = localStorage.setItem.bind(localStorage);
+    let threw = false;
+    const setItemSpy = vi
+      .spyOn(localStorage, 'setItem')
+      .mockImplementation((key: string, value: string) => {
+        if (key === `${V1_PREFIX}t1` && !threw) {
+          threw = true;
+          throw quotaError();
+        }
+        originalSetItem(key, value);
+      });
+
+    setThreadSizePriors('t1', entry({ width: 900 }));
+    vi.advanceTimersByTime(1000);
+
+    // The retried entry write succeeded, so the thread must stay indexed —
+    // an unindexed entry escapes the LRU cap forever.
+    const stored = JSON.parse(localStorage.getItem(`${V1_PREFIX}t1`) as string);
+    expect(stored.width).toBe(900);
+    const index = JSON.parse(localStorage.getItem(`${V1_PREFIX}index`) as string);
+    expect(index).toEqual(['t1']);
+  });
+
   it('evicts the oldest thread and retries once; disables persistence if it still fails', () => {
     setThreadSizePriors('t1', entry());
     vi.advanceTimersByTime(1000);

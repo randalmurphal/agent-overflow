@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"agent-overflow/internal/slicesx"
@@ -105,8 +106,10 @@ func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCou
 // ListItemsBeforeTurn is the legacy turn-floor pager. Active panes use
 // ListItemsBeforeCursor so long single turns remain item-bounded. Keep this
 // public compatibility surface item-bounded too: the synthetic cursor points
-// at the start of beforeTurnIndex, so rows strictly below that turn are loaded
-// with a hard primary-row budget.
+// below every possible index in beforeTurnIndex — head-healed prompts sit at
+// NEGATIVE indexes, so index 0 is not the start of a turn — keeping the load
+// strictly below that turn with a hard primary-row budget (mirror of
+// ListItemsAfterTurn's MaxInt ceiling).
 func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget int) (store.PagedItems, error) {
 	if itemBudget <= 0 {
 		itemBudget = paginationItems
@@ -116,7 +119,7 @@ func (a *App) ListItemsBeforeTurn(threadID string, beforeTurnIndex, itemBudget i
 	}
 	paged, err := a.store.ListItemsBeforeCursor(
 		threadID,
-		store.TimelineCursor{TurnIndex: beforeTurnIndex, ItemIndex: 0},
+		store.TimelineCursor{TurnIndex: beforeTurnIndex, ItemIndex: math.MinInt},
 		itemBudget,
 	)
 	if err != nil {
@@ -147,7 +150,7 @@ func (a *App) ListItemsAfterTurn(threadID string, afterTurnIndex, itemBudget int
 	}
 	paged, err := a.store.ListItemsAfterCursor(
 		threadID,
-		store.TimelineCursor{TurnIndex: afterTurnIndex, ItemIndex: int(^uint(0) >> 1)},
+		store.TimelineCursor{TurnIndex: afterTurnIndex, ItemIndex: math.MaxInt},
 		itemBudget,
 	)
 	if err != nil {

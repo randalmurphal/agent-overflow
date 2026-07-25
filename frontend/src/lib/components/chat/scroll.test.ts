@@ -2395,7 +2395,6 @@ describe('scroll integration — useStickToBottom wiring', () => {
       todo: null,
     }));
     setBindingMock('ListRecentTurns', async () => []);
-    setBindingMock('ListThreadCheckpoints', async () => []);
 
     await pane.switchThread(threadB);
     await tick();
@@ -2551,7 +2550,6 @@ describe('scroll integration — draft placeholder transitions', () => {
       todo: null,
     }));
     setBindingMock('ListRecentTurns', async () => []);
-    setBindingMock('ListThreadCheckpoints', async () => []);
 
     await draftPane.switchThread(materialized);
     await tick();

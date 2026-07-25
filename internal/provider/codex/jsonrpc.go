@@ -160,6 +160,15 @@ func IsAmbiguousSteerTimeout(err error) bool {
 	return IsRequestTimeout(err, "turn/steer")
 }
 
+// IsAmbiguousTurnStartTimeout is the `turn/start` analog of
+// IsAmbiguousSteerTimeout: the request was written to Codex but the
+// JSON-RPC ack never arrived, so the turn — and its user-message echo —
+// may already be running. Callers must not re-send the content on this
+// error; they leave the pending echo confirmation in place instead.
+func IsAmbiguousTurnStartTimeout(err error) bool {
+	return IsRequestTimeout(err, "turn/start")
+}
+
 // defaultRequestTimeout bounds how long sendRequest waits for a JSON-RPC
 // response. Overridable by tests via Session.requestTimeoutOverride.
 const defaultRequestTimeout = 30 * time.Second

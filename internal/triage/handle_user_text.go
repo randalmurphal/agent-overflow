@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 
+	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
@@ -52,11 +53,63 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	providerItemID := readProviderItemIDFromMeta(evt.Meta)
 
 	if eventParentID(evt) == "" {
-		if pending, ok := r.consumeMatchingPendingSend(evt.ThreadID, providerItemID); ok {
-			if pending.DeferredItem != nil {
-				return r.persistDeferredUserText(pending, providerItemID, evt)
+		// Pop and handle under the thread's flush anchor lock so the popped snapshot's
+		// AnchoredAtInterrupt / WasDeferred state is truthful: the
+		// interrupt paths (PromoteQuietFlushSends,
+		// EagerPersistDeferredFlushSends) hold the same mutex across their
+		// claim + store write, so a claim this echo observes is a claim
+		// whose bump/persist already committed — and a failed write was
+		// already unclaimed. The confirmed hook (message-anchor record)
+		// runs inside the lock too; it is already synchronous on this
+		// read loop, and the only new waiters are the rare interrupt
+		// paths, which need the ordering more than the latency.
+		handled, err := func() (bool, error) {
+			anchor := r.flushAnchor(evt.ThreadID)
+			anchor.Lock()
+			defer anchor.Unlock()
+			pending, ok := r.consumeMatchingPendingSend(evt.ThreadID, providerItemID)
+			if !ok {
+				return false, nil
 			}
-			return r.attachProviderItemIDToUserRow(evt.ThreadID, pending, providerItemID, evt)
+			// Stash the echo's wire identity on the popped entry BEFORE
+			// the fallible handlers: if a write fails, the reinserted
+			// EchoConsumed entry must still carry the transcript uuid and
+			// parent so the session-death self-heal can stamp them — the
+			// echo won't necessarily be re-delivered (round-6, R6-1).
+			pending.EchoProviderItemID = providerItemID
+			pending.EchoParentUUID = readParentUUIDFromMeta(evt.Meta)
+			var handleErr error
+			if pending.DeferredItem != nil {
+				handleErr = r.persistDeferredUserText(&pending, providerItemID, evt)
+			} else {
+				handleErr = r.attachProviderItemIDToUserRow(evt.ThreadID, &pending, providerItemID, evt)
+			}
+			if handleErr != nil && !r.isWireOnlyUserTextSeen(evt.ThreadID, providerItemID) {
+				// This echo IS the consumption boundary even though the
+				// write failed: record the message anchor now so fork /
+				// revert-on-interrupt can slice at this message without
+				// waiting for a retry or session-death self-heal. The
+				// anchor row doesn't depend on the failed stamp, only on
+				// the item row existing (FK) — so record for found rows
+				// (quiet persists committed at dispatch); deferred rows
+				// that never persisted stay honestly anchor-less until
+				// their write lands (round-10, R10-2).
+				r.recordEchoBoundaryAnchor(evt.ThreadID, &pending)
+				// Both paths mark the dedup set exactly at their durable
+				// point, so unseen means nothing committed for this
+				// envelope: reinsert the popped entry so a re-delivered
+				// echo retries instead of persisting an injected-context
+				// duplicate. The reinsert marks the entry EchoConsumed —
+				// a session-death drain self-heals the timeline row from
+				// DeferredItem / QuietItem rather than restoring the
+				// message to the draft, because this echo proved the
+				// provider context already contains it (round-5, R5-3).
+				r.reinsertPendingSendHead(evt.ThreadID, pending)
+			}
+			return true, handleErr
+		}()
+		if handled || err != nil {
+			return err
 		}
 		if r.HasPendingSendForThread(evt.ThreadID) {
 			// Sends are outstanding but this echo matched none of their
@@ -91,7 +144,7 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 	return r.persistInjectedContextNotification(evt, providerItemID)
 }
 
-func (r *Router) persistDeferredUserText(pending pendingSend, providerItemID string, evt provider.ProviderEvent) error {
+func (r *Router) persistDeferredUserText(pending *pendingSend, providerItemID string, evt provider.ProviderEvent) error {
 	if pending.DeferredItem == nil {
 		return nil
 	}
@@ -104,37 +157,100 @@ func (r *Router) persistDeferredUserText(pending pendingSend, providerItemID str
 	item.CreatedAt = now
 	item.UpdatedAt = now
 
-	mergedMeta, err := usermessage.MergeProviderItemID(item.Meta, providerItemID)
-	if err != nil {
-		return fmt.Errorf("triage: merge provider_item_id into deferred %s/%s meta: %w", item.ThreadID, item.ID, err)
-	}
-	item.Meta = mergedMeta
-	// Persist via the standard MAX+1 path so the queued message lands
-	// AFTER any rows the model emitted between dispatch and this wire
-	// echo. Capturing an item_index at dispatch time was the ordering
-	// bug: streaming rows occupied the captured slot, then a shift on
-	// insert placed the queued message above content that arrived first.
-	// ThreadID / TurnIndex / Kind / Role / Status are guaranteed populated
-	// by the dispatcher's row construction in app_flush_queue.go.
-	if err := r.persistItem(item, nil); err != nil {
-		return fmt.Errorf("triage: persist deferred user_text %s/%s: %w", item.ThreadID, item.ID, err)
-	}
-	persisted, found, err := r.store.GetThreadItem(item.ThreadID, item.ID)
-	if err != nil {
-		return fmt.Errorf("triage: reload deferred user_text %s/%s: %w", item.ThreadID, item.ID, err)
-	}
-	if !found {
-		persisted = item
-	}
+	// The parent uuid is merged into the SAME persist as the item id:
+	// the anchor's copy below is a separate follow-up write that can
+	// fail after this commit, and the already-cut revert retry needs a
+	// durable parent it can slice through (round-5, R5-8).
+	//
+	// Placement is decided by the turn's occupancy at the FIRST echo,
+	// stashed across failures (EchoTurnWasEmpty): an occupied turn means
+	// pre-dispatch content correctly precedes the prompt (steer shape),
+	// so the standard MAX+1 append applies — capturing a tail index at
+	// dispatch time was the original ordering bug (streaming rows
+	// occupied the captured slot, TestHandleUserText_DeferredFlush_*).
+	// An EMPTY turn is the prompt's own (this echo opens it): everything
+	// that lands in it later is the prompt's response, so the persist —
+	// and every retry / self-heal after a failed first attempt, by which
+	// time the response occupies 0..n — goes to the turn HEAD, keeping
+	// the prompt above its own response (round-7, R7-4). ThreadID /
+	// TurnIndex / Kind / Role / Status are guaranteed populated by the
+	// dispatcher's row construction in app_flush_queue.go.
 	parentUUID := readParentUUIDFromMeta(evt.Meta)
+	var persisted store.Item
+	persistErr := func() error {
+		if !pending.EchoConsumed {
+			_, hasRows, sampleErr := r.store.MaxItemIndexForTurn(item.ThreadID, item.TurnIndex)
+			if sampleErr != nil {
+				// A failed sample must still record occupancy: aborting
+				// here would reinsert the entry as EchoConsumed with the
+				// zero value, and the retry — by which time the response
+				// occupies the turn — would append the prompt below its
+				// own response (round-14, D14-1). The turn-open state is
+				// first-echo information the router already holds and is
+				// exact except for an open-but-still-rowless turn, where
+				// it prefers the steer-shape append.
+				r.mu.Lock()
+				open, hasOpen := r.openTurns[item.ThreadID]
+				r.mu.Unlock()
+				pending.EchoTurnWasEmpty = !hasOpen || open != item.TurnIndex
+				log.Printf("triage: sample deferred turn occupancy for %s/%s: %v — falling back to turn-open state (empty=%v)",
+					item.ThreadID, item.ID, sampleErr, pending.EchoTurnWasEmpty)
+			} else {
+				pending.EchoTurnWasEmpty = !hasRows
+			}
+		}
+		mergedMeta, err := usermessage.MergeProviderIDs(item.Meta, providerItemID, parentUUID)
+		if err != nil {
+			return fmt.Errorf("triage: merge provider ids into deferred %s/%s meta: %w", item.ThreadID, item.ID, err)
+		}
+		item.Meta = mergedMeta
+		if pending.EchoTurnWasEmpty {
+			persisted, err = r.persistUserPromptAtTurnHead(item)
+		} else {
+			persisted, err = r.persistItemWithEmit(item, nil, nil, true)
+		}
+		if err != nil {
+			return fmt.Errorf("triage: persist deferred user_text %s/%s: %w", item.ThreadID, item.ID, err)
+		}
+		return nil
+	}()
+	// The echo proves the provider consumed the queued message; if no
+	// init opened its logical turn (Claude's mid-loop consumption emits
+	// none), open it now — turns row, open-turn state, round re-mint,
+	// `provider:turn_started` — on BOTH outcomes: the provider advanced
+	// regardless of our write, and the response that follows on this
+	// serial read loop must attribute to this turn. Left unopened on
+	// failure, those rows would land under the still-open predecessor
+	// while the replay retry / session-death self-heal later put the
+	// user row in item.TurnIndex, permanently separating the prompt from
+	// its response (round-6, R6-3). On success the open runs AFTER the
+	// persist so the user-row upsert precedes `provider:turn_started`
+	// (the normal direct-send emission order); the active-turn registry
+	// still learns the new index before any response content because the
+	// read loop is serial (moving-RESPONSE-pill bug).
+	// pending.InterruptedTurnIndex feeds the predecessor settle: the
+	// interrupt paths stamp it pre-ack
+	// (MarkFlushSendsInterrupted), so an echo that beats the
+	// interrupt ack still settles the cut turn "interrupted" rather
+	// than "end_turn" (round-6, R6-4); it is -1 outside interrupts.
+	r.openQueuedEchoTurn(item.ThreadID, item.TurnIndex, now, pending.InterruptedTurnIndex)
+	if persistErr != nil {
+		return persistErr
+	}
+	// Replay guard, recorded the moment the row is durable and BEFORE the
+	// fallible follow-ups below: the pending entry is already popped, so
+	// any error path from here on would otherwise leave a re-delivered
+	// echo of this consumed envelope unmatched — and the wire-only branch
+	// would persist an injected-context duplicate of the user's message.
+	r.markWireOnlyUserTextSeen(item.ThreadID, providerItemID)
 	r.mu.Lock()
-	confirmedHook := r.deferredUserTextConfirmed
+	confirmedHook := r.flushUserTextConfirmed
 	r.mu.Unlock()
 	if confirmedHook != nil {
 		confirmedHook(item.ThreadID, persisted)
 	}
-	if err := r.store.UpdateCheckpointProviderIDs(item.ThreadID, item.ID, providerItemID, parentUUID); err != nil {
-		return fmt.Errorf("triage: update message checkpoint provider ids: %w", err)
+	if err := r.store.UpdateMessageAnchorProviderIDs(item.ThreadID, item.ID, providerItemID, parentUUID); err != nil {
+		return fmt.Errorf("triage: update message anchor provider ids: %w", err)
 	}
 	return nil
 }
@@ -195,30 +311,89 @@ func readParentUUIDFromMeta(meta json.RawMessage) string {
 // and persist an order the live view never showed (queued message
 // reordering bug, 2026-07-03/07-05). Anchored rows stamp only.
 //
-// Missing-row is a bounded edge case (the AO send must have errored
-// after RegisterPendingSend but before the optimistic persist). Log
-// once and return nil rather than panic — the send-failure path has
-// already surfaced an error row to the user, and a stranded pending
-// entry would only mis-route the next wire user_text.
-func (r *Router) attachProviderItemIDToUserRow(threadID string, pending pendingSend, providerItemID string, evt provider.ProviderEvent) error {
+// Runs under the thread's flush anchor lock (the handleUserText pop holds it): the
+// interrupt paths' claim + store write completed or unclaimed before
+// this ran, so pending.AnchoredAtInterrupt is truthful and the row meta
+// read below reflects any committed promote.
+//
+// Missing-row with a QuietItem on the pending entry means the interrupt
+// path's eager persist FAILED after the message was consumed from the
+// queue (the entry was unclaimed, so we land in the un-anchored path):
+// the echo proves the provider has the message, so self-heal by
+// persisting the retained copy — the timeline must not lose a message
+// the provider context contains. Missing-row WITHOUT a retained copy is
+// the bounded send-error edge case (the AO send errored after
+// RegisterPendingSend but before the optimistic persist): log and
+// return nil rather than panic — the send-failure path has already
+// surfaced an error row to the user, and a stranded pending entry would
+// only mis-route the next wire user_text.
+func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pendingSend, providerItemID string, evt provider.ProviderEvent) error {
 	aoItemID := pending.AOItemID
 	existing, found, err := r.store.GetThreadItem(threadID, aoItemID)
 	if err != nil {
 		return fmt.Errorf("triage: load user row %s/%s for provider_item_id stamp: %w", threadID, aoItemID, err)
 	}
+	selfHealed := false
 	if !found {
-		log.Printf("triage: handleUserText pending match for %s/%s but row absent — skipping stamp", threadID, aoItemID)
-		return nil
+		if pending.QuietItem == nil {
+			log.Printf("triage: handleUserText pending match for %s/%s but row absent — skipping stamp", threadID, aoItemID)
+			return nil
+		}
+		log.Printf("triage: handleUserText pending match for %s/%s but row absent — re-persisting the retained copy (eager interrupt persist must have failed)", threadID, aoItemID)
+		if err := r.persistItem(*pending.QuietItem, nil); err != nil {
+			return fmt.Errorf("triage: self-heal persist for %s/%s: %w", threadID, aoItemID, err)
+		}
+		reloaded, reFound, reErr := r.store.GetThreadItem(threadID, aoItemID)
+		if reErr != nil {
+			return fmt.Errorf("triage: reload self-healed row %s/%s: %w", threadID, aoItemID, reErr)
+		}
+		if !reFound {
+			return fmt.Errorf("triage: self-healed row %s/%s vanished after persist", threadID, aoItemID)
+		}
+		existing = reloaded
+		selfHealed = true
 	}
 
-	mergedMeta, err := usermessage.MergeProviderItemID(existing.Meta, providerItemID)
-	if err != nil {
-		return fmt.Errorf("triage: merge provider_item_id into %s/%s meta: %w", threadID, aoItemID, err)
+	// A deferred-origin row that was eager-persisted during interrupt owns
+	// a fresh turn index. Its echo normally lands after the next pickup's
+	// system.init opened that turn (no-op here), but when the interrupt
+	// raced the CLI's mid-loop queue drain the echo arrives on the still-
+	// live old round — open the logical turn exactly like the deferred
+	// persist path would have. openQueuedEchoTurn's guards make this safe
+	// on replays (settled or already-passed indexes are refused).
+	if pending.WasDeferred {
+		// pending.InterruptedTurnIndex names the turn the eager-persisting
+		// interrupt provably cut short; the settle inside records
+		// "interrupted" only when the still-open predecessor IS that turn
+		// (a sibling queued message's turn drained naturally and settles
+		// "end_turn") — and the settlement claim would block the
+		// interrupt's own truncated result from recording that later.
+		//
+		// Opened BEFORE the meta stamp below — the inverse of
+		// persistDeferredUserText's persist-then-open — because here the
+		// row already exists at pending.TurnIndex: if the stamp fails
+		// with the turn unopened, the response would allocate under the
+		// still-open predecessor and sort ABOVE the message.
+		r.openQueuedEchoTurn(threadID, pending.TurnIndex, eventTimestampMillis(evt), pending.InterruptedTurnIndex)
 	}
+
+	// Item id and parent uuid merge together — the same store tx stamps
+	// both, so the parent (the already-cut retry's slice-through point)
+	// can't be lost to a failed anchor follow-up (round-5, R5-8).
 	parentUUID := readParentUUIDFromMeta(evt.Meta)
+	mergedMeta, err := usermessage.MergeProviderIDs(existing.Meta, providerItemID, parentUUID)
+	if err != nil {
+		return fmt.Errorf("triage: merge provider ids into %s/%s meta: %w", threadID, aoItemID, err)
+	}
 	if mergedMeta == existing.Meta {
-		if err := r.store.UpdateCheckpointProviderIDs(threadID, aoItemID, providerItemID, parentUUID); err != nil {
-			return fmt.Errorf("triage: update message checkpoint provider ids: %w", err)
+		if providerItemID != "" {
+			// The row already durably carries this id, so the echo is
+			// consumed regardless of what the anchor update below does
+			// — record the replay guard first (see the main path's twin).
+			r.markWireOnlyUserTextSeen(threadID, providerItemID)
+		}
+		if err := r.store.UpdateMessageAnchorProviderIDs(threadID, aoItemID, providerItemID, parentUUID); err != nil {
+			return fmt.Errorf("triage: update message anchor provider ids: %w", err)
 		}
 		if providerItemID == "" {
 			// We popped a pending-send marker but the wire echo carried
@@ -229,13 +404,14 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending pendingS
 			// parser gap for a new wire shape — a silent stuck-UI is
 			// the worst presentation.
 			log.Printf("triage: handleUserText popped pending entry %s/%s but wire echo carried no provider_item_id — queue-confirm path will not fire; check parser coverage for the wire shape", threadID, aoItemID)
+			return nil
 		}
 		// Otherwise: provider_item_id already equals providerItemID. This
 		// is the expected path for an AO send that minted the id up front
 		// (app_send.go stamps it before persist) and Claude echoed it back
 		// verbatim, as well as for a genuine duplicate (session-resume
 		// replay). The row already carries the id, so skip the redundant
-		// write + emit; UpdateCheckpointProviderIDs above still folds in
+		// write + emit; UpdateMessageAnchorProviderIDs above still folds in
 		// parent_uuid, which only the echo knows.
 		return nil
 	}
@@ -245,44 +421,253 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending pendingS
 		// direct send this means Claude did not honour the top-level uuid
 		// we supplied (claude.Session.Send) — a binary-contract drift. We
 		// overwrite to the echoed id (the real transcript uuid, the correct
-		// slice anchor) and self-heal the checkpoint below, but log loudly:
+		// slice anchor) and self-heal the anchor below, but log loudly:
 		// a silent drift would mean every fast send→escape quietly
 		// regressed from the UUID-keyed slice to the ordinal-walk fallback.
 		// Re-spike the uuid contract per docs/references/spike-policy.md.
 		log.Printf("triage: handleUserText user row %s/%s pre-stamped provider_item_id %q but wire echo carried %q — Claude did not honour the supplied uuid; overwriting to the echoed id and re-checking the uuid contract", threadID, aoItemID, existingID, providerItemID)
 	}
 
-	// Eager flush rows were persisted quietly at dispatch, before the rows
-	// the model emitted between dispatch and this echo. Reposition to the
-	// turn tail so the queued message lands AFTER that content, matching
-	// where Claude consumed it — the echo-side mirror of the interrupt
-	// promote (PromoteQuietFlushSends). Scoped to :flush: so direct sends
-	// and steers, already at their intended slot, never move — and skipped
-	// when the interrupt handler already anchored the row (see the doc
-	// comment above).
-	if strings.Contains(aoItemID, ":flush:") && !pending.AnchoredAtInterrupt {
-		bumped, bumpErr := r.store.BumpItemToTurnEnd(threadID, aoItemID)
-		if bumpErr != nil {
-			return fmt.Errorf("triage: reposition flush row %s/%s to turn tail: %w", threadID, aoItemID, bumpErr)
+	// An interrupt-promoted row consumed here (mid-loop — no init between
+	// the promote and this echo) is about to have its RESPONSE persist in
+	// the same turn, below it. Record the provider-order boundary — the
+	// turn's current max item_index — so revert / fork can tell the
+	// interrupted tail (provider-order BEFORE the queued_command
+	// attachment) from that response (provider-order AFTER). The read
+	// loop is serial, so every same-turn row that precedes the
+	// attachment was DISPATCHED before this echo — but a row deferred
+	// behind a mid-settle stream (invariant 11) has no item_index yet
+	// and would otherwise drain after this sample, land above the
+	// boundary, and be cut as "response" on revert while the session
+	// slice retains it (round-6, R6-2). Drain the queue first; when
+	// that persisted anything, the promoted row re-bumps below so
+	// display order matches provider order (those rows were never
+	// user-visible, so no watched tail leapfrogs). Streaming rows are
+	// immune: they persist their row synchronously at first content.
+	// The meta decode is reliable because the flush anchor lock ordered
+	// this pop after the promote's bump-and-mark committed — a claimed
+	// entry always shows its marker here. Deferred-origin rows
+	// (WasDeferred) never carry the promotion marker, so state.Promoted
+	// gates them out.
+	boundary := -1
+	rebumpOverDrained := false
+	unanchoredEagerBump := strings.Contains(aoItemID, ":flush:") && !pending.AnchoredAtInterrupt && !selfHealed
+	if pending.AnchoredAtInterrupt {
+		state, stateErr := itemmeta.DecodePromotionState(existing.Meta)
+		if stateErr != nil {
+			return fmt.Errorf("triage: decode promotion state for %s/%s: %w", threadID, aoItemID, stateErr)
 		}
-		existing = bumped
-		mergedMeta, err = usermessage.MergeProviderItemID(existing.Meta, providerItemID)
-		if err != nil {
-			return fmt.Errorf("triage: merge provider_item_id into repositioned flush row %s/%s meta: %w", threadID, aoItemID, err)
+		if state.Promoted {
+			// Under the thread's drain lock: a settle-goroutine drain
+			// pops the queue map before its rows are committed, so an
+			// unlocked check here could see an empty queue while
+			// handed-off rows are still in flight — they would then
+			// persist above the boundary sampled below and be cut as
+			// "response" on revert although the session slice keeps
+			// them (round-7, R7-3). Holding the lock through the
+			// sample is sufficient: queue appends happen only on this
+			// serial read loop, so the queue cannot refill afterwards.
+			err := func() error {
+				drainLock := r.drainLock(threadID)
+				drainLock.Lock()
+				defer drainLock.Unlock()
+				if r.hasQueuedInterruptItems(threadID) {
+					if drainErr := r.drainInterruptQueueLocked(threadID, false); drainErr != nil {
+						// Per-item failures are already logged inside the
+						// drain; the boundary below stays correct for the
+						// rows that did persist.
+						log.Printf("triage: drain deferred rows before promoted echo boundary %s/%s: %v", threadID, aoItemID, drainErr)
+					}
+					rebumpOverDrained = true
+				}
+				maxIdx, ok, maxErr := r.store.MaxItemIndexForTurn(threadID, existing.TurnIndex)
+				if maxErr != nil {
+					return fmt.Errorf("triage: resolve promoted echo boundary for %s/%s: %w", threadID, aoItemID, maxErr)
+				}
+				if ok {
+					boundary = maxIdx
+				}
+				return nil
+			}()
+			if err != nil {
+				return err
+			}
+			// Stash for the reinsert path: if the write below fails, a
+			// session-death self-heal cannot recompute this value — by
+			// then the response rows have persisted into the same MAX
+			// (round-6, R6-1).
+			pending.EchoPromotedBoundary = boundary
 		}
+	} else if unanchoredEagerBump {
+		// The unanchored eager row is about to bump to the turn tail. If
+		// that bump FAILS and the session dies before a replay, the
+		// self-heal can only stamp metadata — the row stays at its
+		// dispatch-time index, ahead of output that preceded the queued
+		// command in the transcript, and the revert cut at that index
+		// would remove retained provider-prefix history (round-10,
+		// R10-1). Sample the turn's provider-order boundary NOW (same
+		// drain-first discipline as the promoted branch: rows deferred
+		// behind a mid-settle stream were dispatched before this echo
+		// and belong below the sample) and stash it for the self-heal,
+		// which marks the healed row promoted-with-boundary so the cut
+		// follows provider order even though the display position is
+		// unrecoverable. The local `boundary` stays -1: on a SUCCESSFUL
+		// bump the row sits at the tail and needs no marker. Draining
+		// here also keeps display order true on success — a post-bump
+		// drain would sort dispatched-before rows above the attachment.
+		func() {
+			drainLock := r.drainLock(threadID)
+			drainLock.Lock()
+			defer drainLock.Unlock()
+			if r.hasQueuedInterruptItems(threadID) {
+				if drainErr := r.drainInterruptQueueLocked(threadID, false); drainErr != nil {
+					// Per-item failures are already logged inside the
+					// drain; the sample below stays correct for the rows
+					// that did persist.
+					log.Printf("triage: drain deferred rows before eager flush bump %s/%s: %v", threadID, aoItemID, drainErr)
+				}
+			}
+			maxIdx, ok, maxErr := r.store.MaxItemIndexForTurn(threadID, existing.TurnIndex)
+			if maxErr != nil {
+				// The stash only serves the bump-failure self-heal; a
+				// failed sample degrades that heal to the pre-boundary
+				// posture instead of failing an echo whose bump may
+				// still succeed.
+				log.Printf("triage: sample eager flush echo boundary for %s/%s: %v", threadID, aoItemID, maxErr)
+				return
+			}
+			if ok {
+				pending.EchoPromotedBoundary = maxIdx
+			}
+		}()
+	}
+	if pending.NeedsTailRebump {
+		// An earlier promoted echo's sibling re-bump failed to move this
+		// row over the content it drained (rebumpAnchoredQuietSiblings):
+		// it still sits below rows that precede it in provider order, and
+		// the anchored path above would skip the bump. This echo is the
+		// repair point — force the turn-tail bump; the boundary sampled
+		// above keeps the revert cut on provider order (round-11, R11-5).
+		rebumpOverDrained = true
+	}
+	transform := func(meta string) (string, error) {
+		merged, mergeErr := usermessage.MergeProviderIDs(meta, providerItemID, parentUUID)
+		if mergeErr != nil {
+			return "", mergeErr
+		}
+		if boundary >= 0 {
+			return itemmeta.MarkPromotedEchoBoundary(merged, boundary)
+		}
+		return merged, nil
 	}
 
-	existing.Meta = mergedMeta
-	existing.UpdatedAt = eventTimestampMillis(evt)
-	persisted, err := r.store.UpsertItem(existing, nil)
-	if err != nil {
-		return fmt.Errorf("triage: upsert user row %s/%s with provider_item_id: %w", threadID, aoItemID, err)
+	// Both write shapes below are single-transaction store operations that
+	// read the row's CURRENT meta inside the tx. The flush anchor lock already
+	// keeps the interrupt promote out of this window; the tx-scoped merge
+	// is the second line of defense for any writer the mutex doesn't
+	// cover.
+	var persisted store.Item
+	if unanchoredEagerBump || rebumpOverDrained {
+		// Eager flush rows were persisted quietly at dispatch, before the
+		// rows the model emitted between dispatch and this echo. Reposition
+		// to the turn tail so the queued message lands AFTER that content,
+		// matching where Claude consumed it — the echo-side mirror of the
+		// interrupt promote (PromoteQuietFlushSends). Scoped to :flush: so
+		// direct sends and steers, already at their intended slot, never
+		// move — and skipped when the interrupt handler already anchored
+		// the row (see the doc comment above) or when the self-heal just
+		// persisted it at the turn tail. An anchored row DOES re-bump when
+		// the boundary drain above persisted deferred rows past it
+		// (rebumpOverDrained): those rows precede the attachment in
+		// provider order, so the message belongs back at the tail — and
+		// they were never displayed, so no watched order changes (R6-2).
+		persisted, err = r.store.BumpItemToTurnEnd(threadID, aoItemID, transform, eventTimestampMillis(evt))
+		if err != nil {
+			return fmt.Errorf("triage: reposition flush row %s/%s to turn tail: %w", threadID, aoItemID, err)
+		}
+		if rebumpOverDrained {
+			// The re-bump leapfrogged later-FIFO anchored siblings in the
+			// same turn: they now sit below both the drained rows and this
+			// row, inverting provider order — and the user-row cut
+			// predicate (item_index >= anchor) would KEEP them on a revert
+			// at this message while the session slice removes them. Bump
+			// them back above in FIFO order (round-7, R7-2).
+			r.rebumpAnchoredQuietSiblings(threadID, aoItemID, existing.TurnIndex, eventTimestampMillis(evt))
+		}
+	} else {
+		persisted, _, err = r.store.UpdateItemMetaMerge(threadID, aoItemID, transform, eventTimestampMillis(evt))
+		if err != nil {
+			return fmt.Errorf("triage: stamp provider_item_id on %s/%s: %w", threadID, aoItemID, err)
+		}
 	}
-	if err := r.store.UpdateCheckpointProviderIDs(threadID, aoItemID, providerItemID, parentUUID); err != nil {
-		return fmt.Errorf("triage: update message checkpoint provider ids: %w", err)
-	}
+	// Replay guard, recorded the moment the stamp is durable and BEFORE
+	// the fallible follow-ups below: the pending entry is already popped,
+	// so any error path from here on would otherwise leave a re-delivered
+	// echo of this consumed envelope unmatched — and the wire-only branch
+	// would persist an injected:wire:* duplicate of the user's message.
+	r.markWireOnlyUserTextSeen(threadID, providerItemID)
 	r.emitItemUpsertWithActivity(persisted, false)
+	// Eager quiet flush rows reach their final state only here — bumped
+	// to the turn tail with provider ids stamped — so this is their
+	// anchor-record moment, mirroring persistDeferredUserText's hook for
+	// deferred rows. Without it a queued message dispatched into an
+	// active turn carries no message anchor and can't be a fork /
+	// revert-on-interrupt slice point. Direct sends (QueueItemID == "")
+	// recorded at send time. Skipped when a FAILED first echo already
+	// recorded at the boundary (AnchorRecordedAtEcho);
+	// UpdateMessageAnchorProviderIDs below still folds this echo's ids
+	// into that earlier record.
+	if pending.QueueItemID != "" && !pending.AnchorRecordedAtEcho {
+		r.mu.Lock()
+		confirmedHook := r.flushUserTextConfirmed
+		r.mu.Unlock()
+		if confirmedHook != nil {
+			confirmedHook(threadID, persisted)
+		}
+	}
+	// AFTER the hook, deliberately: the flush row's anchor is created
+	// (or replaced) inside the hook — an update running before it would
+	// stamp zero rows or a doomed row. (The hook's record mirrors both
+	// ids from the freshly stamped item meta, round-5 R5-8, so this
+	// update is mainly for anchors that PRE-EXIST the echo — direct
+	// sends recorded at send time — whose rows still need the echo's
+	// ids folded in.)
+	if err := r.store.UpdateMessageAnchorProviderIDs(threadID, aoItemID, providerItemID, parentUUID); err != nil {
+		return fmt.Errorf("triage: update message anchor provider ids: %w", err)
+	}
 	return nil
+}
+
+// recordEchoBoundaryAnchor runs the confirmed hook for a queued flush
+// entry whose echo handling failed pre-durability, so the message
+// anchor exists from the true consumption boundary — the echo —
+// instead of whenever a retry or session-death self-heal later gets
+// the row durable (round-10, R10-2). Only an EXISTING row can carry an
+// anchor (the anchor row's item FK): quiet shapes persisted at
+// dispatch record here; a deferred shape whose persist failed stays
+// anchor-less until its write lands — its record then runs at that
+// (late, but earliest possible) moment. Caller holds the thread's
+// flush anchor lock, same as the success-path hook sites.
+func (r *Router) recordEchoBoundaryAnchor(threadID string, pending *pendingSend) {
+	if pending.QueueItemID == "" || pending.AnchorRecordedAtEcho {
+		return
+	}
+	r.mu.Lock()
+	confirmedHook := r.flushUserTextConfirmed
+	r.mu.Unlock()
+	if confirmedHook == nil {
+		return
+	}
+	row, found, err := r.store.GetThreadItem(threadID, pending.AOItemID)
+	if err != nil {
+		log.Printf("triage: lookup for echo-boundary anchor record %s/%s: %v", threadID, pending.AOItemID, err)
+		return
+	}
+	if !found {
+		return
+	}
+	confirmedHook(threadID, row)
+	pending.AnchorRecordedAtEcho = true
 }
 
 // persistWireOnlySubagentPrompt creates a fresh nested `user_text` row

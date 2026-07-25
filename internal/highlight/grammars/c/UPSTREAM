@@ -1,0 +1,4 @@
+grammar: github.com/tree-sitter/tree-sitter-c v0.24.2 (Go module, MIT)
+queries: helix-editor/helix @ 14d6bc0febed9c692048271a8ae2362ac969c6e0
+         runtime/queries/c/highlights.scm (MPL-2.0, see LICENSE)
+reconciliations: none

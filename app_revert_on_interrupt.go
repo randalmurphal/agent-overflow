@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -117,17 +117,16 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 		}
 	}
 
-	// Resolve a checkpoint for the provider-revert helpers. When the
-	// at-send capture failed (e.g. workspace is not a git repo), we
-	// synthesize a record carrying just the turn index — Claude
-	// session-fork and Codex fork-at-turn only read TurnIndex.
-	record := a.resolveRevertCheckpoint(threadID, userItem)
+	// Resolve the message anchor for the provider-rollback helpers.
+	// When the at-send record didn't land, we synthesize one from the
+	// item row — Claude session-fork and Codex fork-at-turn read
+	// TurnIndex plus the provider ids the item meta already carries.
+	anchor := a.resolveMessageAnchor("interrupt-and-revert", threadID, userItem)
 
-	err = a.revertConversationLocked(revertConversationLockedArgs{
+	err = a.rollbackConversationLocked(rollbackConversationLockedArgs{
 		thread:       thread,
 		userItem:     userItem,
-		record:       record,
-		mode:         RevertModeConversationOnly,
+		anchor:       anchor,
 		promptDraft:  promptDraft,
 		errorPrefix:  "interrupt-and-revert",
 		markReverted: false,
@@ -192,7 +191,7 @@ func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Ite
 	userCount := 0
 	for _, item := range items {
 		if item.Kind == "user_text" && item.Role == "user" {
-			if checkpoint.IsWireOnlyUserItem(item) {
+			if store.IsWireOnlyUserItem(item) {
 				continue
 			}
 			userItem = item
@@ -232,41 +231,51 @@ func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Ite
 // handoff. That makes a message mid-handoff observable here as either
 // still-queued or already-in-flight, never invisible in the gap between.
 //
+// The lock-free boundary drains don't hold flushHandoffMu; for them the
+// triage claim count (see tryFlushQueue) keeps a draining batch inside
+// QueuedFlushItemCount until the App inflight count has it. That overlap
+// only closes the gap if the triage counts are read FIRST: a batch moving
+// claimed→in-flight between the reads is then double-counted, never
+// zero-counted. Do not reorder these reads.
+//
 // Reached only from evaluateInterruptRevertPredicate (InterruptAndRevertIfClean
 // holds the per-thread action lock, not flushHandoffMu), so there is no
 // re-entrancy on this mutex.
 func (a *App) pendingFlushWorkCount(threadID string) int {
 	a.flushHandoffMu.Lock()
 	defer a.flushHandoffMu.Unlock()
-	total := a.flushDispatchItemCount(threadID)
+	total := 0
 	if a.triage != nil {
 		total += a.triage.QueuedFlushItemCount(threadID)
 		total += a.triage.DeferredPendingFlushItemCount(threadID)
 	}
+	total += a.flushDispatchItemCount(threadID)
 	return total
 }
 
-// resolveRevertCheckpoint returns the persisted checkpoint for the
-// user item, or a synthesized record with just UserItemID, TurnIndex,
-// and ProviderUserMessageID populated when the at-send capture didn't
-// write a row (non-git workspace, capture error). The Claude revert
-// path keys on `ProviderUserMessageID` when available so the slice
-// point is immune to synthetic-entry ordinal drift; populating it on
-// the synthesized record means a non-git workspace also benefits from
-// the structural fix.
-func (a *App) resolveRevertCheckpoint(threadID string, userItem store.Item) store.Checkpoint {
-	if record, ok, err := a.store.GetCheckpointByUserItemID(threadID, userItem.ID); err == nil && ok {
-		if record.TurnIndex == userItem.TurnIndex {
-			return record
+// resolveMessageAnchor returns the persisted message anchor for the
+// user item, or a synthesized record built from the item row when the
+// at-send record didn't land (record error, legacy row) or its turn
+// index drifted from the item's. The Claude rollback/fork paths key on
+// `ProviderUserMessageID` when available so the slice point is immune
+// to synthetic-entry ordinal drift; populating it on the synthesized
+// record means an anchor-less row also benefits from the structural
+// fix. op labels log lines only.
+func (a *App) resolveMessageAnchor(op string, threadID string, userItem store.Item) store.MessageAnchor {
+	if anchor, ok, err := a.store.GetMessageAnchor(threadID, userItem.ID); err == nil && ok {
+		if anchor.TurnIndex == userItem.TurnIndex {
+			return anchor
 		}
-		log.Printf("app: interrupt-and-revert: checkpoint turn index %d does not match user item turn index %d; synthesizing", record.TurnIndex, userItem.TurnIndex)
+		log.Printf("app: %s: anchor turn index %d does not match user item turn index %d; synthesizing", op, anchor.TurnIndex, userItem.TurnIndex)
 	} else if err != nil {
-		log.Printf("app: interrupt-and-revert: load checkpoint: %v", err)
+		log.Printf("app: %s: load message anchor: %v", op, err)
 	}
-	return store.Checkpoint{
+	return store.MessageAnchor{
+		ThreadID:              threadID,
 		UserItemID:            userItem.ID,
 		TurnIndex:             userItem.TurnIndex,
 		ProviderUserMessageID: usermessage.ReadProviderItemID(userItem.Meta),
+		ProviderParentUUID:    usermessage.ReadProviderParentUUID(userItem.Meta),
 	}
 }
 
@@ -284,14 +293,28 @@ func (a *App) runPlainInterruptLocked(threadID string) error {
 	if providerSess == nil {
 		return nil
 	}
+	// Pre-ack sample + pre-ack publish onto the unconsumed pending flush
+	// entries, same as InterruptTurn (round-5 R5-4, round-6 R6-4,
+	// round-7 R7-5).
+	interruptedTurn := -1
+	var stampToken triage.FlushStampToken
+	if a.triage != nil {
+		interruptedTurn = a.triage.OpenTurnIndex(threadID)
+		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
+	}
 	if err := providerSess.Interrupt(context.Background()); err != nil {
+		if a.triage != nil {
+			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
+		}
 		return err
 	}
 	if a.triage != nil {
-		if _, err := a.triage.MarkUserInterrupt(threadID); err != nil {
+		// Pre-ack sampled turn + token fence, same as InterruptTurn
+		// (round-11, C11-1 / CT11-1).
+		if _, err := a.triage.MarkUserInterrupt(threadID, interruptedTurn, stampToken); err != nil {
 			log.Printf("app: interrupt-and-revert: plain fallback: mark user interrupt: %v", err)
 		}
-		a.eagerPersistFlushSendsOnInterrupt(threadID, sess)
+		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)
 	}
 	return nil
 }

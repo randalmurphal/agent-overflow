@@ -87,9 +87,9 @@ Payload bytes go through `utils/payloadDataCache.ts`, keyed by
 `(threadId, payloadId, version)` and byte-bounded by its LRU. Per-pane
 registries track expansion intent; the data cache tracks loaded bytes.
 
-Heavy work such as Mermaid render, Shiki highlight, KaTeX typeset, and
-attachment image load should stay lazy and row-local. Module-level
-singletons in the markdown pipeline keep remounts cheap.
+Heavy work such as Mermaid render, syntax-span requests, KaTeX
+typeset, and attachment image load should stay lazy and row-local.
+Module-level singletons in the markdown pipeline keep remounts cheap.
 
 ## Companion Panes
 
@@ -119,6 +119,24 @@ Path linkification runs inside marked parsing from the server-validated
 `PathRef[]` allowlist on item metadata. The generated href includes a
 per-page-load nonce and is the only `agent-overflow:open` form admitted
 by Streamdown's `transformUrl`.
+
+Code-block spans come from the backend (`HighlightCode` via
+`markdown/codeSpanCache.ts`); remote clients additionally ingest
+backend-pushed seeds (`highlight:seed` → `markdown/liveCodeSeeds.svelte.ts`,
+wired through `stores/eventsHighlight.ts`) so streaming fences color
+without a WAN round trip per growth step. Seeds are hash-verified
+cache-warmers — a non-matching seed is inert and the RPC path takes
+over. Loopback clients never receive seed frames.
+
+Settled history rows skip the RPC entirely: `AssistantMessage.svelte`
+and `DiffFileStack.svelte` ingest persisted span blobs
+(`items.meta` `codeSpans`, `Item.payloadPreviewSpans`) via
+`utils/persistedSpans.ts` — synchronously at component init, before
+the code/diff hosts mount and take their first cache reads. Blobs are
+version-stamped (`hv`) and content-addressed; a stale blob is dropped
+and the RPC path recomputes. The ingest is deliberately not memoized:
+thread switches evict the span caches, and remounts must be able to
+re-seed.
 
 The `svelte-streamdown@3.1.2` pnpm patch is intentional. Parser bugs in
 that pipeline go upstream-then-patch; do not duplicate parser fixes in

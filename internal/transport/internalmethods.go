@@ -161,36 +161,37 @@ var LocalOnlyMethods = map[string]bool{
 	// AttachThreadWorktree creates a worktree pointing at an existing
 	// branch; same class as PrepareThreadWorktree.
 	"AttachThreadWorktree": true,
-	// RevertToMessageCheckpoint mutates the local working tree (git restore
-	// checkout into the workspace). Same class.
-	"RevertToMessageCheckpoint":            true,
-	"RevertToMessageCheckpointWithOptions": true,
 	// Diff-returning bindings expose bulk file content in a single wire
 	// call. The threat shape matches the credential / endpoint
 	// enumeration class below: a token-holder gets the user's
 	// agent-edited code, in-progress work, and any non-gitignored config
 	// (e.g. a forgotten `secrets.local`, an `.env.example` the agent
-	// touched while iterating) in one call.
+	// touched while iterating) in one call. Working-tree and
+	// workspace-current diffs include uncommitted edits; commit diffs
+	// expose committed-but-unpushed work.
 	//
-	// Storage in a hidden git ref is NOT a security boundary — checkpoint
-	// captures stage everything tracked-at-HEAD plus untracked-not-ignored,
-	// so anything not gitignored ends up in the ref namespace. Working-tree
-	// and workspace-current diffs additionally include uncommitted edits.
-	//
-	// Lock the checkpoint/diff surface down loopback-only. UX cost is
+	// Lock the diff surface down loopback-only. UX cost is
 	// "diff panels don't render from a remote browser"; that's a feature
 	// nobody currently depends on, and locking down later (after a remote
 	// workflow grows to need them) would be a breaking change.
-	"GetMessageCheckpointDiff":       true,
-	"GetMessageCheckpointRevertDiff": true,
-	"GetBranchBaseDiff":              true,
-	"GetSessionAgentDiff":            true,
-	"ListThreadCheckpoints":          true,
-	"GetWorkingTreeDiff":             true,
-	"GetWorkspaceCurrentDiff":        true,
+	"GetBranchBaseDiff":       true,
+	"GetWorkingTreeDiff":      true,
+	"GetWorkspaceCurrentDiff": true,
+	"ListBranchCommits":       true,
+	"GetCommitDiff":           true,
+	"ListPRCommits":           true,
+	"GetPRCommitDiff":         true,
 	// GetDiffContextLines reads arbitrary workspace/ref file content by
 	// line range (review hunk-gap expansion) — same bulk-content class.
-	"GetDiffContextLines":        true,
+	// VerifyEditDiffs runs the same content resolution (it only reports
+	// servability, but the resolution reads workspace files by path).
+	"GetDiffContextLines": true,
+	"VerifyEditDiffs":     true,
+	// HighlightPatchWithContext resolves workspace/ref file content by
+	// path to prime span parsing — same class. The wire-safe
+	// HighlightCode / HighlightPatch / HighlightClassNames RPCs are
+	// pure text-in/metadata-out and deliberately NOT in this set.
+	"HighlightPatchWithContext":  true,
 	"ListDiffReviewComments":     true,
 	"CreateDiffReviewComment":    true,
 	"UpdateDiffReviewComment":    true,

@@ -25,7 +25,7 @@
   import { GitListBranches } from '../../stores/bindings';
   import { getPane } from '../../stores/panes.svelte';
   import type { GitBranch, GitStatus } from '../../types/git';
-  import type { DiffReviewComment, Thread } from '../../types/models';
+  import type { DiffReviewComment } from '../../types/models';
   import {
     buildCommentGroups,
     commentCountsByFile,
@@ -34,21 +34,11 @@
   import { fileExtensionLabel } from '../../utils/reviewTree';
   import Icon from '../primitives/Icon.svelte';
 
-  interface ReviewPaneSource {
-    paneId: string;
-    threadId: string;
-    thread?: Thread | null;
-    workspacePath?: string;
+  interface Props {
+    ctx: PanelContext;
   }
 
-  interface Props { ctx?: PanelContext; source?: ReviewPaneSource }
-
-  let { ctx, source }: Props = $props();
-  const initialProps = untrack(() => ({ ctx, source }));
-  const sourcePaneId = initialProps.ctx?.paneId ?? initialProps.source?.paneId ?? '';
-  const sourceThreadId = initialProps.ctx?.threadId ?? initialProps.source?.threadId ?? null;
-  const sourceThread = initialProps.ctx?.thread ?? initialProps.source?.thread ?? null;
-  let sourceWorkspacePath = $derived(ctx?.workspacePath ?? source?.workspacePath);
+  let { ctx }: Props = $props();
   // Extension-filter state is owned here (not in the tree) so the
   // dropdown's "Apply filter to diff" toggle can also narrow the diff
   // body, and the selection survives rail tab switches.
@@ -63,7 +53,7 @@
   // could re-evaluate it on the OLD instance before the {#key} teardown
   // and crash the render flush.
   // svelte-ignore state_referenced_locally
-  const review = sourceThreadId ? reviewStateForPane(sourcePaneId, sourceThreadId, sourceThread) : null;
+  const review = ctx.threadId ? reviewStateForPane(ctx.paneId, ctx.threadId, ctx.thread) : null;
   let branches: GitBranch[] = $state([]);
   let branchesError: string | null = $state(null);
   const storedTreeVisible = readTreeVisiblePref();
@@ -130,7 +120,7 @@
   });
 
   $effect(() => {
-    const threadId = sourceThreadId;
+    const threadId = ctx.threadId;
     const scope = review?.scope;
     if (!threadId || scope !== 'branch') return;
     let cancelled = false;
@@ -151,7 +141,7 @@
   });
 
   onDestroy(() => {
-    disposeReviewStateForPane(sourcePaneId, sourceThreadId ?? undefined);
+    disposeReviewStateForPane(ctx.paneId, ctx.threadId ?? undefined);
   });
 
   function setScope(value: string): void {
@@ -159,9 +149,9 @@
     void review.setScope(value);
   }
 
-  function setCheckpoint(value: string): void {
+  function setCommit(value: string): void {
     if (!review) return;
-    void review.selectCheckpoint(value || null);
+    void review.selectCommit(value || null);
   }
 
   function setBaseBranch(value: string): void {
@@ -184,7 +174,38 @@
   }
 
   function isReviewScope(value: string): value is ReviewScope {
-    return value === 'turn' || value === 'session' || value === 'workspace' || value === 'branch' || value === 'pr';
+    return value === 'workspace' || value === 'branch' || value === 'pr' || value === 'edits';
+  }
+
+  function setEdit(value: string): void {
+    if (!review) return;
+    void review.selectEdit(value || null);
+  }
+
+  // Edits selector groups: ascending turn order; each group offers the
+  // whole-turn option first, then every edit — including single-edit
+  // turns, so a pinned `item:` selection always has a matching option.
+  const editGroups = $derived.by(() => {
+    if (!review || review.scope !== 'edits') return [];
+    const groups = new Map<number, typeof review.edits[number][]>();
+    for (const entry of review.edits) {
+      const group = groups.get(entry.turnIndex);
+      if (group) group.push(entry);
+      else groups.set(entry.turnIndex, [entry]);
+    }
+    return [...groups.entries()].map(([turnIndex, entries]) => ({
+      turnIndex,
+      label: review.editTurnLabels.get(turnIndex) ?? `Turn ${turnIndex}`,
+      entries,
+    }));
+  });
+
+  // Native <select> popups size to their longest option with no CSS
+  // truncation available, so unbounded label text (a pathological
+  // commit subject) must be capped before render. Edits-scope labels
+  // arrive pre-capped from Go (editSelectorLabel).
+  function capOptionLabel(label: string): string {
+    return label.length > 80 ? `${label.slice(0, 77).trimEnd()}...` : label;
   }
 
   function commentById(commentId: string): DiffReviewComment | null {
@@ -220,7 +241,7 @@
   }
 
   const liveGitSignature = $derived(
-    gitStatusSignature(getPane(sourcePaneId)?.gitStatus.status ?? null),
+    gitStatusSignature(getPane(ctx.paneId)?.gitStatus.status ?? null),
   );
   let loadedGitSignature = $state<string | null>(null);
   let wasLoading = false;
@@ -239,7 +260,7 @@
       wasLoading = loading;
     });
   });
-  const WORKTREE_SCOPES: readonly ReviewScope[] = ['workspace', 'session', 'branch'];
+  const WORKTREE_SCOPES: readonly ReviewScope[] = ['workspace', 'branch'];
   const diffStale = $derived(
     !!review && !review.loading && !review.conflictView
       && WORKTREE_SCOPES.includes(review.scope)
@@ -258,12 +279,11 @@
       onchange={(event) => setScope(event.currentTarget.value)}
       disabled={!review}
     >
-      {#if sourceWorkspacePath}
-        <option value="turn">Turn</option>
-        <option value="session">Session</option>
+      {#if ctx.workspacePath}
         <option value="workspace">Workspace</option>
         <option value="branch">Branch</option>
       {/if}
+      <option value="edits">Edits</option>
       {#if review?.prRef}
         <option value="pr">{review.prScopeLabel ?? 'PR'}</option>
       {/if}
@@ -287,18 +307,40 @@
       </select>
     {/if}
 
-    {#if review?.scope === 'turn'}
+    {#if review && (review.scope === 'branch' || review.scope === 'pr') && review.commits.length > 0}
       <select
         class="min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
-        aria-label="Turn checkpoint"
-        data-testid="review-checkpoint-select"
-        value={review.selectedCheckpointUserItemId ?? ''}
-        onchange={(event) => setCheckpoint(event.currentTarget.value)}
+        aria-label="Commit"
+        data-testid="review-commit-select"
+        value={review.selectedCommitSHA ?? ''}
+        onchange={(event) => setCommit(event.currentTarget.value)}
         disabled={review.loading}
       >
-        <option value="">Latest</option>
-        {#each review.checkpoints as checkpoint (checkpoint.userItemId)}
-          <option value={checkpoint.userItemId}>Turn {checkpoint.turnIndex}</option>
+        <option value="">All commits</option>
+        {#each review.commits as commit (commit.sha)}
+          <option value={commit.sha}>{commit.shortSha} {capOptionLabel(commit.subject)}</option>
+        {/each}
+      </select>
+    {/if}
+
+    {#if review && review.scope === 'edits' && editGroups.length > 0}
+      <select
+        class="min-w-0 flex-1 rounded-[var(--radius-field)] border border-border-subtle bg-surface-0 px-2 py-1 text-xs text-fg"
+        aria-label="Edit"
+        data-testid="review-edit-select"
+        value={review.selectedEditKey ?? ''}
+        onchange={(event) => setEdit(event.currentTarget.value)}
+        disabled={review.loading}
+      >
+        {#each editGroups as group (group.turnIndex)}
+          <optgroup label={group.label}>
+            <option value={`turn:${group.turnIndex}`}>
+              All edits in turn ({group.entries.length})
+            </option>
+            {#each group.entries as entry (entry.itemId)}
+              <option value={`item:${entry.itemId}`}>{entry.title} +{entry.insertions} −{entry.deletions}</option>
+            {/each}
+          </optgroup>
         {/each}
       </select>
     {/if}
@@ -422,7 +464,7 @@
     </button>
   </div>
 
-  {#if !sourceThreadId}
+  {#if !ctx.threadId}
     <div class="p-3 text-sm text-fg-muted">No thread selected.</div>
   {:else if review}
     {#if review.error}
@@ -454,7 +496,7 @@
     {#if review.scope === 'pr' && review.prDetail}
       <ReviewPRHeader
         detail={review.prDetail}
-        hasWorkspace={!!sourceWorkspacePath}
+        hasWorkspace={!!ctx.workspacePath}
         onViewConflicts={() => { void review?.openConflictView(); }}
         ciPipeline={review.ciPipeline}
         ciLoading={review.ciLoading}
@@ -563,6 +605,7 @@
           files={diffFiles}
           viewMode={review.viewMode}
           wordWrap={review.wordWrap}
+          spanContext={review.spanContext}
           collapsedPaths={review.collapsedPaths}
           onToggleCollapsed={review.toggleCollapsed}
           drafts={review.drafts}
@@ -625,7 +668,10 @@
             {review.drafts.length} {review.drafts.length === 1 ? 'draft' : 'drafts'}
           </div>
           <div class="flex items-center gap-2">
-            {#if review.scope === 'pr'}
+            {#if review.scope === 'pr' && !review.selectedCommitSHA}
+              <!-- Single-commit view: drafts anchor to that commit's diff,
+                   not the PR head diff — PR submission would mis-place
+                   them, so the only target is the linked agent. -->
               <select
                 class="rounded border border-border-subtle bg-surface-0 px-2 py-1 text-[0.6875rem]"
                 value={review.submitTarget}
@@ -638,15 +684,15 @@
             <button
               type="button"
               class="rounded border border-accent/45 px-2 py-1 text-[0.6875rem] font-medium text-accent hover:bg-accent/10 disabled:opacity-45"
-              disabled={review.sendingComments || (review.submitTarget === 'agent' && review.isTurnActive)}
-              title={review.isTurnActive && review.submitTarget === 'agent' ? 'Send from the chat box while the agent is working' : 'Send comments'}
-              onclick={() => { void (review?.submitTarget === 'pr' ? review?.submitPRReview() : review?.sendComments()); }}
+              disabled={review.sendingComments || (review.effectiveSubmitTarget === 'agent' && review.isTurnActive)}
+              title={review.isTurnActive && review.effectiveSubmitTarget === 'agent' ? 'Send from the chat box while the agent is working' : 'Send comments'}
+              onclick={() => { void (review?.effectiveSubmitTarget === 'pr' ? review?.submitPRReview() : review?.sendComments()); }}
             >
               Send comments
             </button>
           </div>
         </div>
-        {#if review.scope === 'pr' && review.submitTarget === 'pr'}
+        {#if review.effectiveSubmitTarget === 'pr'}
           <div class="mt-2 flex flex-wrap items-center gap-2">
             {#each ['comment', 'approve', 'request-changes'] as nextVerdict}
               {@const ownPRBlocked = review.prRef?.forge === 'github' && review.prDetail?.viewerIsAuthor && nextVerdict !== 'comment'}

@@ -1170,6 +1170,49 @@ func TestListItemsBeforeCursor_CapsWithinDenseTurn(t *testing.T) {
 	}
 }
 
+// TestPagingCursorsAcceptHeadHealedNegativeIndex pins R9-1 (round 9):
+// head-healed prompts persist at negative item indexes, so a page
+// bounded by one must keep its cursor valid — older/newer paging from
+// a {turn, -1} cursor pages normally instead of returning empty.
+func TestPagingCursorsAcceptHeadHealedNegativeIndex(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	seedItem(t, s, "t", "t0-a", 0, 0, "")
+	seedItem(t, s, "t", "t0-b", 0, 1, "")
+	seedItem(t, s, "t", "t1-head", 1, -1, "")
+	seedItem(t, s, "t", "t1-a", 1, 0, "")
+
+	paged, err := s.ListItemsBeforeCursor("t", TimelineCursor{TurnIndex: 1, ItemIndex: -1, ItemID: "t1-head"}, 10)
+	if err != nil {
+		t.Fatalf("items before head cursor: %v", err)
+	}
+	if got, want := collectIDs(paged.Items), []string{"t0-a", "t0-b"}; !equalStringSlice(got, want) {
+		t.Errorf("items before head-healed prompt: got %v, want %v", got, want)
+	}
+
+	paged, err = s.ListItemsAfterCursor("t", TimelineCursor{TurnIndex: 0, ItemIndex: 1, ItemID: "t0-b"}, 10)
+	if err != nil {
+		t.Fatalf("items after cursor: %v", err)
+	}
+	if got, want := collectIDs(paged.Items), []string{"t1-head", "t1-a"}; !equalStringSlice(got, want) {
+		t.Errorf("items after turn 0: got %v, want %v", got, want)
+	}
+	if paged.OldestCursor.ItemIndex != -1 {
+		t.Errorf("oldest cursor item index = %d, want -1 (the head-healed prompt)", paged.OldestCursor.ItemIndex)
+	}
+
+	// The empty sentinel stays invalid: its TurnIndex is -1.
+	paged, err = s.ListItemsBeforeCursor("t", emptyTimelineCursor(), 10)
+	if err != nil {
+		t.Fatalf("items before sentinel: %v", err)
+	}
+	if len(paged.Items) != 0 {
+		t.Errorf("sentinel cursor paged %v, want empty", collectIDs(paged.Items))
+	}
+}
+
 func TestListItemsAfterCursor_CapsWithinDenseTurn(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {

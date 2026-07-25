@@ -192,6 +192,13 @@ export function peekThreadSizePriorsForTest(threadId: string): SizePriorsEntry |
   return entries.get(threadId);
 }
 
+/** Diagnostic accounting (memoryReport). */
+export function sizePriorsStats(): { threads: number; rows: number } {
+  let rows = 0;
+  for (const entry of entries.values()) rows += entry.rows.size;
+  return { threads: entries.size, rows };
+}
+
 export interface RowEstimateOptions {
   /** Per-row prior lookup (already validity-gated by the caller), if any. */
   rowPrior?: (index: number) => number | undefined;

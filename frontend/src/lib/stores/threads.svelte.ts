@@ -2,7 +2,7 @@ import type { Thread } from '../types/models';
 import { clearPayloadCacheForThread } from '../utils/payloadDataCache';
 import { clearThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { clearThreadSizePriors } from '../utils/virtual/priors';
-import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
+import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
 import { ListThreads } from './bindings';
 import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './thread.svelte';
 import { threadItemCache } from './threadItemCache';
@@ -18,6 +18,14 @@ export function getThreads(): Thread[] {
   return threads;
 }
 
+/**
+ * Boot-time wholesale load (also the test-seeding helper). Replaces the
+ * registry with the backend snapshot verbatim, which is only safe while
+ * no local read-state exists yet: mid-session, a snapshot can predate
+ * the debounced MarkThreadRead persist and revert lastReadAt. Mid-session
+ * resyncs go through eventsThreadRows' refreshSidebarProjections, which
+ * merges each row against local state first.
+ */
 export async function loadThreads(): Promise<Thread[]> {
   threads = await ListThreads() as Thread[];
   return threads;
@@ -30,6 +38,16 @@ export async function refreshThreads(): Promise<void> {
     console.error('Failed to load threads:', err);
     addToast('error', 'Failed to load threads');
   }
+}
+
+/**
+ * Wholesale registry replacement for resync paths. The caller owns the
+ * merge policy — rows must already be reconciled against local state
+ * (see eventsThreadRows.resyncThreadRows); this setter stays dumb so
+ * that policy lives in one place.
+ */
+export function replaceAllThreads(rows: Thread[]): void {
+  threads = rows;
 }
 
 export function prependThread(thread: Thread): void {
@@ -51,7 +69,7 @@ export function removeThread(id: string): void {
   threadItemCache.evict(id);
   clearThreadScrollSnapshot(id);
   clearThreadSizePriors(id);
-  clearTokensForThread(id);
+  evictDiffSpansForThread(id);
   clearPayloadCacheForThread(id);
   releaseThreadTerminalState(id);
 }

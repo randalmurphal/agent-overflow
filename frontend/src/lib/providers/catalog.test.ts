@@ -14,7 +14,6 @@ const ALL_CAPABILITIES: (keyof ProviderCapabilities)[] = [
   'runtimeModes',
   'planMode',
   'fork',
-  'revert',
   'attachments',
   'mcp',
 ];
@@ -63,7 +62,7 @@ describe('provider catalog', () => {
   it('defaults unknown / absent providers to supported so the gate only subtracts', () => {
     expect(providerSupports('unknown', 'fork')).toBe(true);
     expect(providerSupports(null, 'mcp')).toBe(true);
-    expect(providerSupports(undefined, 'revert')).toBe(true);
+    expect(providerSupports(undefined, 'planMode')).toBe(true);
   });
 
   it('falls back cleanly for unknown display labels', () => {

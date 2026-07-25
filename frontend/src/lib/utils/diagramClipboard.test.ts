@@ -112,6 +112,25 @@ describe('diagramClipboard', () => {
     expect(item.types).toContain('image/png');
   });
 
+  it('copyAsPNG reaches clipboard.write before rasterisation completes (WebKit gesture rule)', async () => {
+    // Hold the raster pipeline open: capture toBlob's callback instead of
+    // invoking it, so the PNG blob stays pending. WebKit rejects a
+    // clipboard.write that runs after an await consumed the user gesture,
+    // so the write must happen synchronously with the blob still pending
+    // (passed to ClipboardItem as a Promise).
+    let releaseBlob: (() => void) | undefined;
+    HTMLCanvasElement.prototype.toBlob = function (cb: BlobCallback) {
+      releaseBlob = () => cb(new Blob(['png-bytes'], { type: 'image/png' }));
+    } as typeof HTMLCanvasElement.prototype.toBlob;
+
+    const { write } = installClipboard();
+    const pending = copyAsPNG(makeSvg());
+    expect(write).toHaveBeenCalledTimes(1);
+    await expect(pending).resolves.toBe('png');
+    // Settle the held raster promise so nothing dangles past the test.
+    releaseBlob?.();
+  });
+
   it('copyAsPNG falls back to image/svg+xml when PNG write rejects', async () => {
     // Only accept the SVG MIME — pretend the host rejects PNG writes.
     const { write } = installClipboard({

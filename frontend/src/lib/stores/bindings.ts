@@ -208,16 +208,22 @@ export {
   UpdateKeybindings,
   ResetKeybindings,
 
-  // Checkpoints (message-keyed git-ref snapshots for diff panel + revert UX)
-  GetMessageCheckpointDiff,
-  GetMessageCheckpointRevertDiff,
+  // Review pane diffs (workspace / branch / per-commit / edits)
   GetBranchBaseDiff,
-  GetSessionAgentDiff,
   GetWorkspaceCurrentDiff,
+  ListBranchCommits,
+  GetCommitDiff,
   GetDiffContextLines,
-  RevertToMessageCheckpoint,
-  RevertToMessageCheckpointWithOptions,
-  ListThreadCheckpoints,
+  VerifyEditDiffs,
+  ListThreadEditDiffs,
+  GetTurnEditsDiff,
+
+  // Syntax-highlight span metadata (backend tree-sitter)
+  HighlightClassNames,
+  HighlightSchemaVersion,
+  HighlightCode,
+  HighlightPatch,
+  HighlightPatchWithContext,
 
   // Thread runtime mode (three-tier approval axis)
   GetThreadRuntimeMode,
@@ -260,6 +266,8 @@ export {
   SendDiffReviewComments,
   GetPRDetail,
   GetPRDiff,
+  ListPRCommits,
+  GetPRCommitDiff,
   GetPRMergeConflicts,
   GetMergeConflictFile,
   GetPRCIJobs,

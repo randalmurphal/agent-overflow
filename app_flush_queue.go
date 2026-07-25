@@ -84,14 +84,30 @@ func (a *App) configureTriageQueueCallbacks() {
 		return
 	}
 	a.triage.SetFlushDispatcher(a.enqueueFlushDispatch)
-	a.triage.SetDeferredUserTextConfirmedHook(func(threadID string, item store.Item) {
-		thread, err := a.store.GetThread(threadID)
-		if err != nil {
-			log.Printf("flush queue: load thread for deferred checkpoint %s/%s: %v", threadID, item.ID, err)
-			return
-		}
-		a.captureMessageCheckpoint(thread, item)
+	a.triage.SetFlushUserTextConfirmedHook(func(threadID string, item store.Item) {
+		a.recordMessageAnchor(item)
 	})
+}
+
+// newTriageRouter constructs the triage router with every App-owned
+// observer wired. ALL construction sites must route through this —
+// a router built bare would silently drop the streaming observers.
+func (a *App) newTriageRouter(st *store.Store) *triage.Router {
+	r := triage.NewRouter(st, a.emitWithReplay())
+	r.SetAssistantTextStreamObserver(a.observeAssistantTextStream)
+	r.SetDiffPayloadObserver(a.observeDiffPayloadPersisted)
+	r.SetCodeSpanEnricher(a.buildPersistedCodeSpans)
+	return r
+}
+
+// ensureTriageRouter lazily constructs the router for the defensive
+// pre-Startup entry paths (production wires it in initSubsystems).
+func (a *App) ensureTriageRouter() {
+	if a.triage != nil {
+		return
+	}
+	a.triage = a.newTriageRouter(a.store)
+	a.configureTriageQueueCallbacks()
 }
 
 func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushItem) {
@@ -239,9 +255,16 @@ func (a *App) drainFlushDispatch(ctx context.Context, timeout time.Duration) err
 	}
 }
 
-func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) {
+// restoreUnconfirmedQueueOnSessionDeath drains queued and unconfirmed
+// flush state after a session death, restoring what it can to the
+// composer draft. Items it REQUEUES instead (failed stale-row cleanup,
+// failed draft restore) are also returned: a caller that runs a triage
+// CleanupThread afterwards wipes the queue those items just re-entered
+// and must re-register them once the cleanup has run (round-13,
+// D13-1). Callers with no subsequent cleanup may ignore the return.
+func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) []triage.UnconfirmedFlushItem {
 	if a.triage == nil || strings.TrimSpace(threadID) == "" {
-		return
+		return nil
 	}
 
 	dispatchItems := a.drainFlushDispatchForSessionEnd(threadID)
@@ -253,10 +276,11 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) {
 	for _, item := range dispatchItems {
 		payload := append(json.RawMessage(nil), item.Payload...)
 		drained = append(drained, triage.UnconfirmedFlushItem{
-			QueueItemID: item.ID,
-			Message:     item.Message,
-			Payload:     payload,
-			EnqueuedAt:  item.EnqueuedAt,
+			QueueItemID:     item.ID,
+			Message:         item.Message,
+			Payload:         payload,
+			EnqueuedAt:      item.EnqueuedAt,
+			StaleUserItemID: item.StaleUserItemID,
 		})
 	}
 	drained = dedupeUnconfirmedFlushItems(drained)
@@ -269,41 +293,78 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) {
 		return left < right
 	})
 	if len(drained) == 0 {
-		return
+		return nil
 	}
 
-	queueItemIDs := make([]string, 0, len(drained))
-	userItemIDs := make([]string, 0, len(drained))
-	parts := make([]composerdraft.Part, 0, len(drained))
-	quietItemsToDelete := make([]store.Item, 0, len(drained))
+	// Quiet-row cleanup runs BEFORE the draft restore: a row whose
+	// cleanup fails must stay OUT of the restored draft — sending that
+	// draft after the store recovers would mint a second flush row while
+	// the original unconsumed row still sits in the timeline (round-10,
+	// R10-5). A failed-cleanup item is requeued instead, carrying the
+	// stale row's id so the redispatch retries the cleanup before
+	// persisting a fresh row (round-11, R11-1): queue item plus
+	// persisted quiet row is exactly the pre-drain state. Requeued items
+	// caught still-queued by a LATER death re-enter here through
+	// StaleUserItemID and get the same retry.
+	restorable := make([]triage.UnconfirmedFlushItem, 0, len(drained))
+	var cleanupFailed []triage.UnconfirmedFlushItem
 	for _, item := range drained {
+		staleID := item.StaleUserItemID
+		if item.QuietItem != nil {
+			staleID = item.QuietItem.ID
+		}
+		if staleID == "" {
+			restorable = append(restorable, item)
+			continue
+		}
+		if err := a.cleanupStaleFlushRow(threadID, staleID); err != nil {
+			log.Printf("flush queue: cleanup unconfirmed quiet row %s/%s failed — requeueing the message instead of restoring it to the draft: %v", threadID, staleID, err)
+			item.StaleUserItemID = staleID
+			cleanupFailed = append(cleanupFailed, item)
+			continue
+		}
+		item.StaleUserItemID = ""
+		restorable = append(restorable, item)
+	}
+	requeued := make([]triage.UnconfirmedFlushItem, 0, len(cleanupFailed))
+	if len(cleanupFailed) > 0 {
+		a.requeueUnconfirmedFlushItems(threadID, cleanupFailed)
+		requeued = append(requeued, cleanupFailed...)
+	}
+
+	// queue_restored reports only the items actually restored to the
+	// draft. A cleanup-failed item is REQUEUED — it is still queued, and
+	// listing its ids here would make the frontend remove the Zone 2
+	// entry that the queue_state_changed emission re-adds (round-12,
+	// D12-3).
+	queueItemIDs := make([]string, 0, len(restorable))
+	userItemIDs := make([]string, 0, len(restorable))
+	for _, item := range restorable {
 		if item.QueueItemID != "" {
 			queueItemIDs = append(queueItemIDs, item.QueueItemID)
 		}
 		if item.UserItemID != "" {
 			userItemIDs = append(userItemIDs, item.UserItemID)
 		}
+	}
+
+	parts := make([]composerdraft.Part, 0, len(restorable))
+	for _, item := range restorable {
 		part := a.restoredFlushDraftPart(threadID, item)
 		if strings.TrimSpace(part.Content) != "" || len(part.AttachmentIDs) > 0 || part.SourceProposedPlan != nil {
 			parts = append(parts, part)
 		}
-		if item.QuietItem != nil {
-			quietItemsToDelete = append(quietItemsToDelete, *item.QuietItem)
-		}
 	}
-
 	if len(parts) > 0 {
 		if err := a.restoreFlushDraft(threadID, parts); err != nil {
 			log.Printf("flush queue: restore draft after session death for %s: %v", threadID, err)
-			a.requeueUnconfirmedFlushItems(threadID, drained)
+			// The quiet rows behind these items are already deleted, so
+			// the requeued entries carry deferred semantics — the retained
+			// copies supply message and payload; nothing references a
+			// store row (R6-6 stays intact).
+			a.requeueUnconfirmedFlushItems(threadID, restorable)
 			a.emitQueueStateChanged(threadID)
-			return
-		}
-	}
-
-	for _, item := range quietItemsToDelete {
-		if err := a.store.DeleteThreadItem(threadID, item.ID); err != nil {
-			log.Printf("flush queue: delete unconfirmed quiet row %s/%s: %v", threadID, item.ID, err)
+			return append(requeued, restorable...)
 		}
 	}
 
@@ -314,6 +375,190 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) {
 		QueueItemIDs: queueItemIDs,
 		UserItemIDs:  userItemIDs,
 	})
+	return requeued
+}
+
+// cleanupStaleFlushRow removes a quietly-persisted flush row whose
+// message is being restored or redispatched. The FK cascade on
+// message_anchors takes any anchor row with it. A row already gone
+// (an earlier retry finished the job) is success.
+func (a *App) cleanupStaleFlushRow(threadID, userItemID string) error {
+	if _, found, err := a.store.GetThreadItem(threadID, userItemID); err != nil {
+		return fmt.Errorf("lookup stale flush row: %w", err)
+	} else if !found {
+		return nil
+	}
+	return a.store.DeleteThreadItem(threadID, userItemID)
+}
+
+// restoreEagerPersistedFlushesToDraft returns eagerly-persisted
+// interrupt rows to the composer draft after a definite Codex resend
+// failure: the store rows are deleted and
+// the content lands back in the composer, merged ahead of any draft
+// text the user already typed. This mirrors the Codex TUI, whose
+// recovery posture for input the model never consumed is
+// restore-to-composer, not leave-as-history (input_restore.rs
+// drain_pending_messages_for_restore).
+//
+// A row whose store cleanup fails must stay OUT of the restored draft
+// — sending that draft would mint a second row while the original
+// still sits in the timeline (same posture as the session-death
+// restore, round-10 R10-5). Those items fall back to the stale-marker
+// requeue so the redispatch retries the cleanup. A failed draft write
+// likewise falls back to the requeue; by then the rows are already
+// deleted, so the stale markers resolve as no-ops and the emitted row
+// removal keeps the frontend timeline in sync with the store.
+func (a *App) restoreEagerPersistedFlushesToDraft(threadID string, persisted []triage.EagerPersistedFlush) {
+	if len(persisted) == 0 {
+		return
+	}
+	restorable := make([]triage.EagerPersistedFlush, 0, len(persisted))
+	var cleanupFailed []triage.EagerPersistedFlush
+	for _, p := range persisted {
+		if err := a.cleanupStaleFlushRow(threadID, p.UserItemID); err != nil {
+			log.Printf("flush queue: cleanup eager flush row %s/%s failed — requeueing the message instead of restoring it to the draft: %v", threadID, p.UserItemID, err)
+			cleanupFailed = append(cleanupFailed, p)
+			continue
+		}
+		restorable = append(restorable, p)
+	}
+	if len(cleanupFailed) > 0 {
+		a.requeueEagerPersistedFlushes(threadID, cleanupFailed)
+	}
+	if len(restorable) == 0 {
+		return
+	}
+
+	// Restorable-only id lists, same rule as the session-death restore
+	// (round-12, D12-3): a requeued item keeps its timeline row and its
+	// Zone 1 entry, so listing it here would make the frontend remove
+	// state that still exists.
+	queueItemIDs := make([]string, 0, len(restorable))
+	userItemIDs := make([]string, 0, len(restorable))
+	parts := make([]composerdraft.Part, 0, len(restorable))
+	for _, p := range restorable {
+		if p.QueueItemID != "" {
+			queueItemIDs = append(queueItemIDs, p.QueueItemID)
+		}
+		userItemIDs = append(userItemIDs, p.UserItemID)
+		part := draftPartFromUserItem(store.Item{ThreadID: threadID, ID: p.UserItemID, Summary: p.Content, Meta: p.Meta})
+		if strings.TrimSpace(part.Content) != "" || len(part.AttachmentIDs) > 0 || part.SourceProposedPlan != nil {
+			parts = append(parts, part)
+		}
+	}
+	if len(parts) > 0 {
+		if err := a.restoreFlushDraft(threadID, parts); err != nil {
+			log.Printf("flush queue: restore draft after failed resend for %s: %v", threadID, err)
+			// The rows are already deleted — emit the removal so the
+			// frontend drops them, then requeue so the messages keep a
+			// delivery vehicle (their redispatch persists fresh rows).
+			a.emit("provider:queue_restored", QueueRestoredEvent{
+				ThreadID:    threadID,
+				Reason:      "resend_failed",
+				UserItemIDs: userItemIDs,
+			})
+			a.requeueEagerPersistedFlushes(threadID, restorable)
+			return
+		}
+	}
+	a.emit("provider:queue_restored", QueueRestoredEvent{
+		ThreadID:     threadID,
+		Reason:       "resend_failed",
+		QueueItemIDs: queueItemIDs,
+		UserItemIDs:  userItemIDs,
+	})
+}
+
+// requeueEagerPersistedFlushes returns eagerly-persisted interrupt
+// rows to the flush queue. Since the composer-restore became the
+// primary recovery for a failed Codex resend
+// (restoreEagerPersistedFlushesToDraft), this is its fallback: rows
+// whose cleanup or draft write failed keep a delivery vehicle here
+// (round-13, CT13-2). Each item carries StaleUserItemID = its
+// persisted row id so the redispatch's cleanup removes the eager row
+// before persisting again — the timeline never shows the message twice
+// — and the payload is rebuilt from the row's usermessage meta so
+// attachments and plan/diff provenance survive the round trip. Queue
+// identity (QueueItemID, EnqueuedAt) is preserved so the Zone 1 entry
+// reappears as the same message the user queued.
+func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.EagerPersistedFlush) {
+	if a.triage == nil || len(persisted) == 0 {
+		return
+	}
+	for _, p := range persisted {
+		payload, err := flushPayloadFromUserMeta(p.Meta)
+		if err != nil {
+			// Requeue anyway: the message text survives; only the
+			// attachment/provenance refs on this corrupt meta are lost.
+			log.Printf("flush queue: rebuild payload for requeue %s/%s: %v", threadID, p.UserItemID, err)
+		}
+		queueID := p.QueueItemID
+		if queueID == "" {
+			queueID = flushqueue.NewItemID()
+		}
+		a.triage.RegisterQueueItem(threadID, triage.QueuedFlushItem{
+			ID:              queueID,
+			Message:         p.Content,
+			Payload:         payload,
+			EnqueuedAt:      p.EnqueuedAt,
+			StaleUserItemID: p.UserItemID,
+		})
+	}
+	a.emitQueueStateChanged(threadID)
+}
+
+// flushPayloadFromUserMeta rebuilds a flush-queue payload from a
+// persisted user row's usermessage meta — the inverse of the
+// resolveUserMessageEnvelope → Marshal step the original dispatch ran.
+//
+// The revision COMMENT ID lists are deliberately dropped: the original
+// resolution already appended their excerpts into the persisted content
+// this requeue re-sends, and carrying the IDs would make the redispatch
+// append them a second time (round-14, CT14-4). The source refs stay so
+// provenance survives on the re-persisted row.
+func flushPayloadFromUserMeta(meta string) (json.RawMessage, error) {
+	if meta == "" {
+		return nil, nil
+	}
+	if strings.TrimSpace(meta) == "null" {
+		// json.Unmarshal accepts a literal null without touching the
+		// struct — corrupt meta must fail loudly, not decode as empty.
+		return nil, fmt.Errorf("user meta is JSON null")
+	}
+	var m usermessage.Meta
+	if err := json.Unmarshal([]byte(meta), &m); err != nil {
+		return nil, err
+	}
+	payload := flushQueuePayload{
+		SourceProposedPlan:         m.SourceProposedPlan,
+		RevisionSourceProposedPlan: m.RevisionSourceProposedPlan,
+		RevisionSourceDiffReview:   m.RevisionSourceDiffReview,
+	}
+	for _, att := range m.Attachments {
+		payload.AttachmentIDs = append(payload.AttachmentIDs, att.ID)
+	}
+	return json.Marshal(payload)
+}
+
+// attachmentIDsFromUserMeta extracts the attachment ids recorded on a
+// persisted user row's usermessage meta, for re-resolving provider
+// attachments on the Codex interrupt resend (round-14, CT14-2).
+func attachmentIDsFromUserMeta(meta string) ([]string, error) {
+	if meta == "" {
+		return nil, nil
+	}
+	if strings.TrimSpace(meta) == "null" {
+		return nil, fmt.Errorf("user meta is JSON null")
+	}
+	var m usermessage.Meta
+	if err := json.Unmarshal([]byte(meta), &m); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(m.Attachments))
+	for _, att := range m.Attachments {
+		ids = append(ids, att.ID)
+	}
+	return ids, nil
 }
 
 func (a *App) restoredFlushDraftPart(threadID string, item triage.UnconfirmedFlushItem) composerdraft.Part {
@@ -398,10 +643,11 @@ func queuedFlushItemFromUnconfirmed(item triage.UnconfirmedFlushItem) (triage.Qu
 		return triage.QueuedFlushItem{}, false
 	}
 	return triage.QueuedFlushItem{
-		ID:         queueItemID,
-		Message:    message,
-		Payload:    payload,
-		EnqueuedAt: item.EnqueuedAt,
+		ID:              queueItemID,
+		Message:         message,
+		Payload:         payload,
+		EnqueuedAt:      item.EnqueuedAt,
+		StaleUserItemID: item.StaleUserItemID,
 	}, true
 }
 
@@ -529,12 +775,19 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 		if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
 			return
 		}
-		flushedItem, flushedEmitted, err := a.dispatchFlushItem(threadID, item)
+		flushedItem, flushedEmitted, requeue, err := a.dispatchFlushItem(threadID, item)
 		if err != nil {
 			log.Printf("flush dispatch: thread=%s item=%s: %v", threadID, item.ID, err)
 			if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
 				return
 			}
+			// The FAILING item requeues too, ahead of the unattempted
+			// tail — dropping it would leave the message in no state at
+			// all (round-13, CT13-1/C13-2). Its StaleUserItemID reflects
+			// how far dispatch got: the original marker when cleanup
+			// never ran or failed, cleared once cleanup succeeded, the
+			// fresh row id once a quiet persist landed.
+			a.triage.RegisterQueueItem(threadID, requeue)
 			for _, unattempted := range items[i+1:] {
 				a.triage.RegisterQueueItem(threadID, unattempted)
 			}
@@ -551,15 +804,23 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 	a.emitQueueStateChanged(threadID)
 }
 
-func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (QueueFlushedItem, bool, error) {
+// dispatchFlushItem dispatches one queued message. On error, the
+// returned requeue value is the item to re-register (round-13,
+// CT13-1): a copy of the input whose StaleUserItemID tracks the
+// durable state left behind — unchanged until the stale-row cleanup
+// runs, cleared once cleanup succeeds, and pointing at the fresh quiet
+// row once an eager persist lands (so the redispatch cleans it up
+// before persisting again). On success requeue is the zero value.
+func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (QueueFlushedItem, bool, triage.QueuedFlushItem, error) {
+	requeue := item
 	if a.shuttingDown.Load() {
-		return QueueFlushedItem{}, false, ErrShuttingDown
+		return QueueFlushedItem{}, false, requeue, ErrShuttingDown
 	}
 
 	var payload flushQueuePayload
 	if len(item.Payload) > 0 {
 		if err := json.Unmarshal(item.Payload, &payload); err != nil {
-			return QueueFlushedItem{}, false, fmt.Errorf("decode payload: %w", err)
+			return QueueFlushedItem{}, false, requeue, fmt.Errorf("decode payload: %w", err)
 		}
 	}
 
@@ -572,32 +833,29 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		revisionSourceDiffCommentIDs: payload.RevisionSourceDiffCommentIDs,
 	})
 	if err != nil {
-		return QueueFlushedItem{}, false, err
+		return QueueFlushedItem{}, false, requeue, err
 	}
 	content := resolved.content
 	providerAttachments := resolved.providerAttachments
 	userMeta := resolved.userMessageMeta
 
-	if a.triage == nil {
-		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
-		a.configureTriageQueueCallbacks()
-	}
+	a.ensureTriageRouter()
 
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		return QueueFlushedItem{}, false, fmt.Errorf("load thread: %w", err)
+		return QueueFlushedItem{}, false, requeue, fmt.Errorf("load thread: %w", err)
 	}
 	if err := a.ensureClaudeContextReadyForUserSendLocked(thread); err != nil {
-		return QueueFlushedItem{}, false, err
+		return QueueFlushedItem{}, false, requeue, err
 	}
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
-		return QueueFlushedItem{}, false, fmt.Errorf("no active session for thread %s", threadID)
+		return QueueFlushedItem{}, false, requeue, fmt.Errorf("no active session for thread %s", threadID)
 	}
 
 	responseTurnIndex, activeAtResolution, err := a.resolveFlushTurnPlacement(threadID, sess)
 	if err != nil {
-		return QueueFlushedItem{}, false, fmt.Errorf("resolve turn index: %w", err)
+		return QueueFlushedItem{}, false, requeue, fmt.Errorf("resolve turn index: %w", err)
 	}
 
 	// Claude with an active turn: persist the user_text within the active turn
@@ -613,7 +871,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			persistTurnIndex = active.TurnIndex
 			eagerPersist = true
 		} else if lookupErr != nil {
-			return QueueFlushedItem{}, false, fmt.Errorf("resolve persist turn: %w", lookupErr)
+			return QueueFlushedItem{}, false, requeue, fmt.Errorf("resolve persist turn: %w", lookupErr)
 		}
 	}
 
@@ -635,9 +893,28 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		sendUUID = uuid.NewString()
 	}
 
+	if item.StaleUserItemID != "" {
+		// A previous dispatch of this message left a quiet row whose
+		// session-death cleanup failed (see QueuedFlushItem doc). Retry
+		// it here — AFTER every failure-prone resolution step above, so
+		// an envelope/thread/session/placement error aborts the item
+		// while the stale row (the message's only durable copy) is
+		// still intact for the next retry (round-12, D12-1) — and
+		// BEFORE nextFlushUserItemID, which allocates against the
+		// turn's persisted rows. On cleanup failure, abort the item:
+		// persisting a fresh row over the stale one would show the
+		// message twice (round-11, R11-1). The remaining loss windows
+		// (allocation, persist, send) are the same ones a first
+		// dispatch of any message already has.
+		if err := a.cleanupStaleFlushRow(threadID, item.StaleUserItemID); err != nil {
+			return QueueFlushedItem{}, false, requeue, fmt.Errorf("cleanup stale flush row %s: %w", item.StaleUserItemID, err)
+		}
+		requeue.StaleUserItemID = ""
+	}
+
 	flushItemID, err := a.nextFlushUserItemID(threadID, persistTurnIndex)
 	if err != nil {
-		return QueueFlushedItem{}, false, fmt.Errorf("allocate item id: %w", err)
+		return QueueFlushedItem{}, false, requeue, fmt.Errorf("allocate item id: %w", err)
 	}
 	now := time.Now().UnixMilli()
 	userItem := store.Item{
@@ -666,8 +943,9 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			Items:    []QueueFlushedItem{flushedItem},
 		})
 		if persistErr := a.triage.PersistItemQuiet(userItem, nil); persistErr != nil {
-			return QueueFlushedItem{}, true, fmt.Errorf("eager persist flush: %w", persistErr)
+			return QueueFlushedItem{}, true, requeue, fmt.Errorf("eager persist flush: %w", persistErr)
 		}
+		requeue.StaleUserItemID = userItem.ID
 		// Non-deferred pending send at the response turn. The item is
 		// already persisted at persistTurnIndex; on echo,
 		// attachProviderItemIDToUserRow stamps provider_item_id and
@@ -694,7 +972,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		if codex.IsAmbiguousSteerTimeout(dispatchErr) {
 			log.Printf("flush dispatch: thread=%s item=%s: codex steer timed out after write; leaving pending confirmation for provider echo", threadID, item.ID)
 			a.applyProposedPlanAcceptance(threadID, userItem, resolved)
-			return flushedItem, eagerPersist, nil
+			return flushedItem, eagerPersist, triage.QueuedFlushItem{}, nil
 		}
 		if sess.codex != nil && codex.IsNoActiveTurnRace(dispatchErr) {
 			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
@@ -704,7 +982,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			freshFlushItemID, allocErr := a.nextFlushUserItemID(threadID, responseTurnIndex)
 			if allocErr != nil {
 				a.persistFlushDispatchError(threadID, responseTurnIndex, allocErr)
-				return QueueFlushedItem{}, eagerPersist, allocErr
+				return QueueFlushedItem{}, eagerPersist, requeue, allocErr
 			}
 			userItem.ID = freshFlushItemID
 			userItem.TurnIndex = responseTurnIndex
@@ -715,20 +993,30 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			a.triage.RegisterPendingFlushSendWithEnqueuedAt(threadID, item.ID, userItem, item.EnqueuedAt, sendUUID)
 			sess.liveness.bumpActivity(time.Now())
 			if sendErr := sess.codex.Send(context.Background(), content, sendOpts); sendErr != nil {
+				if codex.IsAmbiguousTurnStartTimeout(sendErr) {
+					// Same ambiguity as the steer timeout above: the
+					// turn/start was written and the echo may already be
+					// coming. A requeue would double-send (round-14,
+					// D14-2) — leave the pending entry for the echo.
+					log.Printf("flush dispatch: thread=%s item=%s: codex turn/start timed out after write; leaving pending confirmation for provider echo", threadID, item.ID)
+					a.applyProposedPlanAcceptance(threadID, userItem, resolved)
+					flushedItem.UserItemID = userItem.ID
+					return flushedItem, eagerPersist, triage.QueuedFlushItem{}, nil
+				}
 				a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 				a.persistFlushDispatchError(threadID, responseTurnIndex, sendErr)
-				return QueueFlushedItem{}, eagerPersist, sendErr
+				return QueueFlushedItem{}, eagerPersist, requeue, sendErr
 			}
 			a.applyProposedPlanAcceptance(threadID, userItem, resolved)
 			flushedItem.UserItemID = userItem.ID
-			return flushedItem, eagerPersist, nil
+			return flushedItem, eagerPersist, triage.QueuedFlushItem{}, nil
 		}
 		a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 		a.persistFlushDispatchError(threadID, persistTurnIndex, dispatchErr)
-		return QueueFlushedItem{}, eagerPersist, dispatchErr
+		return QueueFlushedItem{}, eagerPersist, requeue, dispatchErr
 	}
 	a.applyProposedPlanAcceptance(threadID, userItem, resolved)
-	return flushedItem, eagerPersist, nil
+	return flushedItem, eagerPersist, triage.QueuedFlushItem{}, nil
 }
 
 // nextFlushSequenceForTurn returns the next available flush sequence
@@ -913,12 +1201,9 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 		return QueuedItem{}, fmt.Errorf("register queue item: %w", err)
 	}
 
-	if a.triage == nil {
-		// Defensive: production wires triage in initSubsystems.
-		// Mirrors the lazy-init pattern on Send and Steer.
-		a.triage = triage.NewRouter(a.store, a.emitWithReplay())
-		a.configureTriageQueueCallbacks()
-	}
+	// Defensive: production wires triage in initSubsystems. Mirrors
+	// the lazy-init pattern on Send and Steer.
+	a.ensureTriageRouter()
 
 	// Hold flushHandoffMu across the queue append and the immediate flush
 	// handoff below: the revert predicate reads the same queued / in-flight

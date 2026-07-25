@@ -367,6 +367,11 @@ func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 		// through to skip a redundant SQLite read on the hot path. See
 		// enrichStreamingPathRefsAndEmit.
 		r.enrichStreamingPathRefsAndEmit(updated, flush.updatedAt)
+		// Same full-running-summary cadence feeds the highlight seed
+		// push (app-wired; nil when unwired).
+		if r.assistantTextStream != nil {
+			r.assistantTextStream(updated.ThreadID, updated.ID, updated.Summary, false)
+		}
 		if flush.payloadID == "" || flush.payloadDelta == "" {
 			return nil
 		}

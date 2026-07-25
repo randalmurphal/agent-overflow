@@ -53,7 +53,9 @@ import (
 	"time"
 
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/notify"
+	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/wsldistro"
@@ -151,6 +153,17 @@ func main() {
 		log.SetOutput(tolerantMultiWriter(os.Stderr, logFile))
 		log.Printf("launcher: started, log=%s", logFile.Name())
 		defer logFile.Close()
+	}
+
+	// Same opt-in env var as the WSL backend (WSLENV forwards it across
+	// the boundary), but a different loopback: this binds Windows-side
+	// 127.0.0.1, the backend binds WSL-side 127.0.0.1 — same default
+	// port, zero conflict. Lets the launcher's own heap be profiled;
+	// query it from PowerShell, not a WSL shell.
+	if pprofAddr, _, pprofErr := pprofserve.StartIfEnabled(); pprofErr != nil {
+		log.Printf("launcher: pprof: %v", pprofErr)
+	} else if pprofAddr != "" {
+		log.Printf("launcher: pprof listening on %s (Windows loopback)", pprofAddr)
 	}
 
 	flags, err := parseLauncherFlags(os.Args[1:])
@@ -495,8 +508,9 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 
 	phaseStarted = time.Now()
 	l, bs, err := wsllauncher.Launch(ctx, wsllauncher.LaunchOptions{
-		Distro:     distro,
-		BinaryPath: binPath,
+		Distro:         distro,
+		BinaryPath:     binPath,
+		PassthroughEnv: diagenv.Passthrough(),
 	})
 	logBootPhase("launcher.wsl_launch", phaseStarted)
 	if err != nil {
@@ -939,6 +953,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	// Windows-side in window.json, not the WSL settings.
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		w, flush := uiwindow.RestoreAndTrack(app, opts, loadWindowGeometry(), saveWindowGeometry)
+		trimWebviewMemoryOnMinimise(w)
 		a.mu.Lock()
 		a.window = w
 		a.flushGeometry = flush
@@ -1118,6 +1133,42 @@ func browserArgs(enableDevArgs bool) []string {
 		"--no-pings",
 		"--no-experiments",
 		"--no-default-browser-check",
+		// Every byte this webview loads comes from the loopback backend
+		// (or the embedded picker page) — the HTTP disk cache can never
+		// win anything over a localhost fetch, but Chromium still sizes
+		// an index and in-memory bookkeeping for it in the network
+		// service. 1 MiB is the practical floor (0 means "default").
+		"--disk-cache-size=1048576",
+		// Force grayscale text AA in every layer state. The scroll
+		// controller demotes each parked pane's content layer to shed
+		// its tile memory (the promotion lease in
+		// frontend/src/lib/utils/scroll/index.svelte.ts); without this
+		// flag, demoted text picks up ClearType subpixel AA while
+		// composited text renders grayscale, so panes visibly snap
+		// between the two styles at lease boundaries. With it, chat
+		// text is pixel-identical to the permanently-promoted rendering
+		// this replaced, and root-layer text (sidebar/topbar) matches
+		// instead of being the app's odd subpixel surface. Glyph-edge
+		// blending only — text color is untouched.
+		"--disable-lcd-text",
+		// MANDATORY COMPANION to --disable-lcd-text. Blink composites a
+		// scroller eagerly whenever doing so cannot hurt LCD text; with
+		// LCD text globally off, that guard always passes, so EVERY
+		// scroller (each pane timeline, the pane strip) got promoted to
+		// composited scrolling with content-sized raster layers —
+		// measured 2026-07-21: renderer cc/tile_memory 165.5MB vs the
+		// 89.9MB the lease work started from. This feature (verified
+		// present in WebView2 150.0.4078.83) restores the
+		// prefer-non-composited default so scrollers stay unlayerized;
+		// scrolling still runs on the compositor via raster-inducing
+		// scroll, and the lease's explicit will-change promotion — which
+		// bypasses the preference — keeps actively-scrolling panes
+		// composited exactly as designed. If a future WebView2 drops the
+		// feature the symptom to watch for is this same eager-compositing
+		// regression, visible as full-scroll-height layers in the CDP
+		// LayerTree dump for panes whose contentEl carries no
+		// will-change.
+		"--enable-features=PreferNonCompositedScrolling",
 	}
 	if enableDevArgs {
 		args = append(args,

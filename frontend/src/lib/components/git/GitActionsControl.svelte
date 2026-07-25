@@ -18,9 +18,8 @@
   import { forgeLabels } from '../../utils/forgeLabels';
   import { handleExternalURL, safeExternalURL } from '../../utils/externalLinks';
   import { OPEN_SHIP_CHANGES_EVENT } from '../../stores/events';
-  import CommitDialog from './CommitDialog.svelte';
-  import ShipChangesDrawer from './ShipChangesDrawer.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
+  import LazyOverlay from '../primitives/LazyOverlay.svelte';
   import Popover from '../primitives/Popover.svelte';
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
@@ -252,14 +251,22 @@
     {/snippet}
   </Popover>
 
-  <CommitDialog {pane} open={showCommit} onClose={handleCommitClose} />
+  <LazyOverlay
+    load={() => import('./CommitDialog.svelte')}
+    active={showCommit}
+    props={{ pane, open: showCommit, onClose: handleCommitClose }}
+  />
 
-  <ShipChangesDrawer
-    {pane}
-    open={showShip}
-    onClose={() => {
-      showShip = false;
-      void pane.gitStatus.refreshNow();
+  <LazyOverlay
+    load={() => import('./ShipChangesDrawer.svelte')}
+    active={showShip}
+    props={{
+      pane,
+      open: showShip,
+      onClose: () => {
+        showShip = false;
+        void pane.gitStatus.refreshNow();
+      },
     }}
   />
 

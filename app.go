@@ -12,7 +12,6 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/updater"
 
 	"agent-overflow/internal/attachment"
-	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
 	"agent-overflow/internal/codexmodels"
@@ -20,6 +19,7 @@ import (
 	"agent-overflow/internal/discussion"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
+	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/mcpstatus"
@@ -113,7 +113,6 @@ type App struct {
 	turnObservers              map[string]map[uint64]turnObserver
 	nextTurnObserverID         uint64
 	discussionTurnObserverOnce sync.Once
-	checkpoints                *checkpoint.Store
 	registry                   *discussion.Registry
 	channels                   *discussion.ChannelService
 	// designWorkdir owns each thread's per-thread {main,options}
@@ -210,6 +209,10 @@ type App struct {
 	// clobbering the pending release the installer is about to use.
 	updaterMu   sync.Mutex
 	updaterBusy bool
+	// restartExitFn is the process-exit call RestartToUpdate's watchdog
+	// fires when graceful shutdown wedges (see armRestartExitWatchdog).
+	// nil means os.Exit; tests inject a recorder.
+	restartExitFn func(code int)
 	// shuttingDown is flipped to true once Shutdown begins. Binding entry
 	// points that spin up new work (StartSession, SendMessage, ReconnectSession)
 	// check it and fail fast with ErrShuttingDown so late RPCs can't race
@@ -262,7 +265,7 @@ type App struct {
 	// (pendingFlushWorkCount) makes the queued message observable to a
 	// concurrent Stop click as either still-queued or already-in-flight, never
 	// neither. Deliberately NOT the per-thread action lock: that lock is held
-	// for seconds by git / worktree / checkpoint ops, and queueing a message
+	// for seconds by git / worktree ops, and queueing a message
 	// must stay responsive while those run. See RegisterQueueItem for the full
 	// lock hierarchy and deadlock-freedom argument.
 	flushHandoffMu sync.Mutex
@@ -330,6 +333,20 @@ type App struct {
 	// edits and on OAuth completion.
 	mcpStatusCacheOnce sync.Once
 	mcpStatusCache     *mcpstatus.Cache
+	// highlightSpanCache is the content-addressed syntax-highlight span
+	// cache (internal/highlight). Keys hash the full input, so entries
+	// never go stale; lazy-init through highlightCache() so tests
+	// building a bare App{} don't have to wire it.
+	highlightCacheOnce sync.Once
+	highlightSpanCache *highlight.Cache
+	// highlightSeeder tracks per-streaming-item fence-scan state for
+	// the remote-only highlight seed push (app_highlight_seed.go).
+	// Zero value ready; internal locking.
+	highlightSeeder highlightSeeder
+	// diffSeedWorkers counts in-flight preview-push goroutines
+	// (app_highlight_diff_seed.go); bursts past diffSeedMaxWorkers drop
+	// their seeds instead of queueing behind the parse semaphore.
+	diffSeedWorkers atomic.Int32
 	// claudeConfigStore / codexConfigStore are the file-backed MCP
 	// library adapters. AO is a 1:1 sync UI over Claude's
 	// ~/.claude.json `mcpServers` and Codex's ~/.codex/config.toml
@@ -413,6 +430,10 @@ type App struct {
 	// seq when it emits, so test observers see the same shape the
 	// downstream code emitted.
 	testEmitHook func(name string, data any)
+	// remoteClientProbeFn is a test-only override for hasRemoteClient
+	// (production reads the transport server's connection counter).
+	remoteClientProbeFn func() bool
+
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a

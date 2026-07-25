@@ -25,6 +25,23 @@ func (s *Session) Fork(ctx context.Context) (string, error) {
 // spike-verified against codex-cli 0.144
 // (scratchpad spike-fork-at-turn, 2026-07-10).
 //
+// Turn granularity is an app-server API limit, not a core one
+// (source-verified at rust-v0.144.5 and rust-v0.145.0-alpha.23,
+// 2026-07-17): the fork handler's only cut is
+// truncate_rollout_after_turn_id, while codex-rs core already owns a
+// message-granular cut — ForkSnapshot::TruncateBeforeNthUserMessage
+// slices the rollout strictly before the nth user message, mid-turn
+// steers included. That granularity is what the Codex TUI's own
+// Esc-Esc backtrack uses, but it reaches it through `thread/rollback`
+// (num_turns counts user-MESSAGE boundaries, not wire turns), which
+// answers external callers with "thread/rollback is deprecated and
+// will be removed soon" and mutates the source thread in place —
+// neither fits our fork-and-repoint revert model. When thread/fork
+// grows a message-granular anchor, add a ForkAt variant for it and
+// switch the revert/fork callers so Codex reverts gain the same
+// mid-turn precision Claude's session-file slice already has (see the
+// truncation-granularity comment in revertConversationLocked).
+//
 // The response's surviving turn tail is validated against the
 // requested anchor: a mismatch would mean the fork kept turns we asked
 // to drop (or vice versa), and building local truncation on top of

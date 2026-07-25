@@ -8,9 +8,9 @@ export type ItemsRange = readonly [startIndex: number, endIndex: number];
 /**
  * A geometry change that moved content above the viewport top, reported by
  * the engine as an observation. The engine NEVER writes scrollTop — the
- * scroll controller's resolver decides whether `target` is applied (while
- * pinned the per-beat pin write already covers it, so a decline is not an
- * error state).
+ * scroll controller's resolver decides what write `target` becomes
+ * (verbatim, or redirected to the controller's own bottom target while
+ * pinned at the bottom).
  */
 export interface EngineCompensation {
   kind: 'remeasure-above' | 'head-splice';

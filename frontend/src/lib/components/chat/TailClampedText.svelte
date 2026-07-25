@@ -17,11 +17,30 @@
   // stale, and it does the work without a forced `scrollHeight` read per delta.
   // Regression: tailClampedText.browser.test.ts.
   //
-  // The caller still feeds a MONOTONICALLY-GROWING live tail (the per-pane
-  // smoother tail), never a re-trimmed sliding window — a shrinking/rewrapping
-  // string would make the visible window jump instead of scroll. When expanded
-  // the clamp and anchor are dropped entirely (plain `block`; content flows to
-  // full height).
+  // Callers feed a MONOTONICALLY-GROWING live tail (the per-pane smoother
+  // tail) — never a pre-trimmed sliding window, whose moving start offset
+  // would re-wrap (and visibly jump) the visible lines on every delta. The
+  // component bounds its own layout cost instead: clipping bounds what is
+  // painted, not what is laid out, so an unbounded tail re-line-breaks the
+  // ENTIRE thinking text on every ~50Hz reveal tick. While collapsed, the
+  // rendered text is windowed at WRAP-STABLE offsets only (hard newlines, or
+  // a measured rendered line start for a monster single paragraph — see
+  // tailWindow.ts), which keeps the visible lines pixel-identical while
+  // capping per-tick layout at the window cap (~8k chars) instead of the
+  // whole accumulated tail. Append-detection
+  // sentinels reset the window on the one non-append transition (the settle
+  // swap to the rune-trimmed summary). When expanded the clamp, anchor, and
+  // window are all dropped (plain `block`; full text flows to full height).
+  import { untrack } from 'svelte';
+  import {
+    TAIL_WINDOW_CAP_CHARS,
+    TAIL_WINDOW_KEEP_LINES,
+    TAIL_WINDOW_MEASURE_RETRY_CHARS,
+    TAIL_WINDOW_MIN_KEEP_CHARS,
+    isMonotonicAppend,
+    measuredLineStartOffset,
+    newlineCutOffset,
+  } from './tailWindow';
 
   let {
     text,
@@ -36,9 +55,67 @@
     testId?: string;
     class?: string;
   } = $props();
+
+  let el: HTMLSpanElement | undefined = $state();
+
+  /** Start of the wrap-stable window into `text` while collapsed. */
+  let cutOffset = $state(0);
+
+  // Non-reactive bookkeeping for isMonotonicAppend (which detects the
+  // one non-append transition — the settle swap to the shorter
+  // rune-trimmed summary — and resets the window) and for throttling
+  // failed measurements.
+  let prevLen = 0;
+  let prevLastCharCode = 0;
+  let cutFirstCharCode = 0;
+  let measureFloor = 0;
+
+  const rendered = $derived(expanded || cutOffset === 0 ? text : text.slice(cutOffset));
+
+  // Depends on `text` and `expanded` only — `cutOffset` reads go through
+  // `untrack` so the effect's own cut writes can't re-trigger it.
+  $effect(() => {
+    const t = text;
+    const renderedCut = untrack(() => cutOffset);
+    let cut = renderedCut;
+
+    if (!isMonotonicAppend(t, prevLen, prevLastCharCode, cut, cutFirstCharCode)) {
+      cut = 0;
+      measureFloor = 0;
+    }
+    prevLen = t.length;
+    prevLastCharCode = t.length > 0 ? t.charCodeAt(t.length - 1) : 0;
+
+    if (!expanded && t.length - cut > TAIL_WINDOW_CAP_CHARS) {
+      const nlCut = newlineCutOffset(t, cut, TAIL_WINDOW_MIN_KEEP_CHARS);
+      if (nlCut !== null) {
+        cut = nlCut;
+      } else if (cut === renderedCut && t.length >= measureFloor) {
+        // The whole advanceable region is one giant paragraph — cut at
+        // a measured rendered line start instead. Effects run after DOM
+        // flush, so the text node currently renders t.slice(renderedCut)
+        // and the measured offset is relative to it — which is why a
+        // run that just reset the cut must not measure (the DOM still
+        // shows the pre-reset window until the next flush).
+        const node = el?.firstChild;
+        if (el && node instanceof Text) {
+          const lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight);
+          const rel = measuredLineStartOffset(node, TAIL_WINDOW_KEEP_LINES, lineHeight);
+          if (rel === null) measureFloor = t.length + TAIL_WINDOW_MEASURE_RETRY_CHARS;
+          else cut += rel;
+        }
+      }
+    }
+
+    if (cut !== renderedCut) {
+      cutFirstCharCode = cut > 0 ? t.charCodeAt(cut) : 0;
+      cutOffset = cut;
+    }
+  });
 </script>
 
 <span
+  bind:this={el}
   {id}
   data-testid={testId}
   class={[
@@ -46,4 +123,4 @@
     expanded ? 'block' : 'flex flex-col justify-end max-h-[3lh] overflow-hidden',
     extraClass || null,
   ]}
->{text}</span>
+>{rendered}</span>

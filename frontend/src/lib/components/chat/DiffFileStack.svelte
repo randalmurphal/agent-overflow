@@ -26,6 +26,7 @@
     inlineDiffPreviewFiles,
   } from '../../utils/inlineThreshold';
   import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
+  import { ingestPersistedPatchSpans } from '../../utils/persistedSpans';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import DiffFileBlock from './DiffFileBlock.svelte';
@@ -40,6 +41,20 @@
   }
 
   let { pane, item, meta, payloadId }: Props = $props();
+
+  // Warm the diff span cache from the payload's persisted preview
+  // spans (payloads.preview_spans, joined onto the item row). The init
+  // call is the cold-mount path: it seeds synchronously (tables
+  // memoized) BEFORE the DiffFileBlock children mount, so their first
+  // getSpansForLine reads hit and no highlight RPC fires. The
+  // initial-value capture is the point — the $effect below covers the
+  // blob arriving later (persist-tap write racing the row's first
+  // emission, item upserts).
+  // svelte-ignore state_referenced_locally
+  ingestPersistedPatchSpans(item.threadId, item.payloadPreviewSpans);
+  $effect(() => {
+    ingestPersistedPatchSpans(item.threadId, item.payloadPreviewSpans);
+  });
 
   // Always created: useLeasedPayloadExpansion returns this fallback both
   // for pane-less mounts AND for paned rows whose files all carry preview
@@ -145,7 +160,7 @@
 
   function openFullDiff(): void {
     if (!pane || !payloadId) return;
-    openReviewForItem(pane, { turnIndex: item.turnIndex });
+    openReviewForItem(pane, { editItemId: item.id });
   }
 
   function applyMetaToPatchFile(
@@ -179,7 +194,6 @@
     {payloadId}
     threadId={item.threadId}
     itemId={item.id}
-    turnIndex={item.turnIndex}
     workspacePath={paneWorkspacePath(pane)}
     toolName={item.toolName}
     createdAt={item.createdAt}

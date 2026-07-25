@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // flush_queue.go owns the per-thread "queued user message awaiting provider
@@ -61,6 +63,13 @@ type QueuedFlushItem struct {
 	// EnqueuedAt is the wall clock at register time. Diagnostic only:
 	// the dispatcher does not key off it.
 	EnqueuedAt int64
+	// StaleUserItemID names a quiet user_text row from a PREVIOUS
+	// dispatch of this message whose session-death cleanup failed
+	// (app-layer requeue, round-11 R11-1). The dispatcher must retry
+	// that cleanup before persisting a fresh row — dispatching over
+	// the stale row would show the message twice in the timeline.
+	// Empty for normal queue items.
+	StaleUserItemID string
 }
 
 type UnconfirmedFlushItem struct {
@@ -71,6 +80,13 @@ type UnconfirmedFlushItem struct {
 	EnqueuedAt   int64
 	DeferredItem *store.Item
 	QuietItem    *store.Item
+	// StaleUserItemID carries a requeued item's failed-cleanup row id
+	// (QueuedFlushItem.StaleUserItemID) through a session-death drain
+	// that catches the item still queued, so the obligation survives
+	// repeated deaths. Entries drained from the pending-send FIFO
+	// never carry it: their dispatch already ran the cleanup before
+	// persisting.
+	StaleUserItemID string
 }
 
 // FlushDispatcher is the app-layer callback invoked when triage drains
@@ -95,12 +111,25 @@ func (r *Router) SetFlushDispatcher(fn FlushDispatcher) {
 	r.mu.Unlock()
 }
 
-// SetDeferredUserTextConfirmedHook wires the app-layer callback that runs
-// after a deferred queued user_text row is persisted from provider echo.
-// Nil disables the callback. The hook runs outside r.mu.
-func (r *Router) SetDeferredUserTextConfirmedHook(fn func(threadID string, item store.Item)) {
+// SetFlushUserTextConfirmedHook wires the app-layer callback that runs
+// after a flush-queued user_text row is confirmed — by its provider
+// echo (persisted deferred rows / stamped eager quiet rows) or by the
+// interrupt paths that anchor a row at its final position
+// (PromoteQuietFlushSends, EagerPersistDeferredFlushSends). Nil
+// disables the callback.
+//
+// CONTRACT: the hook runs outside r.mu but UNDER the thread's flush
+// anchor lock — the
+// in-lock invocation is load-bearing (the message anchor it records
+// must exist before the mutex releases, or an echo in the gap stamps
+// ids onto an anchor that isn't there yet; round-4 CT4-1) — and
+// often on the provider read loop. It must not call back into any
+// Router method (the anchor lock is not reentrant; DrainUnconfirmedFlushItems,
+// PromoteQuietFlushSends etc. would deadlock) and must not block
+// indefinitely. Store/emit work, as the anchor record does, is fine.
+func (r *Router) SetFlushUserTextConfirmedHook(fn func(threadID string, item store.Item)) {
 	r.mu.Lock()
-	r.deferredUserTextConfirmed = fn
+	r.flushUserTextConfirmed = fn
 	r.mu.Unlock()
 }
 
@@ -157,7 +186,10 @@ func (r *Router) QueuedFlushItemCount(threadID string) int {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.queuedFlushItems[threadID])
+	// claimedFlushItems keeps a batch mid-handoff (deleted from the
+	// queue, not yet recorded in-flight by the App dispatcher) visible
+	// to the revert predicate — see tryFlushQueue.
+	return len(r.queuedFlushItems[threadID]) + r.claimedFlushItems[threadID]
 }
 
 func (r *Router) DeferredPendingFlushItemCount(threadID string) int {
@@ -234,41 +266,25 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 // ordering. The batch is copied out under r.mu so a concurrent CleanupThread
 // between unlock and dispatch doesn't observe a partially-cleared queue.
 //
-// This primitive is deliberately NOT self-protecting against the
-// revert-on-interrupt predicate. Between deleting the batch from
-// queuedFlushItems here and the App-layer dispatcher recording it as
-// in-flight, the item is invisible to every counter that predicate consults
-// (queue length, inflight count, persisted rows). App.RegisterQueueItem — the
-// drain trigger that fires on a bare user action, when the latest turn may be
-// a lone user_text — closes this window by holding App.flushHandoffMu across
-// the call; the predicate reads the same counters under that mutex
-// (pendingFlushWorkCount), so InterruptAndRevertIfClean cannot observe the gap.
-//
-// The boundary-drain triggers (turn / tool / background-task completion) run
-// lock-free on this goroutine and are NOT protected. For most of them the turn
-// carries durable agent content by the time the drain fires — a settled
-// assistant_text or a persisted tool_call row — or a live background-task
-// count, so in practice the predicate refuses before the window matters. The
-// one path traced exhaustively here is the exception: a top-level Codex
-// unified-exec command that completes outside an
-// active wire round: observeCodexUnifiedExecComplete removes the live tracker
-// and skips the command-row persist before firing this drain (see
-// handleToolComplete in router.go), and the unified-exec start never persisted
-// a tool_call row — so the turn can hold only its lone user_text and a Stop
-// landing in the window would wrongly revert. Closing that path is a tracked
-// follow-up. The drain itself does NOT take flushHandoffMu — it runs on a
-// goroutine that never holds it, and that mutex only serializes the
-// RegisterQueueItem trigger against the predicate. What observes the fix is the
-// predicate's existing flushHandoffMu-guarded read, which already folds in the
-// triage counts. The fix stays inside the router — a
-// per-thread claim count bumped under r.mu alongside the delete here, folded
-// into QueuedFlushItemCount, and dropped only after the dispatcher has
-// synchronously recorded the batch in-flight — so the batch reads as queued,
-// then claimed, then in-flight, never invisible across the handoff. (For that
-// overlap to be airtight the predicate must read the triage counts before the
-// App inflight count; today pendingFlushWorkCount reads them App-first.) See
-// app_flush_queue.go RegisterQueueItem for the analogous guarantee on the
-// action-triggered path.
+// Handoff visibility: the boundary-drain triggers (turn / tool /
+// background-task completion) run lock-free on this goroutine, without
+// App.flushHandoffMu — only the RegisterQueueItem trigger holds that
+// mutex against the revert-on-interrupt predicate. A batch mid-handoff
+// must therefore stay visible to the predicate on its own: the
+// claimedFlushItems count is bumped under r.mu alongside the queue
+// delete and dropped only after the dispatcher has synchronously
+// recorded the batch in-flight (enqueueFlushDispatch bumps its
+// inflight counter before returning). Folded into QueuedFlushItemCount,
+// the batch reads as queued → claimed → in-flight, never invisible —
+// without it, a Stop landing in the gap on a turn with no durable agent
+// rows (a top-level Codex unified-exec completing outside an active
+// wire round persists nothing) would wrongly revert the turn's prompt
+// while the dispatcher delivers the follow-up (round-14 close-out,
+// C14-1). The overlap is airtight only if the predicate reads the
+// triage counts BEFORE the App inflight count — pendingFlushWorkCount
+// does. A dispatch that fails and requeues between those two reads is
+// covered separately: the failure persists an error row before the
+// inflight count drops, so the turn is no longer clean.
 func (r *Router) tryFlushQueue(threadID string) bool {
 	if threadID == "" {
 		return false
@@ -287,8 +303,16 @@ func (r *Router) tryFlushQueue(threadID string) bool {
 	batch := make([]QueuedFlushItem, len(queue))
 	copy(batch, queue)
 	delete(r.queuedFlushItems, threadID)
+	r.claimedFlushItems[threadID] += len(batch)
 	r.mu.Unlock()
 
+	defer func() {
+		r.mu.Lock()
+		if r.claimedFlushItems[threadID] -= len(batch); r.claimedFlushItems[threadID] <= 0 {
+			delete(r.claimedFlushItems, threadID)
+		}
+		r.mu.Unlock()
+	}()
 	dispatcher(threadID, batch)
 	return true
 }
@@ -366,25 +390,50 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 		return nil
 	}
 
+	// Serialize with the interrupt anchor transitions and the echo
+	// pop+write (lock order: flush anchor before r.mu, always). Without
+	// this a session-death drain could slip between an eager persist's
+	// claim (DeferredItem moved to QuietItem under r.mu) and its store
+	// write: the drain would restore the message to the draft and try to
+	// delete a row that doesn't exist yet, then the persist would commit
+	// AFTER teardown — the next session shows the message in both the
+	// draft and the timeline (round-4 review, CT4-2). Under the mutex an
+	// in-flight transition fully commits (or unclaims) before the drain
+	// snapshots, so a returned QuietItem always reflects the store.
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
+
 	r.mu.Lock()
 	var drained []UnconfirmedFlushItem
 	for _, item := range r.queuedFlushItems[threadID] {
 		payload := append(json.RawMessage(nil), item.Payload...)
 		drained = append(drained, UnconfirmedFlushItem{
-			QueueItemID: item.ID,
-			Message:     item.Message,
-			Payload:     payload,
-			EnqueuedAt:  item.EnqueuedAt,
+			QueueItemID:     item.ID,
+			Message:         item.Message,
+			Payload:         payload,
+			EnqueuedAt:      item.EnqueuedAt,
+			StaleUserItemID: item.StaleUserItemID,
 		})
 	}
 	delete(r.queuedFlushItems, threadID)
 
 	pending := r.pendingByThread[threadID]
+	var echoConsumed []pendingSend
 	if len(pending) > 0 {
 		kept := make([]pendingSend, 0, len(pending))
 		for _, entry := range pending {
 			if entry.QueueItemID == "" || !strings.Contains(entry.AOItemID, ":flush:") {
 				kept = append(kept, entry)
+				continue
+			}
+			if entry.EchoConsumed {
+				// The echo arrived (the provider transcript contains the
+				// message) but its write failed pre-durability. NOT
+				// restorable: a draft restore would re-send content the
+				// provider context already has, duplicating it on the
+				// next session (round-5, R5-3). Self-healed below.
+				echoConsumed = append(echoConsumed, entry)
 				continue
 			}
 			restored := UnconfirmedFlushItem{
@@ -411,5 +460,119 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 		}
 	}
 	r.mu.Unlock()
+
+	// Still under the anchor lock: a re-delivered echo retrying one of
+	// these entries cannot interleave with the heal.
+	for _, entry := range echoConsumed {
+		r.selfHealEchoConsumedFlushRow(threadID, entry)
+	}
 	return drained
+}
+
+// selfHealEchoConsumedFlushRow makes sure the timeline carries a flush
+// message whose provider consumption was proven by an echo that then
+// failed before its durable write (round-5, R5-3), and stamps the
+// echo's stashed wire identity onto the row and its message anchor
+// (round-6, R6-1): the entry is dropped after this, so an unstamped
+// row would permanently lack its slice anchor — a later revert would
+// ordinal-walk or full-clone while the provider transcript still
+// contains the message. When the row already exists (eager interrupt
+// persist committed; only the echo's stamp was lost) the stamp is the
+// heal; when it is missing, the retained copy persists with the ids
+// (and, for promoted rows, the echo-time boundary) already merged.
+// Caller MUST hold the thread's flush anchor lock. Session-death
+// path: failures are logged loudly rather than returned — the
+// retained copy is lost only if the store itself is failing.
+func (r *Router) selfHealEchoConsumedFlushRow(threadID string, entry pendingSend) {
+	stampMeta := func(meta string) (string, error) {
+		merged, err := usermessage.MergeProviderIDs(meta, entry.EchoProviderItemID, entry.EchoParentUUID)
+		if err != nil {
+			return "", err
+		}
+		if entry.EchoPromotedBoundary >= 0 {
+			// Stashed at echo time for promoted rows (whose store meta
+			// already carries the marker) AND for unanchored eager rows
+			// whose tail bump then failed (round-10, R10-1) — the healed
+			// row sits at its dispatch-time index, so the marker+boundary
+			// pair is what keeps the revert cut on provider order.
+			// Written together so the boundary is never orphaned.
+			if merged, err = itemmeta.MarkPromotedAtInterrupt(merged); err != nil {
+				return "", err
+			}
+			if merged, err = itemmeta.MarkPromotedEchoBoundary(merged, entry.EchoPromotedBoundary); err != nil {
+				return "", err
+			}
+		}
+		return merged, nil
+	}
+	hasEchoIDs := entry.EchoProviderItemID != "" || entry.EchoParentUUID != ""
+
+	retained := entry.QuietItem
+	if retained == nil {
+		retained = entry.DeferredItem
+	}
+	_, found, err := r.store.GetThreadItem(threadID, entry.AOItemID)
+	if err != nil {
+		log.Printf("triage: self-heal lookup for echo-consumed flush row %s/%s: %v", threadID, entry.AOItemID, err)
+		return
+	}
+	switch {
+	case found:
+		if hasEchoIDs {
+			updated, _, err := r.store.UpdateItemMetaMerge(threadID, entry.AOItemID, stampMeta, time.Now().UnixMilli())
+			if err != nil {
+				log.Printf("triage: self-heal stamp for echo-consumed flush row %s/%s: %v", threadID, entry.AOItemID, err)
+			} else {
+				// A non-interrupt quiet row was never emitted (quiet
+				// persist at dispatch; the emitting echo bump failed) —
+				// without this upsert it stays invisible until a thread
+				// reload (round-7, R7-7). Idempotent for rows the
+				// promote path already emitted.
+				r.emitItemUpsertWithActivity(updated, false)
+			}
+		}
+	case retained == nil:
+		log.Printf("triage: echo-consumed flush entry %s/%s has no retained copy — the message survives only in the provider transcript", threadID, entry.AOItemID)
+		return
+	default:
+		item := *retained
+		if stamped, stampErr := stampMeta(item.Meta); stampErr != nil {
+			// Content preservation trumps id enrichment: persist the
+			// retained copy as-is rather than lose the message.
+			log.Printf("triage: self-heal id merge for echo-consumed flush row %s/%s: %v — persisting the retained copy unstamped", threadID, entry.AOItemID, stampErr)
+		} else {
+			item.Meta = stamped
+		}
+		var persistErr error
+		if entry.QuietItem == nil && entry.EchoTurnWasEmpty {
+			// Deferred-origin retained copy whose turn was EMPTY at the
+			// first echo — the turn is the prompt's own, and the failed
+			// echo opened it (R6-3): response rows now occupy 0..n and
+			// an append would sort the prompt after its own response
+			// (round-7, R7-4). Steer-shape deferred rows
+			// (EchoTurnWasEmpty false) keep the append — pre-dispatch
+			// content correctly precedes them.
+			_, persistErr = r.persistUserPromptAtTurnHead(item)
+		} else {
+			persistErr = r.persistItem(item, nil)
+		}
+		if persistErr != nil {
+			log.Printf("triage: self-heal persist for echo-consumed flush row %s/%s: %v", threadID, entry.AOItemID, persistErr)
+			return
+		}
+		log.Printf("triage: echo-consumed flush row %s/%s was missing at session-death drain — re-persisted the retained copy", threadID, entry.AOItemID)
+	}
+	if hasEchoIDs {
+		// Fold the ids into the row's message anchor too — the anchor
+		// copy is the rollback path's first slice candidate. Rows that
+		// existed at the failed echo already hold an anchor recorded
+		// at the true consumption boundary (recordEchoBoundaryAnchor,
+		// round-10 R10-2). Rows healed from a never-persisted deferred
+		// copy have no anchor row (the upsert needs the row's FK); the
+		// update is then a no-op and rollback falls back to the
+		// item-meta synthesis.
+		if err := r.store.UpdateMessageAnchorProviderIDs(threadID, entry.AOItemID, entry.EchoProviderItemID, entry.EchoParentUUID); err != nil {
+			log.Printf("triage: self-heal anchor ids for echo-consumed flush row %s/%s: %v", threadID, entry.AOItemID, err)
+		}
+	}
 }

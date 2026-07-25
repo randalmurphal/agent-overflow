@@ -1,7 +1,5 @@
 <script lang="ts">
-  import RotateCcw from 'lucide-svelte/icons/rotate-ccw';
   import GitFork from 'lucide-svelte/icons/git-fork';
-  import FileDiff from 'lucide-svelte/icons/file-diff';
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -13,16 +11,13 @@
   import CopyButton from '../primitives/CopyButton.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
-  import Popover from '../primitives/Popover.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { openReviewCompanion } from '../../stores/reviewPane.svelte';
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import {
     parseUserMessageAttachments,
     parseUserMessageMeta,
   } from '../../utils/userMessageMeta';
   import { formatTimeOfDay } from '../../utils/format';
-  import type { RevertMode } from '../../types/checkpoint';
   import type { UserMessageActions } from './userMessageActions';
 
   interface Props {
@@ -42,29 +37,14 @@
     targetFlash = false,
     targetFlashNonce = 0,
   }: Props = $props();
-  let revertAnchor: HTMLSpanElement | undefined = $state(undefined);
 
   const userMeta = $derived(parseUserMessageMeta(item.meta));
-  const hasMessageCheckpoint = $derived(pane?.checkpoints.checkpointUserItemIds.has(item.id) ?? false);
   const isWireOnlyUserMessage = $derived(userMeta?.wire_only === true);
-  const canRequestRevert = $derived(typeof actions?.onRevertMessage === 'function');
   const canRequestFork = $derived(typeof actions?.onForkMessage === 'function');
-  const canConfirmRevert = $derived(typeof actions?.onConfirmRevertMessage === 'function');
-  const revertPopoverOpen = $derived(actions?.revertTargetItemId === item.id);
-  const revertAffectedFiles = $derived(actions?.revertAffectedFiles ?? []);
-  const revertTotals = $derived.by(() => revertAffectedFiles.reduce(
-    (acc, file) => ({
-      additions: acc.additions + file.additions,
-      deletions: acc.deletions + file.deletions,
-    }),
-    { additions: 0, deletions: 0 },
-  ));
-  const revertBusy = $derived(actions?.revertingItemId === item.id);
   const forkBusy = $derived(actions?.forkingItemId === item.id);
 
-  // Eligibility for the revert/fork message actions. Flips at most once
-  // per message lifetime — when the per-message checkpoint is captured —
-  // and then stays stable. Deliberately does NOT gate on getActiveTurn:
+  // Eligibility for the fork message action. Stable for the message's
+  // lifetime. Deliberately does NOT gate on getActiveTurn:
   // unmounting the toolbar at turn-started / re-mounting at turn-completed
   // would collapse the footer row's height (the icon buttons are taller
   // than the timestamp text), which reads as jitter on the just-sent
@@ -72,15 +52,11 @@
   // `actionsTurnLocked`, which disables the buttons — grayed out via the
   // IconButton disabled styling — instead of removing them from the DOM.
   const showMessageActions = $derived(
-    pane !== undefined
-      && pane.checkpoints.loaded
-      && !pane.checkpoints.unavailable
-      && hasMessageCheckpoint
-      && !isWireOnlyUserMessage,
+    pane !== undefined && !isWireOnlyUserMessage,
   );
 
   // True while a turn is in flight on this pane's thread. Disables the
-  // action buttons so revert/fork/review can't race the active turn.
+  // action buttons so fork can't race the active turn.
   const actionsTurnLocked = $derived(
     pane !== undefined && getActiveTurn(pane.threadId) !== null,
   );
@@ -117,31 +93,9 @@
   const time = $derived(formatTimeOfDay(item.createdAt));
   const isoTime = $derived(new Date(item.createdAt).toISOString());
 
-  async function requestRevert(): Promise<void> {
-    if (!canRequestRevert || revertBusy || actionsTurnLocked) return;
-    if (revertPopoverOpen) {
-      actions?.onCancelRevertMessage?.();
-      return;
-    }
-    await actions?.onRevertMessage?.(item);
-  }
-
-  async function confirmRevert(mode: RevertMode): Promise<void> {
-    if (!canConfirmRevert || revertBusy) return;
-    await actions?.onConfirmRevertMessage?.(mode);
-  }
-
   async function requestFork(): Promise<void> {
     if (!canRequestFork || forkBusy || actionsTurnLocked) return;
     await actions?.onForkMessage?.(item);
-  }
-
-  function openCheckpointReview(): void {
-    if (!pane?.threadId || actionsTurnLocked) return;
-    void openReviewCompanion(pane.paneId, pane.threadId, {
-      scope: 'turn',
-      checkpointUserItemId: item.id,
-    });
   }
 </script>
 
@@ -190,44 +144,18 @@
         </div>
       {/if}
       {#if visibleSummary}
-        <p class="whitespace-pre-wrap break-words">{visibleSummary}</p>
+        <!-- wrap-anywhere, not break-words: `overflow-wrap: break-word` doesn't
+             lower a line's min-content width, and the bubble is a shrink-to-fit
+             flex child whose fit-content sizing floors at min-content — pasted
+             plaintext tables (NBSP-padded cells, unbroken border runs) blew the
+             bubble past the pane edge instead of wrapping. `anywhere` counts the
+             break opportunities in min-content, so the 82% cap holds.
+             Guard: userMessageOverflow.browser.test.ts -->
+        <p class="whitespace-pre-wrap wrap-anywhere">{visibleSummary}</p>
       {/if}
     </div>
     <div class="mt-1 flex items-center justify-end gap-1.5 pr-1 text-[0.625rem] text-fg-hint">
       {#if showMessageActions && pane}
-        <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
-          <IconButton
-            label="Open checkpoint in review pane"
-            size="sm"
-            variant="ghost"
-            disabled={actionsTurnLocked}
-            onClick={openCheckpointReview}
-          >
-            {#snippet children()}
-              <Icon icon={FileDiff} size={13} strokeWidth={2.2} />
-            {/snippet}
-          </IconButton>
-        </span>
-        {#if canRequestRevert}
-          <span
-            bind:this={revertAnchor}
-            class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100"
-          >
-            <IconButton
-              label="Revert to this message"
-              size="sm"
-              variant="ghost"
-              disabled={revertBusy || actionsTurnLocked}
-              ariaHaspopup="menu"
-              ariaExpanded={revertPopoverOpen}
-              onClick={() => void requestRevert()}
-            >
-              {#snippet children()}
-                <Icon icon={RotateCcw} size={13} strokeWidth={2.2} />
-              {/snippet}
-            </IconButton>
-          </span>
-        {/if}
         {#if canRequestFork}
           <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
             <IconButton
@@ -257,45 +185,6 @@
         {time}
       </time>
     </div>
-    <Popover
-      anchor={revertAnchor}
-      open={revertPopoverOpen}
-      onClose={() => actions?.onCancelRevertMessage?.()}
-      placement="bottom-end"
-      offset={8}
-      role="menu"
-      ariaLabel="Revert message options"
-    >
-      <div
-        class="w-[244px] overflow-hidden rounded-[10px] border border-border bg-surface-1/98 p-1.5 text-left shadow-menu"
-        data-testid="user-message-revert-popover"
-      >
-        <button
-          type="button"
-          class="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[0.75rem] text-fg transition-colors hover:bg-surface-2/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-55"
-          disabled={revertBusy}
-          onclick={() => void confirmRevert('conversation-and-files')}
-          role="menuitem"
-          data-testid="revert-conversation-and-files"
-        >
-          <span class="whitespace-nowrap font-medium">Conversation & files</span>
-          <span class="flex shrink-0 items-center gap-1 whitespace-nowrap font-mono text-[0.6875rem] tabular-nums">
-            <span class="text-success">+{revertTotals.additions}</span>
-            <span class="text-error">-{revertTotals.deletions}</span>
-          </span>
-        </button>
-        <button
-          type="button"
-          class="mt-0.5 flex w-full items-center rounded-[var(--radius-control)] px-2.5 py-2 text-left text-[0.75rem] font-medium text-fg-muted transition-colors hover:bg-surface-2/70 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-default disabled:opacity-55"
-          disabled={revertBusy}
-          onclick={() => void confirmRevert('conversation-only')}
-          role="menuitem"
-          data-testid="revert-conversation-only"
-        >
-          Conversation only
-        </button>
-      </div>
-    </Popover>
   </div>
 </div>
 

@@ -20,7 +20,7 @@ const DefaultSubscriberBuffer = 1024
 
 // EventBus is the in-memory fanout for server-pushed events. Events
 // are tagged with a monotonically increasing per-channel sequence and
-// stored in a fixed-capacity circular buffer per channel; subscribers
+// stored in a bounded circular buffer per channel; subscribers
 // receive every new event live and can replay missed events when they
 // reconnect.
 //
@@ -56,22 +56,38 @@ type EventBus struct {
 	closed   atomic.Bool
 }
 
-// ring is a fixed-capacity circular buffer keyed by per-channel seq.
-// head + count slide around backing[]; no copies on overflow.
+// ring is a bounded circular buffer keyed by per-channel seq.
+// head + count slide around backing[]; no copies on overflow. The
+// backing array starts small and doubles up to capacity as events
+// arrive — most channels never see more than a handful of events, so
+// preallocating capacity slots per channel would waste the bulk of
+// the bus's steady-state memory.
 type ring struct {
-	head    int
-	count   int
-	seq     uint64
-	backing []Event
+	head     int
+	count    int
+	seq      uint64
+	capacity int
+	backing  []Event
 }
+
+// ringInitialCapacity is the first backing allocation for a non-empty
+// ring. Small on purpose: quiet channels stay small forever.
+const ringInitialCapacity = 16
 
 func newRing(capacity int) *ring {
-	return &ring{backing: make([]Event, capacity)}
+	return &ring{capacity: capacity}
 }
 
-// append stores e at the tail, evicting the oldest entry if full.
-// O(1) — the index advances; no element shift.
+// append stores e at the tail, growing the backing up to capacity and
+// evicting the oldest entry once full. Amortized O(1). A zero-capacity
+// ring (ephemeral channels) tracks sequence only and retains nothing.
 func (r *ring) append(e Event) {
+	if r.capacity == 0 {
+		return
+	}
+	if r.count == len(r.backing) && r.count < r.capacity {
+		r.grow()
+	}
 	cap := len(r.backing)
 	if r.count < cap {
 		r.backing[(r.head+r.count)%cap] = e
@@ -81,6 +97,19 @@ func (r *ring) append(e Event) {
 		r.head = (r.head + 1) % cap
 	}
 	r.seq = e.Seq
+}
+
+// grow re-linearizes the ring into a larger backing array (head back
+// to 0). Doubling bounded by capacity; at most log2(capacity) growths
+// over a channel's lifetime.
+func (r *ring) grow() {
+	newCap := min(max(2*len(r.backing), ringInitialCapacity), r.capacity)
+	fresh := make([]Event, newCap)
+	for i := range r.count {
+		fresh[i] = r.backing[(r.head+i)%len(r.backing)]
+	}
+	r.backing = fresh
+	r.head = 0
 }
 
 // replayAfter walks the ring and returns every event with seq > lastSeq.
@@ -163,7 +192,17 @@ func (b *EventBus) Emit(channel string, payload any) (Event, error) {
 	b.mu.Lock()
 	r, ok := b.rings[channel]
 	if !ok {
-		r = newRing(b.capacity)
+		capacity := b.capacity
+		if ephemeralEventChannels[channel] {
+			// Seed-style cache warmers: sequence tracking only, no
+			// replay retention (see event_visibility.go).
+			capacity = 0
+		} else if latestOnlyEventChannels[channel] {
+			// Whole-state frames: the newest one supersedes all prior
+			// ones, so retain exactly it (see event_visibility.go).
+			capacity = 1
+		}
+		r = newRing(capacity)
 		b.rings[channel] = r
 	}
 	r.seq++
@@ -178,7 +217,14 @@ func (b *EventBus) Emit(channel string, payload any) (Event, error) {
 		return Event{}, err
 	}
 	evt.WireBytes = wire
-	r.append(evt)
+	// The ring retains WireBytes only: replay writes it verbatim
+	// (writeEventFrame's fast path — replay never batches), so also
+	// retaining Data would hold every payload twice for the ring's
+	// lifetime. Live fanout below still carries Data for the batch
+	// writer.
+	ringEvt := evt
+	ringEvt.Data = nil
+	r.append(ringEvt)
 
 	// Snapshot the maintained slice under the same lock. Subs join /
 	// leave through Subscribe / Close, so this is a single bounded
@@ -286,6 +332,13 @@ func (b *EventBus) Replay(lastSeqByChannel map[string]uint64) []Event {
 			continue
 		}
 		evts, hadGap := r.replayAfter(lastSeq)
+		if hadGap && latestOnlyEventChannels[channel] {
+			// Whole-state channel: frames the ring evicted are
+			// superseded state, not lost history — deliver the newest
+			// frame instead of a gap marker (a gap would make clients
+			// log/recover for data the next frame replaces anyway).
+			evts, hadGap = r.replayAfter(r.seq - 1)
+		}
 		if hadGap {
 			gap := Event{
 				Channel: channel,

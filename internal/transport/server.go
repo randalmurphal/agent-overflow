@@ -123,6 +123,13 @@ type Config struct {
 	// early but hold navigation until the backend is actually ready.
 	RequireReadyForBootstrap bool
 
+	// CrossOriginIsolate makes every asset and design response carry
+	// cross-origin isolation headers (COOP/COEP/CORP) so the SPA runs
+	// crossOriginIsolated and measureUserAgentSpecificMemory works.
+	// Diagnostic opt-in (AGENT_OVERFLOW_RENDERER_DIAG) — COEP blocks
+	// remote subresources while on. See WriteCrossOriginIsolationHeaders.
+	CrossOriginIsolate bool
+
 	// HTTPReadHeaderTimeout, HTTPReadTimeout, HTTPWriteTimeout,
 	// HTTPIdleTimeout map onto net/http.Server fields. Zero values
 	// pick safe defaults documented in New().
@@ -199,6 +206,13 @@ type Server struct {
 	ready atomic.Bool
 
 	startupFailed atomic.Bool
+
+	// remoteConns counts live non-loopback WebSocket connections.
+	// Feeds HasRemoteClient, which gates work that only benefits
+	// remote viewers (the highlight seed push). Note tunneled remotes
+	// (SSH local forward) arrive AS loopback and are invisible here —
+	// they get the ordinary RPC path, today's behavior.
+	remoteConns atomic.Int64
 }
 
 // New constructs a Server. Generates a token if one wasn't provided.
@@ -348,13 +362,25 @@ func (s *Server) buildHTTPServer() *http.Server {
 		// (which can include user material) over LAN. LAN-served design
 		// previews are a separate feature — pick it up via a deliberate
 		// token-validation pass when we want them.
-		mux.Handle("/design/", s.loopbackHostGuard(s.designLoopbackOnly(designH).ServeHTTP))
+		// Diag-mode isolation headers must cover /design/ too: COEP
+		// applies to nested documents, so the preview iframe fails to
+		// load under the isolated shell unless its responses carry
+		// CORP/COEP themselves.
+		var designFinal http.Handler = s.loopbackHostGuard(s.designLoopbackOnly(designH).ServeHTTP)
+		if s.cfg.CrossOriginIsolate {
+			designFinal = withCrossOriginIsolation(designFinal)
+		}
+		mux.Handle("/design/", designFinal)
 	}
-	if s.cfg.AssetHandler != nil {
-		mux.Handle("/", withAssetHeaders(s.cfg.AssetHandler))
-	} else {
-		mux.Handle("/", withAssetHeaders(http.NotFoundHandler()))
+	assetH := s.cfg.AssetHandler
+	if assetH == nil {
+		assetH = http.NotFoundHandler()
 	}
+	assetFinal := withAssetHeaders(assetH)
+	if s.cfg.CrossOriginIsolate {
+		assetFinal = withCrossOriginIsolation(assetFinal)
+	}
+	mux.Handle("/", assetFinal)
 	return &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: s.cfg.HTTPReadHeaderTimeout,
@@ -518,6 +544,12 @@ func (s *Server) Addr() string {
 // Token returns the auth token in use.
 func (s *Server) Token() string { return s.token }
 
+// HasRemoteClient reports whether at least one non-loopback WebSocket
+// connection is currently attached. Producers of remote-only event
+// channels (see event_visibility.go) consult this to skip the work
+// entirely when nobody would receive it.
+func (s *Server) HasRemoteClient() bool { return s.remoteConns.Load() > 0 }
+
 // MarkReady releases a readiness-gated bootstrap endpoint.
 func (s *Server) MarkReady() { s.ready.Store(true) }
 
@@ -624,10 +656,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 // withAssetHeaders wraps the asset handler with caching + security
-// headers. Cache headers are content-aware: Vite-hashed asset paths
-// (/assets/*) get a year of immutable caching because their filename
-// already encodes their content hash, while index.html and "/" go out
-// as no-cache so a fresh deploy isn't shadowed by a stale shell.
+// headers. Cache headers are content- and peer-aware: Vite-hashed asset
+// paths (/assets/*) get a year of immutable caching for remote peers
+// but no-store for loopback ones (see below), while index.html and "/"
+// go out as no-cache so a fresh deploy isn't shadowed by a stale shell.
 //
 // Security headers come from WriteSecurityHeaders so the rule set stays
 // in sync between this server and clientmode's stub.
@@ -637,9 +669,23 @@ func withAssetHeaders(next http.Handler) http.Handler {
 		WriteSecurityHeaders(h)
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/assets/"):
+			if remoteAddrIsLoopback(r.RemoteAddr) {
+				// The only loopback consumer is the embedded webview,
+				// which loads the SPA once per process and never
+				// renavigates — a cached asset can never be reused.
+				// Cacheable scripts DO cost: Blink's in-memory HTTP
+				// cache retains their decoded text for the page's
+				// lifetime (~6 MB measured 2026-07-21, renderer
+				// web_cache/Script_resources). no-store keeps assets
+				// out of that cache; the rare manual reload refetches
+				// embedded bytes over loopback.
+				h.Set("Cache-Control", "no-store")
+				break
+			}
 			// Vite emits hashed filenames under /assets/, so the response
 			// is content-addressable forever — a content change ships a
-			// new path, never overwrites this one.
+			// new path, never overwrites this one. Remote clients reload
+			// across sessions, so the cache genuinely pays off there.
 			h.Set("Cache-Control", "public, max-age=31536000, immutable")
 		default:
 			// "/" and "/index.html" are the SPA entry shell; a deploy
@@ -647,6 +693,17 @@ func withAssetHeaders(next http.Handler) http.Handler {
 			// old shell that fetches new asset URLs from a stale manifest.
 			h.Set("Cache-Control", "no-cache, must-revalidate")
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withCrossOriginIsolation stamps the diagnostic isolation headers on
+// every response of the wrapped handler. Kept separate from
+// withAssetHeaders because it also wraps the /design/ route, which has
+// its own header stack.
+func withCrossOriginIsolation(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		WriteCrossOriginIsolationHeaders(w.Header())
 		next.ServeHTTP(w, r)
 	})
 }
@@ -690,6 +747,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	profile := connProfile{
 		isLoopback: isLoopback,
+	}
+
+	if !isLoopback {
+		s.remoteConns.Add(1)
+		defer s.remoteConns.Add(-1)
 	}
 
 	// Use the server's root context so Shutdown can cancel us promptly,

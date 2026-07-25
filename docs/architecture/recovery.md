@@ -75,14 +75,19 @@ with a Reconnect button that calls `App.ReconnectSession` (in
 `session_ref` drives the resume; no extra state is needed from the
 frontend.
 
-## Revert and Recovery
+## Rollback and Recovery
 
-The revert modes in `app_checkpoint.go` interact with this machinery:
+Conversation rollback (fork-from-message and the Stop/Esc
+revert-on-interrupt, shared saga in `app_conversation_rollback.go`)
+interacts with this machinery:
 
-- Codex `revert-conversation` and `revert-both` call `thread/rollback`
-  on the live or a temp resumed session (`rollbackCodexThread`).
-  `session_ref` stays valid.
-- Claude has no wire-level rollback, so the same modes clear
-  `SessionRef` and `PendingForkRef` (`revertProviderConversation` in
-  `app_checkpoint.go`). The next message starts a fresh session; the
-  old session file is left on disk untouched.
+- Codex calls `thread/rollback` on the live or a temp resumed session
+  (`rollbackCodexThreadToMessage`). `session_ref` stays valid. Rolling
+  back to turn 0 clears `session_ref` and starts fresh instead.
+- Claude has no wire-level rollback, so
+  `rollbackClaudeThreadToMessage` writes a sliced copy of the session
+  JSONL (`internal/provider/claude/sessionfork`) and points
+  `session_ref` at it; the original session file is left on disk
+  untouched. Turn 0 clears the session entirely.
+
+See `docs/architecture/revert-modes.md` for the full sequence.

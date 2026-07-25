@@ -716,7 +716,7 @@ func TestMarkUserInterrupt_ExemptsBackgroundedLaunches(t *testing.T) {
 		t.Fatalf("inline start: %v", err)
 	}
 
-	errID, err := router.MarkUserInterrupt("t1")
+	errID, err := markUserInterruptForTest(router, "t1")
 	if err != nil {
 		t.Fatalf("MarkUserInterrupt: %v", err)
 	}

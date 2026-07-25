@@ -225,6 +225,18 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 		a.watchSessionProcess(ps.PID(), sessionToken)
 	}
 
+	// A session-death restore can requeue messages instead of restoring
+	// them to the draft (failed stale-row cleanup, R11-1). Every other
+	// drain trigger needs a live session (RegisterQueueItem) or wire
+	// traffic (the boundary drains), so an idle replacement would strand
+	// them indefinitely — flush now that the session can accept sends
+	// (round-12, D12-2). The dispatch worker serializes behind this
+	// function's thread action lock, so the flush lands after startup
+	// completes.
+	if a.triage != nil && a.triage.HasQueuedFlushItems(threadID) {
+		a.triage.FlushQueuedItems(threadID)
+	}
+
 	// Best-effort Codex reconcile for the on-reopen case. If the prior
 	// app-server forgot the thread across a restart we want to flip any
 	// still-`running && is_background` rows to errored/lost (systemError
@@ -324,7 +336,25 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	// Thread-scoped design state must be torn down alongside the session
 	// so a restart doesn't leak the prior turn's MCP registration.
 	a.teardownDesignThread(threadID)
-	return a.closeProviderSession(threadID, existing)
+	err := a.closeProviderSession(threadID, existing)
+	// The replacement session streams fresh items; the old stream's
+	// scanner states are dead weight (their final ticks will never
+	// arrive) and a reused item ID would inherit a stale watermark.
+	// unregisterSession can't purge for this path — the token was
+	// already taken above, so its callback no-ops. Unlike
+	// teardownAndCloseSession there is no CleanupThread here (the
+	// replacement path deliberately keeps triage live), so the stream
+	// persist buffers must be drained explicitly first: Close drained
+	// the read loop, but a buffer armed by its final deltas would
+	// otherwise fire its 250ms flush AFTER the purge and re-register
+	// the state it just removed.
+	if a.triage != nil {
+		if flushErr := a.triage.FlushThread(threadID); flushErr != nil {
+			log.Printf("app: flush stream buffers before seeder purge for %s: %v", threadID, flushErr)
+		}
+	}
+	a.highlightSeeder.purgeThread(threadID)
+	return err
 }
 
 // mergeProviderEnv folds providerExtraEnv into a session config's Env
@@ -523,6 +553,21 @@ func (a *App) InterruptTurn(threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
+	// The whole interrupt — session capture, pre-ack Mark, ack wait,
+	// and the post-ack bookkeeping/promote/eager block — runs under the
+	// thread action lock: the same lock the session-start funnel holds
+	// across MarkThreadActive + spawn, the death drain holds across its
+	// restore, and the dispatch worker holds per batch. Without it a
+	// replacement could reactivate the thread between the post-ack
+	// epoch checks and their store writes, and the Codex resend could
+	// go through a captured session already swapped out (round-12,
+	// CT12-2/CT12-3/C12-2). runPlainInterruptLocked holds the same lock
+	// via its caller — including across the ack wait, the established
+	// precedent that the provider read loop never blocks on this lock.
+	// The in-triage epoch fences stay as defense for an interrupt that
+	// acquires this lock only after a replacement completed.
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		return nil
@@ -532,14 +577,38 @@ func (a *App) InterruptTurn(threadID string) error {
 	if providerSess == nil {
 		return fmt.Errorf("session has no provider")
 	}
+	// Sampled BEFORE the interrupt ack: awaiting it keeps the read loop
+	// processing wire events, so the cut turn can settle in the gap and
+	// a later sample would miss it (round-5, R5-4). The sample is also
+	// PUBLISHED onto the unconsumed pending flush entries pre-ack: the
+	// CLI's mid-loop queue drain can echo one back during the ack wait,
+	// and a post-ack stamp would let that echo settle the cut turn
+	// "end_turn" (round-6, R6-4; broadened past still-deferred entries
+	// in round-7, R7-5). If the interrupt request itself fails the
+	// previous stamps are RESTORED — not wiped: an entry eager-persisted
+	// by an earlier interrupt still carries that interrupt's valid
+	// stamp.
+	interruptedTurn := -1
+	var stampToken triage.FlushStampToken
+	if a.triage != nil {
+		interruptedTurn = a.triage.OpenTurnIndex(threadID)
+		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
+	}
 	if err := providerSess.Interrupt(context.Background()); err != nil {
+		if a.triage != nil {
+			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
+		}
 		return err
 	}
 	if a.triage != nil {
-		if _, err := a.triage.MarkUserInterrupt(threadID); err != nil {
+		// The pre-ack sampled turn, not a fresh resolution: a queued echo
+		// consumed during the ack wait may have opened its own turn, and
+		// the stopped bookkeeping belongs on the turn the user cut
+		// (round-11, C11-1).
+		if _, err := a.triage.MarkUserInterrupt(threadID, interruptedTurn, stampToken); err != nil {
 			log.Printf("app: interrupt turn: mark user interrupt: %v", err)
 		}
-		a.eagerPersistFlushSendsOnInterrupt(threadID, sess)
+		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)
 	}
 	return nil
 }
@@ -556,29 +625,46 @@ func (a *App) InterruptTurn(threadID string) error {
 //
 // For Codex, deferred sends are also re-sent as a fresh turn because
 // Codex discards steered pending_input on turn/interrupt.
-func (a *App) eagerPersistFlushSendsOnInterrupt(threadID string, sess session) {
-	a.triage.PromoteQuietFlushSends(threadID)
+//
+// interruptedTurn is the caller's pre-ack OpenTurnIndex sample (-1
+// when no turn was open) — see EagerPersistDeferredFlushSends for why
+// it cannot be sampled here (round-5, R5-4). stampToken is the pre-ack
+// mark's token, fencing the eager stamp against newer concurrent
+// interrupts and session replacement (round-9, R9-5/R9-6).
+func (a *App) eagerPersistFlushSendsOnInterrupt(threadID string, sess session, interruptedTurn int, stampToken triage.FlushStampToken) {
+	// Message-anchor recording for both paths happens INSIDE the router
+	// calls, under the thread's flush anchor lock, via the confirmed
+	// hook. This is the rows' baseline anchor (rollback stays offered if
+	// the session dies before the echo); the echo-time hook later stamps
+	// the provider ids at the consumption boundary (round-7, R7-1). The
+	// baseline must commit before the mutex releases or an echo in the
+	// gap stamps ids onto an anchor that doesn't exist yet (round-4
+	// review, CT4-1).
+	a.triage.PromoteQuietFlushSends(threadID, stampToken)
 
-	persisted := a.triage.EagerPersistDeferredFlushSends(threadID)
+	persisted := a.triage.EagerPersistDeferredFlushSends(threadID, interruptedTurn, stampToken)
 	if len(persisted) == 0 {
+		return
+	}
+
+	if sess.codex == nil {
 		return
 	}
 
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		log.Printf("app: eager persist flush: load thread %s: %v", threadID, err)
-		return
-	}
-
-	for _, p := range persisted {
-		a.captureMessageCheckpoint(thread, store.Item{
-			ID:        p.UserItemID,
-			ThreadID:  threadID,
-			TurnIndex: p.TurnIndex,
-		})
-	}
-
-	if sess.codex == nil {
+		// The resend cannot run, and Codex discarded the queued input at
+		// turn/interrupt — the entries' echoes will never come. Clear
+		// them (a lingering FIFO entry would mis-pair the next send's
+		// echo) and restore the messages to the composer draft, the
+		// provider-native recovery for input Codex never consumed.
+		ids := make([]string, len(persisted))
+		for i, p := range persisted {
+			ids[i] = p.UserItemID
+		}
+		a.triage.ClearPendingSendsByItemIDs(threadID, ids)
+		a.restoreEagerPersistedFlushesToDraft(threadID, persisted)
 		return
 	}
 
@@ -589,7 +675,15 @@ func (a *App) eagerPersistFlushSendsOnInterrupt(threadID string, sess session) {
 // eagerly-persisted flush items as a fresh Codex turn. Codex discards
 // steered pending_input on turn/interrupt (codex-rs abort_all_tasks →
 // input_queue.clear_pending), so the client must re-submit — mirroring
-// the Codex TUI's submit_pending_steers_after_interrupt flow.
+// the Codex TUI's submit_pending_steers_after_interrupt flow, merged
+// into one message like the TUI's merge_user_messages resubmit.
+//
+// Failure posture also mirrors the TUI: input the model never consumed
+// is restored to the composer draft
+// (restoreEagerPersistedFlushesToDraft), never left in the timeline
+// looking sent. Only the delivery-ambiguous turn/start timeout keeps
+// its pending entry — the turn may be running and a restore would
+// double-send.
 func (a *App) codexResendAfterInterrupt(
 	threadID string,
 	sess session,
@@ -604,14 +698,36 @@ func (a *App) codexResendAfterInterrupt(
 	}
 	a.triage.ClearPendingSendsByItemIDs(threadID, ids)
 
+	// The original dispatch delivered image attachments alongside the
+	// steer; this resend is the content's only remaining delivery, so
+	// it must carry them too (round-14, CT14-2). IDs come from the
+	// persisted rows' meta — the same source the requeue payload uses.
+	var attachmentIDs []string
+	for _, p := range persisted {
+		ids, err := attachmentIDsFromUserMeta(p.Meta)
+		if err != nil {
+			log.Printf("app: codex interrupt re-send: decode attachments for %s/%s: %v", threadID, p.UserItemID, err)
+			continue
+		}
+		attachmentIDs = append(attachmentIDs, ids...)
+	}
+	providerAttachments, _, err := a.resolveSendMessageAttachments(threadID, attachmentIDs)
+	if err != nil {
+		log.Printf("app: codex interrupt re-send: resolve attachments for %s: %v", threadID, err)
+		a.restoreEagerPersistedFlushesToDraft(threadID, persisted)
+		return
+	}
+
 	merged := strings.Join(contents, "\n\n")
 	sendOpts := provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
+		Attachments:     providerAttachments,
 	}
 
 	turnIndex, err := a.nextSendTurnIndex(threadID)
 	if err != nil {
 		log.Printf("app: codex interrupt re-send: resolve turn index for %s: %v", threadID, err)
+		a.restoreEagerPersistedFlushesToDraft(threadID, persisted)
 		return
 	}
 
@@ -626,8 +742,23 @@ func (a *App) codexResendAfterInterrupt(
 	sess.liveness.bumpActivity(time.Now())
 
 	if sendErr := sess.codex.Send(context.Background(), merged, sendOpts); sendErr != nil {
+		if codex.IsAmbiguousTurnStartTimeout(sendErr) {
+			// The turn/start was written; the turn — and its echo — may
+			// already be running. Requeueing would re-send content Codex
+			// may have consumed (round-14, D14-2). Keep the pending entry:
+			// a late echo settles it normally, and if the turn truly never
+			// started the session-death drain recovers the rows.
+			log.Printf("app: codex interrupt re-send for thread %s timed out after write; leaving pending confirmation for provider echo", threadID)
+			return
+		}
 		log.Printf("app: codex interrupt re-send for thread %s: %v", threadID, sendErr)
 		a.triage.ClearPendingSendForFailure(threadID, persisted[0].UserItemID)
+		// Codex discarded the queued input at turn/interrupt and this
+		// resend was its only delivery — the rows would sit in the
+		// timeline looking sent. Delete them and hand the content back
+		// to the composer, the same recovery the Codex TUI applies to
+		// unconsumed input.
+		a.restoreEagerPersistedFlushesToDraft(threadID, persisted)
 	}
 }
 
@@ -690,11 +821,21 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 		// Restore before cleanup: the sweep's clearFlushQueueLocked
 		// discards queued items, and they only exist in router memory —
 		// without the restore the user's queued text would vanish.
+		var requeued []triage.UnconfirmedFlushItem
 		if a.triage.ThreadEpoch(threadID) == epoch {
-			a.restoreUnconfirmedQueueOnSessionDeath(threadID)
+			requeued = a.restoreUnconfirmedQueueOnSessionDeath(threadID)
 		}
 		if !a.triage.CleanupThreadIfEpoch(threadID, epoch) {
 			log.Printf("app: skipped triage cleanup for thread %s — a replacement session reactivated it mid-teardown", threadID)
+		} else if len(requeued) > 0 {
+			// The restore REQUEUED these (failed stale-row cleanup or
+			// failed draft restore) and the cleanup just wiped the queue
+			// they re-entered — re-register them so the next start's
+			// funnel flush still finds them (round-13, D13-1). When the
+			// cleanup was skipped, the queue was never wiped and they
+			// are still registered.
+			a.requeueUnconfirmedFlushItems(threadID, requeued)
+			a.emitQueueStateChanged(threadID)
 		}
 	}
 	if err := a.closeProviderSession(threadID, sess); err != nil {
@@ -726,5 +867,10 @@ func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	if a.triage != nil {
 		a.triage.CleanupThread(threadID)
 	}
-	return a.closeProviderSession(threadID, sess)
+	err := a.closeProviderSession(threadID, sess)
+	// After the provider process is closed no flush tick can re-register
+	// seeder state; a thread killed mid-stream would otherwise strand
+	// its entries (no final tick ever arrives to clear them).
+	a.highlightSeeder.purgeThread(threadID)
+	return err
 }

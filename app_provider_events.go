@@ -286,5 +286,12 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 		a.triage.ClearEffectiveModel(threadID)
 	}
 
+	// The provider read loop is gone, so no flush tick can re-register
+	// seeder state; drop what a mid-stream crash stranded (racing settle
+	// goroutines only send final ticks, which self-clean on an ephemeral
+	// state). Without this, a crashed stream's entries survive into the
+	// thread's next session with a stale fence watermark.
+	a.highlightSeeder.purgeThread(threadID)
+
 	a.teardownDesignThread(threadID)
 }

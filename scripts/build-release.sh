@@ -103,6 +103,45 @@ validate_launcher() {
 	fi
 }
 
+# The darwin zips are arch-labeled and the in-app updater matches assets by
+# those labels, so a mislabeled slice would ship an unrunnable build to
+# updaters. The bundle must be UNIVERSAL (arm64 + x86_64) before it may be
+# published under either arch name.
+validate_universal_macho() {
+	path=$1
+	[ -f "$path" ] || { echo "ERROR: missing macOS binary: $path" >&2; exit 1; }
+	if command -v lipo >/dev/null 2>&1; then
+		archs=$(lipo -archs "$path" 2>/dev/null || true)
+		case "$archs" in
+			*arm64*x86_64*|*x86_64*arm64*) ;;
+			*)
+				echo "ERROR: macOS binary is not universal (archs: ${archs:-unreadable}); refusing to publish arch-labeled assets: $path" >&2
+				exit 1
+				;;
+		esac
+	else
+		desc=$(file -b "$path" 2>/dev/null || true)
+		case "$desc" in
+			*universal*) ;;
+			*)
+				echo "ERROR: macOS binary is not universal (file: ${desc:-unreadable}); refusing to publish arch-labeled assets: $path" >&2
+				exit 1
+				;;
+		esac
+	fi
+}
+
+# One universal bundle, published once per arch label: the updater's asset
+# matcher requires BOTH the platform and arch tokens in an asset name, so a
+# single "universal"-named zip would match nobody (and renaming the existing
+# darwin-arm64 asset would strand already-shipped clients).
+package_darwin_zips() {
+	validate_universal_macho "$ROOT_DIR/bin/agent-overflow.app/Contents/MacOS/agent-overflow"
+	arm64_zip="$OUT_DIR/agent-overflow-darwin-arm64.zip"
+	( cd "$ROOT_DIR/bin" && zip -qr "$arm64_zip" "agent-overflow.app" )
+	cp "$arm64_zip" "$OUT_DIR/agent-overflow-darwin-amd64.zip"
+}
+
 validate_version
 require_clean_tree
 sync_version
@@ -149,15 +188,15 @@ fi
 if [ "$SKIP_MACOS" -eq 0 ]; then
 	case "$(uname -s)" in
 		Darwin)
-			echo "==> Building macOS app bundle"
-			( cd "$ROOT_DIR" && VERSION="$VERSION" wails3 task darwin:package )
-			( cd "$ROOT_DIR/bin" && zip -qr "$OUT_DIR/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
+			echo "==> Building macOS app bundle (universal)"
+			( cd "$ROOT_DIR" && VERSION="$VERSION" wails3 task darwin:package:universal )
+			package_darwin_zips
 			;;
 		*)
 			if command -v docker >/dev/null 2>&1 && docker image inspect wails-cross >/dev/null 2>&1; then
-				echo "==> Building macOS app bundle with Docker cross image"
-				( cd "$ROOT_DIR" && VERSION="$VERSION" wails3 task darwin:package )
-				( cd "$ROOT_DIR/bin" && zip -qr "$OUT_DIR/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
+				echo "==> Building macOS app bundle with Docker cross image (universal)"
+				( cd "$ROOT_DIR" && VERSION="$VERSION" wails3 task darwin:package:universal )
+				package_darwin_zips
 			else
 				echo "==> Skipping macOS app bundle; Docker image wails-cross is not available."
 			fi

@@ -485,10 +485,24 @@ func (r *Router) attachPayloadToItemWithEmit(
 	if item.CreatedAt == 0 {
 		item.CreatedAt = now
 	}
+	var err error
 	if emit {
-		return r.persistItem(item, &payload)
+		err = r.persistItem(item, &payload)
+	} else {
+		err = r.persistItemQuiet(item, &payload)
 	}
-	return r.persistItemQuiet(item, &payload)
+	if err != nil {
+		return err
+	}
+	// Diff-kind full writes are the one attach path whose data blob is a
+	// complete unified patch, so this is where the diff payload observer
+	// fires for them (tool results notify from their own persist sites).
+	// The append branch above never notifies: its content is a delta,
+	// and spans keyed to a delta would match no reader's text.
+	if payloadKind == "diff" {
+		r.notifyDiffPayloadPersisted(evt.ThreadID, payloadID, ToolResultMeta{}, string(data))
+	}
+	return nil
 }
 
 func buildPayloadMeta(payloadKind string, evt provider.ProviderEvent) string {

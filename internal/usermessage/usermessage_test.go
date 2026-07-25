@@ -276,3 +276,76 @@ func TestMergeProviderItemIDHandlesJSONNullExisting(t *testing.T) {
 		t.Errorf("json-null existing should be replaced with valid object; got %q", got)
 	}
 }
+
+// R5-8 (round 5): the parent uuid is stamped into item meta in the SAME
+// merge as the item id so the two can never diverge across a failed
+// follow-up write. These pin the combined helper's contract.
+
+func TestMergeProviderIDsStampsBothKeys(t *testing.T) {
+	got, err := MergeProviderIDs(`{"attachments":[{"id":"att-1"}]}`, "u-new", "p-new")
+	if err != nil {
+		t.Fatalf("MergeProviderIDs: %v", err)
+	}
+	if ReadProviderItemID(got) != "u-new" {
+		t.Errorf("item id not stamped: %q", got)
+	}
+	if ReadProviderParentUUID(got) != "p-new" {
+		t.Errorf("parent uuid not stamped: %q", got)
+	}
+	if !strings.Contains(got, "att-1") {
+		t.Errorf("existing keys lost: %q", got)
+	}
+}
+
+func TestMergeProviderIDsEmptyValuePreservesStoredKey(t *testing.T) {
+	existing, err := MergeProviderIDs("", "u-old", "p-old")
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := MergeProviderIDs(existing, "u-new", "")
+	if err != nil {
+		t.Fatalf("merge with empty parent: %v", err)
+	}
+	if ReadProviderItemID(got) != "u-new" || ReadProviderParentUUID(got) != "p-old" {
+		t.Errorf("empty parent must not blank the stored one: %q", got)
+	}
+	got, err = MergeProviderIDs(existing, "", "p-new")
+	if err != nil {
+		t.Fatalf("merge with empty id: %v", err)
+	}
+	if ReadProviderItemID(got) != "u-old" || ReadProviderParentUUID(got) != "p-new" {
+		t.Errorf("empty id must not blank the stored one: %q", got)
+	}
+}
+
+func TestMergeProviderIDsNoChangeReturnsOriginal(t *testing.T) {
+	existing, err := MergeProviderIDs("", "u-1", "p-1")
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := MergeProviderIDs(existing, "u-1", "p-1")
+	if err != nil {
+		t.Fatalf("no-op merge: %v", err)
+	}
+	if got != existing {
+		t.Errorf("identical values must return the original string for no-op detection: %q vs %q", got, existing)
+	}
+	if got, err := MergeProviderIDs(existing, "", ""); err != nil || got != existing {
+		t.Errorf("both-empty merge must pass through: %q err=%v", got, err)
+	}
+}
+
+func TestReadProviderParentUUID(t *testing.T) {
+	if got := ReadProviderParentUUID(""); got != "" {
+		t.Errorf("empty meta = %q", got)
+	}
+	if got := ReadProviderParentUUID(`{not-json`); got != "" {
+		t.Errorf("malformed meta = %q", got)
+	}
+	if got := ReadProviderParentUUID(`{"provider_parent_uuid":42}`); got != "" {
+		t.Errorf("non-string value = %q", got)
+	}
+	if got := ReadProviderParentUUID(`{"provider_parent_uuid":"p-1"}`); got != "p-1" {
+		t.Errorf("stored parent = %q, want p-1", got)
+	}
+}

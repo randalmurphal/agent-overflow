@@ -16,7 +16,7 @@
   import { createUsageStats, localTzOffsetMinutes } from '../../stores/usageQuery.svelte';
   import { formatTokens } from '../../utils/format';
   import { formatUsageCostOrNull } from '../../utils/usageDisplay';
-  import UsageModal from '../usage/UsageModal.svelte';
+  import LazyOverlay from '../primitives/LazyOverlay.svelte';
 
   interface ProviderRow {
     provider: string;
@@ -106,9 +106,13 @@
   </div>
 {/if}
 
-<UsageModal
-  open={modalOpen}
-  onClose={() => {
-    modalOpen = false;
+<LazyOverlay
+  load={() => import('../usage/UsageModal.svelte')}
+  active={modalOpen}
+  props={{
+    open: modalOpen,
+    onClose: () => {
+      modalOpen = false;
+    },
   }}
 />

@@ -4,9 +4,8 @@
 // Svelte 5's `state_unsafe_mutation` guard.
 //
 // The matchMedia listener is attached lazily on first `'system'` read
-// and survives until `teardownThemeModeForTest()` is called. Same
-// pattern as `diffTheme.svelte.ts` — and `getDiffTheme()` is now a
-// one-line wrapper over this store, so we don't double-subscribe.
+// and survives until `teardownThemeModeForTest()` is called. The
+// terminal and mermaid theme reads share this one listener.
 
 import { getSettings } from './settings.svelte';
 

@@ -52,10 +52,14 @@ beforeEach(() => {
   setBindingMock('GetThread', async () => ({ id: 'thread-1', workspacePath: '/repo' }));
   setBindingMock('GetGitStatus', async () => ({}));
   setBindingMock('GetWorkspaceCurrentDiff', async () => patch());
-  setBindingMock('GetSessionAgentDiff', async () => '');
   setBindingMock('GetBranchBaseDiff', async () => '');
-  setBindingMock('GetMessageCheckpointDiff', async () => '');
-  setBindingMock('ListThreadCheckpoints', async () => []);
+  setBindingMock('ListBranchCommits', async () => []);
+  setBindingMock('GetCommitDiff', async () => '');
+  setBindingMock('ListPRCommits', async () => []);
+  setBindingMock('GetPRCommitDiff', async () => '');
+  setBindingMock('ListThreadEditDiffs', async () => ({ entries: [], turnLabels: [] }));
+  setBindingMock('GetTurnEditsDiff', async () => ({ data: '' }));
+  setBindingMock('GetPayloadData', async () => ({ data: '' }));
   setBindingMock('GitListBranches', async () => [{ name: 'main', isCurrent: false, isDefault: true }]);
   setBindingMock('ListDiffReviewComments', async () => []);
   setBindingMock('CreateDiffReviewComment', async () => ({}));
@@ -407,6 +411,142 @@ describe('<ReviewPane>', () => {
     expect(view.getByRole('button', { name: 'Request changes' })).toBeDisabled();
     // A comment-only review is always allowed, even on your own PR.
     expect(view.getByRole('button', { name: 'Comment' })).toBeEnabled();
+  });
+
+  it('selecting a PR commit hides the PR submit target and verdict row', async () => {
+    const commitSHA = 'b'.repeat(40);
+    const detail: PRDetail = {
+      number: 5,
+      title: 'Add feature',
+      body: '',
+      authorLogin: 'octocat',
+      state: 'open',
+      draft: false,
+      headRefName: 'feature',
+      baseRefName: 'main',
+      headSHA: 'sha-a',
+      url: 'https://github.com/owner/repo/pull/5',
+      additions: 3,
+      deletions: 0,
+      changedFiles: 1,
+      viewerIsAuthor: false,
+      reviewDecision: '',
+      latestReviews: [],
+      checks: { total: 0, success: 0, pending: 0, failure: 0, skipped: 0, canceled: 0, checks: [] },
+      mergeability: 'clean',
+    };
+    setBindingMock('SubscribePRUpdates', async (threadId: string, pr: unknown) => ({
+      id: 'sub-1',
+      threadId,
+      pr,
+      detail,
+      threads: [],
+      headSHA: 'sha-a',
+    }));
+    setBindingMock('UnsubscribePRUpdates', async () => undefined);
+    setBindingMock('GetPRDiff', async () => patch());
+    setBindingMock('ListPRReviewThreads', async () => []);
+    setBindingMock('ListPRCommits', async () => [
+      { sha: commitSHA, shortSha: 'bbbbbbb', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    setBindingMock('GetPRCommitDiff', async () => patch());
+    // Echo the requested sourceKey so a draft exists (and the send strip
+    // renders) in both the whole-PR and single-commit views.
+    setBindingMock('ListDiffReviewComments', async (_threadId: never, scope: string, sourceKey: string) =>
+      scope === 'pr'
+        ? [
+            {
+              id: 'pr-draft-1',
+              threadId: 'thread-1',
+              scope,
+              sourceKey,
+              filePath: 'src/app.ts',
+              status: 'draft',
+              side: 'new',
+              newLine: 1,
+              selectedText: '',
+              body: 'nit',
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ]
+        : [],
+    );
+
+    const ctx: PanelContext = {
+      ...makeCtx(),
+      thread: {
+        prRef: JSON.stringify({ Forge: 'github', Namespace: 'owner', Repo: 'repo', Number: 5 }),
+        workspacePath: '/repo',
+      } as unknown as Thread,
+    };
+    const view = render(ReviewPane, { ctx });
+
+    await waitFor(() => {
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
+    });
+    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'pr' } });
+
+    await waitFor(() => {
+      expect(view.getByTestId('review-commit-select')).toBeInTheDocument();
+      expect(view.getByTestId('review-send-strip')).toBeInTheDocument();
+    });
+    const strip = view.getByTestId('review-send-strip');
+    await fireEvent.change(strip.querySelector('select')!, { target: { value: 'pr' } });
+    await waitFor(() => {
+      expect(view.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    });
+
+    await fireEvent.change(view.getByTestId('review-commit-select'), { target: { value: commitSHA } });
+    // The single-commit view can only send to the agent: the target
+    // select and the PR verdict row both leave the strip.
+    await waitFor(() => {
+      expect(view.getByTestId('review-send-strip').querySelector('select')).toBeNull();
+    });
+    expect(view.queryByRole('button', { name: 'Approve' })).toBeNull();
+
+    // Back to "All commits" restores the PR target (still selected).
+    await fireEvent.change(view.getByTestId('review-commit-select'), { target: { value: '' } });
+    await waitFor(() => {
+      expect(view.getByTestId('review-send-strip').querySelector('select')).not.toBeNull();
+      expect(view.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    });
+  });
+
+  it('edits scope shows the turn-grouped selector and switches to a single edit', async () => {
+    setBindingMock('ListThreadEditDiffs', async () => ({
+      entries: [
+        { itemId: 'tool:1', payloadId: 'pl-1', turnIndex: 1, title: 'Edited parser.go', paths: ['parser.go'], insertions: 1, deletions: 0, createdAt: 1 },
+        { itemId: 'tool:2a', payloadId: 'pl-2a', turnIndex: 2, title: 'Edited lexer.go', paths: ['lexer.go'], insertions: 2, deletions: 1, createdAt: 2 },
+        { itemId: 'tool:2b', payloadId: 'pl-2b', turnIndex: 2, title: 'Edited lexer.go', paths: ['lexer.go'], insertions: 1, deletions: 1, createdAt: 3 },
+      ],
+      turnLabels: [
+        { turnIndex: 1, label: 'fix the parser' },
+        { turnIndex: 2, label: 'now the lexer' },
+      ],
+    }));
+    setBindingMock('GetTurnEditsDiff', async () => ({ data: patch() }));
+    const payload = setBindingMock('GetPayloadData', async () => ({ data: patch() }));
+
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => {
+      expect(view.getByTestId('review-diff-stats')).toBeInTheDocument();
+    });
+    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'edits' } });
+
+    await waitFor(() => {
+      expect(view.getByTestId('review-edit-select')).toBeInTheDocument();
+    });
+    const select = view.getByTestId('review-edit-select') as HTMLSelectElement;
+    // Default: the latest turn's whole set, grouped under its prompt.
+    expect(select.value).toBe('turn:2');
+    const groups = [...select.querySelectorAll('optgroup')].map((group) => group.label);
+    expect(groups).toEqual(['fix the parser', 'now the lexer']);
+
+    await fireEvent.change(select, { target: { value: 'item:tool:2a' } });
+    await waitFor(() => {
+      expect(payload).toHaveBeenCalledWith('thread-1', 'pl-2a');
+    });
   });
 
   it('keeps the scope selector enabled while a slow PR load is in flight', async () => {

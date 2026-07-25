@@ -82,7 +82,7 @@ func TestWorkflowTakeoverRejectsHistoricalPhaseThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := app.prepareWorkflowTakeoverSendLocked(old); err == nil || !strings.Contains(err.Error(), "not the current attempt") {
+	if _, err := app.prepareWorkflowTakeoverSend(old); err == nil || !strings.Contains(err.Error(), "not the current attempt") {
 		t.Fatalf("historical takeover error = %v", err)
 	}
 }

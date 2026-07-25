@@ -66,6 +66,41 @@ on the wire at all. Rules for any future receiver:
   needs per-method classification, extend `internalmethods.go` rather
   than re-checking origin in method bodies.
 
+## Event-channel visibility
+
+`event_visibility.go` filters pushed events per connection origin:
+
+- `loopbackOnlyEventChannels` — frames carrying local-terminal bytes or
+  identity/billing data that a LAN peer must not see.
+- `remoteOnlyEventChannels` — frames that exist purely to hide WAN
+  round-trip latency (`highlight:seed`) and are waste on a local pipe.
+  The producer is ALSO gated on `Server.HasRemoteClient()` (an atomic
+  count of non-loopback WS connections), so no work happens when only
+  loopback clients are attached; the wire filter is what keeps the
+  frames off loopback pipes while a remote viewer keeps the producer
+  running. Caveat: SSH-tunneled remotes arrive as loopback and are
+  invisible to the probe — they keep the RPC path.
+  (`highlight:diff_seed` used to sit here too; it goes to every client
+  now because its persist-time seeds can be parse-primed — better than
+  the loopback RPC recompute — and local clients consume them as
+  in-place cache upgrades.)
+- `ephemeralEventChannels` — both seed channels are also excluded from
+  replay-ring retention (`eventbus.go` gives them a zero-capacity
+  ring: sequence tracking only). Seeds are point-in-time cache warmers
+  — replaying superseded frames after a reconnect is useless, and each
+  frame can carry large span/hash arrays that would otherwise sit in
+  the ring up to `DefaultRingCapacity` deep. Replay for these channels
+  returns nothing and no gap marker.
+- `latestOnlyEventChannels` — unkeyed whole-state channels
+  (`system:stats`) get a capacity-1 ring: the newest frame fully
+  supersedes all prior ones, so a default-depth ring would retain
+  hundreds of stale samples forever and replay them all on reconnect.
+  Replay delivers the single newest frame and never a gap marker —
+  evicted frames are superseded state, not lost history. Keyed
+  channels (git:status, provider:usage, discussion:state, mcp:status)
+  must NOT join this set: capacity 1 would evict other keys' latest
+  frames.
+
 ## Wire frames
 
 - **Client → Server**:

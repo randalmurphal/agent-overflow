@@ -362,6 +362,27 @@ describe('eventEscapesTerminalToCommand (terminal key-escape predicate)', () => 
       ),
     ).toBe(false);
   });
+
+  // Pressing mod+shift+` produces event.key '~' (the shifted glyph), which is
+  // why the default binding is spelled `mod+shift+~` — a `mod+shift+\`` chord
+  // would never fire. Pin the full dispatch on both platforms so neither the
+  // glyph spelling nor the mod resolution regresses.
+  it('dispatches mod+shift+~ to terminal.newPane on both platforms', () => {
+    const run = vi.fn();
+    registerCommand({ id: 'terminal.newPane', label: 'New Pane', editableReachable: true, run });
+    setKeybindingsForTest([{ key: 'mod+shift+~', command: 'terminal.newPane' }]);
+
+    // Windows/Linux: Ctrl+Shift+` → key '~'.
+    expect(dispatchKey(ev('~', { ctrlKey: true, shiftKey: true, code: 'Backquote' }), baseCtx(), { isMac: false })).toBe(true);
+    // macOS: Cmd+Shift+` → key '~'.
+    expect(dispatchKey(ev('~', { metaKey: true, shiftKey: true, code: 'Backquote' }), baseCtx(), { isMac: true })).toBe(true);
+    expect(run).toHaveBeenCalledTimes(2);
+
+    // The bare backtick (shift not producing '~', or the unshifted key) must
+    // not fire it.
+    expect(dispatchKey(ev('`', { ctrlKey: true, code: 'Backquote' }), baseCtx(), { isMac: false })).toBe(false);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('keybindings store — loading', () => {

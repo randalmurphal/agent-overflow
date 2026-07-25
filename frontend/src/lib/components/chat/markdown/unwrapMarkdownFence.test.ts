@@ -115,4 +115,97 @@ describe('unwrapMarkdownFence', () => {
     const input = 'Hello world.\n\nSome more text.';
     expect(unwrapMarkdownFence(input)).toBe(input);
   });
+
+  // Fast-path equivalence: sources admitted by the "backtick within the
+  // first four characters" guard that are NOT ```markdown wrappers must
+  // short-circuit on the opener-line test without changing behavior.
+
+  it('returns a message that starts with inline code unchanged', () => {
+    const input = '`useTailWindow` is the hook in question.\n\nIt cuts at line starts.\n\n```go\ncode\n```';
+    expect(unwrapMarkdownFence(input)).toBe(input);
+  });
+
+  it('returns a single-line inline-code message with no newline unchanged', () => {
+    const input = '`flag` ' + 'prose '.repeat(500);
+    expect(unwrapMarkdownFence(input)).toBe(input);
+  });
+
+  it('returns an indented non-opener first line unchanged', () => {
+    const input = ' x `tick`\n```markdown\n```go\ncode\n```\n```';
+    expect(unwrapMarkdownFence(input)).toBe(input);
+  });
+
+  it('unwraps an opener preceded by up to three blank characters', () => {
+    const input = ['', '```markdown', '# Title', '```go', 'code', '```', '```'].join('\n');
+    expect(unwrapMarkdownFence(input)).toBe(['# Title', '```go', 'code', '```'].join('\n'));
+  });
+
+  it('unwraps an opener with trailing whitespace', () => {
+    const input = ['```markdown   ', '# Title', '```go', 'code', '```', '```'].join('\n');
+    expect(unwrapMarkdownFence(input)).toBe(['# Title', '```go', 'code', '```'].join('\n'));
+  });
+
+  it('leaves an opener beyond the first four characters unchanged (guard shape)', () => {
+    const input = ['', '', '', '', '```markdown', '```go', 'code', '```', '```'].join('\n');
+    expect(unwrapMarkdownFence(input)).toBe(input);
+  });
+
+  it('leaves a language-tag lookalike unchanged', () => {
+    const input = ['```markdownx', '```go', 'code', '```', '```'].join('\n');
+    expect(unwrapMarkdownFence(input)).toBe(input);
+  });
+
+  it('unwraps with exactly three leading blank characters (guard boundary)', () => {
+    const input = ['', '', '', '```markdown', '# Title', '```go', 'code', '```', '```'].join('\n');
+    expect(unwrapMarkdownFence(input)).toBe(['# Title', '```go', 'code', '```'].join('\n'));
+  });
+
+  // OPENER_SCAN_RE (the sticky fast-path pre-check) must accept/reject
+  // exactly the opener lines OPENER_RE does — a divergence silently
+  // breaks the unwrap (or falsely engages it). Each candidate line is
+  // dropped into an otherwise-unwrappable document; whether the unwrap
+  // happens is then decided solely by the opener test, exercising both
+  // regexes through the public API.
+  describe('fast-path equivalence over opener-line shapes', () => {
+    const docFor = (opener: string, closer: string): string =>
+      [opener, '# Title', '```go', 'code', '```', closer].join('\n');
+
+    const unwrapped = ['# Title', '```go', 'code', '```'].join('\n');
+
+    const accepted: Array<[string, string, string]> = [
+      ['plain opener', '```markdown', '```'],
+      ['short alias', '```md', '```'],
+      ['uppercase', '```MARKDOWN', '```'],
+      ['mixed case alias', '```Md', '```'],
+      ['one leading space', ' ```markdown', '```'],
+      ['three leading spaces', '   ```markdown', '```'],
+      ['trailing spaces', '```markdown   ', '```'],
+      ['trailing tab', '```markdown\t', '```'],
+      ['trailing carriage return', '```markdown\r', '```'],
+      ['five-backtick fence', '`````markdown', '`````'],
+    ];
+
+    const rejected: Array<[string, string]> = [
+      ['no language tag', '```'],
+      ['two backticks', '``md'],
+      ['wrong language', '```markdwn'],
+      ['tag with suffix', '```mdx'],
+      ['tilde fence', '~~~markdown'],
+      ['tab indentation', '\t```markdown'],
+      ['inline content after tag', '```markdown # heading'],
+    ];
+
+    for (const [name, opener, closer] of accepted) {
+      it(`accepts: ${name}`, () => {
+        expect(unwrapMarkdownFence(docFor(opener, closer))).toBe(unwrapped);
+      });
+    }
+
+    for (const [name, opener] of rejected) {
+      it(`rejects: ${name}`, () => {
+        const input = docFor(opener, '```');
+        expect(unwrapMarkdownFence(input)).toBe(input);
+      });
+    }
+  });
 });

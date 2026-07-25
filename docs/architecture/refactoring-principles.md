@@ -18,7 +18,7 @@ Create files and packages around a single responsibility:
   `provider.ProviderEvent` values.
 - triage decides persistence and frontend routing.
 - app-level code coordinates cross-boundary workflows such as session
-  startup, sends, queues, checkpoints, and design setup.
+  startup, sends, queues, forks, and design setup.
 - frontend stores own visible UI state and projection, not backend
   business decisions.
 

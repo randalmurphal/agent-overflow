@@ -285,10 +285,13 @@
       aria-label="Discussion Channel Messages"
       data-testid="channel-message-list"
     >
-      <!-- will-change-transform: permanent layer promotion for the scroll
-           controller's sub-pixel glide residue (translateY), matching
-           MessageTimeline's contentEl. -->
-      <div bind:this={contentEl} class="space-y-3 will-change-transform">
+      <!-- Layer promotion for the scroll controller's sub-pixel glide
+           residue is controller-owned (scroll-activity lease, matching
+           MessageTimeline's contentEl — see the lease section in
+           utils/scroll/index.svelte.ts). No static will-change class:
+           it would pin a full-content-height composited layer per
+           parked surface. -->
+      <div bind:this={contentEl} class="space-y-3">
         {#if loadingInitial}
           <div class="text-[0.75rem] text-fg-subtle">Loading channel messages…</div>
         {:else if loadError}

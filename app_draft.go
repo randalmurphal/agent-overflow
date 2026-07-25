@@ -161,9 +161,6 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	a.clearThreadSystemPrompt(threadID)
 	a.removeDeliberation(thread)
 	a.clearAutoReconnectAttempted(threadID)
-	if err := a.cleanupThreadCheckpoints(threadID, thread, true); err != nil {
-		errs = append(errs, fmt.Errorf("cleanup checkpoints: %w", err))
-	}
 	if err := a.cleanupThreadAttachmentFiles(threadID); err != nil {
 		errs = append(errs, fmt.Errorf("cleanup attachments: %w", err))
 	}

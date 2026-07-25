@@ -25,7 +25,7 @@ Two options:
 Persist `task_id` to `items.meta` at `task_started` time, and provide
 a dedicated store lookup `FindToolCallItemByTaskID` backed by a
 partial index on `json_extract(meta, '$.task_id')`
-(migration v17).
+(`idx_items_meta_task_id`, now part of the v1 baseline schema).
 
 The adapter also keeps its in-memory map for the common "same
 session" fast path, but the persisted copy is the source of truth for

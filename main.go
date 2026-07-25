@@ -17,11 +17,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/diagenv"
+	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/settings"
@@ -105,6 +108,17 @@ func main() {
 
 	if shouldSyncShellEnv(flags) {
 		syncShellEnvForBoot()
+	}
+
+	// Opt-in loopback pprof listener (AGENT_OVERFLOW_PPROF=1). Started
+	// for every backend mode — headless, embedded webview, client —
+	// because memory questions don't care which shell the process wears.
+	if pprofAddr, _, pprofErr := pprofserve.StartIfEnabled(); pprofErr != nil {
+		// The operator explicitly asked for profiling; a silent no-op
+		// listener would waste their next hour. Loud, not fatal.
+		log.Printf("pprof: %v", pprofErr)
+	} else if pprofAddr != "" {
+		log.Printf("pprof: serving on http://%s/debug/pprof/", pprofAddr)
 	}
 
 	switch {
@@ -329,6 +343,13 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// X-Frame-Options: DENY.
 		DesignHandler: appService.DesignServer,
 		MCPToolCall:   appService.handleWorkflowMCPToolCall,
+		// Diagnostic cross-origin isolation so the renderer exposes
+		// measureUserAgentSpecificMemory. Opt-in: COEP breaks remote
+		// subresources (chat-markdown images, design-preview assets).
+		CrossOriginIsolate: envTruthy(os.Getenv(diagenv.RendererDiag)),
+	}
+	if cfg.CrossOriginIsolate {
+		log.Printf("transport: renderer diag mode — cross-origin isolation headers on (remote subresources will not load)")
 	}
 	if listenAddr != "" {
 		host, port := splitListenAddr(listenAddr)
@@ -581,6 +602,14 @@ func isNativeDevMode() bool {
 
 func logBootPhase(phase string, started time.Time) {
 	log.Printf("boot: phase=%s duration=%s", phase, time.Since(started).Round(time.Millisecond))
+}
+
+// envTruthy treats "1"/"true" (any case) as enabled; everything else,
+// including empty, is off. Deliberately narrower than strconv.ParseBool
+// so a typo'd value reads as off rather than a surprise opt-in.
+func envTruthy(v string) bool {
+	v = strings.TrimSpace(v)
+	return v == "1" || strings.EqualFold(v, "true")
 }
 
 // fatalf prints the formatted message to stderr and exits 1. Used at

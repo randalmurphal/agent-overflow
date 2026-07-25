@@ -13,6 +13,12 @@ type PayloadPreview struct {
 	NextOffset int    `json:"nextOffset"`
 	TotalSize  int    `json:"totalSize"`
 	IsComplete bool   `json:"isComplete"`
+	// PatchSpans carries the persisted highlight spans of a diff-kind
+	// payload (computed once at persist time, stored beside the row).
+	// Keys are content-addressed per file, so spans for a file the
+	// served text truncates simply never match and that file falls back
+	// to the RPC path. See app_highlight_diff_seed.go.
+	PatchSpans []PatchSpanSeed `json:"patchSpans,omitempty"`
 }
 
 type PayloadChunk struct {
@@ -27,13 +33,18 @@ type PayloadChunk struct {
 // projection based on the payload kind.
 type PayloadContent struct {
 	Data string `json:"data"`
+	// PatchSpans: see PayloadPreview.PatchSpans.
+	PatchSpans []PatchSpanSeed `json:"patchSpans,omitempty"`
 }
 
+// GetPayloadPreview serves a payload's leading bytes, with the payload's
+// persisted highlight spans attached for diff kinds.
 func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int) (PayloadPreview, error) {
 	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
 		return PayloadPreview{}, err
 	}
-	if _, err := a.getThreadPayloadMeta(threadID, payloadID); err != nil {
+	meta, err := a.getThreadPayloadMeta(threadID, payloadID)
+	if err != nil {
 		return PayloadPreview{}, err
 	}
 	data, totalSize, isComplete, err := a.store.GetPayloadPreview(payloadID, maxBytes)
@@ -45,6 +56,7 @@ func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int)
 		NextOffset: len(data),
 		TotalSize:  totalSize,
 		IsComplete: isComplete,
+		PatchSpans: a.persistedPayloadPatchSpans(meta.Kind, payloadID),
 	}, nil
 }
 
@@ -68,14 +80,16 @@ func (a *App) GetPayloadChunk(threadID string, payloadID string, offset int, max
 	}, nil
 }
 
-// GetPayloadData returns a payload body. The caller must supply the owning
-// thread so payload ids cannot be read outside the thread timeline that
-// references them.
+// GetPayloadData returns a payload body, with the payload's persisted
+// highlight spans attached for diff kinds. The caller must supply the
+// owning thread so payload ids cannot be read outside the thread
+// timeline that references them.
 func (a *App) GetPayloadData(threadID string, payloadID string) (PayloadContent, error) {
 	if err := a.flushThreadPayloadBuffers(threadID); err != nil {
 		return PayloadContent{}, err
 	}
-	if _, err := a.getThreadPayloadMeta(threadID, payloadID); err != nil {
+	meta, err := a.getThreadPayloadMeta(threadID, payloadID)
+	if err != nil {
 		return PayloadContent{}, err
 	}
 	data, err := a.store.GetPayloadData(payloadID)
@@ -83,7 +97,8 @@ func (a *App) GetPayloadData(threadID string, payloadID string) (PayloadContent,
 		return PayloadContent{}, err
 	}
 	return PayloadContent{
-		Data: string(data),
+		Data:       string(data),
+		PatchSpans: a.persistedPayloadPatchSpans(meta.Kind, payloadID),
 	}, nil
 }
 

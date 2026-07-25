@@ -1,4 +1,5 @@
 import { GetPayloadChunk, GetPayloadData, GetPayloadPreview } from '../stores/bindings';
+import { seedPayloadPatchSpans } from './diffSpanCache.svelte';
 import { payloadVersionKey, readPayloadCache, writePayloadCache } from './payloadDataCache';
 import { boundedPayloadVersionString } from './payloadVersion';
 import { revealedSuffix } from './textOverlap';
@@ -319,6 +320,11 @@ export function createPayloadExpansion(
         'Loading payload timed out',
       );
       const data = payloadTextFromBindingData(result.data, 'GetPayloadData');
+      // Diff-kind payload responses to remote clients carry precomputed
+      // spans; seeding BEFORE the chunks land means the diff rows'
+      // first render is a synchronous span-cache hit (no RPC, no
+      // plain-then-colored repaint). Absent on loopback: no-op.
+      await seedPayloadPatchSpans(ownerThreadID, result.patchSpans);
       return {
         data,
         nextOffset: data.length,
@@ -331,6 +337,7 @@ export function createPayloadExpansion(
       requestTimeoutMs,
       'Loading payload preview timed out',
     );
+    await seedPayloadPatchSpans(ownerThreadID, preview.patchSpans);
     return {
       ...preview,
       data: payloadTextFromBindingData(preview.data, 'GetPayloadPreview'),

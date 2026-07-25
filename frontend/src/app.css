@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./styles/tokens.css";
+@import "./styles/syntax.css";
 
 :root {
   --surface-0: oklch(0.145 0.014 285.82);
@@ -172,27 +173,28 @@ html.light {
   --font-sans: 'Geist Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
 
-  /* Override Tailwind's animate-pulse with a stepped timing function.
-     Every animate-pulse in this app is an ambient indicator (working
-     dots in the sidebar/header/picker, loading text, retry icons) —
-     and a continuously-eased compositor animation forces a GPU present
-     every vsync for as long as it is visible. On a 165Hz panel that
-     made one pulsing 6px dot a standing 165 presents/sec client in the
-     desktop composition lane whenever ANY thread was working, which
-     showed up as stutter in OTHER apps (2026-07-04: YouTube video +
-     typing hitches with the app idle-visible; minimizing the window —
-     which stops Chromium frame production — cleared it). steps() makes
-     the animation update in discrete jumps: 4 steps per half-cycle ≈ 4
-     opacity changes/sec, imperceptible on indicator dots, ~40× less
-     lane traffic. Spinners (animate-spin) are deliberately NOT stepped
-     — rotation reads as broken when discretized — and are only used
-     transiently. */
-  --animate-pulse: pulse 2s steps(8, jump-none) infinite;
-  @keyframes pulse {
-    50% {
-      opacity: 0.5;
-    }
-  }
+  /* Disarm Tailwind's animate-pulse animation. Every animate-pulse in
+     this app is an ambient indicator (working dots in the sidebar/
+     header/picker, loading text, retry icons); the utility keeps its
+     name but is now a MARKER class — utils/ambientTicker.ts discovers
+     marked elements and writes their pulsing opacity inline, so style
+     recalc touches only the dots and only when a value changes.
+
+     History, because both halves matter: the original smooth pulse
+     forced a GPU present every vsync — on a 165Hz panel one 6px dot was
+     a standing 165 presents/sec client that stuttered OTHER apps
+     (2026-07-04 incident). A steps() timing function fixed the present
+     rate but not the style-recalc rate: a running CSS animation ticks
+     main-thread style recalc every vsync even when its output is
+     stepped (measured 2026-07-20: ~60 recalcs/sec from the ambient
+     indicators alone, each recalc allocating into Blink's Oilpan heap —
+     see ambientTicker.ts). The JS ticker closes that: style work now
+     happens only when a value actually changes. Spinners (animate-spin)
+     are deliberately untouched — smooth rotation, transient use only.
+     Standing spinners use primitives/SteppedSpinner.svelte: a spoked
+     glyph whose steps(12) rotation lands on spoke positions, so the
+     discretization reads as design. */
+  --animate-pulse: none;
 
   /* Existing semantic colors. */
   --color-surface-0: var(--surface-0);
@@ -605,6 +607,7 @@ pre, code, kbd, samp, .ansi-body {
   cursor: pointer;
   font-weight: 500;
   color: var(--text-secondary);
+  -webkit-user-select: none;
   user-select: none;
   padding: 0.125rem 0;
 }
@@ -665,10 +668,16 @@ pre, code, kbd, samp, .ansi-body {
  * events so it never blocks the click target, and sits behind the
  * row's text. Matches forge's Sidebar.logic.ts glow-ring-* treatment.
  *
- * Keyframes shift between a subtle outer shadow and a stronger inset
- * lift; 2.5s is slow enough to read as a "hey, over here" attention
- * pulse without strobing. Reduced-motion users get the static border
- * (no animation) via the @media block below.
+ * The breathing shifts between a subtle outer shadow and a stronger
+ * inset lift; the 2.5s cycle is slow enough to read as a "hey, over
+ * here" attention pulse without strobing. utils/ambientTicker.ts
+ * drives it through --ambient-glow-t (0 rest → 1 peak, 250ms steps)
+ * written inline on the HOST element — a ::before can't take inline
+ * styles, and the host-scoped var keeps invalidation to that row's
+ * subtree. box-shadow can't be composited, and a CSS animation would
+ * tick style recalc every vsync besides (see the --animate-pulse note
+ * in @theme). Reduced-motion users get the static border: the ticker
+ * withholds writes and the var() fallback (t=0) is the rest state.
  */
 .status-glow-warning,
 .status-glow-info {
@@ -682,14 +691,9 @@ pre, code, kbd, samp, .ansi-body {
   border-radius: inherit;
   pointer-events: none;
   border: 1px solid currentColor;
-  /* steps(): box-shadow animation cannot be composited, so a smooth
-     ease repaints AND presents every vsync for as long as the glow is
-     visible — attention states can persist for minutes, making this a
-     standing full-refresh-rate client (same incident as the
-     --animate-pulse override in @theme). 5 steps per half-cycle ≈ 4
-     updates/sec — the breathing still reads, the lane traffic drops
-     ~40×. */
-  animation: status-glow-pulse 2.5s steps(5, jump-none) infinite;
+  box-shadow: 0 0 0 calc(var(--ambient-glow-t, 0) * 2px)
+    rgb(from currentColor r g b / calc(var(--ambient-glow-t, 0) * 0.22));
+  opacity: calc(0.7 + 0.3 * var(--ambient-glow-t, 0));
 }
 .status-glow-warning::before {
   color: var(--warning);
@@ -697,51 +701,52 @@ pre, code, kbd, samp, .ansi-body {
 .status-glow-info::before {
   color: var(--info);
 }
-@keyframes status-glow-pulse {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgb(from currentColor r g b / 0);
-    opacity: 0.7;
-  }
-  50% {
-    box-shadow: 0 0 0 2px rgb(from currentColor r g b / 0.22);
-    opacity: 1;
-  }
-}
+/*
+ * Ambient pulse: no CSS here on purpose. The utility's animation is
+ * disarmed in @theme (--animate-pulse: none) and the ticker
+ * (utils/ambientTicker.ts) writes inline opacity onto every
+ * `.animate-pulse` element — `animate-pulse`, `ambient-pulse-s2`, and
+ * `ambient-pulse-s4` (Indicator.svelte's 250ms/500ms staggers) are
+ * marker classes the ticker discovers, not styled selectors. Inline
+ * leaf writes keep the recalc scope to the dots themselves; a shared
+ * CSS variable on <html> was tried first and invalidated style for
+ * the whole document per write (see the note in ambientTicker.ts).
+ * With the ticker stopped or reduced motion active, no inline style
+ * is present and elements rest at their natural opacity.
+ */
 
 /*
- * Activity-rail working shimmer: a thin accent-tinted highlight band
- * that sweeps across the top edge of the composer card while the
- * agent is working.
+ * Activity-rail working indicator: a static accent hairline across the
+ * top edge of the composer card (presence) plus a three-LED
+ * left-to-right chase in the rail's working chip (liveness).
  *
- * Implementation: the host span is the track; a `::before` pseudo-
- * element is the band. The band is 50% of the track wide with a
- * peak-in-the-middle gradient (transparent → accent → transparent),
- * and animates via `transform: translateX()` so the peak glides from
- * the track's left edge to its right edge. `animation-direction:
- * alternate` reverses smoothly at each endpoint. The band's
- * transparent edges absorb the over-translate at -50% / +150% so the
- * highlight is always perceptibly present — no off-screen dead time
- * between cycles. translateX is composite-only so the animation
- * never repaints.
+ * This replaced the smooth shimmer sweep, which was the app's last
+ * standing per-vsync compositor client — a continuously-eased
+ * transform animation presents every vsync (165/s on a 165Hz panel)
+ * for the entire working turn (same incident as the --animate-pulse
+ * note in @theme). Here the hairline never animates, and the chase is
+ * driven by utils/ambientTicker.ts (--ambient-led1/2/3, one-hot
+ * advance every 250ms): 4 presents/s while working, and style recalc
+ * only when a LED actually flips — a CSS animation would tick recalc
+ * every vsync even with stepped timing (see the @theme note).
+ *
+ * Low-power mode omits the .working-leds wrapper class, which drops
+ * the chase and leaves the LEDs at their resting opacity; the hairline
+ * is static and stays in every mode. The ticker writes the chase as
+ * inline opacity on the wrapper's children (leaf-scoped recalc); with
+ * the ticker idle or reduced motion active there is no inline style
+ * and all three LEDs rest at 0.45.
  */
-.activity-shimmer::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 50%;
+.working-hairline {
   background: linear-gradient(
     90deg,
     transparent,
-    color-mix(in oklab, var(--accent) 75%, transparent),
+    color-mix(in oklab, var(--accent) 55%, transparent),
     transparent
   );
-  animation: activity-shimmer 1.6s ease-in-out infinite alternate;
 }
-@keyframes activity-shimmer {
-  from { transform: translateX(-50%); }
-  to   { transform: translateX(150%); }
+.working-led {
+  opacity: 0.45;
 }
 
 /*

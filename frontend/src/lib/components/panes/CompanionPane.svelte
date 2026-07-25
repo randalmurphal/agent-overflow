@@ -1,8 +1,5 @@
 <script lang="ts">
   import type { Component } from 'svelte';
-  import PlanSidebar from '../chat/PlanSidebar.svelte';
-  import DesignPreviewRhsPanel from '../design/DesignPreviewRhsPanel.svelte';
-  import ReviewPane from '../review/ReviewPane.svelte';
   import {
     closeCompanion,
     type CompanionPanelKind,
@@ -19,18 +16,30 @@
     sourcePaneId: string;
   }
 
-  type CompanionRegistryEntry = {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    component: Component<any>;
-  };
+  // Panel bodies load lazily so the plan/design/review feature chunks
+  // stay out of the eager startup graph — a companion pane only exists
+  // after an explicit user action.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type CompanionLoader = () => Promise<{ default: Component<any> }>;
 
-  const COMPANION_COMPONENTS = {
-    plan: { component: PlanSidebar },
-    'design-preview': { component: DesignPreviewRhsPanel },
-    review: { component: ReviewPane },
-  } satisfies Record<CompanionPanelKind, CompanionRegistryEntry>;
+  const COMPANION_LOADERS = {
+    plan: () => import('../chat/PlanSidebar.svelte'),
+    'design-preview': () => import('../design/DesignPreviewRhsPanel.svelte'),
+    review: () => import('../review/ReviewPane.svelte'),
+  } satisfies Record<CompanionPanelKind, CompanionLoader>;
 
   let { paneId, kind, sourcePaneId }: Props = $props();
+  // Captured ONCE, deliberately non-reactive: an {#await} block re-runs
+  // its expression whenever any dependency invalidates, with no
+  // promise-identity cutoff — and a divider drag replaces this pane's
+  // layout item (the source behind the `kind` prop) every frame. Calling
+  // the loader inside the template minted a fresh promise per frame,
+  // flashing the pending branch and remounting the panel body mid-drag
+  // (full review reload + scroll reset). A companion's kind is fixed for
+  // its lifetime, so one promise is correct; thread switches remount the
+  // body through {#key panelKey} without changing kind.
+  // svelte-ignore state_referenced_locally
+  const panelLoad = COMPANION_LOADERS[kind]();
   let sourcePane = $derived(getPane(sourcePaneId));
   let panelContext = $derived(
     sourcePane ? makePanelContext(sourcePane, () => closeCompanion(paneId)) : null,
@@ -41,8 +50,6 @@
 </script>
 
 {#if sourcePane && panelContext}
-  {@const panelEntry = COMPANION_COMPONENTS[kind]}
-  {@const PanelComponent = panelEntry.component as unknown as Component<Record<string, unknown>>}
   <aside
     aria-label={kind === 'plan' ? 'Proposed Plan' : kind === 'review' ? 'Review' : 'Design Preview'}
     class="flex h-full min-h-0 flex-col border-l border-border bg-surface-1"
@@ -51,7 +58,13 @@
     data-companion-source-pane-id={sourcePaneId}
   >
     {#key panelKey}
-      <PanelComponent ctx={panelContext} />
+      {#await panelLoad then { default: PanelComponent }}
+        <PanelComponent ctx={panelContext} />
+      {:catch err}
+        <div class="flex h-full min-h-0 items-center justify-center px-4 text-sm text-error" data-testid="companion-pane-load-error">
+          Failed to load panel: {err instanceof Error ? err.message : String(err)}
+        </div>
+      {/await}
     {/key}
   </aside>
 {:else}

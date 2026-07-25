@@ -1,7 +1,6 @@
 import { tick } from 'svelte';
 import type { Item, Project, Thread } from '../types/models';
 import { asProviderID } from '../types/providers';
-import type { Checkpoint } from '../types/checkpoint';
 import type {
   ApprovalRequest,
   ContextWindow,
@@ -13,12 +12,6 @@ import type {
   SubagentNotificationEvent,
   UserInputRequest,
 } from '../types/events';
-import type {
-  CheckpointCapturedEvent,
-  CheckpointErrorEvent,
-  CheckpointRevertedEvent,
-  CheckpointUnavailableEvent,
-} from '../types/checkpoint';
 import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
 import type {
   ActiveOptionSet,
@@ -29,7 +22,6 @@ import {
   CloseThreadTerminals,
   CreateThread,
   ListRecentTurns,
-  ListThreadCheckpoints,
   MoveThreadTerminals,
   SwitchThread,
   AutoResumeThread,
@@ -44,7 +36,6 @@ import {
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 
 import { addToast } from './toast.svelte';
-import { createThreadCheckpointState, type ThreadCheckpointState } from './threadCheckpoints.svelte';
 import { createGitStatusSlot, type GitStatusSlot } from './gitStatus.svelte';
 import {
   closeCompanion,
@@ -58,7 +49,7 @@ import { openReviewCompanion } from './reviewPane.svelte';
 import { errString } from '../utils/errors';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
-import { clearTokensForThread } from '../utils/tokenCacheReactive.svelte';
+import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
 import {
   MAX_CACHED_SNAPSHOT_ITEMS,
   threadItemCache,
@@ -172,10 +163,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // changes shape or identity; `applyItemDelta` intentionally does not bump.
   let timelineRevision = $state(0);
   // Non-reactive timestamp of the last LIVE timeline content advance — a
-  // smoother reveal, an overwrite patch, a text-like provider row, or a
+  // smoother reveal, an overwrite patch, a text-like provider row, a
   // visible-field update to an already mounted row (tool output preview,
   // running→completed result chrome; see events.ts
-  // providerUpsertAdvancesLiveContent).
+  // providerUpsertAdvancesLiveContent), or a wire append / reveal-gate
+  // release entering the loaded tail (`armLiveContentAppendSpring`
+  // below — that path shares the arm's restore gates, so a switch-load
+  // settle never stamps).
   // Read imperatively by the scroll controller
   // (MessageTimeline's `animationMode` getter) to choose spring vs
   // sync-pin; see utils/springAnimationLatch.ts. Deliberately NOT
@@ -214,7 +208,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       items[index] = item;
     },
     stampLiveContent,
-    armStructuralSpring,
+    armStructuralSpring: armLiveContentAppendSpring,
     appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
   });
   // Windowed-history / paging machinery (loaded-window cursors and flags,
@@ -301,14 +295,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // fire-once FOCUS_TERMINAL_EVENT, whose listener didn't exist yet when the
   // event fired on a cold first open (the lazy import hadn't resolved).
   let pendingTerminalFocus = $state(false);
-  // Checkpoint bookkeeping is per-pane and resets on thread switch so
-  // per-message checkpoint affordances never flash stale availability.
-  const checkpoints: ThreadCheckpointState = createThreadCheckpointState();
 
   // Live git-status for this pane's workspace. Owns the single gitwatch
   // subscription (driven by ChatHeaderActions via attach); GitActionsControl
-  // and the header diff/PR badges read it. Reset on thread switch like
-  // checkpoints so a stale count never flashes for the incoming thread.
+  // and the header diff/PR badges read it. Reset on thread switch so a
+  // stale count never flashes for the incoming thread.
   const gitStatus: GitStatusSlot = createGitStatusSlot();
 
   const channelState = createThreadChannelState();
@@ -365,8 +356,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * entry so a slow paged fetch from thread A cannot clobber thread B's
    * items when the user flips between them quickly. Also exposed
    * publicly via the `switchGeneration` getter so MessageTimeline's
-   * `$effect.pre` can detect same-thread re-switch (the
-   * revert-to-checkpoint flow) and re-run its restore reset path —
+   * `$effect.pre` can detect same-thread re-switch (forced reloads
+   * that mutate items in place) and re-run its restore reset path —
    * must be `$state` for that effect dependency to track.
    */
   let switchGeneration = $state(0);
@@ -449,13 +440,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
   /**
    * Arm the structural-append spring and schedule its follow-up nudge.
-   * The pane data layer is the sole owner of this decision; the two call
-   * sites are `applyProviderItemUpserts` (a wire append to the loaded
-   * tail) and `recomputeRevealPass` (the reveal gate releasing withheld
-   * rows). Scroll writes still belong to the controller — the pane only
-   * talks to the registered `PaneScrollController` surface, the same
-   * seam the `scrollToItemRequest` intent publishes through when a
-   * scroll needs virtualizer index resolution.
+   * Returns whether the gates passed and the controller was armed. The
+   * pane data layer is the sole owner of this decision; the call sites
+   * are `armLiveContentAppendSpring` below (wire appends to the loaded
+   * tail via `applyProviderItemUpserts`, and `recomputeRevealPass`
+   * releasing withheld rows) plus the composer's optimistic user-send,
+   * which arms WITHOUT the live-content stamp (the send stays a
+   * one-shot; see `lastLiveContentAt`). Scroll writes still belong to
+   * the controller — the pane only talks to the registered
+   * `PaneScrollController` surface, the same seam the
+   * `scrollToItemRequest` intent publishes through when a scroll needs
+   * virtualizer index resolution.
    *
    * The arm runs synchronously with the data change — strictly before the
    * Svelte flush in which the virtualizer measures the new/released rows
@@ -481,11 +476,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    *   changes render nothing, and arming would open a 250ms spring
    *   window on unrelated channel-message growth.
    */
-  function armStructuralSpring(): void {
+  function armStructuralSpring(): boolean {
     const controller = scrollController;
-    if (!controller) return;
-    if (loading) return;
-    if (threadUsesDiscussionSurface(thread)) return;
+    if (!controller) return false;
+    if (loading) return false;
+    if (threadUsesDiscussionSurface(thread)) return false;
     controller.markStructuralContentPending();
     const token = ++structuralNudgeToken;
     const generation = switchGeneration;
@@ -497,6 +492,25 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (scrollController !== controller) return;
       controller.observe('live-content');
     })();
+    return true;
+  }
+
+  /**
+   * A wire append to the loaded tail (or a reveal-gate release mounting
+   * withheld rows) IS live content advancing: arm the structural spring
+   * AND stamp the live-content latch, sharing the arm's restore gates.
+   * The arm's 250ms one-shot alone only covers the append's first
+   * growth delivery — a background-task completion landing after turn
+   * end mounted with a brief chase and then teleported when its payload
+   * preview / markdown / highlight spans settled, because nothing had
+   * stamped the latch and every follow-up delta resolved 'instant'.
+   * The stamp opens the same SPRING_MODE_HOLD_MS rolling window those
+   * rows get when they arrive mid-stream, so post-turn appends animate
+   * identically. The one-shot stays armed alongside it: it is the
+   * append's own floor, independent of latch tuning.
+   */
+  function armLiveContentAppendSpring(): void {
+    if (armStructuralSpring()) stampLiveContent();
   }
 
   function rebuildItemIndexes(nextItems: Item[]): void {
@@ -688,18 +702,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // (hydrateSubagentChildren) lives in threadSubagentMemory.ts as
   // `subagentMemory.hydrateChildren`.
 
-  async function refreshCheckpointsForThread(threadID: string): Promise<void> {
-    const checkpointRows = ((await ListThreadCheckpoints(threadID)) ??
-      []) as Checkpoint[];
-    if (thread?.id !== threadID) return;
-    const sorted = [...checkpointRows].sort((a, b) => a.turnIndex - b.turnIndex);
-    checkpoints.setCheckpoints(sorted);
-  }
-
   /**
    * Snapshot the outgoing thread into the LRU cache (when worth it),
-   * and the partitioned shiki token cache.
-   * Same-thread re-switch (revert-to-checkpoint flows) skips the
+   * and evict its highlight-span cache entries.
+   * Same-thread re-switch skips the
    * snapshot AND force-evicts the cache entry so the incoming load
    * fetches fresh state instead of flashing the stale view through
    * `cache.get`. Streamed events evict inactive-thread cache entries
@@ -742,25 +748,24 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     }
     if (sameThreadReswitch) {
       threadItemCache.evict(incomingThreadId);
-      // Revert-to-checkpoint mutates this thread's items in place; its
+      // A same-thread re-switch mutates this thread's items in place; its
       // measured-size priors are now stale (the structure/content key would
       // also refuse them, but evict to free them promptly — same as the item cache).
       clearThreadSizePriors(incomingThreadId);
     }
     if (outgoingThreadId) {
-      // Free Shiki tokens cached against the outgoing thread. The shared
-      // cache is partitioned by threadId so this is a clean segmental
-      // drop; new lines tokenized for the incoming thread start from a
-      // fresh per-thread namespace.
-      clearTokensForThread(outgoingThreadId);
+      // Free highlight spans cached against the outgoing thread. The
+      // shared cache tracks per-key thread ownership, so entries a
+      // still-open thread also requested survive the drop.
+      evictDiffSpansForThread(outgoingThreadId);
     }
   }
 
   /**
    * Wipe pane-scoped state to the empty/default shape for the incoming
-   * thread: transient fields, turn-lifecycle pointers, live-todo state,
-   * and checkpoint bookkeeping. Pure mutation of pane state — no cache or
-   * outgoing-thread side effects.
+   * thread: transient fields, turn-lifecycle pointers, and live-todo
+   * state. Pure mutation of pane state — no cache or outgoing-thread
+   * side effects.
    */
   function resetIncomingPaneState(newThread: Thread): void {
     pendingInteractiveState.clear();
@@ -788,7 +793,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     subagentNotifications = [];
 
     liveTodoState.resetForThread(newThread.id);
-    checkpoints.clearForThread();
     gitStatus.reset();
   }
 
@@ -902,8 +906,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // Companion panes (plan / design-preview / review / take-control)
     // belong to the thread they were opened for. Switching this pane to
     // a DIFFERENT thread closes them instead of retargeting them; a
-    // same-thread re-switch (revert-to-checkpoint reload) keeps them
-    // open. Closing
+    // same-thread re-switch keeps them open. Closing
     // happens synchronously, before any effect flush sees the new
     // thread, so a mounted companion body never re-renders against a
     // thread it wasn't opened for.
@@ -1049,22 +1052,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       },
     );
 
-    const checkpointsPromise = withGenGuard(
-      'load checkpoints',
-      gen,
-      () => refreshCheckpointsForThread(newThread.id),
-      () => {},
-      (err) => {
-        checkpoints.setError(`Failed to load checkpoints: ${errString(err)}`);
-      },
-    );
-
     await Promise.allSettled([
       switchPromise,
       liveStatePromise,
       loadItemsPromise,
       recentTurnsPromise,
-      checkpointsPromise,
       autoResumePromise,
     ]);
     return { liveStateHydrationConsumed };
@@ -1260,9 +1252,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get showTerminal() {
       return showTerminal;
     },
-    get checkpoints() {
-      return checkpoints;
-    },
     get gitStatus() {
       return gitStatus;
     },
@@ -1283,28 +1272,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         return true;
       }
       return thread?.id === threadID;
-    },
-    refreshCheckpoints: refreshCheckpointsForThread,
-    applyCheckpointCaptured(payload: CheckpointCapturedEvent | null): void {
-      if (!payload || payload.threadId !== thread?.id) return;
-      void refreshCheckpointsForThread(payload.threadId);
-    },
-    applyCheckpointUnavailable(
-      payload: CheckpointUnavailableEvent | null,
-    ): void {
-      if (!payload || payload.threadId !== thread?.id) return;
-      checkpoints.markUnavailable(payload.reason);
-      checkpoints.setError(
-        'Workspace is not a git repo. Checkpoint diffs are unavailable.',
-      );
-    },
-    applyCheckpointError(payload: CheckpointErrorEvent | null): void {
-      if (!payload || payload.threadId !== thread?.id) return;
-      checkpoints.setError(`Checkpoint failed: ${payload.error}`);
-    },
-    applyCheckpointReverted(payload: CheckpointRevertedEvent | null): void {
-      if (!payload || payload.threadId !== thread?.id) return;
-      void refreshCheckpointsForThread(payload.threadId);
     },
     /**
      * Most recent completed turn, or null if the thread has no settled
@@ -1438,9 +1405,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * Monotonically increasing counter bumped at the top of every
      * `switchThread`, `clear`, `startDraftPlaceholder`, and
      * `adoptMaterializedDraftThread` call. Exposed so consumers can
-     * detect a same-thread re-switch — the path the revert-to-checkpoint
-     * flow takes when it calls `switchThread(currentThread)` to reload
-     * items in place. `pane.threadId` doesn't change on that path, so
+     * detect a same-thread re-switch — the path a forced
+     * `switchThread(currentThread)` reload takes to replace items
+     * in place. `pane.threadId` doesn't change on that path, so
      * any reset logic keyed purely on the thread id (the
      * MessageTimeline restore-effect.pre, in particular) would miss the
      * event and leave stale scroll state (the regression: revert lands
@@ -1652,7 +1619,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // `pagingGeneration` and `scrollToItemRequest.nonce` stay
       // monotonic for the pane's lifetime so no consumer observes a
       // regressed counter.
-      checkpoints.clearForThread();
       gitStatus.reset();
       // Invalidate any in-flight switchThread so its late resolutions can't
       // repopulate the pane we just cleared.
@@ -1907,16 +1873,20 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     ): ApplyItemUpsertsToWindowResult | null {
       const applied = upsertItemsBatch(incoming);
       // A wire append to the loaded tail arms the structural-append
-      // spring and its follow-up nudge (see `armStructuralSpring`, which
-      // also owns the loading/discussion gates). Turn-state-independent,
-      // so appends after turn end (interrupt echo, force-closed tool
-      // rows) arm too — an effect keyed on the active turn never saw
+      // spring, stamps the live-content latch, and schedules the
+      // follow-up nudge (see `armLiveContentAppendSpring`;
+      // `armStructuralSpring` owns the loading/discussion gates).
+      // Turn-state-independent, so appends after turn end (interrupt
+      // echo, force-closed tool rows, background-task completion
+      // siblings) arm too — an effect keyed on the active turn never saw
       // those and they landed as instant whole-viewport teleports
-      // (bug-report-20260702T193212Z). Optimistic-send and
-      // rollback-restore rows route through `upsertItems` above,
-      // deliberately outside this arm.
+      // (bug-report-20260702T193212Z). Rollback-restore rows route
+      // through `upsertItems` above, deliberately outside this arm;
+      // the composer's optimistic user-send arms at its own call site
+      // (`pane.armStructuralSpring()` before its upsert) without the
+      // stamp.
       if (applied && applied.appendedItems.length > 0) {
-        armStructuralSpring();
+        armLiveContentAppendSpring();
       }
       return applied;
     },
@@ -2176,6 +2146,19 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return streamingReveal.liveThinkingTailFor(itemId);
     },
 
+    /**
+     * True while a per-item smoother still owns this row's summary
+     * writes — i.e. the reveal is mid-drain, including the multi-second
+     * tail AFTER the wire settles the item's status to terminal.
+     * Reactive (SvelteMap-backed): row components derive their rendered
+     * streaming mode from `status === 'streaming' || isItemSmoothing`,
+     * so the streaming markdown guards hold until the drain finishes
+     * rather than dropping at wire settle while text is still growing.
+     */
+    isItemSmoothing(itemId: string): boolean {
+      return streamingReveal.isSmoothing(itemId);
+    },
+
     // Snap every behind smoother straight to its full received text on
     // visibilitychange → visible. See threadStreamingReveal.svelte.ts
     // `snapAllToReceived` for the full rationale.
@@ -2230,6 +2213,19 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     setSendInFlight(value: boolean): void {
       sendInFlight = value;
     },
+
+    /**
+     * Open the one-shot structural-append spring window for a mutation
+     * this pane is about to apply outside the wire-upsert path. Sole
+     * external caller today: the composer's optimistic user-send, so the
+     * just-sent message glides in through the spring instead of
+     * sync-pinning (the send deliberately does NOT stamp the
+     * live-content latch — one append wants one spring window, not
+     * 500ms of spring eligibility for unrelated reflows). Owns the
+     * loading/discussion gates; call it synchronously BEFORE the item
+     * mutation so the window is open when the flush delivers geometry.
+     */
+    armStructuralSpring,
 
     trackOptimisticItem(id: string): void {
       optimisticItemIds.add(id);

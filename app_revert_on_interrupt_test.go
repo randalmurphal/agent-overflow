@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/checkpoint"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
@@ -20,7 +19,7 @@ import (
 func TestEvaluateInterruptRevertPredicateNoItems(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "pred-empty", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "pred-empty", "claude", t.TempDir())
 
 	ok, _, reason, err := app.evaluateInterruptRevertPredicate(thread.ID)
 	if err != nil {
@@ -40,7 +39,7 @@ func TestEvaluateInterruptRevertPredicateNoItems(t *testing.T) {
 func TestEvaluateInterruptRevertPredicateSingleUserItem(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "pred-single", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "pred-single", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
 
 	ok, userItem, reason, err := app.evaluateInterruptRevertPredicate(thread.ID)
@@ -65,7 +64,7 @@ func TestEvaluateInterruptRevertPredicateSingleUserItem(t *testing.T) {
 func TestEvaluateInterruptRevertPredicateRejectsAssistantText(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "pred-asst", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "pred-asst", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
 	now := time.Now().UnixMilli()
 	if _, err := app.store.AppendItem(store.Item{
@@ -100,7 +99,7 @@ func TestEvaluateInterruptRevertPredicateRejectsAssistantText(t *testing.T) {
 func TestEvaluateInterruptRevertPredicateRejectsToolCall(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "pred-tool", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "pred-tool", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
 	now := time.Now().UnixMilli()
 	if _, err := app.store.AppendItem(store.Item{
@@ -136,7 +135,7 @@ func TestEvaluateInterruptRevertPredicateRejectsToolCall(t *testing.T) {
 func TestEvaluateInterruptRevertPredicateAllowsThinking(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "pred-think", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "pred-think", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
 	now := time.Now().UnixMilli()
 	if _, err := app.store.AppendItem(store.Item{
@@ -171,7 +170,7 @@ func TestEvaluateInterruptRevertPredicateAllowsThinking(t *testing.T) {
 func TestEvaluateInterruptRevertPredicateRejectsMultiUser(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "pred-multi", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "pred-multi", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "u:1", 0, "second")
 
@@ -194,7 +193,7 @@ func TestEvaluateInterruptRevertPredicateRejectsMultiUser(t *testing.T) {
 func TestEvaluateInterruptRevertPredicateRejectsQueuedFlush(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "pred-queue", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "pred-queue", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
 	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
@@ -217,7 +216,7 @@ func TestEvaluateInterruptRevertPredicateRejectsQueuedFlush(t *testing.T) {
 func TestEvaluateInterruptRevertPredicateRejectsInflightFlushDispatch(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "pred-dispatch", "codex", t.TempDir())
+	thread := createAppTestThread(t, app, "pred-dispatch", "codex", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
 	app.flushDispatchMu.Lock()
@@ -267,7 +266,7 @@ func TestEvaluateInterruptRevertPredicateRejectsInflightFlushDispatch(t *testing
 func TestRegisterQueueItemSerializesInterruptRevertAcrossFlushHandoff(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "register-serialize", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "register-serialize", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "original prompt P0")
 
 	// RegisterQueueItem only flushes immediately when a session is attached.
@@ -365,7 +364,7 @@ func TestRegisterQueueItemSerializesInterruptRevertAcrossFlushHandoff(t *testing
 func TestEvaluateInterruptRevertPredicateRejectsRunningBackgroundTasks(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "pred-background", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "pred-background", "claude", t.TempDir())
 	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 0)
 	insertUserItem(t, app.store, thread.ID, "u:1", 1, "hello")
 
@@ -384,7 +383,7 @@ func TestEvaluateInterruptRevertPredicateRejectsRunningBackgroundTasks(t *testin
 func TestEvaluateInterruptRevertPredicateRejectsStashedBackgroundTasks(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "pred-stashed-background", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "pred-stashed-background", "claude", t.TempDir())
 	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 0)
 	if err := app.store.UpsertPendingBackgroundTerminal(store.PendingBackgroundTaskTerminal{
 		ThreadID:  thread.ID,
@@ -410,27 +409,15 @@ func TestEvaluateInterruptRevertPredicateRejectsStashedBackgroundTasks(t *testin
 	}
 }
 
-// TestResolveRevertCheckpointReturnsPersisted is the simple lookup case
-// when the at-send checkpoint capture wrote a row keyed by the user
-// item id and matching turn index.
-func TestResolveRevertCheckpointReturnsPersisted(t *testing.T) {
+// TestResolveMessageAnchorReturnsPersisted is the simple lookup case
+// when the at-send record wrote an anchor keyed by the user item id
+// and matching turn index.
+func TestResolveMessageAnchorReturnsPersisted(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "rc-found", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "rc-found", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
-	want := store.Checkpoint{
-		ID:                    "chk-0",
-		ThreadID:              thread.ID,
-		UserItemID:            "u:0",
-		TurnIndex:             0,
-		ProviderUserMessageID: "provider-u-0",
-		RefName:               checkpoint.ThreadRefPrefix(thread.ID) + "message/some",
-		WorkspacePath:         thread.WorkspacePath,
-		CapturedAt:            time.Now().UnixMilli(),
-	}
-	if err := app.store.SaveCheckpoint(want); err != nil {
-		t.Fatalf("save checkpoint: %v", err)
-	}
+	seedMessageAnchor(t, app.store, thread.ID, "u:0", 0, "provider-u-0", "")
 
 	userItem, ok, err := app.store.GetThreadItem(thread.ID, "u:0")
 	if err != nil {
@@ -439,23 +426,26 @@ func TestResolveRevertCheckpointReturnsPersisted(t *testing.T) {
 	if !ok {
 		t.Fatalf("user item u:0 missing")
 	}
-	got := app.resolveRevertCheckpoint(thread.ID, userItem)
-	if got.ID != want.ID {
-		t.Fatalf("checkpoint id = %q, want %q", got.ID, want.ID)
+	got := app.resolveMessageAnchor("test", thread.ID, userItem)
+	// The provider id only exists on the persisted row (the item meta is
+	// empty), so seeing it proves the lookup returned the stored anchor
+	// rather than synthesizing.
+	if got.ProviderUserMessageID != "provider-u-0" {
+		t.Fatalf("anchor provider id = %q, want persisted provider-u-0", got.ProviderUserMessageID)
 	}
-	if got.TurnIndex != want.TurnIndex {
-		t.Fatalf("turn index = %d, want %d", got.TurnIndex, want.TurnIndex)
+	if got.TurnIndex != 0 {
+		t.Fatalf("turn index = %d, want 0", got.TurnIndex)
 	}
 }
 
-// TestResolveRevertCheckpointSynthesizesWhenMissing covers the case
-// where at-send capture didn't write a row (e.g. workspace is not a
-// git repo). The provider revert helpers only need TurnIndex, so we
-// synthesize a minimal record.
-func TestResolveRevertCheckpointSynthesizesWhenMissing(t *testing.T) {
+// TestResolveMessageAnchorSynthesizesWhenMissing covers the case where
+// the at-send record didn't land. The provider rollback helpers only
+// need TurnIndex plus whatever ids the item meta carries, so a minimal
+// record is synthesized from the row.
+func TestResolveMessageAnchorSynthesizesWhenMissing(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "rc-missing", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "rc-missing", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
 
 	userItem, ok, err := app.store.GetThreadItem(thread.ID, "u:0")
@@ -465,15 +455,15 @@ func TestResolveRevertCheckpointSynthesizesWhenMissing(t *testing.T) {
 	if !ok {
 		t.Fatalf("user item u:0 missing")
 	}
-	got := app.resolveRevertCheckpoint(thread.ID, userItem)
+	got := app.resolveMessageAnchor("test", thread.ID, userItem)
 	if got.UserItemID != "u:0" {
 		t.Fatalf("synthesized userItemID = %q, want u:0", got.UserItemID)
 	}
 	if got.TurnIndex != 0 {
 		t.Fatalf("synthesized turnIndex = %d, want 0", got.TurnIndex)
 	}
-	if got.ID != "" {
-		t.Fatalf("synthesized record should have empty ID, got %q", got.ID)
+	if got.ProviderUserMessageID != "" {
+		t.Fatalf("synthesized provider id = %q, want empty (item meta carries none)", got.ProviderUserMessageID)
 	}
 }
 
@@ -484,7 +474,7 @@ func TestResolveRevertCheckpointSynthesizesWhenMissing(t *testing.T) {
 func TestRunPlainInterruptLockedNoSessionIsNoOp(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "no-session", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "no-session", "claude", t.TempDir())
 
 	if err := app.runPlainInterruptLocked(thread.ID); err != nil {
 		t.Fatalf("runPlainInterruptLocked returned err = %v, want nil", err)
@@ -513,7 +503,7 @@ func TestInterruptAndRevertIfCleanRejectsEmptyThreadID(t *testing.T) {
 func TestInterruptAndRevertIfCleanFallsBackWhenAssistantPresent(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "fallback", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "fallback", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
 	now := time.Now().UnixMilli()
 	if _, err := app.store.AppendItem(store.Item{
@@ -560,7 +550,7 @@ func TestInterruptAndRevertIfCleanRevertsClaudeFirstTurn(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
-	thread := createCheckpointTestThread(t, app, "revert-first", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "revert-first", "claude", t.TempDir())
 	// Even though TurnIndex==0 short-circuits in the Claude revert path,
 	// SessionRef is set to confirm it gets cleared.
 	thread.SessionRef = "stale-session"
@@ -624,7 +614,7 @@ func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testi
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
-	thread := createCheckpointTestThread(t, app, "revert-tui", "claude-tui", t.TempDir())
+	thread := createAppTestThread(t, app, "revert-tui", "claude-tui", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "the original prompt")
 
 	result, err := app.InterruptAndRevertIfClean(thread.ID)
@@ -655,18 +645,18 @@ func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testi
 	}
 }
 
-// TestInterruptAndRevertIfCleanRevertsWithSynthesizedCheckpoint covers
-// the "at-send capture failed" path: no checkpoint row exists, the
+// TestInterruptAndRevertIfCleanRevertsWithSynthesizedAnchor covers
+// the "at-send record failed" path: no message-anchor row exists, the
 // revert helper synthesizes one with just TurnIndex. The revert should
 // still succeed because the Claude TurnIndex==0 path doesn't need any
-// checkpoint metadata.
-func TestInterruptAndRevertIfCleanRevertsWithSynthesizedCheckpoint(t *testing.T) {
+// anchor metadata.
+func TestInterruptAndRevertIfCleanRevertsWithSynthesizedAnchor(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
-	thread := createCheckpointTestThread(t, app, "revert-synth", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "revert-synth", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "synth prompt")
-	// Deliberately do NOT call SaveCheckpoint — the predicate is still
+	// Deliberately do NOT seed a message anchor — the predicate is still
 	// eligible because it only depends on items + queue, and the revert
 	// helper synthesizes a record from the user item.
 
@@ -700,7 +690,7 @@ func TestInterruptAndRevertIfCleanCodexStopsSessionWithActiveTurn(t *testing.T) 
 	defer cleanup()
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
 	workspace := t.TempDir()
-	thread := createCheckpointTestThread(t, app, "codex-interrupt-revert", "codex", workspace)
+	thread := createAppTestThread(t, app, "codex-interrupt-revert", "codex", workspace)
 	thread.SessionRef = "provider-codex-interrupt"
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
@@ -777,7 +767,7 @@ func TestInterruptAndRevertIfCleanCodexMarksCompletionDuringInterruptAsReverted(
 	defer cleanup()
 	app.triage = triage.NewRouter(app.store, app.emit)
 	workspace := t.TempDir()
-	thread := createCheckpointTestThread(t, app, "codex-interrupt-marker", "codex", workspace)
+	thread := createAppTestThread(t, app, "codex-interrupt-marker", "codex", workspace)
 	thread.SessionRef = "provider-codex-marker"
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
@@ -833,19 +823,17 @@ func TestInterruptAndRevertIfCleanCodexMarksCompletionDuringInterruptAsReverted(
 	}
 }
 
-// TestInterruptAndRevertIfCleanSurvivesCompactBoundary is the
-// interrupt-revert counterpart to TestRevertToMessageCheckpointSurvivesCompactBoundary.
-// The "synthesize a checkpoint when none was captured" branch
-// (`resolveRevertCheckpoint`) now lifts `provider_item_id` off the
-// user item's Meta so the synthesized record drives the same
-// UUID-keyed slice — non-git workspaces benefit from the structural
-// fix too.
+// TestInterruptAndRevertIfCleanSurvivesCompactBoundary pins the
+// compact-boundary slice for interrupt-revert. The "synthesize an
+// anchor when none was recorded" branch (`resolveMessageAnchor`)
+// lifts `provider_item_id` off the user item's Meta so the
+// synthesized record drives the same UUID-keyed slice.
 //
 // Scenario: 3 logical turns, /compact summary on disk between turn
 // 0's assistant and turn 1's user prompt (the placement that
 // triggers the ordinal off-by-N). User sends turn 2 and immediately
-// hits Stop before any agent output. AO synthesizes a checkpoint
-// (no at-send capture row exists). The revert must keep turn 1's
+// hits Stop before any agent output. AO synthesizes an anchor
+// (no at-send row exists). The revert must keep turn 1's
 // full assistant response.
 func TestInterruptAndRevertIfCleanSurvivesCompactBoundary(t *testing.T) {
 	app, cleanup := newTestApp(t)
@@ -865,7 +853,7 @@ func TestInterruptAndRevertIfCleanSurvivesCompactBoundary(t *testing.T) {
 {"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"compact-interrupt-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
 {"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"compact-interrupt-session","message":{"role":"user","content":"third"}}
 `)
-	thread := createCheckpointTestThread(t, app, "interrupt-compact", "claude", workspace)
+	thread := createAppTestThread(t, app, "interrupt-compact", "claude", workspace)
 	thread.SessionRef = sessionID
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
@@ -873,7 +861,7 @@ func TestInterruptAndRevertIfCleanSurvivesCompactBoundary(t *testing.T) {
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "u:1", 1, "second")
 	// u:2 carries provider_item_id=u2 — the wire-stamp the synthesize
-	// path will read to populate the synthesized checkpoint.
+	// path will read to populate the synthesized anchor.
 	insertUserItemWithMeta(t, app.store, thread.ID, "u:2", 2, "third", `{"provider_item_id":"u2"}`)
 
 	result, err := app.InterruptAndRevertIfClean(thread.ID)
@@ -937,7 +925,7 @@ func TestInterruptAndRevertIfCleanSurvivesPriorInterruptMarker(t *testing.T) {
 {"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"prior-interrupt-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
 {"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"prior-interrupt-session","message":{"role":"user","content":"third"}}
 `)
-	thread := createCheckpointTestThread(t, app, "interrupt-marker", "claude", workspace)
+	thread := createAppTestThread(t, app, "interrupt-marker", "claude", workspace)
 	thread.SessionRef = sessionID
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
@@ -972,30 +960,29 @@ func TestInterruptAndRevertIfCleanSurvivesPriorInterruptMarker(t *testing.T) {
 		[]string{"third"})
 }
 
-// TestResolveRevertCheckpointSynthesizesProviderUserMessageID is the
+// TestResolveMessageAnchorSynthesizesProviderUserMessageID is the
 // fine-grained unit test for the synthesize path: when no persisted
-// checkpoint exists, the helper must lift the wire id off the user
-// item's Meta so the downstream Claude revert can do UUID-keyed
-// slicing. Regression guard for the bug where a non-git workspace
-// (which never captures git checkpoints) fell back to the legacy
-// ordinal walk even after the fix.
-func TestResolveRevertCheckpointSynthesizesProviderUserMessageID(t *testing.T) {
+// anchor exists, the helper must lift the wire id off the user item's
+// Meta so the downstream Claude rollback can do UUID-keyed slicing.
+// Regression guard for the bug where an anchor-less row fell back to
+// the legacy ordinal walk even after the fix.
+func TestResolveMessageAnchorSynthesizesProviderUserMessageID(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	thread := createCheckpointTestThread(t, app, "synth-uuid", "claude", t.TempDir())
+	thread := createAppTestThread(t, app, "synth-uuid", "claude", t.TempDir())
 	const meta = `{"provider_item_id":"wire-u1"}`
 	insertUserItemWithMeta(t, app.store, thread.ID, "u:1", 1, "second", meta)
 
 	item := store.Item{ID: "u:1", ThreadID: thread.ID, TurnIndex: 1, Kind: "user_text", Role: "user", Meta: meta}
-	cp := app.resolveRevertCheckpoint(thread.ID, item)
-	if cp.ProviderUserMessageID != "wire-u1" {
-		t.Fatalf("synthesized ProviderUserMessageID = %q, want %q", cp.ProviderUserMessageID, "wire-u1")
+	anchor := app.resolveMessageAnchor("test", thread.ID, item)
+	if anchor.ProviderUserMessageID != "wire-u1" {
+		t.Fatalf("synthesized ProviderUserMessageID = %q, want %q", anchor.ProviderUserMessageID, "wire-u1")
 	}
-	if cp.UserItemID != "u:1" {
-		t.Fatalf("synthesized UserItemID = %q, want u:1", cp.UserItemID)
+	if anchor.UserItemID != "u:1" {
+		t.Fatalf("synthesized UserItemID = %q, want u:1", anchor.UserItemID)
 	}
-	if cp.TurnIndex != 1 {
-		t.Fatalf("synthesized TurnIndex = %d, want 1", cp.TurnIndex)
+	if anchor.TurnIndex != 1 {
+		t.Fatalf("synthesized TurnIndex = %d, want 1", anchor.TurnIndex)
 	}
 }
 

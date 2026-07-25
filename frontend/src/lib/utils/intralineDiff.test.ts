@@ -4,7 +4,7 @@ import {
   intralineRanges,
   segmentLine,
 } from './intralineDiff';
-import type { LineToken } from './tokenCache';
+import type { SpanSegment } from './syntaxSpans';
 
 describe('intralineRanges', () => {
   it('finds the changed middle and snaps it to word bounds', () => {
@@ -55,36 +55,36 @@ describe('intralineRanges', () => {
 });
 
 describe('segmentLine', () => {
-  const tokens: LineToken[] = [
-    { content: 'const ', color: '#f00' },
-    { content: 'value', color: '#0f0' },
-    { content: ' = 1;', color: '#00f' },
+  const spans: SpanSegment[] = [
+    { text: 'const ', className: 'syntax-keyword' },
+    { text: 'value', className: '' },
+    { text: ' = 1;', className: 'syntax-number' },
   ];
   const text = 'const value = 1;';
 
-  it('splits tokens at range boundaries and keeps colors', () => {
-    // Range covers "value = " — spans token 2 fully and token 3 partly.
-    const segments = segmentLine(tokens, text, { start: 6, end: 14 });
+  it('splits span segments at range boundaries and keeps classes', () => {
+    // Range covers "value = " — spans segment 2 fully and segment 3 partly.
+    const segments = segmentLine(spans, text, { start: 6, end: 14 });
     expect(segments).toEqual([
-      { text: 'const ', color: '#f00', fontStyle: undefined, emph: false },
-      { text: 'value', color: '#0f0', fontStyle: undefined, emph: true },
-      { text: ' = ', color: '#00f', fontStyle: undefined, emph: true },
-      { text: '1;', color: '#00f', fontStyle: undefined, emph: false },
+      { text: 'const ', className: 'syntax-keyword', emph: false },
+      { text: 'value', className: '', emph: true },
+      { text: ' = ', className: 'syntax-number', emph: true },
+      { text: '1;', className: 'syntax-number', emph: false },
     ]);
     expect(segments.map((segment) => segment.text).join('')).toBe(text);
   });
 
-  it('falls back to plain-text slicing when untokenized', () => {
+  it('falls back to plain-text slicing when spans have not landed', () => {
     const segments = segmentLine(null, text, { start: 6, end: 11 });
     expect(segments).toEqual([
-      { text: 'const ', color: undefined, fontStyle: undefined, emph: false },
-      { text: 'value', color: undefined, fontStyle: undefined, emph: true },
-      { text: ' = 1;', color: undefined, fontStyle: undefined, emph: false },
+      { text: 'const ', className: '', emph: false },
+      { text: 'value', className: '', emph: true },
+      { text: ' = 1;', className: '', emph: false },
     ]);
   });
 
   it('handles a range covering the whole line', () => {
-    const segments = segmentLine(tokens, text, { start: 0, end: text.length });
+    const segments = segmentLine(spans, text, { start: 0, end: text.length });
     expect(segments.every((segment) => segment.emph)).toBe(true);
     expect(segments.map((segment) => segment.text).join('')).toBe(text);
   });

@@ -618,14 +618,39 @@ summarized`), 3 turns in one persistent session:
 - **`parentUuid` is CLI-assigned.** The client supplies only `uuid`; the
   CLI assigns `parentUuid` itself, threading the entry onto the transcript.
 
-### Queued (mid-turn) sends honor the client uuid too (claude 2.1.202)
+### Queued-message consumption — two flavors (claude 2.1.202 / 2.1.205)
 
-Confirmed by isolated spike on 2026-07-09 against the installed binary,
-same base flag set: a second user envelope written to stdin **while a
-turn is running** (msg2 queued ~5 s into a ~20 s turn, its own minted
-uuid) is held by the CLI until the running turn finishes and then
-echoed back as `user{isReplay:true}` carrying the supplied uuid
-**verbatim** — at turn pickup, not enqueue time. Two consequences:
+A user envelope written to stdin **while a turn is running** honors the
+client-supplied uuid in both cases, but the CLI consumes it at one of
+two points with **different transcript shapes**:
+
+**At turn pickup** (spike 2026-07-09, 2.1.202: msg2 queued ~5 s into a
+~20 s turn): the CLI holds the message until the running turn finishes,
+then echoes it as `user{isReplay:true}` carrying the supplied uuid
+**verbatim** and persists a real `type:"user"` JSONL entry under that
+uuid — exactly like a direct send, just delayed.
+
+**Mid-loop** (production transcripts, 2.1.205): the CLI's queue
+processor drains the message into the RUNNING turn at the next API
+iteration (query.ts:1547 in the local source copy). No `system/init`,
+no new wire turn — the response continues on the same wire round, and
+the transcript entry is NOT a user row:
+
+```json
+{"type":"attachment","uuid":"<CLI-minted>","parentUuid":"<prior entry>",
+ "isSidechain":false,
+ "attachment":{"type":"queued_command",
+               "prompt":[{"type":"text","text":"<queued message>"}],
+               "source_uuid":"<client-supplied uuid>",
+               "commandMode":"prompt","timestamp":"…"}}
+```
+
+The client uuid survives only as `attachment.source_uuid`; the next
+assistant entry parents to the attachment row's own uuid, so the row is
+on the active branch. The stdout echo still carries the client uuid, so
+AO's identity matching works the same in both flavors.
+
+Consequences:
 
 - AO's flush-queue dispatch (`app_flush_queue.go`) mints a uuid per
   queued item exactly like a direct send, and triage's pending-send
@@ -636,6 +661,16 @@ echoed back as `user{isReplay:true}` carrying the supplied uuid
   envelope landing in that window (e.g. an `<agent-message>` subagent
   report) interleaves with pending queued sends. Identity matching —
   not FIFO position — is what keeps those from mispairing.
+- The revert / fork slice must anchor on EITHER shape:
+  `sessionfork.parentUUIDForUserMessageUUIDInTranscript` prefers the
+  real user entry and falls back to the `queued_command` attachment's
+  `source_uuid`. A user-uuid-only matcher silently misses every
+  mid-loop-consumed queued message (`ErrMessageNotFound` → ordinal
+  fallback → wrong slice for a mid-turn anchor).
+- Mid-turn slices resume cleanly: spike 2026-07-15 (2.1.205) resumed a
+  session JSONL truncated immediately after a `tool_result` entry with
+  full prior context retained — the contract behind reverting to a
+  queued message that shares its turn with a running prompt.
 
 ### Timing — the fast send→escape race window
 

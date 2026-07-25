@@ -61,12 +61,16 @@ export interface PatchFile {
   /** New-side file length, learned from a context-expansion response.
    * Sizes (or retires) the trailing hunk gap. Absent on plain parses. */
   newSideTotal?: number;
+  /** Skip hunk-gap rows entirely. Set by the review pane for edits-
+   * scope files whose expansion was refused (the workspace drifted from
+   * the historical patch, so there is no source to expand from). */
+  suppressGaps?: boolean;
 }
 
 /** Display rows for a PatchFile — the canonical call shape, so every
  * consumer shares one memo entry per file (see buildPatchDisplayRows). */
 export function filePatchDisplayRows(file: PatchFile): PatchDisplayRow[] {
-  return buildPatchDisplayRows(file.lines, file.newSideTotal);
+  return buildPatchDisplayRows(file.lines, file.newSideTotal, file.suppressGaps === true);
 }
 
 export function patchFileRowId(file: Pick<PatchFile, 'path'>, index: number): string {
@@ -145,6 +149,287 @@ function parsePatch(patch: string, includeLines: boolean): PatchFile[] {
   }
   finish();
   return files;
+}
+
+/**
+ * Merge same-path patch sections into one PatchFile per path, preserving
+ * first-appearance order. A whole-turn edits concatenation contains one
+ * section per tool call, so a file edited twice in a turn parses as two
+ * PatchFiles with the same path — but the review surface keys file-header
+ * rows, the file tree, and the collapse/comment maps by path, and a
+ * duplicate crashes the keyed each.
+ *
+ * Each section's line numbers describe the file AT ITS EDIT'S MOMENT,
+ * so plain concatenation is incoherent: a later edit higher in the file
+ * shifts every earlier section's real position, leaving hunks out of
+ * file order, breaking the gutter's monotonic-numbering assumption, and
+ * failing the byte-exact workspace verification that gates priming and
+ * gap expansion. Sections editing DISJOINT regions (the common case)
+ * renumber exactly instead: replay them chronologically, shifting each
+ * already-placed hunk by the net line delta of every later hunk landing
+ * entirely above it, then emit ONE coherent section — a single header
+ * block with all hunks interleaved in final-file order. The result
+ * describes the final file, so it verifies, primes, and expands exactly
+ * like a single-section diff.
+ *
+ * A file CREATED in the turn composes instead of renumbering: the
+ * creation section carries the entire file, so later sections' hunks
+ * apply to that content directly (old-side lines byte-verified before
+ * each splice), and the merge emits one clean added-file section of the
+ * end-of-turn content — exactly what a Write-then-Edit sequence means.
+ *
+ * Overlapping sections on a pre-existing file (an edit re-touching an
+ * earlier edit's lines) cannot be renumbered without the file content
+ * to compose against — those fall back to plain concatenation in edit
+ * order with `suppressGaps` set: their gap coordinates are fiction and
+ * verification would refuse them anyway. A failed composition (a later
+ * hunk's old side not matching the built content) falls back the same
+ * way.
+ *
+ * Line arrays are shared parse-cache state and never mutated; merged
+ * files get fresh arrays sharing the sections' PatchLine objects.
+ */
+export function mergePatchFilesByPath(files: PatchFile[]): PatchFile[] {
+  const groups: PatchFile[][] = [];
+  const groupByPath = new Map<string, PatchFile[]>();
+  for (const file of files) {
+    const group = groupByPath.get(file.path);
+    if (group) {
+      group.push(file);
+      continue;
+    }
+    const created = [file];
+    groupByPath.set(file.path, created);
+    groups.push(created);
+  }
+  return groups.map((sections) => (sections.length === 1 ? sections[0] : mergeFileSections(sections)));
+}
+
+// Identity memo for the store's `files` derived: it re-runs on every
+// expansion click, and a fresh merged lines array per run would break
+// every identity-keyed memo downstream — the expansion rebuild cache
+// and the span cache's predecessor-chain fallback especially, which
+// re-renders the whole file plain for a round trip (the expansion
+// white-flash bug). Keyed on the parsePatchFilesCached result, which
+// is stable per patch text; oversized patches that bypass that cache
+// miss here too and keep today's rebuild-per-run behavior.
+const mergedFilesCache = new WeakMap<PatchFile[], PatchFile[]>();
+
+export function mergePatchFilesByPathCached(files: PatchFile[]): PatchFile[] {
+  const hit = mergedFilesCache.get(files);
+  if (hit) return hit;
+  const merged = mergePatchFilesByPath(files);
+  mergedFilesCache.set(files, merged);
+  return merged;
+}
+
+interface SectionHunk {
+  oldStart: number;
+  newStart: number;
+  /** New-side start in the merged (final-file) frame; begins at
+   * `newStart` and accumulates the shifts of later sections. */
+  pos: number;
+  /** Header text after the closing `@@` (section heading), preserved. */
+  suffix: string;
+  body: PatchLine[];
+  oldCount: number;
+  newCount: number;
+}
+
+interface ParsedSection {
+  preamble: PatchLine[];
+  hunks: SectionHunk[];
+}
+
+/** A section split into its meta preamble and hunk segments, with
+ * counts taken from the body (headers can lie; bodies can't). Null for
+ * any shape renumbering can't reason about — conflict pseudo-rows,
+ * unparseable or non-ascending headers, meta lines between hunks, and
+ * `\ No newline at end of file` markers (only meaningful at EOF, so
+ * the hunk carrying one can't be re-ordered mid-file). */
+function parseSectionHunks(file: PatchFile): ParsedSection | null {
+  const preamble: PatchLine[] = [];
+  const hunks: SectionHunk[] = [];
+  let current: SectionHunk | null = null;
+  for (const line of file.lines) {
+    if (line.fold !== undefined || line.type === 'marker') return null;
+    if (line.content.startsWith('\\')) return null;
+    if (line.type === 'meta') {
+      const header = parseHunkHeader(line.content);
+      if (header) {
+        current = {
+          oldStart: header.oldStart,
+          newStart: header.newStart,
+          pos: header.newStart,
+          suffix: hunkHeaderSuffix(line.content),
+          body: [],
+          oldCount: 0,
+          newCount: 0,
+        };
+        hunks.push(current);
+        continue;
+      }
+      if (current) return null;
+      preamble.push(line);
+      continue;
+    }
+    if (!current) return null;
+    current.body.push(line);
+    if (line.type === 'del' || line.type === 'context') current.oldCount += 1;
+    if (line.type === 'add' || line.type === 'context') current.newCount += 1;
+  }
+  for (let index = 1; index < hunks.length; index += 1) {
+    if (hunks[index].newStart <= hunks[index - 1].newStart) return null;
+  }
+  return { preamble, hunks };
+}
+
+function mergeFileSections(sections: PatchFile[]): PatchFile {
+  const parsed: ParsedSection[] = [];
+  for (const section of sections) {
+    const parsedSection = parseSectionHunks(section);
+    if (!parsedSection) return concatFileSections(sections);
+    parsed.push(parsedSection);
+  }
+
+  const composed = composeCreatedFileSections(sections, parsed);
+  if (composed) return composed;
+
+  const placed: SectionHunk[] = [];
+  for (const parsedSection of parsed) {
+    // A section's old side is the file every earlier section produced,
+    // so its old coordinates and the placed hunks' positions share one
+    // frame: each placed hunk shifts by the net delta of this section's
+    // hunks landing entirely above it — or the regions overlap and
+    // exact renumbering is impossible.
+    for (const earlier of placed) {
+      let shift = 0;
+      for (const hunk of parsedSection.hunks) {
+        // A zero-old-count hunk inserts AFTER oldStart (git's `-N,0`
+        // convention), so its effective old-side position is
+        // oldStart + 1 — without the adjustment, an insertion right
+        // after a placed hunk's first line would read as "entirely
+        // above" and shift it.
+        const oldFrom = hunk.oldCount === 0 ? hunk.oldStart + 1 : hunk.oldStart;
+        const oldEnd = oldFrom + hunk.oldCount;
+        if (oldEnd <= earlier.pos) shift += hunk.newCount - hunk.oldCount;
+        else if (oldFrom < earlier.pos + earlier.newCount) return concatFileSections(sections);
+      }
+      earlier.pos += shift;
+    }
+    placed.push(...parsedSection.hunks);
+  }
+  placed.sort((a, b) => a.pos - b.pos);
+
+  const lines: PatchLine[] = [...parsed[0].preamble];
+  for (const hunk of placed) {
+    // Old numbers shift with the hunk: a merged diff has no single
+    // old-side frame (each section's old side is a different moment),
+    // so keeping the intra-hunk old/new pairing aligned is the honest
+    // rendering.
+    const oldStart = Math.max(1, hunk.oldStart + (hunk.pos - hunk.newStart));
+    lines.push({
+      content: formatHunkHeader(oldStart, hunk.oldCount, hunk.pos, hunk.newCount, hunk.suffix),
+      type: 'meta',
+    });
+    lines.push(...hunk.body);
+  }
+  return { ...sections[0], ...sectionTotals(sections), lines };
+}
+
+/**
+ * Merge a created-then-edited file by real patch composition: seed the
+ * file content from the creation section's add lines, apply each later
+ * section's hunks to it in order (old-side lines byte-verified before
+ * every splice — patches and content share Claude's tab mangling, so
+ * byte-exact is the right comparison), and emit ONE added-file section
+ * holding the end-of-turn content. Returns null when the shape doesn't
+ * apply (first section isn't a pure creation) or a hunk's old side
+ * doesn't match the built content — callers fall back.
+ */
+function composeCreatedFileSections(sections: PatchFile[], parsed: ParsedSection[]): PatchFile | null {
+  const creation = parsed[0].hunks;
+  // A pure creation is exactly one hunk of only-adds starting at +1
+  // (git's `@@ -0,0 +1,N @@` shape).
+  if (creation.length !== 1) return null;
+  const seed = creation[0];
+  if (seed.oldStart !== 0 || seed.oldCount !== 0 || seed.newStart !== 1) return null;
+
+  let content = seed.body.map((line) => line.content.slice(1));
+  for (let index = 1; index < parsed.length; index += 1) {
+    // A later re-creation or rename has no old side to verify against
+    // the built content; a deletion means the file's end state isn't an
+    // added file at all. All three keep today's fallback behavior.
+    if (sections[index].kind !== 'modified') return null;
+    const applied = applyHunksToContent(content, parsed[index].hunks);
+    if (!applied) return null;
+    content = applied;
+  }
+
+  const lines: PatchLine[] = [...parsed[0].preamble];
+  lines.push({ content: formatHunkHeader(0, 0, 1, content.length, seed.suffix), type: 'meta' });
+  for (const text of content) {
+    lines.push({ content: `+${text}`, type: 'add' });
+  }
+  return {
+    ...sections[0],
+    kind: 'added',
+    additions: content.length,
+    deletions: 0,
+    lines,
+  };
+}
+
+/**
+ * Apply one section's hunks to file content (1-based diff coordinates
+ * over a 0-based array), verifying every old-side line byte-exactly
+ * before splicing. Returns null on any mismatch — never a guess.
+ */
+function applyHunksToContent(content: string[], hunks: SectionHunk[]): string[] | null {
+  const out = content.slice();
+  let delta = 0;
+  for (const hunk of hunks) {
+    // Zero-old-count hunks insert AFTER old line `oldStart` (git's
+    // `-N,0` convention); others replace starting AT `oldStart`.
+    const start = (hunk.oldCount === 0 ? hunk.oldStart : hunk.oldStart - 1) + delta;
+    if (start < 0 || start > out.length) return null;
+    const oldLines: string[] = [];
+    const newLines: string[] = [];
+    for (const line of hunk.body) {
+      const text = line.content.slice(1);
+      if (line.type === 'del' || line.type === 'context') oldLines.push(text);
+      if (line.type === 'add' || line.type === 'context') newLines.push(text);
+    }
+    for (let offset = 0; offset < oldLines.length; offset += 1) {
+      if (out[start + offset] !== oldLines[offset]) return null;
+    }
+    out.splice(start, oldLines.length, ...newLines);
+    delta += newLines.length - oldLines.length;
+  }
+  return out;
+}
+
+function concatFileSections(sections: PatchFile[]): PatchFile {
+  return {
+    ...sections[0],
+    ...sectionTotals(sections),
+    lines: sections.flatMap((section) => section.lines),
+    suppressGaps: true,
+  };
+}
+
+function sectionTotals(sections: PatchFile[]): { additions: number; deletions: number; kind: string } {
+  let additions = 0;
+  let deletions = 0;
+  // A later section deleting the file is its end state; otherwise the
+  // first section's kind (added / renamed) describes the file best.
+  let kind = sections[0].kind;
+  for (const section of sections) {
+    additions += section.additions;
+    deletions += section.deletions;
+    if (section !== sections[0] && section.kind === 'deleted') kind = 'deleted';
+  }
+  return { additions, deletions, kind };
 }
 
 // Content-keyed memo over parsePatchFiles for render-hot preview
@@ -235,26 +520,26 @@ export function extractPatchFile(patch: string, filePath: string): string | null
 // response) participates in the key: it changes the trailing gap.
 const displayRowsCache = new WeakMap<
   PatchLine[],
-  { newSideTotal: number | undefined; rows: PatchDisplayRow[] }
+  { newSideTotal: number | undefined; suppressGaps: boolean; rows: PatchDisplayRow[] }
 >();
 
-export function buildPatchDisplayRows(lines: PatchLine[], newSideTotal?: number): PatchDisplayRow[] {
+export function buildPatchDisplayRows(lines: PatchLine[], newSideTotal?: number, suppressGaps = false): PatchDisplayRow[] {
   const cached = displayRowsCache.get(lines);
-  if (cached && cached.newSideTotal === newSideTotal) return cached.rows;
-  const rows = buildPatchDisplayRowsUncached(lines, newSideTotal);
+  if (cached && cached.newSideTotal === newSideTotal && cached.suppressGaps === suppressGaps) return cached.rows;
+  const rows = buildPatchDisplayRowsUncached(lines, newSideTotal, suppressGaps);
   attachIntralineRanges(rows);
-  displayRowsCache.set(lines, { newSideTotal, rows });
+  displayRowsCache.set(lines, { newSideTotal, suppressGaps, rows });
   return rows;
 }
 
-function buildPatchDisplayRowsUncached(lines: PatchLine[], newSideTotal?: number): PatchDisplayRow[] {
+function buildPatchDisplayRowsUncached(lines: PatchLine[], newSideTotal?: number, suppressGaps = false): PatchDisplayRow[] {
   const rows: PatchDisplayRow[] = [];
   let oldLine = 0;
   let newLine = 0;
   let fallbackIndex = 0;
   // Conflict pseudo-files represent hidden runs as their own fold rows
   // (utils/conflictFile.ts) — emitting hunk gaps there would double up.
-  const emitGaps = !lines.some((line) => line.fold !== undefined || line.type === 'marker');
+  const emitGaps = !suppressGaps && !lines.some((line) => line.fold !== undefined || line.type === 'marker');
   let gapId = 0;
   let sawHunk = false;
   // oldStart of the first hunk: 0 marks an added file (fully present,
@@ -447,6 +732,27 @@ export function parseHunkHeader(line: string): { oldStart: number; newStart: num
     oldStart: Number(match[1]),
     newStart: Number(match[2]),
   };
+}
+
+/** Header text after the closing `@@` (the function-context heading),
+ * preserved verbatim when a hunk header is rewritten. */
+export function hunkHeaderSuffix(content: string): string {
+  const match = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(.*)$/.exec(content);
+  return match?.[1] ?? '';
+}
+
+/** Compose a unified-diff hunk header — the inverse of
+ * parseHunkHeader + hunkHeaderSuffix. Every header rewriter (section
+ * renumbering here, gap expansion in diffContextExpansion.ts) goes
+ * through this so the emit and parse sides can't drift. */
+export function formatHunkHeader(
+  oldStart: number,
+  oldCount: number,
+  newStart: number,
+  newCount: number,
+  suffix: string,
+): string {
+  return `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${suffix}`;
 }
 
 function isPatchMetaLine(line: string): boolean {

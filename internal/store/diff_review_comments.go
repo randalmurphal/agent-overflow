@@ -24,6 +24,7 @@ const (
 	DiffReviewScopeWorkspace DiffReviewScope = "workspace"
 	DiffReviewScopeBranch    DiffReviewScope = "branch"
 	DiffReviewScopePR        DiffReviewScope = "pr"
+	DiffReviewScopeEdits     DiffReviewScope = "edits"
 )
 
 type DiffReviewComment struct {
@@ -91,8 +92,10 @@ func NormalizeDiffReviewScope(scope string) (string, error) {
 		return string(DiffReviewScopeBranch), nil
 	case DiffReviewScopePR:
 		return string(DiffReviewScopePR), nil
+	case DiffReviewScopeEdits:
+		return string(DiffReviewScopeEdits), nil
 	default:
-		return "", fmt.Errorf("diff review scope must be turn, session, workspace, branch, or pr")
+		return "", fmt.Errorf("diff review scope must be turn, session, workspace, branch, pr, or edits")
 	}
 }
 
