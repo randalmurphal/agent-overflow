@@ -39,6 +39,10 @@ Ubuntu 23.04+ / Debian 13+).
 - `make harness` — boots the agent test harness (real app, isolated data
   dir, mocked providers); `make e2e` runs the Playwright suite against it.
   See [docs/architecture/agent-harness.md](docs/architecture/agent-harness.md).
+- `make provider-smoke` — manual real-provider gate; **spends real model
+  tokens** and needs authenticated `claude` + `codex` CLIs on PATH. Run it
+  before a release and after upgrading either provider CLI.
+  See [providersmoke_test.go](providersmoke_test.go).
 
 Every task must leave `make go-build`, `make go-test`,
 `cd frontend && pnpm run check`, and `cd frontend && pnpm run build` passing.

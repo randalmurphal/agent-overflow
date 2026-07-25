@@ -801,6 +801,21 @@ payload locations, per-turn re-send quirks) live in the decisions log (D2a);
 the schema-generation rules both providers enforce live in
 `internal/providerschema` (§3).
 
+**A mocked suite cannot prove schema acceptance, so one gate is real.** Mock
+providers accept any schema; the CLIs enforce strict mode and refuse the phase
+before it starts — which is how five envelope-schema defects survived a fully
+green harness. `make provider-smoke` (build-tagged out of the ordinary Go
+suite, so `make verify` stays hermetic) drives one trivial single-phase
+workflow through the **real** `claude` and `codex` binaries under default
+binary resolution and asserts the three things only a real run can show:
+the CLI accepted the generated envelope schema, the run reached `done` through
+a real envelope carrying its declared output, and the writing phase ran in the
+run's own worktree/branch (§9) with the project checkout untouched. It spends
+real tokens, so it is manual: run it before a release and after upgrading
+either provider CLI. A live rejection that `internal/providerschema` does not
+already flag means the rule set is short one rule, and adding it there is what
+makes the mock catch it from then on.
+
 ## 11. Scheduler / automations
 
 An **automation = a trigger + an optional condition + an action**, and **the

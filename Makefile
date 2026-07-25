@@ -1,4 +1,4 @@
-.PHONY: install dev dev-wsl build build-wsl test check verify release go-build go-test test-race mockprovider aocli harness-build harness e2e
+.PHONY: install dev dev-wsl build build-wsl test check verify release go-build go-test test-race provider-smoke mockprovider aocli harness-build harness e2e
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing and raw provider
@@ -102,6 +102,20 @@ go-test:
 # measured headroom.
 test-race:
 	go test -race -timeout 1800s ./internal/transport/... ./internal/triage/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... .
+
+# provider-smoke is the real-provider gate: it drives one trivial workflow
+# through the REAL `claude` and `codex` binaries (default PATH resolution — no
+# binary-path override) and asserts schema acceptance, envelope round-trip, and
+# the §9 worktree/branch rules. It SPENDS REAL MODEL TOKENS — one trivial turn
+# per provider — and requires both CLIs installed and authenticated.
+#
+# The `providersmoke` build tag is what keeps it out of `make go-test` and
+# `make verify`, which stay hermetic. Run this manually before a release and
+# after upgrading either provider CLI; the mocked suites accept any
+# structured-output schema, so nothing else in the repo can catch a schema the
+# real CLIs reject. See providersmoke_test.go.
+provider-smoke:
+	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 15m .
 
 # playwright install is idempotent and cached (~/.cache/ms-playwright);
 # the Chromium binary backs the frontend browser test project
