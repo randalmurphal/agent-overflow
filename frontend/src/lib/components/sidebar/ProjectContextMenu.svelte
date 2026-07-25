@@ -10,7 +10,6 @@
   import {
     ArchiveProject,
     DeleteProject,
-    DeleteProjectDiscardingWorkflowWork,
     OpenInEditor,
     ProjectDeletionPreview as fetchDeletionPreview,
   } from '../../stores/bindings';
@@ -18,6 +17,7 @@
   import { closePanesShowingThreads } from '../../stores/panes.svelte';
   import { removeThread } from '../../stores/threads.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { retainedNotice } from '../../utils/projectCleanup';
   import { userFacingError } from '../../utils/userFacingError';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import ProjectDeleteDialog from './ProjectDeleteDialog.svelte';
@@ -42,8 +42,8 @@
 
   let showArchiveConfirm = $state(false);
   let showDeleteConfirm = $state(false);
-  // Set only when the project owns workflow work: the loss dialog renders from
-  // it, and its presence is what tells the delete call to pass consent.
+  // Set only when the project owns workflow work — that is the case with more
+  // to say than the one-line confirm can carry.
   let deletionPreview = $state<ProjectDeletionPreview | null>(null);
   let deleting = $state(false);
 
@@ -68,10 +68,9 @@
     }
   }
 
-  // Delete asks the backend what it would destroy before offering anything.
-  // A preview that fails stops here: falling through to the plain confirm would
-  // hand the user a dialog that understates the loss, and falling through to the
-  // delete would destroy runs and branches nobody was shown.
+  // Delete asks the backend what deletion involves before offering anything.
+  // A preview that fails stops here rather than falling through to the plain
+  // confirm: that dialog would describe a project with runs as if it had none.
   async function startDelete(): Promise<void> {
     try {
       const preview = await fetchDeletionPreview(project.project.id);
@@ -84,26 +83,26 @@
       console.error('Failed to inspect project before delete:', err);
       addToast(
         'error',
-        userFacingError(err, 'Could not work out what deleting this project would destroy.'),
+        userFacingError(err, 'Could not work out what deleting this project involves.'),
       );
     }
   }
 
-  async function doDelete(discardWorkflowWork: boolean): Promise<void> {
+  async function doDelete(): Promise<void> {
     deleting = true;
     try {
-      // The consent is which method is called, not an argument: only the
-      // discarding form removes worktrees and deletes branches, and only it is
-      // refused from a non-loopback client.
-      const deleteProject = discardWorkflowWork
-        ? DeleteProjectDiscardingWorkflowWork
-        : DeleteProject;
-      const threadIds = await deleteProject(project.project.id);
-      for (const id of threadIds) removeThread(id);
+      const result = await DeleteProject(project.project.id);
+      for (const id of result.threadIds) removeThread(id);
       removeProjectLocal(project.project.id);
-      closePanesShowingThreads(threadIds);
+      closePanesShowingThreads(result.threadIds);
       deletionPreview = null;
       addToast('info', `Deleted project "${project.project.name}".`);
+      // A checkout git declined to remove is reported separately and stays on
+      // screen as a warning: the deletion succeeded, but there is something on
+      // disk the user has to finish themselves, and folding that into the
+      // success line is how it goes unread.
+      const notice = retainedNotice(result.retainedWorktrees);
+      if (notice) addToast('warning', notice, 12000);
     } catch (err) {
       console.error('Failed to delete project:', err);
       addToast('error', userFacingError(err));
@@ -181,7 +180,7 @@
   destructive={true}
   onConfirm={() => {
     showDeleteConfirm = false;
-    void doDelete(false);
+    void doDelete();
   }}
   onCancel={() => {
     showDeleteConfirm = false;
@@ -196,7 +195,7 @@
     preview={deletionPreview}
     submitting={deleting}
     onConfirm={() => {
-      void doDelete(true);
+      void doDelete();
     }}
     onCancel={() => {
       deletionPreview = null;

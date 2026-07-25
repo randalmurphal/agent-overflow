@@ -94,8 +94,10 @@ root `CLAUDE.md` principle 3.
   Because nothing cascades, `DeleteProjectWorkflowRecords` is what drops a
   deleted project's runs, phases, units, effects, and automations in one
   transaction — `App.DeleteProject` calls it on every deletion (D25), after the
-  app layer has taken the human's consent and destroyed the run worktrees and
-  branches. State-machine validation and
+  app layer has stopped the runs and removed the worktrees they used. The app
+  layer deletes no branch there: cleaning up after a project is not a licence
+  to rewrite the user's repository, and D23's per-run discard remains the only
+  flow in the app that deletes one. State-machine validation and
   scheduling belong to `internal/workflow`, not this package.
   `work_item_units.go` carries one row per fan-out unit (and join) of a phase
   attempt, written `pending` at expansion and updated in place through

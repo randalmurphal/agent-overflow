@@ -21,6 +21,11 @@ import (
 // is the consent: it walks the whole run tree, reports every worktree the
 // discard would remove along with what is in it, and mutates nothing. The
 // discard itself then removes exactly what the preview described.
+//
+// Project deletion (D25) walks the same trees and removes the same checkouts,
+// but it is cleanup: it deletes no branch and takes no consent, because nothing
+// it does is unrecoverable. Keep it that way — "discard is the only flow that
+// deletes a branch" is what makes this preview worth reading.
 
 const (
 	// maxDiscardPreviewFiles bounds the named dirty paths per worktree. The
@@ -122,15 +127,17 @@ func (a *App) WorkflowDiscardPreview(itemID string) (WorkflowDiscardPreview, err
 	return preview, nil
 }
 
-// workflowTreeLoss is what discarding one run tree would cost: the tree's
-// members, the subset still in flight, and the checkouts the tree owns. It is
-// the single definition of "what a discard destroys" — the per-run preview, the
-// project-deletion preview (D25), and the discard itself all build on it, so
-// none of them can describe a different set than the others.
+// workflowTreeLoss is what one run tree holds: its members, the subset still in
+// flight, and the checkouts it owns. It is the single definition of "what a run
+// tree owns" — the per-run discard preview, the discard itself, and project
+// deletion's preview and cleanup (D25) all build on it, so none of them can
+// describe a different set than the others. What each does with the set is
+// their own business: the discard deletes the branches too, the cleanup never
+// does.
 type workflowTreeLoss struct {
 	members []store.WorkItem
 	live    []string
-	targets []discardWorktreeTarget
+	targets []workflowWorktreeTarget
 }
 
 func (a *App) workflowTreeLoss(rootID, projectPath string) (workflowTreeLoss, error) {
@@ -167,7 +174,7 @@ func (a *App) workflowTreeLoss(rootID, projectPath string) (workflowTreeLoss, er
 // label prefixes the one failure that aborts the report rather than being
 // recorded on a row, so the caller's flow is named in the message.
 func (a *App) describeDiscardTargets(
-	projectPath string, targets []discardWorktreeTarget, label string,
+	projectPath string, targets []workflowWorktreeTarget, label string,
 ) ([]WorkflowDiscardWorktree, error) {
 	described := make([]WorkflowDiscardWorktree, 0, len(targets))
 	if len(targets) == 0 {
@@ -281,8 +288,11 @@ func isProjectCheckout(projectPath, targetPath string) bool {
 	return gitops.SameFilesystemPath(projectPath, targetPath)
 }
 
-// discardWorktreeTarget is one checkout the tree owns, before inspection.
-type discardWorktreeTarget struct {
+// workflowWorktreeTarget is one checkout a run tree owns, before inspection.
+// The name is not discard-specific because the collection is not: the per-run
+// discard and project deletion's cleanup (D25) both act on this same set, which
+// is what stops them describing different checkouts as a run's own.
+type workflowWorktreeTarget struct {
 	itemID string
 	unitID string
 	path   string
@@ -304,10 +314,10 @@ type discardWorktreeTarget struct {
 // here is what keeps the preview and the discard describing the same set.
 func (a *App) workflowTreeWorktrees(
 	members []store.WorkItem, base, projectPath string,
-) ([]discardWorktreeTarget, error) {
-	targets := make([]discardWorktreeTarget, 0, len(members))
+) ([]workflowWorktreeTarget, error) {
+	targets := make([]workflowWorktreeTarget, 0, len(members))
 	seen := make(map[string]bool, len(members))
-	add := func(target discardWorktreeTarget) {
+	add := func(target workflowWorktreeTarget) {
 		if strings.TrimSpace(target.path) == "" {
 			return
 		}
@@ -322,7 +332,7 @@ func (a *App) workflowTreeWorktrees(
 		targets = append(targets, target)
 	}
 	for _, member := range members {
-		add(discardWorktreeTarget{itemID: member.ID, path: member.WorktreePath, branch: member.Branch, base: base})
+		add(workflowWorktreeTarget{itemID: member.ID, path: member.WorktreePath, branch: member.Branch, base: base})
 		units, err := a.store.ListWorkItemUnits(member.ID)
 		if err != nil {
 			return nil, fmt.Errorf("workflow discard %s: list fan-out units: %w", member.ID, err)
@@ -330,7 +340,7 @@ func (a *App) workflowTreeWorktrees(
 		for _, unit := range units {
 			// A unit branch is cut from its run's branch, so that is what its
 			// commits are unmerged against.
-			add(discardWorktreeTarget{
+			add(workflowWorktreeTarget{
 				itemID: member.ID, unitID: unit.UnitID,
 				path: unit.WorktreePath, branch: unit.Branch, base: member.Branch,
 			})
@@ -343,25 +353,15 @@ func (a *App) workflowTreeWorktrees(
 // reported on the row instead of aborting the preview — a half-broken worktree
 // is exactly the state a human most needs the rest of the report for.
 func (a *App) describeDiscardWorktree(
-	projectPath string, registry projectWorktreeRegistry, target discardWorktreeTarget,
+	projectPath string, registry projectWorktreeRegistry, target workflowWorktreeTarget,
 ) WorkflowDiscardWorktree {
 	described := WorkflowDiscardWorktree{
 		ItemID: target.itemID, UnitID: target.unitID,
-		Path: target.path, Branch: target.branch, Base: target.base,
+		Path: target.path, Base: target.base,
 		DirtyFiles: make([]string, 0), UnmergedCommits: make([]gitdiff.Commit, 0),
 	}
-	for _, worktree := range registry.worktrees {
-		if gitops.SameFilesystemPath(worktree.Path, target.path) {
-			described.Registered = true
-			if described.Branch == "" {
-				described.Branch = worktree.Branch
-			}
-			break
-		}
-	}
-	if info, err := os.Stat(target.path); err == nil && info.IsDir() {
-		described.Present = true
-	}
+	described.Branch, described.Registered = registeredWorktreeBranch(registry, target)
+	described.Present = worktreeDirectoryPresent(target.path)
 	var errs []error
 	if described.Present {
 		files, total, err := a.gitCore().WorkingTreeChanges(target.path, maxDiscardPreviewFiles)

@@ -1,71 +1,96 @@
 package main
 
 import (
-	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/workflow/scheduler"
 )
 
-// The workflow half of project deletion (decision D25).
+// The workflow half of project deletion (decision D25) — the read half: what
+// the deletion will do, said before it does it. `app_project_delete_cleanup.go`
+// is the half that does it.
 //
 // Deleting a project used to leave its workflow work behind: `work_items` and
 // its record tables carry no foreign key to `projects`, so the runs survived
 // with a project id that resolved to nothing, unreachable from every
-// project-scoped query, and their worktrees and branches stayed on disk. D25
-// settled that the other way — deletion destroys them — but never silently.
+// project-scoped query, and the worktrees the app had created for them stayed
+// registered in the user's repository. Deletion now takes both with it.
 //
-// ProjectDeletionPreview is the consent, the same shape D23 gives a single
-// discard: it walks every run tree the project owns, reports every checkout the
-// deletion would remove along with what is in it, and mutates nothing.
-// DeleteProject refuses outright until that consent is handed back.
+// Deletion is CLEANUP, not discard. It removes what the app owns — its own
+// rows, and the checkouts it created in an app-managed directory — and it never
+// deletes a branch: every commit those runs produced is still reachable in the
+// repository afterwards. Removing a project from Agent Overflow is a statement
+// about Agent Overflow. Git is a system the user owns independently and has
+// their own tools for; a sidebar housekeeping action does not get to rewrite
+// it. D23's per-run discard stays the only flow in the app that deletes a
+// branch (`app_workflow_discard_apply.go`), because there the human has said
+// the work itself is not wanted.
 //
-// The consent is a separate METHOD, not a parameter on DeleteProject, because
-// the transport authorizes by method name: `LocalOnlyMethods` can refuse
-// DeleteProjectDiscardingWorkflowWork from a LAN peer, and cannot express "the
-// same method, but only when this argument is false". Ordinary project deletion
-// stays reachable from a remote client, as it has always been; the one flow in
-// the app that deletes a git branch does not become reachable with it.
+// Nothing here is unrecoverable, so nothing here takes a consent. The preview
+// exists so the deletion can be described honestly — including the checkouts
+// git will refuse to remove, which are left in place and reported.
 
-// ErrProjectOwnsWorkflowWork is the refusal a project deletion takes when the
-// caller has not consented to destroying the workflow work the project owns.
-// Nothing is mutated when it is returned.
-var ErrProjectOwnsWorkflowWork = errors.New("project owns workflow work")
+// The reasons cleanup gives for leaving a checkout on disk, in the words the
+// user reads. The preview predicts them and the cleanup reports them, so they
+// are written once: two surfaces wording the same outcome differently is how a
+// user ends up believing neither.
+const (
+	retainedRepositoryGone = "the project's repository is no longer on disk, so git cannot remove this checkout"
+	retainedNotRegistered  = "git no longer tracks this path as a worktree of the project"
+)
 
-// ProjectDeletionPreview is what deleting one project would destroy on the
-// workflow side.
+// retainedDirtyReason is the ordinary case: `git worktree remove` refuses a
+// checkout carrying uncommitted or untracked work, and the app does not
+// override that refusal.
+func retainedDirtyReason(count int) string {
+	return fmt.Sprintf("%d uncommitted or untracked file%s", count, pluralSuffix(count))
+}
+
+// ProjectCleanupWorktree is one checkout the deletion will clean up, and what it
+// expects to manage to do with it.
+type ProjectCleanupWorktree struct {
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+	// DirtyFileCount is the uncommitted and untracked files in the checkout. It
+	// is the same `git status --porcelain` question `git worktree remove` asks
+	// itself — gitignored files excluded on both sides — so it decides Retained
+	// rather than merely sitting next to it.
+	DirtyFileCount int `json:"dirtyFileCount"`
+	// Retained reports that the deletion will leave this checkout on disk.
+	Retained bool `json:"retained"`
+	// Reason is why, in the words the user reads. Empty unless Retained.
+	Reason string `json:"reason,omitempty"`
+}
+
+// ProjectDeletionPreview is what deleting one project would do on the workflow
+// side. There is no loss to consent to — no branch is deleted and no commit
+// becomes unreachable — so this describes the cleanup rather than a cost.
 type ProjectDeletionPreview struct {
 	ProjectID string `json:"projectId"`
-	// RootRunIDs names each run tree the deletion would discard. A run whose
-	// caller's record is missing counts as a root of its own, so every run the
-	// project owns is covered by exactly one tree.
-	RootRunIDs []string `json:"rootRunIds"`
 	// RunCount is every run the project owns — roots and the runs they called.
 	RunCount int `json:"runCount"`
-	// LiveRunIDs is the subset still in flight. Deletion cancels them first; they
-	// are called out because that is work the human is stopping, not just work
-	// they are throwing away.
+	// LiveRunIDs is the subset still in flight. Deletion cancels them first;
+	// they are called out because that is work the human is stopping.
 	LiveRunIDs []string `json:"liveRunIds"`
 	// AutomationCount is how many triggers go with the project.
 	AutomationCount int `json:"automationCount"`
-	// Worktrees is every checkout the deletion would remove, deduplicated across
-	// the whole forest, with the branch, dirty files, and unmerged commits that
-	// live in it and nowhere else.
-	Worktrees []WorkflowDiscardWorktree `json:"worktrees"`
-	// HasWork is the one signal a caller branches on. It is true when the project
-	// owns any run or any automation — deriving it again from the counts is how
-	// two surfaces end up disagreeing about whether a deletion needs consent.
+	// Worktrees is every checkout the deletion will act on, deduplicated across
+	// the whole forest, each carrying whether it will survive the cleanup.
+	Worktrees []ProjectCleanupWorktree `json:"worktrees"`
+	// HasWork is the one signal a caller branches on. It is true when the
+	// project owns any run or any automation — deriving it again from the counts
+	// is how two surfaces end up disagreeing about what a deletion involves.
 	HasWork bool `json:"hasWork"`
 }
 
-// ProjectDeletionPreview reports what deleting a project would destroy on the
+// ProjectDeletionPreview reports what deleting a project would do on the
 // workflow side. It runs read-only SQLite and git queries and mutates nothing.
 //
-// LocalOnly: it reads local checkouts and repository history.
+// LocalOnly: it reads local checkouts and their uncommitted paths.
 func (a *App) ProjectDeletionPreview(projectID string) (ProjectDeletionPreview, error) {
 	if a.store == nil {
 		return ProjectDeletionPreview{}, fmt.Errorf("project deletion preview: store unavailable")
@@ -80,11 +105,10 @@ func (a *App) ProjectDeletionPreview(projectID string) (ProjectDeletionPreview, 
 	}
 	preview := ProjectDeletionPreview{
 		ProjectID:       projectID,
-		RootRunIDs:      make([]string, 0, len(footprint.roots)),
 		RunCount:        len(footprint.runIDs),
 		LiveRunIDs:      make([]string, 0),
 		AutomationCount: len(footprint.automationIDs),
-		Worktrees:       make([]WorkflowDiscardWorktree, 0),
+		Worktrees:       make([]ProjectCleanupWorktree, 0),
 		HasWork:         footprint.hasWork(),
 	}
 	if len(footprint.roots) == 0 {
@@ -94,29 +118,13 @@ func (a *App) ProjectDeletionPreview(projectID string) (ProjectDeletionPreview, 
 	if err != nil {
 		return ProjectDeletionPreview{}, err
 	}
-	targets := make([]discardWorktreeTarget, 0, len(footprint.roots))
-	seen := make(map[string]bool, len(footprint.roots))
-	for _, root := range footprint.roots {
-		preview.RootRunIDs = append(preview.RootRunIDs, root.ID)
-		loss, err := a.workflowTreeLoss(root.ID, project.Path)
-		if err != nil {
-			return ProjectDeletionPreview{}, err
-		}
-		preview.LiveRunIDs = append(preview.LiveRunIDs, loss.live...)
-		// Each tree already deduplicates the checkouts its own members share;
-		// this drops a checkout two trees both recorded, so one loss is never
-		// listed twice.
-		for _, target := range loss.targets {
-			key := gitops.CanonicalPath(target.path)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			targets = append(targets, target)
-		}
+	checkouts, err := a.projectWorkflowCheckouts(footprint, project.Path)
+	if err != nil {
+		return ProjectDeletionPreview{}, err
 	}
-	preview.Worktrees, err = a.describeDiscardTargets(
-		project.Path, targets, "project deletion preview "+projectID,
+	preview.LiveRunIDs = checkouts.live
+	preview.Worktrees, err = a.describeCleanupTargets(
+		project.Path, checkouts.targets, "project deletion preview "+projectID,
 	)
 	if err != nil {
 		return ProjectDeletionPreview{}, err
@@ -124,25 +132,13 @@ func (a *App) ProjectDeletionPreview(projectID string) (ProjectDeletionPreview, 
 	return preview, nil
 }
 
-// DeleteProjectDiscardingWorkflowWork deletes a project AND the workflow work it
-// owns: every run and its phase/unit/effect records, its automations, and the
-// run worktrees and branches on disk. It is the consenting form of
-// DeleteProject, which refuses a project that owns any of that.
-//
-// LocalOnly: it removes local checkouts and deletes branches — the same class as
-// WorkflowDiscardItem, whose per-run destruction this performs project-wide.
-func (a *App) DeleteProjectDiscardingWorkflowWork(id string) ([]string, error) {
-	return a.deleteProject(id, true)
-}
-
 // projectWorkflowFootprint is the git-free answer to "what workflow work does
 // this project own": every run id, the roots of the forest those runs form, and
-// every automation id. It is one pair of SQLite reads, so both the preview and
-// DeleteProject's consent check can afford to take it — and DeleteProject can
-// take it twice to prove nothing appeared underneath it.
+// every automation id. It is one pair of SQLite reads, so DeleteProject can
+// afford to take it twice and prove nothing appeared underneath it.
 type projectWorkflowFootprint struct {
-	// roots are the runs nothing else in the project called — where a tree walk,
-	// and therefore a discard, has to start.
+	// roots are the runs nothing else in the project called — where a tree walk
+	// has to start.
 	roots []store.WorkItem
 	// runIDs and automationIDs are sorted so two footprints of the same project
 	// compare directly.
@@ -163,19 +159,6 @@ func (f projectWorkflowFootprint) sameAs(other projectWorkflowFootprint) bool {
 		slices.Equal(f.automationIDs, other.automationIDs)
 }
 
-// describe renders the footprint as the phrase a refusal puts in front of a
-// human: counts, never ids.
-func (f projectWorkflowFootprint) describe() string {
-	parts := make([]string, 0, 2)
-	if count := len(f.runIDs); count > 0 {
-		parts = append(parts, fmt.Sprintf("%d workflow run%s", count, pluralSuffix(count)))
-	}
-	if count := len(f.automationIDs); count > 0 {
-		parts = append(parts, fmt.Sprintf("%d automation%s", count, pluralSuffix(count)))
-	}
-	return strings.Join(parts, " and ")
-}
-
 func pluralSuffix(count int) string {
 	if count == 1 {
 		return ""
@@ -184,8 +167,8 @@ func pluralSuffix(count int) string {
 }
 
 func (a *App) projectWorkflowFootprint(projectID string) (projectWorkflowFootprint, error) {
-	// Summaries, not full rows: the consent check needs ids, linkage, and
-	// workspace pointers, never every run's frozen workflow snapshot.
+	// Summaries, not full rows: this needs ids, linkage, and workspace pointers,
+	// never every run's frozen workflow snapshot.
 	items, err := a.store.ListWorkItemSummaries(store.WorkItemListFilter{ProjectID: projectID})
 	if err != nil {
 		return projectWorkflowFootprint{}, fmt.Errorf("project %s workflow footprint: list runs: %w", projectID, err)
@@ -220,111 +203,130 @@ func (a *App) projectWorkflowFootprint(projectID string) (projectWorkflowFootpri
 	return footprint, nil
 }
 
-// discardProjectWorkflowWork runs the D23 discard over every run tree the
-// project owns, then ends the provider sessions those trees were running on.
+// projectWorkflowCheckouts is every checkout the project's run forest owns, plus
+// the runs still in flight, as one reading of the store.
+type projectWorkflowCheckouts struct {
+	live    []string
+	targets []workflowWorktreeTarget
+}
+
+// projectWorkflowCheckouts walks every root the project owns and collects the
+// checkouts its trees registered. It goes through the same workflowTreeLoss walk
+// the per-run discard uses, so the preview, the cleanup, and a single run's
+// discard cannot disagree about which checkouts belong to a run.
 //
-// It MUST run before DeleteProject takes any thread lock. Discard cancels the
-// live members first, and cancelling reaches App.InterruptTurn through the
-// engine's teardown → Runner.Stop path; InterruptTurn takes
-// a.threadLocks().Lock(threadID) on the workflow phase thread, which is one of
-// the very locks DeleteProject would already be holding. Cancelling under those
-// locks deadlocks.
-//
-// A failure aborts the deletion with the project intact. Discard tolerates a
-// checkout that is already gone and a branch that is already deleted, so the
-// retry after a partial failure picks up where this left off.
-func (a *App) discardProjectWorkflowWork(footprint projectWorkflowFootprint) error {
-	var errs []error
+// Each tree already deduplicates the checkouts its own members share; this drops
+// a checkout two trees both recorded, so one path is never handled twice.
+func (a *App) projectWorkflowCheckouts(
+	footprint projectWorkflowFootprint, projectPath string,
+) (projectWorkflowCheckouts, error) {
+	collected := projectWorkflowCheckouts{
+		live:    make([]string, 0),
+		targets: make([]workflowWorktreeTarget, 0, len(footprint.roots)),
+	}
+	seen := make(map[string]bool, len(footprint.roots))
 	for _, root := range footprint.roots {
-		if _, err := a.discardWorkflowTree(root); err != nil {
-			errs = append(errs, fmt.Errorf("discard run %s: %w", root.ID, err))
-			continue
-		}
-		members, err := a.workflowRunTree(root.ID)
+		loss, err := a.workflowTreeLoss(root.ID, projectPath)
 		if err != nil {
-			errs = append(errs, err)
-			continue
+			return projectWorkflowCheckouts{}, err
 		}
-		if err := a.stopWorkflowTreeSessions(members); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// stopWorkflowTreeSessions ends the provider processes the tree's phases and
-// fan-out units were running on.
-//
-// The discard has already cancelled those runs, so the sessions have nothing
-// left to produce. Stopping them settles their open turn rows synchronously —
-// session teardown runs triage's cleanup, which synthesizes the truncated
-// turn-complete — and that is what lets DeleteProject's thread-activity check
-// see an idle project instead of racing a provider that was told to stop and
-// has not yet said so. A CLI that acks an interrupt and then never emits a
-// result would otherwise block the deletion the human just consented to,
-// forever.
-//
-// The run's origin thread is deliberately untouched: that is the human's own
-// conversation, which the ordinary thread teardown handles like any other.
-func (a *App) stopWorkflowTreeSessions(members []store.WorkItem) error {
-	var errs []error
-	for _, member := range members {
-		threadIDs, err := a.workflowRunThreadIDs(member)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		for _, threadID := range threadIDs {
-			if err := a.stopSession(threadID); err != nil {
-				errs = append(errs, fmt.Errorf("stop workflow session on thread %s: %w", threadID, err))
+		collected.live = append(collected.live, loss.live...)
+		for _, target := range loss.targets {
+			key := gitops.CanonicalPath(target.path)
+			if seen[key] {
+				continue
 			}
+			seen[key] = true
+			collected.targets = append(collected.targets, target)
 		}
 	}
-	return errors.Join(errs...)
+	return collected, nil
 }
 
-// workflowRunThreadIDs lists the threads one run's phase attempts and fan-out
-// units ran on, deduplicated — a re-entered phase reuses its thread.
-func (a *App) workflowRunThreadIDs(item store.WorkItem) ([]string, error) {
-	phases, err := a.store.ListWorkItemPhases(item.ID)
-	if err != nil {
-		return nil, fmt.Errorf("list phases of run %s: %w", item.ID, err)
-	}
-	units, err := a.store.ListWorkItemUnits(item.ID)
-	if err != nil {
-		return nil, fmt.Errorf("list fan-out units of run %s: %w", item.ID, err)
-	}
-	threadIDs := make([]string, 0, len(phases)+len(units))
-	seen := make(map[string]bool, len(phases)+len(units))
-	add := func(threadID string) {
-		if threadID == "" || seen[threadID] {
-			return
-		}
-		seen[threadID] = true
-		threadIDs = append(threadIDs, threadID)
-	}
-	for _, phase := range phases {
-		add(phase.ThreadID)
-	}
-	for _, unit := range units {
-		add(unit.ThreadID)
-	}
-	return threadIDs, nil
-}
-
-// refreshWorkflowSchedule recomputes the automation schedule after rows have
-// been deleted, so the scheduler drops them from its in-memory arming instead
-// of firing a trigger whose definition is gone.
+// describeCleanupTargets inspects a whole target set against one reading of the
+// project's worktree registry. An empty set asks git nothing: that is a
+// read-only run, one that worked in the project checkout, or one whose
+// checkouts were already released.
 //
-// A nil scheduler — a bare test App, or a boot that never reached workflow
-// init — has no schedule to correct, and neither does a stopped one: it arms
-// nothing, so the deleted automations are already unreachable.
-func (a *App) refreshWorkflowSchedule() error {
-	if a.workflowScheduler == nil {
-		return nil
+// label prefixes the one failure that aborts the report rather than being
+// recorded on a row, so the caller's flow is named in the message.
+func (a *App) describeCleanupTargets(
+	projectPath string, targets []workflowWorktreeTarget, label string,
+) ([]ProjectCleanupWorktree, error) {
+	described := make([]ProjectCleanupWorktree, 0, len(targets))
+	if len(targets) == 0 {
+		return described, nil
 	}
-	if err := a.workflowScheduler.Refresh(); err != nil && !errors.Is(err, scheduler.ErrStopped) {
-		return err
+	registry, err := a.readProjectWorktrees(projectPath, label)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	for _, target := range targets {
+		described = append(described, a.describeCleanupWorktree(registry, target))
+	}
+	return described, nil
+}
+
+// describeCleanupWorktree answers, for one checkout, what the cleanup expects to
+// manage. The prediction is exact rather than approximate: it decides on the
+// same question `git worktree remove` decides on, so a checkout this reports as
+// removable is one git will remove.
+//
+// A checkout that is no longer on disk is reported plainly, not as a retention:
+// there is nothing left there to leave behind, and git prunes a registration
+// whose directory is gone without complaint.
+func (a *App) describeCleanupWorktree(
+	registry projectWorktreeRegistry, target workflowWorktreeTarget,
+) ProjectCleanupWorktree {
+	branch, registered := registeredWorktreeBranch(registry, target)
+	described := ProjectCleanupWorktree{Path: target.path, Branch: branch}
+	if !worktreeDirectoryPresent(target.path) {
+		return described
+	}
+	if !registry.present {
+		described.Retained, described.Reason = true, retainedRepositoryGone
+		return described
+	}
+	if !registered {
+		described.Retained, described.Reason = true, retainedNotRegistered
+		return described
+	}
+	// Paths are not collected: the count is what decides the outcome, and the
+	// checkout stays exactly where the user can look at it themselves.
+	_, total, err := a.gitCore().WorkingTreeChanges(target.path, 0)
+	if err != nil {
+		// An uninspectable checkout is one the cleanup cannot promise to remove,
+		// so it is reported as staying rather than silently assumed clean.
+		described.Retained = true
+		described.Reason = fmt.Sprintf("it could not be inspected: %v", err)
+		return described
+	}
+	described.DirtyFileCount = total
+	if total > 0 {
+		described.Retained, described.Reason = true, retainedDirtyReason(total)
+	}
+	return described
+}
+
+// registeredWorktreeBranch reports whether git still knows a target's path as a
+// worktree of the project, and the branch to name it by: the record's own when
+// it has one, the registry's otherwise.
+func registeredWorktreeBranch(
+	registry projectWorktreeRegistry, target workflowWorktreeTarget,
+) (string, bool) {
+	for _, worktree := range registry.worktrees {
+		if !gitops.SameFilesystemPath(worktree.Path, target.path) {
+			continue
+		}
+		if strings.TrimSpace(target.branch) == "" {
+			return worktree.Branch, true
+		}
+		return target.branch, true
+	}
+	return target.branch, false
+}
+
+func worktreeDirectoryPresent(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }

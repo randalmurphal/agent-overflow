@@ -9,21 +9,21 @@ import (
 	"agent-overflow/internal/workflow/engine"
 )
 
-// deleteProjectCascadeTimeout bounds the deadlock this test exists to catch. A
+// deleteProjectCleanupTimeout bounds the deadlock this test exists to catch. A
 // correct DeleteProject finishes in well under a second here; a lock-first one
 // never finishes at all.
-const deleteProjectCascadeTimeout = 30 * time.Second
+const deleteProjectCleanupTimeout = 30 * time.Second
 
-// The load-bearing ordering: DeleteProject cascades the workflow discard BEFORE
-// it takes a single thread lock.
+// The load-bearing ordering: DeleteProject runs the workflow cleanup BEFORE it
+// takes a single thread lock.
 //
 // The run below is live on a provider that acks an interrupt and then says
 // nothing else — a wedged CLI. Deleting the project has to cancel it, and
 // cancelling walks engine teardown → Runner.Stop → App.InterruptTurn, which
 // locks the phase thread. DeleteProject holds a lock on every thread in the
-// project, the phase thread among them, so a cascade run after the locks are
+// project, the phase thread among them, so a cleanup run after the locks are
 // taken blocks on a lock its own caller owns and never returns: the select
-// below fails instead of the suite hanging. It would also fail if the cascade
+// below fails instead of the suite hanging. It would also fail if the cleanup
 // were dropped altogether, because the live run's open turn would trip the
 // thread-activity refusal.
 func TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks(t *testing.T) {
@@ -66,7 +66,7 @@ func TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks(t *testing.T
 
 	deleted := make(chan error, 1)
 	go func() {
-		_, err := app.DeleteProjectDiscardingWorkflowWork(projectRow.ID)
+		_, err := app.DeleteProject(projectRow.ID)
 		deleted <- err
 	}()
 	select {
@@ -74,11 +74,11 @@ func TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks(t *testing.T
 		if err != nil {
 			t.Fatalf("DeleteProject with a live run: %v", err)
 		}
-	case <-time.After(deleteProjectCascadeTimeout):
+	case <-time.After(deleteProjectCleanupTimeout):
 		t.Fatalf(
-			"DeleteProject did not return within %s: the discard cascade is running "+
+			"DeleteProject did not return within %s: the workflow cleanup is running "+
 				"under the thread locks it needs App.InterruptTurn to take on %s",
-			deleteProjectCascadeTimeout, phaseThreadID,
+			deleteProjectCleanupTimeout, phaseThreadID,
 		)
 	}
 

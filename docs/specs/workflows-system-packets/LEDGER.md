@@ -1247,7 +1247,7 @@ Accepted deviations — each ratified, none silent:
   run is durably parked `needs-human(paused)` regardless. D27.
 - **Project deletion left workflow rows and worktrees behind** — recorded
   as the campaign's one OPEN decision (D25) with options. Resolved
-  post-campaign; see the entry below.
+  post-campaign as cleanup, not discard; see the entry below.
 
 Verdict: **MERGED**. Rev-2 decisions D16–D23 plus the D2a and D11 amendments
 are implemented; the ratification sweep added invariants 30–34, brought
@@ -1256,26 +1256,49 @@ D25, archived the two superseded planning docs
 (`workflows-refit.md`, `workflows-system-gap-analysis.md`), and left the
 battery green.
 
-## D25 — project deletion cascade (post-campaign, 2026-07-25)
+## D25 — project deletion cleans up after itself (post-campaign, 2026-07-25)
 
-The one decision the M6 sweep left open. The user chose option 2, *refuse then
-cascade*: deleting a project that owns workflow work now shows the loss and
-destroys it on confirmation instead of leaking rows and disk.
+The one decision the M6 sweep left open, and the one that shipped twice. It
+landed first as *refuse then cascade*: `DeleteProject` refused a project that
+owned workflow work with a typed `ErrProjectOwnsWorkflowWork`, a second
+`DeleteProjectDiscardingWorkflowWork` (LocalOnly) consented to it, and
+consenting ran the D23 discard across every run tree — forced worktree removal
+**and branch deletion** — behind a loss dialog listing unmerged commits. The
+user ruled that this overshoots, and it was reworked the same day into cleanup.
 
-Shipped: `App.ProjectDeletionPreview` (LocalOnly) reporting the project's whole
-run forest through the same `workflowTreeLoss` collection the D23 discard
-preview uses; `App.DeleteProject(id)` refusing with typed
-`ErrProjectOwnsWorkflowWork`, and `App.DeleteProjectDiscardingWorkflowWork(id)`
-(LocalOnly) as the consenting form — the consent is a separate method, not a
-parameter, because `LocalOnlyMethods` authorizes by method name and a bool
-argument cannot be classified; the sidebar
-delete flow previewing before it offers anything and rendering the loss through
-a `WorkflowLossList` shared with the discard dialog.
+Deleting a project means "remove this from Agent Overflow". It deletes what the
+app owns and cleans up the litter the app made; git is a system the user owns
+independently, so **project deletion never deletes a branch** and D23's per-run
+discard is again the only flow in the app that does.
 
-The ordering constraint is the part worth remembering: the cascade runs before
+Shipped: one `App.DeleteProject(id)` that cancels the project's live runs,
+stops their sessions, removes their worktrees with the **non-force**
+`RemoveWorktree` — git's refusal of a checkout carrying uncommitted work is the
+safety valve, and a refused checkout comes back in the result's
+`RetainedWorktrees` with a reason rather than failing the deletion — then
+deletes the threads, the workflow rows, the automations, and the project. The
+refusal is explained by re-asking the working tree its state, never by matching
+git's message. `App.ProjectDeletionPreview` (LocalOnly) describes that cleanup
+in advance, sharing the D23 discard's target collection (`workflowTreeLoss`)
+but not its row type: unmerged commits are not a loss when the branch is kept,
+so reporting them would mislead. The sidebar dialog is informational — what
+goes, that branches are kept, which checkouts stay — with retained checkouts
+raised as a warning toast after the fact.
+
+Deleted with the rework: the typed refusal, the consenting method, its
+`LocalOnlyMethods` row and dispatcher stub, and the `WorkflowLossList` /
+`runLossSummary` sharing between the discard dialog and the project dialog —
+the two surfaces stopped saying the same thing, so they stopped sharing a
+renderer. `ProjectDeletionPreview` stays LocalOnly: it still reads local
+checkouts and their uncommitted paths.
+
+The ordering constraint is the part worth remembering: the cleanup runs before
 any thread lock is taken, because cancelling a live run reaches
 `App.InterruptTurn` and that locks the run's phase thread. Pinned by
-`TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks`. Two riders
+`TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks`; the
+no-branch-deletion rule is pinned by branch-set equality across the fixture and
+by `TestProjectDeletionSourceCallsNoBranchDeletion`, which parses the flow's
+three files for any `DeleteBranch` / `RemoveWorktreeForce` call. Two riders
 fixed on the way: `workflowRunTree` now reads its root instead of trusting a
 caller's copy (a discard of a *live root* previously refused the work it had
 just cancelled), and `HarnessReset` gets the automation-schedule refresh the

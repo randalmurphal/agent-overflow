@@ -1,5 +1,8 @@
 import type {
+  ProjectCleanupWorktree,
   ProjectDeletionPreview,
+  ProjectDeletionResult,
+  RetainedWorktree,
   WorkflowArtifact,
   WorkflowAutomationView,
   WorkflowDefinitionCatalog,
@@ -106,10 +109,13 @@ export interface WorkflowDefinitionView {
 }
 
 export type {
-  // Project deletion reports its loss with the same rows a single discard does
-  // (D25), so its preview shape lives with them rather than growing a parallel
-  // definition next to the project types.
+  // Project deletion (D25) walks the same run trees the workflow surfaces do,
+  // so its shapes live here rather than growing a parallel definition next to
+  // the project types. What it reports is its own: a cleanup, not a loss.
+  ProjectCleanupWorktree,
   ProjectDeletionPreview,
+  ProjectDeletionResult,
+  RetainedWorktree,
   WorkItem,
   WorkItemUsage,
   WorkflowArtifact,

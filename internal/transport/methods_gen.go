@@ -50,7 +50,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteEmptyDraftThread", ID: 3876094070},               // main.App.DeleteEmptyDraftThread
 	{Name: "DeleteMcpServer", ID: 4263017529},                      // main.App.DeleteMcpServer
 	{Name: "DeleteProject", ID: 3379369923},                        // main.App.DeleteProject
-	{Name: "DeleteProjectDiscardingWorkflowWork", ID: 813591209},   // main.App.DeleteProjectDiscardingWorkflowWork
 	{Name: "DeleteProposedPlanComment", ID: 554913120},             // main.App.DeleteProposedPlanComment
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297},                 // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974},                         // main.App.DeleteThread

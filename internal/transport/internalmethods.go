@@ -304,17 +304,12 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowOpenInThread": true,
 	// Discard preview reads local checkouts and repository history — dirty
 	// paths and unmerged commit subjects — which is the same local-disclosure
-	// class as the diff bindings. ProjectDeletionPreview is the same report
-	// widened to every run tree a project owns, so it inherits the reasoning.
+	// class as the diff bindings. ProjectDeletionPreview reads the same local
+	// checkouts across every run tree a project owns, so it inherits the
+	// reasoning. DeleteProject itself stays wire reachable: it deletes no
+	// branch, so it destroys nothing git cannot still reach (D25).
 	"WorkflowDiscardPreview": true,
 	"ProjectDeletionPreview": true,
-	// Deleting a project that owns workflow work removes its run worktrees and
-	// deletes their branches — the only branch-deleting flow in the app (D23),
-	// here applied to every run tree at once. Plain DeleteProject stays wire
-	// reachable: it destroys no git state. The split into two methods is what
-	// lets this table refuse the destructive one, which it could not do if the
-	// consent were a parameter.
-	"DeleteProjectDiscardingWorkflowWork": true,
 	// Fan-out unit recovery is the same control plane one unit down: a retry
 	// starts a provider session or a local command, a drop rewrites what the
 	// join consolidates, and a takeover restarts a session schema-less so a

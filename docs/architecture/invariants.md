@@ -1131,8 +1131,8 @@ accumulated session, a tool attempt's is its exit status.
 `Resume` refuses reasons that are not a continuation, and a parked
 attempt with no recorded session starts a fresh attempt *loudly*
 rather than pretending to continue. The one place that *does* stop a
-phase session is the D25 project-deletion cascade
-(`stopWorkflowTreeSessions`, `app_project_delete_workflow.go`), and it
+phase session is the D25 project-deletion cleanup
+(`stopWorkflowTreeSessions`, `app_project_delete_cleanup.go`), and it
 is not a park: the run has already been cancelled and the thread is
 about to be deleted, so there is no session left to resume into.
 
@@ -1270,8 +1270,8 @@ thread — across `Engine.Cancel`, `WorkflowCancelItem`,
 `discardWorkflowTree`, or anything else that can drive a run to
 teardown. `DeleteProject` (`app_projects.go`) is the shape that forces
 the rule: it locks every thread in the project, so its D25 workflow
-cascade runs **first**, before the first lock is taken
-(`discardProjectWorkflowWork`, `app_project_delete_workflow.go`).
+cleanup runs **first**, before the first lock is taken
+(`cleanUpProjectWorkflowWork`, `app_project_delete_cleanup.go`).
 
 **Rationale.** Cancel is synchronous through the engine's command
 goroutine (invariant 30), and teardown calls `Runner.Stop`, which calls
@@ -1284,12 +1284,12 @@ caller. It is a hard deadlock, not a slow path, and it only appears
 when a run happens to be live, which is exactly the case a happy-path
 test misses.
 
-**Enforcement.** The cascade runs before the lock acquisition and the
-locked section re-reads what it cascaded, refusing with a retry
-message if a cron fire changed the set underneath it — so "cascade
-first" cannot be softened into "cascade wherever, then re-check".
-Anything that stops a run as a *side effect* of a thread-scoped
-operation belongs on the same side of the locks.
+**Enforcement.** The cleanup runs before the lock acquisition and the
+locked section re-reads what it cleaned up, refusing with a retry
+message if a cron fire changed the set underneath it — so "stop the
+runs first" cannot be softened into "stop them wherever, then
+re-check". Anything that stops a run as a *side effect* of a
+thread-scoped operation belongs on the same side of the locks.
 
 **Test.** `TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks`
 (`app_project_delete_live_run_test.go`) drives a live run on a provider

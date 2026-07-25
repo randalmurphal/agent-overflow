@@ -1677,18 +1677,65 @@ export class PayloadPreview {
 }
 
 /**
- * ProjectDeletionPreview is what deleting one project would destroy on the
- * workflow side.
+ * ProjectCleanupWorktree is one checkout the deletion will clean up, and what it
+ * expects to manage to do with it.
+ */
+export class ProjectCleanupWorktree {
+    "path": string;
+    "branch": string;
+
+    /**
+     * DirtyFileCount is the uncommitted and untracked files in the checkout. It
+     * is the same `git status --porcelain` question `git worktree remove` asks
+     * itself — gitignored files excluded on both sides — so it decides Retained
+     * rather than merely sitting next to it.
+     */
+    "dirtyFileCount": number;
+
+    /**
+     * Retained reports that the deletion will leave this checkout on disk.
+     */
+    "retained": boolean;
+
+    /**
+     * Reason is why, in the words the user reads. Empty unless Retained.
+     */
+    "reason"?: string;
+
+    /** Creates a new ProjectCleanupWorktree instance. */
+    constructor($$source: Partial<ProjectCleanupWorktree> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("branch" in $$source)) {
+            this["branch"] = "";
+        }
+        if (!("dirtyFileCount" in $$source)) {
+            this["dirtyFileCount"] = 0;
+        }
+        if (!("retained" in $$source)) {
+            this["retained"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProjectCleanupWorktree instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProjectCleanupWorktree {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProjectCleanupWorktree($$parsedSource as Partial<ProjectCleanupWorktree>);
+    }
+}
+
+/**
+ * ProjectDeletionPreview is what deleting one project would do on the workflow
+ * side. There is no loss to consent to — no branch is deleted and no commit
+ * becomes unreachable — so this describes the cleanup rather than a cost.
  */
 export class ProjectDeletionPreview {
     "projectId": string;
-
-    /**
-     * RootRunIDs names each run tree the deletion would discard. A run whose
-     * caller's record is missing counts as a root of its own, so every run the
-     * project owns is covered by exactly one tree.
-     */
-    "rootRunIds": string[];
 
     /**
      * RunCount is every run the project owns — roots and the runs they called.
@@ -1696,9 +1743,8 @@ export class ProjectDeletionPreview {
     "runCount": number;
 
     /**
-     * LiveRunIDs is the subset still in flight. Deletion cancels them first; they
-     * are called out because that is work the human is stopping, not just work
-     * they are throwing away.
+     * LiveRunIDs is the subset still in flight. Deletion cancels them first;
+     * they are called out because that is work the human is stopping.
      */
     "liveRunIds": string[];
 
@@ -1708,16 +1754,15 @@ export class ProjectDeletionPreview {
     "automationCount": number;
 
     /**
-     * Worktrees is every checkout the deletion would remove, deduplicated across
-     * the whole forest, with the branch, dirty files, and unmerged commits that
-     * live in it and nowhere else.
+     * Worktrees is every checkout the deletion will act on, deduplicated across
+     * the whole forest, each carrying whether it will survive the cleanup.
      */
-    "worktrees": WorkflowDiscardWorktree[];
+    "worktrees": ProjectCleanupWorktree[];
 
     /**
-     * HasWork is the one signal a caller branches on. It is true when the project
-     * owns any run or any automation — deriving it again from the counts is how
-     * two surfaces end up disagreeing about whether a deletion needs consent.
+     * HasWork is the one signal a caller branches on. It is true when the
+     * project owns any run or any automation — deriving it again from the counts
+     * is how two surfaces end up disagreeing about what a deletion involves.
      */
     "hasWork": boolean;
 
@@ -1725,9 +1770,6 @@ export class ProjectDeletionPreview {
     constructor($$source: Partial<ProjectDeletionPreview> = {}) {
         if (!("projectId" in $$source)) {
             this["projectId"] = "";
-        }
-        if (!("rootRunIds" in $$source)) {
-            this["rootRunIds"] = [];
         }
         if (!("runCount" in $$source)) {
             this["runCount"] = 0;
@@ -1752,20 +1794,64 @@ export class ProjectDeletionPreview {
      * Creates a new ProjectDeletionPreview instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectDeletionPreview {
-        const $$createField1_0 = $$createType4;
-        const $$createField3_0 = $$createType4;
-        const $$createField5_0 = $$createType27;
+        const $$createField2_0 = $$createType4;
+        const $$createField4_0 = $$createType27;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("rootRunIds" in $$parsedSource) {
-            $$parsedSource["rootRunIds"] = $$createField1_0($$parsedSource["rootRunIds"]);
-        }
         if ("liveRunIds" in $$parsedSource) {
-            $$parsedSource["liveRunIds"] = $$createField3_0($$parsedSource["liveRunIds"]);
+            $$parsedSource["liveRunIds"] = $$createField2_0($$parsedSource["liveRunIds"]);
         }
         if ("worktrees" in $$parsedSource) {
-            $$parsedSource["worktrees"] = $$createField5_0($$parsedSource["worktrees"]);
+            $$parsedSource["worktrees"] = $$createField4_0($$parsedSource["worktrees"]);
         }
         return new ProjectDeletionPreview($$parsedSource as Partial<ProjectDeletionPreview>);
+    }
+}
+
+/**
+ * ProjectDeletionResult is what deleting one project did: the threads that went
+ * with it, so the frontend can purge pane state, and the checkouts that are
+ * still on disk afterwards.
+ * 
+ * The two travel together because a deletion that removed most of its litter is
+ * still a partial outcome, and a caller that only saw the thread ids would
+ * report it as a clean success.
+ */
+export class ProjectDeletionResult {
+    "threadIds": string[];
+
+    /**
+     * RetainedWorktrees is empty on the ordinary path. It carries the checkouts
+     * git declined to remove — see RetainedWorktree — so the user can finish the
+     * job with their own tools.
+     */
+    "retainedWorktrees": RetainedWorktree[];
+
+    /** Creates a new ProjectDeletionResult instance. */
+    constructor($$source: Partial<ProjectDeletionResult> = {}) {
+        if (!("threadIds" in $$source)) {
+            this["threadIds"] = [];
+        }
+        if (!("retainedWorktrees" in $$source)) {
+            this["retainedWorktrees"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProjectDeletionResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProjectDeletionResult {
+        const $$createField0_0 = $$createType4;
+        const $$createField1_0 = $$createType29;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("threadIds" in $$parsedSource) {
+            $$parsedSource["threadIds"] = $$createField0_0($$parsedSource["threadIds"]);
+        }
+        if ("retainedWorktrees" in $$parsedSource) {
+            $$parsedSource["retainedWorktrees"] = $$createField1_0($$parsedSource["retainedWorktrees"]);
+        }
+        return new ProjectDeletionResult($$parsedSource as Partial<ProjectDeletionResult>);
     }
 }
 
@@ -1799,7 +1885,7 @@ export class ProviderTerminalHandle {
      * Creates a new ProviderTerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): ProviderTerminalHandle {
-        const $$createField2_0 = $$createType28;
+        const $$createField2_0 = $$createType30;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -1959,6 +2045,42 @@ export const RemoteEndpointSummary = settings$0.RemoteEndpointSummary;
  */
 export type RemoteEndpointSummary = settings$0.RemoteEndpointSummary;
 
+/**
+ * RetainedWorktree is a checkout the deletion left on disk, and why. Git
+ * refuses to remove a worktree carrying uncommitted or untracked work, and the
+ * app does not override that; the user is told which ones so they can deal with
+ * them (`git worktree remove`) rather than discover them in `git worktree list`
+ * months later.
+ */
+export class RetainedWorktree {
+    "path": string;
+    "branch": string;
+    "reason": string;
+
+    /** Creates a new RetainedWorktree instance. */
+    constructor($$source: Partial<RetainedWorktree> = {}) {
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("branch" in $$source)) {
+            this["branch"] = "";
+        }
+        if (!("reason" in $$source)) {
+            this["reason"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RetainedWorktree instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RetainedWorktree {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RetainedWorktree($$parsedSource as Partial<RetainedWorktree>);
+    }
+}
+
 export class SendDiffReviewCommentsInput {
     "pr"?: store$0.DiffReviewPRContext | null;
 
@@ -1972,7 +2094,7 @@ export class SendDiffReviewCommentsInput {
      * Creates a new SendDiffReviewCommentsInput instance from a string or object.
      */
     static createFrom($$source: any = {}): SendDiffReviewCommentsInput {
-        const $$createField0_0 = $$createType30;
+        const $$createField0_0 = $$createType32;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pr" in $$parsedSource) {
             $$parsedSource["pr"] = $$createField0_0($$parsedSource["pr"]);
@@ -2012,7 +2134,7 @@ export class SendMessageOptions {
         const $$createField2_0 = $$createType8;
         const $$createField3_0 = $$createType8;
         const $$createField4_0 = $$createType4;
-        const $$createField5_0 = $$createType32;
+        const $$createField5_0 = $$createType34;
         const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
@@ -2177,7 +2299,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType28;
+        const $$createField2_0 = $$createType30;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -2344,11 +2466,11 @@ export class ThreadLiveState {
      * Creates a new ThreadLiveState instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadLiveState {
-        const $$createField3_0 = $$createType34;
-        const $$createField4_0 = $$createType36;
-        const $$createField5_0 = $$createType38;
-        const $$createField6_0 = $$createType39;
-        const $$createField7_0 = $$createType41;
+        const $$createField3_0 = $$createType36;
+        const $$createField4_0 = $$createType38;
+        const $$createField5_0 = $$createType40;
+        const $$createField6_0 = $$createType41;
+        const $$createField7_0 = $$createType43;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("activeTurn" in $$parsedSource) {
             $$parsedSource["activeTurn"] = $$createField3_0($$parsedSource["activeTurn"]);
@@ -2471,7 +2593,7 @@ export class VerifyEditDiffsRequest {
      * Creates a new VerifyEditDiffsRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): VerifyEditDiffsRequest {
-        const $$createField2_0 = $$createType43;
+        const $$createField2_0 = $$createType45;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField2_0($$parsedSource["files"]);
@@ -2571,7 +2693,7 @@ export class WorkflowAgentRunOutputs {
      * Creates a new WorkflowAgentRunOutputs instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowAgentRunOutputs {
-        const $$createField4_0 = $$createType44;
+        const $$createField4_0 = $$createType46;
         const $$createField5_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("outputs" in $$parsedSource) {
@@ -2963,7 +3085,7 @@ export class WorkflowDefinitionCatalog {
      * Creates a new WorkflowDefinitionCatalog instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionCatalog {
-        const $$createField1_0 = $$createType46;
+        const $$createField1_0 = $$createType48;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("workflows" in $$parsedSource) {
             $$parsedSource["workflows"] = $$createField1_0($$parsedSource["workflows"]);
@@ -3000,7 +3122,7 @@ export class WorkflowDefinitionInput {
      * Creates a new WorkflowDefinitionInput instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionInput {
-        const $$createField3_0 = $$createType47;
+        const $$createField3_0 = $$createType49;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("enum" in $$parsedSource) {
             $$parsedSource["enum"] = $$createField3_0($$parsedSource["enum"]);
@@ -3062,8 +3184,8 @@ export class WorkflowDefinitionListing {
      * Creates a new WorkflowDefinitionListing instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionListing {
-        const $$createField5_0 = $$createType49;
-        const $$createField6_0 = $$createType51;
+        const $$createField5_0 = $$createType51;
+        const $$createField6_0 = $$createType53;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField5_0($$parsedSource["phases"]);
@@ -3141,7 +3263,7 @@ export class WorkflowDiscardPreview {
     static createFrom($$source: any = {}): WorkflowDiscardPreview {
         const $$createField1_0 = $$createType4;
         const $$createField2_0 = $$createType4;
-        const $$createField3_0 = $$createType27;
+        const $$createField3_0 = $$createType55;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("members" in $$parsedSource) {
             $$parsedSource["members"] = $$createField1_0($$parsedSource["members"]);
@@ -3310,7 +3432,7 @@ export class WorkflowDiscardWorktree {
      */
     static createFrom($$source: any = {}): WorkflowDiscardWorktree {
         const $$createField7_0 = $$createType4;
-        const $$createField9_0 = $$createType53;
+        const $$createField9_0 = $$createType57;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("dirtyFiles" in $$parsedSource) {
             $$parsedSource["dirtyFiles"] = $$createField7_0($$parsedSource["dirtyFiles"]);
@@ -3358,7 +3480,7 @@ export class WorkflowDispositionReceipt {
      * Creates a new WorkflowDispositionReceipt instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDispositionReceipt {
-        const $$createField6_0 = $$createType55;
+        const $$createField6_0 = $$createType59;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("discarded" in $$parsedSource) {
             $$parsedSource["discarded"] = $$createField6_0($$parsedSource["discarded"]);
@@ -3469,14 +3591,14 @@ export class WorkflowItemDetailView {
      * Creates a new WorkflowItemDetailView instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowItemDetailView {
-        const $$createField0_0 = $$createType56;
+        const $$createField0_0 = $$createType60;
         const $$createField1_0 = $$createType4;
-        const $$createField2_0 = $$createType58;
-        const $$createField3_0 = $$createType60;
-        const $$createField4_0 = $$createType62;
-        const $$createField5_0 = $$createType44;
-        const $$createField6_0 = $$createType64;
-        const $$createField7_0 = $$createType65;
+        const $$createField2_0 = $$createType62;
+        const $$createField3_0 = $$createType64;
+        const $$createField4_0 = $$createType66;
+        const $$createField5_0 = $$createType46;
+        const $$createField6_0 = $$createType68;
+        const $$createField7_0 = $$createType69;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
@@ -3756,7 +3878,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType67;
+        const $$createField0_0 = $$createType71;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -3882,45 +4004,49 @@ const $$createType22 = git$0.ReviewThread.createFrom;
 const $$createType23 = $Create.Array($$createType22);
 const $$createType24 = PatchSpanSeed.createFrom;
 const $$createType25 = $Create.Array($$createType24);
-const $$createType26 = WorkflowDiscardWorktree.createFrom;
+const $$createType26 = ProjectCleanupWorktree.createFrom;
 const $$createType27 = $Create.Array($$createType26);
-const $$createType28 = terminal$0.SessionSummary.createFrom;
-const $$createType29 = store$0.DiffReviewPRContext.createFrom;
-const $$createType30 = $Create.Nullable($$createType29);
-const $$createType31 = store$0.DiffReviewSourceRef.createFrom;
+const $$createType28 = RetainedWorktree.createFrom;
+const $$createType29 = $Create.Array($$createType28);
+const $$createType30 = terminal$0.SessionSummary.createFrom;
+const $$createType31 = store$0.DiffReviewPRContext.createFrom;
 const $$createType32 = $Create.Nullable($$createType31);
-const $$createType33 = LiveStateActiveTurn.createFrom;
+const $$createType33 = store$0.DiffReviewSourceRef.createFrom;
 const $$createType34 = $Create.Nullable($$createType33);
-const $$createType35 = flushqueue$0.QueuedItem.createFrom;
-const $$createType36 = $Create.Array($$createType35);
-const $$createType37 = QueueFlushedItem.createFrom;
+const $$createType35 = LiveStateActiveTurn.createFrom;
+const $$createType36 = $Create.Nullable($$createType35);
+const $$createType37 = flushqueue$0.QueuedItem.createFrom;
 const $$createType38 = $Create.Array($$createType37);
-const $$createType39 = provider$0.PendingInteractiveRequests.createFrom;
-const $$createType40 = LiveStateTodo.createFrom;
-const $$createType41 = $Create.Nullable($$createType40);
-const $$createType42 = EditDiffVerifyFile.createFrom;
-const $$createType43 = $Create.Array($$createType42);
-const $$createType44 = $Create.Map($Create.Any, $Create.Any);
-const $$createType45 = WorkflowDefinitionListing.createFrom;
-const $$createType46 = $Create.Array($$createType45);
-const $$createType47 = $Create.Array($Create.Any);
-const $$createType48 = WorkflowDefinitionPhase.createFrom;
-const $$createType49 = $Create.Array($$createType48);
-const $$createType50 = WorkflowDefinitionInput.createFrom;
+const $$createType39 = QueueFlushedItem.createFrom;
+const $$createType40 = $Create.Array($$createType39);
+const $$createType41 = provider$0.PendingInteractiveRequests.createFrom;
+const $$createType42 = LiveStateTodo.createFrom;
+const $$createType43 = $Create.Nullable($$createType42);
+const $$createType44 = EditDiffVerifyFile.createFrom;
+const $$createType45 = $Create.Array($$createType44);
+const $$createType46 = $Create.Map($Create.Any, $Create.Any);
+const $$createType47 = WorkflowDefinitionListing.createFrom;
+const $$createType48 = $Create.Array($$createType47);
+const $$createType49 = $Create.Array($Create.Any);
+const $$createType50 = WorkflowDefinitionPhase.createFrom;
 const $$createType51 = $Create.Array($$createType50);
-const $$createType52 = gitdiff$0.Commit.createFrom;
+const $$createType52 = WorkflowDefinitionInput.createFrom;
 const $$createType53 = $Create.Array($$createType52);
-const $$createType54 = WorkflowDiscardResult.createFrom;
-const $$createType55 = $Create.Nullable($$createType54);
-const $$createType56 = WorkflowItemView.createFrom;
-const $$createType57 = WorkflowItemPhaseView.createFrom;
-const $$createType58 = $Create.Array($$createType57);
-const $$createType59 = WorkflowItemUnitView.createFrom;
-const $$createType60 = $Create.Array($$createType59);
-const $$createType61 = WorkflowItemChildView.createFrom;
+const $$createType54 = WorkflowDiscardWorktree.createFrom;
+const $$createType55 = $Create.Array($$createType54);
+const $$createType56 = gitdiff$0.Commit.createFrom;
+const $$createType57 = $Create.Array($$createType56);
+const $$createType58 = WorkflowDiscardResult.createFrom;
+const $$createType59 = $Create.Nullable($$createType58);
+const $$createType60 = WorkflowItemView.createFrom;
+const $$createType61 = WorkflowItemPhaseView.createFrom;
 const $$createType62 = $Create.Array($$createType61);
-const $$createType63 = WorkflowArtifact.createFrom;
+const $$createType63 = WorkflowItemUnitView.createFrom;
 const $$createType64 = $Create.Array($$createType63);
-const $$createType65 = store$0.WorkItemUsage.createFrom;
-const $$createType66 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType67 = $Create.Array($$createType66);
+const $$createType65 = WorkflowItemChildView.createFrom;
+const $$createType66 = $Create.Array($$createType65);
+const $$createType67 = WorkflowArtifact.createFrom;
+const $$createType68 = $Create.Array($$createType67);
+const $$createType69 = store$0.WorkItemUsage.createFrom;
+const $$createType70 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType71 = $Create.Array($$createType70);

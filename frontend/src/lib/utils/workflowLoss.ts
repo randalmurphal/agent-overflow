@@ -1,10 +1,12 @@
-// The one description of what a checkout is about to cost, shared by the
-// single-run discard preview (§4.5, D23) and the project-deletion preview
-// (D25). Both surfaces render the same rows, so they read the same way.
+// What discarding one checkout costs, in one line (§4.5, D23). Used only by the
+// discard dialog: project deletion deletes no branch and loses no commit, so it
+// describes a cleanup instead — see utils/projectCleanup.ts. The two said the
+// same thing once and stopped when deletion did; sharing a renderer between
+// them now would only make one of them lie.
 //
 // Pure: no bindings, no Svelte. A worktree that could not be inspected reports
 // its own failure rather than being summarised as if it were clean — a silent
-// gap in a loss preview is the one thing these surfaces cannot do.
+// gap in a loss preview is the one thing this surface cannot do.
 
 import type { WorkflowDiscardWorktree } from '../types/workflow';
 
@@ -22,18 +24,4 @@ export function worktreeLossSummary(worktree: WorkflowDiscardWorktree): string {
   if (!worktree.present) fragments.push('checkout already gone');
   else if (!worktree.registered) fragments.push('not a registered worktree — reported, not removed');
   return fragments.join(' · ');
-}
-
-// runLossSummary is the one-line headline above the rows: how much is going,
-// and how much of it is still moving. Returns '' when there is nothing to say.
-export function runLossSummary(runCount: number, liveCount: number, automationCount: number): string {
-  const parts: string[] = [];
-  if (runCount > 0) parts.push(countLabel(runCount, 'workflow run'));
-  if (automationCount > 0) parts.push(countLabel(automationCount, 'automation'));
-  if (parts.length === 0) return '';
-  const subject = parts.join(' and ');
-  if (liveCount === 0) return `${subject} will be deleted.`;
-  return `${subject} will be deleted, including ${liveCount} still working — ${
-    liveCount === 1 ? 'it is' : 'they are'
-  } stopped first.`;
 }

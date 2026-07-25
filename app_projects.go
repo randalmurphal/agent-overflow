@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/project"
+	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 
 	"github.com/google/uuid"
@@ -106,49 +107,57 @@ func (a *App) UpdateProjectSortPositions(orderedIDs []string) error {
 	return a.store.UpdateProjectSortPositions(orderedIDs)
 }
 
-// DeleteProject tears down every contained thread before removing the project
-// and returns their ids so the frontend can purge pane state. A project with
-// active turns or running background tasks is refused: deleting the workspace
-// container must never implicitly interrupt work in one of its threads.
+// ProjectDeletionResult is what deleting one project did: the threads that went
+// with it, so the frontend can purge pane state, and the checkouts that are
+// still on disk afterwards.
 //
-// A project that owns workflow work is refused outright, and nothing is
-// mutated: destroying runs, automations, and the worktrees and branches on disk
-// needs the human's consent (decision D25), which is a different method rather
-// than a parameter — see DeleteProjectDiscardingWorkflowWork.
-func (a *App) DeleteProject(id string) ([]string, error) {
-	return a.deleteProject(id, false)
+// The two travel together because a deletion that removed most of its litter is
+// still a partial outcome, and a caller that only saw the thread ids would
+// report it as a clean success.
+type ProjectDeletionResult struct {
+	ThreadIDs []string `json:"threadIds"`
+	// RetainedWorktrees is empty on the ordinary path. It carries the checkouts
+	// git declined to remove — see RetainedWorktree — so the user can finish the
+	// job with their own tools.
+	RetainedWorktrees []RetainedWorktree `json:"retainedWorktrees"`
 }
 
-// deleteProject is the one implementation behind both entry points.
+// DeleteProject removes a project from Agent Overflow: every contained thread,
+// every workflow run and automation the project owns, the worktrees the app
+// created for those runs, and the project row. A project with active turns or
+// running background tasks is refused: deleting the workspace container must
+// never implicitly interrupt work in one of its threads.
 //
-// The order below is load-bearing. The discard cascade runs FIRST, before a
-// single thread lock is taken: cancelling a live run reaches App.InterruptTurn,
-// which locks the run's phase thread — one of the locks this method would
-// otherwise already hold on every thread in the project.
-func (a *App) deleteProject(id string, discardWorkflowWork bool) ([]string, error) {
+// It is cleanup, not discard (decision D25). No branch is deleted, so every
+// commit the runs produced stays reachable in the repository; a checkout
+// carrying uncommitted work is left alone by git's own refusal and reported in
+// the result. Nothing here is unrecoverable, which is why nothing here takes a
+// consent — see app_project_delete_workflow.go.
+//
+// The order below is load-bearing (invariant 35). The workflow cleanup runs
+// FIRST, before a single thread lock is taken: cancelling a live run reaches
+// App.InterruptTurn, which locks the run's phase thread — one of the locks this
+// method would otherwise already hold on every thread in the project.
+func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 	if a.store == nil {
-		return nil, fmt.Errorf("delete project: store unavailable")
+		return ProjectDeletionResult{}, fmt.Errorf("delete project: store unavailable")
 	}
+	result := ProjectDeletionResult{ThreadIDs: []string{}, RetainedWorktrees: []RetainedWorktree{}}
 	footprint, err := a.projectWorkflowFootprint(id)
 	if err != nil {
-		return nil, err
-	}
-	if footprint.hasWork() && !discardWorkflowWork {
-		return nil, fmt.Errorf(
-			"%w: deleting it would destroy %s; ProjectDeletionPreview reports what would be lost, "+
-				"and DeleteProjectDiscardingWorkflowWork is the deletion that consents to it",
-			ErrProjectOwnsWorkflowWork, footprint.describe(),
-		)
+		return ProjectDeletionResult{}, err
 	}
 	if footprint.hasWork() {
-		if err := a.discardProjectWorkflowWork(footprint); err != nil {
-			return nil, fmt.Errorf("delete project %s: discard workflow work: %w", id, err)
+		retained, err := a.cleanUpProjectWorkflowWork(id, footprint)
+		if err != nil {
+			return ProjectDeletionResult{}, fmt.Errorf("delete project %s: clean up workflow work: %w", id, err)
 		}
+		result.RetainedWorktrees = retained
 	}
 
 	ids, err := a.store.ListThreadIDsForProject(id)
 	if err != nil {
-		return nil, err
+		return ProjectDeletionResult{}, err
 	}
 	slices.Sort(ids)
 	ids = slices.Compact(ids)
@@ -156,7 +165,7 @@ func (a *App) deleteProject(id string, discardWorkflowWork bool) ([]string, erro
 	for _, threadID := range ids {
 		thread, err := a.store.GetThread(threadID)
 		if err != nil {
-			return nil, fmt.Errorf("delete project: load thread %s: %w", threadID, err)
+			return ProjectDeletionResult{}, fmt.Errorf("delete project: load thread %s: %w", threadID, err)
 		}
 		threads[threadID] = thread
 	}
@@ -173,31 +182,31 @@ func (a *App) deleteProject(id string, discardWorkflowWork bool) ([]string, erro
 
 	lockedIDs, err := a.store.ListThreadIDsForProject(id)
 	if err != nil {
-		return nil, err
+		return ProjectDeletionResult{}, err
 	}
 	slices.Sort(lockedIDs)
 	lockedIDs = slices.Compact(lockedIDs)
 	if !slices.Equal(ids, lockedIDs) {
-		return nil, fmt.Errorf("delete project: contained threads changed during deletion; retry")
+		return ProjectDeletionResult{}, fmt.Errorf("delete project: contained threads changed during deletion; retry")
 	}
-	// The same guard for the workflow side: the cascade above ran unlocked, and
-	// a cron automation firing in that window would start a run this deletion
-	// never showed the human and never discarded.
+	// The same guard for the workflow side: the cleanup above ran unlocked, and a
+	// cron automation firing in that window would start a run this deletion never
+	// described and never cleaned up after.
 	lockedFootprint, err := a.projectWorkflowFootprint(id)
 	if err != nil {
-		return nil, err
+		return ProjectDeletionResult{}, err
 	}
 	if !footprint.sameAs(lockedFootprint) {
-		return nil, fmt.Errorf("delete project: contained workflow work changed during deletion; retry")
+		return ProjectDeletionResult{}, fmt.Errorf("delete project: contained workflow work changed during deletion; retry")
 	}
 
 	for _, threadID := range ids {
 		reason, err := a.threadActivityBlockReason(threadID)
 		if err != nil {
-			return nil, fmt.Errorf("delete project: check thread %s activity: %w", threadID, err)
+			return ProjectDeletionResult{}, fmt.Errorf("delete project: check thread %s activity: %w", threadID, err)
 		}
 		if reason != "" {
-			return nil, fmt.Errorf("cannot delete project while thread %s is running: %s", threadID, reason)
+			return ProjectDeletionResult{}, fmt.Errorf("cannot delete project while thread %s is running: %s", threadID, reason)
 		}
 	}
 
@@ -207,28 +216,30 @@ func (a *App) deleteProject(id string, discardWorkflowWork bool) ([]string, erro
 			continue
 		}
 		if err := a.deleteThreadTreeWithSubtreeLocksHeld(threadID); err != nil {
-			return nil, fmt.Errorf("delete project: delete thread %s: %w", threadID, err)
+			return ProjectDeletionResult{}, fmt.Errorf("delete project: delete thread %s: %w", threadID, err)
 		}
 	}
-	// The run records outlive the discard on purpose — a discard keeps the run's
-	// history and only destroys its checkouts — so the project's rows are dropped
-	// here. `work_items` has no foreign key to `projects` to cascade through, and
-	// a row left behind would carry a project id that resolves to nothing.
+	// The cleanup above frees disk and stops processes; it never touches a row,
+	// because a run record is not litter — it is the history the app is being
+	// asked to forget. It is dropped here, with the project. `work_items` has no
+	// foreign key to `projects` to cascade through, and a row left behind would
+	// carry a project id that resolves to nothing.
 	if err := a.store.DeleteProjectWorkflowRecords(id); err != nil {
-		return nil, err
+		return ProjectDeletionResult{}, err
 	}
 	// Automations went with those rows; the scheduler still has them armed until
 	// it re-reads.
 	if err := a.refreshWorkflowSchedule(); err != nil {
-		return nil, fmt.Errorf("delete project %s: refresh automation schedule: %w", id, err)
+		return ProjectDeletionResult{}, fmt.Errorf("delete project %s: refresh automation schedule: %w", id, err)
 	}
 	if err := a.store.DeleteProject(id); err != nil {
 		if errors.Is(err, store.ErrProjectHasThreads) {
-			return nil, fmt.Errorf("delete project: contained threads changed during deletion; retry")
+			return ProjectDeletionResult{}, fmt.Errorf("delete project: contained threads changed during deletion; retry")
 		}
-		return nil, err
+		return ProjectDeletionResult{}, err
 	}
-	return ids, nil
+	result.ThreadIDs = slicesx.OrEmpty(ids)
+	return result, nil
 }
 
 // projectThreadLockOrder returns a stable parent-before-descendant ordering.

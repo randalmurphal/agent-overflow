@@ -119,10 +119,10 @@ chromium` on a fresh machine).
   spec needs the thread visible.
 - Each worker owns one backend; tests share it and must leave it reset
   (the fixture does this) rather than booting their own. Production project
-  deletion cascades the workflow rows (D25), but `HarnessReset` still deletes
-  them itself first (`DeleteProjectWorkflowRecords`): reset removes the
-  generated workspace tree wholesale rather than running git worktree/branch
-  destruction against whatever a spec left behind. A spec that asserts on a
+  deletion drops the workflow rows (D25), but `HarnessReset` still deletes them
+  itself first (`DeleteProjectWorkflowRecords`): reset removes the generated
+  workspace tree wholesale rather than spending a git worktree removal per
+  checkout on fixtures that are about to go anyway. A spec that asserts on a
   global count (the overlay's attention badge, the sweep total) depends on
   that explicit delete.
 - Transport notification replay survives `HarnessReset`. Any spec whose

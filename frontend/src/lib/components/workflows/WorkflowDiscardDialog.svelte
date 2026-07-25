@@ -9,8 +9,8 @@
 
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
-  import WorkflowLossList from '../shared/WorkflowLossList.svelte';
   import type { WorkflowDiscardPreview } from '../../types/workflow';
+  import { worktreeLossSummary } from '../../utils/workflowLoss';
   import { WorkflowDiscardPreview as fetchDiscardPreview } from '../../stores/bindings';
   import { getWorkflowCosts, getWorkflowDetail, getWorkflowRun } from '../../stores/workflowRuns.svelte';
   import { resolveWorkflowRun } from '../../stores/workflowResolve';
@@ -80,11 +80,23 @@
           </p>
         {/if}
 
-        <WorkflowLossList
-          worktrees={preview.worktrees}
-          emptyMessage="No checkouts to remove — this run left nothing on disk."
-          testIdPrefix="workflow-discard"
-        />
+        {#if preview.worktrees.length > 0}
+          <ul
+            class="divide-y divide-border-subtle rounded-md border border-border-subtle"
+            data-testid="workflow-discard-worktrees"
+          >
+            {#each preview.worktrees as worktree (worktree.unitId ? `${worktree.path}::${worktree.unitId}` : worktree.path)}
+              <li class="px-3 py-2" data-testid="workflow-discard-worktree">
+                <p class="truncate font-mono text-xs text-fg">{worktree.path}</p>
+                <p class="truncate text-[0.6875rem] text-fg-muted">{worktreeLossSummary(worktree)}</p>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="text-xs text-fg-muted" data-testid="workflow-discard-no-worktrees">
+            No checkouts to remove — this run left nothing on disk.
+          </p>
+        {/if}
 
         <p class="text-xs text-fg-muted" data-testid="workflow-discard-artifacts">
           Artifacts already captured survive. The run record is kept.

@@ -134,12 +134,12 @@ func TestAppDeleteProjectReturnsThreadIDs(t *testing.T) {
 		return nil
 	}
 
-	ids, err := app.DeleteProject(p.ID)
+	result, err := app.DeleteProject(p.ID)
 	if err != nil {
 		t.Fatalf("DeleteProject: %v", err)
 	}
-	if len(ids) != 1 || ids[0] != thread.ID {
-		t.Fatalf("DeleteProject ids = %v, want [%s]", ids, thread.ID)
+	if len(result.ThreadIDs) != 1 || result.ThreadIDs[0] != thread.ID {
+		t.Fatalf("DeleteProject thread ids = %v, want [%s]", result.ThreadIDs, thread.ID)
 	}
 	if len(stopped) != 1 || stopped[0] != thread.ID {
 		t.Fatalf("stopped sessions = %v, want [%s]", stopped, thread.ID)

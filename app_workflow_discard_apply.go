@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/engine"
 )
@@ -32,7 +31,7 @@ func (a *App) discardWorkflowTree(root store.WorkItem) (WorkflowDiscardResult, e
 	if err != nil {
 		return result, err
 	}
-	cancelled, err := a.cancelWorkflowTreeForDiscard(members)
+	cancelled, err := a.cancelWorkflowTreeMembers(members)
 	if err != nil {
 		return result, err
 	}
@@ -80,7 +79,7 @@ func (a *App) discardWorkflowTree(root store.WorkItem) (WorkflowDiscardResult, e
 	}
 	var errs []error
 	for _, target := range targets {
-		removed, err := a.removeDiscardedWorktree(project.Path, registry.worktrees, target)
+		removed, err := a.removeDiscardedWorktree(project.Path, registry, target)
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -97,11 +96,15 @@ func (a *App) discardWorkflowTree(root store.WorkItem) (WorkflowDiscardResult, e
 	return result, a.clearDiscardedTreeWorkspaces(members)
 }
 
-// cancelWorkflowTreeForDiscard stops the members still in flight and reports
+// cancelWorkflowTreeMembers stops the members still in flight and reports
 // which ones it stopped. Cancel is itself tree-aware, so the shallowest live
 // member brings its own descendants down; deeper members are skipped once an
 // ancestor has cancelled them.
-func (a *App) cancelWorkflowTreeForDiscard(members []store.WorkItem) ([]string, error) {
+//
+// Shared by the discard and by project deletion's cleanup (D25) — both have to
+// stop a tree before they can touch its checkouts, and neither may hold a
+// thread lock while they do (invariant 35).
+func (a *App) cancelWorkflowTreeMembers(members []store.WorkItem) ([]string, error) {
 	stopped := make([]string, 0)
 	live := make([]store.WorkItem, 0)
 	for _, member := range members {
@@ -125,7 +128,7 @@ func (a *App) cancelWorkflowTreeForDiscard(members []store.WorkItem) ([]string, 
 			continue
 		}
 		if err := workflowEngine.Cancel(member.ID); err != nil {
-			errs = append(errs, fmt.Errorf("cancel run %s before discard: %w", member.ID, err))
+			errs = append(errs, fmt.Errorf("cancel run %s: %w", member.ID, err))
 			continue
 		}
 		cancelled[member.ID] = true
@@ -147,7 +150,7 @@ type discardRemoval struct {
 // its branch is still deleted if it exists, because the branch is the run's
 // either way.
 func (a *App) removeDiscardedWorktree(
-	projectPath string, worktrees []gitops.Worktree, target discardWorktreeTarget,
+	projectPath string, registry projectWorktreeRegistry, target workflowWorktreeTarget,
 ) (discardRemoval, error) {
 	if isProjectCheckout(projectPath, target.path) {
 		// workflowTreeWorktrees already filters these out; the destructive step
@@ -155,17 +158,7 @@ func (a *App) removeDiscardedWorktree(
 		// they are sitting on is the one mistake here that cannot be undone.
 		return discardRemoval{}, nil
 	}
-	registered := false
-	branch := target.branch
-	for _, worktree := range worktrees {
-		if gitops.SameFilesystemPath(worktree.Path, target.path) {
-			registered = true
-			if branch == "" {
-				branch = worktree.Branch
-			}
-			break
-		}
-	}
+	branch, registered := registeredWorktreeBranch(registry, target)
 	removal := discardRemoval{}
 	if registered {
 		if err := a.gitCore().RemoveWorktreeForce(projectPath, target.path, true); err != nil {

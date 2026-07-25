@@ -418,14 +418,12 @@ func (h *Harness) HarnessReset() (err error) {
 		return fmt.Errorf("list projects: %w", err)
 	}
 	for _, p := range projects {
-		// Production deletion cascades these rows too (D25), but it also runs the
-		// discard over every run tree — git worktree removals and branch deletions
-		// against whatever the spec left on disk. Reset owns disk cleanup wholesale
-		// (it removes the generated workspace tree below), so it drops the rows
-		// first and hands DeleteProject a project with nothing left to destroy.
-		// Calling the non-consenting DeleteProject is the tripwire: if anything
-		// survived, the deletion refuses instead of quietly running git against a
-		// test fixture.
+		// Production deletion cascades these rows too (D25), and cleans up the
+		// run worktrees git still knows about. Reset owns disk cleanup wholesale
+		// — it removes the generated workspace tree below — so it drops the rows
+		// first and hands DeleteProject a project with nothing left to walk,
+		// rather than spending a git subprocess per checkout on fixtures that are
+		// about to be deleted outright.
 		if err := h.app.store.DeleteProjectWorkflowRecords(p.Project.ID); err != nil {
 			return fmt.Errorf("delete workflow records for project %s: %w", p.Project.ID, err)
 		}

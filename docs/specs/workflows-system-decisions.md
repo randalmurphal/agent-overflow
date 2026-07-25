@@ -704,8 +704,9 @@ The rev-2 campaign (M6, waves W1–W12) shipped. These five questions were
 raised during implementation and deferred to the close; each is settled
 against the code as it stands, with the file that carries the behaviour named
 so a future reader can check the ruling rather than trust it. D25 was the one
-left open at the sweep; it was decided by the user the next day and is
-recorded below as the verdict it now is.
+left open at the sweep; it was decided by the user the next day, implemented
+once too destructively, and reworked the same day. It is recorded below as the
+verdict it now is, with what the first attempt got wrong.
 
 - **D24. `report-back` stays out of the closed grant set** (ratifies the
   deferral in D15/§5). The enforceable grants are exactly `start-run`,
@@ -721,78 +722,122 @@ recorded below as the verdict it now is.
   new `Grant` constant, its `ScopedTokenMethods` rows, and the bound method's
   row-level check. **Ratified as-is; not a gap.**
 
-- **D25 (RESOLVED 2026-07-25 — option 2, refuse then cascade). Deleting a
-  project destroys its workflow work, but only after showing the human exactly
-  what that means.** Chosen by the user: *"if deleted project has work to
-  destroy, it should have the user confirm it wants to delete and allow for
-  proper and full cleanup."* The rejected alternatives were cascading silently
-  (option 1 — destroys parked runs and unmerged branches the user may not
-  realize the project owned) and leaving the leak with a reclaim path bolted on
-  later (option 3 — keeps a class of orphan nothing in the UI can reach).
+- **D25 (RESOLVED 2026-07-25). Deleting a project cleans up after itself; it
+  never deletes a branch.** The M6 sweep left this open, and the first
+  implementation went further than the ruling that followed it — see the rework
+  note below. Settled shape: deleting a project removes what Agent Overflow
+  owns — its threads, its runs and their phase/unit/effect rows, its
+  automations, its attachments, the project row — and cleans up the litter it
+  made on disk, the run worktrees it created in an app-managed directory
+  (`<repo>-worktrees`, or `<configDir>/worktrees/<project>`). It deletes no
+  branch, so every commit those runs produced is still reachable in the
+  repository afterwards. The rejected alternative was leaving the leak in place
+  with a reclaim path bolted on later: `work_items` carries no foreign key to
+  `projects`, so the runs survived a deletion with a project id resolving to
+  nothing, unreachable from every project-scoped query, and their registered
+  worktrees stayed in `git worktree list` with nothing left in the app that
+  could ever remove them.
 
-  Shape, which is D23's "the preview is the consent" widened from one run tree
-  to a project's whole forest:
+  Shape:
 
+  - `App.DeleteProject(id)` (`app_projects.go`) is the one entry point. It
+    cancels the project's live runs and stops their provider sessions, removes
+    their worktrees, deletes the threads and every workflow row, refreshes the
+    automation schedule, and deletes the project. It returns a
+    `ProjectDeletionResult`: the thread ids the frontend purges pane state for,
+    and the worktrees still on disk afterwards.
+  - Removal is `gitCore().RemoveWorktree` — **non-force**, deliberately
+    (`app_project_delete_cleanup.go`). Git refuses to remove a worktree
+    carrying uncommitted or untracked work, and that refusal is the whole
+    safety valve: the app created the directory so it cleans it up, but it does
+    not get to destroy what the user left inside it. A refused checkout is a
+    reported outcome, not a failure — the deletion still succeeds, and the
+    checkout rides back in `RetainedWorktrees` with a reason, so a partial
+    cleanup is never a silent one. `isProjectCheckout` is re-checked at the
+    removal itself, so a run that recorded the user's own checkout as its
+    workspace can never cost them it.
+  - A refusal is explained by asking the checkout what state it is in
+    (`WorkingTreeChanges`), not by matching git's message: that message is
+    localized and free to change between versions, while the working-tree
+    question is the same one `git worktree remove` decides on. When the answer
+    does not explain the refusal — the checkout is clean, or the question
+    itself failed — git broke rather than refused, and its own words are
+    reported unchanged rather than replaced by a guess.
   - `App.ProjectDeletionPreview` (`app_project_delete_workflow.go`, LocalOnly)
-    walks every root run the project owns and reports the run count, the runs
-    still in flight, the automation count, and one `WorkflowDiscardWorktree`
-    row per checkout with its branch, dirty files, and unmerged commits. It
-    mutates nothing, and it reuses the discard preview's row type and target
-    collection rather than defining a second description of the same loss —
-    `workflowTreeLoss` (`app_workflow_discard.go`) is now the one place that
-    says what a discard destroys.
-  - `App.DeleteProject(id)` refuses outright when the project owns any run or
-    automation, with the typed `ErrProjectOwnsWorkflowWork` naming the preview
-    and the consenting method. Nothing is mutated on that path.
-  - `App.DeleteProjectDiscardingWorkflowWork(id)` (LocalOnly) is that consenting
-    method. The consent is a separate METHOD rather than a parameter because the
-    transport authorizes by method name: `LocalOnlyMethods` can refuse this one
-    from a LAN peer, and cannot express "the same method, but only when this
-    argument is false". Plain project deletion stays remotely reachable as it
-    always was — it destroys no git state — while the one flow in the app that
-    deletes a branch does not become reachable alongside it. It discards every
-    root tree — worktrees removed,
-    branches deleted, `isProjectCheckout` re-checked at the destructive step so
-    the user's own checkout and the branch they sit on are never touched — then
-    deletes the threads, the workflow rows
-    (`store.DeleteProjectWorkflowRecords`, now called on every deletion), and
-    the project row, refreshing the automation schedule so the scheduler drops
-    triggers whose definitions just went.
-  - The sidebar's Delete action fetches the preview first. Nothing to destroy
-    keeps today's one-line confirm; anything to destroy opens the loss dialog
-    (`ProjectDeleteDialog.svelte` over the shared `WorkflowLossList.svelte`). A
-    preview that fails stops the flow with an error — it never falls through to
-    a delete whose cost nobody was shown.
+    describes that cleanup before it runs: the run count, the runs still in
+    flight, the automation count, and one row per checkout with its path, its
+    branch, its uncommitted-file count, and whether it will be retained. It
+    mutates nothing. It shares the *target collection* with the D23 discard
+    (`workflowTreeLoss`) — which checkouts a run tree owns is one question with
+    one answer — but not the row type: a discard row reports unmerged commits
+    as a loss, and under cleanup those commits are not lost, so reporting them
+    would be actively misleading.
+  - The sidebar previews before it offers anything. Nothing to say keeps the
+    one-line confirm; a project that owns runs or automations opens
+    `ProjectDeleteDialog.svelte`, which says what is deleted, that the branches
+    are kept, and which checkouts will be left behind. A failing preview stops
+    the flow rather than falling through to a confirm that would describe a
+    project with runs as if it had none. Retained checkouts come back as a
+    separate warning toast after the deletion, not folded into the success
+    line.
 
-  **Implementation note — the ordering is load-bearing.** The discard cascade
-  runs *before* `DeleteProject` acquires a single thread lock. Discard cancels
-  the live members first, and cancelling walks engine teardown →
-  `Runner.Stop` → `App.InterruptTurn`, which takes
-  `a.threadLocks().Lock(threadID)` on the run's phase thread — one of the locks
-  `DeleteProject` holds across every thread in the project. Cascading under
-  those locks deadlocks outright; the regression that pins it is
+  **Rework note (2026-07-25).** The first implementation of D25 shipped as
+  *refuse then cascade*: `DeleteProject` refused a project that owned workflow
+  work with a typed error, a second `DeleteProjectDiscardingWorkflowWork`
+  method (LocalOnly) consented to it, and consenting ran the full D23 discard —
+  forced worktree removal **and branch deletion** — across every run tree the
+  project owned, behind a loss dialog listing unmerged commits. That was
+  reworked the same day, on the user's ruling, to the cleanup above.
+
+  The reason is a boundary, not a preference. Deleting a project means "remove
+  this from Agent Overflow." Git is a system the user owns independently, with
+  its own tools for throwing work away; a sidebar housekeeping action has no
+  business rewriting their repository as a side effect. The codebase already
+  drew the line — see `discardWorkflowTree`'s header
+  (`app_workflow_discard_apply.go`): cleanup frees a checkout and leaves the
+  commits reachable through the branch, while discard is the human saying the
+  work itself is not wanted. Project deletion is cleanup. **D23's per-run
+  discard remains the only flow in the app that deletes a branch**, which is
+  what makes its preview worth reading.
+
+  Everything the consent machinery existed for went with it: because nothing
+  the deletion does is unrecoverable, there is nothing to gate. The typed
+  refusal, the second method, and the LocalOnly row that classified it are
+  deleted; the preview stays LocalOnly because it still reads local checkouts
+  and their uncommitted paths, and `DeleteProject` stays wire-reachable as it
+  always was. The rule is pinned two ways in
+  `app_project_delete_workflow_test.go`: the branch set of the fixture
+  repository is asserted unchanged across a deletion that removes checkouts,
+  and `TestProjectDeletionSourceCallsNoBranchDeletion` parses the three files
+  that own the flow and fails on any call to `DeleteBranch` or
+  `RemoveWorktreeForce` — including in the lines no fixture reaches.
+
+  **Implementation note — the ordering is load-bearing (invariant 35).** The
+  cleanup runs *before* `DeleteProject` acquires a single thread lock.
+  Cancelling a live run walks engine teardown → `Runner.Stop` →
+  `App.InterruptTurn`, which takes `a.threadLocks().Lock(threadID)` on the
+  run's phase thread — one of the locks `DeleteProject` holds across every
+  thread in the project. Cleaning up under those locks deadlocks outright; the
+  regression that pins it is
   `TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks`
   (`app_project_delete_live_run_test.go`), which fails on a timeout rather than
-  hanging the suite. Because the cascade runs unlocked, the locked section
-  re-reads the project's run and automation ids and refuses with the same
-  retry shape as the thread-set guard if a cron fire changed them underneath
-  it. The cascade also stops the cancelled runs' phase and unit sessions, which
-  settles their turn rows synchronously — otherwise a CLI that acks an
-  interrupt and never emits a result would block the deletion the human just
-  consented to.
+  hanging the suite. Because the cleanup runs unlocked, the locked section
+  re-reads the project's run and automation ids and refuses with the same retry
+  shape as the thread-set guard if a cron fire changed them underneath it. The
+  cleanup also stops the cancelled runs' phase and unit sessions, which settles
+  their turn rows synchronously — otherwise a CLI that acks an interrupt and
+  never emits a result would block the deletion forever.
 
   **Implementation note — a project whose checkout is gone stays deletable.**
-  Every git question the preview and the cascade ask goes through
+  Every git question the preview and the cleanup ask goes through
   `readProjectWorktrees` (`app_workflow_discard.go`), which returns an absent
   registry rather than an error when the project directory is no longer on
-  disk. The repository that registered those checkouts and held their branches
-  went with it, so there is nothing left for git to destroy and no repository
-  to ask; the cascade clears the run records' workspace pointers and moves on,
-  and the preview skips the branch comparison instead of decorating every row
-  with the same failure. Any other git or stat failure still propagates. Making
-  it an error instead would leave the run undiscardable and the project
-  undeletable, permanently and with no other path out of either
-  (`TestDeleteProjectWithAMissingCheckoutStillCascades`).
+  disk. There is no repository left to ask and nothing git can be asked to
+  remove; the checkouts still sitting on disk are reported as retained with
+  that as the reason, and the deletion proceeds. Any other git or stat failure
+  still propagates. Making it an error instead would leave the project
+  undeletable, permanently and with no other path out
+  (`TestDeleteProjectWithAMissingCheckoutStillCleansUp`).
 
 - **D26. A question is one string; UI-SPEC §8's `1`–`9` stay unbound.**
   The control envelope's `question` is a single nullable string
