@@ -230,12 +230,7 @@ inputs:
       type: string
 phases:
   - id: port
-    driver: agent
     shape: fan-out
-    provider: claude
-    model: claude-opus-4-7
-    prompt: port.md
-    access: write
     outputs:
       report:
         schema:
@@ -282,7 +277,6 @@ test('discard previews the loss and then removes every checkout and branch', asy
         name: 'discard-flow',
         yaml: discardFanOutYaml,
         prompts: {
-          'port.md': 'Coordinate the parallel port.',
           'alpha.md': 'Port the alpha slice and return the envelope.',
           'beta.md': 'Port the beta slice and return the envelope.',
           'merge.md': 'Consolidate {{units}} and return the envelope.',

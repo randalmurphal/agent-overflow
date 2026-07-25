@@ -646,7 +646,7 @@ func TestWorkflowRunnerRejectsUnsupportedPhasesAndStopsUnknownRuns(t *testing.T)
 	}
 	for _, phase := range []def.Phase{
 		{ID: "tool", Driver: def.DriverTool, Shape: def.ShapeSingle},
-		{ID: "fan", Driver: def.DriverAgent, Shape: def.ShapeFanOut},
+		{ID: "fan", Shape: def.ShapeFanOut},
 	} {
 		err := runner.Start(context.Background(), engine.RunRequest{Phase: phase}, func() {}, func(engine.Outcome) {})
 		if err == nil {

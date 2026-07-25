@@ -62,9 +62,12 @@ func validateGrants(phase Phase, phaseElement string) []Finding {
 		return nil
 	}
 	var findings []Finding
-	if phase.Driver == DriverTool {
-		findings = append(findings, finding("phase.grants", phaseElement,
-			"grants require an agent driver: a tool phase runs a command, not a session that could hold the credentials"))
+	if !phaseHoldsAgentSession(phase) {
+		message := "grants require an agent driver: a tool phase runs a command, not a session that could hold the credentials"
+		if phase.EffectiveShape() == ShapeFanOut {
+			message = "grants require an agent session: every unit and the join of this fan-out runs a command, so nothing would hold the credentials"
+		}
+		findings = append(findings, finding("phase.grants", phaseElement, message))
 	}
 	seen := make(map[string]struct{}, len(phase.Grants))
 	for _, name := range phase.Grants {
@@ -82,4 +85,23 @@ func validateGrants(phase Phase, phaseElement string) []Finding {
 		seen[trimmed] = struct{}{}
 	}
 	return findings
+}
+
+// phaseHoldsAgentSession reports whether anything the phase runs is a provider
+// session that could hold its injected credentials. A single-shape phase answers
+// with its own driver; a fan-out answers with its units and its join, because
+// the phase itself runs nothing and grants are still declared on it — the app
+// scopes every unit's token from the *phase's* frozen grants
+// (`frozenPhaseGrants`, keyed by phase id), so the declaration belongs there and
+// is dead only when nothing under it runs an agent.
+func phaseHoldsAgentSession(phase Phase) bool {
+	if phase.EffectiveShape() != ShapeFanOut {
+		return phase.Driver != DriverTool
+	}
+	for _, unit := range phase.UnitDefinitions() {
+		if unit.EffectiveDriver() == DriverAgent {
+			return true
+		}
+	}
+	return phase.Join != nil && phase.Join.EffectiveDriver() == DriverAgent
 }

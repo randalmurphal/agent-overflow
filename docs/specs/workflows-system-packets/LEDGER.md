@@ -1189,3 +1189,68 @@ P5.0 (a29c2992), P5.1 (e964d888), P5.2 (da481733) — all M4 rulings from
 tool, per-project queues with pause + concurrency limits +
 workflow:definitions-changed, intent-context hand-off seeds (F4.4), and
 PR follow-ups as linked threads (D11 amendment).
+
+## M6 campaign closed (rev 2, 2026-07-25)
+
+Spec rev 2 (`workflows-system.md`, 2026-07-24) re-centered the system on
+directly-started background runs. Twelve waves, dispatched serially rather
+than in parallel lanes — every wave after W1 depended on the previous one's
+engine surface, so the M0-era lane model bought nothing. Same review
+protocol: scope/assumptions/gaming audit plus independent gate re-runs
+before each merge.
+
+| Wave | Scope | Commit |
+|---|---|---|
+| W10a | Delete the rev-1 workflows frontend surface | `1c7aca55` |
+| W1 | Queue removal + direct start (engine, RPC, store) | `e05686f3` |
+| — | Merge origin/main into workflows-system | `3916403f` |
+| W2 | Tool driver execution | `560e2abd` |
+| W3 | `access` enforced at the provider session (D22) | `1808d975` |
+| W6 | Per-entry loop counters (D21) | `a6b5276b` |
+| W4a | Fan-out — engine units | `75347e2b` |
+| W4b | Fan-out — unit threads, sub-worktrees, join (D19/D20) | `08300e16` |
+| W5 | Call phases — composition and recursion (D18) | `4796e399` |
+| W7 | Thread binding, wake, pause/resume, discard (D17/D23) | `9cababf7` |
+| W8 | Scheduler and automations on the start path (§11) | `5df8de60` |
+| W9 | `ao` CLI execution surface, scoped tokens, `/workflow` (D15/D17) | `a89d10ee` |
+| W10b | Rev-2 overlay UI — home, run detail, sweep, intake, footer | `8cd26975` |
+| W11 | Real-provider smoke gate behind `make provider-smoke` | `246f1dc3` |
+| W12 | Ratification sweep (this entry) | working tree |
+
+Gate battery at close: `make verify` green from the repo root — frontend
+build, `go-build`, `go-test`, `pnpm check`, `pnpm test`, `pnpm test:browser`,
+`make build`, `make build-wsl`. `make provider-smoke` is deliberately NOT in
+that battery (D28): it spends real tokens and is run before a release and
+after a provider CLI upgrade instead.
+
+Accepted deviations — each ratified, none silent:
+
+- **Pause keeps the provider process alive.** Teardown interrupts the turn
+  (`InterruptTurn`), never `StopSession`; resume continues the same session.
+  Invariant 31.
+- **Descendant parks go silent once the root rests.** A descendant parking
+  `needs-human` wakes the *root's* thread, but only while the root is still
+  running — a resting root is already on the human's surface (D17 amendment).
+- **`job-notes` is kebab-case**, matching the reserved `trigger` seed rather
+  than the Go-side field name.
+- **Exit-code scheme 0/1/2** for the `ao` CLI (`internal/aocli/run.go`):
+  0 success, 1 *findings* — a real answer the caller can act on (validation
+  findings, `run wait` settling on a non-done state) — and 2 error, for
+  anything that did not produce an answer at all.
+- **`ao run wait` polls, it does not subscribe.** A one-shot CLI process
+  would need the WebSocket wire and its replay ring to subscribe; a bounded
+  poll against the same scoped RPC surface is smaller and cannot desync.
+- **`report-back` excluded** from the closed grant set — D24.
+- **UI-SPEC §8 digits `1`–`9` unbound** — the envelope carries one question
+  string, so there is nothing to enumerate. D26.
+- **A wake lost to graceful quit is accepted** — logged and emitted, and the
+  run is durably parked `needs-human(paused)` regardless. D27.
+- **Project deletion leaves workflow rows and worktrees behind** — recorded
+  as the campaign's one OPEN decision (D25) with options, not resolved.
+
+Verdict: **MERGED**. Rev-2 decisions D16–D23 plus the D2a and D11 amendments
+are implemented; the ratification sweep added invariants 30–34, brought
+`schema.md` current through migration v40, ratified D24/D26/D27/D28, opened
+D25, archived the two superseded planning docs
+(`workflows-refit.md`, `workflows-system-gap-analysis.md`), and left the
+battery green.

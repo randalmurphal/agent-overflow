@@ -1,5 +1,10 @@
 # Synthesis Brief — one mockup from the design-round verdict
 
+> **Historical (rev 1, 2026-07-11).** The mockup this brief produced
+> (`synthesis.html`) still binds row and receipt *tone*, which `UI-SPEC.md`
+> rev 2 restates; its pane frame, queue strip, and drag-priority surfaces are
+> superseded by the rev-2 overlay. `UI-SPEC.md` rev 2 is authoritative.
+
 Read first: `BRIEF.md` (canonical dataset + the seven moments still apply), then
 `docs/specs/workflows-system-decisions.md` **D11 and D12** (the verdict — this brief
 implements it), then skim the three prior concepts (`concept-a.html`, `concept-b.html`,

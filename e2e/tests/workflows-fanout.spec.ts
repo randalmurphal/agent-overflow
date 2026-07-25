@@ -53,11 +53,7 @@ inputs:
 phases:
   - id: port
     name: Port in parallel
-    driver: agent
     shape: fan-out
-    provider: claude
-    model: claude-opus-4-7
-    prompt: port.md
     outputs:
       report:
         schema:
@@ -89,7 +85,6 @@ test('a static fan-out runs each unit isolated and lets the join drive the gate'
         name: 'fanout-static',
         yaml: staticFanOutYaml,
         prompts: {
-          'port.md': 'Coordinate the parallel port.',
           'alpha.md': 'Port the alpha slice and return the envelope.',
           'beta.md': 'Port the beta slice and return the envelope.',
           'merge.md': 'Consolidate {{units}} and return the envelope.',
@@ -182,12 +177,7 @@ phases:
       routes:
         - to: port
   - id: port
-    driver: agent
     shape: fan-out
-    provider: codex
-    model: gpt-5.5
-    prompt: port.md
-    access: read-only
     over: plan.sections
     as: section
     unit:
@@ -234,7 +224,6 @@ test('a dynamic fan-out stamps one unit per element of the array a prior phase e
         yaml: dynamicFanOutYaml,
         prompts: {
           'plan.md': 'Plan {{goal}} and return the sections.',
-          'port.md': 'Coordinate the parallel port.',
           'unit.md': 'Port {{section.path}} and return the envelope.',
           'merge.md': 'Consolidate {{units}} and return the envelope.',
         },
@@ -273,12 +262,7 @@ inputs:
       type: string
 phases:
   - id: port
-    driver: agent
     shape: fan-out
-    provider: claude
-    model: claude-opus-4-7
-    prompt: port.md
-    access: read-only
     outputs:
       report:
         schema:
@@ -325,7 +309,6 @@ test('a failed unit parks the attempt and WorkflowRetryUnit repairs it in place'
         name: 'fanout-recovery',
         yaml: mixedFanOutYaml,
         prompts: {
-          'port.md': 'Coordinate the parallel port.',
           'alpha.md': 'Port the alpha slice and return the envelope.',
           'beta.md': 'Port the beta slice and return the envelope.',
           'merge.md': 'Consolidate {{units}} and return the envelope.',

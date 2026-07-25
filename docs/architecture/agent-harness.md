@@ -79,7 +79,7 @@ One WebSocket carries everything:
 | `HarnessInfo()` | Identity + evidence paths (DB, event-log dir, UI trace, frontend error log). |
 | `HarnessEmit(channel, payload)` | Publish a raw event on the bus — escape hatch for injecting one-off frames at the frontend. |
 | `HarnessSeed(spec)` | Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, plus project-scoped workflow definitions/profile/items. Returns created ids. |
-| `HarnessReset()` | Blank slate without a reboot: pause/drain workflow queue ownership, stop sessions, settle in-flight turns, delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). Recorded bundles survive. Reload the page after. |
+| `HarnessReset()` | Blank slate without a reboot: set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete projects through the production cascade, delete the workflow run records (`DeleteProjectWorkflowRecords` — `work_items` has no FK to `projects` to cascade through), remove workflow config/run dirs and generated seed workspaces, and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
 | `HarnessSetScenario(spec)` | Install/replace a mock scenario rule (library `name` or inline `scenario` JSON, optional `cwd` scope). Validated at set time. |
 | `HarnessClearScenarios()` / `HarnessListScenarios()` | Drop rules / list library + active rules. |
 | `HarnessListMocks()` | Registered mock processes in spawn order. |
@@ -103,8 +103,9 @@ while one is still pending errors instead of silently coalescing.
 `HarnessSeed` writes ordinary thread *completed history* — the rows the app
 itself would have persisted after the fact. Workflow items are different: the
 seeder writes definitions/profile files to the production project config layout
-and calls `WorkflowEnqueueItem`; non-queued targets run through the real engine
-and mock provider. It never inserts work-item or phase rows directly.
+and calls `WorkflowStartRun`, the one start path every producer uses; the run
+executes through the real engine and mock provider. It never inserts work-item,
+phase, or unit rows directly.
 
 The project-level workflow seed shape is:
 
@@ -128,13 +129,15 @@ The project-level workflow seed shape is:
 
 Definition `name` is a filename stem; YAML retains the authoritative workflow
 id. Prompt keys are confined sibling-relative paths. `count` defaults to one,
-and `target` defaults to `queued`; supported targets are `queued`,
+and `target` defaults to `running`; supported targets are `running`,
 `needs-human`, and `done`. A spec expands to at most 100 workflow items.
-Seeding pauses the queue, drives non-queued targets
-one at a time from `workflow:item-state`, and restores the caller's active/
-concurrency settings. A queued target requires the caller's queue already be
-inactive, because restoring an active queue would immediately invalidate that
-resting state.
+There is no queue to order against (rev 2): every run starts immediately and is
+bounded by provider resource capacity. A `running` target returns as soon as the
+run has started; the other two subscribe to `workflow:item-state` **before**
+starting, so a run that reaches its target inside the start call cannot be
+missed, and fail loudly (30s) rather than hanging if it rests somewhere else. A
+fixture that must exist without executing is seeded with the global pause set
+(`WorkflowSetGlobalPause`), which holds its first phase without parking it.
 
 Live ordinary-thread behaviour (streaming, approvals, turn lifecycle) remains
 the mock provider's job: create a thread, `SendMessage`, and let the scenario
@@ -267,9 +270,14 @@ consumes its match, so two identical waits observe two distinct
 occurrences), `reset()`, and `close()`. `e2e/tests/fixtures.ts` shares one backend per
 Playwright worker and resets between tests. `e2e/tests/harness.spec.ts`
 covers boot, seeded rendering, a full live mock turn, frame-by-frame
-`step-gated` advancement, and reset. `e2e/tests/workflows.spec.ts` covers
-two-phase drain, human gate approval, same-session question answering,
-watchdog stall, and cancellation. Read both as references for new specs.
+`step-gated` advancement, and reset. `e2e/tests/workflows.spec.ts` covers a
+two-phase chain, human gate approval, same-session question answering,
+watchdog stall, and cancellation; the rest of the workflow surface is split by
+concern across `workflows-rerun`, `workflows-tool`, `workflows-access`,
+`workflows-fanout`, `workflows-call`, `workflows-wake`,
+`workflows-automations`, `workflows-cli`, and
+`workflows-overlay` (see `e2e/AGENTS.md` for what each one pins). Read
+`harness.spec.ts` and `workflows.spec.ts` as references for new specs.
 
 ```
 make e2e          # harness-build + playwright test
@@ -288,8 +296,9 @@ accumulates under the paths `HarnessInfo` reports.
   harness methods on the `Harness` receiver (name-prefixed `Harness*`)
   so they inherit the registration gate and `LocalOnly` marking.
 - The harness never fabricates app state through side doors: projects and
-  threads run through `CreateProject`/`CreateThread`, workflow items through
-  `WorkflowEnqueueItem`, resets through the production delete cascade, and live
+  threads run through `CreateProject`/`CreateThread`, workflow runs through
+  `WorkflowStartRun`, resets through the production delete cascade plus
+  `DeleteProjectWorkflowRecords`, and live
   turns through real sessions + triage. Direct store writes are reserved for
   completed ordinary-thread history—the rows production would already have
   persisted after a finished turn. If the harness needs a new capability, it

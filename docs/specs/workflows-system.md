@@ -122,8 +122,16 @@ and that output also becomes the variables the next phase consumes.
   fixed list) or **dynamically**: `over:` names an array variable, `as:` binds
   the element, and one unit template stamps per element — the unit count is a
   runtime fact (e.g. a plan phase emits `sections`, the port phase fans out
-  over them). Each unit may name its **own provider/model/access** (mixed
-  Claude/Codex fan-outs are a feature, not an accident). Unit semantics:
+  over them). Each unit names its **own driver/provider/model/access** (mixed
+  Claude/Codex fan-outs are a feature, not an accident) — and only the units
+  and the join do: **a fan-out phase runs no work of its own, so declaring a
+  driver, provider, model, prompt, command, or access on the phase is a
+  validation error** naming the per-unit field instead. (A phase-level
+  declaration that reached no unit would be an authoring trap: it reads like
+  it governs them and it does not.) The phase still declares what belongs to
+  the whole attempt — inputs, the outputs its join answers, the resources held
+  once for the attempt, its watchdog, and the grants every unit's session is
+  scoped by. Unit semantics:
   - units run in parallel, bounded by resources (§6);
   - each unit runs on its **own AO thread** (§7 — inspectable like any phase)
     and, when writing, in its **own sub-worktree** (§9);

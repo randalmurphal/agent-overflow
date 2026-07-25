@@ -22,12 +22,7 @@ outputs:
 phases:
   - id: review
     name: Review in parallel and consolidate
-    driver: agent
     shape: fan-out
-    provider: codex
-    model: gpt-5.6-sol
-    prompt: review-coordinator.md
-    access: read-only
     resources: [review-workers]
     inputs:
       goal:

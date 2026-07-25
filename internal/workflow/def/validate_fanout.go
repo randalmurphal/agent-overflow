@@ -38,13 +38,7 @@ func validateFanOut(workflow Workflow, phase Phase, phaseElement string) []Findi
 	if phase.Join == nil {
 		add("phase.fan-out", phaseElement, "fan-out shape requires a join")
 	}
-	// A fan-out phase runs no turn of its own — its units and its join carry the
-	// bindings — so a phase-level `driver: tool` would demand a check/command the
-	// phase can never run, and would make "what produces this phase's envelope"
-	// (PhaseProducesToolEnvelope) ambiguous between the phase and its join.
-	if phase.Driver == DriverTool {
-		add("phase.fan-out", phaseElement, "a fan-out phase runs no command of its own; its units and join carry the bindings, so driver must be agent")
-	}
+	findings = append(findings, fanOutPhaseFieldFindings(phase, phaseElement)...)
 	if dynamic {
 		if strings.TrimSpace(phase.Over) == "" {
 			add("phase.fan-out", phaseElement, "a dynamic fan-out requires over: an array-typed variable reference")
@@ -78,6 +72,42 @@ func validateFanOut(workflow Workflow, phase Phase, phaseElement string) []Findi
 			add("phase.fan-out-unit", joinElement, "join id must match [a-z0-9-]+")
 		}
 		findings = append(findings, validateUnitDefinition(*phase.Join, joinElement, unitRoleJoin)...)
+	}
+	return findings
+}
+
+// fanOutPhaseFieldFindings refuses every field that configures the phase's own
+// execution. A fan-out phase runs no turn and no command: `startPhaseWork`
+// expands it into units instead of starting a runner, `phaseResources` skips its
+// provider bound because its units and join each take their own, and
+// `PhaseProducesToolEnvelope` answers from the join. A phase-level provider,
+// model, prompt, or command therefore executes nothing, and a phase-level
+// `access` reads as "my units may write" while every unit stays at its own
+// declaration — so each is a finding naming the per-unit field to move it to,
+// rather than a line the author never learns was ignored.
+func fanOutPhaseFieldFindings(phase Phase, phaseElement string) []Finding {
+	// One message per forbidden group, naming the fields the author actually
+	// wrote, so a miswired fan-out reads as one problem instead of a wall.
+	forbidden := []struct {
+		fields  []string
+		present bool
+		message string
+	}{
+		{[]string{"driver"}, phase.Driver != "",
+			"a fan-out phase runs no work of its own; each unit and the join declares its driver by the binding it carries — command: for a tool one, provider/model/prompt for an agent one"},
+		{[]string{"provider", "model", "prompt"}, phase.Provider != "" || phase.Model != "" || phase.Prompt != "",
+			"a fan-out phase runs no turn of its own; declare provider, model, and prompt on each fan_out unit (or on the unit: template) and on the join"},
+		{[]string{"check", "command", "commands"}, phase.Check != "" || phase.Command != "" || len(phase.Commands) > 0,
+			"a fan-out phase runs no command of its own; declare command: on the unit or the join that runs it"},
+		{[]string{"access"}, phase.Access != "",
+			"a fan-out phase touches no workspace; declare access on each unit and on the join — a writing unit gets its own sub-worktree, and a phase-level declaration would never reach one"},
+	}
+	var findings []Finding
+	for _, group := range forbidden {
+		if group.present {
+			findings = append(findings, finding("phase.fan-out", phaseElement,
+				fmt.Sprintf("%s is not valid on a fan-out phase: %s", strings.Join(group.fields, "/"), group.message)))
+		}
 	}
 	return findings
 }

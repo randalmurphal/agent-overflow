@@ -1061,6 +1061,204 @@ loop, and liveness probing is an explicit non-goal
 
 ---
 
+## 30. The workflow engine's command goroutine is the only mutator, and `teardown` the only release path
+
+**Rule.** Every workflow FSM transition and every mutation of the
+engine's scheduler state (`items`, `holders`, `waitingKeys`,
+`inflightStarts`) happens on the single goroutine `Engine.loop()` owns
+(`internal/workflow/engine/engine.go`). Runner callbacks, bound RPC
+methods, the scheduler, and the startup sweep all enqueue commands and
+wait for a reply; none touch the maps. `teardown` (`fsm.go`) is the
+only function that releases a resource holder and the only caller of
+`Runner.Stop` — with `teardownUnit` (`unit_outcomes.go`) as the
+per-unit half of the same contract. Normal phase exit, gate park,
+validation exhaustion, failure, cancel, pause, takeover, discard, and
+crash sweep are *triggers* of that one path, never alternatives to it.
+
+**Rationale.** This is the workflows system's version of invariant 8
+(one writer per thread). Resource capacity is a project-local
+semaphore with no timeout: a second release site that forgets one
+holder does not crash, it silently lowers the project's capacity for
+the rest of the process lifetime, and the symptom — "phases stopped
+starting" — points nowhere near the code that leaked. Serializing on
+one goroutine is also what makes a child run's terminal transition
+safe to re-enter its parent's call phase: `transition` pushes the
+parent's settle onto `e.deferred` instead of recursing, so the child's
+teardown finishes before the parent's phase completes.
+
+**Enforcement.** The engine exposes no state accessor that returns a
+live map; `Paused` and friends round-trip through the command channel.
+`internal/workflow/scheduler/` never imports the engine — it imports
+`store` and `workflow/def` only, and takes one start callback from the
+app — so an automation firing cannot reach into FSM state; the same
+holds for `internal/workflow/runner/`, which is pure helpers. Every
+new exit path must route through `teardown`; adding a `releaseResources`
+call anywhere else is the defect.
+
+**Test.** `TestSemaphoreReleaseOnEveryImplementedExitPath` and
+`TestSemaphoreReleaseWhenRunnerStartFailsAfterAcquisition`
+(`engine/semaphores_test.go`); `TestFSMTransitionTableIsClosed` and
+`TestRunnerStartupDoesNotBlockEngineCancellation`
+(`engine/engine_test.go`); `engine/rebuild_test.go` for the crash-sweep
+trigger; `engine/unit_actions_test.go` for the per-unit half.
+
+---
+
+## 31. A parked workflow attempt keeps its provider session
+
+**Rule.** Pausing or interrupting a workflow attempt tears the attempt
+down without killing the provider process. `workflowAppRunner.Stop`
+(`app_workflow_runner.go`) calls `InterruptTurn(threadID)` for an agent
+attempt — never `StopSession`, never `CleanupThread` — so the CLI
+process, its session file, and the thread's history survive the park.
+Resume carries the parked attempt's thread on
+`RunRequest.PriorThreadID` (`engine/start.go`, `engine/units.go`) and
+the runner continues that session instead of starting a fresh one.
+`paused` and `interrupted` are distinct typed reasons that resume
+identically. A tool attempt has no turn to interrupt: teardown kills
+its process group, because a command is re-run from the start.
+
+**Rationale.** Core principle 2 — the provider process is the source of
+truth during a turn. A phase that resumes into a new session loses
+everything the model established before the pause and pays the context
+cost again; worse, the resumed run would silently produce different
+work than the paused one. The asymmetry between agent and tool
+attempts is not an inconsistency: an agent attempt's value is the
+accumulated session, a tool attempt's is its exit status.
+
+**Enforcement.** `Stop` is reachable only from `teardown`
+(invariant 30), so there is one place this contract can be broken.
+`Resume` refuses reasons that are not a continuation, and a parked
+attempt with no recorded session starts a fresh attempt *loudly*
+rather than pretending to continue.
+
+**Test.** `engine/pause_test.go` —
+`TestPauseParksRunReleasesResourcesAndStopsTheTurn`,
+`TestResumeContinuesTheParkedProviderThread`,
+`TestResumeInterruptedRunUsesTheSameContinuation`,
+`TestResumeWithoutASessionStartsAFreshAttemptLoudly`,
+`TestResumeRefusesReasonsThatAreNotAContinuation`, plus the fan-out
+repair/continuation pair.
+
+---
+
+## 32. A resting run reaches a human through exactly one thread and one delivery path
+
+**Rule.** Only a *root* run may be bound to a thread
+(`work_items.origin_thread_id`), and the wake for a resting run is
+delivered by `registerQueueItem` (`app_workflow_wake.go`) — the same
+queued-user-message path a human `SendMessage` uses. There is no second
+delivery channel: an idle thread flushes the queued item immediately, a
+busy thread queues it behind the running turn, and a deleted thread
+falls back to the notification surface. A descendant that parks
+surfaces at its root; once the root itself is resting, further
+descendant parks are silent.
+
+**Rationale.** Two delivery paths means two orderings, and a wake that
+jumps a live turn either interleaves with the user's own message or is
+dropped by the thread's one-writer rule (invariant 8). Riding the
+queue makes "the run woke you up" indistinguishable from "someone sent
+you a message" everywhere downstream — persistence, replay, steer,
+undo — so no consumer needs a workflow-shaped special case. Binding
+only roots is what keeps the mapping one-to-one: a called run's news is
+its parent's business, and the parent's root already has the thread.
+
+**Enforcement.** Structural, in SQLite: migration v39 rebuilt
+`work_items` with `CHECK(parent_item_id = '' OR origin_thread_id = '')`
+(`internal/store/migrate.go`), so binding a child run is not a bug the
+app can have — the insert fails. `WorkflowBindThread` refuses threads a
+run cannot report into, and `WorkflowUnbindThread` refuses a called
+run. The composed message itself is bounded and quoted per invariant 34.
+
+**Test.** `TestMigrationV39AddsOriginThreadAndPausedReason`
+(`internal/store/migrate_test.go`) for the CHECK;
+`app_workflow_binding_test.go` for the bind/unbind refusals;
+`app_workflow_wake_test.go` —
+`TestWorkflowWakeDeliversToAnIdleBoundThread`,
+`TestWorkflowWakeQueuesIntoABusyBoundThread`,
+`TestWorkflowWakeFallsBackWhenTheBoundThreadIsGone`,
+`TestWorkflowDescendantParkSurfacesAtTheRoot`,
+`TestWorkflowDescendantParkIsSilentOnceTheRootRests`.
+
+---
+
+## 33. A scoped `ao` token lives exactly as long as its session and can call exactly what its phase was granted
+
+**Rule.** Three closed sets, all enforced outside the method bodies:
+
+- **Lifetime.** `App.aoTokens` is mutated only by
+  `registerAOTokenLocked` / `revokeAOTokenLocked`, called from the
+  session-map mutators in `app_session_manager.go` under `a.mu`.
+  Registration rides the session map, not the spawn path, so a token
+  cannot outlive the process it was minted for.
+- **Surface.** `transport.ScopedTokenMethods` is a closed allow-list
+  mapping method name to the grants that admit it. Anything absent —
+  every non-workflow RPC, every `LocalOnly` method outside the table —
+  is `method_not_found` for a scoped token. A phase scope additionally
+  needs one of the listed grants and gets the typed `grant_required`
+  refusal naming what to add; an interactive scope may call everything
+  listed, because a human approves each invocation.
+- **Reach.** Every `ScopedTokenMethods` entry is also in
+  `LocalOnlyMethods`, and `/rpc` refuses non-loopback peers with a 404
+  and does not honour the server's own session token.
+
+**Rationale.** The credential sits in the environment of a full-access
+autonomous provider session — the one place in the app where a prompt
+injection has hands. Its authority therefore has to be bounded by
+construction rather than by what the CLI happens to send: a leaked
+entry in the map is standing authority after the session is gone, and
+a method reachable-but-ungated is the whole App surface one grep away.
+Grants are *frozen at run start*, so widening a workflow's grants
+cannot retroactively widen a session already in flight.
+
+**Enforcement.** `ResolveScopedToken` is `//wails:ignore` — the method
+that turns a token into authority is not itself callable with one.
+Row-level scoping ("which runs may this phase act on") is deliberately
+not expressed in the table; it depends on the run record and is
+enforced by the bound methods from `CallerScopeFrom` in
+`app_workflow_cli.go`.
+
+**Test.** `internal/transport/scopedtoken_test.go` —
+`TestScopedTokenMethodsNameOnlyKnownGrants` (grants exist in `def`'s
+closed set), `TestScopedTokenMethodsAreLocalOnly` (the LAN-reach
+pairing), `TestAuthorizeScopedMethodByKindAndGrant`,
+`TestScopedRPCRouteAuthorizesAndRevokes`,
+`TestWebviewTokenIsNotAScopedToken`; `app_ao_session_test.go` for
+mint/register/revoke riding the session map.
+
+---
+
+## 34. Model-authored text embedded in a prompt is quoted through `internal/untrustedtext`
+
+**Rule.** Any string that came from a model, a provider envelope, a
+worktree, or a third party and is then embedded in a prompt we send to
+another model goes through `untrustedtext.Field` (single-line values),
+`untrustedtext.Quote` (bounded free text), or `untrustedtext.Truncate`
+(whole blocks). One package, one rule — no local escaping helper, no
+"this field is obviously safe" exception.
+
+**Rationale.** The workflow triage seed, the wake message, and the PR
+review composer all splice text one agent wrote into a prompt another
+agent obeys. Without a shared rule, two prompts drift on what "this is
+data, not an instruction" looks like, and the weaker one becomes the
+injection path. The rune-bounded quoting also caps unbounded model
+output before it reaches a context window — a correctness property as
+well as a safety one.
+
+**Enforcement.** The quoting is `strconv.QuoteToASCII` plus `<`, `>`,
+`&` escaping, so the output is always a single visually-delimited token
+regardless of what the source contained. Current call sites:
+`internal/workflow/wake/compose.go`, `app_workflow_triage.go`,
+`app_workflow_pr.go`. A new prompt that interpolates foreign text adds
+a call site here rather than inventing a scheme.
+
+**Test.** `internal/untrustedtext/untrustedtext_test.go` for the rule
+itself; `internal/workflow/wake/compose_test.go` and
+`app_workflow_triage_test.go` for the composed prompts staying quoted
+and bounded.
+
+---
+
 ## See Also
 
 - [`chat-rewrite.md`](chat-rewrite.md) — the spec these rules were

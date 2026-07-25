@@ -487,6 +487,14 @@ const testProvider = "claude"
 // staticFanOutPhase builds the fan-out shape the engine schedules: a phase that
 // runs no turn of its own, `width` agent units, and the join whose envelope
 // becomes the phase's.
+//
+// The phase keeps the agent driver/provider `agentPhase` set even though `def`
+// validation now refuses those fields on a fan-out. That is deliberate: frozen
+// snapshots are decoded, never re-validated (`decodeSnapshot`), so a run
+// started before the rule landed still reaches the engine shaped like this. The
+// shape guards it relies on — `phaseResources` skipping the provider bound,
+// `PhaseProducesToolEnvelope` answering from the join — are only exercised by a
+// fixture that carries the fields they have to ignore.
 func staticFanOutPhase(id string, width int, resources []string, routes []def.Route) def.Phase {
 	phase := agentPhase(id, resources, routes)
 	phase.Shape = def.ShapeFanOut

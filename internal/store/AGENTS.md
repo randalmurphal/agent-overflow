@@ -219,6 +219,26 @@ baseline:
 - Migration v29 adds JSON-checked `work_items.disposition` receipts and
   `work_items.digest` human-facing run summaries.
 
+## Recent schema changes (v30-v34) — direct start, read-only sessions
+
+- Migration v30 adds the partial `idx_usage_ledger_project_work_item`; v31 adds
+  the UNIQUE partial `idx_work_items_agent_source_ref`, which is what makes a
+  re-entered phase's repeated `ao run start` resolve to its prior effect instead
+  of racing a second identical start.
+- The v33 rebuild removes the queue (workflows rev 2): `work_items.sort_position`
+  is dropped, `state` no longer admits `'queued'` (any surviving row is migrated
+  to `needs-human` / `interrupted` — it stopped without producing a result, which
+  is exactly what that reason means), and the three `sort_position`-ordered
+  indexes become `created_at`-ordered. `projects.workflow_queue_paused` /
+  `workflow_concurrency` (v32) are left physically present but dead: SQLite
+  refuses `DROP COLUMN` on a CHECK-bearing column and rebuilding an FK-parent
+  table to delete two unread integers is not worth the blast radius.
+  `projectColumns` omits them, so nothing reads or writes them.
+- The v34 rebuild widens the `threads.runtime_mode` CHECK (and
+  `chat_model_profiles`' in lockstep, because a thread's mode is written back
+  into the profile row) with `read-only` — the mode a phase declaring
+  `access: read-only` runs its provider session in.
+
 ## Recent schema changes (v35-v36) — fan-out units
 
 - `work_item_units` (v35) persists one row per fan-out unit and join of a phase
@@ -243,6 +263,21 @@ baseline:
   CHECKs make the linkage all-or-nothing: half a parent reference would make the
   tree unreadable in exactly the direction recovery walks it. Like the earlier
   work-item rebuilds it recreates every index and preserves every column.
+
+## Recent schema changes (v39) — origin-thread binding
+
+- The v39 rebuild adds `work_items.origin_thread_id` — the conversation thread a
+  root run reports back into (D17) — plus the partial
+  `idx_work_items_origin_thread` that the inverse lookup (every run bound to one
+  thread) walks when a deleted thread's bindings are cleared.
+- A fourth CHECK, `parent_item_id = '' OR origin_thread_id = ''`, makes "child
+  runs never bind" **structural**: the two columns cannot both be set, so a
+  called run cannot acquire a thread of its own however it is written. A
+  descendant's park still reaches a human — it surfaces as the *root's* wake —
+  and that is the app's composition step, not a second binding.
+- The same rebuild widens `reason` with `'paused'`. It resumes identically to
+  `'interrupted'`; the distinction exists so the morning-after view says whether
+  a run stopped on purpose or because the app died.
 
 ## Recent schema changes (v40) — automation fire records
 

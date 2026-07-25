@@ -90,6 +90,23 @@ func TestScopedTokenMethodsNameOnlyKnownGrants(t *testing.T) {
 	}
 }
 
+// TestScopedTokenMethodsAreLocalOnly pins the pairing rule this package's
+// AGENTS.md states in prose: a method the `ao` CLI may call is by definition a
+// method that drives autonomous provider sessions, so it must also be refused
+// for non-loopback WebSocket peers. The scoped route is loopback-only on its
+// own, but the same method is reachable over `/ws`; without this check a new
+// entry could widen the LAN surface while looking like a CLI-only change.
+//
+// Transitively this also proves every scoped method exists: LocalOnlyMethods is
+// checked against GeneratedMethods by TestLocalOnlyMethods_AllExist.
+func TestScopedTokenMethodsAreLocalOnly(t *testing.T) {
+	for method := range ScopedTokenMethods {
+		if !LocalOnlyMethods[method] {
+			t.Errorf("ScopedTokenMethods[%q] is not in LocalOnlyMethods: a method an unattended agent session may call must not be reachable from a LAN peer either — add it to internalmethods.go", method)
+		}
+	}
+}
+
 func TestAuthorizeScopedMethodByKindAndGrant(t *testing.T) {
 	interactive := CallerScope{Kind: ScopeKindInteractive, ThreadID: "t", ProjectID: "p"}
 	granted := CallerScope{

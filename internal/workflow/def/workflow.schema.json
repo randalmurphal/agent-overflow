@@ -91,11 +91,30 @@
             ]}
           },
           "else": {
-            "required": ["driver"],
             "not": {"anyOf": [
               {"required": ["call"]}, {"required": ["args"]}, {"required": ["max_depth"]}
             ]}
           }
+        },
+        {
+          "if": {"properties": {"shape": {"const": "fan-out"}}, "required": ["shape"]},
+          "then": {
+            "required": ["join"],
+            "not": {"anyOf": [
+              {"required": ["driver"]}, {"required": ["provider"]}, {"required": ["model"]},
+              {"required": ["prompt"]}, {"required": ["check"]}, {"required": ["command"]},
+              {"required": ["commands"]}, {"required": ["access"]}
+            ]}
+          }
+        },
+        {
+          "if": {
+            "not": {"anyOf": [
+              {"properties": {"shape": {"const": "call"}}, "required": ["shape"]},
+              {"properties": {"shape": {"const": "fan-out"}}, "required": ["shape"]}
+            ]}
+          },
+          "then": {"required": ["driver"]}
         }
       ]
     },

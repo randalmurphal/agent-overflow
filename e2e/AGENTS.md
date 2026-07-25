@@ -30,6 +30,16 @@ headless, isolated data dir, mocked providers. Full harness guide:
   gate, a dynamic `over:` fan-out whose width comes from a prior phase's array
   (claude plan phase, codex units), and a mixed-provider fan-out whose failed
   unit parks the run until `WorkflowRetryUnit` repairs it in place.
+- `tests/workflows-access.spec.ts` — `access` enforced at the provider session
+  (§9, D22), asserted from the launch config each mock observed: one run per
+  provider whose read-only phase is followed by a write phase, so both sessions
+  share a worktree and any difference in permission mode / sandbox came from
+  `access` alone. The Go unit tests cover the mapping; this covers the wiring
+  surviving to argv and thread-start params.
+- `tests/workflows-call.spec.ts` — `shape: call` phases (§3a, D18): a call phase
+  whose child run lands in the *caller's* worktree rather than provisioning one,
+  completing the parent on the child's declared outputs, and a bounded
+  self-call recursion terminating inside its declared `max_depth`.
 - `tests/workflows-wake.spec.ts` — thread binding and disposal (§5, D17/D23): a
   run bound to a chat thread waking it with its declared outputs when it rests,
   a pause interrupting a held turn and a resume continuing as turn 2 of the very

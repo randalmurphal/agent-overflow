@@ -283,11 +283,7 @@ name: Fan-out flow
 phases:
   - id: port
     name: Port in parallel
-    driver: agent
     shape: fan-out
-    provider: claude
-    model: claude-opus-4-7
-    prompt: port.md
     outputs:
       report:
         schema:
@@ -308,7 +304,6 @@ cleanup: manual
 		t.Fatal(err)
 	}
 	for name, body := range map[string]string{
-		"port.md":  "Coordinate the port",
 		"alpha.md": "Port the ALPHA-UNIT slice",
 		"beta.md":  "Port the BETA-UNIT slice",
 		"merge.md": "Consolidate {{units}}",

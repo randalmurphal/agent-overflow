@@ -44,6 +44,19 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   (`over:` an array-typed variable, `as:` an element binding, `unit:` one
   template). The two forms are mutually exclusive, both require a `join:`, and
   both require `shape: fan-out`.
+- A fan-out phase **runs no work of its own**, so every field that would
+  configure some — `driver`, `provider`/`model`/`prompt`,
+  `check`/`command`/`commands`, `access` — is a finding, exactly as it is on a
+  call phase. The units and the join carry all of it: `startPhaseWork` expands
+  the phase instead of starting a runner, `phaseResources` skips its provider
+  bound because each unit takes its own, and `PhaseProducesToolEnvelope` answers
+  from the join. A phase-level `access` is refused for the same reason a
+  phase-level `provider` is — it reads as "my units may write" and reaches no
+  unit; a writing unit declares its own and gets its own sub-worktree. What a
+  fan-out phase *does* declare is `inputs:` (what its units and join may
+  reference), `outputs:` (the contract its join answers), `resources:` (held
+  once for the whole attempt), `watchdog:` (each unit's turn is watched by it),
+  and `grants:` (every unit's session is scoped from the phase's frozen set).
 - `ExpandUnits(phase, vars)` is the one expansion, shared by the engine's phase
   entry and its recovery paths. Static units expand to themselves; dynamic ones
   are stamped `<template-or-phase-id>-<index>` with the whole element bound
@@ -105,10 +118,14 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   `update-notes`, `introspect` — and lives in `grants.go`. An unknown name is a
   finding rather than an ignored line, because a typo would otherwise read as
   "this phase deliberately has no authority".
-- Grants require an agent driver. A `driver: tool` phase runs a command, not a
-  session that could hold the credentials, so `grants:` on one is a finding.
-  A call phase grants nothing either: the child workflow's own phases declare
-  what they may do.
+- Grants require an agent session, which `phaseHoldsAgentSession` is the one
+  predicate for. A `driver: tool` phase runs a command, not a session that could
+  hold the credentials, so `grants:` on one is a finding. A fan-out phase has no
+  driver at all, so it answers with its units and its join — grants stay legal
+  there (the app scopes every unit's token from the *phase's* frozen set) and
+  are a finding only when nothing under the phase runs an agent. A call phase
+  grants nothing either: the child workflow's own phases declare what they may
+  do.
 - Grants are frozen into the run snapshot with everything else. A phase
   re-entered after the definition was edited keeps the authority the run
   started with — widening a running phase's authority by editing a file is
@@ -142,9 +159,10 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   for a fan-out whose join is a command, so `PhaseOutputs` merges `passed` /
   `exit-code` exactly as it does for a `driver: tool` phase and the synthesized
   tool envelope validates against its own phase contract.
-- A fan-out phase runs no turn of its own, so `driver: tool` on the phase is a
-  finding: the command would never run, and "what produces this phase's
-  envelope" would be ambiguous between the phase and its join.
+- A fan-out phase runs no turn of its own, so **any** `driver:` on the phase is
+  a finding (see "Fan-out authoring"): the binding would never run, and "what
+  produces this phase's envelope" would be ambiguous between the phase and its
+  join.
 - `JoinDeclarations(phase)` binds the reserved `units` name last so a phase
   input can never shadow the results a join exists to consolidate. The
   reference grammar has no indexing, so `{{units}}` — the whole array rendered

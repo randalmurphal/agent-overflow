@@ -1,5 +1,12 @@
 # Workflows System UI — Design Round Brief
 
+> **Historical (rev 1, 2026-07-11).** This brief and the three concept mockups
+> it produced describe the queue-centric surface the design round explored.
+> Workflows **rev 2** removed the queue, the workflows pane, the per-project
+> sidebar section, and the chat-enqueue confirm card; the authoritative surface
+> is `UI-SPEC.md` **rev 2**. Read this for the design reasoning and the
+> canonical dataset, not for what ships.
+
 Three competing information-architecture concepts, one brief. Each concept is a single
 self-contained HTML mockup a human will open in browser tabs side by side.
 

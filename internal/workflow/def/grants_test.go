@@ -68,6 +68,30 @@ func TestValidateGrantsRefusesUnknownDuplicateAndToolPhases(t *testing.T) {
 		}
 	})
 
+	// A fan-out phase has no driver of its own, so "does anything here hold a
+	// session" is answered by its units and its join — the app scopes every one
+	// of their tokens from the phase's frozen grants.
+	t.Run("fan-out with an agent unit", func(t *testing.T) {
+		workflow := dynamicFanOutWorkflow()
+		workflow.Phases[1].Grants = []string{string(GrantIntrospect)}
+		result := Validate(fanOutFixture(t, workflow, fanOutPrompts()), validBindings(), nil)
+		if !result.Valid() {
+			t.Fatalf("fan-out grant was refused:\n%s", formatFindings(result.Findings))
+		}
+	})
+
+	t.Run("fan-out with only tool units", func(t *testing.T) {
+		workflow := dynamicFanOutWorkflow()
+		phase := &workflow.Phases[1]
+		phase.Grants = []string{string(GrantIntrospect)}
+		phase.Unit = &Unit{ID: "port-section", Command: "merge-branches"}
+		phase.Join = &Unit{ID: "merge", Command: "merge-branches"}
+		result := Validate(fanOutFixture(t, workflow, fanOutPrompts()), validBindings(), nil)
+		if !hasFindingMessage(result.Findings, "phase.grants", "grants require an agent session") {
+			t.Fatalf("all-tool fan-out grant was accepted:\n%s", formatFindings(result.Findings))
+		}
+	})
+
 	t.Run("call phase", func(t *testing.T) {
 		phase := Phase{ID: "invoke", Shape: ShapeCall, Call: "child", Grants: []string{string(GrantStartRun)}}
 		findings := validateCall(phase, "phase")

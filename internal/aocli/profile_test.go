@@ -118,7 +118,7 @@ func TestFanOutWidthReportIsInformational(t *testing.T) {
 	mustMkdirAll(t, sharedDir)
 	mustMkdirAll(t, projectDir)
 	mustWriteFile(t, filepath.Join(sharedDir, "wide.yaml"), fanOutWorkflowYAML())
-	for _, prompt := range []string{"work.md", "left.md", "right.md", "merge.md"} {
+	for _, prompt := range []string{"left.md", "right.md", "merge.md"} {
 		mustWriteFile(t, filepath.Join(sharedDir, prompt), "do the work\n")
 	}
 	mustWriteFile(t, filepath.Join(projectDir, "profile.yaml"), "capacities:\n  \"provider:claude\": 1\n")
@@ -158,11 +158,7 @@ func fanOutWorkflowYAML() string {
 name: Wide fan-out
 phases:
   - id: work
-    driver: agent
     shape: fan-out
-    provider: claude
-    model: sonnet
-    prompt: work.md
     fan_out:
       - id: left
         provider: claude

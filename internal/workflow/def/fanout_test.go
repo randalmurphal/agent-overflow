@@ -44,7 +44,9 @@ func dynamicFanOutWorkflow() Workflow {
 				Gate:    Gate{Routes: []Route{{To: "port"}}},
 			},
 			{
-				ID: "port", Driver: DriverAgent, Provider: "claude", Model: "sonnet", Prompt: "port.md",
+				// No driver/provider/model/prompt/access: a fan-out phase runs no
+				// work of its own, and declaring any of them is a finding.
+				ID:    "port",
 				Shape: ShapeFanOut, Over: "plan.sections", As: "section",
 				Unit:    &Unit{ID: "port-section", Provider: "claude", Model: "sonnet", Prompt: "unit.md", Access: AccessWrite},
 				Join:    &Unit{ID: "merge", Provider: "claude", Model: "sonnet", Prompt: "join.md"},
@@ -69,7 +71,7 @@ func staticFanOutWorkflow() Workflow {
 
 func fanOutPrompts() map[string]string {
 	return map[string]string{
-		"plan.md": "plan {{goal}}", "port.md": "port", "unit.md": "port {{section.path}}", "join.md": "merge",
+		"plan.md": "plan {{goal}}", "unit.md": "port {{section.path}}", "join.md": "merge",
 	}
 }
 
@@ -105,11 +107,7 @@ phases:
       routes:
         - to: port
   - id: port
-    driver: agent
     shape: fan-out
-    provider: claude
-    model: sonnet
-    prompt: port.md
     over: plan.sections
     as: section
     unit:
@@ -212,6 +210,71 @@ func TestFanOutAuthoringFindings(t *testing.T) {
 				t.Fatalf("missing code %q naming %q; findings:\n%s", tc.code, tc.element, formatFindings(result.Findings))
 			}
 		})
+	}
+}
+
+// A fan-out phase runs no work of its own: startPhaseWork expands it into units
+// instead of starting a runner, phaseResources skips its provider bound, and
+// PhaseProducesToolEnvelope answers from the join. Every field that would
+// configure the phase's own execution is therefore refused rather than accepted
+// and ignored — the trap this pins is an author writing `provider:` or
+// `access: write` on the phase and never learning it reached no unit.
+func TestFanOutRefusesPhaseLevelExecutionFields(t *testing.T) {
+	cases := []struct {
+		name   string
+		names  string
+		mutate func(*Phase)
+	}{
+		{"driver", "driver", func(p *Phase) { p.Driver = DriverAgent }},
+		{"tool driver", "driver", func(p *Phase) { p.Driver = DriverTool }},
+		{"provider", "provider/model/prompt", func(p *Phase) { p.Provider = "claude" }},
+		{"model", "provider/model/prompt", func(p *Phase) { p.Model = "sonnet" }},
+		{"prompt", "provider/model/prompt", func(p *Phase) { p.Prompt = "unit.md" }},
+		{"check", "check/command/commands", func(p *Phase) { p.Check = "build-and-test" }},
+		{"command", "check/command/commands", func(p *Phase) { p.Command = "merge-branches" }},
+		{"commands", "check/command/commands", func(p *Phase) { p.Commands = []string{"merge-branches"} }},
+		{"access", "access", func(p *Phase) { p.Access = AccessWrite }},
+		{"read-only access", "access", func(p *Phase) { p.Access = AccessReadOnly }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			workflow := dynamicFanOutWorkflow()
+			tc.mutate(&workflow.Phases[1])
+			result := Validate(fanOutFixture(t, workflow, fanOutPrompts()), validBindings(), nil)
+			if !hasFinding(result.Findings, "phase.fan-out", "phase \"port\"") {
+				t.Fatalf("phase-level %s was accepted on a fan-out; findings:\n%s", tc.name, formatFindings(result.Findings))
+			}
+			var message string
+			for _, found := range result.Findings {
+				if found.Code == "phase.fan-out" && strings.HasPrefix(found.Message, tc.names+" is not valid") {
+					message = found.Message
+				}
+			}
+			if message == "" {
+				t.Fatalf("no refusal naming %q; findings:\n%s", tc.names, formatFindings(result.Findings))
+			}
+			// The message has to point at the per-unit mechanism, otherwise the
+			// author only learns the field is wrong, not where it belongs.
+			if !strings.Contains(message, "unit") || !strings.Contains(message, "join") {
+				t.Fatalf("refusal does not name the per-unit mechanism: %q", message)
+			}
+		})
+	}
+}
+
+// The refusal must not swallow the checks a single-shape phase still needs: a
+// phase with the fan-out fields removed is an ordinary agent phase again, and
+// forgetting its provider is still a finding.
+func TestSingleShapePhaseStillRequiresItsOwnExecutionFields(t *testing.T) {
+	workflow := dynamicFanOutWorkflow()
+	phase := &workflow.Phases[1]
+	phase.Shape, phase.Over, phase.As, phase.Unit, phase.Join = ShapeSingle, "", "", nil, nil
+	phase.Driver = DriverAgent
+	result := Validate(fanOutFixture(t, workflow, fanOutPrompts()), validBindings(), nil)
+	for _, code := range []string{"phase.prompt", "phase.model"} {
+		if !hasFinding(result.Findings, code, "phase \"port\"") {
+			t.Fatalf("missing %q on a single-shape phase; findings:\n%s", code, formatFindings(result.Findings))
+		}
 	}
 }
 
@@ -419,7 +482,7 @@ func TestInlinePromptsInlinesTheUnitTemplate(t *testing.T) {
 		}
 	}
 	workflow := Workflow{ID: "w", Name: "W", Phases: []Phase{{
-		ID: "fan", Driver: DriverAgent, Shape: ShapeFanOut, Over: "goal", As: "item",
+		ID: "fan", Shape: ShapeFanOut, Over: "goal", As: "item",
 		Unit: &Unit{ID: "u", Prompt: "unit.md"}, Join: &Unit{ID: "j", Prompt: "join.md"},
 	}}}
 	inlined, err := InlinePrompts(ResolvedWorkflow{Workflow: workflow, Path: filepath.Join(dir, "workflow.yaml")})

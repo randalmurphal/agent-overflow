@@ -85,20 +85,14 @@ func validateWorkflow(resolved ResolvedWorkflow, bindings Bindings, calls CallRe
 			// its contract is checked against the child in validateCallGraph.
 			continue
 		}
-		if phase.Driver != DriverAgent && phase.Driver != DriverTool {
-			add(finding("phase.driver", phaseElement, "driver must be agent or tool"))
-		}
-		if phase.Access != "" && phase.Access != AccessReadOnly && phase.Access != AccessWrite {
-			add(finding("phase.access", phaseElement, "access must be read-only or write"))
+		if shape != ShapeFanOut {
+			// A fan-out phase runs no turn or command of its own either — its
+			// units and join do — so validateFanOut refuses those fields instead
+			// of checking them here.
+			add(validatePhaseExecution(phase, phaseElement)...)
 		}
 		add(validateGrants(phase, phaseElement)...)
 		add(validateFanOut(workflow, phase, phaseElement)...)
-		if phase.Driver == DriverAgent && phase.Prompt == "" {
-			add(finding("phase.prompt", phaseElement, "agent driver requires a prompt file"))
-		}
-		if phase.Driver == DriverAgent && (strings.TrimSpace(phase.Provider) == "" || strings.TrimSpace(phase.Model) == "") {
-			add(finding("phase.model", phaseElement, "agent driver requires provider and model"))
-		}
 		if phase.Watchdog != "" {
 			duration, err := time.ParseDuration(phase.Watchdog)
 			if err != nil {
@@ -106,15 +100,6 @@ func validateWorkflow(resolved ResolvedWorkflow, bindings Bindings, calls CallRe
 			} else if duration <= 0 {
 				add(finding("phase.watchdog", phaseElement, "watchdog must be greater than 0"))
 			}
-		}
-		if phase.Driver == DriverTool && phase.Check == "" && phase.Command == "" {
-			add(finding("phase.tool", phaseElement, "tool driver requires a check or command binding"))
-		}
-		// One phase, one command. Two bindings have no defined precedence, and
-		// picking one at run time would make the phase's behaviour depend on
-		// resolution order rather than on the definition.
-		if phase.Driver == DriverTool && phase.Check != "" && phase.Command != "" {
-			add(finding("phase.tool", phaseElement, "tool driver accepts a check or a command binding, not both"))
 		}
 		for name, output := range phase.Outputs {
 			outputElement := fmt.Sprintf("%s output %q", phaseElement, name)
@@ -150,6 +135,40 @@ func validateWorkflow(resolved ResolvedWorkflow, bindings Bindings, calls CallRe
 
 func finding(code, element, message string) Finding {
 	return Finding{Code: code, Element: element, Message: message}
+}
+
+// validatePhaseExecution checks the fields that configure a phase's own turn or
+// command. Only a single-shape phase runs one: a call phase delegates to its
+// child workflow and a fan-out delegates to its units and its join, and both
+// refuse these fields outright (validateCall / validateFanOut) rather than
+// checking a declaration that would never execute.
+func validatePhaseExecution(phase Phase, phaseElement string) []Finding {
+	var findings []Finding
+	add := func(code, message string) {
+		findings = append(findings, finding(code, phaseElement, message))
+	}
+	if phase.Driver != DriverAgent && phase.Driver != DriverTool {
+		add("phase.driver", "driver must be agent or tool")
+	}
+	if phase.Access != "" && phase.Access != AccessReadOnly && phase.Access != AccessWrite {
+		add("phase.access", "access must be read-only or write")
+	}
+	if phase.Driver == DriverAgent && phase.Prompt == "" {
+		add("phase.prompt", "agent driver requires a prompt file")
+	}
+	if phase.Driver == DriverAgent && (strings.TrimSpace(phase.Provider) == "" || strings.TrimSpace(phase.Model) == "") {
+		add("phase.model", "agent driver requires provider and model")
+	}
+	if phase.Driver == DriverTool && phase.Check == "" && phase.Command == "" {
+		add("phase.tool", "tool driver requires a check or command binding")
+	}
+	// One phase, one command. Two bindings have no defined precedence, and
+	// picking one at run time would make the phase's behaviour depend on
+	// resolution order rather than on the definition.
+	if phase.Driver == DriverTool && phase.Check != "" && phase.Command != "" {
+		add("phase.tool", "tool driver accepts a check or a command binding, not both")
+	}
+	return findings
 }
 
 func quoted(value string) string { return fmt.Sprintf("%q", value) }

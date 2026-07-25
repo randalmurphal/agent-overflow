@@ -697,3 +697,97 @@ everything else above stands.
   badge. No per-project sidebar section, no workflows pane, no deep-link
   pane machinery; OS notifications deep-link into the overlay. Surface
   detail: `workflows-system-ui/UI-SPEC.md` rev 2.
+
+## Ratification sweep (W12, 2026-07-25)
+
+The rev-2 campaign (M6, waves W1–W12) shipped. These five questions were
+raised during implementation and deferred to the close; each is settled
+against the code as it stands, with the file that carries the behaviour named
+so a future reader can check the ruling rather than trust it. D25 is the one
+that stays **open** — it is recorded as a question with options, not a verdict.
+
+- **D24. `report-back` stays out of the closed grant set** (ratifies the
+  deferral in D15/§5). The enforceable grants are exactly `start-run`,
+  `schedule`, `update-notes`, and `introspect`
+  (`internal/workflow/def/grants.go` `grantSet`), and each maps to methods in
+  `transport.ScopedTokenMethods` (`internal/transport/scopedtoken.go`) that
+  the app can actually authorize. `report-back` has no such mapping: its
+  shape depends on profile-bound forge commands that rev 2 did not settle.
+  The set is *closed*, so an unknown name is a validation finding naming the
+  available grants — never an ignored declaration — which means admitting
+  `report-back` early would let a workflow declare a capability nothing can
+  honour and discover it only at run time. Adding it later is additive: a
+  new `Grant` constant, its `ScopedTokenMethods` rows, and the bound method's
+  row-level check. **Ratified as-is; not a gap.**
+
+- **D25 (OPEN). Deleting a project leaves its workflow records and worktrees
+  behind.** `App.DeleteProject` (`app_projects.go`) refuses while any
+  contained thread is active, tears down every thread, then deletes the
+  `projects` row (`internal/store/projects.go`). It does *not* touch
+  `work_items`, `work_item_phases`, `work_item_units`, `work_item_effects`,
+  `automations`, or the run worktrees on disk, and no foreign key does it
+  either — `work_items` declares none. The rows therefore survive with a
+  `project_id` that resolves to nothing, and because every overlay query is
+  project-scoped they are also unreachable from the UI. That the gap is known
+  is visible in the harness, which calls
+  `store.DeleteProjectWorkflowRecords` explicitly (`app_harness_seed.go`)
+  precisely because production does not. Options, none chosen:
+  1. **Cascade on delete** — call `DeleteProjectWorkflowRecords` from
+     `DeleteProject` and remove the run worktrees/branches first. Simple, but
+     silently destroys parked runs and unmerged branches the user may not
+     realize the project owned.
+  2. **Refuse, then cascade** — block deletion while the project has any
+     non-terminal run (the thread-activity refusal already models this), show
+     the §4.5 discard loss preview across the tree, and cascade once the user
+     consents. Consistent with D23's "the preview is the consent", and more
+     work.
+  3. **Leave it, add a reclaim path** — keep deletion cheap and add an
+     explicit maintenance action that lists and purges orphaned workflow
+     rows/worktrees.
+  Deferred deliberately: the right answer depends on whether project deletion
+  should be able to destroy unmerged work at all, which is a product call
+  rather than an implementation one. Until it is made, deleting a project
+  leaks rows and disk.
+
+- **D26. A question is one string; UI-SPEC §8's `1`–`9` stay unbound.**
+  The control envelope's `question` is a single nullable string
+  (`internal/workflow/def/envelope.go` — `"question"` in the generated schema,
+  and post-validation requires a non-empty string exactly when
+  `status: question`). There is no suggested-answers array on the wire, so
+  "pick + send the nth suggested answer" has nothing to enumerate; the shipped
+  overlay accordingly registers `workflows.*` commands for toggle/escape/back/
+  sweep/action/enter and no digit bindings
+  (`frontend/src/lib/stores/workflowCommands.svelte.ts`). The row stays in the
+  UI spec as the reserved shape it would take *if* a future envelope revision
+  adds choices, and it is deliberately not implemented against a synthesized
+  client-side list — inventing options the model did not offer would put words
+  in the run's mouth. **Ratified: spec row is aspirational, code is correct.**
+
+- **D27. A wake lost to graceful quit is accepted.** `Shutdown`
+  (`app_shutdown.go`) flips `shuttingDown` before step 1a pauses every active
+  run, so the pause-triggered wake reaches `registerQueueItem` /
+  `sendMessageWithOptions` after the gate and gets `ErrShuttingDown`.
+  `reportWakeFailure` (`app_workflow_wake.go`) logs it and emits
+  `workflow:error` — into a UI that is closing. Nothing is silently swallowed,
+  and nothing durable is lost: the run is parked `needs-human(paused)` in
+  SQLite by the same teardown, so at next boot it is in the overlay with the
+  needs-attention badge and resumes on the same provider thread (invariant 31).
+  The alternative — pausing runs *before* closing the RPC surface so the wake
+  lands — would leave a window where the UI can start new work during
+  shutdown, which is a worse trade than losing a message that is redundant
+  with durable state. **Ratified as accepted behaviour, not a bug.**
+
+- **D28. Provider-schema drift is caught by a cadenced real-provider gate,
+  not by CI.** `make provider-smoke` (Makefile) drives one trivial workflow
+  through the real `claude` and `codex` binaries and asserts schema
+  acceptance, envelope round-trip, and the §9 worktree/branch rules; the
+  `providersmoke` build tag keeps it out of `make go-test` and `make verify`,
+  which stay hermetic and token-free. **Cadence: before a release, and after
+  upgrading either provider CLI.** That is the enforcement mechanism for
+  D2a — the mocked suites accept any structured-output schema by
+  construction, and `internal/providerschema` encodes rules observed from CLI
+  rejections rather than derived from a published contract, so only a real
+  run can tell us a rule went stale. The cadence is stated in the Makefile
+  comment next to the target so it is discoverable from the thing it governs.
+  **Ratified: cadence is the gate; no CI automation of a token-spending
+  test.**

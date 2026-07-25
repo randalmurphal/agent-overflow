@@ -107,7 +107,7 @@ func TestUnitOutputsMergeToolOutputsForCommandUnitsOnly(t *testing.T) {
 // post-validation.
 func TestPhaseProducesToolEnvelopeFollowsTheJoinForFanOut(t *testing.T) {
 	fanOut := func(join Unit) Phase {
-		return Phase{ID: "port", Driver: DriverAgent, Shape: ShapeFanOut,
+		return Phase{ID: "port", Shape: ShapeFanOut,
 			FanOut: []Unit{{ID: "alpha", Provider: "claude", Model: "sonnet", Prompt: "u.md"}},
 			Join:   &join}
 	}
@@ -120,7 +120,7 @@ func TestPhaseProducesToolEnvelopeFollowsTheJoinForFanOut(t *testing.T) {
 		{"agent join", fanOut(Unit{ID: "merge", Provider: "claude", Model: "sonnet", Prompt: "j.md"}), false},
 		{"single tool phase", Phase{ID: "build", Driver: DriverTool, Command: "build"}, true},
 		{"single agent phase", Phase{ID: "plan", Driver: DriverAgent}, false},
-		{"fan-out with no join", Phase{ID: "port", Driver: DriverAgent, Shape: ShapeFanOut}, false},
+		{"fan-out with no join", Phase{ID: "port", Shape: ShapeFanOut}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,7 +139,7 @@ func TestPhaseProducesToolEnvelopeFollowsTheJoinForFanOut(t *testing.T) {
 // have to agree: the driver always supplies `passed`/`exit-code`, so the phase
 // that reads its envelope must declare them.
 func TestCommandJoinEnvelopeAcceptsTheSynthesizedToolResult(t *testing.T) {
-	phase := Phase{ID: "port", Driver: DriverAgent, Shape: ShapeFanOut,
+	phase := Phase{ID: "port", Shape: ShapeFanOut,
 		Outputs: map[string]Variable{"merged": {Schema: JSONSchema{Type: "boolean"}}},
 		FanOut:  []Unit{{ID: "alpha", Provider: "claude", Model: "sonnet", Prompt: "u.md"}},
 		Join:    &Unit{ID: "merge", Command: "merge-branches"}}
@@ -285,11 +285,7 @@ id: port
 name: Port
 phases:
   - id: port
-    driver: agent
     shape: fan-out
-    provider: claude
-    model: sonnet
-    prompt: port.md
     fan_out:
       - id: alpha
         provider: claude
@@ -319,7 +315,7 @@ phases:
 	if _, ok := unit.Outputs["file"]; !ok {
 		t.Fatalf("unit outputs did not round-trip: %+v", unit)
 	}
-	prompts := map[string]string{"port.md": "coordinate", "unit.md": "port", "join.md": "merge {{units}}"}
+	prompts := map[string]string{"unit.md": "port", "join.md": "merge {{units}}"}
 	if result := Validate(fanOutFixture(t, workflow, prompts), validBindings(), nil); !result.Valid() {
 		t.Fatalf("unit outputs findings:\n%s", formatFindings(result.Findings))
 	}
