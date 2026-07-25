@@ -29,6 +29,12 @@
   }
   let { item, detail, kind, failedUnit, expandFirstDiff }: Props = $props();
 
+  // A run that could not finish shows one evidence block whichever state it
+  // stopped in — the diagnosis is the same question, and only the way back
+  // differs (`failed` reruns, `blocked` resumes). The check strip is suppressed
+  // for both because the failure evidence carries the checks that matter.
+  let unresolved = $derived(kind === 'failed' || kind === 'blocked');
+
   let checkPhases = $derived.by(() => {
     const checks = new Set(detail.checkPhaseIds ?? []);
     return (detail.phases ?? []).filter((phase) => checks.has(phase.phaseId));
@@ -59,7 +65,7 @@
 </script>
 
 <div class="space-y-3 px-4" data-testid="workflow-evidence" data-kind={kind}>
-  {#if checkPhases.length > 0 && kind !== 'stuck'}
+  {#if checkPhases.length > 0 && !unresolved}
     <section data-testid="workflow-checks">
       <h3 class="mb-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-fg-muted">Checks</h3>
       <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs">
@@ -82,7 +88,7 @@
     </blockquote>
   {/if}
 
-  {#if kind === 'stuck'}
+  {#if unresolved}
     <WorkflowFailureEvidence {detail} />
   {/if}
 

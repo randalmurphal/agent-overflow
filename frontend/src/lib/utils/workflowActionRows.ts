@@ -10,7 +10,8 @@ import type { WorkItem } from '../types/workflow';
 export type WorkflowResolutionKind =
   | 'gate'
   | 'question'
-  | 'stuck'
+  | 'failed'
+  | 'blocked'
   | 'paused'
   | 'unit-failed'
   | 'taken-over'
@@ -53,9 +54,15 @@ const RESUMABLE_REASONS = new Set(['paused', 'interrupted']);
 const DONE_REASONS = new Set(['disposition']);
 
 /**
- * Which §4.3 row a run is on. `failed` shares the stuck row (the table groups
- * "stuck / failed"); `needs-human(disposition)` shares the done row, because a
- * refused merge parks exactly where the disposition decision lives.
+ * Which §4.3 row a run is on. `needs-human(disposition)` shares the done row,
+ * because a refused merge parks exactly where the disposition decision lives.
+ *
+ * `failed` and `blocked` show the same evidence — a run that could not finish —
+ * but they are two rows, not one, because the engine offers each exactly one
+ * edge back and they are different edges. `RerunFailed` is the only
+ * `failed → running` transition and refuses anything else; `Resume` is the only
+ * way out of `needs-human` and refuses a `failed` run. A single row would have
+ * to offer one of them to a state that rejects it.
  */
 export function workflowResolutionKind(item: Pick<WorkItem, 'state' | 'reason'>): WorkflowResolutionKind {
   switch (item.state) {
@@ -66,11 +73,14 @@ export function workflowResolutionKind(item: Pick<WorkItem, 'state' | 'reason'>)
     case 'done':
       return 'done';
     case 'failed':
-      return 'stuck';
+      return 'failed';
     case 'needs-human':
       break;
     default:
-      return 'stuck';
+      // A state the backend never emits. `failed` is the row that assumes the
+      // least — its actions are a hand-off and a discard, neither of which
+      // pretends the run can be continued from here.
+      return 'failed';
   }
   const reason = item.reason ?? '';
   if (reason === 'gate') return 'gate';
@@ -79,7 +89,7 @@ export function workflowResolutionKind(item: Pick<WorkItem, 'state' | 'reason'>)
   if (reason === 'taken-over') return 'taken-over';
   if (RESUMABLE_REASONS.has(reason)) return 'paused';
   if (DONE_REASONS.has(reason)) return 'done';
-  return 'stuck';
+  return 'blocked';
 }
 
 export interface WorkflowActionRowInput {
@@ -104,10 +114,23 @@ export function workflowActionRow(input: WorkflowActionRowInput): WorkflowAction
       return [
         { id: 'take-over', label: 'Take over instead', key: 't', variant: 'ghost' },
       ];
-    case 'stuck':
+    case 'failed':
       return [
         { id: 'take-over', label: 'Continue with agent', key: 't', variant: 'primary' },
         { id: 'rerun', label: 'Rerun with guidance', key: 'a', variant: 'secondary' },
+        { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
+      ];
+    case 'blocked':
+      // The paused row's shape, and for the paused row's reason: both stopped
+      // short of a result and both continue once the human clears the way. Six
+      // of the seven reasons that land here are environmental (an unbound
+      // check, a secret that would not resolve, a budget ceiling, a watchdog),
+      // so resuming after fixing the thing outside the run is the common case,
+      // and it is the primary. The seventh is the agent's own `stuck` — for
+      // that one the hand-off is the better move, and it keeps its key.
+      return [
+        { id: 'resume', label: 'Resume', key: 'a', variant: 'primary' },
+        { id: 'take-over', label: 'Continue with agent', key: 't', variant: 'ghost' },
         { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
       ];
     case 'paused':
@@ -193,7 +216,12 @@ export function workflowDigestFallback(
       return { whatHappened: `${phase} is running.`, whatItNeeds: 'Nothing — it is still working.' };
     case 'cancelled':
       return { whatHappened: 'The run was stopped.', whatItNeeds: 'Nothing — discard it when you are done with the worktree.' };
-    case 'stuck':
+    case 'failed':
       return { whatHappened: `${phase} could not finish.`, whatItNeeds: 'Continue with an agent, rerun it, or discard it.' };
+    case 'blocked':
+      // Says that resuming starts the phase over, because the word "resume"
+      // means continuing the same session one row up and the two must not be
+      // confused.
+      return { whatHappened: `${phase} stopped and needs you.`, whatItNeeds: 'Clear what blocked it, then resume — the phase starts over.' };
   }
 }

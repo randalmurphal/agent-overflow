@@ -21,7 +21,8 @@ describe('workflowResolutionKind', () => {
     ['running', '', 'running'],
     ['cancelled', '', 'cancelled'],
     ['done', '', 'done'],
-    ['failed', 'agent-error', 'stuck'],
+    ['failed', 'check-failed-genuine', 'failed'],
+    ['failed', 'child-failed', 'failed'],
     ['needs-human', 'gate', 'gate'],
     ['needs-human', 'question', 'question'],
     ['needs-human', 'unit-failed', 'unit-failed'],
@@ -29,15 +30,20 @@ describe('workflowResolutionKind', () => {
     ['needs-human', 'paused', 'paused'],
     ['needs-human', 'interrupted', 'paused'],
     ['needs-human', 'disposition', 'done'],
-    ['needs-human', 'stuck', 'stuck'],
-    ['needs-human', 'child-failed', 'stuck'],
-    ['needs-human', '', 'stuck'],
+    ['needs-human', 'stuck', 'blocked'],
+    ['needs-human', 'agent-error', 'blocked'],
+    ['needs-human', 'wiring-error', 'blocked'],
+    ['needs-human', 'setup-failed', 'blocked'],
+    ['needs-human', 'budget-exhausted', 'blocked'],
+    ['needs-human', 'stalled', 'blocked'],
+    ['needs-human', 'retries-exhausted', 'blocked'],
+    ['needs-human', '', 'blocked'],
   ])('%s(%s) resolves on the %s row', (state, reason, expected) => {
     expect(workflowResolutionKind(item(state, reason))).toBe(expected);
   });
 
-  it('treats an unknown state as stuck rather than rendering no actions', () => {
-    expect(workflowResolutionKind(item('teleported'))).toBe('stuck');
+  it('treats an unknown state as failed rather than rendering no actions', () => {
+    expect(workflowResolutionKind(item('teleported'))).toBe('failed');
   });
 });
 
@@ -54,7 +60,8 @@ describe('workflowActionRow', () => {
   });
 
   it.each([
-    ['stuck', ['take-over', 'rerun', 'discard']],
+    ['failed', ['take-over', 'rerun', 'discard']],
+    ['blocked', ['resume', 'take-over', 'discard']],
     ['paused', ['resume', 'take-over', 'discard']],
     ['unit-failed', ['retry-unit', 'drop-unit', 'take-over-unit', 'discard']],
     ['taken-over', ['complete-takeover', 'take-over', 'discard']],
@@ -62,6 +69,20 @@ describe('workflowActionRow', () => {
     ['cancelled', ['discard', 'back']],
   ] as const)('%s offers exactly its §4.3 row', (kind, expected) => {
     expect(ids(kind)).toEqual([...expected]);
+  });
+
+  // The reason `failed` and `blocked` are two rows. Each state has exactly one
+  // engine edge back and the guards are mutually exclusive: `RerunFailed`
+  // refuses anything that is not `failed`, `Resume` refuses anything that is
+  // not `needs-human`. Offering the wrong one is a button that always errors,
+  // which is what a single shared row used to do to every parked run.
+  it.each([
+    ['failed', 'rerun', 'resume'],
+    ['blocked', 'resume', 'rerun'],
+  ] as const)('%s offers the one continuation its state accepts, and never the other', (kind, accepted, refused) => {
+    const row = ids(kind);
+    expect(row).toContain(accepted);
+    expect(row).not.toContain(refused);
   });
 
   it('offers an unbound done run a thread to bind, and never offers one to a child (D18)', () => {
@@ -77,12 +98,13 @@ describe('workflowActionRow', () => {
     expect(armed('running')).toEqual(['cancel']);
     // Discard never arms inline: §4.5 makes the loss preview the consent.
     expect(armed('done')).toEqual([]);
-    expect(armed('stuck')).toEqual([]);
+    expect(armed('failed')).toEqual([]);
+    expect(armed('blocked')).toEqual([]);
   });
 
   it('binds at most one action per key on every row', () => {
     const kinds: WorkflowResolutionKind[] = [
-      'gate', 'question', 'stuck', 'paused', 'unit-failed', 'taken-over', 'done', 'running', 'cancelled',
+      'gate', 'question', 'failed', 'blocked', 'paused', 'unit-failed', 'taken-over', 'done', 'running', 'cancelled',
     ];
     for (const kind of kinds) {
       const row = workflowActionRow({ kind, bound: false, isChild: false });
@@ -113,7 +135,7 @@ describe('workflowActionForKey', () => {
 describe('workflowDigestFallback', () => {
   it('never renders empty and names the phase when one is known', () => {
     const kinds: WorkflowResolutionKind[] = [
-      'gate', 'question', 'stuck', 'paused', 'unit-failed', 'taken-over', 'done', 'running', 'cancelled',
+      'gate', 'question', 'failed', 'blocked', 'paused', 'unit-failed', 'taken-over', 'done', 'running', 'cancelled',
     ];
     for (const kind of kinds) {
       const digest = workflowDigestFallback(kind, 'check');
