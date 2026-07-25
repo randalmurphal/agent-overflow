@@ -314,10 +314,12 @@ export {
 
   // Workflows
   WorkflowAnswerQuestion,
+  WorkflowBindThread,
   WorkflowCancelItem,
   WorkflowCreateItemPR,
   WorkflowDiscussPR,
   WorkflowDiscardItem,
+  WorkflowDiscardPreview,
   WorkflowFetchPRReviewComments,
   WorkflowGetEngineState,
   WorkflowGetItem,
@@ -327,9 +329,11 @@ export {
   WorkflowListItems,
   WorkflowListUnresolvedItems,
   WorkflowMergeItem,
+  WorkflowOpenInThread,
   WorkflowOpenStudioThread,
   WorkflowOpenTriageAgent,
   WorkflowOpenTriageThread,
+  WorkflowPauseItem,
   WorkflowResolveGate,
   WorkflowResumeItem,
   WorkflowRerunItem,
@@ -337,6 +341,7 @@ export {
   WorkflowSetGlobalPause,
   WorkflowSetJobNotes,
   WorkflowStartRun,
+  WorkflowUnbindThread,
 
   // Build-time stamped binary version (Settings footer).
   Version,

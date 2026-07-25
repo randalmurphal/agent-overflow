@@ -1,0 +1,364 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/triage"
+	"agent-overflow/internal/workflow/engine"
+	workflowrunner "agent-overflow/internal/workflow/runner"
+)
+
+// wakeHarness wires the two seams a wake crosses — the ordinary send and the
+// flush queue — so a test can assert which one a delivery took without a
+// provider process.
+type wakeHarness struct {
+	app        *App
+	mu         sync.Mutex
+	sends      []string
+	queued     []string
+	events     []string
+	errorTexts []string
+}
+
+func newWakeHarness(t *testing.T) *wakeHarness {
+	t.Helper()
+	app, _ := setupE2EApp(t)
+	h := &wakeHarness{app: app}
+	app.sendMessageFn = func(threadID, content string, _ []string) error {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.sends = append(h.sends, content)
+		return nil
+	}
+	app.triage.SetFlushDispatcher(func(_ string, items []triage.QueuedFlushItem) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		for _, item := range items {
+			h.queued = append(h.queued, item.Message)
+		}
+	})
+	app.testEmitHook = func(name string, data any) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.events = append(h.events, name)
+		if event, ok := data.(engine.ErrorEvent); ok {
+			h.errorTexts = append(h.errorTexts, event.Error)
+		}
+	}
+	app.configDir = t.TempDir()
+	return h
+}
+
+func (h *wakeHarness) snapshot() (sends, queued, events, errorTexts []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.sends...), append([]string(nil), h.queued...),
+		append([]string(nil), h.events...), append([]string(nil), h.errorTexts...)
+}
+
+// drain waits for the app's wake worker, which runs off the engine's emit
+// goroutine and therefore is not finished when the transition returns.
+func (h *wakeHarness) drain() { h.app.workflowWake.Wait() }
+
+func (h *wakeHarness) chatThread(t *testing.T, id string) store.Thread {
+	t.Helper()
+	thread := store.Thread{
+		ID: id, ProjectID: defaultTestProjectID, ProjectPath: "/tmp/project",
+		Title: id, Provider: string(provider.Claude), Model: "sonnet",
+		Mode: threadmode.ModeChat, CreatedAt: 1, UpdatedAt: 1,
+	}
+	if err := h.app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	return thread
+}
+
+func (h *wakeHarness) run(t *testing.T, id string, state engine.State, reason engine.Reason) store.WorkItem {
+	t.Helper()
+	item := store.WorkItem{
+		ID: id, ProjectID: defaultTestProjectID, Goal: "Ship " + id,
+		WorkflowID: "build", WorkflowScope: "shared", State: string(state),
+		Reason: string(reason), Source: "manual",
+		CreatedAt: time.Now().UnixMilli(), StartedAt: time.Now().UnixMilli(),
+	}
+	if err := h.app.store.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	return item
+}
+
+func (h *wakeHarness) phase(t *testing.T, itemID, phaseID string, attempt int, status, threadID string, envelope json.RawMessage) {
+	t.Helper()
+	if err := h.app.store.CreateWorkItemPhase(store.WorkItemPhase{
+		ItemID: itemID, PhaseID: phaseID, Attempt: attempt, ThreadID: threadID,
+		InputEnvelope: json.RawMessage(`{}`), OutputEnvelope: envelope,
+		Status: status, StartedAt: 10, EndedAt: 11,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkflowWakeDeliversToAnIdleBoundThread(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-thread")
+	item := h.run(t, "wake-done", engine.StateDone, "")
+	h.phase(t, item.ID, "verify", 1, "completed", "phase-thread",
+		json.RawMessage(`{"status":"done","outputs":{"ok":true}}`))
+	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	// A draft the user has typed but not sent must survive a background wake.
+	if err := h.app.store.UpsertThreadDraft(store.ThreadDraft{
+		ThreadID: thread.ID, Content: "half-written thought", UpdatedAt: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateDone,
+	})
+	h.drain()
+
+	sends, queued, _, _ := h.snapshot()
+	if len(sends) != 1 || len(queued) != 0 {
+		t.Fatalf("idle delivery took sends=%d queued=%d, want one ordinary send", len(sends), len(queued))
+	}
+	for _, want := range []string{`Run "wake-done"`, "is done", `Phase "verify"`, "nothing is waiting on a reply"} {
+		if !strings.Contains(sends[0], want) {
+			t.Fatalf("wake missing %q:\n%s", want, sends[0])
+		}
+	}
+	draft, found, err := h.app.store.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || draft.Content != "half-written thought" {
+		t.Fatalf("wake destroyed the composer draft: found=%v draft=%+v", found, draft)
+	}
+}
+
+func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-busy")
+	h.app.sessions[thread.ID] = session{provider: string(provider.Claude), token: "live"}
+	item := h.run(t, "wake-question", engine.StateNeedsHuman, engine.ReasonQuestion)
+	h.phase(t, item.ID, "plan", 1, "parked", "phase-thread",
+		json.RawMessage(`{"status":"question","question":"Which base branch?"}`))
+	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateNeedsHuman,
+	})
+	h.drain()
+
+	sends, queued, _, _ := h.snapshot()
+	if len(queued) != 1 || len(sends) != 0 {
+		t.Fatalf("live-session delivery took sends=%d queued=%d, want the queued path", len(sends), len(queued))
+	}
+	for _, want := range []string{"needs-human (question)", "Which base branch?", "does not continue until this is resolved"} {
+		if !strings.Contains(queued[0], want) {
+			t.Fatalf("queued wake missing %q:\n%s", want, queued[0])
+		}
+	}
+}
+
+func TestWorkflowWakeFallsBackWhenTheBoundThreadIsGone(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-deleted")
+	item := h.run(t, "wake-orphan", engine.StateFailed, engine.ReasonAgentError)
+	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.app.store.DeleteThread(thread.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateFailed,
+	})
+	h.drain()
+
+	sends, queued, _, errorTexts := h.snapshot()
+	if len(sends) != 0 || len(queued) != 0 {
+		t.Fatalf("a deleted thread still received a wake: sends=%d queued=%d", len(sends), len(queued))
+	}
+	// The fallback is loud: the binding is cleared and the run says so.
+	stored, err := h.app.store.GetWorkItem(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.OriginThreadID != "" {
+		t.Fatalf("stale binding survived: %q", stored.OriginThreadID)
+	}
+	if len(errorTexts) == 0 || !strings.Contains(errorTexts[0], "bound thread is gone") {
+		t.Fatalf("error events = %v, want the fallback reported", errorTexts)
+	}
+}
+
+func TestWorkflowWakeIgnoresUnboundAndCalledRuns(t *testing.T) {
+	h := newWakeHarness(t)
+	unbound := h.run(t, "wake-unbound", engine.StateDone, "")
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: unbound.ID, ProjectID: unbound.ProjectID, From: engine.StateRunning, To: engine.StateDone,
+	})
+	h.drain()
+	if sends, queued, _, _ := h.snapshot(); len(sends) != 0 || len(queued) != 0 {
+		t.Fatalf("an unbound run woke a thread: sends=%d queued=%d", len(sends), len(queued))
+	}
+
+	// A called run finishing is the caller's business, not a wake of its own.
+	child := store.WorkItem{
+		ID: "wake-child", ProjectID: defaultTestProjectID, Goal: "called", WorkflowID: "child",
+		WorkflowScope: "shared", State: string(engine.StateDone), Source: "call",
+		ParentItemID: unbound.ID, ParentPhaseID: "audit", ParentAttempt: 1, CallDepth: 1,
+		CreatedAt: 2,
+	}
+	if err := h.app.store.CreateWorkItem(child); err != nil {
+		t.Fatal(err)
+	}
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: child.ID, ProjectID: child.ProjectID, From: engine.StateRunning, To: engine.StateDone,
+	})
+	h.drain()
+	if sends, queued, _, _ := h.snapshot(); len(sends) != 0 || len(queued) != 0 {
+		t.Fatalf("a called run woke a thread as itself: sends=%d queued=%d", len(sends), len(queued))
+	}
+}
+
+// A grandchild parking while the root waits is announced at the ROOT — the run
+// a human watches and the run that carries the binding.
+func TestWorkflowDescendantParkSurfacesAtTheRoot(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-root")
+	root := h.run(t, "tree-root", engine.StateRunning, "")
+	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	child := store.WorkItem{
+		ID: "tree-child", ProjectID: defaultTestProjectID, Goal: "middle", WorkflowID: "mid",
+		WorkflowScope: "shared", State: string(engine.StateRunning), Source: "call",
+		ParentItemID: root.ID, ParentPhaseID: "call-mid", ParentAttempt: 1, CallDepth: 1, CreatedAt: 2,
+	}
+	if err := h.app.store.CreateWorkItem(child); err != nil {
+		t.Fatal(err)
+	}
+	grandchild := store.WorkItem{
+		ID: "tree-grandchild", ProjectID: defaultTestProjectID, Goal: "deep", WorkflowID: "leaf",
+		WorkflowScope: "shared", State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonQuestion),
+		Source: "call", ParentItemID: child.ID, ParentPhaseID: "call-leaf", ParentAttempt: 1,
+		CallDepth: 2, CreatedAt: 3,
+	}
+	if err := h.app.store.CreateWorkItem(grandchild); err != nil {
+		t.Fatal(err)
+	}
+	h.phase(t, grandchild.ID, "ask", 1, "parked", "leaf-thread",
+		json.RawMessage(`{"status":"question","question":"Which environment?"}`))
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: grandchild.ID, ProjectID: grandchild.ProjectID,
+		From: engine.StateRunning, To: engine.StateNeedsHuman,
+	})
+	h.drain()
+
+	sends, _, _, _ := h.snapshot()
+	if len(sends) != 1 {
+		t.Fatalf("descendant park produced %d wakes, want exactly one at the root", len(sends))
+	}
+	for _, want := range []string{
+		`Run "tree-root"`, "is waiting", "A called run 2 levels down parked",
+		`run "tree-grandchild"`, "needs-human (question)", "Which environment?",
+		`cannot continue until called run "tree-grandchild" is resolved`,
+	} {
+		if !strings.Contains(sends[0], want) {
+			t.Fatalf("root wake missing %q:\n%s", want, sends[0])
+		}
+	}
+}
+
+// Once the root itself rests, its own transition is the surface; announcing the
+// descendant again would be a duplicate.
+func TestWorkflowDescendantParkIsSilentOnceTheRootRests(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-settled")
+	root := h.run(t, "settled-root", engine.StateNeedsHuman, engine.ReasonChildFailed)
+	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	child := store.WorkItem{
+		ID: "settled-child", ProjectID: defaultTestProjectID, Goal: "called", WorkflowID: "child",
+		WorkflowScope: "shared", State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonStuck),
+		Source: "call", ParentItemID: root.ID, ParentPhaseID: "audit", ParentAttempt: 1,
+		CallDepth: 1, CreatedAt: 2,
+	}
+	if err := h.app.store.CreateWorkItem(child); err != nil {
+		t.Fatal(err)
+	}
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: child.ID, ProjectID: child.ProjectID, From: engine.StateRunning, To: engine.StateNeedsHuman,
+	})
+	h.drain()
+	if sends, queued, _, _ := h.snapshot(); len(sends) != 0 || len(queued) != 0 {
+		t.Fatalf("descendant park duplicated the root's own surface: sends=%d queued=%d", len(sends), len(queued))
+	}
+}
+
+func TestWorkflowWakeCarriesNarrativeArtifactAndFailedUnitReferences(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-refs")
+	item := h.run(t, "wake-refs", engine.StateNeedsHuman, engine.ReasonUnitFailed)
+	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.phase(t, item.ID, "fan", 1, "parked", "join-thread", json.RawMessage(`{"status":"stuck","reason":"a unit failed"}`))
+	if err := h.app.store.CreateWorkItemUnits([]store.WorkItemUnit{{
+		ItemID: item.ID, PhaseID: "fan", Attempt: 1, UnitID: "pkg-store", UnitIndex: 0,
+		Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed,
+		ThreadID: "unit-thread", Provider: string(provider.Claude), Model: "sonnet",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	narrative, err := workflowrunner.NarrativePath(h.app.workflowDataRoot(), item.ID, "fan", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(narrative), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(narrative, []byte("what happened"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateNeedsHuman,
+	})
+	h.drain()
+
+	sends, _, _, _ := h.snapshot()
+	if len(sends) != 1 {
+		t.Fatalf("wakes = %d, want one", len(sends))
+	}
+	for _, want := range []string{
+		`- "narrative":`, `- "phase thread": "join-thread"`,
+		`- "failed unit": "pkg-store (thread unit-thread)"`, "a unit failed",
+	} {
+		if !strings.Contains(sends[0], want) {
+			t.Fatalf("wake missing %q:\n%s", want, sends[0])
+		}
+	}
+	// References are pointers, never content.
+	if strings.Contains(sends[0], "what happened") {
+		t.Fatalf("wake inlined narrative content:\n%s", sends[0])
+	}
+}

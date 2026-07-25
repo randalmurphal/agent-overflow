@@ -1466,6 +1466,7 @@ export class WorkItem {
     "source": string;
     "sourceRef"?: string;
     "triageThreadId"?: string;
+    "originThreadId"?: string;
     "disposition"?: json$0.RawMessage;
     "digest"?: json$0.RawMessage;
     "parentItemId"?: string;

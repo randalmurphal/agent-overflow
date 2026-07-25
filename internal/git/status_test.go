@@ -965,3 +965,104 @@ func panelWorkspaceTotal(t *testing.T, repo string) (insertions, deletions int) 
 	}
 	return insertions, deletions
 }
+
+// The discard loss preview names files, so the parser has to survive the paths
+// git would otherwise quote and escape, and must not count a rename twice.
+func TestWorkingTreeChangesNamesAwkwardPathsAndCountsRenamesOnce(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	if paths, total, err := core.WorkingTreeChanges(repo, 5); err != nil {
+		t.Fatalf("clean tree: %v", err)
+	} else if total != 0 || len(paths) != 0 {
+		t.Fatalf("clean tree = %d changes %v, want none", total, paths)
+	}
+
+	const spaced = "a file with spaces.txt"
+	const unicode = "réponse.txt"
+	for _, name := range []string{spaced, unicode} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte("seed\n"), 0o644); err != nil {
+			t.Fatalf("write %q: %v", name, err)
+		}
+	}
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "commit", "-m", "awkward names")
+	// One rename (staged, two porcelain fields) and one untracked add.
+	testutil.RunGit(t, repo, "mv", spaced, "renamed file.txt")
+	if err := os.WriteFile(filepath.Join(repo, unicode), []byte("edited\n"), 0o644); err != nil {
+		t.Fatalf("modify unicode file: %v", err)
+	}
+
+	paths, total, err := core.WorkingTreeChanges(repo, 10)
+	if err != nil {
+		t.Fatalf("WorkingTreeChanges: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d (%v), want 2: a rename is one change, not two", total, paths)
+	}
+	joined := strings.Join(paths, "|")
+	for _, want := range []string{"renamed file.txt", unicode} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("paths %v are missing %q; git quoting leaked into the preview", paths, want)
+		}
+	}
+	if strings.Contains(joined, `\`) || strings.Contains(joined, `"`) {
+		t.Fatalf("paths %v are quoted; a preview must show the real filename", paths)
+	}
+	// The count stays exact when the sample is capped, and a zero limit is the
+	// count-only form CountWorkingTreeChanges is built on.
+	if capped, cappedTotal, err := core.WorkingTreeChanges(repo, 1); err != nil {
+		t.Fatalf("capped: %v", err)
+	} else if len(capped) != 1 || cappedTotal != 2 {
+		t.Fatalf("capped = %d names of %d, want 1 of 2", len(capped), cappedTotal)
+	}
+	if none, noneTotal, err := core.WorkingTreeChanges(repo, 0); err != nil {
+		t.Fatalf("count only: %v", err)
+	} else if len(none) != 0 || noneTotal != 2 {
+		t.Fatalf("count-only = %d names of %d, want 0 of 2", len(none), noneTotal)
+	}
+	if count, err := core.CountWorkingTreeChanges(repo); err != nil || count != 2 {
+		t.Fatalf("CountWorkingTreeChanges = %d, %v; want 2", count, err)
+	}
+}
+
+func TestDeleteBranchForcesUnmergedAndIsIdempotent(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+	testutil.RunGit(t, repo, "checkout", "-b", "unlanded")
+	if err := os.WriteFile(filepath.Join(repo, "work.txt"), []byte("unlanded\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testutil.RunGit(t, repo, "add", "work.txt")
+	testutil.RunGit(t, repo, "commit", "-m", "unlanded work")
+	testutil.RunGit(t, repo, "checkout", "main")
+
+	// -d refuses a branch whose commits never landed, which is every branch a
+	// discard is asked to delete.
+	if err := core.DeleteBranch(repo, "unlanded", false); err == nil {
+		t.Fatal("DeleteBranch without force accepted an unmerged branch")
+	}
+	if err := core.DeleteBranch(repo, "unlanded", true); err != nil {
+		t.Fatalf("DeleteBranch force: %v", err)
+	}
+	branches, err := core.ListBranches(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, branch := range branches {
+		if branch.Name == "unlanded" {
+			t.Fatal("forced delete left the branch behind")
+		}
+	}
+	// Deleting again is a no-op: a tree whose branch was already released must
+	// not fail the discard that covers it.
+	if err := core.DeleteBranch(repo, "unlanded", true); err != nil {
+		t.Fatalf("DeleteBranch on an absent branch: %v", err)
+	}
+	if err := core.DeleteBranch(repo, "  ", true); err == nil {
+		t.Fatal("DeleteBranch accepted an empty branch name")
+	}
+	if err := core.DeleteBranch(repo, "--upload-pack=evil", true); err == nil {
+		t.Fatal("DeleteBranch accepted a flag-shaped branch name")
+	}
+}

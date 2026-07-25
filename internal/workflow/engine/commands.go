@@ -72,6 +72,17 @@ type pauseStateCommand struct {
 	result *bool
 	reply  chan response
 }
+type pauseItemCommand struct {
+	itemID string
+	reply  chan response
+}
+type pauseAllActiveCommand struct {
+	reply chan response
+}
+type resumeItemCommand struct {
+	itemID string
+	reply  chan response
+}
 type humanGateCommand struct {
 	itemID   string
 	decision HumanDecision
@@ -158,6 +169,15 @@ func (e *Engine) request(command any) error {
 		command.reply = reply
 		e.commands <- command
 	case pauseStateCommand:
+		command.reply = reply
+		e.commands <- command
+	case pauseItemCommand:
+		command.reply = reply
+		e.commands <- command
+	case pauseAllActiveCommand:
+		command.reply = reply
+		e.commands <- command
+	case resumeItemCommand:
 		command.reply = reply
 		e.commands <- command
 	case humanGateCommand:
@@ -313,6 +333,19 @@ func (e *Engine) loop() {
 		case pauseStateCommand:
 			*command.result = e.paused
 			command.reply <- response{}
+		case pauseItemCommand:
+			// Pause only stops work; anything a freed lock releases starts
+			// through startWaiting inside the handler and reports on its own.
+			err = e.pauseItem(command.itemID)
+			e.commandStarts = nil
+			command.reply <- response{err: err}
+		case pauseAllActiveCommand:
+			err = e.pauseAllActive()
+			e.commandStarts = nil
+			command.reply <- response{err: err}
+		case resumeItemCommand:
+			err = e.resumeItem(command.itemID)
+			command.reply <- e.itemCommandResponse(command.itemID, err)
 		case humanGateCommand:
 			err = errors.Join(e.resolveHumanGate(command.itemID, command.decision, command.note), e.startWaiting())
 			command.reply <- e.itemCommandResponse(command.itemID, err)

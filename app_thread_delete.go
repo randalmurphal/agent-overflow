@@ -125,6 +125,15 @@ func (a *App) deleteThreadTree(threadID string, subtreeLocksHeld bool) error {
 			errs = append(errs, fmt.Errorf("cleanup replay log: %w", err))
 		}
 	}
+	// Unbind every workflow run that reports into this thread (D17). Runs are
+	// deliberately FK-free so history outlives threads, so the binding has to be
+	// dropped here — otherwise a finished run would try to wake a thread that no
+	// longer exists, and the overlay would show a binding to nothing.
+	if unbound, err := a.store.ClearWorkItemOriginThreads(threadID); err != nil {
+		errs = append(errs, fmt.Errorf("clear workflow thread bindings: %w", err))
+	} else if unbound > 0 {
+		log.Printf("delete thread %s: unbound %d workflow run(s); their results now surface in the workflows overlay", threadID, unbound)
+	}
 
 	// If ANY step above errored, skip the DB row delete so the next
 	// DeleteThread call can reconcile from a known state. Without this,

@@ -158,14 +158,14 @@ func repairable(itemID, unitID, action string, unit *unitRun) error {
 }
 
 // recoverableUnitPark reports whether a parked run is one whose units are the
-// state worth repairing: a unit failed, the process died mid-attempt, or a
-// human took a unit over.
+// state worth repairing: a unit failed, the run was stopped mid-attempt (by a
+// pause or by the process dying), or a human took a unit over.
 func recoverableUnitPark(reason Reason) bool {
 	switch reason {
-	case ReasonUnitFailed, ReasonInterrupted, ReasonTakenOver:
+	case ReasonUnitFailed, ReasonTakenOver:
 		return true
 	default:
-		return false
+		return ResumableReason(reason)
 	}
 }
 

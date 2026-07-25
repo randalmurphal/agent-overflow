@@ -302,7 +302,9 @@ func ResolveConfigured(configRoot, projectSlug string) ([]def.ResolvedWorkflow, 
 // callResolver answers a call phase's static target from one snapshot of the
 // configured directories. Resolution is `def.Resolve`'s, so a call edge lands on
 // exactly the definition a run start would pick: project scope wins over shared.
-type callResolver struct{ byID map[string]def.ResolvedWorkflow }
+type callResolver struct {
+	byID map[string]def.ResolvedWorkflow
+}
 
 func (r callResolver) ResolveCall(id string) (def.ResolvedWorkflow, error) {
 	workflow, ok := r.byID[id]

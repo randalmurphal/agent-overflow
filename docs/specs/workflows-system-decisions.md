@@ -676,6 +676,13 @@ everything else above stands.
   files, unmerged commits) — the preview is the consent. Teardown is
   **tree-aware**: children and in-flight units always come down with the
   root.
+- **D17 amendment (2026-07-25).** "Child runs never bind and never notify"
+  holds, but it left a subtree parked on a question with nothing on any
+  surface. A descendant parking `needs-human` while the root still waits now
+  produces the **root's** wake and OS notification, composed to name the parked
+  descendant (run id, workflow, typed reason, parked phase). The child still
+  never surfaces as itself — the root is the unit of attention, and it is the
+  root's thread that is woken.
 - **D2a amendment (2026-07-24).** Envelope schemas must be provider-legal
   under both CLIs' strict modes; the rules live in
   `internal/providerschema` (each with its observed CLI rejection), the

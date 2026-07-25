@@ -379,18 +379,77 @@ func (c *Core) upstreamFor(cwd, branch string) (string, bool) {
 }
 
 // CountWorkingTreeChanges returns the number of changed files (staged,
-// unstaged, untracked) in cwd via `git status --porcelain`. Cheaper than the
-// full Status aggregator when the caller only needs a dirty-or-not signal.
+// unstaged, untracked) in cwd. Cheaper than the full Status aggregator when the
+// caller only needs a dirty-or-not signal.
 func (c *Core) CountWorkingTreeChanges(cwd string) (int, error) {
-	stdout, _, err := c.Execute(cwd, "status", "--porcelain")
+	_, total, err := c.WorkingTreeChanges(cwd, 0)
+	return total, err
+}
+
+// WorkingTreeChanges lists the changed files (staged, unstaged, untracked) in
+// cwd and reports the total, which is what CountWorkingTreeChanges is. `limit`
+// caps the returned slice — 0 returns the count alone — so a caller previewing
+// what a destructive action would discard can name the first N files without
+// materializing a pathological tree.
+//
+// `--porcelain -z` is used rather than the line-oriented form because git
+// quotes and escapes paths with spaces or non-ASCII bytes in the latter: a
+// preview must show the real filename. Rename and copy entries carry a second
+// NUL-terminated field (the original path) which is consumed as part of the
+// same change rather than counted twice.
+func (c *Core) WorkingTreeChanges(cwd string, limit int) (paths []string, total int, err error) {
+	stdout, _, err := c.Execute(cwd, "status", "--porcelain", "-z")
 	if err != nil {
-		return 0, err
+		return nil, 0, err
 	}
-	count := 0
-	for line := range strings.SplitSeq(stdout, "\n") {
-		if strings.TrimSpace(line) != "" {
-			count++
+	fields := strings.Split(stdout, "\x00")
+	for index := 0; index < len(fields); index++ {
+		entry := fields[index]
+		// The trailing NUL leaves an empty final field; a short entry cannot
+		// carry the mandatory "XY " status prefix.
+		if len(entry) < 4 {
+			continue
+		}
+		status, path := entry[:2], entry[3:]
+		if status[0] == 'R' || status[0] == 'C' {
+			index++ // The origin path belongs to this entry, not the next one.
+		}
+		total++
+		if limit > 0 && len(paths) < limit {
+			paths = append(paths, path)
 		}
 	}
-	return count, nil
+	return paths, total, nil
+}
+
+// DeleteBranch removes a local branch. `force` uses `-D`, which is what a
+// discard needs: the branch being thrown away is by definition one whose
+// commits never landed, and `-d` refuses exactly those.
+func (c *Core) DeleteBranch(cwd, branch string, force bool) error {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return fmt.Errorf("git branch name is required")
+	}
+	if err := validateBranchName(branch); err != nil {
+		return err
+	}
+	exists, err := c.branchExistsChecked(cwd, branch)
+	if err != nil {
+		return fmt.Errorf("check branch %q: %w", branch, err)
+	}
+	if !exists {
+		return nil
+	}
+	flag := "-d"
+	if force {
+		flag = "-D"
+	}
+	result, err := c.run(cwd, "branch", flag, "--", branch)
+	if err != nil {
+		return fmt.Errorf("delete branch %q: %w", branch, err)
+	}
+	if result.exitCode != 0 {
+		return fmt.Errorf("delete branch %q: %s", branch, strings.TrimSpace(result.stderr))
+	}
+	return nil
 }

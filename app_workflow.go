@@ -329,6 +329,12 @@ func (a *App) WorkflowCancelItem(itemID string) error {
 	return workflowEngine.Cancel(itemID)
 }
 
+// WorkflowResumeItem returns a parked run to running. With no target phase it
+// dispatches on why the run parked: a run stopped mid-attempt (`paused`,
+// `interrupted`) continues on the provider session it parked on and carries its
+// whole tree with it, while every other reason re-enters the phase with a fresh
+// attempt. Naming a target phase is always a fresh entry — that is what
+// choosing a different phase means.
 func (a *App) WorkflowResumeItem(itemID, targetPhase string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
@@ -337,6 +343,9 @@ func (a *App) WorkflowResumeItem(itemID, targetPhase string) error {
 	item, itemErr := a.store.GetWorkItem(itemID)
 	if itemErr != nil {
 		return itemErr
+	}
+	if targetPhase == "" && engine.ResumableReason(engine.Reason(item.Reason)) {
+		return workflowEngine.ResumeItem(itemID)
 	}
 	if item.Reason == string(engine.ReasonTakenOver) {
 		phase, phaseErr := a.currentWorkflowPhaseAttempt(itemID)

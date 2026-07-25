@@ -274,3 +274,52 @@ func TestShowFileAtCommit(t *testing.T) {
 		t.Fatal("expected error for a NUL in the path")
 	}
 }
+
+// The discard loss preview measures a unit branch against its run's branch, so
+// both ends are names and neither is the checked-out HEAD.
+func TestListBranchCommitsMeasuresTwoNamedBranches(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "checkout", "-b", "run")
+	commitFile(t, repo, "run.txt", "run\n", "run change")
+	testutil.RunGit(t, repo, "checkout", "-b", "unit")
+	commitFile(t, repo, "unit.txt", "unit\n", "unit change")
+	// Back to a third branch: neither end of the range is HEAD.
+	testutil.RunGit(t, repo, "checkout", "main")
+
+	commits, err := ListBranchCommits(context.Background(), repo, "run", "unit")
+	if err != nil {
+		t.Fatalf("ListBranchCommits: %v", err)
+	}
+	if len(commits) != 1 || commits[0].Subject != "unit change" {
+		t.Fatalf("unit vs run = %+v, want only the unit's own commit", commits)
+	}
+	// Measured against the repo base instead, the run's commit counts too —
+	// which is exactly the double-count the unit's own base avoids.
+	fromMain, err := ListBranchCommits(context.Background(), repo, "main", "unit")
+	if err != nil {
+		t.Fatalf("ListBranchCommits from main: %v", err)
+	}
+	if len(fromMain) != 2 {
+		t.Fatalf("unit vs main = %d commits, want 2", len(fromMain))
+	}
+	if merged, err := ListBranchCommits(context.Background(), repo, "unit", "run"); err != nil {
+		t.Fatalf("ListBranchCommits landed direction: %v", err)
+	} else if len(merged) != 0 {
+		t.Fatalf("run vs unit = %+v, want none: everything on run is already on unit", merged)
+	}
+}
+
+// A ref git cannot resolve must fail loudly: reporting "no unmerged commits"
+// would tell a human nothing would be lost by deleting the branch.
+func TestListBranchCommitsRefusesUnresolvableRefs(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "checkout", "-b", "known")
+	commitFile(t, repo, "a.txt", "a\n", "change")
+
+	if _, err := ListBranchCommits(context.Background(), repo, "main", "ghost"); err == nil {
+		t.Fatal("ListBranchCommits accepted an unknown branch")
+	}
+	if _, err := ListBranchCommits(context.Background(), repo, "ghost", "known"); err == nil {
+		t.Fatal("ListBranchCommits accepted an unknown base")
+	}
+}

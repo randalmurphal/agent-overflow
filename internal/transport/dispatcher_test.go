@@ -741,6 +741,11 @@ func (p *privilegedApp) WorkflowRerunItem() string              { return "ok" }
 func (p *privilegedApp) WorkflowRetryUnit() string              { return "ok" }
 func (p *privilegedApp) WorkflowDropUnit() string               { return "ok" }
 func (p *privilegedApp) WorkflowTakeOverUnit() string           { return "ok" }
+func (p *privilegedApp) WorkflowPauseItem() string              { return "ok" }
+func (p *privilegedApp) WorkflowBindThread() string             { return "ok" }
+func (p *privilegedApp) WorkflowUnbindThread() string           { return "ok" }
+func (p *privilegedApp) WorkflowOpenInThread() string           { return "ok" }
+func (p *privilegedApp) WorkflowDiscardPreview() string         { return "ok" }
 func (p *privilegedApp) UpdateThreadMode() string               { return "ok" }
 func (p *privilegedApp) UpdateThreadProvider() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadModel() string              { return "ok" }

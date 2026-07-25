@@ -30,6 +30,13 @@ headless, isolated data dir, mocked providers. Full harness guide:
   gate, a dynamic `over:` fan-out whose width comes from a prior phase's array
   (claude plan phase, codex units), and a mixed-provider fan-out whose failed
   unit parks the run until `WorkflowRetryUnit` repairs it in place.
+- `tests/workflows-wake.spec.ts` — thread binding and disposal (§5, D17/D23): a
+  run bound to a chat thread waking it with its declared outputs when it rests,
+  a pause interrupting a held turn and a resume continuing as turn 2 of the very
+  same mock session, and a discard preview naming a unit checkout's uncommitted
+  file before the discard removes every checkout and branch in the tree. The
+  discard case reads and writes the run's real worktrees from Node, which is the
+  only way to assert on work that exists nowhere else.
 - `tests/workflows-helpers.ts` — shared workflow seeds, mock-provider scenarios,
   direct start (`WorkflowStartRun`), the global-pause switch, state waits,
   result envelopes, and compact workflow definitions.

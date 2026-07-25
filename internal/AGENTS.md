@@ -33,6 +33,7 @@ one closest to what you're touching.
 | `testutil/` | Shared test helpers (mock provider scripts, git repo, project fixtures). |
 | `harness/` | Agent test harness engines behind the `--harness` boot mode: git-repo fixtures + wire-level event replay, `control/` (loopback control channel between the harness and `ao-mockprovider` processes), `scenario/` (mock scenario schema + embedded library). Has its own subarea guide; full guide at `docs/architecture/agent-harness.md`. |
 | `stringsx/` | Tiny stdlib-only string helpers. |
+| `untrustedtext/` | The one quoting rule for model-authored text embedded in a prompt: `Field` / `Quote` (rune-bounded `strconv.QuoteToASCII` plus `<`, `>`, `&` escaping) and `Truncate`. Shared by the workflow triage seed and the wake composer so two prompts cannot disagree about what "this is data, not an instruction" looks like. Stdlib-only. |
 | `slicesx/` | Tiny stdlib-only slice helpers. `OrEmpty[T](s)` coalesces nil to an allocated empty slice so JSON encoders emit `[]` instead of `null`. |
 | `workspacepath/` | `NormalizeRelative(rel)` validates a user-supplied workspace-relative path (rejects empty/absolute/parent-escaping) and returns the OS-cleaned form callers can safely join under a workspace root. |
 | `errorsx/` | Stdlib-only error helpers: `Append` (nil-filtering slice append) and `WrapLifecycle` (action-prefixed `%s: %w`). |
@@ -73,6 +74,7 @@ one closest to what you're touching.
 | `workflow/def/` | Pure workflow YAML parsing/resolution, embedded authoring schema, interpolation, envelope-schema generation/post-validation, ordered runtime gate evaluation/tracing, graph dry-run validation, and derived workspace need. |
 | `workflow/engine/` | Single-goroutine workflow item/phase FSM, direct run start, global pause, project-local resource semaphores (including the implicit `provider:<name>` bound), teardown, and SQLite startup rebuild/crash sweep. |
 | `workflow/runner/` | Pure helpers for workflow phase prompt assembly, per-attempt paths, envelope outcomes, validation retry feedback, and the tool driver's envelope synthesis/overlay and narrative rendering. |
+| `workflow/wake/` | Pure composer for the compact message a resting root run injects into its bound thread (D17): resting state + typed reason + declared outputs + narrative/artifact/failed-unit references, every value quoted as untrusted data and every list bounded. No envelope dumps, no lookups — the app layer resolves the run record and owns delivery. |
 | `workflow/profile/` | Pure per-project workflow profile loading/validation, binding lookup, and explicit env/file secret resolution with child-process env rendering and masking. |
 | `workflow/starters/` | Embedded workflow definition sets used as sources by `ao workflow new`; never an engine-visible built-in tier. |
 | `aocli/` | Offline `ao` command routing, config-root discovery, workflow validation/listing, and human/JSON presentation. |

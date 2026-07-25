@@ -55,6 +55,31 @@ func ListCommitsRange(ctx context.Context, workspace, base, head string) ([]Comm
 	if head != "HEAD" && !commitSHAPattern.MatchString(head) {
 		return nil, fmt.Errorf("gitdiff: invalid head %q", head)
 	}
+	return logCommitRange(ctx, workspace, base, head)
+}
+
+// ListBranchCommits returns the commits on `branch` that are not reachable from
+// `base` (`base..branch`), newest first, capped at maxListedCommits — the
+// commits a branch would lose if it were deleted without landing.
+//
+// Unlike ListCommitsRange both ends are branch names, resolved through the same
+// local-then-remote lookup, because the caller is describing two refs rather
+// than a fetched head OID. A branch that does not resolve is an error: silently
+// reporting "no unmerged commits" for a branch git could not find would turn a
+// lookup failure into a claim that nothing would be lost.
+func ListBranchCommits(ctx context.Context, workspace, base, branch string) ([]Commit, error) {
+	base, err := resolveBaseRef(ctx, workspace, base)
+	if err != nil {
+		return nil, err
+	}
+	branch, err = resolveBaseRef(ctx, workspace, branch)
+	if err != nil {
+		return nil, err
+	}
+	return logCommitRange(ctx, workspace, base, branch)
+}
+
+func logCommitRange(ctx context.Context, workspace, base, head string) ([]Commit, error) {
 	stdout, _, _, err := runGit(ctx, workspace, nil, false,
 		"log", "--no-decorate", "--max-count="+strconv.Itoa(maxListedCommits),
 		"--pretty=format:%x00%H"+logFieldSep+"%h"+logFieldSep+"%an"+logFieldSep+"%at"+logFieldSep+"%s",

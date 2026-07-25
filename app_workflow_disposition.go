@@ -22,8 +22,12 @@ type WorkflowDispositionReceipt struct {
 	PRRef         string `json:"prRef,omitempty"`
 	Base          string `json:"base,omitempty"`
 	CleanupFailed bool   `json:"cleanupFailed,omitempty"`
-	Policy        string `json:"policy"`
-	At            int64  `json:"at"`
+	// Discarded is set for a discard and records the tree it covered and the
+	// checkouts and branches it destroyed (D23). Merge and PR leave the work
+	// reachable; discard does not, so its receipt is the only account of it.
+	Discarded *WorkflowDiscardResult `json:"discarded,omitempty"`
+	Policy    string                 `json:"policy"`
+	At        int64                  `json:"at"`
 }
 
 type workflowDispositionAction string
@@ -125,71 +129,33 @@ func validateWorkflowDispositionState(item store.WorkItem, action workflowDispos
 }
 
 func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispositionAction, policy profile.Disposition) (WorkflowDispositionReceipt, error) {
-	projectRow, removeWorktree, err := a.validateWorkflowDispositionWorktree(item, action)
-	if err != nil {
-		return WorkflowDispositionReceipt{}, err
+	receipt := WorkflowDispositionReceipt{
+		Action: string(action), Policy: string(policy), At: time.Now().UnixMilli(),
 	}
 	cleanupAuto := false
-	if action != workflowDispositionDiscard {
+	if action == workflowDispositionDiscard {
+		// Discard is tree-scoped and destroys the branches too (D23): the run
+		// tree's checkouts, its fan-out sub-worktrees, and the branches all of
+		// them held. WorkflowDiscardPreview is what a human consents to before
+		// reaching here, and the tree walk does its own per-checkout validation
+		// — a run whose worktree is already gone still has descendants and unit
+		// branches to discard.
+		discarded, err := a.discardWorkflowTree(item)
+		if err != nil {
+			return WorkflowDispositionReceipt{}, err
+		}
+		receipt.Discarded = &discarded
+	} else {
+		projectRow, err := a.validateWorkflowDispositionWorktree(item)
+		if err != nil {
+			return WorkflowDispositionReceipt{}, err
+		}
 		cleanupAuto, err = a.workflowCleanupAuto(item)
 		if err != nil {
 			return WorkflowDispositionReceipt{}, err
 		}
-	}
-	receipt := WorkflowDispositionReceipt{
-		Action: string(action), Policy: string(policy), At: time.Now().UnixMilli(),
-	}
-	core := a.gitCore()
-	switch action {
-	case workflowDispositionMerge:
-		baseBranch, err := a.workflowDispositionBase(item)
-		if err != nil {
+		if err := a.landWorkflowDisposition(&receipt, item, projectRow, action); err != nil {
 			return WorkflowDispositionReceipt{}, err
-		}
-		merged, err := core.MergeBranch(projectRow.Path, baseBranch, item.Branch)
-		if err != nil {
-			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s refused: %w", item.ID, err)
-		}
-		receipt.Mode = merged.Mode
-		receipt.SHA = merged.SHA
-		receipt.Base = baseBranch
-	case workflowDispositionPR:
-		baseBranch, err := a.workflowDispositionBase(item)
-		if err != nil {
-			return WorkflowDispositionReceipt{}, err
-		}
-		sha, err := core.HeadSHA(item.WorktreePath)
-		if err != nil {
-			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s read PR head: %w", item.ID, err)
-		}
-		if err := core.Push(item.WorktreePath); err != nil {
-			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s push: %w", item.ID, err)
-		}
-		prRef, err := core.CreatePR(
-			item.WorktreePath, item.Goal,
-			fmt.Sprintf("Created from Agent Overflow workflow %s.", item.WorkflowID), baseBranch, false,
-		)
-		if err != nil {
-			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s create PR: %w", item.ID, err)
-		}
-		receipt.PRRef = prRef
-		receipt.SHA = sha
-		receipt.Base = baseBranch
-	case workflowDispositionDiscard:
-		// Fan-out sub-worktrees are part of the tree being discarded. They are
-		// removed first because they were cut from the item's branch: taking the
-		// item's own worktree away while its units still hold checkouts of
-		// branches descended from it leaves a tree nothing points at.
-		if err := a.removeWorkflowUnitWorktrees(item); err != nil {
-			return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s discard: %w", item.ID, err)
-		}
-		if removeWorktree {
-			if _, err := a.RemoveOtherWorktreeForProject(item.ProjectID, "", item.WorktreePath, true); err != nil {
-				return WorkflowDispositionReceipt{}, fmt.Errorf("workflow disposition %s discard: %w", item.ID, err)
-			}
-			if err := a.store.UpdateWorkItemWorkspace(item.ID, "", "", ""); err != nil {
-				return receipt, err
-			}
 		}
 	}
 
@@ -233,6 +199,50 @@ func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispo
 	return receipt, nil
 }
 
+// landWorkflowDisposition performs the git side of the two landing actions and
+// records what it did on the receipt.
+func (a *App) landWorkflowDisposition(
+	receipt *WorkflowDispositionReceipt, item store.WorkItem,
+	projectRow store.Project, action workflowDispositionAction,
+) error {
+	baseBranch, err := a.workflowDispositionBase(item)
+	if err != nil {
+		return err
+	}
+	receipt.Base = baseBranch
+	core := a.gitCore()
+	switch action {
+	case workflowDispositionMerge:
+		merged, err := core.MergeBranch(projectRow.Path, baseBranch, item.Branch)
+		if err != nil {
+			return fmt.Errorf("workflow disposition %s refused: %w", item.ID, err)
+		}
+		receipt.Mode = merged.Mode
+		receipt.SHA = merged.SHA
+		return nil
+	case workflowDispositionPR:
+		sha, err := core.HeadSHA(item.WorktreePath)
+		if err != nil {
+			return fmt.Errorf("workflow disposition %s read PR head: %w", item.ID, err)
+		}
+		if err := core.Push(item.WorktreePath); err != nil {
+			return fmt.Errorf("workflow disposition %s push: %w", item.ID, err)
+		}
+		prRef, err := core.CreatePR(
+			item.WorktreePath, item.Goal,
+			fmt.Sprintf("Created from Agent Overflow workflow %s.", item.WorkflowID), baseBranch, false,
+		)
+		if err != nil {
+			return fmt.Errorf("workflow disposition %s create PR: %w", item.ID, err)
+		}
+		receipt.PRRef = prRef
+		receipt.SHA = sha
+		return nil
+	default:
+		return fmt.Errorf("workflow disposition %s: %q does not land a branch", item.ID, action)
+	}
+}
+
 func (a *App) workflowDispositionBase(item store.WorkItem) (string, error) {
 	projectProfile, err := a.workflowProjectProfile(item.ProjectID)
 	if err != nil {
@@ -248,42 +258,41 @@ func (a *App) workflowDispositionBase(item store.WorkItem) (string, error) {
 	return baseBranch, nil
 }
 
-func (a *App) validateWorkflowDispositionWorktree(item store.WorkItem, action workflowDispositionAction) (store.Project, bool, error) {
-	if action == workflowDispositionDiscard && (strings.TrimSpace(item.WorktreePath) == "" || strings.TrimSpace(item.Branch) == "") {
-		return store.Project{}, false, nil
-	}
+// validateWorkflowDispositionWorktree gates the two landing actions: they read
+// the run's worktree and push its branch, so the checkout must exist, be
+// registered on that branch, and be clean. Discard does not come through here —
+// it removes checkouts rather than reading them, and tolerates the ones that
+// are already gone.
+func (a *App) validateWorkflowDispositionWorktree(item store.WorkItem) (store.Project, error) {
 	projectRow, err := a.store.GetProject(item.ProjectID)
 	if err != nil {
-		return store.Project{}, false, err
+		return store.Project{}, err
 	}
 	if strings.TrimSpace(item.WorktreePath) == "" || strings.TrimSpace(item.Branch) == "" {
-		return store.Project{}, false, fmt.Errorf("workflow disposition %s: item branch or worktree is missing", item.ID)
+		return store.Project{}, fmt.Errorf("workflow disposition %s: item branch or worktree is missing", item.ID)
 	}
 	info, err := os.Stat(item.WorktreePath)
 	if err != nil {
-		return store.Project{}, false, fmt.Errorf("workflow disposition %s: inspect worktree: %w", item.ID, err)
+		return store.Project{}, fmt.Errorf("workflow disposition %s: inspect worktree: %w", item.ID, err)
 	}
 	if !info.IsDir() {
-		return store.Project{}, false, fmt.Errorf("workflow disposition %s: worktree is not a directory", item.ID)
+		return store.Project{}, fmt.Errorf("workflow disposition %s: worktree is not a directory", item.ID)
 	}
 	worktree, found, err := a.findWorktree(projectRow.Path, item.WorktreePath)
 	if err != nil {
-		return store.Project{}, false, err
+		return store.Project{}, err
 	}
 	if !found || worktree.Branch != item.Branch {
-		return store.Project{}, false, fmt.Errorf("workflow disposition %s: worktree is not registered on branch %q", item.ID, item.Branch)
-	}
-	if action == workflowDispositionDiscard {
-		return projectRow, true, nil
+		return store.Project{}, fmt.Errorf("workflow disposition %s: worktree is not registered on branch %q", item.ID, item.Branch)
 	}
 	changes, err := a.gitCore().CountWorkingTreeChanges(item.WorktreePath)
 	if err != nil {
-		return store.Project{}, false, fmt.Errorf("workflow disposition %s: inspect item worktree: %w", item.ID, err)
+		return store.Project{}, fmt.Errorf("workflow disposition %s: inspect item worktree: %w", item.ID, err)
 	}
 	if changes > 0 {
-		return store.Project{}, false, fmt.Errorf("workflow disposition %s: item worktree is dirty (%d changed files)", item.ID, changes)
+		return store.Project{}, fmt.Errorf("workflow disposition %s: item worktree is dirty (%d changed files)", item.ID, changes)
 	}
-	return projectRow, true, nil
+	return projectRow, nil
 }
 
 func (a *App) workflowProjectProfile(projectID string) (*profile.Profile, error) {
@@ -303,34 +312,7 @@ func (a *App) workflowCleanupAuto(item store.WorkItem) (bool, error) {
 }
 
 func (a *App) queueAutoDisposition(itemID string) {
-	a.workflowAutoDispositionMu.Lock()
-	a.workflowAutoDispositionIDs = append(a.workflowAutoDispositionIDs, itemID)
-	if a.workflowAutoDispositionBusy {
-		a.workflowAutoDispositionMu.Unlock()
-		return
-	}
-	a.workflowAutoDispositionBusy = true
-	a.workflowAutoDispositionWG.Add(1)
-	a.workflowAutoDispositionMu.Unlock()
-	go a.runAutoDispositionQueue()
-}
-
-func (a *App) runAutoDispositionQueue() {
-	defer a.workflowAutoDispositionWG.Done()
-	for {
-		a.workflowAutoDispositionMu.Lock()
-		if len(a.workflowAutoDispositionIDs) == 0 {
-			a.workflowAutoDispositionBusy = false
-			a.workflowAutoDispositionMu.Unlock()
-			return
-		}
-		itemID := a.workflowAutoDispositionIDs[0]
-		a.workflowAutoDispositionIDs[0] = ""
-		a.workflowAutoDispositionIDs = a.workflowAutoDispositionIDs[1:]
-		a.workflowAutoDispositionMu.Unlock()
-
-		a.autoDisposeWorkflowItem(itemID)
-	}
+	a.workflowAutoDisposition.Go(func() { a.autoDisposeWorkflowItem(itemID) })
 }
 
 func (a *App) autoDisposeWorkflowItem(itemID string) {

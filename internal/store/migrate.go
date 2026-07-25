@@ -1430,7 +1430,77 @@ CREATE INDEX idx_work_item_units_worktree
 		SQL:     rebuildWorkItemsCallLinkageV38SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 39,
+		Name:    "work_item_thread_binding",
+		SQL:     rebuildWorkItemsThreadBindingV39SQL,
+		Rebuild: true,
+	},
 }
+
+// workItemsReasonCheckV38 is the typed park-reason CHECK shipped by v38;
+// workItemsReasonCheckV39 is the same constraint widened with `paused`, the
+// reason a deliberate pause (human or graceful quit) parks under. It is
+// distinct from `interrupted` on purpose: both resume identically, and the
+// reason is what tells a human whether the run stopped by intent or by death.
+const (
+	workItemsReasonCheckV38 = `reason           TEXT    NOT NULL DEFAULT '' CHECK(reason IN ('','gate','question','stuck','stalled','budget-exhausted','retries-exhausted','check-failed-genuine','agent-error','wiring-error','disposition','setup-failed','interrupted','taken-over','unit-failed','child-failed')),`
+	workItemsReasonCheckV39 = `reason           TEXT    NOT NULL DEFAULT '' CHECK(reason IN ('','gate','question','stuck','stalled','budget-exhausted','retries-exhausted','check-failed-genuine','agent-error','wiring-error','disposition','setup-failed','interrupted','taken-over','unit-failed','child-failed','paused')),`
+)
+
+// rebuildWorkItemsThreadBindingV39SQL records a root run's bound origin thread
+// (§5, D17) and widens the typed park reason set with `paused` (D23).
+//
+// `origin_thread_id` is the thread a resting transition wakes. Only a *root*
+// run may carry one — a called run surfaces through its caller's tree and never
+// binds — and the fourth CHECK below makes that structural rather than a rule
+// callers have to remember. There is no threads foreign key, matching
+// `triage_thread_id`: run history outlives the thread it was started from, and
+// a deleted bound thread degrades to the unbound surface at wake time.
+//
+// SQLite can alter neither a CHECK nor a column list in place, so this follows
+// the established table-rebuild pattern. It is derived from the shipped v38
+// text rather than retyped, which makes accidental column/index drift
+// impossible. The derivation also has to EXTEND v38's copy lists with the call
+// linkage v38 itself introduced: v38's INSERT copies the columns that existed
+// at v37, so re-running that text against a v38 table would silently drop every
+// run's parent linkage. `origin_thread_id` is not copied — it is new here and
+// defaults empty.
+var rebuildWorkItemsThreadBindingV39SQL = mustReplaceOnce(
+	mustReplaceOnce(
+		mustReplaceOnce(
+			mustReplaceOnce(
+				mustReplaceOnce(
+					rebuildWorkItemsCallLinkageV38SQL,
+					workItemsReasonCheckV38, workItemsReasonCheckV39,
+				),
+				"    triage_thread_id TEXT    NOT NULL DEFAULT '',",
+				"    triage_thread_id TEXT    NOT NULL DEFAULT '',\n    origin_thread_id TEXT    NOT NULL DEFAULT '',",
+			),
+			"    CHECK((parent_item_id = '') = (call_depth = 0))",
+			"    CHECK((parent_item_id = '') = (call_depth = 0)),\n    CHECK(parent_item_id = '' OR origin_thread_id = '')",
+		),
+		workItemsCopyColumnsV38+"\n)",
+		workItemsCopyColumnsV39+"\n)",
+	),
+	workItemsCopyColumnsV38+"\nFROM work_items;",
+	workItemsCopyColumnsV39+"\nFROM work_items;",
+) + `
+CREATE INDEX idx_work_items_origin_thread
+  ON work_items(origin_thread_id)
+  WHERE origin_thread_id <> '';
+`
+
+// workItemsCopyColumnsV38 is the column list v38's rebuild copies (the v37
+// column set); workItemsCopyColumnsV39 adds the linkage columns v38 created, so
+// a rebuild derived from v38's text carries them instead of resetting them.
+const (
+	workItemsCopyColumnsV38 = `    source, source_ref, triage_thread_id, disposition, digest,
+    created_at, started_at, ended_at`
+	workItemsCopyColumnsV39 = `    source, source_ref, triage_thread_id, disposition, digest,
+    parent_item_id, parent_phase_id, parent_attempt, call_depth,
+    created_at, started_at, ended_at`
+)
 
 // rebuildWorkItemsCallLinkageV38SQL links a run to the call phase that invoked
 // it: the parent item, the parent phase attempt, and the depth of the tree it

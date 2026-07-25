@@ -157,10 +157,12 @@ export const Version = dispatch('Version');
 
 // Workflow surface.
 export const WorkflowAnswerQuestion = dispatch('WorkflowAnswerQuestion');
+export const WorkflowBindThread = dispatch('WorkflowBindThread');
 export const WorkflowCancelItem = dispatch('WorkflowCancelItem');
 export const WorkflowCreateItemPR = dispatch('WorkflowCreateItemPR');
 export const WorkflowDiscussPR = dispatch('WorkflowDiscussPR');
 export const WorkflowDiscardItem = dispatch('WorkflowDiscardItem');
+export const WorkflowDiscardPreview = dispatch('WorkflowDiscardPreview');
 export const WorkflowFetchPRReviewComments = dispatch('WorkflowFetchPRReviewComments');
 export const WorkflowGetEngineState = dispatch('WorkflowGetEngineState');
 export const WorkflowGetItem = dispatch('WorkflowGetItem');
@@ -170,16 +172,19 @@ export const WorkflowListItemCosts = dispatch('WorkflowListItemCosts');
 export const WorkflowListItems = dispatch('WorkflowListItems');
 export const WorkflowListUnresolvedItems = dispatch('WorkflowListUnresolvedItems');
 export const WorkflowMergeItem = dispatch('WorkflowMergeItem');
+export const WorkflowOpenInThread = dispatch('WorkflowOpenInThread');
 export const WorkflowOpenStudioThread = dispatch('WorkflowOpenStudioThread');
 export const WorkflowOpenTriageAgent = dispatch('WorkflowOpenTriageAgent');
 export const WorkflowOpenTriageThread = dispatch('WorkflowOpenTriageThread');
 export const WorkflowRerunItem = dispatch('WorkflowRerunItem');
 export const WorkflowSendPRReviewCommentsToThread = dispatch('WorkflowSendPRReviewCommentsToThread');
+export const WorkflowPauseItem = dispatch('WorkflowPauseItem');
 export const WorkflowResolveGate = dispatch('WorkflowResolveGate');
 export const WorkflowResumeItem = dispatch('WorkflowResumeItem');
 export const WorkflowSetGlobalPause = dispatch('WorkflowSetGlobalPause');
 export const WorkflowSetJobNotes = dispatch('WorkflowSetJobNotes');
 export const WorkflowStartRun = dispatch('WorkflowStartRun');
+export const WorkflowUnbindThread = dispatch('WorkflowUnbindThread');
 
 // Per-provider/model context window + auto-compact thresholds.
 // GetContextSettings hydrates the form; the two updates persist either

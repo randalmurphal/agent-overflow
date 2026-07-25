@@ -39,6 +39,12 @@ type sendMessageOptions struct {
 	RevisionSourceDiffReview     *SourceDiffReview
 	RevisionSourceDiffCommentIDs []string
 	OutputSchema                 json.RawMessage
+	// PreserveDraft keeps the thread's durable composer draft. Set by the
+	// app-internal injectors (a workflow wake, a seeded triage/open-in-thread
+	// turn) whose text did not come from the composer: a user send consumes the
+	// draft, but a system-injected message that cleared it would silently
+	// destroy text the user typed and has not sent.
+	PreserveDraft bool
 }
 
 // userMessageInputs is the projection of fields shared by every
@@ -325,8 +331,10 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		return store.Item{}, fmt.Errorf("send message: persist user message: %w", err)
 	}
 	userMsgKept = true
-	if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
-		log.Printf("send message: delete draft for thread %s: %v", threadID, draftErr)
+	if !opts.PreserveDraft {
+		if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
+			log.Printf("send message: delete draft for thread %s: %v", threadID, draftErr)
+		}
 	}
 	a.recordMessageAnchor(userItem)
 	// Click-time plan/diff-review acceptance. Sticky: a subsequent

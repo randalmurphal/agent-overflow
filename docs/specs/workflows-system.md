@@ -335,7 +335,11 @@ run records an optional **bound thread**:
   **binds an existing open thread** chosen from a picker — after which resting
   states wake that thread like the agent case.
 - **child runs** (§3a) never bind and never notify; they surface through the
-  parent's run tree.
+  parent's run tree. A descendant that parks `needs-human` while the root is
+  still waiting produces the **root's** wake and notification, composed to name
+  the parked descendant (its run id, workflow, typed reason, and parked phase) —
+  a subtree blocked on a question is never invisible just because the run
+  holding it is not the one a human is watching.
 
 If a bound thread has been deleted, the run falls back to the unbound surface
 — a wake is never silently lost.

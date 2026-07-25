@@ -180,7 +180,7 @@ func TestWorkflowAutoMergeHonorsCleanupAutoAfterReceipt(t *testing.T) {
 	workflowEmitter{app: app, emit: func(string, any) {}}.Emit(
 		"workflow:item-state", engine.StateEvent{ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateDone},
 	)
-	app.workflowAutoDispositionWG.Wait()
+	app.workflowAutoDisposition.Wait()
 	stored, err := app.store.GetWorkItem(item.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -407,7 +407,7 @@ func TestWorkflowCreateItemPRPushesAndPersistsReference(t *testing.T) {
 	workflowEmitter{app: app, emit: func(string, any) {}}.Emit(
 		"workflow:item-state", engine.StateEvent{ItemID: autoItem.ID, ProjectID: autoItem.ProjectID, From: engine.StateRunning, To: engine.StateDone},
 	)
-	app.workflowAutoDispositionWG.Wait()
+	app.workflowAutoDisposition.Wait()
 	autoStored, err := app.store.GetWorkItem(autoItem.ID)
 	if err != nil {
 		t.Fatal(err)

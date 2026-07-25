@@ -286,6 +286,18 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowDiscussPR":                    true,
 	"WorkflowSetJobNotes":                  true,
 	"WorkflowRerunItem":                    true,
+	"WorkflowPauseItem":                    true,
+	// Thread binding wires a run's results into a local provider session: a
+	// bound run injects user turns into that thread from a background
+	// goroutine, and WorkflowOpenInThread creates the thread and starts the
+	// session outright.
+	"WorkflowBindThread":   true,
+	"WorkflowUnbindThread": true,
+	"WorkflowOpenInThread": true,
+	// Discard preview reads local checkouts and repository history — dirty
+	// paths and unmerged commit subjects — which is the same local-disclosure
+	// class as the diff bindings.
+	"WorkflowDiscardPreview": true,
 	// Fan-out unit recovery is the same control plane one unit down: a retry
 	// starts a provider session or a local command, a drop rewrites what the
 	// join consolidates, and a takeover restarts a session schema-less so a

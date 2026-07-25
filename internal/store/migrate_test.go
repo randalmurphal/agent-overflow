@@ -2612,3 +2612,91 @@ func TestMigrationV38AddsCallLinkage(t *testing.T) {
 		t.Fatal("foreign_key_check reported a violation after v38 rebuild")
 	}
 }
+
+func TestMigrationV39AddsOriginThreadAndPausedReason(t *testing.T) {
+	db := migrateThrough(t, 38)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+		 seeds, step_mode, worktree_path, branch, base_branch, budget,
+		 source, source_ref, triage_thread_id, disposition, digest,
+		 parent_item_id, parent_phase_id, parent_attempt, call_depth,
+		 created_at, started_at, ended_at)
+		VALUES ('item-v39', 'project-v39', 'keep goal', 'wf', 'shared', '{"id":"wf"}',
+		 'needs-human', 'child-failed', '{"ticket":"AO-9"}', 1, '/tmp/wt', 'ao-v39', 'main', '{}',
+		 'agent', 'agent-ref-v39', 'triage-v39', '{"action":"merged"}', '{"whatHappened":"x"}',
+		 '', '', 0, 0, 7, 8, 9)`)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, source,
+		 parent_item_id, parent_phase_id, parent_attempt, call_depth, created_at)
+		VALUES ('child-v39', 'project-v39', 'called run', 'child-wf', 'shared', 'running', 'call',
+		 'item-v39', 'audit', 1, 1, 10)`)
+	if _, err := db.Exec(`UPDATE work_items SET reason = 'paused' WHERE id = 'item-v39'`); err == nil {
+		t.Fatal("work_items accepted 'paused' before v39 — the CHECK was already wrong")
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 39)); err != nil {
+		t.Fatalf("apply migration v39: %v", err)
+	}
+
+	var preserved int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_items
+		WHERE id = 'item-v39' AND project_id = 'project-v39' AND goal = 'keep goal'
+		  AND workflow_id = 'wf' AND workflow_scope = 'shared' AND snapshot = '{"id":"wf"}'
+		  AND state = 'needs-human' AND reason = 'child-failed' AND seeds = '{"ticket":"AO-9"}'
+		  AND step_mode = 1 AND worktree_path = '/tmp/wt' AND branch = 'ao-v39'
+		  AND base_branch = 'main' AND budget = '{}' AND source = 'agent'
+		  AND source_ref = 'agent-ref-v39' AND triage_thread_id = 'triage-v39'
+		  AND disposition = '{"action":"merged"}' AND digest = '{"whatHappened":"x"}'
+		  AND parent_item_id = '' AND call_depth = 0 AND origin_thread_id = ''
+		  AND created_at = 7 AND started_at = 8 AND ended_at = 9`).Scan(&preserved); err != nil {
+		t.Fatalf("read preserved work item: %v", err)
+	}
+	if preserved != 1 {
+		t.Fatal("v39 rebuild did not preserve the work item row, or defaulted its binding wrong")
+	}
+	var child int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_items
+		WHERE id = 'child-v39' AND parent_item_id = 'item-v39' AND parent_phase_id = 'audit'
+		  AND parent_attempt = 1 AND call_depth = 1 AND origin_thread_id = ''`).Scan(&child); err != nil {
+		t.Fatalf("read preserved child: %v", err)
+	}
+	if child != 1 {
+		t.Fatal("v39 rebuild did not preserve the call linkage of a child run")
+	}
+
+	mustExec(t, db, `UPDATE work_items SET reason = 'paused' WHERE id = 'item-v39'`)
+	mustExec(t, db, `UPDATE work_items SET origin_thread_id = 'thread-v39' WHERE id = 'item-v39'`)
+	// Widening is not loosening.
+	if _, err := db.Exec(`UPDATE work_items SET reason = 'snoozed' WHERE id = 'item-v39'`); err == nil {
+		t.Fatal("work_items accepted an unknown reason after v39")
+	}
+	// A called run can never carry a binding: children never notify as
+	// themselves, so the structure refuses what the policy forbids.
+	if _, err := db.Exec(`UPDATE work_items SET origin_thread_id = 'thread-v39' WHERE id = 'child-v39'`); err == nil {
+		t.Fatal("work_items accepted an origin thread on a called run")
+	}
+	if _, err := db.Exec(`UPDATE work_items SET parent_item_id = 'child-v39', parent_phase_id = 'p',
+		parent_attempt = 1, call_depth = 1 WHERE id = 'item-v39'`); err == nil {
+		t.Fatal("work_items accepted call linkage on a bound run")
+	}
+
+	for _, index := range []string{
+		"idx_work_items_project_state_created", "idx_work_items_project_created",
+		"idx_work_items_state_created", "idx_work_items_triage_thread",
+		"idx_work_items_agent_source_ref", "idx_work_items_parent",
+		"idx_work_items_origin_thread",
+	} {
+		readIndexSQL(t, db, index)
+	}
+	assertPlanUses(t, db, "idx_work_items_origin_thread",
+		`EXPLAIN QUERY PLAN SELECT id FROM work_items
+		 WHERE origin_thread_id = ? AND origin_thread_id <> ''`, "thread-v39")
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("foreign_key_check reported a violation after v39 rebuild")
+	}
+}

@@ -91,7 +91,7 @@ func (e *Engine) completeTakeover(itemID string) error {
 	if !ok || current.ThreadID == "" {
 		return fmt.Errorf("complete takeover %q: parked attempt thread is missing", itemID)
 	}
-	return e.continueParkedAttempt(item, current.ThreadID, nil, true)
+	return e.continueParkedAttempt(item, current.ThreadID, nil, true, "complete takeover")
 }
 
 func (e *Engine) answer(itemID, answer string) error {
@@ -116,7 +116,7 @@ func (e *Engine) answer(itemID, answer string) error {
 	if !ok || current.ThreadID == "" {
 		return fmt.Errorf("answer question %q: parked attempt thread is missing", itemID)
 	}
-	return e.continueParkedAttempt(item, current.ThreadID, &Feedback{Note: answer}, false)
+	return e.continueParkedAttempt(item, current.ThreadID, &Feedback{Note: answer}, false, "answer question")
 }
 
 // continueParkedAttempt resumes a parked run on the provider session it parked
@@ -126,13 +126,17 @@ func (e *Engine) answer(itemID, answer string) error {
 // and the work units already produced the results the join exists to
 // consolidate — replacing the attempt would throw every one of them away and
 // redo it.
-func (e *Engine) continueParkedAttempt(item *runtimeItem, threadID string, feedback *Feedback, finalize bool) error {
+//
+// `action` names the verb that asked for the continuation ("answer question",
+// "complete takeover", "resume item") so a refusal reads as the human's own
+// action failing rather than as an internal step they never invoked.
+func (e *Engine) continueParkedAttempt(item *runtimeItem, threadID string, feedback *Feedback, finalize bool, action string) error {
 	phase, ok := findPhase(item.workflow, item.phaseID)
 	if !ok {
-		return fmt.Errorf("continue item %q: phase %q is absent from snapshot", item.item.ID, item.phaseID)
+		return fmt.Errorf("%s %q: phase %q is absent from snapshot", action, item.item.ID, item.phaseID)
 	}
 	if phase.EffectiveShape() == def.ShapeFanOut {
-		return e.continueFanOutJoin(item, threadID, feedback, finalize)
+		return e.continueFanOutJoin(item, threadID, feedback, finalize, action)
 	}
 	if err := e.transition(item, StateRunning, ""); err != nil {
 		return err
@@ -152,11 +156,7 @@ func (e *Engine) continueParkedAttempt(item *runtimeItem, threadID string, feedb
 // A fan-out that parked before its join ever ran, or whose work units still rest
 // failed or taken over, is refused: there is nothing for a join to consolidate
 // yet, and the units are what a human has to decide about first.
-func (e *Engine) continueFanOutJoin(item *runtimeItem, threadID string, feedback *Feedback, finalize bool) error {
-	action := "answer question"
-	if finalize {
-		action = "complete takeover"
-	}
+func (e *Engine) continueFanOutJoin(item *runtimeItem, threadID string, feedback *Feedback, finalize bool, action string) error {
 	if err := e.restoreFanOut(item); err != nil {
 		return fmt.Errorf("%s %q: %w", action, item.item.ID, err)
 	}

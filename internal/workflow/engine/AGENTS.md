@@ -70,6 +70,30 @@ resource semaphores, and startup recovery.
   teardown, releasing resources and runner timers without touching its
   worktree/provider history. `CompleteTakeover` creates one finalize attempt on
   that same thread; validation exhaustion re-parks as `taken-over`.
+- **Pause is a root action over a whole tree, and it joins the teardown
+  contract.** `PauseItem` refuses a called run ("pause the run that called
+  it"), walks the subtree deepest-first, and takes each live member down
+  through `teardown` — interrupt the in-flight turn(s), release locks, write
+  the partial envelope, park `needs-human(paused)`. It differs from cancel in
+  exactly one respect: `teardownRequest.retainCallChildren` keeps the call
+  children the phase is waiting on, because pause does not abandon the
+  attempt. Members already parked for another reason keep that reason; a pause
+  never rewrites why a run needs a human. A persisted-`running` member the
+  scheduler does not hold is an error, not a skip — it would be a run nothing
+  could ever stop. `PauseAllActive` is the same path over every active root
+  and is what graceful quit calls before provider sessions die.
+- **`paused` and `interrupted` resume identically.** Both stopped an attempt
+  before it produced a result, so `ResumeItem` continues on the session that
+  parked rather than re-entering the phase: a single-shape attempt through
+  `continueParkedAttempt`, a fan-out through the same repair `RetryUnit`
+  applies (every unit resting `failed` reopened at once) and then either
+  relaunch or `continueFanOutJoin`, a call phase by reopening the attempt and
+  recursing into the child. Descendants parked for another reason stay parked
+  and the root returns to waiting on them. The reasons differ for the human
+  reading the run list, not for the recovery. A parked attempt whose thread no
+  longer exists falls back to a fresh attempt whose feedback says so — the
+  `ThreadExists` probe exists so a deleted session parks as itself instead of
+  as an `agent-error` from a failed runner start.
 - `RerunFailed` is the only `failed → running` edge. It re-stamps the run start
   before the transition and carries the previous attempt's failure feedback into
   the new one; the attempt begins immediately, subject to resources and pause.
@@ -230,3 +254,9 @@ resource semaphores, and startup recovery.
   runner-owned; the engine only checks phase-boundary budgets and maps outcomes.
 - Persisting the pause flag and emitting it to the frontend is app wiring. The
   engine owns the live flag and the `workflow:engine-state` payload shape.
+- Waking a bound thread is app wiring too. The engine's contribution is the
+  `workflow:item-state` transition; `app_workflow_notifications.go` decides
+  from that one event who is told and how (a wake into the run's bound thread,
+  an OS notification when it needs a human, a descendant's park announced at
+  its root). Discard — worktree removal and branch deletion — is entirely
+  app-side; the engine only cancels what is still in flight when asked.

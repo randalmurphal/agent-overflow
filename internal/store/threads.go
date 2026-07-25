@@ -258,6 +258,25 @@ func (s *Store) GetThread(id string) (Thread, error) {
 	return t, nil
 }
 
+// ThreadExists reports whether a thread row is still present. It is the narrow
+// probe for the callers that hold a thread id from a table with no threads
+// foreign key (workflow run records) and need to know whether the pointer is
+// still live without materializing the row.
+func (s *Store) ThreadExists(id string) (bool, error) {
+	if id == "" {
+		return false, nil
+	}
+	var one int
+	err := s.db.QueryRow(`SELECT 1 FROM threads WHERE id = ?`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: thread exists %s: %w", id, err)
+	}
+	return true, nil
+}
+
 func (s *Store) ListThreads() ([]Thread, error) {
 	rows, err := s.db.Query(
 		`SELECT ` + threadColumns + ` FROM threads WHERE archived = 0 ORDER BY updated_at DESC`,

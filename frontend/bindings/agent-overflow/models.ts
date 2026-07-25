@@ -2608,6 +2608,230 @@ export class WorkflowDefinitionPhase {
     }
 }
 
+/**
+ * WorkflowDiscardPreview is what a discard of one run tree would destroy.
+ */
+export class WorkflowDiscardPreview {
+    "itemId": string;
+
+    /**
+     * Members is the run tree, root first.
+     */
+    "members": string[];
+
+    /**
+     * LiveMembers is the subset still in flight. Discarding cancels them first;
+     * they are called out because that is work the human is stopping, not just
+     * work they are throwing away.
+     */
+    "liveMembers": string[];
+    "worktrees": WorkflowDiscardWorktree[];
+
+    /** Creates a new WorkflowDiscardPreview instance. */
+    constructor($$source: Partial<WorkflowDiscardPreview> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("members" in $$source)) {
+            this["members"] = [];
+        }
+        if (!("liveMembers" in $$source)) {
+            this["liveMembers"] = [];
+        }
+        if (!("worktrees" in $$source)) {
+            this["worktrees"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowDiscardPreview instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowDiscardPreview {
+        const $$createField1_0 = $$createType4;
+        const $$createField2_0 = $$createType4;
+        const $$createField3_0 = $$createType50;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("members" in $$parsedSource) {
+            $$parsedSource["members"] = $$createField1_0($$parsedSource["members"]);
+        }
+        if ("liveMembers" in $$parsedSource) {
+            $$parsedSource["liveMembers"] = $$createField2_0($$parsedSource["liveMembers"]);
+        }
+        if ("worktrees" in $$parsedSource) {
+            $$parsedSource["worktrees"] = $$createField3_0($$parsedSource["worktrees"]);
+        }
+        return new WorkflowDiscardPreview($$parsedSource as Partial<WorkflowDiscardPreview>);
+    }
+}
+
+/**
+ * WorkflowDiscardResult is what a discard actually destroyed. It rides the
+ * disposition receipt into the durable run record, because a discard is the one
+ * disposition whose effects cannot be recovered by looking at git afterwards:
+ * the branches it deleted are exactly the ones nothing else references.
+ */
+export class WorkflowDiscardResult {
+    /**
+     * Members is the run tree the discard covered, root first.
+     */
+    "members": string[];
+
+    /**
+     * Cancelled is the subset that was still in flight and was stopped.
+     */
+    "cancelled": string[];
+
+    /**
+     * RemovedWorktrees and DeletedBranches are what git was actually asked to
+     * destroy — a subset of the preview, since a checkout can be released
+     * between the preview and the discard.
+     */
+    "removedWorktrees": string[];
+    "deletedBranches": string[];
+
+    /** Creates a new WorkflowDiscardResult instance. */
+    constructor($$source: Partial<WorkflowDiscardResult> = {}) {
+        if (!("members" in $$source)) {
+            this["members"] = [];
+        }
+        if (!("cancelled" in $$source)) {
+            this["cancelled"] = [];
+        }
+        if (!("removedWorktrees" in $$source)) {
+            this["removedWorktrees"] = [];
+        }
+        if (!("deletedBranches" in $$source)) {
+            this["deletedBranches"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowDiscardResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowDiscardResult {
+        const $$createField0_0 = $$createType4;
+        const $$createField1_0 = $$createType4;
+        const $$createField2_0 = $$createType4;
+        const $$createField3_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("members" in $$parsedSource) {
+            $$parsedSource["members"] = $$createField0_0($$parsedSource["members"]);
+        }
+        if ("cancelled" in $$parsedSource) {
+            $$parsedSource["cancelled"] = $$createField1_0($$parsedSource["cancelled"]);
+        }
+        if ("removedWorktrees" in $$parsedSource) {
+            $$parsedSource["removedWorktrees"] = $$createField2_0($$parsedSource["removedWorktrees"]);
+        }
+        if ("deletedBranches" in $$parsedSource) {
+            $$parsedSource["deletedBranches"] = $$createField3_0($$parsedSource["deletedBranches"]);
+        }
+        return new WorkflowDiscardResult($$parsedSource as Partial<WorkflowDiscardResult>);
+    }
+}
+
+/**
+ * WorkflowDiscardWorktree is one checkout the discard would remove, plus the
+ * work that lives in it and nowhere else.
+ */
+export class WorkflowDiscardWorktree {
+    "itemId": string;
+
+    /**
+     * UnitID is set when this is a fan-out unit's sub-worktree.
+     */
+    "unitId"?: string;
+    "path": string;
+    "branch": string;
+
+    /**
+     * Base is the ref the unmerged commits are measured against: the run's base
+     * branch for a run worktree, the owning run's branch for a unit worktree
+     * (so a unit's landed commits are not counted twice).
+     */
+    "base": string;
+
+    /**
+     * Present reports whether the checkout is still on disk. A registered
+     * worktree whose directory is gone carries no dirty files but its branch
+     * still exists and is still deleted.
+     */
+    "present": boolean;
+
+    /**
+     * Registered reports whether git still knows this path as a worktree of the
+     * project. An unregistered path is reported, not removed.
+     */
+    "registered": boolean;
+    "dirtyFiles": string[];
+    "dirtyFileCount": number;
+    "unmergedCommits": gitdiff$0.Commit[];
+    "unmergedCommitCount": number;
+
+    /**
+     * Error carries a per-worktree inspection failure. The preview reports it
+     * rather than failing outright: a human deciding whether to discard is
+     * better served by "this one could not be inspected" than by no preview.
+     */
+    "error"?: string;
+
+    /** Creates a new WorkflowDiscardWorktree instance. */
+    constructor($$source: Partial<WorkflowDiscardWorktree> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("path" in $$source)) {
+            this["path"] = "";
+        }
+        if (!("branch" in $$source)) {
+            this["branch"] = "";
+        }
+        if (!("base" in $$source)) {
+            this["base"] = "";
+        }
+        if (!("present" in $$source)) {
+            this["present"] = false;
+        }
+        if (!("registered" in $$source)) {
+            this["registered"] = false;
+        }
+        if (!("dirtyFiles" in $$source)) {
+            this["dirtyFiles"] = [];
+        }
+        if (!("dirtyFileCount" in $$source)) {
+            this["dirtyFileCount"] = 0;
+        }
+        if (!("unmergedCommits" in $$source)) {
+            this["unmergedCommits"] = [];
+        }
+        if (!("unmergedCommitCount" in $$source)) {
+            this["unmergedCommitCount"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowDiscardWorktree instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowDiscardWorktree {
+        const $$createField7_0 = $$createType4;
+        const $$createField9_0 = $$createType52;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("dirtyFiles" in $$parsedSource) {
+            $$parsedSource["dirtyFiles"] = $$createField7_0($$parsedSource["dirtyFiles"]);
+        }
+        if ("unmergedCommits" in $$parsedSource) {
+            $$parsedSource["unmergedCommits"] = $$createField9_0($$parsedSource["unmergedCommits"]);
+        }
+        return new WorkflowDiscardWorktree($$parsedSource as Partial<WorkflowDiscardWorktree>);
+    }
+}
+
 export class WorkflowDispositionReceipt {
     "action": string;
     "mode"?: string;
@@ -2615,6 +2839,13 @@ export class WorkflowDispositionReceipt {
     "prRef"?: string;
     "base"?: string;
     "cleanupFailed"?: boolean;
+
+    /**
+     * Discarded is set for a discard and records the tree it covered and the
+     * checkouts and branches it destroyed (D23). Merge and PR leave the work
+     * reachable; discard does not, so its receipt is the only account of it.
+     */
+    "discarded"?: WorkflowDiscardResult | null;
     "policy": string;
     "at": number;
 
@@ -2637,7 +2868,11 @@ export class WorkflowDispositionReceipt {
      * Creates a new WorkflowDispositionReceipt instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDispositionReceipt {
+        const $$createField6_0 = $$createType54;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("discarded" in $$parsedSource) {
+            $$parsedSource["discarded"] = $$createField6_0($$parsedSource["discarded"]);
+        }
         return new WorkflowDispositionReceipt($$parsedSource as Partial<WorkflowDispositionReceipt>);
     }
 }
@@ -2744,14 +2979,14 @@ export class WorkflowItemDetailView {
      * Creates a new WorkflowItemDetailView instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowItemDetailView {
-        const $$createField0_0 = $$createType49;
+        const $$createField0_0 = $$createType55;
         const $$createField1_0 = $$createType4;
-        const $$createField2_0 = $$createType51;
-        const $$createField3_0 = $$createType53;
-        const $$createField4_0 = $$createType55;
-        const $$createField5_0 = $$createType56;
-        const $$createField6_0 = $$createType58;
-        const $$createField7_0 = $$createType59;
+        const $$createField2_0 = $$createType57;
+        const $$createField3_0 = $$createType59;
+        const $$createField4_0 = $$createType61;
+        const $$createField5_0 = $$createType62;
+        const $$createField6_0 = $$createType64;
+        const $$createField7_0 = $$createType65;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
@@ -3024,7 +3259,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType61;
+        const $$createField0_0 = $$createType67;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -3173,16 +3408,22 @@ const $$createType45 = WorkflowDefinitionPhase.createFrom;
 const $$createType46 = $Create.Array($$createType45);
 const $$createType47 = WorkflowDefinitionInput.createFrom;
 const $$createType48 = $Create.Array($$createType47);
-const $$createType49 = WorkflowItemView.createFrom;
-const $$createType50 = WorkflowItemPhaseView.createFrom;
-const $$createType51 = $Create.Array($$createType50);
-const $$createType52 = WorkflowItemUnitView.createFrom;
-const $$createType53 = $Create.Array($$createType52);
-const $$createType54 = WorkflowItemChildView.createFrom;
-const $$createType55 = $Create.Array($$createType54);
-const $$createType56 = $Create.Map($Create.Any, $Create.Any);
-const $$createType57 = WorkflowArtifact.createFrom;
-const $$createType58 = $Create.Array($$createType57);
-const $$createType59 = store$0.WorkItemUsage.createFrom;
-const $$createType60 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType49 = WorkflowDiscardWorktree.createFrom;
+const $$createType50 = $Create.Array($$createType49);
+const $$createType51 = gitdiff$0.Commit.createFrom;
+const $$createType52 = $Create.Array($$createType51);
+const $$createType53 = WorkflowDiscardResult.createFrom;
+const $$createType54 = $Create.Nullable($$createType53);
+const $$createType55 = WorkflowItemView.createFrom;
+const $$createType56 = WorkflowItemPhaseView.createFrom;
+const $$createType57 = $Create.Array($$createType56);
+const $$createType58 = WorkflowItemUnitView.createFrom;
+const $$createType59 = $Create.Array($$createType58);
+const $$createType60 = WorkflowItemChildView.createFrom;
 const $$createType61 = $Create.Array($$createType60);
+const $$createType62 = $Create.Map($Create.Any, $Create.Any);
+const $$createType63 = WorkflowArtifact.createFrom;
+const $$createType64 = $Create.Array($$createType63);
+const $$createType65 = store$0.WorkItemUsage.createFrom;
+const $$createType66 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType67 = $Create.Array($$createType66);

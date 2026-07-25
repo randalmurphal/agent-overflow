@@ -52,7 +52,21 @@ const (
 	ReasonTakenOver          Reason = "taken-over"
 	ReasonUnitFailed         Reason = "unit-failed"
 	ReasonChildFailed        Reason = "child-failed"
+	// ReasonPaused is a deliberate stop — the human pause action or the
+	// graceful-quit path. It resumes exactly like ReasonInterrupted; the
+	// distinct reason is what tells a human whether the run stopped on purpose
+	// or because the process died (spec §12, D23).
+	ReasonPaused Reason = "paused"
 )
+
+// ResumableReason reports whether a park continues on the provider session it
+// parked on. Both members stopped an attempt mid-flight without the phase
+// producing a result, so the next turn is a continuation of that session rather
+// than a fresh attempt — the difference between them is provenance, not
+// recovery.
+func ResumableReason(reason Reason) bool {
+	return reason == ReasonPaused || reason == ReasonInterrupted
+}
 
 type OutcomeKind string
 
@@ -304,4 +318,9 @@ type persistence interface {
 	FailRunningWorkItemUnits(string, string, int, string, int64) (int64, error)
 	ListWorkItemPhaseUnits(string, string, int) ([]store.WorkItemUnit, error)
 	ListProjects() ([]store.Project, error)
+	// ThreadExists tells a resume whether the session its parked attempt would
+	// continue on is still there. Without it the engine would hand the runner a
+	// dead thread id and take an agent-error park instead of the fresh attempt a
+	// deleted session actually calls for.
+	ThreadExists(string) (bool, error)
 }

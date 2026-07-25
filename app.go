@@ -92,11 +92,13 @@ type App struct {
 	// workflowDispositionMu serializes local git/forge disposition actions.
 	// They are rare, mutate shared repository metadata, and must not race an
 	// automatic policy against a manual click.
-	workflowDispositionMu       sync.Mutex
-	workflowAutoDispositionMu   sync.Mutex
-	workflowAutoDispositionWG   sync.WaitGroup
-	workflowAutoDispositionIDs  []string
-	workflowAutoDispositionBusy bool
+	workflowDispositionMu sync.Mutex
+	// workflowAutoDisposition and workflowWake serialize the two app-side
+	// reactions to workflow lifecycle events. Both run off the engine's
+	// command-loop goroutine (which emits them) and in submission order, so
+	// two transitions of one run cannot race each other's follow-up.
+	workflowAutoDisposition serialQueue
+	workflowWake            serialQueue
 	// workflowChatProposalMu serializes start/dismiss decisions for persisted
 	// chat proposal cards so two local clicks cannot start one proposal twice.
 	workflowChatProposalMu sync.Mutex

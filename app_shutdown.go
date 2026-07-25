@@ -44,6 +44,15 @@ const (
 	// closing, any RPC still running would observe closed-store errors
 	// anyway, so we pay a bounded delay to let the polite ones finish.
 	transportShutdownDrainTimeout = 3 * time.Second
+
+	// workflowPauseAllTimeout bounds the graceful-quit pause of active workflow
+	// runs. Pausing interrupts each in-flight turn and parks its run
+	// `needs-human(paused)`; it deliberately does NOT wait for turns to finish,
+	// so the budget only has to cover interrupt + park + SQLite writes. A run
+	// that misses the window is not lost — its session dies with the process
+	// and the next startup sweep parks it `needs-human(interrupted)`, which
+	// resume treats identically. Quit latency is the thing worth protecting.
+	workflowPauseAllTimeout = 3 * time.Second
 )
 
 // Shutdown tears the App down in a documented order. See the numbered steps
@@ -101,6 +110,17 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 
+	// Step 1a: pause every active workflow run. This runs while provider
+	// sessions, the engine's ctx, and SQLite are all still alive, because
+	// pausing is real work: it interrupts each in-flight turn, releases the
+	// run's resource locks, writes the partial envelope, and parks the run
+	// `needs-human(paused)` — a state the next launch resumes from on the same
+	// provider session. Doing it after Step 1b (or after Step 4) would leave
+	// every active run to the crash sweep instead.
+	if a.workflowEngine != nil {
+		record("pause active workflow runs", a.pauseWorkflowRunsForShutdown())
+	}
+
 	// Step 1b: cancel the App-lifetime ctx so fire-and-forget goroutines
 	// (rate-limit probe loop, Claude OAuth poller, MCP live-reconcile
 	// callbacks) unblock their I/O and exit BEFORE drainTriage runs.
@@ -125,10 +145,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	if a.workflowEngine != nil {
 		engineErr := a.workflowEngine.Close()
-		// No new done events can arrive after the engine closes. Let the
-		// single auto-disposition worker finish before SQLite closes so a
-		// landed branch cannot lose its durable receipt during shutdown.
-		a.workflowAutoDispositionWG.Wait()
+		// No new lifecycle events can arrive after the engine closes. Let the
+		// app-side reaction workers finish before SQLite closes, so a landed
+		// branch cannot lose its durable receipt and a composed wake cannot
+		// lose its delivery during shutdown.
+		a.workflowAutoDisposition.Wait()
+		a.workflowWake.Wait()
 		record("close workflow engine", engineErr)
 	}
 

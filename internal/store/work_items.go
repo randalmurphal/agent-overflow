@@ -29,6 +29,7 @@ type WorkItem struct {
 	Source              string          `json:"source"`
 	SourceRef           string          `json:"sourceRef,omitempty"`
 	TriageThreadID      string          `json:"triageThreadId,omitempty"`
+	OriginThreadID      string          `json:"originThreadId,omitempty"`
 	Disposition         json.RawMessage `json:"disposition,omitempty"`
 	Digest              json.RawMessage `json:"digest,omitempty"`
 	ParentItemID        string          `json:"parentItemId,omitempty"`
@@ -75,13 +76,13 @@ func qualifiedUnresolvedWorkItemsPredicate(prefix string) string {
 
 const workItemColumns = `id, project_id, goal, workflow_id, workflow_scope,
 snapshot, state, reason, seeds, step_mode, worktree_path,
-branch, base_branch, budget, source, source_ref, triage_thread_id,
+branch, base_branch, budget, source, source_ref, triage_thread_id, origin_thread_id,
 disposition, digest, parent_item_id, parent_phase_id, parent_attempt, call_depth,
 created_at, started_at, ended_at`
 
 const workItemSummaryListColumns = `w.id, w.project_id, w.goal, w.workflow_id, w.workflow_scope,
 '', w.state, w.reason, '', w.step_mode, w.worktree_path,
-w.branch, w.base_branch, '', w.source, w.source_ref, w.triage_thread_id,
+w.branch, w.base_branch, '', w.source, w.source_ref, w.triage_thread_id, w.origin_thread_id,
 w.disposition, '', w.parent_item_id, w.parent_phase_id, w.parent_attempt, w.call_depth,
 w.created_at, w.started_at, w.ended_at`
 
@@ -115,7 +116,7 @@ func scanWorkItem(scanner interface{ Scan(...any) error }, includeProgress bool)
 		&item.ID, &item.ProjectID, &item.Goal, &item.WorkflowID, &item.WorkflowScope,
 		&snapshot, &item.State, &item.Reason, &seeds, &stepMode,
 		&item.WorktreePath, &item.Branch, &item.BaseBranch, &budget, &item.Source,
-		&item.SourceRef, &item.TriageThreadID, &disposition, &digest,
+		&item.SourceRef, &item.TriageThreadID, &item.OriginThreadID, &disposition, &digest,
 		&item.ParentItemID, &item.ParentPhaseID, &item.ParentAttempt, &item.CallDepth,
 		&item.CreatedAt, &item.StartedAt, &item.EndedAt,
 	}
@@ -137,12 +138,12 @@ func scanWorkItem(scanner interface{ Scan(...any) error }, includeProgress bool)
 func (s *Store) CreateWorkItem(item WorkItem) error {
 	_, err := s.db.Exec(
 		`INSERT INTO work_items (`+workItemColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ProjectID, item.Goal, item.WorkflowID, item.WorkflowScope,
 		jsonText(item.Snapshot), item.State, item.Reason,
 		jsonText(item.Seeds), boolToInt(item.StepMode), item.WorktreePath, item.Branch,
 		item.BaseBranch, jsonText(item.Budget), item.Source, item.SourceRef,
-		item.TriageThreadID, jsonText(item.Disposition), jsonText(item.Digest),
+		item.TriageThreadID, item.OriginThreadID, jsonText(item.Disposition), jsonText(item.Digest),
 		item.ParentItemID, item.ParentPhaseID, item.ParentAttempt, item.CallDepth,
 		item.CreatedAt, item.StartedAt, item.EndedAt,
 	)
@@ -474,6 +475,45 @@ func (s *Store) UpdateWorkItemTriageThread(id, threadID string) error {
 		return fmt.Errorf("store: update work item triage thread %s: %w", id, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: update work item triage thread %s", id))
+}
+
+// UpdateWorkItemOriginThread binds (or, with an empty threadID, unbinds) the
+// chat thread a root run wakes on every resting transition (§5, D17). The
+// schema refuses a binding on a called run, so "child runs never bind" cannot
+// be defeated by a caller that forgets to check.
+//
+// Thread lifetime is deliberately independent, like triage_thread_id: a deleted
+// thread leaves a stale id that the wake path clears when it next resolves it,
+// falling back to the unbound surface rather than losing the wake.
+func (s *Store) UpdateWorkItemOriginThread(id, threadID string) error {
+	result, err := s.db.Exec(
+		`UPDATE work_items SET origin_thread_id = ? WHERE id = ?`, threadID, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update work item origin thread %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update work item origin thread %s", id))
+}
+
+// ClearWorkItemOriginThreads unbinds every run pointing at a thread that no
+// longer exists. Returns how many rows it cleared so the caller can report the
+// convergence rather than silently repairing state.
+func (s *Store) ClearWorkItemOriginThreads(threadID string) (int64, error) {
+	if threadID == "" {
+		return 0, nil
+	}
+	result, err := s.db.Exec(
+		`UPDATE work_items SET origin_thread_id = '' WHERE origin_thread_id = ? AND origin_thread_id <> ''`,
+		threadID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: clear work item origin threads for %s: %w", threadID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: clear work item origin threads for %s: %w", threadID, err)
+	}
+	return affected, nil
 }
 
 // CreateWorkItemTriageThread makes the hand-off thread and its durable item

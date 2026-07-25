@@ -14,6 +14,13 @@ type teardownRequest struct {
 	phaseStatus string
 	nextState   State
 	reason      Reason
+	// retainCallChildren keeps a waiting call phase's child subtree alive
+	// instead of cancelling it. Pause is the only trigger that sets it, and it
+	// is correct for exactly one reason: pause does not abandon the phase. The
+	// attempt is preserved so resume re-enters it holding the same child, which
+	// is also being paused alongside. Every other trigger leaves the call phase
+	// for good, and a descendant nothing can consume must come down with it.
+	retainCallChildren bool
 }
 
 func transitionAllowed(from, to State) bool {
@@ -38,7 +45,7 @@ func reasonAllowed(reason Reason) bool {
 		ReasonBudgetExhausted, ReasonRetriesExhausted,
 		ReasonCheckFailedGenuine, ReasonAgentError, ReasonWiringError,
 		ReasonDisposition, ReasonSetupFailed, ReasonInterrupted, ReasonTakenOver,
-		ReasonUnitFailed, ReasonChildFailed:
+		ReasonUnitFailed, ReasonChildFailed, ReasonPaused:
 		return true
 	default:
 		return false
@@ -105,8 +112,10 @@ func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 	if err := e.teardownUnits(item, request.phaseStatus); err != nil {
 		errs = append(errs, err)
 	}
-	if err := e.cancelCallChildren(item); err != nil {
-		errs = append(errs, err)
+	if !request.retainCallChildren {
+		if err := e.cancelCallChildren(item); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if item.runnerStarting {
 		if item.runnerStartCancel != nil {

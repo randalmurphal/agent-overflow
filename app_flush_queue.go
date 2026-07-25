@@ -1169,6 +1169,19 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 // for any other client (remote `--connect` peers, additional
 // webviews) that may be observing the same thread.
 func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessageOptions) (QueuedItem, error) {
+	// A user queueing a message has just consumed their composer draft, so the
+	// bound entry point clears it.
+	return a.registerQueueItem(threadID, message, opts, false)
+}
+
+// registerQueueItem is RegisterQueueItem plus the one axis the wire does not
+// carry: whether the durable composer draft belongs to this message.
+//
+// `preserveDraft` is set by the app-internal injectors (a workflow wake). Their
+// text did not come from the composer, and clearing the draft would destroy
+// text the user typed and has not sent — a silent data loss the user could not
+// have anticipated from a run finishing in the background.
+func (a *App) registerQueueItem(threadID string, message string, opts SendMessageOptions, preserveDraft bool) (QueuedItem, error) {
 	if a.shuttingDown.Load() {
 		return QueuedItem{}, ErrShuttingDown
 	}
@@ -1262,8 +1275,10 @@ func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessag
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		EnqueuedAt:                   enqueuedAt,
 	}
-	if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
-		log.Printf("register queue item: delete draft for thread %s: %v", threadID, draftErr)
+	if !preserveDraft {
+		if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
+			log.Printf("register queue item: delete draft for thread %s: %v", threadID, draftErr)
+		}
 	}
 	a.emitQueueStateChanged(threadID)
 	if _, ok := a.sessionManager().get(threadID); ok {
