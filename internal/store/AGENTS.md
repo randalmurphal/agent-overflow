@@ -90,7 +90,12 @@ root `CLAUDE.md` principle 3.
 - `work_items.go` / `work_item_phases.go` / `work_item_units.go` /
   `work_item_effects.go` — bare workflow run-record CRUD (migration v26;
   units v35; call linkage v38). Project, thread, and item ids are
-  intentionally denormalized without FKs so run history survives deletion. State-machine validation and
+  intentionally denormalized without FKs so run history survives deletion.
+  Because nothing cascades, `DeleteProjectWorkflowRecords` is what drops a
+  deleted project's runs, phases, units, effects, and automations in one
+  transaction — `App.DeleteProject` calls it on every deletion (D25), after the
+  app layer has taken the human's consent and destroyed the run worktrees and
+  branches. State-machine validation and
   scheduling belong to `internal/workflow`, not this package.
   `work_item_units.go` carries one row per fan-out unit (and join) of a phase
   attempt, written `pending` at expansion and updated in place through

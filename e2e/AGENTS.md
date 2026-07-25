@@ -118,11 +118,13 @@ chromium` on a fresh machine).
   least one turn, or send the first message before navigating, when a
   spec needs the thread visible.
 - Each worker owns one backend; tests share it and must leave it reset
-  (the fixture does this) rather than booting their own. `work_items` and its
-  record tables carry no foreign key to `projects`, so `HarnessReset` deletes
-  them explicitly (`DeleteProjectWorkflowRecords`) — a spec that asserts on a
+  (the fixture does this) rather than booting their own. Production project
+  deletion cascades the workflow rows (D25), but `HarnessReset` still deletes
+  them itself first (`DeleteProjectWorkflowRecords`): reset removes the
+  generated workspace tree wholesale rather than running git worktree/branch
+  destruction against whatever a spec left behind. A spec that asserts on a
   global count (the overlay's attention badge, the sweep total) depends on
-  that, not on a project cascade.
+  that explicit delete.
 - Transport notification replay survives `HarnessReset`. Any spec whose
   backend state can produce a notification therefore declares a distinct
   no-op worker fixture identity, and each cold-activation case declares its

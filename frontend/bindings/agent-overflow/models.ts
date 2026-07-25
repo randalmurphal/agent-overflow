@@ -1677,6 +1677,99 @@ export class PayloadPreview {
 }
 
 /**
+ * ProjectDeletionPreview is what deleting one project would destroy on the
+ * workflow side.
+ */
+export class ProjectDeletionPreview {
+    "projectId": string;
+
+    /**
+     * RootRunIDs names each run tree the deletion would discard. A run whose
+     * caller's record is missing counts as a root of its own, so every run the
+     * project owns is covered by exactly one tree.
+     */
+    "rootRunIds": string[];
+
+    /**
+     * RunCount is every run the project owns — roots and the runs they called.
+     */
+    "runCount": number;
+
+    /**
+     * LiveRunIDs is the subset still in flight. Deletion cancels them first; they
+     * are called out because that is work the human is stopping, not just work
+     * they are throwing away.
+     */
+    "liveRunIds": string[];
+
+    /**
+     * AutomationCount is how many triggers go with the project.
+     */
+    "automationCount": number;
+
+    /**
+     * Worktrees is every checkout the deletion would remove, deduplicated across
+     * the whole forest, with the branch, dirty files, and unmerged commits that
+     * live in it and nowhere else.
+     */
+    "worktrees": WorkflowDiscardWorktree[];
+
+    /**
+     * HasWork is the one signal a caller branches on. It is true when the project
+     * owns any run or any automation — deriving it again from the counts is how
+     * two surfaces end up disagreeing about whether a deletion needs consent.
+     */
+    "hasWork": boolean;
+
+    /** Creates a new ProjectDeletionPreview instance. */
+    constructor($$source: Partial<ProjectDeletionPreview> = {}) {
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+        if (!("rootRunIds" in $$source)) {
+            this["rootRunIds"] = [];
+        }
+        if (!("runCount" in $$source)) {
+            this["runCount"] = 0;
+        }
+        if (!("liveRunIds" in $$source)) {
+            this["liveRunIds"] = [];
+        }
+        if (!("automationCount" in $$source)) {
+            this["automationCount"] = 0;
+        }
+        if (!("worktrees" in $$source)) {
+            this["worktrees"] = [];
+        }
+        if (!("hasWork" in $$source)) {
+            this["hasWork"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProjectDeletionPreview instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProjectDeletionPreview {
+        const $$createField1_0 = $$createType4;
+        const $$createField3_0 = $$createType4;
+        const $$createField5_0 = $$createType27;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("rootRunIds" in $$parsedSource) {
+            $$parsedSource["rootRunIds"] = $$createField1_0($$parsedSource["rootRunIds"]);
+        }
+        if ("liveRunIds" in $$parsedSource) {
+            $$parsedSource["liveRunIds"] = $$createField3_0($$parsedSource["liveRunIds"]);
+        }
+        if ("worktrees" in $$parsedSource) {
+            $$parsedSource["worktrees"] = $$createField5_0($$parsedSource["worktrees"]);
+        }
+        return new ProjectDeletionPreview($$parsedSource as Partial<ProjectDeletionPreview>);
+    }
+}
+
+/**
  * ProviderTerminalHandle is what attaching to a provider PTY returns: the
  * terminal id (for routing output + replay) plus its current summary (winsize)
  * so the frontend can size an xterm to the last-drawn frame before writing the
@@ -1706,7 +1799,7 @@ export class ProviderTerminalHandle {
      * Creates a new ProviderTerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): ProviderTerminalHandle {
-        const $$createField2_0 = $$createType26;
+        const $$createField2_0 = $$createType28;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -1879,7 +1972,7 @@ export class SendDiffReviewCommentsInput {
      * Creates a new SendDiffReviewCommentsInput instance from a string or object.
      */
     static createFrom($$source: any = {}): SendDiffReviewCommentsInput {
-        const $$createField0_0 = $$createType28;
+        const $$createField0_0 = $$createType30;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pr" in $$parsedSource) {
             $$parsedSource["pr"] = $$createField0_0($$parsedSource["pr"]);
@@ -1919,7 +2012,7 @@ export class SendMessageOptions {
         const $$createField2_0 = $$createType8;
         const $$createField3_0 = $$createType8;
         const $$createField4_0 = $$createType4;
-        const $$createField5_0 = $$createType30;
+        const $$createField5_0 = $$createType32;
         const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
@@ -2084,7 +2177,7 @@ export class TerminalHandle {
      * Creates a new TerminalHandle instance from a string or object.
      */
     static createFrom($$source: any = {}): TerminalHandle {
-        const $$createField2_0 = $$createType26;
+        const $$createField2_0 = $$createType28;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -2251,11 +2344,11 @@ export class ThreadLiveState {
      * Creates a new ThreadLiveState instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadLiveState {
-        const $$createField3_0 = $$createType32;
-        const $$createField4_0 = $$createType34;
-        const $$createField5_0 = $$createType36;
-        const $$createField6_0 = $$createType37;
-        const $$createField7_0 = $$createType39;
+        const $$createField3_0 = $$createType34;
+        const $$createField4_0 = $$createType36;
+        const $$createField5_0 = $$createType38;
+        const $$createField6_0 = $$createType39;
+        const $$createField7_0 = $$createType41;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("activeTurn" in $$parsedSource) {
             $$parsedSource["activeTurn"] = $$createField3_0($$parsedSource["activeTurn"]);
@@ -2378,7 +2471,7 @@ export class VerifyEditDiffsRequest {
      * Creates a new VerifyEditDiffsRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): VerifyEditDiffsRequest {
-        const $$createField2_0 = $$createType41;
+        const $$createField2_0 = $$createType43;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField2_0($$parsedSource["files"]);
@@ -2478,7 +2571,7 @@ export class WorkflowAgentRunOutputs {
      * Creates a new WorkflowAgentRunOutputs instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowAgentRunOutputs {
-        const $$createField4_0 = $$createType42;
+        const $$createField4_0 = $$createType44;
         const $$createField5_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("outputs" in $$parsedSource) {
@@ -2870,7 +2963,7 @@ export class WorkflowDefinitionCatalog {
      * Creates a new WorkflowDefinitionCatalog instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionCatalog {
-        const $$createField1_0 = $$createType44;
+        const $$createField1_0 = $$createType46;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("workflows" in $$parsedSource) {
             $$parsedSource["workflows"] = $$createField1_0($$parsedSource["workflows"]);
@@ -2907,7 +3000,7 @@ export class WorkflowDefinitionInput {
      * Creates a new WorkflowDefinitionInput instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionInput {
-        const $$createField3_0 = $$createType45;
+        const $$createField3_0 = $$createType47;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("enum" in $$parsedSource) {
             $$parsedSource["enum"] = $$createField3_0($$parsedSource["enum"]);
@@ -2969,8 +3062,8 @@ export class WorkflowDefinitionListing {
      * Creates a new WorkflowDefinitionListing instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionListing {
-        const $$createField5_0 = $$createType47;
-        const $$createField6_0 = $$createType49;
+        const $$createField5_0 = $$createType49;
+        const $$createField6_0 = $$createType51;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("phases" in $$parsedSource) {
             $$parsedSource["phases"] = $$createField5_0($$parsedSource["phases"]);
@@ -3048,7 +3141,7 @@ export class WorkflowDiscardPreview {
     static createFrom($$source: any = {}): WorkflowDiscardPreview {
         const $$createField1_0 = $$createType4;
         const $$createField2_0 = $$createType4;
-        const $$createField3_0 = $$createType51;
+        const $$createField3_0 = $$createType27;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("members" in $$parsedSource) {
             $$parsedSource["members"] = $$createField1_0($$parsedSource["members"]);
@@ -3381,7 +3474,7 @@ export class WorkflowItemDetailView {
         const $$createField2_0 = $$createType58;
         const $$createField3_0 = $$createType60;
         const $$createField4_0 = $$createType62;
-        const $$createField5_0 = $$createType42;
+        const $$createField5_0 = $$createType44;
         const $$createField6_0 = $$createType64;
         const $$createField7_0 = $$createType65;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
@@ -3789,31 +3882,31 @@ const $$createType22 = git$0.ReviewThread.createFrom;
 const $$createType23 = $Create.Array($$createType22);
 const $$createType24 = PatchSpanSeed.createFrom;
 const $$createType25 = $Create.Array($$createType24);
-const $$createType26 = terminal$0.SessionSummary.createFrom;
-const $$createType27 = store$0.DiffReviewPRContext.createFrom;
-const $$createType28 = $Create.Nullable($$createType27);
-const $$createType29 = store$0.DiffReviewSourceRef.createFrom;
+const $$createType26 = WorkflowDiscardWorktree.createFrom;
+const $$createType27 = $Create.Array($$createType26);
+const $$createType28 = terminal$0.SessionSummary.createFrom;
+const $$createType29 = store$0.DiffReviewPRContext.createFrom;
 const $$createType30 = $Create.Nullable($$createType29);
-const $$createType31 = LiveStateActiveTurn.createFrom;
+const $$createType31 = store$0.DiffReviewSourceRef.createFrom;
 const $$createType32 = $Create.Nullable($$createType31);
-const $$createType33 = flushqueue$0.QueuedItem.createFrom;
-const $$createType34 = $Create.Array($$createType33);
-const $$createType35 = QueueFlushedItem.createFrom;
+const $$createType33 = LiveStateActiveTurn.createFrom;
+const $$createType34 = $Create.Nullable($$createType33);
+const $$createType35 = flushqueue$0.QueuedItem.createFrom;
 const $$createType36 = $Create.Array($$createType35);
-const $$createType37 = provider$0.PendingInteractiveRequests.createFrom;
-const $$createType38 = LiveStateTodo.createFrom;
-const $$createType39 = $Create.Nullable($$createType38);
-const $$createType40 = EditDiffVerifyFile.createFrom;
-const $$createType41 = $Create.Array($$createType40);
-const $$createType42 = $Create.Map($Create.Any, $Create.Any);
-const $$createType43 = WorkflowDefinitionListing.createFrom;
-const $$createType44 = $Create.Array($$createType43);
-const $$createType45 = $Create.Array($Create.Any);
-const $$createType46 = WorkflowDefinitionPhase.createFrom;
-const $$createType47 = $Create.Array($$createType46);
-const $$createType48 = WorkflowDefinitionInput.createFrom;
+const $$createType37 = QueueFlushedItem.createFrom;
+const $$createType38 = $Create.Array($$createType37);
+const $$createType39 = provider$0.PendingInteractiveRequests.createFrom;
+const $$createType40 = LiveStateTodo.createFrom;
+const $$createType41 = $Create.Nullable($$createType40);
+const $$createType42 = EditDiffVerifyFile.createFrom;
+const $$createType43 = $Create.Array($$createType42);
+const $$createType44 = $Create.Map($Create.Any, $Create.Any);
+const $$createType45 = WorkflowDefinitionListing.createFrom;
+const $$createType46 = $Create.Array($$createType45);
+const $$createType47 = $Create.Array($Create.Any);
+const $$createType48 = WorkflowDefinitionPhase.createFrom;
 const $$createType49 = $Create.Array($$createType48);
-const $$createType50 = WorkflowDiscardWorktree.createFrom;
+const $$createType50 = WorkflowDefinitionInput.createFrom;
 const $$createType51 = $Create.Array($$createType50);
 const $$createType52 = gitdiff$0.Commit.createFrom;
 const $$createType53 = $Create.Array($$createType52);

@@ -1245,8 +1245,9 @@ Accepted deviations — each ratified, none silent:
   string, so there is nothing to enumerate. D26.
 - **A wake lost to graceful quit is accepted** — logged and emitted, and the
   run is durably parked `needs-human(paused)` regardless. D27.
-- **Project deletion leaves workflow rows and worktrees behind** — recorded
-  as the campaign's one OPEN decision (D25) with options, not resolved.
+- **Project deletion left workflow rows and worktrees behind** — recorded
+  as the campaign's one OPEN decision (D25) with options. Resolved
+  post-campaign; see the entry below.
 
 Verdict: **MERGED**. Rev-2 decisions D16–D23 plus the D2a and D11 amendments
 are implemented; the ratification sweep added invariants 30–34, brought
@@ -1254,3 +1255,29 @@ are implemented; the ratification sweep added invariants 30–34, brought
 D25, archived the two superseded planning docs
 (`workflows-refit.md`, `workflows-system-gap-analysis.md`), and left the
 battery green.
+
+## D25 — project deletion cascade (post-campaign, 2026-07-25)
+
+The one decision the M6 sweep left open. The user chose option 2, *refuse then
+cascade*: deleting a project that owns workflow work now shows the loss and
+destroys it on confirmation instead of leaking rows and disk.
+
+Shipped: `App.ProjectDeletionPreview` (LocalOnly) reporting the project's whole
+run forest through the same `workflowTreeLoss` collection the D23 discard
+preview uses; `App.DeleteProject(id)` refusing with typed
+`ErrProjectOwnsWorkflowWork`, and `App.DeleteProjectDiscardingWorkflowWork(id)`
+(LocalOnly) as the consenting form — the consent is a separate method, not a
+parameter, because `LocalOnlyMethods` authorizes by method name and a bool
+argument cannot be classified; the sidebar
+delete flow previewing before it offers anything and rendering the loss through
+a `WorkflowLossList` shared with the discard dialog.
+
+The ordering constraint is the part worth remembering: the cascade runs before
+any thread lock is taken, because cancelling a live run reaches
+`App.InterruptTurn` and that locks the run's phase thread. Pinned by
+`TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks`. Two riders
+fixed on the way: `workflowRunTree` now reads its root instead of trusting a
+caller's copy (a discard of a *live root* previously refused the work it had
+just cancelled), and `HarnessReset` gets the automation-schedule refresh the
+row deletion always needed. No migration — the tables and the delete statement
+already existed.

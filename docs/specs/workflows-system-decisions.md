@@ -703,8 +703,9 @@ everything else above stands.
 The rev-2 campaign (M6, waves W1–W12) shipped. These five questions were
 raised during implementation and deferred to the close; each is settled
 against the code as it stands, with the file that carries the behaviour named
-so a future reader can check the ruling rather than trust it. D25 is the one
-that stays **open** — it is recorded as a question with options, not a verdict.
+so a future reader can check the ruling rather than trust it. D25 was the one
+left open at the sweep; it was decided by the user the next day and is
+recorded below as the verdict it now is.
 
 - **D24. `report-back` stays out of the closed grant set** (ratifies the
   deferral in D15/§5). The enforceable grants are exactly `start-run`,
@@ -720,34 +721,78 @@ that stays **open** — it is recorded as a question with options, not a verdict
   new `Grant` constant, its `ScopedTokenMethods` rows, and the bound method's
   row-level check. **Ratified as-is; not a gap.**
 
-- **D25 (OPEN). Deleting a project leaves its workflow records and worktrees
-  behind.** `App.DeleteProject` (`app_projects.go`) refuses while any
-  contained thread is active, tears down every thread, then deletes the
-  `projects` row (`internal/store/projects.go`). It does *not* touch
-  `work_items`, `work_item_phases`, `work_item_units`, `work_item_effects`,
-  `automations`, or the run worktrees on disk, and no foreign key does it
-  either — `work_items` declares none. The rows therefore survive with a
-  `project_id` that resolves to nothing, and because every overlay query is
-  project-scoped they are also unreachable from the UI. That the gap is known
-  is visible in the harness, which calls
-  `store.DeleteProjectWorkflowRecords` explicitly (`app_harness_seed.go`)
-  precisely because production does not. Options, none chosen:
-  1. **Cascade on delete** — call `DeleteProjectWorkflowRecords` from
-     `DeleteProject` and remove the run worktrees/branches first. Simple, but
-     silently destroys parked runs and unmerged branches the user may not
-     realize the project owned.
-  2. **Refuse, then cascade** — block deletion while the project has any
-     non-terminal run (the thread-activity refusal already models this), show
-     the §4.5 discard loss preview across the tree, and cascade once the user
-     consents. Consistent with D23's "the preview is the consent", and more
-     work.
-  3. **Leave it, add a reclaim path** — keep deletion cheap and add an
-     explicit maintenance action that lists and purges orphaned workflow
-     rows/worktrees.
-  Deferred deliberately: the right answer depends on whether project deletion
-  should be able to destroy unmerged work at all, which is a product call
-  rather than an implementation one. Until it is made, deleting a project
-  leaks rows and disk.
+- **D25 (RESOLVED 2026-07-25 — option 2, refuse then cascade). Deleting a
+  project destroys its workflow work, but only after showing the human exactly
+  what that means.** Chosen by the user: *"if deleted project has work to
+  destroy, it should have the user confirm it wants to delete and allow for
+  proper and full cleanup."* The rejected alternatives were cascading silently
+  (option 1 — destroys parked runs and unmerged branches the user may not
+  realize the project owned) and leaving the leak with a reclaim path bolted on
+  later (option 3 — keeps a class of orphan nothing in the UI can reach).
+
+  Shape, which is D23's "the preview is the consent" widened from one run tree
+  to a project's whole forest:
+
+  - `App.ProjectDeletionPreview` (`app_project_delete_workflow.go`, LocalOnly)
+    walks every root run the project owns and reports the run count, the runs
+    still in flight, the automation count, and one `WorkflowDiscardWorktree`
+    row per checkout with its branch, dirty files, and unmerged commits. It
+    mutates nothing, and it reuses the discard preview's row type and target
+    collection rather than defining a second description of the same loss —
+    `workflowTreeLoss` (`app_workflow_discard.go`) is now the one place that
+    says what a discard destroys.
+  - `App.DeleteProject(id)` refuses outright when the project owns any run or
+    automation, with the typed `ErrProjectOwnsWorkflowWork` naming the preview
+    and the consenting method. Nothing is mutated on that path.
+  - `App.DeleteProjectDiscardingWorkflowWork(id)` (LocalOnly) is that consenting
+    method. The consent is a separate METHOD rather than a parameter because the
+    transport authorizes by method name: `LocalOnlyMethods` can refuse this one
+    from a LAN peer, and cannot express "the same method, but only when this
+    argument is false". Plain project deletion stays remotely reachable as it
+    always was — it destroys no git state — while the one flow in the app that
+    deletes a branch does not become reachable alongside it. It discards every
+    root tree — worktrees removed,
+    branches deleted, `isProjectCheckout` re-checked at the destructive step so
+    the user's own checkout and the branch they sit on are never touched — then
+    deletes the threads, the workflow rows
+    (`store.DeleteProjectWorkflowRecords`, now called on every deletion), and
+    the project row, refreshing the automation schedule so the scheduler drops
+    triggers whose definitions just went.
+  - The sidebar's Delete action fetches the preview first. Nothing to destroy
+    keeps today's one-line confirm; anything to destroy opens the loss dialog
+    (`ProjectDeleteDialog.svelte` over the shared `WorkflowLossList.svelte`). A
+    preview that fails stops the flow with an error — it never falls through to
+    a delete whose cost nobody was shown.
+
+  **Implementation note — the ordering is load-bearing.** The discard cascade
+  runs *before* `DeleteProject` acquires a single thread lock. Discard cancels
+  the live members first, and cancelling walks engine teardown →
+  `Runner.Stop` → `App.InterruptTurn`, which takes
+  `a.threadLocks().Lock(threadID)` on the run's phase thread — one of the locks
+  `DeleteProject` holds across every thread in the project. Cascading under
+  those locks deadlocks outright; the regression that pins it is
+  `TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks`
+  (`app_project_delete_live_run_test.go`), which fails on a timeout rather than
+  hanging the suite. Because the cascade runs unlocked, the locked section
+  re-reads the project's run and automation ids and refuses with the same
+  retry shape as the thread-set guard if a cron fire changed them underneath
+  it. The cascade also stops the cancelled runs' phase and unit sessions, which
+  settles their turn rows synchronously — otherwise a CLI that acks an
+  interrupt and never emits a result would block the deletion the human just
+  consented to.
+
+  **Implementation note — a project whose checkout is gone stays deletable.**
+  Every git question the preview and the cascade ask goes through
+  `readProjectWorktrees` (`app_workflow_discard.go`), which returns an absent
+  registry rather than an error when the project directory is no longer on
+  disk. The repository that registered those checkouts and held their branches
+  went with it, so there is nothing left for git to destroy and no repository
+  to ask; the cascade clears the run records' workspace pointers and moves on,
+  and the preview skips the branch comparison instead of decorating every row
+  with the same failure. Any other git or stat failure still propagates. Making
+  it an error instead would leave the run undiscardable and the project
+  undeletable, permanently and with no other path out of either
+  (`TestDeleteProjectWithAMissingCheckoutStillCascades`).
 
 - **D26. A question is one string; UI-SPEC §8's `1`–`9` stay unbound.**
   The control envelope's `question` is a single nullable string

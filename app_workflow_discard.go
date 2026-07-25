@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 
@@ -96,50 +97,132 @@ func (a *App) WorkflowDiscardPreview(itemID string) (WorkflowDiscardPreview, err
 	if err != nil {
 		return WorkflowDiscardPreview{}, err
 	}
-	members, err := a.workflowRunTree(item)
-	if err != nil {
-		return WorkflowDiscardPreview{}, err
-	}
 	project, err := a.store.GetProject(item.ProjectID)
 	if err != nil {
 		return WorkflowDiscardPreview{}, err
 	}
-	base, err := a.workflowDispositionBase(item)
+	loss, err := a.workflowTreeLoss(item.ID, project.Path)
+	if err != nil {
+		return WorkflowDiscardPreview{}, err
+	}
+	preview := WorkflowDiscardPreview{
+		ItemID:      item.ID,
+		Members:     make([]string, 0, len(loss.members)),
+		LiveMembers: loss.live,
+	}
+	for _, member := range loss.members {
+		preview.Members = append(preview.Members, member.ID)
+	}
+	preview.Worktrees, err = a.describeDiscardTargets(
+		project.Path, loss.targets, "workflow discard preview "+item.ID,
+	)
+	if err != nil {
+		return WorkflowDiscardPreview{}, err
+	}
+	return preview, nil
+}
+
+// workflowTreeLoss is what discarding one run tree would cost: the tree's
+// members, the subset still in flight, and the checkouts the tree owns. It is
+// the single definition of "what a discard destroys" — the per-run preview, the
+// project-deletion preview (D25), and the discard itself all build on it, so
+// none of them can describe a different set than the others.
+type workflowTreeLoss struct {
+	members []store.WorkItem
+	live    []string
+	targets []discardWorktreeTarget
+}
+
+func (a *App) workflowTreeLoss(rootID, projectPath string) (workflowTreeLoss, error) {
+	members, err := a.workflowRunTree(rootID)
+	if err != nil {
+		return workflowTreeLoss{}, err
+	}
+	// members[0] is the tree's root as the store has it right now, which is what
+	// the base branch has to be resolved from.
+	base, err := a.workflowDispositionBase(members[0])
 	if err != nil {
 		// A run with no resolvable base branch can still be discarded; the loss
 		// report just cannot say what "unmerged" means for it.
 		base = ""
 	}
-	preview := WorkflowDiscardPreview{
-		ItemID:      item.ID,
-		Members:     make([]string, 0, len(members)),
-		LiveMembers: make([]string, 0),
-		Worktrees:   make([]WorkflowDiscardWorktree, 0),
-	}
+	loss := workflowTreeLoss{members: members, live: make([]string, 0)}
 	for _, member := range members {
-		preview.Members = append(preview.Members, member.ID)
 		if engine.State(member.State) == engine.StateRunning {
-			preview.LiveMembers = append(preview.LiveMembers, member.ID)
+			loss.live = append(loss.live, member.ID)
 		}
 	}
-	targets, err := a.workflowTreeWorktrees(members, base, project.Path)
+	loss.targets, err = a.workflowTreeWorktrees(members, base, projectPath)
 	if err != nil {
-		return WorkflowDiscardPreview{}, err
+		return workflowTreeLoss{}, err
 	}
+	return loss, nil
+}
+
+// describeDiscardTargets inspects a whole target set against one reading of the
+// project's worktree registry. An empty set asks git nothing: that is a
+// read-only run, one that worked in the project checkout, or one whose
+// checkouts were already released — there is nothing to lose.
+//
+// label prefixes the one failure that aborts the report rather than being
+// recorded on a row, so the caller's flow is named in the message.
+func (a *App) describeDiscardTargets(
+	projectPath string, targets []discardWorktreeTarget, label string,
+) ([]WorkflowDiscardWorktree, error) {
+	described := make([]WorkflowDiscardWorktree, 0, len(targets))
 	if len(targets) == 0 {
-		// A read-only run, one that worked in the project checkout, or one whose
-		// checkouts were already released. There is nothing to lose, and nothing
-		// to ask git about.
-		return preview, nil
+		return described, nil
 	}
-	worktrees, err := a.gitCore().ListWorktrees(project.Path)
+	registry, err := a.readProjectWorktrees(projectPath, label)
 	if err != nil {
-		return WorkflowDiscardPreview{}, fmt.Errorf("workflow discard preview %s: list worktrees: %w", item.ID, err)
+		return nil, err
 	}
 	for _, target := range targets {
-		preview.Worktrees = append(preview.Worktrees, a.describeDiscardWorktree(project.Path, worktrees, target))
+		described = append(described, a.describeDiscardWorktree(projectPath, registry, target))
 	}
-	return preview, nil
+	return described, nil
+}
+
+// projectWorktreeRegistry is one reading of which paths git still knows as
+// worktrees of a project, plus whether the project checkout was there to be
+// read at all. The two facts travel together because an empty list means
+// opposite things without the second: nothing is registered, or there is no
+// repository left to register anything.
+type projectWorktreeRegistry struct {
+	worktrees []gitops.Worktree
+	present   bool
+}
+
+// readProjectWorktrees reads the project's worktree registry.
+//
+// A project whose checkout has been deleted from disk has no registry to read
+// and nothing git can be asked to remove or delete — the repository that held
+// those branches went with it. That is reported as an absent registry, not as
+// an error, because the alternative is a run that can never be discarded and a
+// project that can never be deleted, both permanently. Any other failure is a
+// real one and propagates.
+//
+// label prefixes those failures so the caller's flow is named in the message.
+func (a *App) readProjectWorktrees(projectPath, label string) (projectWorktreeRegistry, error) {
+	info, err := os.Stat(projectPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return projectWorktreeRegistry{}, nil
+	}
+	if err != nil {
+		return projectWorktreeRegistry{}, fmt.Errorf(
+			"%s: inspect project checkout %q: %w", label, projectPath, err,
+		)
+	}
+	if !info.IsDir() {
+		return projectWorktreeRegistry{}, fmt.Errorf(
+			"%s: project checkout %q is not a directory", label, projectPath,
+		)
+	}
+	worktrees, err := a.gitCore().ListWorktrees(projectPath)
+	if err != nil {
+		return projectWorktreeRegistry{}, fmt.Errorf("%s: list worktrees: %w", label, err)
+	}
+	return projectWorktreeRegistry{worktrees: worktrees, present: true}, nil
 }
 
 // workflowDiscardRoot loads a run and refuses the actions that only make sense
@@ -165,7 +248,16 @@ func (a *App) workflowDiscardRoot(itemID string) (store.WorkItem, error) {
 
 // workflowRunTree returns the root and every run it called, transitively, root
 // first. Depth is bounded by the same constant that bounds a call chain.
-func (a *App) workflowRunTree(root store.WorkItem) ([]store.WorkItem, error) {
+//
+// It takes an id and reads the root itself rather than accepting a caller's
+// copy: the discard re-walks the tree after cancelling it, and a root supplied
+// from before that cancel would still read `running` and make the discard
+// refuse the very work it just stopped.
+func (a *App) workflowRunTree(rootID string) ([]store.WorkItem, error) {
+	root, err := a.store.GetWorkItem(rootID)
+	if err != nil {
+		return nil, fmt.Errorf("workflow run tree %s: %w", rootID, err)
+	}
 	members := []store.WorkItem{root}
 	for index := 0; index < len(members); index++ {
 		member := members[index]
@@ -251,14 +343,14 @@ func (a *App) workflowTreeWorktrees(
 // reported on the row instead of aborting the preview — a half-broken worktree
 // is exactly the state a human most needs the rest of the report for.
 func (a *App) describeDiscardWorktree(
-	projectPath string, worktrees []gitops.Worktree, target discardWorktreeTarget,
+	projectPath string, registry projectWorktreeRegistry, target discardWorktreeTarget,
 ) WorkflowDiscardWorktree {
 	described := WorkflowDiscardWorktree{
 		ItemID: target.itemID, UnitID: target.unitID,
 		Path: target.path, Branch: target.branch, Base: target.base,
 		DirtyFiles: make([]string, 0), UnmergedCommits: make([]gitdiff.Commit, 0),
 	}
-	for _, worktree := range worktrees {
+	for _, worktree := range registry.worktrees {
 		if gitops.SameFilesystemPath(worktree.Path, target.path) {
 			described.Registered = true
 			if described.Branch == "" {
@@ -280,7 +372,10 @@ func (a *App) describeDiscardWorktree(
 			described.DirtyFileCount = total
 		}
 	}
-	if described.Branch != "" && target.base != "" && described.Branch != target.base {
+	// Without the project repository there is no branch graph to walk, so the
+	// comparison is skipped rather than reported as a failure per row: the
+	// commits are already gone with the repository that held them.
+	if registry.present && described.Branch != "" && target.base != "" && described.Branch != target.base {
 		commits, err := gitdiff.ListBranchCommits(a.lifeCtx(), projectPath, target.base, described.Branch)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list unmerged commits: %w", err))

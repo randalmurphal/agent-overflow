@@ -5,11 +5,14 @@
   // here too — Rename is the only action the parent still drives.
 
   import type { ProjectWithCounts } from '../../types/models';
+  import type { ProjectDeletionPreview } from '../../types/workflow';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     ArchiveProject,
     DeleteProject,
+    DeleteProjectDiscardingWorkflowWork,
     OpenInEditor,
+    ProjectDeletionPreview as fetchDeletionPreview,
   } from '../../stores/bindings';
   import { removeProjectLocal } from '../../stores/projects.svelte';
   import { closePanesShowingThreads } from '../../stores/panes.svelte';
@@ -17,6 +20,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
+  import ProjectDeleteDialog from './ProjectDeleteDialog.svelte';
   import Popover from '../primitives/Popover.svelte';
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
@@ -38,6 +42,10 @@
 
   let showArchiveConfirm = $state(false);
   let showDeleteConfirm = $state(false);
+  // Set only when the project owns workflow work: the loss dialog renders from
+  // it, and its presence is what tells the delete call to pass consent.
+  let deletionPreview = $state<ProjectDeletionPreview | null>(null);
+  let deleting = $state(false);
 
   async function doArchive(): Promise<void> {
     try {
@@ -60,16 +68,47 @@
     }
   }
 
-  async function doDelete(): Promise<void> {
+  // Delete asks the backend what it would destroy before offering anything.
+  // A preview that fails stops here: falling through to the plain confirm would
+  // hand the user a dialog that understates the loss, and falling through to the
+  // delete would destroy runs and branches nobody was shown.
+  async function startDelete(): Promise<void> {
     try {
-      const threadIds = await DeleteProject(project.project.id);
+      const preview = await fetchDeletionPreview(project.project.id);
+      if (preview.hasWork) {
+        deletionPreview = preview;
+      } else {
+        showDeleteConfirm = true;
+      }
+    } catch (err) {
+      console.error('Failed to inspect project before delete:', err);
+      addToast(
+        'error',
+        userFacingError(err, 'Could not work out what deleting this project would destroy.'),
+      );
+    }
+  }
+
+  async function doDelete(discardWorkflowWork: boolean): Promise<void> {
+    deleting = true;
+    try {
+      // The consent is which method is called, not an argument: only the
+      // discarding form removes worktrees and deletes branches, and only it is
+      // refused from a non-loopback client.
+      const deleteProject = discardWorkflowWork
+        ? DeleteProjectDiscardingWorkflowWork
+        : DeleteProject;
+      const threadIds = await deleteProject(project.project.id);
       for (const id of threadIds) removeThread(id);
       removeProjectLocal(project.project.id);
       closePanesShowingThreads(threadIds);
+      deletionPreview = null;
       addToast('info', `Deleted project "${project.project.name}".`);
     } catch (err) {
       console.error('Failed to delete project:', err);
       addToast('error', userFacingError(err));
+    } finally {
+      deleting = false;
     }
   }
 </script>
@@ -112,7 +151,7 @@
           variant="danger"
           onSelect={() => {
             onClose();
-            showDeleteConfirm = true;
+            void startDelete();
           }}
         />
       {/snippet}
@@ -142,9 +181,25 @@
   destructive={true}
   onConfirm={() => {
     showDeleteConfirm = false;
-    void doDelete();
+    void doDelete(false);
   }}
   onCancel={() => {
     showDeleteConfirm = false;
   }}
 />
+
+{#if deletionPreview}
+  <ProjectDeleteDialog
+    open={true}
+    projectName={project.project.name}
+    threadCount={project.threadCount}
+    preview={deletionPreview}
+    submitting={deleting}
+    onConfirm={() => {
+      void doDelete(true);
+    }}
+    onCancel={() => {
+      deletionPreview = null;
+    }}
+  />
+{/if}

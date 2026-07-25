@@ -9,6 +9,7 @@
 
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
+  import WorkflowLossList from '../shared/WorkflowLossList.svelte';
   import type { WorkflowDiscardPreview } from '../../types/workflow';
   import { WorkflowDiscardPreview as fetchDiscardPreview } from '../../stores/bindings';
   import { getWorkflowCosts, getWorkflowDetail, getWorkflowRun } from '../../stores/workflowRuns.svelte';
@@ -54,18 +55,6 @@
     })();
   });
 
-  function worktreeMeta(worktree: WorkflowDiscardPreview['worktrees'][number]): string {
-    if (worktree.error) return worktree.error;
-    const fragments = [
-      worktree.branch || 'no branch',
-      `${worktree.dirtyFileCount} dirty ${worktree.dirtyFileCount === 1 ? 'file' : 'files'}`,
-      `${worktree.unmergedCommitCount} unmerged ${worktree.unmergedCommitCount === 1 ? 'commit' : 'commits'}`,
-    ];
-    if (!worktree.present) fragments.push('checkout already gone');
-    else if (!worktree.registered) fragments.push('not a registered worktree — reported, not removed');
-    return fragments.join(' · ');
-  }
-
   async function confirm(): Promise<void> {
     if (!item || viewOnly || submitting) return;
     submitting = true;
@@ -91,20 +80,11 @@
           </p>
         {/if}
 
-        {#if preview.worktrees.length > 0}
-          <ul class="divide-y divide-border-subtle rounded-md border border-border-subtle" data-testid="workflow-discard-worktrees">
-            {#each preview.worktrees as worktree (worktree.path)}
-              <li class="px-3 py-2" data-testid="workflow-discard-worktree">
-                <p class="truncate font-mono text-xs text-fg">{worktree.path}</p>
-                <p class="truncate text-[0.6875rem] text-fg-muted">{worktreeMeta(worktree)}</p>
-              </li>
-            {/each}
-          </ul>
-        {:else}
-          <p class="text-xs text-fg-muted" data-testid="workflow-discard-no-worktrees">
-            No checkouts to remove — this run left nothing on disk.
-          </p>
-        {/if}
+        <WorkflowLossList
+          worktrees={preview.worktrees}
+          emptyMessage="No checkouts to remove — this run left nothing on disk."
+          testIdPrefix="workflow-discard"
+        />
 
         <p class="text-xs text-fg-muted" data-testid="workflow-discard-artifacts">
           Artifacts already captured survive. The run record is kept.

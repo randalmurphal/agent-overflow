@@ -287,6 +287,8 @@ export {
   BrowseDirectory,
   CreateProject,
   DeleteProject,
+  DeleteProjectDiscardingWorkflowWork,
+  ProjectDeletionPreview,
   ListProjects,
   RenameProject,
   UnarchiveProject,

@@ -1,4 +1,5 @@
 import type {
+  ProjectDeletionPreview,
   WorkflowArtifact,
   WorkflowAutomationView,
   WorkflowDefinitionCatalog,
@@ -105,6 +106,10 @@ export interface WorkflowDefinitionView {
 }
 
 export type {
+  // Project deletion reports its loss with the same rows a single discard does
+  // (D25), so its preview shape lives with them rather than growing a parallel
+  // definition next to the project types.
+  ProjectDeletionPreview,
   WorkItem,
   WorkItemUsage,
   WorkflowArtifact,

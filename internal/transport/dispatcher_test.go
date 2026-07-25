@@ -730,28 +730,32 @@ func (p *privilegedApp) WorkflowFetchPRReviewComments() string { return "ok" }
 func (p *privilegedApp) WorkflowSendPRReviewCommentsToThread() string {
 	return "ok"
 }
-func (p *privilegedApp) WorkflowDiscussPR() string              { return "ok" }
-func (p *privilegedApp) WorkflowGetJobNotes() string            { return "ok" }
-func (p *privilegedApp) WorkflowGetEngineState() string         { return "ok" }
-func (p *privilegedApp) WorkflowSetJobNotes() string            { return "ok" }
-func (p *privilegedApp) WorkflowListDefinitions() string        { return "ok" }
-func (p *privilegedApp) WorkflowRerunItem() string              { return "ok" }
-func (p *privilegedApp) WorkflowRetryUnit() string              { return "ok" }
-func (p *privilegedApp) WorkflowDropUnit() string               { return "ok" }
-func (p *privilegedApp) WorkflowTakeOverUnit() string           { return "ok" }
-func (p *privilegedApp) WorkflowAgentStartRun() string          { return "ok" }
-func (p *privilegedApp) WorkflowAgentRunStatus() string         { return "ok" }
-func (p *privilegedApp) WorkflowAgentRunOutput() string         { return "ok" }
-func (p *privilegedApp) WorkflowAgentListRuns() string          { return "ok" }
-func (p *privilegedApp) WorkflowAgentSchedule() string          { return "ok" }
-func (p *privilegedApp) WorkflowAgentGetNotes() string          { return "ok" }
-func (p *privilegedApp) WorkflowAgentSetNotes() string          { return "ok" }
-func (p *privilegedApp) WorkflowComposerContext() string        { return "ok" }
-func (p *privilegedApp) WorkflowPauseItem() string              { return "ok" }
-func (p *privilegedApp) WorkflowBindThread() string             { return "ok" }
-func (p *privilegedApp) WorkflowUnbindThread() string           { return "ok" }
-func (p *privilegedApp) WorkflowOpenInThread() string           { return "ok" }
-func (p *privilegedApp) WorkflowDiscardPreview() string         { return "ok" }
+func (p *privilegedApp) WorkflowDiscussPR() string       { return "ok" }
+func (p *privilegedApp) WorkflowGetJobNotes() string     { return "ok" }
+func (p *privilegedApp) WorkflowGetEngineState() string  { return "ok" }
+func (p *privilegedApp) WorkflowSetJobNotes() string     { return "ok" }
+func (p *privilegedApp) WorkflowListDefinitions() string { return "ok" }
+func (p *privilegedApp) WorkflowRerunItem() string       { return "ok" }
+func (p *privilegedApp) WorkflowRetryUnit() string       { return "ok" }
+func (p *privilegedApp) WorkflowDropUnit() string        { return "ok" }
+func (p *privilegedApp) WorkflowTakeOverUnit() string    { return "ok" }
+func (p *privilegedApp) WorkflowAgentStartRun() string   { return "ok" }
+func (p *privilegedApp) WorkflowAgentRunStatus() string  { return "ok" }
+func (p *privilegedApp) WorkflowAgentRunOutput() string  { return "ok" }
+func (p *privilegedApp) WorkflowAgentListRuns() string   { return "ok" }
+func (p *privilegedApp) WorkflowAgentSchedule() string   { return "ok" }
+func (p *privilegedApp) WorkflowAgentGetNotes() string   { return "ok" }
+func (p *privilegedApp) WorkflowAgentSetNotes() string   { return "ok" }
+func (p *privilegedApp) WorkflowComposerContext() string { return "ok" }
+func (p *privilegedApp) WorkflowPauseItem() string       { return "ok" }
+func (p *privilegedApp) WorkflowBindThread() string      { return "ok" }
+func (p *privilegedApp) WorkflowUnbindThread() string    { return "ok" }
+func (p *privilegedApp) WorkflowOpenInThread() string    { return "ok" }
+func (p *privilegedApp) WorkflowDiscardPreview() string  { return "ok" }
+func (p *privilegedApp) ProjectDeletionPreview() string  { return "ok" }
+func (p *privilegedApp) DeleteProjectDiscardingWorkflowWork() string {
+	return "ok"
+}
 func (p *privilegedApp) WorkflowCreateAutomation() string       { return "ok" }
 func (p *privilegedApp) WorkflowUpdateAutomation() string       { return "ok" }
 func (p *privilegedApp) WorkflowDeleteAutomation() string       { return "ok" }

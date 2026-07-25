@@ -28,7 +28,7 @@ func (a *App) discardWorkflowTree(root store.WorkItem) (WorkflowDiscardResult, e
 		Members: make([]string, 0), Cancelled: make([]string, 0),
 		RemovedWorktrees: make([]string, 0), DeletedBranches: make([]string, 0),
 	}
-	members, err := a.workflowRunTree(root)
+	members, err := a.workflowRunTree(root.ID)
 	if err != nil {
 		return result, err
 	}
@@ -38,8 +38,10 @@ func (a *App) discardWorkflowTree(root store.WorkItem) (WorkflowDiscardResult, e
 	}
 	result.Cancelled = cancelled
 	// Re-read: cancelling settles runs, and the paths and branches recorded on
-	// a member can change as its teardown lands.
-	members, err = a.workflowRunTree(root)
+	// a member can change as its teardown lands. workflowRunTree re-reads the
+	// root as well as its callees, so the state checked below is the state the
+	// cancel left behind.
+	members, err = a.workflowRunTree(root.ID)
 	if err != nil {
 		return result, err
 	}
@@ -65,13 +67,20 @@ func (a *App) discardWorkflowTree(root store.WorkItem) (WorkflowDiscardResult, e
 		// the discard is the receipt the caller writes, and git has nothing to do.
 		return result, nil
 	}
-	worktrees, err := a.gitCore().ListWorktrees(project.Path)
+	registry, err := a.readProjectWorktrees(project.Path, fmt.Sprintf("workflow discard %s", root.ID))
 	if err != nil {
-		return result, fmt.Errorf("workflow discard %s: list worktrees: %w", root.ID, err)
+		return result, err
+	}
+	if !registry.present {
+		// The repository that registered these checkouts and held their branches
+		// is no longer on disk, so there is nothing left for git to destroy and
+		// no repository to ask. Clearing the pointers is the whole of what is
+		// left to do; refusing instead would make the run undiscardable forever.
+		return result, a.clearDiscardedTreeWorkspaces(members)
 	}
 	var errs []error
 	for _, target := range targets {
-		removed, err := a.removeDiscardedWorktree(project.Path, worktrees, target)
+		removed, err := a.removeDiscardedWorktree(project.Path, registry.worktrees, target)
 		if err != nil {
 			errs = append(errs, err)
 		}

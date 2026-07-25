@@ -26,10 +26,9 @@ type discardFixture struct {
 func newDiscardFixture(t *testing.T, itemID string) *discardFixture {
 	t.Helper()
 	app, _ := setupE2EApp(t)
-	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = app.workflowEngine.Close() })
+	// startWorkflowEngineForTest, not a bare initWorkflowEngine: engine startup
+	// also arms the §11 scheduler, and only this helper stops it again.
+	startWorkflowEngineForTest(t, app, t.TempDir())
 	repo := testutil.InitGitRepo(t)
 	projectRow := testutil.EnsureProject(t, app.store, repo)
 	return &discardFixture{

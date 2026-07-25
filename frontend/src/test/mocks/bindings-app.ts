@@ -423,6 +423,10 @@ export const ListProjects = dispatch('ListProjects');
 export const CreateProject = dispatch('CreateProject');
 export const RenameProject = dispatch('RenameProject');
 export const DeleteProject = dispatch('DeleteProject');
+export const DeleteProjectDiscardingWorkflowWork = dispatch(
+  'DeleteProjectDiscardingWorkflowWork',
+);
+export const ProjectDeletionPreview = dispatch('ProjectDeletionPreview');
 export const ArchiveProject = dispatch('ArchiveProject');
 export const UnarchiveProject = dispatch('UnarchiveProject');
 

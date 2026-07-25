@@ -50,6 +50,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteEmptyDraftThread", ID: 3876094070},               // main.App.DeleteEmptyDraftThread
 	{Name: "DeleteMcpServer", ID: 4263017529},                      // main.App.DeleteMcpServer
 	{Name: "DeleteProject", ID: 3379369923},                        // main.App.DeleteProject
+	{Name: "DeleteProjectDiscardingWorkflowWork", ID: 813591209},   // main.App.DeleteProjectDiscardingWorkflowWork
 	{Name: "DeleteProposedPlanComment", ID: 554913120},             // main.App.DeleteProposedPlanComment
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297},                 // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974},                         // main.App.DeleteThread
@@ -189,6 +190,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "PrepareThreadWorktree", ID: 2870364785},                // main.App.PrepareThreadWorktree
 	{Name: "ProbeClaudeAccount", ID: 1313986574},                   // main.App.ProbeClaudeAccount
 	{Name: "ProbeCodexAccount", ID: 2614227175},                    // main.App.ProbeCodexAccount
+	{Name: "ProjectDeletionPreview", ID: 2575010484},               // main.App.ProjectDeletionPreview
 	{Name: "ProviderTerminalAttach", ID: 1393518281},               // main.App.ProviderTerminalAttach
 	{Name: "ProviderTerminalDetach", ID: 2584141779},               // main.App.ProviderTerminalDetach
 	{Name: "ProviderTerminalInput", ID: 1783659784},                // main.App.ProviderTerminalInput

@@ -574,11 +574,15 @@ func (s *Store) CreateWorkItemTriageThread(itemID string, thread Thread) error {
 // cascade). One transaction, because a half-deleted run is a run the engine's
 // startup rebuild would try to resume.
 //
-// This is deliberately NOT part of DeleteProject. Deleting a project today
-// leaves its runs behind, and changing that is a product decision about what
-// happens to their worktrees and branches — this call exists for the callers
-// that have already dealt with that (the harness reset, which cancels every
-// live run and removes the generated workspaces before it deletes projects).
+// App.DeleteProject calls this on every project deletion (decision D25): there
+// is no foreign key from these tables to `projects` to cascade through, so a
+// project deletion that skipped it would leave rows carrying a project id that
+// resolves to nothing — unreachable from every project-scoped query and
+// invisible in the UI. The app layer owns the disk side (the run worktrees and
+// branches) and the human consent that precedes both; this call is only the
+// rows. The harness reset invokes it directly for the same reason, ahead of the
+// deletion, because it removes the generated workspaces wholesale rather than
+// through git.
 func (s *Store) DeleteProjectWorkflowRecords(projectID string) error {
 	if projectID == "" {
 		return fmt.Errorf("store: delete project workflow records: project id is required")

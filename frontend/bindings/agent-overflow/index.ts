@@ -45,6 +45,7 @@ export {
     PayloadChunk,
     PayloadContent,
     PayloadPreview,
+    ProjectDeletionPreview,
     ProviderTerminalHandle,
     QueueFlushedItem,
     QueuedItem,

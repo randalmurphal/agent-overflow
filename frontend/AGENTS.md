@@ -106,7 +106,11 @@ Rules that are not stylistic:
   §8 key target refuses too — the guard is not decoration.
 - **§4.5, preview is consent.** Discard opens the loss preview; nothing
   destructive fires from a row. Other destructive actions arm a confirm that
-  Esc disarms.
+  Esc disarms. The rows themselves render through
+  `components/shared/WorkflowLossList.svelte` (formatting in
+  `utils/workflowLoss.ts`), which the sidebar's project-delete dialog shares —
+  it lives in `shared/` precisely because the sidebar is eagerly loaded and a
+  static import into `workflows/` would drag the overlay chunk into startup.
 
 ## Thread Switch And Scroll
 
