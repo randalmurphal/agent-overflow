@@ -30,10 +30,11 @@ func TestParseValidFixture(t *testing.T) {
 	if got.WorktreeSetup.Timeout != "15m" {
 		t.Fatalf("worktree setup timeout = %q", got.WorktreeSetup.Timeout)
 	}
-	if !got.HasCheck("test") || !got.HasCapacity("live-stack") || !got.HasCommand("report-issue") {
+	capacity, bound := got.Capacity("live-stack")
+	if !got.HasCheck("test") || !bound || capacity != 1 || !got.HasCommand("report-issue") {
 		t.Fatalf("profile does not expose expected bindings: %+v", got)
 	}
-	if got.HasCheck("missing") || got.HasCapacity("missing") || got.HasCommand("missing") {
+	if _, bound := got.Capacity("missing"); got.HasCheck("missing") || bound || got.HasCommand("missing") {
 		t.Fatal("profile reports an undeclared binding")
 	}
 }
@@ -45,7 +46,7 @@ func TestDefaultAndNilBindings(t *testing.T) {
 		t.Fatalf("Default = %+v", got)
 	}
 	var nilProfile *Profile
-	if nilProfile.HasCheck("x") || nilProfile.HasCapacity("x") || nilProfile.HasCommand("x") {
+	if _, bound := nilProfile.Capacity("x"); nilProfile.HasCheck("x") || bound || nilProfile.HasCommand("x") {
 		t.Fatal("nil profile exposes bindings")
 	}
 }

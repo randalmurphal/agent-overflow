@@ -62,16 +62,11 @@ func Validate(resolved ResolvedWorkflow, bindings Bindings) ValidationResult {
 		if phase.Access != "" && phase.Access != AccessReadOnly && phase.Access != AccessWrite {
 			add(finding("phase.access", phaseElement, "access must be read-only or write"))
 		}
-		shape := phase.Shape
-		if shape == "" {
-			shape = ShapeSingle
-		}
+		shape := phase.EffectiveShape()
 		if shape != ShapeSingle && shape != ShapeFanOut {
 			add(finding("phase.shape", phaseElement, "shape must be single or fan-out"))
 		}
-		if shape == ShapeFanOut && (len(phase.FanOut) == 0 || phase.Join == nil) {
-			add(finding("phase.fan-out", phaseElement, "fan-out shape requires fan_out units and a join"))
-		}
+		add(validateFanOut(workflow, phase, phaseElement)...)
 		if phase.Driver == DriverAgent && phase.Prompt == "" {
 			add(finding("phase.prompt", phaseElement, "agent driver requires a prompt file"))
 		}
@@ -95,25 +90,6 @@ func Validate(resolved ResolvedWorkflow, bindings Bindings) ValidationResult {
 		if phase.Driver == DriverTool && phase.Check != "" && phase.Command != "" {
 			add(finding("phase.tool", phaseElement, "tool driver accepts a check or a command binding, not both"))
 		}
-		unitIDs := map[string]bool{}
-		for unitIndex, unit := range phase.FanOut {
-			unitElement := fmt.Sprintf("%s fan-out unit %q", phaseElement, unit.ID)
-			if !idPattern.MatchString(unit.ID) {
-				add(finding("phase.fan-out-unit", phaseElement, fmt.Sprintf("fan-out unit %d id must match [a-z0-9-]+", unitIndex)))
-			} else if unitIDs[unit.ID] {
-				add(finding("phase.fan-out-unit", unitElement, "unit id is duplicated"))
-			}
-			unitIDs[unit.ID] = true
-			if unit.Access != "" && unit.Access != AccessReadOnly && unit.Access != AccessWrite {
-				add(finding("phase.access", unitElement, "access must be read-only or write"))
-			}
-		}
-		if phase.Join != nil && phase.Join.Access != "" && phase.Join.Access != AccessReadOnly && phase.Join.Access != AccessWrite {
-			add(finding("phase.access", phaseElement+" join", "access must be read-only or write"))
-		}
-		if phase.Join != nil && !idPattern.MatchString(phase.Join.ID) {
-			add(finding("phase.fan-out-unit", phaseElement+" join", "join id must match [a-z0-9-]+"))
-		}
 		for name, output := range phase.Outputs {
 			outputElement := fmt.Sprintf("%s output %q", phaseElement, name)
 			if !idPattern.MatchString(name) {
@@ -128,8 +104,9 @@ func Validate(resolved ResolvedWorkflow, bindings Bindings) ValidationResult {
 	graph := buildGraph(workflow, phaseIndex, &result.Findings)
 	add(validateVariables(workflow, phaseIndex, graph)...)
 	add(validateWorkflowOutputs(workflow, phaseIndex)...)
-	add(validatePrompts(resolved)...)
+	add(validatePrompts(resolved, phaseIndex)...)
 	add(validateBindings(workflow, bindings)...)
+	result.Reports = fanOutWidthReports(workflow, bindings)
 	sort.SliceStable(result.Findings, func(i, j int) bool {
 		if result.Findings[i].Element == result.Findings[j].Element {
 			return result.Findings[i].Code < result.Findings[j].Code
@@ -165,7 +142,7 @@ func validateWorkflowOutputs(workflow Workflow, phaseIndex map[string]int) []Fin
 	return findings
 }
 
-func validatePrompts(resolved ResolvedWorkflow) []Finding {
+func validatePrompts(resolved ResolvedWorkflow, phaseIndex map[string]int) []Finding {
 	var findings []Finding
 	base := filepath.Dir(resolved.Path)
 	for _, phase := range resolved.Workflow.Phases {
@@ -194,21 +171,36 @@ func validatePrompts(resolved ResolvedWorkflow) []Finding {
 				}
 			}
 		}
-		for _, unit := range phase.FanOut {
-			findings = append(findings, validateUnitPrompt(resolved.Workflow.ID, phase, unit, base)...)
+		// A unit's prompt may read the phase's declared inputs and, in a dynamic
+		// fan-out, the element binding. Resolving the element schema here is what
+		// lets `{{section.path}}` validate against the array's item schema
+		// instead of reporting an undeclared reference.
+		element, hasElement := overElement(resolved.Workflow, phaseIndex, phase)
+		var elementDeclaration *Variable
+		if hasElement {
+			elementDeclaration = &element
+		}
+		declarations := UnitDeclarations(phase, elementDeclaration)
+		role := unitRoleStatic
+		if phase.DynamicFanOut() {
+			role = unitRoleTemplate
+		}
+		for _, unit := range phase.UnitDefinitions() {
+			findings = append(findings, validateUnitPrompt(resolved.Workflow.ID, phase, unit, base, declarations, role)...)
 		}
 		if phase.Join != nil {
-			findings = append(findings, validateUnitPrompt(resolved.Workflow.ID, phase, *phase.Join, base)...)
+			// The join runs after every unit rests and never binds an element.
+			findings = append(findings, validateUnitPrompt(resolved.Workflow.ID, phase, *phase.Join, base, phase.Inputs, unitRoleJoin)...)
 		}
 	}
 	return findings
 }
 
-func validateUnitPrompt(workflowID string, phase Phase, unit Unit, base string) []Finding {
+func validateUnitPrompt(workflowID string, phase Phase, unit Unit, base string, declarations map[string]Variable, role string) []Finding {
 	if unit.Prompt == "" {
 		return nil
 	}
-	element := fmt.Sprintf("workflow %q phase %q unit %q prompt file %q", workflowID, phase.ID, unit.ID, unit.Prompt)
+	element := fmt.Sprintf("workflow %q phase %q %s %q prompt file %q", workflowID, phase.ID, role, unit.ID, unit.Prompt)
 	clean := filepath.Clean(unit.Prompt)
 	if filepath.IsAbs(unit.Prompt) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return []Finding{finding("prompt.path", element, "prompt must be a sibling-relative path inside the definition directory")}
@@ -226,7 +218,7 @@ func validateUnitPrompt(workflowID string, phase Phase, unit Unit, base string) 
 		return []Finding{finding("prompt.file", element, fmt.Sprintf("cannot read: %v", err))}
 	}
 	var findings []Finding
-	for _, message := range ValidateTemplate(string(data), phase.Inputs) {
+	for _, message := range ValidateTemplate(string(data), declarations) {
 		findings = append(findings, finding("prompt.template", element, message))
 	}
 	return findings
@@ -243,7 +235,7 @@ func validateBindings(workflow Workflow, bindings Bindings) []Finding {
 			findings = append(findings, finding("binding.check", element, fmt.Sprintf("check %q is not bindable", phase.Check)))
 		}
 		for _, resource := range phase.Resources {
-			if !bindings.HasCapacity(resource) {
+			if _, bound := bindings.Capacity(resource); !bound {
 				findings = append(findings, finding("binding.capacity", element, fmt.Sprintf("resource capacity %q is not bindable", resource)))
 			}
 		}
@@ -253,7 +245,7 @@ func validateBindings(workflow Workflow, bindings Bindings) []Finding {
 				findings = append(findings, finding("binding.command", element, fmt.Sprintf("command %q is not bindable", command)))
 			}
 		}
-		for _, unit := range phase.FanOut {
+		for _, unit := range phase.UnitDefinitions() {
 			if unit.Command != "" && !bindings.HasCommand(unit.Command) {
 				findings = append(findings, finding("binding.command", element+fmt.Sprintf(" fan-out unit %q", unit.ID), fmt.Sprintf("command %q is not bindable", unit.Command)))
 			}

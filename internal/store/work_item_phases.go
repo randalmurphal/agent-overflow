@@ -113,6 +113,26 @@ func (s *Store) CompleteWorkItemPhase(itemID, phaseID string, attempt int, outpu
 	return requireRowsAffected(result, fmt.Sprintf("store: complete work item phase %s/%s/%d", itemID, phaseID, attempt))
 }
 
+// ReopenWorkItemPhase returns a settled attempt to running. It backs fan-out
+// unit recovery, where repairing one unit continues the attempt its siblings
+// already produced results for instead of superseding it. The output envelope
+// and gate trace are cleared because the reopened attempt has not produced them
+// yet — leaving the parked ones would make an unfinished attempt look decided.
+// started_at is untouched: it is the same attempt, and attempt ordering is how
+// phase history is read back.
+func (s *Store) ReopenWorkItemPhase(itemID, phaseID string, attempt int) error {
+	result, err := s.db.Exec(
+		`UPDATE work_item_phases
+		 SET status = 'running', output_envelope = '', gate_trace = '', ended_at = 0
+		 WHERE item_id = ? AND phase_id = ? AND attempt = ?`,
+		itemID, phaseID, attempt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: reopen work item phase %s/%s/%d: %w", itemID, phaseID, attempt, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: reopen work item phase %s/%s/%d", itemID, phaseID, attempt))
+}
+
 func (s *Store) ListWorkItemPhases(itemID string) ([]WorkItemPhase, error) {
 	rows, err := s.db.Query(
 		`SELECT `+workItemPhaseColumns+` FROM work_item_phases

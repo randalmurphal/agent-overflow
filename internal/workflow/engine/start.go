@@ -98,6 +98,10 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 	if halted, err := e.enforceBudget(item); halted {
 		return err
 	}
+	// A new attempt never inherits the previous one's fan-out. Teardown already
+	// clears it on every exit path; this keeps that true by construction rather
+	// than by the caller having come through teardown.
+	item.fan = nil
 	vars, priorPhases, err := e.variableContext(item, nil)
 	if err != nil {
 		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}), err)
@@ -120,7 +124,7 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 	})
 
 	if e.paused {
-		e.addWaiting(item)
+		e.addWaiting(item, nil)
 		return nil
 	}
 	acquired, ok, err := e.acquirePhaseResources(item.item.ProjectID, phase)
@@ -128,11 +132,11 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}), err)
 	}
 	if !ok {
-		e.addWaiting(item)
+		e.addWaiting(item, nil)
 		return nil
 	}
 	item.acquired = acquired
-	return e.startRunner(item, phase, vars)
+	return e.startPhaseWork(item, phase, vars)
 }
 
 func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string]any) error {
@@ -177,7 +181,13 @@ func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string
 func (e *Engine) finishRunnerStart(command runnerStartCommand) error {
 	item, ok := e.items[command.key.ItemID]
 	if !ok || item.phaseID != command.key.PhaseID || item.attempt != command.key.Attempt ||
-		State(item.item.State) != StateRunning || !item.runnerStarting {
+		State(item.item.State) != StateRunning {
+		return nil
+	}
+	if command.key.UnitID != "" {
+		return e.finishUnitStart(item, command)
+	}
+	if !item.runnerStarting {
 		return nil
 	}
 	if item.runnerStartCancel != nil {
@@ -189,16 +199,42 @@ func (e *Engine) finishRunnerStart(command runnerStartCommand) error {
 		item.runnerActive = true
 		return nil
 	}
+	return e.parkStartFailure(item, command.err)
+}
+
+// finishUnitStart settles one unit's provisioning. A unit that could not start
+// is not a unit failure: the frozen definition, the live profile, or the
+// workspace could not produce runnable work at all, so the attempt parks under
+// the same sentinel-mapped reason a single-shape phase would.
+func (e *Engine) finishUnitStart(item *runtimeItem, command runnerStartCommand) error {
+	if item.fan == nil {
+		return nil
+	}
+	unit := item.fan.find(command.key.UnitID)
+	if unit == nil || !unit.runnerStarting {
+		return nil
+	}
+	clearUnitStart(unit)
+	if command.err == nil {
+		unit.runnerActive = true
+		return nil
+	}
+	return e.parkStartFailure(item, command.err)
+}
+
+// parkStartFailure maps a runner startup failure onto a typed park reason by
+// sentinel, never by string matching.
+func (e *Engine) parkStartFailure(item *runtimeItem, cause error) error {
 	reason := ReasonAgentError
 	switch {
-	case errors.Is(command.err, ErrSetupFailed):
+	case errors.Is(cause, ErrSetupFailed):
 		reason = ReasonSetupFailed
-	case errors.Is(command.err, ErrWiringFailed):
+	case errors.Is(cause, ErrWiringFailed):
 		reason = ReasonWiringError
 	}
 	return errors.Join(
 		e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason}),
-		command.err,
+		cause,
 	)
 }
 

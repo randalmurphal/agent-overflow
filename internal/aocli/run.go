@@ -154,6 +154,12 @@ func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Wr
 		for _, finding := range result.Findings {
 			fmt.Fprintf(&output, "%s: %s: %s\n", finding.Element, finding.Code, finding.Message)
 		}
+		// Reports never fail a validation — they describe what the run will do,
+		// not what is wrong with it — so they print under their own marker and
+		// leave the exit code alone.
+		for _, report := range result.Reports {
+			fmt.Fprintf(&output, "note: %s: %s: %s\n", report.Element, report.Code, report.Message)
+		}
 		if err := writeOutput(stdout, output.String()); err != nil {
 			return operationalError(stderr, err)
 		}

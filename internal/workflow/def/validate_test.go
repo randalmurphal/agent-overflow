@@ -8,12 +8,25 @@ import (
 )
 
 type testBindings struct {
-	checks, capacities, commands map[string]bool
+	checks, commands map[string]bool
+	capacities       map[string]bool
+	// declared overrides the capacity a bound resource reports. Absent names
+	// fall back to 1, which is enough for the bindability checks.
+	declared map[string]int
 }
 
-func (b testBindings) HasCheck(name string) bool    { return b.checks[name] }
-func (b testBindings) HasCapacity(name string) bool { return b.capacities[name] }
-func (b testBindings) HasCommand(name string) bool  { return b.commands[name] }
+func (b testBindings) HasCheck(name string) bool   { return b.checks[name] }
+func (b testBindings) HasCommand(name string) bool { return b.commands[name] }
+
+func (b testBindings) Capacity(name string) (int, bool) {
+	if capacity, ok := b.declared[name]; ok {
+		return capacity, true
+	}
+	if b.capacities[name] {
+		return 1, true
+	}
+	return 0, false
+}
 
 func validResolved(t *testing.T) ResolvedWorkflow {
 	t.Helper()

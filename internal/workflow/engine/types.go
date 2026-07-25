@@ -50,6 +50,7 @@ const (
 	ReasonSetupFailed        Reason = "setup-failed"
 	ReasonInterrupted        Reason = "interrupted"
 	ReasonTakenOver          Reason = "taken-over"
+	ReasonUnitFailed         Reason = "unit-failed"
 )
 
 type OutcomeKind string
@@ -71,19 +72,37 @@ type Outcome struct {
 	Envelope json.RawMessage `json:"envelope,omitempty"`
 }
 
-// RunKey uniquely identifies one persisted phase attempt.
+// RunKey uniquely identifies one running piece of work: a phase attempt, or
+// one unit of a fan-out phase attempt. An empty UnitID is the phase's own
+// single attempt, so every existing key keeps meaning exactly what it meant.
 type RunKey struct {
 	ItemID  string `json:"itemId"`
 	PhaseID string `json:"phaseId"`
 	Attempt int    `json:"attempt"`
+	UnitID  string `json:"unitId,omitempty"`
 }
 
+// UnitKind separates a fan-out's parallel workers from the join that runs after
+// they rest. The join is an ordinary unit whose envelope becomes the phase's.
+type UnitKind string
+
+const (
+	UnitWork UnitKind = "unit"
+	UnitJoin UnitKind = "join"
+)
+
 // RunRequest contains the immutable workflow snapshot plus phase-local input.
+// Unit, UnitIndex, and UnitKind are set exactly when Key.UnitID is: they carry
+// the stamped unit definition a fan-out attempt expanded, and Vars already
+// includes the element binding a dynamic expansion bound to it.
 type RunRequest struct {
 	Key              RunKey         `json:"key"`
 	Item             store.WorkItem `json:"item"`
 	Workflow         def.Workflow   `json:"workflow"`
 	Phase            def.Phase      `json:"phase"`
+	Unit             *def.Unit      `json:"unit,omitempty"`
+	UnitIndex        int            `json:"unitIndex,omitempty"`
+	UnitKind         UnitKind       `json:"unitKind,omitempty"`
 	Vars             map[string]any `json:"vars"`
 	Feedback         *Feedback      `json:"feedback,omitempty"`
 	PriorThreadID    string         `json:"priorThreadId,omitempty"`
@@ -172,14 +191,17 @@ type Config struct {
 const MaxSeedBytes = 64 * 1024
 const MaxSnapshotBytes = 4 * 1024 * 1024
 
-// DefaultProviderCapacity bounds concurrent agent phases per provider when the
-// project profile does not declare a `provider:<name>` capacity.
-const DefaultProviderCapacity = 2
+// DefaultProviderCapacity bounds concurrent agent phases and fan-out units per
+// provider when the project profile does not declare a `provider:<name>`
+// capacity. The value is def's so the scheduler and the dry-run's width report
+// can never disagree about the bound a run actually gets.
+const DefaultProviderCapacity = def.DefaultProviderCapacity
 
-// ProviderResource is the implicit resource every agent-driver phase acquires
-// in addition to its declared resources. Capacity comes from the live project
-// profile like any other resource, defaulting to DefaultProviderCapacity.
-func ProviderResource(provider string) string { return "provider:" + provider }
+// ProviderResource is the implicit resource every agent-driver phase and every
+// agent-driver fan-out unit acquires in addition to the phase's declared
+// resources. Capacity comes from the live project profile like any other
+// resource, defaulting to DefaultProviderCapacity.
+func ProviderResource(provider string) string { return def.ProviderResource(provider) }
 
 // Snapshot is the persisted, immutable run definition.
 type Snapshot struct {
@@ -200,11 +222,18 @@ type EngineState struct {
 	Paused bool `json:"paused"`
 }
 
+// PhaseEvent reports one phase attempt's status, or — when UnitID is set — one
+// fan-out unit's status inside that attempt. Units ride the phase channel
+// rather than a parallel one: a unit is a piece of the attempt, and a consumer
+// that ignores UnitID still sees exactly the phase timeline it saw before.
 type PhaseEvent struct {
-	ItemID  string `json:"itemId"`
-	PhaseID string `json:"phaseId"`
-	Attempt int    `json:"attempt"`
-	Status  string `json:"status"`
+	ItemID    string   `json:"itemId"`
+	PhaseID   string   `json:"phaseId"`
+	Attempt   int      `json:"attempt"`
+	Status    string   `json:"status"`
+	UnitID    string   `json:"unitId,omitempty"`
+	UnitIndex int      `json:"unitIndex,omitempty"`
+	UnitKind  UnitKind `json:"unitKind,omitempty"`
 }
 
 type ErrorEvent struct {
@@ -225,8 +254,15 @@ type persistence interface {
 	UpdateWorkItemRunStart(string, json.RawMessage, string, string, string, int64) error
 	CreateWorkItemPhase(store.WorkItemPhase) error
 	CompleteWorkItemPhase(string, string, int, json.RawMessage, json.RawMessage, string, int64) error
+	ReopenWorkItemPhase(string, string, int) error
 	ListWorkItemPhases(string) ([]store.WorkItemPhase, error)
 	ListWorkItemPhaseContexts(string) ([]store.WorkItemPhaseContext, error)
 	UpdateWorkItemPhaseIntervention(string, string, int, json.RawMessage) error
+	CreateWorkItemUnits([]store.WorkItemUnit) error
+	StartWorkItemUnit(string, string, int, string, int, string, int64) error
+	CompleteWorkItemUnit(string, string, int, string, string, json.RawMessage, string, int64) error
+	RetryWorkItemUnit(string, string, int, string) error
+	FailRunningWorkItemUnits(string, string, int, string, int64) (int64, error)
+	ListWorkItemPhaseUnits(string, string, int) ([]store.WorkItemUnit, error)
 	ListProjects() ([]store.Project, error)
 }

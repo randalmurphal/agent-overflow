@@ -1,6 +1,9 @@
 package def
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Scope identifies where a workflow definition was loaded from.
 type Scope string
@@ -65,8 +68,41 @@ type Phase struct {
 	MCP          []string            `yaml:"mcp,omitempty" json:"mcp,omitempty"`
 	Access       Access              `yaml:"access,omitempty" json:"access,omitempty"`
 	FanOut       []Unit              `yaml:"fan_out,omitempty" json:"fanOut,omitempty"`
+	Over         string              `yaml:"over,omitempty" json:"over,omitempty"`
+	As           string              `yaml:"as,omitempty" json:"as,omitempty"`
+	Unit         *Unit               `yaml:"unit,omitempty" json:"unit,omitempty"`
 	Join         *Unit               `yaml:"join,omitempty" json:"join,omitempty"`
 	Gate         Gate                `yaml:"gate" json:"gate"`
+}
+
+// EffectiveShape resolves the phase's declared shape, defaulting to single.
+func (p Phase) EffectiveShape() Shape {
+	if p.Shape == "" {
+		return ShapeSingle
+	}
+	return p.Shape
+}
+
+// DynamicFanOut reports whether the phase stamps its units from one template
+// over an array variable instead of declaring them statically. Any of the three
+// dynamic fields counts, so a half-authored dynamic form is validated as a
+// dynamic fan-out (and told what is missing) rather than silently read as a
+// static fan-out with no units.
+func (p Phase) DynamicFanOut() bool {
+	return p.Over != "" || p.As != "" || p.Unit != nil
+}
+
+// UnitDefinitions returns every unit definition the phase can run: its static
+// list, or the single dynamic template. The join is not included — it is a
+// distinct field with its own lifecycle.
+func (p Phase) UnitDefinitions() []Unit {
+	if p.DynamicFanOut() {
+		if p.Unit == nil {
+			return nil
+		}
+		return []Unit{*p.Unit}
+	}
+	return p.FanOut
 }
 
 type Driver string
@@ -90,6 +126,17 @@ type Unit struct {
 	Prompt   string `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 	Command  string `yaml:"command,omitempty" json:"command,omitempty"`
 	Access   Access `yaml:"access,omitempty" json:"access,omitempty"`
+}
+
+// EffectiveDriver resolves how a unit executes. Units never declare `driver`:
+// the binding they carry is the discriminator — a `command` runs deterministically
+// like a tool phase, anything else runs an agent turn. Validation refuses a unit
+// that carries both kinds of binding or neither, so this can never guess.
+func (u Unit) EffectiveDriver() Driver {
+	if strings.TrimSpace(u.Command) != "" {
+		return DriverTool
+	}
+	return DriverAgent
 }
 
 // Gate contains ordered, first-match-wins routes.
@@ -170,9 +217,12 @@ func CountHumanGates(workflow Workflow) int {
 }
 
 // Bindings is the narrow profile-facing surface used by dry-run validation.
+// Capacity returns the declared capacity and whether the resource is bound at
+// all, so one method answers both "is this bindable" and "how wide can this
+// fan-out actually run".
 type Bindings interface {
 	HasCheck(name string) bool
-	HasCapacity(name string) bool
+	Capacity(name string) (int, bool)
 	HasCommand(name string) bool
 }
 
@@ -192,9 +242,13 @@ type Finding struct {
 
 func (f Finding) Error() string { return fmt.Sprintf("%s: %s", f.Element, f.Message) }
 
-// ValidationResult reports every independently discoverable error.
+// ValidationResult reports every independently discoverable error, plus the
+// dry-run's informational reports. Reports never make a workflow invalid: they
+// describe how a valid definition will behave at run time (a fan-out wider than
+// its provider capacity throttles rather than failing).
 type ValidationResult struct {
 	Findings      []Finding     `json:"findings"`
+	Reports       []Finding     `json:"reports,omitempty"`
 	BindingStatus BindingStatus `json:"bindingStatus"`
 }
 
@@ -231,6 +285,9 @@ func normalizeAccess(access Access) Access {
 
 // Writes reports whether the phase itself, its join, or any of its fan-out
 // units needs write access. This is the per-phase half of DeriveWorkspaceNeed.
+// A dynamic fan-out's single template counts once: its stamped units share the
+// template's access, so one writing template means the run needs a worktree
+// however many elements the array carries at run time.
 func (p Phase) Writes() bool {
 	if p.EffectiveAccess() == AccessWrite {
 		return true
@@ -238,7 +295,7 @@ func (p Phase) Writes() bool {
 	if p.Join != nil && p.Join.EffectiveAccess() == AccessWrite {
 		return true
 	}
-	for _, unit := range p.FanOut {
+	for _, unit := range p.UnitDefinitions() {
 		if unit.EffectiveAccess() == AccessWrite {
 			return true
 		}

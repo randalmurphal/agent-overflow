@@ -13,11 +13,18 @@ resource semaphores, and startup recovery.
   the only caller of `Runner.Stop` (takeover uses `StopForTakeover`), so an
   agent session or a tool phase's process tree dies in the same place its
   resources are released — including the `runnerStarting` window, where an
-  attempt that has not reported yet is still stopped by key.
+  attempt that has not reported yet is still stopped by key. Teardown is
+  tree-aware: `teardownUnit` is the per-unit half of the same contract (the
+  only place a unit's capacity is released and the only caller of
+  `Runner.Stop` for a unit key), an attempt's in-flight units come down before
+  the phase releases anything of its own, and `sweepPersistedUnits` then fails
+  any row still claiming `running` — the case where no in-memory state
+  survived to be torn down.
 - There is no queued state. `StartItem` admits an item straight to `running`
   and enters its first phase; back-pressure is a *phase* waiting on resource
-  capacity, never an item waiting in line. `waiting` is a FIFO list of held
-  phase starts, so freed capacity goes to the longest-waiting phase.
+  capacity, never an item waiting in line. `waiting` is one FIFO list of held
+  starts — phase attempts and fan-out units alike — so freed capacity goes to
+  the longest-waiting piece of work regardless of which kind it is.
 - Resource capacity comes from the live project profile at acquisition time.
   Acquisitions are sorted and all-or-nothing; names never contend across
   projects.
@@ -28,6 +35,12 @@ resource semaphores, and startup recovery.
   prefix in `internal/workflow/profile` validation. A tool-driver phase never
   takes provider capacity, and a frozen agent phase with no provider is a
   wiring error rather than an unbounded start.
+- A fan-out phase runs no turn of its own, so it takes no provider slot: its
+  units and its join each acquire `provider:<their own provider>`. If the phase
+  also held one it would compete with the very units it waits for, and at
+  capacity 1 it would deadlock outright. The phase's *declared* resources stay
+  phase-scoped — acquired once at entry and held for the whole attempt — so a
+  `live-stack` mutex is taken once by the attempt, not once per unit.
 - Runner start failures are mapped to typed park reasons by sentinel, never by
   string matching: `ErrSetupFailed` → `setup-failed` (workspace provisioning,
   setup hooks, secret resolution, a process that would not start),
@@ -105,6 +118,34 @@ resource semaphores, and startup recovery.
   nothing pretends otherwise. An agent phase pinned to a provider that cannot
   apply a runtime mode (`provider.Capabilities.EnforcesRuntimeMode` false) is
   refused with `ErrWiringFailed` rather than started with an inert declaration.
+
+## Fan-out attempts
+
+- Expansion happens at phase entry, from the frozen phase plus the live
+  variable context: a static `fan_out:` list expands to itself, and a dynamic
+  `over:`/`as:`/`unit:` phase stamps one unit per array element. Width is a
+  runtime fact — zero units is legal and runs the join immediately, and an
+  `over:` variable that is missing or not an array at runtime is a
+  `wiring-error` park, not a crash. Every unit row is persisted `pending`
+  before any unit starts.
+- Whether an attempt may still launch is derived from its unit statuses
+  (`fanOutRun.blocked`), never latched into a flag, so an attempt rebuilt from
+  its rows blocks for exactly the reason the live one did. A unit resting
+  `failed` stops further launches and parks the run `unit-failed` once the
+  in-flight units finish; a unit resting `taken-over` does the same under
+  `taken-over`, which outranks a failure. In-flight units are never interrupted
+  by a sibling's failure — their work is durable.
+- The join is the attempt's final unit. It runs when every unit rests `done` or
+  `dropped`, receives their persisted results (id, index, status, outputs,
+  branch, worktree, thread) under the reserved `units` variable, and its
+  envelope *is* the phase's envelope — so a join failure is an ordinary phase
+  failure (`agent-error`), not the unit-failure policy.
+- `RetryUnit` / `DropUnit` / `TakeOverUnit` repair an attempt rather than
+  replacing it: the phase attempt row is reopened (`ReopenWorkItemPhase`) so
+  finished units keep their results, and the run only returns to `running` when
+  no unit is left blocking it. A unit that cannot *start* is not a unit failure
+  — it parks the attempt under the same sentinel-mapped reason a single-shape
+  phase would, because nothing runnable was ever produced.
 
 ## Boundaries
 

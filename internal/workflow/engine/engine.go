@@ -27,6 +27,9 @@ type runtimeItem struct {
 	feedback          *Feedback
 	priorThreadID     string
 	takeoverFinalize  bool
+	// fan is the live fan-out state of the current attempt, or nil for a
+	// single-shape phase. It never outlives its attempt: teardown clears it.
+	fan *fanOutRun
 }
 
 type resourceKey struct {
@@ -51,10 +54,12 @@ type Engine struct {
 	closing  bool
 	used     bool
 
-	ctx            context.Context
-	items          map[string]*runtimeItem
-	waiting        []*runtimeItem
-	waitingByID    map[string]struct{}
+	ctx   context.Context
+	items map[string]*runtimeItem
+	// waiting is one FIFO of held starts — phase attempts and fan-out units
+	// alike — so freed capacity always goes to the longest-waiting work.
+	waiting        []waiter
+	waitingKeys    map[waitKey]struct{}
 	holders        map[resourceKey]int
 	paused         bool
 	lastTimestamp  int64
@@ -71,7 +76,7 @@ func New(store persistence, runner Runner, emitter Emitter, definitions Definiti
 		profiles: profiles, spend: spend, paused: config.Paused, now: time.Now,
 		commands: make(chan any, commandBuffer), done: make(chan struct{}),
 		items: make(map[string]*runtimeItem), holders: make(map[resourceKey]int),
-		waitingByID:    make(map[string]struct{}),
+		waitingKeys:    make(map[waitKey]struct{}),
 		inflightStarts: make(map[*runnerStartFuture]struct{}),
 	}, nil
 }
@@ -205,291 +210,6 @@ func (e *Engine) ResolveHumanGate(itemID string, decision HumanDecision, note st
 // Sync waits until every command submitted before it has been processed.
 func (e *Engine) Sync() error { return e.request(syncCommand{}) }
 
-type response struct {
-	err    error
-	starts []*runnerStartFuture
-}
-
-type runnerStartFuture struct {
-	key  RunKey
-	done chan response
-}
-type initCommand struct{ reply chan response }
-type closeCommand struct{ reply chan response }
-type syncCommand struct{ reply chan response }
-type startCommand struct {
-	item          store.WorkItem
-	waitForStarts bool
-	reply         chan response
-}
-type cancelCommand struct {
-	itemID string
-	reply  chan response
-}
-type parkDispositionCommand struct {
-	itemID string
-	reply  chan response
-}
-type rerunFailedCommand struct {
-	itemID string
-	reply  chan response
-}
-type resolveDispositionCommand struct {
-	itemID string
-	reply  chan response
-}
-type resumeCommand struct {
-	itemID      string
-	targetPhase string
-	reply       chan response
-}
-type answerCommand struct {
-	itemID string
-	answer string
-	reply  chan response
-}
-type takeoverCommand struct {
-	itemID string
-	reply  chan response
-}
-type completeTakeoverCommand struct {
-	itemID string
-	reply  chan response
-}
-type pauseCommand struct {
-	paused        bool
-	waitForStarts bool
-	reply         chan response
-}
-type pauseStateCommand struct {
-	result *bool
-	reply  chan response
-}
-type humanGateCommand struct {
-	itemID   string
-	decision HumanDecision
-	note     string
-	reply    chan response
-}
-type completionCommand struct {
-	key     RunKey
-	outcome Outcome
-}
-type runnerStartCommand struct {
-	key    RunKey
-	future *runnerStartFuture
-	err    error
-}
-
-func (e *Engine) request(command any) error {
-	e.lifeMu.Lock()
-	if !e.started {
-		e.lifeMu.Unlock()
-		return fmt.Errorf("workflow engine: not started")
-	}
-	_, closeRequest := command.(closeCommand)
-	if e.closing && !closeRequest {
-		e.lifeMu.Unlock()
-		return fmt.Errorf("workflow engine: closing")
-	}
-	reply := make(chan response, 1)
-	switch command := command.(type) {
-	case initCommand:
-		command.reply = reply
-		e.commands <- command
-	case closeCommand:
-		command.reply = reply
-		e.commands <- command
-	case syncCommand:
-		command.reply = reply
-		e.commands <- command
-	case startCommand:
-		command.reply = reply
-		e.commands <- command
-	case cancelCommand:
-		command.reply = reply
-		e.commands <- command
-	case parkDispositionCommand:
-		command.reply = reply
-		e.commands <- command
-	case rerunFailedCommand:
-		command.reply = reply
-		e.commands <- command
-	case resolveDispositionCommand:
-		command.reply = reply
-		e.commands <- command
-	case resumeCommand:
-		command.reply = reply
-		e.commands <- command
-	case answerCommand:
-		command.reply = reply
-		e.commands <- command
-	case takeoverCommand:
-		command.reply = reply
-		e.commands <- command
-	case completeTakeoverCommand:
-		command.reply = reply
-		e.commands <- command
-	case pauseCommand:
-		command.reply = reply
-		e.commands <- command
-	case pauseStateCommand:
-		command.reply = reply
-		e.commands <- command
-	case humanGateCommand:
-		command.reply = reply
-		e.commands <- command
-	default:
-		e.lifeMu.Unlock()
-		return fmt.Errorf("workflow engine: unsupported command %T", command)
-	}
-	e.lifeMu.Unlock()
-	return waitEngineResponse(<-reply)
-}
-
-func waitEngineResponse(result response) error {
-	errs := []error{result.err}
-	for _, start := range result.starts {
-		errs = append(errs, waitEngineResponse(<-start.done))
-	}
-	return errors.Join(errs...)
-}
-
-func (e *Engine) commandResponse(err error) response {
-	starts := append([]*runnerStartFuture(nil), e.commandStarts...)
-	e.commandStarts = nil
-	return response{err: err, starts: starts}
-}
-
-func (e *Engine) itemCommandResponse(itemID string, err error) response {
-	starts := make([]*runnerStartFuture, 0, len(e.commandStarts))
-	for _, start := range e.commandStarts {
-		if start.key.ItemID == itemID {
-			starts = append(starts, start)
-		}
-	}
-	e.commandStarts = nil
-	return response{err: err, starts: starts}
-}
-
-func (e *Engine) syncResponse() response {
-	starts := make([]*runnerStartFuture, 0, len(e.inflightStarts))
-	for start := range e.inflightStarts {
-		starts = append(starts, start)
-	}
-	return response{starts: starts}
-}
-
-func settleRunnerStart(start *runnerStartFuture, result response) {
-	select {
-	case start.done <- result:
-	default:
-	}
-}
-
-func (e *Engine) loop() {
-	defer close(e.done)
-	for command := range e.commands {
-		e.commandStarts = nil
-		var err error
-		switch command := command.(type) {
-		case initCommand:
-			err = e.rebuild()
-			if err == nil {
-				err = e.startWaiting()
-			}
-			command.reply <- e.commandResponse(err)
-		case startCommand:
-			err = e.startNewItem(command.item)
-			if command.waitForStarts {
-				command.reply <- e.itemCommandResponse(command.item.ID, err)
-			} else {
-				e.commandStarts = nil
-				command.reply <- response{err: err}
-			}
-		case cancelCommand:
-			err = e.cancel(command.itemID)
-			e.commandStarts = nil
-			command.reply <- response{err: err}
-		case parkDispositionCommand:
-			err = e.parkDisposition(command.itemID)
-			e.commandStarts = nil
-			command.reply <- response{err: err}
-		case rerunFailedCommand:
-			err = e.rerunFailed(command.itemID)
-			command.reply <- e.itemCommandResponse(command.itemID, err)
-		case resolveDispositionCommand:
-			err = e.resolveDisposition(command.itemID)
-			e.commandStarts = nil
-			command.reply <- response{err: err}
-		case resumeCommand:
-			err = e.resume(command.itemID, command.targetPhase)
-			command.reply <- e.itemCommandResponse(command.itemID, err)
-		case answerCommand:
-			err = e.answer(command.itemID, command.answer)
-			command.reply <- e.itemCommandResponse(command.itemID, err)
-		case takeoverCommand:
-			err = errors.Join(e.takeOver(command.itemID), e.startWaiting())
-			e.commandStarts = nil
-			command.reply <- response{err: err}
-		case completeTakeoverCommand:
-			err = e.completeTakeover(command.itemID)
-			command.reply <- e.itemCommandResponse(command.itemID, err)
-		case pauseCommand:
-			if e.paused != command.paused {
-				e.paused = command.paused
-				e.emitEngineState()
-			}
-			if !e.paused {
-				startErr := e.startWaiting()
-				if command.waitForStarts {
-					err = startErr
-				}
-			}
-			if command.waitForStarts {
-				command.reply <- e.commandResponse(err)
-			} else {
-				e.commandStarts = nil
-				command.reply <- response{err: err}
-			}
-		case pauseStateCommand:
-			*command.result = e.paused
-			command.reply <- response{}
-		case humanGateCommand:
-			err = errors.Join(e.resolveHumanGate(command.itemID, command.decision, command.note), e.startWaiting())
-			command.reply <- e.itemCommandResponse(command.itemID, err)
-		case runnerStartCommand:
-			err = e.finishRunnerStart(command)
-			if err != nil {
-				e.emitError(command.key.ItemID, err)
-			}
-			_ = e.startWaiting() // startWaiting reports item-scoped failures itself.
-			delete(e.inflightStarts, command.future)
-			e.commandStarts = nil
-			settleRunnerStart(command.future, response{err: err})
-		case completionCommand:
-			if err = e.complete(command.key, command.outcome); err != nil {
-				e.emitError(command.key.ItemID, err)
-			}
-			_ = e.startWaiting() // startWaiting emits item-scoped asynchronous errors itself.
-		case syncCommand:
-			command.reply <- e.syncResponse()
-		case closeCommand:
-			for _, item := range e.items {
-				if item.runnerStarting && item.runnerStartCancel != nil {
-					item.runnerStartCancel()
-				}
-			}
-			for start := range e.inflightStarts {
-				settleRunnerStart(start, response{err: fmt.Errorf("workflow engine closed before runner startup settled")})
-				delete(e.inflightStarts, start)
-			}
-			command.reply <- response{}
-			return
-		}
-	}
-}
-
 func (e *Engine) cancel(itemID string) error {
 	item, ok := e.items[itemID]
 	if !ok {
@@ -568,24 +288,28 @@ func (e *Engine) resume(itemID, targetPhase string) error {
 	return e.enterPhase(item)
 }
 
+// loadParked rebuilds a parked run from SQLite. Every human action on a
+// non-resident item goes through it — resume, answer, takeover, gate
+// resolution, unit recovery — so its failures are labelled for the item rather
+// than for any one of those verbs.
 func (e *Engine) loadParked(itemID string) (*runtimeItem, error) {
 	storedItem, err := e.store.GetWorkItem(itemID)
 	if err != nil {
-		return nil, fmt.Errorf("resume item %q: %w", itemID, err)
+		return nil, fmt.Errorf("load parked item %q: %w", itemID, err)
 	}
 	if State(storedItem.State) != StateNeedsHuman {
-		return nil, fmt.Errorf("resume item %q: invalid transition %s -> %s", itemID, storedItem.State, StateRunning)
+		return nil, fmt.Errorf("load parked item %q: state is %s, want %s", itemID, storedItem.State, StateNeedsHuman)
 	}
 	item := &runtimeItem{item: storedItem}
 	if len(storedItem.Snapshot) == 0 {
 		return item, nil
 	}
 	if err := decodeSnapshot(storedItem.Snapshot, &item.workflow); err != nil {
-		return nil, fmt.Errorf("resume item %q snapshot: %w", itemID, err)
+		return nil, fmt.Errorf("load parked item %q snapshot: %w", itemID, err)
 	}
 	phases, err := e.store.ListWorkItemPhases(itemID)
 	if err != nil {
-		return nil, fmt.Errorf("resume item %q phases: %w", itemID, err)
+		return nil, fmt.Errorf("load parked item %q phases: %w", itemID, err)
 	}
 	if current, ok := currentPhaseAttempt(phases); ok {
 		item.phaseID = current.PhaseID
@@ -593,7 +317,7 @@ func (e *Engine) loadParked(itemID string) (*runtimeItem, error) {
 		if len(current.InputEnvelope) > 0 {
 			var input PhaseInput
 			if err := decodeJSON(current.InputEnvelope, &input); err != nil {
-				return nil, fmt.Errorf("resume item %q input envelope: %w", itemID, err)
+				return nil, fmt.Errorf("load parked item %q input envelope: %w", itemID, err)
 			}
 			item.feedback = input.Feedback
 		}

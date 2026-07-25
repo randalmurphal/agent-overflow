@@ -91,8 +91,21 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 			}
 		}()
 	}
-	if request.Phase.Shape != "" && request.Phase.Shape != def.ShapeSingle {
-		return fmt.Errorf("workflow runner: phase %q uses unsupported shape %q; only single is available", request.Phase.ID, request.Phase.Shape)
+	// Fan-out execution is an engine capability the app runner does not
+	// implement yet: units need their own threads and sub-worktrees. Refusing by
+	// sentinel parks the run as a wiring error — the frozen definition and this
+	// build cannot produce runnable work — instead of blaming the agent.
+	if request.Phase.EffectiveShape() != def.ShapeSingle {
+		return errors.Join(engine.ErrWiringFailed, fmt.Errorf(
+			"workflow runner: phase %q uses shape %q; only single is available in this build",
+			request.Phase.ID, request.Phase.EffectiveShape(),
+		))
+	}
+	if request.Key.UnitID != "" {
+		return errors.Join(engine.ErrWiringFailed, fmt.Errorf(
+			"workflow runner: phase %q unit %q cannot run; fan-out units are not available in this build",
+			request.Phase.ID, request.Key.UnitID,
+		))
 	}
 	switch request.Phase.Driver {
 	case def.DriverTool:
@@ -590,6 +603,12 @@ func workflowPhaseRuntimeMode(access def.Access) provider.RuntimeMode {
 	return provider.RuntimeReadOnly
 }
 
+// workflowRunKey is the app runner's map key for one live piece of engine work.
+// It carries the unit id so a fan-out attempt's units never collide with each
+// other or with their phase's own key.
 func workflowRunKey(key engine.RunKey) string {
+	if key.UnitID != "" {
+		return fmt.Sprintf("%s/%s/%d/%s", key.ItemID, key.PhaseID, key.Attempt, key.UnitID)
+	}
 	return fmt.Sprintf("%s/%s/%d", key.ItemID, key.PhaseID, key.Attempt)
 }

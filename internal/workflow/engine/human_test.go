@@ -127,8 +127,13 @@ func TestTakeoverDetachesAndCompleteRoutesThroughGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
-	if h.runner.stopCount() != 1 {
-		t.Fatalf("runner stops = %d, want 1", h.runner.stopCount())
+	// A takeover detaches the attempt through StopForTakeover; the ordinary stop
+	// path must not also run, which would kill the session the human now steers.
+	if takeovers := h.runner.takeovers(); len(takeovers) != 1 || takeovers[0].ItemID != item.ID {
+		t.Fatalf("takeover stops = %+v, want the live attempt detached once", takeovers)
+	}
+	if h.runner.stopCount() != 0 {
+		t.Fatalf("runner stops = %d, want none for a takeover", h.runner.stopCount())
 	}
 	phases, err := h.store.ListWorkItemPhases(item.ID)
 	if err != nil {

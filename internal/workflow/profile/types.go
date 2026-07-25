@@ -92,13 +92,14 @@ func (p *Profile) HasCheck(name string) bool {
 	return ok
 }
 
-// HasCapacity reports whether a named project-local resource is bound.
-func (p *Profile) HasCapacity(name string) bool {
+// Capacity returns a named project-local resource's declared capacity and
+// whether the profile binds it at all.
+func (p *Profile) Capacity(name string) (int, bool) {
 	if p == nil {
-		return false
+		return 0, false
 	}
-	_, ok := p.Capacities[name]
-	return ok
+	capacity, ok := p.Capacities[name]
+	return capacity, ok
 }
 
 // HasCommand reports whether a named command template is bound.

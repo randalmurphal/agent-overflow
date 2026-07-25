@@ -54,7 +54,19 @@
         "mcp": {"type": "array", "items": {"type": "string"}},
         "access": {"enum": ["read-only", "write"]},
         "fan_out": {"type": "array", "items": {"$ref": "#/$defs/unit"}},
+        "over": {"type": "string"}, "as": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+        "unit": {"$ref": "#/$defs/unit"},
         "join": {"$ref": "#/$defs/unit"}, "gate": {"$ref": "#/$defs/gate"}
+      },
+      "not": {
+        "anyOf": [
+          {"required": ["fan_out", "over"]},
+          {"required": ["fan_out", "as"]},
+          {"required": ["fan_out", "unit"]}
+        ]
+      },
+      "dependentRequired": {
+        "over": ["as", "unit"], "as": ["over", "unit"], "unit": ["over", "as"]
       }
     },
     "unit": {

@@ -107,3 +107,78 @@ func TestProjectProfileBindingFindingsAreVisible(t *testing.T) {
 		t.Fatalf("Run exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
+
+// TestFanOutWidthReportIsInformational pins decision D19's dry-run half: a
+// static fan-out wider than the provider capacity it will actually get is
+// reported, but the workflow stays valid — the run throttles, it does not break.
+func TestFanOutWidthReportIsInformational(t *testing.T) {
+	configRoot := t.TempDir()
+	sharedDir := filepath.Join(configRoot, "workflows")
+	projectDir := filepath.Join(configRoot, "projects", "sample")
+	mustMkdirAll(t, sharedDir)
+	mustMkdirAll(t, projectDir)
+	mustWriteFile(t, filepath.Join(sharedDir, "wide.yaml"), fanOutWorkflowYAML())
+	for _, prompt := range []string{"work.md", "left.md", "right.md", "merge.md"} {
+		mustWriteFile(t, filepath.Join(sharedDir, prompt), "do the work\n")
+	}
+	mustWriteFile(t, filepath.Join(projectDir, "profile.yaml"), "capacities:\n  \"provider:claude\": 1\n")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Run([]string{"workflow", "validate", "--config-root", configRoot, "--project", "sample", "--id", "wide"}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("Run exit code = %d, want %d; stdout=%q stderr=%q", code, exitOK, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "note: ") || !strings.Contains(stdout.String(), "fan-out.width") {
+		t.Fatalf("stdout = %q, want an informational width note", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Run([]string{"workflow", "validate", "--config-root", configRoot, "--project", "sample", "--id", "wide", "--json"}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("Run --json exit code = %d; stderr=%q", code, stderr.String())
+	}
+	var result struct {
+		Findings []json.RawMessage `json:"findings"`
+		Reports  []struct {
+			Code string `json:"code"`
+		} `json:"reports"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 0 || len(result.Reports) != 1 || result.Reports[0].Code != "fan-out.width" {
+		t.Fatalf("validation result = %+v, want one report and no findings", result)
+	}
+}
+
+func fanOutWorkflowYAML() string {
+	return `id: wide
+name: Wide fan-out
+phases:
+  - id: work
+    driver: agent
+    shape: fan-out
+    provider: claude
+    model: sonnet
+    prompt: work.md
+    fan_out:
+      - id: left
+        provider: claude
+        model: sonnet
+        prompt: left.md
+      - id: right
+        provider: claude
+        model: sonnet
+        prompt: right.md
+    join:
+      id: merge
+      provider: claude
+      model: sonnet
+      prompt: merge.md
+    gate:
+      routes:
+        - to: done
+`
+}

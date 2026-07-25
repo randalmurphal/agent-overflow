@@ -1368,7 +1368,117 @@ CHECK(workflow_concurrency BETWEEN 0 AND 32);`,
 		SQL:     rebuildRuntimeModeReadOnlyV34SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 35,
+		Name:    "work_item_units",
+		// One row per fan-out unit of one phase attempt, written when the unit is
+		// created rather than when it finishes: a sub-worktree and branch must be
+		// registered the moment they exist so a crash can never strand them and
+		// the discard preview can list them. Like work_item_phases this carries no
+		// foreign keys — run history outlives the project, thread, and item rows
+		// it references.
+		SQL: `CREATE TABLE work_item_units (
+    item_id        TEXT    NOT NULL,
+    phase_id       TEXT    NOT NULL,
+    attempt        INTEGER NOT NULL CHECK(attempt >= 1),
+    unit_id        TEXT    NOT NULL,
+    unit_index     INTEGER NOT NULL CHECK(unit_index >= 0),
+    kind           TEXT    NOT NULL CHECK(kind IN ('unit','join')),
+    provider       TEXT    NOT NULL DEFAULT '',
+    model          TEXT    NOT NULL DEFAULT '',
+    thread_id      TEXT    NOT NULL DEFAULT '',
+    branch         TEXT    NOT NULL DEFAULT '',
+    worktree_path  TEXT    NOT NULL DEFAULT '',
+    narrative_path TEXT    NOT NULL DEFAULT '',
+    status         TEXT    NOT NULL CHECK(status IN ('pending','running','done','failed','dropped','taken-over')),
+    unit_attempt   INTEGER NOT NULL DEFAULT 1 CHECK(unit_attempt >= 1),
+    envelope       TEXT    NOT NULL DEFAULT '' CHECK(envelope = '' OR json_valid(envelope)),
+    feedback       TEXT    NOT NULL DEFAULT '',
+    started_at     INTEGER NOT NULL DEFAULT 0,
+    ended_at       INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(item_id, phase_id, attempt, unit_id)
+);
+
+CREATE INDEX idx_work_item_units_attempt
+  ON work_item_units(item_id, phase_id, attempt, unit_index);
+
+CREATE INDEX idx_work_item_units_worktree
+  ON work_item_units(item_id, worktree_path)
+  WHERE worktree_path <> '';`,
+	},
+	{
+		Version: 36,
+		Name:    "work_item_unit_failed_reason",
+		SQL:     rebuildWorkItemsUnitFailedReasonV36SQL,
+		Rebuild: true,
+	},
 }
+
+// rebuildWorkItemsUnitFailedReasonV36SQL widens the typed park reason set with
+// `unit-failed`: a fan-out unit that exhausted its retries stops the launch of
+// not-yet-started units and parks the run with the failed unit's record. SQLite
+// cannot alter a CHECK in place, so the established table-rebuild pattern
+// applies; every other column, value, and index is carried over unchanged.
+const rebuildWorkItemsUnitFailedReasonV36SQL = `
+CREATE TABLE work_items_new (
+    id               TEXT    PRIMARY KEY,
+    project_id       TEXT    NOT NULL,
+    goal             TEXT    NOT NULL,
+    workflow_id      TEXT    NOT NULL,
+    workflow_scope   TEXT    NOT NULL CHECK(workflow_scope IN ('project','shared')),
+    snapshot         TEXT    NOT NULL DEFAULT '' CHECK(snapshot = '' OR json_valid(snapshot)),
+    state            TEXT    NOT NULL CHECK(state IN ('running','needs-human','done','failed','cancelled')),
+    reason           TEXT    NOT NULL DEFAULT '' CHECK(reason IN ('','gate','question','stuck','stalled','budget-exhausted','retries-exhausted','check-failed-genuine','agent-error','wiring-error','disposition','setup-failed','interrupted','taken-over','unit-failed')),
+    seeds            TEXT    NOT NULL DEFAULT '' CHECK(seeds = '' OR json_valid(seeds)),
+    step_mode        INTEGER NOT NULL DEFAULT 0 CHECK(step_mode IN (0,1)),
+    worktree_path    TEXT    NOT NULL DEFAULT '',
+    branch           TEXT    NOT NULL DEFAULT '',
+    base_branch      TEXT    NOT NULL DEFAULT '',
+    budget           TEXT    NOT NULL DEFAULT '' CHECK(budget = '' OR json_valid(budget)),
+    source           TEXT    NOT NULL CHECK(source IN ('manual','agent','automation')),
+    source_ref       TEXT    NOT NULL DEFAULT '',
+    triage_thread_id TEXT    NOT NULL DEFAULT '',
+    disposition      TEXT    NOT NULL DEFAULT '' CHECK(disposition = '' OR json_valid(disposition)),
+    digest           TEXT    NOT NULL DEFAULT '' CHECK(digest = '' OR json_valid(digest)),
+    created_at       INTEGER NOT NULL,
+    started_at       INTEGER NOT NULL DEFAULT 0,
+    ended_at         INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT INTO work_items_new (
+    id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+    seeds, step_mode, worktree_path, branch, base_branch, budget,
+    source, source_ref, triage_thread_id, disposition, digest,
+    created_at, started_at, ended_at
+)
+SELECT
+    id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+    seeds, step_mode, worktree_path, branch, base_branch, budget,
+    source, source_ref, triage_thread_id, disposition, digest,
+    created_at, started_at, ended_at
+FROM work_items;
+
+DROP TABLE work_items;
+
+ALTER TABLE work_items_new RENAME TO work_items;
+
+CREATE INDEX idx_work_items_project_state_created
+  ON work_items(project_id, state, created_at);
+
+CREATE INDEX idx_work_items_project_created
+  ON work_items(project_id, created_at);
+
+CREATE INDEX idx_work_items_state_created
+  ON work_items(state, created_at, id);
+
+CREATE INDEX idx_work_items_triage_thread
+  ON work_items(triage_thread_id)
+  WHERE triage_thread_id <> '';
+
+CREATE UNIQUE INDEX idx_work_items_agent_source_ref
+  ON work_items(source_ref)
+  WHERE source = 'agent' AND source_ref <> '';
+`
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies
 // any unapplied migrations in order.

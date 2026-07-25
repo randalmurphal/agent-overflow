@@ -2391,3 +2391,133 @@ func TestRuntimeModeCheckMatchesProvider(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrationV35CreatesWorkItemUnits(t *testing.T) {
+	db := migrateThrough(t, 34)
+	var before int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'work_item_units'`,
+	).Scan(&before); err != nil {
+		t.Fatalf("count work_item_units before v35: %v", err)
+	}
+	if before != 0 {
+		t.Fatal("work_item_units existed before v35")
+	}
+	if err := applyMigration(db, migrationByVersion(t, 35)); err != nil {
+		t.Fatalf("apply migration v35: %v", err)
+	}
+	for _, index := range []string{"idx_work_item_units_attempt", "idx_work_item_units_worktree"} {
+		readIndexSQL(t, db, index)
+	}
+
+	mustExec(t, db, `INSERT INTO work_item_units
+		(item_id, phase_id, attempt, unit_id, unit_index, kind, provider, model, status)
+		VALUES ('item-v35', 'port', 1, 'port-0', 0, 'unit', 'claude', 'sonnet', 'pending')`)
+	mustExec(t, db, `INSERT INTO work_item_units
+		(item_id, phase_id, attempt, unit_id, unit_index, kind, status)
+		VALUES ('item-v35', 'port', 1, 'merge', 1, 'join', 'pending')`)
+
+	// The same unit id in a later attempt is a different row; within one
+	// attempt it is a collision.
+	mustExec(t, db, `INSERT INTO work_item_units
+		(item_id, phase_id, attempt, unit_id, unit_index, kind, status)
+		VALUES ('item-v35', 'port', 2, 'port-0', 0, 'unit', 'pending')`)
+	if _, err := db.Exec(`INSERT INTO work_item_units
+		(item_id, phase_id, attempt, unit_id, unit_index, kind, status)
+		VALUES ('item-v35', 'port', 1, 'port-0', 3, 'unit', 'pending')`); err == nil {
+		t.Fatal("duplicate unit id within one attempt was accepted")
+	}
+
+	invalid := []struct {
+		name string
+		sql  string
+	}{
+		{"unit kind", `UPDATE work_item_units SET kind = 'coordinator' WHERE unit_id = 'port-0' AND attempt = 1`},
+		{"unit status", `UPDATE work_item_units SET status = 'paused' WHERE unit_id = 'port-0' AND attempt = 1`},
+		{"phase attempt", `UPDATE work_item_units SET attempt = 0 WHERE unit_id = 'port-0' AND attempt = 1`},
+		{"unit index", `UPDATE work_item_units SET unit_index = -1 WHERE unit_id = 'port-0' AND attempt = 1`},
+		{"unit attempt", `UPDATE work_item_units SET unit_attempt = 0 WHERE unit_id = 'port-0' AND attempt = 1`},
+		{"unit envelope", `UPDATE work_item_units SET envelope = '{' WHERE unit_id = 'port-0' AND attempt = 1`},
+	}
+	for _, test := range invalid {
+		if _, err := db.Exec(test.sql); err == nil {
+			t.Errorf("%s constraint accepted invalid value", test.name)
+		}
+	}
+	for _, status := range []string{"pending", "running", "done", "failed", "dropped", "taken-over"} {
+		mustExec(t, db, `UPDATE work_item_units SET status = ? WHERE unit_id = 'port-0' AND attempt = 1`, status)
+	}
+
+	// Unit rows carry no foreign keys, for the same reason phase rows do not:
+	// the run record outlives the item it describes.
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, source, created_at)
+		VALUES ('item-v35', 'project-v35', 'goal', 'wf', 'shared', 'running', 'manual', 1)`)
+	mustExec(t, db, `DELETE FROM work_items WHERE id = 'item-v35'`)
+	var retained int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_item_units WHERE item_id = 'item-v35'`).Scan(&retained); err != nil {
+		t.Fatalf("count retained units: %v", err)
+	}
+	if retained != 3 {
+		t.Fatalf("unit rows after work item delete = %d, want 3 (no FK cascade)", retained)
+	}
+}
+
+func TestMigrationV36AddsUnitFailedReason(t *testing.T) {
+	db := migrateThrough(t, 35)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+		 seeds, step_mode, worktree_path, branch, base_branch, budget,
+		 source, source_ref, triage_thread_id, disposition, digest,
+		 created_at, started_at, ended_at)
+		VALUES ('item-v36', 'project-v36', 'keep goal', 'wf', 'shared', '{"id":"wf"}',
+		 'needs-human', 'question', '{"ticket":"AO-2"}', 1, '/tmp/wt', 'ao-v36', 'main', '{}',
+		 'agent', 'agent-ref-v36', 'triage-v36', '{"action":"merged"}', '{"whatHappened":"x"}',
+		 4, 5, 6)`)
+	if _, err := db.Exec(`UPDATE work_items SET reason = 'unit-failed' WHERE id = 'item-v36'`); err == nil {
+		t.Fatal("work_items accepted 'unit-failed' before v36 — the CHECK was already wrong")
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 36)); err != nil {
+		t.Fatalf("apply migration v36: %v", err)
+	}
+
+	var preserved int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_items
+		WHERE id = 'item-v36' AND project_id = 'project-v36' AND goal = 'keep goal'
+		  AND workflow_id = 'wf' AND workflow_scope = 'shared' AND snapshot = '{"id":"wf"}'
+		  AND state = 'needs-human' AND reason = 'question' AND seeds = '{"ticket":"AO-2"}'
+		  AND step_mode = 1 AND worktree_path = '/tmp/wt' AND branch = 'ao-v36'
+		  AND base_branch = 'main' AND budget = '{}' AND source = 'agent'
+		  AND source_ref = 'agent-ref-v36' AND triage_thread_id = 'triage-v36'
+		  AND disposition = '{"action":"merged"}' AND digest = '{"whatHappened":"x"}'
+		  AND created_at = 4 AND started_at = 5 AND ended_at = 6`).Scan(&preserved); err != nil {
+		t.Fatalf("read preserved work item: %v", err)
+	}
+	if preserved != 1 {
+		t.Fatal("v36 rebuild did not preserve the work item row")
+	}
+	mustExec(t, db, `UPDATE work_items SET reason = 'unit-failed' WHERE id = 'item-v36'`)
+	// Widening is not loosening.
+	if _, err := db.Exec(`UPDATE work_items SET reason = 'unit-exploded' WHERE id = 'item-v36'`); err == nil {
+		t.Fatal("work_items accepted an unknown reason after v36")
+	}
+	if _, err := db.Exec(`UPDATE work_items SET state = 'queued' WHERE id = 'item-v36'`); err == nil {
+		t.Fatal("v36 rebuild reintroduced the queued state")
+	}
+	for _, index := range []string{
+		"idx_work_items_project_state_created", "idx_work_items_project_created",
+		"idx_work_items_state_created", "idx_work_items_triage_thread",
+		"idx_work_items_agent_source_ref",
+	} {
+		readIndexSQL(t, db, index)
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("foreign_key_check reported a violation after v36 rebuild")
+	}
+}

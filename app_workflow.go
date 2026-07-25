@@ -512,10 +512,33 @@ type WorkflowItemPhaseView struct {
 	EndedAt        int64           `json:"endedAt,omitempty"`
 }
 
+// WorkflowItemUnitView is one fan-out unit (or join) of one phase attempt. A
+// unit is part of its phase rather than a timeline of its own, so it rides the
+// same detail response the phases do; single-shape runs simply have none.
+// Envelopes stay out of the list for the same reason phase inputs do — the
+// attempt's own envelope already carries the result the UI shows.
+type WorkflowItemUnitView struct {
+	ItemID       string `json:"itemId"`
+	PhaseID      string `json:"phaseId"`
+	Attempt      int    `json:"attempt"`
+	UnitID       string `json:"unitId"`
+	UnitIndex    int    `json:"unitIndex"`
+	Kind         string `json:"kind"`
+	ThreadID     string `json:"threadId,omitempty"`
+	Branch       string `json:"branch,omitempty"`
+	WorktreePath string `json:"worktreePath,omitempty"`
+	Status       string `json:"status"`
+	UnitAttempt  int    `json:"unitAttempt"`
+	Feedback     string `json:"feedback,omitempty"`
+	StartedAt    int64  `json:"startedAt,omitempty"`
+	EndedAt      int64  `json:"endedAt,omitempty"`
+}
+
 type WorkflowItemDetailView struct {
 	Item          WorkflowItemView        `json:"item"`
 	CheckPhaseIDs []string                `json:"checkPhaseIds"`
 	Phases        []WorkflowItemPhaseView `json:"phases"`
+	Units         []WorkflowItemUnitView  `json:"units"`
 	Outputs       map[string]any          `json:"outputs"`
 	Artifacts     []WorkflowArtifact      `json:"artifacts"`
 	Usage         store.WorkItemUsage     `json:"usage"`
@@ -557,6 +580,20 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 			Status: phase.Status, StartedAt: phase.StartedAt, EndedAt: phase.EndedAt,
 		})
 	}
+	units, err := a.store.ListWorkItemUnits(itemID)
+	if err != nil {
+		return WorkflowItemDetailView{}, err
+	}
+	unitViews := make([]WorkflowItemUnitView, 0, len(units))
+	for _, unit := range units {
+		unitViews = append(unitViews, WorkflowItemUnitView{
+			ItemID: unit.ItemID, PhaseID: unit.PhaseID, Attempt: unit.Attempt,
+			UnitID: unit.UnitID, UnitIndex: unit.UnitIndex, Kind: unit.Kind,
+			ThreadID: unit.ThreadID, Branch: unit.Branch, WorktreePath: unit.WorktreePath,
+			Status: unit.Status, UnitAttempt: unit.UnitAttempt, Feedback: unit.Feedback,
+			StartedAt: unit.StartedAt, EndedAt: unit.EndedAt,
+		})
+	}
 	return WorkflowItemDetailView{
 		Item: WorkflowItemView{
 			ID: item.ID, ProjectID: item.ProjectID, Goal: item.Goal,
@@ -567,7 +604,8 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 			Disposition: item.Disposition, Digest: item.Digest, CreatedAt: item.CreatedAt,
 			StartedAt: item.StartedAt, EndedAt: item.EndedAt,
 		},
-		CheckPhaseIDs: checkPhaseIDs, Phases: phaseViews, Outputs: outputs, Artifacts: artifacts, Usage: usage,
+		CheckPhaseIDs: checkPhaseIDs, Phases: phaseViews, Units: unitViews,
+		Outputs: outputs, Artifacts: artifacts, Usage: usage,
 	}, nil
 }
 

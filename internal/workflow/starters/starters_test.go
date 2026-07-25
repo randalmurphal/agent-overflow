@@ -17,9 +17,17 @@ type documentedBindings struct {
 	capacities map[string]bool
 }
 
-func (b documentedBindings) HasCheck(name string) bool    { return b.checks[name] }
-func (b documentedBindings) HasCommand(name string) bool  { return b.commands[name] }
-func (b documentedBindings) HasCapacity(name string) bool { return b.capacities[name] }
+func (b documentedBindings) HasCheck(name string) bool   { return b.checks[name] }
+func (b documentedBindings) HasCommand(name string) bool { return b.commands[name] }
+
+// Capacity reports 1 for every documented resource: the starters document
+// which names a project must bind, not how wide the project runs them.
+func (b documentedBindings) Capacity(name string) (int, bool) {
+	if !b.capacities[name] {
+		return 0, false
+	}
+	return 1, true
+}
 
 func TestEmbeddedStartersAreCompleteAndValid(t *testing.T) {
 	if got, want := List(), []string{"build-and-validate", "multi-lens-review", "poll-jira-and-start"}; !reflect.DeepEqual(got, want) {
@@ -149,7 +157,7 @@ func usedBindings(workflow def.Workflow) documentedBindings {
 		for _, capacity := range phase.Resources {
 			result.capacities[capacity] = true
 		}
-		for _, unit := range phase.FanOut {
+		for _, unit := range phase.UnitDefinitions() {
 			if unit.Command != "" {
 				result.commands[unit.Command] = true
 			}

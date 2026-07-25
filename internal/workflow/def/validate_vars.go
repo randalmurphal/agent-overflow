@@ -27,6 +27,7 @@ func validateVariables(workflow Workflow, phaseIndex map[string]int, graph workf
 				findings = append(findings, finding("variable.type", element, fmt.Sprintf("declared type %q does not match producer type %q", consumer.Schema.Type, producer.Schema.Type)))
 			}
 		}
+		findings = append(findings, validateOverReference(workflow, phaseIndex, graph, consumerIndex, phase)...)
 		for routeIndex, route := range phase.Gate.Routes {
 			if route.When != nil {
 				findings = append(findings, validatePredicate(workflow, phaseIndex, graph, consumerIndex, routeIndex, *route.When)...)
@@ -42,6 +43,52 @@ func validateVariables(workflow Workflow, phaseIndex map[string]int, graph workf
 		}
 	}
 	return findings
+}
+
+// validateOverReference resolves a dynamic fan-out's `over:` reference. The
+// spec's dry-run promises that every `over:` names an array-typed variable, and
+// the reference has to behave like any other consumed variable: it must resolve,
+// its producer must dominate this phase, and it must be present — a missing
+// array at run time can only park the attempt as a wiring error.
+func validateOverReference(workflow Workflow, phaseIndex map[string]int, graph workflowGraph, consumerIndex int, phase Phase) []Finding {
+	if !phase.DynamicFanOut() || strings.TrimSpace(phase.Over) == "" {
+		return nil
+	}
+	element := fmt.Sprintf("workflow %q phase %q over %q", workflow.ID, phase.ID, phase.Over)
+	variable, producerIndex, ok := resolveReference(workflow, phaseIndex, phase.Over)
+	if !ok {
+		return []Finding{finding("variable.unresolved", element, fmt.Sprintf("reference %q does not resolve", phase.Over))}
+	}
+	var findings []Finding
+	if producerIndex >= 0 && (producerIndex == consumerIndex || !graph.dominators[consumerIndex][producerIndex]) {
+		findings = append(findings, finding("variable.dominance", element, fmt.Sprintf("producer phase %q does not dominate phase %q", workflow.Phases[producerIndex].ID, phase.ID)))
+	}
+	if variable.Optional {
+		findings = append(findings, finding("variable.optionality", element, fmt.Sprintf("optional producer %q cannot be fanned out over", phase.Over)))
+	}
+	if variable.Schema.Type != "array" {
+		findings = append(findings, finding("variable.type", element, fmt.Sprintf("over must name an array-typed variable; %q is %q", phase.Over, variable.Schema.Type)))
+	} else if variable.Schema.Items == nil {
+		findings = append(findings, finding("variable.type", element, fmt.Sprintf("array %q declares no item schema", phase.Over)))
+	}
+	return findings
+}
+
+// overElement resolves the element schema a dynamic fan-out binds under `as`.
+// It reports false for anything validateOverReference already flagged, so a
+// broken `over:` produces one finding rather than a cascade of undeclared
+// template references.
+func overElement(workflow Workflow, phaseIndex map[string]int, phase Phase) (Variable, bool) {
+	if !phase.DynamicFanOut() || strings.TrimSpace(phase.Over) == "" {
+		return Variable{}, false
+	}
+	variable, _, ok := resolveReference(workflow, phaseIndex, phase.Over)
+	if !ok || variable.Schema.Type != "array" || variable.Schema.Items == nil {
+		return Variable{}, false
+	}
+	// Elements of a present array are present; the array's own optionality is
+	// reported separately rather than making every element optional.
+	return Variable{Schema: *variable.Schema.Items}, true
 }
 
 func resolveReference(workflow Workflow, phaseIndex map[string]int, ref string) (Variable, int, bool) {

@@ -32,6 +32,16 @@ func InlinePrompts(resolved ResolvedWorkflow) (Workflow, error) {
 			unit.Prompt = body
 		}
 
+		if phase.Unit != nil {
+			template := *phase.Unit
+			body, err := inlinePrompt(base, template.Prompt)
+			if err != nil {
+				return Workflow{}, fmt.Errorf("inline workflow %q phase %q unit template %q prompt %q: %w", workflow.ID, phase.ID, template.ID, template.Prompt, err)
+			}
+			template.Prompt = body
+			phase.Unit = &template
+		}
+
 		if phase.Join != nil {
 			join := *phase.Join
 			body, err := inlinePrompt(base, join.Prompt)

@@ -74,6 +74,7 @@ export {
     WorkflowDispositionReceipt,
     WorkflowItemDetailView,
     WorkflowItemPhaseView,
+    WorkflowItemUnitView,
     WorkflowItemView,
     WorkflowPRReviewComments,
     WorkspaceFileSearchResult,

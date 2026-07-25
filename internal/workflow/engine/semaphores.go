@@ -10,13 +10,19 @@ import (
 )
 
 // phaseResources is the canonical, sorted set a phase acquires: everything it
-// declared plus the implicit `provider:<name>` resource every agent-driver
-// phase takes. Tool phases never acquire provider capacity. A frozen agent
-// phase without a provider is unrunnable, so it is refused here rather than
-// silently escaping the bound.
+// declared plus the implicit `provider:<name>` resource an agent-driver phase
+// takes for its own turn. Tool phases never acquire provider capacity. A frozen
+// agent phase without a provider is unrunnable, so it is refused here rather
+// than silently escaping the bound.
+//
+// A fan-out phase runs no turn of its own — its units and its join do, each
+// acquiring provider capacity for itself (unitResources). If the phase also
+// held a slot it would compete with the very units it is waiting for, and at
+// capacity 1 it would deadlock outright: the phase would hold the only slot
+// forever while its first unit waited for it.
 func phaseResources(phase def.Phase) ([]string, error) {
 	names := phase.Resources
-	if phase.Driver == def.DriverAgent {
+	if phase.Driver == def.DriverAgent && phase.EffectiveShape() != def.ShapeFanOut {
 		provider := strings.TrimSpace(phase.Provider)
 		if provider == "" {
 			return nil, fmt.Errorf("agent phase %q declares no provider", phase.ID)
@@ -24,6 +30,21 @@ func phaseResources(phase def.Phase) ([]string, error) {
 		names = append(append([]string(nil), names...), ProviderResource(provider))
 	}
 	return canonicalResources(names), nil
+}
+
+// unitResources is what one fan-out unit or join acquires: its own provider
+// capacity, and nothing else. The phase's declared resources stay phase-scoped
+// — acquired once at phase entry and held for the whole attempt — so a
+// `live-stack` mutex is taken once by the attempt, not once per unit.
+func unitResources(unit def.Unit) ([]string, error) {
+	if unit.EffectiveDriver() != def.DriverAgent {
+		return nil, nil
+	}
+	provider := strings.TrimSpace(unit.Provider)
+	if provider == "" {
+		return nil, fmt.Errorf("agent unit %q declares no provider", unit.ID)
+	}
+	return []string{ProviderResource(provider)}, nil
 }
 
 func canonicalResources(resources []string) []string {
@@ -42,9 +63,9 @@ func canonicalResources(resources []string) []string {
 }
 
 // resourceCapacity reads the live project profile at every acquisition, so
-// editing profile.yaml takes effect on the next phase start. A `provider:<name>`
-// resource the profile does not declare falls back to DefaultProviderCapacity;
-// any other undeclared resource is a wiring error.
+// editing profile.yaml takes effect on the next phase or unit start. A
+// `provider:<name>` resource the profile does not declare falls back to
+// DefaultProviderCapacity; any other undeclared resource is a wiring error.
 func resourceCapacity(capacities map[string]int, projectID, name string) (int, error) {
 	capacity, declared := capacities[name]
 	if declared {
@@ -53,16 +74,10 @@ func resourceCapacity(capacities map[string]int, projectID, name string) (int, e
 		}
 		return capacity, nil
 	}
-	if isProviderResource(name) {
+	if def.IsProviderResource(name) {
 		return DefaultProviderCapacity, nil
 	}
 	return 0, fmt.Errorf("project %q resource %q has no positive capacity", projectID, name)
-}
-
-const providerResourcePrefix = "provider:"
-
-func isProviderResource(name string) bool {
-	return len(name) > len(providerResourcePrefix) && strings.HasPrefix(name, providerResourcePrefix)
 }
 
 // acquirePhaseResources takes the phase's whole resource set all-or-nothing in
@@ -73,6 +88,20 @@ func (e *Engine) acquirePhaseResources(projectID string, phase def.Phase) ([]str
 	if err != nil {
 		return nil, false, err
 	}
+	return e.acquireResources(projectID, names)
+}
+
+// acquireUnitResources takes one unit's capacity through the same semaphores,
+// with the same all-or-nothing rule, so units and phases contend on one bound.
+func (e *Engine) acquireUnitResources(projectID string, unit def.Unit) ([]string, bool, error) {
+	names, err := unitResources(unit)
+	if err != nil {
+		return nil, false, err
+	}
+	return e.acquireResources(projectID, names)
+}
+
+func (e *Engine) acquireResources(projectID string, names []string) ([]string, bool, error) {
 	if len(names) == 0 {
 		return nil, true, nil
 	}
@@ -100,11 +129,26 @@ func (e *Engine) acquirePhaseResources(projectID string, phase def.Phase) ([]str
 
 // releaseResources is called only by teardown.
 func (e *Engine) releaseResources(item *runtimeItem) error {
+	errs := []error{e.releaseHeld(item.item.ProjectID, item.acquired)}
+	item.acquired = nil
+	e.removeAllWaiting(item)
+	return errors.Join(errs...)
+}
+
+// releaseUnitResources is called only by teardownUnit.
+func (e *Engine) releaseUnitResources(item *runtimeItem, unit *unitRun) error {
+	err := e.releaseHeld(item.item.ProjectID, unit.acquired)
+	unit.acquired = nil
+	e.removeWaiting(item, unit)
+	return err
+}
+
+func (e *Engine) releaseHeld(projectID string, names []string) error {
 	var errs []error
-	for _, name := range item.acquired {
-		key := resourceKey{projectID: item.item.ProjectID, name: name}
+	for _, name := range names {
+		key := resourceKey{projectID: projectID, name: name}
 		if e.holders[key] < 1 {
-			errs = append(errs, fmt.Errorf("release unheld project resource %s/%s", item.item.ProjectID, name))
+			errs = append(errs, fmt.Errorf("release unheld project resource %s/%s", projectID, name))
 			continue
 		}
 		if e.holders[key] == 1 {
@@ -113,50 +157,105 @@ func (e *Engine) releaseResources(item *runtimeItem) error {
 			e.holders[key]--
 		}
 	}
-	item.acquired = nil
-	e.removeWaiting(item)
 	return errors.Join(errs...)
 }
 
-// addWaiting appends to a FIFO list, so freed capacity goes to the
-// longest-waiting phase.
-func (e *Engine) addWaiting(item *runtimeItem) {
-	if _, exists := e.waitingByID[item.item.ID]; exists {
-		item.waiting = true
-		return
-	}
-	e.waiting = append(e.waiting, item)
-	e.waitingByID[item.item.ID] = struct{}{}
-	item.waiting = true
+// waiter is one held start: a phase attempt, or one unit of a fan-out attempt.
+// Both wait in the same FIFO, so freed capacity always goes to the
+// longest-waiting piece of work regardless of which kind it is.
+type waiter struct {
+	item *runtimeItem
+	unit *unitRun
 }
 
-func (e *Engine) removeWaiting(item *runtimeItem) {
-	if _, exists := e.waitingByID[item.item.ID]; !exists {
-		item.waiting = false
+// itemID identifies the run a held start belongs to, whichever kind it is.
+func (w waiter) itemID() string { return w.item.item.ID }
+
+type waitKey struct {
+	itemID string
+	unitID string
+}
+
+func waiterKey(item *runtimeItem, unit *unitRun) waitKey {
+	key := waitKey{itemID: item.item.ID}
+	if unit != nil {
+		key.unitID = unit.id
+	}
+	return key
+}
+
+// addWaiting appends to a FIFO list, so freed capacity goes to the
+// longest-waiting phase or unit.
+func (e *Engine) addWaiting(item *runtimeItem, unit *unitRun) {
+	key := waiterKey(item, unit)
+	if _, exists := e.waitingKeys[key]; exists {
+		markWaiting(item, unit, true)
 		return
 	}
-	delete(e.waitingByID, item.item.ID)
-	for index, waiting := range e.waiting {
-		if waiting != item {
+	e.waiting = append(e.waiting, waiter{item: item, unit: unit})
+	e.waitingKeys[key] = struct{}{}
+	markWaiting(item, unit, true)
+}
+
+func (e *Engine) removeWaiting(item *runtimeItem, unit *unitRun) {
+	key := waiterKey(item, unit)
+	if _, exists := e.waitingKeys[key]; !exists {
+		markWaiting(item, unit, false)
+		return
+	}
+	delete(e.waitingKeys, key)
+	for index, held := range e.waiting {
+		if held.item != item || held.unit != unit {
 			continue
 		}
 		copy(e.waiting[index:], e.waiting[index+1:])
-		e.waiting[len(e.waiting)-1] = nil
+		e.waiting[len(e.waiting)-1] = waiter{}
 		e.waiting = e.waiting[:len(e.waiting)-1]
 		break
 	}
-	item.waiting = false
+	markWaiting(item, unit, false)
 }
 
-// startWaiting releases held phase starts in wait order. It is the one place
-// freed capacity — or an unpause — turns into work.
+// removeAllWaiting drops every held start belonging to an item — its phase
+// start and each of its units. Teardown releases the whole attempt, so leaving
+// a unit waiter behind would hand capacity to work that no longer exists.
+func (e *Engine) removeAllWaiting(item *runtimeItem) {
+	for index := len(e.waiting) - 1; index >= 0; index-- {
+		if e.waiting[index].item == item {
+			e.removeWaiting(item, e.waiting[index].unit)
+		}
+	}
+}
+
+func markWaiting(item *runtimeItem, unit *unitRun, waiting bool) {
+	if unit != nil {
+		unit.waiting = waiting
+		return
+	}
+	item.waiting = waiting
+}
+
+// startWaiting releases held starts in wait order. It is the one place freed
+// capacity — or an unpause — turns into work, for phases and units alike.
 func (e *Engine) startWaiting() error {
 	if e.paused {
 		return nil
 	}
 	var errs []error
 	for index := 0; index < len(e.waiting); {
-		item := e.waiting[index]
+		held := e.waiting[index]
+		if held.unit != nil {
+			started, err := e.releaseWaitingUnit(held.item, held.unit)
+			if err != nil {
+				e.emitError(held.item.item.ID, err)
+				errs = append(errs, err)
+			}
+			if !started && err == nil {
+				index++
+			}
+			continue
+		}
+		item := held.item
 		phase, ok := findPhase(item.workflow, item.phaseID)
 		if !ok {
 			err := errors.Join(
@@ -179,7 +278,7 @@ func (e *Engine) startWaiting() error {
 			continue
 		}
 		item.acquired = acquired
-		e.removeWaiting(item)
+		e.removeWaiting(item, nil)
 		halted, err := e.enforceBudget(item)
 		if halted {
 			if err != nil {
@@ -195,10 +294,28 @@ func (e *Engine) startWaiting() error {
 			errs = append(errs, combined)
 			continue
 		}
-		if err := e.startRunner(item, phase, vars); err != nil {
+		if err := e.startPhaseWork(item, phase, vars); err != nil {
 			e.emitError(item.item.ID, err)
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// releaseWaitingUnit starts one held unit if its capacity is now free. It
+// reports whether the waiter left the list, which is how startWaiting knows
+// whether its cursor still points at an unexamined entry.
+func (e *Engine) releaseWaitingUnit(item *runtimeItem, unit *unitRun) (bool, error) {
+	acquired, ok, err := e.acquireUnitResources(item.item.ProjectID, unit.definition)
+	if err != nil {
+		return true, errors.Join(err, e.teardown(item, teardownRequest{
+			phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed,
+		}))
+	}
+	if !ok {
+		return false, nil
+	}
+	unit.acquired = acquired
+	e.removeWaiting(item, unit)
+	return true, e.startUnitRunner(item, unit)
 }

@@ -104,7 +104,7 @@ func TestSemaphoreReleaseStartsWaiterWithManyNonWaitingItems(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(h.engine.waiting) != 1 || h.engine.waiting[0].item.ID != "waiter" {
+	if len(h.engine.waiting) != 1 || h.engine.waiting[0].itemID() != "waiter" {
 		t.Fatalf("waiting set = %+v, want only the resource-blocked phase", h.engine.waiting)
 	}
 	h.runner.complete(t, "holder", Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
@@ -360,7 +360,7 @@ func TestResourceCapacityDefaultsOnlyForProviderNamespace(t *testing.T) {
 			t.Errorf("capacity(%q) = %d err=%v, want %d", tc.name, got, err, tc.want)
 		}
 	}
-	for _, name := range []string{"undeclared", "provider:", providerResourcePrefix} {
+	for _, name := range []string{"undeclared", "provider:", "provider"} {
 		if _, err := resourceCapacity(capacities, "project", name); err == nil {
 			t.Errorf("undeclared resource %q silently defaulted", name)
 		}

@@ -81,11 +81,18 @@ root `CLAUDE.md` principle 3.
   wire-cost sum used for workflow budget checks, while
   `QueryWorkItemUsageDetail` groups the same rows by model/cost source so the
   app can add query-time `usagecost` estimates for rows without wire cost.
-- `work_items.go` / `work_item_phases.go` / `work_item_effects.go` — bare
-  workflow run-record CRUD (migration v26). Project, thread, and item ids
-  are intentionally denormalized without FKs so run history survives
-  deletion. State-machine validation and scheduling belong to
-  `internal/workflow`, not this package.
+- `work_items.go` / `work_item_phases.go` / `work_item_units.go` /
+  `work_item_effects.go` — bare workflow run-record CRUD (migration v26;
+  units v35). Project, thread, and item ids are intentionally denormalized
+  without FKs so run history survives deletion. State-machine validation and
+  scheduling belong to `internal/workflow`, not this package.
+  `work_item_units.go` carries one row per fan-out unit (and join) of a phase
+  attempt, written `pending` at expansion and updated in place through
+  start/attach/complete; `RetryWorkItemUnit` returns a settled unit to
+  `pending` and `FailRunningWorkItemUnits` is the crash-sweep counterpart of
+  the engine's teardown. `ReopenWorkItemPhase` (in `work_item_phases.go`) puts
+  a settled attempt back to `running` for that recovery, since repairing one
+  unit continues the attempt its siblings already produced results for.
 - `automations.go` — automation definition, continuity-note, and
   per-source cursor CRUD. Cursors are dependent scheduler state and
   cascade when an automation is deleted.
@@ -189,6 +196,17 @@ baseline:
   `work_items.triage_thread_id`.
 - Migration v29 adds JSON-checked `work_items.disposition` receipts and
   `work_items.digest` human-facing run summaries.
+
+## Recent schema changes (v35-v36) — fan-out units
+
+- `work_item_units` (v35) persists one row per fan-out unit and join of a phase
+  attempt, keyed `(item_id, phase_id, attempt, unit_id)`. Rows are born
+  `pending` when the attempt expands, so an attempt's width and its units'
+  sub-worktrees survive a crash; `unit_attempt` counts per-unit retries in
+  place rather than adding rows.
+- The v36 rebuild widens the `work_items.reason` CHECK with `unit-failed`, the
+  typed park reason a fan-out attempt takes when a unit does not complete. It
+  recreates every `work_items` index, like the earlier work-item rebuilds.
 
 ## Extension points
 

@@ -70,35 +70,55 @@ func (f *fakeProfiles) setCapacity(projectID, name string, capacity int) {
 	f.profiles[projectID].Capacities[name] = capacity
 }
 
+// fakeRunner records every start and lets a test complete one by key. The
+// per-run maps accept either a whole run key (`item/phase/attempt[/unit]`) or a
+// bare item id, so a phase-level test can stay item-scoped while a fan-out test
+// addresses one unit precisely.
 type fakeRunner struct {
-	mu        sync.Mutex
-	callbacks map[string]func(Outcome)
-	starts    []RunRequest
-	stops     []RunKey
-	partials  map[string]json.RawMessage
-	startErrs map[string]error
-	stopErrs  map[string]error
-	startWait map[string]<-chan struct{}
+	mu           sync.Mutex
+	callbacks    map[string]func(Outcome)
+	lastItemRun  map[string]RunKey
+	starts       []RunRequest
+	stops        []RunKey
+	takeoverKeys []RunKey
+	partials     map[string]json.RawMessage
+	startErrs    map[string]error
+	stopErrs     map[string]error
+	startWait    map[string]<-chan struct{}
 }
 
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{
-		callbacks: make(map[string]func(Outcome)), partials: make(map[string]json.RawMessage),
+		callbacks: make(map[string]func(Outcome)), lastItemRun: make(map[string]RunKey),
+		partials:  make(map[string]json.RawMessage),
 		startErrs: make(map[string]error), stopErrs: make(map[string]error),
 		startWait: make(map[string]<-chan struct{}),
 	}
 }
 
 func runMapKey(key RunKey) string {
+	if key.UnitID != "" {
+		return fmt.Sprintf("%s/%s/%d/%s", key.ItemID, key.PhaseID, key.Attempt, key.UnitID)
+	}
 	return fmt.Sprintf("%s/%s/%d", key.ItemID, key.PhaseID, key.Attempt)
+}
+
+func lookupByRun[T any](values map[string]T, key RunKey) T {
+	if value, ok := values[runMapKey(key)]; ok {
+		return value
+	}
+	return values[key.ItemID]
 }
 
 func (f *fakeRunner) Start(ctx context.Context, request RunRequest, entered func(), complete func(Outcome)) error {
 	f.mu.Lock()
 	f.starts = append(f.starts, request)
-	f.callbacks[request.Key.ItemID] = complete
-	wait := f.startWait[request.Key.ItemID]
-	err := f.startErrs[request.Key.ItemID]
+	f.callbacks[runMapKey(request.Key)] = complete
+	if request.Key.UnitID == "" {
+		f.lastItemRun[request.Key.ItemID] = request.Key
+	}
+	wait := lookupByRun(f.startWait, request.Key)
+	err := lookupByRun(f.startErrs, request.Key)
 	f.mu.Unlock()
 	entered()
 	if wait != nil {
@@ -115,22 +135,66 @@ func (f *fakeRunner) Stop(_ context.Context, key RunKey) (json.RawMessage, error
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stops = append(f.stops, key)
-	return append(json.RawMessage(nil), f.partials[runMapKey(key)]...), f.stopErrs[key.ItemID]
+	return append(json.RawMessage(nil), f.partials[runMapKey(key)]...), lookupByRun(f.stopErrs, key)
 }
 
-func (f *fakeRunner) StopForTakeover(ctx context.Context, key RunKey) (json.RawMessage, error) {
-	return f.Stop(ctx, key)
+// StopForTakeover records separately from Stop: a takeover detaches a run
+// without killing it, and tests assert that teardown does not then stop it.
+func (f *fakeRunner) StopForTakeover(_ context.Context, key RunKey) (json.RawMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.takeoverKeys = append(f.takeoverKeys, key)
+	return append(json.RawMessage(nil), f.partials[runMapKey(key)]...), lookupByRun(f.stopErrs, key)
 }
 
 func (f *fakeRunner) complete(t *testing.T, itemID string, outcome Outcome) {
 	t.Helper()
 	f.mu.Lock()
-	callback := f.callbacks[itemID]
+	key, ok := f.lastItemRun[itemID]
+	f.mu.Unlock()
+	if !ok {
+		t.Fatalf("item %q has no phase-level runner start", itemID)
+	}
+	f.completeRun(t, key, outcome)
+}
+
+// completeRun reports an outcome for one exact run key, which is how a fan-out
+// test completes an individual unit or its join.
+func (f *fakeRunner) completeRun(t *testing.T, key RunKey, outcome Outcome) {
+	t.Helper()
+	f.mu.Lock()
+	callback := f.callbacks[runMapKey(key)]
 	f.mu.Unlock()
 	if callback == nil {
-		t.Fatalf("item %q has no active runner callback", itemID)
+		t.Fatalf("run %s has no active runner callback", runMapKey(key))
 	}
 	callback(outcome)
+}
+
+func (f *fakeRunner) startedKeys() []RunKey {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	keys := make([]RunKey, 0, len(f.starts))
+	for _, start := range f.starts {
+		keys = append(keys, start.Key)
+	}
+	return keys
+}
+
+func (f *fakeRunner) startedUnitIDs() []string {
+	ids := make([]string, 0)
+	for _, key := range f.startedKeys() {
+		if key.UnitID != "" {
+			ids = append(ids, key.UnitID)
+		}
+	}
+	return ids
+}
+
+func (f *fakeRunner) takeovers() []RunKey {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]RunKey(nil), f.takeoverKeys...)
 }
 
 func (f *fakeRunner) started() []RunRequest {
@@ -143,6 +207,27 @@ func (f *fakeRunner) stopCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.stops)
+}
+
+func (f *fakeRunner) stopped() []RunKey {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]RunKey(nil), f.stops...)
+}
+
+// startFor returns the request one exact run key was started with, which is how
+// a fan-out test inspects the variable context a unit or join received.
+func (f *fakeRunner) startFor(t *testing.T, key RunKey) RunRequest {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for index := len(f.starts) - 1; index >= 0; index-- {
+		if f.starts[index].Key == key {
+			return f.starts[index]
+		}
+	}
+	t.Fatalf("run %s was never started", runMapKey(key))
+	return RunRequest{}
 }
 
 type emittedEvent struct {
@@ -317,6 +402,91 @@ func agentPhase(id string, resources []string, routes []def.Route) def.Phase {
 }
 
 const testProvider = "claude"
+
+// staticFanOutPhase builds the fan-out shape the engine schedules: a phase that
+// runs no turn of its own, `width` agent units, and the join whose envelope
+// becomes the phase's.
+func staticFanOutPhase(id string, width int, resources []string, routes []def.Route) def.Phase {
+	phase := agentPhase(id, resources, routes)
+	phase.Shape = def.ShapeFanOut
+	for index := 0; index < width; index++ {
+		phase.FanOut = append(phase.FanOut, def.Unit{
+			ID:       fmt.Sprintf("%s-unit-%d", id, index),
+			Provider: testProvider, Model: "test-model", Prompt: "unit.md",
+		})
+	}
+	phase.Join = &def.Unit{ID: id + "-join", Provider: testProvider, Model: "test-model", Prompt: "join.md"}
+	return phase
+}
+
+// dynamicFanOutPhase fans out one template over an array variable, which is the
+// authoring form whose width is only known at phase entry.
+func dynamicFanOutPhase(id, over, as string, routes []def.Route) def.Phase {
+	phase := agentPhase(id, nil, routes)
+	phase.Shape = def.ShapeFanOut
+	phase.Over = over
+	phase.As = as
+	phase.Unit = &def.Unit{
+		ID: id + "-unit", Provider: testProvider, Model: "test-model",
+		Prompt: "unit.md", Access: def.AccessWrite,
+	}
+	phase.Join = &def.Unit{ID: id + "-join", Provider: testProvider, Model: "test-model", Prompt: "join.md"}
+	return phase
+}
+
+func fanOutWorkflow(id string, width int) def.Workflow {
+	return def.Workflow{ID: id, Phases: []def.Phase{
+		staticFanOutPhase("work", width, nil, []def.Route{{To: "done"}}),
+	}}
+}
+
+func unitKey(itemID, phaseID string, attempt int, unitID string) RunKey {
+	return RunKey{ItemID: itemID, PhaseID: phaseID, Attempt: attempt, UnitID: unitID}
+}
+
+// unitStatuses projects one attempt's persisted unit rows to `id -> status`,
+// which is the fact every fan-out assertion is really about.
+func (h *testHarness) unitStatuses(t *testing.T, itemID, phaseID string, attempt int) map[string]string {
+	t.Helper()
+	rows, err := h.store.ListWorkItemPhaseUnits(itemID, phaseID, attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statuses := make(map[string]string, len(rows))
+	for _, row := range rows {
+		statuses[row.UnitID] = row.Status
+	}
+	return statuses
+}
+
+func (h *testHarness) requireUnitStatuses(t *testing.T, itemID, phaseID string, attempt int, want map[string]string) {
+	t.Helper()
+	got := h.unitStatuses(t, itemID, phaseID, attempt)
+	if len(got) != len(want) {
+		t.Fatalf("unit statuses = %v, want %v", got, want)
+	}
+	for id, status := range want {
+		if got[id] != status {
+			t.Fatalf("unit %q = %q, want %q (all: %v)", id, got[id], status, got)
+		}
+	}
+}
+
+// requireNoHeldResources asserts the teardown contract's observable outcome:
+// after a run settles, no project resource is still checked out and nothing is
+// left queued for one.
+func (h *testHarness) requireNoHeldResources(t *testing.T) {
+	t.Helper()
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.engine.holders) != 0 {
+		t.Fatalf("resource holders = %v, want none", h.engine.holders)
+	}
+	if len(h.engine.waiting) != 0 || len(h.engine.waitingKeys) != 0 {
+		t.Fatalf("waiting = %d entries / %d keys, want none", len(h.engine.waiting), len(h.engine.waitingKeys))
+	}
+}
 
 // limitProviderCapacity pins the implicit provider resource to `capacity` so a
 // test can make phase contention deterministic instead of relying on

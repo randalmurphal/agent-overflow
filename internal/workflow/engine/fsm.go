@@ -37,7 +37,8 @@ func reasonAllowed(reason Reason) bool {
 	case ReasonGate, ReasonQuestion, ReasonStuck, ReasonStalled,
 		ReasonBudgetExhausted, ReasonRetriesExhausted,
 		ReasonCheckFailedGenuine, ReasonAgentError, ReasonWiringError,
-		ReasonDisposition, ReasonSetupFailed, ReasonInterrupted, ReasonTakenOver:
+		ReasonDisposition, ReasonSetupFailed, ReasonInterrupted, ReasonTakenOver,
+		ReasonUnitFailed:
 		return true
 	default:
 		return false
@@ -80,6 +81,12 @@ func (e *Engine) transition(item *runtimeItem, to State, reason Reason) error {
 func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 	var errs []error
 	output := request.output
+	// Teardown is tree-aware (spec §12): an attempt's in-flight units come down
+	// with it, through the one per-unit release path, before the phase releases
+	// anything of its own.
+	if err := e.teardownUnits(item, request.phaseStatus); err != nil {
+		errs = append(errs, err)
+	}
 	if item.runnerStarting {
 		if item.runnerStartCancel != nil {
 			item.runnerStartCancel()
@@ -104,6 +111,13 @@ func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 	if err := e.releaseResources(item); err != nil {
 		errs = append(errs, err)
 	}
+	// Sweep the persisted rows last: after a crash no in-memory unit state
+	// existed to tear down, and a row left claiming `running` would make a
+	// rebuilt attempt look live forever.
+	if err := e.sweepPersistedUnits(item, request.phaseStatus); err != nil {
+		errs = append(errs, err)
+	}
+	item.fan = nil
 
 	phasePersisted := true
 	if item.phaseID != "" && item.attempt > 0 {
@@ -133,12 +147,23 @@ func (e *Engine) complete(key RunKey, outcome Outcome) error {
 	if !ok || item.phaseID != key.PhaseID || item.attempt != key.Attempt || State(item.item.State) != StateRunning {
 		return nil // A completion racing a persisted teardown is stale, not an error.
 	}
+	if key.UnitID != "" {
+		return e.completeUnit(item, key, outcome)
+	}
 	if item.runnerStartCancel != nil {
 		item.runnerStartCancel()
 	}
 	item.runnerStarting = false
 	item.runnerStartCancel = nil
 	item.runnerActive = false
+	return e.completePhaseOutcome(item, key, outcome)
+}
+
+// completePhaseOutcome maps a phase-level outcome onto the FSM. A fan-out's
+// join reaches it too: the join's envelope is the phase's envelope, so its
+// outcome is the phase's outcome and a join that fails is an agent error, not
+// the unit-failure policy.
+func (e *Engine) completePhaseOutcome(item *runtimeItem, key RunKey, outcome Outcome) error {
 	switch outcome.Kind {
 	case OutcomeDone:
 		item.takeoverFinalize = false
