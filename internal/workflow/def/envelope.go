@@ -13,9 +13,10 @@ const DefaultEnvelopeSizeCap = 64 * 1024
 
 // EnvelopeSchema generates the provider-compatible flat control schema.
 func EnvelopeSchema(phase Phase) ([]byte, error) {
-	outputProperties := make(map[string]any, len(phase.Outputs))
-	outputRequired := make([]string, 0, len(phase.Outputs))
-	for name, output := range phase.Outputs {
+	declared := PhaseOutputs(phase)
+	outputProperties := make(map[string]any, len(declared))
+	outputRequired := make([]string, 0, len(declared))
+	for name, output := range declared {
 		if !idPattern.MatchString(name) {
 			return nil, fmt.Errorf("phase %q output %q has invalid name", phase.ID, name)
 		}
@@ -213,13 +214,14 @@ func ValidateEnvelope(phase Phase, payload []byte, sizeCap ...int) error {
 			findings = append(findings, EnvelopeFinding{Path: "$.outputs", Message: "must be an object or null"})
 		}
 	}
+	declaredOutputs := PhaseOutputs(phase)
 	if outputs != nil {
 		for name := range outputs {
-			if _, ok := phase.Outputs[name]; !ok {
+			if _, ok := declaredOutputs[name]; !ok {
 				findings = append(findings, EnvelopeFinding{Path: "$.outputs." + name, Message: "property is not allowed"})
 			}
 		}
-		for name, declaration := range phase.Outputs {
+		for name, declaration := range declaredOutputs {
 			value, ok := outputs[name]
 			if !ok {
 				findings = append(findings, EnvelopeFinding{Path: "$.outputs." + name, Message: "property is required"})

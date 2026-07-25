@@ -46,18 +46,24 @@ export interface WorkflowSeedItem {
   target?: 'running' | 'needs-human' | 'done';
 }
 
+// repoFiles are committed into the seeded project's git repository. Tool-phase
+// fixtures use it to ship the scripts their profile bindings name.
 export async function seedWorkflowProject(
   harness: HarnessApp,
   projectName: string,
   definitions: WorkflowSeedDefinition[],
   items: WorkflowSeedItem[] = [],
   profile = '',
+  repoFiles: Record<string, string> = {},
 ): Promise<SeedResult['projects'][number]> {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
       {
         name: projectName,
-        repo: {},
+        repo:
+          Object.keys(repoFiles).length > 0
+            ? { commits: [{ message: 'fixture scripts', files: repoFiles }] }
+            : {},
         workflows: {
           definitions: definitions.map((definition) => ({
             ...definition,

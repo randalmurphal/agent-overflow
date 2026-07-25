@@ -56,15 +56,9 @@ func (r *workflowAppRunner) prepareWorkspace(ctx context.Context, request engine
 		return preparedWorkflowWorkspace{path: item.WorktreePath, project: project}, nil
 	}
 
-	if r.profiles == nil {
-		return preparedWorkflowWorkspace{}, fmt.Errorf("profile source unavailable")
-	}
-	projectProfile, err := r.profiles.Profile(ctx, item.ProjectID)
+	projectProfile, err := r.projectProfile(ctx, item.ProjectID)
 	if err != nil {
-		return preparedWorkflowWorkspace{}, fmt.Errorf("load project profile: %w", err)
-	}
-	if projectProfile == nil {
-		return preparedWorkflowWorkspace{}, fmt.Errorf("load project profile: nil profile")
+		return preparedWorkflowWorkspace{}, err
 	}
 	baseBranch := strings.TrimSpace(item.BaseBranch)
 	if baseBranch == "" {

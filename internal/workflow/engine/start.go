@@ -190,8 +190,11 @@ func (e *Engine) finishRunnerStart(command runnerStartCommand) error {
 		return nil
 	}
 	reason := ReasonAgentError
-	if errors.Is(command.err, ErrSetupFailed) {
+	switch {
+	case errors.Is(command.err, ErrSetupFailed):
 		reason = ReasonSetupFailed
+	case errors.Is(command.err, ErrWiringFailed):
+		reason = ReasonWiringError
 	}
 	return errors.Join(
 		e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: reason}),

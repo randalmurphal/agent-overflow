@@ -88,6 +88,21 @@ declares:
 - an **access** declaration: `read-only` | `write` — enforced, not advisory
   (§9).
 
+**How a tool phase produces its envelope.** The binding (`check:` or
+`command:`) resolves through the live project profile to an **argv array** —
+never a shell string — whose elements are interpolated from the variable
+context exactly like an agent prompt. The process runs in the phase's
+workspace with the profile's resolved secrets in its environment and
+`AO_ENVELOPE` pointing at a file path it may write. Every tool phase emits
+`passed` (boolean) and `exit-code` (number) whether or not it writes that
+file; a command that needs to emit more writes a control envelope there and
+the system overlays those two outputs onto it, since a process cannot know its
+own exit status while it is still running. **A non-zero exit is `passed:
+false`, not a phase failure** — the gate decides what a red check means (§4).
+Only infrastructure failure (unresolvable binding, missing binary, a kill) is a
+phase failure, and an unparseable written envelope parks directly: retrying a
+deterministic command cannot make it valid.
+
 **Variable system — the data backbone.** A workflow carries a variable context:
 
 - the **workflow start** seeds it from the item's inputs (goal, ticket info,

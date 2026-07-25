@@ -9,7 +9,11 @@ resource semaphores, and startup recovery.
   every FSM transition. Runner callbacks enqueue commands; they never mutate
   state directly.
 - `teardown` is the only path that releases resource holders. Normal phase
-  exit, parks, failures, cancellation, and crash sweep all use it.
+  exit, parks, failures, cancellation, and crash sweep all use it. It is also
+  the only caller of `Runner.Stop` (takeover uses `StopForTakeover`), so an
+  agent session or a tool phase's process tree dies in the same place its
+  resources are released — including the `runnerStarting` window, where an
+  attempt that has not reported yet is still stopped by key.
 - There is no queued state. `StartItem` admits an item straight to `running`
   and enters its first phase; back-pressure is a *phase* waiting on resource
   capacity, never an item waiting in line. `waiting` is a FIFO list of held
@@ -24,6 +28,18 @@ resource semaphores, and startup recovery.
   prefix in `internal/workflow/profile` validation. A tool-driver phase never
   takes provider capacity, and a frozen agent phase with no provider is a
   wiring error rather than an unbounded start.
+- Runner start failures are mapped to typed park reasons by sentinel, never by
+  string matching: `ErrSetupFailed` → `setup-failed` (workspace provisioning,
+  setup hooks, secret resolution, a process that would not start),
+  `ErrWiringFailed` → `wiring-error` (the frozen definition and the live project
+  profile cannot produce runnable work — an unbound check/command, a failed
+  argv interpolation), everything else → `agent-error`. These are the same
+  reasons the engine parks its own equivalents under — an unroutable gate or a
+  phase missing from the snapshot is `wiring-error`, a failed resource
+  acquisition is `setup-failed` — so a run's park reason does not depend on
+  which side of the `Runner` boundary noticed. A new runner failure mode picks
+  one of these sentinels or adds one here; it does not fall through to
+  `agent-error` by accident.
 - Global pause is one engine-level flag (`Pause`, persisted by the app in
   settings and restored through `Config.Paused`). While paused no phase starts
   anywhere; in-flight turns run to completion and their items rest at the next

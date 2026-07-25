@@ -29,6 +29,51 @@ func (r ResolvedSecrets) String() string {
 // GoString applies the same redaction to Go-syntax diagnostic formatting.
 func (r ResolvedSecrets) GoString() string { return r.String() }
 
+// Environ renders the resolved secrets as `NAME=value` entries for a phase
+// process environment, sorted by name so the result is deterministic.
+//
+// A secret name is `[a-z0-9-]+`, which is not a legal environment variable
+// name, so the mapping is the documented one: upper-case, hyphens to
+// underscores (`gh-token` → `GH_TOKEN`). That mapping is injective over the
+// validated name grammar — the only other name reaching a given result would
+// have to contain an underscore, which validation rejects — so two secrets can
+// never quietly overwrite each other in the phase environment.
+func (r ResolvedSecrets) Environ() []string {
+	names := make([]string, 0, len(r.Values))
+	for name := range r.Values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	environ := make([]string, 0, len(names))
+	for _, name := range names {
+		environ = append(environ, EnvName(name)+"="+r.Values[name])
+	}
+	return environ
+}
+
+// EnvName maps a profile secret name to its phase environment variable name.
+func EnvName(name string) string {
+	return strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+}
+
+// Mask replaces every resolved secret value in text. Untrusted output — command
+// output, agent narratives — passes through here before it is persisted, so a
+// credential a phase echoed never lands in the run record.
+func (r ResolvedSecrets) Mask(text string) string {
+	for _, value := range r.Masks {
+		// An empty value would splice the placeholder between every rune.
+		// Nothing to hide either way.
+		if value == "" {
+			continue
+		}
+		text = strings.ReplaceAll(text, value, MaskPlaceholder)
+	}
+	return text
+}
+
+// MaskPlaceholder replaces a resolved secret value in persisted text.
+const MaskPlaceholder = "[redacted]"
+
 // SecretResolutionError identifies a failed reference without exposing a value.
 type SecretResolutionError struct {
 	Secret string

@@ -15,6 +15,13 @@ import (
 // setup-failed reason instead of reporting an agent failure.
 var ErrSetupFailed = errors.New("workflow setup failed")
 
+// ErrWiringFailed marks runner startup failures where the frozen definition and
+// the live project profile cannot produce runnable work — a tool phase whose
+// binding the profile no longer declares, an argument referencing a variable
+// that is not in scope. The engine maps wrapped instances to the wiring-error
+// reason, the same reason a gate that matched nothing parks with.
+var ErrWiringFailed = errors.New("workflow wiring failed")
+
 type State string
 
 // A run has no queued state: admitting an item starts it. Contention is a

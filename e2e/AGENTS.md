@@ -21,9 +21,18 @@ headless, isolated data dir, mocked providers. Full harness guide:
   and cancel/interrupt.
 - `tests/workflows-rerun.spec.ts` — RPC-only global-pause hold, then rerun of a
   failed run with guidance, through to completion.
+- `tests/workflows-tool.spec.ts` — `driver: tool` phases, which run **real**
+  subprocesses: a green check routing its gate into an agent phase, a red check
+  looping back and then parking (a non-zero exit is `passed: false`, not a
+  failure), and a command writing its own envelope to `AO_ENVELOPE`.
 - `tests/workflows-helpers.ts` — shared workflow seeds, mock-provider scenarios,
   direct start (`WorkflowStartRun`), the global-pause switch, state waits,
   result envelopes, and compact workflow definitions.
+  `seedWorkflowProject`'s `repoFiles` argument commits files into the seeded
+  git repository, which is how a tool fixture ships the script its profile
+  binding names. Profile bindings are argv arrays pointing at real binaries or
+  committed scripts — never shell strings, because the runner does not use a
+  shell.
 - `tests/notifications.spec.ts` — OS-notification pipe: `HarnessNotify`'s
   typed degraded send error, cold activation through transport replay and
   the pre-hydration queue, and the `none`-target no-op log.

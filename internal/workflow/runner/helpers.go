@@ -10,18 +10,39 @@ import (
 	"agent-overflow/internal/workflow/engine"
 )
 
-// NarrativePath returns the absolute system-owned narrative path for one phase
-// attempt. The caller owns directory creation.
-func NarrativePath(dataRoot, itemID, phaseID string, attempt int) (string, error) {
+// AttemptDir returns the absolute system-owned directory holding one phase
+// attempt's app-managed files. The caller owns directory creation.
+func AttemptDir(dataRoot, itemID, phaseID string, attempt int) (string, error) {
 	if strings.TrimSpace(dataRoot) == "" || itemID == "" || phaseID == "" || attempt < 1 {
-		return "", fmt.Errorf("workflow narrative path: data root, item id, phase id, and positive attempt are required")
+		return "", fmt.Errorf("workflow attempt directory: data root, item id, phase id, and positive attempt are required")
 	}
-	path := filepath.Join(dataRoot, "workflow-runs", itemID, fmt.Sprintf("%s.%d", phaseID, attempt), "narrative.md")
+	path := filepath.Join(dataRoot, "workflow-runs", itemID, fmt.Sprintf("%s.%d", phaseID, attempt))
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return "", fmt.Errorf("workflow narrative path: %w", err)
+		return "", fmt.Errorf("workflow attempt directory: %w", err)
 	}
 	return absolute, nil
+}
+
+// NarrativePath returns the absolute system-owned narrative path for one phase
+// attempt. Agent phases are told to write it; the runner writes it for tool
+// phases. The caller owns directory creation.
+func NarrativePath(dataRoot, itemID, phaseID string, attempt int) (string, error) {
+	dir, err := AttemptDir(dataRoot, itemID, phaseID, attempt)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "narrative.md"), nil
+}
+
+// EnvelopePath returns the absolute system-provided path a tool phase's command
+// may write its control envelope to. The runner exports it as AO_ENVELOPE.
+func EnvelopePath(dataRoot, itemID, phaseID string, attempt int) (string, error) {
+	dir, err := AttemptDir(dataRoot, itemID, phaseID, attempt)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "envelope.json"), nil
 }
 
 // BuildPrompt interpolates an inlined runtime prompt and appends the

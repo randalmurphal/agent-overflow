@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/profile"
 )
@@ -28,27 +29,46 @@ const (
 	workflowTimerBackoff
 )
 
-func (r *workflowAppRunner) reliability(ctx context.Context, request engine.RunRequest) (time.Duration, []time.Duration, error) {
+// projectProfile is the one live-profile read every phase start goes through.
+// Capacities, bindings, reliability defaults, and secrets all come from the
+// profile as it is on disk right now — editing it takes effect on the next
+// phase start, with no restart and no re-run.
+func (r *workflowAppRunner) projectProfile(ctx context.Context, projectID string) (*profile.Profile, error) {
 	if r.profiles == nil {
-		return 0, nil, fmt.Errorf("workflow runner: profile source unavailable")
+		return nil, fmt.Errorf("workflow runner: profile source unavailable")
 	}
-	projectProfile, err := r.profiles.Profile(ctx, request.Item.ProjectID)
+	projectProfile, err := r.profiles.Profile(ctx, projectID)
 	if err != nil {
-		return 0, nil, fmt.Errorf("workflow runner: load reliability profile for project %q: %w", request.Item.ProjectID, err)
+		return nil, fmt.Errorf("workflow runner: load profile for project %q: %w", projectID, err)
 	}
 	if projectProfile == nil {
-		return 0, nil, fmt.Errorf("workflow runner: load reliability profile for project %q: nil profile", request.Item.ProjectID)
+		return nil, fmt.Errorf("workflow runner: load profile for project %q: nil profile", projectID)
 	}
+	return projectProfile, nil
+}
 
+func (r *workflowAppRunner) reliability(ctx context.Context, request engine.RunRequest) (time.Duration, []time.Duration, error) {
+	projectProfile, err := r.projectProfile(ctx, request.Item.ProjectID)
+	if err != nil {
+		return 0, nil, err
+	}
+	return workflowReliability(projectProfile, request.Phase)
+}
+
+// workflowReliability derives one phase's inactivity watchdog and transient
+// backoff schedule. Both drivers read the same profile defaults; a phase-level
+// watchdog overrides the project default for either.
+func workflowReliability(projectProfile *profile.Profile, phase def.Phase) (time.Duration, []time.Duration, error) {
 	watchdog := defaultWorkflowWatchdog
+	var err error
 	if projectProfile.Reliability.Watchdog != "" {
 		watchdog, err = parseWorkflowDuration(projectProfile.Reliability.Watchdog, "profile watchdog")
 		if err != nil {
 			return 0, nil, err
 		}
 	}
-	if request.Phase.Watchdog != "" {
-		watchdog, err = parseWorkflowDuration(profile.Duration(request.Phase.Watchdog), fmt.Sprintf("phase %q watchdog", request.Phase.ID))
+	if phase.Watchdog != "" {
+		watchdog, err = parseWorkflowDuration(profile.Duration(phase.Watchdog), fmt.Sprintf("phase %q watchdog", phase.ID))
 		if err != nil {
 			return 0, nil, err
 		}

@@ -12,6 +12,13 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   caller.
 - Workflow input names and phase IDs share one namespace. Phase output
   references use `phase.output`; nested object paths may continue after that.
+- A phase's output contract is whatever `PhaseOutputs` returns, never
+  `phase.Outputs` read directly. A `driver: tool` phase always contributes
+  `passed` (boolean) and `exit-code` (number) on top of its authored outputs;
+  authoring them is a validation finding, and the merge means a snapshot frozen
+  before that rule still resolves one consistent set. Envelope-schema
+  generation, envelope post-validation, and variable resolution all go through
+  that single function so no path can disagree about what a phase produces.
 - Validation returns typed findings and collects all independent errors.
 - `Bindings` is intentionally narrow; profile loading implements it elsewhere.
 
@@ -24,6 +31,7 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
 | `resolve.go` | Ordered scoped-directory resolution. |
 | `schema.go` | JSON-Schema fragments and embedded authoring schema. |
 | `envelope.go` | Generated control schema and payload post-validation. |
+| `tool.go` | The tool driver's implicit outputs and the merged `PhaseOutputs` contract. |
 | `interpolate.go` | Single-pass prompt interpolation and template checks. |
 | `validate*.go` | Whole-definition structural, graph, variable, and binding checks. |
 

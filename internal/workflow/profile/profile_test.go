@@ -277,6 +277,32 @@ func TestResolveSecretsEnvAndFile(t *testing.T) {
 	}
 }
 
+func TestResolvedSecretsEnvironAndMask(t *testing.T) {
+	resolved := ResolvedSecrets{
+		Values: map[string]string{"gh-token": "ghp_live", "registry": "hunter2"},
+		Masks:  []string{"ghp_live", "hunter2", ""},
+	}
+	want := []string{"GH_TOKEN=ghp_live", "REGISTRY=hunter2"}
+	if got := resolved.Environ(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Environ() = %v, want %v", got, want)
+	}
+
+	masked := resolved.Mask("pushing with ghp_live to registry as hunter2")
+	if strings.Contains(masked, "ghp_live") || strings.Contains(masked, "hunter2") {
+		t.Fatalf("Mask left a resolved value in place: %q", masked)
+	}
+	if want := "pushing with " + MaskPlaceholder + " to registry as " + MaskPlaceholder; masked != want {
+		t.Fatalf("Mask() = %q, want %q", masked, want)
+	}
+	// An empty resolved value must not splice the placeholder between runes.
+	if got := (ResolvedSecrets{Masks: []string{""}}).Mask("abc"); got != "abc" {
+		t.Fatalf("empty mask rewrote text: %q", got)
+	}
+	if got := (ResolvedSecrets{}).Environ(); len(got) != 0 {
+		t.Fatalf("Environ() with no secrets = %v", got)
+	}
+}
+
 func TestResolveSecretsRejectsOversizedAndNonRegularFiles(t *testing.T) {
 	t.Run("oversized", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "secret")

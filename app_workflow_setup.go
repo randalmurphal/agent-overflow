@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"agent-overflow/internal/workflow/profile"
+	workflowrunner "agent-overflow/internal/workflow/runner"
 	"agent-overflow/internal/workspacepath"
 )
 
@@ -48,13 +48,13 @@ func runWorkflowWorktreeSetup(ctx context.Context, projectRoot, worktreeRoot str
 		command.Dir = worktreeRoot
 		command.Stdout = tail
 		command.Stderr = tail
-		configureWorkflowSetupCommand(command)
+		configureWorkflowCommand(command)
 		if commandErr := command.Run(); commandErr != nil {
 			output := strings.TrimSpace(tail.String())
 			if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-				return fmt.Errorf("worktree setup command %s timed out after %s; output tail: %s", formatWorkflowArgv(argv), timeout, output)
+				return fmt.Errorf("worktree setup command %s timed out after %s; output tail: %s", workflowrunner.FormatArgv(argv), timeout, output)
 			}
-			return fmt.Errorf("worktree setup command %s failed: %w; output tail: %s", formatWorkflowArgv(argv), commandErr, output)
+			return fmt.Errorf("worktree setup command %s failed: %w; output tail: %s", workflowrunner.FormatArgv(argv), commandErr, output)
 		}
 	}
 	return nil
@@ -274,17 +274,13 @@ func validateWorkflowDestination(root, destination string) error {
 	return nil
 }
 
-func formatWorkflowArgv(argv []string) string {
-	quoted := make([]string, len(argv))
-	for index, arg := range argv {
-		quoted[index] = strconv.Quote(arg)
-	}
-	return "[" + strings.Join(quoted, ", ") + "]"
-}
-
+// workflowTailBuffer keeps the last `limit` bytes written to it. Command output
+// is unbounded and its useful end is the tail, so a phase or setup hook never
+// buffers a whole stream.
 type workflowTailBuffer struct {
 	mu    sync.Mutex
 	limit int
+	total int64
 	data  []byte
 }
 
@@ -296,6 +292,7 @@ func (b *workflowTailBuffer) Write(payload []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	written := len(payload)
+	b.total += int64(written)
 	if b.limit <= 0 {
 		return written, nil
 	}
@@ -316,4 +313,11 @@ func (b *workflowTailBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return string(b.data)
+}
+
+// Truncated reports whether writes exceeded the retained tail.
+func (b *workflowTailBuffer) Truncated() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.total > int64(len(b.data))
 }

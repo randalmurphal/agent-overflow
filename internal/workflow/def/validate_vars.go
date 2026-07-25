@@ -57,7 +57,7 @@ func resolveReference(workflow Workflow, phaseIndex map[string]int, ref string) 
 	if !ok {
 		return Variable{}, -1, false
 	}
-	output, ok := workflow.Phases[index].Outputs[parts[1]]
+	output, ok := PhaseOutputs(workflow.Phases[index])[parts[1]]
 	if !ok {
 		return Variable{}, -1, false
 	}

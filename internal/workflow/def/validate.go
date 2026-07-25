@@ -89,6 +89,12 @@ func Validate(resolved ResolvedWorkflow, bindings Bindings) ValidationResult {
 		if phase.Driver == DriverTool && phase.Check == "" && phase.Command == "" {
 			add(finding("phase.tool", phaseElement, "tool driver requires a check or command binding"))
 		}
+		// One phase, one command. Two bindings have no defined precedence, and
+		// picking one at run time would make the phase's behaviour depend on
+		// resolution order rather than on the definition.
+		if phase.Driver == DriverTool && phase.Check != "" && phase.Command != "" {
+			add(finding("phase.tool", phaseElement, "tool driver accepts a check or a command binding, not both"))
+		}
 		unitIDs := map[string]bool{}
 		for unitIndex, unit := range phase.FanOut {
 			unitElement := fmt.Sprintf("%s fan-out unit %q", phaseElement, unit.ID)
@@ -112,6 +118,9 @@ func Validate(resolved ResolvedWorkflow, bindings Bindings) ValidationResult {
 			outputElement := fmt.Sprintf("%s output %q", phaseElement, name)
 			if !idPattern.MatchString(name) {
 				add(finding("output.name", outputElement, "name must match [a-z0-9-]+"))
+			}
+			if phase.Driver == DriverTool && ReservedToolOutput(name) {
+				add(finding("output.reserved", outputElement, "the tool driver always supplies this output; remove the declaration"))
 			}
 			add(validateSchemaDefinition(output.Schema, outputElement)...)
 		}

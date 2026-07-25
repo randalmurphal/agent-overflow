@@ -117,9 +117,6 @@ phases:
         schema:
           type: boolean
     outputs:
-      passed:
-        schema:
-          type: boolean
       details:
         schema:
           type: string

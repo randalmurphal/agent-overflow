@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func configureWorkflowSetupCommand(command *exec.Cmd) {
+func configureWorkflowCommand(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
 		if command.Process == nil {
