@@ -20,7 +20,6 @@ import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
   focusAdjacentPane,
   focusPane,
-  getFocusedPaneId,
   getFocusedThreadPaneId,
   getPane,
   moveFocusedPane,
@@ -30,7 +29,7 @@ import {
   syncThread,
 } from './panes.svelte';
 import { closeFocusedPaneOrCompanion } from './companionPanes.svelte';
-import { getPaneLayoutItems, removePaneLayoutItem, type PaneLayoutItem } from './paneLayout.svelte';
+import type { PaneLayoutItem } from './paneLayout.svelte';
 import { focusPaneComposerIfEditableActive } from '../components/panes/paneComposerFocus';
 import { getThreadById } from './threads.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
@@ -255,18 +254,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     when: '!terminalFocus',
     editableReachable: true,
     run: () => {
-      const focusedId = getFocusedPaneId();
-      const layout = getPaneLayoutItems();
-      const workflowsIndex = focusedId
-        ? layout.findIndex((item) => item.paneId === focusedId && item.kind === 'workflows')
-        : -1;
-      if (workflowsIndex >= 0 && focusedId) {
-        removePaneLayoutItem(focusedId);
-        const next = layout[workflowsIndex - 1] ?? layout[workflowsIndex + 1];
-        if (next) focusPane(next.paneId);
-      } else {
-        closeFocusedPaneOrCompanion();
-      }
+      closeFocusedPaneOrCompanion();
       const nextFocused = getFocusedThreadPaneId();
       if (nextFocused) focusPaneComposerIfEditableActive(nextFocused);
     },

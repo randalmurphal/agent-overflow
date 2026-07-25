@@ -89,20 +89,6 @@ describe('<GeneralSettings> — Behavior toggles', () => {
   });
 });
 
-describe('<GeneralSettings> — Workflow chat proposals', () => {
-  beforeEach(async () => {
-    await seed();
-  });
-
-  it('defaults on and persists the workflowChatEnqueue toggle', async () => {
-    const { getByRole } = render(GeneralSettings);
-    const toggle = getByRole('switch', { name: 'Toggle Queue Workflows From Chat' });
-    expect(toggle).toHaveAttribute('aria-checked', 'true');
-    await fireEvent.click(toggle);
-    expect(getBindingMock('UpdateSettings')!.mock.calls[0][0]).toEqual({ workflowChatEnqueue: false });
-  });
-});
-
 describe('<GeneralSettings> — Pane density', () => {
   beforeEach(async () => {
     await seed();

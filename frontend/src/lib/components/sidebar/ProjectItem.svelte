@@ -37,7 +37,6 @@
   import Icon from '../primitives/Icon.svelte';
   import ProjectContextMenu from './ProjectContextMenu.svelte';
   import ProjectThreadList from './ProjectThreadList.svelte';
-  import WorkflowsSection from './WorkflowsSection.svelte';
   import ThreadRow from './ThreadRow.svelte';
   import { buildSidebarThreadTree, rollupDisplayStatus } from '../../utils/sidebarTree';
   import {
@@ -384,7 +383,6 @@
 
   {#if expanded}
     <ProjectThreadList projectId={project.project.id} {threads} {pane} {onNewThread} />
-    <WorkflowsSection projectId={project.project.id} />
   {:else if activeWhenCollapsed}
     <!--
       Active-thread pin: the user is reading this thread but the project

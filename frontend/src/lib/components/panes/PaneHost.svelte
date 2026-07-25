@@ -15,10 +15,6 @@
   import PaneDivider from './PaneDivider.svelte';
   import { measurePane } from './measurePane';
   import { createPaneThreadDrag } from './usePaneThreadDrag.svelte';
-  import WorkflowsPane from '../workflows/WorkflowsPane.svelte';
-  import ReviewPane from '../review/ReviewPane.svelte';
-  import { getWorkflowDetail, WORKFLOWS_PANE_ID } from '../../stores/workflowsPane.svelte';
-  import { getReviewCompanionTarget } from '../../stores/reviewPane.svelte';
 
   interface Props {
     children?: Snippet;
@@ -380,25 +376,6 @@
     return `flex-grow:${widthPx};flex-basis:${widthPx}px;min-width:${minPaneWidth}px`;
   }
 
-  function workflowsReviewTarget() {
-    const explicit = getReviewCompanionTarget(WORKFLOWS_PANE_ID);
-    if (explicit) return explicit;
-    const detail = getWorkflowDetail();
-    let phase = null;
-    if (detail) {
-      for (let index = detail.phases.length - 1; index >= 0; index -= 1) {
-        if (!detail.phases[index].threadId) continue;
-        phase = detail.phases[index];
-        break;
-      }
-    }
-    if (!detail || !phase?.threadId) return null;
-    return {
-      threadId: phase.threadId,
-      thread: null,
-      workspacePath: detail.item.worktreePath,
-    };
-  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -424,26 +401,7 @@
     </section>
   {:else}
     {#each layoutItems as item, index (item.id)}
-      {#if item.kind === 'workflows'}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <section
-          use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
-          style={paneSectionStyle(item.widthPx)}
-          class="flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70"
-          data-pane-id={item.paneId}
-          data-pane-kind={item.kind}
-          data-pane-min-width={minPaneWidth}
-          data-pane-width={item.widthPx}
-          data-pane-focused={focusedPaneId === item.paneId}
-          onpointerdown={() => handlePanePointerDown(item.paneId)}
-          onfocusin={() => handlePaneFocusIn(item.paneId)}
-        >
-          <WorkflowsPane paneId={item.paneId} />
-        </section>
-      {:else if isCompanionKind(item.kind)}
-        {@const workflowReviewTarget = item.kind === 'review' && item.sourcePaneId === WORKFLOWS_PANE_ID
-          ? workflowsReviewTarget()
-          : null}
+      {#if isCompanionKind(item.kind)}
         <!-- Companion panes (plan/design-preview/review panels + the
              take-control PTY mirror) are not ThreadPanes: no thread-drop
              wiring, and they hold their own logical focus — pane-scoped
@@ -471,19 +429,6 @@
         >
           {#if item.kind === 'take-control'}
             <TakeControlPane paneId={item.paneId} />
-          {:else if workflowReviewTarget}
-            <aside
-              aria-label="Review"
-              class="flex h-full min-h-0 flex-col border-l border-border bg-surface-1"
-              data-testid="companion-pane-review"
-              data-companion-pane-id={item.paneId}
-              data-companion-source-pane-id={WORKFLOWS_PANE_ID}
-              data-review-thread-id={workflowReviewTarget.threadId}
-            >
-              {#key workflowReviewTarget.threadId}
-                <ReviewPane source={{ paneId: WORKFLOWS_PANE_ID, ...workflowReviewTarget }} />
-              {/key}
-            </aside>
           {:else}
             <CompanionPane paneId={item.paneId} kind={item.kind} sourcePaneId={item.sourcePaneId!} />
           {/if}

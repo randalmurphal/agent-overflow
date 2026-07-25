@@ -120,19 +120,8 @@ import {
   applyNotificationActivated,
 } from './eventsNotification';
 import { parseNotificationTarget } from './notificationActivationQueue';
-import type {
-  WorkflowErrorEvent,
-  WorkflowItemStateEvent,
-  WorkflowPhaseStateEvent,
-  WorkflowQueueStateEvent,
-} from '../types/workflow';
-import {
-  applyWorkflowErrorEvent,
-  applyWorkflowDefinitionsChangedEvent,
-  applyWorkflowItemStateEvent,
-  applyWorkflowPhaseStateEvent,
-  applyWorkflowQueueStateEvent,
-} from './eventsWorkflow';
+import type { WorkflowErrorEvent } from '../types/workflow';
+import { applyWorkflowErrorEvent } from './eventsWorkflow';
 
 /**
  * Frontend custom DOM event names live in `./eventNames` so consumers
@@ -382,20 +371,8 @@ export function setupEventListeners(): () => void {
     applyDiscussionState,
   );
   const cancelPRUpdated = wailsEventOn('pr:updated', applyPRReviewUpdated);
-  const cancelWorkflowItemState = wailsEventOn<WorkflowItemStateEvent>(
-    'workflow:item-state', applyWorkflowItemStateEvent,
-  );
-  const cancelWorkflowQueueState = wailsEventOn<WorkflowQueueStateEvent>(
-    'workflow:queue-state', applyWorkflowQueueStateEvent,
-  );
-  const cancelWorkflowPhaseState = wailsEventOn<WorkflowPhaseStateEvent>(
-    'workflow:phase-state', applyWorkflowPhaseStateEvent,
-  );
   const cancelWorkflowError = wailsEventOn<WorkflowErrorEvent>(
     'workflow:error', applyWorkflowErrorEvent,
-  );
-  const cancelWorkflowDefinitionsChanged = wailsEventOn(
-    'workflow:definitions-changed', applyWorkflowDefinitionsChangedEvent,
   );
 
   return () => {
@@ -434,11 +411,7 @@ export function setupEventListeners(): () => void {
     cancelDiscussionMessage();
     cancelDiscussionState();
     cancelPRUpdated();
-    cancelWorkflowItemState();
-    cancelWorkflowQueueState();
-    cancelWorkflowPhaseState();
     cancelWorkflowError();
-    cancelWorkflowDefinitionsChanged();
     clearAllDesignThrottles();
     clearAllDiscussionLiveTail();
   };

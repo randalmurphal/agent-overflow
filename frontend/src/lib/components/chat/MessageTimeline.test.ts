@@ -71,21 +71,6 @@ describe('<MessageTimeline>', () => {
     expect(getByText(/No messages yet/i)).toBeInTheDocument();
   });
 
-  it('mounts persisted workflow proposals at their timeline position', async () => {
-    const pane = await buildPane(undefined, [
-      makeItem({
-        id: 'workflow-proposal:1', kind: 'workflow_proposal', summary: 'Ship it',
-        meta: JSON.stringify({
-          state: 'pending', projectId: 'p', projectName: 'AO', workflowId: 'build',
-          workflowName: 'Build', workflowScope: 'shared', goal: 'Ship it', seeds: {},
-          baseBranch: 'main', stepMode: false,
-        }),
-      }),
-    ]);
-    const { getByTestId } = render(MessageTimeline, { props: { pane } });
-    expect(getByTestId('wf-confirm-card')).toHaveTextContent('AO · Ship it · Build · main');
-  });
-
   it('keeps active-turn status out of the virtualized history', async () => {
     const pane = await buildPane(undefined, [
       makeItem({ id: 'user:0', kind: 'user_text', role: 'user', summary: 'hi' }),

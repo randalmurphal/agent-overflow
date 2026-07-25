@@ -228,14 +228,6 @@ cleanup: manual
 `;
 }
 
-export function terminalWorkflow(
-  id: string,
-  terminal: 'done' | 'failed',
-  access: 'read-only' | 'write' = 'read-only',
-): string {
-  return singlePhaseWorkflow(id, `        - to: ${terminal}`, access);
-}
-
 export function retryableFailureWorkflow(id: string): string {
   return `id: ${id}
 name: ${id}
@@ -266,58 +258,5 @@ phases:
               value: false
           to: failed
         - to: done
-`;
-}
-
-export function humanGateWorkflow(
-  id: string,
-  access: 'read-only' | 'write' = 'read-only',
-): string {
-  return `id: ${id}
-name: ${id}
-inputs:
-  goal:
-    schema:
-      type: string
-phases:
-  - id: prepare
-    driver: agent
-    provider: claude
-    model: claude-opus-4-7
-    prompt: ${id}.md
-    access: ${access}
-    inputs:
-      goal:
-        schema:
-          type: string
-    outputs:
-      complete:
-        schema:
-          type: boolean
-    gate:
-      routes:
-        - to: review
-  - id: review
-    driver: agent
-    provider: claude
-    model: claude-opus-4-7
-    prompt: ${id}.md
-    access: ${access}
-    inputs:
-      prepare.complete:
-        schema:
-          type: boolean
-    outputs:
-      complete:
-        schema:
-          type: boolean
-    gate:
-      routes:
-        - human:
-            approve: done
-            reject:
-              loop: prepare
-              max: 1
-cleanup: manual
 `;
 }

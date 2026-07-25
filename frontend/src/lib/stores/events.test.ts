@@ -27,17 +27,6 @@ import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import type { ProviderStatusEvent } from '../types/events';
 import type { Item, ProjectWithCounts } from '../types/models';
-import type { WorkItem } from '../types/workflow';
-import {
-  activateWorkflowsPane,
-  getWorkflowItems,
-  loadWorkflowOverview,
-  resetWorkflowsPane,
-} from './workflowsPane.svelte';
-import {
-  getProjectWorkflowRuns,
-  resetWorkflowsSidebarForTest,
-} from './workflowsSidebar.svelte';
 
 function providerStatusEvent(overrides: Partial<ProviderStatusEvent> = {}): ProviderStatusEvent {
   return {
@@ -80,8 +69,6 @@ describe('setupEventListeners', () => {
     resetThreadStatuses();
     resetSendQueue();
     resetProjectsForTest();
-    resetWorkflowsPane();
-    resetWorkflowsSidebarForTest();
     resetRateLimitsInfo();
     resetProviderStatuses();
     setBindingMock('AutoResumeThread', async () => {});
@@ -97,8 +84,6 @@ describe('setupEventListeners', () => {
     resetPanesForTest();
     resetThreadStatuses();
     resetSendQueue();
-    resetWorkflowsPane();
-    resetWorkflowsSidebarForTest();
   });
 
   it('registers and unregisters the unified listener set', () => {
@@ -111,11 +96,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:turn_completed')).toBe(1);
     expect(wailsListenerCount('provider:subagent_notification')).toBe(1);
     expect(wailsListenerCount('thread:updated')).toBe(1);
-    expect(wailsListenerCount('workflow:item-state')).toBe(1);
-    expect(wailsListenerCount('workflow:queue-state')).toBe(1);
-    expect(wailsListenerCount('workflow:phase-state')).toBe(1);
     expect(wailsListenerCount('workflow:error')).toBe(1);
-    expect(wailsListenerCount('workflow:definitions-changed')).toBe(1);
 
     cleanup();
 
@@ -128,11 +109,7 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:turn_completed')).toBe(0);
     expect(wailsListenerCount('provider:subagent_notification')).toBe(0);
     expect(wailsListenerCount('thread:updated')).toBe(0);
-    expect(wailsListenerCount('workflow:item-state')).toBe(0);
-    expect(wailsListenerCount('workflow:queue-state')).toBe(0);
-    expect(wailsListenerCount('workflow:phase-state')).toBe(0);
     expect(wailsListenerCount('workflow:error')).toBe(0);
-    expect(wailsListenerCount('workflow:definitions-changed')).toBe(0);
 
     cleanup = setupEventListeners();
   });
@@ -1879,34 +1856,6 @@ describe('setupEventListeners', () => {
 
     expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(10_000);
     expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(10_000);
-  });
-
-  it('refreshes the active workflows pane and sidebar after workflow transport gaps', async () => {
-    addProjectLocal(projectWithCounts('workflow-project').project);
-    let state = 'queued';
-    setBindingMock('WorkflowListItems', async () => [{
-      id: 'run', projectId: 'workflow-project', workflowId: 'wf', workflowScope: 'shared',
-      goal: 'Run', state, reason: '', sortPosition: 1, stepMode: false, source: 'manual', createdAt: 1,
-    } as WorkItem]);
-    setBindingMock('WorkflowListUnresolvedItems', async () => [{
-      id: 'run', projectId: 'workflow-project', workflowId: 'wf', workflowScope: 'shared',
-      goal: 'Run', state, reason: '', sortPosition: 1, stepMode: false, source: 'manual', createdAt: 1,
-    } as WorkItem]);
-    setBindingMock('WorkflowListItemCosts', async () => ({}));
-    setBindingMock('WorkflowListDefinitions', async () => ({
-      baseBranch: 'main', predictedQueuePosition: 1, workflows: [],
-    }));
-    activateWorkflowsPane();
-    await loadWorkflowOverview();
-    expect(getWorkflowItems()[0]?.state).toBe('queued');
-    state = 'running';
-
-    emitWailsEvent(transportGapChannel, { channel: 'workflow:item-state', seq: 9 });
-
-    await vi.waitFor(() => {
-      expect(getWorkflowItems()[0]?.state).toBe('running');
-      expect(getProjectWorkflowRuns('workflow-project')[0]?.state).toBe('running');
-    });
   });
 
   it('refreshes the context meter via GetThread after a provider:usage transport gap', async () => {

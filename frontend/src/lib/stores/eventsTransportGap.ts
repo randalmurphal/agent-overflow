@@ -9,8 +9,6 @@ import { GetThread } from './bindings';
 import { refreshSidebarProjections } from './eventsThreadRows';
 import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
-import { isWorkflowsPaneActive, reloadWorkflowsPaneAfterGap } from './workflowsPane.svelte';
-import { refreshWorkflowsSidebar } from './workflowsSidebar.svelte';
 
 // The handler matches on the channel name we lost rather than each
 // payload kind because a single gap on `provider:item_event` can
@@ -20,13 +18,6 @@ import { refreshWorkflowsSidebar } from './workflowsSidebar.svelte';
 export function applyTransportGap(gap: { channel: string; seq: number }): void {
   if (!gap || typeof gap.channel !== 'string') return;
   switch (gap.channel) {
-    case 'workflow:item-state':
-    case 'workflow:phase-state':
-    case 'workflow:queue-state': {
-      refreshWorkflowsSidebar(true);
-      if (isWorkflowsPaneActive()) void reloadWorkflowsPaneAfterGap();
-      return;
-    }
     case 'provider:item_event':
     case 'provider:turn_started':
     case 'provider:turn_completed':

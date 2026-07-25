@@ -234,15 +234,15 @@ describe('reviewPane store', () => {
     expect(same.pendingJumpFilePath).toBeNull();
   });
 
-  it('records a render target for a workflows source pane without a ThreadPane', async () => {
-    setPaneLayoutItemsForTest([{ id: 'workflows', paneId: 'workflows', kind: 'workflows', widthPx: 500 }]);
-    const state = await openReviewCompanion('workflows', 'thread-1', {
+  it('records a render target for a source pane without a ThreadPane', async () => {
+    setPaneLayoutItemsForTest([{ id: 'unregistered', paneId: 'unregistered', kind: 'thread', widthPx: 500 }]);
+    const state = await openReviewCompanion('unregistered', 'thread-1', {
       scope: 'branch',
       baseBranch: 'release',
       workspacePath: '/tmp/run',
     });
     expect(state).not.toBeNull();
-    expect(getReviewCompanionTarget('workflows')).toEqual({
+    expect(getReviewCompanionTarget('unregistered')).toEqual({
       threadId: 'thread-1', thread: null, workspacePath: '/tmp/run',
     });
     expect(state?.scope).toBe('branch');

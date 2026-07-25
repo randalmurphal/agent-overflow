@@ -5,9 +5,6 @@
 // module only binds them to the real thread and pane stores.
 import { getThreadById } from './threads.svelte';
 import { openThreadInPane } from './panes.svelte';
-import { GetThread, WorkflowGetItem, WorkflowOpenTriageAgent } from './bindings';
-import { addToast } from './toast.svelte';
-import { openWorkflowsPane, workflowThreadFromWire } from './workflowsPane.svelte';
 import {
   createNotificationActivationQueue,
   type NotificationTarget,
@@ -22,21 +19,7 @@ export type { NotificationTarget } from './notificationActivationQueue';
 function createAppNotificationActivationQueue() {
   return createNotificationActivationQueue({
     getThreadById: (id) => getThreadById(id),
-    loadThreadById: async (id) => workflowThreadFromWire(await GetThread(id)),
-    getWorkflowItem: async (id) => WorkflowGetItem(id),
-    createWorkflowTriageAgent: async (projectId) =>
-      workflowThreadFromWire(await WorkflowOpenTriageAgent(projectId)),
     openThread: (thread) => openThreadInPane(thread),
-    openWorkflowItem: (detail) => openWorkflowsPane({
-      kind: 'sweep-at-run',
-      projectId: detail.item.projectId,
-      workflowId: detail.item.workflowId,
-      itemId: detail.item.id,
-      workflowLabel: detail.item.workflowId,
-      label: detail.item.goal,
-    }),
-    openWorkflowsOverview: () => openWorkflowsPane({ kind: 'overview' }),
-    showError: (message) => addToast('error', message),
     console,
   });
 }

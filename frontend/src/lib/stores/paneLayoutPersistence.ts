@@ -21,13 +21,6 @@ import { getMinPaneWidth } from './paneDensity.svelte';
 import { FALLBACK_PANE_WIDTH_PX, normalizePaneWidthPx } from '../utils/paneWidths';
 import { restoreCompanion, type CompanionPanelKind } from './companionPanes.svelte';
 import {
-  getPersistedWorkflowsPaneState,
-  parsePersistedWorkflowsPaneState,
-  resetWorkflowsPane,
-  restoreWorkflowsPaneState,
-  setWorkflowsPanePersistenceHandler,
-} from './workflowsPane.svelte';
-import {
   focusPane,
   getAllPanes,
   getFocusedPaneId,
@@ -110,10 +103,9 @@ function companionPaneIdFor(sourcePaneId: string, kind: CompanionPanelKind): str
   return `${kind}-${sourcePaneId}`;
 }
 
-async function emptyLayout(): Promise<void> {
+function emptyLayout(): void {
   setPaneLayoutItems([]);
   resetPaneRegistry(null);
-  resetWorkflowsPane();
 }
 
 function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
@@ -183,16 +175,6 @@ function parsePersistedLayout(raw: unknown): PersistedPaneLayout | null {
         threadId: pane.threadId,
         widthPx: persistedWidthFor(pane, record.version),
       });
-    } else if (pane.kind === 'workflows') {
-      if (pane.paneId !== 'workflows') continue;
-      if (!parsePersistedWorkflowsPaneState(pane.workflowState)) continue;
-      seenPaneIds.add(pane.paneId);
-      panes.push({
-        paneId: pane.paneId,
-        kind: 'workflows',
-        workflowState: pane.workflowState,
-        widthPx: persistedWidthFor(pane, record.version),
-      });
     } else if (isPersistedCompanionKind(pane.kind)) {
       if (typeof pane.sourcePaneId !== 'string' || !isSafePersistedPaneId(pane.sourcePaneId)) continue;
       if (!validThreadPaneIds.has(pane.sourcePaneId)) continue;
@@ -231,13 +213,6 @@ function buildSnapshot(): PersistedPaneLayout {
         paneId: item.paneId,
         kind: 'thread',
         threadId,
-        widthPx: normalizePersistedWidthPx(item.widthPx),
-      });
-    } else if (item.kind === 'workflows') {
-      panes.push({
-        paneId: item.paneId,
-        kind: 'workflows',
-        workflowState: getPersistedWorkflowsPaneState(),
         widthPx: normalizePersistedWidthPx(item.widthPx),
       });
     } else if (
@@ -304,13 +279,12 @@ async function loadThreadsForValidation(availableThreads?: Thread[]): Promise<Th
 export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Promise<void> {
   const persisted = readPersistedLayout();
   if (!persisted) {
-    await emptyLayout();
+    emptyLayout();
     return;
   }
 
   const threads = await loadThreadsForValidation(availableThreads);
   const threadPanes = persisted.panes.filter((pane) => pane.kind === 'thread' && pane.threadId);
-  const workflowsPane = persisted.panes.find((pane) => pane.kind === 'workflows');
   const companionPanes = persisted.panes.filter((pane) => isPersistedCompanionKind(pane.kind));
   const neededThreadIds = new Set(threadPanes.map((pane) => pane.threadId as string));
   const threadById = new Map<string, Thread>();
@@ -332,21 +306,6 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
     registryEntries.push({ paneId: pane.paneId, thread });
   }
 
-  if (workflowsPane) {
-    const threadItemsById = new Map(layoutItems.map((item) => [item.paneId, item]));
-    layoutItems.length = 0;
-    for (const pane of persisted.panes) {
-      if (pane.kind === 'thread') {
-        const item = threadItemsById.get(pane.paneId);
-        if (item) layoutItems.push(item);
-      } else if (pane.kind === 'workflows') {
-        layoutItems.push({
-          id: pane.paneId, paneId: pane.paneId, kind: 'workflows', widthPx: pane.widthPx,
-        });
-      }
-    }
-  }
-
   const restoredFocusedPaneId = persisted.focusedPaneId &&
     registryEntries.some((entry) => entry.paneId === persisted.focusedPaneId)
     ? persisted.focusedPaneId
@@ -354,9 +313,7 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
   setPaneLayoutItems(layoutItems);
   await hydrateRestoredPaneRegistry(registryEntries, restoredFocusedPaneId);
 
-  const restoredThreadItems = layoutItems.filter(
-    (item) => item.kind === 'workflows' || getAllPanes().has(item.paneId),
-  );
+  const restoredThreadItems = layoutItems.filter((item) => getAllPanes().has(item.paneId));
   const companionsBySource = new Map<string, PaneLayoutItem[]>();
   for (const pane of companionPanes) {
     if (!isPersistedCompanionKind(pane.kind) || !pane.sourcePaneId) continue;
@@ -382,10 +339,6 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
     if (companions) restoredLayoutItems.push(...companions);
   }
   setPaneLayoutItems(restoredLayoutItems);
-
-  if (workflowsPane) {
-    await restoreWorkflowsPaneState(parsePersistedWorkflowsPaneState(workflowsPane.workflowState));
-  }
 
   // A persisted focused COMPANION id can only be honored now — the hydrate
   // above validated against thread panes and fell back to one of those.
@@ -421,7 +374,6 @@ export function installPaneLayoutPersistence(): void {
     flush: flushPendingPaneLayoutPersistence,
   });
   setPanePersistenceHandler(persistPaneLayout);
-  setWorkflowsPanePersistenceHandler(persistPaneLayout);
 }
 
 export async function waitForPaneLayoutPersistenceForTest(): Promise<void> {
@@ -433,5 +385,4 @@ export function resetPaneLayoutPersistenceForTest(): void {
   lastPersistedPaneLayoutKey = null;
   setPaneLayoutPersistenceHandlers(null);
   setPanePersistenceHandler(null);
-  setWorkflowsPanePersistenceHandler(null);
 }

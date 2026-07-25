@@ -14,7 +14,7 @@ import { getPaneHostWidth } from './layoutMetrics.svelte';
 // paired to a source thread pane via `sourcePaneId`. take-control remains
 // ephemeral; plan, design-preview, and review companions are persisted by layout
 // persistence and restored through companionPanes.svelte.ts.
-export type PaneLayoutKind = 'thread' | 'take-control' | 'plan' | 'design-preview' | 'review' | 'workflows';
+export type PaneLayoutKind = 'thread' | 'take-control' | 'plan' | 'design-preview' | 'review';
 export type CompanionPaneKind = 'take-control' | 'plan' | 'design-preview' | 'review';
 
 export function isCompanionKind(kind: PaneLayoutKind): kind is CompanionPaneKind {

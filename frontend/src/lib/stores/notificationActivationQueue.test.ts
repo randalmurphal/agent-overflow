@@ -14,19 +14,12 @@ function setup() {
     warn: vi.fn(),
     error: vi.fn(),
   };
-  const showError = vi.fn();
   const queue = createNotificationActivationQueue({
     getThreadById: (id) => threads.get(id),
-    loadThreadById: async (id) => threads.get(id) ?? thread(id),
-    getWorkflowItem: async (id) => ({ item: { id } }) as never,
-    createWorkflowTriageAgent: async (projectId) => thread(`triage:${projectId}`),
     openThread: async (value) => { opened.push(value.id); },
-    openWorkflowItem: async (detail) => { opened.push(detail.item.id); },
-    openWorkflowsOverview: async () => { opened.push('overview'); },
-    showError,
     console: logger,
   });
-  return { queue, threads, opened, logger, showError };
+  return { queue, threads, opened, logger };
 }
 
 describe('notification activation queue', () => {
@@ -83,16 +76,10 @@ describe('notification activation queue', () => {
     ]);
     const queue = createNotificationActivationQueue({
       getThreadById: (id) => threads.get(id),
-      loadThreadById: async (id) => threads.get(id) ?? thread(id),
-      getWorkflowItem: async (id) => ({ item: { id } }) as never,
-      createWorkflowTriageAgent: async (projectId) => thread(`triage:${projectId}`),
       openThread: async (value) => {
         opened.push(value.id);
         if (value.id === 'thread-1') await firstBlocked;
       },
-      openWorkflowItem: async (detail) => { opened.push(detail.item.id); },
-      openWorkflowsOverview: async () => { opened.push('overview'); },
-      showError: vi.fn(),
       console: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     });
     queue.receive({ kind: 'thread', threadId: 'thread-1' });
@@ -106,14 +93,6 @@ describe('notification activation queue', () => {
     expect(opened).toEqual(['thread-1', 'thread-2']);
   });
 
-  it('routes workflow items and triage agents after hydration', async () => {
-    const { queue, opened } = setup();
-    queue.receive({ kind: 'workflow-item', workItemId: 'run-1' });
-    queue.receive({ kind: 'workflow-triage-agent', projectId: 'project-1' });
-    await queue.markHydrated();
-    expect(opened).toEqual(['run-1', 'triage:project-1']);
-  });
-
   it('serializes activations received after hydration', async () => {
     let releaseFirst!: () => void;
     const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
@@ -124,16 +103,10 @@ describe('notification activation queue', () => {
     ]);
     const queue = createNotificationActivationQueue({
       getThreadById: (id) => threads.get(id),
-      loadThreadById: async (id) => threads.get(id) ?? thread(id),
-      getWorkflowItem: async (id) => ({ item: { id } }) as never,
-      createWorkflowTriageAgent: async (projectId) => thread(`triage:${projectId}`),
       openThread: async (value) => {
         opened.push(value.id);
         if (value.id === 'thread-1') await firstBlocked;
       },
-      openWorkflowItem: async (detail) => { opened.push(detail.item.id); },
-      openWorkflowsOverview: async () => { opened.push('overview'); },
-      showError: vi.fn(),
       console: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     });
     await queue.markHydrated();
@@ -145,35 +118,26 @@ describe('notification activation queue', () => {
     await vi.waitFor(() => expect(opened).toEqual(['thread-1', 'thread-2']));
   });
 
-  it('rejects ambiguous and oversized workflow targets', () => {
+  it('rejects unsupported, ambiguous, and oversized targets', () => {
     const { queue, logger } = setup();
-    queue.receive({ kind: 'workflow-item', workItemId: 'run', projectId: 'project' });
-    queue.receive({ kind: 'workflow-triage-agent', projectId: 'x'.repeat(257) });
+    queue.receive({ kind: 'workflow-item', workItemId: 'run' });
+    queue.receive({ kind: 'thread', threadId: 'thread-1', projectId: 'project' });
+    queue.receive({ kind: 'thread', threadId: 'x'.repeat(257) });
+    queue.receive({ kind: 'none', threadId: 'thread-1' });
     expect(queue.pendingCount()).toBe(0);
-    expect(logger.warn).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledTimes(4);
   });
 
-  it('surfaces workflow routing failures without exposing backend details', async () => {
-    const { showError, logger } = setup();
-    const failure = new Error('private backend detail');
+  it('logs an activation failure without dropping the queue', async () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const failingQueue = createNotificationActivationQueue({
-      getThreadById: async () => undefined,
-      loadThreadById: async () => { throw failure; },
-      getWorkflowItem: async () => { throw failure; },
-      createWorkflowTriageAgent: async () => { throw failure; },
+      getThreadById: async () => { throw new Error('private backend detail'); },
       openThread: async () => undefined,
-      openWorkflowItem: async () => undefined,
-      openWorkflowsOverview: async () => undefined,
-      showError,
       console: logger,
     });
-    failingQueue.receive({ kind: 'workflow-item', workItemId: 'run' });
-    failingQueue.receive({ kind: 'workflow-triage-agent', projectId: 'project' });
+    failingQueue.receive({ kind: 'thread', threadId: 'thread-1' });
     await failingQueue.markHydrated();
-    expect(showError.mock.calls).toEqual([
-      ['Could not open this workflow run.'],
-      ['Could not open the workflow triage agent.'],
-    ]);
-    expect(logger.error).toHaveBeenCalledTimes(2);
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(failingQueue.pendingCount()).toBe(0);
   });
 });

@@ -84,40 +84,6 @@ export interface WorkflowDispositionReceipt {
   at: number;
 }
 
-export type WorkflowPaneLevel =
-  | { kind: 'overview' }
-  | { kind: 'workflow'; projectId: string; workflowId: string; label: string }
-  | {
-      kind: 'run';
-      projectId: string;
-      workflowId: string;
-      workflowLabel: string;
-      itemId: string;
-      label: string;
-      sweep: boolean;
-    }
-  | { kind: 'all-clear' };
-
-export type WorkflowsPaneTarget =
-  | { kind: 'overview' }
-  | { kind: 'workflow'; projectId: string; workflowId: string; label?: string }
-  | {
-      kind: 'run';
-      projectId: string;
-      workflowId: string;
-      itemId: string;
-      workflowLabel?: string;
-      label?: string;
-    }
-  | {
-      kind: 'sweep-at-run';
-      projectId: string;
-      workflowId: string;
-      itemId: string;
-      workflowLabel?: string;
-      label?: string;
-    };
-
 export interface WorkflowResolvedReceipt {
   itemId: string;
   kind: 'approved' | 'answered' | 'handed-off' | 're-enqueued' | 'merged' | 'pr' | 'discarded' | 'removed';

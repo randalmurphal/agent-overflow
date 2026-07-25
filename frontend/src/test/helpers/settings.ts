@@ -38,7 +38,6 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     usagePeriod: 'month',
     workflowQueueActive: true,
     workflowConcurrency: 2,
-    workflowChatEnqueue: true,
     ...overrides,
   };
 }
