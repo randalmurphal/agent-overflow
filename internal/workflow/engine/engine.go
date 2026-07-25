@@ -15,8 +15,17 @@ import (
 const commandBuffer = 256
 
 type runtimeItem struct {
-	item              store.WorkItem
-	workflow          def.Workflow
+	item     store.WorkItem
+	workflow def.Workflow
+	// workspaceNeed is the run's frozen §9 decision, carried on every RunRequest
+	// so the runner never re-derives it from the workflow alone (which cannot
+	// see what this run's call edges reach).
+	workspaceNeed def.WorkspaceNeed
+	// rootID is the tree's root item, cached because parent linkage is immutable.
+	// Budgets are enforced against the root across the whole tree (§12), so every
+	// budget check on a child resolves it; an empty value means "not resolved
+	// yet", and a root item resolves to its own id.
+	rootID            string
 	phaseID           string
 	attempt           int
 	runnerActive      bool
@@ -65,6 +74,19 @@ type Engine struct {
 	lastTimestamp  int64
 	commandStarts  []*runnerStartFuture
 	inflightStarts map[*runnerStartFuture]struct{}
+	// deferred is work an FSM transition queued for the command loop to run once
+	// the current command settles — today, a finished child run re-entering the
+	// parent phase that called it. It is drained on the owner goroutine before
+	// the next command is read, so a child completion is serialized like every
+	// other transition without a self-send that could deadlock the buffer.
+	deferred []deferredWork
+}
+
+// deferredWork is one queued follow-up plus the run it belongs to, so a failure
+// is reported against the item a human would look at.
+type deferredWork struct {
+	itemID string
+	run    func() error
 }
 
 func New(store persistence, runner Runner, emitter Emitter, definitions DefinitionSource, profiles ProfileSource, spend SpendSource, config Config) (*Engine, error) {
@@ -247,14 +269,15 @@ func (e *Engine) resume(itemID, targetPhase string) error {
 		}
 	}
 	if len(item.workflow.Phases) == 0 {
-		workflow, err := e.definitions.Resolve(e.ctx, item.item)
+		resolved, err := e.definitions.Resolve(e.ctx, item.item)
 		if err != nil {
 			return fmt.Errorf("resume setup-failed item %q: %w", itemID, err)
 		}
+		workflow := resolved.Workflow
 		if len(workflow.Phases) == 0 {
 			return fmt.Errorf("resume setup-failed item %q: workflow has no phases", itemID)
 		}
-		snapshot, err := json.Marshal(Snapshot{Workflow: workflow})
+		snapshot, err := json.Marshal(Snapshot{Workflow: workflow, WorkspaceNeed: resolved.WorkspaceNeed})
 		if err != nil {
 			return fmt.Errorf("resume setup-failed item %q snapshot: %w", itemID, err)
 		}
@@ -268,7 +291,7 @@ func (e *Engine) resume(itemID, targetPhase string) error {
 		); err != nil {
 			return err
 		}
-		item.workflow = workflow
+		item.adoptSnapshot(Snapshot{Workflow: workflow, WorkspaceNeed: resolved.WorkspaceNeed})
 		item.item.Snapshot = snapshot
 		item.item.StartedAt = startedAt
 		item.phaseID = workflow.Phases[0].ID
@@ -304,9 +327,11 @@ func (e *Engine) loadParked(itemID string) (*runtimeItem, error) {
 	if len(storedItem.Snapshot) == 0 {
 		return item, nil
 	}
-	if err := decodeSnapshot(storedItem.Snapshot, &item.workflow); err != nil {
+	snapshot, err := decodeSnapshot(storedItem.Snapshot)
+	if err != nil {
 		return nil, fmt.Errorf("load parked item %q snapshot: %w", itemID, err)
 	}
+	item.adoptSnapshot(snapshot)
 	phases, err := e.store.ListWorkItemPhases(itemID)
 	if err != nil {
 		return nil, fmt.Errorf("load parked item %q phases: %w", itemID, err)

@@ -1468,6 +1468,10 @@ export class WorkItem {
     "triageThreadId"?: string;
     "disposition"?: json$0.RawMessage;
     "digest"?: json$0.RawMessage;
+    "parentItemId"?: string;
+    "parentPhaseId"?: string;
+    "parentAttempt"?: number;
+    "callDepth"?: number;
     "createdAt": number;
     "startedAt"?: number;
     "endedAt"?: number;

@@ -109,6 +109,10 @@ func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Wr
 		return operationalError(stderr, err)
 	}
 
+	root, err := resolveConfigRoot(*configRoot)
+	if err != nil {
+		return operationalError(stderr, err)
+	}
 	var resolved def.ResolvedWorkflow
 	if *id == "" {
 		workflow, err := def.ParseFile(paths[0])
@@ -117,10 +121,6 @@ func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Wr
 		}
 		resolved = def.ResolvedWorkflow{Workflow: workflow, Path: paths[0], Scope: def.ScopeShared}
 	} else {
-		root, err := resolveConfigRoot(*configRoot)
-		if err != nil {
-			return operationalError(stderr, err)
-		}
 		workflows, err := ResolveConfigured(root, *projectSlug)
 		if err != nil {
 			return operationalError(stderr, err)
@@ -138,11 +138,17 @@ func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Wr
 		}
 	}
 
-	bindings, err := loadProjectBindings(*configRoot, *projectSlug)
+	bindings, err := loadProjectBindings(root, *projectSlug)
 	if err != nil {
 		return operationalError(stderr, err)
 	}
-	result := def.Validate(resolved, bindings)
+	// A call edge is resolved against the same configured scopes a run start
+	// uses, so `ao workflow validate` sees the call graph the engine will.
+	calls, err := NewCallResolver(root, *projectSlug)
+	if err != nil {
+		return operationalError(stderr, err)
+	}
+	result := def.Validate(resolved, bindings, calls)
 	result.Findings = slicesx.OrEmpty(result.Findings)
 	if *jsonOutput {
 		if err := writeJSON(stdout, result); err != nil {
@@ -293,6 +299,42 @@ func ResolveConfigured(configRoot, projectSlug string) ([]def.ResolvedWorkflow, 
 	return def.Resolve(sources)
 }
 
+// callResolver answers a call phase's static target from one snapshot of the
+// configured directories. Resolution is `def.Resolve`'s, so a call edge lands on
+// exactly the definition a run start would pick: project scope wins over shared.
+type callResolver struct{ byID map[string]def.ResolvedWorkflow }
+
+func (r callResolver) ResolveCall(id string) (def.ResolvedWorkflow, error) {
+	workflow, ok := r.byID[id]
+	if !ok {
+		return def.ResolvedWorkflow{}, fmt.Errorf("workflow id %q was not found in this project's shared or project scope", id)
+	}
+	return workflow, nil
+}
+
+// NewCallResolver builds the dry-run's view of the call graph. The directory is
+// read once per resolver, so one validation sees one consistent set of
+// definitions no matter how many edges it walks.
+func NewCallResolver(configRoot, projectSlug string) (def.CallResolver, error) {
+	resolved, err := ResolveConfigured(configRoot, projectSlug)
+	if err != nil {
+		return nil, err
+	}
+	return CallResolverFor(resolved), nil
+}
+
+// CallResolverFor builds a call resolver over an already-resolved set. Callers
+// that resolved the directory themselves use this so one request sees exactly
+// one snapshot of the definitions — validating a listing against a re-read of
+// the directory could report call edges that disagree with the rows it renders.
+func CallResolverFor(resolved []def.ResolvedWorkflow) def.CallResolver {
+	byID := make(map[string]def.ResolvedWorkflow, len(resolved))
+	for _, workflow := range resolved {
+		byID[workflow.Workflow.ID] = workflow
+	}
+	return callResolver{byID: byID}
+}
+
 // ResolveWorkflow resolves one workflow by its explicit persisted scope.
 func ResolveWorkflow(configRoot, projectSlug, workflowID string, scope def.Scope) (def.ResolvedWorkflow, error) {
 	sources, err := configuredSources(configRoot, projectSlug)
@@ -323,6 +365,7 @@ func listConfigured(configRoot, projectSlug string, bindings def.Bindings) ([]li
 	if err != nil {
 		return nil, err
 	}
+	calls := CallResolverFor(resolved)
 	shared, err := resolveScope(sources, def.ScopeShared)
 	if err != nil {
 		return nil, err
@@ -334,7 +377,7 @@ func listConfigured(configRoot, projectSlug string, bindings def.Bindings) ([]li
 	entries := make([]listEntry, 0, len(resolved))
 	for _, workflow := range resolved {
 		_, shadows := sharedIDs[workflow.Workflow.ID]
-		validation := def.Validate(workflow, bindings)
+		validation := def.Validate(workflow, bindings, calls)
 		entries = append(entries, listEntry{
 			ID:            workflow.Workflow.ID,
 			Name:          workflow.Workflow.Name,

@@ -31,6 +31,10 @@ type WorkItem struct {
 	TriageThreadID      string          `json:"triageThreadId,omitempty"`
 	Disposition         json.RawMessage `json:"disposition,omitempty"`
 	Digest              json.RawMessage `json:"digest,omitempty"`
+	ParentItemID        string          `json:"parentItemId,omitempty"`
+	ParentPhaseID       string          `json:"parentPhaseId,omitempty"`
+	ParentAttempt       int             `json:"parentAttempt,omitempty"`
+	CallDepth           int             `json:"callDepth,omitempty"`
 	CreatedAt           int64           `json:"createdAt"`
 	StartedAt           int64           `json:"startedAt,omitempty"`
 	EndedAt             int64           `json:"endedAt,omitempty"`
@@ -54,9 +58,13 @@ type WorkItemAttentionContext struct {
 // An empty ProjectID matches every project. UnresolvedOnly excludes cancelled
 // items and every item with a disposition receipt, regardless of state.
 type WorkItemListFilter struct {
-	ProjectID      string   `json:"projectId"`
-	States         []string `json:"states,omitempty"`
-	UnresolvedOnly bool     `json:"unresolvedOnly,omitempty"`
+	ProjectID string   `json:"projectId"`
+	States    []string `json:"states,omitempty"`
+	// ParentItemID restricts the listing to the runs one item called. Empty
+	// matches every item regardless of linkage, so a plain project listing still
+	// shows called runs alongside their callers.
+	ParentItemID   string `json:"parentItemId,omitempty"`
+	UnresolvedOnly bool   `json:"unresolvedOnly,omitempty"`
 }
 
 const unresolvedWorkItemsPredicate = `disposition = '' AND state IN ('running','needs-human','done','failed')`
@@ -68,12 +76,14 @@ func qualifiedUnresolvedWorkItemsPredicate(prefix string) string {
 const workItemColumns = `id, project_id, goal, workflow_id, workflow_scope,
 snapshot, state, reason, seeds, step_mode, worktree_path,
 branch, base_branch, budget, source, source_ref, triage_thread_id,
-disposition, digest, created_at, started_at, ended_at`
+disposition, digest, parent_item_id, parent_phase_id, parent_attempt, call_depth,
+created_at, started_at, ended_at`
 
 const workItemSummaryListColumns = `w.id, w.project_id, w.goal, w.workflow_id, w.workflow_scope,
 '', w.state, w.reason, '', w.step_mode, w.worktree_path,
 w.branch, w.base_branch, '', w.source, w.source_ref, w.triage_thread_id,
-w.disposition, '', w.created_at, w.started_at, w.ended_at`
+w.disposition, '', w.parent_item_id, w.parent_phase_id, w.parent_attempt, w.call_depth,
+w.created_at, w.started_at, w.ended_at`
 
 const workItemSummaryProgressJoin = `
  LEFT JOIN work_item_phases AS current_phase ON current_phase.rowid = (
@@ -106,6 +116,7 @@ func scanWorkItem(scanner interface{ Scan(...any) error }, includeProgress bool)
 		&snapshot, &item.State, &item.Reason, &seeds, &stepMode,
 		&item.WorktreePath, &item.Branch, &item.BaseBranch, &budget, &item.Source,
 		&item.SourceRef, &item.TriageThreadID, &disposition, &digest,
+		&item.ParentItemID, &item.ParentPhaseID, &item.ParentAttempt, &item.CallDepth,
 		&item.CreatedAt, &item.StartedAt, &item.EndedAt,
 	}
 	if includeProgress {
@@ -126,12 +137,13 @@ func scanWorkItem(scanner interface{ Scan(...any) error }, includeProgress bool)
 func (s *Store) CreateWorkItem(item WorkItem) error {
 	_, err := s.db.Exec(
 		`INSERT INTO work_items (`+workItemColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ProjectID, item.Goal, item.WorkflowID, item.WorkflowScope,
 		jsonText(item.Snapshot), item.State, item.Reason,
 		jsonText(item.Seeds), boolToInt(item.StepMode), item.WorktreePath, item.Branch,
 		item.BaseBranch, jsonText(item.Budget), item.Source, item.SourceRef,
 		item.TriageThreadID, jsonText(item.Disposition), jsonText(item.Digest),
+		item.ParentItemID, item.ParentPhaseID, item.ParentAttempt, item.CallDepth,
 		item.CreatedAt, item.StartedAt, item.EndedAt,
 	)
 	if err != nil {
@@ -173,7 +185,7 @@ func (s *Store) GetWorkItemBySourceRef(source, sourceRef string) (WorkItem, bool
 // the engine owner's synchronous event path.
 func (s *Store) GetWorkItemAttentionContext(id string) (WorkItemAttentionContext, error) {
 	const query = `SELECT
-		w.id, w.project_id, w.goal, w.state, w.reason, w.worktree_path, w.digest,
+		w.id, w.project_id, w.goal, w.state, w.reason, w.worktree_path, w.digest, w.parent_item_id,
 		COALESCE(p.phase_id, ''), COALESCE(p.output_envelope, ''),
 		COALESCE((
 			SELECT json_extract(phase.value, '$.check')
@@ -194,7 +206,7 @@ func (s *Store) GetWorkItemAttentionContext(id string) (WorkItemAttentionContext
 	if err := s.db.QueryRow(query, id).Scan(
 		&context.Item.ID, &context.Item.ProjectID, &context.Item.Goal,
 		&context.Item.State, &context.Item.Reason, &context.Item.WorktreePath,
-		&digest, &context.PhaseID, &output, &context.Check,
+		&digest, &context.Item.ParentItemID, &context.PhaseID, &output, &context.Check,
 	); err != nil {
 		return WorkItemAttentionContext{}, fmt.Errorf("store: get work item attention context %s: %w", id, err)
 	}
@@ -223,6 +235,60 @@ func (s *Store) GetWorkItemByPhaseThread(threadID string) (WorkItem, error) {
 	return item, nil
 }
 
+// ListWorkItemChildren returns the runs one item called, oldest-first. Children
+// are ordinary run records linked by parent id (§3a); the run tree is read
+// through this one edge rather than through a denormalized tree column.
+func (s *Store) ListWorkItemChildren(parentItemID string) ([]WorkItem, error) {
+	if parentItemID == "" {
+		return nil, fmt.Errorf("store: list work item children: empty parent id")
+	}
+	return s.queryWorkItems(
+		// The `<> ''` is not redundant: it is what lets SQLite use the partial
+		// index, since a bound parameter alone cannot prove the predicate holds.
+		`SELECT `+workItemColumns+` FROM work_items
+		 WHERE parent_item_id = ? AND parent_item_id <> ''
+		 ORDER BY created_at ASC, id ASC`,
+		"list work item children", parentItemID,
+	)
+}
+
+// ListWorkItemCallChildren narrows ListWorkItemChildren to the runs one call
+// *attempt* created. A rerun of a call phase is a new attempt with a new child,
+// so the attempt — not the phase — is what identifies the invocation a parent is
+// waiting on.
+func (s *Store) ListWorkItemCallChildren(parentItemID, parentPhaseID string, parentAttempt int) ([]WorkItem, error) {
+	if parentItemID == "" || parentPhaseID == "" {
+		return nil, fmt.Errorf("store: list work item call children: parent id and phase id are required")
+	}
+	return s.queryWorkItems(
+		`SELECT `+workItemColumns+` FROM work_items
+		 WHERE parent_item_id = ? AND parent_item_id <> ''
+		   AND parent_phase_id = ? AND parent_attempt = ?
+		 ORDER BY created_at ASC, id ASC`,
+		"list work item call children", parentItemID, parentPhaseID, parentAttempt,
+	)
+}
+
+func (s *Store) queryWorkItems(query, label string, args ...any) ([]WorkItem, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: %s: %w", label, err)
+	}
+	defer rows.Close()
+	items := make([]WorkItem, 0)
+	for rows.Next() {
+		item, err := scanWorkItem(rows, false)
+		if err != nil {
+			return nil, fmt.Errorf("store: %s: scan: %w", label, err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: %s: iterate: %w", label, err)
+	}
+	return items, nil
+}
+
 // ListWorkItems returns matching items oldest-first. An empty ProjectID lists
 // every project; an empty States slice includes every state.
 func (s *Store) ListWorkItems(filter WorkItemListFilter) ([]WorkItem, error) {
@@ -245,8 +311,8 @@ func (s *Store) listWorkItems(filter WorkItemListFilter, columns string, include
 		progressColumns = workItemSummaryProgressColumns
 	}
 	query := `SELECT ` + columns + progressColumns + ` FROM ` + table
-	conditions := make([]string, 0, 3)
-	args := make([]any, 0, 1+len(filter.States))
+	conditions := make([]string, 0, 4)
+	args := make([]any, 0, 2+len(filter.States))
 	if filter.ProjectID != "" {
 		conditions = append(conditions, prefix+`project_id = ?`)
 		args = append(args, filter.ProjectID)
@@ -256,6 +322,12 @@ func (s *Store) listWorkItems(filter WorkItemListFilter, columns string, include
 		for _, state := range filter.States {
 			args = append(args, state)
 		}
+	}
+	if filter.ParentItemID != "" {
+		// The second predicate is what makes the partial parent index usable; a
+		// bound parameter on its own does not prove `parent_item_id <> ''`.
+		conditions = append(conditions, prefix+`parent_item_id = ? AND `+prefix+`parent_item_id <> ''`)
+		args = append(args, filter.ParentItemID)
 	}
 	if filter.UnresolvedOnly {
 		conditions = append(conditions, qualifiedUnresolvedWorkItemsPredicate(prefix))

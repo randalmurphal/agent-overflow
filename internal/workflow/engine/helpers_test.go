@@ -14,14 +14,63 @@ import (
 	"agent-overflow/internal/workflow/profile"
 )
 
-type fakeDefinitions struct{ workflows map[string]def.Workflow }
+type fakeDefinitions struct {
+	mu        sync.Mutex
+	workflows map[string]def.Workflow
+	// callResolves records every call-time resolution, so a test can assert that
+	// a child was resolved fresh per invocation rather than reusing the parent's
+	// frozen snapshot.
+	callResolves []string
+}
 
-func (f *fakeDefinitions) Resolve(_ context.Context, item store.WorkItem) (def.Workflow, error) {
-	workflow, ok := f.workflows[item.WorkflowID]
+func (f *fakeDefinitions) Resolve(_ context.Context, item store.WorkItem) (ResolvedDefinition, error) {
+	return f.resolve(item.WorkflowID)
+}
+
+func (f *fakeDefinitions) ResolveCall(_ context.Context, _ string, workflowID string) (ResolvedDefinition, error) {
+	f.mu.Lock()
+	f.callResolves = append(f.callResolves, workflowID)
+	f.mu.Unlock()
+	return f.resolve(workflowID)
+}
+
+func (f *fakeDefinitions) resolve(workflowID string) (ResolvedDefinition, error) {
+	workflow, ok := f.workflows[workflowID]
 	if !ok {
-		return def.Workflow{}, fmt.Errorf("workflow %q not found", item.WorkflowID)
+		return ResolvedDefinition{}, fmt.Errorf("workflow %q not found", workflowID)
 	}
-	return workflow, nil
+	// Mirror the app source: the frozen need accounts for the whole call graph,
+	// so a caller of a writing workflow provisions a worktree.
+	need, err := def.PropagatedWorkspaceNeed(workflow, fakeCallResolver{workflows: f.workflows})
+	if err != nil {
+		return ResolvedDefinition{}, err
+	}
+	return ResolvedDefinition{Workflow: workflow, Scope: def.ScopeShared, WorkspaceNeed: need}, nil
+}
+
+func (f *fakeDefinitions) callResolveCount(workflowID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, resolved := range f.callResolves {
+		if resolved == workflowID {
+			count++
+		}
+	}
+	return count
+}
+
+// fakeCallResolver is the def-side view of the same definition set. It is a
+// separate type because def.CallResolver and engine.DefinitionSource both name
+// a method `ResolveCall` with different signatures.
+type fakeCallResolver struct{ workflows map[string]def.Workflow }
+
+func (f fakeCallResolver) ResolveCall(id string) (def.ResolvedWorkflow, error) {
+	workflow, ok := f.workflows[id]
+	if !ok {
+		return def.ResolvedWorkflow{}, fmt.Errorf("workflow %q not found", id)
+	}
+	return def.ResolvedWorkflow{Workflow: workflow, Scope: def.ScopeShared}, nil
 }
 
 type fakeProfiles struct {
@@ -29,18 +78,45 @@ type fakeProfiles struct {
 	profiles map[string]*profile.Profile
 }
 
+// fakeSpendSource prices per item and aggregates over the run tree, the way the
+// app's store-backed source does. Tests set one item's spend — including a
+// called run's — and assert what the root's budget check sees.
 type fakeSpendSource struct {
 	mu     sync.Mutex
+	store  *store.Store
 	spends map[string]Spend
 	errs   map[string]error
 	calls  []string
 }
 
-func (f *fakeSpendSource) ItemSpend(_ context.Context, itemID string) (Spend, error) {
+func (f *fakeSpendSource) TreeSpend(_ context.Context, rootItemID string) (Spend, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, itemID)
-	return f.spends[itemID], f.errs[itemID]
+	f.calls = append(f.calls, rootItemID)
+	if err := f.errs[rootItemID]; err != nil {
+		return Spend{}, err
+	}
+	return f.treeSpend(rootItemID)
+}
+
+func (f *fakeSpendSource) treeSpend(itemID string) (Spend, error) {
+	total := f.spends[itemID]
+	if f.store == nil {
+		return total, nil
+	}
+	children, err := f.store.ListWorkItemChildren(itemID)
+	if err != nil {
+		return Spend{}, err
+	}
+	for _, child := range children {
+		childSpend, err := f.treeSpend(child.ID)
+		if err != nil {
+			return Spend{}, err
+		}
+		total.Tokens += childSpend.Tokens
+		total.USD += childSpend.USD
+	}
+	return total, nil
 }
 
 func (f *fakeSpendSource) callCount() int {
@@ -299,12 +375,13 @@ func (f *fakeEmitter) engineStateEvents() []EngineState {
 }
 
 type testHarness struct {
-	store    *store.Store
-	engine   *Engine
-	runner   *fakeRunner
-	emitter  *fakeEmitter
-	profiles *fakeProfiles
-	spend    *fakeSpendSource
+	store       *store.Store
+	engine      *Engine
+	runner      *fakeRunner
+	emitter     *fakeEmitter
+	profiles    *fakeProfiles
+	spend       *fakeSpendSource
+	definitions *fakeDefinitions
 }
 
 // harnessOptions configures a test engine. `capacities` is applied to the
@@ -346,7 +423,7 @@ func newHarnessWith(t *testing.T, options harnessOptions) *testHarness {
 	runner := newFakeRunner()
 	emitter := &fakeEmitter{}
 	profiles := &fakeProfiles{profiles: make(map[string]*profile.Profile)}
-	spend := &fakeSpendSource{spends: make(map[string]Spend), errs: make(map[string]error)}
+	spend := &fakeSpendSource{store: database, spends: make(map[string]Spend), errs: make(map[string]error)}
 	for _, projectID := range options.projectIDs {
 		capacities := make(map[string]int, len(options.capacities[projectID]))
 		for name, capacity := range options.capacities[projectID] {
@@ -354,7 +431,8 @@ func newHarnessWith(t *testing.T, options harnessOptions) *testHarness {
 		}
 		profiles.profiles[projectID] = &profile.Profile{Capacities: capacities}
 	}
-	engine, err := New(database, runner, emitter, &fakeDefinitions{workflows: options.workflows}, profiles, spend, options.config)
+	definitions := &fakeDefinitions{workflows: options.workflows}
+	engine, err := New(database, runner, emitter, definitions, profiles, spend, options.config)
 	if err != nil {
 		database.Close()
 		t.Fatal(err)
@@ -372,7 +450,10 @@ func newHarnessWith(t *testing.T, options harnessOptions) *testHarness {
 			t.Errorf("close store: %v", err)
 		}
 	})
-	return &testHarness{store: database, engine: engine, runner: runner, emitter: emitter, profiles: profiles, spend: spend}
+	return &testHarness{
+		store: database, engine: engine, runner: runner, emitter: emitter,
+		profiles: profiles, spend: spend, definitions: definitions,
+	}
 }
 
 // testItem builds an admissible run record. `ordinal` only spaces created_at

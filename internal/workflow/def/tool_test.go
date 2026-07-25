@@ -125,7 +125,7 @@ func TestValidateRejectsReservedToolOutputsAndDoubleBindings(t *testing.T) {
 		},
 		Gate: Gate{Routes: []Route{{To: "done"}}},
 	}}}
-	result := Validate(ResolvedWorkflow{Workflow: workflow}, nil)
+	result := Validate(ResolvedWorkflow{Workflow: workflow}, nil, nil)
 	codes := map[string]bool{}
 	for _, finding := range result.Findings {
 		codes[finding.Code] = true
@@ -157,7 +157,7 @@ func TestToolPhaseSystemOutputsResolveAsVariables(t *testing.T) {
 			Gate:   Gate{Routes: []Route{{To: "failed"}}},
 		},
 	}}
-	result := Validate(ResolvedWorkflow{Workflow: workflow, Path: "flow.yaml"}, nil)
+	result := Validate(ResolvedWorkflow{Workflow: workflow, Path: "flow.yaml"}, nil, nil)
 	for _, finding := range result.Findings {
 		switch finding.Code {
 		case "predicate.ref", "variable.unresolved", "predicate.type", "variable.type":

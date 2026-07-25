@@ -139,7 +139,7 @@ phases:
 		t.Fatalf("dynamic phase form = %+v", phase)
 	}
 	resolved := fanOutFixture(t, workflow, fanOutPrompts())
-	if result := Validate(resolved, validBindings()); !result.Valid() {
+	if result := Validate(resolved, validBindings(), nil); !result.Valid() {
 		t.Fatalf("dynamic fan-out findings:\n%s", formatFindings(result.Findings))
 	}
 }
@@ -152,7 +152,7 @@ func TestStaticFanOutStaysValid(t *testing.T) {
 	prompts := fanOutPrompts()
 	prompts["unit.md"] = "port {{plan.sections}}"
 	resolved = fanOutFixture(t, resolved.Workflow, prompts)
-	if result := Validate(resolved, validBindings()); !result.Valid() {
+	if result := Validate(resolved, validBindings(), nil); !result.Valid() {
 		t.Fatalf("static fan-out findings:\n%s", formatFindings(result.Findings))
 	}
 }
@@ -207,7 +207,7 @@ func TestFanOutAuthoringFindings(t *testing.T) {
 			tc.mutate(&workflow)
 			prompts := fanOutPrompts()
 			prompts["undeclared.md"] = "port {{nowhere}}"
-			result := Validate(fanOutFixture(t, workflow, prompts), validBindings())
+			result := Validate(fanOutFixture(t, workflow, prompts), validBindings(), nil)
 			if !hasFinding(result.Findings, tc.code, tc.element) {
 				t.Fatalf("missing code %q naming %q; findings:\n%s", tc.code, tc.element, formatFindings(result.Findings))
 			}
@@ -225,7 +225,7 @@ func TestStaticFanOutUnitFindings(t *testing.T) {
 	}
 	prompts := fanOutPrompts()
 	prompts["unit.md"] = "port"
-	result := Validate(fanOutFixture(t, workflow, prompts), validBindings())
+	result := Validate(fanOutFixture(t, workflow, prompts), validBindings(), nil)
 	for _, want := range []struct{ code, element string }{
 		{"phase.fan-out-unit", "fan-out unit \"alpha\""},
 		{"phase.fan-out-unit", "phase \"port\""},
@@ -356,7 +356,7 @@ func TestFanOutWidthIsReportedNotFailed(t *testing.T) {
 	prompts["unit.md"] = "port"
 	resolved := fanOutFixture(t, workflow, prompts)
 
-	result := Validate(resolved, validBindings())
+	result := Validate(resolved, validBindings(), nil)
 	if !result.Valid() {
 		t.Fatalf("width report failed the workflow:\n%s", formatFindings(result.Findings))
 	}
@@ -371,10 +371,10 @@ func TestFanOutWidthIsReportedNotFailed(t *testing.T) {
 
 	wide := validBindings().(testBindings)
 	wide.declared = map[string]int{ProviderResource("claude"): 3}
-	if reports := Validate(resolved, wide).Reports; len(reports) != 0 {
+	if reports := Validate(resolved, wide, nil).Reports; len(reports) != 0 {
 		t.Fatalf("declared capacity still reported: %s", formatFindings(reports))
 	}
-	if reports := Validate(resolved, nil).Reports; len(reports) != 0 {
+	if reports := Validate(resolved, nil, nil).Reports; len(reports) != 0 {
 		t.Fatalf("unchecked bindings reported width: %s", formatFindings(reports))
 	}
 }
@@ -385,7 +385,7 @@ func TestDynamicFanOutWidthIsNeverReported(t *testing.T) {
 	resolved := fanOutFixture(t, dynamicFanOutWorkflow(), fanOutPrompts())
 	narrow := validBindings().(testBindings)
 	narrow.declared = map[string]int{ProviderResource("claude"): 1}
-	result := Validate(resolved, narrow)
+	result := Validate(resolved, narrow, nil)
 	if !result.Valid() || len(result.Reports) != 0 {
 		t.Fatalf("dynamic fan-out reported a static width: %s", formatFindings(result.Reports))
 	}

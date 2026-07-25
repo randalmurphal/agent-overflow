@@ -101,9 +101,10 @@ func (a *App) WorkflowListDefinitions(projectID string) (WorkflowDefinitionCatal
 	if err != nil {
 		return WorkflowDefinitionCatalog{}, err
 	}
+	calls := aocli.CallResolverFor(resolved)
 	listings := make([]WorkflowDefinitionListing, 0, len(resolved))
 	for _, workflow := range resolved {
-		validation := def.Validate(workflow, &bindings)
+		validation := def.Validate(workflow, &bindings, calls)
 		listing := WorkflowDefinitionListing{
 			ID: workflow.Workflow.ID, Name: workflow.Workflow.Name,
 			Scope: string(workflow.Scope), PhaseCount: len(workflow.Workflow.Phases),

@@ -81,10 +81,16 @@ root `CLAUDE.md` principle 3.
   wire-cost sum used for workflow budget checks, while
   `QueryWorkItemUsageDetail` groups the same rows by model/cost source so the
   app can add query-time `usagecost` estimates for rows without wire cost.
+  `QueryWorkItemTreeUsage` / `QueryWorkItemTreeUsageDetail` are the same two
+  reads over a whole run tree — a recursive walk of `work_items.parent_item_id`
+  from the supplied id — which is the total a workflow budget is enforced
+  against. The recursion is anchored on the id, not on a `work_items` lookup, so
+  an id whose run record is gone still prices its own rows rather than silently
+  reporting zero.
 - `work_items.go` / `work_item_phases.go` / `work_item_units.go` /
   `work_item_effects.go` — bare workflow run-record CRUD (migration v26;
-  units v35). Project, thread, and item ids are intentionally denormalized
-  without FKs so run history survives deletion. State-machine validation and
+  units v35; call linkage v38). Project, thread, and item ids are
+  intentionally denormalized without FKs so run history survives deletion. State-machine validation and
   scheduling belong to `internal/workflow`, not this package.
   `work_item_units.go` carries one row per fan-out unit (and join) of a phase
   attempt, written `pending` at expansion and updated in place through
@@ -93,6 +99,11 @@ root `CLAUDE.md` principle 3.
   the engine's teardown. `ReopenWorkItemPhase` (in `work_item_phases.go`) puts
   a settled attempt back to `running` for that recovery, since repairing one
   unit continues the attempt its siblings already produced results for.
+  `work_items.go` also owns the call linkage (v38): `ListWorkItemChildren` reads
+  a run's callees, `ListWorkItemCallChildren` narrows that to the child one call
+  *attempt* created, and `WorkItemListFilter.ParentItemID` is the same edge for
+  summary listings. All three pair the parameter with `parent_item_id <> ''` so
+  the partial index applies.
 - `automations.go` — automation definition, continuity-note, and
   per-source cursor CRUD. Cursors are dependent scheduler state and
   cascade when an automation is deleted.
@@ -212,6 +223,15 @@ baseline:
   of `AttachWorkItemUnitRun` that every thread-first entry point (a human
   steering one taken-over unit) resolves through. It is the unit-side mirror of
   `idx_work_item_phases_thread`.
+
+## Recent schema changes (v38) — call linkage
+
+- The v38 rebuild adds `parent_item_id`, `parent_phase_id`, `parent_attempt`,
+  and `call_depth` to `work_items`, widens `source` with `'call'` and `reason`
+  with `'child-failed'`, and adds the partial `idx_work_items_parent`. Three
+  CHECKs make the linkage all-or-nothing: half a parent reference would make the
+  tree unreadable in exactly the direction recovery walks it. Like the earlier
+  work-item rebuilds it recreates every index and preserves every column.
 
 ## Extension points
 

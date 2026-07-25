@@ -50,14 +50,14 @@ func validBindings() Bindings {
 }
 
 func TestValidateValidFixture(t *testing.T) {
-	result := Validate(validResolved(t), validBindings())
+	result := Validate(validResolved(t), validBindings(), nil)
 	if !result.Valid() {
 		t.Fatalf("valid fixture findings:\n%s", formatFindings(result.Findings))
 	}
 	if result.BindingStatus != BindingsChecked {
 		t.Fatalf("binding status = %q", result.BindingStatus)
 	}
-	unchecked := Validate(validResolved(t), nil)
+	unchecked := Validate(validResolved(t), nil, nil)
 	if !unchecked.Valid() || unchecked.BindingStatus != BindingsUnchecked {
 		t.Fatalf("nil bindings should be explicit unchecked success: %+v", unchecked)
 	}
@@ -128,7 +128,7 @@ func TestValidateGoldenErrorsNameOffendingElement(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resolved := validResolved(t)
 			tc.mutate(&resolved)
-			result := Validate(resolved, tc.bindings)
+			result := Validate(resolved, tc.bindings, nil)
 			for _, finding := range result.Findings {
 				if finding.Code == tc.wantCode && strings.Contains(finding.Element, tc.wantElement) {
 					return
@@ -176,7 +176,7 @@ func TestValidateStructuralGoldenErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resolved := validResolved(t)
 			tc.mutate(&resolved)
-			result := Validate(resolved, validBindings())
+			result := Validate(resolved, validBindings(), nil)
 			if !hasFinding(result.Findings, tc.code, tc.element) {
 				t.Fatalf("missing code %q naming %q; findings:\n%s", tc.code, tc.element, formatFindings(result.Findings))
 			}
@@ -190,7 +190,7 @@ func TestValidateCollectsUnresolvedAndInvalidInputSchema(t *testing.T) {
 	resolved.Workflow.Phases[1].Inputs = map[string]Variable{
 		"missing": {Schema: JSONSchema{Type: "string", MinLength: &negative}},
 	}
-	result := Validate(resolved, validBindings())
+	result := Validate(resolved, validBindings(), nil)
 	if !hasFinding(result.Findings, "variable.unresolved", "input \"missing\"") ||
 		!hasFinding(result.Findings, "schema.length", "input \"missing\"") {
 		t.Fatalf("all-errors contract failed:\n%s", formatFindings(result.Findings))
@@ -204,7 +204,7 @@ func TestValidateAllowsOptionalNonDominatingReferencesAndCombinators(t *testing.
 		{Exists: "review.notes"},
 		{Not: &Predicate{Eq: &Comparison{Ref: "goal", Value: ""}}},
 	}}
-	result := Validate(resolved, validBindings())
+	result := Validate(resolved, validBindings(), nil)
 	if hasFinding(result.Findings, "variable.dominance", "review.notes") ||
 		hasFinding(result.Findings, "predicate.dominance", "predicate") {
 		t.Fatalf("optional non-dominating reference was rejected:\n%s", formatFindings(result.Findings))
@@ -248,7 +248,7 @@ func TestValidatePromptConfinementAndSize(t *testing.T) {
 		}},
 	}
 	resolved := ResolvedWorkflow{Workflow: workflow, Scope: ScopeShared, Path: filepath.Join(root, "workflow.yaml")}
-	result := Validate(resolved, nil)
+	result := Validate(resolved, nil, nil)
 	if !hasFinding(result.Findings, "prompt.path", "escape.md") {
 		t.Fatalf("symlink escape was not rejected:\n%s", formatFindings(result.Findings))
 	}
@@ -257,7 +257,7 @@ func TestValidatePromptConfinementAndSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolved.Workflow.Phases[0].Prompt = "large.md"
-	result = Validate(resolved, nil)
+	result = Validate(resolved, nil, nil)
 	if !hasFinding(result.Findings, "prompt.file", "large.md") {
 		t.Fatalf("oversized prompt was not rejected:\n%s", formatFindings(result.Findings))
 	}

@@ -2642,11 +2642,70 @@ export class WorkflowDispositionReceipt {
     }
 }
 
+/**
+ * WorkflowItemChildView is one run this item called. A child is a real run with
+ * a detail page of its own; this is the caller-side summary — enough to render
+ * the call phase's progress without loading the child's timeline.
+ */
+export class WorkflowItemChildView {
+    "itemId": string;
+    "workflowId": string;
+    "state": string;
+    "reason"?: string;
+    "parentPhaseId": string;
+    "parentAttempt": number;
+    "callDepth": number;
+    "currentPhaseId"?: string;
+    "currentPhaseOrdinal": number;
+    "phaseCount": number;
+    "startedAt"?: number;
+    "endedAt"?: number;
+
+    /** Creates a new WorkflowItemChildView instance. */
+    constructor($$source: Partial<WorkflowItemChildView> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("workflowId" in $$source)) {
+            this["workflowId"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("parentPhaseId" in $$source)) {
+            this["parentPhaseId"] = "";
+        }
+        if (!("parentAttempt" in $$source)) {
+            this["parentAttempt"] = 0;
+        }
+        if (!("callDepth" in $$source)) {
+            this["callDepth"] = 0;
+        }
+        if (!("currentPhaseOrdinal" in $$source)) {
+            this["currentPhaseOrdinal"] = 0;
+        }
+        if (!("phaseCount" in $$source)) {
+            this["phaseCount"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowItemChildView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowItemChildView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowItemChildView($$parsedSource as Partial<WorkflowItemChildView>);
+    }
+}
+
 export class WorkflowItemDetailView {
     "item": WorkflowItemView;
     "checkPhaseIds": string[];
     "phases": WorkflowItemPhaseView[];
     "units": WorkflowItemUnitView[];
+    "children": WorkflowItemChildView[];
     "outputs": { [_ in string]?: any };
     "artifacts": WorkflowArtifact[];
     "usage": store$0.WorkItemUsage;
@@ -2664,6 +2723,9 @@ export class WorkflowItemDetailView {
         }
         if (!("units" in $$source)) {
             this["units"] = [];
+        }
+        if (!("children" in $$source)) {
+            this["children"] = [];
         }
         if (!("outputs" in $$source)) {
             this["outputs"] = {};
@@ -2686,9 +2748,10 @@ export class WorkflowItemDetailView {
         const $$createField1_0 = $$createType4;
         const $$createField2_0 = $$createType51;
         const $$createField3_0 = $$createType53;
-        const $$createField4_0 = $$createType54;
+        const $$createField4_0 = $$createType55;
         const $$createField5_0 = $$createType56;
-        const $$createField6_0 = $$createType57;
+        const $$createField6_0 = $$createType58;
+        const $$createField7_0 = $$createType59;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
@@ -2702,14 +2765,17 @@ export class WorkflowItemDetailView {
         if ("units" in $$parsedSource) {
             $$parsedSource["units"] = $$createField3_0($$parsedSource["units"]);
         }
+        if ("children" in $$parsedSource) {
+            $$parsedSource["children"] = $$createField4_0($$parsedSource["children"]);
+        }
         if ("outputs" in $$parsedSource) {
-            $$parsedSource["outputs"] = $$createField4_0($$parsedSource["outputs"]);
+            $$parsedSource["outputs"] = $$createField5_0($$parsedSource["outputs"]);
         }
         if ("artifacts" in $$parsedSource) {
-            $$parsedSource["artifacts"] = $$createField5_0($$parsedSource["artifacts"]);
+            $$parsedSource["artifacts"] = $$createField6_0($$parsedSource["artifacts"]);
         }
         if ("usage" in $$parsedSource) {
-            $$parsedSource["usage"] = $$createField6_0($$parsedSource["usage"]);
+            $$parsedSource["usage"] = $$createField7_0($$parsedSource["usage"]);
         }
         return new WorkflowItemDetailView($$parsedSource as Partial<WorkflowItemDetailView>);
     }
@@ -2846,6 +2912,16 @@ export class WorkflowItemView {
     "triageThreadId"?: string;
     "disposition"?: json$0.RawMessage;
     "digest"?: json$0.RawMessage;
+
+    /**
+     * Parent linkage is present only on a called run (§3a). It names the caller,
+     * the caller's call phase, and the attempt of it that invoked this run, so a
+     * child is always navigable back to the exact invocation that created it.
+     */
+    "parentItemId"?: string;
+    "parentPhaseId"?: string;
+    "parentAttempt"?: number;
+    "callDepth"?: number;
     "createdAt": number;
     "startedAt"?: number;
     "endedAt"?: number;
@@ -2948,7 +3024,7 @@ export class WorkspaceFileSearchResult {
      * Creates a new WorkspaceFileSearchResult instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkspaceFileSearchResult {
-        const $$createField0_0 = $$createType59;
+        const $$createField0_0 = $$createType61;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField0_0($$parsedSource["files"]);
@@ -3102,9 +3178,11 @@ const $$createType50 = WorkflowItemPhaseView.createFrom;
 const $$createType51 = $Create.Array($$createType50);
 const $$createType52 = WorkflowItemUnitView.createFrom;
 const $$createType53 = $Create.Array($$createType52);
-const $$createType54 = $Create.Map($Create.Any, $Create.Any);
-const $$createType55 = WorkflowArtifact.createFrom;
-const $$createType56 = $Create.Array($$createType55);
-const $$createType57 = store$0.WorkItemUsage.createFrom;
-const $$createType58 = workspacefiles$0.WorkspaceFile.createFrom;
-const $$createType59 = $Create.Array($$createType58);
+const $$createType54 = WorkflowItemChildView.createFrom;
+const $$createType55 = $Create.Array($$createType54);
+const $$createType56 = $Create.Map($Create.Any, $Create.Any);
+const $$createType57 = WorkflowArtifact.createFrom;
+const $$createType58 = $Create.Array($$createType57);
+const $$createType59 = store$0.WorkItemUsage.createFrom;
+const $$createType60 = workspacefiles$0.WorkspaceFile.createFrom;
+const $$createType61 = $Create.Array($$createType60);

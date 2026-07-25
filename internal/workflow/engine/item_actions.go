@@ -55,9 +55,11 @@ func (e *Engine) rerunFailed(itemID string) error {
 		return fmt.Errorf("rerun failed item %q: already tracked", itemID)
 	}
 	runtime := &runtimeItem{item: stored}
-	if err := decodeSnapshot(stored.Snapshot, &runtime.workflow); err != nil {
+	snapshot, err := decodeSnapshot(stored.Snapshot)
+	if err != nil {
 		return fmt.Errorf("rerun failed item %q snapshot: %w", itemID, err)
 	}
+	runtime.adoptSnapshot(snapshot)
 	phases, err := e.store.ListWorkItemPhases(itemID)
 	if err != nil {
 		return fmt.Errorf("rerun failed item %q phases: %w", itemID, err)

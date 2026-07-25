@@ -120,7 +120,12 @@ func unitRunFrom(expanded def.ExpandedUnit, kind UnitKind) *unitRun {
 // recovery, so a resumed fan-out continues its existing attempt instead of
 // expanding a second set of units.
 func (e *Engine) startPhaseWork(item *runtimeItem, phase def.Phase, vars map[string]any) error {
-	if phase.EffectiveShape() != def.ShapeFanOut {
+	switch phase.EffectiveShape() {
+	case def.ShapeCall:
+		// A call phase starts a child run instead of a runner, then rests with no
+		// runner and no capacity until that run reaches a terminal state.
+		return e.startCall(item, phase, vars)
+	case def.ShapeSingle:
 		return e.startRunner(item, phase, vars)
 	}
 	if item.fan == nil {
@@ -297,8 +302,9 @@ func (e *Engine) startUnitRunner(item *runtimeItem, unit *unitRun) error {
 			ItemID: item.item.ID, PhaseID: item.phaseID,
 			Attempt: item.attempt, UnitID: unit.id,
 		},
-		Item: item.item, Workflow: item.workflow, Phase: phase,
-		Unit: &definition, UnitIndex: unit.index, UnitKind: unit.kind,
+		Item: item.item, Workflow: item.workflow, WorkspaceNeed: item.workspaceNeed,
+		Phase: phase,
+		Unit:  &definition, UnitIndex: unit.index, UnitKind: unit.kind,
 		UnitAttempt: unit.attempt,
 		Vars:        vars, Feedback: cloneFeedback(unit.feedback),
 	}

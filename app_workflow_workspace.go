@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -19,9 +20,12 @@ import (
 // with the path because every consumer that needs one needs the other — the
 // thread row, a unit's sub-worktree base, the run record.
 type preparedWorkflowWorkspace struct {
-	path    string
-	branch  string
-	project store.Project
+	path   string
+	branch string
+	// baseBranch is what the worktree was cut from. Empty on the project root,
+	// where there is no cut and the run works on whatever branch is checked out.
+	baseBranch string
+	project    store.Project
 }
 
 // prepareWorkspace resolves (and, on first use, provisions) the item's primary
@@ -44,38 +48,165 @@ func (r *workflowAppRunner) resolveWorkspace(ctx context.Context, request engine
 	if err != nil {
 		return preparedWorkflowWorkspace{}, fmt.Errorf("load project: %w", err)
 	}
-	if def.DeriveWorkspaceNeed(request.Workflow) == def.WorkspaceProjectRoot {
-		return preparedWorkflowWorkspace{path: project.Path, project: project}, nil
+	// The need is frozen with the run and already accounts for the whole call
+	// graph (§9): a workflow that calls a writing workflow needs a worktree even
+	// though its own phases never write. Re-deriving it here from the definition
+	// alone would silently under-provision such a root.
+	switch request.WorkspaceNeed {
+	case def.WorkspaceProjectRoot, def.WorkspaceWorktree:
+	default:
+		return preparedWorkflowWorkspace{}, fmt.Errorf(
+			"run request for item %q carries no frozen workspace need", request.Key.ItemID,
+		)
 	}
 	item, err := r.app.store.GetWorkItem(request.Key.ItemID)
 	if err != nil {
 		return preparedWorkflowWorkspace{}, fmt.Errorf("load work item: %w", err)
 	}
-
-	if item.WorktreePath != "" || item.Branch != "" {
-		if item.WorktreePath == "" || item.Branch == "" || item.BaseBranch == "" {
-			return preparedWorkflowWorkspace{}, fmt.Errorf("work item has incomplete workspace fields")
-		}
-		info, statErr := os.Stat(item.WorktreePath)
-		if statErr != nil {
-			if errors.Is(statErr, fs.ErrNotExist) {
-				return preparedWorkflowWorkspace{}, fmt.Errorf("recorded worktree %q is missing", item.WorktreePath)
-			}
-			return preparedWorkflowWorkspace{}, fmt.Errorf("inspect recorded worktree %q: %w", item.WorktreePath, statErr)
-		}
-		if !info.IsDir() {
-			return preparedWorkflowWorkspace{}, fmt.Errorf("recorded worktree %q is not a directory", item.WorktreePath)
-		}
-		registered, ok, findErr := r.app.findWorktree(project.Path, item.WorktreePath)
-		if findErr != nil {
-			return preparedWorkflowWorkspace{}, fmt.Errorf("verify recorded worktree %q: %w", item.WorktreePath, findErr)
-		}
-		if !ok || registered.Branch != item.Branch {
-			return preparedWorkflowWorkspace{}, fmt.Errorf("recorded worktree %q is not registered on branch %q", item.WorktreePath, item.Branch)
-		}
-		return preparedWorkflowWorkspace{path: item.WorktreePath, branch: item.Branch, project: project}, nil
+	if item.ParentItemID != "" {
+		return r.resolveCalledWorkspace(ctx, item, project)
 	}
+	if request.WorkspaceNeed == def.WorkspaceProjectRoot {
+		return preparedWorkflowWorkspace{path: project.Path, project: project}, nil
+	}
+	return r.provisionWorkspace(ctx, item, request.Workflow.ID, project)
+}
 
+// resolveCalledWorkspace answers for a run a call phase created. A called run
+// provisions nothing of its own (§9): it executes where its tree's root does, so
+// a recursive workflow iterates in one worktree instead of cutting one per
+// level. The stamped columns are the fast path — the call phase copies the
+// caller's workspace onto the child row when it creates it — and the root is the
+// authority whenever they are empty, which is what makes a workflow whose *first*
+// phase is a call still run its child in an isolated worktree.
+func (r *workflowAppRunner) resolveCalledWorkspace(
+	ctx context.Context, item store.WorkItem, project store.Project,
+) (preparedWorkflowWorkspace, error) {
+	recorded, ok, err := r.recordedWorkspace(item, project)
+	if err != nil || ok {
+		return recorded, err
+	}
+	root, err := r.rootWorkItem(item)
+	if err != nil {
+		return preparedWorkflowWorkspace{}, err
+	}
+	need, err := frozenWorkspaceNeed(root)
+	if err != nil {
+		return preparedWorkflowWorkspace{}, err
+	}
+	if need == def.WorkspaceProjectRoot {
+		return preparedWorkflowWorkspace{path: project.Path, project: project}, nil
+	}
+	prepared, err := r.prepareRootWorkspace(ctx, root, project)
+	if err != nil {
+		return preparedWorkflowWorkspace{}, err
+	}
+	// Record the answer on the child so its run record shows where it ran, and so
+	// every later phase of this child resolves through the fast path above.
+	// The base branch comes from what provisioning resolved, not from the root row
+	// read before it: on the first cut of a tree, that read predates the answer.
+	if err := r.app.store.UpdateWorkItemWorkspace(
+		item.ID, prepared.path, prepared.branch, prepared.baseBranch,
+	); err != nil {
+		return preparedWorkflowWorkspace{}, fmt.Errorf("stamp called run %q workspace: %w", item.ID, err)
+	}
+	return prepared, nil
+}
+
+// prepareRootWorkspace provisions (or adopts) the root's workspace under the
+// root's own lock, so a called run cannot race the root — or a sibling call —
+// into cutting a second worktree for one tree.
+func (r *workflowAppRunner) prepareRootWorkspace(
+	ctx context.Context, root store.WorkItem, project store.Project,
+) (preparedWorkflowWorkspace, error) {
+	unlock := r.workspaceLocks.Lock(root.ID)
+	defer unlock()
+	current, err := r.app.store.GetWorkItem(root.ID)
+	if err != nil {
+		return preparedWorkflowWorkspace{}, fmt.Errorf("load root work item %q: %w", root.ID, err)
+	}
+	return r.provisionWorkspace(ctx, current, current.WorkflowID, project)
+}
+
+// rootWorkItem walks the call linkage to the run tree's root. Linkage is
+// immutable, so this is a stable fact about the item.
+func (r *workflowAppRunner) rootWorkItem(item store.WorkItem) (store.WorkItem, error) {
+	current := item
+	for depth := 0; current.ParentItemID != ""; depth++ {
+		if depth > engine.MaxCallDepth {
+			return store.WorkItem{}, fmt.Errorf("resolve root of work item %q: tree is deeper than %d", item.ID, engine.MaxCallDepth)
+		}
+		parent, err := r.app.store.GetWorkItem(current.ParentItemID)
+		if err != nil {
+			return store.WorkItem{}, fmt.Errorf("resolve root of work item %q: %w", item.ID, err)
+		}
+		current = parent
+	}
+	return current, nil
+}
+
+// frozenWorkspaceNeed reads the need the run froze at start. Older snapshots
+// predate the field; deriving from the frozen definition is the same answer for
+// them, because a call graph is what the field exists to account for and they
+// have none.
+func frozenWorkspaceNeed(item store.WorkItem) (def.WorkspaceNeed, error) {
+	if len(item.Snapshot) == 0 {
+		return "", fmt.Errorf("work item %q has no frozen workflow snapshot", item.ID)
+	}
+	var snapshot engine.Snapshot
+	if err := json.Unmarshal(item.Snapshot, &snapshot); err != nil {
+		return "", fmt.Errorf("decode work item %q snapshot: %w", item.ID, err)
+	}
+	if snapshot.WorkspaceNeed != "" {
+		return snapshot.WorkspaceNeed, nil
+	}
+	return def.DeriveWorkspaceNeed(snapshot.Workflow), nil
+}
+
+// recordedWorkspace verifies the workspace an item already recorded. A recorded
+// worktree that is gone or no longer registered on its branch is an error, never
+// a reason to cut a fresh one: the run's work lives there.
+func (r *workflowAppRunner) recordedWorkspace(
+	item store.WorkItem, project store.Project,
+) (preparedWorkflowWorkspace, bool, error) {
+	if item.WorktreePath == "" && item.Branch == "" {
+		return preparedWorkflowWorkspace{}, false, nil
+	}
+	if item.WorktreePath == "" || item.Branch == "" || item.BaseBranch == "" {
+		return preparedWorkflowWorkspace{}, false, fmt.Errorf("work item has incomplete workspace fields")
+	}
+	info, statErr := os.Stat(item.WorktreePath)
+	if statErr != nil {
+		if errors.Is(statErr, fs.ErrNotExist) {
+			return preparedWorkflowWorkspace{}, false, fmt.Errorf("recorded worktree %q is missing", item.WorktreePath)
+		}
+		return preparedWorkflowWorkspace{}, false, fmt.Errorf("inspect recorded worktree %q: %w", item.WorktreePath, statErr)
+	}
+	if !info.IsDir() {
+		return preparedWorkflowWorkspace{}, false, fmt.Errorf("recorded worktree %q is not a directory", item.WorktreePath)
+	}
+	registered, ok, findErr := r.app.findWorktree(project.Path, item.WorktreePath)
+	if findErr != nil {
+		return preparedWorkflowWorkspace{}, false, fmt.Errorf("verify recorded worktree %q: %w", item.WorktreePath, findErr)
+	}
+	if !ok || registered.Branch != item.Branch {
+		return preparedWorkflowWorkspace{}, false, fmt.Errorf("recorded worktree %q is not registered on branch %q", item.WorktreePath, item.Branch)
+	}
+	return preparedWorkflowWorkspace{
+		path: item.WorktreePath, branch: item.Branch, baseBranch: item.BaseBranch, project: project,
+	}, true, nil
+}
+
+// provisionWorkspace adopts the item's recorded worktree, or cuts one. It is the
+// only place a run's primary worktree is created, and it always runs under that
+// item's workspace lock.
+func (r *workflowAppRunner) provisionWorkspace(
+	ctx context.Context, item store.WorkItem, workflowID string, project store.Project,
+) (preparedWorkflowWorkspace, error) {
+	recorded, ok, err := r.recordedWorkspace(item, project)
+	if err != nil || ok {
+		return recorded, err
+	}
 	projectProfile, err := r.projectProfile(ctx, item.ProjectID)
 	if err != nil {
 		return preparedWorkflowWorkspace{}, err
@@ -91,7 +222,7 @@ func (r *workflowAppRunner) resolveWorkspace(ctx context.Context, request engine
 		return preparedWorkflowWorkspace{}, fmt.Errorf("resolve base branch: repository has no current branch")
 	}
 	core := r.app.gitCore()
-	branchPrefix := workflowWorktreeBranchPrefix(r.app.worktreeBranchPrefix(), request.Workflow.ID, item.ID)
+	branchPrefix := workflowWorktreeBranchPrefix(r.app.worktreeBranchPrefix(), workflowID, item.ID)
 	branch, worktreePath, err := findInterruptedWorkflowProvisioning(core, project.Path, branchPrefix)
 	if err != nil {
 		return preparedWorkflowWorkspace{}, err
@@ -123,7 +254,9 @@ func (r *workflowAppRunner) resolveWorkspace(ctx context.Context, request engine
 	if err := r.app.store.UpdateWorkItemWorkspace(item.ID, worktreePath, branch, baseBranch); err != nil {
 		return preparedWorkflowWorkspace{}, rollback(fmt.Errorf("persist workspace: %w", err))
 	}
-	return preparedWorkflowWorkspace{path: worktreePath, branch: branch, project: project}, nil
+	return preparedWorkflowWorkspace{
+		path: worktreePath, branch: branch, baseBranch: baseBranch, project: project,
+	}, nil
 }
 
 // provisionUnitWorktree cuts one writing fan-out unit's isolated sub-worktree

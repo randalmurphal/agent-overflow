@@ -408,3 +408,92 @@ func TestQueryWorkItemUsageDetail(t *testing.T) {
 		t.Fatalf("estimated detail = %+v", details[1])
 	}
 }
+
+func TestQueryWorkItemTreeUsageAggregatesCalledRuns(t *testing.T) {
+	s := newTestStore(t)
+	// root -> child -> grandchild, plus a sibling tree that must not leak in.
+	tree := []WorkItem{
+		testWorkItem("root", "project-a", "running", 10),
+		testCalledWorkItem("child", "root", "audit", 1, 1, 20),
+		testCalledWorkItem("grandchild", "child", "audit", 1, 2, 30),
+		testWorkItem("other-root", "project-a", "running", 40),
+		testCalledWorkItem("other-child", "other-root", "audit", 1, 1, 50),
+	}
+	for _, item := range tree {
+		if err := s.CreateWorkItem(item); err != nil {
+			t.Fatalf("create %s: %v", item.ID, err)
+		}
+	}
+	rows := []UsageLedgerRow{
+		{CreatedAt: 1, ThreadID: "t1", WorkItemID: "root", Provider: "claude", Model: "m", InputTokens: 10, OutputTokens: 5, CostUSD: 0.25, CostSource: "wire"},
+		{CreatedAt: 2, ThreadID: "t2", WorkItemID: "child", Provider: "claude", Model: "m", InputTokens: 20, OutputTokens: 7, CostUSD: 0.5, CostSource: "wire"},
+		{CreatedAt: 3, ThreadID: "t3", WorkItemID: "grandchild", Provider: "codex", Model: "n", InputTokens: 100, CostSource: "none"},
+		{CreatedAt: 4, ThreadID: "t4", WorkItemID: "other-child", Provider: "claude", Model: "m", InputTokens: 1000, CostUSD: 9, CostSource: "wire"},
+	}
+	if err := s.AppendUsage(rows); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	usage, err := s.QueryWorkItemTreeUsage("root")
+	if err != nil {
+		t.Fatalf("query tree: %v", err)
+	}
+	if usage.InputTokens != 130 || usage.OutputTokens != 12 || usage.TotalTokens != 142 || usage.CostUSD != 0.75 {
+		t.Fatalf("tree usage = %#v", usage)
+	}
+	// Enforcement happens against the root, but the same query answers for any
+	// node: a subtree prices exactly its own runs.
+	subtree, err := s.QueryWorkItemTreeUsage("child")
+	if err != nil {
+		t.Fatalf("query subtree: %v", err)
+	}
+	if subtree.TotalTokens != 127 || subtree.CostUSD != 0.5 {
+		t.Fatalf("subtree usage = %#v", subtree)
+	}
+	leaf, err := s.QueryWorkItemTreeUsage("grandchild")
+	if err != nil {
+		t.Fatalf("query leaf: %v", err)
+	}
+	own, err := s.QueryWorkItemUsage("grandchild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leaf != own {
+		t.Fatalf("childless tree usage %#v differs from item usage %#v", leaf, own)
+	}
+	// Ledger rows outlive the runs they attribute (no foreign keys), and the walk
+	// is anchored on the id rather than on a work_items lookup — so an id with no
+	// run record still prices its own rows instead of silently reporting zero.
+	if err := s.AppendUsage([]UsageLedgerRow{
+		{CreatedAt: 5, ThreadID: "t5", WorkItemID: "ghost", Provider: "claude", Model: "m", InputTokens: 7, CostUSD: 0.1, CostSource: "wire"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	orphaned, err := s.QueryWorkItemTreeUsage("ghost")
+	if err != nil {
+		t.Fatalf("query orphaned: %v", err)
+	}
+	if orphaned.TotalTokens != 7 || orphaned.CostUSD != 0.1 {
+		t.Fatalf("usage without a run record = %#v", orphaned)
+	}
+
+	detail, err := s.QueryWorkItemTreeUsageDetail("child")
+	if err != nil {
+		t.Fatalf("query tree detail: %v", err)
+	}
+	if len(detail) != 2 {
+		t.Fatalf("tree detail groups = %#v", detail)
+	}
+	if detail[0].Model != "m" || detail[0].CostSource != "wire" || detail[0].InputTokens != 20 {
+		t.Fatalf("wire group = %#v", detail[0])
+	}
+	if detail[1].Model != "n" || detail[1].CostSource != "none" || detail[1].InputTokens != 100 {
+		t.Fatalf("unpriced group = %#v", detail[1])
+	}
+	if _, err := s.QueryWorkItemTreeUsage(""); err == nil {
+		t.Fatal("empty root id must be rejected")
+	}
+	if _, err := s.QueryWorkItemTreeUsageDetail(""); err == nil {
+		t.Fatal("empty root id must be rejected")
+	}
+}

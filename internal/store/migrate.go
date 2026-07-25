@@ -1424,7 +1424,92 @@ CREATE INDEX idx_work_item_units_worktree
   ON work_item_units(thread_id)
   WHERE thread_id <> '';`,
 	},
+	{
+		Version: 38,
+		Name:    "work_item_call_linkage",
+		SQL:     rebuildWorkItemsCallLinkageV38SQL,
+		Rebuild: true,
+	},
 }
+
+// rebuildWorkItemsCallLinkageV38SQL links a run to the call phase that invoked
+// it: the parent item, the parent phase attempt, and the depth of the tree it
+// sits at. `call` joins the source set (nobody enqueued the run — a phase did)
+// and `child-failed` joins the typed reason set (the parent's call phase failed
+// because its child run did). SQLite cannot alter a CHECK in place, so this
+// follows the established table-rebuild pattern; every other column, value, and
+// index is carried over unchanged, plus one partial index for the children-of
+// lookup the run tree is read through.
+const rebuildWorkItemsCallLinkageV38SQL = `
+CREATE TABLE work_items_new (
+    id               TEXT    PRIMARY KEY,
+    project_id       TEXT    NOT NULL,
+    goal             TEXT    NOT NULL,
+    workflow_id      TEXT    NOT NULL,
+    workflow_scope   TEXT    NOT NULL CHECK(workflow_scope IN ('project','shared')),
+    snapshot         TEXT    NOT NULL DEFAULT '' CHECK(snapshot = '' OR json_valid(snapshot)),
+    state            TEXT    NOT NULL CHECK(state IN ('running','needs-human','done','failed','cancelled')),
+    reason           TEXT    NOT NULL DEFAULT '' CHECK(reason IN ('','gate','question','stuck','stalled','budget-exhausted','retries-exhausted','check-failed-genuine','agent-error','wiring-error','disposition','setup-failed','interrupted','taken-over','unit-failed','child-failed')),
+    seeds            TEXT    NOT NULL DEFAULT '' CHECK(seeds = '' OR json_valid(seeds)),
+    step_mode        INTEGER NOT NULL DEFAULT 0 CHECK(step_mode IN (0,1)),
+    worktree_path    TEXT    NOT NULL DEFAULT '',
+    branch           TEXT    NOT NULL DEFAULT '',
+    base_branch      TEXT    NOT NULL DEFAULT '',
+    budget           TEXT    NOT NULL DEFAULT '' CHECK(budget = '' OR json_valid(budget)),
+    source           TEXT    NOT NULL CHECK(source IN ('manual','agent','automation','call')),
+    source_ref       TEXT    NOT NULL DEFAULT '',
+    triage_thread_id TEXT    NOT NULL DEFAULT '',
+    disposition      TEXT    NOT NULL DEFAULT '' CHECK(disposition = '' OR json_valid(disposition)),
+    digest           TEXT    NOT NULL DEFAULT '' CHECK(digest = '' OR json_valid(digest)),
+    parent_item_id   TEXT    NOT NULL DEFAULT '',
+    parent_phase_id  TEXT    NOT NULL DEFAULT '',
+    parent_attempt   INTEGER NOT NULL DEFAULT 0 CHECK(parent_attempt >= 0),
+    call_depth       INTEGER NOT NULL DEFAULT 0 CHECK(call_depth >= 0),
+    created_at       INTEGER NOT NULL,
+    started_at       INTEGER NOT NULL DEFAULT 0,
+    ended_at         INTEGER NOT NULL DEFAULT 0,
+    CHECK((parent_item_id = '') = (parent_phase_id = '')),
+    CHECK((parent_item_id = '') = (parent_attempt = 0)),
+    CHECK((parent_item_id = '') = (call_depth = 0))
+);
+
+INSERT INTO work_items_new (
+    id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+    seeds, step_mode, worktree_path, branch, base_branch, budget,
+    source, source_ref, triage_thread_id, disposition, digest,
+    created_at, started_at, ended_at
+)
+SELECT
+    id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+    seeds, step_mode, worktree_path, branch, base_branch, budget,
+    source, source_ref, triage_thread_id, disposition, digest,
+    created_at, started_at, ended_at
+FROM work_items;
+
+DROP TABLE work_items;
+
+ALTER TABLE work_items_new RENAME TO work_items;
+
+CREATE INDEX idx_work_items_project_state_created
+  ON work_items(project_id, state, created_at);
+
+CREATE INDEX idx_work_items_project_created
+  ON work_items(project_id, created_at);
+
+CREATE INDEX idx_work_items_state_created
+  ON work_items(state, created_at, id);
+
+CREATE INDEX idx_work_items_triage_thread
+  ON work_items(triage_thread_id)
+  WHERE triage_thread_id <> '';
+
+CREATE UNIQUE INDEX idx_work_items_agent_source_ref
+  ON work_items(source_ref)
+  WHERE source = 'agent' AND source_ref <> '';
+
+CREATE INDEX idx_work_items_parent
+  ON work_items(parent_item_id, parent_phase_id, parent_attempt)
+  WHERE parent_item_id <> '';`
 
 // rebuildWorkItemsUnitFailedReasonV36SQL widens the typed park reason set with
 // `unit-failed`: a fan-out unit that exhausted its retries stops the launch of

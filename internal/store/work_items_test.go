@@ -318,3 +318,128 @@ func TestListWorkItemSummariesIncludesPersistedPhaseProgress(t *testing.T) {
 		t.Fatalf("summary loaded frozen snapshot: %s", got.Snapshot)
 	}
 }
+
+// testCalledWorkItem builds a run created by a call phase: linked to its caller,
+// carrying the caller's workspace, and never carrying a budget of its own.
+func testCalledWorkItem(id, parentID, parentPhase string, attempt, depth int, createdAt int64) WorkItem {
+	item := testWorkItem(id, "project-a", "running", createdAt)
+	item.Budget = nil
+	item.Source = "call"
+	item.SourceRef = parentID + "/" + parentPhase
+	item.ParentItemID = parentID
+	item.ParentPhaseID = parentPhase
+	item.ParentAttempt = attempt
+	item.CallDepth = depth
+	return item
+}
+
+func TestWorkItemCallLinkageRoundTripsAndListsChildren(t *testing.T) {
+	s := newTestStore(t)
+	rows := []WorkItem{
+		testWorkItem("root", "project-a", "running", 10),
+		testCalledWorkItem("child-a", "root", "audit", 1, 1, 20),
+		testCalledWorkItem("child-b", "root", "audit", 2, 1, 30),
+		testCalledWorkItem("child-c", "root", "review", 1, 1, 40),
+		testCalledWorkItem("grandchild", "child-a", "audit", 1, 2, 50),
+		testWorkItem("unrelated", "project-a", "running", 60),
+	}
+	for _, row := range rows {
+		if err := s.CreateWorkItem(row); err != nil {
+			t.Fatalf("create %s: %v", row.ID, err)
+		}
+	}
+
+	child, err := s.GetWorkItem("child-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ParentItemID != "root" || child.ParentPhaseID != "audit" ||
+		child.ParentAttempt != 1 || child.CallDepth != 1 || child.Source != "call" {
+		t.Fatalf("call linkage round trip = %+v", child)
+	}
+	if root, err := s.GetWorkItem("root"); err != nil {
+		t.Fatal(err)
+	} else if root.ParentItemID != "" || root.CallDepth != 0 {
+		t.Fatalf("root carries linkage: %+v", root)
+	}
+
+	children, err := s.ListWorkItemChildren("root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 3 || children[0].ID != "child-a" || children[2].ID != "child-c" {
+		t.Fatalf("children of root = %#v", children)
+	}
+	// One attempt's invocation, not the phase's: a rerun of a call phase creates
+	// a new attempt with a fresh child, and the parent waits on that one alone.
+	attemptChildren, err := s.ListWorkItemCallChildren("root", "audit", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attemptChildren) != 1 || attemptChildren[0].ID != "child-b" {
+		t.Fatalf("call children of root/audit/2 = %#v", attemptChildren)
+	}
+	if none, err := s.ListWorkItemCallChildren("root", "audit", 3); err != nil {
+		t.Fatal(err)
+	} else if len(none) != 0 {
+		t.Fatalf("unstarted attempt has children: %#v", none)
+	}
+	if leaves, err := s.ListWorkItemChildren("unrelated"); err != nil {
+		t.Fatal(err)
+	} else if len(leaves) != 0 {
+		t.Fatalf("childless item reported children: %#v", leaves)
+	}
+
+	// An empty parent id would otherwise select every root run at once.
+	if _, err := s.ListWorkItemChildren(""); err == nil {
+		t.Fatal("empty parent id must be refused")
+	}
+	if _, err := s.ListWorkItemCallChildren("root", "", 1); err == nil {
+		t.Fatal("empty parent phase id must be refused")
+	}
+
+	summaries, err := s.ListWorkItemSummaries(WorkItemListFilter{ParentItemID: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 3 || summaries[0].ID != "child-a" || summaries[0].ParentPhaseID != "audit" {
+		t.Fatalf("child summaries = %#v", summaries)
+	}
+	// A project listing still lists every run, callers and callees alike.
+	all, err := s.ListWorkItemSummaries(WorkItemListFilter{ProjectID: "project-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != len(rows) {
+		t.Fatalf("project listing = %d items, want %d", len(all), len(rows))
+	}
+}
+
+func TestWorkItemRejectsPartialCallLinkage(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateWorkItem(testWorkItem("root", "project-a", "running", 10)); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		break_ func(*WorkItem)
+	}{
+		{"no phase", func(item *WorkItem) { item.ParentPhaseID = "" }},
+		{"no attempt", func(item *WorkItem) { item.ParentAttempt = 0 }},
+		{"no depth", func(item *WorkItem) { item.CallDepth = 0 }},
+		{"depth without parent", func(item *WorkItem) {
+			item.ParentItemID = ""
+			item.ParentPhaseID = ""
+			item.ParentAttempt = 0
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			item := testCalledWorkItem("child-"+tc.name, "root", "audit", 1, 1, 20)
+			tc.break_(&item)
+			if err := s.CreateWorkItem(item); err == nil {
+				t.Fatal("partial call linkage was accepted")
+			}
+		})
+	}
+}

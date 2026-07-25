@@ -227,7 +227,7 @@ func TestJoinDeclarationsCannotBeShadowedByAPhaseInput(t *testing.T) {
 func TestJoinOutputsAreAValidationFinding(t *testing.T) {
 	workflow := dynamicFanOutWorkflow()
 	workflow.Phases[1].Join.Outputs = map[string]Variable{"merged": {Schema: JSONSchema{Type: "boolean"}}}
-	result := Validate(fanOutFixture(t, workflow, fanOutPrompts()), validBindings())
+	result := Validate(fanOutFixture(t, workflow, fanOutPrompts()), validBindings(), nil)
 	if !hasFinding(result.Findings, "phase.fan-out-unit", `phase "port" join`) {
 		t.Fatalf("join outputs accepted; findings:\n%s", formatFindings(result.Findings))
 	}
@@ -240,7 +240,7 @@ func TestFanOutPhaseWithToolDriverIsAFinding(t *testing.T) {
 	workflow := dynamicFanOutWorkflow()
 	workflow.Phases[1].Driver = DriverTool
 	workflow.Phases[1].Command = "merge-branches"
-	result := Validate(fanOutFixture(t, workflow, fanOutPrompts()), validBindings())
+	result := Validate(fanOutFixture(t, workflow, fanOutPrompts()), validBindings(), nil)
 	if !hasFinding(result.Findings, "phase.fan-out", `phase "port"`) {
 		t.Fatalf("fan-out driver: tool accepted; findings:\n%s", formatFindings(result.Findings))
 	}
@@ -254,7 +254,7 @@ func TestUnitOutputFindingsMatchPhaseOutputRules(t *testing.T) {
 		"Bad Name": {Schema: JSONSchema{Type: "string"}},
 		"untyped":  {Schema: JSONSchema{Type: "widget"}},
 	}
-	result := Validate(fanOutFixture(t, workflow, fanOutPrompts()), validBindings())
+	result := Validate(fanOutFixture(t, workflow, fanOutPrompts()), validBindings(), nil)
 	for _, want := range []struct{ code, element string }{
 		{"output.name", `unit template "port-section" output "Bad Name"`},
 		{"schema.type", `unit template "port-section" output "untyped"`},
@@ -270,7 +270,7 @@ func TestUnitOutputFindingsMatchPhaseOutputRules(t *testing.T) {
 	}}
 	prompts := fanOutPrompts()
 	prompts["unit.md"] = "port"
-	result = Validate(fanOutFixture(t, command, prompts), validBindings())
+	result = Validate(fanOutFixture(t, command, prompts), validBindings(), nil)
 	if !hasFinding(result.Findings, "output.reserved", `fan-out unit "alpha" output "passed"`) {
 		t.Fatalf("command unit redeclared a reserved output; findings:\n%s", formatFindings(result.Findings))
 	}
@@ -320,7 +320,7 @@ phases:
 		t.Fatalf("unit outputs did not round-trip: %+v", unit)
 	}
 	prompts := map[string]string{"port.md": "coordinate", "unit.md": "port", "join.md": "merge {{units}}"}
-	if result := Validate(fanOutFixture(t, workflow, prompts), validBindings()); !result.Valid() {
+	if result := Validate(fanOutFixture(t, workflow, prompts), validBindings(), nil); !result.Valid() {
 		t.Fatalf("unit outputs findings:\n%s", formatFindings(result.Findings))
 	}
 	payload := `{"status":"done","outputs":{"file":"a.go"},"question":null,"reason":null}`

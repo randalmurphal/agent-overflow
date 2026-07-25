@@ -10,8 +10,26 @@ import (
 	"time"
 )
 
-// Validate performs a complete dry-run over a resolved workflow.
-func Validate(resolved ResolvedWorkflow, bindings Bindings) ValidationResult {
+// Validate performs a complete dry-run over a resolved workflow, including the
+// workflows it reaches through call edges. `calls` resolves those targets under
+// §8 scoping; a definition with call phases cannot be dry-run without one, and
+// says so rather than passing unchecked.
+func Validate(resolved ResolvedWorkflow, bindings Bindings, calls CallResolver) ValidationResult {
+	state := newCallValidation(resolved.Workflow.ID)
+	result := validateWorkflow(resolved, bindings, calls, state)
+	// An unbounded cycle is a property of the call graph rather than of any one
+	// definition — the edge that closes it can sit several levels down, and the
+	// workflow holding that edge is perfectly valid read on its own. Collecting
+	// cycles during the traversal and reporting them on the graph's own result
+	// means a caller always sees `call.unbounded-cycle`, whatever it entered at.
+	result.Findings = append(result.Findings, state.cycles...)
+	return result
+}
+
+// validateWorkflow is the per-definition dry-run. Call-graph traversal state is
+// threaded through so a child validates exactly once per dry-run and a cycle
+// terminates instead of recursing forever.
+func validateWorkflow(resolved ResolvedWorkflow, bindings Bindings, calls CallResolver, state *callValidation) ValidationResult {
 	workflow := resolved.Workflow
 	status := BindingsChecked
 	if bindings == nil {
@@ -56,15 +74,22 @@ func Validate(resolved ResolvedWorkflow, bindings Bindings) ValidationResult {
 		} else {
 			phaseIndex[phase.ID] = i
 		}
+		shape := phase.EffectiveShape()
+		if shape != ShapeSingle && shape != ShapeFanOut && shape != ShapeCall {
+			add(finding("phase.shape", phaseElement, "shape must be single, fan-out, or call"))
+		}
+		add(validateCall(phase, phaseElement)...)
+		if shape == ShapeCall {
+			// Everything below configures work of the phase's own, which a call
+			// phase never does; validateCall refused each field it declared, and
+			// its contract is checked against the child in validateCallGraph.
+			continue
+		}
 		if phase.Driver != DriverAgent && phase.Driver != DriverTool {
 			add(finding("phase.driver", phaseElement, "driver must be agent or tool"))
 		}
 		if phase.Access != "" && phase.Access != AccessReadOnly && phase.Access != AccessWrite {
 			add(finding("phase.access", phaseElement, "access must be read-only or write"))
-		}
-		shape := phase.EffectiveShape()
-		if shape != ShapeSingle && shape != ShapeFanOut {
-			add(finding("phase.shape", phaseElement, "shape must be single or fan-out"))
 		}
 		add(validateFanOut(workflow, phase, phaseElement)...)
 		if phase.Driver == DriverAgent && phase.Prompt == "" {
@@ -102,8 +127,14 @@ func Validate(resolved ResolvedWorkflow, bindings Bindings) ValidationResult {
 		}
 	}
 	graph := buildGraph(workflow, phaseIndex, &result.Findings)
-	add(validateVariables(workflow, phaseIndex, graph)...)
-	add(validateWorkflowOutputs(workflow, phaseIndex)...)
+	// Every reference check below runs against the effective workflow: a call
+	// phase's downstream surface is the child's declared outputs, so consumers
+	// of `call-phase.output` resolve and type-check against the child's real
+	// contract rather than against a phase that declares nothing.
+	callFindings, effective := validateCallGraph(workflow, phaseIndex, graph, bindings, calls, state)
+	add(callFindings...)
+	add(validateVariables(effective, phaseIndex, graph)...)
+	add(validateWorkflowOutputs(effective, phaseIndex)...)
 	add(validatePrompts(resolved)...)
 	add(validateBindings(workflow, bindings)...)
 	result.Reports = fanOutWidthReports(workflow, bindings)

@@ -97,6 +97,16 @@ func (a *App) runWorkflowDisposition(itemID string, action workflowDispositionAc
 }
 
 func validateWorkflowDispositionState(item store.WorkItem, action workflowDispositionAction) error {
+	// A called run has no workspace of its own — it borrows its caller's (§3a),
+	// so every disposition action would operate on the caller's branch and
+	// worktree while the caller may still be running. The run tree is disposed
+	// through its root.
+	if item.ParentItemID != "" {
+		return fmt.Errorf(
+			"workflow disposition %s: this run was called by %s; dispose the run that called it",
+			item.ID, item.ParentItemID,
+		)
+	}
 	state := engine.State(item.State)
 	switch action {
 	case workflowDispositionMerge, workflowDispositionPR:
@@ -339,6 +349,12 @@ func (a *App) autoDisposeWorkflowItem(itemID string) {
 		return
 	}
 	if item.State != string(engine.StateDone) || item.WorktreePath == "" || len(item.Disposition) > 0 {
+		return
+	}
+	// Called runs are never auto-disposed: the worktree they finished in belongs
+	// to their caller, which is typically still running. Not an error — there is
+	// simply nothing at this level to dispose.
+	if item.ParentItemID != "" {
 		return
 	}
 	projectProfile, err := a.workflowProjectProfile(item.ProjectID)

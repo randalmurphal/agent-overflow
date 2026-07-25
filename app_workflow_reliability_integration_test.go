@@ -146,7 +146,7 @@ func TestWorkflowSpendSourceAddsEstimatedRowsToWireCost(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	spend, err := (workflowSpendSource{store: app.store}).ItemSpend(t.Context(), "item")
+	spend, err := (workflowSpendSource{store: app.store}).TreeSpend(t.Context(), "item")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestWorkflowSpendSourceAddsEstimatedRowsToWireCost(t *testing.T) {
 	if err := app.store.AppendUsage([]store.UsageLedgerRow{{WorkItemID: "unknown", Model: "future-model", InputTokens: 1, CostSource: "none"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (workflowSpendSource{store: app.store}).ItemSpend(t.Context(), "unknown"); err == nil || !strings.Contains(err.Error(), "no USD rate") {
+	if _, err := (workflowSpendSource{store: app.store}).TreeSpend(t.Context(), "unknown"); err == nil || !strings.Contains(err.Error(), "no USD rate") {
 		t.Fatalf("unknown model error = %v", err)
 	}
 }

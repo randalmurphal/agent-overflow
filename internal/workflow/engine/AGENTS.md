@@ -160,6 +160,66 @@ resource semaphores, and startup recovery.
   it stamps the join's thread onto the phase attempt row (`AttachWorkItemPhaseRun`)
   the moment the join's thread exists.
 
+## Call phases
+
+- A `shape: call` phase runs no work of its own: it resolves its static target
+  **at call time** (a fresh `DefinitionSource.ResolveCall` per invocation, §8
+  scoping), evaluates its `args:` against the caller's variable context, and
+  starts the child as an ordinary run linked by `parent_item_id` /
+  `parent_phase_id` / `parent_attempt`. The caller then rests — still `running`,
+  holding no runner, no resources, and no provider capacity — until the child
+  reaches a terminal state.
+- The parent attempt row is persisted (with its evaluated args) **before** the
+  child exists. That order is what makes a crash recoverable: the only gap it
+  can open is an attempt with no child, which `recoverCall` re-invokes in place
+  from the persisted args — no new attempt row, so phase history and every loop
+  count derived from it stay honest. The reverse order could leave a child run
+  no attempt claims. On rebuild, an alive child leaves the parent resting and a
+  terminal child settles it exactly as a live completion would, so rebuild order
+  does not matter.
+- The call phase's envelope is synthesized, never authored: a `done` child
+  becomes `{status: done, outputs: <the child workflow's declared outputs>}` and
+  the parent's gate routes on those names. A `failed` child fails the parent
+  phase under `child-failed` (a `RerunFailed` then makes a *fresh* call, never
+  resumes the old child); a `cancelled` child parks the parent `agent-error`,
+  because cancelling the parent too is the human's call. A child that parks
+  `needs-human` is not terminal — the parent keeps waiting, and the child's
+  eventual completion resumes it.
+- Child→parent notification never runs inside the child's own transition. The
+  terminal transition appends to the loop's `deferred` queue, which is drained
+  after the current command settles, so the parent's phase completion is an
+  ordinary serialized step rather than a re-entrant teardown.
+- Depth is bounded twice: the author's `max_depth` on the edge (counted as the
+  number of times *this* (workflow, phase) edge already appears in the run's
+  ancestry) and the engine's absolute `MaxCallDepth`. The absolute one exists
+  because children resolve live — an edit landing after the parent's dry-run can
+  introduce a cycle validation never saw. Exceeding either parks the run that
+  tried to recurse as `wiring-error`, carrying the rendered call chain in the
+  attempt's envelope.
+- Workspace flows down and is never provisioned by a child (§9): the child row
+  is stamped with the caller's worktree/branch/base branch at creation, so a
+  self-calling workflow iterates in one worktree. The workspace columns belong to
+  the runner, so `startCall` re-reads the caller's row before stamping — the
+  engine's in-memory item still carries what they were at start. Stamping can
+  legitimately copy nothing (a read-only tree, or a call that is the root's first
+  phase, which runs before any worktree exists); the runner then resolves the
+  *root's* workspace through parent linkage and stamps the answer back, so the
+  tree still has exactly one. The root's provisioning uses the propagated need
+  (`def.PropagatedWorkspaceNeed`), frozen into the snapshot and carried on
+  `RunRequest.WorkspaceNeed` — a read-only caller of a writing workflow still
+  gets a worktree.
+- Budgets are per tree, enforced against the root (§12): `enforceBudget` resolves
+  the tree's root through parent linkage (cached on the runtime item), reads the
+  root's budget envelope and persisted start time, and prices the whole tree
+  through `SpendSource.TreeSpend`. A child carries no budget of its own —
+  `startNewItem` refuses one — and the item parked is the one whose check
+  tripped, not the root.
+- Teardown is tree-aware: leaving a call phase for any reason (cancel, rerun
+  after failure, takeover, crash park) brings the live descendant subtree down
+  first, deepest child before its parent, through the same teardown contract. A
+  descendant the scheduler evicted (parked) is transitioned in place — it holds
+  no resources and no runner, so the transition *is* its teardown.
+
 ## Boundaries
 
 - Provider and app/channel implementations live behind `Runner` and `Emitter`.

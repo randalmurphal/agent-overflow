@@ -122,7 +122,11 @@ func runNew(args []string, inheritedConfigRoot string, stdout, stderr io.Writer)
 	if err != nil {
 		return operationalError(stderr, err)
 	}
-	validation := def.Validate(def.ResolvedWorkflow{Workflow: workflow, Scope: scope, Path: definitionPath}, bindings)
+	calls, err := NewCallResolver(root, *projectSlug)
+	if err != nil {
+		return operationalError(stderr, err)
+	}
+	validation := def.Validate(def.ResolvedWorkflow{Workflow: workflow, Scope: scope, Path: definitionPath}, bindings, calls)
 	validation.Findings = slicesx.OrEmpty(validation.Findings)
 	created := make([]string, 0, len(files))
 	for _, file := range files {

@@ -220,6 +220,31 @@ func settleRunnerStart(start *runnerStartFuture, result response) {
 	}
 }
 
+// drainDeferred runs the follow-up work transitions queued during the command
+// just processed — a finished child run re-entering the call phase that was
+// waiting on it. Draining until empty is deliberate: completing a parent can
+// finish it too, and that completion has to reach *its* parent in the same
+// serialized pass. Depth is bounded by MaxCallDepth, because that is what bounds
+// how deep a call tree can be.
+func (e *Engine) drainDeferred() {
+	drained := false
+	for len(e.deferred) > 0 {
+		pending := e.deferred
+		e.deferred = nil
+		drained = true
+		for _, work := range pending {
+			if err := work.run(); err != nil {
+				e.emitError(work.itemID, err)
+			}
+		}
+	}
+	if drained {
+		// A settled call phase releases nothing of its own, but the phase it
+		// advanced into may free or need capacity like any other.
+		_ = e.startWaiting() // startWaiting emits item-scoped failures itself.
+	}
+}
+
 func (e *Engine) loop() {
 	defer close(e.done)
 	for command := range e.commands {
@@ -233,7 +258,7 @@ func (e *Engine) loop() {
 			}
 			command.reply <- e.commandResponse(err)
 		case startCommand:
-			err = e.startNewItem(command.item)
+			err = e.startNewItem(command.item, nil)
 			if command.waitForStarts {
 				command.reply <- e.itemCommandResponse(command.item.ID, err)
 			} else {
@@ -318,6 +343,7 @@ func (e *Engine) loop() {
 			}
 			_ = e.startWaiting() // startWaiting emits item-scoped asynchronous errors itself.
 		case syncCommand:
+			e.drainDeferred()
 			command.reply <- e.syncResponse()
 		case closeCommand:
 			for _, item := range e.items {
@@ -340,5 +366,6 @@ func (e *Engine) loop() {
 			command.reply <- response{}
 			return
 		}
+		e.drainDeferred()
 	}
 }

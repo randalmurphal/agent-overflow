@@ -29,11 +29,34 @@ export interface WorkflowUnit {
   unitAttempt: number;
 }
 
+// WorkflowChild is one run this run called (spec §3a). A child is a real run
+// with a detail page of its own; this is the caller-side summary.
+export interface WorkflowChild {
+  itemId: string;
+  workflowId: string;
+  state: string;
+  reason?: string;
+  parentPhaseId: string;
+  parentAttempt: number;
+  callDepth: number;
+  currentPhaseId?: string;
+  currentPhaseOrdinal: number;
+  phaseCount: number;
+}
+
 export interface WorkflowDetail {
-  item: WorkflowItem & { worktreePath?: string; branch?: string };
+  item: WorkflowItem & {
+    worktreePath?: string;
+    branch?: string;
+    parentItemId?: string;
+    parentPhaseId?: string;
+    parentAttempt?: number;
+    callDepth?: number;
+  };
   checkPhaseIds: string[];
   phases: WorkflowPhase[];
   units: WorkflowUnit[];
+  children: WorkflowChild[];
 }
 
 export interface WorkflowStateEvent {

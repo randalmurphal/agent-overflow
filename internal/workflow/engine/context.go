@@ -10,9 +10,14 @@ import (
 	"agent-overflow/internal/workflow/def"
 )
 
+// controlEnvelope is the flat control shape every phase envelope carries. The
+// engine reads Status and Outputs; Reason is written when the engine has to
+// synthesize an envelope for work that ran no turn of its own (a call phase's
+// child outcome), and is decoded so those envelopes round-trip.
 type controlEnvelope struct {
 	Status  string         `json:"status"`
 	Outputs map[string]any `json:"outputs"`
+	Reason  string         `json:"reason,omitempty"`
 }
 
 func (e *Engine) variableContext(item *runtimeItem, current json.RawMessage) (map[string]any, []store.WorkItemPhaseContext, error) {

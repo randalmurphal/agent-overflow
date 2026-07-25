@@ -51,6 +51,7 @@ const (
 	ReasonInterrupted        Reason = "interrupted"
 	ReasonTakenOver          Reason = "taken-over"
 	ReasonUnitFailed         Reason = "unit-failed"
+	ReasonChildFailed        Reason = "child-failed"
 )
 
 type OutcomeKind string
@@ -97,18 +98,24 @@ const (
 // try number it is on, and Vars already includes the element binding a dynamic
 // expansion bound to it (or, for a join, the units it consolidates).
 type RunRequest struct {
-	Key              RunKey         `json:"key"`
-	Item             store.WorkItem `json:"item"`
-	Workflow         def.Workflow   `json:"workflow"`
-	Phase            def.Phase      `json:"phase"`
-	Unit             *def.Unit      `json:"unit,omitempty"`
-	UnitIndex        int            `json:"unitIndex,omitempty"`
-	UnitKind         UnitKind       `json:"unitKind,omitempty"`
-	UnitAttempt      int            `json:"unitAttempt,omitempty"`
-	Vars             map[string]any `json:"vars"`
-	Feedback         *Feedback      `json:"feedback,omitempty"`
-	PriorThreadID    string         `json:"priorThreadId,omitempty"`
-	FinalizeTakeover bool           `json:"finalizeTakeover,omitempty"`
+	Key      RunKey         `json:"key"`
+	Item     store.WorkItem `json:"item"`
+	Workflow def.Workflow   `json:"workflow"`
+	// WorkspaceNeed is the run's frozen workspace decision (§9) — derived at
+	// start with write-need propagated through the call graph, so a read-only
+	// root that calls a writing child still provisions the worktree its whole
+	// tree shares. The runner provisions against this, never against a fresh
+	// derivation from Workflow alone, which cannot see the child.
+	WorkspaceNeed    def.WorkspaceNeed `json:"workspaceNeed,omitempty"`
+	Phase            def.Phase         `json:"phase"`
+	Unit             *def.Unit         `json:"unit,omitempty"`
+	UnitIndex        int               `json:"unitIndex,omitempty"`
+	UnitKind         UnitKind          `json:"unitKind,omitempty"`
+	UnitAttempt      int               `json:"unitAttempt,omitempty"`
+	Vars             map[string]any    `json:"vars"`
+	Feedback         *Feedback         `json:"feedback,omitempty"`
+	PriorThreadID    string            `json:"priorThreadId,omitempty"`
+	FinalizeTakeover bool              `json:"finalizeTakeover,omitempty"`
 }
 
 type Feedback struct {
@@ -116,9 +123,13 @@ type Feedback struct {
 	Note   string         `json:"note,omitempty"`
 }
 
+// PhaseInput is the frozen input of one phase attempt. Args is set only for a
+// call phase: it is the evaluated argument map the child run was seeded with,
+// which is what makes an invocation reproducible from the run record alone.
 type PhaseInput struct {
 	Vars     map[string]any `json:"vars"`
 	Feedback *Feedback      `json:"feedback,omitempty"`
+	Args     map[string]any `json:"args,omitempty"`
 }
 
 type HumanDecision string
@@ -161,10 +172,25 @@ type Emitter interface {
 	Emit(eventName string, payload any)
 }
 
-// DefinitionSource resolves the validated workflow that is frozen at item
-// start. It is not consulted after Snapshot has been persisted.
+// ResolvedDefinition is one validated workflow plus the two facts only a
+// resolver can answer about it: which scope it came from (§8 project-over-shared
+// precedence), and the workspace it needs once write-need has been propagated
+// through its call graph (§9). `def` stays pure — it derives the single
+// definition's need — so the propagated answer is produced where the loading is.
+type ResolvedDefinition struct {
+	Workflow      def.Workflow      `json:"workflow"`
+	Scope         def.Scope         `json:"scope"`
+	WorkspaceNeed def.WorkspaceNeed `json:"workspaceNeed"`
+}
+
+// DefinitionSource resolves the validated workflow frozen into a run record.
+// Resolve answers for an item at start and is not consulted after that item's
+// Snapshot is persisted. ResolveCall answers a call phase's static target by id
+// at call time, under §8 scoping, so every invocation freezes the definition
+// that was on disk when it was invoked.
 type DefinitionSource interface {
-	Resolve(context.Context, store.WorkItem) (def.Workflow, error)
+	Resolve(context.Context, store.WorkItem) (ResolvedDefinition, error)
+	ResolveCall(ctx context.Context, projectID, workflowID string) (ResolvedDefinition, error)
 }
 
 // ProfileSource returns the live project profile at each resource acquisition.
@@ -178,9 +204,12 @@ type Spend struct {
 	USD    float64 `json:"usd"`
 }
 
-// SpendSource supplies token and composed wire-plus-estimated USD spend.
+// SpendSource supplies token and composed wire-plus-estimated USD spend for a
+// whole run tree. Budgets are enforced against the root item across every run
+// it called (§12), so the aggregate — not one item's rows — is the number a
+// ceiling is compared against.
 type SpendSource interface {
-	ItemSpend(context.Context, string) (Spend, error)
+	TreeSpend(ctx context.Context, rootItemID string) (Spend, error)
 }
 
 // Config supplies the persisted engine state restored at startup. Bounded
@@ -205,9 +234,15 @@ const DefaultProviderCapacity = def.DefaultProviderCapacity
 // resource, defaulting to DefaultProviderCapacity.
 func ProviderResource(provider string) string { return def.ProviderResource(provider) }
 
-// Snapshot is the persisted, immutable run definition.
+// Snapshot is the persisted, immutable run definition. WorkspaceNeed is frozen
+// with it because the answer depends on definitions outside this one (§9: write
+// need propagates through call edges) — re-deriving it later from the frozen
+// graph alone would silently drop a called workflow's writes. A snapshot frozen
+// before this field existed leaves it empty, and the runner falls back to the
+// single-definition derivation, which is exactly what it did then.
 type Snapshot struct {
-	Workflow def.Workflow `json:"workflow"`
+	Workflow      def.Workflow      `json:"workflow"`
+	WorkspaceNeed def.WorkspaceNeed `json:"workspaceNeed,omitempty"`
 }
 
 type StateEvent struct {
@@ -260,6 +295,8 @@ type persistence interface {
 	ListWorkItemPhases(string) ([]store.WorkItemPhase, error)
 	ListWorkItemPhaseContexts(string) ([]store.WorkItemPhaseContext, error)
 	UpdateWorkItemPhaseIntervention(string, string, int, json.RawMessage) error
+	ListWorkItemChildren(string) ([]store.WorkItem, error)
+	ListWorkItemCallChildren(string, string, int) ([]store.WorkItem, error)
 	CreateWorkItemUnits([]store.WorkItemUnit) error
 	StartWorkItemUnit(string, string, int, string, int, string, int64) error
 	CompleteWorkItemUnit(string, string, int, string, string, json.RawMessage, string, int64) error

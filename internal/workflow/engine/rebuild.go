@@ -50,12 +50,14 @@ func (e *Engine) rebuild() error {
 			}
 			item := &runtimeItem{item: storedItem}
 			e.items[storedItem.ID] = item
-			if err := decodeSnapshot(storedItem.Snapshot, &item.workflow); err != nil {
+			snapshot, err := decodeSnapshot(storedItem.Snapshot)
+			if err != nil {
 				parkErr := e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError})
 				rebuildErr := fmt.Errorf("rebuild item %q snapshot: %w", storedItem.ID, err)
 				e.emitError(storedItem.ID, errors.Join(rebuildErr, parkErr))
 				continue
 			}
+			item.adoptSnapshot(snapshot)
 			phases, err := e.store.ListWorkItemPhases(storedItem.ID)
 			if err != nil {
 				return fmt.Errorf("rebuild item %q phases: %w", storedItem.ID, err)
@@ -67,6 +69,22 @@ func (e *Engine) rebuild() error {
 				e.observePhaseTimestamps(current)
 			} else if len(item.workflow.Phases) > 0 {
 				item.phaseID = item.workflow.Phases[0].ID
+			}
+			// A call phase resting on a live child is a legitimate `running`
+			// state with no envelope and no runner, so it is re-linked rather
+			// than swept: the child is the thing that reports, and it rebuilt (or
+			// will rebuild) as an ordinary item of its own.
+			if hasCurrent && current.Status == "running" && callPhase(item.workflow, current.PhaseID) {
+				if err := e.recoverCall(item, current); err != nil {
+					recoverErr := fmt.Errorf("recover call phase for item %q: %w", storedItem.ID, err)
+					if State(item.item.State) == StateRunning {
+						recoverErr = errors.Join(recoverErr, e.teardown(item, teardownRequest{
+							phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError,
+						}))
+					}
+					e.emitError(storedItem.ID, recoverErr)
+				}
+				continue
 			}
 			if !hasCurrent || !terminalEnvelope(current.OutputEnvelope) {
 				item.runnerActive = hasCurrent && current.Status == "running"
@@ -115,22 +133,33 @@ func (e *Engine) recoverPendingHumanDecisions(itemIDs []string) {
 	}
 }
 
-func decodeSnapshot(payload json.RawMessage, workflow *def.Workflow) error {
+func decodeSnapshot(payload json.RawMessage) (Snapshot, error) {
 	if len(payload) == 0 {
-		return fmt.Errorf("snapshot is empty")
+		return Snapshot{}, fmt.Errorf("snapshot is empty")
 	}
 	if len(payload) > MaxSnapshotBytes {
-		return fmt.Errorf("snapshot is %d bytes; maximum is %d", len(payload), MaxSnapshotBytes)
+		return Snapshot{}, fmt.Errorf("snapshot is %d bytes; maximum is %d", len(payload), MaxSnapshotBytes)
 	}
 	var snapshot Snapshot
 	if err := decodeJSON(payload, &snapshot); err != nil {
-		return err
+		return Snapshot{}, err
 	}
 	if len(snapshot.Workflow.Phases) == 0 {
-		return fmt.Errorf("snapshot workflow has no phases")
+		return Snapshot{}, fmt.Errorf("snapshot workflow has no phases")
 	}
-	*workflow = snapshot.Workflow
-	return nil
+	return snapshot, nil
+}
+
+// adoptSnapshot installs a frozen definition on a resident run. A snapshot
+// written before workspace need was frozen carries none; deriving it from the
+// frozen graph alone is exactly what the runner did then, so an in-flight run
+// keeps the workspace it already has instead of changing it mid-run.
+func (item *runtimeItem) adoptSnapshot(snapshot Snapshot) {
+	item.workflow = snapshot.Workflow
+	item.workspaceNeed = snapshot.WorkspaceNeed
+	if item.workspaceNeed == "" {
+		item.workspaceNeed = def.DeriveWorkspaceNeed(snapshot.Workflow)
+	}
 }
 
 func currentPhaseAttempt(phases []store.WorkItemPhase) (store.WorkItemPhase, bool) {

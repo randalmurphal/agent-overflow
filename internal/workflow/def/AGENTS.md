@@ -54,6 +54,40 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   because fabricating a unit from the template for an arbitrary id would run a
   real turn on a wrong contract.
 
+## Call authoring
+
+- A `shape: call` phase declares a **static** workflow id (`call:`), an argument
+  map (`args:` — child input name to a reference in the caller), an optional
+  `max_depth:`, and its gate. Nothing else: every field that configures work of
+  the phase's own (driver, provider/model/prompt, check/command/commands,
+  resources, capabilities/mcp, access, watchdog, inputs, outputs, fan-out) is a
+  finding rather than a silently ignored declaration, because the child's phases
+  are what carry all of it. The target is never a variable — a static id is what
+  lets the dry-run validate the whole call graph before anything runs.
+- A call phase's downstream surface is the **child workflow's declared
+  `outputs:`**, typed by the child phases that produce them (`CallPhaseOutputs`).
+  Validation builds an *effective* workflow whose call phases carry those
+  outputs and runs every existing variable, gate, and workflow-output check
+  against it, so a parent consumer type-checks against the child's real
+  contract with no separate code path. The caller's definition is never mutated.
+- `Validate` takes a `CallResolver` because a definition with call edges cannot
+  be dry-run without resolution: its arguments, its child's validity, and its
+  cycles are all facts about definitions this package will not read from disk
+  itself. A nil resolver is legal and reports `call.unresolved` per edge rather
+  than calling an unchecked graph valid.
+- Each reachable workflow is validated exactly once per dry-run (memoized), a
+  child that fails its own validation is reported on the *edge* that calls it
+  (`call.child-invalid`, quoting a bounded prefix of its findings), and cycles
+  are collected across the traversal and reported on the graph's own result:
+  the edge that closes a cycle can sit levels down, so `call.unbounded-cycle`
+  always lands on what the caller validated, naming the cycle and the edge that
+  must declare `max_depth`.
+- `PropagatedWorkspaceNeed(workflow, calls)` is the call-aware workspace answer;
+  `DeriveWorkspaceNeed` stays the pure single-definition one. A workflow that
+  calls a writing workflow needs a worktree, because the child executes in the
+  caller's workspace and never provisions one — the root is the only place a
+  worktree can be cut.
+
 ## Unit and join envelopes
 
 - `EnvelopeContract` is the one thing schema generation and post-validation are
@@ -93,7 +127,8 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
 | `tool.go` | The tool driver's implicit outputs and the merged `PhaseOutputs` contract. |
 | `interpolate.go` | Single-pass prompt interpolation and template checks. |
 | `fanout.go` | Unit expansion, unit-scoped declarations, and the implicit `provider:<name>` resource + its default capacity. |
-| `validate*.go` | Whole-definition structural, graph, variable, and binding checks. `validate_fanout.go` holds the fan-out structural rules and the width report. |
+| `calls.go` | Call-phase accessors, the child-outputs surface, and the call-aware workspace need. |
+| `validate*.go` | Whole-definition structural, graph, variable, and binding checks. `validate_fanout.go` holds the fan-out structural rules and the width report; `validate_calls.go` holds the call shape, the call-graph traversal (cycles, child validity), and the argument checks. |
 
 Tests use deterministic fixtures under `testdata/` and must not inspect shared
 application configuration.

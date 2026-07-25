@@ -40,10 +40,10 @@
       "properties": {"from": {"type": "string"}, "artifact": {"type": "boolean"}}
     },
     "phase": {
-      "type": "object", "additionalProperties": false, "required": ["id", "driver", "gate"],
+      "type": "object", "additionalProperties": false, "required": ["id", "gate"],
       "properties": {
         "id": {"type": "string", "pattern": "^[a-z0-9-]+$"}, "name": {"type": "string"},
-        "driver": {"enum": ["agent", "tool"]}, "shape": {"enum": ["single", "fan-out"]},
+        "driver": {"enum": ["agent", "tool"]}, "shape": {"enum": ["single", "fan-out", "call"]},
         "provider": {"type": "string"}, "model": {"type": "string"}, "prompt": {"type": "string"},
         "watchdog": {"type": "string"},
         "inputs": {"$ref": "#/$defs/variables"}, "outputs": {"$ref": "#/$defs/variables"},
@@ -56,7 +56,11 @@
         "fan_out": {"type": "array", "items": {"$ref": "#/$defs/unit"}},
         "over": {"type": "string"}, "as": {"type": "string", "pattern": "^[a-z0-9-]+$"},
         "unit": {"$ref": "#/$defs/unit"},
-        "join": {"$ref": "#/$defs/unit"}, "gate": {"$ref": "#/$defs/gate"}
+        "join": {"$ref": "#/$defs/unit"},
+        "call": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+        "args": {"type": "object", "additionalProperties": {"type": "string"}},
+        "max_depth": {"type": "integer", "minimum": 1},
+        "gate": {"$ref": "#/$defs/gate"}
       },
       "not": {
         "anyOf": [
@@ -67,7 +71,29 @@
       },
       "dependentRequired": {
         "over": ["as", "unit"], "as": ["over", "unit"], "unit": ["over", "as"]
-      }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"shape": {"const": "call"}}, "required": ["shape"]},
+          "then": {
+            "required": ["call"],
+            "not": {"anyOf": [
+              {"required": ["driver"]}, {"required": ["provider"]}, {"required": ["model"]},
+              {"required": ["prompt"]}, {"required": ["watchdog"]}, {"required": ["inputs"]},
+              {"required": ["outputs"]}, {"required": ["check"]}, {"required": ["command"]},
+              {"required": ["resources"]}, {"required": ["commands"]}, {"required": ["capabilities"]},
+              {"required": ["mcp"]}, {"required": ["access"]}, {"required": ["fan_out"]},
+              {"required": ["over"]}, {"required": ["as"]}, {"required": ["unit"]}, {"required": ["join"]}
+            ]}
+          },
+          "else": {
+            "required": ["driver"],
+            "not": {"anyOf": [
+              {"required": ["call"]}, {"required": ["args"]}, {"required": ["max_depth"]}
+            ]}
+          }
+        }
+      ]
     },
     "unit": {
       "type": "object", "additionalProperties": false, "required": ["id"],

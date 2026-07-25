@@ -191,7 +191,7 @@ func (a *App) validateWorkflowChatProposal(input workflowChatToolArguments) (sto
 	if err != nil {
 		return store.Project{}, def.ResolvedWorkflow{}, "", nil, fmt.Errorf("workflow proposal: load project profile: %w", err)
 	}
-	validation := def.Validate(*resolved, bindings)
+	validation := def.Validate(*resolved, bindings, aocli.CallResolverFor(resolvedList))
 	if !validation.Valid() {
 		return store.Project{}, def.ResolvedWorkflow{}, "", nil, fmt.Errorf("workflow proposal: workflow %q is invalid: %s", input.Workflow, validation.Findings[0].Error())
 	}

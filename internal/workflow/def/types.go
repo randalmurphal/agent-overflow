@@ -72,6 +72,9 @@ type Phase struct {
 	As           string              `yaml:"as,omitempty" json:"as,omitempty"`
 	Unit         *Unit               `yaml:"unit,omitempty" json:"unit,omitempty"`
 	Join         *Unit               `yaml:"join,omitempty" json:"join,omitempty"`
+	Call         string              `yaml:"call,omitempty" json:"call,omitempty"`
+	Args         map[string]string   `yaml:"args,omitempty" json:"args,omitempty"`
+	MaxDepth     int                 `yaml:"max_depth,omitempty" json:"maxDepth,omitempty"`
 	Gate         Gate                `yaml:"gate" json:"gate"`
 }
 
@@ -114,6 +117,7 @@ const (
 	DriverTool     Driver = "tool"
 	ShapeSingle    Shape  = "single"
 	ShapeFanOut    Shape  = "fan-out"
+	ShapeCall      Shape  = "call"
 	AccessReadOnly Access = "read-only"
 	AccessWrite    Access = "write"
 )

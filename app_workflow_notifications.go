@@ -39,6 +39,12 @@ func (a *App) afterWorkflowStateEvent(event engine.StateEvent) {
 		return
 	}
 	item := context.Item
+	// A called run does not notify (§5); it surfaces through its caller's run
+	// tree. The unit of human attention is the root run, which is what the
+	// overlay lists and what a notification can be acted on from.
+	if item.ParentItemID != "" {
+		return
+	}
 	var digest WorkflowDigest
 	upgrade := true
 	if err := json.Unmarshal(item.Digest, &digest); err != nil {

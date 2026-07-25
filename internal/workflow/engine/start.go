@@ -14,9 +14,26 @@ import (
 // row is created before the definition is resolved so a workflow that broke
 // between validation and admission parks a visible run record rather than
 // vanishing.
-func (e *Engine) startNewItem(item store.WorkItem) error {
+//
+// `resolved` is the definition a call phase already froze for its child; a
+// root start passes nil and resolves here. Passing it through means one
+// invocation resolves the child exactly once, so the definition the parent
+// validated is the definition the child runs.
+func (e *Engine) startNewItem(item store.WorkItem, resolved *ResolvedDefinition) error {
 	if item.ID == "" || item.ProjectID == "" {
 		return fmt.Errorf("start item: id and project id are required")
+	}
+	if item.ParentItemID != "" && len(item.Budget) > 0 {
+		// §12: one ceiling per tree, enforced against the root. A budget on a
+		// child would be a second, silently-ignored one.
+		return fmt.Errorf("start item %q: only a root run carries a budget; it is enforced across the whole call tree", item.ID)
+	}
+	if resolved == nil && item.ParentItemID != "" {
+		// Child runs exist only because a call phase created them, and they carry
+		// a budget-free, workspace-inherited shape that only that path builds.
+		// Admitting one from outside would produce a run whose tree accounting is
+		// wrong from birth.
+		return fmt.Errorf("start item %q: parent linkage is set by the call path, not by intake", item.ID)
 	}
 	if state := State(item.State); state != "" && state != StateRunning {
 		return fmt.Errorf("start item %q: state must be empty or running, got %q", item.ID, item.State)
@@ -42,21 +59,25 @@ func (e *Engine) startNewItem(item store.WorkItem) error {
 	runtime := &runtimeItem{item: item}
 	e.items[item.ID] = runtime
 	e.emitItemState(item.ID, item.ProjectID, "", StateRunning, "")
-	return e.beginRun(runtime)
+	return e.beginRun(runtime, resolved)
 }
 
 // beginRun freezes the resolved workflow into the run record and enters the
 // first phase. The item is already persisted running, so every failure here
 // parks it through teardown instead of leaving an unstarted row.
-func (e *Engine) beginRun(item *runtimeItem) error {
-	workflow, err := e.definitions.Resolve(e.ctx, item.item)
-	if err != nil {
-		return e.parkUnstartable(item, fmt.Errorf("resolve item %q workflow: %w", item.item.ID, err))
+func (e *Engine) beginRun(item *runtimeItem, resolved *ResolvedDefinition) error {
+	if resolved == nil {
+		definition, err := e.definitions.Resolve(e.ctx, item.item)
+		if err != nil {
+			return e.parkUnstartable(item, fmt.Errorf("resolve item %q workflow: %w", item.item.ID, err))
+		}
+		resolved = &definition
 	}
+	workflow := resolved.Workflow
 	if len(workflow.Phases) == 0 {
 		return e.parkUnstartable(item, fmt.Errorf("resolve item %q workflow: workflow has no phases", item.item.ID))
 	}
-	snapshot, err := json.Marshal(Snapshot{Workflow: workflow})
+	snapshot, err := json.Marshal(Snapshot{Workflow: workflow, WorkspaceNeed: resolved.WorkspaceNeed})
 	if err != nil {
 		return e.parkUnstartable(item, fmt.Errorf("snapshot item %q workflow: %w", item.item.ID, err))
 	}
@@ -73,6 +94,7 @@ func (e *Engine) beginRun(item *runtimeItem) error {
 	item.item.Snapshot = snapshot
 	item.item.StartedAt = startedAt
 	item.workflow = workflow
+	item.workspaceNeed = resolved.WorkspaceNeed
 	item.phaseID = workflow.Phases[0].ID
 	return e.enterPhase(item)
 }
@@ -107,7 +129,25 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}), err)
 	}
 	attempt := nextAttempt(priorPhases, phase.ID)
-	input, err := json.Marshal(PhaseInput{Vars: vars, Feedback: item.feedback})
+	phaseInput := PhaseInput{Vars: vars, Feedback: item.feedback}
+	if phase.IsCall() {
+		// A call phase's input *is* its argument map: it runs no turn, so the args
+		// are the only thing it hands anywhere. Persisting them on the attempt row
+		// makes the invocation auditable and lets a rebuild re-invoke the same
+		// call after a crash between the attempt and the child.
+		args, argsErr := callArgs(phase, vars)
+		if argsErr != nil {
+			return errors.Join(
+				e.teardown(item, teardownRequest{
+					output:      callParkEnvelope(argsErr),
+					phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError,
+				}),
+				fmt.Errorf("call %s/%s: %w", item.item.ID, phase.ID, argsErr),
+			)
+		}
+		phaseInput.Args = args
+	}
+	input, err := json.Marshal(phaseInput)
 	if err != nil {
 		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError}), err)
 	}
@@ -142,7 +182,8 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 func (e *Engine) startRunner(item *runtimeItem, phase def.Phase, vars map[string]any) error {
 	request := RunRequest{
 		Key:  RunKey{ItemID: item.item.ID, PhaseID: item.phaseID, Attempt: item.attempt},
-		Item: item.item, Workflow: item.workflow, Phase: phase, Vars: vars,
+		Item: item.item, Workflow: item.workflow, WorkspaceNeed: item.workspaceNeed,
+		Phase: phase, Vars: vars,
 		Feedback: cloneFeedback(item.feedback), PriorThreadID: item.priorThreadID,
 		FinalizeTakeover: item.takeoverFinalize,
 	}

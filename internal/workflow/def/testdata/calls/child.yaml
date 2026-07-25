@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=../../workflow.schema.json
+id: child-audit
+name: Child audit
+description: The workflow the caller invokes.
+inputs:
+  subject:
+    schema:
+      type: string
+  depth:
+    schema:
+      type: number
+    optional: true
+outputs:
+  approved:
+    from: inspect.ok
+  summary:
+    from: inspect.notes
+phases:
+  - id: inspect
+    driver: tool
+    check: test
+    inputs:
+      subject:
+        schema:
+          type: string
+    outputs:
+      ok:
+        schema:
+          type: boolean
+      notes:
+        schema:
+          type: string
+    gate:
+      routes:
+        - to: done

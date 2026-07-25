@@ -29,7 +29,7 @@ func TestEveryStarterCanBeScaffolded(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result := def.Validate(def.ResolvedWorkflow{Workflow: workflow, Scope: def.ScopeShared, Path: definitionPath}, nil)
+			result := def.Validate(def.ResolvedWorkflow{Workflow: workflow, Scope: def.ScopeShared, Path: definitionPath}, nil, nil)
 			if !result.Valid() {
 				t.Fatalf("scaffold findings = %+v", result.Findings)
 			}
@@ -98,7 +98,7 @@ func TestNewBlankCreatesMinimalValidProjectWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	validation := def.Validate(def.ResolvedWorkflow{Workflow: workflow, Scope: def.ScopeProject, Path: definitionPath}, nil)
+	validation := def.Validate(def.ResolvedWorkflow{Workflow: workflow, Scope: def.ScopeProject, Path: definitionPath}, nil, nil)
 	if !validation.Valid() {
 		t.Fatalf("blank scaffold findings = %+v", validation.Findings)
 	}

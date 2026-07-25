@@ -72,6 +72,7 @@ export {
     WorkflowDefinitionListing,
     WorkflowDefinitionPhase,
     WorkflowDispositionReceipt,
+    WorkflowItemChildView,
     WorkflowItemDetailView,
     WorkflowItemPhaseView,
     WorkflowItemUnitView,

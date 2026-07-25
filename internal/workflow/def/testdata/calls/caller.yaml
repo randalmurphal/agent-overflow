@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=../../workflow.schema.json
+id: caller
+name: Caller with a call phase
+description: A call-shape validator fixture.
+inputs:
+  goal:
+    schema:
+      type: string
+outputs:
+  verdict:
+    from: audit.summary
+phases:
+  - id: prepare
+    driver: agent
+    provider: codex
+    model: test-model
+    prompt: prepare.md
+    inputs:
+      goal:
+        schema:
+          type: string
+    outputs:
+      target:
+        schema:
+          type: string
+    gate:
+      routes:
+        - to: audit
+  - id: audit
+    shape: call
+    call: child-audit
+    args:
+      subject: prepare.target
+    max_depth: 2
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: audit.approved
+              value: true
+          to: report
+        - park: needs-human
+  - id: report
+    driver: tool
+    check: test
+    inputs:
+      audit.summary:
+        schema:
+          type: string
+    gate:
+      routes:
+        - to: done

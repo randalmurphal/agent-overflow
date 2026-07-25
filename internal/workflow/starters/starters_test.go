@@ -70,7 +70,8 @@ func TestEmbeddedStartersAreCompleteAndValid(t *testing.T) {
 				Workflow: workflow,
 				Scope:    def.ScopeShared,
 				Path:     definitionPath,
-			}, documented)
+			}, documented, nil)
+
 			if !result.Valid() || result.BindingStatus != def.BindingsChecked {
 				t.Fatalf("starter validation = %+v", result)
 			}

@@ -38,7 +38,7 @@ func reasonAllowed(reason Reason) bool {
 		ReasonBudgetExhausted, ReasonRetriesExhausted,
 		ReasonCheckFailedGenuine, ReasonAgentError, ReasonWiringError,
 		ReasonDisposition, ReasonSetupFailed, ReasonInterrupted, ReasonTakenOver,
-		ReasonUnitFailed:
+		ReasonUnitFailed, ReasonChildFailed:
 		return true
 	default:
 		return false
@@ -73,7 +73,23 @@ func (e *Engine) transition(item *runtimeItem, to State, reason Reason) error {
 	if to != StateRunning {
 		delete(e.items, item.item.ID)
 	}
+	// A child run reaching a terminal state is what re-enters the call phase
+	// waiting on it. The parent is driven from the command loop's deferred queue
+	// rather than from inside this transition, so the child's own teardown
+	// finishes first and the parent's phase completion is an ordinary serialized
+	// step instead of a re-entrant one.
+	if item.item.ParentItemID != "" && isTerminal(to) {
+		settled := item.item
+		e.deferred = append(e.deferred, deferredWork{
+			itemID: settled.ParentItemID,
+			run:    func() error { return e.settleCallChild(settled) },
+		})
+	}
 	return nil
+}
+
+func isTerminal(state State) bool {
+	return state == StateDone || state == StateFailed || state == StateCancelled
 }
 
 // teardown is the only function allowed to release resource holders. It is
@@ -82,9 +98,14 @@ func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 	var errs []error
 	output := request.output
 	// Teardown is tree-aware (spec §12): an attempt's in-flight units come down
-	// with it, through the one per-unit release path, before the phase releases
-	// anything of its own.
+	// with it, through the one per-unit release path, and a call phase's whole
+	// live child subtree comes down before the phase releases anything of its
+	// own. Any exit from a waiting call phase — cancel, rerun, takeover, crash
+	// park — therefore leaves no descendant running with nothing to consume it.
 	if err := e.teardownUnits(item, request.phaseStatus); err != nil {
+		errs = append(errs, err)
+	}
+	if err := e.cancelCallChildren(item); err != nil {
 		errs = append(errs, err)
 	}
 	if item.runnerStarting {

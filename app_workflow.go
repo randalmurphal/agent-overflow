@@ -63,12 +63,16 @@ type workflowDefinitionSource struct {
 
 type workflowSpendSource struct{ store *store.Store }
 
-func (s workflowSpendSource) ItemSpend(_ context.Context, itemID string) (engine.Spend, error) {
-	usage, err := s.store.QueryWorkItemUsage(itemID)
+// TreeSpend prices one run tree: the root's own ledger rows plus every run it
+// called, transitively (§12 budgets are enforced against the root across the
+// tree). The pricing rules are the item-scoped ones — the aggregation is what
+// differs.
+func (s workflowSpendSource) TreeSpend(_ context.Context, rootItemID string) (engine.Spend, error) {
+	usage, err := s.store.QueryWorkItemTreeUsage(rootItemID)
 	if err != nil {
 		return engine.Spend{}, err
 	}
-	details, err := s.store.QueryWorkItemUsageDetail(itemID)
+	details, err := s.store.QueryWorkItemTreeUsageDetail(rootItemID)
 	if err != nil {
 		return engine.Spend{}, err
 	}
@@ -93,32 +97,61 @@ func (s workflowSpendSource) ItemSpend(_ context.Context, itemID string) (engine
 	return engine.Spend{Tokens: usage.TotalTokens, USD: cost}, nil
 }
 
-func (s workflowDefinitionSource) Resolve(ctx context.Context, item store.WorkItem) (def.Workflow, error) {
-	projectRow, err := s.store.GetProject(item.ProjectID)
+// Resolve freezes an item's workflow at run start, by the scope the item
+// records.
+func (s workflowDefinitionSource) Resolve(ctx context.Context, item store.WorkItem) (engine.ResolvedDefinition, error) {
+	return s.resolve(ctx, item.ProjectID, item.WorkflowID, def.Scope(item.WorkflowScope))
+}
+
+// ResolveCall freezes a call phase's target at call time. The scope is not
+// supplied: a call names a static id and resolution follows §8 precedence
+// (project scope wins over shared), exactly as a run start by id would.
+func (s workflowDefinitionSource) ResolveCall(ctx context.Context, projectID, workflowID string) (engine.ResolvedDefinition, error) {
+	return s.resolve(ctx, projectID, workflowID, "")
+}
+
+// resolve is the one path a definition becomes runnable through: resolve by
+// scope (or by §8 precedence), dry-run it including its whole call graph,
+// derive the workspace need with call edges propagated, and inline prompts.
+func (s workflowDefinitionSource) resolve(ctx context.Context, projectID, workflowID string, scope def.Scope) (engine.ResolvedDefinition, error) {
+	projectRow, err := s.store.GetProject(projectID)
 	if err != nil {
-		return def.Workflow{}, fmt.Errorf("workflow definition: load project %q: %w", item.ProjectID, err)
+		return engine.ResolvedDefinition{}, fmt.Errorf("workflow definition: load project %q: %w", projectID, err)
 	}
-	resolved, err := aocli.ResolveWorkflow(s.configRoot, projectRow.Slug, item.WorkflowID, def.Scope(item.WorkflowScope))
+	calls, err := aocli.NewCallResolver(s.configRoot, projectRow.Slug)
 	if err != nil {
-		return def.Workflow{}, err
+		return engine.ResolvedDefinition{}, err
 	}
-	bindings, err := s.profiles.Profile(ctx, item.ProjectID)
+	var resolved def.ResolvedWorkflow
+	if scope == "" {
+		resolved, err = calls.ResolveCall(workflowID)
+	} else {
+		resolved, err = aocli.ResolveWorkflow(s.configRoot, projectRow.Slug, workflowID, scope)
+	}
 	if err != nil {
-		return def.Workflow{}, err
+		return engine.ResolvedDefinition{}, err
 	}
-	validation := def.Validate(resolved, bindings)
+	bindings, err := s.profiles.Profile(ctx, projectID)
+	if err != nil {
+		return engine.ResolvedDefinition{}, err
+	}
+	validation := def.Validate(resolved, bindings, calls)
 	if !validation.Valid() {
 		messages := make([]string, 0, len(validation.Findings))
 		for _, finding := range validation.Findings {
 			messages = append(messages, finding.Error())
 		}
-		return def.Workflow{}, fmt.Errorf("workflow definition %q is invalid: %s", item.WorkflowID, strings.Join(messages, "; "))
+		return engine.ResolvedDefinition{}, fmt.Errorf("workflow definition %q is invalid: %s", workflowID, strings.Join(messages, "; "))
+	}
+	need, err := def.PropagatedWorkspaceNeed(resolved.Workflow, calls)
+	if err != nil {
+		return engine.ResolvedDefinition{}, fmt.Errorf("workflow definition %q workspace need: %w", workflowID, err)
 	}
 	inlined, err := def.InlinePrompts(resolved)
 	if err != nil {
-		return def.Workflow{}, err
+		return engine.ResolvedDefinition{}, err
 	}
-	return inlined, nil
+	return engine.ResolvedDefinition{Workflow: inlined, Scope: resolved.Scope, WorkspaceNeed: need}, nil
 }
 
 func (a *App) initWorkflowEngine(dataRoot string) error {
@@ -230,12 +263,13 @@ func (a *App) startWorkflowRun(projectID, workflowID, workflowScope, goal string
 		baseBranch = strings.TrimSpace(projectProfile.BaseBranch)
 	}
 	definitions := workflowDefinitionSource{store: a.store, configRoot: a.workflowDataRoot(), profiles: profiles}
-	workflow, err := definitions.Resolve(a.lifeCtx(), store.WorkItem{
+	resolved, err := definitions.Resolve(a.lifeCtx(), store.WorkItem{
 		ProjectID: projectID, WorkflowID: workflowID, WorkflowScope: string(scope),
 	})
 	if err != nil {
 		return store.WorkItem{}, fmt.Errorf("start workflow run: %w", err)
 	}
+	workflow := resolved.Workflow
 	normalizedSeeds := append(json.RawMessage(nil), seeds...)
 	// Chat proposals are untrusted agent-produced input and must be checked at
 	// both proposal time and the approval commit point (the user may edit it).
@@ -493,9 +527,34 @@ type WorkflowItemView struct {
 	TriageThreadID string          `json:"triageThreadId,omitempty"`
 	Disposition    json.RawMessage `json:"disposition,omitempty"`
 	Digest         json.RawMessage `json:"digest,omitempty"`
-	CreatedAt      int64           `json:"createdAt"`
-	StartedAt      int64           `json:"startedAt,omitempty"`
-	EndedAt        int64           `json:"endedAt,omitempty"`
+	// Parent linkage is present only on a called run (§3a). It names the caller,
+	// the caller's call phase, and the attempt of it that invoked this run, so a
+	// child is always navigable back to the exact invocation that created it.
+	ParentItemID  string `json:"parentItemId,omitempty"`
+	ParentPhaseID string `json:"parentPhaseId,omitempty"`
+	ParentAttempt int    `json:"parentAttempt,omitempty"`
+	CallDepth     int    `json:"callDepth,omitempty"`
+	CreatedAt     int64  `json:"createdAt"`
+	StartedAt     int64  `json:"startedAt,omitempty"`
+	EndedAt       int64  `json:"endedAt,omitempty"`
+}
+
+// WorkflowItemChildView is one run this item called. A child is a real run with
+// a detail page of its own; this is the caller-side summary — enough to render
+// the call phase's progress without loading the child's timeline.
+type WorkflowItemChildView struct {
+	ItemID              string `json:"itemId"`
+	WorkflowID          string `json:"workflowId"`
+	State               string `json:"state"`
+	Reason              string `json:"reason,omitempty"`
+	ParentPhaseID       string `json:"parentPhaseId"`
+	ParentAttempt       int    `json:"parentAttempt"`
+	CallDepth           int    `json:"callDepth"`
+	CurrentPhaseID      string `json:"currentPhaseId,omitempty"`
+	CurrentPhaseOrdinal int    `json:"currentPhaseOrdinal"`
+	PhaseCount          int    `json:"phaseCount"`
+	StartedAt           int64  `json:"startedAt,omitempty"`
+	EndedAt             int64  `json:"endedAt,omitempty"`
 }
 
 // WorkflowItemPhaseView is the timeline projection used by run detail. Input
@@ -539,6 +598,7 @@ type WorkflowItemDetailView struct {
 	CheckPhaseIDs []string                `json:"checkPhaseIds"`
 	Phases        []WorkflowItemPhaseView `json:"phases"`
 	Units         []WorkflowItemUnitView  `json:"units"`
+	Children      []WorkflowItemChildView `json:"children"`
 	Outputs       map[string]any          `json:"outputs"`
 	Artifacts     []WorkflowArtifact      `json:"artifacts"`
 	Usage         store.WorkItemUsage     `json:"usage"`
@@ -560,7 +620,10 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 	if err != nil {
 		return WorkflowItemDetailView{}, err
 	}
-	usage, err := a.store.QueryWorkItemUsage(itemID)
+	// Tree usage, not this item's own: a run's spend includes the runs it called
+	// (§12), which is the same total the engine's budget check compares against.
+	// An item with no children returns exactly what its own ledger sums to.
+	usage, err := a.store.QueryWorkItemTreeUsage(itemID)
 	if err != nil {
 		return WorkflowItemDetailView{}, err
 	}
@@ -594,6 +657,20 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 			StartedAt: unit.StartedAt, EndedAt: unit.EndedAt,
 		})
 	}
+	children, err := a.store.ListWorkItemSummaries(store.WorkItemListFilter{ParentItemID: itemID})
+	if err != nil {
+		return WorkflowItemDetailView{}, err
+	}
+	childViews := make([]WorkflowItemChildView, 0, len(children))
+	for _, child := range children {
+		childViews = append(childViews, WorkflowItemChildView{
+			ItemID: child.ID, WorkflowID: child.WorkflowID, State: child.State,
+			Reason: child.Reason, ParentPhaseID: child.ParentPhaseID,
+			ParentAttempt: child.ParentAttempt, CallDepth: child.CallDepth,
+			CurrentPhaseID: child.CurrentPhaseID, CurrentPhaseOrdinal: child.CurrentPhaseOrdinal,
+			PhaseCount: child.PhaseCount, StartedAt: child.StartedAt, EndedAt: child.EndedAt,
+		})
+	}
 	return WorkflowItemDetailView{
 		Item: WorkflowItemView{
 			ID: item.ID, ProjectID: item.ProjectID, Goal: item.Goal,
@@ -601,11 +678,13 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 			State: item.State, Reason: item.Reason, Seeds: item.Seeds, StepMode: item.StepMode, WorktreePath: item.WorktreePath,
 			Branch: item.Branch, BaseBranch: item.BaseBranch, Budget: item.Budget,
 			Source: item.Source, SourceRef: item.SourceRef, TriageThreadID: item.TriageThreadID,
-			Disposition: item.Disposition, Digest: item.Digest, CreatedAt: item.CreatedAt,
-			StartedAt: item.StartedAt, EndedAt: item.EndedAt,
+			Disposition: item.Disposition, Digest: item.Digest,
+			ParentItemID: item.ParentItemID, ParentPhaseID: item.ParentPhaseID,
+			ParentAttempt: item.ParentAttempt, CallDepth: item.CallDepth,
+			CreatedAt: item.CreatedAt, StartedAt: item.StartedAt, EndedAt: item.EndedAt,
 		},
 		CheckPhaseIDs: checkPhaseIDs, Phases: phaseViews, Units: unitViews,
-		Outputs: outputs, Artifacts: artifacts, Usage: usage,
+		Children: childViews, Outputs: outputs, Artifacts: artifacts, Usage: usage,
 	}, nil
 }
 
