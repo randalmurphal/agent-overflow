@@ -67,6 +67,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		ReasoningEffort:    claudeEffortFromOption(opts.ReasoningEffort),
 		FastMode:           claudeFastMode(model, opts.FastMode),
 		PermissionFlags:    claudePermissionFlags(opts.RuntimeMode),
+		DisallowedTools:    claudeDisallowedTools(opts.RuntimeMode),
 		BasePermissionMode: claudeBasePermissionMode(opts.RuntimeMode),
 		InteractionMode:    opts.Mode,
 		AutoCompactPercent: autoCompactPercent,
@@ -74,8 +75,15 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 	}
 }
 
+// claudeReadOnlyDisallowedTools is the set of built-in tools removed outright
+// from a read-only session. See claudeDisallowedTools for why this is separate
+// from (and not redundant with) the `dontAsk` permission mode.
+var claudeReadOnlyDisallowedTools = []string{"Write", "Edit", "NotebookEdit"}
+
 // claudePermissionFlags maps a RuntimeMode to the raw CLI flag sequence the
-// Claude SDK would send to headless `claude -p`.
+// Claude SDK would send to headless `claude -p`. These are exactly the flags
+// whose effect `set_permission_mode` can reproduce on a live session; the
+// spawn-only tool removal lives in claudeDisallowedTools.
 func claudePermissionFlags(mode provider.RuntimeMode) []string {
 	permissionMode := claudeBasePermissionMode(mode)
 	if permissionMode == "default" {
@@ -88,12 +96,45 @@ func claudePermissionFlags(mode provider.RuntimeMode) []string {
 	return flags
 }
 
+// claudeDisallowedTools returns the tools to strip from the session via
+// `--disallowedTools`. Only read-only sessions strip anything.
+//
+// This is deliberately NOT folded into claudePermissionFlags. `dontAsk` alone
+// is not enforcement: it converts an "ask" decision into a "deny" at the end
+// of the permission pipeline, so an action that some settings source already
+// *allows* never becomes an ask and is permitted. A `permissions.allow` entry
+// for Write in the user's `~/.claude/settings.json` would therefore let a
+// read-only session write files. `--disallowedTools` removes the tools from
+// the session's toolset entirely, which no allow rule can reinstate.
+//
+// Verified against claude 2.1.219 — see docs/references/claude-wire.md
+// §"Permission modes for read-only sessions" for the spike transcript.
+//
+// The split also carries a lifecycle meaning: tool removal is applied once at
+// spawn and there is no control_request that can add or drop a tool mid-session.
+// Keeping it on its own Config field is what makes any transition into or out
+// of read-only fail the PlanLiveUpdate equality check and demand a restart,
+// rather than half-applying as a bare set_permission_mode.
+func claudeDisallowedTools(mode provider.RuntimeMode) []string {
+	if mode != provider.RuntimeReadOnly {
+		return nil
+	}
+	return append([]string(nil), claudeReadOnlyDisallowedTools...)
+}
+
 // claudeBasePermissionMode maps a RuntimeMode to Claude's permission-mode
 // value. Unlike claudePermissionFlags, it returns "default" for supervised
 // mode so sessions can restore the base mode via set_permission_mode after a
 // plan turn.
 func claudeBasePermissionMode(mode provider.RuntimeMode) string {
 	switch mode {
+	case provider.RuntimeReadOnly:
+		// "dontAsk" denies anything that would otherwise prompt, immediately
+		// and without emitting a CanUseTool control_request. Reads and
+		// non-mutating bash still run; the denial arrives as an is_error
+		// tool_result the model reads and continues from, so an unattended
+		// turn completes instead of stalling. Verified on claude 2.1.219.
+		return "dontAsk"
 	case provider.RuntimeAutoAcceptEdits:
 		return "acceptEdits"
 	case provider.RuntimeFullAccess:

@@ -6,8 +6,11 @@ Pure validators and parsers for the two thread-mode axes:
   `discussion` / `workflow` / `workflow-studio` / `workflow-triage`, which are
   set only by their owning sagas). Controls the UX shell and how
   user input is routed.
-- **Runtime mode** — `approval-required`, `auto-accept-edits`,
-  `full-access`. Controls how the provider session treats tool calls.
+- **Runtime mode** — `read-only`, `approval-required`,
+  `auto-accept-edits`, `full-access`. Controls how the provider session
+  treats tool calls. The legal set is `provider.AllRuntimeModes`, not a
+  local list — `ParseRuntime` derives membership from it so a tier added
+  in `internal/provider` cannot be rejected here.
 
 The package owns the legal value sets, normalisation (trim), and a clear
 error path for unknown values. Everything stateful — persisting, emitting

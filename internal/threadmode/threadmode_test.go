@@ -91,13 +91,14 @@ func TestIsPostCreationMode(t *testing.T) {
 	}
 }
 
+// TestParseRuntime_AllLegal iterates provider.AllRuntimeModes rather than a
+// local list so a mode the provider package considers canonical can never be
+// rejected here — the parser is the wire-facing gate for the same value set.
 func TestParseRuntime_AllLegal(t *testing.T) {
-	legal := []provider.RuntimeMode{
-		provider.RuntimeApprovalRequired,
-		provider.RuntimeAutoAcceptEdits,
-		provider.RuntimeFullAccess,
+	if len(provider.AllRuntimeModes) == 0 {
+		t.Fatal("provider.AllRuntimeModes is empty")
 	}
-	for _, m := range legal {
+	for _, m := range provider.AllRuntimeModes {
 		got, err := ParseRuntime(string(m))
 		if err != nil {
 			t.Fatalf("ParseRuntime(%q): %v", m, err)
@@ -109,7 +110,7 @@ func TestParseRuntime_AllLegal(t *testing.T) {
 }
 
 func TestParseRuntime_RejectsUnknown(t *testing.T) {
-	for _, in := range []string{"", "anything", "  ", "Approval-Required"} {
+	for _, in := range []string{"", "anything", "  ", "Approval-Required", "Read-Only", "readonly"} {
 		if _, err := ParseRuntime(in); err == nil {
 			t.Errorf("ParseRuntime(%q) should fail", in)
 		}
@@ -174,5 +175,22 @@ func TestWorkflowModesAreLegalSagaOwnedAndHidden(t *testing.T) {
 	got[0] = "mutated"
 	if !IsHidden(ModeWorkflow) {
 		t.Fatal("HiddenModes exposed mutable package state")
+	}
+}
+
+// TestParseOptionalRuntime_AcceptsReadOnly covers the restricted tier through
+// the optional path, which is what the settings / new-thread-defaults callers
+// use. Rejecting it there would make the mode unselectable everywhere except
+// the workflow runner.
+func TestParseOptionalRuntime_AcceptsReadOnly(t *testing.T) {
+	got, present, err := ParseOptionalRuntime(string(provider.RuntimeReadOnly))
+	if err != nil {
+		t.Fatalf("ParseOptionalRuntime(read-only): %v", err)
+	}
+	if !present {
+		t.Fatal("present = false for read-only")
+	}
+	if got != provider.RuntimeReadOnly {
+		t.Fatalf("got = %q, want read-only", got)
 	}
 }

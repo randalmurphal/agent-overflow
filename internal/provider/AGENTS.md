@@ -26,6 +26,37 @@ to know which provider produced an event.
   - Cross-thread orchestration or reconnect policy — the session
     registry in `app.go` owns lifecycle decisions.
 
+## RuntimeMode
+
+Four tiers on one axis (`runtime_modes.go`): `read-only`,
+`approval-required`, `auto-accept-edits`, `full-access`. Provider packages own
+the wire mapping; `AllRuntimeModes` is the canonical list and both
+`NormalizeRuntimeMode` and `threadmode.ParseRuntime` derive membership from it,
+so a new tier cannot be legal in one place and coerced away in another.
+
+`read-only` is the unattended tier — the only mode that **denies instead of
+prompting**, so a workflow phase running with no human present is refused
+rather than left waiting. Two rules follow:
+
+- **Never make it a fallback.** `DefaultRuntimeMode` is `full-access`; an
+  unknown or corrupt value must not collapse into a restricted session, and a
+  restricted session must not silently widen. Every per-provider mapping
+  switch enumerates all four modes — a mode reaching a `default:` branch is a
+  bug, not a safe default.
+- **Per-provider mappings are exhaustive by test.** `read-only` is Claude
+  `--permission-mode dontAsk` **plus** `--disallowedTools
+  "Write,Edit,NotebookEdit"` (the mode alone is defeated by any settings-source
+  allow rule — see `docs/references/claude-wire.md` §"Permission modes for
+  read-only sessions"), and Codex sandbox `read-only` + approval policy
+  `never`. Claude's tool removal is spawn-time only, so transitions into or out
+  of `read-only` require a session restart; `PlanLiveUpdate` enforces that by
+  comparing `Config.DisallowedTools`.
+
+`Capabilities.EnforcesRuntimeMode` marks providers whose session config
+actually applies the mode. It is false for `claude-tui` (approvals live inside
+the real TUI), so callers that treat a runtime mode as a guarantee rather than
+a preference must refuse those providers instead of running unenforced.
+
 ## SessionOptions + ThreadView
 
 `SessionOptions` (this package) and `store.ThreadView` (in

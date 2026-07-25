@@ -1,6 +1,7 @@
 import type { ProviderID } from './providers';
 
 export type RuntimeMode =
+  | "read-only"
   | "approval-required"
   | "auto-accept-edits"
   | "full-access";

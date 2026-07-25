@@ -13,12 +13,14 @@ func TestNormalizeRuntimeMode(t *testing.T) {
 		in   string
 		want RuntimeMode
 	}{
+		{"read-only", "read-only", RuntimeReadOnly},
 		{"approval-required", "approval-required", RuntimeApprovalRequired},
 		{"auto-accept-edits", "auto-accept-edits", RuntimeAutoAcceptEdits},
 		{"full-access", "full-access", RuntimeFullAccess},
 		{"empty falls back to default", "", DefaultRuntimeMode},
 		{"unknown falls back to default", "yolo", DefaultRuntimeMode},
 		{"case-sensitive (upper case falls back)", "FULL-ACCESS", DefaultRuntimeMode},
+		{"case-sensitive read-only falls back", "Read-Only", DefaultRuntimeMode},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -35,6 +37,7 @@ func TestNormalizeRuntimeMode(t *testing.T) {
 // forces a coordinated update.
 func TestAllRuntimeModesContainsEveryValue(t *testing.T) {
 	want := map[RuntimeMode]bool{
+		RuntimeReadOnly:         true,
 		RuntimeApprovalRequired: true,
 		RuntimeAutoAcceptEdits:  true,
 		RuntimeFullAccess:       true,
@@ -52,5 +55,36 @@ func TestAllRuntimeModesContainsEveryValue(t *testing.T) {
 		if !want[m] {
 			t.Errorf("AllRuntimeModes has unknown %q — add to both lists", m)
 		}
+	}
+}
+
+// TestIsRuntimeModeTracksAllRuntimeModes proves the membership predicate is
+// derived from the canonical list rather than a parallel switch. A parallel
+// switch is how a new mode ends up legal in one place and coerced to
+// full-access in another.
+func TestIsRuntimeModeTracksAllRuntimeModes(t *testing.T) {
+	for _, mode := range AllRuntimeModes {
+		if !IsRuntimeMode(mode) {
+			t.Errorf("IsRuntimeMode(%q) = false, want true for a canonical mode", mode)
+		}
+	}
+	for _, mode := range []RuntimeMode{"", "yolo", "readonly", "Read-Only"} {
+		if IsRuntimeMode(mode) {
+			t.Errorf("IsRuntimeMode(%q) = true, want false", mode)
+		}
+	}
+}
+
+// TestReadOnlyIsNeverTheFallback guards the property that makes read-only
+// safe to rely on: it must be reachable only by explicit selection. If an
+// unknown value ever normalized to read-only, a corrupt row would silently
+// cripple an interactive thread; if read-only normalized to something else,
+// an unattended phase would silently gain write access.
+func TestReadOnlyIsNeverTheFallback(t *testing.T) {
+	if DefaultRuntimeMode == RuntimeReadOnly {
+		t.Fatal("DefaultRuntimeMode must not be read-only — unknown values would collapse into a restricted session")
+	}
+	if got := NormalizeRuntimeMode(string(RuntimeReadOnly)); got != RuntimeReadOnly {
+		t.Errorf("NormalizeRuntimeMode(read-only) = %q, want read-only", got)
 	}
 }

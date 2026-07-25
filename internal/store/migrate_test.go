@@ -10,6 +10,12 @@ import (
 	"testing"
 	"time"
 
+	// Test-only dependency. The shipped internal/store package stays
+	// provider-free by design (it duplicates the runtime-mode value set
+	// rather than importing it); importing provider here is what proves the
+	// duplicate has not drifted, without putting the edge in the build graph.
+	"agent-overflow/internal/provider"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -2221,4 +2227,167 @@ func TestMigrationV29AddsDispositionAndDigest(t *testing.T) {
 	mustExec(t, db, `UPDATE work_items
 		SET disposition = '{"action":"merged"}', digest = '{"whatHappened":"done","whatItNeeds":"nothing"}'
 		WHERE id = 'item-v29'`)
+}
+
+// TestMigrationV34WidensRuntimeModeCheckOnBothTables is the per-version test
+// for the read-only runtime tier. It asserts all three properties a CHECK
+// widening needs: the new value is accepted afterwards, garbage is still
+// rejected (a widened CHECK must not become a permissive one), and existing
+// rows survive the table rebuild intact.
+//
+// Both tables are covered because both must move together — a thread's
+// runtime mode is written back into chat_model_profiles by
+// rememberChatModelProfile, so widening only threads would relocate the CHECK
+// violation rather than remove it.
+func TestMigrationV34WidensRuntimeModeCheckOnBothTables(t *testing.T) {
+	db := migrateThrough(t, 33)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v34', '/tmp/v34', 'V34', 'blue', 3, 10, 11, 0)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (
+			id, project_id, title, provider, model, workspace_path, worktree_path,
+			branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+			fast_mode, context_window, auto_compact_standard_percent,
+			auto_compact_extended_percent, runtime_mode, last_token_usage, last_read_at,
+			pinned_at, created_at, updated_at, archived, disabled_mcp_servers
+		) VALUES (
+			'thread-v34', 'project-v34', 'Preserve me', 'claude', 'claude-sonnet-5', '/tmp/v34', '/tmp/v34-wt',
+			'feature/v34', 'github:34', 'session-v34', 'fork-v34', 'workflow-triage', 'high',
+			1, 1000000, 55, 70, 'auto-accept-edits', '{"input_tokens":34}', 21,
+			22, 23, 24, 1, '["server-v34"]'
+		)
+	`)
+	mustExec(t, db, `
+		INSERT INTO items (
+			id, thread_id, turn_index, item_index, kind, role, status, summary,
+			parent_id, is_background, completion_of, tool_name, decision, meta,
+			created_at, updated_at
+		) VALUES (
+			'item-v34', 'thread-v34', 1, 2, 'assistant_text', 'assistant', 'completed', 'kept',
+			'', 0, '', '', '', '{}', 25, 26
+		)
+	`)
+	mustExec(t, db, `
+		INSERT INTO chat_model_profiles (
+			provider, model, reasoning_effort, fast_mode, context_window,
+			auto_compact_standard_percent, auto_compact_extended_percent,
+			runtime_mode, updated_at
+		) VALUES ('claude', 'claude-sonnet-5', 'high', 1, 1000000, 60, 75, 'full-access', 27)
+	`)
+
+	// Before the migration the tier is unrepresentable on both tables.
+	if _, err := db.Exec(`UPDATE threads SET runtime_mode = 'read-only' WHERE id = 'thread-v34'`); err == nil {
+		t.Fatal("threads accepted 'read-only' before v34 — the CHECK was already wrong")
+	}
+	if _, err := db.Exec(`UPDATE chat_model_profiles SET runtime_mode = 'read-only'`); err == nil {
+		t.Fatal("chat_model_profiles accepted 'read-only' before v34 — the CHECK was already wrong")
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 34)); err != nil {
+		t.Fatalf("apply migration v34: %v", err)
+	}
+
+	// Carry-over: every column of the pre-existing rows survives the rebuild.
+	var title, model, prRef, mode, tokenUsage, disabledServers, runtimeMode string
+	var fastMode, contextWindow, archived int
+	if err := db.QueryRow(`
+		SELECT title, model, pr_ref, mode, last_token_usage, disabled_mcp_servers,
+		       runtime_mode, fast_mode, context_window, archived
+		FROM threads WHERE id = 'thread-v34'
+	`).Scan(&title, &model, &prRef, &mode, &tokenUsage, &disabledServers,
+		&runtimeMode, &fastMode, &contextWindow, &archived); err != nil {
+		t.Fatalf("read migrated thread: %v", err)
+	}
+	if title != "Preserve me" || model != "claude-sonnet-5" || prRef != "github:34" ||
+		mode != "workflow-triage" || tokenUsage != `{"input_tokens":34}` ||
+		disabledServers != `["server-v34"]` || runtimeMode != "auto-accept-edits" ||
+		fastMode != 1 || contextWindow != 1000000 || archived != 1 {
+		t.Fatalf("migrated thread lost data: title=%q model=%q pr_ref=%q mode=%q usage=%q disabled=%q runtime=%q fast=%d context=%d archived=%d",
+			title, model, prRef, mode, tokenUsage, disabledServers, runtimeMode, fastMode, contextWindow, archived)
+	}
+
+	var itemSummary string
+	if err := db.QueryRow(`SELECT summary FROM items WHERE id = 'item-v34'`).Scan(&itemSummary); err != nil {
+		t.Fatalf("read child item after thread rebuild: %v", err)
+	}
+	if itemSummary != "kept" {
+		t.Fatalf("item summary = %q, want kept", itemSummary)
+	}
+
+	var profileRuntime string
+	var profileFastMode, profileContextWindow, profileUpdatedAt int
+	if err := db.QueryRow(`
+		SELECT runtime_mode, fast_mode, context_window, updated_at
+		FROM chat_model_profiles WHERE provider = 'claude' AND model = 'claude-sonnet-5'
+	`).Scan(&profileRuntime, &profileFastMode, &profileContextWindow, &profileUpdatedAt); err != nil {
+		t.Fatalf("read migrated model profile: %v", err)
+	}
+	if profileRuntime != "full-access" || profileFastMode != 1 ||
+		profileContextWindow != 1000000 || profileUpdatedAt != 27 {
+		t.Fatalf("migrated profile lost data: runtime=%q fast=%d context=%d updated=%d",
+			profileRuntime, profileFastMode, profileContextWindow, profileUpdatedAt)
+	}
+
+	// The new value is now accepted on both tables.
+	mustExec(t, db, `UPDATE threads SET runtime_mode = 'read-only' WHERE id = 'thread-v34'`)
+	mustExec(t, db, `UPDATE chat_model_profiles SET runtime_mode = 'read-only' WHERE provider = 'claude'`)
+
+	// Widening is not loosening: an unknown value is still refused.
+	if _, err := db.Exec(`UPDATE threads SET runtime_mode = 'yolo' WHERE id = 'thread-v34'`); err == nil {
+		t.Fatal("threads accepted an unknown runtime_mode after v34")
+	}
+	if _, err := db.Exec(`UPDATE chat_model_profiles SET runtime_mode = 'yolo' WHERE provider = 'claude'`); err == nil {
+		t.Fatal("chat_model_profiles accepted an unknown runtime_mode after v34")
+	}
+
+	for _, index := range []string{
+		"idx_threads_project", "idx_threads_updated", "idx_threads_parent",
+		"idx_threads_forked_from", "idx_threads_pinned_at", "idx_chat_model_profiles_updated",
+	} {
+		var found string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after v34: %v", index, err)
+		}
+	}
+
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("foreign_key_check reported a violation after v34 rebuild")
+	}
+}
+
+// TestRuntimeModeCheckMatchesProvider ties the SQL CHECK literal to
+// provider.AllRuntimeModes. internal/store cannot import internal/provider
+// (cycle), so the value set is written out by hand in two places; this test is
+// what stops those copies from drifting. A mode added to the provider package
+// without a migration would otherwise fail at INSERT time in production.
+func TestRuntimeModeCheckMatchesProvider(t *testing.T) {
+	s := newTestStore(t)
+	for _, table := range []string{"threads", "chat_model_profiles"} {
+		var schema string
+		if err := s.db.QueryRow(
+			`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, table,
+		).Scan(&schema); err != nil {
+			t.Fatalf("read %s schema: %v", table, err)
+		}
+		if !strings.Contains(schema, runtimeModeCheckV34) {
+			t.Fatalf("%s does not carry the current runtime_mode CHECK\nwant substring: %s\ngot: %s",
+				table, runtimeModeCheckV34, schema)
+		}
+	}
+
+	for _, mode := range provider.AllRuntimeModes {
+		if !strings.Contains(runtimeModeCheckV34, "'"+string(mode)+"'") {
+			t.Errorf("runtime mode %q is canonical in internal/provider but absent from the SQL CHECK — add a migration", mode)
+		}
+		if got := normalizeRuntimeMode(string(mode)); got != string(mode) {
+			t.Errorf("normalizeRuntimeMode(%q) = %q — store's copy of the value set has drifted", mode, got)
+		}
+	}
 }

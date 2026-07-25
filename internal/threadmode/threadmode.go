@@ -144,13 +144,14 @@ func IsPostCreationMode(mode string) bool {
 // an error for unrecognised values; the empty string is rejected
 // (callers that want optional behaviour should use ParseOptionalRuntime).
 func ParseRuntime(mode string) (provider.RuntimeMode, error) {
+	// Membership comes from provider.AllRuntimeModes rather than a local
+	// switch so a new tier cannot be legal in the provider package and
+	// rejected here.
 	normalized := provider.RuntimeMode(strings.TrimSpace(mode))
-	switch normalized {
-	case provider.RuntimeApprovalRequired, provider.RuntimeAutoAcceptEdits, provider.RuntimeFullAccess:
-		return normalized, nil
-	default:
+	if !provider.IsRuntimeMode(normalized) {
 		return "", fmt.Errorf("invalid runtime mode %q", mode)
 	}
+	return normalized, nil
 }
 
 // ParseOptionalRuntime parses an optional runtime-mode value. An empty

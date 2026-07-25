@@ -526,6 +526,19 @@ func (r *workflowAppRunner) validatePriorThread(request engine.RunRequest, threa
 }
 
 func (a *App) createWorkflowThread(request engine.RunRequest, workspace string, project store.Project) (store.Thread, error) {
+	access := request.Phase.EffectiveAccess()
+	if !provider.CapabilitiesForProvider(request.Phase.Provider).EnforcesRuntimeMode {
+		// The phase declares an access level the provider's session config
+		// cannot apply. Refusing here is the point: starting anyway would run
+		// an unattended phase with its `access` declaration silently inert,
+		// which is the exact hole D22 closes. Typed as a wiring error — the
+		// frozen definition and the runtime cannot produce the work it
+		// describes — so the item parks with an actionable reason.
+		return store.Thread{}, fmt.Errorf(
+			"%w: workflow runner: phase %q declares access %q but provider %q does not enforce runtime modes",
+			engine.ErrWiringFailed, request.Phase.ID, access, request.Phase.Provider,
+		)
+	}
 	seed := a.seedChatModelProfile(request.Phase.Provider, request.Phase.Model)
 	now := time.Now().UnixMilli()
 	title := request.Phase.Name
@@ -538,8 +551,9 @@ func (a *App) createWorkflowThread(request engine.RunRequest, workspace string, 
 		Model:         provider.NormalizeModelSlug(request.Phase.Provider, request.Phase.Model),
 		WorkspacePath: workspace, Mode: "workflow",
 		ReasoningEffort: seed.ReasoningEffort, FastMode: seed.FastMode,
-		ContextWindow: seed.ContextWindow, RuntimeMode: string(provider.RuntimeFullAccess),
-		CreatedAt: now, UpdatedAt: now,
+		ContextWindow: seed.ContextWindow,
+		RuntimeMode:   string(workflowPhaseRuntimeMode(access)),
+		CreatedAt:     now, UpdatedAt: now,
 	}
 	if !gitops.SameFilesystemPath(workspace, project.Path) {
 		thread.WorktreePath = workspace
@@ -549,13 +563,31 @@ func (a *App) createWorkflowThread(request engine.RunRequest, workspace string, 
 		}
 		thread.Branch = current.Branch
 	}
+	// sanitizeThreadModelSettings does not touch RuntimeMode (see its doc
+	// comment), so the phase's access mapping set above survives it.
 	thread = a.sanitizeThreadModelSettings(thread)
-	thread.RuntimeMode = string(provider.RuntimeFullAccess)
 	thread.DisabledMcpServers = a.snapshotDisabledMcpServers(thread.Provider, thread.WorkspacePath)
 	if err := a.store.CreateThread(thread); err != nil {
 		return store.Thread{}, fmt.Errorf("workflow runner: create phase thread: %w", err)
 	}
 	return a.store.GetThread(thread.ID)
+}
+
+// workflowPhaseRuntimeMode maps a phase's effective access declaration onto
+// the provider session's runtime mode (decision D22, spec §9). This is the
+// single translation point: the thread row it feeds is the source of truth
+// that ThreadView → SessionOptions derives from, so restarts, resumes, and
+// Answer-continuations all inherit the phase's access without re-deriving it.
+//
+// `write` gets full access rather than a supervised tier because a writing
+// phase already runs inside its own isolated workspace and there is nobody
+// present to answer a prompt; `read-only` gets the restricted mode, which
+// denies mutations outright instead of asking about them.
+func workflowPhaseRuntimeMode(access def.Access) provider.RuntimeMode {
+	if access == def.AccessWrite {
+		return provider.RuntimeFullAccess
+	}
+	return provider.RuntimeReadOnly
 }
 
 func workflowRunKey(key engine.RunKey) string {

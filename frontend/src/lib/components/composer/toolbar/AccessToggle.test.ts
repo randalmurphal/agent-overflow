@@ -138,8 +138,38 @@ describe('<AccessToggle>', () => {
 
     await fireEvent.click(getByTestId('composer-access-toggle'));
 
+    expect(getByText('Deny edits and mutating commands instead of asking.')).toBeTruthy();
     expect(getByText('Ask before commands and file changes.')).toBeTruthy();
     expect(getByText('Auto-approve edits, ask before other actions.')).toBeTruthy();
     expect(getByText('Allow commands and edits without prompts.')).toBeTruthy();
+  });
+
+  // A workflow phase declaring `access: read-only` persists this mode on its
+  // thread row, so any surface that renders a thread must display it rather
+  // than silently falling back to the full-access label — which would show an
+  // unattended, restricted session as unrestricted.
+  it('renders the read-only tier rather than falling back', async () => {
+    const pane = await buildPane('read-only');
+    const { getByTestId } = render(AccessToggle, { props: { pane } });
+
+    const trigger = getByTestId('composer-access-toggle');
+    expect(trigger.getAttribute('data-mode')).toBe('read-only');
+    expect(trigger.textContent).toContain('Read-only');
+    expect(trigger.getAttribute('aria-label')).toBe('Runtime Access Mode: Read-only');
+  });
+
+  it('persists a read-only selection', async () => {
+    const pane = await buildPane('full-access');
+    const updated = makeThread('read-only');
+    const update = setBindingMock('UpdateThreadRuntimeMode', async () => updated);
+    const { getByRole, getByTestId } = render(AccessToggle, { props: { pane } });
+
+    await fireEvent.click(getByTestId('composer-access-toggle'));
+    await fireEvent.click(getByRole('menuitem', { name: /Read-only/ }));
+
+    expect(update).toHaveBeenCalledWith('thread-1', 'read-only');
+    await waitFor(() => {
+      expect(getByTestId('composer-access-toggle').getAttribute('data-mode')).toBe('read-only');
+    });
   });
 });

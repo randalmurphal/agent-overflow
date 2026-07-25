@@ -37,6 +37,16 @@ type Capabilities struct {
 	ModelCatalog              ModelCatalogSource
 	BackgroundTerminalCleaner BackgroundTerminalCleaner
 	ImageIngestion            ImageIngestion
+	// EnforcesRuntimeMode reports whether the provider's session config
+	// actually applies the thread's RuntimeMode. False means the thread row's
+	// runtime mode is inert for this provider — permissions are governed
+	// somewhere we do not drive (claude-tui hands them to the real TUI).
+	//
+	// Callers that treat a runtime mode as a guarantee rather than a
+	// preference — a workflow phase's `access` declaration is the one that
+	// exists today — must refuse to start on a provider where this is false,
+	// instead of running unenforced under a mode nothing reads.
+	EnforcesRuntimeMode bool
 }
 
 func CapabilitiesForProvider(providerName string) Capabilities {
@@ -46,17 +56,20 @@ func CapabilitiesForProvider(providerName string) Capabilities {
 			ModelCatalog:              CodexLiveModelCatalog,
 			BackgroundTerminalCleaner: CodexBackgroundTerminalCleaner,
 			ImageIngestion:            PathImageIngestion,
+			EnforcesRuntimeMode:       true,
 		}
 	case string(ClaudeTUI):
 		// Same static model catalog as headless claude and no background-terminal
 		// cleaner, but ingests images by pasting their on-disk path into the real
-		// TUI composer.
+		// TUI composer. claudetui.ConfigFromOptions keeps only model / workdir /
+		// resume / effort from the shared options — permission flags never reach
+		// the TUI, which owns approvals itself — so RuntimeMode is inert here.
 		return Capabilities{ImageIngestion: PathImageIngestion}
 	case string(Claude):
 		// Headless: base64-inlines image bytes (the zero-value ingestion); named
 		// explicitly so it reads as a known provider rather than a default
 		// fall-through.
-		return Capabilities{}
+		return Capabilities{EnforcesRuntimeMode: true}
 	default:
 		return Capabilities{}
 	}

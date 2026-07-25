@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
 )
 
@@ -86,6 +87,19 @@ func (a *codexAdapter) handleLine(line []byte) {
 
 func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params json.RawMessage) {
 	switch method {
+	case "thread/start":
+		// Codex carries its permission configuration in the thread/start
+		// params rather than argv, so this is the earliest observable point.
+		// Reported before the response so a test that waits on the config
+		// cannot see the session make progress first.
+		a.e.rep.report(control.Report{
+			Kind: control.ReportSessionConfig,
+			SessionConfig: &control.SessionConfig{
+				Sandbox:        readParamString(params, "sandbox"),
+				ApprovalPolicy: readParamString(params, "approvalPolicy"),
+			},
+		})
+		a.respond(id, method, a.e.currentVars())
 	case "thread/resume":
 		// Echo the requested thread id and rebind ${THREAD_ID} to it.
 		if tid := readParamString(params, "threadId"); tid != "" {

@@ -60,6 +60,14 @@ func PlanLiveUpdate(prev, next provider.SessionOptions) (LiveUpdate, bool) {
 	// Blank the live-appliable axes (PermissionFlags travel with
 	// BasePermissionMode) plus lifecycle fields, then require everything
 	// left — the spawn-only config — to be identical.
+	//
+	// DisallowedTools is deliberately NOT blanked: `--disallowedTools`
+	// removes tools from the process's toolset at spawn and no control
+	// request can put them back, so any transition into or out of the
+	// read-only runtime mode falls through to the DeepEqual below and
+	// demands a restart. Blanking it would let a read-only → auto-accept-edits
+	// switch ack a bare set_permission_mode while Write/Edit stayed missing —
+	// a session claiming a mode it cannot honour.
 	prevCfg.Model, nextCfg.Model = "", ""
 	prevCfg.BasePermissionMode, nextCfg.BasePermissionMode = "", ""
 	prevCfg.PermissionFlags, nextCfg.PermissionFlags = nil, nil

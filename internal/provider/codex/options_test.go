@@ -30,11 +30,17 @@ func TestCodexEffortFromOption(t *testing.T) {
 	}
 }
 
-// TestRuntimeModeToCodex enumerates the three runtime tiers and asserts the
+// TestRuntimeModeToCodex enumerates every runtime tier and asserts the
 // (approval, sandbox) pair each produces. Split-then-compose means a future
-// RuntimeMode addition without touching both helpers is caught here.
+// RuntimeMode addition without touching both helpers is caught here — the
+// exhaustiveness guard below turns "forgot a mode" into a failure rather
+// than a silent fall-through to the untrusted/read-only default.
 func TestRuntimeModeToCodex(t *testing.T) {
 	cases := map[provider.RuntimeMode]codexRuntime{
+		// read-only and approval-required share the OS sandbox but differ on
+		// escalation: read-only never prompts (unattended), approval-required
+		// escalates every non-read command to the human who is present.
+		provider.RuntimeReadOnly:         {ApprovalPolicy: "never", Sandbox: "read-only"},
 		provider.RuntimeApprovalRequired: {ApprovalPolicy: "untrusted", Sandbox: "read-only"},
 		provider.RuntimeAutoAcceptEdits:  {ApprovalPolicy: "on-request", Sandbox: "workspace-write"},
 		provider.RuntimeFullAccess:       {ApprovalPolicy: "never", Sandbox: "danger-full-access"},
@@ -77,6 +83,7 @@ func TestConfigFromOptionsRuntimeModesPair(t *testing.T) {
 		{provider.RuntimeFullAccess, "never", "danger-full-access"},
 		{provider.RuntimeAutoAcceptEdits, "on-request", "workspace-write"},
 		{provider.RuntimeApprovalRequired, "untrusted", "read-only"},
+		{provider.RuntimeReadOnly, "never", "read-only"},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.mode), func(t *testing.T) {
@@ -301,5 +308,45 @@ func TestBuildThreadParamsBaseInstructions(t *testing.T) {
 	params := buildThreadParams(Config{SystemPrompt: "hello"})
 	if params["baseInstructions"] != "hello" {
 		t.Errorf("baseInstructions = %v, want hello", params["baseInstructions"])
+	}
+}
+
+// TestRuntimeModeToCodexCoversEveryMode makes the mapping table above
+// exhaustive by construction. Without it, a new RuntimeMode silently takes
+// the default branch (untrusted/read-only) — which for an unattended mode
+// means every command escalates to a human who is not there.
+func TestRuntimeModeToCodexCoversEveryMode(t *testing.T) {
+	covered := map[provider.RuntimeMode]codexRuntime{
+		provider.RuntimeReadOnly:         {ApprovalPolicy: "never", Sandbox: "read-only"},
+		provider.RuntimeApprovalRequired: {ApprovalPolicy: "untrusted", Sandbox: "read-only"},
+		provider.RuntimeAutoAcceptEdits:  {ApprovalPolicy: "on-request", Sandbox: "workspace-write"},
+		provider.RuntimeFullAccess:       {ApprovalPolicy: "never", Sandbox: "danger-full-access"},
+	}
+	for _, mode := range provider.AllRuntimeModes {
+		want, ok := covered[mode]
+		if !ok {
+			t.Fatalf("runtime mode %q has no asserted codex mapping — add one here and in runtimeModeToCodex", mode)
+		}
+		if got := runtimeModeToCodex(mode); got != want {
+			t.Errorf("runtimeModeToCodex(%q) = %+v, want %+v", mode, got, want)
+		}
+	}
+}
+
+// TestReadOnlySandboxIsAcceptedByThreadAndTurnParams proves the sandbox
+// string the read-only mode produces survives both wire paths: the
+// thread/start normalizer and the per-turn override builder. A sandbox value
+// the turn builder rejects would fail every runtime-mode change mid-session.
+func TestReadOnlySandboxIsAcceptedByThreadAndTurnParams(t *testing.T) {
+	sandbox := runtimeModeToCodex(provider.RuntimeReadOnly).Sandbox
+	if got := normalizeThreadSandbox(sandbox); got != sandbox {
+		t.Errorf("normalizeThreadSandbox(%q) = %q — read-only must survive verbatim", sandbox, got)
+	}
+	policy, err := turnSandboxPolicy(sandbox)
+	if err != nil {
+		t.Fatalf("turnSandboxPolicy(%q): %v", sandbox, err)
+	}
+	if policy["type"] != "readOnly" {
+		t.Errorf("turnSandboxPolicy(%q) = %v, want type readOnly", sandbox, policy)
 	}
 }

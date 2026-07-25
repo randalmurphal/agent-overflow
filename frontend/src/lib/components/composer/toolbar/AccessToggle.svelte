@@ -3,6 +3,7 @@
   // defaults; materialized threads persist the selected runtime mode directly.
 
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import Eye from 'lucide-svelte/icons/eye';
   import Lock from 'lucide-svelte/icons/lock';
   import LockOpen from 'lucide-svelte/icons/lock-open';
   import PenLine from 'lucide-svelte/icons/pen-line';
@@ -39,7 +40,15 @@
     icon: IconComponent;
   }
 
+  const DEFAULT_MODE: RuntimeMode = 'full-access';
+
   const TIERS: readonly TierMeta[] = [
+    {
+      mode: 'read-only',
+      label: 'Read-only',
+      description: 'Deny edits and mutating commands instead of asking.',
+      icon: Eye,
+    },
     {
       mode: 'approval-required',
       label: 'Supervised',
@@ -53,18 +62,23 @@
       icon: PenLine,
     },
     {
-      mode: 'full-access',
+      mode: DEFAULT_MODE,
       label: 'Full access',
       description: 'Allow commands and edits without prompts.',
       icon: LockOpen,
     },
   ];
 
+  // Resolved by value, not by index: the tier list is ordered most- to
+  // least-restrictive, so a positional fallback silently changes meaning
+  // whenever a tier is inserted.
+  const DEFAULT_TIER = TIERS.find((t) => t.mode === DEFAULT_MODE) as TierMeta;
+
   let current = $derived<RuntimeMode>(runtimeModeForThread(pane.thread));
-  let currentMeta = $derived(TIERS.find((t) => t.mode === current) ?? TIERS[2]);
+  let currentMeta = $derived(TIERS.find((t) => t.mode === current) ?? DEFAULT_TIER);
 
   function runtimeModeForThread(thread: Thread | null | undefined): RuntimeMode {
-    return (thread?.runtimeMode as RuntimeMode | undefined) ?? 'full-access';
+    return (thread?.runtimeMode as RuntimeMode | undefined) ?? DEFAULT_MODE;
   }
 
   function closeMenu(): void {

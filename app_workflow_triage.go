@@ -153,10 +153,9 @@ func (a *App) newWorkflowTriageThread(threadID string, project store.Project, wo
 		thread.WorktreePath = workspace
 		thread.Branch = branch
 	}
+	// sanitizeThreadModelSettings does not touch RuntimeMode (see its doc
+	// comment), so the fullAccess override set above survives it.
 	thread = a.sanitizeThreadModelSettings(thread)
-	if fullAccess {
-		thread.RuntimeMode = string(provider.RuntimeFullAccess)
-	}
 	thread.DisabledMcpServers = a.snapshotDisabledMcpServers(thread.Provider, thread.WorkspacePath)
 	return thread
 }

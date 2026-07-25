@@ -28,6 +28,7 @@ export type ContextWindow = number;
 export type ThreadMode = "chat" | "plan" | "design" | "discussion";
 
 export type RuntimeMode =
+  | "read-only"
   | "approval-required"
   | "auto-accept-edits"
   | "full-access";

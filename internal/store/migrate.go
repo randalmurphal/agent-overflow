@@ -15,6 +15,36 @@ const createMigrationVersionsTableSQL = `CREATE TABLE IF NOT EXISTS migration_ve
 	applied  INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
 )`
 
+// mustReplaceOnce derives one migration's SQL from an earlier, already-shipped
+// rebuild by substituting exactly one fragment. It panics unless `old` occurs
+// exactly once.
+//
+// strings.Replace(..., 1) silently no-ops when the fragment is absent, which
+// would ship a rebuild migration that recreates the table without the change
+// it exists to make — a schema that looks migrated and isn't. A mismatch here
+// is always a source-edit mistake caught on the first test run, so failing at
+// package init is the loud, early failure.
+func mustReplaceOnce(source, old, replacement string) string {
+	switch n := strings.Count(source, old); n {
+	case 1:
+		return strings.Replace(source, old, replacement, 1)
+	default:
+		panic(fmt.Sprintf("store: migration derivation expected exactly 1 occurrence of %q, found %d", old, n))
+	}
+}
+
+// mustCutFrom returns source from the first occurrence of marker onward,
+// panicking if the marker is absent. Used to slice one table's statement group
+// out of a multi-table rebuild so a later migration can re-derive that table
+// without retyping its columns and indexes.
+func mustCutFrom(source, marker string) string {
+	idx := strings.Index(source, marker)
+	if idx < 0 {
+		panic(fmt.Sprintf("store: migration derivation could not find marker %q", marker))
+	}
+	return source[idx:]
+}
+
 // Migration represents a versioned schema change.
 type Migration struct {
 	Version int
@@ -432,11 +462,10 @@ END;
 // the proven v11 rebuild. Keeping the complete rebuild mechanically derived
 // preserves every column, index, trigger, and FK-safety property of that
 // migration while admitting the persisted chat confirmation card.
-var rebuildItemsWorkflowProposalV31SQL = strings.Replace(
+var rebuildItemsWorkflowProposalV31SQL = mustReplaceOnce(
 	rebuildItemsV11SQL,
 	"        'compaction_reasoning',",
 	"        'compaction_reasoning',\n        'workflow_proposal',",
-	1,
 )
 
 const rebuildDiffReviewCommentsV16SQL = `
@@ -710,11 +739,10 @@ CREATE INDEX idx_threads_updated     ON threads(updated_at DESC);
 // rebuildThreadsWorkflowModesV28SQL preserves the complete v27 rebuild text
 // and changes only the enumerated mode CHECK. Deriving it from the shipped v27
 // SQL makes accidental column/index drift impossible.
-var rebuildThreadsWorkflowModesV28SQL = strings.Replace(
+var rebuildThreadsWorkflowModesV28SQL = mustReplaceOnce(
 	rebuildThreadsWorkflowModeV27SQL,
 	"CHECK(mode IN ('chat','plan','design','discussion','terminal','workflow'))",
 	"CHECK(mode IN ('chat','plan','design','discussion','terminal','workflow','workflow-studio','workflow-triage'))",
-	1,
 )
 
 // rebuildWorkItemsTakeoverTriageV28SQL adds the durable triage-thread link and
@@ -851,6 +879,47 @@ CREATE UNIQUE INDEX idx_work_items_agent_source_ref
   ON work_items(source_ref)
   WHERE source = 'agent' AND source_ref <> '';
 `
+
+// runtimeModeCheckPreV34 is the runtime_mode CHECK shipped on both threads and
+// chat_model_profiles up to v33; runtimeModeCheckV34 is the same constraint
+// widened with the read-only tier. Written out in full (rather than assembled
+// from provider.AllRuntimeModes) because internal/store stays provider-free —
+// TestRuntimeModeCheckMatchesProvider asserts the two agree.
+const (
+	runtimeModeCheckPreV34 = "CHECK(runtime_mode IN ('approval-required','auto-accept-edits','full-access'))"
+	runtimeModeCheckV34    = "CHECK(runtime_mode IN ('read-only','approval-required','auto-accept-edits','full-access'))"
+)
+
+// chatModelProfilesRebuildV19SQL is the chat_model_profiles half of the v19
+// rebuild — the statement group that established that table's current shape.
+// Sliced out of the shipped v19 text rather than retyped so a later rebuild
+// cannot drift from the columns and index the table actually has. v19 rebuilds
+// threads first and chat_model_profiles second, so cutting at the profiles
+// CREATE takes the profiles group and nothing before it.
+var chatModelProfilesRebuildV19SQL = mustCutFrom(
+	rebuildCodexReasoningEffortsV19SQL,
+	"CREATE TABLE chat_model_profiles_new (",
+)
+
+// rebuildRuntimeModeReadOnlyV34SQL widens the runtime_mode CHECK on both
+// tables that carry one so a workflow phase declaring `access: read-only` can
+// persist the restricted runtime mode on its thread row (spec §9, D22).
+//
+// Both tables must move together. A thread's runtime mode is written back into
+// the chat_model_profiles row for its provider/model by rememberChatModelProfile
+// (app_thread_model.go), so widening only threads would make opening a
+// read-only workflow thread fail on the profile write instead of the thread
+// write — a CHECK violation one hop away from the change that caused it.
+//
+// SQLite cannot alter a CHECK in place, so each table is rebuilt. Both halves
+// are derived from the migrations that last established their shapes (threads:
+// v28, chat_model_profiles: v19), which preserves every column, index, and FK
+// property of those proven rebuilds.
+var rebuildRuntimeModeReadOnlyV34SQL = mustReplaceOnce(
+	rebuildThreadsWorkflowModesV28SQL, runtimeModeCheckPreV34, runtimeModeCheckV34,
+) + mustReplaceOnce(
+	chatModelProfilesRebuildV19SQL, runtimeModeCheckPreV34, runtimeModeCheckV34,
+)
 
 // migrations is the ordered list of all schema migrations. Squashed
 // for v0.0.1: the prior 51-migration chain produced this schema; old
@@ -1291,6 +1360,12 @@ CHECK(workflow_concurrency BETWEEN 0 AND 32);`,
 		Version: 33,
 		Name:    "work_items_direct_start",
 		SQL:     rebuildWorkItemsDirectStartV33SQL,
+		Rebuild: true,
+	},
+	{
+		Version: 34,
+		Name:    "runtime_mode_read_only",
+		SQL:     rebuildRuntimeModeReadOnlyV34SQL,
 		Rebuild: true,
 	},
 }

@@ -195,7 +195,12 @@ type Config struct {
 	AllowedTools    []string
 	// PermissionFlags carries the full permission flag sequence. Nil / empty
 	// means "don't pass any permission-related flag".
-	PermissionFlags    []string
+	PermissionFlags []string
+	// DisallowedTools names built-in tools to remove from the session via
+	// `--disallowedTools`. Spawn-time only: no control_request can add or
+	// drop a tool on a live session, so a change here always requires a
+	// restart (PlanLiveUpdate enforces that by comparing this field).
+	DisallowedTools    []string
 	BasePermissionMode string
 	InteractionMode    provider.InteractionMode
 	MaxTurns           int
@@ -393,6 +398,9 @@ func buildArgs(cfg Config) []string {
 	// PermissionFlags is either nil (default CLI prompting) or a complete
 	// permission-related CLI flag sequence for the selected runtime mode.
 	args = append(args, cfg.PermissionFlags...)
+	for _, tool := range cfg.DisallowedTools {
+		args = append(args, "--disallowedTools", tool)
+	}
 	if cfg.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(cfg.MaxTurns))
 	}
@@ -403,9 +411,15 @@ func buildArgs(cfg Config) []string {
 	return args
 }
 
+// normalizeClaudePermissionMode keeps only permission modes the CLI accepts
+// on `--permission-mode` / `set_permission_mode`. Anything else collapses to
+// "default" (supervised prompting), so every mode AO can select must be
+// listed here — omitting one would silently widen a restricted session into
+// the prompting default, which for an unattended run means a hang rather
+// than a refusal.
 func normalizeClaudePermissionMode(mode string) string {
 	switch mode {
-	case "acceptEdits", "bypassPermissions", "plan":
+	case "acceptEdits", "bypassPermissions", "plan", "dontAsk":
 		return mode
 	default:
 		return "default"

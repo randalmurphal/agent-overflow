@@ -86,6 +86,8 @@ type Report struct {
 	// Detail is kind-specific: step action name, wait-gate name,
 	// approval decision, exit code.
 	Detail string `json:"detail,omitempty"`
+	// SessionConfig is set only on ReportSessionConfig reports.
+	SessionConfig *SessionConfig `json:"sessionConfig,omitempty"`
 }
 
 // Report kinds. Tests await these via harness:mock events; renaming any
@@ -101,4 +103,30 @@ const (
 	ReportApprovalDecided = "approval_decided"
 	ReportScenarioDone    = "scenario_done"
 	ReportExiting         = "exiting"
+	// ReportSessionConfig carries the permission/sandbox configuration the
+	// app actually launched this session with. Posted once per mock as soon
+	// as it is observable — for Claude that is argv at boot, for Codex the
+	// thread/start params.
+	ReportSessionConfig = "session_config"
 )
+
+// SessionConfig is the permission/sandbox configuration a mock observed the
+// app request. It exists so a test can assert what the app ASKED the provider
+// for, which is the only part of runtime-mode enforcement AO owns — whether
+// the real CLI then honours it is a provider-behaviour question answered by
+// spikes, not by the harness.
+//
+// The fields are deliberately per-provider rather than a normalized mode: the
+// point of the assertion is to catch a wrong mapping, and a normalized shape
+// would launder exactly the mistake under test.
+type SessionConfig struct {
+	// PermissionMode is Claude's --permission-mode value ("" when the flag
+	// was omitted, which is the supervised default).
+	PermissionMode string `json:"permissionMode,omitempty"`
+	// DisallowedTools lists Claude's --disallowedTools values in argv order.
+	DisallowedTools []string `json:"disallowedTools,omitempty"`
+	// Sandbox is Codex's thread/start `sandbox`.
+	Sandbox string `json:"sandbox,omitempty"`
+	// ApprovalPolicy is Codex's thread/start `approvalPolicy`.
+	ApprovalPolicy string `json:"approvalPolicy,omitempty"`
+}

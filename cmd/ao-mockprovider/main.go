@@ -86,6 +86,16 @@ func main() {
 	e := newEngine(src.sc, src.fixtureRoot, cwd, w, rep, base)
 	installSignalHandler(e)
 
+	// Claude's permission configuration is entirely argv, so it is
+	// observable the moment the process starts. Codex's arrives later on
+	// thread/start and is reported from the adapter.
+	if protocol == scenario.ProviderClaude {
+		rep.report(control.Report{
+			Kind:          control.ReportSessionConfig,
+			SessionConfig: claudeSessionConfig(args),
+		})
+	}
+
 	if src.client != nil {
 		go src.client.Poll(context.Background(), e.handleCommand)
 	}
@@ -134,6 +144,29 @@ func flagValue(args []string, flag string) string {
 		}
 	}
 	return ""
+}
+
+// flagValues returns every argument following each occurrence of flag, in
+// argv order. `--disallowedTools` is repeated once per tool by buildArgs.
+func flagValues(args []string, flag string) []string {
+	var out []string
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			out = append(out, args[i+1])
+		}
+	}
+	return out
+}
+
+// claudeSessionConfig reads the permission configuration out of the argv the
+// app spawned this mock with. This is the harness's view of what AO asked the
+// Claude CLI for — the mapping under test in
+// internal/provider/claude/options.go.
+func claudeSessionConfig(args []string) *control.SessionConfig {
+	return &control.SessionConfig{
+		PermissionMode:  flagValue(args, "--permission-mode"),
+		DisallowedTools: flagValues(args, "--disallowedTools"),
+	}
 }
 
 func randomHex(n int) string {

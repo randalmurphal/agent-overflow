@@ -73,6 +73,21 @@ resource semaphores, and startup recovery.
   outside the owner loop so cancellation and unrelated commands remain live.
 - Cleanup policy is plumbing only until disposition lands: read-only workflows
   have no worktree, and writing workflows retain theirs in every terminal state.
+- A phase's `access` declaration is enforced at the provider session, not only
+  used to derive workspace need. `def.Phase.EffectiveAccess()` is the single
+  predicate behind both: `write` → `provider.RuntimeFullAccess` (full access
+  inside the run's isolated workspace), `read-only` or unset →
+  `provider.RuntimeReadOnly` (mutations denied outright, never prompted). Unset
+  means read-only on both axes, so an unannotated phase can only ever be
+  under-privileged. The mapping is stamped onto the phase thread row at
+  creation (`createWorkflowThread`), which makes it survive restarts, resumes,
+  and `Answer` continuations for free — `SessionOptions` are re-derived from
+  the row every time. A writing phase in the graph means every phase shares the
+  worktree, so workspace is NOT a proxy for access. Tool-driver phases hold no
+  provider session; for them `access` affects workspace derivation only, and
+  nothing pretends otherwise. An agent phase pinned to a provider that cannot
+  apply a runtime mode (`provider.Capabilities.EnforcesRuntimeMode` false) is
+  refused with `ErrWiringFailed` rather than started with an inert declaration.
 
 ## Boundaries
 

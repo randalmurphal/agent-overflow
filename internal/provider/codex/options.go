@@ -47,6 +47,19 @@ func runtimeModeToCodex(mode provider.RuntimeMode) codexRuntime {
 
 func codexApprovalPolicy(mode provider.RuntimeMode) string {
 	switch mode {
+	case provider.RuntimeReadOnly:
+		// AskForApproval::Never — "Never ask the user to approve commands.
+		// Failures are immediately returned to the model, and never escalated
+		// to the user for approval" (codex-rs/protocol/src/protocol.rs). Paired
+		// with the read-only sandbox this is the unattended-restricted config:
+		// a sandbox denial comes straight back as a tool failure the model can
+		// react to, and nothing waits on a human. `Never` also suppresses MCP
+		// auth elicitation outright (codex-rs/core/src/mcp_tool_call.rs), which
+		// is what keeps an unattended phase from parking on a prompt.
+		//
+		// NOT "untrusted": that escalates every non-read command to a human,
+		// which is precisely the stall a read-only workflow phase cannot afford.
+		return "never"
 	case provider.RuntimeAutoAcceptEdits:
 		return "on-request"
 	case provider.RuntimeFullAccess:
@@ -60,6 +73,9 @@ func codexApprovalPolicy(mode provider.RuntimeMode) string {
 
 func codexSandbox(mode provider.RuntimeMode) string {
 	switch mode {
+	case provider.RuntimeReadOnly:
+		// OS-level sandbox: writes are refused by the kernel, not by policy.
+		return "read-only"
 	case provider.RuntimeAutoAcceptEdits:
 		return "workspace-write"
 	case provider.RuntimeFullAccess:

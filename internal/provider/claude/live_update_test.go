@@ -257,3 +257,54 @@ func TestApplyLiveUpdateBypassAllowedWhenSpawnedWithAllowFlag(t *testing.T) {
 		t.Fatalf("captured line = %+v, want set_permission_mode bypassPermissions", captured)
 	}
 }
+
+// TestPlanLiveUpdateReadOnlyTransitionsRequireRestart covers the transitions,
+// not just the states. `--disallowedTools` is applied once at spawn and no
+// control_request can add or drop a tool on a live session, so every move
+// into or out of read-only must fall through to a restart.
+//
+// Without this, a read-only → auto-accept-edits switch would ack a bare
+// set_permission_mode while Write/Edit stayed missing from the process: a
+// session reporting a mode it cannot honour. The reverse (anything →
+// read-only) is worse — the session would report read-only while the write
+// tools were still loaded and only the softer dontAsk denial applied.
+func TestPlanLiveUpdateReadOnlyTransitionsRequireRestart(t *testing.T) {
+	others := []provider.RuntimeMode{
+		provider.RuntimeApprovalRequired,
+		provider.RuntimeAutoAcceptEdits,
+		provider.RuntimeFullAccess,
+	}
+
+	for _, other := range others {
+		t.Run("into read-only from "+string(other), func(t *testing.T) {
+			prev := liveUpdateBaseOptions()
+			prev.RuntimeMode = other
+			next := prev
+			next.RuntimeMode = provider.RuntimeReadOnly
+			if _, ok := PlanLiveUpdate(prev, next); ok {
+				t.Error("PlanLiveUpdate allowed a live switch into read-only; tool removal is spawn-only")
+			}
+		})
+		t.Run("out of read-only to "+string(other), func(t *testing.T) {
+			prev := liveUpdateBaseOptions()
+			prev.RuntimeMode = provider.RuntimeReadOnly
+			next := prev
+			next.RuntimeMode = other
+			if _, ok := PlanLiveUpdate(prev, next); ok {
+				t.Error("PlanLiveUpdate allowed a live switch out of read-only; removed tools cannot be restored")
+			}
+		})
+	}
+
+	t.Run("read-only to read-only needs nothing", func(t *testing.T) {
+		prev := liveUpdateBaseOptions()
+		prev.RuntimeMode = provider.RuntimeReadOnly
+		update, ok := PlanLiveUpdate(prev, prev)
+		if !ok {
+			t.Fatal("PlanLiveUpdate rejected an unchanged read-only session")
+		}
+		if update != (LiveUpdate{}) {
+			t.Errorf("update = %+v, want zero for an unchanged session", update)
+		}
+	})
+}

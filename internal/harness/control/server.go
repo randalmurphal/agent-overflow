@@ -38,6 +38,10 @@ type MockInfo struct {
 	// killed without reporting (SIGKILL) stays Exited=false; liveness
 	// tracking is report-based by design.
 	Exited bool `json:"exited"`
+	// SessionConfig is the permission/sandbox configuration this mock
+	// observed the app launch it with, latched from its ReportSessionConfig.
+	// nil until that report arrives (or for a mock that never posts one).
+	SessionConfig *SessionConfig `json:"sessionConfig,omitempty"`
 }
 
 // Assignment is what the backend's resolver hands a registering mock.
@@ -308,12 +312,25 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad report", http.StatusBadRequest)
 		return
 	}
-	if rep.Kind == ReportExiting {
+	switch {
+	case rep.Kind == ReportExiting:
 		s.mu.Lock()
 		conn.info.Exited = true
 		s.mu.Unlock()
+	case rep.Kind == ReportSessionConfig && rep.SessionConfig != nil:
+		// Latched onto MockInfo as well as fanned out as an event so a test
+		// can read it after the fact (HarnessListMocks) instead of racing the
+		// harness:mock stream — the config is observable before the first
+		// turn, long before a test knows to start listening.
+		s.mu.Lock()
+		observed := *rep.SessionConfig
+		conn.info.SessionConfig = &observed
+		s.mu.Unlock()
 	}
-	s.report(conn.info, rep)
+	s.mu.Lock()
+	info := conn.info
+	s.mu.Unlock()
+	s.report(info, rep)
 	w.WriteHeader(http.StatusNoContent)
 }
 

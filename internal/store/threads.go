@@ -1215,10 +1215,12 @@ func normalizeEffort(effort string) string {
 
 // normalizeRuntimeMode coerces empty or unknown strings to the default
 // runtime mode. Duplicated from provider.NormalizeRuntimeMode so that
-// internal/store stays provider-free (import cycle avoidance).
+// internal/store stays provider-free (import cycle avoidance). The literal
+// value set is asserted against provider.AllRuntimeModes by
+// TestRuntimeModeCheckMatchesProvider so the copy cannot drift.
 func normalizeRuntimeMode(mode string) string {
 	switch mode {
-	case "approval-required", "auto-accept-edits", "full-access":
+	case "read-only", "approval-required", "auto-accept-edits", "full-access":
 		return mode
 	default:
 		return "full-access"

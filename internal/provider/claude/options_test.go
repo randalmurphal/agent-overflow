@@ -413,3 +413,114 @@ func TestBuildArgsAutoCompactClampsAbove90(t *testing.T) {
 		t.Fatalf("unclamped 150 leaked into --settings: %v", args)
 	}
 }
+
+// TestConfigFromOptionsRuntimeModeReadOnly pins the verified read-only
+// launch config. Both halves are load-bearing and neither is sufficient
+// alone:
+//
+//   - `--permission-mode dontAsk` turns every would-be prompt into an
+//     immediate denial, so an unattended turn is refused rather than left
+//     hanging on a CanUseTool control_request nobody answers.
+//   - `--disallowedTools Write,Edit,NotebookEdit` removes the write tools
+//     from the session outright. dontAsk only converts "ask" to "deny", so
+//     an action a settings source already ALLOWS never becomes an ask and
+//     would be permitted — a user's `permissions.allow: ["Write"]` would
+//     otherwise let a read-only session write files.
+//
+// Verified against claude 2.1.219; transcript in
+// docs/references/claude-wire.md §"Permission modes for read-only sessions".
+func TestConfigFromOptionsRuntimeModeReadOnly(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:    "claude",
+		RuntimeMode: provider.RuntimeReadOnly,
+	})
+	wantFlags := []string{"--permission-mode", "dontAsk"}
+	if !slices.Equal(cfg.PermissionFlags, wantFlags) {
+		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, wantFlags)
+	}
+	wantTools := []string{"Write", "Edit", "NotebookEdit"}
+	if !slices.Equal(cfg.DisallowedTools, wantTools) {
+		t.Errorf("DisallowedTools = %v, want %v", cfg.DisallowedTools, wantTools)
+	}
+	if cfg.BasePermissionMode != "dontAsk" {
+		t.Errorf("BasePermissionMode = %q, want dontAsk", cfg.BasePermissionMode)
+	}
+	// The bypass escape hatch must never ride along with a restricted mode.
+	if slices.Contains(cfg.PermissionFlags, "--allow-dangerously-skip-permissions") {
+		t.Error("read-only must not carry --allow-dangerously-skip-permissions")
+	}
+}
+
+// TestOnlyReadOnlyDisallowsTools proves the tool removal is exclusive to the
+// read-only tier. Leaking it into another mode would silently strip Write /
+// Edit from an interactive session.
+func TestOnlyReadOnlyDisallowsTools(t *testing.T) {
+	for _, mode := range provider.AllRuntimeModes {
+		cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", RuntimeMode: mode})
+		if mode == provider.RuntimeReadOnly {
+			if len(cfg.DisallowedTools) == 0 {
+				t.Errorf("mode %q: expected disallowed tools", mode)
+			}
+			continue
+		}
+		if len(cfg.DisallowedTools) != 0 {
+			t.Errorf("mode %q: DisallowedTools = %v, want none", mode, cfg.DisallowedTools)
+		}
+	}
+}
+
+// TestClaudeBasePermissionModeCoversEveryRuntimeMode makes the mapping
+// exhaustive. A mode that falls through to "default" would spawn a
+// supervised, prompting session — for an unattended workflow phase that is a
+// hang, not a refusal.
+func TestClaudeBasePermissionModeCoversEveryRuntimeMode(t *testing.T) {
+	want := map[provider.RuntimeMode]string{
+		provider.RuntimeReadOnly:         "dontAsk",
+		provider.RuntimeApprovalRequired: "default",
+		provider.RuntimeAutoAcceptEdits:  "acceptEdits",
+		provider.RuntimeFullAccess:       "bypassPermissions",
+	}
+	for _, mode := range provider.AllRuntimeModes {
+		expected, ok := want[mode]
+		if !ok {
+			t.Fatalf("runtime mode %q has no asserted permission mode — add one here and in claudeBasePermissionMode", mode)
+		}
+		if got := claudeBasePermissionMode(mode); got != expected {
+			t.Errorf("claudeBasePermissionMode(%q) = %q, want %q", mode, got, expected)
+		}
+	}
+}
+
+// TestBuildArgsRendersDisallowedTools proves the Config field actually
+// reaches argv. A mapping the spawn path drops is enforcement on paper only.
+func TestBuildArgsRendersDisallowedTools(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:    "claude",
+		RuntimeMode: provider.RuntimeReadOnly,
+	})
+	args := buildArgs(cfg)
+	for _, tool := range []string{"Write", "Edit", "NotebookEdit"} {
+		idx := slices.Index(args, tool)
+		if idx <= 0 || args[idx-1] != "--disallowedTools" {
+			t.Errorf("args missing --disallowedTools %s: %v", tool, args)
+		}
+	}
+	modeIdx := slices.Index(args, "dontAsk")
+	if modeIdx <= 0 || args[modeIdx-1] != "--permission-mode" {
+		t.Errorf("args missing --permission-mode dontAsk: %v", args)
+	}
+}
+
+// TestNormalizeClaudePermissionModeAcceptsEverySelectableMode is the guard
+// for the coercion at the session boundary: any mode ConfigFromOptions can
+// emit must survive normalizeClaudePermissionMode unchanged. A mode that
+// collapses to "default" there would make the live session's restored base
+// mode (after a plan turn) quietly wider than the thread's runtime mode.
+func TestNormalizeClaudePermissionModeAcceptsEverySelectableMode(t *testing.T) {
+	for _, mode := range provider.AllRuntimeModes {
+		base := claudeBasePermissionMode(mode)
+		if got := normalizeClaudePermissionMode(base); got != base {
+			t.Errorf("runtime mode %q maps to %q but normalizeClaudePermissionMode returns %q", mode, base, got)
+		}
+	}
+}

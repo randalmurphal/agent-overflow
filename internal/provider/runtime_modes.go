@@ -1,13 +1,35 @@
 package provider
 
-// RuntimeMode is the three-tier approval axis (mirrors t3-code). It controls
-// whether the agent prompts for tool use, auto-approves file edits, or
-// bypasses approvals entirely. Provider packages own the wire-level mapping.
-// Orthogonal to InteractionMode ("plan" / "design" / "discussion"), which
-// shapes *what* the agent does, not how much friction is in the way.
+// RuntimeMode is the approval/permission axis (three tiers mirror t3-code,
+// plus AO's own read-only tier). It controls whether the agent prompts for
+// tool use, auto-approves file edits, bypasses approvals entirely, or is
+// denied every mutating action outright. Provider packages own the
+// wire-level mapping. Orthogonal to InteractionMode ("plan" / "design" /
+// "discussion"), which shapes *what* the agent does, not how much friction
+// is in the way.
+//
+// The modes are ordered from most to least restrictive on the *mutation*
+// dimension, but note that RuntimeReadOnly is not simply "stricter than
+// approval-required": it is the only mode that never produces an interactive
+// request at all, which is what makes it the mode unattended work runs under.
 type RuntimeMode string
 
 const (
+	// RuntimeReadOnly denies every mutating action instead of asking about
+	// it, and never emits an interactive request. Reads and non-mutating
+	// shell commands run normally; writes, edits, and mutating commands are
+	// refused immediately and the refusal is handed straight back to the
+	// model, so the turn keeps moving rather than stalling on a prompt
+	// nobody is present to answer.
+	//
+	// This is the mode unattended work runs under — a workflow phase that
+	// declares `access: read-only` maps here (docs/specs/workflows-system.md
+	// §9, decision D22). It is deliberately NOT reachable by falling back
+	// from an unknown value: a session that was meant to be restricted must
+	// never silently widen, and one that was meant to be permissive must
+	// never silently seize up.
+	RuntimeReadOnly RuntimeMode = "read-only"
+
 	// RuntimeApprovalRequired prompts the user for every tool use.
 	RuntimeApprovalRequired RuntimeMode = "approval-required"
 
@@ -27,6 +49,7 @@ const (
 // pickers, and migration fallbacks all reference it — keep in sync with the
 // const block above.
 var AllRuntimeModes = []RuntimeMode{
+	RuntimeReadOnly,
 	RuntimeApprovalRequired,
 	RuntimeAutoAcceptEdits,
 	RuntimeFullAccess,
@@ -36,15 +59,31 @@ var AllRuntimeModes = []RuntimeMode{
 // settings default. Intentionally frictionless — see RuntimeFullAccess.
 const DefaultRuntimeMode = RuntimeFullAccess
 
+// knownRuntimeModes is derived from AllRuntimeModes so a mode added to the
+// canonical list is recognised by NormalizeRuntimeMode without a second edit.
+// Adding a constant and forgetting the validator would silently coerce that
+// mode to full-access — the exact failure this indirection removes.
+var knownRuntimeModes = func() map[RuntimeMode]struct{} {
+	known := make(map[RuntimeMode]struct{}, len(AllRuntimeModes))
+	for _, mode := range AllRuntimeModes {
+		known[mode] = struct{}{}
+	}
+	return known
+}()
+
+// IsRuntimeMode reports whether mode is one of the canonical values.
+func IsRuntimeMode(mode RuntimeMode) bool {
+	_, ok := knownRuntimeModes[mode]
+	return ok
+}
+
 // NormalizeRuntimeMode returns the input if it's a known mode; otherwise
 // falls back to DefaultRuntimeMode. Callers pass arbitrary strings coming
 // from the wire or an older DB row; this is the chokepoint that keeps
 // unknown values out of the session-config mapping.
 func NormalizeRuntimeMode(mode string) RuntimeMode {
-	switch RuntimeMode(mode) {
-	case RuntimeApprovalRequired, RuntimeAutoAcceptEdits, RuntimeFullAccess:
-		return RuntimeMode(mode)
-	default:
-		return DefaultRuntimeMode
+	if candidate := RuntimeMode(mode); IsRuntimeMode(candidate) {
+		return candidate
 	}
+	return DefaultRuntimeMode
 }

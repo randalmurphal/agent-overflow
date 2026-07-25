@@ -63,6 +63,15 @@ func (a *App) sanitizeChatModelProfile(profile store.ChatModelProfile) store.Cha
 	return profile
 }
 
+// sanitizeThreadModelSettings coerces the thread's *model-derived* settings
+// (model slug, reasoning effort, fast mode, context window) to what the
+// resolved model actually supports.
+//
+// It deliberately does not touch thread.RuntimeMode. Runtime mode is the
+// access/approval axis, not a model capability: it is chosen by the user per
+// thread or by a workflow phase's `access` declaration, and no model catalog
+// entry can legitimately override that choice. Callers therefore do not need
+// to re-stamp RuntimeMode after calling this.
 func (a *App) sanitizeThreadModelSettings(thread store.Thread) store.Thread {
 	profile := a.sanitizeChatModelProfile(store.ChatModelProfile{
 		Provider:        thread.Provider,

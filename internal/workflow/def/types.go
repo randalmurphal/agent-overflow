@@ -200,6 +200,52 @@ type ValidationResult struct {
 
 func (r ValidationResult) Valid() bool { return len(r.Findings) == 0 }
 
+// DefaultAccess is what an omitted `access:` declaration means. Read-only is
+// the safe default in both directions it governs: an unannotated phase neither
+// provisions a worktree nor gets a writable provider session, so forgetting
+// the field can only ever under-privilege a phase, never let an unattended
+// agent loose on the project root.
+const DefaultAccess = AccessReadOnly
+
+// EffectiveAccess resolves the phase's declared access, defaulting to
+// DefaultAccess when unset. Every consumer — workspace derivation and the
+// provider session's runtime mode — goes through this one predicate so the
+// two can never disagree about what a phase is allowed to do.
+func (p Phase) EffectiveAccess() Access { return normalizeAccess(p.Access) }
+
+// EffectiveAccess resolves the unit's declared access, defaulting to
+// DefaultAccess when unset. Fan-out units and joins carry their own access
+// independent of the owning phase.
+func (u Unit) EffectiveAccess() Access { return normalizeAccess(u.Access) }
+
+// normalizeAccess treats any value other than an explicit `write` as
+// read-only. An unrecognised string reaching here is already a validation
+// finding; resolving it to the restrictive side means a typo cannot widen a
+// phase's privileges while the author waits for the error.
+func normalizeAccess(access Access) Access {
+	if access == AccessWrite {
+		return AccessWrite
+	}
+	return DefaultAccess
+}
+
+// Writes reports whether the phase itself, its join, or any of its fan-out
+// units needs write access. This is the per-phase half of DeriveWorkspaceNeed.
+func (p Phase) Writes() bool {
+	if p.EffectiveAccess() == AccessWrite {
+		return true
+	}
+	if p.Join != nil && p.Join.EffectiveAccess() == AccessWrite {
+		return true
+	}
+	for _, unit := range p.FanOut {
+		if unit.EffectiveAccess() == AccessWrite {
+			return true
+		}
+	}
+	return false
+}
+
 // WorkspaceNeed is derived from phase write capabilities, never authored.
 type WorkspaceNeed string
 
@@ -209,15 +255,13 @@ const (
 )
 
 // DeriveWorkspaceNeed returns a worktree iff any phase or fan-out unit writes.
+// It shares Phase.Writes — and therefore EffectiveAccess — with the session
+// runtime-mode mapping, so a workflow can never be given a worktree it is not
+// allowed to write to, or write access to a workspace it never provisioned.
 func DeriveWorkspaceNeed(workflow Workflow) WorkspaceNeed {
 	for _, phase := range workflow.Phases {
-		if phase.Access == AccessWrite || (phase.Join != nil && phase.Join.Access == AccessWrite) {
+		if phase.Writes() {
 			return WorkspaceWorktree
-		}
-		for _, unit := range phase.FanOut {
-			if unit.Access == AccessWrite {
-				return WorkspaceWorktree
-			}
 		}
 	}
 	return WorkspaceProjectRoot

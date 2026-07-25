@@ -1707,6 +1707,108 @@ could clobber a previously-known good reading.
 
 ---
 
+## Permission modes for read-only sessions
+
+Spike-verified on **claude 2.1.219** (2026-07-25). Consumed by
+`internal/provider/claude/options.go`
+(`claudeBasePermissionMode` / `claudeDisallowedTools`) to implement the
+workflow `access: read-only` mapping (spec §9, decision D22).
+
+`--permission-mode` accepts `acceptEdits | auto | bypassPermissions | manual |
+dontAsk | plan` on this release. There is no `--sandbox` flag.
+
+### `dontAsk` denies; it does not auto-approve, and it does not prompt
+
+The name is ambiguous — it could mean "don't ask, just do it". It means the
+opposite. One turn under
+`claude -p --output-format stream-json --input-format stream-json --verbose
+--permission-mode dontAsk`, asked to read a file, write a file, run `ls -1`,
+and run `touch mutated.txt`:
+
+| Action | Result |
+|---|---|
+| `Read readme.txt` | succeeded |
+| `Write written.txt` | denied — `tool_result` with `is_error: true` |
+| `Bash ls -1` | succeeded |
+| `Bash touch mutated.txt` | denied — `tool_result` with `is_error: true` |
+
+Denial text (verbatim prefix):
+
+```
+Permission to use Write has been denied because Claude Code is running in
+don't ask mode.
+```
+
+The properties that matter for unattended work, all observed:
+
+- **No `control_request` was emitted at all.** The denial is synthesised
+  in-process, so nothing waits on a `CanUseTool` response that no human will
+  send.
+- **The turn completed normally** — `result{subtype:"success",
+  is_error:false}`, process exit 0. The model reads the error `tool_result`
+  and keeps going.
+- **The working tree was untouched** — neither file was created,
+  `git status` clean.
+- Bash is judged **per command**, not wholesale: `ls -1` ran, `touch` did not.
+
+Mechanically, `dontAsk` is applied at the very end of the permission pipeline
+as an `ask → deny` rewrite (`hasPermissionsToUseTool`, claude-code source
+`src/utils/permissions/permissions.ts`), which is exactly why the next section
+matters.
+
+### ⚠ `dontAsk` alone is NOT enforcement — an allow rule defeats it
+
+Because the rewrite only converts `ask`, anything a settings source already
+resolves to `allow` never becomes an ask and is permitted. Re-running the same
+turn with `--settings '{"permissions":{"allow":["Write","Edit","Bash(touch:*)"]}}'`:
+**every step succeeded** and the repo was dirtied (`written.txt` and
+`mutated.txt` both created). A user's own
+`~/.claude/settings.json` `permissions.allow` would do the same thing to a
+session AO intended to be read-only.
+
+Adding `--disallowedTools "Write,Edit,NotebookEdit"` to that same pre-allowed
+run removed the write tools from the session entirely — the model reported
+"the Write tool isn't currently loaded" and could not call it — while `Read`
+and `ls -1` still worked. Tool removal is a deny that outranks any allow rule,
+so **both flags are required**; neither is redundant.
+
+**Residual, deliberately not closed here:** a pre-existing allow rule for a
+*mutating Bash command* (e.g. `Bash(touch:*)`) is still honoured under
+`dontAsk`, because Bash stays available and that specific command resolves to
+`allow`. Closing it completely would need either `--setting-sources ""` (which
+also drops the project's `CLAUDE.md` — `isSettingSourceEnabled('projectSettings')`
+gates memory loading) or Claude's `sandbox.filesystem.denyWrite` settings block
+(OS-level, platform-dependent, and silently falls back to unsandboxed unless
+`sandbox.failIfUnavailable` is set). Both are behaviour changes beyond a
+permission mapping. Codex's read-only sandbox has no equivalent gap, so the two
+providers' read-only tiers are not exactly equal in strength.
+
+### Flag form: repeated is accepted
+
+`--help` documents `--disallowedTools <tools...>` as "comma or space-separated".
+The **repeated-flag** form AO emits (`--disallowedTools Write --disallowedTools
+Edit --disallowedTools NotebookEdit`, matching how `--allowedTools` is already
+rendered in `buildArgs`) was verified equivalent: with
+`permissions.allow: ["Write","Edit"]` also in play, all three tools were still
+removed and the working tree stayed clean.
+
+### Spawn-time only
+
+`--disallowedTools` is applied when the process starts and there is no
+`control_request` that adds or removes a tool mid-session. A live
+runtime-mode change into or out of read-only therefore requires a session
+restart, not a `set_permission_mode` — enforced by
+`claude.PlanLiveUpdate` comparing `Config.DisallowedTools`.
+
+### `set_permission_mode` accepts `dontAsk`
+
+`dontAsk` must be listed in `normalizeClaudePermissionMode`
+(`internal/provider/claude/session.go`); values it does not recognise collapse
+to `"default"`, which would silently restore a *prompting* base mode after a
+plan turn — a hang rather than a refusal for an unattended run.
+
+---
+
 ## Resume does not re-emit assistant content (stdout)
 
 Spike-verified on 2.1.170 (2026-06-24), fixture
