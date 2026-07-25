@@ -8,12 +8,10 @@ function bindings(): WorkflowActionBindings {
     cancelItem: vi.fn(async () => undefined),
     createPR: vi.fn(async () => ({ action: 'pr', prRef: '#12' } as never)),
     discardItem: vi.fn(async () => ({ action: 'discarded' } as never)),
-    listItems: vi.fn(async () => [{ id: 'run', projectId: 'p', state: 'queued', sortPosition: 2 } as WorkItem]),
     mergeItem: vi.fn(async () => ({ action: 'merged', base: 'release', mode: 'ff', sha: '1234567890' } as never)),
-    reenqueueFailedItem: vi.fn(async () => undefined),
-    removeQueuedItem: vi.fn(async () => undefined),
     resolveGate: vi.fn(async () => undefined),
     resumeItem: vi.fn(async () => undefined),
+    rerunItem: vi.fn(async () => undefined),
   };
 }
 
@@ -41,13 +39,13 @@ describe('workflow action dispatch', () => {
     expect(deps.resumeItem).toHaveBeenCalledWith('run', '');
   });
 
-  it('re-enqueues failed items through the dedicated lifecycle action and reports their rank', async () => {
+  it('reruns failed items through the dedicated lifecycle action and reports the immediate restart', async () => {
     const deps = bindings();
     const failed = { id: 'run', projectId: 'p' } as WorkItem;
-    const receipt = await dispatchWorkflowAction(failed, { kind: 're-enqueue' }, 2, deps);
-    expect(deps.reenqueueFailedItem).toHaveBeenCalledWith('run');
-    expect(deps.listItems).toHaveBeenCalledWith('p');
-    expect(receipt?.message).toBe('Re-enqueued with the diagnosis as guidance — position 1');
+    const receipt = await dispatchWorkflowAction(failed, { kind: 'rerun' }, 2, deps);
+    expect(deps.rerunItem).toHaveBeenCalledWith('run');
+    expect(receipt?.kind).toBe('restarted');
+    expect(receipt?.message).toBe('Restarted with the diagnosis as guidance');
   });
 
   it('uses the disposition base and human merge mode in merge receipts', async () => {
@@ -62,11 +60,6 @@ describe('workflow action dispatch', () => {
     expect(receipt?.message).toBe('Merged to main — fast-forward abc');
   });
 
-  it('notes that removing an automation run is temporary', async () => {
-    const receipt = await dispatchWorkflowAction({ id: 'run', source: 'automation' } as WorkItem, { kind: 'remove' }, 1, bindings());
-    expect(receipt?.message).toBe('Removed from queue — automation will re-propose it next cycle');
-  });
-
   it('dispatches every remaining action to its exact binding', async () => {
     const cases = [
       { action: { kind: 'answer', answer: 'yes' } as const, binding: 'answerQuestion' as const, args: ['run', 'yes'], receipt: 'answered' },
@@ -74,7 +67,6 @@ describe('workflow action dispatch', () => {
       { action: { kind: 'create-pr' } as const, binding: 'createPR' as const, args: ['run'], receipt: 'pr' },
       { action: { kind: 'discard' } as const, binding: 'discardItem' as const, args: ['run'], receipt: 'discarded' },
       { action: { kind: 'cancel' } as const, binding: 'cancelItem' as const, args: ['run'], receipt: null },
-      { action: { kind: 'remove' } as const, binding: 'removeQueuedItem' as const, args: ['run'], receipt: 'removed' },
     ];
     for (const testCase of cases) {
       const deps = bindings();

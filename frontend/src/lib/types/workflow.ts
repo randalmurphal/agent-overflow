@@ -14,7 +14,7 @@ import type {
 export type WorkflowItemDetail = WorkflowItemDetailView;
 export type WorkItemPhase = WorkflowItemPhaseView;
 
-export type WorkflowRunState = 'queued' | 'running' | 'needs-human' | 'done' | 'failed' | 'cancelled';
+export type WorkflowRunState = 'running' | 'needs-human' | 'done' | 'failed' | 'cancelled';
 export type WorkflowRunReason =
   | 'gate'
   | 'question'
@@ -38,20 +38,13 @@ export interface WorkflowItemStateEvent {
   reason?: WorkflowRunReason;
 }
 
-export interface WorkflowQueueStateEvent {
-  active: boolean;
-  globalConcurrency: number;
-  runningCount?: number;
-  slotCapacity?: number;
-  startsRemaining?: number;
-  projects?: WorkflowProjectQueueState[];
-}
-
-export interface WorkflowProjectQueueState {
-  projectId: string;
+/**
+ * WorkflowEngineStateEvent is the `workflow:engine-state` payload: the live
+ * global pause flag. There is no queue, so this is the whole engine-wide
+ * control surface.
+ */
+export interface WorkflowEngineStateEvent {
   paused: boolean;
-  concurrency: number;
-  runningCount: number;
 }
 
 export interface WorkflowPhaseStateEvent {
@@ -86,7 +79,7 @@ export interface WorkflowDispositionReceipt {
 
 export interface WorkflowResolvedReceipt {
   itemId: string;
-  kind: 'approved' | 'answered' | 'handed-off' | 're-enqueued' | 'merged' | 'pr' | 'discarded' | 'removed';
+  kind: 'approved' | 'answered' | 'handed-off' | 'restarted' | 'merged' | 'pr' | 'discarded';
   message: string;
   costUsd: number;
 }

@@ -18,7 +18,7 @@ func setupWorkflowChatProposalTest(t *testing.T) (*App, store.Project, store.Thr
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	writeWorkflowFixture(t, configRoot)
-	if _, err := app.settings.Update(map[string]any{"workflowQueueActive": false}); err != nil {
+	if _, err := app.settings.Update(map[string]any{"workflowPaused": true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.initWorkflowEngine(configRoot); err != nil {
@@ -52,7 +52,7 @@ func recordWorkflowChatProposal(t *testing.T, app *App, thread store.Thread, pro
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "awaiting user confirmation") || !strings.Contains(result, "Nothing has been enqueued") {
+	if !strings.Contains(result, "awaiting user confirmation") || !strings.Contains(result, "Nothing has started") {
 		t.Fatalf("tool result = %q", result)
 	}
 	items, err := app.store.ListItems(thread.ID)
@@ -110,7 +110,7 @@ func TestWorkflowChatProposalQueueAndDismissPersistResolvedState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workItem.Source != "agent" || workItem.SourceRef != queuedProposal.ID || workItem.State != string(engine.StateQueued) {
+	if workItem.Source != "agent" || workItem.SourceRef != queuedProposal.ID || workItem.State != string(engine.StateRunning) {
 		t.Fatalf("queued work item = %+v", workItem)
 	}
 	resolved, found, err := app.store.GetThreadItem(thread.ID, queuedProposal.ID)
@@ -121,7 +121,7 @@ func TestWorkflowChatProposalQueueAndDismissPersistResolvedState(t *testing.T) {
 	if err := json.Unmarshal([]byte(resolved.Meta), &queuedMeta); err != nil {
 		t.Fatal(err)
 	}
-	if queuedMeta.State != "queued" || queuedMeta.WorkItemID != workItem.ID || queuedMeta.Goal != "Queue me edited" {
+	if queuedMeta.State != "started" || queuedMeta.WorkItemID != workItem.ID || queuedMeta.Goal != "Queue me edited" {
 		t.Fatalf("queued proposal meta = %+v", queuedMeta)
 	}
 	if _, err := app.WorkflowQueueChatProposal(thread.ID, queuedProposal.ID, projectRow.ID, "packet-flow", "shared", "again", json.RawMessage(`{"goal":"again"}`), "", false); err == nil {

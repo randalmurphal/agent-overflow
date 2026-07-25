@@ -1474,6 +1474,83 @@ func TestMigrationV29AddsProjectWorkflowQueueSettings(t *testing.T) {
 	}
 }
 
+// TestMigrationV30RemovesQueueFromWorkItems covers the direct-start rebuild:
+// resident `queued` rows become needs-human(interrupted) with an ended_at, the
+// `queued` state becomes unrepresentable, `sort_position` is gone, every other
+// row survives byte-for-byte, and the rebuilt indexes are the created_at-ordered
+// set the queueless read path uses.
+func TestMigrationV30RemovesQueueFromWorkItems(t *testing.T) {
+	db := migrateThrough(t, 29)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+		 sort_position, seeds, step_mode, worktree_path, branch, base_branch, budget,
+		 source, source_ref, triage_thread_id, disposition, digest,
+		 created_at, started_at, ended_at)
+		VALUES ('queued-v30', 'project-v30', 'never started', 'wf', 'project', '{}',
+		 'queued', '', 4, '{"ticket":"AO-1"}', 1, '', '', '', '{}',
+		 'manual', 'ref-v30', '', '', '', 40, 0, 0)`)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+		 sort_position, seeds, step_mode, worktree_path, branch, base_branch, budget,
+		 source, source_ref, triage_thread_id, disposition, digest,
+		 created_at, started_at, ended_at)
+		VALUES ('parked-v30', 'project-v30', 'keep goal', 'wf', 'shared', '{"id":"wf"}',
+		 'needs-human', 'question', 9, '{}', 0, '/tmp/wt', 'ao-v30', 'main', '{}',
+		 'agent', 'agent-ref-v30', 'triage-v30', '{"action":"merged"}', '{"whatHappened":"x"}',
+		 4, 5, 6)`)
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 30)); err != nil {
+		t.Fatalf("apply migration v30: %v", err)
+	}
+
+	columns, err := tableColumns(db, "work_items")
+	if err != nil {
+		t.Fatalf("work_items columns: %v", err)
+	}
+	if columns["sort_position"] {
+		t.Fatal("work_items.sort_position survived the direct-start rebuild")
+	}
+	var state, reason string
+	var endedAt int64
+	if err := db.QueryRow(`SELECT state, reason, ended_at FROM work_items WHERE id = 'queued-v30'`).
+		Scan(&state, &reason, &endedAt); err != nil {
+		t.Fatalf("read migrated queued row: %v", err)
+	}
+	if state != "needs-human" || reason != "interrupted" || endedAt != 40 {
+		t.Fatalf("migrated queued row = (%q, %q, %d), want (needs-human, interrupted, 40)", state, reason, endedAt)
+	}
+	var preserved int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_items
+		WHERE id = 'parked-v30' AND project_id = 'project-v30' AND goal = 'keep goal'
+		  AND workflow_id = 'wf' AND workflow_scope = 'shared' AND snapshot = '{"id":"wf"}'
+		  AND state = 'needs-human' AND reason = 'question' AND seeds = '{}'
+		  AND step_mode = 0 AND worktree_path = '/tmp/wt' AND branch = 'ao-v30'
+		  AND base_branch = 'main' AND budget = '{}' AND source = 'agent'
+		  AND source_ref = 'agent-ref-v30' AND triage_thread_id = 'triage-v30'
+		  AND disposition = '{"action":"merged"}' AND digest = '{"whatHappened":"x"}'
+		  AND created_at = 4 AND started_at = 5 AND ended_at = 6`).Scan(&preserved); err != nil {
+		t.Fatalf("read preserved work item: %v", err)
+	}
+	if preserved != 1 {
+		t.Fatal("v30 rebuild did not preserve the untouched work item row")
+	}
+	if _, err := db.Exec(`UPDATE work_items SET state = 'queued' WHERE id = 'parked-v30'`); err == nil {
+		t.Fatal("post-v30 work_items accepted the removed queued state")
+	}
+	for _, index := range []string{
+		"idx_work_items_project_state_created", "idx_work_items_project_created",
+		"idx_work_items_state_created", "idx_work_items_triage_thread",
+		"idx_work_items_agent_source_ref",
+	} {
+		readIndexSQL(t, db, index)
+	}
+	if _, err := db.Exec(`INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, source, source_ref, created_at)
+		VALUES ('dup-v30', 'project-v30', 'dup', 'wf', 'shared', 'running', 'agent', 'agent-ref-v30', 7)`); err == nil {
+		t.Fatal("post-v30 rebuild lost the agent source-ref idempotency index")
+	}
+}
+
 // TestV12ChannelMaxTurnsColumn covers the plain ALTER TABLE ADD COLUMN
 // migration that backs the restart-rebuild path
 // (deliberationForChannel): a pre-existing channel row must backfill

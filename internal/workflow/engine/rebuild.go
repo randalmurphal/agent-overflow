@@ -11,8 +11,6 @@ import (
 )
 
 func (e *Engine) rebuild() error {
-	e.queueActive = e.config.Active
-	e.startsRemaining = -1
 	projects, err := e.store.ListProjects()
 	if err != nil {
 		return fmt.Errorf("rebuild workflow engine: list projects: %w", err)
@@ -20,12 +18,9 @@ func (e *Engine) rebuild() error {
 	projectIDs := make(map[string]struct{}, len(projects))
 	for _, project := range projects {
 		projectIDs[project.ID] = struct{}{}
-		if _, exists := e.projectQueues[project.ID]; !exists {
-			e.projectQueues[project.ID] = projectQueueState{}
-		}
 	}
 	activeItems, err := e.store.ListWorkItems(store.WorkItemListFilter{
-		States: []string{string(StateQueued), string(StateRunning), string(StateNeedsHuman)},
+		States: []string{string(StateRunning), string(StateNeedsHuman)},
 	})
 	if err != nil {
 		return fmt.Errorf("rebuild workflow engine: list active items: %w", err)
@@ -39,24 +34,23 @@ func (e *Engine) rebuild() error {
 		}
 		itemsByProject[item.ProjectID] = append(itemsByProject[item.ProjectID], item)
 	}
+	// Human gate decisions that were persisted but not yet executed are
+	// replayed after every item is rebuilt, so their downstream phases see a
+	// fully reconstructed run.
+	var pendingHuman []string
 	for _, project := range projects {
 		items := itemsByProject[project.ID]
 		for _, storedItem := range items {
 			e.observeItemTimestamps(storedItem)
 			if State(storedItem.State) == StateNeedsHuman {
 				if Reason(storedItem.Reason) == ReasonGate && len(storedItem.Snapshot) > 0 {
-					e.pendingHuman = append(e.pendingHuman, storedItem.ID)
+					pendingHuman = append(pendingHuman, storedItem.ID)
 				}
 				continue
 			}
 			item := &runtimeItem{item: storedItem}
 			e.items[storedItem.ID] = item
-			if State(storedItem.State) == StateQueued {
-				e.queued = append(e.queued, item)
-				continue
-			}
 			if err := decodeSnapshot(storedItem.Snapshot, &item.workflow); err != nil {
-				e.acquireSlot(item)
 				parkErr := e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError})
 				rebuildErr := fmt.Errorf("rebuild item %q snapshot: %w", storedItem.ID, err)
 				e.emitError(storedItem.ID, errors.Join(rebuildErr, parkErr))
@@ -74,7 +68,6 @@ func (e *Engine) rebuild() error {
 			} else if len(item.workflow.Phases) > 0 {
 				item.phaseID = item.workflow.Phases[0].ID
 			}
-			e.acquireSlot(item)
 			if !hasCurrent || !terminalEnvelope(current.OutputEnvelope) {
 				item.runnerActive = hasCurrent && current.Status == "running"
 				if err := e.teardown(item, teardownRequest{
@@ -103,16 +96,23 @@ func (e *Engine) rebuild() error {
 		if err := e.store.UpdateWorkItemState(item.ID, string(StateCancelled), string(ReasonInterrupted), endedAt); err != nil {
 			return fmt.Errorf("rebuild workflow engine: cancel orphan item %q: %w", item.ID, err)
 		}
-		e.emitter.Emit("workflow:item-state", StateEvent{
-			ItemID: item.ID, ProjectID: item.ProjectID,
-			From: State(item.State), To: StateCancelled, Reason: ReasonInterrupted,
-		})
+		e.emitItemState(item.ID, item.ProjectID, State(item.State), StateCancelled, ReasonInterrupted)
 		log.Printf("workflow rebuild: cancelled orphan item %s for missing project %s", item.ID, item.ProjectID)
 	}
-	_ = e.resumePendingHuman()
-	e.sortQueued()
-	e.emitQueue()
+	e.recoverPendingHumanDecisions(pendingHuman)
+	e.emitEngineState()
 	return nil
+}
+
+// recoverPendingHumanDecisions replays gate decisions that were recorded
+// before the app died. Each failure is item-scoped and reported; one broken
+// run never blocks the rest of the rebuild.
+func (e *Engine) recoverPendingHumanDecisions(itemIDs []string) {
+	for _, itemID := range itemIDs {
+		if _, err := e.recoverPersistedHumanDecision(itemID); err != nil {
+			e.emitError(itemID, err)
+		}
+	}
 }
 
 func decodeSnapshot(payload json.RawMessage, workflow *def.Workflow) error {

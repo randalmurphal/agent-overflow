@@ -11,6 +11,14 @@ import (
 
 var namePattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
+// capacityNamePattern additionally admits the reserved `provider:<name>` form.
+// The workflow engine acquires an implicit `provider:claude` / `provider:codex`
+// resource for every agent phase, and its capacity is read from this map like
+// any other resource, so the name has to be expressible here. The colon is
+// reserved for that namespace: a bare `[a-z0-9-]+` name can never collide with
+// it, and no other prefix is accepted.
+var capacityNamePattern = regexp.MustCompile(`^(provider:)?[a-z0-9-]+$`)
+
 // Validate returns all independently discoverable profile findings.
 func Validate(profile Profile) ValidationResult {
 	var findings []Finding
@@ -23,7 +31,9 @@ func Validate(profile Profile) ValidationResult {
 	validateArgvMap("check", profile.Checks, &findings)
 	for name, capacity := range profile.Capacities {
 		element := fmt.Sprintf("profile capacity %q", name)
-		validateName("capacity", name, element, &findings)
+		if !capacityNamePattern.MatchString(name) {
+			add("capacity.name", element, "name must match [a-z0-9-]+ or provider:[a-z0-9-]+")
+		}
 		if capacity < 1 {
 			add("capacity.value", element, "capacity must be at least 1")
 		}

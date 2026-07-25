@@ -10,13 +10,12 @@ import (
 )
 
 func humanWorkflow() def.Workflow {
-	output := map[string]def.Variable{"ok": {Schema: def.JSONSchema{Type: "boolean"}}}
 	return def.Workflow{ID: "human", Phases: []def.Phase{
-		{ID: "build", Driver: def.DriverAgent, Outputs: output, Gate: def.Gate{Routes: []def.Route{{To: "review"}}}},
-		{ID: "review", Driver: def.DriverAgent, Outputs: output, Gate: def.Gate{Routes: []def.Route{{Human: &def.HumanRoute{
+		agentPhase("build", nil, []def.Route{{To: "review"}}),
+		agentPhase("review", nil, []def.Route{{Human: &def.HumanRoute{
 			Approve: "done",
 			Reject:  &def.LoopTarget{Loop: "build", Max: 1, Feedback: []string{"review.ok"}},
-		}}}}},
+		}}}),
 	}}
 }
 
@@ -33,9 +32,9 @@ func parkAtHumanGate(t *testing.T, h *testHarness, itemID string) {
 
 func TestHumanGateApprovalRoutesToDone(t *testing.T) {
 	workflow := humanWorkflow()
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"human": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"human": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "human", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	parkAtHumanGate(t, h, item.ID)
@@ -50,9 +49,9 @@ func TestHumanGateApprovalRoutesToDone(t *testing.T) {
 
 func TestHumanGateRejectPersistsFeedbackAndEnforcesBound(t *testing.T) {
 	workflow := humanWorkflow()
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"human": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"human": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "human", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	parkAtHumanGate(t, h, item.ID)
@@ -115,10 +114,10 @@ func TestPersistedGateTraceDecodePreservesLargeInteger(t *testing.T) {
 
 func TestTakeoverDetachesAndCompleteRoutesThroughGate(t *testing.T) {
 	workflow := onePhaseWorkflow("takeover", []string{"writer"}, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"takeover": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"takeover": workflow}, []string{"project"}, nil)
 	h.profiles.setCapacity("project", "writer", 1)
 	item := testItem("item", "project", "takeover", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
@@ -171,10 +170,10 @@ func (f failingInterventionPersistence) UpdateWorkItemPhaseIntervention(string, 
 
 func TestTakeoverInterventionFailureStillParksAndReleases(t *testing.T) {
 	workflow := onePhaseWorkflow("takeover-failure", []string{"writer"}, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"takeover-failure": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"takeover-failure": workflow}, []string{"project"}, nil)
 	h.profiles.setCapacity("project", "writer", 1)
 	item := testItem("item", "project", "takeover-failure", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	wantErr := errors.New("intervention write failed")
@@ -183,8 +182,8 @@ func TestTakeoverInterventionFailureStillParksAndReleases(t *testing.T) {
 		t.Fatalf("takeover error = %v, want %v", err, wantErr)
 	}
 	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonTakenOver)
-	if h.engine.activeSlots != 0 || len(h.engine.holders) != 0 {
-		t.Fatalf("takeover failure retained resources: slots=%d holders=%v", h.engine.activeSlots, h.engine.holders)
+	if len(h.engine.holders) != 0 {
+		t.Fatalf("takeover failure retained resources: holders=%v", h.engine.holders)
 	}
 	phases, err := h.store.ListWorkItemPhases(item.ID)
 	if err != nil {
@@ -197,9 +196,9 @@ func TestTakeoverInterventionFailureStillParksAndReleases(t *testing.T) {
 
 func TestTakeoverFinalizeValidationFailureReparksAndResumeIsFresh(t *testing.T) {
 	workflow := onePhaseWorkflow("takeover", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"takeover": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"takeover": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "takeover", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
@@ -228,9 +227,9 @@ func TestTakeoverFinalizeValidationFailureReparksAndResumeIsFresh(t *testing.T) 
 
 func TestTakeoverOfParkedQuestionLeavesAnswerPathUntouchedUntilTakeover(t *testing.T) {
 	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "question", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {

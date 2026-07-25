@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/store"
@@ -43,7 +42,7 @@ func TestWorkflowJobNotesBoundedAndUnknownRejected(t *testing.T) {
 	}
 }
 
-func TestWorkflowListDefinitionsIncludesValidationAndPredictedPosition(t *testing.T) {
+func TestWorkflowListDefinitionsIncludesValidation(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	app.configDir = configRoot
@@ -54,25 +53,11 @@ func TestWorkflowListDefinitionsIncludesValidationAndPredictedPosition(t *testin
 		t.Fatal(err)
 	}
 	writeWorkflowListingFixtures(t, configRoot, projectRow.Slug)
-	if err := app.store.CreateWorkItem(store.WorkItem{
-		ID: "queued", ProjectID: projectRow.ID, Goal: "queued", WorkflowID: "valid", WorkflowScope: "shared",
-		State: string(engine.StateQueued), Source: "manual", CreatedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	otherProject := testutil.EnsureProject(t, app.store, testutil.InitGitRepo(t))
-	if err := app.store.CreateWorkItem(store.WorkItem{
-		ID: "queued-later", ProjectID: otherProject.ID, Goal: "later", WorkflowID: "valid", WorkflowScope: "shared",
-		State: string(engine.StateQueued), SortPosition: 99, Source: "manual", CreatedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
 	catalog, err := app.WorkflowListDefinitions(projectRow.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if catalog.BaseBranch != "main" || catalog.PredictedQueuePosition != 2 {
+	if catalog.BaseBranch != "main" {
 		t.Fatalf("catalog metadata = %+v", catalog)
 	}
 	listings := catalog.Workflows
@@ -179,11 +164,13 @@ func TestWorkflowItemDetailAndListCostsIncludeUsage(t *testing.T) {
 	}
 }
 
-func TestWorkflowRemoveQueuedItemKeepsCancelledRecord(t *testing.T) {
+func TestWorkflowStartRunResolvesBaseBranchAndCancelKeepsTheRecord(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
 	writeWorkspaceWorkflow(t, configRoot, "done")
-	if _, err := app.settings.Update(map[string]any{"workflowQueueActive": false}); err != nil {
+	// Paused: every run is admitted and persisted, but its first phase is held,
+	// so no provider process starts and the assertions stay deterministic.
+	if _, err := app.settings.Update(map[string]any{"workflowPaused": true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.initWorkflowEngine(configRoot); err != nil {
@@ -193,33 +180,33 @@ func TestWorkflowRemoveQueuedItemKeepsCancelledRecord(t *testing.T) {
 	projectRow := testutil.EnsureProject(t, app.store, testutil.InitGitRepo(t))
 	projectRow = mustReloadProject(t, app.store, projectRow.ID)
 	writeWorkspaceProfile(t, configRoot, projectRow.Slug, "\nbase_branch: main\n")
-	if _, err := app.WorkflowEnqueueItem(projectRow.ID, "missing", "shared", "invalid", json.RawMessage(`{}`), nil, "", false); err == nil {
+	if _, err := app.WorkflowStartRun(projectRow.ID, "missing", "shared", "invalid", json.RawMessage(`{}`), nil, "", false); err == nil {
 		t.Fatal("unknown workflow id did not return synchronously")
 	}
-	if count, err := app.store.CountWorkItemsInStates(string(engine.StateQueued)); err != nil || count != 0 {
+	if count, err := app.store.CountWorkItemsInStates(string(engine.StateRunning)); err != nil || count != 0 {
 		t.Fatalf("unknown workflow persistence count = %d err=%v, want zero", count, err)
 	}
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "remove me", json.RawMessage(`{}`), nil, "", false)
+	item, err := app.WorkflowStartRun(projectRow.ID, "workspace-flow", "shared", "cancel me", json.RawMessage(`{}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.BaseBranch != "main" {
-		t.Fatalf("default enqueue base branch = %q, want main", item.BaseBranch)
+	if item.State != string(engine.StateRunning) || item.BaseBranch != "main" {
+		t.Fatalf("started run = %+v, want running on main", item)
 	}
-	override, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "override base", json.RawMessage(`{}`), nil, "release/v2", false)
+	override, err := app.WorkflowStartRun(projectRow.ID, "workspace-flow", "shared", "override base", json.RawMessage(`{}`), nil, "release/v2", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if override.BaseBranch != "release/v2" {
-		t.Fatalf("override enqueue base branch = %q", override.BaseBranch)
+		t.Fatalf("override start base branch = %q", override.BaseBranch)
 	}
-	if err := app.WorkflowRemoveQueuedItem(override.ID); err != nil {
+	if err := app.WorkflowCancelItem(override.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "invalid base", json.RawMessage(`{}`), nil, "--base", false); err == nil {
+	if _, err := app.WorkflowStartRun(projectRow.ID, "workspace-flow", "shared", "invalid base", json.RawMessage(`{}`), nil, "--base", false); err == nil {
 		t.Fatal("invalid base branch override succeeded")
 	}
-	if err := app.WorkflowRemoveQueuedItem(item.ID); err != nil {
+	if err := app.WorkflowCancelItem(item.ID); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := app.store.GetWorkItem(item.ID)
@@ -227,10 +214,10 @@ func TestWorkflowRemoveQueuedItemKeepsCancelledRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	if stored.State != string(engine.StateCancelled) || stored.WorktreePath != "" {
-		t.Fatalf("removed item = %+v", stored)
+		t.Fatalf("cancelled item = %+v", stored)
 	}
-	if err := app.WorkflowRemoveQueuedItem(item.ID); err == nil {
-		t.Fatal("second removal unexpectedly succeeded")
+	if err := app.WorkflowCancelItem(item.ID); err == nil {
+		t.Fatal("second cancellation unexpectedly succeeded")
 	}
 }
 

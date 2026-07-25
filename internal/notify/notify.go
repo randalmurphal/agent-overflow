@@ -25,7 +25,6 @@ const (
 const (
 	MaxThreadIDBytes   = 256
 	MaxWorkItemIDBytes = 256
-	MaxProjectIDBytes  = 256
 	MaxTitleBytes      = 4 * 1024
 	MaxBodyBytes       = 64 * 1024
 )
@@ -36,7 +35,6 @@ type Target struct {
 	Kind       string `json:"kind"`
 	ThreadID   string `json:"threadId,omitempty"`
 	WorkItemID string `json:"workItemId,omitempty"`
-	ProjectID  string `json:"projectId,omitempty"`
 }
 
 // Send is the backend-to-launcher wire payload. ID is allocated before
@@ -68,7 +66,7 @@ func ValidateTarget(target Target) error {
 		if len(target.ThreadID) > MaxThreadIDBytes {
 			return fmt.Errorf("notification thread target threadId exceeds %d bytes", MaxThreadIDBytes)
 		}
-		if target.WorkItemID != "" || target.ProjectID != "" {
+		if target.WorkItemID != "" {
 			return errors.New("notification thread target must not include workflow identifiers")
 		}
 	case "workflow-item":
@@ -78,21 +76,11 @@ func ValidateTarget(target Target) error {
 		if len(target.WorkItemID) > MaxWorkItemIDBytes {
 			return fmt.Errorf("notification workflow-item target workItemId exceeds %d bytes", MaxWorkItemIDBytes)
 		}
-		if target.ThreadID != "" || target.ProjectID != "" {
+		if target.ThreadID != "" {
 			return errors.New("notification workflow-item target must include only workItemId")
 		}
-	case "workflow-triage-agent":
-		if target.ProjectID == "" {
-			return errors.New("notification workflow-triage-agent target requires projectId")
-		}
-		if len(target.ProjectID) > MaxProjectIDBytes {
-			return fmt.Errorf("notification workflow-triage-agent target projectId exceeds %d bytes", MaxProjectIDBytes)
-		}
-		if target.ThreadID != "" || target.WorkItemID != "" {
-			return errors.New("notification workflow-triage-agent target must include only projectId")
-		}
 	case "none":
-		if target.ThreadID != "" || target.WorkItemID != "" || target.ProjectID != "" {
+		if target.ThreadID != "" || target.WorkItemID != "" {
 			return errors.New("notification none target must not include identifiers")
 		}
 	default:

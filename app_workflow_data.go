@@ -46,9 +46,8 @@ type WorkflowDefinitionListing struct {
 }
 
 type WorkflowDefinitionCatalog struct {
-	BaseBranch             string                      `json:"baseBranch"`
-	PredictedQueuePosition int                         `json:"predictedQueuePosition"`
-	Workflows              []WorkflowDefinitionListing `json:"workflows"`
+	BaseBranch string                      `json:"baseBranch"`
+	Workflows  []WorkflowDefinitionListing `json:"workflows"`
 }
 
 // WorkflowGetJobNotes reads the continuity notes stored on an automation.
@@ -102,10 +101,6 @@ func (a *App) WorkflowListDefinitions(projectID string) (WorkflowDefinitionCatal
 	if err != nil {
 		return WorkflowDefinitionCatalog{}, err
 	}
-	position, err := a.store.PredictWorkItemQueuePosition(projectID, time.Now().UnixMilli())
-	if err != nil {
-		return WorkflowDefinitionCatalog{}, err
-	}
 	listings := make([]WorkflowDefinitionListing, 0, len(resolved))
 	for _, workflow := range resolved {
 		validation := def.Validate(workflow, &bindings)
@@ -147,9 +142,7 @@ func (a *App) WorkflowListDefinitions(projectID string) (WorkflowDefinitionCatal
 		}
 		listings = append(listings, listing)
 	}
-	return WorkflowDefinitionCatalog{
-		BaseBranch: bindings.BaseBranch, PredictedQueuePosition: position, Workflows: listings,
-	}, nil
+	return WorkflowDefinitionCatalog{BaseBranch: bindings.BaseBranch, Workflows: listings}, nil
 }
 
 // WorkflowListItemCosts returns grouped per-run costs for overview rows.
@@ -164,30 +157,16 @@ func (a *App) WorkflowListItemCosts(projectID string) (map[string]float64, error
 	return a.store.QueryWorkItemCosts(projectID)
 }
 
-// WorkflowRemoveQueuedItem keeps the record but prevents a not-yet-started run
-// from being provisioned.
-func (a *App) WorkflowRemoveQueuedItem(itemID string) error {
+// WorkflowRerunItem starts a failed run's last phase again immediately,
+// carrying its latest diagnosis as guidance for the new attempt.
+func (a *App) WorkflowRerunItem(itemID string) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return err
 	}
 	itemID = strings.TrimSpace(itemID)
 	if itemID == "" {
-		return fmt.Errorf("remove queued workflow item: item id is required")
+		return fmt.Errorf("rerun workflow item: item id is required")
 	}
-	return workflowEngine.RemoveQueued(itemID)
-}
-
-// WorkflowReenqueueFailedItem returns a failed run to the queue with its
-// latest diagnosis as feedback for the next attempt.
-func (a *App) WorkflowReenqueueFailedItem(itemID string) error {
-	workflowEngine, err := a.requireWorkflowEngine()
-	if err != nil {
-		return err
-	}
-	itemID = strings.TrimSpace(itemID)
-	if itemID == "" {
-		return fmt.Errorf("re-enqueue failed workflow item: item id is required")
-	}
-	return workflowEngine.ReenqueueFailed(itemID)
+	return workflowEngine.RerunFailed(itemID)
 }

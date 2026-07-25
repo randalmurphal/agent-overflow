@@ -10,14 +10,14 @@ import (
 )
 
 func TestBudgetExceededBeforePhaseAttemptStarts(t *testing.T) {
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{
+	h := newHarness(t, Config{}, map[string]def.Workflow{
 		"flow": onePhaseWorkflow("flow", nil, []def.Route{{To: "done"}}),
 	}, []string{"p"}, nil)
 	h.spend.spends["limited"] = Spend{Tokens: 101, USD: 1.25}
 	item := testItem("limited", "p", "flow", 0)
 	item.Budget = json.RawMessage(`{"tokens":100}`)
 
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonBudgetExhausted)
@@ -40,15 +40,15 @@ func TestBudgetExceededBeforePhaseAttemptStarts(t *testing.T) {
 
 func TestProfileBudgetTripsAtNextPhaseBoundary(t *testing.T) {
 	workflow := def.Workflow{ID: "flow", Phases: []def.Phase{
-		{ID: "first", Driver: def.DriverAgent, Outputs: map[string]def.Variable{"ok": {Schema: def.JSONSchema{Type: "boolean"}}}, Gate: def.Gate{Routes: []def.Route{{To: "second"}}}},
-		{ID: "second", Driver: def.DriverAgent, Gate: def.Gate{Routes: []def.Route{{To: "done"}}}},
+		agentPhase("first", nil, []def.Route{{To: "second"}}),
+		agentPhase("second", nil, []def.Route{{To: "done"}}),
 	}}
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"flow": workflow}, []string{"p"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"flow": workflow}, []string{"p"}, nil)
 	limit := int64(10)
 	h.profiles.profiles["p"].Reliability.PerItemBudget = &profile.Budget{Tokens: &limit}
 	item := testItem("boundary", "p", "flow", 0)
 
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	h.spend.spends[item.ID] = Spend{Tokens: 11}
@@ -64,17 +64,17 @@ func TestProfileBudgetTripsAtNextPhaseBoundary(t *testing.T) {
 
 func TestWallClockBudgetUsesEngineClock(t *testing.T) {
 	workflow := def.Workflow{ID: "flow", Phases: []def.Phase{
-		{ID: "first", Driver: def.DriverAgent, Outputs: map[string]def.Variable{"ok": {Schema: def.JSONSchema{Type: "boolean"}}}, Gate: def.Gate{Routes: []def.Route{{To: "second"}}}},
-		{ID: "second", Driver: def.DriverAgent, Gate: def.Gate{Routes: []def.Route{{To: "done"}}}},
+		agentPhase("first", nil, []def.Route{{To: "second"}}),
+		agentPhase("second", nil, []def.Route{{To: "done"}}),
 	}}
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"flow": workflow}, []string{"p"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"flow": workflow}, []string{"p"}, nil)
 	ceiling := profile.Duration("1s")
 	h.profiles.profiles["p"].Reliability.PerItemBudget = &profile.Budget{WallClock: &ceiling}
 	now := time.UnixMilli(100)
 	h.engine.now = func() time.Time { return now }
 	item := testItem("wall", "p", "flow", 0)
 
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(1500 * time.Millisecond)
@@ -90,11 +90,11 @@ func TestWallClockBudgetUsesEngineClock(t *testing.T) {
 }
 
 func TestNoBudgetDoesNotQuerySpend(t *testing.T) {
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{
+	h := newHarness(t, Config{}, map[string]def.Workflow{
 		"flow": onePhaseWorkflow("flow", nil, []def.Route{{To: "done"}}),
 	}, []string{"p"}, nil)
 	item := testItem("unlimited", "p", "flow", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	if len(h.runner.started()) != 1 || h.spend.callCount() != 0 {
@@ -104,7 +104,7 @@ func TestNoBudgetDoesNotQuerySpend(t *testing.T) {
 
 func TestWallClockBudgetRecheckedAfterResourceWait(t *testing.T) {
 	workflow := onePhaseWorkflow("resource", []string{"stack"}, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 2}, map[string]def.Workflow{
+	h := newHarness(t, Config{}, map[string]def.Workflow{
 		"resource": workflow,
 	}, []string{"p"}, nil)
 	h.profiles.setCapacity("p", "stack", 1)
@@ -113,10 +113,10 @@ func TestWallClockBudgetRecheckedAfterResourceWait(t *testing.T) {
 	now := time.UnixMilli(100)
 	h.engine.now = func() time.Time { return now }
 
-	if err := h.engine.Enqueue(testItem("holder", "p", "resource", 0)); err != nil {
+	if err := h.engine.StartItem(testItem("holder", "p", "resource", 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.Enqueue(testItem("waiter", "p", "resource", 1)); err != nil {
+	if err := h.engine.StartItem(testItem("waiter", "p", "resource", 1)); err != nil {
 		t.Fatal(err)
 	}
 	if starts := h.runner.started(); len(starts) != 1 || starts[0].Key.ItemID != "holder" {

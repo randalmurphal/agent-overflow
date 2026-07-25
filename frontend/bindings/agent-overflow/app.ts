@@ -56,6 +56,9 @@ import * as store$0 from "./internal/store/models.js";
 import * as terminal$0 from "./internal/terminal/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as engine$0 from "./internal/workflow/engine/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as profile$0 from "./internal/workflow/profile/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -2950,12 +2953,6 @@ export function WorkflowDismissChatProposal(threadID: string, proposalID: string
     return $Call.ByID(1877476344, threadID, proposalID);
 }
 
-export function WorkflowEnqueueItem(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, baseBranch: string, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
-    return $Call.ByID(683191625, projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode).then(($result: any) => {
-        return $$createType101($result);
-    });
-}
-
 /**
  * WorkflowFetchPRReviewComments returns the PR's review conversations that
  * have not been explicitly resolved. Conversation comments without a forge
@@ -2963,6 +2960,16 @@ export function WorkflowEnqueueItem(projectID: string, workflowID: string, workf
  */
 export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromise<$models.WorkflowPRReviewComments> {
     return $Call.ByID(819019128, itemID).then(($result: any) => {
+        return $$createType101($result);
+    });
+}
+
+/**
+ * WorkflowGetEngineState reports the live global pause flag. The engine is the
+ * authority; settings are only its restart-surviving copy.
+ */
+export function WorkflowGetEngineState(): $CancellablePromise<engine$0.EngineState> {
+    return $Call.ByID(2130001947).then(($result: any) => {
         return $$createType102($result);
     });
 }
@@ -3001,7 +3008,7 @@ export function WorkflowListItemCosts(projectID: string): $CancellablePromise<{ 
 
 export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3037887964, projectID).then(($result: any) => {
-        return $$createType106($result);
+        return $$createType107($result);
     });
 }
 
@@ -3012,7 +3019,7 @@ export function WorkflowListItems(projectID: string): $CancellablePromise<store$
  */
 export function WorkflowListUnresolvedItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3613211765, projectID).then(($result: any) => {
-        return $$createType106($result);
+        return $$createType107($result);
     });
 }
 
@@ -3066,28 +3073,16 @@ export function WorkflowOpenTriageThread(itemID: string): $CancellablePromise<st
  */
 export function WorkflowQueueChatProposal(threadID: string, proposalID: string, projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, baseBranch: string, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(2517836963, threadID, proposalID, projectID, workflowID, workflowScope, goal, seeds, baseBranch, stepMode).then(($result: any) => {
-        return $$createType101($result);
+        return $$createType106($result);
     });
 }
 
 /**
- * WorkflowReenqueueFailedItem returns a failed run to the queue with its
- * latest diagnosis as feedback for the next attempt.
+ * WorkflowRerunItem starts a failed run's last phase again immediately,
+ * carrying its latest diagnosis as guidance for the new attempt.
  */
-export function WorkflowReenqueueFailedItem(itemID: string): $CancellablePromise<void> {
-    return $Call.ByID(4280612743, itemID);
-}
-
-/**
- * WorkflowRemoveQueuedItem keeps the record but prevents a not-yet-started run
- * from being provisioned.
- */
-export function WorkflowRemoveQueuedItem(itemID: string): $CancellablePromise<void> {
-    return $Call.ByID(2004111234, itemID);
-}
-
-export function WorkflowReorderQueue(projectID: string, orderedIDs: string[]): $CancellablePromise<void> {
-    return $Call.ByID(1214686266, projectID, orderedIDs);
+export function WorkflowRerunItem(itemID: string): $CancellablePromise<void> {
+    return $Call.ByID(1986594501, itemID);
 }
 
 export function WorkflowResolveGate(itemID: string, decision: string, note: string): $CancellablePromise<void> {
@@ -3110,23 +3105,31 @@ export function WorkflowSendPRReviewCommentsToThread(itemID: string): $Cancellab
 }
 
 /**
+ * WorkflowSetGlobalPause toggles the one engine-level kill switch: no new
+ * phase starts anywhere while paused, in-flight turns finish. It is persisted
+ * before it is applied, so a restart recovers the requested state even if
+ * shutdown races the live update.
+ */
+export function WorkflowSetGlobalPause(paused: boolean): $CancellablePromise<void> {
+    return $Call.ByID(774492663, paused);
+}
+
+/**
  * WorkflowSetJobNotes replaces one automation's bounded continuity notes.
  */
 export function WorkflowSetJobNotes(automationID: string, notes: string): $CancellablePromise<void> {
     return $Call.ByID(1934298592, automationID, notes);
 }
 
-export function WorkflowSetQueue(active: boolean, maxStarts: number, concurrency: number): $CancellablePromise<void> {
-    return $Call.ByID(3526159695, active, maxStarts, concurrency);
-}
-
 /**
- * WorkflowUpdateProjectQueue persists one project's queue controls before
- * applying them to the live scheduler. A restart therefore recovers the
- * requested state even if shutdown races the in-memory update.
+ * WorkflowStartRun is the one start path every producer calls. The run begins
+ * immediately; contention shows up as its first phase waiting on resource
+ * capacity, never as a queued item.
  */
-export function WorkflowUpdateProjectQueue(projectID: string, paused: boolean | null, concurrency: number | null): $CancellablePromise<void> {
-    return $Call.ByID(778072333, projectID, paused, concurrency);
+export function WorkflowStartRun(projectID: string, workflowID: string, workflowScope: string, goal: string, seeds: json$0.RawMessage, budget: profile$0.Budget | null, baseBranch: string, stepMode: boolean): $CancellablePromise<store$0.WorkItem> {
+    return $Call.ByID(1009082601, projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode).then(($result: any) => {
+        return $$createType106($result);
+    });
 }
 
 /**
@@ -3249,9 +3252,10 @@ const $$createType97 = $models.SubmitPRReviewResult.createFrom;
 const $$createType98 = $models.PRUpdateSubscriptionResult.createFrom;
 const $$createType99 = $models.MCPAuthInitResult.createFrom;
 const $$createType100 = $models.WorkflowDispositionReceipt.createFrom;
-const $$createType101 = store$0.WorkItem.createFrom;
-const $$createType102 = $models.WorkflowPRReviewComments.createFrom;
+const $$createType101 = $models.WorkflowPRReviewComments.createFrom;
+const $$createType102 = engine$0.EngineState.createFrom;
 const $$createType103 = $models.WorkflowItemDetailView.createFrom;
 const $$createType104 = $models.WorkflowDefinitionCatalog.createFrom;
 const $$createType105 = $Create.Map($Create.Any, $Create.Any);
-const $$createType106 = $Create.Array($$createType101);
+const $$createType106 = store$0.WorkItem.createFrom;
+const $$createType107 = $Create.Array($$createType106);

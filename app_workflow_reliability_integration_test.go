@@ -37,7 +37,7 @@ func TestWorkflowReliabilityStallTripsWatchdog(t *testing.T) {
 	writeReliabilityProfile(t, configRoot, projectRow.Slug, "watchdog: 1h\n  backoff: [5ms]\n")
 	startWorkflowEngineForTest(t, app, configRoot)
 
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "reliability-flow", "shared", "stall", json.RawMessage(`{}`), nil, "", false)
+	item, err := app.WorkflowStartRun(projectRow.ID, "reliability-flow", "shared", "stall", json.RawMessage(`{}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestWorkflowReliabilityTransientDeathRetriesThenExhausts(t *testing.T) {
 	writeReliabilityProfile(t, configRoot, projectRow.Slug, "watchdog: 1h\n  backoff: [50ms, 50ms]\n")
 	startWorkflowEngineForTest(t, app, configRoot)
 
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "reliability-flow", "shared", "retry deaths", json.RawMessage(`{}`), nil, "", false)
+	item, err := app.WorkflowStartRun(projectRow.ID, "reliability-flow", "shared", "retry deaths", json.RawMessage(`{}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestWorkflowReliabilityAttributedTokenBudgetTripsAtBoundary(t *testing.T) {
 	startWorkflowEngineForTest(t, app, configRoot)
 
 	tokenLimit := int64(10)
-	item, err := app.WorkflowEnqueueItem(
+	item, err := app.WorkflowStartRun(
 		projectRow.ID, "reliability-flow", "shared", "budget", json.RawMessage(`{}`),
 		&profile.Budget{Tokens: &tokenLimit}, "", false,
 	)

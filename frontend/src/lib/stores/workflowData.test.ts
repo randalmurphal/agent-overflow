@@ -11,18 +11,17 @@ import {
   workflowSweepItems,
   workflowSidebarRuns,
   workflowAge,
-  workflowQueuedRank,
 } from './workflowData';
 
 function item(id: string, state: string, endedAt: number, disposition = ''): WorkItem {
-  return { id, state, endedAt, disposition, createdAt: endedAt, sortPosition: endedAt } as WorkItem;
+  return { id, state, endedAt, disposition, createdAt: endedAt } as WorkItem;
 }
 
 describe('workflow data reducers', () => {
   it('merges all-project fan-out results and costs', () => {
     const catalog = { workflows: [{ id: 'wf' }] } as WorkflowDefinitionCatalog;
     const merged = mergeWorkflowProjectLoads([
-      { projectId: 'p1', items: [item('b', 'queued', 2)], costs: { b: 2 }, catalog },
+      { projectId: 'p1', items: [item('b', 'needs-human', 2)], costs: { b: 2 }, catalog },
       { projectId: 'p2', items: [item('a', 'running', 1)], costs: { a: 1 }, catalog },
     ]);
     expect(merged.items.map((entry) => entry.id)).toEqual(['a', 'b']);
@@ -31,7 +30,7 @@ describe('workflow data reducers', () => {
   });
 
   it('patches item state from events without mutating other rows', () => {
-    const rows = [item('a', 'running', 1), item('b', 'queued', 2)];
+    const rows = [item('a', 'running', 1), item('b', 'running', 2)];
     const patched = patchWorkflowItems(rows, {
       itemId: 'a', projectId: 'p', from: 'running', to: 'needs-human', reason: 'gate',
     });
@@ -69,7 +68,7 @@ describe('workflow data reducers', () => {
   it('loads all items once and fetches definitions for every known project', async () => {
     const listItems = async () => [
       { ...item('a', 'running', 1), projectId: 'p1' },
-      { ...item('b', 'queued', 2), projectId: 'p2' },
+      { ...item('b', 'needs-human', 2), projectId: 'p2' },
       { ...item('resolved', 'done', 3, '{"action":"merged","policy":"manual","at":1}'), projectId: 'p3' },
       { ...item('cancelled', 'cancelled', 4), projectId: 'p4' },
     ];
@@ -88,32 +87,22 @@ describe('workflow data reducers', () => {
 
   it('keeps only live and awaiting-disposition sidebar runs in signal order', () => {
     const rows = [
-      { ...item('queued', 'queued', 4), projectId: 'p' },
+      { ...item('newer-running', 'running', 4), projectId: 'p' },
       { ...item('failed', 'failed', 2), projectId: 'p' },
       { ...item('new-attention', 'needs-human', 3), projectId: 'p' },
       { ...item('old-attention', 'needs-human', 1), projectId: 'p' },
-      { ...item('running', 'running', 5), projectId: 'p' },
+      { ...item('running', 'running', 0), projectId: 'p' },
       { ...item('done', 'done', 6), projectId: 'p' },
       { ...item('resolved', 'done', 7, '{"action":"merged","policy":"manual","at":1}'), projectId: 'p' },
       { ...item('resolved-failure', 'failed', 8, '{"action":"discarded","policy":"manual","at":1}'), projectId: 'p' },
       { ...item('cancelled', 'cancelled', 9), projectId: 'p' },
     ];
     expect(workflowSidebarRuns(rows, 'p').map((entry) => entry.id)).toEqual([
-      'old-attention', 'new-attention', 'failed', 'running', 'queued', 'done',
+      'old-attention', 'new-attention', 'failed', 'running', 'newer-running', 'done',
     ]);
     expect(isWorkflowSidebarRun(rows[6])).toBe(false);
     expect(isWorkflowSidebarRun(rows[7])).toBe(false);
     expect(isWorkflowSidebarRun(rows[8])).toBe(false);
-  });
-
-  it('derives queued rank from project membership instead of sparse sort positions', () => {
-    const rows = [
-      { ...item('first', 'queued', 1), projectId: 'p', sortPosition: 10 },
-      { ...item('other', 'queued', 2), projectId: 'other', sortPosition: 0 },
-      { ...item('second', 'queued', 3), projectId: 'p', sortPosition: 40 },
-    ];
-    expect(workflowQueuedRank(rows, rows[0])).toBe(1);
-    expect(workflowQueuedRank(rows, rows[2])).toBe(2);
   });
 
   it('renders bare workflow ages that compose with and without "ago"', () => {

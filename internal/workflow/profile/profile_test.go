@@ -76,6 +76,25 @@ func TestParseAppliesDefaultBackoffWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestCapacityNameProviderNamespace pins the one place a profile name may carry
+// a colon: the engine's implicit `provider:<name>` resource, whose capacity is
+// declared here like any other resource. Every other colon-bearing name stays
+// invalid so the namespace cannot be squatted.
+func TestCapacityNameProviderNamespace(t *testing.T) {
+	for _, name := range []string{"provider:claude", "provider:codex", "live-stack"} {
+		result := Validate(Profile{Disposition: DispositionManual, Capacities: map[string]int{name: 1}})
+		if !result.Valid() {
+			t.Errorf("capacity %q findings = %+v, want none", name, result.Findings)
+		}
+	}
+	for _, name := range []string{"provider:", "provider:Claude", "prov:claude", "provider:claude:extra", "live:stack", ":claude"} {
+		result := Validate(Profile{Disposition: DispositionManual, Capacities: map[string]int{name: 1}})
+		if len(result.Findings) != 1 || result.Findings[0].Code != "capacity.name" {
+			t.Errorf("capacity %q findings = %+v, want one capacity.name finding", name, result.Findings)
+		}
+	}
+}
+
 func TestValidationFindingsGolden(t *testing.T) {
 	profile := Profile{
 		BaseBranch:  "   ",

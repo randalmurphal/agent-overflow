@@ -42,7 +42,7 @@ worktree_setup:
 	}
 	startWorkflowEngineForTest(t, app, configRoot)
 
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "write", json.RawMessage(`{}`), nil, "", false)
+	item, err := app.WorkflowStartRun(projectRow.ID, "workspace-flow", "shared", "write", json.RawMessage(`{}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,18 +110,15 @@ func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 				t.Fatal(err)
 			}
 			startWorkflowEngineForTest(t, app, configRoot)
-			if err := app.WorkflowSetQueue(true, 0, 0); err == nil {
-				t.Fatal("invalid queue concurrency did not return synchronously")
-			}
-			if err := app.WorkflowSetQueue(false, 0, 1); err != nil {
+			if err := app.WorkflowSetGlobalPause(true); err != nil {
 				t.Fatal(err)
 			}
-			item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", test.name, json.RawMessage(`{}`), nil, "", false)
+			item, err := app.WorkflowStartRun(projectRow.ID, "workspace-flow", "shared", test.name, json.RawMessage(`{}`), nil, "", false)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := app.WorkflowSetQueue(true, 0, 1); err != nil {
-				t.Fatalf("fire-and-forget queue start returned provisioning failure inline: %v", err)
+			if err := app.WorkflowSetGlobalPause(false); err != nil {
+				t.Fatalf("fire-and-forget unpause returned provisioning failure inline: %v", err)
 			}
 			item = waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonSetupFailed)
 			assertWorkflowSetupFailureEvents(t, bus, item.ID)
@@ -193,7 +190,7 @@ func TestWorkflowResumeWithMissingWorktreeParksSetupFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	startWorkflowEngineForTest(t, app, configRoot)
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "missing", json.RawMessage(`{}`), nil, "", false)
+	item, err := app.WorkflowStartRun(projectRow.ID, "workspace-flow", "shared", "missing", json.RawMessage(`{}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,10 +218,10 @@ func TestWorkflowRecoversInterruptedProvisioningWithoutSecondWorktree(t *testing
 		t.Fatal(err)
 	}
 	startWorkflowEngineForTest(t, app, configRoot)
-	if err := app.WorkflowSetQueue(false, 0, 1); err != nil {
+	if err := app.WorkflowSetGlobalPause(true); err != nil {
 		t.Fatal(err)
 	}
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "recover provision", json.RawMessage(`{}`), nil, "", false)
+	item, err := app.WorkflowStartRun(projectRow.ID, "workspace-flow", "shared", "recover provision", json.RawMessage(`{}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +234,7 @@ func TestWorkflowRecoversInterruptedProvisioningWithoutSecondWorktree(t *testing
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, interruptedPath, true) })
-	if err := app.WorkflowSetQueue(true, 0, 1); err != nil {
+	if err := app.WorkflowSetGlobalPause(false); err != nil {
 		t.Fatal(err)
 	}
 	item = waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
@@ -276,7 +273,7 @@ func TestWorkflowStepModeBindingParksThenApprovesToDone(t *testing.T) {
 		t.Fatal(err)
 	}
 	startWorkflowEngineForTest(t, app, configRoot)
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "reliability-flow", "shared", "step", json.RawMessage(`{}`), nil, "", true)
+	item, err := app.WorkflowStartRun(projectRow.ID, "reliability-flow", "shared", "step", json.RawMessage(`{}`), nil, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +299,7 @@ func TestWorkflowArtifactFailureDoesNotChangePhaseOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	startWorkflowEngineForTest(t, app, configRoot)
-	item, err := app.WorkflowEnqueueItem(projectRow.ID, "workspace-flow", "shared", "artifact failure", json.RawMessage(`{}`), nil, "", false)
+	item, err := app.WorkflowStartRun(projectRow.ID, "workspace-flow", "shared", "artifact failure", json.RawMessage(`{}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

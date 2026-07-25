@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
@@ -25,21 +24,14 @@ type runtimeItem struct {
 	runnerStartCancel context.CancelFunc
 	waiting           bool
 	acquired          []string
-	slot              bool
 	feedback          *Feedback
 	priorThreadID     string
 	takeoverFinalize  bool
-	reenqueued        bool
 }
 
 type resourceKey struct {
 	projectID string
 	name      string
-}
-
-type projectQueueState struct {
-	paused      bool
-	concurrency int
 }
 
 // Engine owns all mutable scheduler and FSM state on its command goroutine.
@@ -50,7 +42,6 @@ type Engine struct {
 	definitions DefinitionSource
 	profiles    ProfileSource
 	spend       SpendSource
-	config      Config
 	now         func() time.Time
 
 	commands chan any
@@ -60,52 +51,28 @@ type Engine struct {
 	closing  bool
 	used     bool
 
-	ctx              context.Context
-	items            map[string]*runtimeItem
-	queued           []*runtimeItem
-	waiting          []*runtimeItem
-	waitingByID      map[string]struct{}
-	pendingHuman     []string
-	holders          map[resourceKey]int
-	activeSlots      int
-	projectQueues    map[string]projectQueueState
-	runningByProject map[string]int
-	queueActive      bool
-	startsRemaining  int
-	lastTimestamp    int64
-	commandStarts    []*runnerStartFuture
-	inflightStarts   map[*runnerStartFuture]struct{}
+	ctx            context.Context
+	items          map[string]*runtimeItem
+	waiting        []*runtimeItem
+	waitingByID    map[string]struct{}
+	holders        map[resourceKey]int
+	paused         bool
+	lastTimestamp  int64
+	commandStarts  []*runnerStartFuture
+	inflightStarts map[*runnerStartFuture]struct{}
 }
 
 func New(store persistence, runner Runner, emitter Emitter, definitions DefinitionSource, profiles ProfileSource, spend SpendSource, config Config) (*Engine, error) {
 	if store == nil || runner == nil || emitter == nil || definitions == nil || profiles == nil || spend == nil {
 		return nil, fmt.Errorf("workflow engine: store, runner, emitter, definition source, profile source, and spend source are required")
 	}
-	if config.GlobalConcurrency < 1 || config.GlobalConcurrency > MaxGlobalConcurrency {
-		return nil, fmt.Errorf("workflow engine: global concurrency must be between 1 and %d", MaxGlobalConcurrency)
-	}
-	projectQueues := make(map[string]projectQueueState, len(config.ProjectQueues))
-	for _, project := range config.ProjectQueues {
-		if project.ProjectID == "" {
-			return nil, fmt.Errorf("workflow engine: project queue id is required")
-		}
-		if project.Concurrency < 0 || project.Concurrency > MaxProjectConcurrency {
-			return nil, fmt.Errorf("workflow engine: project %q concurrency must be between 0 and %d", project.ProjectID, MaxProjectConcurrency)
-		}
-		if _, exists := projectQueues[project.ProjectID]; exists {
-			return nil, fmt.Errorf("workflow engine: duplicate project queue %q", project.ProjectID)
-		}
-		projectQueues[project.ProjectID] = projectQueueState{paused: project.Paused, concurrency: project.Concurrency}
-	}
 	return &Engine{
 		store: store, runner: runner, emitter: emitter, definitions: definitions,
-		profiles: profiles, spend: spend, config: config, now: time.Now,
+		profiles: profiles, spend: spend, paused: config.Paused, now: time.Now,
 		commands: make(chan any, commandBuffer), done: make(chan struct{}),
 		items: make(map[string]*runtimeItem), holders: make(map[resourceKey]int),
-		projectQueues: projectQueues, runningByProject: make(map[string]int),
-		waitingByID:     make(map[string]struct{}),
-		inflightStarts:  make(map[*runnerStartFuture]struct{}),
-		startsRemaining: -1,
+		waitingByID:    make(map[string]struct{}),
+		inflightStarts: make(map[*runnerStartFuture]struct{}),
 	}, nil
 }
 
@@ -164,15 +131,42 @@ func (e *Engine) Close() error {
 	return err
 }
 
-func (e *Engine) Enqueue(item store.WorkItem) error {
-	return e.request(enqueueCommand{item: item, waitForStarts: true})
+// StartItem admits a run and begins its first phase immediately. There is no
+// queue: the item is persisted running, and contention shows up as its phase
+// waiting on resource capacity.
+func (e *Engine) StartItem(item store.WorkItem) error {
+	return e.request(startCommand{item: item, waitForStarts: true})
 }
 
-// EnqueueDetachedStarts validates and persists synchronously, but does not
+// StartItemDetachedStarts validates and persists synchronously, but does not
 // attach runner provisioning futures to the caller's response. Async startup
 // failures still park the item and emit workflow:error.
-func (e *Engine) EnqueueDetachedStarts(item store.WorkItem) error {
-	return e.request(enqueueCommand{item: item})
+func (e *Engine) StartItemDetachedStarts(item store.WorkItem) error {
+	return e.request(startCommand{item: item})
+}
+
+// Pause toggles the global kill switch. While paused no phase starts anywhere;
+// in-flight turns finish and their items rest at the next phase boundary with
+// the run still `running`. Unpausing releases every held start.
+func (e *Engine) Pause(paused bool) error {
+	return e.request(pauseCommand{paused: paused, waitForStarts: true})
+}
+
+// PauseDetachedStarts applies the pause flag synchronously while leaving any
+// starts an unpause triggers to report through workflow events.
+func (e *Engine) PauseDetachedStarts(paused bool) error {
+	return e.request(pauseCommand{paused: paused})
+}
+
+// Paused reports the live global pause flag. The result pointer is written on
+// the owner goroutine and read only after the reply channel receives, so the
+// channel handoff is the synchronization.
+func (e *Engine) Paused() (bool, error) {
+	var paused bool
+	if err := e.request(pauseStateCommand{result: &paused}); err != nil {
+		return false, err
+	}
+	return paused, nil
 }
 
 func (e *Engine) Cancel(itemID string) error {
@@ -208,71 +202,7 @@ func (e *Engine) ResolveHumanGate(itemID string, decision HumanDecision, note st
 	return e.request(humanGateCommand{itemID: itemID, decision: decision, note: note})
 }
 
-func (e *Engine) Reorder(projectID string, orderedIDs []string) error {
-	return e.request(reorderCommand{projectID: projectID, orderedIDs: append([]string(nil), orderedIDs...)})
-}
-
-// SetQueue toggles draining and updates live global concurrency. maxStarts <= 0
-// means unbounded; a positive value pauses after that many new item starts and
-// is never persisted.
-func (e *Engine) SetQueue(active bool, maxStarts, concurrency int) error {
-	return e.request(queueCommand{active: active, maxStarts: maxStarts, setMaxStarts: true, concurrency: concurrency, waitForStarts: true})
-}
-
-// SetQueueDetachedStarts applies queue state synchronously while leaving any
-// starts it triggers to report through workflow events.
-func (e *Engine) SetQueueDetachedStarts(active bool, maxStarts, concurrency int) error {
-	return e.request(queueCommand{active: active, maxStarts: maxStarts, setMaxStarts: true, concurrency: concurrency})
-}
-
-// UpdateQueueSettings changes persisted queue settings without altering the
-// transient process-N budget owned by the most recent explicit SetQueue call.
-// A nil active value is a concurrency-only update.
-func (e *Engine) UpdateQueueSettings(active *bool, concurrency int) error {
-	command := queueCommand{concurrency: concurrency, waitForStarts: true}
-	if active != nil {
-		command.active = *active
-		command.setActive = true
-	}
-	return e.request(command)
-}
-
-// UpdateQueueSettingsDetachedStarts is the settings-bound counterpart to
-// SetQueueDetachedStarts and preserves the current process-N budget.
-func (e *Engine) UpdateQueueSettingsDetachedStarts(active *bool, concurrency int) error {
-	command := queueCommand{concurrency: concurrency}
-	if active != nil {
-		command.active = *active
-		command.setActive = true
-	}
-	return e.request(command)
-}
-
-// UpdateProjectQueueSettings changes one project's persisted queue controls.
-// A nil paused value is a concurrency-only update; concurrency 0 inherits the
-// live global cap.
-func (e *Engine) UpdateProjectQueueSettings(projectID string, paused *bool, concurrency int) error {
-	return e.request(newProjectQueueCommand(projectID, paused, concurrency, true))
-}
-
-// UpdateProjectQueueSettingsDetachedStarts applies project settings without
-// attaching any newly triggered runner starts to the caller's response.
-func (e *Engine) UpdateProjectQueueSettingsDetachedStarts(projectID string, paused *bool, concurrency int) error {
-	return e.request(newProjectQueueCommand(projectID, paused, concurrency, false))
-}
-
-func newProjectQueueCommand(projectID string, paused *bool, concurrency int, waitForStarts bool) projectQueueCommand {
-	command := projectQueueCommand{
-		projectID: projectID, concurrency: concurrency, waitForStarts: waitForStarts,
-	}
-	if paused != nil {
-		command.paused = *paused
-		command.setPaused = true
-	}
-	return command
-}
-
-// Sync waits until every command enqueued before it has been processed.
+// Sync waits until every command submitted before it has been processed.
 func (e *Engine) Sync() error { return e.request(syncCommand{}) }
 
 type response struct {
@@ -287,7 +217,7 @@ type runnerStartFuture struct {
 type initCommand struct{ reply chan response }
 type closeCommand struct{ reply chan response }
 type syncCommand struct{ reply chan response }
-type enqueueCommand struct {
+type startCommand struct {
 	item          store.WorkItem
 	waitForStarts bool
 	reply         chan response
@@ -296,15 +226,11 @@ type cancelCommand struct {
 	itemID string
 	reply  chan response
 }
-type removeQueuedCommand struct {
-	itemID string
-	reply  chan response
-}
 type parkDispositionCommand struct {
 	itemID string
 	reply  chan response
 }
-type reenqueueFailedCommand struct {
+type rerunFailedCommand struct {
 	itemID string
 	reply  chan response
 }
@@ -330,27 +256,14 @@ type completeTakeoverCommand struct {
 	itemID string
 	reply  chan response
 }
-type reorderCommand struct {
-	projectID  string
-	orderedIDs []string
-	reply      chan response
-}
-type queueCommand struct {
-	active        bool
-	setActive     bool
-	maxStarts     int
-	setMaxStarts  bool
-	concurrency   int
-	waitForStarts bool
-	reply         chan response
-}
-type projectQueueCommand struct {
-	projectID     string
+type pauseCommand struct {
 	paused        bool
-	setPaused     bool
-	concurrency   int
 	waitForStarts bool
 	reply         chan response
+}
+type pauseStateCommand struct {
+	result *bool
+	reply  chan response
 }
 type humanGateCommand struct {
 	itemID   string
@@ -390,19 +303,16 @@ func (e *Engine) request(command any) error {
 	case syncCommand:
 		command.reply = reply
 		e.commands <- command
-	case enqueueCommand:
+	case startCommand:
 		command.reply = reply
 		e.commands <- command
 	case cancelCommand:
 		command.reply = reply
 		e.commands <- command
-	case removeQueuedCommand:
-		command.reply = reply
-		e.commands <- command
 	case parkDispositionCommand:
 		command.reply = reply
 		e.commands <- command
-	case reenqueueFailedCommand:
+	case rerunFailedCommand:
 		command.reply = reply
 		e.commands <- command
 	case resolveDispositionCommand:
@@ -420,13 +330,10 @@ func (e *Engine) request(command any) error {
 	case completeTakeoverCommand:
 		command.reply = reply
 		e.commands <- command
-	case reorderCommand:
+	case pauseCommand:
 		command.reply = reply
 		e.commands <- command
-	case queueCommand:
-		command.reply = reply
-		e.commands <- command
-	case projectQueueCommand:
+	case pauseStateCommand:
 		command.reply = reply
 		e.commands <- command
 	case humanGateCommand:
@@ -489,11 +396,11 @@ func (e *Engine) loop() {
 		case initCommand:
 			err = e.rebuild()
 			if err == nil {
-				err = e.schedule()
+				err = e.startWaiting()
 			}
 			command.reply <- e.commandResponse(err)
-		case enqueueCommand:
-			err = e.enqueue(command.item, command.waitForStarts)
+		case startCommand:
+			err = e.startNewItem(command.item)
 			if command.waitForStarts {
 				command.reply <- e.itemCommandResponse(command.item.ID, err)
 			} else {
@@ -504,16 +411,12 @@ func (e *Engine) loop() {
 			err = e.cancel(command.itemID)
 			e.commandStarts = nil
 			command.reply <- response{err: err}
-		case removeQueuedCommand:
-			err = e.removeQueued(command.itemID)
-			e.commandStarts = nil
-			command.reply <- response{err: err}
 		case parkDispositionCommand:
 			err = e.parkDisposition(command.itemID)
 			e.commandStarts = nil
 			command.reply <- response{err: err}
-		case reenqueueFailedCommand:
-			err = e.reenqueueFailed(command.itemID)
+		case rerunFailedCommand:
+			err = e.rerunFailed(command.itemID)
 			command.reply <- e.itemCommandResponse(command.itemID, err)
 		case resolveDispositionCommand:
 			err = e.resolveDisposition(command.itemID)
@@ -526,37 +429,21 @@ func (e *Engine) loop() {
 			err = e.answer(command.itemID, command.answer)
 			command.reply <- e.itemCommandResponse(command.itemID, err)
 		case takeoverCommand:
-			e.removePendingHuman(command.itemID)
-			err = errors.Join(e.takeOver(command.itemID), e.schedule())
+			err = errors.Join(e.takeOver(command.itemID), e.startWaiting())
 			e.commandStarts = nil
 			command.reply <- response{err: err}
 		case completeTakeoverCommand:
 			err = e.completeTakeover(command.itemID)
 			command.reply <- e.itemCommandResponse(command.itemID, err)
-		case reorderCommand:
-			err = e.reorder(command.projectID, command.orderedIDs)
-			command.reply <- e.commandResponse(err)
-		case queueCommand:
-			if command.concurrency < 1 || command.concurrency > MaxGlobalConcurrency {
-				err = fmt.Errorf("set workflow queue: concurrency must be between 1 and %d", MaxGlobalConcurrency)
-			} else {
-				e.config.GlobalConcurrency = command.concurrency
-				if command.setActive || command.setMaxStarts {
-					e.queueActive = command.active && e.startsRemaining != 0
-				}
-				if command.setMaxStarts {
-					e.startsRemaining = -1
-					if command.active && command.maxStarts > 0 {
-						e.startsRemaining = command.maxStarts
-					}
-					e.queueActive = command.active
-				}
-				e.emitQueue()
-				if e.queueActive {
-					startErr := e.schedule()
-					if command.waitForStarts {
-						err = startErr
-					}
+		case pauseCommand:
+			if e.paused != command.paused {
+				e.paused = command.paused
+				e.emitEngineState()
+			}
+			if !e.paused {
+				startErr := e.startWaiting()
+				if command.waitForStarts {
+					err = startErr
 				}
 			}
 			if command.waitForStarts {
@@ -565,42 +452,18 @@ func (e *Engine) loop() {
 				e.commandStarts = nil
 				command.reply <- response{err: err}
 			}
-		case projectQueueCommand:
-			if command.projectID == "" {
-				err = fmt.Errorf("set project workflow queue: project id is required")
-			} else if command.concurrency < 0 || command.concurrency > MaxProjectConcurrency {
-				err = fmt.Errorf("set project workflow queue: concurrency must be between 0 and %d", MaxProjectConcurrency)
-			} else {
-				state := e.projectQueues[command.projectID]
-				state.concurrency = command.concurrency
-				if command.setPaused {
-					state.paused = command.paused
-				}
-				e.projectQueues[command.projectID] = state
-				e.emitQueue()
-				if e.queueActive {
-					startErr := e.schedule()
-					if command.waitForStarts {
-						err = startErr
-					}
-				}
-			}
-			if command.waitForStarts {
-				command.reply <- e.commandResponse(err)
-			} else {
-				e.commandStarts = nil
-				command.reply <- response{err: err}
-			}
+		case pauseStateCommand:
+			*command.result = e.paused
+			command.reply <- response{}
 		case humanGateCommand:
-			e.removePendingHuman(command.itemID)
-			err = errors.Join(e.resolveHumanGate(command.itemID, command.decision, command.note), e.schedule())
+			err = errors.Join(e.resolveHumanGate(command.itemID, command.decision, command.note), e.startWaiting())
 			command.reply <- e.itemCommandResponse(command.itemID, err)
 		case runnerStartCommand:
 			err = e.finishRunnerStart(command)
 			if err != nil {
 				e.emitError(command.key.ItemID, err)
 			}
-			_ = e.schedule() // schedule reports item-scoped failures itself.
+			_ = e.startWaiting() // startWaiting reports item-scoped failures itself.
 			delete(e.inflightStarts, command.future)
 			e.commandStarts = nil
 			settleRunnerStart(command.future, response{err: err})
@@ -608,7 +471,7 @@ func (e *Engine) loop() {
 			if err = e.complete(command.key, command.outcome); err != nil {
 				e.emitError(command.key.ItemID, err)
 			}
-			_ = e.schedule() // schedule emits item-scoped asynchronous errors itself.
+			_ = e.startWaiting() // startWaiting emits item-scoped asynchronous errors itself.
 		case syncCommand:
 			command.reply <- e.syncResponse()
 		case closeCommand:
@@ -627,41 +490,6 @@ func (e *Engine) loop() {
 	}
 }
 
-func (e *Engine) enqueue(item store.WorkItem, reportStartErrors bool) error {
-	if State(item.State) != StateQueued {
-		return fmt.Errorf("enqueue item %q: state must be queued, got %q", item.ID, item.State)
-	}
-	if item.ID == "" || item.ProjectID == "" {
-		return fmt.Errorf("enqueue item: id and project id are required")
-	}
-	if len(item.Seeds) > MaxSeedBytes {
-		return fmt.Errorf("enqueue item %q: seeds are %d bytes; maximum is %d", item.ID, len(item.Seeds), MaxSeedBytes)
-	}
-	if len(item.Seeds) > 0 {
-		var seeds map[string]any
-		if err := decodeJSON(item.Seeds, &seeds); err != nil || seeds == nil {
-			return fmt.Errorf("enqueue item %q: seeds must be one JSON object", item.ID)
-		}
-	}
-	if _, exists := e.items[item.ID]; exists {
-		return fmt.Errorf("enqueue item %q: already tracked", item.ID)
-	}
-	if err := e.store.CreateWorkItem(item); err != nil {
-		return fmt.Errorf("enqueue item %q: %w", item.ID, err)
-	}
-	runtime := &runtimeItem{item: item}
-	if _, exists := e.projectQueues[item.ProjectID]; !exists {
-		e.projectQueues[item.ProjectID] = projectQueueState{}
-	}
-	e.items[item.ID] = runtime
-	e.insertQueued(runtime)
-	startErr := e.schedule()
-	if reportStartErrors {
-		return startErr
-	}
-	return nil
-}
-
 func (e *Engine) cancel(itemID string) error {
 	item, ok := e.items[itemID]
 	if !ok {
@@ -671,7 +499,7 @@ func (e *Engine) cancel(itemID string) error {
 		return fmt.Errorf("cancel item %q: invalid transition %s -> %s", itemID, item.item.State, StateCancelled)
 	}
 	err := e.teardown(item, teardownRequest{phaseStatus: "cancelled", nextState: StateCancelled, reason: ReasonInterrupted})
-	return errors.Join(err, e.schedule())
+	return errors.Join(err, e.startWaiting())
 }
 
 func (e *Engine) resume(itemID, targetPhase string) error {
@@ -697,12 +525,6 @@ func (e *Engine) resume(itemID, targetPhase string) error {
 		if humanGate {
 			return fmt.Errorf("resume item %q: human gate decisions require ResolveHumanGate", itemID)
 		}
-	}
-	if e.activeSlots >= e.config.GlobalConcurrency {
-		return fmt.Errorf("resume item %q: global concurrency is full", itemID)
-	}
-	if !e.projectHasCapacity(item.item.ProjectID) {
-		return fmt.Errorf("resume item %q: project concurrency is full", itemID)
 	}
 	if len(item.workflow.Phases) == 0 {
 		workflow, err := e.definitions.Resolve(e.ctx, item.item)
@@ -743,27 +565,7 @@ func (e *Engine) resume(itemID, targetPhase string) error {
 	item.phaseID = targetPhase
 	item.attempt = 0
 	e.items[itemID] = item
-	if err := e.enterPhase(item); err != nil {
-		return err
-	}
-	return e.schedule()
-}
-
-func (e *Engine) reorder(projectID string, orderedIDs []string) error {
-	for _, id := range orderedIDs {
-		item, ok := e.items[id]
-		if !ok || item.item.ProjectID != projectID || State(item.item.State) != StateQueued {
-			return fmt.Errorf("reorder project %q: item %q is not a tracked queued item in that project", projectID, id)
-		}
-	}
-	if err := e.store.ReorderQueuedWorkItems(projectID, orderedIDs); err != nil {
-		return err
-	}
-	for position, id := range orderedIDs {
-		e.items[id].item.SortPosition = position
-	}
-	e.sortQueued()
-	return nil
+	return e.enterPhase(item)
 }
 
 func (e *Engine) loadParked(itemID string) (*runtimeItem, error) {
@@ -809,27 +611,14 @@ func (e *Engine) emitError(itemID string, err error) {
 	})
 }
 
-func (e *Engine) emitQueue() {
-	startsRemaining := e.startsRemaining
-	if startsRemaining < 0 {
-		startsRemaining = 0
-	}
-	projectIDs := make([]string, 0, len(e.projectQueues))
-	for projectID := range e.projectQueues {
-		projectIDs = append(projectIDs, projectID)
-	}
-	sort.Strings(projectIDs)
-	projects := make([]ProjectQueueState, 0, len(projectIDs))
-	for _, projectID := range projectIDs {
-		state := e.projectQueues[projectID]
-		projects = append(projects, ProjectQueueState{
-			ProjectID: projectID, Paused: state.paused, Concurrency: state.concurrency,
-			RunningCount: e.runningByProject[projectID],
-		})
-	}
-	e.emitter.Emit("workflow:queue-state", QueueEvent{
-		Active: e.queueActive, GlobalConcurrency: e.config.GlobalConcurrency,
-		RunningCount: e.activeSlots, SlotCapacity: e.config.GlobalConcurrency,
-		StartsRemaining: startsRemaining, Projects: projects,
+func (e *Engine) emitEngineState() {
+	e.emitter.Emit("workflow:engine-state", EngineState{Paused: e.paused})
+}
+
+// emitItemState is the single place a lifecycle transition reaches the wire,
+// including the birth event a newly started run emits from the empty state.
+func (e *Engine) emitItemState(itemID, projectID string, from, to State, reason Reason) {
+	e.emitter.Emit("workflow:item-state", StateEvent{
+		ItemID: itemID, ProjectID: projectID, From: from, To: to, Reason: reason,
 	})
 }

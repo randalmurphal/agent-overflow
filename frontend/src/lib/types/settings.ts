@@ -182,10 +182,11 @@ export interface Settings {
    */
   usagePeriod: string;
 
-  /** Whether the workflow drain may start new queued runs. */
-  workflowQueueActive: boolean;
-  /** Global workflow phase concurrency, bounded by the backend to 1..32. */
-  workflowConcurrency: number;
+  /**
+   * Global workflow kill switch. While paused no phase starts anywhere; live
+   * turns finish and their runs rest at the next phase boundary.
+   */
+  workflowPaused: boolean;
 }
 
 export interface NetworkPersistedSettings {

@@ -23,15 +23,14 @@ import (
 func TestWorkflowBoundMethodsRegisteredOnApp(t *testing.T) {
 	appType := reflect.TypeOf((*App)(nil))
 	for _, name := range []string{
-		"WorkflowEnqueueItem", "WorkflowCancelItem", "WorkflowResumeItem",
-		"WorkflowAnswerQuestion", "WorkflowResolveGate", "WorkflowReorderQueue",
-		"WorkflowUpdateProjectQueue",
-		"WorkflowSetQueue", "WorkflowListItems", "WorkflowListUnresolvedItems", "WorkflowListItemCosts", "WorkflowGetItem",
+		"WorkflowStartRun", "WorkflowCancelItem", "WorkflowResumeItem",
+		"WorkflowAnswerQuestion", "WorkflowResolveGate", "WorkflowRerunItem",
+		"WorkflowSetGlobalPause", "WorkflowGetEngineState",
+		"WorkflowListItems", "WorkflowListUnresolvedItems", "WorkflowListItemCosts", "WorkflowGetItem",
 		"WorkflowCompleteTakeover", "WorkflowOpenTriageThread", "WorkflowOpenTriageAgent", "WorkflowOpenStudioThread",
 		"WorkflowMergeItem", "WorkflowCreateItemPR", "WorkflowDiscardItem",
 		"WorkflowFetchPRReviewComments", "WorkflowSendPRReviewCommentsToThread", "WorkflowDiscussPR",
 		"WorkflowGetJobNotes", "WorkflowSetJobNotes", "WorkflowListDefinitions",
-		"WorkflowRemoveQueuedItem",
 	} {
 		if _, ok := appType.MethodByName(name); !ok {
 			t.Errorf("App method %s is not registered", name)
@@ -86,15 +85,14 @@ func TestUpdateSettingsPersistsPatch(t *testing.T) {
 func TestSettingsRollbackPatchRestoresEveryPatchedField(t *testing.T) {
 	previous := settings.DefaultSettings
 	previous.Theme = "light"
-	previous.WorkflowQueueActive = true
-	previous.WorkflowConcurrency = 2
+	previous.WorkflowPaused = true
 	rollback, err := settingsRollbackPatch(previous, map[string]any{
-		"theme": "dark", "workflowQueueActive": false, "workflowConcurrency": 7,
+		"theme": "dark", "workflowPaused": false,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rollback["theme"] != "light" || rollback["workflowQueueActive"] != true || rollback["workflowConcurrency"] != float64(2) {
+	if rollback["theme"] != "light" || rollback["workflowPaused"] != true {
 		t.Fatalf("rollback patch = %#v", rollback)
 	}
 }
@@ -109,13 +107,12 @@ func TestUpdateSettingsRollsBackMixedPatchWhenWorkflowEngineRejects(t *testing.T
 	}
 	previous := app.currentSettings()
 	if _, err := app.UpdateSettings(map[string]any{
-		"theme": "dark", "workflowQueueActive": false, "workflowConcurrency": 7,
+		"theme": "dark", "workflowPaused": true,
 	}); err == nil {
 		t.Fatal("UpdateSettings with closed workflow engine succeeded")
 	}
 	current := app.currentSettings()
-	if current.Theme != previous.Theme || current.WorkflowQueueActive != previous.WorkflowQueueActive ||
-		current.WorkflowConcurrency != previous.WorkflowConcurrency {
+	if current.Theme != previous.Theme || current.WorkflowPaused != previous.WorkflowPaused {
 		t.Fatalf("mixed patch was not rolled back: got %+v, previous %+v", current, previous)
 	}
 }

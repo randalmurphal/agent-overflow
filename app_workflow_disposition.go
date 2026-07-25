@@ -303,7 +303,6 @@ func (a *App) runAutoDispositionQueue() {
 		if len(a.workflowAutoDispositionIDs) == 0 {
 			a.workflowAutoDispositionBusy = false
 			a.workflowAutoDispositionMu.Unlock()
-			a.flushWorkflowDrainSummariesIfIdle()
 			return
 		}
 		itemID := a.workflowAutoDispositionIDs[0]
@@ -312,21 +311,7 @@ func (a *App) runAutoDispositionQueue() {
 		a.workflowAutoDispositionMu.Unlock()
 
 		a.autoDisposeWorkflowItem(itemID)
-		item, err := a.store.GetWorkItem(itemID)
-		if err != nil {
-			log.Printf("workflow notification %s: load final disposition outcome: %v", itemID, err)
-			continue
-		}
-		if item.State == string(engine.StateDone) {
-			a.recordWorkflowNotificationOutcome(item.ProjectID, engine.StateDone)
-		}
 	}
-}
-
-func (a *App) workflowAutoDispositionPending() bool {
-	a.workflowAutoDispositionMu.Lock()
-	defer a.workflowAutoDispositionMu.Unlock()
-	return a.workflowAutoDispositionBusy
 }
 
 func (a *App) autoDisposeWorkflowItem(itemID string) {

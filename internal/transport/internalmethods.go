@@ -262,19 +262,17 @@ var LocalOnlyMethods = map[string]bool{
 	// this re-audit trigger.
 	"PostChannelMessage": true,
 	// Workflow mutations drive autonomous full-access provider sessions or
-	// persist local queue/settings state. Keep that control plane loopback-only.
-	// The five pure workflow reads live in methods_gen_test.go's wireSafeMethods
+	// persist local settings state. Keep that control plane loopback-only.
+	// The pure workflow reads live in methods_gen_test.go's wireSafeMethods
 	// so remote workflow surfaces can render without gaining mutation access.
-	"WorkflowEnqueueItem":                  true,
+	"WorkflowStartRun":                     true,
 	"WorkflowQueueChatProposal":            true,
 	"WorkflowDismissChatProposal":          true,
 	"WorkflowCancelItem":                   true,
 	"WorkflowResumeItem":                   true,
 	"WorkflowAnswerQuestion":               true,
 	"WorkflowResolveGate":                  true,
-	"WorkflowReorderQueue":                 true,
-	"WorkflowUpdateProjectQueue":           true,
-	"WorkflowSetQueue":                     true,
+	"WorkflowSetGlobalPause":               true,
 	"WorkflowCompleteTakeover":             true,
 	"WorkflowOpenTriageThread":             true,
 	"WorkflowOpenTriageAgent":              true,
@@ -286,8 +284,7 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowSendPRReviewCommentsToThread": true,
 	"WorkflowDiscussPR":                    true,
 	"WorkflowSetJobNotes":                  true,
-	"WorkflowRemoveQueuedItem":             true,
-	"WorkflowReenqueueFailedItem":          true,
+	"WorkflowRerunItem":                    true,
 	// ConcludeDiscussion is lifecycle control over the deliberation's
 	// provider-session turn loop — same class as PostChannelMessage: it
 	// removes the in-memory FSM (a.deliberations) and can race an

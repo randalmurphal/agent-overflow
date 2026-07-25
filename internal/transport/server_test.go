@@ -227,16 +227,17 @@ func TestDispatcher_WorkflowReadsAreRemoteSafe(t *testing.T) {
 		"WorkflowListItemCosts",
 		"WorkflowListDefinitions",
 		"WorkflowGetJobNotes",
+		"WorkflowGetEngineState",
 	} {
 		if _, frameErr := d.ResolveForOrigin(0, name, false); frameErr != nil {
 			t.Errorf("non-loopback resolve %s: %+v", name, frameErr)
 		}
 	}
 
-	if _, frameErr := d.ResolveForOrigin(0, "WorkflowSetQueue", false); frameErr == nil {
-		t.Fatal("non-loopback peer resolved WorkflowSetQueue mutation")
+	if _, frameErr := d.ResolveForOrigin(0, "WorkflowSetGlobalPause", false); frameErr == nil {
+		t.Fatal("non-loopback peer resolved WorkflowSetGlobalPause mutation")
 	} else if frameErr.Code != ErrCodeMethodNotFound {
-		t.Fatalf("WorkflowSetQueue error code = %q, want %q", frameErr.Code, ErrCodeMethodNotFound)
+		t.Fatalf("WorkflowSetGlobalPause error code = %q, want %q", frameErr.Code, ErrCodeMethodNotFound)
 	}
 }
 

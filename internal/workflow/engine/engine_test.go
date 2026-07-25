@@ -9,50 +9,19 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 )
 
-func TestRemoveQueuedItemCancelsRecordAndLosesRaceToStart(t *testing.T) {
-	workflow := onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"basic": workflow}, []string{"project"}, nil)
-	queued := testItem("queued", "project", "basic", 0)
-	if err := h.engine.Enqueue(queued); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.engine.RemoveQueued(queued.ID); err != nil {
-		t.Fatal(err)
-	}
-	requireItemState(t, h.store, queued.ID, StateCancelled, ReasonInterrupted)
-	if events := h.emitter.stateEvents(queued.ID); len(events) != 1 || events[0].From != StateQueued || events[0].To != StateCancelled {
-		t.Fatalf("remove events = %+v", events)
-	}
-
-	running := testItem("running", "project", "basic", 1)
-	if err := h.engine.Enqueue(running); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.engine.SetQueue(true, 0, 1); err != nil {
-		t.Fatal(err)
-	}
-	queueEvents := h.emitter.queueEvents()
-	lastQueue := queueEvents[len(queueEvents)-1]
-	if lastQueue.RunningCount != 1 || lastQueue.SlotCapacity != 1 {
-		t.Fatalf("running queue event = %+v, want 1/1 slots", lastQueue)
-	}
-	if err := h.engine.RemoveQueued(running.ID); err == nil {
-		t.Fatal("remove queued item succeeded after start won the race")
-	}
-}
-
-func TestReenqueueFailedDrainsWithDiagnosisAtQueueTail(t *testing.T) {
+func TestRerunFailedStartsImmediatelyWithDiagnosisFeedback(t *testing.T) {
 	failedWhenFalse := def.Predicate{Eq: &def.Comparison{Ref: "work.ok", Value: false}}
 	workflow := onePhaseWorkflow("retry-failed", nil, []def.Route{
 		{When: &failedWhenFalse, To: "failed"},
 		{To: "done"},
 	})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"retry-failed": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"retry-failed": workflow}, []string{"project"}, nil)
 	item := testItem("failed", "project", "retry-failed", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: json.RawMessage(`{"status":"done","outputs":{"ok":false,"diagnosis":"tests still fail"},"question":null,"reason":null}`)})
@@ -66,61 +35,40 @@ func TestReenqueueFailedDrainsWithDiagnosisAtQueueTail(t *testing.T) {
 	if failed.State != string(StateFailed) {
 		t.Fatalf("failed item state = %q", failed.State)
 	}
-	if err := h.engine.SetQueue(false, 0, 1); err != nil {
+	if err := h.engine.RerunFailed(item.ID); err != nil {
 		t.Fatal(err)
 	}
-	tail := testItem("tail", "project", "retry-failed", 4)
-	if err := h.engine.Enqueue(tail); err != nil {
-		t.Fatal(err)
+	starts := h.runner.started()
+	if len(starts) != 2 || starts[1].Key.ItemID != item.ID || starts[1].Key.PhaseID != "work" || starts[1].Key.Attempt != 2 {
+		t.Fatalf("rerun starts = %+v, want an immediate second attempt", starts)
 	}
-	if err := h.engine.ReenqueueFailed(item.ID); err != nil {
-		t.Fatal(err)
+	if starts[1].Feedback == nil || starts[1].Feedback.Note != "check-failed-genuine: tests still fail" {
+		t.Fatalf("rerun feedback = %+v", starts[1].Feedback)
+	}
+	if starts[1].Feedback.Values["work.diagnosis"] != "tests still fail" {
+		t.Fatalf("rerun feedback values = %+v", starts[1].Feedback.Values)
 	}
 	reloaded, err := h.store.GetWorkItem(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.State != string(StateQueued) || reloaded.Reason != "" || reloaded.EndedAt != 0 {
-		t.Fatalf("re-enqueued queued state = %+v", reloaded)
-	}
-	if reloaded.SortPosition <= tail.SortPosition {
-		t.Fatalf("re-enqueued sort position = %d, want after %d", reloaded.SortPosition, tail.SortPosition)
-	}
-	if err := h.engine.SetQueue(true, 0, 1); err != nil {
-		t.Fatal(err)
-	}
-	starts := h.runner.started()
-	if len(starts) != 2 || starts[1].Key.ItemID != tail.ID {
-		t.Fatalf("queue tail ordering starts = %+v", starts)
-	}
-	h.runner.complete(t, tail.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
-	if err := h.engine.Sync(); err != nil {
-		t.Fatal(err)
-	}
-	starts = h.runner.started()
-	if len(starts) != 3 || starts[2].Key.ItemID != item.ID || starts[2].Key.PhaseID != "work" || starts[2].Key.Attempt != 2 {
-		t.Fatalf("re-enqueued starts = %+v", starts)
-	}
-	if starts[2].Feedback == nil || starts[2].Feedback.Note != "check-failed-genuine: tests still fail" {
-		t.Fatalf("re-enqueued feedback = %+v", starts[2].Feedback)
-	}
-	if starts[2].Feedback.Values["work.diagnosis"] != "tests still fail" {
-		t.Fatalf("re-enqueued feedback values = %+v", starts[2].Feedback.Values)
-	}
-	reloaded, err = h.store.GetWorkItem(item.ID)
-	if err != nil {
-		t.Fatal(err)
+	if reloaded.State != string(StateRunning) || reloaded.Reason != "" || reloaded.EndedAt != 0 {
+		t.Fatalf("rerun item = %+v, want running with no reason", reloaded)
 	}
 	if reloaded.StartedAt <= failed.StartedAt {
-		t.Fatalf("re-enqueued start time = %d, original = %d", reloaded.StartedAt, failed.StartedAt)
+		t.Fatalf("rerun start time = %d, original = %d", reloaded.StartedAt, failed.StartedAt)
+	}
+	if events := h.emitter.stateEvents(item.ID); len(events) == 0 ||
+		events[len(events)-1].From != StateFailed || events[len(events)-1].To != StateRunning {
+		t.Fatalf("rerun state events = %+v, want a failed -> running edge", h.emitter.stateEvents(item.ID))
 	}
 	phases, err := h.store.ListWorkItemPhases(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var input PhaseInput
-	if len(phases) != 2 || json.Unmarshal(phases[1].InputEnvelope, &input) != nil || input.Feedback == nil || input.Feedback.Note != starts[2].Feedback.Note {
-		t.Fatalf("re-enqueued phase input = %+v, phases=%+v", input, phases)
+	if len(phases) != 2 || json.Unmarshal(phases[1].InputEnvelope, &input) != nil || input.Feedback == nil || input.Feedback.Note != starts[1].Feedback.Note {
+		t.Fatalf("rerun phase input = %+v, phases=%+v", input, phases)
 	}
 	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
 	if err := h.engine.Sync(); err != nil {
@@ -129,10 +77,52 @@ func TestReenqueueFailedDrainsWithDiagnosisAtQueueTail(t *testing.T) {
 	requireItemState(t, h.store, item.ID, StateDone, "")
 }
 
-func TestReenqueueFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
+// TestRerunFailedWaitsForProviderCapacity pins that a rerun is a direct start
+// subject to the same resource bound as any other phase: it does not jump a
+// held phase, and it starts the moment capacity frees.
+func TestRerunFailedWaitsForProviderCapacity(t *testing.T) {
+	failedWhenFalse := def.Predicate{Eq: &def.Comparison{Ref: "work.ok", Value: false}}
+	workflow := onePhaseWorkflow("retry-failed", nil, []def.Route{
+		{When: &failedWhenFalse, To: "failed"},
+		{To: "done"},
+	})
+	h := newHarness(t, Config{}, map[string]def.Workflow{"retry-failed": workflow}, []string{"project"}, nil)
+	h.limitProviderCapacity("project", 1)
+	item := testItem("failed", "project", "retry-failed", 0)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(false)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item.ID, StateFailed, ReasonCheckFailedGenuine)
+
+	holder := testItem("holder", "project", "retry-failed", 1)
+	if err := h.engine.StartItem(holder); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.RerunFailed(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item.ID, StateRunning, "")
+	if got := len(h.runner.started()); got != 2 {
+		t.Fatalf("runner starts = %d, want the rerun held behind provider capacity", got)
+	}
+	h.runner.complete(t, holder.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	if len(starts) != 3 || starts[2].Key.ItemID != item.ID || starts[2].Key.Attempt != 2 {
+		t.Fatalf("released starts = %+v", starts)
+	}
+}
+
+func TestRerunFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
 	workflow := onePhaseWorkflow("retry-failed", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"retry-failed": workflow}, []string{"project"}, nil)
-	for index, state := range []State{StateQueued, StateRunning, StateNeedsHuman, StateDone, StateCancelled} {
+	h := newHarness(t, Config{Paused: true}, map[string]def.Workflow{"retry-failed": workflow}, []string{"project"}, nil)
+	for index, state := range []State{StateRunning, StateNeedsHuman, StateDone, StateCancelled} {
 		item := testItem("not-failed-"+string(state), "project", "retry-failed", index)
 		item.State = string(state)
 		switch state {
@@ -144,8 +134,8 @@ func TestReenqueueFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
 		if err := h.store.CreateWorkItem(item); err != nil {
 			t.Fatal(err)
 		}
-		if err := h.engine.ReenqueueFailed(item.ID); err == nil || !strings.Contains(err.Error(), "invalid state "+string(state)) {
-			t.Fatalf("%s re-enqueue error = %v", state, err)
+		if err := h.engine.RerunFailed(item.ID); err == nil || !strings.Contains(err.Error(), "invalid state "+string(state)) {
+			t.Fatalf("%s rerun error = %v", state, err)
 		}
 	}
 	broken := testItem("broken", "project", "retry-failed", 6)
@@ -155,8 +145,8 @@ func TestReenqueueFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
 	if err := h.store.CreateWorkItem(broken); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.ReenqueueFailed(broken.ID); err == nil || !strings.Contains(err.Error(), "snapshot") {
-		t.Fatalf("broken snapshot re-enqueue error = %v", err)
+	if err := h.engine.RerunFailed(broken.ID); err == nil || !strings.Contains(err.Error(), "snapshot") {
+		t.Fatalf("broken snapshot rerun error = %v", err)
 	}
 
 	discarded := testItem("discarded", "project", "retry-failed", 7)
@@ -166,13 +156,13 @@ func TestReenqueueFailedRejectsOtherStatesAndBrokenSnapshot(t *testing.T) {
 	if err := h.store.CreateWorkItem(discarded); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.ReenqueueFailed(discarded.ID); err == nil || !strings.Contains(err.Error(), "discarded") {
-		t.Fatalf("discarded re-enqueue error = %v", err)
+	if err := h.engine.RerunFailed(discarded.ID); err == nil || !strings.Contains(err.Error(), "discarded") {
+		t.Fatalf("discarded rerun error = %v", err)
 	}
 }
 
 func TestResolveDispositionAndResumeRejections(t *testing.T) {
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, nil, []string{"project"}, nil)
+	h := newHarness(t, Config{Paused: true}, nil, []string{"project"}, nil)
 	parked := testItem("parked-disposition", "project", "unused", 0)
 	parked.State = string(StateNeedsHuman)
 	parked.Reason = string(ReasonDisposition)
@@ -212,24 +202,24 @@ func TestResolveDispositionAndResumeRejections(t *testing.T) {
 	}
 }
 
-func TestDetachedEnqueueReportsProvisioningFailureThroughEventsAndSync(t *testing.T) {
+func TestDetachedStartReportsProvisioningFailureThroughEventsAndSync(t *testing.T) {
 	workflow := onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"basic": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"basic": workflow}, []string{"project"}, nil)
 	item := testItem("detached", "project", "basic", 0)
 	block := make(chan struct{})
 	h.runner.startWait[item.ID] = block
 	h.runner.startErrs[item.ID] = errors.Join(ErrSetupFailed, errors.New("provision failed"))
-	enqueueResult := make(chan error, 1)
-	go func() { enqueueResult <- h.engine.EnqueueDetachedStarts(item) }()
-	var enqueueErr error
+	startResult := make(chan error, 1)
+	go func() { startResult <- h.engine.StartItemDetachedStarts(item) }()
+	var startErr error
 	select {
-	case enqueueErr = <-enqueueResult:
+	case startErr = <-startResult:
 	case <-time.After(time.Second):
 		close(block)
-		t.Fatal("detached enqueue waited for runner provisioning")
+		t.Fatal("detached start waited for runner provisioning")
 	}
-	if enqueueErr != nil {
-		t.Fatalf("detached enqueue returned provisioning error: %v", enqueueErr)
+	if startErr != nil {
+		t.Fatalf("detached start returned provisioning error: %v", startErr)
 	}
 	close(block)
 	if err := h.engine.Sync(); !errors.Is(err, ErrSetupFailed) {
@@ -240,84 +230,128 @@ func TestDetachedEnqueueReportsProvisioningFailureThroughEventsAndSync(t *testin
 		t.Fatal("detached provisioning failure did not emit workflow:error")
 	}
 
+	// Detached only detaches runner provisioning. Everything the start does
+	// synchronously — validation, persistence, definition resolution, phase
+	// entry — still reports to the caller, and the run record is parked with a
+	// typed reason so the failure is visible after the RPC error is gone.
 	unresolvable := testItem("detached-unresolvable", "project", "missing", 1)
-	if err := h.engine.EnqueueDetachedStarts(unresolvable); err != nil {
-		t.Fatalf("detached enqueue returned triggered definition error: %v", err)
+	if err := h.engine.StartItemDetachedStarts(unresolvable); err == nil ||
+		!strings.Contains(err.Error(), `workflow "missing" not found`) {
+		t.Fatalf("detached start definition error = %v", err)
 	}
 	requireItemState(t, h.store, unresolvable.ID, StateNeedsHuman, ReasonSetupFailed)
-	if got := h.emitter.errorEvents(unresolvable.ID); len(got) == 0 {
-		t.Fatal("detached definition failure did not emit workflow:error")
-	}
 
-	paused := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{}, []string{"project"}, nil)
-	queued := testItem("detached-queue-start", "project", "missing", 0)
-	if err := paused.engine.Enqueue(queued); err != nil {
+	// An unpause triggers held starts. Detached unpausing must not hand the
+	// caller their failures either — they land on the item and the event bus.
+	// The phase declares a resource the project profile never binds, so the
+	// release fails inside the unpause with a typed park.
+	unbound := onePhaseWorkflow("unbound", []string{"never-declared"}, []def.Route{{To: "done"}})
+	unpause := newHarness(t, Config{Paused: true}, map[string]def.Workflow{"unbound": unbound}, []string{"project"}, nil)
+	held := testItem("detached-unpause-start", "project", "unbound", 0)
+	if err := unpause.engine.StartItem(held); err != nil {
 		t.Fatal(err)
 	}
-	if err := paused.engine.SetQueueDetachedStarts(true, 0, 1); err != nil {
-		t.Fatalf("detached queue activation returned triggered definition error: %v", err)
+	if got := len(unpause.runner.started()); got != 0 {
+		t.Fatalf("paused engine started %d runners", got)
 	}
-	requireItemState(t, paused.store, queued.ID, StateNeedsHuman, ReasonSetupFailed)
-	if got := paused.emitter.errorEvents(queued.ID); len(got) == 0 {
-		t.Fatal("detached queue activation did not emit workflow:error")
+	if err := unpause.engine.PauseDetachedStarts(false); err != nil {
+		t.Fatalf("detached unpause returned triggered start error: %v", err)
 	}
-
-	settings := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{}, []string{"project"}, nil)
-	settingsItem := testItem("detached-settings-start", "project", "missing", 0)
-	if err := settings.engine.Enqueue(settingsItem); err != nil {
-		t.Fatal(err)
+	requireItemState(t, unpause.store, held.ID, StateNeedsHuman, ReasonSetupFailed)
+	if got := unpause.emitter.errorEvents(held.ID); len(got) == 0 {
+		t.Fatal("detached unpause failure did not emit workflow:error")
 	}
-	active := true
-	if err := settings.engine.UpdateQueueSettingsDetachedStarts(&active, 1); err != nil {
-		t.Fatalf("detached settings activation returned triggered definition error: %v", err)
-	}
-	requireItemState(t, settings.store, settingsItem.ID, StateNeedsHuman, ReasonSetupFailed)
-	if got := settings.emitter.errorEvents(settingsItem.ID); len(got) == 0 {
-		t.Fatal("detached settings activation did not emit workflow:error")
+	if err := unpause.engine.Pause(false); err != nil {
+		t.Fatalf("waiting unpause reported the already-reported failure again: %v", err)
 	}
 }
 
-func TestFSMTransitionsPersistBeforeEmitting(t *testing.T) {
+func TestGlobalPauseHoldsPhaseStartsAndUnpauseReleasesThem(t *testing.T) {
 	workflow := onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"basic": workflow}, []string{"project"}, nil)
-	item := testItem("item", "project", "basic", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"basic": workflow}, []string{"project"}, nil)
+	if paused, err := h.engine.Paused(); err != nil || paused {
+		t.Fatalf("initial paused = %v err=%v, want false", paused, err)
+	}
+	if err := h.engine.Pause(true); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.Cancel(item.ID); err == nil {
-		t.Fatal("queued -> cancelled must be rejected")
+	if paused, err := h.engine.Paused(); err != nil || !paused {
+		t.Fatalf("paused = %v err=%v, want true", paused, err)
 	}
-	if err := h.engine.SetQueue(true, 0, 1); err != nil {
+	first := testItem("first", "project", "basic", 0)
+	second := testItem("second", "project", "basic", 1)
+	for _, item := range []store.WorkItem{first, second} {
+		if err := h.engine.StartItem(item); err != nil {
+			t.Fatal(err)
+		}
+		requireItemState(t, h.store, item.ID, StateRunning, "")
+	}
+	if got := len(h.runner.started()); got != 0 {
+		t.Fatalf("paused engine started %d runners", got)
+	}
+	phases, err := h.store.ListWorkItemPhases(first.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	requireItemState(t, h.store, item.ID, StateRunning, "")
+	if len(phases) != 1 || phases[0].Status != "running" {
+		t.Fatalf("held phase attempt = %+v, want one running row", phases)
+	}
+	if err := h.engine.Pause(false); err != nil {
+		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	if len(starts) != 2 || starts[0].Key.ItemID != first.ID || starts[1].Key.ItemID != second.ID {
+		t.Fatalf("released starts = %+v, want FIFO release", starts)
+	}
+	// Repeating the flag value is a no-op: one event per real change.
+	if err := h.engine.Pause(false); err != nil {
+		t.Fatal(err)
+	}
+	want := []EngineState{{Paused: false}, {Paused: true}, {Paused: false}}
+	if got := h.emitter.engineStateEvents(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("engine state events = %+v, want %+v", got, want)
+	}
+}
+
+// TestGlobalPauseLetsInFlightTurnsFinishAndRestsAtThePhaseBoundary pins the
+// documented pause semantics: pausing never interrupts a live turn, and the
+// item that finishes one stays `running` with its next phase held.
+func TestGlobalPauseLetsInFlightTurnsFinishAndRestsAtThePhaseBoundary(t *testing.T) {
+	workflow := def.Workflow{ID: "two-phase", Phases: []def.Phase{
+		agentPhase("one", nil, []def.Route{{To: "two"}}),
+		agentPhase("two", nil, []def.Route{{To: "done"}}),
+	}}
+	h := newHarness(t, Config{}, map[string]def.Workflow{"two-phase": workflow}, []string{"project"}, nil)
+	item := testItem("item", "project", "two-phase", 0)
+	if err := h.engine.StartItem(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.Pause(true); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(h.runner.started()); got != 1 {
+		t.Fatalf("pause disturbed the in-flight turn: %d starts", got)
+	}
 	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	requireItemState(t, h.store, item.ID, StateDone, "")
-	want := []StateEvent{
-		{ItemID: item.ID, ProjectID: item.ProjectID, From: StateQueued, To: StateRunning},
-		{ItemID: item.ID, ProjectID: item.ProjectID, From: StateRunning, To: StateDone},
+	requireItemState(t, h.store, item.ID, StateRunning, "")
+	if got := len(h.runner.started()); got != 1 {
+		t.Fatalf("paused engine started the next phase: %+v", h.runner.started())
 	}
-	if got := h.emitter.stateEvents(item.ID); !reflect.DeepEqual(got, want) {
-		t.Fatalf("state events = %+v, want %+v", got, want)
+	if err := h.engine.Pause(false); err != nil {
+		t.Fatal(err)
 	}
-	wantPhases := []PhaseEvent{
-		{ItemID: item.ID, PhaseID: "work", Attempt: 1, Status: "running"},
-		{ItemID: item.ID, PhaseID: "work", Attempt: 1, Status: "completed"},
-	}
-	if got := h.emitter.phaseEvents(item.ID); !reflect.DeepEqual(got, wantPhases) {
-		t.Fatalf("phase events = %+v, want %+v", got, wantPhases)
-	}
-	if err := h.engine.Resume(item.ID, ""); err == nil {
-		t.Fatal("done -> running must be rejected")
+	starts := h.runner.started()
+	if len(starts) != 2 || starts[1].Key.PhaseID != "two" {
+		t.Fatalf("unpaused starts = %+v, want the held second phase", starts)
 	}
 }
 
 func TestEngineInstanceCannotRestartAfterClose(t *testing.T) {
 	workflow := onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"basic": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"basic": workflow}, []string{"project"}, nil)
 	if err := h.engine.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -328,20 +362,21 @@ func TestEngineInstanceCannotRestartAfterClose(t *testing.T) {
 
 func TestRunnerStartupDoesNotBlockEngineCancellation(t *testing.T) {
 	workflow := onePhaseWorkflow("slow-start", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"slow-start": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{Paused: true}, map[string]def.Workflow{"slow-start": workflow}, []string{"project"}, nil)
+	h.limitProviderCapacity("project", 1)
 	item := testItem("slow", "project", "slow-start", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	block := make(chan struct{})
+	heldBlock := make(chan struct{})
+	h.runner.startWait[item.ID] = block
+	h.runner.startWait["held"] = heldBlock
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
-	block := make(chan struct{})
-	queuedBlock := make(chan struct{})
-	h.runner.startWait[item.ID] = block
-	h.runner.startWait["queued"] = queuedBlock
-	if err := h.engine.Enqueue(testItem("queued", "project", "slow-start", 1)); err != nil {
+	if err := h.engine.StartItem(testItem("held", "project", "slow-start", 1)); err != nil {
 		t.Fatal(err)
 	}
 	startResult := make(chan error, 1)
-	go func() { startResult <- h.engine.SetQueue(true, 0, 1) }()
+	go func() { startResult <- h.engine.Pause(false) }()
 	deadline := time.Now().Add(time.Second)
 	for len(h.runner.started()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
@@ -368,21 +403,25 @@ func TestRunnerStartupDoesNotBlockEngineCancellation(t *testing.T) {
 		t.Fatal("startup caller did not settle after cancellation")
 	}
 	requireItemState(t, h.store, item.ID, StateCancelled, ReasonInterrupted)
-	close(queuedBlock)
+	close(heldBlock)
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	if len(starts) != 2 || starts[1].Key.ItemID != "held" {
+		t.Fatalf("starts = %+v, want the freed capacity to release the held phase", starts)
 	}
 }
 
 func TestFSMTransitionTableIsClosed(t *testing.T) {
-	states := []State{StateQueued, StateRunning, StateNeedsHuman, StateDone, StateFailed, StateCancelled}
+	states := []State{StateRunning, StateNeedsHuman, StateDone, StateFailed, StateCancelled}
 	want := map[State]map[State]bool{
-		StateQueued:     {StateRunning: true},
 		StateRunning:    {StateNeedsHuman: true, StateDone: true, StateFailed: true, StateCancelled: true},
 		StateNeedsHuman: {StateRunning: true},
 		StateDone:       {},
-		StateFailed:     {},
-		StateCancelled:  {},
+		// Rerun is the only way back out of failed.
+		StateFailed:    {StateRunning: true},
+		StateCancelled: {},
 	}
 	for _, from := range states {
 		for _, to := range states {
@@ -395,9 +434,9 @@ func TestFSMTransitionTableIsClosed(t *testing.T) {
 
 func TestNeedsHumanResumeCreatesNewAttempt(t *testing.T) {
 	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "question", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeQuestion, Envelope: questionEnvelope()})
@@ -419,80 +458,11 @@ func TestNeedsHumanResumeCreatesNewAttempt(t *testing.T) {
 	requireItemState(t, h.store, item.ID, StateDone, "")
 }
 
-func TestDrainPriorityCapPauseAndProcessBound(t *testing.T) {
-	workflow := onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 2}, map[string]def.Workflow{"basic": workflow}, []string{"project"}, nil)
-	for _, item := range []struct {
-		id       string
-		position int
-	}{{"last", 2}, {"first", 0}, {"middle", 1}} {
-		if err := h.engine.Enqueue(testItem(item.id, "project", "basic", item.position)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := h.engine.Reorder("project", []string{"middle", "first", "last"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.engine.SetQueue(true, 2, 2); err != nil {
-		t.Fatal(err)
-	}
-	starts := h.runner.started()
-	if len(starts) != 2 || starts[0].Key.ItemID != "middle" || starts[1].Key.ItemID != "first" {
-		t.Fatalf("starts = %+v, want reordered first two", starts)
-	}
-	h.runner.complete(t, "middle", Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
-	if err := h.engine.Sync(); err != nil {
-		t.Fatal(err)
-	}
-	if got := len(h.runner.started()); got != 2 {
-		t.Fatalf("process bound started %d items, want 2", got)
-	}
-	if err := h.engine.SetQueue(true, 0, 2); err != nil {
-		t.Fatal(err)
-	}
-	starts = h.runner.started()
-	if len(starts) != 3 || starts[2].Key.ItemID != "last" {
-		t.Fatalf("resumed starts = %+v", starts)
-	}
-}
-
-func TestSettingsQueueUpdatePreservesProcessBound(t *testing.T) {
-	workflow := onePhaseWorkflow("basic", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"basic": workflow}, []string{"project"}, nil)
-	for index, id := range []string{"one", "two", "three"} {
-		if err := h.engine.Enqueue(testItem(id, "project", "basic", index)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := h.engine.SetQueue(true, 2, 1); err != nil {
-		t.Fatal(err)
-	}
-	active := true
-	if err := h.engine.UpdateQueueSettings(&active, 1); err != nil {
-		t.Fatal(err)
-	}
-	h.runner.complete(t, "one", Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
-	if err := h.engine.Sync(); err != nil {
-		t.Fatal(err)
-	}
-	h.runner.complete(t, "two", Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
-	if err := h.engine.Sync(); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.engine.UpdateQueueSettings(nil, 2); err != nil {
-		t.Fatal(err)
-	}
-	starts := h.runner.started()
-	if len(starts) != 2 || starts[0].Key.ItemID != "one" || starts[1].Key.ItemID != "two" {
-		t.Fatalf("starts after settings update = %+v, want process bound preserved at two", starts)
-	}
-}
-
 func TestAnswerQuestionContinuesPriorThread(t *testing.T) {
 	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "question", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.store.AttachWorkItemPhaseRun(item.ID, "work", 1, "thread-one", "/tmp/narrative.md"); err != nil {
@@ -522,7 +492,7 @@ func TestAnswerQuestionContinuesPriorThread(t *testing.T) {
 
 func TestAnswerQuestionRejections(t *testing.T) {
 	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
 	if err := h.engine.Answer("missing", ""); err == nil {
 		t.Fatal("empty answer succeeded")
 	}
@@ -531,7 +501,7 @@ func TestAnswerQuestionRejections(t *testing.T) {
 	}
 
 	item := testItem("stuck", "project", "question", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeStuck, Envelope: stuckEnvelope()})
@@ -543,11 +513,16 @@ func TestAnswerQuestionRejections(t *testing.T) {
 	}
 }
 
-func TestAnswerQuestionRejectsWhenConcurrencyIsFull(t *testing.T) {
+// TestAnswerQuestionWaitsForProviderCapacity replaces the old "answer is
+// refused when concurrency is full" behavior: with no queue, an answered run
+// re-enters its phase and that phase waits on the provider bound like any
+// other, instead of handing the human an error.
+func TestAnswerQuestionWaitsForProviderCapacity(t *testing.T) {
 	workflow := onePhaseWorkflow("question", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"question": workflow}, []string{"project"}, nil)
+	h.limitProviderCapacity("project", 1)
 	question := testItem("question", "project", "question", 0)
-	if err := h.engine.Enqueue(question); err != nil {
+	if err := h.engine.StartItem(question); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.store.AttachWorkItemPhaseRun(question.ID, "work", 1, "thread-question", "/tmp/narrative.md"); err != nil {
@@ -557,30 +532,25 @@ func TestAnswerQuestionRejectsWhenConcurrencyIsFull(t *testing.T) {
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.Enqueue(testItem("blocker", "project", "question", 1)); err != nil {
+	blocker := testItem("blocker", "project", "question", 1)
+	if err := h.engine.StartItem(blocker); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.Answer(question.ID, "answer"); err == nil {
-		t.Fatal("answer succeeded at full concurrency")
-	}
-}
-
-func TestSetQueueUpdatesConcurrency(t *testing.T) {
-	workflow := onePhaseWorkflow("queue", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"queue": workflow}, []string{"project"}, nil)
-	for _, id := range []string{"one", "two"} {
-		if err := h.engine.Enqueue(testItem(id, "project", "queue", 0)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := h.engine.SetQueue(true, 0, 2); err != nil {
+	if err := h.engine.Answer(question.ID, "answer"); err != nil {
 		t.Fatal(err)
 	}
+	requireItemState(t, h.store, question.ID, StateRunning, "")
 	if got := len(h.runner.started()); got != 2 {
-		t.Fatalf("started %d items, want 2", got)
+		t.Fatalf("runner starts = %d, want the answered phase held behind provider capacity", got)
 	}
-	if err := h.engine.SetQueue(true, 0, 0); err == nil {
-		t.Fatal("invalid concurrency succeeded")
+	h.runner.complete(t, blocker.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	if len(starts) != 3 || starts[2].Key.ItemID != question.ID || starts[2].Key.Attempt != 2 ||
+		starts[2].PriorThreadID != "thread-question" {
+		t.Fatalf("released answer start = %+v", starts)
 	}
 }
 
@@ -588,20 +558,18 @@ func TestGateUsesSeedsAndNamespacedPhaseOutputs(t *testing.T) {
 	workflow := def.Workflow{ID: "routing", Inputs: map[string]def.Variable{
 		"enabled": {Schema: def.JSONSchema{Type: "boolean"}},
 	}, Phases: []def.Phase{
-		{ID: "one", Driver: def.DriverAgent, Outputs: map[string]def.Variable{
-			"ok": {Schema: def.JSONSchema{Type: "boolean"}},
-		}, Gate: def.Gate{Routes: []def.Route{{
+		agentPhase("one", nil, []def.Route{{
 			When: &def.Predicate{All: []def.Predicate{
 				{Eq: &def.Comparison{Ref: "enabled", Value: true}},
 				{Eq: &def.Comparison{Ref: "one.ok", Value: true}},
 			}}, To: "two",
-		}}}},
-		{ID: "two", Driver: def.DriverAgent, Gate: def.Gate{Routes: []def.Route{{To: "done"}}}},
+		}}),
+		agentPhase("two", nil, []def.Route{{To: "done"}}),
 	}}
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"routing": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"routing": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "routing", 0)
 	item.Seeds = json.RawMessage(`{"enabled":true}`)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
@@ -624,9 +592,9 @@ func TestGateUsesSeedsAndNamespacedPhaseOutputs(t *testing.T) {
 func TestGateNoMatchParksWithWiringError(t *testing.T) {
 	predicate := def.Predicate{Eq: &def.Comparison{Ref: "work.ok", Value: true}}
 	workflow := onePhaseWorkflow("no-match", nil, []def.Route{{When: &predicate, To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"no-match": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"no-match": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "no-match", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(false)})
@@ -638,9 +606,9 @@ func TestGateNoMatchParksWithWiringError(t *testing.T) {
 
 func TestExplicitParkCanResumeWithoutHumanDecision(t *testing.T) {
 	workflow := onePhaseWorkflow("park", nil, []def.Route{{Park: "manual-review"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"park": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"park": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "park", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	h.runner.complete(t, item.ID, Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
@@ -659,15 +627,15 @@ func TestExplicitParkCanResumeWithoutHumanDecision(t *testing.T) {
 
 func TestGateLoopExhaustionFallsThroughToNextRoute(t *testing.T) {
 	workflow := def.Workflow{ID: "fallthrough", Phases: []def.Phase{
-		{ID: "build", Driver: def.DriverAgent, Outputs: map[string]def.Variable{"ok": {Schema: def.JSONSchema{Type: "boolean"}}}, Gate: def.Gate{Routes: []def.Route{{To: "review"}}}},
-		{ID: "review", Driver: def.DriverAgent, Outputs: map[string]def.Variable{"ok": {Schema: def.JSONSchema{Type: "boolean"}}}, Gate: def.Gate{Routes: []def.Route{
+		agentPhase("build", nil, []def.Route{{To: "review"}}),
+		agentPhase("review", nil, []def.Route{
 			{Loop: "build", Max: 1},
 			{To: "done"},
-		}}},
+		}),
 	}}
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"fallthrough": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"fallthrough": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "fallthrough", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	for step := 0; step < 4; step++ {
@@ -691,9 +659,9 @@ func TestGateLoopExhaustionFallsThroughToNextRoute(t *testing.T) {
 
 func TestCancellationUsesRunnerPartialEnvelope(t *testing.T) {
 	workflow := onePhaseWorkflow("cancel", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"cancel": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"cancel": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "cancel", 0)
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 	request := h.runner.started()[0]

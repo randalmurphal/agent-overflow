@@ -311,31 +311,33 @@ func TestRetentionDefaultIsThirtyDays(t *testing.T) {
 	}
 }
 
-func TestWorkflowSettingsDefaultsValidationAndSanitization(t *testing.T) {
+func TestWorkflowSettingsDefaultsAndValidation(t *testing.T) {
 	got := NewService(t.TempDir()).Get()
-	if !got.WorkflowQueueActive || got.WorkflowConcurrency != 2 || !got.WorkflowChatEnqueue {
-		t.Fatalf("workflow defaults = active:%t concurrency:%d chat-enqueue:%t", got.WorkflowQueueActive, got.WorkflowConcurrency, got.WorkflowChatEnqueue)
+	if got.WorkflowPaused || !got.WorkflowChatEnqueue {
+		t.Fatalf("workflow defaults = paused:%t chat-enqueue:%t, want false/true", got.WorkflowPaused, got.WorkflowChatEnqueue)
 	}
 	svc := NewService(t.TempDir())
-	updated, err := svc.Update(map[string]any{"workflowQueueActive": false, "workflowConcurrency": 32, "workflowChatEnqueue": false})
+	updated, err := svc.Update(map[string]any{"workflowPaused": true, "workflowChatEnqueue": false})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.WorkflowQueueActive || updated.WorkflowConcurrency != 32 || updated.WorkflowChatEnqueue {
+	if !updated.WorkflowPaused || updated.WorkflowChatEnqueue {
 		t.Fatalf("workflow settings update = %+v", updated)
 	}
-	if _, err := svc.Update(map[string]any{"workflowConcurrency": 0}); err == nil {
-		t.Fatal("zero workflow concurrency succeeded")
+	for field, value := range map[string]any{"workflowPaused": "yes", "workflowChatEnqueue": "yes"} {
+		if _, err := svc.Update(map[string]any{field: value}); err == nil {
+			t.Errorf("non-boolean %s succeeded", field)
+		}
 	}
-	if _, err := svc.Update(map[string]any{"workflowChatEnqueue": "yes"}); err == nil {
-		t.Fatal("non-boolean workflow chat enqueue succeeded")
-	}
+	// A settings file written before the queue was removed still loads: the
+	// dropped keys are ignored and the pause flag takes its default.
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"workflowConcurrency":99}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"),
+		[]byte(`{"workflowQueueActive":false,"workflowConcurrency":99}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := NewService(dir).Get().WorkflowConcurrency; got != DefaultSettings.WorkflowConcurrency {
-		t.Fatalf("sanitized workflow concurrency = %d, want %d", got, DefaultSettings.WorkflowConcurrency)
+	if legacy := NewService(dir).Get(); legacy.WorkflowPaused != DefaultSettings.WorkflowPaused {
+		t.Fatalf("legacy queue settings file yielded paused = %t, want %t", legacy.WorkflowPaused, DefaultSettings.WorkflowPaused)
 	}
 }
 

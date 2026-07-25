@@ -97,15 +97,13 @@ type App struct {
 	workflowAutoDispositionWG   sync.WaitGroup
 	workflowAutoDispositionIDs  []string
 	workflowAutoDispositionBusy bool
-	workflowNotificationsMu     sync.Mutex
-	// workflowChatProposalMu serializes queue/dismiss decisions for persisted
-	// chat proposal cards so two local clicks cannot enqueue one proposal twice.
-	workflowChatProposalMu      sync.Mutex
-	workflowNotificationTallies map[string]workflowNotificationTally
-	workflowQueueActive         bool
-	workflowProjectQueuePaused  map[string]bool
-	workflowDigestSlots         chan struct{}
-	generateWorkflowDigestFn    func(context.Context, store.WorkItem, WorkflowDigest) (WorkflowDigest, error)
+	// workflowChatProposalMu serializes start/dismiss decisions for persisted
+	// chat proposal cards so two local clicks cannot start one proposal twice.
+	workflowChatProposalMu sync.Mutex
+	// workflowDigestMu guards the lazily allocated digest-generator slots.
+	workflowDigestMu         sync.Mutex
+	workflowDigestSlots      chan struct{}
+	generateWorkflowDigestFn func(context.Context, store.WorkItem, WorkflowDigest) (WorkflowDigest, error)
 	// turnObservers fan provider events out to internal App features after
 	// triage handling has been attempted. Each registration lives until its
 	// returned unsubscribe function runs; the built-in discussion observer

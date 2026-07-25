@@ -16,8 +16,6 @@ var ErrProjectPathInUse = errors.New("store: project path already in use")
 // the app layer has explicitly torn down every contained thread.
 var ErrProjectHasThreads = errors.New("store: project still has threads")
 
-const MaxProjectWorkflowConcurrency = 32
-
 // ProjectWithCounts is the sidebar-lightweight view: the project row plus
 // its thread count and the timestamp of the most recently touched thread.
 // LastActive is 0 when the project has no active (non-archived) threads.
@@ -27,20 +25,23 @@ type ProjectWithCounts struct {
 	LastActive  int64   `json:"lastActive,omitempty"`
 }
 
-const projectColumns = `id, path, name, slug, color, sort_position, workflow_queue_paused, workflow_concurrency, created_at, updated_at, archived`
+// projectColumns omits the dead workflow_queue_paused / workflow_concurrency
+// columns (migration v29). The work queue was removed in workflows rev 2; the
+// columns survive only because SQLite refuses DROP COLUMN on a CHECK-bearing
+// column and rebuilding the FK-parent projects table to delete two unread
+// integers is not worth the blast radius. Nothing reads or writes them.
+const projectColumns = `id, path, name, slug, color, sort_position, created_at, updated_at, archived`
 
 func scanProject(scanner interface{ Scan(...any) error }) (Project, error) {
 	var p Project
-	var archived, workflowQueuePaused int
+	var archived int
 	if err := scanner.Scan(
 		&p.ID, &p.Path, &p.Name, &p.Slug, &p.Color, &p.SortPosition,
-		&workflowQueuePaused, &p.WorkflowConcurrency,
 		&p.CreatedAt, &p.UpdatedAt, &archived,
 	); err != nil {
 		return Project{}, err
 	}
 	p.Archived = archived != 0
-	p.WorkflowQueuePaused = workflowQueuePaused != 0
 	return p, nil
 }
 
@@ -66,10 +67,9 @@ func (s *Store) CreateProject(p Project) error {
 		return fmt.Errorf("store: create project: %w", err)
 	}
 	_, err = tx.Exec(
-		`INSERT INTO projects (id, path, name, slug, color, sort_position, workflow_queue_paused, workflow_concurrency, created_at, updated_at, archived)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO projects (id, path, name, slug, color, sort_position, created_at, updated_at, archived)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.Path, p.Name, p.Slug, p.Color, p.SortPosition,
-		boolToInt(p.WorkflowQueuePaused), p.WorkflowConcurrency,
 		p.CreatedAt, p.UpdatedAt, boolToInt(p.Archived),
 	)
 	if err != nil {
@@ -162,7 +162,6 @@ func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
 	rows, err := s.db.Query(
 		`SELECT p.id, p.path, p.name, p.slug, p.color, p.sort_position,
-		        p.workflow_queue_paused, p.workflow_concurrency,
 		        p.created_at, p.updated_at, p.archived,
 		        COALESCE(COUNT(t.id), 0) AS thread_count,
 		        COALESCE(
@@ -186,61 +185,21 @@ func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
 	var out []ProjectWithCounts
 	for rows.Next() {
 		var (
-			pwc                 ProjectWithCounts
-			archived            int
-			workflowQueuePaused int
+			pwc      ProjectWithCounts
+			archived int
 		)
 		if err := rows.Scan(
 			&pwc.Project.ID, &pwc.Project.Path, &pwc.Project.Name, &pwc.Project.Slug, &pwc.Project.Color,
-			&pwc.Project.SortPosition, &workflowQueuePaused, &pwc.Project.WorkflowConcurrency,
+			&pwc.Project.SortPosition,
 			&pwc.Project.CreatedAt, &pwc.Project.UpdatedAt, &archived,
 			&pwc.ThreadCount, &pwc.LastActive,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan project-with-counts row: %w", err)
 		}
 		pwc.Project.Archived = archived != 0
-		pwc.Project.WorkflowQueuePaused = workflowQueuePaused != 0
 		out = append(out, pwc)
 	}
 	return out, rows.Err()
-}
-
-// UpdateProjectWorkflowQueue persists either or both project-level workflow
-// queue controls and returns the complete updated project row.
-func (s *Store) UpdateProjectWorkflowQueue(id string, paused *bool, concurrency *int) (Project, error) {
-	if paused == nil && concurrency == nil {
-		return Project{}, errors.New("store: update project workflow queue: no settings supplied")
-	}
-	if concurrency != nil && (*concurrency < 0 || *concurrency > MaxProjectWorkflowConcurrency) {
-		return Project{}, fmt.Errorf(
-			"store: update project workflow queue: concurrency %d outside 0..%d",
-			*concurrency, MaxProjectWorkflowConcurrency,
-		)
-	}
-
-	sets := make([]string, 0, 3)
-	args := make([]any, 0, 4)
-	if paused != nil {
-		sets = append(sets, "workflow_queue_paused = ?")
-		args = append(args, boolToInt(*paused))
-	}
-	if concurrency != nil {
-		sets = append(sets, "workflow_concurrency = ?")
-		args = append(args, *concurrency)
-	}
-	sets = append(sets, "updated_at = ?")
-	args = append(args, nowMillis(), id)
-
-	result, err := s.db.Exec(
-		`UPDATE projects SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...,
-	)
-	if err != nil {
-		return Project{}, fmt.Errorf("store: update project workflow queue %s: %w", id, err)
-	}
-	if err := requireRowsAffected(result, fmt.Sprintf("store: update project workflow queue %s", id)); err != nil {
-		return Project{}, err
-	}
-	return s.GetProject(id)
 }
 
 // UpdateProjectName overwrites the display name. Path is immutable after

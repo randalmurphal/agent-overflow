@@ -158,7 +158,7 @@ func (a *App) handleWorkflowMCPToolCall(_ context.Context, threadID string, argu
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Workflow proposal %s was recorded and is awaiting user confirmation. Nothing has been enqueued.", item.ID), nil
+	return fmt.Sprintf("Workflow proposal %s was recorded and is awaiting user confirmation. Nothing has started.", item.ID), nil
 }
 
 func (a *App) validateWorkflowChatProposal(input workflowChatToolArguments) (store.Project, def.ResolvedWorkflow, string, json.RawMessage, error) {
@@ -238,9 +238,11 @@ func (a *App) persistWorkflowChatProposal(threadID string, meta workflowChatProp
 	return item, nil
 }
 
-// WorkflowQueueChatProposal resolves a pending card by enqueueing through the
-// normal workflow path with agent provenance. Edited intake values are passed
-// here so the persisted receipt matches the run the user approved.
+// WorkflowQueueChatProposal resolves a pending card by starting the run
+// through the normal workflow path with agent provenance. Edited intake values
+// are passed here so the persisted receipt matches the run the user approved.
+// The method and settings names still read "queue" because they are wire and
+// settings-file identifiers; the behaviour behind them is a direct start.
 func (a *App) WorkflowQueueChatProposal(threadID, proposalID, projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, baseBranch string, stepMode bool) (store.WorkItem, error) {
 	a.workflowChatProposalMu.Lock()
 	defer a.workflowChatProposalMu.Unlock()
@@ -253,7 +255,7 @@ func (a *App) WorkflowQueueChatProposal(threadID, proposalID, projectID, workflo
 		return store.WorkItem{}, err
 	}
 	if !found {
-		workItem, err = a.enqueueWorkflowItem(projectID, workflowID, workflowScope, goal, seeds, (*profile.Budget)(nil), baseBranch, stepMode, "agent", proposalID)
+		workItem, err = a.startWorkflowRun(projectID, workflowID, workflowScope, goal, seeds, (*profile.Budget)(nil), baseBranch, stepMode, "agent", proposalID)
 		if err != nil {
 			return store.WorkItem{}, err
 		}
@@ -266,7 +268,7 @@ func (a *App) WorkflowQueueChatProposal(threadID, proposalID, projectID, workflo
 	if err != nil {
 		return store.WorkItem{}, fmt.Errorf("queue workflow proposal: reload workflow: %w", err)
 	}
-	meta.State = "queued"
+	meta.State = "started"
 	meta.ProjectID, meta.ProjectName, meta.ProjectColor = projectRow.ID, projectRow.Name, projectRow.Color
 	meta.WorkflowID, meta.WorkflowName, meta.WorkflowScope = workItem.WorkflowID, resolved.Workflow.Name, workItem.WorkflowScope
 	meta.Goal, meta.Seeds, meta.BaseBranch, meta.StepMode = workItem.Goal, workItem.Seeds, workItem.BaseBranch, workItem.StepMode

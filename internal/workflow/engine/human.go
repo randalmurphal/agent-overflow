@@ -76,18 +76,12 @@ func (e *Engine) takeOver(itemID string) error {
 }
 
 func (e *Engine) completeTakeover(itemID string) error {
-	if e.activeSlots >= e.config.GlobalConcurrency {
-		return fmt.Errorf("complete takeover %q: global concurrency is full", itemID)
-	}
 	item, err := e.loadParked(itemID)
 	if err != nil {
 		return err
 	}
 	if Reason(item.item.Reason) != ReasonTakenOver {
 		return fmt.Errorf("complete takeover %q: item reason is %q, want %q", itemID, item.item.Reason, ReasonTakenOver)
-	}
-	if !e.projectHasCapacity(item.item.ProjectID) {
-		return fmt.Errorf("complete takeover %q: project concurrency is full", itemID)
 	}
 	phases, err := e.store.ListWorkItemPhases(itemID)
 	if err != nil {
@@ -104,10 +98,7 @@ func (e *Engine) completeTakeover(itemID string) error {
 	item.takeoverFinalize = true
 	item.attempt = 0
 	e.items[itemID] = item
-	if err := e.enterPhase(item); err != nil {
-		return err
-	}
-	return e.schedule()
+	return e.enterPhase(item)
 }
 
 func (e *Engine) answer(itemID, answer string) error {
@@ -117,18 +108,12 @@ func (e *Engine) answer(itemID, answer string) error {
 	if len(answer) > maxHumanNoteBytes {
 		return fmt.Errorf("answer question %q: answer is %d bytes; maximum is %d", itemID, len(answer), maxHumanNoteBytes)
 	}
-	if e.activeSlots >= e.config.GlobalConcurrency {
-		return fmt.Errorf("answer question %q: global concurrency is full", itemID)
-	}
 	item, err := e.loadParked(itemID)
 	if err != nil {
 		return err
 	}
 	if Reason(item.item.Reason) != ReasonQuestion {
 		return fmt.Errorf("answer question %q: item reason is %q, want %q", itemID, item.item.Reason, ReasonQuestion)
-	}
-	if !e.projectHasCapacity(item.item.ProjectID) {
-		return fmt.Errorf("answer question %q: project concurrency is full", itemID)
 	}
 	phases, err := e.store.ListWorkItemPhases(itemID)
 	if err != nil {
@@ -145,10 +130,7 @@ func (e *Engine) answer(itemID, answer string) error {
 	item.priorThreadID = current.ThreadID
 	item.attempt = 0
 	e.items[itemID] = item
-	if err := e.enterPhase(item); err != nil {
-		return err
-	}
-	return e.schedule()
+	return e.enterPhase(item)
 }
 
 func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note string) error {
@@ -158,18 +140,12 @@ func (e *Engine) resolveHumanGate(itemID string, choice HumanDecision, note stri
 	if len(note) > maxHumanNoteBytes {
 		return fmt.Errorf("resolve human gate %q: note is %d bytes; maximum is %d", itemID, len(note), maxHumanNoteBytes)
 	}
-	if e.activeSlots >= e.config.GlobalConcurrency {
-		return fmt.Errorf("resolve human gate %q: global concurrency is full", itemID)
-	}
 	item, err := e.loadParked(itemID)
 	if err != nil {
 		return err
 	}
 	if Reason(item.item.Reason) != ReasonGate {
 		return fmt.Errorf("resolve human gate %q: item reason is %q, want %q", itemID, item.item.Reason, ReasonGate)
-	}
-	if !e.projectHasCapacity(item.item.ProjectID) {
-		return fmt.Errorf("resolve human gate %q: project concurrency is full", itemID)
 	}
 	phase, ok := findPhase(item.workflow, item.phaseID)
 	if !ok {
@@ -360,6 +336,8 @@ func (e *Engine) continueHumanDecision(item *runtimeItem, decision def.RouteDeci
 		item.phaseID = decision.Target
 		item.attempt = 0
 		item.feedback = feedback
+		// The parked phase's locks were released at park time; hand any freed
+		// capacity to the longest-waiting phase before re-entering.
 		waitingErr := e.startWaiting()
 		return errors.Join(waitingErr, e.enterPhase(item))
 	case def.DecisionDone:

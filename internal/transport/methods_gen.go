@@ -274,8 +274,8 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowDiscardItem", ID: 2163033761},                  // main.App.WorkflowDiscardItem
 	{Name: "WorkflowDiscussPR", ID: 1236472344},                    // main.App.WorkflowDiscussPR
 	{Name: "WorkflowDismissChatProposal", ID: 1877476344},          // main.App.WorkflowDismissChatProposal
-	{Name: "WorkflowEnqueueItem", ID: 683191625},                   // main.App.WorkflowEnqueueItem
 	{Name: "WorkflowFetchPRReviewComments", ID: 819019128},         // main.App.WorkflowFetchPRReviewComments
+	{Name: "WorkflowGetEngineState", ID: 2130001947},               // main.App.WorkflowGetEngineState
 	{Name: "WorkflowGetItem", ID: 70120675},                        // main.App.WorkflowGetItem
 	{Name: "WorkflowGetJobNotes", ID: 3798011060},                  // main.App.WorkflowGetJobNotes
 	{Name: "WorkflowListDefinitions", ID: 2064216126},              // main.App.WorkflowListDefinitions
@@ -287,15 +287,13 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowOpenTriageAgent", ID: 1552981489},              // main.App.WorkflowOpenTriageAgent
 	{Name: "WorkflowOpenTriageThread", ID: 3525577760},             // main.App.WorkflowOpenTriageThread
 	{Name: "WorkflowQueueChatProposal", ID: 2517836963},            // main.App.WorkflowQueueChatProposal
-	{Name: "WorkflowReenqueueFailedItem", ID: 4280612743},          // main.App.WorkflowReenqueueFailedItem
-	{Name: "WorkflowRemoveQueuedItem", ID: 2004111234},             // main.App.WorkflowRemoveQueuedItem
-	{Name: "WorkflowReorderQueue", ID: 1214686266},                 // main.App.WorkflowReorderQueue
+	{Name: "WorkflowRerunItem", ID: 1986594501},                    // main.App.WorkflowRerunItem
 	{Name: "WorkflowResolveGate", ID: 3348479803},                  // main.App.WorkflowResolveGate
 	{Name: "WorkflowResumeItem", ID: 3138507556},                   // main.App.WorkflowResumeItem
 	{Name: "WorkflowSendPRReviewCommentsToThread", ID: 1172404443}, // main.App.WorkflowSendPRReviewCommentsToThread
+	{Name: "WorkflowSetGlobalPause", ID: 774492663},                // main.App.WorkflowSetGlobalPause
 	{Name: "WorkflowSetJobNotes", ID: 1934298592},                  // main.App.WorkflowSetJobNotes
-	{Name: "WorkflowSetQueue", ID: 3526159695},                     // main.App.WorkflowSetQueue
-	{Name: "WorkflowUpdateProjectQueue", ID: 778072333},            // main.App.WorkflowUpdateProjectQueue
+	{Name: "WorkflowStartRun", ID: 1009082601},                     // main.App.WorkflowStartRun
 	{Name: "WriteTerminal", ID: 146795716},                         // main.App.WriteTerminal
 	{Name: "WriteThreadWorkspaceFile", ID: 3895036895},             // main.App.WriteThreadWorkspaceFile
 }

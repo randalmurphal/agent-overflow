@@ -123,17 +123,6 @@ func (s workflowDefinitionSource) Resolve(ctx context.Context, item store.WorkIt
 
 func (a *App) initWorkflowEngine(dataRoot string) error {
 	settingsSnapshot := a.currentSettings()
-	projects, err := a.store.ListProjects()
-	if err != nil {
-		return fmt.Errorf("initialize workflow engine: list project queue settings: %w", err)
-	}
-	projectQueues := make([]engine.ProjectQueueConfig, 0, len(projects))
-	for _, projectRow := range projects {
-		projectQueues = append(projectQueues, engine.ProjectQueueConfig{
-			ProjectID: projectRow.ID, Paused: projectRow.WorkflowQueuePaused,
-			Concurrency: projectRow.WorkflowConcurrency,
-		})
-	}
 	profiles := workflowProfileSource{store: a.store, configRoot: dataRoot}
 	runner := newWorkflowAppRunner(a, dataRoot, profiles)
 	// Live workflow turns are the only turns that need work-item usage
@@ -149,10 +138,7 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 	workflowEngine, err := engine.New(
 		a.store, runner, workflowEmitter{app: a, emit: a.emitWithReplay()}, definitions, profiles,
 		workflowSpendSource{store: a.store},
-		engine.Config{
-			Active: settingsSnapshot.WorkflowQueueActive, GlobalConcurrency: settingsSnapshot.WorkflowConcurrency,
-			ProjectQueues: projectQueues,
-		},
+		engine.Config{Paused: settingsSnapshot.WorkflowPaused},
 	)
 	if err != nil {
 		if a.triage != nil {
@@ -183,11 +169,14 @@ func (a *App) requireWorkflowEngine() (*engine.Engine, error) {
 	return a.workflowEngine, nil
 }
 
-func (a *App) WorkflowEnqueueItem(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, budget *profile.Budget, baseBranch string, stepMode bool) (store.WorkItem, error) {
-	return a.enqueueWorkflowItem(projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode, "manual", "")
+// WorkflowStartRun is the one start path every producer calls. The run begins
+// immediately; contention shows up as its first phase waiting on resource
+// capacity, never as a queued item.
+func (a *App) WorkflowStartRun(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, budget *profile.Budget, baseBranch string, stepMode bool) (store.WorkItem, error) {
+	return a.startWorkflowRun(projectID, workflowID, workflowScope, goal, seeds, budget, baseBranch, stepMode, "manual", "")
 }
 
-func (a *App) enqueueWorkflowItem(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, budget *profile.Budget, baseBranch string, stepMode bool, source, sourceRef string) (store.WorkItem, error) {
+func (a *App) startWorkflowRun(projectID, workflowID, workflowScope, goal string, seeds json.RawMessage, budget *profile.Budget, baseBranch string, stepMode bool, source, sourceRef string) (store.WorkItem, error) {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return store.WorkItem{}, err
@@ -198,14 +187,14 @@ func (a *App) enqueueWorkflowItem(projectID, workflowID, workflowScope, goal str
 	baseBranch = strings.TrimSpace(baseBranch)
 	scope := def.Scope(strings.TrimSpace(workflowScope))
 	if projectID == "" || workflowID == "" || goal == "" {
-		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: project id, workflow id, and goal are required")
+		return store.WorkItem{}, fmt.Errorf("start workflow run: project id, workflow id, and goal are required")
 	}
 	if scope != def.ScopeProject && scope != def.ScopeShared {
-		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: scope must be project or shared")
+		return store.WorkItem{}, fmt.Errorf("start workflow run: scope must be project or shared")
 	}
 	if baseBranch != "" {
 		if err := gitops.ValidateBranchName(baseBranch); err != nil {
-			return store.WorkItem{}, fmt.Errorf("enqueue workflow item: invalid base branch: %w", err)
+			return store.WorkItem{}, fmt.Errorf("start workflow run: invalid base branch: %w", err)
 		}
 	}
 	if validation := profile.ValidateBudget(budget); !validation.Valid() {
@@ -213,29 +202,29 @@ func (a *App) enqueueWorkflowItem(projectID, workflowID, workflowScope, goal str
 		for _, finding := range validation.Findings {
 			messages = append(messages, finding.Error())
 		}
-		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %s", strings.Join(messages, "; "))
+		return store.WorkItem{}, fmt.Errorf("start workflow run: %s", strings.Join(messages, "; "))
 	}
 	var encodedBudget json.RawMessage
 	if budget != nil {
 		encodedBudget, err = json.Marshal(budget)
 		if err != nil {
-			return store.WorkItem{}, fmt.Errorf("enqueue workflow item: encode budget: %w", err)
+			return store.WorkItem{}, fmt.Errorf("start workflow run: encode budget: %w", err)
 		}
 	}
 	projectRow, err := a.store.GetProject(projectID)
 	if err != nil {
-		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %w", err)
+		return store.WorkItem{}, fmt.Errorf("start workflow run: %w", err)
 	}
 	if projectRow.Archived {
-		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: project %q is archived", projectRow.Name)
+		return store.WorkItem{}, fmt.Errorf("start workflow run: project %q is archived", projectRow.Name)
 	}
 	// Definition/profile errors are synchronous validation failures, not
 	// provisioning failures. Resolve before persistence so an unknown or broken
-	// workflow never enters the queue under the fire-and-forget start contract.
+	// workflow is refused at the call under the fire-and-forget start contract.
 	profiles := workflowProfileSource{store: a.store, configRoot: a.workflowDataRoot()}
 	projectProfile, err := profiles.Profile(a.lifeCtx(), projectID)
 	if err != nil {
-		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: load project profile: %w", err)
+		return store.WorkItem{}, fmt.Errorf("start workflow run: load project profile: %w", err)
 	}
 	if baseBranch == "" {
 		baseBranch = strings.TrimSpace(projectProfile.BaseBranch)
@@ -245,36 +234,32 @@ func (a *App) enqueueWorkflowItem(projectID, workflowID, workflowScope, goal str
 		ProjectID: projectID, WorkflowID: workflowID, WorkflowScope: string(scope),
 	})
 	if err != nil {
-		return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %w", err)
+		return store.WorkItem{}, fmt.Errorf("start workflow run: %w", err)
 	}
 	normalizedSeeds := append(json.RawMessage(nil), seeds...)
 	// Chat proposals are untrusted agent-produced input and must be checked at
 	// both proposal time and the approval commit point (the user may edit it).
-	// Preserve the established manual/harness enqueue contract, whose callers
+	// Preserve the established manual/harness start contract, whose callers
 	// may intentionally let the workflow runner derive values from Goal.
 	if source == "agent" {
 		seedValues, encodedSeeds, err := decodeWorkflowSeeds(seeds)
 		if err != nil {
-			return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %w", err)
+			return store.WorkItem{}, fmt.Errorf("start workflow run: %w", err)
 		}
 		if validationErrors := def.ValidateInputs(workflow, seedValues); len(validationErrors) > 0 {
-			return store.WorkItem{}, fmt.Errorf("enqueue workflow item: %s", strings.Join(validationErrors, "; "))
+			return store.WorkItem{}, fmt.Errorf("start workflow run: %s", strings.Join(validationErrors, "; "))
 		}
 		normalizedSeeds = encodedSeeds
-	}
-	sortPosition, err := a.store.NextWorkItemSortPosition(projectID)
-	if err != nil {
-		return store.WorkItem{}, err
 	}
 	item := store.WorkItem{
 		ID: uuid.NewString(), ProjectID: projectID, Goal: goal,
 		WorkflowID: workflowID, WorkflowScope: string(scope),
-		State: string(engine.StateQueued), SortPosition: sortPosition,
+		State: string(engine.StateRunning),
 		Seeds: normalizedSeeds, Budget: encodedBudget,
 		BaseBranch: baseBranch, StepMode: stepMode, Source: source, SourceRef: sourceRef,
 		CreatedAt: time.Now().UnixMilli(),
 	}
-	if err := workflowEngine.EnqueueDetachedStarts(item); err != nil {
+	if err := workflowEngine.StartItemDetachedStarts(item); err != nil {
 		return store.WorkItem{}, err
 	}
 	return a.store.GetWorkItem(item.ID)
@@ -433,67 +418,38 @@ func (a *App) WorkflowResolveGate(itemID, decision, note string) error {
 	return workflowEngine.ResolveHumanGate(itemID, engine.HumanDecision(decision), note)
 }
 
-func (a *App) WorkflowReorderQueue(projectID string, orderedIDs []string) error {
+// WorkflowSetGlobalPause toggles the one engine-level kill switch: no new
+// phase starts anywhere while paused, in-flight turns finish. It is persisted
+// before it is applied, so a restart recovers the requested state even if
+// shutdown races the live update.
+func (a *App) WorkflowSetGlobalPause(paused bool) error {
 	workflowEngine, err := a.requireWorkflowEngine()
 	if err != nil {
 		return err
-	}
-	return workflowEngine.Reorder(projectID, orderedIDs)
-}
-
-// WorkflowUpdateProjectQueue persists one project's queue controls before
-// applying them to the live scheduler. A restart therefore recovers the
-// requested state even if shutdown races the in-memory update.
-func (a *App) WorkflowUpdateProjectQueue(projectID string, paused *bool, concurrency *int) error {
-	workflowEngine, err := a.requireWorkflowEngine()
-	if err != nil {
-		return err
-	}
-	projectID = strings.TrimSpace(projectID)
-	if projectID == "" {
-		return fmt.Errorf("update project workflow queue: project id is required")
-	}
-	projectRow, err := a.store.GetProject(projectID)
-	if err != nil {
-		return fmt.Errorf("update project workflow queue: %w", err)
-	}
-	if projectRow.Archived {
-		return fmt.Errorf("update project workflow queue: project %q is archived", projectRow.Name)
-	}
-	updated, err := a.store.UpdateProjectWorkflowQueue(projectID, paused, concurrency)
-	if err != nil {
-		return err
-	}
-	if err := workflowEngine.UpdateProjectQueueSettingsDetachedStarts(
-		projectID, paused, updated.WorkflowConcurrency,
-	); err != nil {
-		return fmt.Errorf("update project workflow queue: apply live settings: %w", err)
-	}
-	return nil
-}
-
-func (a *App) WorkflowSetQueue(active bool, maxStarts, concurrency int) error {
-	workflowEngine, err := a.requireWorkflowEngine()
-	if err != nil {
-		return err
-	}
-	if concurrency < 1 || concurrency > engine.MaxGlobalConcurrency {
-		return fmt.Errorf("set workflow queue: concurrency must be between 1 and %d", engine.MaxGlobalConcurrency)
 	}
 	previous := a.currentSettings()
-	if _, err := a.settings.Update(map[string]any{
-		"workflowQueueActive": active, "workflowConcurrency": concurrency,
-	}); err != nil {
+	if _, err := a.settings.Update(map[string]any{"workflowPaused": paused}); err != nil {
 		return err
 	}
-	if err := workflowEngine.SetQueueDetachedStarts(active, maxStarts, concurrency); err != nil {
-		_, rollbackErr := a.settings.Update(map[string]any{
-			"workflowQueueActive": previous.WorkflowQueueActive,
-			"workflowConcurrency": previous.WorkflowConcurrency,
-		})
+	if err := workflowEngine.PauseDetachedStarts(paused); err != nil {
+		_, rollbackErr := a.settings.Update(map[string]any{"workflowPaused": previous.WorkflowPaused})
 		return errors.Join(err, rollbackErr)
 	}
 	return nil
+}
+
+// WorkflowGetEngineState reports the live global pause flag. The engine is the
+// authority; settings are only its restart-surviving copy.
+func (a *App) WorkflowGetEngineState() (engine.EngineState, error) {
+	workflowEngine, err := a.requireWorkflowEngine()
+	if err != nil {
+		return engine.EngineState{}, err
+	}
+	paused, err := workflowEngine.Paused()
+	if err != nil {
+		return engine.EngineState{}, err
+	}
+	return engine.EngineState{Paused: paused}, nil
 }
 
 func (a *App) WorkflowListItems(projectID string) ([]store.WorkItem, error) {
@@ -526,7 +482,6 @@ type WorkflowItemView struct {
 	WorkflowScope  string          `json:"workflowScope"`
 	State          string          `json:"state"`
 	Reason         string          `json:"reason,omitempty"`
-	SortPosition   int             `json:"sortPosition"`
 	Seeds          json.RawMessage `json:"seeds,omitempty"`
 	StepMode       bool            `json:"stepMode"`
 	WorktreePath   string          `json:"worktreePath,omitempty"`
@@ -606,8 +561,7 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 		Item: WorkflowItemView{
 			ID: item.ID, ProjectID: item.ProjectID, Goal: item.Goal,
 			WorkflowID: item.WorkflowID, WorkflowScope: item.WorkflowScope,
-			State: item.State, Reason: item.Reason, SortPosition: item.SortPosition,
-			Seeds: item.Seeds, StepMode: item.StepMode, WorktreePath: item.WorktreePath,
+			State: item.State, Reason: item.Reason, Seeds: item.Seeds, StepMode: item.StepMode, WorktreePath: item.WorktreePath,
 			Branch: item.Branch, BaseBranch: item.BaseBranch, Budget: item.Budget,
 			Source: item.Source, SourceRef: item.SourceRef, TriageThreadID: item.TriageThreadID,
 			Disposition: item.Disposition, Digest: item.Digest, CreatedAt: item.CreatedAt,

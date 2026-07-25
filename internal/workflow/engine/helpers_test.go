@@ -200,14 +200,14 @@ func (f *fakeEmitter) errorEvents(itemID string) []ErrorEvent {
 	return result
 }
 
-func (f *fakeEmitter) queueEvents() []QueueEvent {
+func (f *fakeEmitter) engineStateEvents() []EngineState {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var result []QueueEvent
+	var result []EngineState
 	for _, event := range f.events {
-		queue, ok := event.payload.(QueueEvent)
-		if event.name == "workflow:queue-state" && ok {
-			result = append(result, queue)
+		state, ok := event.payload.(EngineState)
+		if event.name == "workflow:engine-state" && ok {
+			result = append(result, state)
 		}
 	}
 	return result
@@ -222,13 +222,31 @@ type testHarness struct {
 	spend    *fakeSpendSource
 }
 
+// harnessOptions configures a test engine. `capacities` is applied to the
+// project profiles before Start, so a test can make the rebuild itself run
+// under a specific resource bound.
+type harnessOptions struct {
+	config      Config
+	workflows   map[string]def.Workflow
+	projectIDs  []string
+	capacities  map[string]map[string]int
+	beforeStart func(*store.Store)
+}
+
 func newHarness(t *testing.T, config Config, workflows map[string]def.Workflow, projectIDs []string, beforeStart func(*store.Store)) *testHarness {
+	t.Helper()
+	return newHarnessWith(t, harnessOptions{
+		config: config, workflows: workflows, projectIDs: projectIDs, beforeStart: beforeStart,
+	})
+}
+
+func newHarnessWith(t *testing.T, options harnessOptions) *testHarness {
 	t.Helper()
 	database, err := store.New(filepath.Join(t.TempDir(), "engine.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for index, projectID := range projectIDs {
+	for index, projectID := range options.projectIDs {
 		if err := database.CreateProject(store.Project{
 			ID: projectID, Path: filepath.Join(t.TempDir(), projectID), Name: projectID,
 			SortPosition: index, CreatedAt: 1, UpdatedAt: 1,
@@ -237,17 +255,21 @@ func newHarness(t *testing.T, config Config, workflows map[string]def.Workflow, 
 			t.Fatal(err)
 		}
 	}
-	if beforeStart != nil {
-		beforeStart(database)
+	if options.beforeStart != nil {
+		options.beforeStart(database)
 	}
 	runner := newFakeRunner()
 	emitter := &fakeEmitter{}
 	profiles := &fakeProfiles{profiles: make(map[string]*profile.Profile)}
 	spend := &fakeSpendSource{spends: make(map[string]Spend), errs: make(map[string]error)}
-	for _, projectID := range projectIDs {
-		profiles.profiles[projectID] = &profile.Profile{Capacities: make(map[string]int)}
+	for _, projectID := range options.projectIDs {
+		capacities := make(map[string]int, len(options.capacities[projectID]))
+		for name, capacity := range options.capacities[projectID] {
+			capacities[name] = capacity
+		}
+		profiles.profiles[projectID] = &profile.Profile{Capacities: capacities}
 	}
-	engine, err := New(database, runner, emitter, &fakeDefinitions{workflows: workflows}, profiles, spend, config)
+	engine, err := New(database, runner, emitter, &fakeDefinitions{workflows: options.workflows}, profiles, spend, options.config)
 	if err != nil {
 		database.Close()
 		t.Fatal(err)
@@ -268,20 +290,39 @@ func newHarness(t *testing.T, config Config, workflows map[string]def.Workflow, 
 	return &testHarness{store: database, engine: engine, runner: runner, emitter: emitter, profiles: profiles, spend: spend}
 }
 
-func testItem(id, projectID, workflowID string, position int) store.WorkItem {
+// testItem builds an admissible run record. `ordinal` only spaces created_at
+// apart so list order is deterministic; there is no queue rank to set.
+func testItem(id, projectID, workflowID string, ordinal int) store.WorkItem {
 	return store.WorkItem{
 		ID: id, ProjectID: projectID, Goal: id, WorkflowID: workflowID,
-		WorkflowScope: "shared", State: string(StateQueued), SortPosition: position,
-		Seeds: json.RawMessage(`{}`), Source: "manual", CreatedAt: int64(position + 10),
+		WorkflowScope: "shared", State: string(StateRunning),
+		Seeds: json.RawMessage(`{}`), Source: "manual", CreatedAt: int64(ordinal + 10),
 	}
 }
 
 func onePhaseWorkflow(id string, resources []string, routes []def.Route) def.Workflow {
-	return def.Workflow{ID: id, Phases: []def.Phase{{
-		ID: "work", Driver: def.DriverAgent, Resources: resources,
-		Outputs: map[string]def.Variable{"ok": {Schema: def.JSONSchema{Type: "boolean"}}},
-		Gate:    def.Gate{Routes: routes},
-	}}}
+	return def.Workflow{ID: id, Phases: []def.Phase{agentPhase("work", resources, routes)}}
+}
+
+// agentPhase mirrors what def validation guarantees for an agent phase: a
+// provider is always present, which is what the implicit provider resource is
+// keyed on.
+func agentPhase(id string, resources []string, routes []def.Route) def.Phase {
+	return def.Phase{
+		ID: id, Driver: def.DriverAgent, Provider: testProvider, Model: "test-model",
+		Resources: resources,
+		Outputs:   map[string]def.Variable{"ok": {Schema: def.JSONSchema{Type: "boolean"}}},
+		Gate:      def.Gate{Routes: routes},
+	}
+}
+
+const testProvider = "claude"
+
+// limitProviderCapacity pins the implicit provider resource to `capacity` so a
+// test can make phase contention deterministic instead of relying on
+// DefaultProviderCapacity.
+func (h *testHarness) limitProviderCapacity(projectID string, capacity int) {
+	h.profiles.setCapacity(projectID, ProviderResource(testProvider), capacity)
 }
 
 func doneEnvelope(ok bool) json.RawMessage {

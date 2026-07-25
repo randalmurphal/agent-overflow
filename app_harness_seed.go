@@ -19,7 +19,6 @@ import (
 
 	"agent-overflow/internal/harness"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/workflow/engine"
 
 	"github.com/google/uuid"
 )
@@ -40,8 +39,8 @@ type HarnessSeedProject struct {
 	// <dataRoot>/workspaces/<Name>.
 	Repo    *harness.RepoSpec   `json:"repo,omitempty"`
 	Threads []HarnessSeedThread `json:"threads,omitempty"`
-	// Workflows installs project-scoped definitions/profile data and creates
-	// work items through WorkflowEnqueueItem.
+	// Workflows installs project-scoped definitions/profile data and starts
+	// work items through WorkflowStartRun.
 	Workflows *HarnessSeedWorkflows `json:"workflows,omitempty"`
 }
 
@@ -118,42 +117,12 @@ func (h *Harness) HarnessSeed(spec HarnessSeedSpec) (result HarnessSeedResult, e
 		return HarnessSeedResult{}, fmt.Errorf("seed spec has no projects")
 	}
 	workflowSeed := specHasWorkflowSeed(spec)
-	var queueSnapshot harnessWorkflowQueueSnapshot
 	if workflowSeed {
 		if err := validateWorkflowSeedPlan(spec); err != nil {
 			return HarnessSeedResult{}, err
 		}
 		if _, requireErr := h.app.requireWorkflowEngine(); requireErr != nil {
 			return HarnessSeedResult{}, fmt.Errorf("seed workflows: %w", requireErr)
-		}
-		queueSnapshot, err = h.workflowQueueSnapshot()
-		if err != nil {
-			return HarnessSeedResult{}, fmt.Errorf("seed workflows: snapshot queue: %w", err)
-		}
-		if queueSnapshot.active && specHasQueuedWorkflowTarget(spec) {
-			return HarnessSeedResult{}, fmt.Errorf("seed workflows target %q requires the caller's workflow queue to be inactive so the restored queue configuration cannot immediately drain it", engine.StateQueued)
-		}
-		if err := h.app.WorkflowSetQueue(false, 0, queueSnapshot.concurrency); err != nil {
-			return HarnessSeedResult{}, fmt.Errorf("seed workflows: pause queue: %w", err)
-		}
-		defer func() {
-			restoreErr := h.app.WorkflowSetQueue(queueSnapshot.active, queueSnapshot.maxStarts, queueSnapshot.concurrency)
-			if restoreErr != nil {
-				err = errors.Join(err, fmt.Errorf("seed workflows: restore queue: %w", restoreErr))
-			}
-		}()
-		if specHasDrivenWorkflowTarget(spec) {
-			projects, listErr := h.app.store.ListProjects()
-			if listErr != nil {
-				return HarnessSeedResult{}, fmt.Errorf("seed workflows: list existing projects: %w", listErr)
-			}
-			queued, listErr := h.queuedWorkflowItems(projects)
-			if listErr != nil {
-				return HarnessSeedResult{}, listErr
-			}
-			if len(queued) > 0 {
-				return HarnessSeedResult{}, fmt.Errorf("seed workflows: cannot drive a non-queued target while %d pre-existing workflow item(s) are queued", len(queued))
-			}
 		}
 	}
 	for pi, project := range spec.Projects {
@@ -164,7 +133,7 @@ func (h *Harness) HarnessSeed(spec HarnessSeedSpec) (result HarnessSeedResult, e
 		result.Projects = append(result.Projects, created)
 	}
 	if workflowSeed {
-		if err := h.seedWorkflowItemsInTargetOrder(spec, &result); err != nil {
+		if err := h.seedWorkflowItemsForProjects(spec, &result); err != nil {
 			return result, err
 		}
 	}
@@ -406,16 +375,16 @@ func (h *Harness) HarnessReset() (err error) {
 		log.Printf("harness: reset: discarded in-flight recording %q", recording.Name)
 	}
 
-	restoreQueue, err := h.prepareWorkflowReset()
+	resumeEngine, err := h.prepareWorkflowReset()
 	if err != nil {
-		if restoreQueue != nil {
-			err = errors.Join(err, restoreQueue())
+		if resumeEngine != nil {
+			err = errors.Join(err, resumeEngine())
 		}
 		return err
 	}
 	defer func() {
-		if restoreQueue != nil {
-			err = errors.Join(err, restoreQueue())
+		if resumeEngine != nil {
+			err = errors.Join(err, resumeEngine())
 		}
 	}()
 

@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"agent-overflow/internal/workflow/def"
@@ -39,12 +40,12 @@ func TestSemaphoreReleaseOnEveryImplementedExitPath(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			workflow := onePhaseWorkflow("resource", []string{"stack"}, tc.routes)
-			h := newHarness(t, Config{Active: true, GlobalConcurrency: 2}, map[string]def.Workflow{"resource": workflow}, []string{"project"}, nil)
+			h := newHarness(t, Config{}, map[string]def.Workflow{"resource": workflow}, []string{"project"}, nil)
 			h.profiles.setCapacity("project", "stack", 1)
-			if err := h.engine.Enqueue(testItem("holder", "project", "resource", 0)); err != nil {
+			if err := h.engine.StartItem(testItem("holder", "project", "resource", 0)); err != nil {
 				t.Fatal(err)
 			}
-			if err := h.engine.Enqueue(testItem("waiter", "project", "resource", 1)); err != nil {
+			if err := h.engine.StartItem(testItem("waiter", "project", "resource", 1)); err != nil {
 				t.Fatal(err)
 			}
 			if starts := h.runner.started(); len(starts) != 1 || starts[0].Key.ItemID != "holder" {
@@ -65,13 +66,13 @@ func TestSemaphoreReleaseOnEveryImplementedExitPath(t *testing.T) {
 
 func TestSemaphoreReleaseWhenRunnerStartFailsAfterAcquisition(t *testing.T) {
 	workflow := onePhaseWorkflow("resource", []string{"stack"}, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 2}, map[string]def.Workflow{"resource": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"resource": workflow}, []string{"project"}, nil)
 	h.profiles.setCapacity("project", "stack", 1)
 	h.runner.startErrs["holder"] = errors.New("start failed")
-	if err := h.engine.Enqueue(testItem("holder", "project", "resource", 0)); err == nil {
+	if err := h.engine.StartItem(testItem("holder", "project", "resource", 0)); err == nil {
 		t.Fatal("expected surfaced start error")
 	}
-	if err := h.engine.Enqueue(testItem("waiter", "project", "resource", 1)); err != nil {
+	if err := h.engine.StartItem(testItem("waiter", "project", "resource", 1)); err != nil {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, "holder", StateNeedsHuman, ReasonAgentError)
@@ -83,41 +84,48 @@ func TestSemaphoreReleaseWhenRunnerStartFailsAfterAcquisition(t *testing.T) {
 
 func TestSemaphoreReleaseStartsWaiterWithManyNonWaitingItems(t *testing.T) {
 	workflow := onePhaseWorkflow("resource", []string{"stack"}, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 2}, map[string]def.Workflow{"resource": workflow}, []string{"project"}, nil)
-	h.profiles.setCapacity("project", "stack", 1)
-	if err := h.engine.Enqueue(testItem("holder", "project", "resource", 0)); err != nil {
+	unbound := onePhaseWorkflow("unbound", nil, []def.Route{{To: "done"}})
+	h := newHarnessWith(t, harnessOptions{
+		workflows:  map[string]def.Workflow{"resource": workflow, "unbound": unbound},
+		projectIDs: []string{"project"},
+		capacities: map[string]map[string]int{"project": {
+			"stack": 1, ProviderResource(testProvider): 512,
+		}},
+	})
+	if err := h.engine.StartItem(testItem("holder", "project", "resource", 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.Enqueue(testItem("waiter", "project", "resource", 1)); err != nil {
+	if err := h.engine.StartItem(testItem("waiter", "project", "resource", 1)); err != nil {
 		t.Fatal(err)
 	}
 	for index := 0; index < 256; index++ {
-		item := testItem(fmt.Sprintf("backlog-%03d", index), "project", "resource", index+2)
-		if err := h.engine.Enqueue(item); err != nil {
+		item := testItem(fmt.Sprintf("backlog-%03d", index), "project", "unbound", index+2)
+		if err := h.engine.StartItem(item); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if len(h.engine.waiting) != 1 || h.engine.waiting[0].item.ID != "waiter" {
-		t.Fatalf("waiting set = %+v", h.engine.waiting)
+		t.Fatalf("waiting set = %+v, want only the resource-blocked phase", h.engine.waiting)
 	}
 	h.runner.complete(t, "holder", Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	starts := h.runner.started()
-	if len(starts) < 2 || starts[1].Key.ItemID != "waiter" {
-		t.Fatalf("waiter was not started on release: %+v", starts)
+	started := h.runner.started()
+	last := started[len(started)-1]
+	if last.Key.ItemID != "waiter" {
+		t.Fatalf("waiter was not started on release: %+v", last)
 	}
 }
 
 func TestSemaphoreReleaseContinuesWhenRunnerStopFails(t *testing.T) {
 	workflow := onePhaseWorkflow("resource", []string{"stack"}, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 2}, map[string]def.Workflow{"resource": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"resource": workflow}, []string{"project"}, nil)
 	h.profiles.setCapacity("project", "stack", 1)
-	if err := h.engine.Enqueue(testItem("holder", "project", "resource", 0)); err != nil {
+	if err := h.engine.StartItem(testItem("holder", "project", "resource", 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.Enqueue(testItem("waiter", "project", "resource", 1)); err != nil {
+	if err := h.engine.StartItem(testItem("waiter", "project", "resource", 1)); err != nil {
 		t.Fatal(err)
 	}
 	h.runner.stopErrs["holder"] = errors.New("stop failed")
@@ -144,13 +152,13 @@ func TestMultiResourceAcquisitionIsAllOrNothing(t *testing.T) {
 		"both": onePhaseWorkflow("both", []string{"b", "a"}, []def.Route{{To: "done"}}),
 		"a":    onePhaseWorkflow("a", []string{"a"}, []def.Route{{To: "done"}}),
 	}
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 3}, workflows, []string{"project"}, nil)
+	h := newHarness(t, Config{}, workflows, []string{"project"}, nil)
 	h.profiles.setCapacity("project", "a", 1)
 	h.profiles.setCapacity("project", "b", 1)
 	for _, item := range []struct {
 		id, workflow string
 	}{{"holds-b", "b"}, {"waits-both", "both"}, {"uses-a", "a"}} {
-		if err := h.engine.Enqueue(testItem(item.id, "project", item.workflow, len(h.runner.started()))); err != nil {
+		if err := h.engine.StartItem(testItem(item.id, "project", item.workflow, len(h.runner.started()))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -162,13 +170,13 @@ func TestMultiResourceAcquisitionIsAllOrNothing(t *testing.T) {
 
 func TestResourceNamesAreProjectLocal(t *testing.T) {
 	workflow := onePhaseWorkflow("resource", []string{"stack"}, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 2}, map[string]def.Workflow{"resource": workflow}, []string{"one", "two"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"resource": workflow}, []string{"one", "two"}, nil)
 	h.profiles.setCapacity("one", "stack", 1)
 	h.profiles.setCapacity("two", "stack", 1)
-	if err := h.engine.Enqueue(testItem("one-item", "one", "resource", 0)); err != nil {
+	if err := h.engine.StartItem(testItem("one-item", "one", "resource", 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.Enqueue(testItem("two-item", "two", "resource", 0)); err != nil {
+	if err := h.engine.StartItem(testItem("two-item", "two", "resource", 0)); err != nil {
 		t.Fatal(err)
 	}
 	if starts := h.runner.started(); len(starts) != 2 {
@@ -178,15 +186,15 @@ func TestResourceNamesAreProjectLocal(t *testing.T) {
 
 func TestLoweredCapacityBlocksWithoutEvictingHolders(t *testing.T) {
 	workflow := onePhaseWorkflow("resource", []string{"stack"}, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 3}, map[string]def.Workflow{"resource": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"resource": workflow}, []string{"project"}, nil)
 	h.profiles.setCapacity("project", "stack", 2)
 	for _, id := range []string{"one", "two"} {
-		if err := h.engine.Enqueue(testItem(id, "project", "resource", 0)); err != nil {
+		if err := h.engine.StartItem(testItem(id, "project", "resource", 0)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	h.profiles.setCapacity("project", "stack", 1)
-	if err := h.engine.Enqueue(testItem("three", "project", "resource", 2)); err != nil {
+	if err := h.engine.StartItem(testItem("three", "project", "resource", 2)); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(h.runner.started()); got != 2 {
@@ -211,16 +219,16 @@ func TestLoweredCapacityBlocksWithoutEvictingHolders(t *testing.T) {
 
 func TestLoopPhaseExitReleasesBeforeRetryAndExhaustionParks(t *testing.T) {
 	workflow := def.Workflow{ID: "loop", Phases: []def.Phase{
-		{ID: "build", Driver: def.DriverAgent, Resources: []string{"stack"}, Outputs: map[string]def.Variable{"ok": {Schema: def.JSONSchema{Type: "boolean"}}}, Gate: def.Gate{Routes: []def.Route{{To: "review"}}}},
-		{ID: "review", Driver: def.DriverAgent, Resources: []string{"stack"}, Outputs: map[string]def.Variable{"ok": {Schema: def.JSONSchema{Type: "boolean"}}}, Gate: def.Gate{Routes: []def.Route{{Loop: "build", Max: 1}}}},
+		agentPhase("build", []string{"stack"}, []def.Route{{To: "review"}}),
+		agentPhase("review", []string{"stack"}, []def.Route{{Loop: "build", Max: 1}}),
 	}}
 	waiterWorkflow := onePhaseWorkflow("waiter", []string{"stack"}, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 2}, map[string]def.Workflow{"loop": workflow, "waiter": waiterWorkflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"loop": workflow, "waiter": waiterWorkflow}, []string{"project"}, nil)
 	h.profiles.setCapacity("project", "stack", 1)
-	if err := h.engine.Enqueue(testItem("looping", "project", "loop", 0)); err != nil {
+	if err := h.engine.StartItem(testItem("looping", "project", "loop", 0)); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.engine.Enqueue(testItem("waiter", "project", "waiter", 1)); err != nil {
+	if err := h.engine.StartItem(testItem("waiter", "project", "waiter", 1)); err != nil {
 		t.Fatal(err)
 	}
 	h.runner.complete(t, "looping", Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
@@ -260,11 +268,101 @@ func TestLoopPhaseExitReleasesBeforeRetryAndExhaustionParks(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireItemState(t, h.store, "looping", StateNeedsHuman, ReasonRetriesExhausted)
-	if err := h.engine.Enqueue(testItem("after-exhaustion", "project", "waiter", 2)); err != nil {
+	if err := h.engine.StartItem(testItem("after-exhaustion", "project", "waiter", 2)); err != nil {
 		t.Fatal(err)
 	}
 	starts = h.runner.started()
 	if starts[len(starts)-1].Key.ItemID != "after-exhaustion" {
 		t.Fatalf("retries-exhausted park leaked resource: %+v", starts)
+	}
+}
+
+// TestImplicitProviderResourceBoundsAgentPhases pins the bound spec §6 puts on
+// concurrent CLI sessions: it applies without any declaration, comes from the
+// project profile when declared, and is per provider.
+func TestImplicitProviderResourceBoundsAgentPhases(t *testing.T) {
+	workflow := onePhaseWorkflow("agentic", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{}, map[string]def.Workflow{"agentic": workflow}, []string{"project"}, nil)
+	for index, id := range []string{"one", "two", "three"} {
+		if err := h.engine.StartItem(testItem(id, "project", "agentic", index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(h.runner.started()); got != DefaultProviderCapacity {
+		t.Fatalf("undeclared provider capacity started %d phases, want %d", got, DefaultProviderCapacity)
+	}
+	requireItemState(t, h.store, "three", StateRunning, "")
+	h.runner.complete(t, "one", Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	starts := h.runner.started()
+	if len(starts) != 3 || starts[2].Key.ItemID != "three" {
+		t.Fatalf("freed provider capacity did not release the held phase: %+v", starts)
+	}
+}
+
+func TestProfileDeclaredProviderCapacityWins(t *testing.T) {
+	workflow := onePhaseWorkflow("agentic", nil, []def.Route{{To: "done"}})
+	h := newHarnessWith(t, harnessOptions{
+		workflows:  map[string]def.Workflow{"agentic": workflow},
+		projectIDs: []string{"project"},
+		capacities: map[string]map[string]int{"project": {ProviderResource(testProvider): 1}},
+	})
+	for index, id := range []string{"one", "two"} {
+		if err := h.engine.StartItem(testItem(id, "project", "agentic", index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(h.runner.started()); got != 1 {
+		t.Fatalf("declared provider capacity started %d phases, want 1", got)
+	}
+}
+
+func TestPhaseResourcesAddProviderOnlyForAgentDrivers(t *testing.T) {
+	agent := agentPhase("work", []string{"stack"}, []def.Route{{To: "done"}})
+	got, err := phaseResources(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{ProviderResource(testProvider), "stack"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("agent phase resources = %v, want %v", got, want)
+	}
+
+	tool := def.Phase{ID: "check", Driver: def.DriverTool, Check: "go-test", Resources: []string{"stack"}}
+	got, err = phaseResources(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"stack"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("tool phase resources = %v, want %v", got, want)
+	}
+
+	providerless := agent
+	providerless.Provider = "  "
+	if _, err := phaseResources(providerless); err == nil {
+		t.Fatal("agent phase with no provider was admitted unbounded")
+	}
+}
+
+func TestResourceCapacityDefaultsOnlyForProviderNamespace(t *testing.T) {
+	capacities := map[string]int{ProviderResource("codex"): 5, "stack": 2}
+	for _, tc := range []struct {
+		name string
+		want int
+	}{
+		{ProviderResource("codex"), 5},
+		{ProviderResource("claude"), DefaultProviderCapacity},
+		{"stack", 2},
+	} {
+		got, err := resourceCapacity(capacities, "project", tc.name)
+		if err != nil || got != tc.want {
+			t.Errorf("capacity(%q) = %d err=%v, want %d", tc.name, got, err, tc.want)
+		}
+	}
+	for _, name := range []string{"undeclared", "provider:", providerResourcePrefix} {
+		if _, err := resourceCapacity(capacities, "project", name); err == nil {
+			t.Errorf("undeclared resource %q silently defaulted", name)
+		}
 	}
 }

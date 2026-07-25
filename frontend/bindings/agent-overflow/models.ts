@@ -1956,16 +1956,12 @@ export class WorkflowArtifact {
 
 export class WorkflowDefinitionCatalog {
     "baseBranch": string;
-    "predictedQueuePosition": number;
     "workflows": WorkflowDefinitionListing[];
 
     /** Creates a new WorkflowDefinitionCatalog instance. */
     constructor($$source: Partial<WorkflowDefinitionCatalog> = {}) {
         if (!("baseBranch" in $$source)) {
             this["baseBranch"] = "";
-        }
-        if (!("predictedQueuePosition" in $$source)) {
-            this["predictedQueuePosition"] = 0;
         }
         if (!("workflows" in $$source)) {
             this["workflows"] = [];
@@ -1978,10 +1974,10 @@ export class WorkflowDefinitionCatalog {
      * Creates a new WorkflowDefinitionCatalog instance from a string or object.
      */
     static createFrom($$source: any = {}): WorkflowDefinitionCatalog {
-        const $$createField2_0 = $$createType33;
+        const $$createField1_0 = $$createType33;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("workflows" in $$parsedSource) {
-            $$parsedSource["workflows"] = $$createField2_0($$parsedSource["workflows"]);
+            $$parsedSource["workflows"] = $$createField1_0($$parsedSource["workflows"]);
         }
         return new WorkflowDefinitionCatalog($$parsedSource as Partial<WorkflowDefinitionCatalog>);
     }
@@ -2270,7 +2266,6 @@ export class WorkflowItemView {
     "workflowScope": string;
     "state": string;
     "reason"?: string;
-    "sortPosition": number;
     "seeds"?: json$0.RawMessage;
     "stepMode": boolean;
     "worktreePath"?: string;
@@ -2305,9 +2300,6 @@ export class WorkflowItemView {
         }
         if (!("state" in $$source)) {
             this["state"] = "";
-        }
-        if (!("sortPosition" in $$source)) {
-            this["sortPosition"] = 0;
         }
         if (!("stepMode" in $$source)) {
             this["stepMode"] = false;

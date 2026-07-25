@@ -38,7 +38,7 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 
 	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
 	budgetTokens := int64(1_000_000)
-	item, err := app.WorkflowEnqueueItem(
+	item, err := app.WorkflowStartRun(
 		projectRow.ID, "packet-flow", "shared", "exercise workflow",
 		json.RawMessage(`{"goal":"exercise workflow"}`), &profile.Budget{Tokens: &budgetTokens}, "", false,
 	)
@@ -46,7 +46,7 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(item.Budget) == 0 {
-		t.Fatal("enqueue did not persist the optional item budget")
+		t.Fatal("start did not persist the optional item budget")
 	}
 	waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonQuestion)
 
@@ -123,7 +123,7 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": invalidBinary}); err != nil {
 		t.Fatal(err)
 	}
-	invalidItem, err := app.WorkflowEnqueueItem(
+	invalidItem, err := app.WorkflowStartRun(
 		projectRow.ID, "packet-flow", "shared", "invalid envelope",
 		json.RawMessage(`{"goal":"invalid envelope"}`), nil, "", false,
 	)
@@ -151,15 +151,20 @@ func TestWorkflowBindingRunsGatesQuestionsAndEnvelopeRetry(t *testing.T) {
 	if userTurns != 2 {
 		t.Fatalf("invalid envelope user turns = %d, want initial + one retry; items=%+v", userTurns, threadItems)
 	}
-	if err := app.WorkflowSetQueue(false, 0, 3); err != nil {
+	if err := app.WorkflowSetGlobalPause(true); err != nil {
 		t.Fatal(err)
 	}
-	queueSettings := app.currentSettings()
-	if queueSettings.WorkflowQueueActive || queueSettings.WorkflowConcurrency != 3 {
-		t.Fatalf("persisted workflow queue settings = %+v", queueSettings)
+	if !app.currentSettings().WorkflowPaused {
+		t.Fatal("global pause was not persisted to settings")
 	}
-	if err := app.WorkflowSetQueue(true, 0, 2); err != nil {
+	if state, err := app.WorkflowGetEngineState(); err != nil || !state.Paused {
+		t.Fatalf("engine state = %+v, %v, want paused", state, err)
+	}
+	if err := app.WorkflowSetGlobalPause(false); err != nil {
 		t.Fatal(err)
+	}
+	if app.currentSettings().WorkflowPaused {
+		t.Fatal("unpause was not persisted to settings")
 	}
 	items, err := app.WorkflowListItems(projectRow.ID)
 	if err != nil || len(items) != 2 {
@@ -230,7 +235,7 @@ cleanup: manual
 	})
 
 	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
-	item, err := app.WorkflowEnqueueItem(
+	item, err := app.WorkflowStartRun(
 		projectRow.ID, "codex-flow", "shared", "check codex schema",
 		json.RawMessage(`{"goal":"check codex schema"}`), nil, "", false,
 	)
@@ -346,7 +351,7 @@ cleanup: manual
 		}
 	})
 	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
-	item, err := app.WorkflowEnqueueItem(
+	item, err := app.WorkflowStartRun(
 		projectRow.ID, "retry-flow", "shared", "recover envelope",
 		json.RawMessage(`{"goal":"recover envelope"}`), nil, "", false,
 	)
@@ -551,11 +556,11 @@ func assertWorkflowEmissions(t *testing.T, bus *capturedEventBus, itemID string)
 			if payload.ItemID == itemID {
 				seen[event.Name] = true
 			}
-		case engine.QueueEvent:
+		case engine.EngineState:
 			seen[event.Name] = true
 		}
 	}
-	for _, name := range []string{"workflow:item-state", "workflow:phase-state", "workflow:queue-state"} {
+	for _, name := range []string{"workflow:item-state", "workflow:phase-state", "workflow:engine-state"} {
 		if !seen[name] {
 			t.Fatalf("missing workflow emission %q; events=%s", name, summarizeEvents(events))
 		}

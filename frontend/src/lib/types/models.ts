@@ -516,8 +516,6 @@ export interface Project {
   name: string;
   color?: string;
   sortPosition: number;
-  workflowQueuePaused?: boolean;
-  workflowConcurrency?: number;
   createdAt: number;
   updatedAt: number;
   archived: boolean;

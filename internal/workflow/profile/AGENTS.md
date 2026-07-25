@@ -12,6 +12,10 @@ resolution for the workflow system.
 - Secret values must never enter errors, logs, or string renderings.
 - Worktree setup is authoring data only here; execution belongs to the
   app-owned runner before its first phase turn, never the engine goroutine.
+- Binding names are `[a-z0-9-]+`. `capacities` is the one exception: it also
+  accepts `provider:<name>`, the reserved namespace for the implicit
+  per-provider resource every agent phase acquires. No other colon-bearing
+  capacity name validates, so the namespace cannot be squatted.
 
 ## Files
 

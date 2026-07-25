@@ -164,6 +164,9 @@ var wireSafeMethods = map[string]bool{
 	"WorkflowListItemCosts":       true,
 	"WorkflowListDefinitions":     true,
 	"WorkflowGetJobNotes":         true,
+	// Pure read of the global pause flag — one boolean, no FS/process
+	// reach. The mutating WorkflowSetGlobalPause stays LocalOnly.
+	"WorkflowGetEngineState": true,
 
 	// Build version string.
 	"Version": true,

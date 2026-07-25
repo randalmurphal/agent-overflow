@@ -17,8 +17,9 @@ var ErrSetupFailed = errors.New("workflow setup failed")
 
 type State string
 
+// A run has no queued state: admitting an item starts it. Contention is a
+// phase waiting on resource capacity while its item stays running.
 const (
-	StateQueued     State = "queued"
 	StateRunning    State = "running"
 	StateNeedsHuman State = "needs-human"
 	StateDone       State = "done"
@@ -149,24 +150,24 @@ type SpendSource interface {
 	ItemSpend(context.Context, string) (Spend, error)
 }
 
-// Config supplies startup queue state. Process-N is deliberately absent: it is
-// an in-memory SetQueue bound and never survives an engine restart.
+// Config supplies the persisted engine state restored at startup. Bounded
+// parallelism is a resource fact (project profile capacities), not a config
+// knob, so the global pause kill switch is all that survives a restart.
 type Config struct {
-	Active            bool
-	GlobalConcurrency int
-	ProjectQueues     []ProjectQueueConfig
-}
-
-type ProjectQueueConfig struct {
-	ProjectID   string
-	Paused      bool
-	Concurrency int
+	Paused bool
 }
 
 const MaxSeedBytes = 64 * 1024
 const MaxSnapshotBytes = 4 * 1024 * 1024
-const MaxGlobalConcurrency = 32
-const MaxProjectConcurrency = 32
+
+// DefaultProviderCapacity bounds concurrent agent phases per provider when the
+// project profile does not declare a `provider:<name>` capacity.
+const DefaultProviderCapacity = 2
+
+// ProviderResource is the implicit resource every agent-driver phase acquires
+// in addition to its declared resources. Capacity comes from the live project
+// profile like any other resource, defaulting to DefaultProviderCapacity.
+func ProviderResource(provider string) string { return "provider:" + provider }
 
 // Snapshot is the persisted, immutable run definition.
 type Snapshot struct {
@@ -181,20 +182,10 @@ type StateEvent struct {
 	Reason    Reason `json:"reason,omitempty"`
 }
 
-type QueueEvent struct {
-	Active            bool                `json:"active"`
-	GlobalConcurrency int                 `json:"globalConcurrency"`
-	RunningCount      int                 `json:"runningCount"`
-	SlotCapacity      int                 `json:"slotCapacity"`
-	StartsRemaining   int                 `json:"startsRemaining,omitempty"`
-	Projects          []ProjectQueueState `json:"projects"`
-}
-
-type ProjectQueueState struct {
-	ProjectID    string `json:"projectId"`
-	Paused       bool   `json:"paused"`
-	Concurrency  int    `json:"concurrency"`
-	RunningCount int    `json:"runningCount"`
+// EngineState is both the Paused query result and the `workflow:engine-state`
+// event payload, so the live flag has exactly one wire shape.
+type EngineState struct {
+	Paused bool `json:"paused"`
 }
 
 type PhaseEvent struct {
@@ -218,11 +209,8 @@ type persistence interface {
 	CreateWorkItem(store.WorkItem) error
 	GetWorkItem(string) (store.WorkItem, error)
 	ListWorkItems(store.WorkItemListFilter) ([]store.WorkItem, error)
-	NextWorkItemSortPosition(string) (int, error)
 	UpdateWorkItemState(string, string, string, int64) error
-	ReenqueueFailedWorkItem(string, int) error
 	UpdateWorkItemRunStart(string, json.RawMessage, string, string, string, int64) error
-	ReorderQueuedWorkItems(string, []string) error
 	CreateWorkItemPhase(store.WorkItemPhase) error
 	CompleteWorkItemPhase(string, string, int, json.RawMessage, json.RawMessage, string, int64) error
 	ListWorkItemPhases(string) ([]store.WorkItemPhase, error)

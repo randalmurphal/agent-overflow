@@ -20,7 +20,6 @@ type WorkItem struct {
 	Snapshot            json.RawMessage `json:"snapshot,omitempty"`
 	State               string          `json:"state"`
 	Reason              string          `json:"reason,omitempty"`
-	SortPosition        int             `json:"sortPosition"`
 	Seeds               json.RawMessage `json:"seeds,omitempty"`
 	StepMode            bool            `json:"stepMode"`
 	WorktreePath        string          `json:"worktreePath,omitempty"`
@@ -60,19 +59,19 @@ type WorkItemListFilter struct {
 	UnresolvedOnly bool     `json:"unresolvedOnly,omitempty"`
 }
 
-const unresolvedWorkItemsPredicate = `disposition = '' AND state IN ('queued','running','needs-human','done','failed')`
+const unresolvedWorkItemsPredicate = `disposition = '' AND state IN ('running','needs-human','done','failed')`
 
 func qualifiedUnresolvedWorkItemsPredicate(prefix string) string {
-	return prefix + `disposition = '' AND ` + prefix + `state IN ('queued','running','needs-human','done','failed')`
+	return prefix + `disposition = '' AND ` + prefix + `state IN ('running','needs-human','done','failed')`
 }
 
 const workItemColumns = `id, project_id, goal, workflow_id, workflow_scope,
-snapshot, state, reason, sort_position, seeds, step_mode, worktree_path,
+snapshot, state, reason, seeds, step_mode, worktree_path,
 branch, base_branch, budget, source, source_ref, triage_thread_id,
 disposition, digest, created_at, started_at, ended_at`
 
 const workItemSummaryListColumns = `w.id, w.project_id, w.goal, w.workflow_id, w.workflow_scope,
-'', w.state, w.reason, w.sort_position, '', w.step_mode, w.worktree_path,
+'', w.state, w.reason, '', w.step_mode, w.worktree_path,
 w.branch, w.base_branch, '', w.source, w.source_ref, w.triage_thread_id,
 w.disposition, '', w.created_at, w.started_at, w.ended_at`
 
@@ -104,7 +103,7 @@ func scanWorkItem(scanner interface{ Scan(...any) error }, includeProgress bool)
 	var stepMode int
 	fields := []any{
 		&item.ID, &item.ProjectID, &item.Goal, &item.WorkflowID, &item.WorkflowScope,
-		&snapshot, &item.State, &item.Reason, &item.SortPosition, &seeds, &stepMode,
+		&snapshot, &item.State, &item.Reason, &seeds, &stepMode,
 		&item.WorktreePath, &item.Branch, &item.BaseBranch, &budget, &item.Source,
 		&item.SourceRef, &item.TriageThreadID, &disposition, &digest,
 		&item.CreatedAt, &item.StartedAt, &item.EndedAt,
@@ -127,9 +126,9 @@ func scanWorkItem(scanner interface{ Scan(...any) error }, includeProgress bool)
 func (s *Store) CreateWorkItem(item WorkItem) error {
 	_, err := s.db.Exec(
 		`INSERT INTO work_items (`+workItemColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ProjectID, item.Goal, item.WorkflowID, item.WorkflowScope,
-		jsonText(item.Snapshot), item.State, item.Reason, item.SortPosition,
+		jsonText(item.Snapshot), item.State, item.Reason,
 		jsonText(item.Seeds), boolToInt(item.StepMode), item.WorktreePath, item.Branch,
 		item.BaseBranch, jsonText(item.Budget), item.Source, item.SourceRef,
 		item.TriageThreadID, jsonText(item.Disposition), jsonText(item.Digest),
@@ -151,9 +150,9 @@ func (s *Store) GetWorkItem(id string) (WorkItem, error) {
 	return item, nil
 }
 
-// GetWorkItemBySourceRef resolves an idempotency/provenance key without
-// materializing the queue. Agent-created chat proposals use this to recover
-// if the run row committed before the proposal card receipt did.
+// GetWorkItemBySourceRef resolves an idempotency/provenance key. Agent-created
+// chat proposals use this to recover if the run row committed before the
+// proposal card receipt did.
 func (s *Store) GetWorkItemBySourceRef(source, sourceRef string) (WorkItem, bool, error) {
 	item, err := scanWorkItem(s.db.QueryRow(
 		`SELECT `+workItemColumns+` FROM work_items WHERE source = ? AND source_ref = ? LIMIT 1`,
@@ -224,8 +223,8 @@ func (s *Store) GetWorkItemByPhaseThread(threadID string) (WorkItem, error) {
 	return item, nil
 }
 
-// ListWorkItems returns matching items in queue order. An empty ProjectID
-// lists every project; an empty States slice includes every state.
+// ListWorkItems returns matching items oldest-first. An empty ProjectID lists
+// every project; an empty States slice includes every state.
 func (s *Store) ListWorkItems(filter WorkItemListFilter) ([]WorkItem, error) {
 	return s.listWorkItems(filter, workItemColumns, false)
 }
@@ -264,7 +263,7 @@ func (s *Store) listWorkItems(filter WorkItemListFilter, columns string, include
 	if len(conditions) > 0 {
 		query += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
-	query += ` ORDER BY ` + prefix + `sort_position ASC, ` + prefix + `created_at ASC`
+	query += ` ORDER BY ` + prefix + `created_at ASC, ` + prefix + `id ASC`
 
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -286,40 +285,6 @@ func (s *Store) listWorkItems(filter WorkItemListFilter, columns string, include
 	return items, nil
 }
 
-// NextWorkItemSortPosition returns the queue position after the project's
-// current maximum without materializing any work items.
-func (s *Store) NextWorkItemSortPosition(projectID string) (int, error) {
-	var position int
-	if err := s.db.QueryRow(
-		`SELECT COALESCE(MAX(sort_position), -1) + 1 FROM work_items WHERE project_id = ?`,
-		projectID,
-	).Scan(&position); err != nil {
-		return 0, fmt.Errorf("store: next work item sort position: %w", err)
-	}
-	return position, nil
-}
-
-// PredictWorkItemQueuePosition returns the one-based global insertion rank for
-// a new project item using the scheduler's sort-position and creation-time
-// ordering. Existing items created in the same millisecond sort first; the
-// final UUID tie-break is unknowable until enqueue allocates the item ID.
-func (s *Store) PredictWorkItemQueuePosition(projectID string, createdAt int64) (int, error) {
-	sortPosition, err := s.NextWorkItemSortPosition(projectID)
-	if err != nil {
-		return 0, err
-	}
-	var before int
-	if err := s.db.QueryRow(
-		`SELECT COUNT(*) FROM work_items
-		 WHERE state = 'queued'
-		   AND (sort_position < ? OR (sort_position = ? AND created_at <= ?))`,
-		sortPosition, sortPosition, createdAt,
-	).Scan(&before); err != nil {
-		return 0, fmt.Errorf("store: predict work item queue position: %w", err)
-	}
-	return before + 1, nil
-}
-
 // UpdateWorkItemState writes the transition result atomically. Transition
 // validity belongs to the workflow engine; the store enforces only schema
 // constraints.
@@ -332,21 +297,6 @@ func (s *Store) UpdateWorkItemState(id, state, reason string, endedAt int64) err
 		return fmt.Errorf("store: update work item state %s: %w", id, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: update work item state %s", id))
-}
-
-// ReenqueueFailedWorkItem atomically returns a failed item to the queue tail.
-// Transition validity belongs to the workflow engine.
-func (s *Store) ReenqueueFailedWorkItem(id string, sortPosition int) error {
-	result, err := s.db.Exec(
-		`UPDATE work_items
-		 SET state = 'queued', reason = '', ended_at = 0, sort_position = ?
-		 WHERE id = ?`,
-		sortPosition, id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: re-enqueue failed work item %s: %w", id, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: re-enqueue failed work item %s", id))
 }
 
 // UpdateWorkItemRunStart freezes the resolved workflow and workspace fields in
@@ -483,76 +433,6 @@ func (s *Store) CreateWorkItemTriageThread(itemID string, thread Thread) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: create work item triage thread: commit: %w", err)
-	}
-	return nil
-}
-
-// ReorderQueuedWorkItems assigns dense positions to the project's complete
-// queued set. Rejecting partial or duplicate sets prevents ambiguous positions.
-func (s *Store) ReorderQueuedWorkItems(projectID string, orderedIDs []string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: reorder queued work items: begin: %w", err)
-	}
-	defer tx.Rollback()
-
-	rows, err := tx.Query(
-		`SELECT id FROM work_items WHERE project_id = ? AND state = 'queued'`, projectID,
-	)
-	if err != nil {
-		return fmt.Errorf("store: reorder queued work items: list queued set: %w", err)
-	}
-	queued := make(map[string]struct{})
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("store: reorder queued work items: scan queued set: %w", err)
-		}
-		queued[id] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return fmt.Errorf("store: reorder queued work items: iterate queued set: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("store: reorder queued work items: close queued set: %w", err)
-	}
-	if len(orderedIDs) != len(queued) {
-		return fmt.Errorf("store: reorder queued work items: got %d ids for %d queued items", len(orderedIDs), len(queued))
-	}
-	seen := make(map[string]struct{}, len(orderedIDs))
-	for _, id := range orderedIDs {
-		if _, duplicate := seen[id]; duplicate {
-			return fmt.Errorf("store: reorder queued work items: duplicate id %s", id)
-		}
-		seen[id] = struct{}{}
-		if _, exists := queued[id]; !exists {
-			return fmt.Errorf("store: reorder queued work items: id %s is not queued in project %s", id, projectID)
-		}
-	}
-	if len(orderedIDs) == 0 {
-		return nil
-	}
-
-	stmt, err := tx.Prepare(
-		`UPDATE work_items SET sort_position = ? WHERE id = ? AND project_id = ? AND state = 'queued'`,
-	)
-	if err != nil {
-		return fmt.Errorf("store: reorder queued work items: prepare: %w", err)
-	}
-	defer stmt.Close()
-	for position, id := range orderedIDs {
-		result, err := stmt.Exec(position, id, projectID)
-		if err != nil {
-			return fmt.Errorf("store: reorder queued work item %s: %w", id, err)
-		}
-		if err := requireRowsAffected(result, fmt.Sprintf("store: reorder queued work item %s", id)); err != nil {
-			return err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: reorder queued work items: commit: %w", err)
 	}
 	return nil
 }

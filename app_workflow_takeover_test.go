@@ -107,7 +107,7 @@ func TestWorkflowTakeoverSteersSchemaLessThenCompletesThroughGate(t *testing.T) 
 		}
 	})
 	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
-	item, err := app.WorkflowEnqueueItem(
+	item, err := app.WorkflowStartRun(
 		projectRow.ID, "takeover-flow", "shared", "exercise takeover",
 		json.RawMessage(`{"goal":"exercise takeover"}`), nil, "", false,
 	)
@@ -195,7 +195,7 @@ func TestWorkflowTakeoverInterruptsLiveTurnBeforeSteering(t *testing.T) {
 		}
 	})
 	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
-	item, err := app.WorkflowEnqueueItem(
+	item, err := app.WorkflowStartRun(
 		projectRow.ID, "live-takeover", "shared", "interrupt me",
 		json.RawMessage(`{"goal":"interrupt me"}`), nil, "", false,
 	)

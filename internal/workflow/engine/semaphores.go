@@ -4,7 +4,27 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
+
+	"agent-overflow/internal/workflow/def"
 )
+
+// phaseResources is the canonical, sorted set a phase acquires: everything it
+// declared plus the implicit `provider:<name>` resource every agent-driver
+// phase takes. Tool phases never acquire provider capacity. A frozen agent
+// phase without a provider is unrunnable, so it is refused here rather than
+// silently escaping the bound.
+func phaseResources(phase def.Phase) ([]string, error) {
+	names := phase.Resources
+	if phase.Driver == def.DriverAgent {
+		provider := strings.TrimSpace(phase.Provider)
+		if provider == "" {
+			return nil, fmt.Errorf("agent phase %q declares no provider", phase.ID)
+		}
+		names = append(append([]string(nil), names...), ProviderResource(provider))
+	}
+	return canonicalResources(names), nil
+}
 
 func canonicalResources(resources []string) []string {
 	set := make(map[string]struct{}, len(resources))
@@ -21,31 +41,61 @@ func canonicalResources(resources []string) []string {
 	return result
 }
 
-func (e *Engine) acquireResources(projectID string, resources []string) (bool, error) {
-	names := canonicalResources(resources)
+// resourceCapacity reads the live project profile at every acquisition, so
+// editing profile.yaml takes effect on the next phase start. A `provider:<name>`
+// resource the profile does not declare falls back to DefaultProviderCapacity;
+// any other undeclared resource is a wiring error.
+func resourceCapacity(capacities map[string]int, projectID, name string) (int, error) {
+	capacity, declared := capacities[name]
+	if declared {
+		if capacity < 1 {
+			return 0, fmt.Errorf("project %q resource %q has no positive capacity", projectID, name)
+		}
+		return capacity, nil
+	}
+	if isProviderResource(name) {
+		return DefaultProviderCapacity, nil
+	}
+	return 0, fmt.Errorf("project %q resource %q has no positive capacity", projectID, name)
+}
+
+const providerResourcePrefix = "provider:"
+
+func isProviderResource(name string) bool {
+	return len(name) > len(providerResourcePrefix) && strings.HasPrefix(name, providerResourcePrefix)
+}
+
+// acquirePhaseResources takes the phase's whole resource set all-or-nothing in
+// canonical order and returns exactly what it took, so a caller can never
+// record a different set than it holds.
+func (e *Engine) acquirePhaseResources(projectID string, phase def.Phase) ([]string, bool, error) {
+	names, err := phaseResources(phase)
+	if err != nil {
+		return nil, false, err
+	}
 	if len(names) == 0 {
-		return true, nil
+		return nil, true, nil
 	}
 	projectProfile, err := e.profiles.Profile(e.ctx, projectID)
 	if err != nil {
-		return false, fmt.Errorf("load live profile for project %q: %w", projectID, err)
+		return nil, false, fmt.Errorf("load live profile for project %q: %w", projectID, err)
 	}
 	if projectProfile == nil {
-		return false, fmt.Errorf("load live profile for project %q: nil profile", projectID)
+		return nil, false, fmt.Errorf("load live profile for project %q: nil profile", projectID)
 	}
 	for _, name := range names {
-		capacity, ok := projectProfile.Capacities[name]
-		if !ok || capacity < 1 {
-			return false, fmt.Errorf("project %q resource %q has no positive capacity", projectID, name)
+		capacity, err := resourceCapacity(projectProfile.Capacities, projectID, name)
+		if err != nil {
+			return nil, false, err
 		}
 		if e.holders[resourceKey{projectID: projectID, name: name}] >= capacity {
-			return false, nil
+			return nil, false, nil
 		}
 	}
 	for _, name := range names {
 		e.holders[resourceKey{projectID: projectID, name: name}]++
 	}
-	return true, nil
+	return names, true, nil
 }
 
 // releaseResources is called only by teardown.
@@ -68,17 +118,14 @@ func (e *Engine) releaseResources(item *runtimeItem) error {
 	return errors.Join(errs...)
 }
 
+// addWaiting appends to a FIFO list, so freed capacity goes to the
+// longest-waiting phase.
 func (e *Engine) addWaiting(item *runtimeItem) {
 	if _, exists := e.waitingByID[item.item.ID]; exists {
 		item.waiting = true
 		return
 	}
-	index := sort.Search(len(e.waiting), func(index int) bool {
-		return !queueLess(e.waiting[index].item, item.item)
-	})
-	e.waiting = append(e.waiting, nil)
-	copy(e.waiting[index+1:], e.waiting[index:])
-	e.waiting[index] = item
+	e.waiting = append(e.waiting, item)
 	e.waitingByID[item.item.ID] = struct{}{}
 	item.waiting = true
 }
@@ -101,7 +148,12 @@ func (e *Engine) removeWaiting(item *runtimeItem) {
 	item.waiting = false
 }
 
+// startWaiting releases held phase starts in wait order. It is the one place
+// freed capacity — or an unpause — turns into work.
 func (e *Engine) startWaiting() error {
+	if e.paused {
+		return nil
+	}
 	var errs []error
 	for index := 0; index < len(e.waiting); {
 		item := e.waiting[index]
@@ -115,18 +167,18 @@ func (e *Engine) startWaiting() error {
 			errs = append(errs, err)
 			continue
 		}
-		acquired, err := e.acquireResources(item.item.ProjectID, phase.Resources)
+		acquired, ok, err := e.acquirePhaseResources(item.item.ProjectID, phase)
 		if err != nil {
 			combined := errors.Join(err, e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}))
 			e.emitError(item.item.ID, combined)
 			errs = append(errs, combined)
 			continue
 		}
-		if !acquired {
+		if !ok {
 			index++
 			continue
 		}
-		item.acquired = canonicalResources(phase.Resources)
+		item.acquired = acquired
 		e.removeWaiting(item)
 		halted, err := e.enforceBudget(item)
 		if halted {

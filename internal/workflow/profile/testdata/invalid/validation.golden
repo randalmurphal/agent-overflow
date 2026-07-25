@@ -1,5 +1,5 @@
 base-branch.value | profile base_branch | must not be blank
-capacity.name | profile capacity "Bad_Capacity" | name must match [a-z0-9-]+
+capacity.name | profile capacity "Bad_Capacity" | name must match [a-z0-9-]+ or provider:[a-z0-9-]+
 capacity.value | profile capacity "Bad_Capacity" | capacity must be at least 1
 check.argv | profile check "Bad_Check" | argv must contain a non-empty executable at index 0
 check.name | profile check "Bad_Check" | name must match [a-z0-9-]+

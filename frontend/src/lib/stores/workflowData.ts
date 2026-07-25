@@ -95,7 +95,7 @@ export function mergeWorkflowProjectLoads(loads: WorkflowProjectLoad[]): Workflo
       definitions.push({ projectId: load.projectId, catalog: load.catalog, definition });
     }
   }
-  items.sort((left, right) => left.sortPosition - right.sortPosition || left.createdAt - right.createdAt);
+  items.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
   return { items, costs, definitions };
 }
 
@@ -121,36 +121,11 @@ export function isWorkflowSidebarRun(item: WorkItem): boolean {
   return !isWorkflowResolved(item);
 }
 
-export function workflowQueuedRank(items: readonly WorkItem[], item: WorkItem): number | null {
-  return workflowQueuedRanks(items).get(item.id) ?? null;
-}
-
-export function workflowQueuedRanks(items: readonly WorkItem[]): ReadonlyMap<string, number> {
-  const queued = items
-    .filter((candidate) => candidate.state === 'queued')
-    .sort((left, right) => left.projectId.localeCompare(right.projectId)
-      || left.sortPosition - right.sortPosition
-      || left.createdAt - right.createdAt
-      || left.id.localeCompare(right.id));
-  const ranks = new Map<string, number>();
-  let projectId = '';
-  let rank = 0;
-  for (const item of queued) {
-    if (item.projectId !== projectId) {
-      projectId = item.projectId;
-      rank = 0;
-    }
-    ranks.set(item.id, ++rank);
-  }
-  return ranks;
-}
-
 function sidebarStateRank(item: WorkItem): number {
   if (item.state === 'needs-human') return 0;
   if (item.state === 'failed') return 1;
   if (item.state === 'running') return 2;
-  if (item.state === 'queued') return 3;
-  return 4;
+  return 3;
 }
 
 export function workflowSidebarRuns(items: WorkItem[], projectId: string): WorkItem[] {
@@ -161,7 +136,7 @@ export function workflowSidebarRuns(items: WorkItem[], projectId: string): WorkI
       if (rank !== 0) return rank;
       const leftAt = left.endedAt || left.startedAt || left.createdAt;
       const rightAt = right.endedAt || right.startedAt || right.createdAt;
-      return leftAt - rightAt || left.sortPosition - right.sortPosition;
+      return leftAt - rightAt || left.id.localeCompare(right.id);
     });
 }
 

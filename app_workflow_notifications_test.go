@@ -69,12 +69,10 @@ func TestWorkflowStateEmitterPersistsTemplateAndSendsTypedNotifications(t *testi
 		From: engine.StateRunning, To: engine.StateNeedsHuman, Reason: engine.ReasonQuestion,
 	})
 
-	for range 2 {
-		select {
-		case <-sender.wake:
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for workflow notifications")
-		}
+	select {
+	case <-sender.wake:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for workflow notifications")
 	}
 	stored, err := app.store.GetWorkItem(item.ID)
 	if err != nil {
@@ -88,21 +86,16 @@ func TestWorkflowStateEmitterPersistsTemplateAndSendsTypedNotifications(t *testi
 		t.Fatalf("digest = %+v", digest)
 	}
 	records := sender.snapshot()
-	foundItem, foundSummary := false, false
-	for _, record := range records {
-		switch record.Target.Kind {
-		case "workflow-item":
-			foundItem = record.Target.WorkItemID == item.ID && record.Body == digest.WhatItNeeds
-		case "workflow-triage-agent":
-			foundSummary = record.Target.ProjectID == projectRow.ID && record.Body == "1 need you"
-		}
-	}
-	if !foundItem || !foundSummary {
+	if len(records) != 1 || records[0].Target.Kind != "workflow-item" ||
+		records[0].Target.WorkItemID != item.ID || records[0].Body != digest.WhatItNeeds {
 		t.Fatalf("notifications = %+v", records)
 	}
 }
 
-func TestDoneAwaitingDispositionOnlyRidesDrainSummary(t *testing.T) {
+// TestDoneItemSendsNoNotification pins the rev-2 notification surface: the
+// coalesced drain summary died with the queue, so a run reaching done is
+// silent — only needs-human and failed interrupt the user.
+func TestDoneItemSendsNoNotification(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	sender := &recordingWorkflowNotificationSender{wake: make(chan struct{}, 2)}
 	app.osNotifications = sender
@@ -119,148 +112,8 @@ func TestDoneAwaitingDispositionOnlyRidesDrainSummary(t *testing.T) {
 	)
 	select {
 	case <-sender.wake:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for drain summary")
-	}
-	records := sender.snapshot()
-	if len(records) != 1 || records[0].Target.Kind != "workflow-triage-agent" || records[0].Body != "1 finished" {
-		t.Fatalf("done notifications = %+v", records)
-	}
-}
-
-func TestPausedQueueSummarizesAfterRunningWorkSettles(t *testing.T) {
-	app, _ := setupE2EApp(t)
-	sender := &recordingWorkflowNotificationSender{wake: make(chan struct{}, 4)}
-	app.osNotifications = sender
-	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
-	queued := store.WorkItem{
-		ID: "pending-item", ProjectID: projectRow.ID, Goal: "Pending", WorkflowID: "wf", WorkflowScope: "shared",
-		State: string(engine.StateQueued), Source: "manual", CreatedAt: 1,
-	}
-	failed := store.WorkItem{
-		ID: "failed-item", ProjectID: projectRow.ID, Goal: "Failed", WorkflowID: "wf", WorkflowScope: "shared",
-		State: string(engine.StateRunning), Source: "manual", CreatedAt: 2,
-		Digest: json.RawMessage(`{"whatHappened":"The run failed.","whatItNeeds":"Review the failure."}`),
-	}
-	for _, item := range []store.WorkItem{queued, failed} {
-		if err := app.store.CreateWorkItem(item); err != nil {
-			t.Fatal(err)
-		}
-	}
-	app.workflowQueueActive = true
-	app.afterWorkflowQueueEvent(engine.QueueEvent{Active: false, GlobalConcurrency: 1})
-	if err := app.store.UpdateWorkItemState(failed.ID, string(engine.StateFailed), string(engine.ReasonAgentError), 3); err != nil {
-		t.Fatal(err)
-	}
-	app.afterWorkflowStateEvent(engine.StateEvent{
-		ItemID: failed.ID, ProjectID: failed.ProjectID,
-		From: engine.StateRunning, To: engine.StateFailed, Reason: engine.ReasonAgentError,
-	})
-	for range 2 {
-		select {
-		case <-sender.wake:
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for paused-queue notifications")
-		}
-	}
-	records := sender.snapshot()
-	foundSummary := false
-	for _, record := range records {
-		if record.Target.Kind == "workflow-triage-agent" && record.Body == "1 failed" {
-			foundSummary = true
-		}
-	}
-	if !foundSummary {
-		t.Fatalf("paused queue did not summarize settled work: %+v", records)
-	}
-}
-
-func TestWorkflowDrainSummaryIsProjectScoped(t *testing.T) {
-	app, _ := setupE2EApp(t)
-	sender := &recordingWorkflowNotificationSender{wake: make(chan struct{}, 2)}
-	app.osNotifications = sender
-	projectA := testutil.EnsureProject(t, app.store, t.TempDir())
-	projectB := testutil.EnsureProject(t, app.store, t.TempDir())
-	if err := app.store.CreateWorkItem(store.WorkItem{
-		ID: "project-b-running", ProjectID: projectB.ID, Goal: "B running", WorkflowID: "wf",
-		WorkflowScope: "shared", State: string(engine.StateRunning), Source: "manual", CreatedAt: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	app.workflowQueueActive = true
-	app.recordWorkflowNotificationOutcome(projectA.ID, engine.StateDone)
-	app.flushWorkflowDrainSummariesIfIdle()
-	waitForWorkflowSummary(t, sender, projectA.ID, "1 finished")
-}
-
-func TestGlobalPauseFlushesProjectWithPendingOnly(t *testing.T) {
-	app, _ := setupE2EApp(t)
-	sender := &recordingWorkflowNotificationSender{wake: make(chan struct{}, 2)}
-	app.osNotifications = sender
-	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
-	if err := app.store.CreateWorkItem(store.WorkItem{
-		ID: "global-pause-pending", ProjectID: projectRow.ID, Goal: "Pending", WorkflowID: "wf",
-		WorkflowScope: "shared", State: string(engine.StateQueued), Source: "manual", CreatedAt: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	app.workflowQueueActive = true
-	app.recordWorkflowNotificationOutcome(projectRow.ID, engine.StateDone)
-	app.afterWorkflowQueueEvent(engine.QueueEvent{
-		Active: false, Projects: []engine.ProjectQueueState{{ProjectID: projectRow.ID}},
-	})
-	waitForWorkflowSummary(t, sender, projectRow.ID, "1 finished")
-}
-
-func TestProjectPauseFlushesAfterRunningSettlesAndIgnoresQueued(t *testing.T) {
-	app, _ := setupE2EApp(t)
-	sender := &recordingWorkflowNotificationSender{wake: make(chan struct{}, 2)}
-	app.osNotifications = sender
-	projectRow := testutil.EnsureProject(t, app.store, t.TempDir())
-	for _, item := range []store.WorkItem{
-		{ID: "project-pause-pending", State: string(engine.StateQueued), CreatedAt: 1},
-		{ID: "project-pause-running", State: string(engine.StateRunning), CreatedAt: 2},
-	} {
-		item.ProjectID = projectRow.ID
-		item.Goal = item.ID
-		item.WorkflowID = "wf"
-		item.WorkflowScope = "shared"
-		item.Source = "manual"
-		if err := app.store.CreateWorkItem(item); err != nil {
-			t.Fatal(err)
-		}
-	}
-	app.workflowQueueActive = true
-	app.recordWorkflowNotificationOutcome(projectRow.ID, engine.StateFailed)
-	app.afterWorkflowQueueEvent(engine.QueueEvent{
-		Active: true, Projects: []engine.ProjectQueueState{{ProjectID: projectRow.ID, Paused: true}},
-	})
-	if records := sender.snapshot(); len(records) != 0 {
-		t.Fatalf("summary flushed while project still ran: %+v", records)
-	}
-	if err := app.store.UpdateWorkItemState(
-		"project-pause-running", string(engine.StateNeedsHuman), string(engine.ReasonQuestion), 3,
-	); err != nil {
-		t.Fatal(err)
-	}
-	app.flushWorkflowDrainSummariesIfIdle()
-	waitForWorkflowSummary(t, sender, projectRow.ID, "1 failed")
-}
-
-func waitForWorkflowSummary(t *testing.T, sender *recordingWorkflowNotificationSender, projectID, body string) {
-	t.Helper()
-	deadline := time.After(time.Second)
-	for {
-		select {
-		case <-sender.wake:
-			for _, record := range sender.snapshot() {
-				if record.Target.Kind == "workflow-triage-agent" && record.Target.ProjectID == projectID && record.Body == body {
-					return
-				}
-			}
-		case <-deadline:
-			t.Fatalf("workflow summary %s/%q not sent: %+v", projectID, body, sender.snapshot())
-		}
+		t.Fatalf("done item sent a notification: %+v", sender.snapshot())
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -276,12 +129,6 @@ func TestWorkflowTemplateDigestUsesCheckAndStuckInputs(t *testing.T) {
 	}, "build", json.RawMessage(`{"reason":"registry unavailable"}`), "")
 	if stuck.WhatHappened != "The run is stuck in build: registry unavailable." {
 		t.Fatalf("stuck digest = %+v", stuck)
-	}
-}
-
-func TestWorkflowDrainSummaryOmitsZeroSegments(t *testing.T) {
-	if got := workflowDrainSummaryBody(workflowNotificationTally{Finished: 3, Failed: 1}); got != "3 finished · 1 failed" {
-		t.Fatalf("summary = %q", got)
 	}
 }
 

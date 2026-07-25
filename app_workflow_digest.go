@@ -226,7 +226,7 @@ func (a *App) upgradeWorkflowDigest(item store.WorkItem, template WorkflowDigest
 }
 
 func (a *App) queueWorkflowDigestUpgrade(item store.WorkItem, template WorkflowDigest, expected []byte) {
-	a.workflowNotificationsMu.Lock()
+	a.workflowDigestMu.Lock()
 	if a.workflowDigestSlots == nil {
 		a.workflowDigestSlots = make(chan struct{}, 2)
 	}
@@ -234,11 +234,11 @@ func (a *App) queueWorkflowDigestUpgrade(item store.WorkItem, template WorkflowD
 	select {
 	case slots <- struct{}{}:
 	default:
-		a.workflowNotificationsMu.Unlock()
+		a.workflowDigestMu.Unlock()
 		log.Printf("workflow digest %s: async upgrade skipped because both generator slots are busy", item.ID)
 		return
 	}
-	a.workflowNotificationsMu.Unlock()
+	a.workflowDigestMu.Unlock()
 	go func() {
 		defer func() { <-slots }()
 		if a.lifeCtx().Err() != nil {

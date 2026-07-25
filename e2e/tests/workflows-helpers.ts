@@ -43,7 +43,7 @@ export interface WorkflowSeedItem {
   seeds?: Record<string, unknown>;
   stepMode?: boolean;
   count?: number;
-  target?: 'queued' | 'needs-human' | 'done';
+  target?: 'running' | 'needs-human' | 'done';
 }
 
 export async function seedWorkflowProject(
@@ -104,26 +104,23 @@ export async function setClaudeScenario(
   });
 }
 
-export async function enqueue(
+export async function start(
   harness: HarnessApp,
   projectId: string,
   workflowId: string,
   stepMode = false,
 ): Promise<WorkflowItem> {
-  return await harness.rpc<WorkflowItem>(
-    'WorkflowEnqueueItem',
+  return await startWorkflow(
+    harness,
     projectId,
     workflowId,
-    'project',
     `Run ${workflowId}`,
-    { goal: `Run ${workflowId}` },
-    null,
-    '',
+    undefined,
     stepMode,
   );
 }
 
-export async function enqueueWorkflow(
+export async function startWorkflow(
   harness: HarnessApp,
   projectId: string,
   workflowId: string,
@@ -132,7 +129,7 @@ export async function enqueueWorkflow(
   stepMode = false,
 ): Promise<WorkflowItem> {
   return await harness.rpc<WorkflowItem>(
-    'WorkflowEnqueueItem',
+    'WorkflowStartRun',
     projectId,
     workflowId,
     'project',
@@ -159,12 +156,21 @@ export async function waitForWorkflowState(
   );
 }
 
-export async function pauseWorkflowQueue(harness: HarnessApp): Promise<void> {
-  await harness.rpc('WorkflowSetQueue', false, 0, 1);
+// setGlobalPause drives the one engine-level kill switch. While paused a
+// started run is admitted and persisted `running` with its first phase held,
+// so a spec can stage scenarios before any provider session exists.
+export async function setGlobalPause(harness: HarnessApp, paused: boolean): Promise<void> {
+  await harness.rpc('WorkflowSetGlobalPause', paused);
 }
 
-export async function startOneWorkflow(harness: HarnessApp): Promise<void> {
-  await harness.rpc('WorkflowSetQueue', true, 1, 1);
+export async function waitForEnginePause(
+  harness: HarnessApp,
+  paused: boolean,
+): Promise<void> {
+  await harness.waitForEvent<{ paused: boolean }>(
+    'workflow:engine-state',
+    (event) => event.paused === paused,
+  );
 }
 
 export function doneResult(outputs: Record<string, unknown>): string {

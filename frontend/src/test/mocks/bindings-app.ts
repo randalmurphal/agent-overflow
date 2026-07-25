@@ -161,8 +161,8 @@ export const WorkflowCancelItem = dispatch('WorkflowCancelItem');
 export const WorkflowCreateItemPR = dispatch('WorkflowCreateItemPR');
 export const WorkflowDiscussPR = dispatch('WorkflowDiscussPR');
 export const WorkflowDiscardItem = dispatch('WorkflowDiscardItem');
-export const WorkflowEnqueueItem = dispatch('WorkflowEnqueueItem');
 export const WorkflowFetchPRReviewComments = dispatch('WorkflowFetchPRReviewComments');
+export const WorkflowGetEngineState = dispatch('WorkflowGetEngineState');
 export const WorkflowGetItem = dispatch('WorkflowGetItem');
 export const WorkflowGetJobNotes = dispatch('WorkflowGetJobNotes');
 export const WorkflowListDefinitions = dispatch('WorkflowListDefinitions');
@@ -173,13 +173,13 @@ export const WorkflowMergeItem = dispatch('WorkflowMergeItem');
 export const WorkflowOpenStudioThread = dispatch('WorkflowOpenStudioThread');
 export const WorkflowOpenTriageAgent = dispatch('WorkflowOpenTriageAgent');
 export const WorkflowOpenTriageThread = dispatch('WorkflowOpenTriageThread');
-export const WorkflowRemoveQueuedItem = dispatch('WorkflowRemoveQueuedItem');
-export const WorkflowReorderQueue = dispatch('WorkflowReorderQueue');
+export const WorkflowRerunItem = dispatch('WorkflowRerunItem');
 export const WorkflowSendPRReviewCommentsToThread = dispatch('WorkflowSendPRReviewCommentsToThread');
-export const WorkflowUpdateProjectQueue = dispatch('WorkflowUpdateProjectQueue');
 export const WorkflowResolveGate = dispatch('WorkflowResolveGate');
 export const WorkflowResumeItem = dispatch('WorkflowResumeItem');
+export const WorkflowSetGlobalPause = dispatch('WorkflowSetGlobalPause');
 export const WorkflowSetJobNotes = dispatch('WorkflowSetJobNotes');
+export const WorkflowStartRun = dispatch('WorkflowStartRun');
 
 // Per-provider/model context window + auto-compact thresholds.
 // GetContextSettings hydrates the form; the two updates persist either

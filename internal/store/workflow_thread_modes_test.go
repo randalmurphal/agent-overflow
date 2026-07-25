@@ -75,7 +75,7 @@ func TestFindWorkflowTriageAgentExcludesItemLinkedThreads(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	item := testWorkItem("workflow-item", defaultTestProjectID, "needs-human", 0, 1)
+	item := testWorkItem("workflow-item", defaultTestProjectID, "needs-human", 1)
 	item.Reason = "stuck"
 	item.TriageThreadID = itemThread.ID
 	if err := s.CreateWorkItem(item); err != nil {

@@ -236,12 +236,12 @@ type Settings struct {
 	// persistence rationale as ProjectSortMode.
 	UsagePeriod string `json:"usagePeriod"`
 
-	// WorkflowQueueActive and WorkflowConcurrency configure the autonomous
-	// workflow drain. WorkflowChatEnqueue controls whether newly started
-	// interactive provider sessions receive the first-party proposal tool.
-	// Concurrency is global across projects and bounded 1..32.
-	WorkflowQueueActive bool `json:"workflowQueueActive"`
-	WorkflowConcurrency int  `json:"workflowConcurrency"`
+	// WorkflowPaused is the global workflow kill switch: while set, no
+	// workflow phase starts anywhere and in-flight turns finish. It is
+	// persisted so a paused engine stays paused across a restart.
+	// WorkflowChatEnqueue controls whether newly started interactive
+	// provider sessions receive the first-party proposal tool.
+	WorkflowPaused      bool `json:"workflowPaused"`
 	WorkflowChatEnqueue bool `json:"workflowChatEnqueue"`
 
 	// Per-client UI view state (pane layout, collapsed projects,
@@ -307,8 +307,7 @@ var DefaultSettings = Settings{
 	Retention:           RetentionSettings{Days: 30},
 	ProjectSortMode:     "lastActivity",
 	UsagePeriod:         "month",
-	WorkflowQueueActive: true,
-	WorkflowConcurrency: 2,
+	WorkflowPaused:      false,
 	WorkflowChatEnqueue: true,
 }
 

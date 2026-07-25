@@ -11,10 +11,9 @@ import (
 )
 
 func stepWorkflow() def.Workflow {
-	outputs := map[string]def.Variable{"ok": {Schema: def.JSONSchema{Type: "boolean"}}}
 	return def.Workflow{ID: "step", Phases: []def.Phase{
-		{ID: "first", Driver: def.DriverAgent, Outputs: outputs, Gate: def.Gate{Routes: []def.Route{{To: "second"}}}},
-		{ID: "second", Driver: def.DriverAgent, Outputs: outputs, Gate: def.Gate{Routes: []def.Route{{To: "done"}}}},
+		agentPhase("first", nil, []def.Route{{To: "second"}}),
+		agentPhase("second", nil, []def.Route{{To: "done"}}),
 	}}
 }
 
@@ -44,10 +43,10 @@ func TestLoopCountsIgnoreGateAttemptAbandonedByTakeover(t *testing.T) {
 
 func TestStepModeParksAtEveryAutomaticGateAndApproveContinues(t *testing.T) {
 	workflow := stepWorkflow()
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"step": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"step": workflow}, []string{"project"}, nil)
 	item := testItem("item", "project", "step", 0)
 	item.StepMode = true
-	if err := h.engine.Enqueue(item); err != nil {
+	if err := h.engine.StartItem(item); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,7 +106,7 @@ func TestStepModeParkRebuildsAndApprovesRecordedDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"step": workflow}, []string{"project"}, func(database *store.Store) {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"step": workflow}, []string{"project"}, func(database *store.Store) {
 		item := testItem("rebuilt-step", "project", "step", 0)
 		item.StepMode = true
 		item.State, item.Reason, item.Snapshot = string(StateNeedsHuman), string(ReasonGate), snapshot
@@ -150,7 +149,7 @@ func TestStepModeApprovedTransitionRebuildPreservesFeedback(t *testing.T) {
 		t.Fatal(err)
 	}
 	intervention := json.RawMessage(`{"decision":"approve","note":"checked"}`)
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"step": workflow}, []string{"project"}, func(database *store.Store) {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"step": workflow}, []string{"project"}, func(database *store.Store) {
 		item := testItem("approved-step", "project", "step", 0)
 		item.StepMode, item.State, item.Snapshot, item.StartedAt = true, string(StateRunning), snapshot, 20
 		if err := database.CreateWorkItem(item); err != nil {
@@ -173,14 +172,11 @@ func TestStepModeApprovedTransitionRebuildPreservesFeedback(t *testing.T) {
 
 func TestRunnerSetupFailureUsesTypedReason(t *testing.T) {
 	workflow := onePhaseWorkflow("setup", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"setup": workflow}, []string{"project"}, nil)
+	h := newHarness(t, Config{}, map[string]def.Workflow{"setup": workflow}, []string{"project"}, nil)
 	item := testItem("setup", "project", "setup", 0)
 	h.runner.startErrs[item.ID] = errors.Join(ErrSetupFailed, errors.New("hook failed"))
-	if err := h.engine.Enqueue(item); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.engine.SetQueue(true, 0, 1); !errors.Is(err, ErrSetupFailed) {
-		t.Fatalf("set queue error = %v, want setup failure", err)
+	if err := h.engine.StartItem(item); !errors.Is(err, ErrSetupFailed) {
+		t.Fatalf("start error = %v, want setup failure", err)
 	}
 	requireItemState(t, h.store, item.ID, StateNeedsHuman, ReasonSetupFailed)
 }

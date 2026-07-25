@@ -1,21 +1,21 @@
 import { test, expect, type HarnessMockEvent } from './fixtures.js';
 import {
   doneResult,
-  enqueue,
   questionResult,
   seedWorkflow,
   setClaudeScenario,
   singlePhaseWorkflow,
+  start,
   type WorkflowDetail,
   type WorkflowStateEvent,
 } from './workflows-helpers.js';
 
-test('workflow drain completes two phases through the real queue', async ({ harness }) => {
-  await setClaudeScenario(harness, 'workflow-drain', [
+test('workflow run completes two phases from a direct start', async ({ harness }) => {
+  await setClaudeScenario(harness, 'workflow-chain', [
     { steps: [{ emit: { lines: [doneResult({ complete: true })] } }] },
   ]);
-  const yaml = `id: drain-flow
-name: Drain flow
+  const yaml = `id: chain-flow
+name: Chain flow
 inputs:
   goal:
     schema:
@@ -25,7 +25,7 @@ phases:
     driver: agent
     provider: claude
     model: claude-opus-4-7
-    prompt: drain-flow.md
+    prompt: chain-flow.md
     access: read-only
     inputs:
       goal:
@@ -42,7 +42,7 @@ phases:
     driver: agent
     provider: claude
     model: claude-opus-4-7
-    prompt: drain-flow.md
+    prompt: chain-flow.md
     access: read-only
     inputs:
       first.complete:
@@ -57,8 +57,8 @@ phases:
         - to: done
 cleanup: manual
 `;
-  const project = await seedWorkflow(harness, 'workflow-drain-project', 'drain-flow', yaml);
-  const item = await enqueue(harness, project.projectId, 'drain-flow');
+  const project = await seedWorkflow(harness, 'workflow-chain-project', 'chain-flow', yaml);
+  const item = await start(harness, project.projectId, 'chain-flow');
 
   await harness.waitForEvent<WorkflowStateEvent>(
     'workflow:item-state',
@@ -136,7 +136,7 @@ cleanup: manual
     'human-flow',
     yaml,
   );
-  const item = await enqueue(harness, project.projectId, 'human-flow');
+  const item = await start(harness, project.projectId, 'human-flow');
   const prepareMock = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (event) => event.scenario === 'workflow-human-gate' && event.report.kind === 'registered',
@@ -197,7 +197,7 @@ test('workflow question answer continues on the same mock session', async ({ har
     'question-flow',
     singlePhaseWorkflow('question-flow', '        - to: done'),
   );
-  const item = await enqueue(harness, project.projectId, 'question-flow');
+  const item = await start(harness, project.projectId, 'question-flow');
   const registered = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (event) => event.scenario === 'workflow-question' && event.report.kind === 'registered',
@@ -238,7 +238,7 @@ test('workflow watchdog parks a stalled mock without a test sleep', async ({ har
     singlePhaseWorkflow('watchdog-flow', '        - to: done'),
     'reliability:\n  watchdog: 100ms\n  backoff: [1ms]\n',
   );
-  const item = await enqueue(harness, project.projectId, 'watchdog-flow');
+  const item = await start(harness, project.projectId, 'watchdog-flow');
 
   const registered = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
@@ -273,7 +273,7 @@ test('workflow cancel interrupts a waitSignal-held mock turn', async ({ harness 
     'cancel-flow',
     singlePhaseWorkflow('cancel-flow', '        - to: done'),
   );
-  const item = await enqueue(harness, project.projectId, 'cancel-flow');
+  const item = await start(harness, project.projectId, 'cancel-flow');
   const registered = await harness.waitForEvent<HarnessMockEvent>(
     'harness:mock',
     (event) => event.scenario === 'workflow-cancel' && event.report.kind === 'registered',

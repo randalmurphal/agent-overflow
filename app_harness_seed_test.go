@@ -50,11 +50,7 @@ func TestHarnessSeedWorkflowsUsesProductionPathsAndResetClearsState(t *testing.T
 		`{"type":"system","subtype":"init","session_id":"seed-workflow","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
 		`{"type":"result","subtype":"success","is_error":false,"structured_output":{"status":"done","outputs":{"summary":"seeded"},"question":null,"reason":null}}`,
 	}})
-	if _, err := app.settings.Update(map[string]any{
-		"claudeBinaryPath":    mock,
-		"workflowQueueActive": false,
-		"workflowConcurrency": 2,
-	}); err != nil {
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": mock}); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.initWorkflowEngine(dataDir); err != nil {
@@ -104,7 +100,6 @@ cleanup: manual
 			Name: "workflow-seed",
 			Repo: &harness.RepoSpec{},
 			Workflows: workflowSeed([]HarnessSeedWorkflowItem{
-				{Workflow: "seeded-flow", Goal: "wait", Seeds: json.RawMessage(`{"goal":"wait"}`), Target: "queued", Count: 2},
 				{Workflow: "seeded-flow", Goal: "finish", Seeds: json.RawMessage(`{"goal":"finish"}`), Target: "done"},
 			}),
 		},
@@ -120,8 +115,8 @@ cleanup: manual
 		t.Fatalf("HarnessSeed: %v", err)
 	}
 	projectResult := result.Projects[0]
-	if len(projectResult.WorkItemIDs) != 3 {
-		t.Fatalf("work item ids = %v, want 3", projectResult.WorkItemIDs)
+	if len(projectResult.WorkItemIDs) != 1 {
+		t.Fatalf("work item ids = %v, want 1", projectResult.WorkItemIDs)
 	}
 	secondDone, err := app.WorkflowGetItem(result.Projects[1].WorkItemIDs[0])
 	if err != nil || secondDone.Item.State != string(engine.StateDone) {
@@ -142,7 +137,8 @@ cleanup: manual
 		}
 	}
 
-	done, err := app.WorkflowGetItem(projectResult.WorkItemIDs[2])
+	doneItemID := projectResult.WorkItemIDs[0]
+	done, err := app.WorkflowGetItem(doneItemID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,22 +146,45 @@ cleanup: manual
 		len(done.Phases[0].OutputEnvelope) == 0 {
 		t.Fatalf("production-driven done item = %+v", done)
 	}
-	persistedPhases, err := app.store.ListWorkItemPhases(projectResult.WorkItemIDs[2])
+	persistedPhases, err := app.store.ListWorkItemPhases(doneItemID)
 	if err != nil || len(persistedPhases) != 1 || len(persistedPhases[0].GateTrace) == 0 {
 		t.Fatalf("production-driven persisted phase trace = %+v, %v", persistedPhases, err)
 	}
-	for _, itemID := range projectResult.WorkItemIDs[:2] {
+
+	// A fixture that must not execute is seeded under the global pause: the run
+	// is admitted and persisted running, but its first phase is held, so the
+	// state is deterministic without any queue.
+	if err := app.WorkflowSetGlobalPause(true); err != nil {
+		t.Fatal(err)
+	}
+	held, err := h.HarnessSeed(HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name: "workflow-seed-held",
+		Repo: &harness.RepoSpec{},
+		Workflows: workflowSeed([]HarnessSeedWorkflowItem{
+			{Workflow: "seeded-flow", Goal: "wait", Seeds: json.RawMessage(`{"goal":"wait"}`), Count: 2},
+		}),
+	}}})
+	if err != nil {
+		t.Fatalf("HarnessSeed under pause: %v", err)
+	}
+	if len(held.Projects[0].WorkItemIDs) != 2 {
+		t.Fatalf("held work item ids = %v, want 2", held.Projects[0].WorkItemIDs)
+	}
+	for _, itemID := range held.Projects[0].WorkItemIDs {
 		item, err := app.store.GetWorkItem(itemID)
-		if err != nil || item.State != string(engine.StateQueued) {
-			t.Fatalf("queued item %s = %+v, %v", itemID, item, err)
+		if err != nil || item.State != string(engine.StateRunning) || item.Reason != "" {
+			t.Fatalf("held item %s = %+v, %v", itemID, item, err)
+		}
+		phases, err := app.store.ListWorkItemPhases(itemID)
+		if err != nil || len(phases) != 1 || phases[0].Status != "running" || phases[0].ThreadID != "" {
+			t.Fatalf("held item %s phases = %+v, %v", itemID, phases, err)
 		}
 	}
-	settings := app.currentSettings()
-	if settings.WorkflowQueueActive || settings.WorkflowConcurrency != 2 {
-		t.Fatalf("queue settings after seed = %+v", settings)
+	if state, err := app.WorkflowGetEngineState(); err != nil || !state.Paused {
+		t.Fatalf("engine state = %+v, %v, want paused", state, err)
 	}
 
-	runDir := filepath.Join(dataDir, "workflow-runs", projectResult.WorkItemIDs[2], "artifacts")
+	runDir := filepath.Join(dataDir, "workflow-runs", doneItemID, "artifacts")
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -188,18 +207,22 @@ cleanup: manual
 			t.Fatalf("workflow reset left %s (stat err %v)", path, err)
 		}
 	}
-	settings = app.currentSettings()
-	if settings.WorkflowQueueActive || settings.WorkflowConcurrency != 2 {
-		t.Fatalf("queue settings after reset = %+v", settings)
+	// Reset is a blank slate: the pause a held-fixture seed left behind must
+	// not survive into the next spec, in the engine or in settings.
+	if app.currentSettings().WorkflowPaused {
+		t.Fatal("reset left the persisted pause flag set")
+	}
+	if state, err := app.WorkflowGetEngineState(); err != nil || state.Paused {
+		t.Fatalf("engine state after reset = %+v, %v, want unpaused", state, err)
 	}
 }
 
 func TestHarnessSeedWorkflowTargetValidationNamesTarget(t *testing.T) {
 	h, _ := newHarnessTestApp(t)
 	_, err := h.seedWorkflowItems("project", HarnessSeedWorkflowItem{
-		Workflow: "flow", Goal: "goal", Target: "running",
+		Workflow: "flow", Goal: "goal", Target: "queued",
 	})
-	if err == nil || !strings.Contains(err.Error(), `unsupported target "running"`) {
+	if err == nil || !strings.Contains(err.Error(), `unsupported target "queued"`) {
 		t.Fatalf("unsupported target error = %v", err)
 	}
 }
@@ -222,7 +245,7 @@ func TestHarnessSeedWorkflowCountIsBoundedBeforeMutation(t *testing.T) {
 	}
 }
 
-func TestHarnessResetCancelsRunningBeforeDrainingQueued(t *testing.T) {
+func TestHarnessResetCancelsRunningAndHeldRuns(t *testing.T) {
 	app, _ := setupE2EApp(t)
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "agent-overflow")
@@ -235,11 +258,7 @@ func TestHarnessResetCancelsRunningBeforeDrainingQueued(t *testing.T) {
 	stallMock := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{{
 		`{"type":"system","subtype":"init","session_id":"reset-running","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
 	}})
-	if _, err := app.settings.Update(map[string]any{
-		"claudeBinaryPath":    stallMock,
-		"workflowQueueActive": false,
-		"workflowConcurrency": 1,
-	}); err != nil {
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": stallMock}); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.initWorkflowEngine(dataDir); err != nil {
@@ -286,29 +305,26 @@ cleanup: manual
 		t.Fatal(err)
 	}
 	projectID := seed.Projects[0].ProjectID
-	if err := app.WorkflowSetQueue(true, 0, 1); err != nil {
-		t.Fatal(err)
-	}
-	running, err := app.WorkflowEnqueueItem(projectID, "reset-flow", "project", "run", json.RawMessage(`{"goal":"run"}`), nil, "", false)
+	running, err := app.WorkflowStartRun(projectID, "reset-flow", "project", "run", json.RawMessage(`{"goal":"run"}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if running.State != string(engine.StateRunning) {
 		t.Fatalf("first item state = %s, want running", running.State)
 	}
-	if err := app.WorkflowSetQueue(false, 0, 1); err != nil {
+	if err := app.WorkflowSetGlobalPause(true); err != nil {
 		t.Fatal(err)
 	}
-	queued, err := app.WorkflowEnqueueItem(projectID, "reset-flow", "project", "wait", json.RawMessage(`{"goal":"wait"}`), nil, "", false)
+	held, err := app.WorkflowStartRun(projectID, "reset-flow", "project", "wait", json.RawMessage(`{"goal":"wait"}`), nil, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if queued.State != string(engine.StateQueued) {
-		t.Fatalf("second item state = %s, want queued", queued.State)
+	if held.State != string(engine.StateRunning) {
+		t.Fatalf("held item state = %s, want running", held.State)
 	}
 
 	if err := h.HarnessReset(); err != nil {
-		t.Fatalf("HarnessReset with running + queued workflows: %v", err)
+		t.Fatalf("HarnessReset with live + held workflows: %v", err)
 	}
 	projects, err := app.store.ListProjects()
 	if err != nil || len(projects) != 0 {

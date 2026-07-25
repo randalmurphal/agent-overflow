@@ -18,11 +18,14 @@ type teardownRequest struct {
 
 func transitionAllowed(from, to State) bool {
 	switch from {
-	case StateQueued:
-		return to == StateRunning
 	case StateRunning:
 		return to == StateNeedsHuman || to == StateDone || to == StateFailed || to == StateCancelled
 	case StateNeedsHuman:
+		return to == StateRunning
+	case StateFailed:
+		// Rerun. `done` and `cancelled` stay terminal: a finished run is
+		// re-entered by starting a new one, and a cancelled run was stopped on
+		// purpose.
 		return to == StateRunning
 	default:
 		return false
@@ -52,54 +55,24 @@ func (e *Engine) transition(item *runtimeItem, to State, reason Reason) error {
 	if reason != "" && !reasonAllowed(reason) {
 		return fmt.Errorf("transition item %q: unknown typed reason %q", item.item.ID, reason)
 	}
-	if (to == StateQueued || to == StateRunning || to == StateDone) && reason != "" {
+	if (to == StateRunning || to == StateDone) && reason != "" {
 		return fmt.Errorf("transition item %q: %s does not accept reason %q", item.item.ID, to, reason)
 	}
 	endedAt := int64(0)
-	if to != StateRunning && to != StateQueued {
+	if to != StateRunning {
 		endedAt = e.timestamp()
 	}
 	if err := e.store.UpdateWorkItemState(item.item.ID, string(to), string(reason), endedAt); err != nil {
 		return fmt.Errorf("transition item %q %s -> %s: %w", item.item.ID, from, to, err)
 	}
-	slotChanged := false
-	if to == StateRunning && !item.slot {
-		e.acquireSlot(item)
-		slotChanged = true
-	}
-	if from == StateRunning && to != StateRunning && item.slot {
-		e.releaseSlot(item)
-		slotChanged = true
-	}
 	item.item.State = string(to)
 	item.item.Reason = string(reason)
 	item.item.EndedAt = endedAt
-	e.emitter.Emit("workflow:item-state", StateEvent{
-		ItemID: item.item.ID, ProjectID: item.item.ProjectID, From: from, To: to, Reason: reason,
-	})
-	if slotChanged {
-		e.emitQueue()
-	}
-	if to != StateRunning && to != StateQueued {
+	e.emitItemState(item.item.ID, item.item.ProjectID, from, to, reason)
+	if to != StateRunning {
 		delete(e.items, item.item.ID)
 	}
 	return nil
-}
-
-func (e *Engine) acquireSlot(item *runtimeItem) {
-	item.slot = true
-	e.activeSlots++
-	e.runningByProject[item.item.ProjectID]++
-}
-
-func (e *Engine) releaseSlot(item *runtimeItem) {
-	item.slot = false
-	e.activeSlots--
-	projectID := item.item.ProjectID
-	e.runningByProject[projectID]--
-	if e.runningByProject[projectID] == 0 {
-		delete(e.runningByProject, projectID)
-	}
 }
 
 // teardown is the only function allowed to release resource holders. It is
@@ -242,6 +215,8 @@ func (e *Engine) finishDecision(item *runtimeItem, decision def.RouteDecision, e
 		item.feedback = feedbackFor(vars, decision.Feedback, "")
 		item.phaseID = decision.Target
 		item.attempt = 0
+		// The phase just released its locks; hand them to the longest-waiting
+		// phase before this item competes for them again.
 		waitingErr := e.startWaiting()
 		return errors.Join(waitingErr, e.enterPhase(item))
 	case def.DecisionDone:

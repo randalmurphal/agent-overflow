@@ -13,7 +13,6 @@ export class Target {
     "kind": string;
     "threadId"?: string;
     "workItemId"?: string;
-    "projectId"?: string;
 
     /** Creates a new Target instance. */
     constructor($$source: Partial<Target> = {}) {

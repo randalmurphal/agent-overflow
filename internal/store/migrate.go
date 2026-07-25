@@ -776,6 +776,82 @@ CREATE INDEX idx_work_item_phases_thread
   WHERE thread_id <> '';
 `
 
+// rebuildWorkItemsDirectStartV30SQL removes the work queue from the run
+// record. It (a) drops `queued` from the state CHECK — a run starts running
+// and contention is a phase waiting on resource capacity, not an item waiting
+// in a line — and (b) drops the `sort_position` queue-order column. SQLite can
+// alter neither in place, so the established table-rebuild pattern applies;
+// dropping the column is free inside the rebuild the CHECK already requires.
+//
+// Resident `queued` rows are runs that were admitted but never started. They
+// park `needs-human(interrupted)` — the same resting state and typed reason a
+// crash produces — so the morning-after view explains them and the ordinary
+// resume path continues them. After this migration `queued` is unrepresentable,
+// which is why the engine's startup rebuild carries no legacy-queued branch.
+const rebuildWorkItemsDirectStartV30SQL = `
+CREATE TABLE work_items_new (
+    id               TEXT    PRIMARY KEY,
+    project_id       TEXT    NOT NULL,
+    goal             TEXT    NOT NULL,
+    workflow_id      TEXT    NOT NULL,
+    workflow_scope   TEXT    NOT NULL CHECK(workflow_scope IN ('project','shared')),
+    snapshot         TEXT    NOT NULL DEFAULT '' CHECK(snapshot = '' OR json_valid(snapshot)),
+    state            TEXT    NOT NULL CHECK(state IN ('running','needs-human','done','failed','cancelled')),
+    reason           TEXT    NOT NULL DEFAULT '' CHECK(reason IN ('','gate','question','stuck','stalled','budget-exhausted','retries-exhausted','check-failed-genuine','agent-error','wiring-error','disposition','setup-failed','interrupted','taken-over')),
+    seeds            TEXT    NOT NULL DEFAULT '' CHECK(seeds = '' OR json_valid(seeds)),
+    step_mode        INTEGER NOT NULL DEFAULT 0 CHECK(step_mode IN (0,1)),
+    worktree_path    TEXT    NOT NULL DEFAULT '',
+    branch           TEXT    NOT NULL DEFAULT '',
+    base_branch      TEXT    NOT NULL DEFAULT '',
+    budget           TEXT    NOT NULL DEFAULT '' CHECK(budget = '' OR json_valid(budget)),
+    source           TEXT    NOT NULL CHECK(source IN ('manual','agent','automation')),
+    source_ref       TEXT    NOT NULL DEFAULT '',
+    triage_thread_id TEXT    NOT NULL DEFAULT '',
+    disposition      TEXT    NOT NULL DEFAULT '' CHECK(disposition = '' OR json_valid(disposition)),
+    digest           TEXT    NOT NULL DEFAULT '' CHECK(digest = '' OR json_valid(digest)),
+    created_at       INTEGER NOT NULL,
+    started_at       INTEGER NOT NULL DEFAULT 0,
+    ended_at         INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT INTO work_items_new (
+    id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+    seeds, step_mode, worktree_path, branch, base_branch, budget,
+    source, source_ref, triage_thread_id, disposition, digest,
+    created_at, started_at, ended_at
+)
+SELECT
+    id, project_id, goal, workflow_id, workflow_scope, snapshot,
+    CASE WHEN state = 'queued' THEN 'needs-human' ELSE state END,
+    CASE WHEN state = 'queued' THEN 'interrupted' ELSE reason END,
+    seeds, step_mode, worktree_path, branch, base_branch, budget,
+    source, source_ref, triage_thread_id, disposition, digest,
+    created_at, started_at,
+    CASE WHEN state = 'queued' THEN created_at ELSE ended_at END
+FROM work_items;
+
+DROP TABLE work_items;
+
+ALTER TABLE work_items_new RENAME TO work_items;
+
+CREATE INDEX idx_work_items_project_state_created
+  ON work_items(project_id, state, created_at);
+
+CREATE INDEX idx_work_items_project_created
+  ON work_items(project_id, created_at);
+
+CREATE INDEX idx_work_items_state_created
+  ON work_items(state, created_at, id);
+
+CREATE INDEX idx_work_items_triage_thread
+  ON work_items(triage_thread_id)
+  WHERE triage_thread_id <> '';
+
+CREATE UNIQUE INDEX idx_work_items_agent_source_ref
+  ON work_items(source_ref)
+  WHERE source = 'agent' AND source_ref <> '';
+`
+
 // migrations is the ordered list of all schema migrations. Squashed
 // for v0.0.1: the prior 51-migration chain produced this schema; old
 // databases were rebaked into a single (1, 'initial_schema') row by
@@ -1128,6 +1204,12 @@ CHECK(workflow_queue_paused IN (0,1));
 
 ALTER TABLE projects ADD COLUMN workflow_concurrency INTEGER NOT NULL DEFAULT 0
 CHECK(workflow_concurrency BETWEEN 0 AND 32);`,
+	},
+	{
+		Version: 30,
+		Name:    "work_items_direct_start",
+		SQL:     rebuildWorkItemsDirectStartV30SQL,
+		Rebuild: true,
 	},
 }
 

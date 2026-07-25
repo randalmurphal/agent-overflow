@@ -15,7 +15,7 @@ func TestStartupCrashSweepStopsAndParksInterruptedAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"crash": workflow}, []string{"project"}, func(database *store.Store) {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"crash": workflow}, []string{"project"}, func(database *store.Store) {
 		item := testItem("crashed", "project", "crash", 0)
 		if err := database.CreateWorkItem(item); err != nil {
 			t.Fatal(err)
@@ -41,10 +41,7 @@ func TestStartupCrashSweepStopsAndParksInterruptedAttempt(t *testing.T) {
 		t.Fatalf("crashed phase was auto-rerun: %+v", h.runner.started())
 	}
 	h.profiles.setCapacity("project", "stack", 1)
-	if err := h.engine.SetQueue(true, 0, 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.engine.Enqueue(testItem("after-crash", "project", "crash", 1)); err != nil {
+	if err := h.engine.StartItem(testItem("after-crash", "project", "crash", 1)); err != nil {
 		t.Fatal(err)
 	}
 	starts := h.runner.started()
@@ -70,7 +67,7 @@ func TestStartupCrashSweepPreservesPersistedAnswerAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"answer-crash": workflow}, []string{"project"}, func(database *store.Store) {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"answer-crash": workflow}, []string{"project"}, func(database *store.Store) {
 		item := testItem("answer-crash", "project", "answer-crash", 0)
 		if err := database.CreateWorkItem(item); err != nil {
 			t.Fatal(err)
@@ -100,22 +97,49 @@ func TestStartupCrashSweepPreservesPersistedAnswerAttempt(t *testing.T) {
 	}
 }
 
-func TestStartupRebuildDrainsPersistedQueuedItems(t *testing.T) {
-	workflow := onePhaseWorkflow("queued", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"queued": workflow}, []string{"project"}, func(database *store.Store) {
-		if err := database.CreateWorkItem(testItem("persisted", "project", "queued", 0)); err != nil {
+// TestStartupRebuildRestoresPersistedPause pins that the kill switch survives
+// a restart: the engine comes up paused, publishes that state, and holds every
+// start until it is cleared.
+func TestStartupRebuildRestoresPersistedPause(t *testing.T) {
+	workflow := onePhaseWorkflow("paused", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{Paused: true}, map[string]def.Workflow{"paused": workflow}, []string{"project"}, nil)
+	if paused, err := h.engine.Paused(); err != nil || !paused {
+		t.Fatalf("restored paused = %v err=%v, want true", paused, err)
+	}
+	if got := h.emitter.engineStateEvents(); len(got) != 1 || !got[0].Paused {
+		t.Fatalf("rebuild engine state events = %+v, want one paused event", got)
+	}
+	if err := h.engine.StartItem(testItem("held", "project", "paused", 0)); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, "held", StateRunning, "")
+	if got := len(h.runner.started()); got != 0 {
+		t.Fatalf("restored pause started %d runners", got)
+	}
+}
+
+// TestStartupRebuildParksRunningRowWithNoSnapshot covers the row shape a
+// pre-rev-2 database produces after the v30 migration turns an unstarted run
+// into a parked one and any stale running row keeps no frozen workflow: it is
+// unrunnable, so it parks with a typed reason instead of being resumed blind.
+func TestStartupRebuildParksRunningRowWithNoSnapshot(t *testing.T) {
+	workflow := onePhaseWorkflow("stale", nil, []def.Route{{To: "done"}})
+	h := newHarness(t, Config{}, map[string]def.Workflow{"stale": workflow}, []string{"project"}, func(database *store.Store) {
+		if err := database.CreateWorkItem(testItem("snapshotless", "project", "stale", 0)); err != nil {
 			t.Fatal(err)
 		}
 	})
-	starts := h.runner.started()
-	if len(starts) != 1 || starts[0].Key.ItemID != "persisted" {
-		t.Fatalf("rebuilt queue starts = %+v", starts)
+	requireItemState(t, h.store, "snapshotless", StateNeedsHuman, ReasonWiringError)
+	if got := len(h.runner.started()); got != 0 {
+		t.Fatalf("snapshotless row started: %+v", h.runner.started())
 	}
-	requireItemState(t, h.store, "persisted", StateRunning, "")
+	if got := h.emitter.errorEvents("snapshotless"); len(got) == 0 {
+		t.Fatal("snapshotless rebuild failure did not emit workflow:error")
+	}
 }
 
 func TestStartupRebuildCancelsItemsWhoseProjectWasDeleted(t *testing.T) {
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, nil, []string{"project"}, func(database *store.Store) {
+	h := newHarness(t, Config{}, nil, []string{"project"}, func(database *store.Store) {
 		orphan := testItem("orphan", "deleted-project", "missing", 0)
 		if err := database.CreateWorkItem(orphan); err != nil {
 			t.Fatal(err)
@@ -126,17 +150,17 @@ func TestStartupRebuildCancelsItemsWhoseProjectWasDeleted(t *testing.T) {
 		t.Fatalf("orphan item started: %+v", starts)
 	}
 	events := h.emitter.stateEvents("orphan")
-	if len(events) != 1 || events[0].From != StateQueued || events[0].To != StateCancelled || events[0].Reason != ReasonInterrupted {
+	if len(events) != 1 || events[0].From != StateRunning || events[0].To != StateCancelled || events[0].Reason != ReasonInterrupted {
 		t.Fatalf("orphan cancellation events = %+v", events)
 	}
-	if err := h.engine.RemoveQueued("orphan"); err == nil || !strings.Contains(err.Error(), "invalid state cancelled") {
+	if err := h.engine.Cancel("orphan"); err == nil || !strings.Contains(err.Error(), "not tracked") {
 		t.Fatalf("orphan remained tracked: %v", err)
 	}
 }
 
 func TestStartupIgnoresParkedSetupFailureUntilResume(t *testing.T) {
 	workflow := onePhaseWorkflow("retry-setup", nil, []def.Route{{To: "done"}})
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"retry-setup": workflow}, []string{"project"}, func(database *store.Store) {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"retry-setup": workflow}, []string{"project"}, func(database *store.Store) {
 		item := testItem("setup-failed", "project", "retry-setup", 0)
 		item.State = string(StateNeedsHuman)
 		item.Reason = string(ReasonSetupFailed)
@@ -160,7 +184,7 @@ func TestStartupRebuildKeepsTakenOverItemParkedAndCompletable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"taken-over": workflow}, []string{"project"}, func(database *store.Store) {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"taken-over": workflow}, []string{"project"}, func(database *store.Store) {
 		item := testItem("taken-over", "project", "taken-over", 0)
 		item.Snapshot = snapshot
 		item.State = string(StateNeedsHuman)
@@ -215,7 +239,7 @@ func TestStartupCompletesPersistedTeardownWindow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"window": workflow}, []string{"project"}, func(database *store.Store) {
+			h := newHarness(t, Config{}, map[string]def.Workflow{"window": workflow}, []string{"project"}, func(database *store.Store) {
 				item := testItem("window", "project", "window", 0)
 				if err := database.CreateWorkItem(item); err != nil {
 					t.Fatal(err)
@@ -259,7 +283,7 @@ func TestStartupContinuesPersistedHumanRejectDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"human": workflow}, []string{"project"}, func(database *store.Store) {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"human": workflow}, []string{"project"}, func(database *store.Store) {
 		item := testItem("human-window", "project", "human", 0)
 		item.State = string(StateNeedsHuman)
 		item.Reason = string(ReasonGate)
@@ -284,7 +308,7 @@ func TestStartupContinuesPersistedHumanRejectDecision(t *testing.T) {
 	requireItemState(t, h.store, "human-window", StateRunning, "")
 }
 
-func TestPendingPersistedHumanDecisionRetriesWhenSlotFrees(t *testing.T) {
+func TestPendingPersistedHumanDecisionsShareProviderCapacity(t *testing.T) {
 	workflow := humanWorkflow()
 	snapshot, err := json.Marshal(Snapshot{Workflow: workflow})
 	if err != nil {
@@ -298,38 +322,41 @@ func TestPendingPersistedHumanDecisionRetriesWhenSlotFrees(t *testing.T) {
 		t.Fatal(err)
 	}
 	intervention := json.RawMessage(`{"decision":"reject","note":"retry"}`)
-	h := newHarness(t, Config{Active: false, GlobalConcurrency: 1}, map[string]def.Workflow{"human": workflow}, []string{"project"}, func(database *store.Store) {
-		for position, id := range []string{"first", "second"} {
-			item := testItem(id, "project", "human", position)
-			item.State, item.Reason, item.Snapshot = string(StateNeedsHuman), string(ReasonGate), snapshot
-			if err := database.CreateWorkItem(item); err != nil {
-				t.Fatal(err)
+	h := newHarnessWith(t, harnessOptions{
+		workflows:  map[string]def.Workflow{"human": workflow},
+		projectIDs: []string{"project"},
+		capacities: map[string]map[string]int{"project": {ProviderResource(testProvider): 1}},
+		beforeStart: func(database *store.Store) {
+			for position, id := range []string{"first", "second"} {
+				item := testItem(id, "project", "human", position)
+				item.State, item.Reason, item.Snapshot = string(StateNeedsHuman), string(ReasonGate), snapshot
+				if err := database.CreateWorkItemPhase(store.WorkItemPhase{
+					ItemID: id, PhaseID: "review", Attempt: 1,
+					InputEnvelope: json.RawMessage(`{"vars":{}}`), OutputEnvelope: doneEnvelope(true),
+					GateTrace: trace, Intervention: intervention,
+					Status: "completed", StartedAt: int64(20 + position), EndedAt: int64(30 + position),
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := database.CreateWorkItem(item); err != nil {
+					t.Fatal(err)
+				}
 			}
-			if err := database.CreateWorkItemPhase(store.WorkItemPhase{
-				ItemID: id, PhaseID: "review", Attempt: 1,
-				InputEnvelope: json.RawMessage(`{"vars":{}}`), OutputEnvelope: doneEnvelope(true),
-				GateTrace: trace, Intervention: intervention,
-				Status: "completed", StartedAt: int64(20 + position), EndedAt: int64(30 + position),
-			}); err != nil {
-				t.Fatal(err)
-			}
-		}
+		},
 	})
 	starts := h.runner.started()
 	if len(starts) != 1 || starts[0].Key.ItemID != "first" {
-		t.Fatalf("initial recovered starts = %+v", starts)
+		t.Fatalf("initial recovered starts = %+v, want only the first within provider capacity", starts)
 	}
-	h.runner.complete(t, "first", Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
-	if err := h.engine.Sync(); err != nil {
-		t.Fatal(err)
-	}
+	// The second recovered decision is running with its phase held, not parked.
+	requireItemState(t, h.store, "second", StateRunning, "")
 	h.runner.complete(t, "first", Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
 	if err := h.engine.Sync(); err != nil {
 		t.Fatal(err)
 	}
 	starts = h.runner.started()
-	if len(starts) != 3 || starts[2].Key.ItemID != "second" || starts[2].Key.PhaseID != "build" {
-		t.Fatalf("pending human decision did not resume: %+v", starts)
+	if len(starts) != 2 || starts[1].Key.ItemID != "second" || starts[1].Key.PhaseID != "build" {
+		t.Fatalf("freed capacity did not release the held decision: %+v", starts)
 	}
 }
 
@@ -339,7 +366,7 @@ func TestMalformedRecoveredDecisionDoesNotBlockOtherItems(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := newHarness(t, Config{Active: true, GlobalConcurrency: 1}, map[string]def.Workflow{"recover": workflow}, []string{"project"}, func(database *store.Store) {
+	h := newHarness(t, Config{}, map[string]def.Workflow{"recover": workflow}, []string{"project"}, func(database *store.Store) {
 		broken := testItem("broken", "project", "recover", 0)
 		if err := database.CreateWorkItem(broken); err != nil {
 			t.Fatal(err)
@@ -358,13 +385,24 @@ func TestMalformedRecoveredDecisionDoesNotBlockOtherItems(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := database.CreateWorkItem(testItem("queued", "project", "recover", 1)); err != nil {
+		healthy := testItem("healthy", "project", "recover", 1)
+		healthy.State = string(StateNeedsHuman)
+		healthy.Reason = string(ReasonSetupFailed)
+		if err := database.CreateWorkItem(healthy); err != nil {
 			t.Fatal(err)
 		}
 	})
 	requireItemState(t, h.store, "broken", StateNeedsHuman, ReasonWiringError)
+	if starts := h.runner.started(); len(starts) != 0 {
+		t.Fatalf("rebuild started a phase: %+v", starts)
+	}
+	// The unrelated item is untouched and still resumable after the broken one
+	// failed to recover.
+	if err := h.engine.Resume("healthy", ""); err != nil {
+		t.Fatal(err)
+	}
 	starts := h.runner.started()
-	if len(starts) != 1 || starts[0].Key.ItemID != "queued" {
-		t.Fatalf("unrelated queue did not continue: %+v", starts)
+	if len(starts) != 1 || starts[0].Key.ItemID != "healthy" {
+		t.Fatalf("unrelated item did not continue: %+v", starts)
 	}
 }

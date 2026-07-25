@@ -1,6 +1,6 @@
 # internal/workflow/engine/
 
-Persisted workflow item/phase FSM coordination, queue draining, project-local
+Persisted workflow item/phase FSM coordination, direct run start, project-local
 resource semaphores, and startup recovery.
 
 ## Invariants
@@ -10,15 +10,30 @@ resource semaphores, and startup recovery.
   state directly.
 - `teardown` is the only path that releases resource holders. Normal phase
   exit, parks, failures, cancellation, and crash sweep all use it.
+- There is no queued state. `StartItem` admits an item straight to `running`
+  and enters its first phase; back-pressure is a *phase* waiting on resource
+  capacity, never an item waiting in line. `waiting` is a FIFO list of held
+  phase starts, so freed capacity goes to the longest-waiting phase.
 - Resource capacity comes from the live project profile at acquisition time.
   Acquisitions are sorted and all-or-nothing; names never contend across
   projects.
-- SQLite is the recovery journal. Startup iterates projects, rebuilds only
-  queued/running scheduler state, and parks interrupted running attempts
-  rather than re-running them. Parked and terminal items are evicted from
-  memory; resume loads a parked item from SQLite on demand.
-- The optional process-N queue bound belongs only to `SetQueue` in memory and
-  never survives restart.
+- Every agent-driver phase implicitly acquires `provider:<provider>` on top of
+  its declared resources — the bound on concurrent CLI sessions. Capacity comes
+  from the project profile like any other resource and falls back to
+  `DefaultProviderCapacity` when undeclared; `provider:` is a reserved name
+  prefix in `internal/workflow/profile` validation. A tool-driver phase never
+  takes provider capacity, and a frozen agent phase with no provider is a
+  wiring error rather than an unbounded start.
+- Global pause is one engine-level flag (`Pause`, persisted by the app in
+  settings and restored through `Config.Paused`). While paused no phase starts
+  anywhere; in-flight turns run to completion and their items rest at the next
+  phase boundary, still `running` with a held phase start — this is not
+  `needs-human`. Unpause replays the held starts through the one
+  `startWaiting` release path.
+- SQLite is the recovery journal. Startup iterates projects, rebuilds running
+  and parked items, and parks interrupted running attempts rather than
+  re-running them. Parked and terminal items are evicted from memory; resume
+  loads a parked item from SQLite on demand.
 - `Answer` is valid only for `needs-human(question)`. It persists a new phase
   attempt whose feedback carries the answer and sets `RunRequest.PriorThreadID`
   from the parked attempt so the runner continues the same provider session.
@@ -26,10 +41,11 @@ resource semaphores, and startup recovery.
   teardown, releasing resources and runner timers without touching its
   worktree/provider history. `CompleteTakeover` creates one finalize attempt on
   that same thread; validation exhaustion re-parks as `taken-over`.
-- `SetQueue` explicitly replaces the transient process-N budget. Settings-only
-  changes use `UpdateQueueSettings`, which preserves that live budget.
-- Queued removal and done-item disposition parking are item lifecycle actions
-  in `item_actions.go`; both stay serialized through the command loop.
+- `RerunFailed` is the only `failed → running` edge. It re-stamps the run start
+  before the transition and carries the previous attempt's failure feedback into
+  the new one; the attempt begins immediately, subject to resources and pause.
+- Done-item disposition parking is an item lifecycle action in
+  `item_actions.go` and stays serialized through the command loop.
 - Per-item budgets are checked before every phase attempt. Item overrides win
   over live profile defaults; token/USD spend comes through `SpendSource`, and
   wall clock uses the engine clock against the persisted item start time.
@@ -50,3 +66,5 @@ resource semaphores, and startup recovery.
 - No timers, watchdogs, retry backoff, worktree setup, or transport/app wiring
   belongs in this package. Reliability timers and sub-attempt retries are
   runner-owned; the engine only checks phase-boundary budgets and maps outcomes.
+- Persisting the pause flag and emitting it to the frontend is app wiring. The
+  engine owns the live flag and the `workflow:engine-state` payload shape.

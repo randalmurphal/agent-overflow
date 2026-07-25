@@ -186,9 +186,6 @@ func validateSettings(current Settings) (Settings, error) {
 	if err := validateFontSize("fontSize", current.FontSize); err != nil {
 		return Settings{}, err
 	}
-	if err := validateWorkflowConcurrency(current.WorkflowConcurrency); err != nil {
-		return Settings{}, err
-	}
 
 	current.ProjectSortMode = strings.TrimSpace(current.ProjectSortMode)
 	if err := validateOption("projectSortMode", current.ProjectSortMode, allowedProjectSortModes); err != nil {
@@ -313,7 +310,6 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		current.FontSize,
 		DefaultSettings.FontSize,
 	)
-	current.WorkflowConcurrency = sanitizeWorkflowConcurrency(current.WorkflowConcurrency)
 	current.ProjectSortMode = sanitizeOption(
 		"projectSortMode",
 		current.ProjectSortMode,
@@ -327,21 +323,6 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		allowedUsagePeriods,
 	)
 	return current
-}
-
-func validateWorkflowConcurrency(value int) error {
-	if value < 1 || value > 32 {
-		return fmt.Errorf("workflowConcurrency must be between 1 and 32")
-	}
-	return nil
-}
-
-func sanitizeWorkflowConcurrency(value int) int {
-	if value >= 1 && value <= 32 {
-		return value
-	}
-	log.Printf("settings: invalid workflowConcurrency %d, using default %d", value, DefaultSettings.WorkflowConcurrency)
-	return DefaultSettings.WorkflowConcurrency
 }
 
 func validateAutoCompactPercent(field string, value int) error {

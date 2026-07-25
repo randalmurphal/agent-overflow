@@ -162,17 +162,15 @@ type ThreadWorkspaceRef struct {
 // project's path is the canonical workspace root, though individual
 // threads may operate in a worktree that diverges from project.path.
 type Project struct {
-	ID                  string `json:"id"`
-	Path                string `json:"path"`
-	Name                string `json:"name"`
-	Slug                string `json:"slug"`
-	Color               string `json:"color,omitempty"`
-	SortPosition        int    `json:"sortPosition"`
-	WorkflowQueuePaused bool   `json:"workflowQueuePaused"`
-	WorkflowConcurrency int    `json:"workflowConcurrency"`
-	CreatedAt           int64  `json:"createdAt"`
-	UpdatedAt           int64  `json:"updatedAt"`
-	Archived            bool   `json:"archived"`
+	ID           string `json:"id"`
+	Path         string `json:"path"`
+	Name         string `json:"name"`
+	Slug         string `json:"slug"`
+	Color        string `json:"color,omitempty"`
+	SortPosition int    `json:"sortPosition"`
+	CreatedAt    int64  `json:"createdAt"`
+	UpdatedAt    int64  `json:"updatedAt"`
+	Archived     bool   `json:"archived"`
 }
 
 // Item represents a persisted timeline entry.

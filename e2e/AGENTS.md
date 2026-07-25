@@ -17,12 +17,13 @@ headless, isolated data dir, mocked providers. Full harness guide:
 - `tests/harness.spec.ts` — the reference specs: boot, seeded history,
   live mock turn, frame-by-frame `step-gated` stepping, reset.
 - `tests/workflows.spec.ts` — RPC/event-only workflow coverage: two-phase
-  drain, human gate approval, same-session question answer, watchdog stall,
+  chain, human gate approval, same-session question answer, watchdog stall,
   and cancel/interrupt.
-- `tests/workflows-reenqueue.spec.ts` — RPC-only re-enqueue of a failed run
-  with guidance, through to completion.
+- `tests/workflows-rerun.spec.ts` — RPC-only global-pause hold, then rerun of a
+  failed run with guidance, through to completion.
 - `tests/workflows-helpers.ts` — shared workflow seeds, mock-provider scenarios,
-  state waits, result envelopes, and compact workflow definitions.
+  direct start (`WorkflowStartRun`), the global-pause switch, state waits,
+  result envelopes, and compact workflow definitions.
 - `tests/notifications.spec.ts` — OS-notification pipe: `HarnessNotify`'s
   typed degraded send error, cold activation through transport replay and
   the pre-hydration queue, and the `none`-target no-op log.

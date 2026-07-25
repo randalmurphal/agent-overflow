@@ -5,138 +5,50 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 )
 
-func (e *Engine) schedule() error {
-	var errs []error
-	errs = append(errs, e.startWaiting())
-	errs = append(errs, e.resumePendingHuman())
-	if !e.queueActive {
-		return errors.Join(errs...)
+// startNewItem persists a newly admitted run and begins its first phase. The
+// row is created before the definition is resolved so a workflow that broke
+// between validation and admission parks a visible run record rather than
+// vanishing.
+func (e *Engine) startNewItem(item store.WorkItem) error {
+	if item.ID == "" || item.ProjectID == "" {
+		return fmt.Errorf("start item: id and project id are required")
 	}
-	for e.activeSlots < e.config.GlobalConcurrency && e.queueActive {
-		item := e.popStartableQueued()
-		if item == nil {
-			break
-		}
-		if err := e.startItem(item); err != nil {
-			errs = append(errs, err)
-			e.emitError(item.item.ID, err)
-			if State(item.item.State) == StateQueued {
-				e.insertQueued(item)
-				break
-			}
-		}
+	if state := State(item.State); state != "" && state != StateRunning {
+		return fmt.Errorf("start item %q: state must be empty or running, got %q", item.ID, item.State)
 	}
-	return errors.Join(errs...)
-}
-
-func (e *Engine) resumePendingHuman() error {
-	var errs []error
-	for index := 0; index < len(e.pendingHuman) && e.activeSlots < e.config.GlobalConcurrency; {
-		itemID := e.pendingHuman[index]
-		storedItem, err := e.store.GetWorkItem(itemID)
-		if err != nil {
-			e.removePendingHuman(itemID)
-			e.emitError(itemID, err)
-			errs = append(errs, err)
-			continue
-		}
-		if !e.projectHasCapacity(storedItem.ProjectID) {
-			index++
-			continue
-		}
-		e.removePendingHuman(itemID)
-		_, err = e.recoverPersistedHumanDecision(itemID)
-		if err != nil {
-			e.emitError(itemID, err)
-			errs = append(errs, err)
+	if len(item.Seeds) > MaxSeedBytes {
+		return fmt.Errorf("start item %q: seeds are %d bytes; maximum is %d", item.ID, len(item.Seeds), MaxSeedBytes)
+	}
+	if len(item.Seeds) > 0 {
+		var seeds map[string]any
+		if err := decodeJSON(item.Seeds, &seeds); err != nil || seeds == nil {
+			return fmt.Errorf("start item %q: seeds must be one JSON object", item.ID)
 		}
 	}
-	return errors.Join(errs...)
-}
-
-func (e *Engine) removePendingHuman(itemID string) {
-	for index, pending := range e.pendingHuman {
-		if pending == itemID {
-			copy(e.pendingHuman[index:], e.pendingHuman[index+1:])
-			e.pendingHuman[len(e.pendingHuman)-1] = ""
-			e.pendingHuman = e.pendingHuman[:len(e.pendingHuman)-1]
-			return
-		}
+	if _, exists := e.items[item.ID]; exists {
+		return fmt.Errorf("start item %q: already tracked", item.ID)
 	}
-}
-
-func queueLess(left, right store.WorkItem) bool {
-	if left.SortPosition != right.SortPosition {
-		return left.SortPosition < right.SortPosition
+	item.State = string(StateRunning)
+	item.Reason = ""
+	item.EndedAt = 0
+	if err := e.store.CreateWorkItem(item); err != nil {
+		return fmt.Errorf("start item %q: %w", item.ID, err)
 	}
-	if left.CreatedAt != right.CreatedAt {
-		return left.CreatedAt < right.CreatedAt
-	}
-	return left.ID < right.ID
+	runtime := &runtimeItem{item: item}
+	e.items[item.ID] = runtime
+	e.emitItemState(item.ID, item.ProjectID, "", StateRunning, "")
+	return e.beginRun(runtime)
 }
 
-func (e *Engine) insertQueued(item *runtimeItem) {
-	index := sort.Search(len(e.queued), func(index int) bool {
-		return !queueLess(e.queued[index].item, item.item)
-	})
-	e.queued = append(e.queued, nil)
-	copy(e.queued[index+1:], e.queued[index:])
-	e.queued[index] = item
-}
-
-func (e *Engine) sortQueued() {
-	sort.Slice(e.queued, func(i, j int) bool {
-		return queueLess(e.queued[i].item, e.queued[j].item)
-	})
-}
-
-func (e *Engine) popStartableQueued() *runtimeItem {
-	for index, item := range e.queued {
-		if !e.projectCanDrain(item.item.ProjectID) {
-			continue
-		}
-		copy(e.queued[index:], e.queued[index+1:])
-		e.queued[len(e.queued)-1] = nil
-		e.queued = e.queued[:len(e.queued)-1]
-		return item
-	}
-	return nil
-}
-
-func (e *Engine) removeQueuedRuntime(itemID string) {
-	for index, item := range e.queued {
-		if item == nil || item.item.ID != itemID {
-			continue
-		}
-		copy(e.queued[index:], e.queued[index+1:])
-		e.queued[len(e.queued)-1] = nil
-		e.queued = e.queued[:len(e.queued)-1]
-		return
-	}
-}
-
-func (e *Engine) projectCanDrain(projectID string) bool {
-	return !e.projectQueues[projectID].paused && e.projectHasCapacity(projectID)
-}
-
-func (e *Engine) projectHasCapacity(projectID string) bool {
-	limit := e.projectQueues[projectID].concurrency
-	if limit == 0 || limit > e.config.GlobalConcurrency {
-		limit = e.config.GlobalConcurrency
-	}
-	return e.runningByProject[projectID] < limit
-}
-
-func (e *Engine) startItem(item *runtimeItem) error {
-	if item.reenqueued {
-		return e.startReenqueuedItem(item)
-	}
+// beginRun freezes the resolved workflow into the run record and enters the
+// first phase. The item is already persisted running, so every failure here
+// parks it through teardown instead of leaving an unstarted row.
+func (e *Engine) beginRun(item *runtimeItem) error {
 	workflow, err := e.definitions.Resolve(e.ctx, item.item)
 	if err != nil {
 		return e.parkUnstartable(item, fmt.Errorf("resolve item %q workflow: %w", item.item.ID, err))
@@ -156,57 +68,25 @@ func (e *Engine) startItem(item *runtimeItem) error {
 		item.item.ID, snapshot, item.item.WorktreePath, item.item.Branch,
 		item.item.BaseBranch, startedAt,
 	); err != nil {
-		return err
+		return e.parkUnstartable(item, fmt.Errorf("freeze item %q run start: %w", item.item.ID, err))
 	}
 	item.item.Snapshot = snapshot
 	item.item.StartedAt = startedAt
 	item.workflow = workflow
 	item.phaseID = workflow.Phases[0].ID
-	if err := e.transition(item, StateRunning, ""); err != nil {
-		return err
-	}
-	e.recordStart()
-	return e.enterPhase(item)
-}
-
-func (e *Engine) startReenqueuedItem(item *runtimeItem) error {
-	startedAt := e.timestamp()
-	if err := e.store.UpdateWorkItemRunStart(
-		item.item.ID, item.item.Snapshot, item.item.WorktreePath, item.item.Branch,
-		item.item.BaseBranch, startedAt,
-	); err != nil {
-		return err
-	}
-	item.item.StartedAt = startedAt
-	if err := e.transition(item, StateRunning, ""); err != nil {
-		return err
-	}
-	e.recordStart()
 	return e.enterPhase(item)
 }
 
 func (e *Engine) parkUnstartable(item *runtimeItem, cause error) error {
-	if err := e.transition(item, StateRunning, ""); err != nil {
-		return errors.Join(cause, err)
-	}
-	e.recordStart()
 	return errors.Join(
 		e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}),
 		cause,
 	)
 }
 
-func (e *Engine) recordStart() {
-	if e.startsRemaining < 0 {
-		return
-	}
-	e.startsRemaining--
-	if e.startsRemaining == 0 {
-		e.queueActive = false
-		e.emitQueue()
-	}
-}
-
+// enterPhase records the next phase attempt and starts it as soon as the
+// global pause is clear and its resources are free. A held phase leaves the
+// item running and waiting, never parked.
 func (e *Engine) enterPhase(item *runtimeItem) error {
 	phase, ok := findPhase(item.workflow, item.phaseID)
 	if !ok {
@@ -239,15 +119,19 @@ func (e *Engine) enterPhase(item *runtimeItem) error {
 		ItemID: item.item.ID, PhaseID: phase.ID, Attempt: attempt, Status: "running",
 	})
 
-	acquired, err := e.acquireResources(item.item.ProjectID, phase.Resources)
-	if err != nil {
-		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}), err)
-	}
-	if !acquired {
+	if e.paused {
 		e.addWaiting(item)
 		return nil
 	}
-	item.acquired = canonicalResources(phase.Resources)
+	acquired, ok, err := e.acquirePhaseResources(item.item.ProjectID, phase)
+	if err != nil {
+		return errors.Join(e.teardown(item, teardownRequest{phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonSetupFailed}), err)
+	}
+	if !ok {
+		e.addWaiting(item)
+		return nil
+	}
+	item.acquired = acquired
 	return e.startRunner(item, phase, vars)
 }
 

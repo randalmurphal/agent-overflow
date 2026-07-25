@@ -689,8 +689,6 @@ export class Project {
     "slug": string;
     "color"?: string;
     "sortPosition": number;
-    "workflowQueuePaused": boolean;
-    "workflowConcurrency": number;
     "createdAt": number;
     "updatedAt": number;
     "archived": boolean;
@@ -711,12 +709,6 @@ export class Project {
         }
         if (!("sortPosition" in $$source)) {
             this["sortPosition"] = 0;
-        }
-        if (!("workflowQueuePaused" in $$source)) {
-            this["workflowQueuePaused"] = false;
-        }
-        if (!("workflowConcurrency" in $$source)) {
-            this["workflowConcurrency"] = 0;
         }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = 0;
@@ -1456,7 +1448,6 @@ export class WorkItem {
     "snapshot"?: json$0.RawMessage;
     "state": string;
     "reason"?: string;
-    "sortPosition": number;
     "seeds"?: json$0.RawMessage;
     "stepMode": boolean;
     "worktreePath"?: string;
@@ -1494,9 +1485,6 @@ export class WorkItem {
         }
         if (!("state" in $$source)) {
             this["state"] = "";
-        }
-        if (!("sortPosition" in $$source)) {
-            this["sortPosition"] = 0;
         }
         if (!("stepMode" in $$source)) {
             this["stepMode"] = false;
