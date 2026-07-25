@@ -278,6 +278,51 @@ cleanup: manual
 `;
 }
 
+// humanGateWorkflow is the three-phase shape the overlay spec parks on: `plan`
+// runs, `review` finishes and asks a human, `apply` runs once the gate is
+// approved. Three phases and not two because a reject loop must target a
+// STRICT ancestor, and because the declared order is what makes the overlay's
+// primary read `Approve → apply` instead of the generic fallback.
+export function humanGateWorkflow(
+  id: string,
+  access: 'read-only' | 'write' = 'read-only',
+): string {
+  const phase = (phaseId: string, inputs: string, gate: string): string => `  - id: ${phaseId}
+    driver: agent
+    provider: claude
+    model: claude-opus-4-7
+    prompt: ${id}.md
+    access: ${access}
+    inputs:
+${inputs}
+    outputs:
+      complete:
+        schema:
+          type: boolean
+    gate:
+      routes:
+${gate}
+`;
+  const boolInput = (name: string): string => `      ${name}:
+        schema:
+          type: boolean`;
+  return `id: ${id}
+name: ${id}
+inputs:
+  goal:
+    schema:
+      type: string
+phases:
+${phase('plan', `      goal:
+        schema:
+          type: string`, '        - to: review')}${phase('review', boolInput('plan.complete'), `        - human:
+            approve: apply
+            reject:
+              loop: plan
+              max: 1`)}${phase('apply', boolInput('review.complete'), '        - to: done')}cleanup: manual
+`;
+}
+
 export function retryableFailureWorkflow(id: string): string {
   return `id: ${id}
 name: ${id}

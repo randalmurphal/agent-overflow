@@ -1,10 +1,15 @@
 import type {
   WorkflowArtifact,
+  WorkflowAutomationView,
   WorkflowDefinitionCatalog,
   WorkflowDefinitionInput,
   WorkflowDefinitionListing,
+  WorkflowDiscardPreview,
+  WorkflowDiscardWorktree,
+  WorkflowItemChildView,
   WorkflowItemDetailView,
   WorkflowItemPhaseView,
+  WorkflowItemUnitView,
 } from '../../../bindings/agent-overflow/models';
 import type {
   WorkItem,
@@ -13,6 +18,8 @@ import type {
 
 export type WorkflowItemDetail = WorkflowItemDetailView;
 export type WorkItemPhase = WorkflowItemPhaseView;
+export type WorkItemUnit = WorkflowItemUnitView;
+export type WorkItemChild = WorkflowItemChildView;
 
 export type WorkflowRunState = 'running' | 'needs-human' | 'done' | 'failed' | 'cancelled';
 export type WorkflowRunReason =
@@ -28,6 +35,9 @@ export type WorkflowRunReason =
   | 'disposition'
   | 'setup-failed'
   | 'interrupted'
+  | 'paused'
+  | 'unit-failed'
+  | 'child-failed'
   | 'taken-over';
 
 export interface WorkflowItemStateEvent {
@@ -52,6 +62,10 @@ export interface WorkflowPhaseStateEvent {
   phaseId: string;
   attempt: number;
   status: string;
+  /** Set when the event reports one fan-out unit inside the attempt. */
+  unitId?: string;
+  unitIndex?: number;
+  unitKind?: string;
 }
 
 export interface WorkflowErrorEvent {
@@ -94,9 +108,12 @@ export type {
   WorkItem,
   WorkItemUsage,
   WorkflowArtifact,
+  WorkflowAutomationView,
   WorkflowDefinitionCatalog,
   WorkflowDefinitionInput,
   WorkflowDefinitionListing,
+  WorkflowDiscardPreview,
+  WorkflowDiscardWorktree,
 };
 
 function parseJSONRecord(value: unknown): Record<string, unknown> | null {

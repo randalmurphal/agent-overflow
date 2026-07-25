@@ -77,6 +77,11 @@ import {
 } from './composerPickerRegistry.svelte';
 import { reportNonBenignInterruptError } from './interruptErrors';
 import { PICKER_TOGGLE_INPUT_EVENT } from './events';
+import { registerWorkflowCommands } from './workflowCommands.svelte';
+import {
+  getWorkflowsOverlayTop,
+  isWorkflowsOverlayOpen,
+} from './workflowsOverlay.svelte';
 
 export interface BuiltinCommandHooks {
   openSettings: () => void;
@@ -1014,6 +1019,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         openShipChanges(pane.paneId);
       }),
   });
+
+  // Workflows overlay + `/workflow` composer context. Kept in their own module
+  // so this file doesn't grow another surface's worth of registrations.
+  registerWorkflowCommands();
 }
 
 /**
@@ -1042,6 +1051,11 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
       !!thread && thread.mode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
     sidebarCursorActive: getSidebarCursorThreadId() !== null,
     anyPickerOpen: false,
+    // Overlay scoping for the §8 chords. Derived here rather than passed in by
+    // App.svelte so every context builder — palette, per-keypress dispatch,
+    // tests — sees the same answer as the overlay itself.
+    workflowsOverlayOpen: isWorkflowsOverlayOpen(),
+    workflowsRunDetail: isWorkflowsOverlayOpen() && getWorkflowsOverlayTop().level === 'run',
     ...extra,
   };
   return {

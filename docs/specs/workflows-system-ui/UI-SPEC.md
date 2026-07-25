@@ -347,19 +347,35 @@ out.
 
 ## 12. Integration point map
 
+As shipped. Paths under `frontend/src/lib/` unless noted.
+
 | Concern | Where |
 |---|---|
-| Overlay frame | new `components/workflows/WorkflowsOverlay.svelte`, mounted in `App.svelte` as a sibling of `<PaneHost>` (never via `globalSurface`) |
-| Navigation/store | new `stores/workflowsOverlay.svelte.ts` (stack, filter, sweep cursor; session + restart persistence via app storage) |
+| Overlay frame (§2.1) | `components/workflows/WorkflowsOverlay.svelte`, mounted in `App.svelte` through `primitives/LazyOverlay.svelte` as a sibling of `<PaneHost>` (never a `globalSurface`, never a pane kind) |
+| Navigation (§2.2) | `stores/workflowsOverlay.svelte.ts` — stack, project filter, sweep cursor, armed confirm, dialog; restart persistence via `stores/appStorage.ts` |
+| Data cache | `stores/workflowRuns.svelte.ts` (runs, catalogs, automations, costs, per-run detail with eviction, session receipts) + the pure projections in `stores/workflowData.ts` |
 | Events / RPC | `stores/eventsWorkflow.ts` via `events.ts`; `stores/bindings.ts`; typed `workflow:*` channel |
-| Run detail content | reuse rev-1 components where they survive: `WorkflowRunDetail` / `WorkflowDiff` / `WorkflowOutputs` / `WorkflowFailureEvidence` / `WorkflowJobNotes` (adapted into the overlay; pane framing stripped) |
-| Footer button | `components/sidebar/WorkflowsFooter.svelte` in `Sidebar.svelte`, above `SettingsFooter.svelte` |
-| Thread exclusion | `Thread.mode` union (`types/models.ts`), `utils/sidebarTree.ts`, `ProjectThreadList.svelte`, `UnifiedThreadPicker.svelte` |
+| Home (§3) | `WorkflowsHome.svelte`, `WorkflowsHomeControls.svelte`, `WorkflowProjectGroup.svelte`, `WorkflowRunRow.svelte`, `WorkflowDefinitionRow.svelte` |
+| Run detail (§4.1–§4.2) | `WorkflowRunDetail.svelte` (coordinator), `WorkflowRunHeader.svelte`, `WorkflowRunTree.svelte`, and the pure tree assembly in `utils/workflowRunTree.ts` |
+| Evidence (§4.3) | `WorkflowEvidence.svelte` dispatching to `WorkflowGateDiff.svelte` / `WorkflowDiff.svelte` / `WorkflowFailureEvidence.svelte` / `WorkflowDisposition.svelte` / `WorkflowOutputs.svelte` / `WorkflowJobNotes.svelte`; envelope reads in `utils/workflowEnvelope.ts` |
+| Action row (§4.3) | `WorkflowActionRow.svelte` over the pure table in `utils/workflowActionRows.ts`; dispatch in `stores/workflowActions.ts`; receipts/toasts/auto-advance in `stores/workflowResolve.ts` |
+| Sweep (§4.4) | `stores/workflowSweep.ts` over `workflowData`'s sweep helpers; `WorkflowAllClear.svelte` |
+| Discard (§4.5) | `WorkflowDiscardDialog.svelte` — loss preview is consent, and it resolves through the same `stores/workflowResolve.ts` |
+| Intake (§5.1) | `WorkflowIntakeDialog.svelte` + `WorkflowSeedFields.svelte` over `utils/workflowIntake.ts`, on the `components/primitives/Modal.svelte` shell |
+| Footer button (§6) | `components/sidebar/WorkflowsFooter.svelte` in `Sidebar.svelte`, above `SettingsFooter.svelte` |
+| Deep links (§7) | `stores/notificationActivationQueue.ts` → `openWorkflowRunInOverlay` |
+| Keyboard (§8) | commands in `stores/workflowCommands.svelte.ts`, flags in `stores/builtinCommands.svelte.ts`, chords in `internal/keybindings/keybindings.go` |
+| Signals (R1) | `utils/workflowRunSignal.ts` — the one place a state maps to a hue |
+| Thread hand-off (R3) | `stores/workflowThreads.ts`; thread exclusion by mode in `utils/sidebarTree.ts`, `ProjectThreadList.svelte`, `UnifiedThreadPicker.svelte` |
 | PR review | `stores/reviewPane.svelte.ts` companion flow (overlay closes; ReviewPane opens as a pane) |
-| `/workflow` command | composer command registry (`stores/builtinCommands.svelte.ts`) + a Go RPC returning the context block |
-| Keyboard | `stores/keybindings.svelte.ts`, `stores/commandRegistry.svelte.ts` (overlay-scoped) |
-| Intake dialog | `components/primitives/` Modal shell |
+| `/workflow` command (§5.2) | `stores/workflowCommands.svelte.ts` registered from `stores/builtinCommands.svelte.ts`; block rendered by `App.WorkflowComposerContext` |
 | Toasts | `stores/toast.svelte.ts` |
+| e2e | `e2e/tests/workflows-overlay.spec.ts` |
+
+Drift from the pre-build plan, deliberately: the reactive cache is
+`stores/workflowRuns.svelte.ts` (rev 1 had no equivalent — `workflowData.ts`
+stays pure so it is unit-testable without a Svelte runtime), and the run
+detail is a coordinator over per-section components rather than one file.
 
 **Deleted with rev 2** (remove, don't orphan): the `'workflows'`
 `PaneLayoutKind` + PaneHost mount branch + pane persistence entries,

@@ -347,8 +347,9 @@ func (h *Harness) awaitSeedWorkflowTarget(subscriber *transport.Subscriber, item
 // prepareWorkflowReset pauses the engine and cancels every live run through
 // the production cancel path before project deletion removes its SQLite row.
 // Pausing first means a phase completing mid-sweep cannot start its successor.
-// Parked and terminal items are already evicted from engine memory; the
-// project cascade removes their durable rows later in HarnessReset.
+// Parked and terminal items are already evicted from engine memory; HarnessReset
+// deletes their durable rows explicitly (DeleteProjectWorkflowRecords) because
+// there is no foreign key from work_items to projects to cascade through.
 //
 // The returned closure clears the pause flag rather than restoring whatever it
 // was: reset is a blank slate, and a spec that leaves the engine paused (the

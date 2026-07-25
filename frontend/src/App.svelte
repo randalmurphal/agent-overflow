@@ -18,6 +18,8 @@
   import { flushAppStorage, hydrateAppStorage } from './lib/stores/appStorage';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
   import { syncSidebarFromAppStorage, syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
+  import { syncWorkflowsOverlayFromAppStorage, isWorkflowsOverlayOpen } from './lib/stores/workflowsOverlay.svelte';
+  import { hydrateWorkflowAttention } from './lib/stores/workflowRuns.svelte';
   import { syncSidebarWidthFromAppStorage } from './lib/stores/sidebarLayout.svelte';
   import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
@@ -27,6 +29,7 @@
   import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import PaneHost from './lib/components/panes/PaneHost.svelte';
+  import LazyOverlay from './lib/components/primitives/LazyOverlay.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
   import TransportStatusBanner from './lib/components/shared/TransportStatusBanner.svelte';
   import DiscussionStartFlow from './lib/components/discussion/DiscussionStartFlow.svelte';
@@ -296,6 +299,10 @@
         await appStorageReady;
         syncSidebarWidthFromAppStorage();
         syncSidebarFromAppStorage();
+        // The workflows overlay stack/filter/sweep cursor are durable per
+        // client (UI-SPEC §2.1), so they adopt the hydrated copy the same way
+        // the sidebar's view state does.
+        syncWorkflowsOverlayFromAppStorage();
         await loadPersistedPaneLayout(threads);
         installPaneLayoutPersistence();
         installCompanionPanes();
@@ -314,6 +321,9 @@
         appReady = true;
       }
     })();
+    // Footer attention badge (§6/§7): authoritative on app open, so a missed
+    // or dismissed OS notification never loses a parked run. Summaries only.
+    void hydrateWorkflowAttention();
     void loadSettingsAndWarmModelCatalogs();
     installUiRenderTraceApi();
     const cleanupExternalLinks = installExternalLinkDelegate();
@@ -437,6 +447,16 @@
     {#if appReady}
       <PaneHost globalSurface={showSettings ? settingsSurface : undefined} />
     {/if}
+    <!--
+      The workflows overlay (UI-SPEC §2.1) is a SIBLING of PaneHost, layered
+      over it — never a globalSurface and never a pane kind. The pane tree
+      stays mounted underneath, so opening and closing rebuild nothing.
+    -->
+    <LazyOverlay
+      load={() => import('./lib/components/workflows/WorkflowsOverlay.svelte')}
+      active={isWorkflowsOverlayOpen()}
+      props={{ open: isWorkflowsOverlayOpen() }}
+    />
   </div>
 </main>
 <DiscussionStartFlow

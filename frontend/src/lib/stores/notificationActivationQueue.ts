@@ -6,14 +6,24 @@ import type { Thread } from '../types/models';
 
 export type NotificationTarget =
   | { kind: 'thread'; threadId: string }
+  | { kind: 'workflow-item'; workItemId: string }
   | { kind: 'none' };
 
 const pendingActivationCapacity = 8;
 const maxNotificationThreadIdBytes = 256;
+const maxNotificationWorkItemIdBytes = 256;
 
 export interface NotificationActivationDependencies {
   getThreadById(id: string): Thread | undefined | Promise<Thread | undefined>;
   openThread(thread: Thread): Promise<unknown>;
+  /**
+   * Deep link for a parked run (UI-SPEC §7): foreground the app, open the
+   * workflows overlay at that run's detail, inside the sweep. The run cache
+   * hydrates behind the overlay, so this never needs the run to be loaded
+   * first — a target naming a run that no longer exists drops off the stack
+   * once the listing lands.
+   */
+  openWorkflowRun(workItemId: string): Promise<unknown>;
   console: Pick<Console, 'info' | 'warn' | 'error'>;
 }
 
@@ -39,14 +49,19 @@ export function parseNotificationTarget(value: unknown): NotificationTarget | nu
     || (target.projectId !== undefined && typeof target.projectId !== 'string')
   ) return null;
   const threadId = typeof target.threadId === 'string' ? target.threadId : '';
-  const foreignId = Boolean(target.workItemId) || Boolean(target.projectId);
+  const workItemId = typeof target.workItemId === 'string' ? target.workItemId : '';
+  const projectId = Boolean(target.projectId);
   switch (target.kind) {
     case 'thread':
-      return threadId && byteLength(threadId) <= maxNotificationThreadIdBytes && !foreignId
+      return threadId && byteLength(threadId) <= maxNotificationThreadIdBytes && !workItemId && !projectId
         ? { kind: 'thread', threadId }
         : null;
+    case 'workflow-item':
+      return workItemId && byteLength(workItemId) <= maxNotificationWorkItemIdBytes && !threadId && !projectId
+        ? { kind: 'workflow-item', workItemId }
+        : null;
     case 'none':
-      return !threadId && !foreignId ? { kind: 'none' } : null;
+      return !threadId && !workItemId && !projectId ? { kind: 'none' } : null;
     default:
       return null;
   }
@@ -64,6 +79,10 @@ export function createNotificationActivationQueue(
     try {
       if (target.kind === 'none') {
         dependencies.console.info('notification:activated: no target');
+        return;
+      }
+      if (target.kind === 'workflow-item') {
+        await dependencies.openWorkflowRun(target.workItemId);
         return;
       }
       const thread = await dependencies.getThreadById(target.threadId);

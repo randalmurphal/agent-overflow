@@ -418,6 +418,14 @@ func (h *Harness) HarnessReset() (err error) {
 		return fmt.Errorf("list projects: %w", err)
 	}
 	for _, p := range projects {
+		// work_items and its record tables carry no foreign key to projects
+		// (migrate.go: "Run-record tables intentionally have no work_items
+		// foreign keys"), so deleting the project does NOT take its runs with
+		// it. Reset has to say so explicitly or a finished run outlives the
+		// test that made it and shows up in the next test's overlay.
+		if err := h.app.store.DeleteProjectWorkflowRecords(p.Project.ID); err != nil {
+			return fmt.Errorf("delete workflow records for project %s: %w", p.Project.ID, err)
+		}
 		if _, err := h.app.DeleteProject(p.Project.ID); err != nil {
 			return fmt.Errorf("delete project %s: %w", p.Project.ID, err)
 		}

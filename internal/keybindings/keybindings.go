@@ -166,6 +166,32 @@ var Defaults = []Keybinding{
 	// palette or any modal has focus so Shift+Tab's default "focus
 	// prev" behaviour still wins inside those surfaces.
 	{Key: "shift+tab", Command: "mode.cycle", When: "hasActiveThread && !paletteOpen && !anyModalOpen", DefaultID: "mode.cycle"},
+	// Workflows overlay (workflows-system-ui/UI-SPEC.md §8). Every chord is
+	// gated on the overlay being open, so the bare letters and digits below are
+	// inert everywhere else; the SPA additionally suppresses them while a text
+	// field has focus (App.svelte's editable-target check), which is what lets
+	// `a` stay "primary action" on the surface and "the letter a" in the answer
+	// box. `esc` sits AFTER thread.interrupt because dispatch walks the resolved
+	// list in reverse — the overlay must consume Escape before a background
+	// turn does.
+	{Key: "mod+shift+w", Command: "workflows.toggle", DefaultID: "workflows.toggle"},
+	{Key: "esc", Command: "workflows.escape", When: "workflowsOverlayOpen", DefaultID: "workflows.escape"},
+	{Key: "backspace", Command: "workflows.back", When: "workflowsRunDetail", DefaultID: "workflows.back"},
+	{Key: "j", Command: "workflows.sweep.next", When: "workflowsRunDetail", DefaultID: "workflows.sweep.next"},
+	{Key: "arrowdown", Command: "workflows.sweep.next", When: "workflowsRunDetail", DefaultID: "workflows.sweep.next.down"},
+	{Key: "arrowright", Command: "workflows.sweep.next", When: "workflowsRunDetail", DefaultID: "workflows.sweep.next.right"},
+	{Key: "k", Command: "workflows.sweep.prev", When: "workflowsRunDetail", DefaultID: "workflows.sweep.prev"},
+	{Key: "arrowup", Command: "workflows.sweep.prev", When: "workflowsRunDetail", DefaultID: "workflows.sweep.prev.up"},
+	{Key: "arrowleft", Command: "workflows.sweep.prev", When: "workflowsRunDetail", DefaultID: "workflows.sweep.prev.left"},
+	{Key: "a", Command: "workflows.action.primary", When: "workflowsRunDetail", DefaultID: "workflows.action.primary"},
+	{Key: "r", Command: "workflows.action.reject", When: "workflowsRunDetail", DefaultID: "workflows.action.reject"},
+	{Key: "t", Command: "workflows.action.thread", When: "workflowsRunDetail", DefaultID: "workflows.action.thread"},
+	{Key: "enter", Command: "workflows.action.enter", When: "workflowsRunDetail", DefaultID: "workflows.action.enter"},
+	// UI-SPEC §8 also lists 1–9 for "pick + send the nth suggested answer".
+	// The phase envelope (internal/workflow/def/envelope.go) carries a single
+	// `question` string and forbids outputs on a question status, so there is
+	// no suggested-answer list to pick from; binding the digits would ship dead
+	// keys. They land the day the envelope grows the field.
 }
 
 // Service owns the persisted user-override file and serializes

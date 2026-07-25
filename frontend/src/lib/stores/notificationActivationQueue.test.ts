@@ -9,6 +9,7 @@ function thread(id: string): Thread {
 function setup() {
   const threads = new Map<string, Thread>();
   const opened: string[] = [];
+  const runs: string[] = [];
   const logger = {
     info: vi.fn(),
     warn: vi.fn(),
@@ -17,9 +18,10 @@ function setup() {
   const queue = createNotificationActivationQueue({
     getThreadById: (id) => threads.get(id),
     openThread: async (value) => { opened.push(value.id); },
+    openWorkflowRun: async (workItemId) => { runs.push(workItemId); },
     console: logger,
   });
-  return { queue, threads, opened, logger };
+  return { queue, threads, opened, runs, logger };
 }
 
 describe('notification activation queue', () => {
@@ -80,6 +82,7 @@ describe('notification activation queue', () => {
         opened.push(value.id);
         if (value.id === 'thread-1') await firstBlocked;
       },
+      openWorkflowRun: async () => undefined,
       console: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     });
     queue.receive({ kind: 'thread', threadId: 'thread-1' });
@@ -107,6 +110,7 @@ describe('notification activation queue', () => {
         opened.push(value.id);
         if (value.id === 'thread-1') await firstBlocked;
       },
+      openWorkflowRun: async () => undefined,
       console: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     });
     await queue.markHydrated();
@@ -120,12 +124,41 @@ describe('notification activation queue', () => {
 
   it('rejects unsupported, ambiguous, and oversized targets', () => {
     const { queue, logger } = setup();
-    queue.receive({ kind: 'workflow-item', workItemId: 'run' });
     queue.receive({ kind: 'thread', threadId: 'thread-1', projectId: 'project' });
     queue.receive({ kind: 'thread', threadId: 'x'.repeat(257) });
+    queue.receive({ kind: 'workflow-item', workItemId: 'x'.repeat(257) });
+    queue.receive({ kind: 'workflow-item', workItemId: 'run-1', threadId: 'thread-1' });
+    queue.receive({ kind: 'workflow-item' });
     queue.receive({ kind: 'none', threadId: 'thread-1' });
     expect(queue.pendingCount()).toBe(0);
-    expect(logger.warn).toHaveBeenCalledTimes(4);
+    expect(logger.warn).toHaveBeenCalledTimes(6);
+  });
+
+  it('routes a workflow-item deep link to the overlay, cold start included', async () => {
+    const { queue, runs } = setup();
+    queue.receive({ kind: 'workflow-item', workItemId: 'run-1' });
+    expect(queue.pendingCount()).toBe(1);
+    expect(runs).toEqual([]);
+
+    await queue.markHydrated();
+    expect(runs).toEqual(['run-1']);
+
+    queue.receive({ kind: 'workflow-item', workItemId: 'run-2' });
+    await vi.waitFor(() => expect(runs).toEqual(['run-1', 'run-2']));
+  });
+
+  it('logs a workflow deep-link failure without dropping the queue', async () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const failingQueue = createNotificationActivationQueue({
+      getThreadById: () => undefined,
+      openThread: async () => undefined,
+      openWorkflowRun: async () => { throw new Error('private backend detail'); },
+      console: logger,
+    });
+    failingQueue.receive({ kind: 'workflow-item', workItemId: 'run-1' });
+    await failingQueue.markHydrated();
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(failingQueue.pendingCount()).toBe(0);
   });
 
   it('logs an activation failure without dropping the queue', async () => {
@@ -133,6 +166,7 @@ describe('notification activation queue', () => {
     const failingQueue = createNotificationActivationQueue({
       getThreadById: async () => { throw new Error('private backend detail'); },
       openThread: async () => undefined,
+      openWorkflowRun: async () => undefined,
       console: logger,
     });
     failingQueue.receive({ kind: 'thread', threadId: 'thread-1' });

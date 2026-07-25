@@ -6,12 +6,16 @@ function bindings(): WorkflowActionBindings {
   return {
     answerQuestion: vi.fn(async () => undefined),
     cancelItem: vi.fn(async () => undefined),
-    createPR: vi.fn(async () => ({ action: 'pr', prRef: '#12' } as never)),
-    discardItem: vi.fn(async () => ({ action: 'discarded' } as never)),
-    mergeItem: vi.fn(async () => ({ action: 'merged', base: 'release', mode: 'ff', sha: '1234567890' } as never)),
+    completeTakeover: vi.fn(async () => undefined),
+    createPR: vi.fn(async () => ({ prRef: '#12' })),
+    discardItem: vi.fn(async () => ({ discarded: { removedWorktrees: ['a', 'b', 'c'] } })),
+    dropUnit: vi.fn(async () => undefined),
+    mergeItem: vi.fn(async () => ({ base: 'release', mode: 'ff', sha: '1234567890' })),
+    pauseItem: vi.fn(async () => undefined),
     resolveGate: vi.fn(async () => undefined),
     resumeItem: vi.fn(async () => undefined),
     rerunItem: vi.fn(async () => undefined),
+    retryUnit: vi.fn(async () => undefined),
   };
 }
 
@@ -21,7 +25,7 @@ describe('workflow action dispatch', () => {
   it('uses the verified gate decision strings', async () => {
     const deps = bindings();
     await dispatchWorkflowAction(item, { kind: 'approve' }, 1, deps);
-    await dispatchWorkflowAction(item, { kind: 'reject', note: 'revise' }, 1, deps);
+    await dispatchWorkflowAction(item, { kind: 'request-changes', note: 'revise' }, 1, deps);
     expect(deps.resolveGate).toHaveBeenNthCalledWith(1, 'run', 'approve', '');
     expect(deps.resolveGate).toHaveBeenNthCalledWith(2, 'run', 'reject', 'revise');
   });
@@ -33,19 +37,20 @@ describe('workflow action dispatch', () => {
     );
   });
 
-  it('resumes failed items with an empty target phase', async () => {
+  it('resumes parked items with an empty target phase', async () => {
     const deps = bindings();
     await dispatchWorkflowAction(item, { kind: 'resume' }, 2, deps);
     expect(deps.resumeItem).toHaveBeenCalledWith('run', '');
   });
 
-  it('reruns failed items through the dedicated lifecycle action and reports the immediate restart', async () => {
+  it('distinguishes a guided rerun from a diagnosis-seeded one', async () => {
     const deps = bindings();
-    const failed = { id: 'run', projectId: 'p' } as WorkItem;
-    const receipt = await dispatchWorkflowAction(failed, { kind: 'rerun' }, 2, deps);
-    expect(deps.rerunItem).toHaveBeenCalledWith('run', '');
-    expect(receipt?.kind).toBe('restarted');
-    expect(receipt?.message).toBe('Restarted with the diagnosis as guidance');
+    const blind = await dispatchWorkflowAction(item, { kind: 'rerun', guidance: '' }, 2, deps);
+    const guided = await dispatchWorkflowAction(item, { kind: 'rerun', guidance: 'skip the cache' }, 2, deps);
+    expect(deps.rerunItem).toHaveBeenNthCalledWith(1, 'run', '');
+    expect(deps.rerunItem).toHaveBeenNthCalledWith(2, 'run', 'skip the cache');
+    expect(blind?.message).toBe('Rerunning — the diagnosis seeds the new attempt');
+    expect(guided?.message).toBe('Rerunning — your guidance seeds the new attempt');
   });
 
   it('uses the disposition base and human merge mode in merge receipts', async () => {
@@ -60,13 +65,46 @@ describe('workflow action dispatch', () => {
     expect(receipt?.message).toBe('Merged to main — fast-forward abc');
   });
 
+  it('accounts for the worktrees a discard actually removed', async () => {
+    const many = await dispatchWorkflowAction(item, { kind: 'discard' }, 1, bindings());
+    expect(many?.message).toBe('Discarded — 3 worktrees removed, record kept');
+
+    const oneDeps = bindings();
+    oneDeps.discardItem = vi.fn(async () => ({ discarded: { removedWorktrees: ['only'] } }));
+    expect((await dispatchWorkflowAction(item, { kind: 'discard' }, 1, oneDeps))?.message)
+      .toBe('Discarded — 1 worktree removed, record kept');
+
+    const noneDeps = bindings();
+    noneDeps.discardItem = vi.fn(async () => ({ discarded: null }));
+    expect((await dispatchWorkflowAction(item, { kind: 'discard' }, 1, noneDeps))?.message)
+      .toBe('Discarded — record kept');
+  });
+
+  it('names the unit in a fan-out receipt', async () => {
+    const deps = bindings();
+    const retried = await dispatchWorkflowAction(item, { kind: 'retry-unit', unitId: 'port-3', note: 'flaky' }, 1, deps);
+    const dropped = await dispatchWorkflowAction(item, { kind: 'drop-unit', unitId: 'port-3', note: '' }, 1, deps);
+    expect(deps.retryUnit).toHaveBeenCalledWith('run', 'port-3', 'flaky');
+    expect(deps.dropUnit).toHaveBeenCalledWith('run', 'port-3', '');
+    expect(retried?.message).toContain('port-3');
+    expect(dropped?.message).toBe('Unit dropped — the join proceeds without port-3');
+  });
+
+  it('returns no receipt for the two actions that park rather than resolve', async () => {
+    const deps = bindings();
+    expect(await dispatchWorkflowAction(item, { kind: 'pause' }, 1, deps)).toBeNull();
+    expect(await dispatchWorkflowAction(item, { kind: 'cancel' }, 1, deps)).toBeNull();
+    expect(deps.pauseItem).toHaveBeenCalledWith('run');
+    expect(deps.cancelItem).toHaveBeenCalledWith('run');
+  });
+
   it('dispatches every remaining action to its exact binding', async () => {
     const cases = [
       { action: { kind: 'answer', answer: 'yes' } as const, binding: 'answerQuestion' as const, args: ['run', 'yes'], receipt: 'answered' },
+      { action: { kind: 'complete-takeover' } as const, binding: 'completeTakeover' as const, args: ['run'], receipt: 'handed-off' },
       { action: { kind: 'merge' } as const, binding: 'mergeItem' as const, args: ['run'], receipt: 'merged' },
       { action: { kind: 'create-pr' } as const, binding: 'createPR' as const, args: ['run'], receipt: 'pr' },
       { action: { kind: 'discard' } as const, binding: 'discardItem' as const, args: ['run'], receipt: 'discarded' },
-      { action: { kind: 'cancel' } as const, binding: 'cancelItem' as const, args: ['run'], receipt: null },
     ];
     for (const testCase of cases) {
       const deps = bindings();

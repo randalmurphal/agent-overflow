@@ -567,3 +567,105 @@ func TestCreateWorkItemRefusesBindingOnCalledRun(t *testing.T) {
 		t.Fatal("store accepted binding a thread to a called run")
 	}
 }
+
+// TestDeleteProjectWorkflowRecords: work_items carries no foreign key to
+// projects, so the only way a project's runs go away is this explicit call.
+// It must take the whole record with it — phases, units, effects, automations
+// and their cursors — and touch nothing another project owns.
+func TestDeleteProjectWorkflowRecords(t *testing.T) {
+	s := newTestStore(t)
+	for _, item := range []WorkItem{
+		testWorkItem("doomed", "project-a", "done", 10),
+		testWorkItem("survivor", "project-b", "done", 20),
+	} {
+		if err := s.CreateWorkItem(item); err != nil {
+			t.Fatalf("create %s: %v", item.ID, err)
+		}
+		if err := s.CreateWorkItemPhase(WorkItemPhase{
+			ItemID: item.ID, PhaseID: "build", Attempt: 1, Status: "completed", StartedAt: 1, EndedAt: 2,
+		}); err != nil {
+			t.Fatalf("create phase for %s: %v", item.ID, err)
+		}
+		if err := s.CreateWorkItemUnits([]WorkItemUnit{{
+			ItemID: item.ID, PhaseID: "build", Attempt: 1, UnitID: "u0",
+			UnitIndex: 0, Kind: "unit", Status: "done", UnitAttempt: 1,
+		}}); err != nil {
+			t.Fatalf("create unit for %s: %v", item.ID, err)
+		}
+		if err := s.RecordWorkItemEffect(WorkItemEffect{
+			ItemID: item.ID, PhaseID: "build", Tool: "start-run", PayloadHash: "h",
+			Payload: json.RawMessage(`{"ok":true}`), CreatedAt: 3,
+		}); err != nil {
+			t.Fatalf("record effect for %s: %v", item.ID, err)
+		}
+	}
+	for _, automation := range []Automation{
+		{ID: "auto-a", ProjectID: "project-a", WorkflowID: "build", WorkflowScope: "project",
+			Name: "A", Enabled: true, Trigger: json.RawMessage(`{"cron":"0 2 * * *"}`), CreatedAt: 1, UpdatedAt: 1},
+		{ID: "auto-b", ProjectID: "project-b", WorkflowID: "build", WorkflowScope: "project",
+			Name: "B", Enabled: true, Trigger: json.RawMessage(`{"cron":"0 3 * * *"}`), CreatedAt: 1, UpdatedAt: 1},
+	} {
+		if err := s.CreateAutomation(automation); err != nil {
+			t.Fatalf("create automation %s: %v", automation.ID, err)
+		}
+		if err := s.SetAutomationCursor(AutomationCursor{
+			AutomationID: automation.ID, SourceKey: "item-done", Cursor: "1", UpdatedAt: 1,
+		}); err != nil {
+			t.Fatalf("set cursor for %s: %v", automation.ID, err)
+		}
+	}
+
+	if err := s.DeleteProjectWorkflowRecords(""); err == nil {
+		t.Fatal("empty project id: want error")
+	}
+	if err := s.DeleteProjectWorkflowRecords("project-a"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	items, err := s.ListWorkItemSummaries(WorkItemListFilter{})
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "survivor" {
+		t.Fatalf("items after delete = %#v", items)
+	}
+	for _, probe := range []struct {
+		itemID string
+		want   int
+	}{{"doomed", 0}, {"survivor", 1}} {
+		phases, err := s.ListWorkItemPhases(probe.itemID)
+		if err != nil {
+			t.Fatalf("list phases %s: %v", probe.itemID, err)
+		}
+		if len(phases) != probe.want {
+			t.Fatalf("phases for %s = %d, want %d", probe.itemID, len(phases), probe.want)
+		}
+		units, err := s.ListWorkItemUnits(probe.itemID)
+		if err != nil {
+			t.Fatalf("list units %s: %v", probe.itemID, err)
+		}
+		if len(units) != probe.want {
+			t.Fatalf("units for %s = %d, want %d", probe.itemID, len(units), probe.want)
+		}
+		_, found, err := s.GetWorkItemEffect(probe.itemID, "build", "start-run", "h")
+		if err != nil {
+			t.Fatalf("get effect %s: %v", probe.itemID, err)
+		}
+		if found != (probe.want == 1) {
+			t.Fatalf("effect for %s found = %v", probe.itemID, found)
+		}
+	}
+	if list, err := s.ListAutomations("project-a"); err != nil || len(list) != 0 {
+		t.Fatalf("project-a automations = %#v, %v", list, err)
+	}
+	if list, err := s.ListAutomations("project-b"); err != nil || len(list) != 1 {
+		t.Fatalf("project-b automations = %#v, %v", list, err)
+	}
+	// The cursor rides its automation's ON DELETE CASCADE.
+	if _, err := s.GetAutomationCursor("auto-a", "item-done"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("cursor for deleted automation: err = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := s.GetAutomationCursor("auto-b", "item-done"); err != nil {
+		t.Fatalf("surviving cursor: %v", err)
+	}
+}

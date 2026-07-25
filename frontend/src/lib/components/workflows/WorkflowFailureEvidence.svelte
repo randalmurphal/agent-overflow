@@ -1,29 +1,9 @@
 <script lang="ts">
-  import type { WorkItemPhase, WorkflowItemDetail } from '../../types/workflow';
-
-  interface FailureEnvelope {
-    outputs?: Record<string, unknown> | null;
-    reason?: unknown;
-  }
+  import type { WorkflowItemDetail } from '../../types/workflow';
+  import { envelopeText as textOutput, parsePhaseEnvelope as envelope } from '../../utils/workflowEnvelope';
 
   interface Props { detail: WorkflowItemDetail }
   let { detail }: Props = $props();
-
-  function envelope(phase: WorkItemPhase): FailureEnvelope | null {
-    if (!phase.outputEnvelope) return null;
-    try {
-      return (typeof phase.outputEnvelope === 'string'
-        ? JSON.parse(phase.outputEnvelope)
-        : phase.outputEnvelope) as FailureEnvelope | null;
-    } catch (error) {
-      console.warn(`workflows: could not parse failure envelope for ${phase.phaseId} attempt ${phase.attempt}`, error);
-      return null;
-    }
-  }
-
-  function textOutput(value: unknown): string {
-    return typeof value === 'string' ? value.trim() : '';
-  }
 
   let failedCheck = $derived.by(() => {
     const checks = new Set(detail.checkPhaseIds ?? []);

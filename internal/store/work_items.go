@@ -568,3 +568,40 @@ func (s *Store) CreateWorkItemTriageThread(itemID string, thread Thread) error {
 	}
 	return nil
 }
+
+// DeleteProjectWorkflowRecords removes every workflow row a project owns: its
+// runs, their phase/unit/effect records, and its automations (whose cursors
+// cascade). One transaction, because a half-deleted run is a run the engine's
+// startup rebuild would try to resume.
+//
+// This is deliberately NOT part of DeleteProject. Deleting a project today
+// leaves its runs behind, and changing that is a product decision about what
+// happens to their worktrees and branches — this call exists for the callers
+// that have already dealt with that (the harness reset, which cancels every
+// live run and removes the generated workspaces before it deletes projects).
+func (s *Store) DeleteProjectWorkflowRecords(projectID string) error {
+	if projectID == "" {
+		return fmt.Errorf("store: delete project workflow records: project id is required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: delete project %s workflow records: begin: %w", projectID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	const owned = `SELECT id FROM work_items WHERE project_id = ?`
+	for _, statement := range []string{
+		`DELETE FROM work_item_units WHERE item_id IN (` + owned + `)`,
+		`DELETE FROM work_item_phases WHERE item_id IN (` + owned + `)`,
+		`DELETE FROM work_item_effects WHERE item_id IN (` + owned + `)`,
+		`DELETE FROM work_items WHERE project_id = ?`,
+		`DELETE FROM automations WHERE project_id = ?`,
+	} {
+		if _, err := tx.Exec(statement, projectID); err != nil {
+			return fmt.Errorf("store: delete project %s workflow records: %w", projectID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: delete project %s workflow records: commit: %w", projectID, err)
+	}
+	return nil
+}

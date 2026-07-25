@@ -1,0 +1,133 @@
+// R3 — only threads break out. Every workflow thread (phase, unit, triage,
+// studio) and the full-review pane open as NORMAL panes beside the pane tree
+// that was never unmounted; opening one closes the overlay, and reopening the
+// overlay restores its stack.
+//
+// Workflow-mode threads are excluded from `ListThreads` by mode, so they are
+// not in the frontend thread registry: every open here resolves the row
+// through `GetThread` first. Once mounted they behave as ordinary panes —
+// `utils/threadModes.ts` keeps them out of lists, search, and pickers by mode
+// (§6), never by title.
+
+import type { Thread } from '../types/models';
+import {
+  GetThread,
+  WorkflowOpenInThread,
+  WorkflowOpenStudioThread,
+  WorkflowOpenTriageAgent,
+  WorkflowOpenTriageThread,
+  WorkflowTakeOverUnit,
+} from './bindings';
+import { getThreadById } from './threads.svelte';
+import { findPaneShowingThread, openThreadInPane } from './panes.svelte';
+import { openReviewCompanion } from './reviewPane.svelte';
+import { closeWorkflowsOverlay } from './workflowsOverlay.svelte';
+import { addToast } from './toast.svelte';
+import { userFacingError } from '../utils/userFacingError';
+
+async function resolveThread(threadId: string): Promise<Thread | null> {
+  const cached = getThreadById(threadId);
+  if (cached) return cached;
+  const thread = (await GetThread(threadId)) as Thread | null;
+  return thread && thread.id ? thread : null;
+}
+
+/**
+ * Open a thread as a normal pane and close the overlay. Returns the pane id so
+ * callers that need a companion (full review) can attach to it.
+ */
+export async function openWorkflowThread(thread: Thread): Promise<string> {
+  const pane = await openThreadInPane(thread);
+  closeWorkflowsOverlay();
+  return pane.paneId;
+}
+
+export async function openWorkflowThreadById(threadId: string): Promise<string | null> {
+  if (!threadId) return null;
+  try {
+    const existing = findPaneShowingThread(threadId);
+    if (existing) {
+      closeWorkflowsOverlay();
+      return existing.paneId;
+    }
+    const thread = await resolveThread(threadId);
+    if (!thread) {
+      addToast('warning', 'That thread is no longer available.');
+      return null;
+    }
+    return await openWorkflowThread(thread);
+  } catch (err) {
+    addToast('error', userFacingError(err, 'Could not open that thread.'));
+    return null;
+  }
+}
+
+async function openFromRpc(
+  load: () => Promise<Thread>,
+  failure: string,
+): Promise<string | null> {
+  try {
+    const thread = await load();
+    if (!thread?.id) {
+      addToast('error', failure);
+      return null;
+    }
+    return await openWorkflowThread(thread);
+  } catch (err) {
+    addToast('error', userFacingError(err, failure));
+    return null;
+  }
+}
+
+/** "Take over" / "Continue with agent" — the seeded hand-off thread. */
+export function takeOverWorkflowRun(itemId: string): Promise<string | null> {
+  return openFromRpc(() => WorkflowOpenTriageThread(itemId) as Promise<Thread>, 'Could not open the hand-off thread.');
+}
+
+/** Unbound done runs (D17): seed a thread with the result, then bind it. */
+export function openWorkflowRunInThread(itemId: string): Promise<string | null> {
+  return openFromRpc(() => WorkflowOpenInThread(itemId) as Promise<Thread>, 'Could not open this run in a thread.');
+}
+
+export function openWorkflowStudioThread(projectId: string, workflowId: string): Promise<string | null> {
+  return openFromRpc(
+    () => WorkflowOpenStudioThread(projectId, workflowId) as Promise<Thread>,
+    'Could not open the workflow studio thread.',
+  );
+}
+
+export function openWorkflowTriageAgent(projectId: string): Promise<string | null> {
+  return openFromRpc(
+    () => WorkflowOpenTriageAgent(projectId) as Promise<Thread>,
+    'Could not open the triage agent.',
+  );
+}
+
+/**
+ * Detach one live unit from engine control and open its thread so the human
+ * can steer it directly. The engine edge runs first: opening the pane before
+ * the detach would leave a session the engine still owns looking steerable.
+ */
+export async function takeOverWorkflowUnit(
+  itemId: string,
+  unitId: string,
+  threadId: string,
+): Promise<string | null> {
+  try {
+    await WorkflowTakeOverUnit(itemId, unitId);
+  } catch (err) {
+    addToast('error', userFacingError(err, `Could not take over ${unitId}.`));
+    return null;
+  }
+  return openWorkflowThreadById(threadId);
+}
+
+/**
+ * "Open full review" — the real ReviewPane as a companion of the phase
+ * thread's pane (§4.7). No parallel diff renderer exists or should.
+ */
+export async function openWorkflowFullReview(threadId: string): Promise<void> {
+  const paneId = await openWorkflowThreadById(threadId);
+  if (!paneId) return;
+  await openReviewCompanion(paneId, threadId, { scope: 'branch' });
+}

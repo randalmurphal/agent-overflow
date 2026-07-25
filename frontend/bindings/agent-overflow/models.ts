@@ -3472,6 +3472,13 @@ export class WorkflowItemUnitView {
     "unitId": string;
     "unitIndex": number;
     "kind": string;
+
+    /**
+     * Provider names the resource a pending unit is waiting capacity on. The
+     * overlay renders it verbatim ("waiting on provider:codex"), which is the
+     * only place a human sees the implicit `provider:<name>` bound (D16).
+     */
+    "provider"?: string;
     "threadId"?: string;
     "branch"?: string;
     "worktreePath"?: string;

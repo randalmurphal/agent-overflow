@@ -5,6 +5,7 @@
 // module only binds them to the real thread and pane stores.
 import { getThreadById } from './threads.svelte';
 import { openThreadInPane } from './panes.svelte';
+import { openWorkflowRunInOverlay } from './workflowsOverlay.svelte';
 import {
   createNotificationActivationQueue,
   type NotificationTarget,
@@ -20,6 +21,9 @@ function createAppNotificationActivationQueue() {
   return createNotificationActivationQueue({
     getThreadById: (id) => getThreadById(id),
     openThread: (thread) => openThreadInPane(thread),
+    openWorkflowRun: async (workItemId) => {
+      openWorkflowRunInOverlay(workItemId);
+    },
     console,
   });
 }

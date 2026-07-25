@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/harness"
 	projectconfig "agent-overflow/internal/project"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/workflow/engine"
@@ -329,5 +330,21 @@ cleanup: manual
 	projects, err := app.store.ListProjects()
 	if err != nil || len(projects) != 0 {
 		t.Fatalf("projects after reset = %+v, %v", projects, err)
+	}
+	// Runs carry no foreign key to their project, so reset has to delete them
+	// itself. Leaving them behind means a finished run outlives the test that
+	// made it and shows up in the next test's workflows overlay.
+	items, err := app.store.ListWorkItemSummaries(store.WorkItemListFilter{})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("work items after reset = %+v, %v", items, err)
+	}
+	for _, itemID := range []string{running.ID, held.ID} {
+		phases, err := app.store.ListWorkItemPhases(itemID)
+		if err != nil {
+			t.Fatalf("list phases for %s: %v", itemID, err)
+		}
+		if len(phases) != 0 {
+			t.Fatalf("phases for %s after reset = %+v", itemID, phases)
+		}
 	}
 }

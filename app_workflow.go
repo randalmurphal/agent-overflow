@@ -606,12 +606,16 @@ type WorkflowItemPhaseView struct {
 // Envelopes stay out of the list for the same reason phase inputs do — the
 // attempt's own envelope already carries the result the UI shows.
 type WorkflowItemUnitView struct {
-	ItemID       string `json:"itemId"`
-	PhaseID      string `json:"phaseId"`
-	Attempt      int    `json:"attempt"`
-	UnitID       string `json:"unitId"`
-	UnitIndex    int    `json:"unitIndex"`
-	Kind         string `json:"kind"`
+	ItemID    string `json:"itemId"`
+	PhaseID   string `json:"phaseId"`
+	Attempt   int    `json:"attempt"`
+	UnitID    string `json:"unitId"`
+	UnitIndex int    `json:"unitIndex"`
+	Kind      string `json:"kind"`
+	// Provider names the resource a pending unit is waiting capacity on. The
+	// overlay renders it verbatim ("waiting on provider:codex"), which is the
+	// only place a human sees the implicit `provider:<name>` bound (D16).
+	Provider     string `json:"provider,omitempty"`
 	ThreadID     string `json:"threadId,omitempty"`
 	Branch       string `json:"branch,omitempty"`
 	WorktreePath string `json:"worktreePath,omitempty"`
@@ -681,6 +685,7 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 		unitViews = append(unitViews, WorkflowItemUnitView{
 			ItemID: unit.ItemID, PhaseID: unit.PhaseID, Attempt: unit.Attempt,
 			UnitID: unit.UnitID, UnitIndex: unit.UnitIndex, Kind: unit.Kind,
+			Provider: unit.Provider,
 			ThreadID: unit.ThreadID, Branch: unit.Branch, WorktreePath: unit.WorktreePath,
 			Status: unit.Status, UnitAttempt: unit.UnitAttempt, Feedback: unit.Feedback,
 			StartedAt: unit.StartedAt, EndedAt: unit.EndedAt,

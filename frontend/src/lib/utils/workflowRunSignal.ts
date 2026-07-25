@@ -1,3 +1,12 @@
+// R1 — two-hue attention. Amber (`--warning`) ONLY for states a human must
+// unblock; red (`--error`) ONLY for `failed`. Everything else is typographic:
+// no dot, no badge. Done-awaiting-disposition is deliberately neutral and has
+// no time-based escalation.
+//
+// Amber rows reuse the sidebar's existing `status-glow-warning` ring + pulse
+// conventions (threadStatusPill.ts / app.css) so the whole app has one
+// vocabulary for "this is blocked on you".
+
 import type { WorkflowRunReason, WorkflowRunState } from '../types/workflow';
 
 export interface WorkflowRunSignal {
@@ -11,16 +20,33 @@ export interface WorkflowRunSignal {
 
 const neutralLabels: Record<string, string> = {
   done: 'Done',
-  queued: 'Queued',
   running: 'Running',
   cancelled: 'Cancelled',
 };
 
-function attentionLabel(reason?: WorkflowRunReason): string {
-  if (reason === 'gate') return 'Review gate';
-  if (reason === 'question') return 'Question';
-  if (reason === 'disposition') return 'Disposition';
-  return 'Needs you';
+// The state word (§4.1). Every typed reason gets a human word; an unknown
+// reason falls back to the generic "Needs you" rather than leaking the token.
+const attentionLabels: Record<string, string> = {
+  gate: 'Review gate',
+  question: 'Question',
+  stuck: 'Stuck',
+  stalled: 'Stalled',
+  paused: 'Paused',
+  interrupted: 'Interrupted',
+  'unit-failed': 'Unit failed',
+  'child-failed': 'Child failed',
+  disposition: 'Disposition',
+  'budget-exhausted': 'Budget spent',
+  'retries-exhausted': 'Retries spent',
+  'check-failed-genuine': 'Check failed',
+  'agent-error': 'Agent error',
+  'wiring-error': 'Wiring error',
+  'setup-failed': 'Setup failed',
+  'taken-over': 'Taken over',
+};
+
+export function workflowAttentionLabel(reason?: WorkflowRunReason | string): string {
+  return attentionLabels[String(reason ?? '')] ?? 'Needs you';
 }
 
 export function workflowRunSignal(
@@ -30,7 +56,7 @@ export function workflowRunSignal(
   if (state === 'needs-human') {
     return {
       signal: 'attention',
-      label: attentionLabel(reason as WorkflowRunReason | undefined),
+      label: workflowAttentionLabel(reason),
       tone: 'text-warning',
       dotClass: 'bg-warning',
       pulse: true,

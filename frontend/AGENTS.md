@@ -30,6 +30,8 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 - `src/lib/components/primitives/` — reusable Menu / Popover / Modal /
   dropdown shells. Pickers compose these rather than rolling their own
   positioning, focus-trap, or keyboard behavior.
+- `src/lib/components/workflows/` — the workflows overlay. See "Workflows
+  Overlay" below before touching it.
 - `src/lib/components/{design,discussion,git,palette,settings,terminal,usage,shared}/` —
   per-feature component groups.
 - `src/lib/types/` — shared TypeScript types.
@@ -60,6 +62,51 @@ hydrate. Settled subagent children are evicted from pane memory into a
 per-anchor fold (`utils/subagentFold.ts`) and re-hydrate on card
 expansion; see "Live Window Bounds" in
 [`docs/architecture/frontend-scroll.md`](../docs/architecture/frontend-scroll.md).
+
+## Workflows Overlay
+
+Spec: [`docs/specs/workflows-system-ui/UI-SPEC.md`](../docs/specs/workflows-system-ui/UI-SPEC.md)
+(§12 maps every section to the file that implements it).
+
+The overlay is a **sibling of `<PaneHost>`** in `App.svelte`, mounted through
+`LazyOverlay`. It is never a pane kind and never a `globalSurface`: the pane
+tree stays mounted underneath, so opening and closing rebuild nothing. Opening
+a thread is the only action that leaves the overlay, and it closes it.
+
+State ownership:
+
+- `stores/workflowsOverlay.svelte.ts` — navigation only (stack, project
+  filter, sweep cursor, armed confirm, open dialog). Persisted through
+  `appStorage`, so it survives a restart; `open` deliberately is not.
+- `stores/workflowRuns.svelte.ts` — the reactive cache (runs, catalogs,
+  automations, costs, per-run detail, session receipts). Run detail is loaded
+  per run and evicted when the detail level leaves that tree, so overlay
+  memory stays bounded by what is on screen. `retainWorkflowDetails` runs
+  inside an `$effect` that reads the same cache: it must not write when
+  nothing is dropped, or the effect re-enters forever.
+- `stores/workflowData.ts` and `utils/workflow*.ts` — pure. Grouping, sweep
+  math, action rows, run-tree assembly, signal mapping, intake validation and
+  envelope reads live there so they are testable without a Svelte runtime.
+  Keep new logic in these, not in components.
+- `stores/workflowResolve.ts` — the ONE resolution path (dispatch → receipt →
+  toast → sweep auto-advance). The action row and the discard dialog both go
+  through it; do not add a second.
+
+Rules that are not stylistic:
+
+- **R1, two hues.** Amber (`--warning`) means a human is blocked; red
+  (`--error`) means failed. Everything else is neutral, including a done run
+  awaiting disposition. `utils/workflowRunSignal.ts` is the only place that
+  decides — never inline a colour in a component.
+- **R2, no internals.** No envelopes, JSON, schemas, gate traces or the word
+  "variables" on any surface. A workflow's typed inputs render as plain form
+  fields named after the field.
+- **§10, remote posture.** Every mutating affordance disables with a
+  `Local only` title in a view-only session (`isViewOnlySession()`), and the
+  §8 key target refuses too — the guard is not decoration.
+- **§4.5, preview is consent.** Discard opens the loss preview; nothing
+  destructive fires from a row. Other destructive actions arm a confirm that
+  Esc disarms.
 
 ## Thread Switch And Scroll
 

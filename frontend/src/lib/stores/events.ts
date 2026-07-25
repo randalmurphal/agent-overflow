@@ -115,8 +115,19 @@ import {
   applyNotificationActivated,
 } from './eventsNotification';
 import { parseNotificationTarget } from './notificationActivationQueue';
-import type { WorkflowErrorEvent } from '../types/workflow';
-import { applyWorkflowErrorEvent } from './eventsWorkflow';
+import type {
+  WorkflowEngineStateEvent,
+  WorkflowErrorEvent,
+  WorkflowItemStateEvent,
+  WorkflowPhaseStateEvent,
+} from '../types/workflow';
+import {
+  applyWorkflowDefinitionsChangedEvent,
+  applyWorkflowEngineStateEvent,
+  applyWorkflowErrorEvent,
+  applyWorkflowItemStateEvent,
+  applyWorkflowPhaseStateEvent,
+} from './eventsWorkflow';
 
 /**
  * Frontend custom DOM event names live in `./eventNames` so consumers
@@ -350,8 +361,25 @@ export function setupEventListeners(): () => void {
     applyDiscussionState,
   );
   const cancelPRUpdated = wailsEventOn('pr:updated', applyPRReviewUpdated);
+  // workflow:* — the typed run-record channel. Item/phase transitions keep
+  // the overlay's run cache live (and the sidebar's needs-attention badge
+  // authoritative) without polling; engine-state carries the one global pause
+  // flag; definitions-changed fires when the studio save path writes a
+  // definition file.
   const cancelWorkflowError = wailsEventOn<WorkflowErrorEvent>(
     'workflow:error', applyWorkflowErrorEvent,
+  );
+  const cancelWorkflowItemState = wailsEventOn<WorkflowItemStateEvent>(
+    'workflow:item-state', applyWorkflowItemStateEvent,
+  );
+  const cancelWorkflowPhaseState = wailsEventOn<WorkflowPhaseStateEvent>(
+    'workflow:phase-state', applyWorkflowPhaseStateEvent,
+  );
+  const cancelWorkflowEngineState = wailsEventOn<WorkflowEngineStateEvent>(
+    'workflow:engine-state', applyWorkflowEngineStateEvent,
+  );
+  const cancelWorkflowDefinitions = wailsEventOn(
+    'workflow:definitions-changed', applyWorkflowDefinitionsChangedEvent,
   );
 
   // highlight:seed — backend-pushed syntax spans for streaming code
@@ -399,6 +427,10 @@ export function setupEventListeners(): () => void {
     cancelDiscussionState();
     cancelPRUpdated();
     cancelWorkflowError();
+    cancelWorkflowItemState();
+    cancelWorkflowPhaseState();
+    cancelWorkflowEngineState();
+    cancelWorkflowDefinitions();
     cancelHighlightSeed();
     cancelHighlightDiffSeed();
     clearAllDesignThrottles();

@@ -60,6 +60,19 @@ headless, isolated data dir, mocked providers. Full harness guide:
   registry, never a mint) and spawns `ao` with exactly that env — everything past
   the process boundary is production code. Requires `bin/ao`; `make e2e` builds
   it.
+- `tests/workflows-overlay.spec.ts` — the workflows overlay
+  (`docs/specs/workflows-system-ui/UI-SPEC.md`) driven through the REAL UI: the
+  sidebar footer badge opening home and a parked gate resolving from its detail,
+  the sweep stepping with j/k and auto-advancing past a receipt to all-clear,
+  the discard loss preview proving nothing is destroyed before it is confirmed,
+  `+ New run` starting a run, a question answered from the footer input (which
+  also proves the §8 letter keys stay letters while a field has focus), the
+  `/workflow` composer command appending below an in-progress draft, and a
+  view-only session with every mutating affordance dead. The view-only case
+  rewrites `remote` on the `/bootstrap.json` response because the harness binds
+  loopback only and that bit is computed from the peer's locality — the SPA
+  still receives exactly the manifest a LAN browser would, and everything
+  downstream of the fetch is production code.
 - `tests/workflows-helpers.ts` — shared workflow seeds, mock-provider scenarios,
   direct start (`WorkflowStartRun`), the global-pause switch, state waits,
   result envelopes, and compact workflow definitions.
@@ -95,7 +108,11 @@ chromium` on a fresh machine).
   least one turn, or send the first message before navigating, when a
   spec needs the thread visible.
 - Each worker owns one backend; tests share it and must leave it reset
-  (the fixture does this) rather than booting their own.
+  (the fixture does this) rather than booting their own. `work_items` and its
+  record tables carry no foreign key to `projects`, so `HarnessReset` deletes
+  them explicitly (`DeleteProjectWorkflowRecords`) — a spec that asserts on a
+  global count (the overlay's attention badge, the sweep total) depends on
+  that, not on a project cascade.
 - Transport notification replay survives `HarnessReset`. Any spec whose
   backend state can produce a notification therefore declares a distinct
   no-op worker fixture identity, and each cold-activation case declares its
