@@ -127,17 +127,8 @@ func decisionForRoute(route Route, routeIndex int) RouteDecision {
 }
 
 func evaluatePredicate(predicate Predicate, vars map[string]any, routeIndex int, path string, trace *GateTrace) (bool, bool, error) {
-	if countPredicateOperators(predicate) != 1 {
-		return false, false, fmt.Errorf("predicate must declare exactly one supported operator")
-	}
-	if predicate.All != nil && len(predicate.All) == 0 {
-		return false, false, fmt.Errorf("all requires at least one predicate")
-	}
-	if predicate.Any != nil && len(predicate.Any) == 0 {
-		return false, false, fmt.Errorf("any requires at least one predicate")
-	}
-	if predicate.In != nil && len(predicate.In.Values) == 0 {
-		return false, false, fmt.Errorf("in requires at least one value")
+	if issues, _ := predicateShapeIssues(predicate); len(issues) > 0 {
+		return false, false, fmt.Errorf("%s", issues[0].message)
 	}
 	var (
 		result bool

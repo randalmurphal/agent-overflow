@@ -287,6 +287,16 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowSetJobNotes":                  true,
 	"WorkflowRerunItem":                    true,
 	"WorkflowPauseItem":                    true,
+	// Automation CRUD is the same control plane one step removed: an automation
+	// is a standing instruction to start autonomous full-access provider sessions
+	// on a schedule, so arming, editing, disabling, or deleting one is session
+	// control even though no session starts inside the call. Run now starts one
+	// outright. The pure read (WorkflowListAutomations) is wire-safe.
+	"WorkflowCreateAutomation":     true,
+	"WorkflowUpdateAutomation":     true,
+	"WorkflowDeleteAutomation":     true,
+	"WorkflowSetAutomationEnabled": true,
+	"WorkflowRunAutomationNow":     true,
 	// Thread binding wires a run's results into a local provider session: a
 	// bound run injects user turns into that thread from a background
 	// goroutine, and WorkflowOpenInThread creates the thread and starts the

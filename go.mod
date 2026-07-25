@@ -15,6 +15,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/rjeczalik/notify v0.9.3
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/shirou/gopsutil/v4 v4.26.4
 	github.com/tree-sitter-grammars/tree-sitter-yaml v0.7.2
 	github.com/tree-sitter/go-tree-sitter v0.25.0

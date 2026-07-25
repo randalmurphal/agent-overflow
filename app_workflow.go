@@ -189,6 +189,19 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 		a.workflowRunner = nil
 		return fmt.Errorf("start workflow engine: %w", err)
 	}
+	// The §11 scheduler starts last and over the running engine: a trigger must
+	// never be able to fire into an engine that does not exist yet.
+	if err := a.initWorkflowScheduler(); err != nil {
+		if closeErr := workflowEngine.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close workflow engine: %w", closeErr))
+		}
+		if a.triage != nil {
+			a.triage.SetUsageWorkItemResolver(nil)
+		}
+		a.workflowEngine = nil
+		a.workflowRunner = nil
+		return err
+	}
 	return nil
 }
 

@@ -1436,6 +1436,37 @@ CREATE INDEX idx_work_item_units_worktree
 		SQL:     rebuildWorkItemsThreadBindingV39SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 40,
+		Name:    "automation_fire_records",
+		// What the §11 scheduler did with each trigger, on the automation's own
+		// row: the last fire (when, and the run it started) and the skip record
+		// the overlap policy, a false or unevaluable condition, a self-chain, or a
+		// failed start produces. A skipped fire is never silently dropped — it is
+		// the record that makes a starving park or a wrong condition visible.
+		//
+		// Plain ADD COLUMNs: nothing here changes a CHECK or a column list, so no
+		// table rebuild is warranted.
+		//
+		// The index backs the overlap check itself, which runs on every fire:
+		// "does this automation still have a non-terminal run". Partial on the
+		// automation source, because every other run's source_ref means something
+		// else entirely (an agent proposal id, a call site) and none of them are
+		// ever queried this way.
+		SQL: `ALTER TABLE automations ADD COLUMN last_fired_at INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE automations ADD COLUMN last_run_item_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE automations ADD COLUMN skip_count INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE automations ADD COLUMN last_skip_at INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE automations ADD COLUMN last_skip_reason TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX idx_work_items_automation_source_ref
+  ON work_items(source_ref, state)
+  WHERE source = 'automation' AND source_ref <> '';`,
+	},
 }
 
 // workItemsReasonCheckV38 is the typed park-reason CHECK shipped by v38;

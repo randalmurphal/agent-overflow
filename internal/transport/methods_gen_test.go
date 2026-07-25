@@ -178,6 +178,10 @@ var wireSafeMethods = map[string]bool{
 	"WorkflowListItemCosts":       true,
 	"WorkflowListDefinitions":     true,
 	"WorkflowGetJobNotes":         true,
+	// Automation rows: definition, trigger rendering, next fire, and the fire
+	// record. Read-only, no FS/process reach; every automation mutation
+	// (including Run now) is LocalOnly.
+	"WorkflowListAutomations": true,
 	// Pure read of the global pause flag — one boolean, no FS/process
 	// reach. The mutating WorkflowSetGlobalPause stays LocalOnly.
 	"WorkflowGetEngineState": true,

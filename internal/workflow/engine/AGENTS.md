@@ -260,3 +260,9 @@ resource semaphores, and startup recovery.
   an OS notification when it needs a human, a descendant's park announced at
   its root). Discard — worktree removal and branch deletion — is entirely
   app-side; the engine only cancels what is still in flight when asked.
+- Automations are app-fed and engine-unaware. `internal/workflow/scheduler`
+  never imports this package: its internal-event triggers are driven by the
+  app forwarding `workflow:item-state` transitions from the same listener that
+  wakes bound threads, and a fired automation enters through `StartItem` like
+  any other start. The engine holds no timer, no trigger, and no automation
+  identity — a run started by one is just a run whose `source` is `automation`.

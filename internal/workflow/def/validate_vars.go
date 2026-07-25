@@ -213,49 +213,16 @@ func validateFeedbackRef(workflow Workflow, phaseIndex map[string]int, graph wor
 
 func validatePredicate(workflow Workflow, phaseIndex map[string]int, graph workflowGraph, phase, route int, predicate Predicate) []Finding {
 	element := fmt.Sprintf("workflow %q phase %q route %d predicate", workflow.ID, workflow.Phases[phase].ID, route)
-	operators := 0
-	if predicate.Eq != nil {
-		operators++
-	}
-	if predicate.Neq != nil {
-		operators++
-	}
-	if predicate.Gt != nil {
-		operators++
-	}
-	if predicate.Gte != nil {
-		operators++
-	}
-	if predicate.Lt != nil {
-		operators++
-	}
-	if predicate.Lte != nil {
-		operators++
-	}
-	if predicate.In != nil {
-		operators++
-	}
-	if predicate.Exists != "" {
-		operators++
-	}
-	if predicate.All != nil {
-		operators++
-	}
-	if predicate.Any != nil {
-		operators++
-	}
-	if predicate.Not != nil {
-		operators++
-	}
-	if operators != 1 {
-		return []Finding{finding("predicate.operator", element, "predicate must declare exactly one supported operator")}
-	}
+	// Shape first, from the one definition the runtime evaluator also reads
+	// (predicate.go). Without a single operator there is no subject for the
+	// reference and type checks below, so those are skipped entirely.
+	issues, structural := predicateShapeIssues(predicate)
 	var findings []Finding
-	if predicate.All != nil && len(predicate.All) == 0 {
-		findings = append(findings, finding("predicate.all", element, "all requires at least one predicate"))
+	for _, issue := range issues {
+		findings = append(findings, finding(issue.code, element, issue.message))
 	}
-	if predicate.Any != nil && len(predicate.Any) == 0 {
-		findings = append(findings, finding("predicate.any", element, "any requires at least one predicate"))
+	if !structural {
+		return findings
 	}
 	comparisons := []struct {
 		name  string
@@ -278,9 +245,6 @@ func validatePredicate(workflow Workflow, phaseIndex map[string]int, graph workf
 	}
 	if predicate.In != nil {
 		variable, ok := validatePredicateRef(workflow, phaseIndex, graph, phase, predicate.In.Ref, element, &findings)
-		if len(predicate.In.Values) == 0 {
-			findings = append(findings, finding("predicate.in", element, "in requires at least one value"))
-		}
 		if ok {
 			for _, value := range predicate.In.Values {
 				if !literalMatches(variable.Schema, value) {

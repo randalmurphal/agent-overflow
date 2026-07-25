@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -168,6 +170,13 @@ func startWorkflowEngineForTest(t *testing.T, app *App, configRoot string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		// The scheduler stops first for the same reason it does in production: a
+		// trigger must not be able to fire into an engine that is closing.
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := app.stopWorkflowScheduler(stopCtx); err != nil {
+			t.Errorf("stop workflow scheduler: %v", err)
+		}
 		if app.workflowEngine != nil {
 			_ = app.workflowEngine.Close()
 		}

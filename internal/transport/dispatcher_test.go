@@ -746,6 +746,11 @@ func (p *privilegedApp) WorkflowBindThread() string             { return "ok" }
 func (p *privilegedApp) WorkflowUnbindThread() string           { return "ok" }
 func (p *privilegedApp) WorkflowOpenInThread() string           { return "ok" }
 func (p *privilegedApp) WorkflowDiscardPreview() string         { return "ok" }
+func (p *privilegedApp) WorkflowCreateAutomation() string       { return "ok" }
+func (p *privilegedApp) WorkflowUpdateAutomation() string       { return "ok" }
+func (p *privilegedApp) WorkflowDeleteAutomation() string       { return "ok" }
+func (p *privilegedApp) WorkflowSetAutomationEnabled() string   { return "ok" }
+func (p *privilegedApp) WorkflowRunAutomationNow() string       { return "ok" }
 func (p *privilegedApp) UpdateThreadMode() string               { return "ok" }
 func (p *privilegedApp) UpdateThreadProvider() string           { return "ok" }
 func (p *privilegedApp) UpdateThreadModel() string              { return "ok" }

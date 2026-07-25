@@ -37,6 +37,16 @@ headless, isolated data dir, mocked providers. Full harness guide:
   file before the discard removes every checkout and branch in the tree. The
   discard case reads and writes the run's real worktrees from Node, which is the
   only way to assert on work that exists nowhere else.
+- `tests/workflows-automations.spec.ts` — automations (§11) driven entirely
+  through RPCs: Run now going through the one start path with the reserved
+  `trigger` / `job-notes` seeds reaching the phase's rendered prompt, a second
+  press refused loudly while the first run is still active (and *not* recorded
+  as a skip, because a human is present), and an `item-done` automation chaining
+  off a finished run but recording a `self-chain` skip instead of chaining off
+  its own. Cron *ticks* are not exercised — the scheduler's granularity is a
+  minute, so tick arithmetic is unit-tested against a fake clock in
+  `internal/workflow/scheduler` instead of costing a minute of wall clock per
+  assertion.
 - `tests/workflows-helpers.ts` — shared workflow seeds, mock-provider scenarios,
   direct start (`WorkflowStartRun`), the global-pause switch, state waits,
   result envelopes, and compact workflow definitions.

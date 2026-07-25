@@ -277,7 +277,9 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowBindThread", ID: 1931806823},                   // main.App.WorkflowBindThread
 	{Name: "WorkflowCancelItem", ID: 4158962817},                   // main.App.WorkflowCancelItem
 	{Name: "WorkflowCompleteTakeover", ID: 3393508470},             // main.App.WorkflowCompleteTakeover
+	{Name: "WorkflowCreateAutomation", ID: 3011758347},             // main.App.WorkflowCreateAutomation
 	{Name: "WorkflowCreateItemPR", ID: 1792283305},                 // main.App.WorkflowCreateItemPR
+	{Name: "WorkflowDeleteAutomation", ID: 1133480652},             // main.App.WorkflowDeleteAutomation
 	{Name: "WorkflowDiscardItem", ID: 2163033761},                  // main.App.WorkflowDiscardItem
 	{Name: "WorkflowDiscardPreview", ID: 2659721862},               // main.App.WorkflowDiscardPreview
 	{Name: "WorkflowDiscussPR", ID: 1236472344},                    // main.App.WorkflowDiscussPR
@@ -287,6 +289,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowGetEngineState", ID: 2130001947},               // main.App.WorkflowGetEngineState
 	{Name: "WorkflowGetItem", ID: 70120675},                        // main.App.WorkflowGetItem
 	{Name: "WorkflowGetJobNotes", ID: 3798011060},                  // main.App.WorkflowGetJobNotes
+	{Name: "WorkflowListAutomations", ID: 2319799628},              // main.App.WorkflowListAutomations
 	{Name: "WorkflowListDefinitions", ID: 2064216126},              // main.App.WorkflowListDefinitions
 	{Name: "WorkflowListItemCosts", ID: 1544440599},                // main.App.WorkflowListItemCosts
 	{Name: "WorkflowListItems", ID: 3037887964},                    // main.App.WorkflowListItems
@@ -302,12 +305,15 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowResolveGate", ID: 3348479803},                  // main.App.WorkflowResolveGate
 	{Name: "WorkflowResumeItem", ID: 3138507556},                   // main.App.WorkflowResumeItem
 	{Name: "WorkflowRetryUnit", ID: 1648002260},                    // main.App.WorkflowRetryUnit
+	{Name: "WorkflowRunAutomationNow", ID: 2615697354},             // main.App.WorkflowRunAutomationNow
 	{Name: "WorkflowSendPRReviewCommentsToThread", ID: 1172404443}, // main.App.WorkflowSendPRReviewCommentsToThread
+	{Name: "WorkflowSetAutomationEnabled", ID: 642610548},          // main.App.WorkflowSetAutomationEnabled
 	{Name: "WorkflowSetGlobalPause", ID: 774492663},                // main.App.WorkflowSetGlobalPause
 	{Name: "WorkflowSetJobNotes", ID: 1934298592},                  // main.App.WorkflowSetJobNotes
 	{Name: "WorkflowStartRun", ID: 1009082601},                     // main.App.WorkflowStartRun
 	{Name: "WorkflowTakeOverUnit", ID: 1931942299},                 // main.App.WorkflowTakeOverUnit
 	{Name: "WorkflowUnbindThread", ID: 2006703348},                 // main.App.WorkflowUnbindThread
+	{Name: "WorkflowUpdateAutomation", ID: 536579134},              // main.App.WorkflowUpdateAutomation
 	{Name: "WriteTerminal", ID: 146795716},                         // main.App.WriteTerminal
 	{Name: "WriteThreadWorkspaceFile", ID: 3895036895},             // main.App.WriteThreadWorkspaceFile
 }

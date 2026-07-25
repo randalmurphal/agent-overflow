@@ -2453,6 +2453,142 @@ export class WorkflowArtifact {
     }
 }
 
+/**
+ * WorkflowAutomationInput is the editable definition of an automation: a
+ * trigger, an optional run-if condition, and the seeds its runs start with.
+ * There is no notes field — continuity notes are written through
+ * WorkflowSetJobNotes, because a phase rewrites them too (§5 update-job-notes)
+ * and a definition edit must not clobber what the last run learned.
+ */
+export class WorkflowAutomationInput {
+    "projectId": string;
+    "workflowId": string;
+    "workflowScope": string;
+    "name": string;
+    "enabled": boolean;
+    "trigger": json$0.RawMessage;
+    "condition"?: json$0.RawMessage;
+    "seeds"?: json$0.RawMessage;
+
+    /** Creates a new WorkflowAutomationInput instance. */
+    constructor($$source: Partial<WorkflowAutomationInput> = {}) {
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+        if (!("workflowId" in $$source)) {
+            this["workflowId"] = "";
+        }
+        if (!("workflowScope" in $$source)) {
+            this["workflowScope"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("trigger" in $$source)) {
+            this["trigger"] = null;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAutomationInput instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAutomationInput {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAutomationInput($$parsedSource as Partial<WorkflowAutomationInput>);
+    }
+}
+
+/**
+ * WorkflowAutomationView is one automation row as the UI reads it: the stored
+ * definition, the parsed trigger's rendering, the next fire a cron trigger has
+ * coming, and the fire record — including the last skip, which is how a
+ * starving overlap or a wrong condition becomes visible.
+ * 
+ * TriggerError is the standing answer to "why is this doing nothing": a stored
+ * trigger that no longer parses is reported on its own row rather than silently
+ * dropped from the schedule.
+ */
+export class WorkflowAutomationView {
+    "id": string;
+    "projectId": string;
+    "workflowId": string;
+    "workflowScope": string;
+    "name": string;
+    "enabled": boolean;
+    "trigger": json$0.RawMessage;
+    "triggerKind"?: string;
+    "triggerSummary"?: string;
+    "triggerError"?: string;
+
+    /**
+     * NextFireAt is set only for an enabled cron trigger that parses. A disabled
+     * automation has no next fire, and saying otherwise would be a lie.
+     */
+    "nextFireAt"?: number;
+    "condition"?: json$0.RawMessage;
+    "seeds"?: json$0.RawMessage;
+    "notes": string;
+    "lastFiredAt"?: number;
+    "lastRunItemId"?: string;
+    "skipCount": number;
+    "lastSkipAt"?: number;
+    "lastSkipReason"?: string;
+    "createdAt": number;
+    "updatedAt": number;
+
+    /** Creates a new WorkflowAutomationView instance. */
+    constructor($$source: Partial<WorkflowAutomationView> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+        if (!("workflowId" in $$source)) {
+            this["workflowId"] = "";
+        }
+        if (!("workflowScope" in $$source)) {
+            this["workflowScope"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("trigger" in $$source)) {
+            this["trigger"] = null;
+        }
+        if (!("notes" in $$source)) {
+            this["notes"] = "";
+        }
+        if (!("skipCount" in $$source)) {
+            this["skipCount"] = 0;
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+        if (!("updatedAt" in $$source)) {
+            this["updatedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkflowAutomationView instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorkflowAutomationView {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkflowAutomationView($$parsedSource as Partial<WorkflowAutomationView>);
+    }
+}
+
 export class WorkflowDefinitionCatalog {
     "baseBranch": string;
     "workflows": WorkflowDefinitionListing[];

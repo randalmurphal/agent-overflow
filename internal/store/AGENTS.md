@@ -106,7 +106,18 @@ root `CLAUDE.md` principle 3.
   the partial index applies.
 - `automations.go` — automation definition, continuity-note, and
   per-source cursor CRUD. Cursors are dependent scheduler state and
-  cascade when an automation is deleted.
+  cascade when an automation is deleted. Migration v40 adds the fire
+  record — `last_fired_at`, `last_run_item_id`, `skip_count`,
+  `last_skip_at`, `last_skip_reason` — written only by
+  `RecordAutomationFire` / `RecordAutomationSkip`, which deliberately
+  leave `updated_at` alone: a fire is not a definition change, and the
+  scheduler keys its armed occurrence on the definition's version.
+  `CreateAutomation` inserts definition columns only, so the record
+  starts zeroed. `ListEnabledAutomations` is the scheduler's read;
+  `ActiveAutomationRun` is the skip-if-running probe — the newest
+  `work_items` row with `source='automation'` and this source ref in a
+  non-terminal state (`running` or `needs-human`), backed by
+  `idx_work_items_automation_source_ref`.
 - `ui_state.go` — persisted per-client UI view state (`ui_state`
   table, migration v15). `(scope, key) → value` where scope is an
   opaque namespace (`client:<uuid>` now, `user:<id>` reserved) and
@@ -232,6 +243,20 @@ baseline:
   CHECKs make the linkage all-or-nothing: half a parent reference would make the
   tree unreadable in exactly the direction recovery walks it. Like the earlier
   work-item rebuilds it recreates every index and preserves every column.
+
+## Recent schema changes (v40) — automation fire records
+
+- `automations` gains five plain `ADD COLUMN`s (no rebuild): `last_fired_at`,
+  `last_run_item_id`, `skip_count`, `last_skip_at`, `last_skip_reason`. They are
+  the scheduler's receipt that a trigger occurrence was acted on — a run started,
+  or a fire was refused with a reason. A refusal that wrote nothing would be
+  indistinguishable from a schedule that never ticked, which is the failure mode
+  the columns exist to remove.
+- `idx_work_items_automation_source_ref` on
+  `work_items(source_ref, state) WHERE source = 'automation' AND source_ref <> ''`
+  backs `ActiveAutomationRun`, the skip-if-running probe. Like the other partial
+  work-item indexes, the query repeats `source_ref <> ''` so the planner can
+  prove the predicate.
 
 ## Extension points
 

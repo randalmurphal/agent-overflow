@@ -2700,3 +2700,56 @@ func TestMigrationV39AddsOriginThreadAndPausedReason(t *testing.T) {
 		t.Fatal("foreign_key_check reported a violation after v39 rebuild")
 	}
 }
+
+func TestMigrationV40AddsAutomationFireRecord(t *testing.T) {
+	db := migrateThrough(t, 39)
+	mustExec(t, db, `INSERT INTO automations
+		(id, project_id, workflow_id, workflow_scope, name, enabled, trigger,
+		 condition, seeds, notes, created_at, updated_at)
+		VALUES ('auto-v40', 'project-v40', 'nightly', 'project', 'Nightly audit', 1,
+		 '{"kind":"cron","expr":"0 3 * * *"}', '', '{"scope":"api"}', 'carry over', 5, 6)`)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, source, source_ref, created_at)
+		VALUES ('run-v40', 'project-v40', 'Nightly audit', 'nightly', 'project', 'needs-human',
+		 'automation', 'auto-v40', 7)`)
+	if _, err := db.Exec(`UPDATE automations SET skip_count = 1 WHERE id = 'auto-v40'`); err == nil {
+		t.Fatal("automations already had skip_count before v40")
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 40)); err != nil {
+		t.Fatalf("apply migration v40: %v", err)
+	}
+
+	// Existing rows keep their definition and start at a zeroed fire record.
+	var preserved int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM automations
+		WHERE id = 'auto-v40' AND name = 'Nightly audit' AND notes = 'carry over'
+		  AND seeds = '{"scope":"api"}' AND created_at = 5 AND updated_at = 6
+		  AND last_fired_at = 0 AND last_run_item_id = '' AND skip_count = 0
+		  AND last_skip_at = 0 AND last_skip_reason = ''`).Scan(&preserved); err != nil {
+		t.Fatalf("read preserved automation: %v", err)
+	}
+	if preserved != 1 {
+		t.Fatal("v40 did not preserve the automation row or defaulted its fire record wrong")
+	}
+
+	mustExec(t, db, `UPDATE automations SET last_fired_at = 11, last_run_item_id = 'run-v40'
+		WHERE id = 'auto-v40'`)
+	mustExec(t, db, `UPDATE automations SET skip_count = skip_count + 1, last_skip_at = 12,
+		last_skip_reason = 'run run-v40 is still running' WHERE id = 'auto-v40'`)
+	var skips int64
+	var reason string
+	if err := db.QueryRow(`SELECT skip_count, last_skip_reason FROM automations
+		WHERE id = 'auto-v40'`).Scan(&skips, &reason); err != nil {
+		t.Fatalf("read fire record: %v", err)
+	}
+	if skips != 1 || reason != "run run-v40 is still running" {
+		t.Fatalf("fire record = (%d, %q)", skips, reason)
+	}
+
+	readIndexSQL(t, db, "idx_work_items_automation_source_ref")
+	assertPlanUses(t, db, "idx_work_items_automation_source_ref",
+		`EXPLAIN QUERY PLAN SELECT id, state FROM work_items
+		 WHERE source = 'automation' AND source_ref = ? AND source_ref <> ''
+		   AND state IN ('running','needs-human')`, "auto-v40")
+}

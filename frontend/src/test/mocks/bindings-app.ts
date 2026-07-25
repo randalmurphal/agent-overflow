@@ -159,7 +159,9 @@ export const Version = dispatch('Version');
 export const WorkflowAnswerQuestion = dispatch('WorkflowAnswerQuestion');
 export const WorkflowBindThread = dispatch('WorkflowBindThread');
 export const WorkflowCancelItem = dispatch('WorkflowCancelItem');
+export const WorkflowCreateAutomation = dispatch('WorkflowCreateAutomation');
 export const WorkflowCreateItemPR = dispatch('WorkflowCreateItemPR');
+export const WorkflowDeleteAutomation = dispatch('WorkflowDeleteAutomation');
 export const WorkflowDiscussPR = dispatch('WorkflowDiscussPR');
 export const WorkflowDiscardItem = dispatch('WorkflowDiscardItem');
 export const WorkflowDiscardPreview = dispatch('WorkflowDiscardPreview');
@@ -167,6 +169,7 @@ export const WorkflowFetchPRReviewComments = dispatch('WorkflowFetchPRReviewComm
 export const WorkflowGetEngineState = dispatch('WorkflowGetEngineState');
 export const WorkflowGetItem = dispatch('WorkflowGetItem');
 export const WorkflowGetJobNotes = dispatch('WorkflowGetJobNotes');
+export const WorkflowListAutomations = dispatch('WorkflowListAutomations');
 export const WorkflowListDefinitions = dispatch('WorkflowListDefinitions');
 export const WorkflowListItemCosts = dispatch('WorkflowListItemCosts');
 export const WorkflowListItems = dispatch('WorkflowListItems');
@@ -181,10 +184,13 @@ export const WorkflowSendPRReviewCommentsToThread = dispatch('WorkflowSendPRRevi
 export const WorkflowPauseItem = dispatch('WorkflowPauseItem');
 export const WorkflowResolveGate = dispatch('WorkflowResolveGate');
 export const WorkflowResumeItem = dispatch('WorkflowResumeItem');
+export const WorkflowRunAutomationNow = dispatch('WorkflowRunAutomationNow');
+export const WorkflowSetAutomationEnabled = dispatch('WorkflowSetAutomationEnabled');
 export const WorkflowSetGlobalPause = dispatch('WorkflowSetGlobalPause');
 export const WorkflowSetJobNotes = dispatch('WorkflowSetJobNotes');
 export const WorkflowStartRun = dispatch('WorkflowStartRun');
 export const WorkflowUnbindThread = dispatch('WorkflowUnbindThread');
+export const WorkflowUpdateAutomation = dispatch('WorkflowUpdateAutomation');
 
 // Per-provider/model context window + auto-compact thresholds.
 // GetContextSettings hydrates the form; the two updates persist either

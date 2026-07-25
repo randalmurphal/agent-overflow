@@ -40,6 +40,10 @@ func (a *App) afterWorkflowStateEvent(event engine.StateEvent) {
 	}
 	itemID := event.ItemID
 	a.workflowWake.Go(func() { a.surfaceRestingWorkflowItem(itemID) })
+	// The same transition is what §11's internal-event triggers chain off. It
+	// goes to the scheduler on its own queue rather than through the wake, so the
+	// two consumers cannot delay each other.
+	a.notifyWorkflowScheduler(event)
 }
 
 // restingWorkflowState reports the transitions a run comes to rest on. `running`

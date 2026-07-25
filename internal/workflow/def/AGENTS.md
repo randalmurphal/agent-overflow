@@ -23,6 +23,16 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   `Reports` is the separate, non-failing channel: a report describes what a run
   will do (a fan-out wider than the provider capacity it will get), never what
   is wrong with the definition, so `Valid()` ignores it.
+- Predicates have one shape definition and one evaluator, both in
+  `predicate.go`. `predicateShapeIssues` is what the static validator
+  (`validatePredicate`) and the runtime evaluator both ask "is this predicate
+  well formed", so a predicate can never validate under one set of rules and
+  evaluate under another. `ValidatePredicateShape` and `EvaluatePredicate` are
+  the standalone exports for predicates that live outside a workflow gate —
+  an automation's run-if condition (`internal/workflow/scheduler`) is checked
+  and evaluated through them rather than through a second evaluator. Exporting
+  them keeps this package's purity intact: it learns nothing about automations,
+  and callers get gate semantics for free.
 - `Bindings` is intentionally narrow; profile loading implements it elsewhere.
   It answers `Capacity(name)` rather than a bare "is it declared", because the
   dry-run's width report needs the number the engine will actually schedule
@@ -126,6 +136,7 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
 | `envelope.go` | Generated control schema and payload post-validation. |
 | `tool.go` | The tool driver's implicit outputs and the merged `PhaseOutputs` contract. |
 | `interpolate.go` | Single-pass prompt interpolation and template checks. |
+| `predicate.go` | The one predicate shape check shared by validation and evaluation, plus the standalone `ValidatePredicateShape` / `EvaluatePredicate` entry points. |
 | `fanout.go` | Unit expansion, unit-scoped declarations, and the implicit `provider:<name>` resource + its default capacity. |
 | `calls.go` | Call-phase accessors, the child-outputs surface, and the call-aware workspace need. |
 | `validate*.go` | Whole-definition structural, graph, variable, and binding checks. `validate_fanout.go` holds the fan-out structural rules and the width report; `validate_calls.go` holds the call shape, the call-graph traversal (cycles, child validity), and the argument checks. |

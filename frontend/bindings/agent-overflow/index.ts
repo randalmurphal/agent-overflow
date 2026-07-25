@@ -67,6 +67,8 @@ export {
     VerifyEditDiffsRequest,
     VerifyEditDiffsResult,
     WorkflowArtifact,
+    WorkflowAutomationInput,
+    WorkflowAutomationView,
     WorkflowDefinitionCatalog,
     WorkflowDefinitionInput,
     WorkflowDefinitionListing,

@@ -39,6 +39,7 @@ import (
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/uitrace"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflow/scheduler"
 	"agent-overflow/internal/workspacefiles"
 )
 
@@ -88,17 +89,21 @@ type App struct {
 	triage                     *triage.Router
 	workflowEngine             *engine.Engine
 	workflowRunner             *workflowAppRunner
+	workflowScheduler          *scheduler.Scheduler
 	workflowDefinitionsWatcher *workflowDefinitionsWatcher
 	// workflowDispositionMu serializes local git/forge disposition actions.
 	// They are rare, mutate shared repository metadata, and must not race an
 	// automatic policy against a manual click.
 	workflowDispositionMu sync.Mutex
-	// workflowAutoDisposition and workflowWake serialize the two app-side
-	// reactions to workflow lifecycle events. Both run off the engine's
-	// command-loop goroutine (which emits them) and in submission order, so
-	// two transitions of one run cannot race each other's follow-up.
+	// workflowAutoDisposition, workflowWake, and workflowSchedulerQueue serialize
+	// the app-side reactions to workflow lifecycle events. Each runs off the
+	// engine's command-loop goroutine (which emits them) and in submission order,
+	// so two transitions of one run cannot race each other's follow-up. They are
+	// separate queues because they are independent consumers: a slow wake
+	// composition must not delay the automation a finished run chains into.
 	workflowAutoDisposition serialQueue
 	workflowWake            serialQueue
+	workflowSchedulerQueue  serialQueue
 	// workflowChatProposalMu serializes start/dismiss decisions for persisted
 	// chat proposal cards so two local clicks cannot start one proposal twice.
 	workflowChatProposalMu sync.Mutex

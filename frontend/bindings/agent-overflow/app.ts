@@ -3071,13 +3071,32 @@ export function WorkflowCompleteTakeover(itemID: string): $CancellablePromise<vo
 }
 
 /**
+ * WorkflowCreateAutomation validates and persists a new automation, then
+ * recomputes the schedule so its first fire is armed without a restart.
+ */
+export function WorkflowCreateAutomation(input: $models.WorkflowAutomationInput): $CancellablePromise<$models.WorkflowAutomationView> {
+    return $Call.ByID(3011758347, input).then(($result: any) => {
+        return $$createType105($result);
+    });
+}
+
+/**
  * WorkflowCreateItemPR pushes a done item's branch and creates a PR/MR through
  * the repository's existing forge integration.
  */
 export function WorkflowCreateItemPR(itemID: string): $CancellablePromise<$models.WorkflowDispositionReceipt> {
     return $Call.ByID(1792283305, itemID).then(($result: any) => {
-        return $$createType105($result);
+        return $$createType106($result);
     });
+}
+
+/**
+ * WorkflowDeleteAutomation removes a trigger. Runs it already started are
+ * untouched — they are ordinary runs whose provenance happens to name a row
+ * that no longer exists.
+ */
+export function WorkflowDeleteAutomation(automationID: string): $CancellablePromise<void> {
+    return $Call.ByID(1133480652, automationID);
 }
 
 /**
@@ -3086,7 +3105,7 @@ export function WorkflowCreateItemPR(itemID: string): $CancellablePromise<$model
  */
 export function WorkflowDiscardItem(itemID: string): $CancellablePromise<$models.WorkflowDispositionReceipt> {
     return $Call.ByID(2163033761, itemID).then(($result: any) => {
-        return $$createType105($result);
+        return $$createType106($result);
     });
 }
 
@@ -3098,7 +3117,7 @@ export function WorkflowDiscardItem(itemID: string): $CancellablePromise<$models
  */
 export function WorkflowDiscardPreview(itemID: string): $CancellablePromise<$models.WorkflowDiscardPreview> {
     return $Call.ByID(2659721862, itemID).then(($result: any) => {
-        return $$createType106($result);
+        return $$createType107($result);
     });
 }
 
@@ -3131,7 +3150,7 @@ export function WorkflowDropUnit(itemID: string, unitID: string, note: string): 
  */
 export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromise<$models.WorkflowPRReviewComments> {
     return $Call.ByID(819019128, itemID).then(($result: any) => {
-        return $$createType107($result);
+        return $$createType108($result);
     });
 }
 
@@ -3141,13 +3160,13 @@ export function WorkflowFetchPRReviewComments(itemID: string): $CancellablePromi
  */
 export function WorkflowGetEngineState(): $CancellablePromise<engine$0.EngineState> {
     return $Call.ByID(2130001947).then(($result: any) => {
-        return $$createType108($result);
+        return $$createType109($result);
     });
 }
 
 export function WorkflowGetItem(itemID: string): $CancellablePromise<$models.WorkflowItemDetailView> {
     return $Call.ByID(70120675, itemID).then(($result: any) => {
-        return $$createType109($result);
+        return $$createType110($result);
     });
 }
 
@@ -3159,12 +3178,22 @@ export function WorkflowGetJobNotes(automationID: string): $CancellablePromise<s
 }
 
 /**
+ * WorkflowListAutomations returns one project's automations, each enriched with
+ * what its stored trigger actually means right now.
+ */
+export function WorkflowListAutomations(projectID: string): $CancellablePromise<$models.WorkflowAutomationView[]> {
+    return $Call.ByID(2319799628, projectID).then(($result: any) => {
+        return $$createType111($result);
+    });
+}
+
+/**
  * WorkflowListDefinitions returns resolved project/shared definitions with the
  * existing dry-run validator's first finding and binding cross-check.
  */
 export function WorkflowListDefinitions(projectID: string): $CancellablePromise<$models.WorkflowDefinitionCatalog> {
     return $Call.ByID(2064216126, projectID).then(($result: any) => {
-        return $$createType110($result);
+        return $$createType112($result);
     });
 }
 
@@ -3173,13 +3202,13 @@ export function WorkflowListDefinitions(projectID: string): $CancellablePromise<
  */
 export function WorkflowListItemCosts(projectID: string): $CancellablePromise<{ [_ in string]?: number }> {
     return $Call.ByID(1544440599, projectID).then(($result: any) => {
-        return $$createType111($result);
+        return $$createType113($result);
     });
 }
 
 export function WorkflowListItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3037887964, projectID).then(($result: any) => {
-        return $$createType112($result);
+        return $$createType114($result);
     });
 }
 
@@ -3190,7 +3219,7 @@ export function WorkflowListItems(projectID: string): $CancellablePromise<store$
  */
 export function WorkflowListUnresolvedItems(projectID: string): $CancellablePromise<store$0.WorkItem[]> {
     return $Call.ByID(3613211765, projectID).then(($result: any) => {
-        return $$createType112($result);
+        return $$createType114($result);
     });
 }
 
@@ -3200,7 +3229,7 @@ export function WorkflowListUnresolvedItems(projectID: string): $CancellableProm
  */
 export function WorkflowMergeItem(itemID: string): $CancellablePromise<$models.WorkflowDispositionReceipt> {
     return $Call.ByID(3006532931, itemID).then(($result: any) => {
-        return $$createType105($result);
+        return $$createType106($result);
     });
 }
 
@@ -3316,6 +3345,18 @@ export function WorkflowRetryUnit(itemID: string, unitID: string, note: string):
 }
 
 /**
+ * WorkflowRunAutomationNow fires an automation on a human's behalf: it skips the
+ * run-if condition (pressing the button is the decision) but still refuses to
+ * overlap the automation's own previous run, loudly, because there is someone
+ * present to read the refusal.
+ */
+export function WorkflowRunAutomationNow(automationID: string): $CancellablePromise<store$0.WorkItem> {
+    return $Call.ByID(2615697354, automationID).then(($result: any) => {
+        return $$createType104($result);
+    });
+}
+
+/**
  * WorkflowSendPRReviewCommentsToThread opens or reuses the run's linked
  * thread, then sends the current unresolved review comments through the
  * normal user-message path.
@@ -3324,6 +3365,14 @@ export function WorkflowSendPRReviewCommentsToThread(itemID: string): $Cancellab
     return $Call.ByID(1172404443, itemID).then(($result: any) => {
         return $$createType1($result);
     });
+}
+
+/**
+ * WorkflowSetAutomationEnabled is the trigger's on/off switch. Disabling stops
+ * future fires; it never touches a run already in flight.
+ */
+export function WorkflowSetAutomationEnabled(automationID: string, enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(642610548, automationID, enabled);
 }
 
 /**
@@ -3373,6 +3422,16 @@ export function WorkflowTakeOverUnit(itemID: string, unitID: string): $Cancellab
 export function WorkflowUnbindThread(itemID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(2006703348, itemID).then(($result: any) => {
         return $$createType104($result);
+    });
+}
+
+/**
+ * WorkflowUpdateAutomation replaces an automation's definition. Continuity
+ * notes and the fire record are untouched: neither is part of the definition.
+ */
+export function WorkflowUpdateAutomation(automationID: string, input: $models.WorkflowAutomationInput): $CancellablePromise<$models.WorkflowAutomationView> {
+    return $Call.ByID(536579134, automationID, input).then(($result: any) => {
+        return $$createType105($result);
     });
 }
 
@@ -3500,11 +3559,13 @@ const $$createType101 = $models.PRUpdateSubscriptionResult.createFrom;
 const $$createType102 = $models.MCPAuthInitResult.createFrom;
 const $$createType103 = $models.VerifyEditDiffsResult.createFrom;
 const $$createType104 = store$0.WorkItem.createFrom;
-const $$createType105 = $models.WorkflowDispositionReceipt.createFrom;
-const $$createType106 = $models.WorkflowDiscardPreview.createFrom;
-const $$createType107 = $models.WorkflowPRReviewComments.createFrom;
-const $$createType108 = engine$0.EngineState.createFrom;
-const $$createType109 = $models.WorkflowItemDetailView.createFrom;
-const $$createType110 = $models.WorkflowDefinitionCatalog.createFrom;
-const $$createType111 = $Create.Map($Create.Any, $Create.Any);
-const $$createType112 = $Create.Array($$createType104);
+const $$createType105 = $models.WorkflowAutomationView.createFrom;
+const $$createType106 = $models.WorkflowDispositionReceipt.createFrom;
+const $$createType107 = $models.WorkflowDiscardPreview.createFrom;
+const $$createType108 = $models.WorkflowPRReviewComments.createFrom;
+const $$createType109 = engine$0.EngineState.createFrom;
+const $$createType110 = $models.WorkflowItemDetailView.createFrom;
+const $$createType111 = $Create.Array($$createType105);
+const $$createType112 = $models.WorkflowDefinitionCatalog.createFrom;
+const $$createType113 = $Create.Map($Create.Any, $Create.Any);
+const $$createType114 = $Create.Array($$createType104);
