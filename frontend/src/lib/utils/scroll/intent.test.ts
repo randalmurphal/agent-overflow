@@ -16,6 +16,7 @@ import {
   type ScrollIntentDeps,
 } from './intent';
 import { AUTO_FOLLOW_BOTTOM_EPSILON_PX } from './resolver';
+import { registerNestedScroller } from './wheelAttribution';
 
 // The deferred scroll-intent pass runs behind a 1ms timer so a concurrent
 // RO callback can stamp its resize classification first. Real timers plus a
@@ -177,10 +178,7 @@ describe('wheel', () => {
     expect(h.spring.cancel).toHaveBeenCalled();
   });
 
-  // CURRENT BEHAVIOR, and the bug the attribution rework exists to fix: the
-  // machine cannot tell whether a nested scroller consumed this delta, so it
-  // escapes even when the outer pane never moved.
-  it('up from a descendant escapes, even though a nested scroller may have consumed it', () => {
+  it('up from an unregistered descendant escapes', () => {
     const h = build();
 
     wheel(h.child, { deltaY: -10 });
@@ -242,6 +240,101 @@ describe('wheel', () => {
     wheel(h.scrollEl, { deltaY: -10 });
 
     expect(h.state.escaped).toBe(false);
+  });
+});
+
+// The outer pane does not move when a nested box absorbs the gesture, so
+// nothing about the user's relationship to the outer pane changed. Before
+// attribution this escaped bottom-follow and the pane silently stopped
+// following mid-turn.
+describe('nested-scroller attribution', () => {
+  function nestedBox(
+    h: Harness,
+    geometry: { scrollTop: number; clientHeight?: number; scrollHeight?: number },
+  ): { box: HTMLDivElement; leaf: HTMLSpanElement; release: () => void } {
+    const box = document.createElement('div');
+    h.child.appendChild(box);
+    box.scrollTop = geometry.scrollTop;
+    Object.defineProperty(box, 'clientHeight', {
+      configurable: true,
+      get: () => geometry.clientHeight ?? 100,
+    });
+    Object.defineProperty(box, 'scrollHeight', {
+      configurable: true,
+      get: () => geometry.scrollHeight ?? 500,
+    });
+    const leaf = document.createElement('span');
+    box.appendChild(leaf);
+    return { box, leaf, release: registerNestedScroller(box) };
+  }
+
+  it('wheel up consumed by a registered box does not escape', () => {
+    const h = build();
+    const { leaf, release } = nestedBox(h, { scrollTop: 200 });
+
+    wheel(leaf, { deltaY: -10 });
+    release();
+
+    expect(h.state.escaped).toBe(false);
+    expect(h.state.isAtBottom).toBe(true);
+  });
+
+  it('wheel up at the registered box top chains out and escapes', () => {
+    const h = build();
+    const { leaf, release } = nestedBox(h, { scrollTop: 0 });
+
+    wheel(leaf, { deltaY: -10 });
+    release();
+
+    expect(h.state.escaped).toBe(true);
+  });
+
+  it('wheel down consumed by a registered box records no down intent', () => {
+    const h = build();
+    h.state.escaped = true;
+    const { leaf, release } = nestedBox(h, { scrollTop: 0 });
+
+    wheel(leaf, { deltaY: 10 });
+    release();
+
+    expect(h.intent.debugState().recentDownIntentActive).toBe(false);
+  });
+
+  it('wheel down at the registered box bottom chains out and records down intent', () => {
+    const h = build();
+    h.state.escaped = true;
+    const { leaf, release } = nestedBox(h, {
+      scrollTop: 400,
+      clientHeight: 100,
+      scrollHeight: 500,
+    });
+
+    wheel(leaf, { deltaY: 10 });
+    release();
+
+    expect(h.intent.debugState().recentDownIntentActive).toBe(true);
+  });
+
+  it('touch drag consumed by a registered box does not escape', () => {
+    const h = build();
+    const { leaf, release } = nestedBox(h, { scrollTop: 200 });
+
+    touch(leaf, 'touchstart', 100);
+    touch(leaf, 'touchmove', 140);
+    release();
+
+    expect(h.state.escaped).toBe(false);
+  });
+
+  it('touch drag at the registered box top chains out and escapes', () => {
+    const h = build();
+    const { leaf, release } = nestedBox(h, { scrollTop: 0 });
+
+    touch(leaf, 'touchstart', 100);
+    touch(leaf, 'touchmove', 140);
+    release();
+
+    expect(h.state.escaped).toBe(true);
   });
 });
 

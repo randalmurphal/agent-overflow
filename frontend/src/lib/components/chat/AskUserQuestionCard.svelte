@@ -50,6 +50,7 @@
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
+  import { nestedScroll } from '../../utils/scroll/wheelAttribution';
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
@@ -233,6 +234,7 @@
                         {#if isSelected && option.preview?.trim()}
                           <div
                             class="mt-1 max-h-40 overflow-y-auto rounded border border-border-subtle bg-surface-0 px-2 py-1"
+                            use:nestedScroll
                             data-testid="ask-user-question-preview"
                           >
                             <ChatMarkdown

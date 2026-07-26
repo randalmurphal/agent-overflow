@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { PathRef } from '../../types/models';
   import ChatMarkdown from './ChatMarkdown.svelte';
+  import { nestedScroll } from '../../utils/scroll/wheelAttribution';
 
   interface Props {
     markdown: string;
@@ -26,11 +27,15 @@
 </script>
 
 <div class="mt-4">
+  <!-- Registered unconditionally even though the overflow is conditional:
+       attribution is decided from live geometry, and an uncapped body has
+       scrollHeight === clientHeight, so it can never claim a gesture. -->
   <div
     class:h-96={capped}
     class:overflow-y-auto={capped}
     class="relative border-l-2 border-accent pl-4"
     aria-busy={loading ? 'true' : undefined}
+    use:nestedScroll
   >
     <ChatMarkdown source={markdown} {workspacePath} {pathRefs} />
     {#if error}

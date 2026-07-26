@@ -697,6 +697,37 @@ only its right edge and needs no gutter — keep this directive chat-only.
 Status banners are absolute overlays, not reserved layout slots. They
 must not change the scroll surface height on mount/unmount.
 
+## Nested Scrollers And Gesture Attribution
+
+Rows may own scrollable bodies (command output, subagent children,
+wait-group children, tool-result patches, payload bodies). Wheel and
+touch events bubble, so without help the outer intent machine cannot
+tell a gesture aimed at the pane from one a nested box just absorbed —
+and treating the latter as "the user left the bottom" broke follow while
+the outer pane had not moved at all.
+
+Every such box opts in with the `nestedScroll` action
+(`utils/scroll/wheelAttribution.ts`). On each gesture the intent machine
+walks `event.target` up to its own scroll element, and the first
+registered scroller that can still move in that direction owns the
+event; the machine then ignores it. Nothing registered can consume it →
+the gesture belongs to the boundary, and native scroll chaining takes it
+there. That chaining is deliberate — browsing up out of a nested box has
+to reach the pane — which is why nested boxes keep the default
+`overscroll-behavior` rather than `contain`.
+
+A registry, not a computed-style probe: wheel handling runs while layout
+is dirty mid-stream, so `getComputedStyle` over every ancestor of every
+wheel event would force reflows at gesture rate. Geometry reads stay
+confined to explicitly marked elements — usually zero or one per gesture.
+
+The same helper serves nested controllers: an inner controller passes its
+own clip as the boundary, so a command-output box inside an activity run
+attributes correctly against both levels.
+
+Adding a new scrollable row body means adding `use:nestedScroll` to it.
+Contract: [`scroll-contracts.md`](scroll-contracts.md) C7.
+
 ## Row And Payload State
 
 Virtualized rows can remount at any time. User-visible row state that must

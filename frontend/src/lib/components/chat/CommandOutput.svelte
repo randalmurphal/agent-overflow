@@ -27,6 +27,7 @@
   import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
+  import { nestedScroll } from '../../utils/scroll/wheelAttribution';
 
   let {
     pane,
@@ -222,7 +223,7 @@
   <!-- Output content -->
   {#if hasBody && expansion.expanded}
     <div id="cmd-output-{payloadId || item.id}" class="ml-5 border-l border-border-subtle bg-surface-0/35">
-      <div class="max-h-96 overflow-auto px-3 py-2">
+      <div class="max-h-96 overflow-auto px-3 py-2" use:nestedScroll>
         {#if hasPayload && expansion.loading}
           <p class="text-[0.6875rem] text-fg-subtle" role="status" aria-live="polite">Loading output…</p>
         {:else if hasPayload && expansion.error}

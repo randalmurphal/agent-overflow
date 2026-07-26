@@ -20,6 +20,7 @@ import type { SpringChase } from './spring';
 import { nowMs } from './time';
 import { trace } from './trace';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
+import { touchDragConsumedBelow, wheelConsumedBelow } from './wheelAttribution';
 
 const RECENT_DOWN_INTENT_WINDOW_MS = 250;
 const SCROLLBAR_DRAG_SESSION_FAILSAFE_MS = 30_000;
@@ -406,6 +407,11 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     if (e.deltaY === 0) return;
     if (!targetIsInsideScrollEl(e)) return;
     if (scrollEl.scrollHeight <= scrollEl.clientHeight) return;
+    // A nested scroller that can absorb this delta owns the gesture: this
+    // element will not move, so nothing about the user's relationship to
+    // THIS scroller changed. At the nested box's own edge the event
+    // attributes outward and lands here normally.
+    if (wheelConsumedBelow(e, scrollEl)) return;
 
     if (e.deltaY < 0) {
       escapeFromUserInput('wheel');
@@ -599,6 +605,11 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     const y = e.touches[0]?.clientY ?? touchStartY;
     const dy = y - touchStartY;
     touchStartY = y;
+    const scrollEl = deps.getScrollEl();
+    // Same attribution as wheel — a drag inside a nested box moves that box,
+    // not this one. The baseline above is still advanced so the gesture
+    // stays continuous if it later chains out at the nested box's edge.
+    if (scrollEl && touchDragConsumedBelow(e.target, scrollEl, dy)) return;
     // Finger moves DOWN visually → page scrolls UP (scrollTop decreases)
     // → user wants to see content above → escape (UP intent). Finger
     // moves UP while already escaped is the matching "scroll back toward

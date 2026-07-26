@@ -6,6 +6,7 @@
   import { formatPayloadSize } from '../../utils/payloadExpansion.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
+  import { nestedScroll } from '../../utils/scroll/wheelAttribution';
 
   let {
     pane,
@@ -76,6 +77,7 @@
     {:else}
       <div
         class="ansi-body min-w-0 max-w-full max-h-60 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words px-3 py-2 text-[0.6875rem] leading-relaxed text-fg-muted"
+        use:nestedScroll
         data-testid={outputTestId}
       >
         <AnsiText source={expansion.displayData} class="whitespace-pre-wrap break-all" />

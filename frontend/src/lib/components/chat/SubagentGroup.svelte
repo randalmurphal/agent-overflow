@@ -44,6 +44,7 @@
   import RowError from './RowError.svelte';
   import { indicatorStateForItem, rowErrorForStatus } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
+  import { nestedScroll } from '../../utils/scroll/wheelAttribution';
 
   let {
     pane,
@@ -269,6 +270,7 @@
       <div
         id="subagent-group-{parent.id}"
         class="ml-5 max-h-[20rem] overflow-y-auto border-l border-border-subtle bg-surface-0/35 px-3 py-2"
+        use:nestedScroll
         role="region"
         aria-label="Subagent Timeline"
         data-testid="subagent-group-body"

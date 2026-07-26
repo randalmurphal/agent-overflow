@@ -5,6 +5,7 @@
   import TimelineLeaf from './TimelineLeaf.svelte';
   import type { UserMessageActions } from './userMessageActions';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
+  import { nestedScroll } from '../../utils/scroll/wheelAttribution';
 
   const INITIAL_VISIBLE_WAIT_CHILDREN = 25;
 
@@ -54,7 +55,7 @@
       If the chevron / icon / label / gap utilities ever change in
       TranscriptDisclosureHeader, recompute this value.
     -->
-    <div class="ml-[6.375rem] max-h-[20rem] overflow-y-auto" data-testid="wait-group-children">
+    <div class="ml-[6.375rem] max-h-[20rem] overflow-y-auto" data-testid="wait-group-children" use:nestedScroll>
       {#each visibleChildren as child (timelineNodeKey(child))}
         {#if child.kind === 'leaf'}
           <TimelineLeaf {pane} item={child.item} {onImageExpand} {userMessageActions} {codexSubagentReceiverLabels} />

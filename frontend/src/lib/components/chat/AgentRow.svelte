@@ -31,6 +31,7 @@
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
+  import { nestedScroll } from '../../utils/scroll/wheelAttribution';
 
   let {
     pane,
@@ -170,13 +171,14 @@
 
 {#snippet agentBodyContent({ data, testId }: { data: string; testId: string })}
   {#if transcriptEntries !== null}
-    <div class="max-h-80 overflow-auto" data-testid={testId}>
+    <div class="max-h-80 overflow-auto" data-testid={testId} use:nestedScroll>
       <ClaudeSubagentTranscript entries={transcriptEntries} />
     </div>
   {:else}
     <div
       class="ansi-body max-h-60 overflow-auto whitespace-pre-wrap break-words px-3 py-2 text-[0.6875rem] leading-relaxed text-fg-muted"
       data-testid={testId}
+      use:nestedScroll
     >
       <AnsiText source={data} />
     </div>

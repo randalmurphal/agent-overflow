@@ -30,8 +30,20 @@ C1..C27.
   geometry or untagged scrollTop direction (R4; applies to engine
   compensation observations and per-row resizes; virtua-era mechanism:
   `$fixScrollJump`).
-- **C7.** Scrollend is inert; pinch-zoom (wheel+ctrl) is not intent;
-  nested-scroller wheel-up escapes the outer follow.
+- **C7.** Scrollend is inert; pinch-zoom (wheel+ctrl) is not intent; a
+  wheel or touch gesture belongs to the scroller that consumes it —
+  a registered nested scroller with room to move in that direction owns
+  the gesture and the outer machine ignores it, and at the nested
+  scroller's own edge the gesture chains outward and the outer machine
+  reacts normally. Amended 2026-07-25: this previously read
+  "nested-scroller wheel-up escapes the outer follow", which broke
+  bottom-follow whenever a user scrolled inside a command-output,
+  subagent, wait-group, or tool-result body — the outer pane never
+  moved, so nothing about the user's relationship to it had changed.
+  Attribution is a registry walk (`utils/scroll/wheelAttribution.ts`,
+  opted into by the `nestedScroll` action), never a computed-style probe:
+  wheel handling runs while layout is dirty mid-stream, so geometry reads
+  stay confined to explicitly marked elements.
 - **C8.** After re-stick/chip-click, every subsequent chunk follows — no
   leaked one-shot state ("stops following until refresh").
 
