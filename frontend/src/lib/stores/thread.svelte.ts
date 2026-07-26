@@ -171,14 +171,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // release entering the loaded tail (`armLiveContentAppendSpring`
   // below — that path shares the arm's restore gates, so a switch-load
   // settle never stamps).
-  // Read imperatively by the scroll controller
-  // (MessageTimeline's `animationMode` getter) to choose spring vs
-  // sync-pin; see utils/springAnimationLatch.ts. Deliberately NOT
-  // `$state`: it is stamped up to ~60×/sec during a drain and is never
-  // read in a reactive scope, so `$state` would churn every dependent
-  // derivation for no benefit. Bulk loads (thread switch, load-older) and
-  // the optimistic user-send / rollback-restore upserts deliberately do
-  // NOT stamp it, so they stay sync-pinned.
+  // Read imperatively by the scroll controller (MessageTimeline's
+  // `liveContentActive` getter) as a LIVENESS signal — it keeps the
+  // spring's post-arrival sentinel alive and lets a composer resize ride
+  // an in-flight glide. It does NOT choose spring vs sync-pin; growth
+  // while pinned at the bottom always glides (see
+  // utils/liveContentActivity.ts and utils/scroll/resolver.ts).
+  // Deliberately NOT `$state`: it is stamped up to ~60×/sec during a
+  // drain and is never read in a reactive scope, so `$state` would churn
+  // every dependent derivation for no benefit.
   let lastLiveContentAt = 0;
   function stampLiveContent(): void {
     lastLiveContentAt = nowForLiveContent();
@@ -512,16 +513,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   /**
    * A wire append to the loaded tail (or a reveal-gate release mounting
    * withheld rows) IS live content advancing: arm the structural spring
-   * AND stamp the live-content latch, sharing the arm's restore gates.
-   * The arm's 250ms one-shot alone only covers the append's first
-   * growth delivery — a background-task completion landing after turn
-   * end mounted with a brief chase and then teleported when its payload
-   * preview / markdown / highlight spans settled, because nothing had
-   * stamped the latch and every follow-up delta resolved 'instant'.
-   * The stamp opens the same SPRING_MODE_HOLD_MS rolling window those
-   * rows get when they arrive mid-stream, so post-turn appends animate
-   * identically. The one-shot stays armed alongside it: it is the
-   * append's own floor, independent of latch tuning.
+   * AND stamp live content, sharing the arm's restore gates.
+   *
+   * Neither signal picks the animation — growth while pinned always
+   * glides (see `utils/scroll/resolver.ts#springGateIsOpen`). They tell
+   * the controller more content is expected imminently, which keeps the
+   * spring sentinel alive across delivery gaps instead of cancelling on
+   * each arrival, and lets the viewport-change path distinguish an
+   * append from idle composer geometry. The 250ms one-shot covers only
+   * the append's first growth delivery; the stamp opens the rolling
+   * liveness window a background-task completion needs while its
+   * payload preview / markdown / highlight spans settle after turn end.
    */
   function armLiveContentAppendSpring(): void {
     if (armStructuralSpring()) stampLiveContent();
@@ -1420,8 +1422,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     /**
      * Non-reactive `performance.now()` stamp of the last live discussion
      * advance (a new channel message, or live-tail growth). Read
-     * imperatively by ChannelView's scroll controller `animationMode` —
-     * mirrors `pane.lastLiveContentAt`'s chat-surface role. See
+     * imperatively by ChannelView's scroll controller
+     * `liveContentActive` — mirrors `pane.lastLiveContentAt`'s
+     * chat-surface role. See
      * `threadChannelState.svelte.ts`.
      */
     get channelLastLiveContentAt() {

@@ -5,7 +5,7 @@
     ThreadPane,
   } from '../../stores/thread.svelte';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
-  import { latchedSpringMode, SPRING_MODE_HOLD_MS } from '../../utils/springAnimationLatch';
+  import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../../utils/liveContentActivity';
   import {
     CHAT_MARKDOWN_PRESENCE_CONTEXT,
     CHAT_MARKDOWN_SETTLED_CONTEXT,
@@ -182,23 +182,28 @@
   // quietContextSignal getter — no template or $derived tracks it.
   let mountedMarkdownCount = 0;
 
-  // Spring while live content advanced within SPRING_MODE_HOLD_MS, else
-  // sync-pin. The pane stamps `lastLiveContentAt` on prose/reasoning
-  // reveals, direct text patches, new text-like provider rows,
-  // visible-field updates to already mounted rows (tool output previews,
+  // Is timeline content still arriving? LIVENESS ONLY — it does not pick
+  // spring vs sync-pin (growth while pinned at the bottom always glides;
+  // see utils/scroll/resolver.ts springGateIsOpen). It keeps the spring's
+  // post-arrival sentinel alive across inter-chunk gaps and lets an
+  // activity-rail composer resize ride an in-flight glide.
+  //
+  // The pane stamps `lastLiveContentAt` on prose/reasoning reveals,
+  // direct text patches, new text-like provider rows, visible-field
+  // updates to already mounted rows (tool output previews,
   // running→completed result chrome), and gated wire appends / reveal
-  // releases (armLiveContentAppendSpring), so during a stream the latch
-  // reads 'spring' continuously and falls to 'instant'
-  // ~SPRING_MODE_HOLD_MS after the last advance — and a post-turn append
-  // (background-task completion sibling) gets the same window as the
-  // identical rows arriving mid-stream.
-  // The 500ms hold is pure tuning; see springAnimationLatch.ts.
-  function animationModeForScroll(): 'spring' | 'instant' {
-    return latchedSpringMode(performance.now(), pane.lastLiveContentAt, SPRING_MODE_HOLD_MS);
+  // releases (armLiveContentAppendSpring). The 500ms hold is pure
+  // tuning; see utils/liveContentActivity.ts.
+  function liveContentActiveNow(): boolean {
+    return isLiveContentActive(
+      performance.now(),
+      pane.lastLiveContentAt,
+      LIVE_CONTENT_ACTIVE_HOLD_MS,
+    );
   }
 
   const stick = createUseStickToBottomController({
-    animationMode: animationModeForScroll,
+    liveContentActive: liveContentActiveNow,
     quietContextSignal: () => anyMarkdownSettledSinceArm || mountedMarkdownCount === 0,
     // The virtualizer is the content-geometry source (its spacer height
     // IS the content height) — the controller creates no contentEl RO;

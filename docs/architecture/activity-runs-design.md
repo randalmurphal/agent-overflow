@@ -167,8 +167,8 @@ Each windowed run instantiates its own
 wrapper) — the same factory, spring constants, fusion floor, and
 glide compositing as the main pane. Like `ChannelView`, it leaves
 `externalContentGeometry` unset and uses the controller's own
-contentEl ResizeObserver. Its `animationMode` wires to the same
-live-content latch (`pane.lastLiveContentAt`), so a streaming run
+contentEl ResizeObserver. Its `liveContentActive` wires to the same
+live-content stamp (`pane.lastLiveContentAt`), so a streaming run
 chases with identical feel. It never registers on
 `pane.scrollController` — that slot stays the timeline's.
 

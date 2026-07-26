@@ -457,11 +457,11 @@ but declining an exact compensation is what *caused* the visible jump: a
 background completion patching its collapsed tool row above the viewport
 shifted the content under a stationary viewport by the row's height
 delta, then the spring re-chased the same distance (2026-07-21). Nor is
-there an `animationMode` tier: the resolver's engaged tiers key on
-observed geometry (`pinned` + `moves-away`), which makes mode-latch and
-spring-lifecycle timing irrelevant to compensation handling — what
-retired the `SPRING_MODE_HOLD_MS > RETAIN_ANIMATION_DURATION_MS`
-cross-file invariant.
+there an animation tier: the resolver's engaged tiers key on observed
+geometry (`pinned` + `moves-away`), which makes spring-lifecycle timing
+irrelevant to compensation handling — what retired the cross-file
+invariant that the animation-mode hold outlast
+`RETAIN_ANIMATION_DURATION_MS` (and, later, the mode latch itself).
 
 Routed writes are controller writes: attributed (`engine.compensation` /
 `engine.anchorRedirect` in the `scroll.write` trace) and self-tagged for
@@ -474,58 +474,93 @@ adapter seam (delivery timing, windowing, measurement) in
 
 ## Live Content Animation
 
-Chat chooses animation mode with a content-keyed latch. `ThreadPane`
-stamps `lastLiveContentAt` whenever live timeline content advances:
-assistant prose, thinking, compaction reasoning, direct text patches,
-visible-field updates to already mounted rows — a running tool row growing
-its output preview per flush window, or running→completed result chrome
-landing — and wire appends / reveal-gate releases entering the loaded
-tail (via `armLiveContentAppendSpring`, below). `MessageTimeline` returns
-`spring` for `SPRING_MODE_HOLD_MS` after that stamp and `instant`
-otherwise.
+Autonomous content growth while pinned at the bottom has **one**
+behavior: the chase glides. There is no per-delivery animation mode and
+no "was this real content?" classifier in the physics path. The resolver
+asks only whether springing is *allowed* right now —
+`springGateIsOpen({springStopRequested, paused, isAtBottom, escaped,
+prefersReducedMotion})` — every input being an explicit signal about
+scroll state or user preference, never a guess about what produced the
+pixels.
 
-The spring is keyed on content arrival, not provider turn state. It
-therefore covers end-of-turn smoother drains and text-stream gaps, while
-late Streamdown typesetting on settled content sync-pins invisibly by
-default. The stamp is window-wide, not viewport-local: a rendered-field
-change anywhere in the loaded window opens the hold, so an unrelated
-bottom reflow landing within it springs instead of pinning — accepted
-bleed, since the window is short and keyed to real content changes. The
-500ms hold is pure tuning — the historical requirement that it outlast
-the spring sentinel retain duration died with the descriptor gate (see
-Engine Compensation Routing).
+This is deliberate. The controller cannot distinguish "content arrived"
+from "layout got corrected": a shiki highlight resolving, KaTeX
+typesetting, a mermaid diagram sizing, an image decoding, and a text
+chunk landing all reach it as the same thing — the content box got
+taller under a pinned viewport. The retired `animationMode` latch
+guessed, keyed on a 500ms window after the last *stamped* content
+advance, and every growth that landed outside a stamp window teleported
+instead of gliding. Both of the 2026-07-25 jank reports were that one
+bug: a background command completing while the agent was idle (nothing
+stamps, the row jumps in), and post-turn markdown/highlight drain
+(stamps lapse mid-settle, so the tail alternates glide and jump).
+Misclassification is now impossible because there is no classification;
+both routes end at the same scrollTop, so the worst case degrades from a
+teleport to a slightly unnecessary glide.
 
-Structural transcript appends additionally have a one-shot override:
-`markStructuralContentPending()` makes the next near-term command/tool row
-growth spring-eligible even when the content latch currently returns
-`instant`. When a chase starts from the one-shot alone (latch instant),
-it cancels on arrival instead of entering the streaming sentinel, so
-later negative geometry corrections sync-pin invisibly instead of
-deferring to a dead chase after the append settles.
+`prefers-reduced-motion` (OS setting or the app's low-power toggle) is
+the one input that turns growth back into an instant pin, which is the
+correct semantic for it.
+
+### Liveness is a separate question
+
+`lastLiveContentAt` still exists, and `ThreadPane` still stamps it
+whenever live timeline content advances: assistant prose, thinking,
+compaction reasoning, direct text patches, visible-field updates to
+already mounted rows — a running tool row growing its output preview per
+flush window, or running→completed result chrome landing — and wire
+appends / reveal-gate releases entering the loaded tail (via
+`armLiveContentAppendSpring`, below). `MessageTimeline` and `ChannelView`
+turn it into a boolean with `isLiveContentActive(now, lastLiveContentAt,
+LIVE_CONTENT_ACTIVE_HOLD_MS)` and pass it as the controller's
+`liveContentActive` option.
+
+It answers a different question: **is more content expected imminently?**
+Two consumers, neither of them the physics choice:
+
+1. **The spring sentinel** (`spring.ts`). When a chase arrives and no
+   target change has landed within `RETAIN_ANIMATION_DURATION_MS`, an
+   active liveness reading keeps the sentinel alive across the gap
+   instead of cancelling — that is what holds `springActive` true for
+   the springActive-keyed resolver carve-outs (negative-delta,
+   overshoot, idle deadband) through an inter-chunk pause. Without the
+   distinction the sentinel would be immortal: a permanent 60Hz rAF per
+   pane, since growth alone would always want a spring.
+2. **The viewport path** (`notifyLiveContentMaybeGrew`). That entry
+   point also carries *viewport* changes — the composer growing under a
+   multi-line draft — where an instant pin is correct while the thread
+   is idle. Liveness (or a pending structural append) is what
+   distinguishes the two there.
+
+Getting liveness wrong is cheap by construction: the worst outcome is a
+sentinel restart or one extra rAF, never a teleport. The 500ms hold is
+pure tuning, and unlike the latch it replaced it is not load-bearing for
+motion quality.
+
+Structural transcript appends additionally have a one-shot:
+`markStructuralContentPending()` marks the next near-term command/tool
+row growth as append-driven even when nothing stamped liveness. When a
+chase starts from the one-shot alone, it cancels on arrival instead of
+entering the streaming sentinel, so later negative geometry corrections
+sync-pin invisibly instead of deferring to a dead chase after the append
+settles.
 
 The pane data layer is the sole owner of the arm, with two arm shapes in
-`thread.svelte.ts`: `armLiveContentAppendSpring` (arm + latch stamp) for
-`applyProviderItemUpserts` (a wire append to the loaded tail) and
+`thread.svelte.ts`: `armLiveContentAppendSpring` (arm + liveness stamp)
+for `applyProviderItemUpserts` (a wire append to the loaded tail) and
 `recomputeRevealPass` (the reveal gate releasing withheld rows — rows
 already in `pane.items` mount without any upsert in that flush), and bare
 `armStructuralSpring` (arm only, no stamp) for the composer's optimistic
-user-send. The stamp is what keeps a post-turn append animating through
-its whole settle: the one-shot covers only the first growth delivery, and
-a background-task completion sibling landing minutes after turn end used
-to mount with a brief chase and then teleport when its payload preview /
-markdown / highlight spans settled past the 250ms window — while the
-identical rows arriving mid-stream glided, because streaming kept the
-latch fresh. Stamping at the arm site gives both cases the same
-`SPRING_MODE_HOLD_MS` rolling window (refreshed by the completion's
-follow-up enrichment upserts through the update path). All arm sites run
+user-send. All arm sites run
 synchronously with the data change, strictly before the Svelte flush in
 which the virtualizer measures the new/released rows and delivers their
 geometry sample. An effect-based arm (MessageTimeline's former
-live-follow signature effect) loses that ordering race — the append's own
-growth resolves instant and only the follow-up remeasure springs — and a
-turn-keyed effect is blind to appends landing after turn end (interrupt
-echo, force-closed tool rows), which sync-pinned as whole-viewport
-teleports (bug-report-20260702T193212Z). The arm is a TTL refresh
+live-follow signature effect) loses that ordering race, so the append's
+own growth is seen a frame late by the sentinel and the viewport path;
+a turn-keyed effect is additionally blind to appends landing after turn
+end (interrupt echo, force-closed tool rows), which under the retired
+mode latch sync-pinned as whole-viewport teleports
+(bug-report-20260702T193212Z). The arm is a TTL refresh
 (250ms), so double-arming (an upsert whose recompute also releases rows)
 is harmless. Each arm also schedules a one-frame-after-flush
 `observe('live-content')` nudge, so growth that never fires a
@@ -809,14 +844,15 @@ side-channel registry (`discussionLiveTail.ts`) into the channel state's
 `ChannelView` renders that tail as a streaming card and lets it fall
 away once the matching agent message lands.
 
-Animation mode uses the same content-keyed latch as chat (see Live
-Content Animation above): the channel state stamps
-`lastLiveContentAt` on every genuinely-new message and on live-tail
-growth, and `ChannelView` calls `latchedSpringMode(now,
-pane.channelLastLiveContentAt, SPRING_MODE_HOLD_MS)` for the controller's
-`animationMode`, springing while a speaker is actively producing content
-and sync-pinning once the channel goes quiet. This is the channel's own
-stamp, independent of the chat timeline's `lastLiveContentAt` — the two
+Growth animates exactly as it does in chat — unconditionally, subject
+only to the signal-based spring gate (see Live Content Animation above).
+The channel keeps its own liveness stamp for the sentinel and viewport
+paths: the channel state stamps `lastLiveContentAt` on every
+genuinely-new message and on live-tail growth, and `ChannelView` calls
+`isLiveContentActive(now, pane.channelLastLiveContentAt,
+LIVE_CONTENT_ACTIVE_HOLD_MS)` for the controller's `liveContentActive`
+option. This is the channel's own stamp, independent of the chat
+timeline's `lastLiveContentAt` — the two
 surfaces never mount at once, but each pane tracks both so switching a
 pane between chat and discussion mode never reads a stale latch.
 

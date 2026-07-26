@@ -44,15 +44,17 @@ const SPRING_MAX_CATCHUP_STEPS = 3;
 // this, the spring would consider itself "arrived" between streaming
 // chunks and stop, then have to spin up again on the next chunk —
 // visibly jittery at chunk boundaries. Once this window expires AND
-// animationMode is still 'spring', the spring enters sentinel mode
+// live content is still arriving, the spring enters sentinel mode
 // (re-rAFs without writing, keeping springToken non-zero) so
 // `springActive` stays true across gaps > 350ms (async shiki loads,
 // parseIncompleteMarkdown rebalances) for the springActive-keyed
 // resolver behavior — chiefly the negative-delta mid-chase carve-out,
 // plus resolveContentDelivery's overshoot and idle-deadband clauses.
-// The sentinel cancels on the next tick where
-// animationMode flips to 'instant' (no live content advanced within the
-// consumer's hold window — see MessageTimeline's content-keyed latch).
+// The sentinel cancels on the next tick where liveContentActive() goes
+// false (nothing advanced within the consumer's hold window — see
+// utils/liveContentActivity.ts). Ending it early is cheap: the next
+// growth simply starts a fresh chase, which is why a time window is an
+// acceptable answer here and not for the physics gate.
 // No ordering between that hold window and this constant is required
 // for correctness: a compensation arriving after the sentinel died
 // resolves through the pass/redirect tiers, both safe (the historical
@@ -261,8 +263,9 @@ const FRAME_INTERVAL_SAMPLE_MIN_MS = 3;
 const FRAME_INTERVAL_SAMPLE_MAX_MS = 21;
 
 // How long a structural-append mark (markStructuralAppend, the
-// controller's markStructuralContentPending) keeps near-term content
-// growth spring-eligible while animationMode is 'instant'.
+// controller's markStructuralContentPending) counts as evidence that
+// more content is imminent — liveness only, alongside
+// liveContentActive(); the physics gate does not consult either.
 const STRUCTURAL_APPEND_SPRING_WINDOW_MS = 250;
 
 // Chase-telemetry frame-gap histogram bounds (ms). Chosen to separate
@@ -348,8 +351,13 @@ export interface SpringChaseDeps {
   scrollTopIsAtTarget(target: number): boolean;
   arrival: ArrivalReadback;
   writeScrollTop(caller: ScrollWriteCaller, value: number): void;
-  /** Normalized per-fire animation mode (anything but 'spring' is 'instant'). */
-  animationMode(): 'spring' | 'instant';
+  /**
+   * Is live timeline content still arriving? LIVENESS ONLY — it decides
+   * whether an arrived chase stays sentinel-alive across inter-chunk
+   * gaps, never whether a movement animates (see resolver.ts
+   * springGateIsOpen and utils/liveContentActivity.ts).
+   */
+  liveContentActive(): boolean;
   /** OS prefers-reduced-motion OR the app's low-power setting (the
    * controller's combined motionReduced() gate). */
   prefersReducedMotion(): boolean;
@@ -626,8 +634,6 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       isAtBottom: deps.isAtBottom(),
       escaped: deps.isEscaped(),
       prefersReducedMotion: deps.prefersReducedMotion(),
-      animationMode: deps.animationMode(),
-      structuralAppendPending: structuralAppendSpringUntil > nowMs(),
     });
   }
 
@@ -635,7 +641,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     if (springToken !== 0) return;
     if (!gateOpen()) return;
     springStartedFromStructuralAppend =
-      deps.animationMode() !== 'spring'
+      !deps.liveContentActive()
       && structuralAppendSpringUntil > nowMs();
     const myToken = ++springGen;
     springToken = myToken;
@@ -722,7 +728,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       // still arriving. Hoisted above the diff branch so the caught-up
       // branch can decide whether to KEEP momentum for the next growth or
       // shed it and settle; the arrival check below reuses both.
-      const wantsStreamingSpringNow = deps.animationMode() === 'spring';
+      const wantsStreamingSpringNow = deps.liveContentActive();
       const wantsSpringNow = wantsStreamingSpringNow || springStartedFromStructuralAppend;
       const withinTargetChangeRetainWindow =
         wantsSpringNow && now - lastTargetChangedAt < RETAIN_ANIMATION_DURATION_MS;
@@ -937,8 +943,9 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       // comparison; the time delta uses rAF's `now` (matches
       // `nowMs()` in test environments because `performance.now` is
       // mocked to read the same source rAF passes the callback).
-      // Mode flip mid-flight (turn ended) or RETAIN_ANIMATION_DURATION_MS
-      // elapsing without another target-change event makes
+      // Liveness lapsing mid-flight (content stopped arriving) or
+      // RETAIN_ANIMATION_DURATION_MS elapsing without another
+      // target-change event makes
       // `withinTargetChangeRetainWindow` (computed above) false, so the
       // spring lands on its next arrival check rather than chasing forever.
       // Bidirectional — applies to downward chases (shrinks) as well as

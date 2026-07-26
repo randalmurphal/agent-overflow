@@ -6,7 +6,7 @@ import {
 } from './index.svelte';
 import { resetScrollIntentModuleStateForTest } from './intent';
 import { RETAIN_ANIMATION_DURATION_MS } from './spring';
-import { latchedSpringMode, SPRING_MODE_HOLD_MS } from '../springAnimationLatch';
+import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../liveContentActivity';
 import { clearUiRenderTrace, getUiRenderTraceRecords, setUiRenderTraceEnabled } from '../uiRenderTrace';
 import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
 
@@ -2043,15 +2043,15 @@ describe('createUseStickToBottomController', () => {
 });
 
 // Spring chase + warm-up gate. These tests construct their own controller
-// with animationMode='spring' so they can exercise the path that the
-// default (no options) controller suppresses.
+// reporting live content so they can exercise the post-arrival sentinel
+// that the default (no options) controller ends immediately.
 describe('createUseStickToBottomController — spring chase', () => {
   let scrollEl: HTMLDivElement;
   let contentEl: HTMLDivElement;
   let geom: Geometry;
   let controller: UseStickToBottomController;
   let originalRO: typeof ResizeObserver | undefined;
-  let mode: 'spring' | 'instant' = 'spring';
+  let liveContent = true;
 
   function getRO(): MockResizeObserver {
     const ro = MockResizeObserver.instances.at(-1);
@@ -2098,9 +2098,9 @@ describe('createUseStickToBottomController — spring chase', () => {
     geom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
     stubGeometry(scrollEl, contentEl, geom);
 
-    mode = 'spring';
+    liveContent = true;
     controller = createUseStickToBottomController({
-      animationMode: () => mode,
+      liveContentActive: () => liveContent,
     });
     controller.attach(scrollEl, contentEl);
   });
@@ -2125,10 +2125,10 @@ describe('createUseStickToBottomController — spring chase', () => {
   // layout), so the assertions are on where the redirected write lands.
   describe('engine compensation anchor redirect (routed)', () => {
     it('redirects a stale below-bottom compensation to true bottom (instant mode, dormant)', async () => {
-      // Idle cold-switch thread is animationMode==='instant' with no spring
+      // Idle cold-switch thread reports no live content, so no spring
       // in flight; without the redirect the compensation resolves through
       // the dormant pass tier and the short frame lands.
-      mode = 'instant';
+      liveContent = false;
       const ro = getRO();
       ro.fire(contentEl, 800); // initial; warm still false
       await waitMs(150);
@@ -2137,6 +2137,9 @@ describe('createUseStickToBottomController — spring chase', () => {
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000);
+      // Growth glides now (warm + at bottom), so let it land: the tier
+      // under test needs the DOM pinned at true bottom, however it got there.
+      await advanceUntil(() => geom.scrollTop === 600);
       expect(geom.scrollTop).toBe(600); // DOM at true bottom → domAlreadyPinned
       // The engine now reports a stale anchor 390px short.
       expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: -390, target: 210 })).toBe(true);
@@ -2148,7 +2151,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // mode='spring' with no chase in flight (springToken===0) would exit
       // through the resolver's final pass tier — the second exit the
       // redirect must also cover.
-      mode = 'spring';
+      liveContent = true;
       const ro = getRO();
       ro.fire(contentEl, 800); // initial; DOM already at bottom (400)
       await waitMs(150);
@@ -2164,7 +2167,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // bottom. The engine's compensation here is legitimate above-viewport
       // anchoring and must land untouched — the redirect is narrow to
       // domAlreadyPinned.
-      mode = 'instant';
+      liveContent = false;
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -2181,13 +2184,14 @@ describe('createUseStickToBottomController — spring chase', () => {
       // of bottom is NOT "moving away" (movesAwayFromBottom is strict
       // `> epsilon`), so it must pass through, not snap to bottom. Pins that
       // threshold — without it a predicate mutation to always-true survives.
-      mode = 'instant';
+      liveContent = false;
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000);
+      await advanceUntil(() => geom.scrollTop === 600);
       expect(geom.scrollTop).toBe(600); // pinned at true bottom
       // 4px short — exactly the epsilon boundary.
       expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: -4, target: 596 })).toBe(true);
@@ -2562,7 +2566,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       localGeom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
       stubGeometry(localScrollEl, localContentEl, localGeom);
       const options: UseStickToBottomOptions = {
-        animationMode: () => 'instant',
+        liveContentActive: () => false,
         quietContextSignal: opts.signal,
       };
       localController = createUseStickToBottomController(options);
@@ -2897,7 +2901,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       controller.detach();
       resetScrollIntentModuleStateForTest();
       MockResizeObserver.instances = [];
-      controller = createUseStickToBottomController({ animationMode: () => mode });
+      controller = createUseStickToBottomController({ liveContentActive: () => liveContent });
       geom.scrollHeight = 1000;
       geom.contentHeight = 800;
       geom.scrollTop = 400;
@@ -3075,7 +3079,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
-      mode = 'instant';
+      liveContent = false;
 
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
@@ -3113,7 +3117,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
-      mode = 'instant';
+      liveContent = false;
 
       geom.scrollHeight = 1400;
       geom.contentHeight = 1200;
@@ -3128,7 +3132,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
-      mode = 'instant';
+      liveContent = false;
 
       controller.markStructuralContentPending();
       geom.scrollHeight = 1200;
@@ -3145,7 +3149,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
-      mode = 'instant';
+      liveContent = false;
 
       controller.markStructuralContentPending();
       geom.scrollHeight = 1200;
@@ -3171,7 +3175,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
-      mode = 'instant';
+      liveContent = false;
 
       controller.markStructuralContentPending();
       geom.scrollHeight = 1250;
@@ -3527,7 +3531,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // streaming, flipped to 'instant' once live content stops — which
       // is what lets the post-arrival sentinel (and with it
       // spring.isActive()) die so the lease can demote.
-      let leaseAnimationMode: 'spring' | 'instant' = 'spring';
+      let leaseLiveContent = true;
 
       function buildLeaseController(releaseMs: number): {
         scrollEl: HTMLDivElement;
@@ -3541,9 +3545,9 @@ describe('createUseStickToBottomController — spring chase', () => {
         document.body.appendChild(sEl);
         const g: Geometry = { scrollHeight: 1400, clientHeight: 600, scrollTop: 800, contentHeight: 1200 };
         stubGeometry(sEl, cEl, g);
-        leaseAnimationMode = 'spring';
+        leaseLiveContent = true;
         const localController = createUseStickToBottomController({
-          animationMode: () => leaseAnimationMode,
+          liveContentActive: () => leaseLiveContent,
           contentLeaseReleaseMs: releaseMs,
         });
         localController.attach(sEl, cEl);
@@ -3625,7 +3629,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         // recheck demotes.
         await advanceUntil(() => g.scrollTop === 1200);
         await advanceUntil(() => cEl.style.transform === '');
-        leaseAnimationMode = 'instant';
+        leaseLiveContent = false;
         await nextFrame();
         await nextFrame();
         mockNow += 5000;
@@ -4061,21 +4065,61 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(afterDetach);
     });
 
-    it('mode=instant takes the sync-pin path even when warm', async () => {
+    it('chases growth that arrives with no live content stamped', async () => {
+      // Regression guard for the 2026-07-25 jump classes (a background
+      // completion's late enrichment; drain growth in a reveal gap).
+      // Liveness false is the state those growths land in — nothing
+      // stamped them — and they must still glide, not teleport.
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150); // warm
 
-      mode = 'instant';
+      liveContent = false;
 
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
       ro.fire(contentEl, 1000);
 
-      // Sync-pin: scrollTop already at target.
+      // No same-frame teleport to the new bottom.
+      expect(geom.scrollTop).toBe(400);
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(600);
+      // And it still arrives.
+      await advanceUntil(() => geom.scrollTop === 600);
       expect(geom.scrollTop).toBe(600);
-      for (let i = 0; i < 5; i++) await nextFrame();
-      expect(geom.scrollTop).toBe(600);
+    });
+
+    it('keeps gliding when liveness lapses mid-settle', async () => {
+      // The post-turn drain symptom, as a transition rather than a
+      // state: streaming glides, the turn ends, the liveness hold
+      // lapses, and the tail keeps growing as markdown / highlight
+      // spans settle. Under the retired mode latch that lapse flipped
+      // the physics mid-settle, so the drain alternated glide and
+      // teleport ("it keeps jumping until the text settles").
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      liveContent = true;
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      await advanceUntil(() => geom.scrollTop === 600);
+
+      // Turn ends; nothing stamps live content any more.
+      liveContent = false;
+
+      geom.scrollHeight = 1300;
+      geom.contentHeight = 1100;
+      ro.fire(contentEl, 1100);
+
+      expect(geom.scrollTop).toBe(600); // no same-frame teleport to 700
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(600);
+      expect(geom.scrollTop).toBeLessThan(700);
+      await advanceUntil(() => geom.scrollTop === 700);
+      expect(geom.scrollTop).toBe(700);
     });
 
     it('prefers-reduced-motion suppresses the spring', async () => {
@@ -4158,7 +4202,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(midScrollTop).toBeLessThan(800);
 
       // Turn ends mid-spring.
-      mode = 'instant';
+      liveContent = false;
 
       // Spring should still land at target (no abrupt cancel).
       await advanceUntil(() => geom.scrollTop === 800);
@@ -4397,7 +4441,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       for (let i = 0; i < 30; i++) await nextFrame();
 
       // Turn ends. Mode flips to instant. Spring should cancel.
-      mode = 'instant';
+      liveContent = false;
       for (let i = 0; i < 10; i++) await nextFrame();
 
       // Spring canceled (springToken=0): a negative contentRO delta
@@ -4866,7 +4910,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // User wheels up + several momentum scroll events, then clicks the
       // chip. The chip's forceStick MUST clear EVERY transient flag so
       // subsequent streaming chunks pin correctly (via spring chase in
-      // this describe block's animationMode='spring').
+      // this describe block reports live content).
       const ro = getRO();
       ro.fire(contentEl, 800);
       await waitMs(150);
@@ -5830,7 +5874,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // language loads are async and parseIncompleteMarkdown rebalances
       // create timing gaps > 350ms.
       //
-      // Fix: when arrived but animationMode is still 'spring', the
+      // Fix: when arrived but live content is still arriving, the
       // spring re-rAFs as a sentinel (springToken stays non-zero) so the
       // resolver's negative-delta carve-out remains engaged. The next
       // chunk's positive contentRO delta bumps lastTargetChangedAt and
@@ -5885,9 +5929,9 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(Math.abs(geom.scrollTop - 700)).toBeLessThanOrEqual(1);
     });
 
-    it('spring sentinel cancels cleanly when animationMode flips to instant (turn ends)', async () => {
+    it('spring sentinel cancels cleanly when live content goes inactive (turn ends)', async () => {
       // The sentinel must not keep the spring alive after the turn ends.
-      // When animationMode flips to 'instant', the next sentinel tick
+      // When liveContentActive() goes false, the next sentinel tick
       // sees wantsSpringNow=false, the retain window is expired, and the
       // standard cancel branch fires.
       const ro = getRO();
@@ -5906,7 +5950,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // cancel branch (springToken→0). Multiple frames because the
       // sentinel's pending rAF and nextFrame's rAF interleave — the
       // cancel may land one frame after the mode flip is visible.
-      mode = 'instant';
+      liveContent = false;
       for (let i = 0; i < 10; i++) await nextFrame();
 
       // With the sentinel cancelled (springToken=0), a negative
@@ -6147,22 +6191,22 @@ describe('createUseStickToBottomController — spring chase', () => {
     it('sentinel + content-latch hold cover a wire-round gap — pinned moves-away compensation is redirected', async () => {
       // The historical "snap up, spring down" cycle: between wire rounds
       // (a tool round-trip, the end-of-turn drain) the pane stops
-      // stamping lastLiveContentAt; the content-keyed latch holds
-      // 'spring' for SPRING_MODE_HOLD_MS so the sentinel survives the
+      // stamping lastLiveContentAt; the activity window holds it live
+      // for LIVE_CONTENT_ACTIVE_HOLD_MS so the sentinel survives the
       // gap and springActive stays true. An engine compensation arriving
       // in the gap that would move a pinned viewport away from the
       // bottom is redirected — and because the resolver's redirect tier
       // outranks the verbatim apply, the no-displacement outcome holds
       // even if the sentinel has already died (the reason the
       // HOLD > RETAIN cross-file invariant could be retired). Uses the
-      // REAL production latch so this can't drift from MessageTimeline.
+      // REAL production window so this can't drift from MessageTimeline.
       let contentAdvancing = true;
       let lastContentAt = 0;
       controller.detach();
       controller = createUseStickToBottomController({
-        animationMode: () => {
+        liveContentActive: () => {
           if (contentAdvancing) lastContentAt = mockNow;
-          return latchedSpringMode(mockNow, lastContentAt, SPRING_MODE_HOLD_MS);
+          return isLiveContentActive(mockNow, lastContentAt, LIVE_CONTENT_ACTIVE_HOLD_MS);
         },
       });
       controller.attach(scrollEl, contentEl);
@@ -6282,7 +6326,7 @@ describe('createUseStickToBottomController — spring chase', () => {
           g.scrollTop = clamped >= max ? Math.max(0, max - 1) : clamped;
         },
       });
-      controller = createUseStickToBottomController({ animationMode: () => mode });
+      controller = createUseStickToBottomController({ liveContentActive: () => liveContent });
       controller.attach(scrollEl, contentEl);
 
       const ro = getRO();
@@ -6359,7 +6403,7 @@ describe('createUseStickToBottomController — external content-geometry source'
   let geom: Geometry;
   let controller: UseStickToBottomController;
   let originalRO: typeof ResizeObserver | undefined;
-  let mode: 'spring' | 'instant' = 'instant';
+  let liveContent = false;
   // Tri-state for the quiet-context signal: undefined models a consumer
   // that passed no option (ChannelView-shaped); boolean models chat's
   // markdown-settled signal.
@@ -6411,10 +6455,10 @@ describe('createUseStickToBottomController — external content-geometry source'
     geom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
     stubGeometry(scrollEl, contentEl, geom);
 
-    mode = 'instant';
+    liveContent = false;
     signal = undefined;
     controller = createUseStickToBottomController({
-      animationMode: () => mode,
+      liveContentActive: () => liveContent,
       // Live-read like production: `signal === undefined` models the
       // option being absent (the getter itself returns undefined).
       get quietContextSignal() {
@@ -6450,7 +6494,7 @@ describe('createUseStickToBottomController — external content-geometry source'
       // contentEl, and the two sources feed conflicting heights into one
       // pipeline. The seam is self-enforcing, not convention-enforced.
       const misconfigured = createUseStickToBottomController({
-        animationMode: () => 'instant',
+        liveContentActive: () => false,
       });
       expect(() =>
         misconfigured.deliverContentGeometry({
@@ -6495,7 +6539,7 @@ describe('createUseStickToBottomController — external content-geometry source'
       // spring chase is in flight — the reflow override on the
       // carve-out. If the width sample failed to open the window, the
       // carve-out would defer and scrollTop would stay mid-chase.
-      mode = 'spring';
+      liveContent = true;
       deliver(800);
       await waitMs(150); // warm via quiet timer (no signal option)
       expect(controller.isWarm).toBe(true);

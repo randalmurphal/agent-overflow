@@ -37,8 +37,8 @@ export interface ThreadChannelState {
   readonly liveTail: ThreadChannelLiveTail | null;
   /** Non-reactive `performance.now()`-timebase stamp of the last live
    * channel advance (a genuinely new message, or live-tail growth).
-   * Read imperatively by the scroll controller's `animationMode` — see
-   * `utils/springAnimationLatch.ts` and `pane.lastLiveContentAt`'s
+   * Read imperatively by the scroll controller's `liveContentActive` —
+   * see `utils/liveContentActivity.ts` and `pane.lastLiveContentAt`'s
    * identical rationale in `thread.svelte.ts`. Deliberately NOT
    * `$state`: tail deltas can stamp many times a second and nothing
    * here needs to reactively re-render off the stamp itself. */

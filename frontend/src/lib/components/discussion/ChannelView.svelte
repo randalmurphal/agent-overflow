@@ -8,7 +8,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
-  import { latchedSpringMode, SPRING_MODE_HOLD_MS } from '../../utils/springAnimationLatch';
+  import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../../utils/liveContentActivity';
   import { relativeTime } from '../../utils/format';
   import Button from '../primitives/Button.svelte';
   import ChannelHeader from './ChannelHeader.svelte';
@@ -37,14 +37,18 @@
   // Discussion now streams the current speaker's in-flight text just like
   // chat: `pane.channelLastLiveContentAt` is stamped by the channel-state
   // layer on genuinely-new messages AND on live-tail growth (see
-  // threadChannelState.svelte.ts). Spring while that's recent, sync-pin
-  // otherwise — identical latch to MessageTimeline's chat surface, just
-  // keyed off the channel's own stamp instead of the pane's timeline
-  // stamp (a discussion pane's `lastLiveContentAt` tracks the timeline,
-  // which this surface doesn't render).
+  // threadChannelState.svelte.ts). Keyed off the channel's own stamp
+  // rather than the pane's timeline stamp (a discussion pane's
+  // `lastLiveContentAt` tracks the timeline, which this surface doesn't
+  // render). Liveness only — growth physics is decided by the
+  // controller, identically to the chat surface.
   const stick = createUseStickToBottomController({
-    animationMode: () =>
-      latchedSpringMode(performance.now(), pane.channelLastLiveContentAt, SPRING_MODE_HOLD_MS),
+    liveContentActive: () =>
+      isLiveContentActive(
+        performance.now(),
+        pane.channelLastLiveContentAt,
+        LIVE_CONTENT_ACTIVE_HOLD_MS,
+      ),
   });
 
   let messages = $derived(pane.channelMessages);
@@ -121,8 +125,8 @@
         loadingInitial = false;
         // Initial batch is in the DOM; snap to bottom. Subsequent live
         // pushes (discussion:message, live-tail growth) route through
-        // the same contentRO the chat surface uses, springing or
-        // sync-pinning per `animationMode` above.
+        // the same contentRO the chat surface uses and follow the bottom
+        // with the same glide.
         await tick();
         if (generation === loadGeneration) {
           // reason:'restore' so an intervening user scroll-up (which

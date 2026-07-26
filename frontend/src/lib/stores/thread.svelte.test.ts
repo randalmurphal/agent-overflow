@@ -7518,16 +7518,14 @@ describe('createThreadPane', () => {
       expect(markStructuralContentPending).toHaveBeenCalledTimes(1);
     });
 
-    it('stamps the live-content latch alongside the wire-append arm', async () => {
+    it('stamps live content alongside the wire-append arm', async () => {
       // A wire append entering the loaded tail is live content: besides
-      // the 250ms one-shot, it must open the full SPRING_MODE_HOLD_MS
-      // rolling window so the appended rows' follow-up growth (payload
-      // preview, markdown, highlight spans) keeps spring-chasing. The
-      // one-shot alone covered only the first growth delivery — a
-      // background-task completion sibling landing after turn end
-      // mounted with a brief chase and then teleported once its settle
-      // outlived the 250ms window, while the identical rows arriving
-      // mid-stream glided (streaming kept the latch fresh).
+      // the 250ms one-shot, it must open the full
+      // LIVE_CONTENT_ACTIVE_HOLD_MS rolling window so the controller
+      // keeps expecting the appended rows' follow-up growth (payload
+      // preview, markdown, highlight spans) and holds the spring
+      // sentinel alive across the gaps between those deliveries rather
+      // than cancelling on each arrival.
       const thread = makeThread({ id: 'thread-arm-stamp' });
       const pane = await buildPane(thread, [
         makeItem({ id: 'seed', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
@@ -7986,8 +7984,10 @@ describe('createThreadPane', () => {
   });
 
   // `pane.lastLiveContentAt` is the source the chat scroll controller
-  // latches on to decide spring vs sync-pin (MessageTimeline's
-  // animationModeForScroll → latchedSpringMode). Through the
+  // reads to decide whether more content is expected imminently
+  // (MessageTimeline's liveContentActiveNow → isLiveContentActive).
+  // It does not choose spring vs sync-pin — growth always glides.
+  // Through the
   // PANE-INTERNAL paths exercised here (`upsertItems`, `applyItemDelta`,
   // `applyItemPatch`), it must advance ONLY on genuine smooth live
   // timeline content arriving — text reveals, final-summary patches —

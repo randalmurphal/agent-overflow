@@ -41,7 +41,7 @@ interface Harness {
   getScrollTop(): number;
   setTarget(value: number): void;
   getTarget(): number;
-  setAnimationMode(mode: 'spring' | 'instant'): void;
+  setLiveContentActive(active: boolean): void;
   residueSettles(): number;
 }
 
@@ -61,7 +61,7 @@ function makeHarness(
 ): Harness {
   let scrollTop = 0;
   let target = 0;
-  let animationMode: 'spring' | 'instant' = 'spring';
+  let liveContentActive = true;
   let residueSettles = 0;
   const writes: { caller: string; value: number }[] = [];
   const store = (value: number): void => {
@@ -102,7 +102,7 @@ function makeHarness(
       writes.push({ caller, value });
       store(value);
     },
-    animationMode: () => animationMode,
+    liveContentActive: () => liveContentActive,
     prefersReducedMotion: () => false,
     forceNextSpringTickTrace: () => {},
     settleGlideResidue: () => {
@@ -123,8 +123,8 @@ function makeHarness(
       target = value;
     },
     getTarget: () => target,
-    setAnimationMode: (mode) => {
-      animationMode = mode;
+    setLiveContentActive: (active: boolean) => {
+      liveContentActive = active;
     },
     residueSettles: () => residueSettles,
   };
@@ -600,7 +600,7 @@ describe('glide residue clearing', () => {
     h.setTarget(60);
     h.spring.markTargetChanged();
     h.spring.start();
-    // Run past arrival + retain lapse; animationMode stays 'spring', so
+    // Run past arrival + retain lapse; live content stays active, so
     // the chase parks in sentinel mode (which must leave text crisp
     // even though no exact write fires once the readback matches).
     for (let i = 0; i < 80; i++) frame();

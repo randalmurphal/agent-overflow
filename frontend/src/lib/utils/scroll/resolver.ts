@@ -100,9 +100,8 @@ export interface ResolverState {
 }
 
 // Per-delivery inputs the controller samples alongside the state. The
-// clock-dependent option reads (animationMode latch, structural-append
-// window, reduced-motion media query) are sampled once per delivery so
-// the decision is reproducible.
+// clock-dependent option read (the reduced-motion media query) is
+// sampled once per delivery so the decision is reproducible.
 export interface ContentDeltaObservation {
   kind: 'delta';
   /** Nonzero contentRO height delta (zero deltas never reach the resolver). */
@@ -117,9 +116,6 @@ export interface ContentDeltaObservation {
    * already-rendered content, so it sync-pins even in spring mode.
    */
   widthReflowActive: boolean;
-  animationMode: 'spring' | 'instant';
-  /** markStructuralContentPending() window still open. */
-  structuralAppendPending: boolean;
   /** OS prefers-reduced-motion OR the app's low-power setting — the
    * controller feeds this from its combined motionReduced() gate. */
   prefersReducedMotion: boolean;
@@ -173,6 +169,22 @@ export interface ContentDecision {
 // so the sites cannot drift on which conditions allow the spring. The `warm` check is deliberately NOT part
 // of this predicate — warmth gates whether a positive delta may spring
 // at all, and the callers that need it check it explicitly.
+//
+// Every input describes the SCROLLER'S STATE, not a guess about what
+// caused the growth. There is deliberately no "is this live content?"
+// term: while pinned at the bottom, the destination is the bottom
+// whatever moved the target, so the only question is the route, and the
+// route should always be the glide. Cases that genuinely must not
+// animate carry their own signal and are checked by their own gate —
+// mount/restore cascade (`warm`), layout correction for a width change
+// (`widthReflowActive`), reduced motion (here), sub-pixel idle wobble
+// (the deadband), user escape / lease (here). A recency window over the
+// last content stamp is not such a signal: it says when a stamp last
+// happened, not what this growth is, and keying physics on it teleported
+// every growth that no code path happened to stamp — late row enrichment
+// and any drain growth landing in a reveal gap (2026-07-25). Liveness
+// still has a job (spring sentinel, live-capable nudges); it just isn't
+// this one. See utils/liveContentActivity.ts.
 export interface SpringGateInputs {
   springStopRequested: boolean;
   paused: boolean;
@@ -180,8 +192,6 @@ export interface SpringGateInputs {
   escaped: boolean;
   /** OS prefers-reduced-motion OR the app's low-power setting. */
   prefersReducedMotion: boolean;
-  animationMode: 'spring' | 'instant';
-  structuralAppendPending: boolean;
 }
 
 export function springGateIsOpen(s: SpringGateInputs): boolean {
@@ -189,8 +199,7 @@ export function springGateIsOpen(s: SpringGateInputs): boolean {
     && !s.paused
     && s.isAtBottom
     && !s.escaped
-    && !s.prefersReducedMotion
-    && (s.animationMode === 'spring' || s.structuralAppendPending);
+    && !s.prefersReducedMotion;
 }
 
 // Stranded-at-bottom oscillation: a row ABOVE the viewport transiently
@@ -340,21 +349,26 @@ export function resolveContentDelivery(
     write = { caller: 'contentRO.oscillationSnap', value: target };
     oscillationRecovery = true;
   } else if (positiveWillPin) {
-    // Positive delta: spring chase when the consumer signals real
-    // streaming content AND the controller has warmed past mount settle
-    // AND the delta is not width-reflow layout correction; sync-pin
-    // otherwise (same paint frame as the growth — no perceptible
-    // motion, content just arrives at the bottom).
+    // Positive delta: the content got taller while the viewport is
+    // pinned to the bottom, so the bottom moved and we follow it. That
+    // ALWAYS glides once the controller has warmed past mount settle and
+    // the delta is not width-reflow layout correction — no question
+    // about what produced the growth (see springGateIsOpen). Both routes
+    // end at the same scrollTop; the glide is the one that stays
+    // readable.
     //
     // The width-reflow carve-out exists because Mermaid, KaTeX, Shiki,
     // images, and normal prose all change height when the content
-    // column width changes. If live content advanced recently the
-    // animation latch still reports 'spring', but the resize is layout
-    // correction for already-rendered content — sync-pin it so a
-    // pane/sidebar/window reflow cannot produce a half-viewport spring
-    // chase from a stale bottom. (Width and height can arrive in
+    // column width changes. That resize is layout correction for
+    // already-rendered content, not the bottom advancing — sync-pin it
+    // so a pane/sidebar/window reflow cannot produce a half-viewport
+    // spring chase from a stale bottom. (Width and height can arrive in
     // separate RO deliveries; the controller holds the classification
     // open for a settle window after a width change.)
+    //
+    // The warm gate is what keeps a thread-switch restore from chasing
+    // its mount cascade (e00723f): the cascade fires while !warm, so it
+    // sync-pins exactly as before.
     if (
       state.warm
       && springGateIsOpen({
@@ -363,8 +377,6 @@ export function resolveContentDelivery(
         isAtBottom: state.isAtBottom,
         escaped: state.escaped,
         prefersReducedMotion: obs.prefersReducedMotion,
-        animationMode: obs.animationMode,
-        structuralAppendPending: obs.structuralAppendPending,
       })
       && !obs.widthReflowActive
     ) {
@@ -461,16 +473,15 @@ export function resolveContentDelivery(
 // model re-sync (the engine's offset follows real scroll events), but
 // "safe to decline" was never "right to decline".
 //
-// Deliberate deviation from the legacy gate: there is no animationMode
-// tier. The gate passed writes whenever mode read 'instant', which made
-// arbitration depend on the mode latch's timing — a mode flip while a
-// chase/sentinel was alive opened the gate mid-spring ("snap up, spring
-// down" per wire-round gap), pinned in place only by the cross-file
-// SPRING_MODE_HOLD_MS > RETAIN_ANIMATION_DURATION_MS invariant. Keying on
-// springActive — the actual thing the arbitration protects — makes that
-// timing irrelevant: no chase means writes land regardless of mode, and an
-// active chase protects its small-jump window regardless of mode (the
-// structural-append-in-instant-mode chase falls out for free).
+// Deliberate deviation from the legacy gate: there is no animation-mode
+// tier. The gate passed writes whenever the mode latch read 'instant',
+// which made arbitration depend on that latch's timing — a mode flip
+// while a chase/sentinel was alive opened the gate mid-spring ("snap up,
+// spring down" per wire-round gap), pinned in place only by a cross-file
+// hold > retain invariant. Keying on springActive — the actual thing the
+// arbitration protects — makes that timing irrelevant. The latch itself
+// is gone now (growth physics takes no such input, see springGateIsOpen),
+// so this tier could not come back even if someone wanted it.
 
 export type EngineWriteCaller = 'engine.compensation' | 'engine.anchorRedirect';
 

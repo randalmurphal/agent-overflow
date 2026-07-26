@@ -39,9 +39,10 @@ export type ScrollWriteCaller =
  * - `'content'` / `'host-layout'` → escape-aware instant re-pin
  *   (composer padding, pane reorder, sidebar/terminal layout settles).
  * - `'live-content'` / `'composer-geometry'` → the live-capable path
- *   that honors animationMode and structural-append marks, so active
- *   output can spring through the change instead of snapping (falls
- *   back to the same instant re-pin when no spring is warranted).
+ *   that honors `liveContentActive` and structural-append marks, so a
+ *   viewport-height change during active output can ride an in-flight
+ *   glide instead of snapping through it (falls back to the same instant
+ *   re-pin when nothing is streaming — an idle composer resize).
  *
  * MessageTimeline's pane-facing adapter overrides `'host-layout'` to
  * re-pin and revalidate its virtualizer geometry; the raw controller
@@ -275,24 +276,29 @@ export interface UseStickToBottomController {
 
 export interface UseStickToBottomOptions {
   /**
-   * Picks animation behavior for autonomous content growth (contentRO
-   * positive deltas). Called per-fire — return 'spring' to make the
-   * delta spring-eligible, 'instant' to sync-pin. A one-shot
-   * markStructuralContentPending() call can make the next near-term
-   * structural append spring-eligible even while this returns 'instant'.
-   * Width-driven layout correction still sync-pins even when this returns
-   * 'spring'.
-   * Defaults to () => 'instant' (sync-pin everywhere) so existing
-   * callers behave identically to the pre-spring-restoration controller.
+   * Is live content still arriving on this surface? Called per-fire.
    *
-   * Chat's MessageTimeline wires this to a content-keyed latch
-   * (`latchedSpringMode(performance.now(), pane.lastLiveContentAt,
-   * SPRING_MODE_HOLD_MS)`) so streaming chunks — and the end-of-turn
-   * drain after the turn signal clears — animate; idle/settled threads,
-   * width reflow corrections, and Discussion's polled channel surface
-   * stay on sync-pin.
+   * This does NOT pick animation behavior — autonomous growth while
+   * pinned at the bottom always glides (see resolver.ts
+   * springGateIsOpen; the cases that must not animate are gated on warm
+   * / width-reflow / reduced-motion instead). It answers "is more
+   * content imminent?", which drives exactly two things:
+   *
+   *   - the spring's post-arrival sentinel, which keeps `springActive`
+   *     true across inter-chunk gaps so mid-stream negative corrections
+   *     stay absorbed instead of snapping;
+   *   - `observe('live-content' | 'composer-geometry')`, where a
+   *     viewport-height change during active output rides the in-flight
+   *     glide but an idle composer resize stays pinned.
+   *
+   * Defaults to () => false: a surface that supplies none ends its
+   * chase at arrival and takes the instant path for nudges.
+   *
+   * Chat's MessageTimeline and Discussion's ChannelView both wire this
+   * to `isLiveContentActive(performance.now(), <stamp>,
+   * LIVE_CONTENT_ACTIVE_HOLD_MS)` over their respective stamps.
    */
-  animationMode?: () => 'spring' | 'instant';
+  liveContentActive?: () => boolean;
   /**
    * Optional consumer-supplied signal that the visible
    * async-typesetting context has settled (e.g. all currently-mounted

@@ -6,33 +6,33 @@
 // geometry pipeline, fed by one of two sources: a single ResizeObserver
 // on the content element (the default — ChannelView), or engine-sourced
 // samples via `deliverContentGeometry` when the consumer sets
-// `externalContentGeometry` (chat — see observers.ts). Two animation
-// behaviors for autonomous content growth, selected per-fire by the
-// consumer via the `animationMode` option:
+// `externalContentGeometry` (chat — see observers.ts).
 //
-//   - 'instant' (default): sync-pin. The same paint frame where
-//     contentEl grows also lands scrollTop at the new target, so the
-//     user sees content arriving at the bottom with no perceptible
-//     scroll motion. Used by Discussion's ChannelView and by chat
-//     whenever no live content has advanced recently — late Streamdown
-//     typesetting on settled content, row remeasurement on a
-//     freshly-mounted thread, etc.
+// Autonomous content growth while pinned at the bottom has ONE
+// behavior: a velocity-spring chase. The viewport interpolates toward
+// the moving bottom across rAF ticks, so streaming chunks, the
+// end-of-turn drain, a late-settling row and a background completion
+// all flow in the same way. Both routes would end at the same
+// scrollTop — the destination is the bottom whatever moved it — so the
+// route is chosen once, and the glide is the readable one. The decision
+// takes no guess at what produced the growth; the cases that must not
+// animate carry their own signal and their own gate:
 //
-//   - 'spring': velocity-spring chase. The viewport interpolates toward
-//     the moving bottom across rAF ticks so the user sees a smooth
-//     scroll-follow. Chat MessageTimeline selects it via a content-keyed
-//     latch (`latchedSpringMode` over `pane.lastLiveContentAt`), so
-//     streaming chunks — and the end-of-turn drain after the turn signal
-//     clears — flow in with a smooth animation. Gated by a quiescence-based warm
-//     state: spring stays off until contentRO has been quiet for
-//     QUIET_MS or the FAILSAFE_MS deadline trips, whichever comes
-//     first. A one-shot structural-append mark can also make the next
-//     near-term command/tool row growth spring-eligible while
-//     animationMode is 'instant'; that path cancels after arrival and does
-//     not enter the streaming sentinel. The warm gate defends against the
-//     original 80LoC-spring-delete regression (commit e00723f) where
-//     mount-time row remeasurement and async Streamdown typesetting
-//     would spring-chase a thread restore visibly.
+//   - quiescence-based warm state: growth stays sync-pinned until
+//     contentRO has been quiet for QUIET_MS or the FAILSAFE_MS deadline
+//     trips. This is what keeps a thread restore from chasing its mount
+//     cascade (the 80LoC-spring-delete regression, commit e00723f).
+//   - width reflow: a content-column width change makes every row
+//     re-wrap; the paired height delta is layout correction for
+//     already-rendered content, not the bottom advancing, so it
+//     sync-pins (see observers.ts's settle window).
+//   - reduced motion (OS preference or the app's low-power setting).
+//   - the idle re-pin deadband, which suppresses the sub-pixel
+//     content-box wobble entirely rather than choosing a route for it.
+//
+// Programmatic placements are a separate concern and stay instant by
+// construction: they go through forceStick / applyScrollTarget, not the
+// growth path.
 //
 // User-initiated snaps (the scroll-to-bottom chip) and thread restores
 // go through `forceStick()` which writes scrollTop directly.
@@ -384,9 +384,9 @@ export function createUseStickToBottomController(
   // still easing out (`transform` non-empty) so the layer never
   // collapses mid-motion. The deferral is bounded: after arrival the
   // spring only stays active as its streaming sentinel, which dies as
-  // soon as the consumer's animationMode latch flips to 'instant'
-  // (MessageTimeline's content-keyed hold window) — so a finished turn
-  // demotes at roughly max(lease idle, latch hold) + one recheck. Promoting/demoting repaints the pane once
+  // soon as the consumer's liveContentActive() goes false (the
+  // content-activity hold window) — so a finished turn demotes at
+  // roughly max(lease idle, activity hold) + one recheck. Promoting/demoting repaints the pane once
   // (tile re-raster) — at promote time that's masked by the scroll
   // motion that triggered it, at demote time the pane is at rest and
   // the repaint produces identical pixels (modulo text-AA mode — see
@@ -560,11 +560,13 @@ export function createUseStickToBottomController(
   // chokepoint. The controller keeps deciding WHEN a chase runs (resolver
   // decisions + intent handlers); the spring owns HOW it advances.
 
-  // Normalized per-fire animation mode: the consumer's option is optional
-  // and may return undefined; every decision site treats anything but
-  // 'spring' as 'instant'.
-  function animationModeNow(): 'spring' | 'instant' {
-    return options.animationMode?.() === 'spring' ? 'spring' : 'instant';
+  // Normalized per-fire liveness read: the consumer's option is optional
+  // and may return undefined; a surface that supplies none is treated as
+  // never live (sentinel ends at arrival, nudges take the instant path).
+  // This does NOT gate whether growth animates — see resolver.ts
+  // springGateIsOpen.
+  function liveContentActiveNow(): boolean {
+    return options.liveContentActive?.() === true;
   }
 
   const spring = createSpringChase({
@@ -577,7 +579,7 @@ export function createUseStickToBottomController(
     scrollTopIsAtTarget,
     arrival: arrivalReadback,
     writeScrollTop,
-    animationMode: animationModeNow,
+    liveContentActive: liveContentActiveNow,
     prefersReducedMotion: motionReduced,
     forceNextSpringTickTrace,
     settleGlideResidue,
@@ -603,7 +605,7 @@ export function createUseStickToBottomController(
     getScrollEl: () => scrollEl,
     getContentEl: () => contentEl,
     hasExternalGeometrySource: () => options.externalContentGeometry === true,
-    animationMode: animationModeNow,
+    liveContentActive: liveContentActiveNow,
     getQuietContextSignal: () => options.quietContextSignal,
     warm: () => warm,
     setWarm: (next) => {
@@ -888,7 +890,19 @@ export function createUseStickToBottomController(
 
   function notifyLiveContentMaybeGrew(): void {
     const gate = readNotifyContentGate();
-    const willSpring = gate.canPin && warm && spring.gateOpen();
+    // Liveness IS load-bearing here, unlike the growth-delta path. This
+    // path also carries VIEWPORT changes ('composer-geometry'): the
+    // composer growing shortens clientHeight and moves the bottom target
+    // without any content arriving. While output is flowing that should
+    // ride the in-flight glide rather than snap through it; while idle
+    // (the user typing a multi-line draft) the transcript must stay
+    // pinned as the box grows, not glide behind it. A structural-append
+    // mark counts as live for the same reason the sentinel accepts it.
+    const willSpring =
+      gate.canPin
+      && warm
+      && spring.gateOpen()
+      && (liveContentActiveNow() || spring.structuralAppendPending());
     if (isUiRenderTraceEnabled()) trace('scroll.notifyLiveContentMaybeGrew', () => ({
       canPin: gate.canPin,
       willSpring,

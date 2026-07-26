@@ -137,7 +137,8 @@ export interface ContentObserverDeps {
    * (`externalContentGeometry` option) — attach() then creates no RO. */
   hasExternalGeometrySource(): boolean;
   /** Normalized per-fire animation mode (anything but 'spring' is 'instant'). */
-  animationMode(): 'spring' | 'instant';
+  /** Live content still arriving — liveness only, never physics. */
+  liveContentActive(): boolean;
   /**
    * Consumer's typesetting-settled signal, read live off the options
    * object per call (like the sibling options — a consumer that assigns
@@ -514,8 +515,6 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       scrollTop: scrollTopAtDelivery,
       target,
       widthReflowActive,
-      animationMode: deps.animationMode(),
-      structuralAppendPending: deps.spring.structuralAppendPending(),
       prefersReducedMotion: deps.prefersReducedMotion(),
     };
     const decision = resolveContentDelivery(deps.resolverStateSnapshot(), observation);
@@ -540,7 +539,8 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       widthChanged,
       widthReflowActive,
       settleEvidence: settle === undefined ? null : lastSettleEvidence,
-      structuralAppendSpringPending: observation.structuralAppendPending,
+      liveContentActive: deps.liveContentActive(),
+      structuralAppendSpringPending: deps.spring.structuralAppendPending(),
       scrollTop: Math.round(scrollTopAtDelivery),
       scrollHeight: Math.round(scrollEl.scrollHeight),
       clientHeight: Math.round(scrollEl.clientHeight),

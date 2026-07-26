@@ -40,8 +40,6 @@ function delta(overrides: Partial<ContentDeltaObservation> = {}): ContentDeltaOb
     scrollTop: TARGET,
     target: TARGET,
     widthReflowActive: false,
-    animationMode: 'instant',
-    structuralAppendPending: false,
     prefersReducedMotion: false,
     ...overrides,
   };
@@ -63,11 +61,9 @@ describe('springGateIsOpen', () => {
     isAtBottom: true,
     escaped: false,
     prefersReducedMotion: false,
-    animationMode: 'spring' as const,
-    structuralAppendPending: false,
   };
 
-  it('opens for spring mode with every gate clear', () => {
+  it('opens with every gate clear', () => {
     expect(springGateIsOpen(open)).toBe(true);
   });
 
@@ -81,13 +77,19 @@ describe('springGateIsOpen', () => {
     expect(springGateIsOpen({ ...open, ...override })).toBe(false);
   });
 
-  it('instant mode closes the gate unless a structural append is pending', () => {
-    expect(springGateIsOpen({ ...open, animationMode: 'instant' })).toBe(false);
-    expect(springGateIsOpen({
-      ...open,
-      animationMode: 'instant',
-      structuralAppendPending: true,
-    })).toBe(true);
+  it('takes no input describing what caused the growth', () => {
+    // The gate is scroller STATE only. A recency window over the last
+    // content stamp used to sit here and teleported every growth no code
+    // path happened to stamp (late row enrichment, drain growth landing
+    // in a reveal gap — 2026-07-25). Adding such a term back is the
+    // regression this pins: the key set is closed.
+    expect(Object.keys(open).sort()).toEqual([
+      'escaped',
+      'isAtBottom',
+      'paused',
+      'prefersReducedMotion',
+      'springStopRequested',
+    ]);
   });
 });
 
@@ -214,18 +216,22 @@ describe('resolveContentDelivery — idle re-pin deadband', () => {
   it('does not gate mid-chase — the spring holds its token across inter-chunk gaps', () => {
     const d = resolveContentDelivery(
       state({ springActive: true }),
-      delta({ delta: 20, scrollTop: TARGET - 2, animationMode: 'spring' }),
+      delta({ delta: 20, scrollTop: TARGET - 2 }),
     );
     expect(d.startSpring).toBe(true);
     expect(d.write).toBeNull();
   });
 
-  it('real growth just past the deadband pins normally', () => {
+  it('real growth just past the deadband follows normally', () => {
+    // The deadband only suppresses the sub-pixel idle wobble; genuine
+    // growth (gap > deadband) still follows the bottom — as a chase,
+    // since a warm at-bottom positive delta always glides.
     const d = resolveContentDelivery(
       state(),
       delta({ delta: 20, scrollTop: TARGET - (IDLE_REPIN_DEADBAND_PX + 1) }),
     );
-    expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
+    expect(d.startSpring).toBe(true);
+    expect(d.write).toBeNull();
   });
 });
 
@@ -255,7 +261,7 @@ describe('resolveContentDelivery — stranded-oscillation recovery', () => {
   it('no recovery when scrollTop is already within the arrival band', () => {
     const d = resolveContentDelivery(
       strandedState,
-      delta({ delta: 37, scrollTop: TARGET - ARRIVAL_DISTANCE_PX, animationMode: 'spring' }),
+      delta({ delta: 37, scrollTop: TARGET - ARRIVAL_DISTANCE_PX }),
     );
     expect(d.oscillationRecovery).toBe(false);
     expect(d.startSpring).toBe(true);
@@ -264,7 +270,7 @@ describe('resolveContentDelivery — stranded-oscillation recovery', () => {
   it('no recovery when there is no sentinel entry', () => {
     const d = resolveContentDelivery(
       state({ springActive: true }),
-      delta({ delta: 37, scrollTop: TARGET - 37, animationMode: 'spring' }),
+      delta({ delta: 37, scrollTop: TARGET - 37 }),
     );
     expect(d.oscillationRecovery).toBe(false);
     expect(d.startSpring).toBe(true);
@@ -273,7 +279,7 @@ describe('resolveContentDelivery — stranded-oscillation recovery', () => {
   it('genuine new growth beyond the sentinel entry spring-chases instead', () => {
     const d = resolveContentDelivery(
       state({ springActive: true, sentinelEntryTarget: TARGET - 40 }),
-      delta({ delta: 40, scrollTop: TARGET - 40, animationMode: 'spring' }),
+      delta({ delta: 40, scrollTop: TARGET - 40 }),
     );
     expect(d.oscillationRecovery).toBe(false);
     expect(d.startSpring).toBe(true);
@@ -302,7 +308,6 @@ describe('resolveContentDelivery — stranded-oscillation recovery', () => {
       delta({
         delta: 5,
         scrollTop: TARGET + SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX + 10,
-        animationMode: 'spring',
       }),
     );
     expect(d.write).toEqual({ caller: 'contentRO.overshoot', value: TARGET });
@@ -328,7 +333,7 @@ describe('resolveContentDelivery — positive delta', () => {
   it('spring-chases when warm with the gate open', () => {
     const d = resolveContentDelivery(
       state(),
-      delta({ delta: 20, scrollTop: TARGET - 20, animationMode: 'spring' }),
+      delta({ delta: 20, scrollTop: TARGET - 20 }),
     );
     expect(d.startSpring).toBe(true);
     expect(d.write).toBeNull();
@@ -337,7 +342,7 @@ describe('resolveContentDelivery — positive delta', () => {
   it('sync-pins before warm-up completes', () => {
     const d = resolveContentDelivery(
       state({ warm: false }),
-      delta({ delta: 20, scrollTop: TARGET - 20, animationMode: 'spring' }),
+      delta({ delta: 20, scrollTop: TARGET - 20 }),
     );
     expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
     expect(d.startSpring).toBe(false);
@@ -346,31 +351,31 @@ describe('resolveContentDelivery — positive delta', () => {
   it('sync-pins width-reflow layout corrections even in spring mode', () => {
     const d = resolveContentDelivery(
       state(),
-      delta({ delta: 20, scrollTop: TARGET - 20, animationMode: 'spring', widthReflowActive: true }),
+      delta({ delta: 20, scrollTop: TARGET - 20, widthReflowActive: true }),
     );
     expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
   });
 
-  it('a pending structural append opens the spring gate in instant mode', () => {
-    const d = resolveContentDelivery(
-      state(),
-      delta({ delta: 20, scrollTop: TARGET - 20, structuralAppendPending: true }),
-    );
-    expect(d.startSpring).toBe(true);
-  });
-
-  it('sync-pins in plain instant mode', () => {
+  it('chases growth that no code path stamped as live content', () => {
+    // THE regression guard for the 2026-07-25 jump classes. Growth that
+    // nothing marked as "live" — a row's late enrichment (highlight
+    // spans, KaTeX, Mermaid, image load) landing after the stream went
+    // quiet, or any drain growth in a reveal gap — used to resolve
+    // through a recency window and teleport. The observation carries no
+    // such term any more: a warm, at-bottom, non-reflow positive delta
+    // is a chase, full stop.
     const d = resolveContentDelivery(
       state(),
       delta({ delta: 20, scrollTop: TARGET - 20 }),
     );
-    expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
+    expect(d.startSpring).toBe(true);
+    expect(d.write).toBeNull();
   });
 
   it('sync-pins under reduced motion', () => {
     const d = resolveContentDelivery(
       state(),
-      delta({ delta: 20, scrollTop: TARGET - 20, animationMode: 'spring', prefersReducedMotion: true }),
+      delta({ delta: 20, scrollTop: TARGET - 20, prefersReducedMotion: true }),
     );
     expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
     expect(d.startSpring).toBe(false);
@@ -379,7 +384,7 @@ describe('resolveContentDelivery — positive delta', () => {
   it('sync-pins while a spring stop is requested', () => {
     const d = resolveContentDelivery(
       state({ springStopRequested: true }),
-      delta({ delta: 20, scrollTop: TARGET - 20, animationMode: 'spring' }),
+      delta({ delta: 20, scrollTop: TARGET - 20 }),
     );
     expect(d.write).toEqual({ caller: 'contentRO.positiveDelta', value: TARGET });
     expect(d.startSpring).toBe(false);
@@ -430,7 +435,7 @@ describe('resolveContentDelivery — negative delta', () => {
   it('suppresses the sync write mid-chase and bumps the retain window instead', () => {
     const d = resolveContentDelivery(
       state({ springActive: true }),
-      delta({ delta: -56, scrollTop: TARGET - 56, animationMode: 'spring' }),
+      delta({ delta: -56, scrollTop: TARGET - 56 }),
     );
     expect(d.write).toBeNull();
     expect(d.setIsAtBottom).toBe(true);
@@ -441,7 +446,7 @@ describe('resolveContentDelivery — negative delta', () => {
   it('width reflow overrides the mid-chase carve-out and sync-pins', () => {
     const d = resolveContentDelivery(
       state({ springActive: true }),
-      delta({ delta: -56, scrollTop: TARGET - 56, animationMode: 'spring', widthReflowActive: true }),
+      delta({ delta: -56, scrollTop: TARGET - 56, widthReflowActive: true }),
     );
     expect(d.write).toEqual({ caller: 'contentRO.negativeDeltaReflow', value: TARGET });
     expect(d.bumpTargetChanged).toBe(false);
@@ -492,7 +497,7 @@ describe('resolveContentDelivery — structural invariants', () => {
               for (const sentinelEntryTarget of [-1, TARGET]) {
                 for (const d of [70, -70]) {
                   for (const scrollTop of scrollTops) {
-                    for (const animationMode of ['spring', 'instant'] as const) {
+                    {
                       const decision = resolveContentDelivery(
                         state({
                           isAtBottom,
@@ -503,7 +508,7 @@ describe('resolveContentDelivery — structural invariants', () => {
                           springActive,
                           sentinelEntryTarget,
                         }),
-                        delta({ delta: d, scrollTop, animationMode }),
+                        delta({ delta: d, scrollTop }),
                       );
                       checked += 1;
                       // One write, always to the bottom target.
@@ -542,7 +547,7 @@ describe('resolveContentDelivery — structural invariants', () => {
         }
       }
     }
-    expect(checked).toBe(2 * 2 * 2 * 2 * 2 * 2 * 2 * 5 * 2);
+    expect(checked).toBe(2 * 2 * 2 * 2 * 2 * 2 * 2 * 5);
   });
 });
 
