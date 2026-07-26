@@ -1,6 +1,7 @@
 <script lang="ts" module>
   import type { TimelineNode as _TNode } from '../../utils/subagentGrouping';
   import { timelineNodeKey } from '../../utils/subagentGrouping';
+  import { chatRowDomId } from '../../utils/chatDomIds';
 
   /**
    * Deterministic key for the `{#each}` binding. Item ids are only unique
@@ -120,6 +121,9 @@
   // ---- Header content derivations ---------------------------------
 
   let parent = $derived(group.parent);
+  // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
+  // the header's `controls` and the body's `id` must be one string.
+  let groupDomId = $derived(chatRowDomId(pane, 'subagent-group', parent.id));
   let parentMeta = $derived(parseJsonObject(parent.meta));
   let payloadMeta = $derived(parseJsonObject(parent.payloadMeta));
   let inputObject = $derived(readClaudeSubagentInput(payloadMeta, parentMeta));
@@ -207,7 +211,7 @@
   >
     <TranscriptDisclosureHeader
       expanded={expanded}
-      controls={`subagent-group-${parent.id}`}
+      controls={groupDomId}
       testId="subagent-group-toggle"
       class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
       onToggle={(event) => preservePaneScrollAnchor(pane, event, toggle)}
@@ -268,7 +272,7 @@
 
     {#if expanded}
       <div
-        id="subagent-group-{parent.id}"
+        id={groupDomId}
         class="ml-5 max-h-[20rem] overflow-y-auto border-l border-border-subtle bg-surface-0/35 px-3 py-2"
         use:nestedScroll
         role="region"

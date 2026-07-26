@@ -1,5 +1,6 @@
 import type { Item } from '../types/models';
 import { extractClaudeTaskID } from './claudeTaskMeta';
+import { RAIL_EXEMPT_PAYLOAD_KINDS } from './timelineRail';
 
 function notificationFilterFingerprint(item: Item): string {
   if (item.kind === 'notification') return `notification:${extractClaudeTaskID(item) ?? ''}`;
@@ -51,6 +52,19 @@ function structuralPayloadFingerprint(item: Item): string {
   return '';
 }
 
+/**
+ * Whether the row sits on the activity rail — which is structure, because it
+ * decides where an activity run starts and ends (`utils/timelineRail.ts`).
+ *
+ * Only the exempt-or-not BIT, never the payload kind itself: a diff, command
+ * output, or thinking payload attaching mid-stream must not read as a
+ * structure change, and there are many of those per turn. A row leaving the
+ * rail happens at most once, when its card-style payload lands.
+ */
+function railMembershipFingerprint(item: Item): string {
+  return RAIL_EXEMPT_PAYLOAD_KINDS.has(item.payloadKind ?? '') ? 'rail-exempt' : '';
+}
+
 export function itemTimelineStructureKey(item: Item): string {
   return [
     item.id,
@@ -64,6 +78,7 @@ export function itemTimelineStructureKey(item: Item): string {
     receiverLabelFingerprint(item),
     structuralMetaFingerprint(item),
     structuralPayloadFingerprint(item),
+    railMembershipFingerprint(item),
   ].join('\x1e');
 }
 

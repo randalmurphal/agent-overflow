@@ -28,6 +28,7 @@
   import Icon from '../primitives/Icon.svelte';
   import ChatMarkdown from './ChatMarkdown.svelte';
   import type { Item } from '../../types/models';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import { formatTimeOfDay } from '../../utils/format';
@@ -76,6 +77,9 @@
     getItem: () => item,
     getFallback: () => localFallback,
   });
+  // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
+  // the header's `controls` and the body's `id` must be one string.
+  let bodyDomId = $derived(chatRowDomId(pane, 'ask-user-question-body', item.id));
   const expansion = $derived(expansionRef.current!);
 
   async function toggle() {
@@ -140,7 +144,7 @@
 >
   <TranscriptDisclosureHeader
     expanded={expansion.expanded}
-    controls={`ask-user-question-body-${item.id}`}
+    controls={bodyDomId}
     testId="ask-user-question-toggle"
     class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
     onToggle={(event) => preservePaneScrollAnchor(pane, event, toggle)}
@@ -180,7 +184,7 @@
          transitions adjacent to it (frontend/AGENTS.md "Anti-patterns").
          The chevron rotation on the toggle is enough visual feedback. -->
     <div
-      id="ask-user-question-body-{item.id}"
+      id={bodyDomId}
       class="ml-5 border-l border-border-subtle bg-surface-0/35 px-3 py-2"
       data-testid="ask-user-question-body"
     >

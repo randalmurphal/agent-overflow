@@ -17,10 +17,13 @@
   let {
     pane,
     run,
+    clipId,
     onExpand,
   }: {
     pane: ThreadPane;
     run: ActivityRunNode;
+    /** The clip this chip expands into, owned by `ActivityRun`. */
+    clipId: string;
     onExpand: () => void;
   } = $props();
 
@@ -44,7 +47,7 @@
   expanded={false}
   testId="activity-run-chip"
   {ariaLabel}
-  controls="activity-run-{run.runId}"
+  controls={clipId}
   onToggle={onExpand}
   class="py-0.5"
 >

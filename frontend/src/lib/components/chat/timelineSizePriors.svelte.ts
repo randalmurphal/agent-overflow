@@ -76,7 +76,18 @@ const ACTIVITY_RUN_CHIP_PX = 24;
  * grows on measure.
  */
 const ACTIVITY_RUN_ROW_FLOOR_PX = 20;
-const ACTIVITY_RUN_CAP_FLOOR_PX = 512;
+/** `32rem` — the constant half of the clip's `min(50vh, 32rem)` cap. */
+const ACTIVITY_RUN_CAP_REM_PX = 512;
+
+/**
+ * The clip's real ceiling right now. `min(50vh, 32rem)` means the rem half
+ * only wins on viewports taller than 1024px; below that, 50vh is smaller, and
+ * using 512 there would overestimate every long run — turning this floor into
+ * a ceiling-breaker that shrinks total geometry when the measurement lands.
+ */
+function activityRunCapFloorPx(): number {
+  return Math.min(window.innerHeight / 2, ACTIVITY_RUN_CAP_REM_PX);
+}
 
 /**
  * Estimate for a node the kind table cannot price, or undefined to fall back
@@ -94,7 +105,7 @@ export function timelineRowStructuralSizeFor(
   if (node?.kind !== 'activity_run') return undefined;
   if (node.collapsed) return ACTIVITY_RUN_CHIP_PX;
   return Math.min(
-    ACTIVITY_RUN_CAP_FLOOR_PX,
+    activityRunCapFloorPx(),
     node.mountedRows * ACTIVITY_RUN_ROW_FLOOR_PX,
   );
 }

@@ -19,10 +19,7 @@ import {
   type TimelineNode,
 } from '../../utils/subagentGrouping';
 import { groupConsecutiveReads } from '../../utils/readGrouping';
-import {
-  activityRunMembershipKey,
-  groupActivityRuns,
-} from '../../utils/activityRunGrouping';
+import { groupActivityRuns } from '../../utils/activityRunGrouping';
 import {
   activityRunDefaultCollapsed,
   activityRunWindowRows,
@@ -108,19 +105,16 @@ export function createTimelineRowProjection(
   // every node in the window, so running it per streaming delta would
   // rebuild the virtualizer's whole data array on every chunk. The reads in
   // the tracked prelude are the complete set of things that can change its
-  // output — structure (`gatedNodes` identity), membership (a payloadKind
-  // flip, which does not bump `timelineRevision`), the registry's own state
-  // (a collapse toggle, an older chunk mounted), and the two settings the
-  // registry consults for runs with no explicit override. The settings have
-  // to be read HERE: the registry reads them inside `resolve`, which runs
-  // untracked, so on a settled thread nothing else would notice the change
-  // and the new default would not apply until an unrelated structural pass.
-  let runMembershipKey = $derived(
-    activityRunMembershipKey(gatedNodes, (id) => options.getPane().getItemById(id)),
-  );
+  // output — structure (`gatedNodes` identity, which carries run membership
+  // because rail participation is part of `itemTimelineStructureKey`), the
+  // registry's own state (a collapse toggle, an older chunk mounted), and the
+  // two settings the registry consults for runs with no explicit override. The
+  // settings have to be read HERE: the registry reads them inside `resolve`,
+  // which runs untracked, so on a settled thread nothing else would notice the
+  // change and the new default would not apply until an unrelated structural
+  // pass.
   let revealedNodes = $derived.by(() => {
     const nodes = gatedNodes;
-    runMembershipKey;
     const pane = options.getPane();
     pane.activityRuns.revision;
     activityRunDefaultCollapsed();
@@ -145,17 +139,15 @@ export function createTimelineRowProjection(
 
   let rowDecorations = $derived.by(() => {
     const activeTurnIndex = getActiveTurn(options.getPane().threadId)?.turnIndex ?? null;
-    // Decoration sets depend on row structure and active-turn exclusion,
-    // not the growing summary text inside an existing row. Track
-    // `pane.revealBoundary` (a $state that only changes when the gate
-    // advances — NOT per streaming delta) so divider/boundary indexes
-    // realign with the gated set without recomputing on every chunk;
-    // `revealedNodes` is read inside `untrack` because structural/group
-    // patches can change its array ref even when the boundary is unchanged.
-    options.getPane().timelineRevision;
-    options.getPane().revealBoundary;
-
-    return untrack(() => timelineRowDecorations(revealedNodes, activeTurnIndex));
+    // Every set this returns is a set of INDEXES into `revealedNodes`, so it
+    // must be invalidated by exactly what reshapes that array — and it is
+    // tracked directly rather than by re-listing its dependencies, because a
+    // list that fell one behind is how `mt-4` and the response pill land on
+    // the wrong rows. (`revealedNodes` gates itself: it holds its own
+    // reference when nothing shaped it, and its prelude already excludes the
+    // growing summary text inside an existing row.) `timelineRowDecorations`
+    // is pure over the nodes it is handed, so this adds no per-item reads.
+    return timelineRowDecorations(revealedNodes, activeTurnIndex);
   });
 
   function responsePillDuration(node: TimelineNode): string {

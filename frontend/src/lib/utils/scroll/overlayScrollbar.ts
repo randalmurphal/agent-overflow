@@ -107,6 +107,36 @@ export function scrollTopForTrackClick(
   );
 }
 
+/** A wheel notch's height in lines, for the rare `deltaMode: 'line'` device. */
+const WHEEL_LINE_PX = 16;
+
+/**
+ * Where a wheel notch over the bar puts `scrollTop`.
+ *
+ * The bar sits outside the element it scrolls, so the browser never applies
+ * the delta and never clamps the result — the bar does both. Reading the unit
+ * is the first half: most devices report pixels, but a line-mode wheel reports
+ * ~3 and a page-mode one reports 1, and applying either raw would move the
+ * surface by almost nothing.
+ */
+export function scrollTopForWheel(
+  metrics: ScrollMetrics,
+  deltaY: number,
+  deltaMode: number,
+): number {
+  return clamp(
+    metrics.scrollTop + wheelDeltaPx(deltaY, deltaMode, metrics.clientHeight),
+    0,
+    scrollableRange(metrics),
+  );
+}
+
+function wheelDeltaPx(deltaY: number, deltaMode: number, clientHeight: number): number {
+  if (deltaMode === 1) return deltaY * WHEEL_LINE_PX;
+  if (deltaMode === 2) return deltaY * Math.max(1, clientHeight);
+  return deltaY;
+}
+
 export function readScrollMetrics(el: Element): ScrollMetrics {
   return {
     scrollTop: el.scrollTop,

@@ -219,7 +219,7 @@ describe('mount window', () => {
     expect(pass(runs, [rows(100)])[0].mountedFrom).toBe(40);
   });
 
-  it('a window asking for the current default size stays inherited', () => {
+  it('an anchored window keeps tracking the size setting', () => {
     let windowRows = 30;
     const runs = createThreadActivityRuns({
       defaultCollapsed: () => false,
@@ -227,10 +227,10 @@ describe('mount window', () => {
     });
     const [run] = pass(runs, [rows(100)]);
 
-    // What a jump asks for: the size the run already had. Recording that as an
-    // override would pin this run for the rest of the session, and every jump
-    // would pin one more.
-    runs.setMountWindow(run.runId, { rows: 30, startItemId: 'i40' });
+    // A jump anchors without stating a size, so this run still inherits.
+    // Writing the size it already had would pin it, and every jump would pin
+    // one more run against a later change to the setting.
+    runs.setWindowAnchor(run.runId, 'i40');
     expect(pass(runs, [rows(100)])[0].mountedRows).toBe(30);
 
     windowRows = 50;
@@ -247,7 +247,26 @@ describe('mount window', () => {
     // `activityRunWindowRows` setting.
     runs.setWindowAnchor(run.runId, 'i40');
 
-    expect(pass(runs, [rows(100)])[0].mountedRows).toBe(10);
+    // Both halves: the window moved (or the size claim would hold for a call
+    // that did nothing at all), and it moved without resizing.
+    expect(pass(runs, [rows(100)])[0])
+      .toMatchObject({ mountedFrom: 40, mountedRows: 10 });
+  });
+
+  it('reports the pin the row has to carry across a remount', () => {
+    const runs = registry({ windowRows: 10 });
+    const [run] = pass(runs, [rows(100)]);
+
+    expect(runs.windowAnchor(run.runId)).toBeNull();
+
+    // The row's controller reads this to know the reader is parked up here:
+    // a run pinned while it had no controller has no escape flag to restore.
+    runs.setWindowAnchor(run.runId, 'i40');
+    expect(runs.windowAnchor(run.runId)).toBe('i40');
+
+    runs.setWindowAnchor(run.runId, null);
+    expect(runs.windowAnchor(run.runId)).toBeNull();
+    expect(runs.windowAnchor('r99')).toBeNull();
   });
 
   it('returns to the tail when its anchored row leaves the run', () => {
@@ -286,7 +305,7 @@ describe('focus requests', () => {
     const runs = registry();
     const [run] = pass(runs, [rows(40)]);
 
-    runs.requestFocus(run.runId, { itemId: 'i5', relocated: true });
+    expect(runs.requestFocus(run.runId, { itemId: 'i5', relocated: true })).toBe(true);
 
     expect(runs.takeFocus(run.runId)).toEqual({ itemId: 'i5', relocated: true });
     expect(runs.takeFocus(run.runId)).toBeNull();
@@ -340,21 +359,28 @@ describe('entry lifecycle', () => {
   });
 
   it('ignores mutations naming a run that does not exist', () => {
-    const runs = registry();
+    const runs = registry({ windowRows: 10 });
 
     // `resolve` is the only thing that creates an entry. A stale call — a
     // click landing after the pass that swept its run, or a typo — must not
     // seed state for whichever run later mints that id.
     runs.setCollapsed('r1', true);
     runs.saveScrollSnapshot('r1', { scrollTop: 400, escaped: true });
-    runs.setWindowAnchor('r1', 'a');
+    runs.setWindowAnchor('r1', 'i40');
+    // The one mutator that reports: a jump has a gesture to abandon, while a
+    // teardown save has nothing left to do either way.
+    expect(runs.requestFocus('r1', { itemId: 'i40', relocated: true })).toBe(false);
 
-    const [run] = pass(runs, [['a', 'b']]);
+    // A hundred rows and an interior anchor, so a stored ghost would move the
+    // window somewhere the tail default cannot reach on its own.
+    const [run] = pass(runs, [rows(100)]);
 
     expect(run.runId).toBe('r1');
     expect(run.collapsed).toBe(false);
-    expect(run.mountedFrom).toBe(0);
+    expect(run.mountedFrom).toBe(90);
+    expect(runs.windowAnchor('r1')).toBeNull();
     expect(runs.scrollSnapshot('r1')).toBeNull();
+    expect(runs.takeFocus('r1')).toBeNull();
   });
 
   it('drops a snapshot saved after the registry was cleared', () => {

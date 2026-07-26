@@ -10,6 +10,7 @@
   // configure it; TimelineLeaf renders those by kind.
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     createPayloadExpansion,
@@ -86,6 +87,9 @@
       cacheEnabled: thinkingPayloadCacheEnabled,
     }),
   });
+  // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
+  // the header's `controls` and the body's `id` must be one string.
+  let bodyDomId = $derived(chatRowDomId(pane, idPrefix, item.id));
   const expansion = $derived(expansionRef.current!);
   keepExpandedPayloadFresh(
     () => expansion,
@@ -150,7 +154,7 @@
 <div class="group/reasoning-row">
   <TranscriptDisclosureHeader
     {expanded}
-    controls={`${idPrefix}-${item.id}`}
+    controls={bodyDomId}
     ariaLabel={toggleAriaLabel}
     testId={`${idPrefix}-toggle`}
     class="!items-start rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
@@ -163,7 +167,7 @@
       <TailClampedText
         text={bodyText}
         {expanded}
-        id={`${idPrefix}-${item.id}`}
+        id={bodyDomId}
         testId={`${idPrefix}-body`}
       />
     {/snippet}

@@ -64,8 +64,14 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
   scrollSnapshot(runId: string): ActivityRunScrollSnapshot | null;
   saveScrollSnapshot(runId: string, snapshot: ActivityRunScrollSnapshot): void;
   /**
-   * Move or resize the run's mounted window. Set by the "N earlier" /
-   * "N later" boundaries and by a jump landing inside the run.
+   * RESIZE the run's mounted window, recording the size as an explicit
+   * override that no longer tracks the `activityRunWindowRows` setting. Set by
+   * the "N earlier" / "N later" boundaries, which is what the user asking for
+   * more rows means.
+   *
+   * A caller that only wants to MOVE the window uses `setWindowAnchor`.
+   * Passing the size the run already has would pin it here — a short run that
+   * mounts all five of its rows would stay at five as it grows.
    */
   setMountWindow(runId: string, window: ActivityRunMountWindow): void;
   /**
@@ -80,12 +86,25 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    */
   setWindowAnchor(runId: string, anchorItemId: string | null): void;
   /**
+   * The item the window is pinned to, or null when it follows the run's tail.
+   *
+   * Deliberately outside the `revision` graph, like `scrollSnapshot`: its one
+   * reader is the row's controller effect, which would otherwise tear down and
+   * rebuild the spring every time the pin it sets moves.
+   */
+  windowAnchor(runId: string): string | null;
+  /**
    * Ask the run's row to bring `itemId` into view once it is mounted. Held
    * on the entry rather than passed down a prop because the row may not
    * exist yet — the jump that requests it is usually what scrolls the run
    * into the virtualizer's buffer in the first place.
+   *
+   * Returns false when no run holds that id — a pass swept it, or `clear()`
+   * did. Reported rather than silent because the caller's whole gesture is
+   * void in that case: `revealActivityRunItem` relays it so a jump cannot
+   * announce success for a run that will never scroll.
    */
-  requestFocus(runId: string, request: ActivityRunFocusRequest): void;
+  requestFocus(runId: string, request: ActivityRunFocusRequest): boolean;
   /** Read and clear the pending focus request. */
   takeFocus(runId: string): ActivityRunFocusRequest | null;
   /** Drop everything — thread switch. */
@@ -394,14 +413,9 @@ export function createThreadActivityRuns(
     setMountWindow: (runId, window) => {
       const entry = entries.get(runId);
       if (!entry) return;
-      // A window asking for exactly the current default is not an override.
-      // Storing it would freeze this run's size against a later change to
-      // `activityRunWindowRows` — and a jump-relocated window asks for the
-      // size it already had, so every jump would pin one more run.
-      const rows = window.rows === options.windowRows() ? null : window.rows;
-      if (entry.windowRows === rows
+      if (entry.windowRows === window.rows
         && entry.windowStartItemId === window.startItemId) return;
-      entry.windowRows = rows;
+      entry.windowRows = window.rows;
       entry.windowStartItemId = window.startItemId;
       revision += 1;
     },
@@ -411,11 +425,13 @@ export function createThreadActivityRuns(
       entry.windowStartItemId = anchorItemId;
       revision += 1;
     },
+    windowAnchor: (runId) => entries.get(runId)?.windowStartItemId ?? null,
     requestFocus: (runId, request) => {
       const entry = entries.get(runId);
-      if (!entry) return;
+      if (!entry) return false;
       entry.focus = request;
       revision += 1;
+      return true;
     },
     takeFocus: (runId) => {
       const entry = entries.get(runId);

@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte';
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
@@ -102,7 +103,11 @@
     const error = itemMeta?.notification_output_error ?? itemMeta?.output_file_error;
     return typeof error === 'string' ? error : '';
   });
-  let hasExpandableBody = $derived(Boolean(item.payloadId) || deferredOutputState === 'loading' || deferredOutputState === 'error');
+    // One derived id for both halves of the disclosure: the header's
+  // `controls` and the body's `id` must be the same string, and pane-scoped
+  // (utils/chatDomIds.ts).
+  let bodyDomId = $derived(chatRowDomId(pane, 'agent-row-body', item.id));
+let hasExpandableBody = $derived(Boolean(item.payloadId) || deferredOutputState === 'loading' || deferredOutputState === 'error');
   let indicatorState = $derived(indicatorStateForItem(effectiveStatusItem, { meta: statusMeta }));
   let rowError = $derived(
     rowErrorWithFallback(effectiveStatusItem, { meta: statusMeta, fallback: 'Agent failed' }),
@@ -119,7 +124,7 @@
   <TranscriptDisclosureHeader
     expanded={expansion.expanded}
     expandable={hasExpandableBody}
-    controls={hasExpandableBody ? `agent-row-body-${item.id}` : undefined}
+    controls={hasExpandableBody ? bodyDomId : undefined}
     testId="agent-row-toggle"
     class="rounded-[var(--radius-control)] px-1 py-1 {hasExpandableBody ? 'hover:bg-surface-2/20' : ''}"
     onToggle={(event) => preservePaneScrollAnchor(pane, event, () => expansion.toggle())}
@@ -159,7 +164,7 @@
     <ExpandablePayloadBody
       {pane}
       {expansion}
-      id="agent-row-body-{item.id}"
+      id={bodyDomId}
       testPrefix="agent-row"
       emptyMessage="No stored payload for this agent."
       {deferredOutputState}

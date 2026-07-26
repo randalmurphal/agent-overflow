@@ -136,6 +136,26 @@ describe('<ActivityRun>', () => {
       expect(getByTestId('activity-run').getAttribute('data-collapsed')).toBe('false');
     });
 
+    it('rail and chip name the same pane-scoped clip', async () => {
+      const { getByTestId } = await renderRun([tool('t0', 0), tool('t1', 1)]);
+
+      const target = getByTestId('activity-run-clip').id;
+      // Pane-scoped, because run ids are minted per registry: every pane's
+      // first run is `r1`, so an unscoped id collides across panes even on
+      // different threads.
+      expect(target).toContain('-main-');
+      expect(getByTestId('activity-run-rail').getAttribute('aria-controls')).toBe(target);
+
+      await fireEvent.click(getByTestId('activity-run-rail'));
+      await tick();
+
+      // The chip takes the clip's place, and must still point at it. Both
+      // halves build the id from one derived value, because a `controls` that
+      // names a string nothing emits fails silently — it looks right and
+      // announces nothing.
+      expect(getByTestId('activity-run-chip').getAttribute('aria-controls')).toBe(target);
+    });
+
     it('starts collapsed when the setting says so', async () => {
       await updateSetting('activityRunDefault', 'collapsed');
       const { getByTestId, queryByTestId } = await renderRun([tool('t0', 0)]);
@@ -290,6 +310,38 @@ describe('<ActivityRun>', () => {
 
       expect(container.querySelector('[data-item-id="t41"]')).not.toBeNull();
       expect(queryByTestId('activity-run-later')).toBeNull();
+    });
+
+    it('holds a historical run\'s window when it becomes the live one', async () => {
+      await updateSetting('activityRunWindowRows', 10);
+      const pane = await buildPane(undefined, [
+        ...LONG_RUN,
+        makeItem({ id: 'p0', itemIndex: 40, kind: 'assistant_text', summary: 'done' }),
+      ]);
+      const { container, getByTestId, queryByTestId } = render(MessageTimeline, {
+        props: { pane },
+      });
+      pane.requestScrollToItem('t20', { flash: true });
+      await flushJump();
+
+      // Prose closed this run, so the jump pinned its window with no
+      // controller to record the escape on.
+      expect(getByTestId('activity-run').dataset.live).toBe('false');
+      expect(container.querySelector('[data-item-id="t20"]')).not.toBeNull();
+
+      // The prose leaves — an interrupt reverts it, a queued item is
+      // withdrawn — and the run it closed is now the timeline's tail, so it
+      // gets a controller. A fresh controller says "not escaped", and taking
+      // that at face value would release the pin and drop the reader at the
+      // run's tail without them touching anything.
+      pane.removeItemById('p0');
+      await tick();
+
+      expect(getByTestId('activity-run').dataset.live).toBe('true');
+      expect(container.querySelector('[data-item-id="t20"]')).not.toBeNull();
+      expect(container.querySelector('[data-item-id="t15"]')).not.toBeNull();
+      expect(getByTestId('activity-run-later').textContent).toContain('15 later');
+      expect(queryByTestId('activity-run-chip')).toBeNull();
     });
   });
 });

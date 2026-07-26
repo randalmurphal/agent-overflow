@@ -25,6 +25,7 @@
    * render with the line-tint background until spans land.
    */
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import { untrack } from 'svelte';
   import EditorLink from '../common/EditorLink.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -106,9 +107,11 @@
   let canToggle = $derived(hasBody || shouldShowFullCTA);
   // Components are encoded separately so the literal `:` joiner stays
   // unambiguous even when item ids or paths contain `:` themselves.
-  let regionDomId = $derived(
-    `diff-file-region-${encodeURIComponent(itemId ?? payloadId ?? 'local')}:${encodeURIComponent(file.path)}`,
-  );
+  let regionDomId = $derived(chatRowDomId(
+    pane,
+    'diff-file-region',
+    `${encodeURIComponent(itemId ?? payloadId ?? 'local')}:${encodeURIComponent(file.path)}`,
+  ));
 
   let timestampSlot = $derived(
     createdAt === undefined

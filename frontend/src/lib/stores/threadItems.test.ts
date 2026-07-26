@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { makeItem } from '../../test/helpers/chat';
+import type { Item } from '../types/models';
 import {
   applyItemUpsertsToWindow,
   compareItemsByTimelinePosition,
@@ -324,6 +325,45 @@ describe('threadItems', () => {
 
     expect(next?.items[0]).toBe(completed);
     expect(next?.structureChanged).toBe(false);
+  });
+
+  it('flags a rail-exempting payload as structural, and an ordinary one not', () => {
+    const current = [
+      makeItem({
+        id: 'plan',
+        threadId: 'thread-1',
+        kind: 'tool_call',
+        status: 'completed',
+        toolName: 'Bash',
+        summary: 'Plan',
+      }),
+    ];
+    const apply = (incoming: Item) => applyWindowUpserts({
+      current,
+      incoming: [incoming],
+      itemIndexById: new Map(current.map((item, index) => [item.id, index])),
+      currentThreadId: 'thread-1',
+      oldestLoadedTurnIndex: 0,
+    });
+
+    // A card-style payload takes the row off the activity rail, which decides
+    // where the run around it starts and ends — the same class of change as an
+    // insertion, and the projection has no other way to hear about it.
+    expect(apply({
+      ...current[0]!,
+      payloadId: 'p-plan',
+      payloadKind: 'proposed_plan',
+      updatedAt: current[0]!.updatedAt + 1,
+    })?.structureChanged).toBe(true);
+
+    // Every other payload kind leaves membership alone, and there are many per
+    // turn: treating those as structural would rebuild the timeline per chunk.
+    expect(apply({
+      ...current[0]!,
+      payloadId: 'p-out',
+      payloadKind: 'command_output',
+      updatedAt: current[0]!.updatedAt + 1,
+    })?.structureChanged).toBe(false);
   });
 
   it('flags task lifecycle completion as structural because it can hide notifications', () => {

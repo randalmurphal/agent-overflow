@@ -541,6 +541,14 @@
     pane.threadId;
     pane.timelineRevision;
     pane.revealBoundary;
+    // A run's mount window decides which of its children are retained, and it
+    // moves without touching any of the above: relocating a window mounts a
+    // different set of rows at the same node count and the same item list.
+    // Without this the pass the signature is ready to accept is never
+    // scheduled, so the window the reader left stays retained until an
+    // unrelated outer scroll. Each bump is one deliberate action (a toggle, a
+    // chunk, a jump), never a streaming delta.
+    pane.activityRuns.revision;
     prune.schedule();
   });
 

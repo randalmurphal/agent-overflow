@@ -131,14 +131,21 @@ function clampWindowStart(run: ActivityRunNode, from: number, rows: number): num
 /** The registry surface `revealActivityRunItem` drives. */
 export interface ActivityRunReveal {
   setCollapsed(runId: string, collapsed: boolean): void;
-  setMountWindow(runId: string, window: ActivityRunMountWindow): void;
-  requestFocus(runId: string, request: ActivityRunFocusRequest): void;
+  setWindowAnchor(runId: string, anchorItemId: string | null): void;
+  /** False when the registry holds no such run; see `ThreadActivityRuns`. */
+  requestFocus(runId: string, request: ActivityRunFocusRequest): boolean;
 }
 
 /**
  * Point a run at one of its items: expand it from a chip, relocate the mount
  * window around the target, and leave the focus request the run's row
- * consumes once it is mounted. Returns false when the item is not in the run.
+ * consumes once it is mounted.
+ *
+ * Returns false when the item is not in the run, and when the registry no
+ * longer holds the run at all — a node resolved before a sweep or a thread
+ * switch names an id whose entry is gone, and every mutator here is a no-op
+ * for it. The answer comes from the registry's own report rather than a
+ * pre-check, so it cannot drift from what was actually stored.
  *
  * One function rather than three calls at each jump site because a partial
  * application is a silent bug — a relocated window on a collapsed run shows
@@ -152,10 +159,13 @@ export function revealActivityRunItem(
   const window = activityRunFocusWindow(run, itemId);
   if (!window) return false;
   registry.setCollapsed(run.runId, false);
-  registry.setMountWindow(run.runId, window);
-  registry.requestFocus(run.runId, {
+  // The anchor, not a whole window: a jump moves the window and never resizes
+  // it, and asking for the size it already has would record that size as an
+  // explicit override — pinning a short run at its current length so it stops
+  // widening as it grows.
+  registry.setWindowAnchor(run.runId, window.startItemId);
+  return registry.requestFocus(run.runId, {
     itemId,
     relocated: window.from !== run.mountedFrom,
   });
-  return true;
 }

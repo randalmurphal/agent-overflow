@@ -34,6 +34,7 @@
     activityRunRowFullyVisible,
     observeActivityRunExpansion,
   } from '../../utils/activityRunClip';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import {
     createUseStickToBottomController,
@@ -65,6 +66,16 @@
   let clipEl = $state<HTMLElement | undefined>();
   let contentEl = $state<HTMLElement | undefined>();
   let expandedPx = $state(0);
+
+  // The run's identity as a PRIMITIVE. Every projection pass hands this
+  // component a fresh node object, so an effect that reads `run.runId`
+  // subscribes to the whole prop and re-runs on every appended row. For the
+  // controller effect below that would mean tearing down and rebuilding the
+  // spring, its observers, and its warm gate on every streamed activity row —
+  // exactly the mid-turn controller churn the registry's stable `runId` exists
+  // to prevent. A derived primitive recomputes but does not propagate while
+  // its value is unchanged, so the effect sees the identity without the churn.
+  let runId = $derived(run.runId);
 
   // Built only for the live run, and only while it is live — a run that a
   // later one displaces has no use for a spring, and a controller per run
@@ -108,11 +119,11 @@
     run.children.length - run.mountedFrom - run.mountedRows,
   );
 
-  // Run ids are minted per registry, so every pane's first run is `r1`. The
-  // pane scope keeps `aria-controls` unambiguous when two panes are open —
-  // otherwise the rail and chip of one pane point a screen reader at the
-  // other pane's clip.
-  let clipId = $derived(`activity-run-${pane.paneId}-${run.runId}`);
+  // Run ids are minted per REGISTRY, so this one needs the pane scope more
+  // than the item-keyed ids do: every pane's first run is `r1`, so two panes
+  // collide even on different threads. Passed to the rail and the chip rather
+  // than rebuilt there (utils/chatDomIds.ts).
+  let clipId = $derived(chatRowDomId(pane, 'activity-run', run.runId));
   let maxHeight = $derived(activityRunClipMaxHeight(expandedPx));
   let toggleLabel = $derived(
     run.collapsed ? 'Expand activity run' : 'Collapse activity run',
@@ -173,7 +184,7 @@
   function saveInnerScroll(): void {
     const clip = clipEl;
     if (!clip) return;
-    pane.activityRuns.saveScrollSnapshot(run.runId, {
+    pane.activityRuns.saveScrollSnapshot(runId, {
       scrollTop: clip.scrollTop,
       escaped: stick?.escapedFromLock ?? false,
     });
@@ -196,20 +207,28 @@
     stick = controller;
     if (controller && content) controller.attach(clip, content);
 
-    const snapshot = pane.activityRuns.scrollSnapshot(run.runId);
+    const snapshot = pane.activityRuns.scrollSnapshot(runId);
     if (snapshot) {
       clip.scrollTop = snapshot.scrollTop;
-      // Escape is event-sourced, so it is carried across the remount
-      // rather than re-derived from the geometry just written.
-      if (controller && snapshot.escaped) controller.setEscapedFromLock(true);
     } else {
       // A run that has never been scrolled rests at its newest row — the
       // latest activity is the reason it is on screen.
       clip.scrollTop = clip.scrollHeight;
     }
 
+    // Escape is event-sourced, so it is carried into a new controller rather
+    // than re-derived from the geometry just written. A pinned window is the
+    // same fact recorded where a run without a controller could keep it: a
+    // historical run a jump pinned has no `escapedFromLock` to save, so
+    // becoming the live one would hand this fresh controller a clean flag and
+    // the anchor effect below would release the pin the reader is standing on.
+    const pinned = pane.activityRuns.windowAnchor(runId) !== null;
+    if (controller && (snapshot?.escaped || pinned)) {
+      controller.setEscapedFromLock(true);
+    }
+
     return () => {
-      pane.activityRuns.saveScrollSnapshot(run.runId, {
+      pane.activityRuns.saveScrollSnapshot(runId, {
         scrollTop: clip.scrollTop,
         escaped: controller?.escapedFromLock ?? false,
       });
@@ -317,7 +336,7 @@
   ></button>
 
   {#if run.collapsed}
-    <ActivityRunChip {pane} {run} onExpand={toggle} />
+    <ActivityRunChip {pane} {run} {clipId} onExpand={toggle} />
   {:else}
     <!-- overflow-x is hidden on purpose: a wide preview inside a tool row
          must not raise a horizontal bar at run level, which would consume
@@ -360,6 +379,7 @@
       target={clipEl}
       content={contentEl}
       ariaLabel="Scroll activity run"
+      ownerDrivenPosition={() => !!stick && !stick.escapedFromLock}
       onUserScrollStart={stick ? () => stick?.setEscapedFromLock(true) : undefined}
       onUserScrollEnd={stick ? (atBottom) => { if (atBottom) stick?.markAtBottom(); } : undefined}
     />

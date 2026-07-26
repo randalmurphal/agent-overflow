@@ -3,6 +3,7 @@ import {
   MIN_THUMB_PX,
   scrollTopForDrag,
   scrollTopForTrackClick,
+  scrollTopForWheel,
   thumbMetrics,
   type ScrollMetrics,
 } from './overlayScrollbar';
@@ -127,5 +128,32 @@ describe('scrollTopForTrackClick', () => {
 
   it('is inert when there is nothing to scroll', () => {
     expect(scrollTopForTrackClick(180, metrics(0, 400, 400), 200)).toBe(0);
+  });
+});
+
+describe('scrollTopForWheel', () => {
+  const surface = metrics(100, 100, 400);
+
+  it('applies a pixel notch as it arrives', () => {
+    expect(scrollTopForWheel(surface, 60, 0)).toBe(160);
+    expect(scrollTopForWheel(surface, -60, 0)).toBe(40);
+  });
+
+  it('reads a line notch as lines', () => {
+    // A raw 3 would move the surface by three pixels — a wheel that does
+    // nothing. Devices reporting lines are rare but real.
+    expect(scrollTopForWheel(surface, 3, 1)).toBe(148);
+  });
+
+  it('reads a page notch as a viewport', () => {
+    expect(scrollTopForWheel(surface, 1, 2)).toBe(200);
+  });
+
+  it('clamps both ends, because nothing else will', () => {
+    // The browser clamps the surfaces it scrolls itself; this one it never
+    // touches, so an overshoot would land an out-of-range scrollTop and the
+    // at-bottom report that follows it would be reasoning about that value.
+    expect(scrollTopForWheel(surface, 9_000, 0)).toBe(300);
+    expect(scrollTopForWheel(surface, -9_000, 0)).toBe(0);
   });
 });

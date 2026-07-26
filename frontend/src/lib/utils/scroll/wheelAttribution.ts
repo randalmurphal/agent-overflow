@@ -34,8 +34,14 @@ const nestedScrollers = new WeakMap<Element, number>();
  * Can `el` still move in this direction? `delta` uses wheel sign
  * conventions: negative scrolls toward earlier content (up), positive
  * toward later content (down).
+ *
+ * Exported for the one surface that answers this question about an element
+ * that is NOT its ancestor: an overlay scrollbar sits beside the scroller it
+ * drives (`components/shared/OverlayScrollbar.svelte`), so the walk below can
+ * never find it, and both places must agree on where an edge is — that is
+ * what decides whether a gesture chains out.
  */
-function canConsumeDelta(el: Element, delta: number): boolean {
+export function canConsumeDelta(el: Element, delta: number): boolean {
   if (delta < 0) return el.scrollTop > CONSUME_EPSILON_PX;
   return el.scrollHeight - el.scrollTop - el.clientHeight > CONSUME_EPSILON_PX;
 }

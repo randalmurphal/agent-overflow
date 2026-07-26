@@ -136,11 +136,11 @@ describe('growing the window', () => {
 });
 
 describe('revealActivityRunItem', () => {
-  function registry(): ActivityRunReveal {
+  function registry(runExists = true): ActivityRunReveal {
     return {
       setCollapsed: vi.fn(),
-      setMountWindow: vi.fn(),
-      requestFocus: vi.fn(),
+      setWindowAnchor: vi.fn(),
+      requestFocus: vi.fn(() => runExists),
     };
   }
 
@@ -150,11 +150,9 @@ describe('revealActivityRunItem', () => {
 
     expect(revealActivityRunItem(reveal, node, 'i40')).toBe(true);
     expect(reveal.setCollapsed).toHaveBeenCalledWith('r1', false);
-    expect(reveal.setMountWindow).toHaveBeenCalledWith('r1', {
-      rows: 10,
-      startItemId: 'i35',
-      from: 35,
-    });
+    // The anchor alone. A jump moves the window; asking for a size would
+    // record the size the run already has as an explicit override.
+    expect(reveal.setWindowAnchor).toHaveBeenCalledWith('r1', 'i35');
     // Relocated: the clip's offset belonged to rows 90-99, so the row consuming
     // this request has to place the target rather than reveal it in place.
     expect(reveal.requestFocus)
@@ -172,13 +170,24 @@ describe('revealActivityRunItem', () => {
       .toHaveBeenCalledWith('r1', { itemId: 'i95', relocated: false });
   });
 
+  it('reports the registry refusing a run it no longer holds', () => {
+    // The node was resolved by an earlier pass and the entry has since been
+    // swept (or a thread switch cleared it), so all three mutators no-op. The
+    // jump has to hear that, or it goes on to tick and scroll for a run that
+    // will never mount the target.
+    const reveal = registry(false);
+    const node = run(rows(100), { from: 90, rows: 10 });
+
+    expect(revealActivityRunItem(reveal, node, 'i40')).toBe(false);
+  });
+
   it('changes nothing for an item the run does not carry', () => {
     const reveal = registry();
     const node = run(rows(10), { from: 0, rows: 10 });
 
     expect(revealActivityRunItem(reveal, node, 'zz')).toBe(false);
     expect(reveal.setCollapsed).not.toHaveBeenCalled();
-    expect(reveal.setMountWindow).not.toHaveBeenCalled();
+    expect(reveal.setWindowAnchor).not.toHaveBeenCalled();
     expect(reveal.requestFocus).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,7 @@
   import CopyFooter from './CopyFooter.svelte';
   import { untrack } from 'svelte';
   import type { CommandOutputMeta, Item } from '../../types/models';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
@@ -91,6 +92,9 @@
     const error = itemMeta.notification_output_error ?? itemMeta.output_file_error;
     return typeof error === 'string' ? error : '';
   });
+  // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
+  // the header's `controls` and the body's `id` must be one string.
+  let outputDomId = $derived(chatRowDomId(pane, 'cmd-output', payloadId || item.id));
   let hasBody = $derived(
     hasPayload || deferredOutputState === 'loading' || deferredOutputState === 'error',
   );
@@ -195,7 +199,7 @@
   <TranscriptDisclosureHeader
     expanded={expansion.expanded}
     expandable={hasBody}
-    controls={hasBody ? `cmd-output-${payloadId || item.id}` : undefined}
+    controls={hasBody ? outputDomId : undefined}
     ariaLabel={`Toggle Command Output: ${displayCommand}`}
     testId="command-output-toggle"
     class="rounded-[var(--radius-control)] px-1 py-1 text-[0.75rem] {hasBody ? 'hover:bg-surface-2/20' : ''}"
@@ -222,7 +226,7 @@
 
   <!-- Output content -->
   {#if hasBody && expansion.expanded}
-    <div id="cmd-output-{payloadId || item.id}" class="ml-5 border-l border-border-subtle bg-surface-0/35">
+    <div id={outputDomId} class="ml-5 border-l border-border-subtle bg-surface-0/35">
       <div class="max-h-96 overflow-auto px-3 py-2" use:nestedScroll>
         {#if hasPayload && expansion.loading}
           <p class="text-[0.6875rem] text-fg-subtle" role="status" aria-live="polite">Loading output…</p>

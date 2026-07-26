@@ -3,6 +3,7 @@
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Icon from '../primitives/Icon.svelte';
   import type { Item } from '../../types/models';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
@@ -14,6 +15,9 @@
 
   let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
 
+  // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
+  // the header's `controls` and the body's `id` must be one string.
+  let detailDomId = $derived(chatRowDomId(pane, 'compaction-detail', item.id));
   const label = $derived(item.summary?.trim() || 'Context compacted');
 
   // The claudetui provider links a "compaction" payload carrying the
@@ -77,7 +81,7 @@
         type="button"
         data-testid="compaction-toggle"
         aria-expanded={expanded}
-        aria-controls={`compaction-detail-${item.id}`}
+        aria-controls={detailDomId}
         aria-label="Toggle compaction summary"
         class="flex cursor-pointer items-center gap-1.5 bg-transparent uppercase tracking-[0.18em] text-fg-subtle transition-colors hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         onclick={(event) => preservePaneScrollAnchor(pane, event, handleToggle)}
@@ -99,7 +103,7 @@
 
   {#if hasCapture && expanded}
     <div
-      id={`compaction-detail-${item.id}`}
+      id={detailDomId}
       data-testid="compaction-detail"
       class="mx-auto mt-3 max-w-2xl rounded-[var(--radius-control)] border border-border-subtle bg-surface-2/20 px-4 py-3 text-xs leading-relaxed text-fg-muted"
     >

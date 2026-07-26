@@ -13,6 +13,7 @@
 
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
@@ -100,7 +101,11 @@
     return typeof d === 'number' && d >= 0 ? d : null;
   });
 
-  let hasExpandableBody = $derived(Boolean(item.payloadId));
+    // One derived id for both halves of the disclosure: the header's
+  // `controls` and the body's `id` must be the same string, and pane-scoped
+  // (utils/chatDomIds.ts).
+  let bodyDomId = $derived(chatRowDomId(pane, 'advisor-row-body', item.id));
+let hasExpandableBody = $derived(Boolean(item.payloadId));
 
   let indicatorState = $derived(indicatorStateForItem(item, { meta: summaryMeta }));
   let rowError = $derived(
@@ -119,7 +124,7 @@
   <TranscriptDisclosureHeader
     expanded={expansion.expanded}
     expandable={hasExpandableBody}
-    controls={hasExpandableBody ? `advisor-row-body-${item.id}` : undefined}
+    controls={hasExpandableBody ? bodyDomId : undefined}
     testId="advisor-row-toggle"
     class="rounded-[var(--radius-control)] px-1 py-1 {hasExpandableBody ? 'hover:bg-surface-2/20' : ''}"
     onToggle={(event) => preservePaneScrollAnchor(pane, event, () => expansion.toggle())}
@@ -158,7 +163,7 @@
     <ExpandablePayloadBody
       {pane}
       {expansion}
-      id="advisor-row-body-{item.id}"
+      id={bodyDomId}
       testPrefix="advisor-row"
       emptyMessage="No stored advisor response."
       copyLabel="Copy response"

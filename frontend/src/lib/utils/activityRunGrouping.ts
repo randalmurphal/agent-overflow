@@ -16,6 +16,11 @@
 // CURRENT item so a late-arriving payloadKind is honored. Prose, user
 // messages, errors, notifications, and every other non-rail kind break runs.
 //
+// That read needs no reactivity gate of its own: rail participation is part of
+// `itemTimelineStructureKey`, so a row leaving the rail bumps
+// `timelineRevision` like any other structure change and the projection
+// rebuilds through the same path an appended row takes.
+//
 // Pure: fresh array out, no mutation of `nodes`. Identity is the one piece
 // it cannot derive alone — see `ActivityRunIdentity`.
 
@@ -91,25 +96,6 @@ function isRunMember(node: TimelineNode, getItem: (id: string) => Item | undefin
   // node list that has none.
   if (node.kind === 'activity_run') return false;
   return timelineNodeHasRail(node, currentLeafItem(node, getItem));
-}
-
-/**
- * The membership pattern of `nodes` as a positional bit string.
- *
- * This is the reactivity gate for the pass. Membership reads live item
- * state, and a `payloadKind` can arrive without bumping `timelineRevision`
- * (that is exactly how a proposed-plan row leaves the rail), so the pass
- * cannot be gated on structure alone. Walking the pattern is cheap and
- * yields a primitive, so ordinary streaming deltas re-run only this walk;
- * the rebuild downstream fires when the pattern actually changes.
- */
-export function activityRunMembershipKey(
-  nodes: readonly TimelineNode[],
-  getItem: (id: string) => Item | undefined,
-): string {
-  let key = '';
-  for (const node of nodes) key += isRunMember(node, getItem) ? '1' : '0';
-  return key;
 }
 
 /** Every item a run row represents, including group members. */

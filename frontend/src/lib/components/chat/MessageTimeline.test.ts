@@ -743,7 +743,7 @@ describe('<MessageTimeline>', () => {
     expect(wrappers[1].className).not.toContain('border-l');
   });
 
-  it('drops a row out of its run from pane state after a non-structural upsert', async () => {
+  it('drops a row out of its run when a payloadKind takes it off the rail', async () => {
     const tool = makeItem({
       id: 'plan-1',
       itemIndex: 0,
@@ -755,8 +755,6 @@ describe('<MessageTimeline>', () => {
     const { container } = render(MessageTimeline, { props: { pane } });
     const run = () => container.querySelector('[data-testid="activity-run"]');
 
-    // Rail membership is read from the LIVE item, so a payloadKind that
-    // arrives without a structural rebuild still has to dissolve the run.
     expect(run()?.getAttribute('data-rail')).toBe('true');
 
     const revisionBefore = pane.timelineRevision;
@@ -774,7 +772,11 @@ describe('<MessageTimeline>', () => {
     });
     await tick();
 
-    expect(pane.timelineRevision).toBe(revisionBefore);
+    // Leaving the rail changes which top-level rows exist, so it counts as a
+    // structure change — that bump is what rebuilds the projection. Rail
+    // participation is in `itemTimelineStructureKey` for exactly this; without
+    // it the row would still be inside a run nothing told to re-group.
+    expect(pane.timelineRevision).toBeGreaterThan(revisionBefore);
     expect(run()).toBeNull();
   });
 
@@ -1472,6 +1474,45 @@ describe('<MessageTimeline>', () => {
       const row = container.querySelector('[data-row-index="1"]');
       if (!row) throw new Error('row 1 not found');
       expect(row.classList.contains('mt-4')).toBe(true);
+    });
+
+    it('realigns boundary decorations when a payloadKind takes a row off the rail', async () => {
+      const pane = await buildPane(undefined, [
+        makeItem({ id: 't0', itemIndex: 0, kind: 'tool_call', status: 'completed', toolName: 'Bash', summary: 'ls' }),
+        makeItem({ id: 't1', itemIndex: 1, kind: 'tool_call', status: 'completed', toolName: 'Bash', summary: 'pwd' }),
+        makeItem({ id: 't2', itemIndex: 2, kind: 'tool_call', status: 'completed', toolName: 'Bash', summary: 'id' }),
+        makeItem({ id: 'text-1', itemIndex: 3, kind: 'assistant_text', summary: 'done' }),
+      ]);
+      const { container } = render(MessageTimeline, { props: { pane } });
+
+      // One run plus the prose: the boundary is the prose, at index 1.
+      expect(container.querySelector('[data-row-index="1"]')?.classList.contains('mt-4'))
+        .toBe(true);
+
+      // A rail-exempt payloadKind arriving on an existing row splits the run in
+      // two around it. Nothing else about the row changes — same kind, same
+      // tool name, same position — so the whole chain hangs on rail
+      // participation being part of the item's structure key: no bump, no
+      // rebuild, and both the split and every index-keyed decoration after it
+      // stay wrong until an unrelated change arrives.
+      pane.upsertItem(makeItem({
+        id: 't1',
+        itemIndex: 1,
+        kind: 'tool_call',
+        status: 'completed',
+        toolName: 'Bash',
+        summary: 'pwd',
+        payloadKind: 'proposed_plan',
+        payloadId: 'payload-plan-1',
+        updatedAt: Date.now() + 1,
+      }));
+      await tick();
+
+      expect(container.querySelectorAll('[data-testid="activity-run"]')).toHaveLength(2);
+      expect(container.querySelector('[data-row-index="3"]')?.classList.contains('mt-4'))
+        .toBe(true);
+      expect(container.querySelector('[data-row-index="1"]')?.classList.contains('mt-4'))
+        .toBe(false);
     });
   });
 

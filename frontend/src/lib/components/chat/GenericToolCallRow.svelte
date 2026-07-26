@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte';
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
@@ -122,7 +123,11 @@
   });
 
   let suppressBodyExpansion = $derived(item.toolName === 'TaskOutput' || item.toolName === 'Read' || item.toolName === 'Skill');
-  let hasExpandableBody = $derived(
+    // One derived id for both halves of the disclosure: the header's
+  // `controls` and the body's `id` must be the same string, and pane-scoped
+  // (utils/chatDomIds.ts).
+  let bodyDomId = $derived(chatRowDomId(pane, 'tool-call-card-body', item.id));
+let hasExpandableBody = $derived(
     !suppressBodyExpansion &&
       (Boolean(item.payloadId) ||
         deferredOutputState === 'loading' ||
@@ -167,7 +172,7 @@
   <TranscriptDisclosureHeader
     expanded={expansion.expanded}
     expandable={hasExpandableBody}
-    controls={hasExpandableBody ? `tool-call-card-body-${item.id}` : undefined}
+    controls={hasExpandableBody ? bodyDomId : undefined}
     testId="tool-call-card-toggle"
     interactiveBody={preview.path !== undefined}
     class="rounded-[var(--radius-control)] px-1 py-1 {hasExpandableBody ? 'hover:bg-surface-2/20' : ''}"
@@ -209,7 +214,7 @@
     <ExpandablePayloadBody
       {pane}
       {expansion}
-      id="tool-call-card-body-{item.id}"
+      id={bodyDomId}
       testPrefix="tool-call-card"
       emptyMessage="No stored payload for this tool result."
       {deferredOutputState}

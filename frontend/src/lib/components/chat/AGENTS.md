@@ -120,7 +120,10 @@ Operational rules for this directory:
   While the inner controller is escaped, `ActivityRun.svelte` pins the mount
   window (`setWindowAnchor`) so appended rows cannot slide the reader's rows
   up the clip; returning to the clip's bottom releases it. Do not add a
-  geometric release — a pin means "the reader is up here."
+  geometric release — a pin means "the reader is up here." A new controller
+  reads the existing pin and starts escaped, for the same reason it carries
+  the snapshot's escape flag: a historical run that a jump pinned had no
+  controller to record the event on.
 - **A jump into a run goes through `revealActivityRunItem`**
   (`utils/activityRunWindow.ts`), which expands, relocates the window, and
   leaves the focus request together. Do not call the three registry methods
@@ -130,6 +133,13 @@ Operational rules for this directory:
   transition. Geometry that depends on that lives in
   `activityRunClip.browser.test.ts` / `activityRunScroll.browser.test.ts`;
   happy-dom cannot see any of it.
+- **The overlay bar is a SIBLING of the clip, not a descendant.** Nothing that
+  starts on the strip reaches the clip on its own: wheel is applied by the
+  control and taken out of the tree, touch is held by `touch-action: none`,
+  and every gesture states its intent through
+  `onUserScrollStart` / `onUserScrollEnd`. A gesture the control forwards
+  without stating intent moves the clip and then gets yanked back by the next
+  chunk; one it leaves alone scrolls the conversation instead.
 
 ## Companion Panes
 

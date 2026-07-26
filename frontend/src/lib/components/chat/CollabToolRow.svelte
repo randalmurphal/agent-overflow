@@ -24,6 +24,7 @@
     keepExpandedPayloadFresh,
   } from '../../utils/payloadExpansion.svelte';
   import CollabToolRowDetails from './CollabToolRowDetails.svelte';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import { indicatorStateForItem, rowErrorForStatus } from './rowState';
@@ -178,6 +179,10 @@
     item.kind === 'tool_completion' &&
       item.toolName === 'collab_agent',
   );
+  // Computed here and PASSED to the details body: the header lives in this
+  // component and the body in another, so a second literal there is a
+  // cross-file drift waiting to happen (utils/chatDomIds.ts).
+  let outputDomId = $derived(chatRowDomId(pane, 'collab-tool-row-output', item.id));
   let hasExpandableOutput = $derived(hasOutputShell && Boolean(item.payloadId));
   const expansionRef = useLeasedItemExpansion({
     getPane: () => pane,
@@ -237,7 +242,7 @@
   <TranscriptDisclosureHeader
     expanded={expansion?.expanded ?? false}
     expandable={hasExpandableOutput}
-    controls={hasExpandableOutput ? `collab-tool-row-output-${item.id}` : undefined}
+    controls={hasExpandableOutput ? outputDomId : undefined}
     testId="collab-tool-row-toggle"
     class="rounded-[var(--radius-control)] py-1 {hasExpandableOutput ? 'hover:bg-surface-2/20' : ''}"
     onToggle={(event) => preservePaneScrollAnchor(pane, event, toggle)}
@@ -252,6 +257,7 @@
   <CollabToolRowDetails
     {pane}
     itemId={item.id}
+    bodyDomId={outputDomId}
     {promptPreview}
     {rowError}
     {completionPreview}

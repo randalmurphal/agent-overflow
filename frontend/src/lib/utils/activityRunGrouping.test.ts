@@ -59,8 +59,6 @@ function waitGroup(parentId: string, completionId?: string): TimelineNode {
     groupKey: parentId,
     children: [],
     descendantCount: 0,
-    loadedDescendantCount: 0,
-    latestChildSummary: '',
     completion: completionId
       ? makeItem({
         id: completionId,

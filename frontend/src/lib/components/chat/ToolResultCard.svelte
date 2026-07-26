@@ -3,6 +3,7 @@
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
   import { getSettings } from '../../stores/settings.svelte';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
   import { lineTintClass } from '../../utils/diffLineTint';
@@ -69,6 +70,9 @@
     getItem: () => item,
     getFallback: () => localFallback,
   });
+  // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
+  // the header's `controls` and the body's `id` must be one string.
+  let patchDomId = $derived(chatRowDomId(pane, 'tool-result-patch', item.id));
   const expansion = $derived(expansionRef.current!);
   keepExpandedPayloadFresh(
     () => expansion,
@@ -223,7 +227,7 @@
       <TranscriptDisclosureHeader
         expanded={expansion.expanded}
         expandable={canExpandExactPatch}
-        controls={canExpandExactPatch ? `tool-result-patch-${item.id}` : undefined}
+        controls={canExpandExactPatch ? patchDomId : undefined}
         ariaLabel="Toggle Exact Patch"
         testId="tool-result-patch-toggle"
         class="rounded-[var(--radius-control)] px-1 py-1 text-[0.75rem] text-fg-muted {canExpandExactPatch ? 'hover:bg-surface-2/20' : ''}"
@@ -258,7 +262,7 @@
       </TranscriptDisclosureHeader>
 
       {#if canExpandExactPatch && expansion.expanded}
-        <div id="tool-result-patch-{item.id}" class="ml-5 border-l border-border-subtle bg-surface-0/35">
+        <div id={patchDomId} class="ml-5 border-l border-border-subtle bg-surface-0/35">
           <div class="px-3 py-2">
             {#if expansion.loading}
               <p class="text-xs text-text-secondary" role="status" aria-live="polite">Loading patch…</p>

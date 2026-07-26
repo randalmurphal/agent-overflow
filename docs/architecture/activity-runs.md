@@ -48,6 +48,18 @@ control. Because the predicate reads live item state, a late-arriving
 `payloadKind` can **split** a run mid-stream; the registry's membership rule
 below is what keeps state attached across that.
 
+That is also why rail participation is part of `itemTimelineStructureKey`
+(`utils/timelineStructure.ts`): a row leaving the rail changes which top-level
+rows exist, so it has to bump `timelineRevision` like an insertion does.
+Carrying it there rather than gating the projection on a membership scan is
+what lets the whole pass stay `untrack`ed with no per-delta walk — and it is
+the exempt-or-not bit only, never the payload kind, so the many payload
+attachments a turn makes stay non-structural. No provider path flips a row's
+rail membership today (triage attaches `proposed_plan` before the row's first
+emit, on both providers); the key keeps the rule honest for the card-style
+kinds the set invites, which arrive through the same late-payload-upgrade
+pattern.
+
 `nodeRole('activity_run')` is `'tool'`, so the `mt-4` tool↔text gap lands at
 both prose↔run boundaries uniformly. It previously depended on which rail
 kind happened to sit at the edge: `thinking` has role `'other'`, and
@@ -136,6 +148,11 @@ streaming delta), so it reads `revision` to know when a rebuild is owed.
 Scroll snapshots deliberately do **not** bump it — they change every inner
 scroll frame and nothing on the node depends on them.
 
+The two readers that sit *outside* that graph are `scrollSnapshot` and
+`windowAnchor`: their one consumer is the row's controller effect, which would
+tear down and rebuild the spring every time the position or pin it writes
+moved.
+
 ## Render
 
 Two states, no third.
@@ -158,7 +175,12 @@ ticking counts alone do not answer "what is it doing".
 - `overscroll-behavior` stays **auto**. Chaining out at the inner edge is
   wanted; gesture correctness comes from attribution, not from blocking the
   chain.
-- `overflow-anchor: none` — prepends compensate manually (WebKit has none).
+- `overflow-anchor: none`. WebKitGTK 6.0 does not implement it at all
+  (`CSS.supports('overflow-anchor', 'none')` → false, measured against
+  2.52.3), so the manual prepend compensation is what does the work in the
+  desktop webview. The declaration still matters: a remote browser client on
+  Blink honors it, and there the browser's own anchoring would fight the
+  compensation. Same reason the outer scroller carries it.
 
 The rail belongs to the run: one continuous border for the whole block,
 doubling as the collapse control (an absolutely positioned hit strip in the
@@ -192,13 +214,20 @@ re-wrap the run's text on every one of those transitions.
 
 `scrollbar-gutter`, the outer scroller's fix, does not transfer. `app.css`
 styles `::-webkit-scrollbar` globally, so this is a classic space-consuming
-bar; WebKitGTK reserves a single-edge `stable` gutter only while the bar is
-present, so a non-shifting native bar needs `both-edges` — 20px, whose left
-10px pushes the run's rows off the rail the run itself draws. The outer
-scroller can afford a gutter because it is the centered column's *parent*;
-the clip sits inside `mx-auto max-w-[62rem]`, so a gutter there insets the
-run's rows relative to the prose above and below. That reads as a card, and
-the run is a window onto activity, not a card.
+bar; measured in WebKitGTK 6.0 (2.52.3), a single-edge `stable` gutter is
+byte-identical to no gutter at all — content is 45px overflowing and 50px
+idle either way — so a non-shifting native bar needs `both-edges`, 20px,
+whose left 10px pushes the run's rows off the rail the run itself draws. The
+outer scroller can afford a gutter because it is the centered column's
+*parent*; the clip sits inside `mx-auto max-w-[62rem]`, so a gutter there
+insets the run's rows relative to the prose above and below. That reads as a
+card, and the run is a window onto activity, not a card.
+
+The shift is self-inflicted, and worth knowing when this comes up again: with
+no `::-webkit-scrollbar` rule at all, WebKitGTK's own bar is already an
+overlay and reserves 0px in every configuration. The global 10px rule in
+`app.css` is what converts every scroller in the app into a classic bar.
+Scoping that rule per platform is the general fix and is out of scope here.
 
 So the bar is suppressed on the clip (`scrollbar-width: none` for the
 standards path, `::-webkit-scrollbar { width: 0; height: 0 }` for WebKit —
@@ -207,9 +236,21 @@ both, because the two engines honor different ones; scoped to
 affordance is rendered out of flow:
 `components/shared/OverlayScrollbar.svelte` over
 `utils/scroll/overlayScrollbar.ts`, absolutely positioned in the column's
-existing `px-6` padding. Track is `pointer-events: none`; only the thumb is
-interactive; drag uses pointer capture so it survives the pointer leaving the
-strip; a track click pages toward it; opacity follows scroll activity.
+existing `px-6` padding. Drag uses pointer capture so it survives the pointer
+leaving the strip, and one pointer owns a drag until it ends; a track click
+pages toward it; the strip is `touch-action: none` so a touch drag is the
+control's gesture rather than a native pan of the surface behind it; opacity
+follows scroll activity, suppressed while the position is the owner's
+(`ownerDrivenPosition`) so a run that auto-follows for a whole turn does not
+hold a permanent bar.
+
+A wheel over the strip is the bar's to apply. It sits BESIDE the clip, not
+inside it, so the notch would otherwise bubble to the conversation — which
+scrolls *and* reads the gesture as the reader leaving the bottom. The bar
+applies the delta to the clip, states the same intent a drag does, and takes
+the event out of the tree; at the clip's own edge it does none of that, so the
+gesture chains outward exactly as a nested box's does (same `canConsumeDelta`
+as `wheelAttribution.ts`, so the two cannot disagree about where an edge is).
 
 A zero-width bar makes `offsetWidth - clientWidth === 0`, so `intent.ts`'s
 geometric scrollbar-gutter hit test can never fire for the clip. That is the
@@ -219,9 +260,12 @@ means a drag has to state its intent rather than have it inferred:
 re-sticks via `markAtBottom()`. That matches the package's own rule that
 intent is event-sourced, never geometry-inferred.
 
-Headless Chromium reserves no width for a scrollbar at all, so the geometric
-form of this guard is unobservable in tests; see
-[Verification](#verification).
+The geometric form of this guard is unobservable in the browser project as
+configured: measured, Chromium reserves 10px for a classic bar when headed and
+0px when headless, and `vitest.config.ts` runs the whole project headless. So
+it is a headless artifact rather than a Chromium one — running that one file
+headed would close the gap, and needs a display (WSLg has one, CI may not).
+See [Verification](#verification).
 
 ## The inner controller (live run only)
 
@@ -294,8 +338,16 @@ Both directions are load-bearing, and the release is the one that bites: a pin
 left behind after the reader returns would strand a live run behind its
 boundary while it kept streaming. The window is deliberately **not** released
 by geometry — an anchor means "the reader is up here", which is not a question
-the tail's position can answer. Historical runs have no controller and no tail
-to follow, so there is nothing to pin.
+the tail's position can answer.
+
+Historical runs have no controller, so they never pin themselves — but a jump
+can pin one, and that pin is the only record of the reader's position a
+controller-less run can keep. So it is carried the way the escape flag is
+carried across a remount: a controller built for a run whose window is
+already pinned starts escaped. Without that, a historical run becoming the
+live one (the prose after it reverts, a queued item is withdrawn) would hand a
+fresh controller a clean flag, and this rule would read it as "the reader is
+at the bottom" and drop them at the run's tail.
 
 - Default size is the `activityRunWindowRows` setting (30, clamped
   `[10, 200]`), sized to overfill the cap.
@@ -328,7 +380,11 @@ after it).
 expand from the chip, relocate the window around the target, leave a focus
 request — because a partial application is a silent bug: a relocated window
 on a collapsed run shows nothing, and a focus request the window does not
-cover scrolls nowhere.
+cover scrolls nowhere. It reports false both for an item the run does not
+carry and for a run the registry no longer holds, and the second answer comes
+from `requestFocus`'s own report rather than a pre-check: every mutator is a
+no-op for a swept id, so a jump that returned true there would announce
+success for a run that will never scroll.
 
 The focus request lives on the registry entry rather than a prop because the
 jump is usually what scrolls the run into the virtualizer's buffer in the
@@ -363,6 +419,14 @@ the run's own mounted window (read off the node, so the bound is correct by
 construction rather than by agreeing with a duplicated constant) plus any
 child with an active expansion.
 
+The prune's cadence has to include `pane.activityRuns.revision`, on both
+halves: the pass's dedupe signature reads it, and the effect that schedules
+the pass reads it too. A window relocation touches neither structure nor the
+item list — same node count, same range, different mounted children — so
+without it the pass either bails as a no-op or is never scheduled, and the
+window the reader left stays retained until an unrelated outer scroll. Each
+bump is one deliberate action (a toggle, a chunk, a jump), never a delta.
+
 `nodeSignature` is
 `A:{runId}:{c|e}:{childCount}:{mountedFrom}:{mountedRows}` — state and window
 included, because both change a sub-cap run's height.
@@ -372,7 +436,11 @@ collapsed and up to the cap expanded, and a single `ROW_KIND_ESTIMATE_PX`
 value would be wrong by ~20× in one state, landing fast-scroll placement
 badly through unmeasured runs. `timelineRowStructuralSize` branches on the
 node: chip height when collapsed, `min(capFloor, mountedRows × rowFloor)`
-when expanded. Still a floor, per the existing convention. Once measured, a
+when expanded, where `capFloor` is `min(50vh, 32rem)` evaluated against the
+current viewport — hard-coding `32rem` would overestimate every long run on a
+viewport shorter than 1024px, and an estimate above the real ceiling shrinks
+total geometry when the measurement lands. Still a floor, per the existing
+convention. Once measured, a
 run is *better* for priors than what it replaced — one stable height instead
 of N estimated ones.
 

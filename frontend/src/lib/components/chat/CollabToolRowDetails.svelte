@@ -8,6 +8,7 @@
   let {
     pane,
     itemId,
+    bodyDomId,
     promptPreview,
     rowError,
     completionPreview,
@@ -18,6 +19,9 @@
   }: {
     pane?: ThreadPane;
     itemId: string;
+    /** Owned by `CollabToolRow`, which also states it as the header's
+     * `controls` — see utils/chatDomIds.ts. */
+    bodyDomId: string;
     promptPreview: string;
     rowError: RowErrorData | null;
     completionPreview: string;
@@ -62,7 +66,7 @@
   <ExpandablePayloadBody
     {pane}
     {expansion}
-    id="collab-tool-row-output-{itemId}"
+    id={bodyDomId}
     testPrefix="collab-tool-row"
     bodyTestId="collab-tool-row-output"
     outputTestId="collab-tool-row-output-text"

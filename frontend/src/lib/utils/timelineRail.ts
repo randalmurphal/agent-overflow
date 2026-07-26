@@ -34,9 +34,16 @@ export const RAIL_GROUP_KINDS: ReadonlySet<string> = new Set([
 // spans the whole row). Proposed-plan rows are the only entry today; extend
 // the set alongside any future card-style payload kind.
 //
-// Because this reads a payloadKind that can arrive AFTER the row first
-// renders, a row can leave the rail mid-stream — which means it can also
-// split an activity run in two. `activityRunGrouping` handles that.
+// Membership therefore depends on a payloadKind, which is metadata a row can
+// gain after it first renders — so a row can in principle leave the rail
+// mid-stream, splitting an activity run in two. `activityRunGrouping` handles
+// that. No provider path does it today: the only exempt kind is
+// `proposed_plan`, and triage attaches that payload before the row's first
+// emit on both providers (`handleProposedPlan`, and Claude/Codex divert plan
+// blocks away from tool-call events entirely). What keeps the guard is the
+// other half of this contract — future card-style kinds are invited into the
+// set above, and late payload upgrades onto an already-emitted row are an
+// established triage pattern (`tool_result_diff_upgrade.go`).
 export const RAIL_EXEMPT_PAYLOAD_KINDS: ReadonlySet<string> = new Set(['proposed_plan']);
 
 /**

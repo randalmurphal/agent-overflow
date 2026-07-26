@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { makeItem } from '../../../test/helpers/chat';
 import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping';
 import { timelineRowStructuralSizeFor } from './timelineSizePriors.svelte';
@@ -7,6 +7,15 @@ import { timelineRowStructuralSizeFor } from './timelineSizePriors.svelte';
 // qualify: every other node kind has one typical height, a run has two (chip
 // and capped clip) and the engine places unmeasured rows with whichever it is
 // in right now.
+
+const REAL_INNER_HEIGHT = window.innerHeight;
+
+/** happy-dom's viewport is fixed, and the clip's cap is half of it. */
+function setViewportHeight(px: number): void {
+  Object.defineProperty(window, 'innerHeight', { value: px, configurable: true });
+}
+
+afterEach(() => setViewportHeight(REAL_INNER_HEIGHT));
 
 function leaf(id: string): TimelineNode {
   return { kind: 'leaf', item: makeItem({ id, kind: 'tool_call', toolName: 'Bash' }) };
@@ -61,7 +70,14 @@ describe('timelineRowStructuralSizeFor', () => {
       mountedRows: 40,
     });
 
+    // The cap is `min(50vh, 32rem)`, so which half wins depends on the
+    // viewport: 32rem only on tall ones. Estimating 512 on a short viewport
+    // would overshoot the real ceiling by a third.
+    setViewportHeight(1400);
     expect(timelineRowStructuralSizeFor(wide)).toBe(512);
+
+    setViewportHeight(800);
+    expect(timelineRowStructuralSizeFor(wide)).toBe(400);
   });
 
   it('declines every other node, so the kind table still decides', () => {
