@@ -6650,3 +6650,104 @@ describe('createUseStickToBottomController — external content-geometry source'
     });
   });
 });
+
+// An activity run attaches a SECOND controller to its own clip while the
+// timeline's instance owns the pane. Nothing in the factory is element-global,
+// but "nothing is global" is exactly the kind of property that decays
+// silently, so the isolation is pinned rather than assumed.
+describe('createUseStickToBottomController — two instances', () => {
+  let outerScroll: HTMLDivElement;
+  let outerContent: HTMLDivElement;
+  let innerScroll: HTMLDivElement;
+  let innerContent: HTMLDivElement;
+  let outerGeom: Geometry;
+  let innerGeom: Geometry;
+  let outer: UseStickToBottomController;
+  let inner: UseStickToBottomController;
+  let originalRO: typeof ResizeObserver | undefined;
+
+  beforeEach(() => {
+    resetScrollIntentModuleStateForTest();
+    MockResizeObserver.instances = [];
+    originalRO = globalThis.ResizeObserver;
+    (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver = MockResizeObserver;
+    mockNow = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => mockNow);
+
+    outerScroll = document.createElement('div');
+    outerContent = document.createElement('div');
+    outerScroll.appendChild(outerContent);
+    document.body.appendChild(outerScroll);
+    // The run's clip lives INSIDE the timeline's content, as it does in the
+    // DOM: an inner gesture's target is an outer descendant.
+    innerScroll = document.createElement('div');
+    innerContent = document.createElement('div');
+    innerScroll.appendChild(innerContent);
+    outerContent.appendChild(innerScroll);
+
+    outerGeom = { scrollHeight: 2000, clientHeight: 600, scrollTop: 1400, contentHeight: 1800 };
+    innerGeom = { scrollHeight: 900, clientHeight: 300, scrollTop: 600, contentHeight: 900 };
+    stubGeometry(outerScroll, outerContent, outerGeom);
+    stubGeometry(innerScroll, innerContent, innerGeom);
+
+    outer = createUseStickToBottomController();
+    inner = createUseStickToBottomController();
+    outer.attach(outerScroll, outerContent);
+    inner.attach(innerScroll, innerContent);
+  });
+
+  afterEach(() => {
+    inner.detach();
+    outer.detach();
+    outerScroll.remove();
+    if (originalRO) {
+      (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalRO;
+    }
+    vi.restoreAllMocks();
+  });
+
+  /** The RO the nth-created controller built, in attach order. */
+  function ro(index: number): MockResizeObserver {
+    const found = MockResizeObserver.instances[index];
+    if (!found) throw new Error(`no ResizeObserver at ${index}`);
+    return found;
+  }
+
+  it('pins its own element and writes nothing to the other', () => {
+    innerGeom.scrollTop = 0;
+    outerGeom.scrollTop = 0;
+
+    // Inner content grew: the inner instance follows it.
+    ro(1).fire(innerContent, 900);
+
+    expect(innerGeom.scrollTop).toBe(900 - 300);
+    // The outer element never moved — the run streaming inside its cap is
+    // the whole reason the prose above it stays put.
+    expect(outerGeom.scrollTop).toBe(0);
+  });
+
+  it('keeps escape state per instance', () => {
+    inner.setEscapedFromLock(true);
+
+    expect(inner.escapedFromLock).toBe(true);
+    expect(outer.escapedFromLock).toBe(false);
+
+    // And the escaped inner instance stops following while the outer one,
+    // untouched, still pins its own growth.
+    innerGeom.scrollTop = 0;
+    outerGeom.scrollTop = 0;
+    ro(1).fire(innerContent, 900);
+    expect(innerGeom.scrollTop).toBe(0);
+    ro(0).fire(outerContent, 1800);
+    expect(outerGeom.scrollTop).toBe(2000 - 600);
+  });
+
+  it('detaching one leaves the other working', () => {
+    inner.detach();
+    outerGeom.scrollTop = 0;
+
+    ro(0).fire(outerContent, 1800);
+
+    expect(outerGeom.scrollTop).toBe(2000 - 600);
+  });
+});

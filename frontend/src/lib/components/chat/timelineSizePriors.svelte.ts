@@ -78,6 +78,27 @@ const ACTIVITY_RUN_CHIP_PX = 24;
 const ACTIVITY_RUN_ROW_FLOOR_PX = 20;
 const ACTIVITY_RUN_CAP_FLOOR_PX = 512;
 
+/**
+ * Estimate for a node the kind table cannot price, or undefined to fall back
+ * to it.
+ *
+ * Only activity runs qualify so far. A run has no single typical height — the
+ * same `runId` is a chip one moment and a capped clip the next, and one kind
+ * entry would be wrong by ~20× in one of the two states, which lands
+ * fast-scroll placement badly through unmeasured runs. Pure and exported so
+ * the state dependence is testable without a pane.
+ */
+export function timelineRowStructuralSizeFor(
+  node: TimelineNode | undefined,
+): number | undefined {
+  if (node?.kind !== 'activity_run') return undefined;
+  if (node.collapsed) return ACTIVITY_RUN_CHIP_PX;
+  return Math.min(
+    ACTIVITY_RUN_CAP_FLOOR_PX,
+    node.mountedRows * ACTIVITY_RUN_ROW_FLOOR_PX,
+  );
+}
+
 export interface TimelineSizePriorsOptions {
   getPane(): ThreadPane;
   getListRef(): TimelineVirtualizerHandle | undefined;
@@ -159,18 +180,8 @@ export function createTimelineSizePriors(
     return node.kind === 'leaf' ? node.item.kind : node.kind;
   }
 
-  // An activity run has no single typical height: the same runId is a chip
-  // one moment and a capped clip the next. A kind-table entry would be
-  // wrong by ~20× in one of the two states, which lands fast-scroll
-  // placement badly through unmeasured runs.
   function timelineRowStructuralSize(index: number): number | undefined {
-    const node = options.getRevealedNodes()[index];
-    if (node?.kind !== 'activity_run') return undefined;
-    if (node.collapsed) return ACTIVITY_RUN_CHIP_PX;
-    return Math.min(
-      ACTIVITY_RUN_CAP_FLOOR_PX,
-      node.mountedRows * ACTIVITY_RUN_ROW_FLOOR_PX,
-    );
+    return timelineRowStructuralSizeFor(options.getRevealedNodes()[index]);
   }
 
   // Capture the engine's current measured sizes for the active thread, but
