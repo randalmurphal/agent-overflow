@@ -64,20 +64,16 @@ vi.mock('../../utils/scroll/index.svelte', async (importOriginal) => {
   return { ...mod, createUseStickToBottomController: wrappedCreate };
 });
 
-// The single stick controller created by the mounted timeline.
-// MessageTimeline creates its stick during component init, before any
-// effect attaches the pane adapter, so by the time a test (or an
-// attachScrollController intercept) runs, the capture is already
-// populated. Deliberately throws on more than one capture: every
-// current test mounts exactly one timeline, and a future multi-pane
-// test that trips this must index the capture array explicitly rather
-// than inherit a silent "most recent wins" ambiguity.
-function lastStick(): UseStickToBottomController {
-  if (createdStickControllers.length > 1) {
-    throw new Error(
-      `lastStick() is ambiguous: ${createdStickControllers.length} controllers were created this test — index createdStickControllers explicitly`,
-    );
-  }
+// The mounted timeline's own stick controller.
+//
+// It is always capture 0: MessageTimeline creates its stick during
+// component init, before any row mounts. Activity runs create their own
+// afterwards — one per live run, see ActivityRun.svelte — so "most
+// recently created" is NOT the timeline's, which is why this indexes
+// rather than taking the last. A future multi-pane test wanting the
+// second timeline's controller has to index `createdStickControllers`
+// itself, after working out how many runs the first pane mounted.
+function timelineStick(): UseStickToBottomController {
   const controller = createdStickControllers[0];
   if (!controller) throw new Error('no useStickToBottom controller has been created yet');
   return controller;
@@ -138,7 +134,7 @@ function watchStickNotifications(pane: ThreadPane): {
     // Spy on the stick, not the attached adapter: the timeline's internal
     // nudges (structural live-content effect, restore settle pass) call
     // stick.observe(...) directly and never cross the adapter.
-    const stick = lastStick();
+    const stick = timelineStick();
     observeSpy = vi.spyOn(stick, 'observe');
     structuralSpy = vi.spyOn(stick, 'markStructuralContentPending');
     originalAttach(controller);
@@ -337,7 +333,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
       set: (next: number) => { scrollTop = next; },
     });
 
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
 
     clearThreadScrollSnapshotsForTest();
     ctrl.setEscapedFromLock(true);
@@ -403,7 +399,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isSticky).toBe(true);
   });
@@ -421,7 +417,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isSticky).toBe(true);
     expect(getThreadScrollSnapshot('new-blank-thread')).toEqual({ kind: 'bottom' });
@@ -486,7 +482,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     let forceStickSpy: ReturnType<typeof vi.spyOn> | null = null;
     const origAttach = pane.attachScrollController.bind(pane);
     pane.attachScrollController = (ctrl: PaneScrollController) => {
-      forceStickSpy = vi.spyOn(lastStick(), 'forceStick');
+      forceStickSpy = vi.spyOn(timelineStick(), 'forceStick');
       origAttach(ctrl);
     };
 
@@ -525,7 +521,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     let observeSpy: ReturnType<typeof vi.spyOn> | null = null;
     const origAttach = pane.attachScrollController.bind(pane);
     pane.attachScrollController = (ctrl: PaneScrollController) => {
-      observeSpy = vi.spyOn(lastStick(), 'observe');
+      observeSpy = vi.spyOn(timelineStick(), 'observe');
       origAttach(ctrl);
     };
 
@@ -587,7 +583,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isSticky).toBe(true);
   });
@@ -619,7 +615,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
     await tick();
 
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isSticky).toBe(true);
   });
@@ -1131,7 +1127,7 @@ describe('scroll integration — auto-follow + button', () => {
     // After the input the chip's button is in the DOM (it may still
     // be in a fade-in transition; what matters is presence as a
     // signal that the user is no longer at-or-near the bottom).
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     expect(ctrl.escapedFromLock).toBe(true);
     expect(ctrl.isAtBottom).toBe(false);
     expect(container.querySelector('[data-testid="scroll-to-bottom"]')).not.toBeNull();
@@ -1168,7 +1164,7 @@ describe('scroll integration — auto-follow + button', () => {
     scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
     await waitForScrollIntent();
 
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     expect(ctrl.escapedFromLock).toBe(true);
     expect(ctrl.isSticky).toBe(false);
     // Escape wins over the visual near-bottom band, so the chip appears
@@ -1212,7 +1208,7 @@ describe('scroll integration — auto-follow + button', () => {
     scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
     await waitForScrollIntent();
 
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     expect(ctrl.escapedFromLock).toBe(true);
     expect(ctrl.isSticky).toBe(false);
 
@@ -1251,7 +1247,7 @@ describe('scroll integration — auto-follow + button', () => {
     scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
     await waitForScrollIntent();
 
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isSticky).toBe(true);
 
@@ -1361,7 +1357,7 @@ describe('scroll integration — auto-follow + button', () => {
     scrollTop = 100;
     scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
     await waitForScrollIntent();
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     expect(ctrl.escapedFromLock).toBe(true);
 
     // 2. User wheel-down — DOWN intent, browser scrolls to 397 (3 px
@@ -1696,7 +1692,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(ctrl?.preserveTimelineWindowAnchor).toBeTypeOf('function');
     if (!ctrl?.preserveTimelineWindowAnchor) return;
 
-    lastStick().setEscapedFromLock(true);
+    timelineStick().setEscapedFromLock(true);
     const run = vi.fn();
     const keepsItem = vi.fn(() => false);
 
@@ -1717,7 +1713,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     const origAttach = pane.attachScrollController.bind(pane);
     pane.attachScrollController = (controller) => {
       ctrl = controller;
-      applyScrollTarget = vi.spyOn(lastStick(), 'applyScrollTarget');
+      applyScrollTarget = vi.spyOn(timelineStick(), 'applyScrollTarget');
       origAttach(controller);
     };
 
@@ -1735,7 +1731,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(controller.preserveTimelineWindowAnchor).toBeTypeOf('function');
     if (!controller.preserveTimelineWindowAnchor) return;
 
-    lastStick().setEscapedFromLock(true);
+    timelineStick().setEscapedFromLock(true);
     const run = vi.fn();
     const keepsItem = vi.fn((itemId: string) => itemId === 'a');
 
@@ -1761,7 +1757,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     const origAttach = pane.attachScrollController.bind(pane);
     pane.attachScrollController = (controller) => {
       ctrl = controller;
-      const stick = lastStick();
+      const stick = timelineStick();
       forceStick = vi.spyOn(stick, 'forceStick');
       markAtBottom = vi.spyOn(stick, 'markAtBottom');
       applyScrollTarget = vi.spyOn(stick, 'applyScrollTarget');
@@ -1781,7 +1777,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(controller.preserveTimelineWindowAnchor).toBeTypeOf('function');
     if (!controller.preserveTimelineWindowAnchor) return;
 
-    lastStick().forceStick({ reason: 'restore' });
+    timelineStick().forceStick({ reason: 'restore' });
     forceStick?.mockClear();
     markAtBottom?.mockClear();
     applyScrollTarget?.mockClear();
@@ -1811,7 +1807,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     const origAttach = pane.attachScrollController.bind(pane);
     pane.attachScrollController = (controller) => {
       ctrl = controller;
-      markAtBottom = vi.spyOn(lastStick(), 'markAtBottom');
+      markAtBottom = vi.spyOn(timelineStick(), 'markAtBottom');
       origAttach(controller);
     };
 
@@ -1828,7 +1824,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(controller.preserveTimelineWindowAnchor).toBeTypeOf('function');
     if (!controller.preserveTimelineWindowAnchor) return;
 
-    lastStick().markAtBottom();
+    timelineStick().markAtBottom();
     markAtBottom?.mockClear();
     const run = vi.fn();
 
@@ -1854,7 +1850,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
     await tick();
 
-    const stick = lastStick();
+    const stick = timelineStick();
 
     expect(stick.isSticky).toBe(true);
     pane.scrollController?.observe('host-layout');
@@ -1878,7 +1874,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
     await tick();
 
-    const stick = lastStick();
+    const stick = timelineStick();
 
     stick.setEscapedFromLock(true);
     stick.setEscapedFromLock(false);
@@ -1933,7 +1929,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     // PaneScrollController is narrow by design — see thread.svelte.ts.
     // Peek at the underlying controller's intent state to verify stickiness
     // survives the upsert without inferring up intent from scrollTop direction.
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     // Baseline: no explicit escape was triggered, no leases held.
     expect(ctrl.isSticky).toBe(true);
     expect(ctrl.escapedFromLock).toBe(false);
@@ -1965,7 +1961,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
     await tick();
 
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     expect(ctrl.isSticky).toBe(true);
     expect(ctrl.escapedFromLock).toBe(false);
 
@@ -2375,7 +2371,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     await tick();
     await tick();
 
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
 
     // Switch to a different uncached thread.
     const threadB = makeThread({ id: 'thread-b-cross' });
@@ -2447,6 +2443,126 @@ describe('scroll integration — useStickToBottom wiring', () => {
   });
 });
 
+describe('scroll integration — activity run inner controller', () => {
+  function tools(count: number, startIndex = 0) {
+    return Array.from({ length: count }, (_, i) =>
+      makeItem({
+        id: `t${startIndex + i}`,
+        itemIndex: startIndex + i,
+        kind: 'tool_call',
+        toolName: 'Bash',
+        summary: `Bash: step ${startIndex + i}`,
+      }),
+    );
+  }
+
+  it('gives exactly one activity run a controller, and it is the last', async () => {
+    const pane = await buildPane(undefined, [
+      ...tools(2),
+      makeItem({ id: 'prose', itemIndex: 2, kind: 'assistant_text', summary: 'thinking out loud' }),
+      ...tools(2, 3),
+      makeItem({ id: 'prose2', itemIndex: 5, kind: 'assistant_text', summary: 'and more' }),
+      ...tools(2, 6),
+    ]);
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+
+    expect(container.querySelectorAll('[data-testid="activity-run"]')).toHaveLength(3);
+    // Timeline + exactly one run. Three runs are on screen; the two
+    // historical ones never chase, so a controller each would be pure tax.
+    expect(createdStickControllers).toHaveLength(2);
+    // And it is the last run that has it — where new activity lands.
+    const runs = container.querySelectorAll('[data-testid="activity-run"]');
+    const lastRunId = (runs[runs.length - 1] as HTMLElement).dataset.runId;
+    expect(lastRunId).toBeTruthy();
+  });
+
+  it('never registers an inner controller on the pane', async () => {
+    // `pane.scrollController` is single-occupancy and belongs to the
+    // timeline. An inner controller claiming it would silently redirect
+    // every pane-level scroll command into a nested box.
+    const pane = await buildPane(undefined, tools(3));
+    const attached: unknown[] = [];
+    const originalAttach = pane.attachScrollController.bind(pane);
+    pane.attachScrollController = (controller) => {
+      attached.push(controller);
+      originalAttach(controller);
+    };
+
+    render(MessageTimeline, { props: { pane } });
+    await tick();
+
+    expect(attached).toHaveLength(1);
+  });
+
+  it('keeps the inner controller off the outer scroll element', async () => {
+    // The inner controller writes `scrollTop` through the same chokepoint
+    // as the timeline's. If it ever attached to the wrong element, a run
+    // pinning its own tail would yank the whole conversation instead.
+    const pane = await buildPane(undefined, tools(3));
+    const { getByTestId } = render(MessageTimeline, { props: { pane } });
+    await tick();
+
+    const outer = getByTestId('message-timeline-scroll') as HTMLElement;
+    const clip = getByTestId('activity-run-clip') as HTMLElement;
+    let outerScrollTop = 0;
+    let clipScrollTop = 0;
+    // Real geometry on both, so a stick actually has somewhere to go: with
+    // happy-dom's zeros every target resolves to 0 and the assertion would
+    // pass without proving anything.
+    Object.defineProperty(outer, 'scrollHeight', { configurable: true, get: () => 4000 });
+    Object.defineProperty(outer, 'clientHeight', { configurable: true, get: () => 600 });
+    Object.defineProperty(outer, 'scrollTop', {
+      configurable: true,
+      get: () => outerScrollTop,
+      set: (next: number) => { outerScrollTop = next; },
+    });
+    Object.defineProperty(clip, 'scrollHeight', { configurable: true, get: () => 1000 });
+    Object.defineProperty(clip, 'clientHeight', { configurable: true, get: () => 300 });
+    Object.defineProperty(clip, 'scrollTop', {
+      configurable: true,
+      get: () => clipScrollTop,
+      set: (next: number) => { clipScrollTop = next; },
+    });
+
+    // Detach the timeline's controller so the outer element has exactly one
+    // possible writer left. Without this the timeline legitimately pins to
+    // its own bottom in the same frame and the assertion proves nothing.
+    timelineStick().detach();
+
+    const inner = createdStickControllers[1];
+    inner.forceStick();
+    await waitForAnimationFrame();
+
+    expect(clipScrollTop).toBe(700);
+    expect(outerScrollTop).toBe(0);
+  });
+
+  it('restores a run inner scroll offset across a remount', async () => {
+    const pane = await buildPane(undefined, tools(3));
+    const view = render(MessageTimeline, { props: { pane } });
+    await tick();
+
+    const clip = view.getByTestId('activity-run-clip') as HTMLElement;
+    const runId = (view.getByTestId('activity-run') as HTMLElement).dataset.runId!;
+    let scrollTop = 0;
+    Object.defineProperty(clip, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (next: number) => { scrollTop = next; },
+    });
+    clip.scrollTop = 128;
+
+    // Unmount is what the virtualizer does when the row leaves the buffer;
+    // the offset has to survive it or a run the user scrolled inside snaps
+    // back to its tail every time it goes off screen.
+    view.unmount();
+
+    expect(pane.activityRuns.scrollSnapshot(runId)?.scrollTop).toBe(128);
+  });
+});
+
 describe('scroll integration — draft placeholder transitions', () => {
   // The `armWarmupWithReset()` + `armRestoreSnap()` block in
   // MessageTimeline.svelte's `$effect.pre` (armRestoreSnap carries the
@@ -2470,7 +2586,7 @@ describe('scroll integration — draft placeholder transitions', () => {
     await tick();
     await tick();
 
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     // Sanity: post-restore, the real thread is sticky-bottom.
     expect(ctrl.escapedFromLock).toBe(false);
     expect(ctrl.isAtBottom).toBe(true);
@@ -2555,7 +2671,7 @@ describe('scroll integration — draft placeholder transitions', () => {
     await tick();
     await tick();
 
-    const ctrl = lastStick();
+    const ctrl = timelineStick();
     // After the real thread's restore runs, the controller is back
     // to sticky-bottom and the chip is hidden.
     expect(ctrl.escapedFromLock).toBe(false);

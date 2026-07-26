@@ -143,6 +143,17 @@
   const rows = createTimelineRowProjection({ getPane: () => pane });
   let revealedNodes = $derived(rows.revealedNodes);
 
+  // At most one activity run gets a scroll controller: the last one, which
+  // is where new activity lands. Resolved here rather than inside the row
+  // because "last" is a property of the list, not of any node.
+  let liveRunId = $derived.by(() => {
+    for (let i = revealedNodes.length - 1; i >= 0; i -= 1) {
+      const node = revealedNodes[i];
+      if (node.kind === 'activity_run') return node.runId;
+    }
+    return null;
+  });
+
   // Animation mode is keyed on whether LIVE timeline content advanced
   // recently (`pane.lastLiveContentAt`), NOT on whether a provider turn
   // is active. Streaming chunks come in fast enough that the contentRO
@@ -701,7 +712,13 @@
         {:else if node.kind === 'read_group'}
           <ReadGroupRow {pane} group={node} />
         {:else if node.kind === 'activity_run'}
-          <ActivityRun {pane} run={node} {depth} {renderNode} />
+          <ActivityRun
+            {pane}
+            run={node}
+            {depth}
+            live={node.runId === liveRunId}
+            {renderNode}
+          />
         {/if}
       {/snippet}
 

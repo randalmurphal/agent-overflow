@@ -11,6 +11,11 @@
   // The rail belongs to the run, not to its rows: one continuous border for
   // the whole block, doubling as the collapse control. Per-row borders would
   // draw the same line but could not be clicked as one thing.
+  //
+  // Only the run holding the live tail gets a scroll controller. Historical
+  // runs never chase, so they need no ResizeObserver, no intent listeners,
+  // no warm gate, and no composited layer — a controller each would tax
+  // every run in the buffer for physics only one of them can use.
 
   import type { Snippet } from 'svelte';
   import { tick } from 'svelte';
@@ -24,6 +29,14 @@
     activityRunExpandedHeight,
   } from '../../utils/activityRunClip';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
+  import {
+    createUseStickToBottomController,
+    type UseStickToBottomController,
+  } from '../../utils/scroll/index.svelte';
+  import {
+    isLiveContentActive,
+    LIVE_CONTENT_ACTIVE_HOLD_MS,
+  } from '../../utils/liveContentActivity';
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
   import ActivityRunChip from './ActivityRunChip.svelte';
 
@@ -31,17 +44,48 @@
     pane,
     run,
     depth,
+    live,
     renderNode,
   }: {
     pane: ThreadPane;
     run: ActivityRunNode;
     depth: number;
+    /** This run holds the timeline's tail, so new activity lands here. */
+    live: boolean;
     renderNode: Snippet<[TimelineNode, number]>;
   } = $props();
 
   let clipEl = $state<HTMLElement | undefined>();
   let contentEl = $state<HTMLElement | undefined>();
   let expandedPx = $state(0);
+
+  // Built only for the live run, and only while it is live — a run that a
+  // later one displaces has no use for a spring, and a controller per run
+  // in the buffer would be a spring, an observer set, and intent listeners
+  // each for physics only one of them can use.
+  //
+  // Same factory, spring constants, and glide compositing as the main pane,
+  // so a streaming run feels identical to a streaming thread. It NEVER
+  // calls `pane.attachScrollController`: that slot is single-occupancy and
+  // belongs to the timeline.
+  //
+  // `externalContentGeometry` is deliberately unset. There is no
+  // virtualizer inside a run, so the controller's own contentEl
+  // ResizeObserver is the right geometry source (the ChannelView
+  // precedent); the timeline leaves it set because its engine reports
+  // geometry the RO would otherwise have to re-derive.
+  let stick = $state<UseStickToBottomController | null>(null);
+
+  function createStick(): UseStickToBottomController {
+    return createUseStickToBottomController({
+      liveContentActive: () =>
+        isLiveContentActive(
+          performance.now(),
+          pane.lastLiveContentAt,
+          LIVE_CONTENT_ACTIVE_HOLD_MS,
+        ),
+    });
+  }
 
   // Tail window: only the newest `mountedRows` children are in the DOM.
   // Without it a 200-row run would mount 200 rows the moment its single
@@ -116,6 +160,53 @@
       sizes.disconnect();
     };
   });
+
+  // Controller lifetime and scroll-position persistence are ONE effect on
+  // purpose. The saved snapshot carries the controller's escape flag, so
+  // splitting them would make the saved value depend on which teardown
+  // Svelte happened to run first.
+  //
+  // Inner position has to survive the virtualizer evicting this row:
+  // without it a run the user had scrolled up inside snaps back to its
+  // tail every time it leaves the buffer.
+  $effect(() => {
+    const clip = clipEl;
+    const content = contentEl;
+    if (!clip) return;
+
+    const controller = live && content ? createStick() : null;
+    stick = controller;
+    if (controller && content) controller.attach(clip, content);
+
+    const snapshot = pane.activityRuns.scrollSnapshot(run.runId);
+    if (snapshot) {
+      clip.scrollTop = snapshot.scrollTop;
+      // Escape is event-sourced, so it is carried across the remount
+      // rather than re-derived from the geometry just written.
+      if (controller && snapshot.escaped) controller.setEscapedFromLock(true);
+    } else {
+      // A run that has never been scrolled rests at its newest row — the
+      // latest activity is the reason it is on screen.
+      clip.scrollTop = clip.scrollHeight;
+    }
+
+    return () => {
+      pane.activityRuns.saveScrollSnapshot(run.runId, {
+        scrollTop: clip.scrollTop,
+        escaped: controller?.escapedFromLock ?? false,
+      });
+      controller?.detach();
+      if (stick === controller) stick = null;
+    };
+  });
+
+  // No head trim, deliberately. Growth cannot accumulate DOM on its own —
+  // the tail slice above is a window, not a high-water mark, so a run that
+  // streams to 500 rows still mounts `mountedRows` of them. The only way
+  // past the window is the user asking for an older chunk, and trimming
+  // that back would revert an explicit action: a short run whose boundary
+  // is visible without scrolling would flash the rows in and drop them in
+  // the same frame. What they asked for stays until the run unmounts.
 </script>
 
 <!-- Rail offsets match what the per-row wrapper used to apply:
@@ -177,10 +268,15 @@
         {/each}
       </div>
     </div>
+    <!-- A zero-width native bar makes the scroll package's geometric
+         scrollbar-gutter hit test impossible, so a drag states its intent
+         instead of having it inferred. -->
     <OverlayScrollbar
       target={clipEl}
       content={contentEl}
       ariaLabel="Scroll activity run"
+      onDragStart={stick ? () => stick?.setEscapedFromLock(true) : undefined}
+      onDragEnd={stick ? (atBottom) => { if (atBottom) stick?.markAtBottom(); } : undefined}
     />
   {/if}
 </div>
