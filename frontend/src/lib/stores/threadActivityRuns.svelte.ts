@@ -14,8 +14,16 @@
 // registry mints an id once and migrates it by membership: an entry
 // sharing any member with the run being built lends that run its id.
 //
-// Session-only, deliberately matching item-expansion leases. The durable
-// layer is the `activityRunDefault` setting.
+// A run can also vanish entirely and come back — the live-window prune can
+// take every item a head run had, and a thread switch drops the lot — so
+// entries carrying explicit state are ARCHIVED on their way out and revived
+// by the same membership rule. Without that, collapsing a noisy run and then
+// paging (or switching threads and returning) hands back a default run, which
+// is the run-level form of the position loss `utils/threadScrollSnapshots.ts`
+// exists to prevent.
+//
+// Session-only: the archive is per pane and dies with it. The durable layer
+// is the `activityRunDefault` setting.
 
 import type {
   ActivityRunIdentity,
@@ -80,6 +88,19 @@ interface RunEntry {
   focusItemId: string | null;
 }
 
+/** A swept entry's state, plus the member ids it can be found again by. */
+interface ArchivedRun extends Omit<RunEntry, 'members' | 'focusItemId'> {
+  keys: string[];
+}
+
+/**
+ * How many archive keys to keep — two per run, so ~64 runs. Small because
+ * each record is four scalars and two ids; a pending focus request is
+ * deliberately not among them, since a jump that never landed is stale by
+ * the time its run comes back.
+ */
+const ARCHIVE_MAX_KEYS = 128;
+
 function emptyEntry(): RunEntry {
   return {
     members: new Set(),
@@ -108,6 +129,12 @@ export function createThreadActivityRuns(
   // Reverse index so migration is one lookup per member instead of a scan
   // over every entry. Rebuilt incrementally as entries take new members.
   const runIdByMember = new Map<string, string>();
+  // Swept entries, reachable by the first and last member id each run had.
+  // Two keys because both edges move independently: the older prune takes a
+  // run's first members and the recent prune takes its last, and either one
+  // surviving is enough to recognize the run when it comes back. Insertion
+  // order is the eviction order.
+  const archive = new Map<string, ArchivedRun>();
   let claimed = new Set<string>();
   let nextRunId = 1;
 
@@ -161,9 +188,59 @@ export function createThreadActivityRuns(
         if (candidate && !claimed.has(candidate)) return candidate;
       }
     }
+    // A live entry always beats an archived one — it is the same run still
+    // going — so the archive is only consulted once the live scan comes up
+    // empty, and over the whole membership rather than per member.
     const minted = `r${nextRunId}`;
     nextRunId += 1;
+    for (const row of rowMemberIds) {
+      for (const id of row) {
+        const revived = archive.get(id);
+        if (!revived) continue;
+        for (const key of revived.keys) archive.delete(key);
+        entries.set(minted, {
+          members: new Set(),
+          collapsed: revived.collapsed,
+          scroll: revived.scroll,
+          windowRows: revived.windowRows,
+          windowStartItemId: revived.windowStartItemId,
+          focusItemId: null,
+        });
+        return minted;
+      }
+    }
     return minted;
+  }
+
+  /**
+   * Park an entry's state where a later pass can find it again. Entries with
+   * nothing explicit on them are dropped: reviving one would hand back the
+   * same defaults a fresh entry produces, at the cost of an archive slot a
+   * real override could have used.
+   */
+  function archiveEntry(entry: RunEntry): void {
+    if (entry.collapsed === null && entry.windowRows === null && entry.scroll === null) {
+      return;
+    }
+    const ids = [...entry.members];
+    if (ids.length === 0) return;
+    const keys = [...new Set([ids[0], ids[ids.length - 1]])];
+    const record: ArchivedRun = {
+      keys,
+      collapsed: entry.collapsed,
+      scroll: entry.scroll,
+      windowRows: entry.windowRows,
+      windowStartItemId: entry.windowStartItemId,
+    };
+    for (const key of keys) {
+      archive.delete(key);
+      archive.set(key, record);
+    }
+    while (archive.size > ARCHIVE_MAX_KEYS) {
+      const oldest = archive.keys().next().value;
+      if (oldest === undefined) break;
+      archive.delete(oldest);
+    }
   }
 
   function resolve(
@@ -206,6 +283,7 @@ export function createThreadActivityRuns(
   function endPass(): void {
     for (const [runId, entry] of [...entries]) {
       if (claimed.has(runId)) continue;
+      archiveEntry(entry);
       for (const id of entry.members) {
         if (runIdByMember.get(id) === runId) runIdByMember.delete(id);
       }
@@ -265,6 +343,11 @@ export function createThreadActivityRuns(
       return itemId;
     },
     clear: () => {
+      // The incoming thread must see no live entry from the outgoing one, but
+      // their state is archived on the way out: item ids are unique per
+      // thread, so a revival can only ever match the thread it came from, and
+      // returning to a thread in this pane finds its runs as it left them.
+      for (const entry of entries.values()) archiveEntry(entry);
       entries.clear();
       runIdByMember.clear();
       claimed = new Set();

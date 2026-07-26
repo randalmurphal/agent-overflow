@@ -267,19 +267,6 @@ describe('focus requests', () => {
 });
 
 describe('entry lifecycle', () => {
-  it('sweeps entries whose runs no longer exist', () => {
-    const runs = registry();
-    const [run] = pass(runs, [['a']]);
-    runs.setCollapsed(run.runId, true);
-
-    // 'a' is gone from the window entirely; nothing can claim the entry.
-    pass(runs, [['z']]);
-
-    // A run that later reuses the same member id gets a fresh entry, not
-    // the swept one's collapse state.
-    expect(pass(runs, [['a']])[0].collapsed).toBe(false);
-  });
-
   it('does not let two runs claim the same entry in one pass', () => {
     const runs = registry();
     const [first] = pass(runs, [['a', 'b']]);
@@ -290,24 +277,115 @@ describe('entry lifecycle', () => {
     expect(right.runId).not.toBe(first.runId);
   });
 
-  it('clear drops every entry', () => {
-    const runs = registry();
-    const [run] = pass(runs, [['a']]);
-    runs.setCollapsed(run.runId, true);
-    runs.saveScrollSnapshot(run.runId, { scrollTop: 10, escaped: true });
-
-    runs.clear();
-
-    const [fresh] = pass(runs, [['a']]);
-    expect(fresh.collapsed).toBe(false);
-    expect(runs.scrollSnapshot(fresh.runId)).toBeNull();
-  });
-
   it('mints distinct ids for concurrent runs', () => {
     const runs = registry();
 
     const [a, b] = pass(runs, [['a'], ['b']]);
 
     expect(a.runId).not.toBe(b.runId);
+  });
+
+  it('drops a swept entry that was never touched', () => {
+    const runs = registry();
+    pass(runs, [['a']]);
+
+    // Nothing explicit on it, so there is nothing to bring back — and the
+    // archive slot stays free for a run the user actually acted on.
+    pass(runs, [['z']]);
+
+    expect(pass(runs, [['a']])[0].collapsed).toBe(false);
+  });
+});
+
+describe('state across a sweep', () => {
+  it('comes back when the whole run leaves the window and returns', () => {
+    const runs = registry();
+    const [run] = pass(runs, [['a', 'b', 'c']]);
+    runs.setCollapsed(run.runId, true);
+    runs.saveScrollSnapshot(run.runId, { scrollTop: 240, escaped: true });
+
+    // The live-window prune takes every item this run had.
+    pass(runs, [['z']]);
+    // Load-older brings them back.
+    const [back] = pass(runs, [['a', 'b', 'c']]);
+
+    expect(back.collapsed).toBe(true);
+    expect(runs.scrollSnapshot(back.runId)).toEqual({ scrollTop: 240, escaped: true });
+  });
+
+  it('is found again by the run tail when the prune cut its head', () => {
+    const runs = registry();
+    const [run] = pass(runs, [['a', 'b', 'c', 'd']]);
+    runs.setCollapsed(run.runId, true);
+
+    pass(runs, [['z']]);
+
+    expect(pass(runs, [['c', 'd', 'e']])[0].collapsed).toBe(true);
+  });
+
+  it('is found again by the run head when the prune cut its tail', () => {
+    const runs = registry();
+    const [run] = pass(runs, [['a', 'b', 'c', 'd']]);
+    runs.setCollapsed(run.runId, true);
+
+    pass(runs, [['z']]);
+
+    expect(pass(runs, [['a', 'b']])[0].collapsed).toBe(true);
+  });
+
+  it('survives a thread switch and back', () => {
+    const runs = registry({ windowRows: 30 });
+    const [run] = pass(runs, [rows(50)]);
+    runs.setMountWindow(run.runId, { rows: 12, startItemId: null });
+    runs.saveScrollSnapshot(run.runId, { scrollTop: 90, escaped: true });
+
+    runs.clear();
+    // The other thread's runs cannot collide: item ids are unique per thread.
+    pass(runs, [['x', 'y']]);
+    runs.clear();
+
+    const [back] = pass(runs, [rows(50)]);
+    expect(back.mountedRows).toBe(12);
+    expect(runs.scrollSnapshot(back.runId)).toEqual({ scrollTop: 90, escaped: true });
+  });
+
+  it('gives a revived run a live id, not the swept one', () => {
+    const runs = registry();
+    const [run] = pass(runs, [['a']]);
+    runs.setCollapsed(run.runId, true);
+    pass(runs, [['z']]);
+
+    const [back] = pass(runs, [['a']]);
+
+    expect(back.runId).not.toBe(run.runId);
+    expect(back.collapsed).toBe(true);
+  });
+
+  it('is claimed once — a split cannot revive the same state twice', () => {
+    const runs = registry();
+    const [run] = pass(runs, [['a', 'b']]);
+    runs.setCollapsed(run.runId, true);
+    pass(runs, [['z']]);
+
+    // A `proposed_plan` arriving mid-run splits it in two. Only the half
+    // holding an archived key inherits; the other starts from the default.
+    const [left, right] = pass(runs, [['a'], ['b']]);
+
+    expect(left.collapsed).toBe(true);
+    expect(right.collapsed).toBe(false);
+  });
+
+  it('a live entry beats an archived one for the same member', () => {
+    const runs = registry({ windowRows: 30 });
+    const [archived] = pass(runs, [['b']]);
+    runs.setMountWindow(archived.runId, { rows: 4, startItemId: null });
+    // 'b' leaves the window and is archived; a separate run keeps 'a' live.
+    const [live] = pass(runs, [['a']]);
+    runs.setMountWindow(live.runId, { rows: 7, startItemId: null });
+
+    // The merged run shares a member with both. The live entry is the same
+    // run still going, so it wins.
+    expect(pass(runs, [['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']])[0].mountedRows)
+      .toBe(7);
   });
 });

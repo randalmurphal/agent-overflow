@@ -157,6 +157,20 @@
     });
   });
 
+  // Persisted per frame, not only at teardown: a thread switch clears the
+  // registry synchronously with the data change, well before Svelte tears
+  // this row down, so a teardown-only save would archive a position several
+  // reads stale. One small write against a Map — the overlay scrollbar
+  // already samples geometry on the same event.
+  function saveInnerScroll(): void {
+    const clip = clipEl;
+    if (!clip) return;
+    pane.activityRuns.saveScrollSnapshot(run.runId, {
+      scrollTop: clip.scrollTop,
+      escaped: stick?.escapedFromLock ?? false,
+    });
+  }
+
   // Controller lifetime and scroll-position persistence are ONE effect on
   // purpose. The saved snapshot carries the controller's escape flag, so
   // splitting them would make the saved value depend on which teardown
@@ -276,6 +290,7 @@
       class="activity-run-clip overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
       style:max-height={maxHeight}
       use:nestedScroll
+      onscroll={saveInnerScroll}
       data-testid="activity-run-clip"
     >
       <div bind:this={contentEl}>
