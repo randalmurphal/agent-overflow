@@ -67,19 +67,24 @@ describe('activityRunFocusWindow', () => {
   it('anchors half a window above the target, keeping the window size', () => {
     const node = run(rows(100), { from: 90, rows: 10 });
 
-    expect(activityRunFocusWindow(node, 'i40')).toEqual({ rows: 10, startItemId: 'i35' });
+    expect(activityRunFocusWindow(node, 'i40'))
+      .toEqual({ rows: 10, startItemId: 'i35', from: 35 });
   });
 
   it('stops at the run start rather than anchoring past it', () => {
     const node = run(rows(100), { from: 90, rows: 10 });
 
-    expect(activityRunFocusWindow(node, 'i2')).toEqual({ rows: 10, startItemId: 'i0' });
+    expect(activityRunFocusWindow(node, 'i2'))
+      .toEqual({ rows: 10, startItemId: 'i0', from: 0 });
   });
 
   it('returns tail mode for a target near the end — nothing would be hidden below', () => {
     const node = run(rows(100), { from: 90, rows: 10 });
 
-    expect(activityRunFocusWindow(node, 'i97')).toEqual({ rows: 10, startItemId: null });
+    // `from` reports where tail mode lands, not the requested 92 — the run's
+    // last row pins the window's end.
+    expect(activityRunFocusWindow(node, 'i97'))
+      .toEqual({ rows: 10, startItemId: null, from: 90 });
   });
 
   it('anchors on the card, not the item, for a nested target', () => {
@@ -92,6 +97,7 @@ describe('activityRunFocusWindow', () => {
     expect(activityRunFocusWindow(node, 'agent-child')).toEqual({
       rows: 10,
       startItemId: 'i15',
+      from: 15,
     });
   });
 
@@ -147,8 +153,23 @@ describe('revealActivityRunItem', () => {
     expect(reveal.setMountWindow).toHaveBeenCalledWith('r1', {
       rows: 10,
       startItemId: 'i35',
+      from: 35,
     });
-    expect(reveal.requestFocus).toHaveBeenCalledWith('r1', 'i40');
+    // Relocated: the clip's offset belonged to rows 90-99, so the row consuming
+    // this request has to place the target rather than reveal it in place.
+    expect(reveal.requestFocus)
+      .toHaveBeenCalledWith('r1', { itemId: 'i40', relocated: true });
+  });
+
+  it('reports an unmoved window, so a visible target is left where it is', () => {
+    const reveal = registry();
+    const node = run(rows(100), { from: 90, rows: 10 });
+
+    // Row 95 already sits in the mounted window, and half a window above it is
+    // past the tail clamp, so the window resolves to exactly where it is.
+    expect(revealActivityRunItem(reveal, node, 'i95')).toBe(true);
+    expect(reveal.requestFocus)
+      .toHaveBeenCalledWith('r1', { itemId: 'i95', relocated: false });
   });
 
   it('changes nothing for an item the run does not carry', () => {

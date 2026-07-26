@@ -100,14 +100,27 @@ export function activityRunChildElement(clip: Element, index: number): HTMLEleme
 }
 
 /**
- * `scrollTop` that centers `row` in `clip`, or null when the row is already
- * fully visible — a jump must not nudge a target the reader can see, which
- * is the common case for a hit inside the run they are already reading.
+ * Whether `row` is entirely inside `clip`'s viewport.
+ *
+ * Separate from the centering below because the two are combined by a policy
+ * that depends on the jump, not on the geometry: a jump that RELOCATED the
+ * mount window has to place its target (the offset it inherited pointed at
+ * different rows, so wherever the target landed is an accident), while a jump
+ * the window already covered must leave a visible target alone — the reader is
+ * looking at those rows, and nudging them would be the jump fighting them.
  */
-export function activityRunCenteredScrollTop(clip: HTMLElement, row: HTMLElement): number | null {
+export function activityRunRowFullyVisible(clip: HTMLElement, row: HTMLElement): boolean {
   const top = row.getBoundingClientRect().top - clip.getBoundingClientRect().top;
-  const height = row.offsetHeight;
-  if (top >= 0 && top + height <= clip.clientHeight) return null;
+  return top >= 0 && top + row.offsetHeight <= clip.clientHeight;
+}
+
+/**
+ * `scrollTop` that centers `row` in `clip`. Floored at 0; the browser clamps
+ * the other end, so a row near either edge lands as close to centered as the
+ * run allows.
+ */
+export function activityRunCenteredScrollTop(clip: HTMLElement, row: HTMLElement): number {
+  const top = row.getBoundingClientRect().top - clip.getBoundingClientRect().top;
   const contentTop = clip.scrollTop + top;
-  return Math.max(0, contentTop - Math.max(0, (clip.clientHeight - height) / 2));
+  return Math.max(0, contentTop - Math.max(0, (clip.clientHeight - row.offsetHeight) / 2));
 }

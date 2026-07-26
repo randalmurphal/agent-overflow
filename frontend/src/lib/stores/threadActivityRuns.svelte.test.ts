@@ -232,9 +232,9 @@ describe('focus requests', () => {
     const runs = registry();
     const [run] = pass(runs, [rows(40)]);
 
-    runs.requestFocus(run.runId, 'i5');
+    runs.requestFocus(run.runId, { itemId: 'i5', relocated: true });
 
-    expect(runs.takeFocus(run.runId)).toBe('i5');
+    expect(runs.takeFocus(run.runId)).toEqual({ itemId: 'i5', relocated: true });
     expect(runs.takeFocus(run.runId)).toBeNull();
   });
 
@@ -250,7 +250,7 @@ describe('focus requests', () => {
     const [run] = pass(runs, [rows(40)]);
     const before = runs.revision;
 
-    runs.requestFocus(run.runId, 'i39');
+    runs.requestFocus(run.runId, { itemId: 'i39', relocated: false });
 
     expect(runs.revision).toBeGreaterThan(before);
   });
@@ -258,11 +258,11 @@ describe('focus requests', () => {
   it('survives until the run is mounted, across passes', () => {
     const runs = registry();
     const [run] = pass(runs, [rows(40)]);
-    runs.requestFocus(run.runId, 'i5');
+    runs.requestFocus(run.runId, { itemId: 'i5', relocated: true });
 
     pass(runs, [rows(40)]);
 
-    expect(runs.takeFocus(run.runId)).toBe('i5');
+    expect(runs.takeFocus(run.runId)?.itemId).toBe('i5');
   });
 });
 

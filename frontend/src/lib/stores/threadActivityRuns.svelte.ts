@@ -29,7 +29,10 @@ import type {
   ActivityRunIdentity,
   ActivityRunResolution,
 } from '../utils/activityRunGrouping';
-import type { ActivityRunMountWindow } from '../utils/activityRunWindow';
+import type {
+  ActivityRunFocusRequest,
+  ActivityRunMountWindow,
+} from '../utils/activityRunWindow';
 
 export interface ActivityRunScrollSnapshot {
   scrollTop: number;
@@ -70,9 +73,9 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * exist yet — the jump that requests it is usually what scrolls the run
    * into the virtualizer's buffer in the first place.
    */
-  requestFocus(runId: string, itemId: string): void;
+  requestFocus(runId: string, request: ActivityRunFocusRequest): void;
   /** Read and clear the pending focus request. */
-  takeFocus(runId: string): string | null;
+  takeFocus(runId: string): ActivityRunFocusRequest | null;
   /** Drop everything — thread switch. */
   clear(): void;
 }
@@ -85,11 +88,11 @@ interface RunEntry {
   windowRows: number | null;
   /** null → the run's tail. */
   windowStartItemId: string | null;
-  focusItemId: string | null;
+  focus: ActivityRunFocusRequest | null;
 }
 
 /** A swept entry's state, plus the member ids it can be found again by. */
-interface ArchivedRun extends Omit<RunEntry, 'members' | 'focusItemId'> {
+interface ArchivedRun extends Omit<RunEntry, 'members' | 'focus'> {
   keys: string[];
 }
 
@@ -108,7 +111,7 @@ function emptyEntry(): RunEntry {
     scroll: null,
     windowRows: null,
     windowStartItemId: null,
-    focusItemId: null,
+    focus: null,
   };
 }
 
@@ -204,7 +207,7 @@ export function createThreadActivityRuns(
           scroll: revived.scroll,
           windowRows: revived.windowRows,
           windowStartItemId: revived.windowStartItemId,
-          focusItemId: null,
+          focus: null,
         });
         return minted;
       }
@@ -329,18 +332,18 @@ export function createThreadActivityRuns(
       entry.windowStartItemId = window.startItemId;
       revision += 1;
     },
-    requestFocus: (runId, itemId) => {
-      entryFor(runId).focusItemId = itemId;
+    requestFocus: (runId, request) => {
+      entryFor(runId).focus = request;
       revision += 1;
     },
     takeFocus: (runId) => {
       const entry = entries.get(runId);
-      if (!entry?.focusItemId) return null;
-      const itemId = entry.focusItemId;
+      if (!entry?.focus) return null;
+      const request = entry.focus;
       // Deliberately silent: the row consuming a request must not schedule
       // another rebuild, and nothing on the node carries the request.
-      entry.focusItemId = null;
-      return itemId;
+      entry.focus = null;
+      return request;
     },
     clear: () => {
       // The incoming thread must see no live entry from the outgoing one, but

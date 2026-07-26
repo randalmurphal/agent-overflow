@@ -42,6 +42,26 @@ export interface ActivityRunMountWindow {
 }
 
 /**
+ * A mount window plus the row it resolves to. The resolved start is what tells
+ * a jump whether the window actually moved, which the stored `(rows,
+ * startItemId)` pair cannot: tail mode says "the last rows", not which ones.
+ */
+export interface ActivityRunFocusWindow extends ActivityRunMountWindow {
+  from: number;
+}
+
+/** A run row's pending "bring this item into view". */
+export interface ActivityRunFocusRequest {
+  itemId: string;
+  /**
+   * The mount window moved for this request, so the clip's current offset
+   * refers to rows that are no longer there. The row consuming the request
+   * places the target instead of leaving it wherever the stale offset put it.
+   */
+  relocated: boolean;
+}
+
+/**
  * Index of the run row that carries `itemId`, or -1. Recursive through group
  * cards, so a hit on a subagent's own tool call resolves to the card's row.
  */
@@ -62,11 +82,12 @@ export function activityRunRowIndexOfItem(run: ActivityRunNode, itemId: string):
 export function activityRunFocusWindow(
   run: ActivityRunNode,
   itemId: string,
-): ActivityRunMountWindow | null {
+): ActivityRunFocusWindow | null {
   const row = activityRunRowIndexOfItem(run, itemId);
   if (row < 0) return null;
   const rows = Math.max(1, run.mountedRows);
-  return windowEndingAt(run, Math.max(0, row - Math.floor(rows / 2)), rows);
+  const from = clampWindowStart(run, row - Math.floor(rows / 2), rows);
+  return { ...windowEndingAt(run, from, rows), from };
 }
 
 /** Grow the window upward by one chunk, keeping its bottom edge. */
@@ -97,11 +118,21 @@ function windowEndingAt(
   return { rows, startItemId: timelineNodeItemId(run.children[from]) };
 }
 
+/**
+ * Where a window of `rows` really starts when asked to start at `from`: never
+ * before the run's first row, and never past the start that puts its last row
+ * on the run's last row. One rule, so a caller reporting the resolved start
+ * cannot disagree with what the registry mounts.
+ */
+function clampWindowStart(run: ActivityRunNode, from: number, rows: number): number {
+  return Math.min(Math.max(0, from), Math.max(0, run.children.length - rows));
+}
+
 /** The registry surface `revealActivityRunItem` drives. */
 export interface ActivityRunReveal {
   setCollapsed(runId: string, collapsed: boolean): void;
   setMountWindow(runId: string, window: ActivityRunMountWindow): void;
-  requestFocus(runId: string, itemId: string): void;
+  requestFocus(runId: string, request: ActivityRunFocusRequest): void;
 }
 
 /**
@@ -122,6 +153,9 @@ export function revealActivityRunItem(
   if (!window) return false;
   registry.setCollapsed(run.runId, false);
   registry.setMountWindow(run.runId, window);
-  registry.requestFocus(run.runId, itemId);
+  registry.requestFocus(run.runId, {
+    itemId,
+    relocated: window.from !== run.mountedFrom,
+  });
   return true;
 }

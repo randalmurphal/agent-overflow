@@ -31,6 +31,7 @@
     activityRunCenteredScrollTop,
     activityRunChildElement,
     activityRunClipMaxHeight,
+    activityRunRowFullyVisible,
     observeActivityRunExpansion,
   } from '../../utils/activityRunClip';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
@@ -223,21 +224,26 @@
     // The request is the dependency, not the node: a jump can target an item
     // the current window already holds, which changes nothing on the node.
     pane.activityRuns.revision;
-    const itemId = pane.activityRuns.takeFocus(run.runId);
-    if (!itemId) return;
-    const row = activityRunRowIndexOfItem(run, itemId);
+    const request = pane.activityRuns.takeFocus(run.runId);
+    if (!request) return;
+    const row = activityRunRowIndexOfItem(run, request.itemId);
     // The item left the run between the request and this flush (a live-window
     // prune). Nothing to scroll to; the outer jump still put the run on
     // screen.
     if (row < run.mountedFrom || row >= run.mountedFrom + run.mountedRows) return;
     const el = activityRunChildElement(clip, row);
     if (!el) return;
-    const target = activityRunCenteredScrollTop(clip, el);
     // Explicit navigation inside the run, so it escapes bottom-follow the
     // same way the outer timeline does — otherwise the next streamed chunk
     // would yank the reader off the item they jumped to.
     stick?.setEscapedFromLock(true);
-    if (target !== null) clip.scrollTop = target;
+    // A relocated window inherited an offset into rows that are no longer
+    // mounted, so where the target sits under it is an accident — center it.
+    // An unmoved window means the reader is already looking at these rows;
+    // leave a target they can see where it is (utils/activityRunClip.ts).
+    if (request.relocated || !activityRunRowFullyVisible(clip, el)) {
+      clip.scrollTop = activityRunCenteredScrollTop(clip, el);
+    }
   });
 
   // No head trim, deliberately. Growth cannot accumulate DOM on its own —
