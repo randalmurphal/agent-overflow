@@ -26,7 +26,9 @@
 // to the user.
 const CONSUME_EPSILON_PX = 0.5;
 
-const nestedScrollers = new WeakSet<Element>();
+// Refcounted: see `registerNestedScroller`. Weakly keyed so a removed
+// element cannot pin itself here through a leaked release fn.
+const nestedScrollers = new WeakMap<Element, number>();
 
 /**
  * Can `el` still move in this direction? `delta` uses wheel sign
@@ -56,7 +58,7 @@ export function scrollDeltaConsumedBelow(
   if (delta === 0) return false;
   let cur: Element | null = target instanceof Element ? target : null;
   while (cur && cur !== boundary) {
-    if (nestedScrollers.has(cur) && canConsumeDelta(cur, delta)) return true;
+    if ((nestedScrollers.get(cur) ?? 0) > 0 && canConsumeDelta(cur, delta)) return true;
     cur = cur.parentElement;
   }
   return false;
@@ -80,11 +82,25 @@ export function touchDragConsumedBelow(
   return scrollDeltaConsumedBelow(target, boundary, -dy);
 }
 
-/** Register an element as a nested scroller. Returns its unregister fn. */
+/**
+ * Register an element as a nested scroller. Returns its unregister fn.
+ *
+ * Refcounted, and each lease releases only itself. One element can be
+ * registered more than once — two actions on the same node, or an action plus
+ * a direct registration — and an unconditional delete would let the first
+ * release unregister a scroller the second still needs, silently handing its
+ * wheel events to the outer surface. Releasing twice is a no-op for the same
+ * reason: it must not drop someone else's count.
+ */
 export function registerNestedScroller(el: Element): () => void {
-  nestedScrollers.add(el);
+  nestedScrollers.set(el, (nestedScrollers.get(el) ?? 0) + 1);
+  let released = false;
   return () => {
-    nestedScrollers.delete(el);
+    if (released) return;
+    released = true;
+    const remaining = (nestedScrollers.get(el) ?? 1) - 1;
+    if (remaining > 0) nestedScrollers.set(el, remaining);
+    else nestedScrollers.delete(el);
   };
 }
 

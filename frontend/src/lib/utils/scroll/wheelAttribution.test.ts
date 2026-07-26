@@ -161,6 +161,25 @@ describe('scrollDeltaConsumedBelow', () => {
 
     expect(scrollDeltaConsumedBelow(leaf, boundary, UP)).toBe(false);
   });
+
+  it('keeps the scroller registered while any lease is still held', () => {
+    const { boundary, box, leaf } = tree({ scrollTop: 200 });
+    const first = registerNestedScroller(box);
+    const second = registerNestedScroller(box);
+
+    // One holder leaving must not deregister an element another still needs:
+    // the box would keep scrolling while the outer machine also treated every
+    // gesture inside it as leaving the conversation.
+    first();
+    expect(scrollDeltaConsumedBelow(leaf, boundary, UP)).toBe(true);
+
+    // And a lease released twice must not drop the other's count.
+    first();
+    expect(scrollDeltaConsumedBelow(leaf, boundary, UP)).toBe(true);
+
+    second();
+    expect(scrollDeltaConsumedBelow(leaf, boundary, UP)).toBe(false);
+  });
 });
 
 describe('wheelConsumedBelow', () => {
