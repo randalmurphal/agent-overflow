@@ -10,7 +10,7 @@
 // today whether or not it sits in a clip). A separate row-count threshold
 // would only add a second, unrelated cliff. But the node has to exist at
 // every length regardless, because the rail is a collapse control on all
-// runs and the node is where collapse state and counts live.
+// runs and the node is where collapse state lives.
 //
 // Membership is rail participation (`timelineRail.ts`), read against the
 // CURRENT item so a late-arriving payloadKind is honored. Prose, user
@@ -20,15 +20,8 @@
 // it cannot derive alone — see `ActivityRunIdentity`.
 
 import type { Item } from '../types/models';
-import {
-  type ActivityRunCounts,
-  type ActivityRunNode,
-  type TimelineNode,
-} from './subagentGrouping';
+import { type ActivityRunNode, type TimelineNode } from './subagentGrouping';
 import { timelineNodeHasRail } from './timelineRail';
-
-const THINKING_LABEL = 'thinking';
-const UNNAMED_TOOL_LABEL = 'tool';
 
 /**
  * How many of a run's newest rows are mounted. Sized to overfill the clip's
@@ -95,24 +88,27 @@ function isRunMember(node: TimelineNode, getItem: (id: string) => Item | undefin
   return timelineNodeHasRail(node, currentLeafItem(node, getItem));
 }
 
-function toolLabel(item: Item): string {
-  if (item.kind === 'thinking') return THINKING_LABEL;
-  const name = item.toolName?.trim();
-  return name && name.length > 0 ? name : UNNAMED_TOOL_LABEL;
-}
-
-function isFailedStatus(status: Item['status']): boolean {
-  // `declined` is a user decision, not a failure; `killed` and `errored`
-  // are outcomes the user did not choose and must not be hidden by a chip.
-  return status === 'errored' || status === 'killed';
-}
-
-function isRunningStatus(status: Item['status']): boolean {
-  return status === 'running' || status === 'streaming';
+/**
+ * The membership pattern of `nodes` as a positional bit string.
+ *
+ * This is the reactivity gate for the pass. Membership reads live item
+ * state, and a `payloadKind` can arrive without bumping `timelineRevision`
+ * (that is exactly how a proposed-plan row leaves the rail), so the pass
+ * cannot be gated on structure alone. Walking the pattern is cheap and
+ * yields a primitive, so ordinary streaming deltas re-run only this walk;
+ * the rebuild downstream fires when the pattern actually changes.
+ */
+export function activityRunMembershipKey(
+  nodes: readonly TimelineNode[],
+  getItem: (id: string) => Item | undefined,
+): string {
+  let key = '';
+  for (const node of nodes) key += isRunMember(node, getItem) ? '1' : '0';
+  return key;
 }
 
 /** Every item a run row represents, including group members. */
-function* runMemberItems(nodes: readonly TimelineNode[]): Generator<Item> {
+export function* activityRunMemberItems(nodes: readonly TimelineNode[]): Generator<Item> {
   for (const node of nodes) {
     switch (node.kind) {
       case 'leaf':
@@ -129,70 +125,24 @@ function* runMemberItems(nodes: readonly TimelineNode[]): Generator<Item> {
         yield node.parent;
         break;
       case 'activity_run':
-        yield* runMemberItems(node.children);
+        yield* activityRunMemberItems(node.children);
         break;
     }
   }
-}
-
-/**
- * Per-tool aggregation for the chip line, e.g. `14 Bash, 6 Read, 9 thinking`.
- *
- * A `tool_completion` pairs with its call and is not counted separately —
- * one Bash call that finished is one Bash, not two. A completion whose call
- * is outside the run is an orphan and counts under its own tool name, so a
- * run trimmed at the head still reports honestly.
- */
-function aggregateCounts(items: readonly Item[]): ActivityRunCounts {
-  const presentIds = new Set(items.map((item) => item.id));
-  const byLabel = new Map<string, number>();
-  let total = 0;
-
-  for (const item of items) {
-    if (item.kind === 'tool_completion') {
-      const callId = item.completionOf;
-      if (callId && presentIds.has(callId)) continue;
-    }
-    total += 1;
-    const label = toolLabel(item);
-    byLabel.set(label, (byLabel.get(label) ?? 0) + 1);
-  }
-
-  const entries = [...byLabel.entries()]
-    .map(([label, count]) => ({ label, count }))
-    .sort((a, b) => {
-      // Thinking last regardless of count: it is ambient, and a reader
-      // scanning a chip wants the tools first.
-      const aThinking = a.label === THINKING_LABEL;
-      const bThinking = b.label === THINKING_LABEL;
-      if (aThinking !== bThinking) return aThinking ? 1 : -1;
-      if (a.count !== b.count) return b.count - a.count;
-      return a.label.localeCompare(b.label);
-    });
-
-  return { entries, total };
 }
 
 function buildRun(
   members: TimelineNode[],
   options: GroupActivityRunsOptions,
 ): ActivityRunNode {
-  // One walk: every read below is over the resolved items, so a run costs a
-  // single traversal per projection pass regardless of how many facts we
-  // derive from it.
-  const items = [...runMemberItems(members)]
-    .map((projected) => options.getItem(projected.id) ?? projected);
-
-  let hasFailure = false;
-  let runningLabel: string | null = null;
-  for (const item of items) {
-    if (isFailedStatus(item.status)) hasFailure = true;
-    // Last one wins: the newest active row is what the user wants named.
-    if (isRunningStatus(item.status)) runningLabel = toolLabel(item);
-  }
-
+  // The projected member items are enough for identity and threadId — both
+  // are immutable per item — so this pass never resolves current items. That
+  // is what keeps it off the streaming path: everything the run displays
+  // that CAN change is derived from these ids at render time instead.
+  const items = [...activityRunMemberItems(members)];
+  const memberItemIds = items.map((item) => item.id);
   const { runId, collapsed, mountedRows } = options.identity.resolve(
-    items.map((item) => item.id),
+    memberItemIds,
     members.length,
   );
   return {
@@ -202,9 +152,7 @@ function buildRun(
     children: members,
     collapsed,
     mountedRows,
-    counts: aggregateCounts(items),
-    hasFailure,
-    runningLabel,
+    memberItemIds,
   };
 }
 

@@ -157,124 +157,26 @@ describe('run boundaries', () => {
   });
 });
 
-describe('counts', () => {
-  function countsOf(nodes: TimelineNode[]) {
-    return run(project(nodes), 0).counts;
-  }
+describe('member items', () => {
+  // The chip aggregates from these ids, so anything missing here is a row
+  // the collapsed run would silently fail to count.
+  it('flattens read-group members into the id list', () => {
+    const nodes = project([tool('t1', 'Bash'), readGroup(['r1', 'r2', 'r3'])]);
 
-  it('aggregates by tool display name, count-descending', () => {
-    const counts = countsOf([
-      tool('a', 'Bash'),
-      tool('b', 'Read'),
-      tool('c', 'Bash'),
-      tool('d', 'Bash'),
-      tool('e', 'Read'),
-    ]);
-
-    expect(counts.entries).toEqual([
-      { label: 'Bash', count: 3 },
-      { label: 'Read', count: 2 },
-    ]);
-    expect(counts.total).toBe(5);
+    expect(run(nodes, 0).memberItemIds).toEqual(['t1', 'r1', 'r2', 'r3']);
   });
 
-  it('sorts thinking last regardless of count', () => {
-    const counts = countsOf([
-      leaf({ id: 'th1', kind: 'thinking' }),
-      leaf({ id: 'th2', kind: 'thinking' }),
-      leaf({ id: 'th3', kind: 'thinking' }),
-      tool('a', 'Bash'),
-    ]);
+  it('lists a subagent group by its launch row, not its descendants', () => {
+    const nodes = project([group('g1'), tool('t1', 'Bash')]);
 
-    expect(counts.entries.map((e) => e.label)).toEqual(['Bash', 'thinking']);
+    expect(run(nodes, 0).memberItemIds).toEqual(['g1', 't1']);
   });
 
-  it('pairs a completion with its call instead of double-counting', () => {
-    const counts = countsOf([
-      tool('t1', 'Bash'),
-      leaf({ id: 'c1', kind: 'tool_completion', toolName: 'Bash', completionOf: 't1' }),
-    ]);
+  it('counts rows and items separately — a read group is many items, one row', () => {
+    const node = run(project([readGroup(['r1', 'r2', 'r3'])]), 0);
 
-    expect(counts.entries).toEqual([{ label: 'Bash', count: 1 }]);
-    expect(counts.total).toBe(1);
-  });
-
-  it('counts an orphan completion whose call is outside the run', () => {
-    const counts = countsOf([
-      leaf({ id: 'c1', kind: 'tool_completion', toolName: 'Bash', completionOf: 'gone' }),
-      tool('t1', 'Edit'),
-    ]);
-
-    expect(counts.entries).toEqual([
-      { label: 'Bash', count: 1 },
-      { label: 'Edit', count: 1 },
-    ]);
-  });
-
-  it('counts every read_group member under Read', () => {
-    const counts = countsOf([readGroup(['r1', 'r2', 'r3'])]);
-
-    expect(counts.entries).toEqual([{ label: 'Read', count: 3 }]);
-  });
-
-  it('counts a subagent group as one launch, not its descendants', () => {
-    const withChildren: TimelineNode = {
-      ...(group('g1') as Extract<TimelineNode, { kind: 'group' }>),
-      children: [tool('child1', 'Bash'), tool('child2', 'Bash')],
-      descendantCount: 2,
-      loadedDescendantCount: 2,
-    };
-    const counts = countsOf([withChildren]);
-
-    expect(counts.entries).toEqual([{ label: 'Task', count: 1 }]);
-  });
-
-  it('falls back to a generic label when a tool has no name', () => {
-    const counts = countsOf([leaf({ id: 'x', kind: 'tool_call' })]);
-
-    expect(counts.entries).toEqual([{ label: 'tool', count: 1 }]);
-  });
-});
-
-describe('attention state', () => {
-  it('flags a failed member so a chip cannot hide it', () => {
-    const nodes = project([tool('t1', 'Bash', { status: 'errored' }), tool('t2', 'Read')]);
-
-    expect(run(nodes, 0).hasFailure).toBe(true);
-  });
-
-  it('treats a killed member as a failure', () => {
-    const nodes = project([tool('t1', 'Bash', { status: 'killed' })]);
-
-    expect(run(nodes, 0).hasFailure).toBe(true);
-  });
-
-  it('does not treat a declined member as a failure — that was a user decision', () => {
-    const nodes = project([tool('t1', 'Bash', { status: 'declined' })]);
-
-    expect(run(nodes, 0).hasFailure).toBe(false);
-  });
-
-  it('names the newest running member', () => {
-    const nodes = project([
-      tool('t1', 'Read', { status: 'running' }),
-      tool('t2', 'Bash', { status: 'running' }),
-    ]);
-
-    expect(run(nodes, 0).runningLabel).toBe('Bash');
-  });
-
-  it('reports no running label once everything settles', () => {
-    const nodes = project([tool('t1', 'Bash')]);
-
-    expect(run(nodes, 0).runningLabel).toBeNull();
-  });
-
-  it('reads status from the live item', () => {
-    const nodes = [tool('t1', 'Bash')];
-    const failed = makeItem({ id: 't1', kind: 'tool_call', toolName: 'Bash', status: 'errored' });
-
-    expect(run(project(nodes, { live: [failed] }), 0).hasFailure).toBe(true);
+    expect(node.memberItemIds).toHaveLength(3);
+    expect(node.children).toHaveLength(1);
   });
 });
 

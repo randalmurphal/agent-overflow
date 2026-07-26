@@ -555,15 +555,13 @@ describe('<MessageTimeline>', () => {
     expect(tableWrapper?.querySelector('table')).not.toBeNull();
   });
 
-  it('marks tool / think leaf rows with data-rail="true" and flat rows with "false"', async () => {
-    // Phase 1 rail: every per-row wrapper carries a `data-rail`
-    // attribute derived from the leaf item's kind at first render.
-    // Tool / completion / thinking leaves participate in the
-    // continuous left-border; assistant_text, user_text, and other
-    // structural rows opt out. The attribute is the behavior contract;
-    // the `border-l ...` class is the implementation. Assert on the
-    // attribute so a future class rename doesn't silently break the
-    // discriminator.
+  it('wraps consecutive tool / think rows into one railed activity run', async () => {
+    // The rail belongs to the run, not to individual rows: tool,
+    // completion, and thinking rows collapse into one timeline row that
+    // draws a single continuous border. Prose on either side stays a row
+    // of its own and breaks the run. `data-rail` is the behavior
+    // contract; the `border-l ...` class is the implementation, so both
+    // are pinned — a class rename must not silently drop the visual.
     const pane = await buildPane(undefined, [
       makeItem({ id: 'u:0', kind: 'user_text', role: 'user', summary: 'hi' }),
       makeItem({
@@ -595,26 +593,24 @@ describe('<MessageTimeline>', () => {
     ]);
     const { container } = render(MessageTimeline, { props: { pane } });
 
+    // user_text | run(tool_call, tool_completion, thinking) | assistant_text
     const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
-    expect(wrappers.length).toBe(5);
-    // Order matches the items array above.
-    expect(wrappers[0].getAttribute('data-rail')).toBe('false'); // user_text
-    expect(wrappers[1].getAttribute('data-rail')).toBe('true');  // tool_call
-    expect(wrappers[2].getAttribute('data-rail')).toBe('true');  // tool_completion
-    expect(wrappers[3].getAttribute('data-rail')).toBe('true');  // thinking
-    expect(wrappers[4].getAttribute('data-rail')).toBe('false'); // assistant_text
+    expect(wrappers.length).toBe(3);
 
-    // Rail-bearing rows also carry the border-l utility; flat rows
-    // don't. Pin both since the class is what produces the visual.
-    expect(wrappers[1].className).toContain('border-l');
-    expect(wrappers[0].className).not.toContain('border-l');
-    expect(wrappers[4].className).not.toContain('border-l');
+    const runs = container.querySelectorAll('[data-testid="activity-run"]');
+    expect(runs).toHaveLength(1);
+    expect(runs[0].getAttribute('data-rail')).toBe('true');
+    expect(runs[0].className).toContain('border-l');
+    // One border for the block, not one per row.
+    expect(wrappers[0].querySelector('[data-testid="activity-run"]')).toBeNull();
+    expect(wrappers[2].querySelector('[data-testid="activity-run"]')).toBeNull();
+    expect(wrappers[1].contains(runs[0])).toBe(true);
   });
 
-  it('extends data-rail="true" to subagent / wait group container rows', async () => {
-    // Group containers (SubagentGroup, WaitGroup) participate in the
-    // rail so consecutive agent/wait rows form one continuous left
-    // border with adjacent tool rows.
+  it('takes subagent / wait group containers into the run', async () => {
+    // Group containers (SubagentGroup, WaitGroup) sit on the rail, so
+    // they join the surrounding run rather than breaking it — the border
+    // stays continuous through nested cards.
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'tool:0',
@@ -652,22 +648,22 @@ describe('<MessageTimeline>', () => {
     ]);
     const { container } = render(MessageTimeline, { props: { pane } });
 
+    // tool_call leaf + agent group + agent group + wait_group, all in one run.
     const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
-    // tool_call leaf + agent group + agent group + wait_group wrapper.
-    expect(wrappers.length).toBe(4);
-    for (const wrapper of wrappers) {
-      expect(wrapper.getAttribute('data-rail')).toBe('true');
-      expect(wrapper.className).toContain('border-l');
-    }
+    expect(wrappers.length).toBe(1);
+    const run = wrappers[0].querySelector('[data-testid="activity-run"]');
+    expect(run?.getAttribute('data-rail')).toBe('true');
+    expect(container.querySelectorAll('[data-testid="subagent-group"]')).toHaveLength(2);
+    expect(container.querySelector('[data-testid="wait-group"]')).not.toBeNull();
   });
 
   it('folds consecutive Read tool_calls into a single rail-bearing read_group row', async () => {
     // Three reads in a row collapse to one ReadGroupRow with three
     // EditorLink members. Pin: (1) only ONE wrapper appears for the
-    // run (vs. three when the grouping is bypassed); (2) the wrapper
-    // carries data-rail="true" so it stays under the continuous rail
-    // alongside neighboring tool rows; (3) each member surfaces as a
-    // discrete EditorLink keyed off its workspace-relative path.
+    // run (vs. three when the grouping is bypassed); (2) it sits under
+    // the run's continuous rail alongside neighboring tool rows; (3) each
+    // member surfaces as a discrete EditorLink keyed off its
+    // workspace-relative path.
     const pane = await buildPane(undefined, [
       makeItem({
         id: 'read:0',
@@ -695,8 +691,9 @@ describe('<MessageTimeline>', () => {
 
     const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
     expect(wrappers).toHaveLength(1);
-    expect(wrappers[0].getAttribute('data-rail')).toBe('true');
-    expect(getByTestId('read-group-row')).toBeInTheDocument();
+    const readRun = wrappers[0].querySelector('[data-testid="activity-run"]');
+    expect(readRun?.getAttribute('data-rail')).toBe('true');
+    expect(readRun?.contains(getByTestId('read-group-row'))).toBe(true);
     const links = getAllByTestId('editor-link');
     expect(links.map((el) => el.getAttribute('data-path'))).toEqual([
       'src/lib/foo.ts',
@@ -709,8 +706,8 @@ describe('<MessageTimeline>', () => {
     // Proposed plans render as standalone markdown sections, not the
     // compact chev/icon/label/preview pattern other tool rows share.
     // The rail running alongside that body would make the plan look
-    // nested under the tool gutter, so plan rows opt out of `data-rail`
-    // and the border-l/ml/pl shell.
+    // nested under the tool gutter, so plan rows opt out of the rail —
+    // which also keeps them out of the activity run the rail defines.
     setBindingMock('GetPayloadData', async () => ({ data: '# Ship it' }));
     const pane = await buildPane(undefined, [
       makeItem({
@@ -741,13 +738,12 @@ describe('<MessageTimeline>', () => {
     expect(wrappers).toHaveLength(2);
     // The non-plan tool row keeps the rail so this test would also
     // catch a regression that disabled the rail wholesale.
-    expect(wrappers[0].getAttribute('data-rail')).toBe('true');
-    expect(wrappers[0].className).toContain('border-l');
-    expect(wrappers[1].getAttribute('data-rail')).toBe('false');
+    expect(wrappers[0].querySelector('[data-testid="activity-run"]')).not.toBeNull();
+    expect(wrappers[1].querySelector('[data-testid="activity-run"]')).toBeNull();
     expect(wrappers[1].className).not.toContain('border-l');
   });
 
-  it('updates leaf rail chrome from pane state after a non-structural upsert', async () => {
+  it('drops a row out of its run from pane state after a non-structural upsert', async () => {
     const tool = makeItem({
       id: 'plan-1',
       itemIndex: 0,
@@ -757,10 +753,11 @@ describe('<MessageTimeline>', () => {
     const pane = await buildPane(undefined, [tool]);
 
     const { container } = render(MessageTimeline, { props: { pane } });
-    const wrapper = () => container.querySelector('[data-testid="message-timeline-node"]');
+    const run = () => container.querySelector('[data-testid="activity-run"]');
 
-    expect(wrapper()?.getAttribute('data-rail')).toBe('true');
-    expect(wrapper()?.className).toContain('border-l');
+    // Rail membership is read from the LIVE item, so a payloadKind that
+    // arrives without a structural rebuild still has to dissolve the run.
+    expect(run()?.getAttribute('data-rail')).toBe('true');
 
     const revisionBefore = pane.timelineRevision;
     pane.upsertItem({
@@ -778,8 +775,7 @@ describe('<MessageTimeline>', () => {
     await tick();
 
     expect(pane.timelineRevision).toBe(revisionBefore);
-    expect(wrapper()?.getAttribute('data-rail')).toBe('false');
-    expect(wrapper()?.className).not.toContain('border-l');
+    expect(run()).toBeNull();
   });
 
   it('renders a single Read through the stable read_group row from first appearance', async () => {
@@ -798,7 +794,7 @@ describe('<MessageTimeline>', () => {
 
     const wrappers = container.querySelectorAll('[data-testid="message-timeline-node"]');
     expect(wrappers).toHaveLength(1);
-    expect(wrappers[0].getAttribute('data-rail')).toBe('true');
+    expect(wrappers[0].querySelector('[data-testid="activity-run"]')).not.toBeNull();
     const initialReadRow = getByTestId('read-group-row');
     expect(initialReadRow).toBeInTheDocument();
     expect(getByTestId('read-group-row-label').textContent).toBe('read');
@@ -1480,8 +1476,11 @@ describe('<MessageTimeline>', () => {
   });
 
   describe('reveal gate', () => {
-    function countNodes(scroll: HTMLElement): number {
-      return scroll.querySelectorAll('[data-testid="message-timeline-node"]').length;
+    // Rendered item rows, not top-level timeline nodes: consecutive
+    // activity rows share one node (their run), so a node count could not
+    // tell "the tool row revealed" from "it was withheld".
+    function countRows(scroll: HTMLElement): number {
+      return scroll.querySelectorAll('[data-item-id]').length;
     }
 
     it('withholds the next row while the prior item streams, then reveals it', async () => {
@@ -1513,7 +1512,7 @@ describe('<MessageTimeline>', () => {
         const scroll = getByTestId('message-timeline-scroll');
         // user + thinking render; the tool call is withheld behind the
         // still-streaming thinking row.
-        expect(countNodes(scroll)).toBe(2);
+        expect(countRows(scroll)).toBe(2);
         expect(scroll.textContent).not.toContain('Bash command');
 
         // Drain the thinking smoother (fast-drain finishes within ~200ms) and
@@ -1523,7 +1522,7 @@ describe('<MessageTimeline>', () => {
         for (let i = 0; i < 40 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
         await tick();
 
-        expect(countNodes(scroll)).toBe(3);
+        expect(countRows(scroll)).toBe(3);
         expect(scroll.textContent).toContain('Bash command');
       } finally {
         __setSmoothingClockForTest(undefined);

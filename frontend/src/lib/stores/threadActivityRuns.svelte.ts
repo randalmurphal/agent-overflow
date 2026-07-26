@@ -32,6 +32,14 @@ export interface ThreadActivityRunsOptions {
 }
 
 export interface ThreadActivityRuns extends ActivityRunIdentity {
+  /**
+   * Bumps whenever a value `resolve` returns could differ. The projection
+   * pass runs untracked (it walks every node and would otherwise re-run on
+   * every streaming delta), so it reads this to know when a rebuild is
+   * owed. Scroll snapshots deliberately do NOT bump it: they change on
+   * every inner scroll frame and nothing on the node depends on them.
+   */
+  readonly revision: number;
   /** Explicit user state, or the setting default when never touched. */
   isCollapsed(runId: string): boolean;
   setCollapsed(runId: string, collapsed: boolean): void;
@@ -66,11 +74,12 @@ export function createThreadActivityRuns(
   let claimed = new Set<string>();
   let nextRunId = 1;
 
-  // Collapse overrides are the only registry state the UI renders from, so
-  // they are the only part that needs to be reactive. Scroll snapshots and
-  // mounted-row counts are read imperatively at mount/trim time — making
-  // them $state would churn dependents on every inner scroll event.
-  let collapseRevision = $state(0);
+  // Collapse state and the mounted-row count both ride on the projected
+  // node, so both have to be able to trigger a rebuild. Each only moves on
+  // a deliberate user action (toggle the run, mount an older chunk), so the
+  // rebuild is rare. Scroll snapshots are excluded on purpose — they move
+  // every inner scroll frame and nothing on the node reads them.
+  let revision = $state(0);
 
   function entryFor(runId: string): RunEntry {
     let entry = entries.get(runId);
@@ -139,7 +148,7 @@ export function createThreadActivityRuns(
   }
 
   function isCollapsed(runId: string): boolean {
-    collapseRevision;
+    revision;
     return entries.get(runId)?.collapsed ?? options.defaultCollapsed();
   }
 
@@ -147,7 +156,7 @@ export function createThreadActivityRuns(
     const entry = entryFor(runId);
     if (entry.collapsed === collapsed) return;
     entry.collapsed = collapsed;
-    collapseRevision += 1;
+    revision += 1;
   }
 
   function toggleCollapsed(runId: string): void {
@@ -155,6 +164,9 @@ export function createThreadActivityRuns(
   }
 
   return {
+    get revision() {
+      return revision;
+    },
     beginPass,
     resolve,
     endPass,
@@ -167,13 +179,16 @@ export function createThreadActivityRuns(
     },
     mountedRows: (runId, fallback) => entries.get(runId)?.mountedRows ?? fallback,
     setMountedRows: (runId, rows) => {
-      entryFor(runId).mountedRows = rows;
+      const entry = entryFor(runId);
+      if (entry.mountedRows === rows) return;
+      entry.mountedRows = rows;
+      revision += 1;
     },
     clear: () => {
       entries.clear();
       runIdByMember.clear();
       claimed = new Set();
-      collapseRevision += 1;
+      revision += 1;
     },
   };
 }

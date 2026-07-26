@@ -1,20 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { makeItem } from '../../../test/helpers/chat';
-import type { ThreadPane } from '../../stores/thread.svelte';
-import type { Item } from '../../types/models';
+import { makeItem } from '../../test/helpers/chat';
+import type { Item } from '../types/models';
 import type {
+  ActivityRunNode,
   ReadGroupNode,
   SubagentGroupNode,
   TimelineNode,
   WaitGroupNode,
-} from '../../utils/subagentGrouping';
-import { createTimelineRowProjection } from './timelineRowProjection.svelte';
-
-// timelineNodeHasRail never reads `pane` — the getPane stub only backs
-// `currentTimelineLeafItem`'s getItemById lookup (used to resolve leaf
-// fixtures below) so it satisfies the factory's option contract.
-const fakePane = { getItemById: () => undefined } as unknown as ThreadPane;
-const rows = createTimelineRowProjection({ getPane: () => fakePane });
+} from './subagentGrouping';
+import { timelineNodeHasRail } from './timelineRail';
 
 function leaf(overrides: Partial<Item> = {}): TimelineNode {
   return { kind: 'leaf', item: makeItem(overrides) };
@@ -45,6 +39,16 @@ const readGroup: ReadGroupNode = {
   members: [],
 };
 
+const activityRun: ActivityRunNode = {
+  kind: 'activity_run',
+  runId: 'r1',
+  threadId: 'thread-1',
+  children: [leaf({ kind: 'tool_call' })],
+  collapsed: false,
+  mountedRows: 1,
+  memberItemIds: ['i1'],
+};
+
 describe('timelineNodeHasRail', () => {
   it.each<[string, TimelineNode, boolean]>([
     ['tool_call leaf', leaf({ kind: 'tool_call' }), true],
@@ -55,8 +59,11 @@ describe('timelineNodeHasRail', () => {
     ['group node', group, true],
     ['wait_group node', waitGroup, true],
     ['read_group node', readGroup, true],
+    // The run DRAWS the rail; it does not sit on one. Answering true here
+    // would make the run a member of itself on the next projection pass.
+    ['activity_run draws its own rail', activityRun, false],
   ])('%s -> %s', (_label, node, expected) => {
-    const leafItem = rows.currentTimelineLeafItem(node);
-    expect(rows.timelineNodeHasRail(node, leafItem)).toBe(expected);
+    const leafItem = node.kind === 'leaf' ? node.item : null;
+    expect(timelineNodeHasRail(node, leafItem)).toBe(expected);
   });
 });

@@ -12,6 +12,25 @@ export interface TimelineRowDecorationSets {
   responsePillIndexes: ReadonlySet<number>;
 }
 
+/**
+ * Every turn a node covers. All but one node covers exactly one; an
+ * activity run can span several, because providers emit per wire round and
+ * a round that produces only tool calls is not separated from the next by
+ * any prose row (see internal/triage/CLAUDE.md § Wire-round vs
+ * logical-turn). Recording only the run's root turn would leave the later
+ * turns with no `tool` role on record, and the assistant message closing
+ * one of them would lose its response divider.
+ */
+function nodeTurnIndexes(node: TimelineNode): number[] {
+  if (node.kind !== 'activity_run') return [timelineNodeTurnIndex(node)];
+  const turns: number[] = [];
+  for (const child of node.children) {
+    const turnIndex = timelineNodeTurnIndex(child);
+    if (turns[turns.length - 1] !== turnIndex) turns.push(turnIndex);
+  }
+  return turns;
+}
+
 export function timelineRowDecorations(
   nodes: readonly TimelineNode[],
   activeTurnIndex: number | null,
@@ -25,7 +44,6 @@ export function timelineRowDecorations(
   for (let index = 0; index < nodes.length; index += 1) {
     const node = nodes[index];
     const role = nodeRole(node);
-    const turnIndex = timelineNodeTurnIndex(node);
 
     if (isToolTextBoundary(nodes, index)) {
       toolTextBoundaryIndexes.add(index);
@@ -42,7 +60,9 @@ export function timelineRowDecorations(
     }
 
     if (role === 'tool' || role === 'text') {
-      lastRenderableRoleByTurn.set(turnIndex, role);
+      for (const turnIndex of nodeTurnIndexes(node)) {
+        lastRenderableRoleByTurn.set(turnIndex, role);
+      }
     }
   }
 

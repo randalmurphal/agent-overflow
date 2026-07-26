@@ -202,6 +202,13 @@ export function sizePriorsStats(): { threads: number; rows: number } {
 export interface RowEstimateOptions {
   /** Per-row prior lookup (already validity-gated by the caller), if any. */
   rowPrior?: (index: number) => number | undefined;
+  /**
+   * Computed estimate for rows whose height is a function of live state
+   * rather than of kind — an activity run is a ~24px chip collapsed and up
+   * to its cap expanded, and one kind-table entry would be wrong by ~20×
+   * in whichever state it did not describe.
+   */
+  structuralSize?: (index: number) => number | undefined;
   /** Maps a row index to its kind for the kind-height table. */
   kindOf?: (index: number) => string | undefined;
   /** Kind → typical height px. Static table, tuned against real data. */
@@ -211,7 +218,8 @@ export interface RowEstimateOptions {
 }
 
 /**
- * The live estimate resolver: per-row prior → kind height → flat default.
+ * The live estimate resolver: per-row prior → structural size → kind
+ * height → flat default.
  * Estimates only ever predict placement for unmeasured rows — they never
  * decide what a row renders, and a measurement always overrides them in
  * the size store.
@@ -226,6 +234,8 @@ export function createRowEstimate(options: RowEstimateOptions): RowEstimate {
     at(index: number): number {
       const prior = options.rowPrior?.(index);
       if (prior !== undefined) return prior;
+      const structural = options.structuralSize?.(index);
+      if (structural !== undefined) return structural;
       const kind = options.kindOf?.(index);
       if (kind !== undefined) {
         const kindHeight = options.kindHeights?.[kind];

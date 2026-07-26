@@ -66,6 +66,18 @@ const ROW_KIND_ESTIMATE_PX: Readonly<Record<string, number>> = {
   wait_group: 36,
 };
 
+/** One chip line, matching ActivityRunChip's `py-0.5` + 12px line box. */
+const ACTIVITY_RUN_CHIP_PX = 24;
+/**
+ * Floor for an expanded run: its rows at the tightest kind height in the
+ * table, capped at the clip's own ceiling. Deliberately a floor, matching
+ * the rest of this table — an estimate that overshoots pushes real content
+ * off the bottom of the placement, which reads worse than a short row that
+ * grows on measure.
+ */
+const ACTIVITY_RUN_ROW_FLOOR_PX = 20;
+const ACTIVITY_RUN_CAP_FLOOR_PX = 512;
+
 export interface TimelineSizePriorsOptions {
   getPane(): ThreadPane;
   getListRef(): TimelineVirtualizerHandle | undefined;
@@ -145,6 +157,18 @@ export function createTimelineSizePriors(
     const node = options.getRevealedNodes()[index];
     if (!node) return undefined;
     return node.kind === 'leaf' ? node.item.kind : node.kind;
+  }
+
+  // An activity run has no single typical height: the same runId is a chip
+  // one moment and a capped clip the next. A kind-table entry would be
+  // wrong by ~20× in one of the two states, which lands fast-scroll
+  // placement badly through unmeasured runs.
+  function timelineRowStructuralSize(index: number): number | undefined {
+    const node = options.getRevealedNodes()[index];
+    if (node?.kind !== 'activity_run') return undefined;
+    if (node.collapsed) return ACTIVITY_RUN_CHIP_PX;
+    const mounted = Math.min(node.children.length, node.mountedRows);
+    return Math.min(ACTIVITY_RUN_CAP_FLOOR_PX, mounted * ACTIVITY_RUN_ROW_FLOOR_PX);
   }
 
   // Capture the engine's current measured sizes for the active thread, but
@@ -278,6 +302,7 @@ export function createTimelineSizePriors(
       stats,
       estimate: createRowEstimate({
         rowPrior,
+        structuralSize: timelineRowStructuralSize,
         kindOf: timelineRowEstimateKind,
         kindHeights: ROW_KIND_ESTIMATE_PX,
         defaultSize: ESTIMATED_ROW_SIZE,

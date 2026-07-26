@@ -1,8 +1,13 @@
 // Node-derivation pipeline for MessageTimeline: raw pane items → grouped
-// structural nodes → the reveal-gated, decorated node list the
-// virtualizer actually renders. Also owns the small per-row read helpers
-// (rail participation, response-pill duration) that the template calls
-// per rendered node.
+// structural nodes → the reveal-gated list → activity runs, which is what
+// the virtualizer actually renders. Also owns the small per-row read
+// helpers (current leaf item, response-pill duration) that the template
+// calls per rendered node.
+//
+// Run wrapping is last on purpose. The structural patch scans TOP-LEVEL
+// indexes for child-bearing roots, and those roots stop being top-level
+// once a run wraps them; patching the pre-run array and letting the run
+// pass consume the result keeps that untouched.
 
 import { untrack } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
@@ -14,7 +19,10 @@ import {
   type TimelineNode,
 } from '../../utils/subagentGrouping';
 import { groupConsecutiveReads } from '../../utils/readGrouping';
-import { timelineNodeHasRail } from '../../utils/timelineRail';
+import {
+  activityRunMembershipKey,
+  groupActivityRuns,
+} from '../../utils/activityRunGrouping';
 import { timelineRowDecorations, type TimelineRowDecorationSets } from './timelineRows';
 import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
 import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
@@ -36,7 +44,6 @@ export interface TimelineRowProjection {
   readonly codexReceiverLabels: ReadonlyMap<string, string>;
   readonly rowDecorations: TimelineRowDecorationSets;
   currentTimelineLeafItem(node: TimelineNode): Item | null;
-  timelineNodeHasRail(node: TimelineNode, leafItem: Item | null): boolean;
   responsePillDuration(node: TimelineNode): string;
 }
 
@@ -89,9 +96,32 @@ export function createTimelineRowProjection(
   // reference when nothing is withheld (boundary null, or the frontier is the
   // tail node), so this is zero-cost outside the brief withhold windows.
   // Everything index-based downstream (virtualizer data, decorations,
-  // scroll-to-index) must read THIS, not `groupedNodes`, so the indices
-  // line up with what the virtualizer actually renders.
-  let revealedNodes = $derived(sliceRevealedNodes(groupedNodes, options.getPane().revealBoundary));
+  // scroll-to-index) must read `revealedNodes`, not `groupedNodes`, so the
+  // indices line up with what the virtualizer actually renders.
+  let gatedNodes = $derived(sliceRevealedNodes(groupedNodes, options.getPane().revealBoundary));
+  // Run wrapping is the LAST pass, so `revealedNodes` is what it produces.
+  // It stays untracked for the same reason `structuralNodes` does: it walks
+  // every node in the window, so running it per streaming delta would
+  // rebuild the virtualizer's whole data array on every chunk. The three
+  // tracked reads above it are the complete set of things that can change
+  // its output — structure (`gatedNodes` identity), membership (a
+  // payloadKind flip, which does not bump `timelineRevision`), and the
+  // registry's own state (a collapse toggle, an older chunk mounted).
+  let runMembershipKey = $derived(
+    activityRunMembershipKey(gatedNodes, (id) => options.getPane().getItemById(id)),
+  );
+  let revealedNodes = $derived.by(() => {
+    const nodes = gatedNodes;
+    runMembershipKey;
+    const pane = options.getPane();
+    pane.activityRuns.revision;
+    return untrack(() =>
+      groupActivityRuns(nodes, {
+        identity: pane.activityRuns,
+        getItem: (id) => pane.getItemById(id),
+      }),
+    );
+  });
   let codexReceiverLabels = $derived.by(() => {
     const provider = options.getPane().thread?.provider;
     // Receiver labels come from spawn-row metadata. Summary-only streaming
@@ -141,7 +171,6 @@ export function createTimelineRowProjection(
       return rowDecorations;
     },
     currentTimelineLeafItem,
-    timelineNodeHasRail,
     responsePillDuration,
   };
 }

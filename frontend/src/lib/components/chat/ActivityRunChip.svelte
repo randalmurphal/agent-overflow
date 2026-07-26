@@ -1,0 +1,70 @@
+<script lang="ts">
+  // A collapsed activity run: one line standing in for the whole block of
+  // tool calls and thinking.
+  //
+  // Counts alone would not be honest. Collapsing must never hide that
+  // something failed or that something is still going, so the chip carries
+  // an error dot and a named running indicator alongside the tally — a
+  // reader who collapsed a run should still be able to tell, at a glance,
+  // whether it needs their attention.
+
+  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { ActivityRunNode } from '../../utils/subagentGrouping';
+  import { activityRunSummary } from '../../utils/activityRunSummary';
+  import Indicator from './Indicator.svelte';
+  import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
+
+  let {
+    pane,
+    run,
+    onExpand,
+  }: {
+    pane: ThreadPane;
+    run: ActivityRunNode;
+    onExpand: () => void;
+  } = $props();
+
+  // Resolved here, not on the node: counts, failure, and the running label
+  // all move on ordinary streaming deltas, and only the chip reads them.
+  let items = $derived(
+    run.memberItemIds
+      .map((id) => pane.getItemById(id))
+      .filter((item) => item !== undefined),
+  );
+  let summary = $derived(activityRunSummary(items));
+  let countsLabel = $derived(
+    summary.counts.entries.map((entry) => `${entry.count} ${entry.label}`).join(', '),
+  );
+  let ariaLabel = $derived(
+    `Expand ${summary.counts.total} activity ${summary.counts.total === 1 ? 'row' : 'rows'}`,
+  );
+</script>
+
+<TranscriptDisclosureHeader
+  expanded={false}
+  testId="activity-run-chip"
+  {ariaLabel}
+  controls="activity-run-{run.runId}"
+  onToggle={onExpand}
+  class="py-0.5"
+>
+  {#snippet children()}
+    <span class="min-w-0 flex-1 truncate text-[0.75rem] text-fg-muted" data-testid="activity-run-chip-counts">
+      {countsLabel}
+    </span>
+    {#if summary.hasFailure}
+      <span class="flex shrink-0 items-center" data-testid="activity-run-chip-failure">
+        <Indicator state="error" ariaLabel="Contains a failure" />
+      </span>
+    {/if}
+    {#if summary.runningLabel}
+      <span
+        class="flex shrink-0 items-center gap-1.5 text-[0.6875rem] text-fg-hint"
+        data-testid="activity-run-chip-running"
+      >
+        <Indicator state="running" ariaLabel="Running {summary.runningLabel}" />
+        {summary.runningLabel}
+      </span>
+    {/if}
+  {/snippet}
+</TranscriptDisclosureHeader>

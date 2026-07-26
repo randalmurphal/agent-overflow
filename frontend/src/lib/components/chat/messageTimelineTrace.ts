@@ -90,7 +90,8 @@ export function recordTimelineRenderTrace(
           kind: 'activity_run',
           runId: node.runId,
           childCount: node.children.length,
-          rowCount: node.counts.total,
+          itemCount: node.memberItemIds.length,
+          mountedRows: node.mountedRows,
           collapsed: node.collapsed,
           turnIndex: timelineNodeTurnIndex(node),
         };

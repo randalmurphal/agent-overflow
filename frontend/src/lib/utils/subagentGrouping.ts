@@ -272,20 +272,15 @@ export interface ActivityRunNode {
    * and a signature blind to it would replay the pre-growth measured height.
    */
   mountedRows: number;
-  /** Per-tool aggregation for the collapsed chip. */
-  counts: ActivityRunCounts;
-  /** A member tool call failed — the chip must not hide that. */
-  hasFailure: boolean;
-  /** A member is still running — the chip must not hide that either. */
-  runningLabel: string | null;
-}
-
-/** Tool display name → row count, for the collapsed chip line. */
-export interface ActivityRunCounts {
-  /** Count-descending, thinking last. */
-  entries: { label: string; count: number }[];
-  /** Total rows represented, including every group member. */
-  total: number;
+  /**
+   * Every item the run represents, group members included, in timeline
+   * order. The chip aggregates its counts from the CURRENT items behind
+   * these ids rather than from a snapshot baked in here: counts, failure,
+   * and the running label all change on ordinary streaming deltas, and a
+   * node that carried them would rebuild the virtualizer's data array on
+   * every chunk. Same rule leaf rows already follow.
+   */
+  memberItemIds: readonly string[];
 }
 
 /**

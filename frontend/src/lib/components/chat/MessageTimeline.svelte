@@ -18,6 +18,7 @@
   import ReadGroupRow from './ReadGroupRow.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
+  import ActivityRun from './ActivityRun.svelte';
   import TimelineLeaf from './TimelineLeaf.svelte';
   import WaitGroup from './WaitGroup.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
@@ -699,6 +700,8 @@
           />
         {:else if node.kind === 'read_group'}
           <ReadGroupRow {pane} group={node} />
+        {:else if node.kind === 'activity_run'}
+          <ActivityRun {pane} run={node} {depth} {renderNode} />
         {/if}
       {/snippet}
 
@@ -748,21 +751,19 @@
           onContentGeometry={stick.deliverContentGeometry}
         >
           {#snippet children(node: TimelineNode, index: number)}
-            {@const currentLeafItem = rows.currentTimelineLeafItem(node)}
-            {@const isRail = rows.timelineNodeHasRail(node, currentLeafItem)}
             <!-- Outer per-row wrapper. We do NOT set data-item-id here:
                  only TimelineLeaf owns that attribute on its root. Structural
                  rows stay unanchored, and tests rely on the divider rendering
                  BEFORE the [data-item-id] node, not containing it.
 
-                 `isRail` decides whether this row participates in the
-                 continuous left-border under consecutive tool / think rows.
-                 Leaf rows of those kinds get the rail; subagent / wait
-                 group containers also opt in so the rail stays continuous
-                 through nested cards and the agent card's chev/ico/label
-                 gutter aligns with adjacent tool rows. Everything else
-                 (assistant_text, user_text, notifications, api errors)
-                 renders flat and breaks the line. -->
+                 The rail is NOT drawn here. Every row that sits on it is
+                 wrapped into an `activity_run` by the last projection pass,
+                 and the run draws one continuous border for the whole block
+                 (ActivityRun.svelte) — which is also what makes the rail
+                 clickable as a single collapse control. Rows that reach this
+                 wrapper directly (prose, user messages, errors,
+                 notifications, proposed plans) are exactly the ones that
+                 never had a rail. -->
             <div
               data-row-index={index}
               class:mt-4={rows.rowDecorations.toolTextBoundaryIndexes.has(index)}
@@ -844,18 +845,7 @@
                       </div>
                     </div>
                   {/if}
-                  <!-- Rail offsets: ml-[14px] places the border-l 14px
-                     inside the row column (under the chev gutter);
-                     pl-[18px] shifts content past the icon + label
-                     gutters so the row body lines up with the body
-                     column described in
-                     docs/specs/tool-call-ui-redesign/README.md
-                     §Row geometry. -->
-                <div
-                  data-testid="message-timeline-node"
-                  data-rail={isRail ? 'true' : 'false'}
-                  class={isRail ? 'border-l border-border-subtle ml-[14px] pl-[18px]' : ''}
-                >
+                <div data-testid="message-timeline-node">
                   {@render renderNode(node, 1)}
                 </div>
               </div>
