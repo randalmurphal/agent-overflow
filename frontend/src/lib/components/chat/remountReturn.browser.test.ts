@@ -39,6 +39,7 @@ import {
   setupTimelineHarness,
   waitForQuietBottom,
   waitForQuietTop,
+  userScrollTo,
   type FrameSettleOptions,
   type QuietBottomOptions,
   type SeedProse,
@@ -225,21 +226,6 @@ function createPhaseMonitor(scrollEl: HTMLElement): PhaseMonitor {
 // ---------------------------------------------------------------------------
 // Scroll choreography
 // ---------------------------------------------------------------------------
-// Emulated user scroll: a direction-matched wheel event (the controller's
-// escape/return-intent signal) followed by stepped, unmarked scrollTop writes
-// (Chromium fires real scroll events for each). See the header for why both
-// halves are load-bearing.
-async function userScrollTo(scrollEl: HTMLElement, targetTop: number, steps = 8): Promise<void> {
-  const start = scrollEl.scrollTop;
-  const deltaY = targetTop < start ? -120 : 120;
-  for (let i = 1; i <= steps; i++) {
-    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true }));
-    scrollEl.scrollTop = start + ((targetTop - start) * i) / steps;
-    await raf();
-    await raf();
-  }
-}
-
 describe('scroll-away/return remount outcomes (real MessageTimeline × Chromium)', () => {
   it('returns to the bottom with no dips, no reversals, and bounded unmount batches', { timeout: 60_000 }, async () => {
     const threadId = 'thread-remount-return';

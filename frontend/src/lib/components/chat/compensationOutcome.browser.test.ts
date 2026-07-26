@@ -45,6 +45,7 @@ import {
   seedTimelineItems,
   setupTimelineHarness,
   waitForQuietBottom,
+  userScrollTo,
   type QuietBottomOptions,
   type SeedProse,
 } from '../../../test/helpers/timelineBrowserHarness';
@@ -148,20 +149,6 @@ function rectTop(scrollEl: HTMLElement, itemId: string): number {
   const el = scrollEl.querySelector<HTMLElement>(`[data-item-id="${itemId}"]`);
   if (!el) throw new Error(`row ${itemId} not mounted`);
   return el.getBoundingClientRect().top;
-}
-
-// Emulated user scroll (same shape as remountReturn.browser.test.ts): the
-// wheel event carries the escape intent, the unmarked stepped writes are the
-// user motion.
-async function userScrollTo(scrollEl: HTMLElement, targetTop: number, steps = 8): Promise<void> {
-  const start = scrollEl.scrollTop;
-  const deltaY = targetTop < start ? -120 : 120;
-  for (let i = 1; i <= steps; i++) {
-    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true }));
-    scrollEl.scrollTop = start + ((targetTop - start) * i) / steps;
-    await raf();
-    await raf();
-  }
 }
 
 function startTurn(pane: ThreadPane, turnId: string, turnIndex: number): void {

@@ -240,6 +240,31 @@ export interface MountedTimeline {
 // Mount the real MessageTimeline over a fresh pane and wait through the
 // warm-up cascade to the settled, visible, bottom-pinned steady state that
 // outcome monitors must start from.
+/**
+ * Emulated user scroll: a direction-matched wheel event (the controller's
+ * escape / return-intent signal) followed by stepped, unmarked `scrollTop`
+ * writes (Chromium fires a real scroll event for each).
+ *
+ * Both halves are load-bearing. Writing `scrollTop` alone is not a reader
+ * scrolling — the controller has no gesture to attribute it to, stays sticky,
+ * and the next anchored transaction correctly re-pins the bottom instead of
+ * holding the row the test moved to.
+ */
+export async function userScrollTo(
+  scrollEl: HTMLElement,
+  targetTop: number,
+  steps = 8,
+): Promise<void> {
+  const start = scrollEl.scrollTop;
+  const deltaY = targetTop < start ? -120 : 120;
+  for (let i = 1; i <= steps; i += 1) {
+    scrollEl.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true }));
+    scrollEl.scrollTop = start + ((targetTop - start) * i) / steps;
+    await raf();
+    await raf();
+  }
+}
+
 export async function mountTimeline(
   threadId: string,
   items: Item[],
