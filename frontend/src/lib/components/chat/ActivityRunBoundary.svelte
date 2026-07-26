@@ -3,9 +3,14 @@
   //
   // Both edges exist because the window can sit anywhere in the run: it
   // starts at the tail, and a jump into the run relocates it around the
-  // target. A boundary is the only way past the window, so it is a real
-  // button rather than a scroll-triggered auto-load — mounting rows the
-  // reader did not ask for is what the window exists to prevent.
+  // target.
+  //
+  // A real button, but not the only way past the window: scrolling to the top
+  // of the window pages the earlier edge in on its own (`onClipScroll` in
+  // ActivityRun.svelte), so browsing back through a long run is one continuous
+  // gesture. What the button adds is jumping a chunk without scrolling for it,
+  // and it is the only affordance the "N later" edge has — that edge resolves
+  // by returning to the clip's bottom, which releases the window pin.
 
   let {
     count,

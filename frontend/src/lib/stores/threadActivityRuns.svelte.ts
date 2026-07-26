@@ -57,10 +57,29 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * every inner scroll frame and nothing on the node depends on them.
    */
   readonly revision: number;
-  /** Explicit user state, or the setting default when never touched. */
+  /** Explicit user state, or the thread default when never touched. */
   isCollapsed(runId: string): boolean;
   setCollapsed(runId: string, collapsed: boolean): void;
   toggleCollapsed(runId: string): void;
+  /**
+   * What a run with no explicit state does in this thread: the bulk override
+   * if one has been taken, otherwise the `activityRunDefault` setting.
+   *
+   * The header's collapse-all control renders from this rather than from a
+   * survey of the runs, so the button means one thing at all times. A survey
+   * would have to answer "all of WHICH runs" — only the loaded window holds
+   * any — and would flip its own label as older history paged in.
+   */
+  readonly bulkCollapsed: boolean;
+  /**
+   * Collapse or expand every run in this thread, now and as more load.
+   *
+   * Sets the thread's default AND drops the per-run overrides it contradicts,
+   * including archived ones: a bulk action the next revived run silently
+   * ignored would not be "all". A run the reader toggles afterwards takes its
+   * own override again, on top of this.
+   */
+  setAllCollapsed(collapsed: boolean): void;
   scrollSnapshot(runId: string): ActivityRunScrollSnapshot | null;
   saveScrollSnapshot(runId: string, snapshot: ActivityRunScrollSnapshot): void;
   /**
@@ -192,6 +211,12 @@ export function createThreadActivityRuns(
   const archive = new Map<string, ArchivedRun>();
   let claimed = new Set<string>();
   let nextRunId = 1;
+
+  // The thread's own collapse default, or null to follow the setting. Set by
+  // the header's collapse-all control and reset on thread switch: it is a view
+  // action taken on a thread ("I don't want to read activity in THIS one"),
+  // and carrying it into an unrelated thread would surprise.
+  let bulkCollapsed = $state<boolean | null>(null);
 
   // Collapse state and the mount window both ride on the projected node, so
   // both have to be able to trigger a rebuild; a focus request bumps it too,
@@ -375,16 +400,44 @@ export function createThreadActivityRuns(
     }
   }
 
-  function isCollapsed(runId: string): boolean {
+  function threadDefaultCollapsed(): boolean {
     revision;
-    return entries.get(runId)?.collapsed ?? options.defaultCollapsed();
+    return bulkCollapsed ?? options.defaultCollapsed();
+  }
+
+  function isCollapsed(runId: string): boolean {
+    return entries.get(runId)?.collapsed ?? threadDefaultCollapsed();
   }
 
   function setCollapsed(runId: string, collapsed: boolean): void {
     const entry = entries.get(runId);
     if (!entry || entry.collapsed === collapsed) return;
     entry.collapsed = collapsed;
+    if (collapsed) forgetInnerPosition(entry);
     revision += 1;
+  }
+
+  /**
+   * Drop where the reader was INSIDE a run, because the run is becoming a
+   * chip and there is no inside any more.
+   *
+   * Both halves say the same thing. The scroll offset is what the clip
+   * restores on expand, and keeping it would reopen the run mid-list — at an
+   * offset the reader last saw before deciding they were done with it, which
+   * on a live run is behind everything that has arrived since. The window
+   * anchor is the pin that says "the reader is up here"; leaving it would hold
+   * the mounted window away from the tail while the clip sits at its bottom,
+   * so the newest activity would not even be mounted to land on. An expanded
+   * run therefore opens where a never-scrolled one does: its newest row, which
+   * is the reason it is on screen.
+   *
+   * NOT the row-count override. That is how many rows the reader asked to
+   * mount, which the chip does not contradict, and re-collapsing a run should
+   * not quietly undo chunks they paged in.
+   */
+  function forgetInnerPosition(entry: RunEntry): void {
+    entry.scroll = null;
+    entry.windowStartItemId = null;
   }
 
   function toggleCollapsed(runId: string): void {
@@ -401,6 +454,31 @@ export function createThreadActivityRuns(
     isCollapsed,
     setCollapsed,
     toggleCollapsed,
+    get bulkCollapsed() {
+      return threadDefaultCollapsed();
+    },
+    setAllCollapsed: (collapsed) => {
+      bulkCollapsed = collapsed;
+      // Per-run overrides are dropped rather than overwritten so the runs go
+      // back to following the thread, which is what makes a later flip apply
+      // to them too. Collapsing also forgets each run's inner position, for
+      // the same reason a single collapse does.
+      for (const entry of entries.values()) {
+        entry.collapsed = null;
+        if (collapsed) forgetInnerPosition(entry);
+      }
+      // Archived runs are the ones a bulk action would otherwise miss: they
+      // come back as the reader pages, and an override from before the action
+      // would revive against it.
+      for (const record of archive.values()) {
+        record.collapsed = null;
+        if (collapsed) {
+          record.scroll = null;
+          record.windowStartItemId = null;
+        }
+      }
+      revision += 1;
+    },
     scrollSnapshot: (runId) => entries.get(runId)?.scroll ?? null,
     saveScrollSnapshot: (runId, snapshot) => {
       // A row torn down AFTER its registry was cleared has nothing to save
@@ -408,6 +486,13 @@ export function createThreadActivityRuns(
       // creating an entry here would leave a memberless ghost behind.
       const entry = entries.get(runId);
       if (!entry) return;
+      // A collapsed run has no inner position to record, and the row that just
+      // became a chip tears its clip down THROUGH this method — so the refusal
+      // has to live here rather than at the one call site. Without it the
+      // teardown would write back the offset `forgetInnerPosition` just
+      // dropped (0, since a detached element reports no scroll), and every
+      // collapse-then-expand would reopen the run at its first row.
+      if (entry.collapsed ?? threadDefaultCollapsed()) return;
       entry.scroll = snapshot;
     },
     setMountWindow: (runId, window) => {
@@ -451,6 +536,9 @@ export function createThreadActivityRuns(
       entries.clear();
       runIdByMember.clear();
       claimed = new Set();
+      // The bulk override is scoped to the thread it was taken on (see its
+      // declaration), so the incoming thread starts from the setting again.
+      bulkCollapsed = null;
       revision += 1;
     },
   };

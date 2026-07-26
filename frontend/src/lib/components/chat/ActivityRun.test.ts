@@ -6,6 +6,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import { buildPane, makeItem } from '../../../test/helpers/chat';
 import { makeSettings } from '../../../test/helpers/settings';
 import { clearThreadScrollSnapshotsForTest } from '../../utils/threadScrollSnapshots';
+import { ACTIVITY_RUN_CAP_CSS } from '../../utils/activityRunClip';
 import type { Item } from '../../types/models';
 import MessageTimeline from './MessageTimeline.svelte';
 
@@ -22,7 +23,22 @@ function tool(id: string, index: number, overrides: Partial<Item> = {}): Item {
 
 async function renderRun(items: Item[]) {
   const pane = await buildPane(undefined, items);
-  return render(MessageTimeline, { props: { pane } });
+  return { ...render(MessageTimeline, { props: { pane } }), pane };
+}
+
+/**
+ * happy-dom lays nothing out, so a clip states the geometry the scroll-driven
+ * paths read back. Every one of them asks the same three numbers, which is why
+ * they travel together: a scrollTop with no scrollHeight beside it describes a
+ * surface that cannot scroll, and the triggers would correctly refuse it.
+ */
+function stampScroll(
+  clip: HTMLElement,
+  metrics: { scrollTop: number; clientHeight: number; scrollHeight: number },
+): void {
+  for (const [key, value] of Object.entries(metrics)) {
+    Object.defineProperty(clip, key, { value, configurable: true, writable: true });
+  }
 }
 
 /**
@@ -55,7 +71,7 @@ describe('<ActivityRun>', () => {
       ]);
 
       const clip = getByTestId('activity-run-clip');
-      expect(clip.style.maxHeight).toBe('min(50vh, 32rem)');
+      expect(clip.style.maxHeight).toBe(ACTIVITY_RUN_CAP_CSS);
       // overflow-x hidden is load-bearing: a horizontal bar at run level
       // would consume HEIGHT and shift every row below it.
       expect(clip.className).toContain('overflow-y-auto');
@@ -88,6 +104,119 @@ describe('<ActivityRun>', () => {
       expect(getAllByTestId('command-output-row')).toHaveLength(14);
       // Nothing left to reach for, so the boundary retires.
       expect(queryByTestId('activity-run-earlier')).toBeNull();
+    });
+
+    it('pages the earlier chunk in on scrolling to the top of the window', async () => {
+      await updateSetting('activityRunWindowRows', 10);
+      const { getByTestId, getAllByTestId, queryByTestId } = await renderRun(
+        Array.from({ length: 14 }, (_, i) => tool(`t${i}`, i)),
+      );
+      const clip = getByTestId('activity-run-clip');
+
+      stampScroll(clip, { scrollTop: 0, clientHeight: 300, scrollHeight: 1500 });
+      await fireEvent.wheel(clip, { deltaY: -120 });
+      await fireEvent.scroll(clip);
+      await tick();
+
+      // Browsing back through a long run is one continuous scroll; reaching
+      // the top must not put a button between the reader and the next rows.
+      expect(getAllByTestId('command-output-row')).toHaveLength(14);
+      expect(queryByTestId('activity-run-earlier')).toBeNull();
+    });
+
+    it('does not page on a position the run wrote itself', async () => {
+      // The run writes its own position on mount, after a prepend, and on a
+      // jump — and each write dispatches a `scroll` event. Reading those as
+      // the reader arriving at the top is how expanding a run used to page
+      // backwards through its history and strand the reader up there: the
+      // mount write aims at `scrollHeight`, but nothing inside is measured
+      // yet, so it lands in the trigger zone. Intent is the gesture, never the
+      // geometry it produced.
+      await updateSetting('activityRunWindowRows', 10);
+      const { getByTestId, getAllByTestId } = await renderRun(
+        Array.from({ length: 14 }, (_, i) => tool(`t${i}`, i)),
+      );
+      const clip = getByTestId('activity-run-clip');
+
+      stampScroll(clip, { scrollTop: 0, clientHeight: 300, scrollHeight: 1500 });
+      await fireEvent.scroll(clip);
+      await tick();
+
+      expect(getAllByTestId('command-output-row')).toHaveLength(10);
+      expect(getByTestId('activity-run-earlier').textContent).toContain('4 earlier');
+    });
+
+    it('stops trusting a gesture once the run answers it', async () => {
+      // The arming has to be consumed by the paging it caused, or one wheel
+      // would license every later self-written position — including the
+      // compensation write the paging itself performs.
+      await updateSetting('activityRunWindowRows', 10);
+      // One chunk past the window still leaves rows hidden above, so there is
+      // a second page for an unarmed scroll to wrongly pull in.
+      const { getByTestId, getAllByTestId } = await renderRun(
+        Array.from({ length: 40 }, (_, i) => tool(`t${i}`, i)),
+      );
+      const clip = getByTestId('activity-run-clip');
+
+      stampScroll(clip, { scrollTop: 0, clientHeight: 300, scrollHeight: 1500 });
+      await fireEvent.wheel(clip, { deltaY: -120 });
+      await fireEvent.scroll(clip);
+      await tick();
+      expect(getAllByTestId('command-output-row')).toHaveLength(35);
+
+      // No new gesture: the rest stays behind the boundary.
+      await fireEvent.scroll(clip);
+      await tick();
+      expect(getAllByTestId('command-output-row')).toHaveLength(35);
+      expect(getByTestId('activity-run-earlier').textContent).toContain('5 earlier');
+    });
+
+    it('leaves the window alone while the reader is mid-scroll', async () => {
+      await updateSetting('activityRunWindowRows', 10);
+      const { getByTestId, getAllByTestId } = await renderRun(
+        Array.from({ length: 14 }, (_, i) => tool(`t${i}`, i)),
+      );
+      const clip = getByTestId('activity-run-clip');
+
+      stampScroll(clip, { scrollTop: 900, clientHeight: 300, scrollHeight: 1500 });
+      await fireEvent.scroll(clip);
+      await tick();
+
+      expect(getAllByTestId('command-output-row')).toHaveLength(10);
+      expect(getByTestId('activity-run-earlier').textContent).toContain('4 earlier');
+    });
+
+    it('holds the window a reader never scrolled, whatever the setting', async () => {
+      // A window that fits under the cap rests at a scrollTop inside the
+      // trigger zone. Paging in there would ignore the setting entirely.
+      await updateSetting('activityRunWindowRows', 10);
+      const { getByTestId, getAllByTestId } = await renderRun(
+        Array.from({ length: 14 }, (_, i) => tool(`t${i}`, i)),
+      );
+      const clip = getByTestId('activity-run-clip');
+
+      stampScroll(clip, { scrollTop: 0, clientHeight: 300, scrollHeight: 300 });
+      await fireEvent.scroll(clip);
+      await tick();
+
+      expect(getAllByTestId('command-output-row')).toHaveLength(10);
+    });
+
+    it('fades the top edge only while activity is passing under it', async () => {
+      const { getByTestId } = await renderRun([tool('t0', 0), tool('t1', 1)]);
+      const clip = getByTestId('activity-run-clip');
+      const fade = getByTestId('activity-run-top-fade');
+
+      // Resting at its first row there is nothing above to dissolve, and
+      // tinting that row would just make it look dimmer than the rest.
+      expect(fade.getAttribute('data-faded')).toBe('false');
+      expect(fade.className).toContain('opacity-0');
+
+      stampScroll(clip, { scrollTop: 120, clientHeight: 300, scrollHeight: 1500 });
+      await fireEvent.scroll(clip);
+
+      expect(fade.getAttribute('data-faded')).toBe('true');
+      expect(fade.className).not.toContain('opacity-0');
     });
 
     it('has no boundary when the whole run fits the window', async () => {
@@ -134,6 +263,35 @@ describe('<ActivityRun>', () => {
 
       expect(getByTestId('activity-run-clip')).toBeInTheDocument();
       expect(getByTestId('activity-run').getAttribute('data-collapsed')).toBe('false');
+    });
+
+    it('keeps no reading position across a collapse', async () => {
+      // The chip replaced the inside of the run, so there is nothing left to
+      // restore and the clip takes the never-scrolled path — its newest row,
+      // which is the reason the run is on screen at all. That the write lands
+      // at the bottom needs real geometry; happy-dom reports zero for both
+      // sides of it, so the landing is asserted in
+      // activityRunScroll.browser.test.ts and the state is asserted here.
+      const { getByTestId, pane } = await renderRun(
+        Array.from({ length: 14 }, (_, i) => tool(`t${i}`, i)),
+      );
+      const clip = getByTestId('activity-run-clip');
+      const id = getByTestId('activity-run').getAttribute('data-run-id') ?? '';
+      stampScroll(clip, { scrollTop: 120, clientHeight: 300, scrollHeight: 1500 });
+      await fireEvent.scroll(clip);
+      expect(pane.activityRuns.scrollSnapshot(id)).not.toBeNull();
+
+      await fireEvent.click(getByTestId('activity-run-rail'));
+      await tick();
+
+      expect(pane.activityRuns.scrollSnapshot(id)).toBeNull();
+
+      await fireEvent.click(getByTestId('activity-run-chip'));
+      await tick();
+
+      // And the reopened clip did not record one on the way back in either.
+      expect(getByTestId('activity-run-clip')).toBeInTheDocument();
+      expect(pane.activityRuns.scrollSnapshot(id)).toBeNull();
     });
 
     it('rail and chip name the same pane-scoped clip', async () => {

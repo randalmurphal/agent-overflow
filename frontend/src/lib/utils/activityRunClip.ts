@@ -13,8 +13,53 @@
 // direction — a new expandable body cannot silently opt out of the cap
 // while staying correct for a screen reader.
 
-/** Base cap, before any expansion. Tunable; feel-tuned against real runs. */
-export const ACTIVITY_RUN_CAP_CSS = 'min(50vh, 32rem)';
+import type { ScrollMetrics } from './scroll/overlayScrollbar';
+
+/**
+ * Activity rows the cap admits before a run starts scrolling in place.
+ *
+ * The number the cap is FOR — the cap is a height only because CSS has no
+ * "eight rows" unit and activity rows are not one height. Change this to
+ * change how much activity a run shows.
+ */
+export const ACTIVITY_RUN_CAP_ROWS = 8;
+
+/**
+ * A typical activity row, in rem.
+ *
+ * Not the tightest row: `ROW_KIND_ESTIMATE_PX` prices a bare one-line
+ * `tool_call` near 25px because it is a placement FLOOR, and sizing the cap
+ * off a floor would show a third fewer rows than it promises. Real runs mix
+ * those with thinking rows, rows carrying a preview line, and the margins
+ * between them, which measures closer to 36px at default settings.
+ *
+ * In rem so the cap tracks the font-size setting — a reader on large text
+ * gets eight rows too, not eight rows' worth of last year's pixels.
+ */
+export const ACTIVITY_RUN_ROW_REM = 2.25;
+
+export const ACTIVITY_RUN_CAP_REM = ACTIVITY_RUN_CAP_ROWS * ACTIVITY_RUN_ROW_REM;
+
+/**
+ * Base cap, before any expansion.
+ *
+ * The `50vh` half is the short-viewport guard, and only it: at the row cap
+ * above it wins below a ~576px window, where eight rows would be most of the
+ * conversation. Whichever half wins, the run is a window onto activity rather
+ * than the whole screen.
+ */
+export const ACTIVITY_RUN_CAP_CSS = `min(50vh, ${ACTIVITY_RUN_CAP_REM}rem)`;
+
+/**
+ * The rem half of the cap in px, assuming a 16px root.
+ *
+ * For placement ESTIMATES only (`timelineSizePriors.svelte.ts`), which is why
+ * the assumption is tolerable: a larger root font makes this an
+ * underestimate, and an under-estimated row only grows when it measures,
+ * which the engine's remeasure-above compensation absorbs invisibly. It is
+ * here rather than there so the number cannot drift from the cap it describes.
+ */
+export const ACTIVITY_RUN_CAP_REM_PX = ACTIVITY_RUN_CAP_REM * 16;
 
 export function activityRunClipMaxHeight(expandedPx: number): string {
   if (expandedPx <= 0) return ACTIVITY_RUN_CAP_CSS;
@@ -84,6 +129,52 @@ export function observeActivityRunExpansion(
     disclosures.disconnect();
     sizes.disconnect();
   };
+}
+
+/**
+ * Runway above the window that reads as "the reader reached the top". A few
+ * rows, so the next chunk is in the DOM before they meet the boundary rather
+ * than after — the same reason the conversation prefetches older history
+ * instead of waiting for the wall.
+ */
+const MOUNT_EARLIER_PREFETCH_PX = 96;
+
+/**
+ * Should the run mount its next older chunk, because the reader scrolled to
+ * the top of the window and there is more above it?
+ *
+ * Requires the clip to be scrollable by more than the runway, which is what
+ * keeps this from overriding `activityRunWindowRows`: a window whose rows all
+ * fit under the cap rests at a `scrollTop` already inside the zone, and
+ * without the guard it would page in chunk after chunk at mount time until the
+ * content overflowed — mounting rows nobody asked for, which is the one thing
+ * the window exists to prevent. Not scrollable means there was no gesture to
+ * act on, and the boundary button is still there.
+ *
+ * Terminates without needing a re-entrancy flag to do the real work: prepend
+ * compensation puts `scrollTop` back above the rows it just added, and a chunk
+ * is several clip heights, so one mount takes the reader out of the zone. When
+ * a short remainder does not, `hiddenEarlier` hits 0 and the boundary is gone.
+ */
+export function activityRunShouldMountEarlier(
+  metrics: ScrollMetrics,
+  hiddenEarlier: number,
+): boolean {
+  if (hiddenEarlier <= 0) return false;
+  if (metrics.scrollHeight - metrics.clientHeight <= MOUNT_EARLIER_PREFETCH_PX) return false;
+  return metrics.scrollTop <= MOUNT_EARLIER_PREFETCH_PX;
+}
+
+/**
+ * Sub-pixel slack for "at the bottom". A fractional row height leaves a
+ * scroller resting at its end short by a fraction of a pixel.
+ */
+const AT_BOTTOM_EPSILON_PX = 1;
+
+/** Is the clip resting on its last row? */
+export function activityRunAtBottom(metrics: ScrollMetrics): boolean {
+  return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight
+    <= AT_BOTTOM_EPSILON_PX;
 }
 
 /**

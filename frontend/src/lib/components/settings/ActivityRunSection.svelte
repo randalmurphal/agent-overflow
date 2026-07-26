@@ -28,7 +28,7 @@
     {
       mode: 'collapsed',
       label: 'Collapsed',
-      description: 'Show a single line with per-tool counts. Click it to open the run.',
+      description: 'Show a single line with per-tool counts. Click it to open the run; click a run\'s left rail to close it again.',
     },
   ];
 
@@ -79,7 +79,7 @@
   <div class="mt-1 flex flex-col gap-1">
     <SettingsField
       label="Rows kept mounted"
-      hint="How many of a run's newest rows stay rendered. Older rows load in chunks from a marker at the top of the run."
+      hint="How many of a run's newest rows stay rendered. Scrolling to the top of a run loads the next chunk of older rows."
       htmlFor="activity-run-window-rows"
     >
       <input

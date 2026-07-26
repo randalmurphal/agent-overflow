@@ -5,12 +5,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 // and the width guard below fails — that is the point of importing it.
 import '../../../app.css';
 import {
+  ACTIVITY_RUN_CAP_REM_PX,
   activityRunClipMaxHeight,
   observeActivityRunExpansion,
 } from '../../utils/activityRunClip';
 
 // happy-dom reports zero geometry, so none of this is observable there: a
-// scrollbar that consumes width, a `max-height: min(50vh, 32rem)` cap, and a
+// scrollbar that consumes width, a `min(50vh, Nrem)` max-height cap, and a
 // `calc()` the browser has to resolve all need a real layout engine. This file
 // runs in the `browser` vitest project (real Chromium via Playwright); see
 // frontend/vitest.config.ts.
@@ -22,7 +23,7 @@ const HOST_H_PX = 600;
  * depends on the runner's window — the formula is asserted, the number is not
  * hardcoded.
  */
-const CAP_PX = Math.min(window.innerHeight / 2, 32 * 16);
+const CAP_PX = Math.min(window.innerHeight / 2, ACTIVITY_RUN_CAP_REM_PX);
 /** clientHeight is integral; a `50vh` of an odd viewport rounds. */
 const ROUND_PX = 1;
 

@@ -112,6 +112,22 @@ Operational rules for this directory:
 - **A run's own state goes in `pane.activityRuns`**, keyed by the
   registry-assigned `runId` — never by a member item id, which changes at
   both window edges.
+- **A clip following its last row is held there while content settles.** The
+  mount write happens before the rows inside finish resolving, so without the
+  settle observer an expanded run drifts out from under the reader. Whether it
+  is following (`followingBottom`) is STORED, never measured: growth moves the
+  bottom away from the clip on every row that resolves, and the `scroll` event
+  from a write arrives after that growth, so a run that re-derived the answer
+  from geometry abandoned the follow on the first row and reopened near its
+  top. Only a reader gesture may clear it; every write states it.
+- **Collapsing a run forgets where the reader was inside it** (scroll snapshot
+  and window anchor both), so it reopens on its newest row. `saveScrollSnapshot`
+  refuses a save for a collapsed run because the chip's own teardown routes
+  through it — do not "fix" that by moving the check to the call site.
+- **The rail is the only per-run collapse control and it is invisible by
+  design.** The header's `activity-runs-toggle` is the visible affordance and
+  the bulk action; it renders from `activityRuns.bulkCollapsed`, never from a
+  survey of the rendered runs.
 - **Nothing that changes per streaming delta belongs on the node.** Chip
   counts, failure, and the running label resolve from current items through
   `utils/activityRunSummary.ts`; a node field would rebuild the
@@ -124,6 +140,16 @@ Operational rules for this directory:
   reads the existing pin and starts escaped, for the same reason it carries
   the snapshot's escape flag: a historical run that a jump pinned had no
   controller to record the event on.
+- **Reaching the top of a run's window pages the next chunk in.** The
+  `· · · N earlier` boundary is a button *as well*, not instead — do not make
+  it the only way past the window. The trigger refuses a clip that is not
+  scrollable past its runway, which is what stops it overriding
+  `activityRunWindowRows`; keep that guard if you touch the threshold. It also
+  refuses a scroll event no gesture preceded — the run writes its own position
+  on mount, after a prepend, and on a jump, and the mount write lands inside
+  the runway because nothing inside is measured yet. Route any new position
+  write through `positionWritten`, never `syncPosition` alone, or the run pages
+  backwards through its own history.
 - **A jump into a run goes through `revealActivityRunItem`**
   (`utils/activityRunWindow.ts`), which expands, relocates the window, and
   leaves the focus request together. Do not call the three registry methods

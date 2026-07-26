@@ -165,10 +165,31 @@ ticking counts alone do not answer "what is it doing".
 
 **Expanded** — the rows inside a height-capped clip:
 
-- `max-height: min(50vh, 32rem)`, inflated to `calc(… + Npx)` by expanded
+- `max-height: min(50vh, 18rem)`, inflated to `calc(… + Npx)` by expanded
   child bodies (below). `max-height`, so a run under the cap renders exactly
   as it did before this component existed — which is why no row-count
   threshold is needed.
+
+  The rem half is derived, not chosen: `ACTIVITY_RUN_CAP_ROWS` (8) ×
+  `ACTIVITY_RUN_ROW_REM` (2.25). The cap is a height only because CSS has no
+  "eight rows" unit, and editing it as a bare rem value is how it would stop
+  meaning a row count. The row figure is a typical activity row, NOT the
+  tightest one — `ROW_KIND_ESTIMATE_PX` prices a bare one-line `tool_call`
+  near 25px because it is a placement floor, and sizing the cap off a floor
+  shows a third fewer rows than it promises. In rem so the cap tracks the
+  font-size setting. The `50vh` half is now purely the short-viewport guard:
+  it only wins below a ~576px window.
+- A **top fade**, the conversation's own effect at run scale: a 24px gradient
+  overlay (`var(--surface-0)` → transparent), so rows dissolve as they rise
+  out of the clip instead of meeting a hard edge. Same overlay-not-mask
+  technique and for the same reason as `MessageTimeline`'s `TOP_FADE_PX` — a
+  mask on the clip rasterizes a full clip-sized texture on every streaming
+  repaint. It paints only while `scrollTop` is off the top edge: a run resting
+  at its first row has nothing above to dissolve, and tinting that row would
+  just make it look dimmer than the rows below it. Paint-only, so it never
+  touches `scrollHeight`/`clientHeight`/`scrollTop` and stays clear of the
+  controller. It needs no scrollbar-safe inset (the conversation's does): the
+  overlay bar hangs outside the clip's right edge.
 - `overflow-y: auto`, `overflow-x: hidden`: a wide preview inside a tool row
   must not raise a horizontal bar at run level, which would consume *height*
   and shift every row below.
@@ -186,6 +207,92 @@ The rail belongs to the run: one continuous border for the whole block,
 doubling as the collapse control (an absolutely positioned hit strip in the
 gutter, a real `<button>` with an `aria-label`, consuming no width). The
 per-row `isRail` styling in `MessageTimeline`'s wrapper retired.
+
+Consuming no width is what makes it invisible, and an invisible control is
+undiscoverable: the collapsed chip is a normal disclosure header with a
+chevron, so getting *out* of a collapse is obvious, while getting *in* has no
+affordance at all. The chat header's **collapse-all toggle**
+(`activity-runs-toggle` in `ChatHeaderActions.svelte`) is the visible entry
+point as well as the bulk action — one button whose direction comes from
+`activityRuns.bulkCollapsed`.
+
+### Collapsing all
+
+`setAllCollapsed` sets a per-thread default and drops the per-run overrides
+that contradict it, in the live entries **and in the archive** — an archived
+override would revive against the bulk state as the reader pages, which would
+make "all" untrue a scroll later. Runs projected afterwards follow it too, so
+loading older history cannot reintroduce expanded runs.
+
+The control renders from that default rather than from a survey of the
+rendered runs. A survey would have to answer "all of *which* runs" — only the
+loaded window holds any — and would relabel itself as older history paged in.
+Reset by `clear()`: it is a view action taken on one thread, and carrying it
+into an unrelated one would surprise. A run the reader toggles afterwards
+takes its own override again, on top.
+
+### Collapsing forgets the reading position
+
+Collapsing drops the run's scroll snapshot **and** its window anchor
+(`forgetInnerPosition`). Both describe where the reader was *inside* the run,
+and the chip replaced the inside: restoring the offset reopens the run
+mid-list — behind everything that arrived while it was a chip, on a live run —
+and a surviving pin would hold the mounted window away from the tail the clip
+now lands on, so the newest rows would not even be mounted. An expanded run
+therefore opens exactly where a never-scrolled one does.
+
+The row-count override is deliberately kept: that is how many rows the reader
+asked to mount, which the chip does not contradict.
+
+### A resting clip is held on its last row while content settles
+
+The position write happens once, at the instant the clip mounts — and the rows
+inside are not finished then. Payload bodies resolve, highlight spans land, a
+row remounts already expanded from its lease and lifts the cap. Each grows the
+run AFTER the write, and `scrollTop` does not follow on its own, so a run the
+reader just opened drifts out from under them. Barely visible expanding one
+already-measured run; unmissable expanding many at once from the header, where
+none of them is measured.
+
+`ActivityRun.svelte` therefore observes the clip AND its content (the two ways
+the gap opens are unrelated — content growing under a fixed clip, and the clip
+growing when cap inflation gives it more room than its content needs) and
+re-writes the bottom while `followingBottom`.
+
+That flag is **stored, not measured**, and the difference is the whole
+mechanism. "Is the clip at the bottom right now" is unanswerable during a
+settle: the clip is written to the bottom, a row inside then resolves and grows
+it, and the `scroll` event from the write is delivered after that growth —
+correctly reporting a position that is no longer the bottom. Re-deriving from
+it dropped the follow on the very first row to resolve, which is what left a
+run reopened by the header's collapse-all sitting near its top and staying
+there. So growth never clears the flag; only a reader gesture does
+(`readerScrolling`, armed by wheel / touch / key / bar drag), and every write
+the component makes states the flag rather than measuring it —
+`positionWritten(clip, following)`. The one thing still read back from live
+geometry is the top fade, which is a pure function of it.
+
+The same fact is what the scroll snapshot's `escaped` field carries, from
+whichever half of the run owns it: the live run's controller as
+`escapedFromLock`, a run without one as `!followingBottom`. A run changes which
+half owns it when a newer run displaces it, so the snapshot must not care which
+wrote it.
+
+Only for a run with no controller: the live run's spring owns bottom-following,
+with intent handling this cannot see, and a second pinner would contend for the
+same pixels.
+
+This **narrows accepted tradeoff 4** ("a historical run does not chase when it
+grows") rather than reversing it. Growth is followed only while the reader is
+resting on the newest row — the one position where following is what they are
+looking at. A run they scrolled inside still never moves under them, which the
+browser suite asserts alongside the following case.
+
+`saveScrollSnapshot` refuses a save for a collapsed run, and that refusal is
+load-bearing rather than defensive — the row that becomes a chip tears its
+clip down *through* that method, and a detached element reports `scrollTop`
+0, so without it every collapse-then-expand would reopen the run at its first
+row (observed).
 
 ### Expanded bodies lift the cap
 
@@ -356,6 +463,28 @@ at the bottom" and drop them at the run's tail.
   write after the DOM has the new rows and before the frame is visible. The
   later edge needs no compensation — rows below the reading position move
   nothing above it.
+- **The earlier edge also pages in on scroll**, so browsing back through a
+  long run is one continuous gesture rather than scroll-click-scroll. The
+  boundary stays a button — that is how a reader jumps a chunk without
+  scrolling for it, and it is the only affordance the later edge has (that
+  edge resolves by returning to the clip's bottom, which releases the window
+  pin). `activityRunShouldMountEarlier` requires the clip to be scrollable by
+  more than the 96px runway, which is what keeps the trigger from overriding
+  `activityRunWindowRows`: a window whose rows all fit under the cap rests at
+  a `scrollTop` already inside the trigger zone, and without the guard it
+  would page chunk after chunk in at mount time until the content overflowed.
+  Not scrollable means there was no gesture to act on. The two paths share one
+  in-flight guard — overlapping mounts would each measure a `scrollHeight` the
+  other is about to change and compensate by the wrong amount.
+- **The trigger arms on the gesture, not on the geometry it produced.** A
+  wheel, a touch drag, a key, or an overlay-bar drag arms it; every position
+  the run writes itself (`positionWritten`) disarms it. Without that the mount
+  write is indistinguishable from the reader arriving at the top: it aims at
+  `scrollHeight`, but the rows inside are not measured at that instant, so it
+  lands inside the runway, pages a chunk in, and the compensation that follows
+  strands the reader up there with the settle observer switched off. Same rule
+  the scroll package states for the conversation — intent is event-sourced,
+  never inferred from where the surface ended up.
 - **No head trim.** Growth cannot accumulate DOM on its own: the window is a
   window, not a high-water mark, so a run that streams to 500 rows still
   mounts `mountedRows` of them, and a jump relocates the window without
@@ -436,10 +565,14 @@ collapsed and up to the cap expanded, and a single `ROW_KIND_ESTIMATE_PX`
 value would be wrong by ~20× in one state, landing fast-scroll placement
 badly through unmeasured runs. `timelineRowStructuralSize` branches on the
 node: chip height when collapsed, `min(capFloor, mountedRows × rowFloor)`
-when expanded, where `capFloor` is `min(50vh, 32rem)` evaluated against the
-current viewport — hard-coding `32rem` would overestimate every long run on a
-viewport shorter than 1024px, and an estimate above the real ceiling shrinks
-total geometry when the measurement lands. Still a floor, per the existing
+when expanded, where `capFloor` is the cap evaluated against the current
+viewport — taking the rem half unconditionally would overestimate every long
+run on a short one, and an estimate above the real ceiling shrinks total
+geometry when the measurement lands. The rem half comes from
+`ACTIVITY_RUN_CAP_REM_PX`, exported beside the cap it mirrors so the two
+cannot drift; its 16px-root assumption is safe in one direction only, which is
+the direction it errs (a larger root makes it an underestimate, and
+underestimates only grow on measure). Still a floor, per the existing
 convention. Once measured, a
 run is *better* for priors than what it replaced — one stable height instead
 of N estimated ones.
@@ -448,7 +581,9 @@ of N estimated ones.
 
 - `activityRunDefault`: `expanded` | `collapsed`, default `expanded`
   (preserves prior visibility). Applies to the live run too — no special
-  case; with `collapsed` a streaming run is a chip with ticking counts.
+  case; with `collapsed` a streaming run is a chip with ticking counts. This
+  is the durable layer under the header's per-thread bulk toggle, which
+  overrides it for one thread and dies with the pane.
 - `activityRunWindowRows`: default 30, clamped `[10, 200]` — validated
   strictly on update and clamped leniently on load.
 
@@ -541,10 +676,18 @@ default window are feel-tuned on the 165Hz setup as with prior scroll work.
 3. **The tool↔text gap now appears at junctions that suppressed it** —
    blocks that open or close with a `thinking` row. Margin only, no
    separator; one-line revert if it reads wrong in situ.
-4. **A historical run does not chase when it grows.** A late
-   `tool_completion` pairing into an older run, or a subagent group
-   hydrating on expand, grows it without following. Correct — nobody is
-   watching it — but an asymmetry, stated rather than assumed.
+4. **A historical run does not chase when it grows** — except while the
+   reader is resting on its newest row. A late `tool_completion` pairing into
+   an older run, or a subagent group hydrating on expand, grows it without
+   following. Correct — nobody is watching it — but an asymmetry, stated
+   rather than assumed.
+
+   Narrowed once, deliberately: "nobody is watching it" is false for the
+   frames right after an expand, where the same growth left the reader partway
+   up a run they had just opened. A clip following its last row is now held
+   there as its content settles ("A resting clip is held on its last row"
+   above). A run the reader has scrolled inside still never moves under them,
+   which is the part of this tradeoff that was load-bearing.
 
    The visible edge of it: load-older paging that extends a short run at its
    HEAD gives that run more children than its window, so the clip — which was
@@ -570,9 +713,12 @@ becomes load-bearing.
 
 | Constant | Value | Where |
 |---|---|---|
-| Clip cap | `min(50vh, 32rem)` | `ACTIVITY_RUN_CAP_CSS` |
+| Clip cap | `min(50vh, 18rem)` | `ACTIVITY_RUN_CAP_CSS` |
+| Rows the cap shows | 8 × 2.25rem | `ACTIVITY_RUN_CAP_ROWS`, `ACTIVITY_RUN_ROW_REM` |
+| Top fade | 24px | `ActivityRun.svelte` |
 | Default window rows | 30, clamped `[10, 200]` | setting + `activityRunWindow.ts` |
 | Boundary chunk | 25 rows | `ACTIVITY_RUN_CHUNK_ROWS` |
+| Scroll-to-mount runway | 96px | `MOUNT_EARLIER_PREFETCH_PX` |
 | Archive capacity | 128 keys (≈64 runs) | `threadActivityRuns.svelte.ts` |
 
 ## Implementation map

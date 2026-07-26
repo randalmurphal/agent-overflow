@@ -31,9 +31,12 @@
     activityRunCenteredScrollTop,
     activityRunChildElement,
     activityRunClipMaxHeight,
+    activityRunAtBottom,
     activityRunRowFullyVisible,
+    activityRunShouldMountEarlier,
     observeActivityRunExpansion,
   } from '../../utils/activityRunClip';
+  import { readScrollMetrics, type ScrollMetrics } from '../../utils/scroll/overlayScrollbar';
   import { chatRowDomId } from '../../utils/chatDomIds';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import {
@@ -133,23 +136,45 @@
     pane.activityRuns.toggleCollapsed(run.runId);
   }
 
+  // Guards `mountEarlier` against overlap. Deliberately a plain local, not
+  // `$state`: nothing renders from it, and a reactive read would invalidate
+  // the template twice per chunk for no visible difference.
+  let mountingEarlier = false;
+
   async function mountEarlier(): Promise<void> {
     // Narrowing, not a fallback: the boundary that calls this renders INSIDE
     // the clip, so the element is bound before any click can reach it.
     const clip = clipEl;
-    if (!clip) return;
-    const beforeHeight = clip.scrollHeight;
-    const beforeTop = clip.scrollTop;
+    // Two paths reach here — the boundary button and the scroll trigger below
+    // — and either can arrive while the other is still awaiting its tick.
+    // Overlapping mounts would each measure a `scrollHeight` the other is
+    // about to change and compensate by the wrong amount, so the second waits
+    // for the next scroll event instead. `hiddenEarlier` is re-checked because
+    // the prop that feeds it does not update until that tick.
+    if (!clip || mountingEarlier || hiddenEarlier <= 0) return;
+    mountingEarlier = true;
+    try {
+      const beforeHeight = clip.scrollHeight;
+      const beforeTop = clip.scrollTop;
 
-    pane.activityRuns.setMountWindow(run.runId, activityRunWindowGrownOlder(run));
-    await tick();
+      pane.activityRuns.setMountWindow(run.runId, activityRunWindowGrownOlder(run));
+      await tick();
 
-    // Manual prepend compensation. WebKit has no `overflow-anchor`, so
-    // rows added ABOVE the viewport would otherwise push the reading
-    // position down by exactly their height. Two reads and a write, after
-    // the DOM has the new rows and before the user can see the frame.
-    const grew = clip.scrollHeight - beforeHeight;
-    if (grew > 0) clip.scrollTop = beforeTop + grew;
+      // Manual prepend compensation. WebKit has no `overflow-anchor`, so
+      // rows added ABOVE the viewport would otherwise push the reading
+      // position down by exactly their height. Two reads and a write, after
+      // the DOM has the new rows and before the user can see the frame.
+      const grew = clip.scrollHeight - beforeHeight;
+      if (grew > 0) clip.scrollTop = beforeTop + grew;
+      // Read back before the settle observer sees the same growth: rows
+      // arriving ABOVE the reader must not be mistaken for the run growing
+      // under one who is resting on its last row. The follow state carries
+      // through unchanged — compensation keeps the distance to the run's last
+      // row exactly as it was, so it says nothing new about the reader.
+      positionWritten(clip, followingBottom);
+    } finally {
+      mountingEarlier = false;
+    }
   }
 
   // No compensation on this edge: rows appended BELOW the reading position
@@ -186,8 +211,126 @@
     if (!clip) return;
     pane.activityRuns.saveScrollSnapshot(runId, {
       scrollTop: clip.scrollTop,
-      escaped: stick?.escapedFromLock ?? false,
+      // One fact — "the reader has left bottom-follow" — recorded from
+      // whichever half of the run owns it. The live run's controller tracks it
+      // as `escapedFromLock`; a run without one tracks it as the absence of
+      // `followingBottom`. A run can change which half owns it (a live run is
+      // displaced by a newer one), so the snapshot must not care which wrote it.
+      escaped: stick ? stick.escapedFromLock : !followingBottom,
     });
+  }
+
+  // Whether activity is currently passing under the clip's upper edge, which
+  // is the only state the top fade should paint in: a run resting at its first
+  // row has nothing above to dissolve, and tinting that row would just make it
+  // look dimmer than the rows below it. Sub-pixel slack because a fractional
+  // row height can leave a scroller "at the top" reporting 0.4.
+  let fadedTop = $state(false);
+  const FADE_EPSILON_PX = 1;
+
+  // Whether the clip should stay on the run's last row as content settles
+  // under it. Plain local, not `$state`: only the settle observer reads it.
+  //
+  // A stored answer rather than a geometric one, and that is the whole point.
+  // "Is it at the bottom right now" is the wrong question during a settle: the
+  // clip is written to the bottom, the rows inside then grow, and the `scroll`
+  // event from that write arrives AFTER the growth — reporting, correctly, a
+  // position that is no longer at the bottom. Re-deriving from it dropped the
+  // follow on the first row that resolved, which is why a run reopened by the
+  // header's collapse-all landed near its top and stayed there. Growth moves
+  // the bottom away from the reader; only the reader can decide to leave it.
+  let followingBottom = false;
+
+  /**
+   * Re-read what the clip's position looks like. Paint only — the fade is the
+   * one thing that IS a pure function of the current geometry, so it is the
+   * one thing read back from it after every move.
+   */
+  function syncPosition(clip: HTMLElement): ScrollMetrics {
+    const metrics = readScrollMetrics(clip);
+    fadedTop = metrics.scrollTop > FADE_EPSILON_PX;
+    return metrics;
+  }
+
+  // Whether the reader is driving the clip's position right now.
+  //
+  // Arming the paging gate on a GESTURE rather than on the resulting geometry
+  // is the same rule the scroll package states for the conversation: intent is
+  // event-sourced, never inferred from where the surface ended up. Inferring
+  // it here was wrong in the one case that matters — the mount write aims at
+  // `scrollHeight`, but the rows inside are not measured yet, so it lands near
+  // the top, and its own scroll event then read as "the reader scrolled to the
+  // top of the window" and paged in a chunk nobody asked for. Whose
+  // compensation then moved them there for real.
+  let readerScrolling = false;
+
+  function armReaderScroll(): void {
+    readerScrolling = true;
+  }
+
+  /**
+   * Arm on the gestures that scroll a clip: wheel, touch drag, and the keys a
+   * focused row inside it responds to.
+   *
+   * An action rather than markup handlers because these observe a gesture
+   * rather than answer one — the clip is a scroll surface, not a control, and
+   * `onkeydown`/`ontouchmove` on a plain div would (correctly) ask for an ARIA
+   * role it has no business claiming. All passive: nothing here can cancel the
+   * scroll it is watching.
+   */
+  function readerGestures(el: HTMLElement) {
+    const opts = { passive: true } as const;
+    el.addEventListener('wheel', armReaderScroll, opts);
+    el.addEventListener('touchmove', armReaderScroll, opts);
+    el.addEventListener('keydown', armReaderScroll, opts);
+    return {
+      destroy() {
+        el.removeEventListener('wheel', armReaderScroll);
+        el.removeEventListener('touchmove', armReaderScroll);
+        el.removeEventListener('keydown', armReaderScroll);
+      },
+    };
+  }
+
+  /**
+   * Record a position THIS COMPONENT wrote, and whether the run should keep
+   * chasing its tail from it.
+   *
+   * The arming drops because a write we made is not the reader scrolling — the
+   * next gesture re-arms, so a run cannot page itself backwards through its own
+   * history. `following` is stated by each write rather than measured, for the
+   * reason `followingBottom` exists: at the instant of a write the rows inside
+   * are routinely unmeasured, so the geometry cannot answer it yet.
+   */
+  function positionWritten(clip: HTMLElement, following: boolean): void {
+    readerScrolling = false;
+    followingBottom = following;
+    syncPosition(clip);
+  }
+
+  // One handler for everything the clip's position drives. Cheap by
+  // construction: three numeric compares and a Map write, and the `$state`
+  // write only invalidates anything on the frame the answer changes.
+  function onClipScroll(): void {
+    const clip = clipEl;
+    if (!clip) return;
+    const metrics = syncPosition(clip);
+    // The two reader-owned decisions, both behind the same gate. Leaving the
+    // run's last row is a decision, so it is read from the geometry only when
+    // the reader produced that geometry; and reaching the top of the window
+    // pages the next chunk in, so browsing back through a long run is one
+    // continuous scroll — the same contract the conversation's own load-older
+    // gate offers. The boundary stays a button: it is the affordance for
+    // jumping a chunk without scrolling for it, and the only one the "N later"
+    // edge has.
+    if (readerScrolling) {
+      followingBottom = activityRunAtBottom(metrics);
+    }
+    // After the flag, so the snapshot archives this frame's answer rather than
+    // the previous one's.
+    saveInnerScroll();
+    if (!readerScrolling) return;
+    if (activityRunShouldMountEarlier(metrics, hiddenEarlier)) void mountEarlier();
   }
 
   // Controller lifetime and scroll-position persistence are ONE effect on
@@ -215,6 +358,13 @@
       // latest activity is the reason it is on screen.
       clip.scrollTop = clip.scrollHeight;
     }
+    // The write above dispatches its `scroll` event asynchronously, so the
+    // position is read back here rather than waiting for it: a run that mounts
+    // already scrolled would otherwise paint one frame without its fade, and
+    // the settle observer would spend that frame not knowing where it is.
+    // A restored run follows its tail again only if the reader left it doing
+    // that; a fresh one was just written to the bottom by definition.
+    positionWritten(clip, snapshot ? !snapshot.escaped : true);
 
     // Escape is event-sourced, so it is carried into a new controller rather
     // than re-derived from the geometry just written. A pinned window is the
@@ -235,6 +385,45 @@
       controller?.detach();
       if (stick === controller) stick = null;
     };
+  });
+
+  // Holds a resting clip on its last row while its content settles.
+  //
+  // The position write above happens once, at the instant the clip mounts —
+  // but the rows inside are not done at that instant. Payload bodies resolve,
+  // highlight spans land, a row remounts already expanded from its lease and
+  // lifts the cap. Every one of those grows the run AFTER the write, and
+  // `scrollTop` does not follow on its own, so the reader is left partway up a
+  // run they just opened. Visible immediately when several runs expand at
+  // once (the header's collapse-all), because none of them is measured.
+  //
+  // Both boxes, because the two ways the gap opens are unrelated: the CONTENT
+  // growing under a fixed clip, and the CLIP growing when cap inflation gives
+  // it more room than its content needs.
+  //
+  // Only for a run with no controller. The live run's spring owns
+  // bottom-following, with intent handling this cannot see; a second pinner
+  // would fight it for the same pixels.
+  //
+  // This narrows the "a historical run does not chase when it grows"
+  // tradeoff rather than reversing it: growth is followed only while the
+  // reader is resting on the newest row, which is the one position where
+  // following is what they are looking at. A run they scrolled inside still
+  // never moves under them.
+  $effect(() => {
+    const clip = clipEl;
+    const content = contentEl;
+    if (!clip || !content || stick) return;
+    const settle = new ResizeObserver(() => {
+      if (!followingBottom) return;
+      clip.scrollTop = clip.scrollHeight;
+      // Our write, so it must not be mistaken for the reader arriving at the
+      // top of a run whose content has not grown past the runway yet.
+      readerScrolling = false;
+    });
+    settle.observe(clip);
+    settle.observe(content);
+    return () => settle.disconnect();
   });
 
   // Jump resolution, inner half: a search hit, review jump, or tray row
@@ -270,6 +459,9 @@
     if (request.relocated || !activityRunRowFullyVisible(clip, el)) {
       clip.scrollTop = activityRunCenteredScrollTop(clip, el);
     }
+    // The jump owns the position now, so the settle observer must not read the
+    // run's next growth as licence to pull the reader off the target.
+    positionWritten(clip, false);
   });
 
   // Whether the window follows the run's tail is a question about the READER,
@@ -350,7 +542,8 @@
       class="activity-run-clip overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
       style:max-height={maxHeight}
       use:nestedScroll
-      onscroll={saveInnerScroll}
+      use:readerGestures
+      onscroll={onClipScroll}
       data-testid="activity-run-clip"
     >
       <div bind:this={contentEl}>
@@ -372,16 +565,46 @@
         {/if}
       </div>
     </div>
+    <!-- Top fade, the run's own copy of the conversation's: rows dissolve as
+         they rise out of the clip instead of being cut by a hard edge. Same
+         gradient OVERLAY technique for the same reason — a mask on the clip
+         rasterizes a full clip-sized texture on every streaming repaint, while
+         this is a strip that paints once (see MessageTimeline's TOP_FADE_PX).
+         Paint-only either way: no effect on scrollHeight/clientHeight/scrollTop
+         and no content-RO traffic, so it stays clear of the controller.
+
+         Shorter than the conversation's 32px — a run shows a handful of rows,
+         and a third of one is enough to read as a dissolve without dimming the
+         row behind it. It needs no scrollbar-safe inset: `right-0` is the
+         clip's own right edge, and the overlay bar hangs outside it. -->
+    <div
+      aria-hidden="true"
+      class="pointer-events-none absolute top-0 right-0 left-0 h-6 transition-opacity duration-150"
+      class:opacity-0={!fadedTop}
+      style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
+      data-testid="activity-run-top-fade"
+      data-faded={fadedTop ? 'true' : 'false'}
+    ></div>
     <!-- A zero-width native bar makes the scroll package's geometric
          scrollbar-gutter hit test impossible, so a drag states its intent
-         instead of having it inferred. -->
+         instead of having it inferred.
+         The handlers are unconditional: a bar drag is the reader scrolling
+         whether or not this run holds the live tail, and the controller half
+         is what is optional (`stick?.`). Handing `undefined` for a historical
+         run made a drag the one gesture that armed nothing, so dragging to the
+         top of a run's window paged nothing in. -->
     <OverlayScrollbar
       target={clipEl}
       content={contentEl}
       ariaLabel="Scroll activity run"
       ownerDrivenPosition={() => !!stick && !stick.escapedFromLock}
-      onUserScrollStart={stick ? () => stick?.setEscapedFromLock(true) : undefined}
-      onUserScrollEnd={stick ? (atBottom) => { if (atBottom) stick?.markAtBottom(); } : undefined}
+      onUserScrollStart={() => {
+        armReaderScroll();
+        stick?.setEscapedFromLock(true);
+      }}
+      onUserScrollEnd={(atBottom) => {
+        if (atBottom) stick?.markAtBottom();
+      }}
     />
   {/if}
 </div>

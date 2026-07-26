@@ -23,6 +23,7 @@ import {
 import { installSizePriorsPersistence } from '../../utils/virtual/priorsStorage';
 import type { RowEstimate, TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
+import { ACTIVITY_RUN_CAP_REM_PX } from '../../utils/activityRunClip';
 import { nodeSignature } from '../../utils/timelineStructureSignature';
 
 // Module scope, not inside createTimelineSizePriors: this must run once,
@@ -76,14 +77,13 @@ const ACTIVITY_RUN_CHIP_PX = 24;
  * grows on measure.
  */
 const ACTIVITY_RUN_ROW_FLOOR_PX = 20;
-/** `32rem` — the constant half of the clip's `min(50vh, 32rem)` cap. */
-const ACTIVITY_RUN_CAP_REM_PX = 512;
 
 /**
- * The clip's real ceiling right now. `min(50vh, 32rem)` means the rem half
- * only wins on viewports taller than 1024px; below that, 50vh is smaller, and
- * using 512 there would overestimate every long run — turning this floor into
- * a ceiling-breaker that shrinks total geometry when the measurement lands.
+ * The clip's real ceiling right now. The cap is a `min()` of a viewport half
+ * and a rem height (utils/activityRunClip.ts), so which half wins depends on
+ * the window; taking the rem half unconditionally would overestimate every
+ * long run on a short viewport — turning this floor into a ceiling-breaker
+ * that shrinks total geometry when the measurement lands.
  */
 function activityRunCapFloorPx(): number {
   return Math.min(window.innerHeight / 2, ACTIVITY_RUN_CAP_REM_PX);

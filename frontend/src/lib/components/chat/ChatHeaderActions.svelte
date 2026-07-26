@@ -15,6 +15,8 @@
   // status from `pane.gitStatus`, so there is exactly one subscription per pane.
   import SquareTerminal from 'lucide-svelte/icons/square-terminal';
   import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
+  import ChevronsDownUp from 'lucide-svelte/icons/chevrons-down-up';
+  import ChevronsUpDown from 'lucide-svelte/icons/chevrons-up-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getProject } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -105,6 +107,16 @@
     toggle();
   }
 
+  // One control, not two. Its meaning comes from the thread's current default
+  // rather than a survey of the rendered runs: only the loaded window holds
+  // any, so a survey would answer "all of which runs" differently as older
+  // history pages in — and a button that relabels itself while you scroll is
+  // worse than one that always says what it will do.
+  let runsCollapsed = $derived(pane.activityRuns.bulkCollapsed);
+  let runsToggleLabel = $derived(
+    runsCollapsed ? 'Expand all activity runs' : 'Collapse all activity runs',
+  );
+
   function toggleWorkspaceReview(): void {
     if (!pane.threadId) return;
     if (pane.showReviewPane) {
@@ -128,6 +140,33 @@
       chord={reviewToggleChord}
       onActivate={() => void ensureThenToggle(toggleWorkspaceReview)}
     />
+  {/if}
+
+  {#if !isDesignThread}
+    <!-- Collapse/expand every activity run in this thread. Also the only
+         VISIBLE affordance for the run collapse mechanic: a single run is
+         toggled by its rail, which consumes no width and so shows nothing
+         until you find it. The setting under Settings → General → Activity
+         Runs is the durable default; this is the per-thread override. -->
+    <Button
+      variant="secondary"
+      size="xs"
+      pressed={runsCollapsed}
+      ariaLabel={runsToggleLabel}
+      title={runsToggleLabel}
+      onclick={() => pane.activityRuns.setAllCollapsed(!runsCollapsed)}
+      testId="activity-runs-toggle"
+      class="shrink-0 w-6 px-0"
+    >
+      {#snippet children()}
+        <Icon
+          icon={runsCollapsed ? ChevronsUpDown : ChevronsDownUp}
+          size={12}
+          strokeWidth={2}
+          class="opacity-90"
+        />
+      {/snippet}
+    </Button>
   {/if}
 
   {#if projectBadge}

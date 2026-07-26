@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeItem } from '../../../test/helpers/chat';
 import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping';
+import { ACTIVITY_RUN_CAP_REM_PX } from '../../utils/activityRunClip';
 import { timelineRowStructuralSizeFor } from './timelineSizePriors.svelte';
 
 // The estimate for a row the kind table cannot price. Only activity runs
@@ -55,10 +56,10 @@ describe('timelineRowStructuralSizeFor', () => {
     // small enough to stay under it.
     const long = run({
       children: Array.from({ length: 500 }, (_, i) => leaf(`i${i}`)),
-      mountedRows: 15,
+      mountedRows: 12,
     });
 
-    expect(timelineRowStructuralSizeFor(long)).toBe(15 * 20);
+    expect(timelineRowStructuralSizeFor(long)).toBe(12 * 20);
   });
 
   it('never estimates past the clip cap', () => {
@@ -70,14 +71,14 @@ describe('timelineRowStructuralSizeFor', () => {
       mountedRows: 40,
     });
 
-    // The cap is `min(50vh, 32rem)`, so which half wins depends on the
-    // viewport: 32rem only on tall ones. Estimating 512 on a short viewport
-    // would overshoot the real ceiling by a third.
+    // The cap is a `min()` of a viewport half and a rem height, so which half
+    // wins depends on the window. Taking the rem half unconditionally would
+    // overshoot the real ceiling on a short one.
     setViewportHeight(1400);
-    expect(timelineRowStructuralSizeFor(wide)).toBe(512);
+    expect(timelineRowStructuralSizeFor(wide)).toBe(ACTIVITY_RUN_CAP_REM_PX);
 
-    setViewportHeight(800);
-    expect(timelineRowStructuralSizeFor(wide)).toBe(400);
+    setViewportHeight(400);
+    expect(timelineRowStructuralSizeFor(wide)).toBe(200);
   });
 
   it('declines every other node, so the kind table still decides', () => {

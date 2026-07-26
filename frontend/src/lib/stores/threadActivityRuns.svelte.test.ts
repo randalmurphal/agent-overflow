@@ -78,6 +78,73 @@ describe('collapse state', () => {
   });
 });
 
+describe('collapsing all', () => {
+  it('reports the thread default the control renders from', () => {
+    const runs = registry({ defaultCollapsed: false });
+
+    expect(runs.bulkCollapsed).toBe(false);
+    runs.setAllCollapsed(true);
+    expect(runs.bulkCollapsed).toBe(true);
+  });
+
+  it('takes runs that had their own state with it, in both directions', () => {
+    const runs = registry({ defaultCollapsed: false });
+    const [kept, flipped] = pass(runs, [['a'], ['b']]);
+    runs.setCollapsed(flipped.runId, true);
+
+    runs.setAllCollapsed(true);
+    expect(pass(runs, [['a'], ['b']]).map((r) => r.collapsed)).toEqual([true, true]);
+
+    // And back: the override that said "collapsed" was dropped, not inverted,
+    // so it cannot survive to contradict the next bulk action either.
+    runs.setAllCollapsed(false);
+    expect(pass(runs, [['a'], ['b']]).map((r) => r.collapsed)).toEqual([false, false]);
+    expect(kept.runId).not.toBe(flipped.runId);
+  });
+
+  it('governs a run that does not exist yet', () => {
+    // Older history pages in after the action. A bulk state that only reached
+    // the runs loaded at the time would not be "all".
+    const runs = registry({ defaultCollapsed: false });
+    pass(runs, [['b']]);
+    runs.setAllCollapsed(true);
+
+    expect(pass(runs, [['b'], ['c']])[1].collapsed).toBe(true);
+  });
+
+  it('governs a run that comes back from the archive', () => {
+    const runs = registry({ defaultCollapsed: false });
+    const [run] = pass(runs, [['a']]);
+    // An explicit expand, archived when the run leaves the loaded window.
+    runs.setCollapsed(run.runId, false);
+    pass(runs, [['z']]);
+
+    runs.setAllCollapsed(true);
+
+    expect(pass(runs, [['a']])[0].collapsed).toBe(true);
+  });
+
+  it('leaves a single run free to disagree afterwards', () => {
+    const runs = registry({ defaultCollapsed: false });
+    const [run] = pass(runs, [['a'], ['b']]);
+    runs.setAllCollapsed(true);
+
+    runs.toggleCollapsed(run.runId);
+
+    expect(pass(runs, [['a'], ['b']]).map((r) => r.collapsed)).toEqual([false, true]);
+  });
+
+  it('is scoped to its thread', () => {
+    const runs = registry({ defaultCollapsed: false });
+    pass(runs, [['a']]);
+    runs.setAllCollapsed(true);
+
+    runs.clear();
+
+    expect(runs.bulkCollapsed).toBe(false);
+  });
+});
+
 describe('scroll snapshots', () => {
   it('round-trips through a simulated remount', () => {
     const runs = registry();
@@ -93,6 +160,47 @@ describe('scroll snapshots', () => {
     const [run] = pass(runs, [['a']]);
 
     expect(runs.scrollSnapshot(run.runId)).toBeNull();
+  });
+
+  it('is dropped when the run collapses, so it reopens at its newest row', () => {
+    const runs = registry();
+    const [run] = pass(runs, [rows(60)]);
+    runs.setWindowAnchor(run.runId, 'i10');
+    runs.saveScrollSnapshot(run.runId, { scrollTop: 240, escaped: true });
+
+    runs.setCollapsed(run.runId, true);
+
+    // Both halves of "where the reader was", because the chip replaced the
+    // inside of the run: an offset would reopen it mid-list, and the window
+    // pin would hold the mounted rows away from the tail it now lands on.
+    expect(runs.scrollSnapshot(run.runId)).toBeNull();
+    expect(runs.windowAnchor(run.runId)).toBeNull();
+    expect(pass(runs, [rows(60)])[0].mountedFrom).toBe(30);
+  });
+
+  it('refuses a save from the clip a collapse is tearing down', () => {
+    // The row that becomes a chip unmounts its clip THROUGH saveScrollSnapshot,
+    // and a detached element reports scrollTop 0 — so without the refusal every
+    // collapse-then-expand would reopen the run at its first row.
+    const runs = registry();
+    const [run] = pass(runs, [['a', 'b']]);
+    runs.setCollapsed(run.runId, true);
+
+    runs.saveScrollSnapshot(run.runId, { scrollTop: 0, escaped: false });
+
+    expect(runs.scrollSnapshot(run.runId)).toBeNull();
+  });
+
+  it('keeps the rows the reader paged in across a collapse', () => {
+    // The row-count override is what they ASKED for, which the chip does not
+    // contradict — unlike the position, which the chip replaced.
+    const runs = registry({ windowRows: 30 });
+    const [run] = pass(runs, [rows(100)]);
+    runs.setMountWindow(run.runId, { rows: 55, startItemId: null });
+
+    runs.setCollapsed(run.runId, true);
+
+    expect(pass(runs, [rows(100)])[0].mountedRows).toBe(55);
   });
 
   it('survives the window edges that re-key a run', () => {
@@ -412,11 +520,13 @@ describe('entry lifecycle', () => {
 });
 
 describe('state across a sweep', () => {
-  it('comes back when the whole run leaves the window and returns', () => {
+  // Deliberately two tests over one combined case: a collapsed run has no
+  // inner position by construction, so a single run carrying both a collapse
+  // override and a scroll snapshot is a state that cannot occur.
+  it('brings a collapsed run back collapsed', () => {
     const runs = registry();
     const [run] = pass(runs, [['a', 'b', 'c']]);
     runs.setCollapsed(run.runId, true);
-    runs.saveScrollSnapshot(run.runId, { scrollTop: 240, escaped: true });
 
     // The live-window prune takes every item this run had.
     pass(runs, [['z']]);
@@ -424,6 +534,16 @@ describe('state across a sweep', () => {
     const [back] = pass(runs, [['a', 'b', 'c']]);
 
     expect(back.collapsed).toBe(true);
+  });
+
+  it('brings an expanded run back where the reader left it', () => {
+    const runs = registry();
+    const [run] = pass(runs, [['a', 'b', 'c']]);
+    runs.saveScrollSnapshot(run.runId, { scrollTop: 240, escaped: true });
+
+    pass(runs, [['z']]);
+    const [back] = pass(runs, [['a', 'b', 'c']]);
+
     expect(runs.scrollSnapshot(back.runId)).toEqual({ scrollTop: 240, escaped: true });
   });
 

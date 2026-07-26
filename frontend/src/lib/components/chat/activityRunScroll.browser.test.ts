@@ -94,6 +94,12 @@ describe('activity run — prepend compensation', () => {
     return built;
   }
 
+  // Driven by the scroll trigger rather than the boundary button, because in
+  // real geometry that is the only way a scrollable run gets here: the
+  // boundary sits at the very top of the content, so it becomes visible only
+  // once the reader is inside the trigger runway. The button is the affordance
+  // for the case the trigger deliberately refuses — a window whose rows all
+  // fit under the cap, which never scrolls and shows its boundary outright.
   it('holds the reading position when an earlier chunk mounts', async () => {
     const { scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
     const runs = scrollEl.querySelectorAll('[data-testid="activity-run"]');
@@ -104,9 +110,14 @@ describe('activity run — prepend compensation', () => {
     // hold, and the compensation would clamp to zero either way.
     expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight);
 
-    // The reader has scrolled to the run's head, where the boundary is.
+    // The reader scrolls to the run's head, which IS the trigger — a
+    // scrollable run pages its next chunk in rather than making them ask.
+    // The wheel is not decoration: paging arms on the gesture, so that a
+    // position the run wrote itself can never be read as the reader arriving.
+    clip.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
     clip.scrollTop = 0;
-    await raf();
+    // Measured synchronously, before the next rendering step dispatches the
+    // scroll event that starts the mount.
     const anchor = `a${RUN_ROWS - WINDOW_ROWS}`;
     const anchorBefore = offsetInClip(clip, anchor);
     const heightBefore = clip.scrollHeight;
@@ -114,7 +125,7 @@ describe('activity run — prepend compensation', () => {
     const outerBefore = scrollEl.scrollTop;
     const outerHeightBefore = scrollEl.scrollHeight;
 
-    (runs[0].querySelector('[data-testid="activity-run-earlier"]') as HTMLElement).click();
+    await raf();
     await tick();
     await raf();
 
@@ -133,6 +144,112 @@ describe('activity run — prepend compensation', () => {
     expect(clip.clientHeight).toBe(clipHeightBefore);
     expect(scrollEl.scrollHeight).toBe(outerHeightBefore);
     expect(scrollEl.scrollTop).toBe(outerBefore);
+  });
+
+  it('reopens a collapsed run on its newest row', async () => {
+    const { scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
+    const run = scrollEl.querySelectorAll('[data-testid="activity-run"]')[0] as HTMLElement;
+    const clip = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+
+    // Vacuity guard: with the cap not engaged, top and bottom are the same
+    // position and every assertion below would hold either way.
+    expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight);
+
+    // The reader scrolls up inside the run, then collapses it to a chip.
+    clip.scrollTop = 0;
+    await raf();
+    (run.querySelector('[data-testid="activity-run-rail"]') as HTMLElement).click();
+    await tick();
+    await raf();
+    expect(run.querySelector('[data-testid="activity-run-clip"]')).toBeNull();
+
+    (run.querySelector('[data-testid="activity-run-chip"]') as HTMLElement).click();
+    await tick();
+    await raf();
+
+    // The offset they were reading at is gone with the chip that replaced it,
+    // so the run opens where a never-scrolled one does — its newest activity.
+    const reopened = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+    expect(reopened.scrollHeight).toBeGreaterThan(reopened.clientHeight);
+    expect(reopened.scrollHeight - reopened.scrollTop - reopened.clientHeight)
+      .toBeLessThanOrEqual(DRIFT_PX);
+  });
+
+  it('reopens on its newest row after the header collapses every run', async () => {
+    // The header's bulk control, not the rail: it flips the THREAD's default
+    // rather than one run's override, and every mounted run reopens at once
+    // from a single flush. That is the path the reader actually uses.
+    const { pane, scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
+    const run = scrollEl.querySelectorAll('[data-testid="activity-run"]')[0] as HTMLElement;
+    expect((run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement).scrollHeight)
+      .toBeGreaterThan(
+        (run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement).clientHeight,
+      );
+
+    pane.activityRuns.setAllCollapsed(true);
+    await tick();
+    await raf();
+    expect(run.querySelector('[data-testid="activity-run-clip"]')).toBeNull();
+
+    pane.activityRuns.setAllCollapsed(false);
+    await tick();
+    await raf();
+    await raf();
+
+    const reopened = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+    expect(reopened.scrollHeight).toBeGreaterThan(reopened.clientHeight);
+    expect(reopened.scrollHeight - reopened.scrollTop - reopened.clientHeight)
+      .toBeLessThanOrEqual(DRIFT_PX);
+  });
+
+  it('stays on the newest row as the run grows under it', async () => {
+    // The position write happens once, when the clip mounts — but the rows
+    // inside are not done then: payload bodies resolve, spans land, a leased
+    // expansion remounts open. Without the settle observer the clip keeps the
+    // offset it was given and every one of those leaves the reader partway up
+    // a run they just opened, which is what expanding several at once showed.
+    const { scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
+    const run = scrollEl.querySelectorAll('[data-testid="activity-run"]')[0] as HTMLElement;
+    const clip = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+    const content = clip.firstElementChild as HTMLElement;
+    expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight);
+
+    // Growth from inside the clip, the way a settling row produces it — not a
+    // scroll, so nothing but the observer can notice it.
+    const grown = document.createElement('div');
+    grown.style.height = '400px';
+    content.appendChild(grown);
+    // Two frames: the observer delivers before the next rAF, and the write it
+    // makes needs the one after to be readable as a settled position.
+    await raf();
+    await raf();
+
+    expect(clip.scrollHeight - clip.scrollTop - clip.clientHeight)
+      .toBeLessThanOrEqual(DRIFT_PX);
+
+    // And a reader who is NOT at the bottom keeps their place through the same
+    // growth — following is for the position where it is what they are looking
+    // at, not a rule about the run.
+    //
+    // Mid-run rather than the top, so the position under test is unambiguously
+    // a reading position: the top doubles as the paging trigger's zone.
+    //
+    // The wheel is what makes this a READER leaving the last row. Growth alone
+    // moves the bottom away from the clip every time a row resolves, so a run
+    // that read "not at the bottom any more" off the geometry would abandon the
+    // follow on the first one — the bug this observer exists to fix.
+    const mid = Math.round((clip.scrollHeight - clip.clientHeight) / 2);
+    expect(mid).toBeGreaterThan(0);
+    clip.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+    clip.scrollTop = mid;
+    await raf();
+    const second = document.createElement('div');
+    second.style.height = '400px';
+    content.appendChild(second);
+    await raf();
+    await raf();
+
+    expect(clip.scrollTop).toBe(mid);
   });
 });
 

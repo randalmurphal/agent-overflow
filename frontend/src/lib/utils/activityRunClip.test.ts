@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   ACTIVITY_RUN_CAP_CSS,
+  ACTIVITY_RUN_CAP_REM,
+  ACTIVITY_RUN_CAP_REM_PX,
+  ACTIVITY_RUN_CAP_ROWS,
+  ACTIVITY_RUN_ROW_REM,
   activityRunClipMaxHeight,
   activityRunExpandedBodies,
   activityRunExpandedHeight,
+  activityRunShouldMountEarlier,
 } from './activityRunClip';
 
 // Which bodies lift a run's cap, and by how much. happy-dom reports zero
@@ -27,6 +32,56 @@ function stampHeight(body: HTMLElement, px: number): HTMLElement {
   Object.defineProperty(body, 'offsetHeight', { value: px, configurable: true });
   return body;
 }
+
+describe('the cap', () => {
+  it('is the row count it claims to be, in rem', () => {
+    // The row count is the tunable; the height is derived from it. Asserted
+    // because a cap edited as a bare rem value would silently stop meaning
+    // "this many rows", which is the only thing it is FOR.
+    expect(ACTIVITY_RUN_CAP_REM).toBe(ACTIVITY_RUN_CAP_ROWS * ACTIVITY_RUN_ROW_REM);
+    expect(ACTIVITY_RUN_CAP_CSS).toBe(`min(50vh, ${ACTIVITY_RUN_CAP_REM}rem)`);
+  });
+
+  it('keeps its px mirror in step, so placement estimates cannot drift', () => {
+    expect(ACTIVITY_RUN_CAP_REM_PX).toBe(ACTIVITY_RUN_CAP_REM * 16);
+  });
+});
+
+describe('activityRunShouldMountEarlier', () => {
+  /** A clip showing 300 of 1500px, scrolled to `scrollTop`. */
+  function scrolled(scrollTop: number) {
+    return { scrollTop, clientHeight: 300, scrollHeight: 1500 };
+  }
+
+  it('pages in when the reader reaches the top and more is hidden', () => {
+    expect(activityRunShouldMountEarlier(scrolled(0), 170)).toBe(true);
+  });
+
+  it('pages in from a runway above the top, not only at exactly zero', () => {
+    // Otherwise the rows arrive after the reader has already met the boundary.
+    expect(activityRunShouldMountEarlier(scrolled(60), 170)).toBe(true);
+  });
+
+  it('stays out of it mid-scroll', () => {
+    expect(activityRunShouldMountEarlier(scrolled(900), 170)).toBe(false);
+  });
+
+  it('stays out of it with nothing hidden above', () => {
+    expect(activityRunShouldMountEarlier(scrolled(0), 0)).toBe(false);
+  });
+
+  it('refuses a window that already fits under the cap', () => {
+    // The guard that keeps this from overriding `activityRunWindowRows`: such a
+    // window rests inside the trigger zone because it never scrolls, and
+    // without the check it would page chunk after chunk in at mount time until
+    // the content overflowed.
+    expect(activityRunShouldMountEarlier({ scrollTop: 0, clientHeight: 300, scrollHeight: 300 }, 170))
+      .toBe(false);
+    // Overflowing by less than the runway is the same case.
+    expect(activityRunShouldMountEarlier({ scrollTop: 40, clientHeight: 300, scrollHeight: 340 }, 170))
+      .toBe(false);
+  });
+});
 
 describe('activityRunClipMaxHeight', () => {
   it('is the bare cap with nothing expanded', () => {

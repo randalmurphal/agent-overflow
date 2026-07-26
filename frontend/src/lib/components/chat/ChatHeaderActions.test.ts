@@ -110,6 +110,39 @@ describe('<ChatHeaderActions> badge gating', () => {
     expect(getByTestId('workspace-diff-counts').textContent).toContain('-1');
   });
 
+  it('toggles every activity run in the thread, and says which way', async () => {
+    // The one visible affordance for the collapse mechanic: a single run is
+    // toggled by its rail, which consumes no width and so shows nothing.
+    const pane = await buildPane();
+    installSubscribeMock(status({}));
+    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    const toggle = getByTestId('activity-runs-toggle');
+
+    expect(pane.activityRuns.bulkCollapsed).toBe(false);
+    expect(toggle.getAttribute('aria-label')).toBe('Collapse all activity runs');
+
+    await fireEvent.click(toggle);
+    await flush();
+
+    expect(pane.activityRuns.bulkCollapsed).toBe(true);
+    expect(toggle.getAttribute('aria-label')).toBe('Expand all activity runs');
+
+    await fireEvent.click(toggle);
+    await flush();
+
+    expect(pane.activityRuns.bulkCollapsed).toBe(false);
+  });
+
+  it('hides the run toggle on a design thread, which has no transcript runs', async () => {
+    const pane = await buildPane(makeThread({ mode: 'design' }));
+    installSubscribeMock(status({}));
+    const { queryByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+
+    expect(queryByTestId('activity-runs-toggle')).toBeNull();
+  });
+
   it('hides the PR badge but keeps the workspace +/- when there is no open PR', async () => {
     const pane = await buildPane();
     installSubscribeMock(status({ openPrUrl: '' }));
