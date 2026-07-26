@@ -167,8 +167,10 @@ export function createTimelineSizePriors(
     const node = options.getRevealedNodes()[index];
     if (node?.kind !== 'activity_run') return undefined;
     if (node.collapsed) return ACTIVITY_RUN_CHIP_PX;
-    const mounted = Math.min(node.children.length, node.mountedRows);
-    return Math.min(ACTIVITY_RUN_CAP_FLOOR_PX, mounted * ACTIVITY_RUN_ROW_FLOOR_PX);
+    return Math.min(
+      ACTIVITY_RUN_CAP_FLOOR_PX,
+      node.mountedRows * ACTIVITY_RUN_ROW_FLOOR_PX,
+    );
   }
 
   // Capture the engine's current measured sizes for the active thread, but

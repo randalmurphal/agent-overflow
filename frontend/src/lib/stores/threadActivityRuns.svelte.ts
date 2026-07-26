@@ -1,5 +1,6 @@
 // Per-pane registry for activity runs: stable identity, collapse
-// overrides, inner scroll snapshots, and the mounted tail-window size.
+// overrides, inner scroll snapshots, the mounted row window, and pending
+// jump-into-run focus requests.
 //
 // Runs are not stored entities. They are recomputed from scratch on every
 // projection pass out of whatever items happen to be loaded, so the
@@ -16,11 +17,15 @@
 // Session-only, deliberately matching item-expansion leases. The durable
 // layer is the `activityRunDefault` setting.
 
-import type { ActivityRunIdentity } from '../utils/activityRunGrouping';
+import type {
+  ActivityRunIdentity,
+  ActivityRunResolution,
+} from '../utils/activityRunGrouping';
+import type { ActivityRunMountWindow } from '../utils/activityRunWindow';
 
 export interface ActivityRunScrollSnapshot {
   scrollTop: number;
-  /** The user scrolled up inside; the tail-window must not trim under them. */
+  /** The user scrolled up inside, so the run must not re-pin under them. */
   escaped: boolean;
 }
 
@@ -46,9 +51,20 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
   toggleCollapsed(runId: string): void;
   scrollSnapshot(runId: string): ActivityRunScrollSnapshot | null;
   saveScrollSnapshot(runId: string, snapshot: ActivityRunScrollSnapshot): void;
-  /** Rows currently mounted from the run's tail. Grows on "N earlier". */
-  mountedRows(runId: string, fallback: number): number;
-  setMountedRows(runId: string, rows: number): void;
+  /**
+   * Move or resize the run's mounted window. Set by the "N earlier" /
+   * "N later" boundaries and by a jump landing inside the run.
+   */
+  setMountWindow(runId: string, window: ActivityRunMountWindow): void;
+  /**
+   * Ask the run's row to bring `itemId` into view once it is mounted. Held
+   * on the entry rather than passed down a prop because the row may not
+   * exist yet — the jump that requests it is usually what scrolls the run
+   * into the virtualizer's buffer in the first place.
+   */
+  requestFocus(runId: string, itemId: string): void;
+  /** Read and clear the pending focus request. */
+  takeFocus(runId: string): string | null;
   /** Drop everything — thread switch. */
   clear(): void;
 }
@@ -57,11 +73,32 @@ interface RunEntry {
   members: Set<string>;
   collapsed: boolean | null;
   scroll: ActivityRunScrollSnapshot | null;
-  mountedRows: number | null;
+  /** null → the `activityRunWindowRows` setting. */
+  windowRows: number | null;
+  /** null → the run's tail. */
+  windowStartItemId: string | null;
+  focusItemId: string | null;
 }
 
 function emptyEntry(): RunEntry {
-  return { members: new Set(), collapsed: null, scroll: null, mountedRows: null };
+  return {
+    members: new Set(),
+    collapsed: null,
+    scroll: null,
+    windowRows: null,
+    windowStartItemId: null,
+    focusItemId: null,
+  };
+}
+
+function rowIndexOfMember(
+  rowMemberIds: readonly (readonly string[])[],
+  itemId: string,
+): number {
+  for (let row = 0; row < rowMemberIds.length; row += 1) {
+    if (rowMemberIds[row].includes(itemId)) return row;
+  }
+  return -1;
 }
 
 export function createThreadActivityRuns(
@@ -74,11 +111,13 @@ export function createThreadActivityRuns(
   let claimed = new Set<string>();
   let nextRunId = 1;
 
-  // Collapse state and the mounted-row count both ride on the projected
-  // node, so both have to be able to trigger a rebuild. Each only moves on
-  // a deliberate user action (toggle the run, mount an older chunk), so the
-  // rebuild is rare. Scroll snapshots are excluded on purpose — they move
-  // every inner scroll frame and nothing on the node reads them.
+  // Collapse state and the mount window both ride on the projected node, so
+  // both have to be able to trigger a rebuild; a focus request bumps it too,
+  // because a jump can target an item the current window already holds and
+  // would otherwise change nothing the row could notice. Each moves only on
+  // a deliberate user action (toggle the run, mount a chunk, jump to a hit),
+  // so the rebuild is rare. Scroll snapshots are excluded on purpose — they
+  // move every inner scroll frame and nothing on the node reads them.
   let revision = $state(0);
 
   function entryFor(runId: string): RunEntry {
@@ -90,50 +129,77 @@ export function createThreadActivityRuns(
     return entry;
   }
 
-  function indexMembers(runId: string, memberItemIds: readonly string[]): void {
+  function indexMembers(
+    runId: string,
+    rowMemberIds: readonly (readonly string[])[],
+  ): void {
     const entry = entryFor(runId);
     for (const id of entry.members) {
       if (runIdByMember.get(id) === runId) runIdByMember.delete(id);
     }
-    entry.members = new Set(memberItemIds);
-    for (const id of memberItemIds) runIdByMember.set(id, runId);
+    entry.members = new Set();
+    for (const row of rowMemberIds) {
+      for (const id of row) {
+        entry.members.add(id);
+        runIdByMember.set(id, runId);
+      }
+    }
   }
 
   function beginPass(): void {
     claimed = new Set();
   }
 
-  function resolve(
-    memberItemIds: readonly string[],
-    childRowCount: number,
-  ): { runId: string; collapsed: boolean; mountedRows: number } {
+  function claimRunId(rowMemberIds: readonly (readonly string[])[]): string {
     // Earliest matching member wins. That is what makes a split deterministic:
     // the entry follows the sub-run holding its previous first member, and the
     // other sub-run starts fresh from the setting default. On a merge the
     // earliest-positioned entry survives and the later one is swept.
-    let runId: string | null = null;
-    for (const id of memberItemIds) {
-      const candidate = runIdByMember.get(id);
-      if (candidate && !claimed.has(candidate)) {
-        runId = candidate;
-        break;
+    for (const row of rowMemberIds) {
+      for (const id of row) {
+        const candidate = runIdByMember.get(id);
+        if (candidate && !claimed.has(candidate)) return candidate;
       }
     }
-    if (!runId) {
-      runId = `r${nextRunId}`;
-      nextRunId += 1;
-    }
+    const minted = `r${nextRunId}`;
+    nextRunId += 1;
+    return minted;
+  }
+
+  function resolve(
+    rowMemberIds: readonly (readonly string[])[],
+  ): ActivityRunResolution {
+    const runId = claimRunId(rowMemberIds);
     claimed.add(runId);
-    indexMembers(runId, memberItemIds);
+    indexMembers(runId, rowMemberIds);
     const entry = entryFor(runId);
-    // A run never mounts more than it has. The stored override only exists
-    // once the user has pulled in an older chunk; until then the window
-    // tracks the current setting, so changing it applies on the next pass.
-    const requested = entry.mountedRows ?? options.windowRows();
+    // A run never mounts more than it has. The stored size only exists once
+    // the user has pulled in another chunk or a jump has relocated the
+    // window; until then it tracks the current setting, so changing the
+    // setting applies on the next pass.
+    const rows = Math.min(
+      rowMemberIds.length,
+      Math.max(1, entry.windowRows ?? options.windowRows()),
+    );
+    const tailFrom = rowMemberIds.length - rows;
+    let mountedFrom = tailFrom;
+    if (entry.windowStartItemId !== null) {
+      const anchored = rowIndexOfMember(rowMemberIds, entry.windowStartItemId);
+      if (anchored >= 0 && anchored < tailFrom) {
+        mountedFrom = anchored;
+      } else {
+        // Either the anchor row has left the loaded window, or the window has
+        // caught up with the run's last row. Both mean nothing is hidden
+        // below it, so it goes back to following the tail — which is how a
+        // jumped-into run resumes showing new activity.
+        entry.windowStartItemId = null;
+      }
+    }
     return {
       runId,
       collapsed: isCollapsed(runId),
-      mountedRows: Math.min(childRowCount, Math.max(1, requested)),
+      mountedFrom,
+      mountedRows: rows,
     };
   }
 
@@ -177,12 +243,26 @@ export function createThreadActivityRuns(
     saveScrollSnapshot: (runId, snapshot) => {
       entryFor(runId).scroll = snapshot;
     },
-    mountedRows: (runId, fallback) => entries.get(runId)?.mountedRows ?? fallback,
-    setMountedRows: (runId, rows) => {
+    setMountWindow: (runId, window) => {
       const entry = entryFor(runId);
-      if (entry.mountedRows === rows) return;
-      entry.mountedRows = rows;
+      if (entry.windowRows === window.rows
+        && entry.windowStartItemId === window.startItemId) return;
+      entry.windowRows = window.rows;
+      entry.windowStartItemId = window.startItemId;
       revision += 1;
+    },
+    requestFocus: (runId, itemId) => {
+      entryFor(runId).focusItemId = itemId;
+      revision += 1;
+    },
+    takeFocus: (runId) => {
+      const entry = entries.get(runId);
+      if (!entry?.focusItemId) return null;
+      const itemId = entry.focusItemId;
+      // Deliberately silent: the row consuming a request must not schedule
+      // another rebuild, and nothing on the node carries the request.
+      entry.focusItemId = null;
+      return itemId;
     },
     clear: () => {
       entries.clear();

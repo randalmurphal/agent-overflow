@@ -23,18 +23,15 @@ import type { Item } from '../types/models';
 import { type ActivityRunNode, type TimelineNode } from './subagentGrouping';
 import { timelineNodeHasRail } from './timelineRail';
 
-/**
- * How many of a run's newest rows are mounted. Sized to overfill the clip's
- * cap so the tail always has content below the fold. User-tunable through
- * the `activityRunWindowRows` setting; the bounds are enforced on both the
- * Go and frontend sides.
- */
-export const ACTIVITY_RUN_WINDOW_ROWS_DEFAULT = 30;
-export const ACTIVITY_RUN_WINDOW_ROWS_MIN = 10;
-export const ACTIVITY_RUN_WINDOW_ROWS_MAX = 200;
-
-/** Rows mounted per click on a run's "N earlier" boundary line. */
-export const ACTIVITY_RUN_OLDER_CHUNK_ROWS = 25;
+/** What the registry resolves for one run, per projection pass. */
+export interface ActivityRunResolution {
+  runId: string;
+  collapsed: boolean;
+  /** Index of the first mounted row. */
+  mountedFrom: number;
+  /** How many rows are mounted, from `mountedFrom`. */
+  mountedRows: number;
+}
 
 /**
  * Assigns each run a `runId` that survives the window edges.
@@ -54,14 +51,15 @@ export interface ActivityRunIdentity {
   beginPass(): void;
   /**
    * Resolve a run's identity and its registry-owned render state in one
-   * lookup. `memberItemIds` is in timeline order and never empty;
-   * `childRowCount` is the run's row count, which differs from the member
-   * count because a read or subagent group is many items but one row.
+   * lookup.
+   *
+   * `rowMemberIds` is one entry per run ROW, each listing the items that row
+   * represents (a read or subagent group is many items but one row), in
+   * timeline order and never empty. Grouped by row rather than flattened
+   * because the registry resolves its mount window from an item id — see
+   * `ActivityRunMountWindow` — and that lookup needs to land on a row index.
    */
-  resolve(
-    memberItemIds: readonly string[],
-    childRowCount: number,
-  ): { runId: string; collapsed: boolean; mountedRows: number };
+  resolve(rowMemberIds: readonly (readonly string[])[]): ActivityRunResolution;
   endPass(): void;
 }
 
@@ -135,23 +133,31 @@ function buildRun(
   members: TimelineNode[],
   options: GroupActivityRunsOptions,
 ): ActivityRunNode {
-  // The projected member items are enough for identity and threadId — both
-  // are immutable per item — so this pass never resolves current items. That
-  // is what keeps it off the streaming path: everything the run displays
-  // that CAN change is derived from these ids at render time instead.
-  const items = [...activityRunMemberItems(members)];
-  const memberItemIds = items.map((item) => item.id);
-  const { runId, collapsed, mountedRows } = options.identity.resolve(
-    memberItemIds,
-    members.length,
-  );
+  // The projected member ids are enough for identity, the mount window, and
+  // threadId — all immutable per item — so this pass never resolves current
+  // items. That is what keeps it off the streaming path: everything the run
+  // displays that CAN change is derived from these ids at render time.
+  const rowMemberIds: string[][] = [];
+  const memberItemIds: string[] = [];
+  let threadId = '';
+  for (const node of members) {
+    const row: string[] = [];
+    for (const item of activityRunMemberItems([node])) {
+      if (threadId === '') threadId = item.threadId;
+      row.push(item.id);
+      memberItemIds.push(item.id);
+    }
+    rowMemberIds.push(row);
+  }
+  const resolved = options.identity.resolve(rowMemberIds);
   return {
     kind: 'activity_run',
-    runId,
-    threadId: items[0]?.threadId ?? '',
+    runId: resolved.runId,
+    threadId,
     children: members,
-    collapsed,
-    mountedRows,
+    collapsed: resolved.collapsed,
+    mountedFrom: resolved.mountedFrom,
+    mountedRows: resolved.mountedRows,
     memberItemIds,
   };
 }

@@ -63,11 +63,12 @@ export function nodeSignature(node: TimelineNode): string {
     // Collapse state changes the row's height dramatically (one chip line
     // vs a capped clip), so it belongs here rather than in the entry-level
     // expansionSig — folding it there would drop every row's prior in the
-    // thread each time one run was toggled. `mountedRows` is here for the
+    // thread each time one run was toggled. The mount window is here for the
     // same reason: mounting another chunk grows a run that has not reached
-    // its cap, and a signature blind to that replays the pre-growth height.
+    // its cap, and moving the window swaps which rows it measures, so a
+    // signature blind to either replays a height that no longer applies.
     case 'activity_run':
-      return `A:${node.runId}:${node.collapsed ? 'c' : 'e'}:${node.children.length}:${node.mountedRows}`;
+      return `A:${node.runId}:${node.collapsed ? 'c' : 'e'}:${node.children.length}:${node.mountedFrom}:${node.mountedRows}`;
     default: {
       // Exhaustiveness guard: a new TimelineNode kind must extend the
       // signature, not silently sign as an empty/identical row (which

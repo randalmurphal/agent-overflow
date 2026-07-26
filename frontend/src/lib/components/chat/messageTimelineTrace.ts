@@ -91,6 +91,7 @@ export function recordTimelineRenderTrace(
           runId: node.runId,
           childCount: node.children.length,
           itemCount: node.memberItemIds.length,
+          mountedFrom: node.mountedFrom,
           mountedRows: node.mountedRows,
           collapsed: node.collapsed,
           turnIndex: timelineNodeTurnIndex(node),

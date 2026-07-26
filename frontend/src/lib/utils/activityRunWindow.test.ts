@@ -1,0 +1,163 @@
+import { describe, expect, it, vi } from 'vitest';
+import { makeItem } from '../../test/helpers/chat';
+import {
+  activityRunFocusWindow,
+  activityRunRowIndexOfItem,
+  activityRunWindowGrownNewer,
+  activityRunWindowGrownOlder,
+  revealActivityRunItem,
+  type ActivityRunReveal,
+} from './activityRunWindow';
+import type { ActivityRunNode, TimelineNode } from './subagentGrouping';
+
+function leaf(id: string): TimelineNode {
+  return { kind: 'leaf', item: makeItem({ id, kind: 'tool_call', toolName: 'Bash' }) };
+}
+
+/** A subagent card: one run row, several items, none of them the row's own. */
+function card(parentId: string, childId: string): TimelineNode {
+  return {
+    kind: 'group',
+    parent: makeItem({ id: parentId, kind: 'tool_call', toolName: 'Task' }),
+    groupKey: parentId,
+    children: [leaf(childId)],
+    descendantCount: 1,
+    loadedDescendantCount: 1,
+    latestChildSummary: '',
+  };
+}
+
+function run(
+  children: TimelineNode[],
+  window: { from: number; rows: number },
+): ActivityRunNode {
+  return {
+    kind: 'activity_run',
+    runId: 'r1',
+    threadId: 'thread-1',
+    children,
+    collapsed: false,
+    mountedFrom: window.from,
+    mountedRows: window.rows,
+    memberItemIds: [],
+  };
+}
+
+function rows(n: number): TimelineNode[] {
+  return Array.from({ length: n }, (_, i) => leaf(`i${i}`));
+}
+
+describe('activityRunRowIndexOfItem', () => {
+  it('finds the row a leaf item is', () => {
+    expect(activityRunRowIndexOfItem(run(rows(5), { from: 0, rows: 5 }), 'i3')).toBe(3);
+  });
+
+  it('finds the card a nested item is inside', () => {
+    const node = run([leaf('i0'), card('agent', 'agent-child')], { from: 0, rows: 2 });
+
+    expect(activityRunRowIndexOfItem(node, 'agent-child')).toBe(1);
+  });
+
+  it('reports -1 for an item the run does not carry', () => {
+    expect(activityRunRowIndexOfItem(run(rows(5), { from: 0, rows: 5 }), 'zz')).toBe(-1);
+  });
+});
+
+describe('activityRunFocusWindow', () => {
+  it('anchors half a window above the target, keeping the window size', () => {
+    const node = run(rows(100), { from: 90, rows: 10 });
+
+    expect(activityRunFocusWindow(node, 'i40')).toEqual({ rows: 10, startItemId: 'i35' });
+  });
+
+  it('stops at the run start rather than anchoring past it', () => {
+    const node = run(rows(100), { from: 90, rows: 10 });
+
+    expect(activityRunFocusWindow(node, 'i2')).toEqual({ rows: 10, startItemId: 'i0' });
+  });
+
+  it('returns tail mode for a target near the end — nothing would be hidden below', () => {
+    const node = run(rows(100), { from: 90, rows: 10 });
+
+    expect(activityRunFocusWindow(node, 'i97')).toEqual({ rows: 10, startItemId: null });
+  });
+
+  it('anchors on the card, not the item, for a nested target', () => {
+    const node = run(
+      [...rows(20), card('agent', 'agent-child'), ...rows(20)],
+      { from: 31, rows: 10 },
+    );
+
+    // Row 20 is the card; half a window above lands on row 15.
+    expect(activityRunFocusWindow(node, 'agent-child')).toEqual({
+      rows: 10,
+      startItemId: 'i15',
+    });
+  });
+
+  it('reports null for an item the run does not carry', () => {
+    expect(activityRunFocusWindow(run(rows(10), { from: 0, rows: 10 }), 'zz')).toBeNull();
+  });
+});
+
+describe('growing the window', () => {
+  it('older keeps the bottom edge', () => {
+    const node = run(rows(200), { from: 100, rows: 20 });
+
+    // 25 rows up, same last row: 100 - 25 = 75, and 120 - 75 = 45 rows.
+    expect(activityRunWindowGrownOlder(node)).toEqual({ rows: 45, startItemId: 'i75' });
+  });
+
+  it('older stops at the run start and stays in tail mode there', () => {
+    const node = run(rows(30), { from: 10, rows: 20 });
+
+    expect(activityRunWindowGrownOlder(node)).toEqual({ rows: 30, startItemId: null });
+  });
+
+  it('newer keeps the top edge', () => {
+    const node = run(rows(200), { from: 100, rows: 20 });
+
+    expect(activityRunWindowGrownNewer(node)).toEqual({ rows: 45, startItemId: 'i100' });
+  });
+
+  it('newer returns to tail mode when it reaches the last row', () => {
+    const node = run(rows(120), { from: 100, rows: 10 });
+
+    // 10 rows left below, so the grown window covers the tail — and giving up
+    // the anchor is what lets the run follow new activity again.
+    expect(activityRunWindowGrownNewer(node)).toEqual({ rows: 20, startItemId: null });
+  });
+});
+
+describe('revealActivityRunItem', () => {
+  function registry(): ActivityRunReveal {
+    return {
+      setCollapsed: vi.fn(),
+      setMountWindow: vi.fn(),
+      requestFocus: vi.fn(),
+    };
+  }
+
+  it('expands, relocates, and requests focus together', () => {
+    const reveal = registry();
+    const node = run(rows(100), { from: 90, rows: 10 });
+
+    expect(revealActivityRunItem(reveal, node, 'i40')).toBe(true);
+    expect(reveal.setCollapsed).toHaveBeenCalledWith('r1', false);
+    expect(reveal.setMountWindow).toHaveBeenCalledWith('r1', {
+      rows: 10,
+      startItemId: 'i35',
+    });
+    expect(reveal.requestFocus).toHaveBeenCalledWith('r1', 'i40');
+  });
+
+  it('changes nothing for an item the run does not carry', () => {
+    const reveal = registry();
+    const node = run(rows(10), { from: 0, rows: 10 });
+
+    expect(revealActivityRunItem(reveal, node, 'zz')).toBe(false);
+    expect(reveal.setCollapsed).not.toHaveBeenCalled();
+    expect(reveal.setMountWindow).not.toHaveBeenCalled();
+    expect(reveal.requestFocus).not.toHaveBeenCalled();
+  });
+});

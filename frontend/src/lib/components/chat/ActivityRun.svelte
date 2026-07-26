@@ -22,11 +22,16 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping';
   import { timelineNodeKey } from '../../utils/subagentGrouping';
-  import { ACTIVITY_RUN_OLDER_CHUNK_ROWS } from '../../utils/activityRunGrouping';
   import {
+    activityRunRowIndexOfItem,
+    activityRunWindowGrownNewer,
+    activityRunWindowGrownOlder,
+  } from '../../utils/activityRunWindow';
+  import {
+    activityRunCenteredScrollTop,
+    activityRunChildElement,
     activityRunClipMaxHeight,
-    activityRunExpandedBodies,
-    activityRunExpandedHeight,
+    observeActivityRunExpansion,
   } from '../../utils/activityRunClip';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import {
@@ -38,6 +43,7 @@
     LIVE_CONTENT_ACTIVE_HOLD_MS,
   } from '../../utils/liveContentActivity';
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
+  import ActivityRunBoundary from './ActivityRunBoundary.svelte';
   import ActivityRunChip from './ActivityRunChip.svelte';
 
   let {
@@ -87,13 +93,19 @@
     });
   }
 
-  // Tail window: only the newest `mountedRows` children are in the DOM.
-  // Without it a 200-row run would mount 200 rows the moment its single
-  // timeline row entered the virtualizer's buffer — the DOM bound the
-  // virtualizer provides at top level has to be re-established inside.
-  let firstMounted = $derived(Math.max(0, run.children.length - run.mountedRows));
-  let mountedChildren = $derived(run.children.slice(firstMounted));
-  let hiddenCount = $derived(firstMounted);
+  // Mount window: only `mountedRows` children starting at `mountedFrom` are
+  // in the DOM. Without it a 200-row run would mount 200 rows the moment its
+  // single timeline row entered the virtualizer's buffer — the DOM bound the
+  // virtualizer provides at top level has to be re-established inside. The
+  // window rests on the run's tail and relocates when a jump resolves into
+  // the run (utils/activityRunWindow.ts).
+  let mountedChildren = $derived(
+    run.children.slice(run.mountedFrom, run.mountedFrom + run.mountedRows),
+  );
+  let hiddenEarlier = $derived(run.mountedFrom);
+  let hiddenLater = $derived(
+    run.children.length - run.mountedFrom - run.mountedRows,
+  );
 
   let maxHeight = $derived(activityRunClipMaxHeight(expandedPx));
   let toggleLabel = $derived(
@@ -104,15 +116,12 @@
     pane.activityRuns.toggleCollapsed(run.runId);
   }
 
-  async function mountOlder(): Promise<void> {
+  async function mountEarlier(): Promise<void> {
     const clip = clipEl;
     const beforeHeight = clip?.scrollHeight ?? 0;
     const beforeTop = clip?.scrollTop ?? 0;
 
-    pane.activityRuns.setMountedRows(
-      run.runId,
-      run.mountedRows + ACTIVITY_RUN_OLDER_CHUNK_ROWS,
-    );
+    pane.activityRuns.setMountWindow(run.runId, activityRunWindowGrownOlder(run));
     await tick();
 
     // Manual prepend compensation. WebKit has no `overflow-anchor`, so
@@ -124,11 +133,17 @@
     if (grew > 0) clip.scrollTop = beforeTop + grew;
   }
 
+  // No compensation on this edge: rows appended BELOW the reading position
+  // move nothing above it.
+  function mountLater(): void {
+    pane.activityRuns.setMountWindow(run.runId, activityRunWindowGrownNewer(run));
+  }
+
   // Expanded payloads lift the cap by their own height (see
-  // utils/activityRunClip.ts). Re-query on two triggers and no others: an
-  // `aria-expanded` flip anywhere in the run, and a change to the mounted
-  // set — a row can remount already-expanded from its lease, which mutates
-  // no attribute. Streaming text growth touches neither, so this stays off
+  // utils/activityRunClip.ts). Reading `mountedChildren` re-targets the
+  // observers when the mounted set changes: a row can remount already
+  // expanded from its lease, which mutates no attribute for the observer
+  // inside to see. Streaming text growth changes neither, so this stays off
   // the hot path.
   $effect(() => {
     const clip = clipEl;
@@ -137,28 +152,9 @@
       return;
     }
     mountedChildren;
-
-    const sizes = new ResizeObserver(() => {
-      expandedPx = activityRunExpandedHeight(activityRunExpandedBodies(clip));
+    return observeActivityRunExpansion(clip, (px) => {
+      expandedPx = px;
     });
-    function retarget(): void {
-      const bodies = activityRunExpandedBodies(clip!);
-      sizes.disconnect();
-      for (const body of bodies) sizes.observe(body);
-      expandedPx = activityRunExpandedHeight(bodies);
-    }
-    const disclosures = new MutationObserver(retarget);
-    disclosures.observe(clip, {
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['aria-expanded'],
-    });
-    retarget();
-
-    return () => {
-      disclosures.disconnect();
-      sizes.disconnect();
-    };
   });
 
   // Controller lifetime and scroll-position persistence are ONE effect on
@@ -200,13 +196,44 @@
     };
   });
 
+  // Jump resolution, inner half: a search hit, review jump, or tray row
+  // whose item lives in this run has already relocated the mount window and
+  // expanded the run from its chip (`revealActivityRunItem`) — what is left
+  // is the scroll, which needs the mounted DOM this effect runs after.
+  //
+  // Declared AFTER the snapshot effect so it wins: a run mounting with both
+  // a saved position and a pending jump has to land on the jump target.
+  $effect(() => {
+    const clip = clipEl;
+    if (!clip) return;
+    // The request is the dependency, not the node: a jump can target an item
+    // the current window already holds, which changes nothing on the node.
+    pane.activityRuns.revision;
+    const itemId = pane.activityRuns.takeFocus(run.runId);
+    if (!itemId) return;
+    const row = activityRunRowIndexOfItem(run, itemId);
+    // The item left the run between the request and this flush (a live-window
+    // prune). Nothing to scroll to; the outer jump still put the run on
+    // screen.
+    if (row < run.mountedFrom || row >= run.mountedFrom + run.mountedRows) return;
+    const el = activityRunChildElement(clip, row);
+    if (!el) return;
+    const target = activityRunCenteredScrollTop(clip, el);
+    // Explicit navigation inside the run, so it escapes bottom-follow the
+    // same way the outer timeline does — otherwise the next streamed chunk
+    // would yank the reader off the item they jumped to.
+    stick?.setEscapedFromLock(true);
+    if (target !== null) clip.scrollTop = target;
+  });
+
   // No head trim, deliberately. Growth cannot accumulate DOM on its own —
-  // the tail slice above is a window, not a high-water mark, so a run that
-  // streams to 500 rows still mounts `mountedRows` of them. The only way
-  // past the window is the user asking for an older chunk, and trimming
-  // that back would revert an explicit action: a short run whose boundary
-  // is visible without scrolling would flash the rows in and drop them in
-  // the same frame. What they asked for stays until the run unmounts.
+  // the slice above is a window, not a high-water mark, so a run that
+  // streams to 500 rows still mounts `mountedRows` of them, and a jump
+  // relocates the window without enlarging it. The only way past the window
+  // is the user asking for another chunk, and trimming that back would revert
+  // an explicit action: a short run whose boundary is visible without
+  // scrolling would flash the rows in and drop them in the same frame. What
+  // they asked for stays until the run unmounts.
 </script>
 
 <!-- Rail offsets match what the per-row wrapper used to apply:
@@ -252,20 +279,22 @@
       data-testid="activity-run-clip"
     >
       <div bind:this={contentEl}>
-        {#if hiddenCount > 0}
-          <button
-            type="button"
-            class="mb-1 flex w-full cursor-pointer items-center gap-2 bg-transparent py-1 text-left text-[0.6875rem] text-fg-hint hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-            onclick={mountOlder}
-            data-testid="activity-run-older"
-          >
-            <span aria-hidden="true">· · ·</span>
-            {hiddenCount} earlier
-          </button>
+        {#if hiddenEarlier > 0}
+          <ActivityRunBoundary count={hiddenEarlier} edge="earlier" onclick={mountEarlier} />
         {/if}
-        {#each mountedChildren as child (timelineNodeKey(child))}
-          {@render renderNode(child, depth)}
+        <!-- The wrapper carries the row's index because that is the only
+             handle a jump has on a non-leaf row: only leaves emit
+             `data-item-id`, and a hit inside a subagent card resolves to the
+             card. A plain div, so row margins keep collapsing exactly as they
+             did when these rows were the virtualizer's own. -->
+        {#each mountedChildren as child, i (timelineNodeKey(child))}
+          <div data-run-child={run.mountedFrom + i}>
+            {@render renderNode(child, depth)}
+          </div>
         {/each}
+        {#if hiddenLater > 0}
+          <ActivityRunBoundary count={hiddenLater} edge="later" onclick={mountLater} />
+        {/if}
       </div>
     </div>
     <!-- A zero-width native bar makes the scroll package's geometric

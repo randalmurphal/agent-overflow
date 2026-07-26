@@ -266,11 +266,16 @@ export interface ActivityRunNode {
    */
   collapsed: boolean;
   /**
-   * How many of the run's newest children are mounted (the tail window).
-   * On the node rather than read from the registry at render time so it
-   * reaches the row signature: mounting another chunk grows a sub-cap run,
-   * and a signature blind to it would replay the pre-growth measured height.
+   * The mounted row window: `mountedRows` children starting at
+   * `mountedFrom`. Defaults to the run's tail and relocates when a jump
+   * resolves into the run (`utils/activityRunWindow.ts`).
+   *
+   * Resolved onto the node rather than read from the registry at render time
+   * so it reaches the row signature: moving or growing the window changes a
+   * sub-cap run's height, and a signature blind to it would replay the
+   * pre-change measured height.
    */
+  mountedFrom: number;
   mountedRows: number;
   /**
    * Every item the run represents, group members included, in timeline

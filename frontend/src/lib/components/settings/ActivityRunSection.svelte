@@ -10,7 +10,7 @@
   import {
     ACTIVITY_RUN_WINDOW_ROWS_MAX,
     ACTIVITY_RUN_WINDOW_ROWS_MIN,
-  } from '../../utils/activityRunGrouping';
+  } from '../../utils/activityRunWindow';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { INPUT_CLASS } from './styles';

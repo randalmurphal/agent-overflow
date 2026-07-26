@@ -25,6 +25,17 @@ async function renderRun(items: Item[]) {
   return render(MessageTimeline, { props: { pane } });
 }
 
+/**
+ * Drains the scroll-to-item flow: the request effect, `loadUntilItem`, and
+ * the reveal tick between pointing the run at the item and scrolling to it.
+ * The macrotask boundary is what clears the awaits inside it.
+ */
+async function flushJump(): Promise<void> {
+  await tick();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await tick();
+}
+
 describe('<ActivityRun>', () => {
   beforeEach(async () => {
     resetBindingMocks();
@@ -55,32 +66,34 @@ describe('<ActivityRun>', () => {
 
     it('mounts only the tail window and offers the rest behind a boundary', async () => {
       await updateSetting('activityRunWindowRows', 10);
-      const { getByTestId, getAllByTestId } = await renderRun(
+      const { getByTestId, getAllByTestId, queryByTestId } = await renderRun(
         Array.from({ length: 14 }, (_, i) => tool(`t${i}`, i)),
       );
 
       expect(getAllByTestId('command-output-row')).toHaveLength(10);
-      expect(getByTestId('activity-run-older').textContent).toContain('4 earlier');
+      expect(getByTestId('activity-run-earlier').textContent).toContain('4 earlier');
+      // The window starts on the tail, so nothing is ever hidden below it.
+      expect(queryByTestId('activity-run-later')).toBeNull();
     });
 
-    it('mounts an older chunk on demand', async () => {
+    it('mounts an earlier chunk on demand', async () => {
       await updateSetting('activityRunWindowRows', 10);
       const { getByTestId, getAllByTestId, queryByTestId } = await renderRun(
         Array.from({ length: 14 }, (_, i) => tool(`t${i}`, i)),
       );
 
-      await fireEvent.click(getByTestId('activity-run-older'));
+      await fireEvent.click(getByTestId('activity-run-earlier'));
       await tick();
 
       expect(getAllByTestId('command-output-row')).toHaveLength(14);
       // Nothing left to reach for, so the boundary retires.
-      expect(queryByTestId('activity-run-older')).toBeNull();
+      expect(queryByTestId('activity-run-earlier')).toBeNull();
     });
 
     it('has no boundary when the whole run fits the window', async () => {
       const { queryByTestId } = await renderRun([tool('t0', 0), tool('t1', 1)]);
 
-      expect(queryByTestId('activity-run-older')).toBeNull();
+      expect(queryByTestId('activity-run-earlier')).toBeNull();
     });
   });
 
@@ -177,6 +190,64 @@ describe('<ActivityRun>', () => {
 
       expect(getByTestId('activity-run-chip-counts').textContent?.trim()).toBe('1 Bash');
       expect(queryByTestId('activity-run-chip-running')).toBeNull();
+    });
+  });
+
+  describe('jumping to an item inside a run', () => {
+    const LONG_RUN = Array.from({ length: 40 }, (_, i) => tool(`t${i}`, i));
+
+    async function jumpTo(itemId: string, items = LONG_RUN) {
+      await updateSetting('activityRunWindowRows', 10);
+      const pane = await buildPane(undefined, items);
+      const view = render(MessageTimeline, { props: { pane } });
+      pane.requestScrollToItem(itemId, { flash: true });
+      await flushJump();
+      return { ...view, pane };
+    }
+
+    it('relocates the window around the target, with context either side', async () => {
+      const { container, getByTestId } = await jumpTo('t20');
+
+      expect(container.querySelector('[data-item-id="t20"]')).not.toBeNull();
+      // Half a window above the hit, so the reader sees what led to it.
+      expect(container.querySelector('[data-item-id="t15"]')).not.toBeNull();
+      expect(container.querySelector('[data-item-id="t14"]')).toBeNull();
+      // Still the same size: a jump moves the window, it does not grow it.
+      expect(container.querySelectorAll('[data-testid="command-output-row"]'))
+        .toHaveLength(10);
+      expect(getByTestId('activity-run-earlier').textContent).toContain('15 earlier');
+      expect(getByTestId('activity-run-later').textContent).toContain('15 later');
+    });
+
+    it('expands a run whose chip could not show the hit', async () => {
+      await updateSetting('activityRunDefault', 'collapsed');
+      const { getByTestId, queryByTestId, container } = await jumpTo('t20');
+
+      expect(queryByTestId('activity-run-chip')).toBeNull();
+      expect(getByTestId('activity-run-clip')).toBeInTheDocument();
+      expect(container.querySelector('[data-item-id="t20"]')).not.toBeNull();
+    });
+
+    it('leaves the window alone when the target is already mounted', async () => {
+      const { getByTestId, queryByTestId } = await jumpTo('t39');
+
+      expect(getByTestId('activity-run-earlier').textContent).toContain('30 earlier');
+      expect(queryByTestId('activity-run-later')).toBeNull();
+    });
+
+    it('follows new activity again once the reader mounts the rest', async () => {
+      const { getByTestId, queryByTestId, container, pane } = await jumpTo('t20');
+
+      await fireEvent.click(getByTestId('activity-run-later'));
+      await tick();
+      expect(queryByTestId('activity-run-later')).toBeNull();
+
+      pane.upsertItem(tool('t40', 40));
+      await tick();
+
+      // Back on the tail: the new row is mounted and nothing is hidden below.
+      expect(container.querySelector('[data-item-id="t40"]')).not.toBeNull();
+      expect(queryByTestId('activity-run-later')).toBeNull();
     });
   });
 });

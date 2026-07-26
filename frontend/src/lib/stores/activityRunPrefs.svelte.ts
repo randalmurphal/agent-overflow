@@ -9,7 +9,7 @@ import {
   ACTIVITY_RUN_WINDOW_ROWS_DEFAULT,
   ACTIVITY_RUN_WINDOW_ROWS_MAX,
   ACTIVITY_RUN_WINDOW_ROWS_MIN,
-} from '../utils/activityRunGrouping';
+} from '../utils/activityRunWindow';
 import type { ActivityRunDefaultMode } from '../types/settings';
 
 export type { ActivityRunDefaultMode };
@@ -49,7 +49,7 @@ export function clampActivityRunWindowRows(rows: number): number {
   );
 }
 
-/** Tail-window size, clamped. */
+/** Mount-window size, clamped. */
 export function activityRunWindowRows(): number {
   return clampActivityRunWindowRows(getSettings().activityRunWindowRows);
 }

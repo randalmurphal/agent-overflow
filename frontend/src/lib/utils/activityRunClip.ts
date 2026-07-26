@@ -50,3 +50,64 @@ export function activityRunExpandedHeight(bodies: readonly HTMLElement[]): numbe
   for (const body of bodies) total += body.offsetHeight;
   return total;
 }
+
+/**
+ * Report the total height of `clip`'s expanded bodies, and keep reporting it
+ * as they open, close, and resize. Returns a teardown.
+ *
+ * Two observers, because the two things that change the number are unrelated:
+ * a disclosure toggling (an `aria-expanded` mutation) changes WHICH bodies
+ * count, and a body growing (a diff loading, output streaming into an open
+ * card) changes what one of them contributes.
+ */
+export function observeActivityRunExpansion(
+  clip: HTMLElement,
+  onHeight: (px: number) => void,
+): () => void {
+  const sizes = new ResizeObserver(() => {
+    onHeight(activityRunExpandedHeight(activityRunExpandedBodies(clip)));
+  });
+  function retarget(): void {
+    const bodies = activityRunExpandedBodies(clip);
+    sizes.disconnect();
+    for (const body of bodies) sizes.observe(body);
+    onHeight(activityRunExpandedHeight(bodies));
+  }
+  const disclosures = new MutationObserver(retarget);
+  disclosures.observe(clip, {
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['aria-expanded'],
+  });
+  retarget();
+  return () => {
+    disclosures.disconnect();
+    sizes.disconnect();
+  };
+}
+
+/**
+ * The mounted wrapper for run row `index`, or null when that row is outside
+ * the mount window.
+ *
+ * Rows are addressed by index rather than by item id because only leaf rows
+ * carry `data-item-id` — a jump into a subagent card inside a run has to
+ * resolve to the card, which owns no id attribute of its own.
+ */
+export function activityRunChildElement(clip: Element, index: number): HTMLElement | null {
+  const found = clip.querySelector(`[data-run-child="${index}"]`);
+  return found instanceof HTMLElement ? found : null;
+}
+
+/**
+ * `scrollTop` that centers `row` in `clip`, or null when the row is already
+ * fully visible — a jump must not nudge a target the reader can see, which
+ * is the common case for a hit inside the run they are already reading.
+ */
+export function activityRunCenteredScrollTop(clip: HTMLElement, row: HTMLElement): number | null {
+  const top = row.getBoundingClientRect().top - clip.getBoundingClientRect().top;
+  const height = row.offsetHeight;
+  if (top >= 0 && top + height <= clip.clientHeight) return null;
+  const contentTop = clip.scrollTop + top;
+  return Math.max(0, contentTop - Math.max(0, (clip.clientHeight - height) / 2));
+}

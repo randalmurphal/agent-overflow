@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ActivityRunResolution } from '../utils/activityRunGrouping';
 import { createThreadActivityRuns } from './threadActivityRuns.svelte';
 
 function registry(overrides: { defaultCollapsed?: boolean; windowRows?: number } = {}) {
@@ -8,16 +9,29 @@ function registry(overrides: { defaultCollapsed?: boolean; windowRows?: number }
   });
 }
 
-/** One projection pass over runs described by their member ids. */
+/**
+ * One run, described row by row. A bare id is a one-item row; an array is a
+ * group row carrying several items, which is the case that makes a run's row
+ * count differ from its member count.
+ */
+type RunSpec = (string | string[])[];
+
+/** One projection pass. */
 function pass(
   runs: ReturnType<typeof registry>,
-  members: string[][],
-  rowCounts?: number[],
-): { runId: string; collapsed: boolean; mountedRows: number }[] {
+  specs: RunSpec[],
+): ActivityRunResolution[] {
   runs.beginPass();
-  const out = members.map((ids, i) => runs.resolve(ids, rowCounts?.[i] ?? ids.length));
+  const out = specs.map((spec) =>
+    runs.resolve(spec.map((row) => (typeof row === 'string' ? [row] : row))),
+  );
   runs.endPass();
   return out;
+}
+
+/** A run of `n` single-item rows, with ids stable across passes. */
+function rows(n: number): RunSpec {
+  return Array.from({ length: n }, (_, i) => `i${i}`);
 }
 
 describe('collapse state', () => {
@@ -94,48 +108,161 @@ describe('scroll snapshots', () => {
   });
 });
 
-describe('mounted rows', () => {
-  it('defaults to the window setting, capped by the run length', () => {
+describe('mount window', () => {
+  it('rests on the run tail, sized by the setting and capped by the length', () => {
     const runs = registry({ windowRows: 30 });
 
-    expect(pass(runs, [['a']], [100])[0].mountedRows).toBe(30);
-    expect(pass(runs, [['a']], [7])[0].mountedRows).toBe(7);
+    expect(pass(runs, [rows(100)])[0]).toMatchObject({ mountedFrom: 70, mountedRows: 30 });
+    expect(pass(runs, [rows(7)])[0]).toMatchObject({ mountedFrom: 0, mountedRows: 7 });
   });
 
-  it('an explicit mount count survives the next pass', () => {
+  it('an explicit size survives the next pass', () => {
     const runs = registry({ windowRows: 30 });
-    const [run] = pass(runs, [['a']], [100]);
+    const [run] = pass(runs, [rows(100)]);
 
-    runs.setMountedRows(run.runId, 55);
+    runs.setMountWindow(run.runId, { rows: 55, startItemId: null });
 
-    expect(pass(runs, [['a']], [100])[0].mountedRows).toBe(55);
+    expect(pass(runs, [rows(100)])[0]).toMatchObject({ mountedFrom: 45, mountedRows: 55 });
   });
 
-  it('an explicit mount count is still capped by the run length', () => {
+  it('an explicit size is still capped by the run length', () => {
     const runs = registry({ windowRows: 30 });
-    const [run] = pass(runs, [['a']], [100]);
-    runs.setMountedRows(run.runId, 55);
+    const [run] = pass(runs, [rows(100)]);
+    runs.setMountWindow(run.runId, { rows: 55, startItemId: null });
 
-    expect(pass(runs, [['a']], [20])[0].mountedRows).toBe(20);
+    expect(pass(runs, [rows(20)])[0]).toMatchObject({ mountedFrom: 0, mountedRows: 20 });
   });
 
-  it('tracks the setting until the user pulls in an older chunk', () => {
-    let rows = 30;
+  it('tracks the setting until the user pulls in another chunk', () => {
+    let windowRows = 30;
     const runs = createThreadActivityRuns({
       defaultCollapsed: () => false,
-      windowRows: () => rows,
+      windowRows: () => windowRows,
     });
-    pass(runs, [['a']], [100]);
+    pass(runs, [rows(100)]);
 
-    rows = 50;
+    windowRows = 50;
 
-    expect(pass(runs, [['a']], [100])[0].mountedRows).toBe(50);
+    expect(pass(runs, [rows(100)])[0].mountedRows).toBe(50);
   });
 
   it('never mounts zero rows', () => {
     const runs = registry({ windowRows: 0 });
 
-    expect(pass(runs, [['a']], [10])[0].mountedRows).toBe(1);
+    expect(pass(runs, [rows(10)])[0].mountedRows).toBe(1);
+  });
+
+  it('starts at the anchored row when one is set', () => {
+    const runs = registry({ windowRows: 10 });
+    const [run] = pass(runs, [rows(100)]);
+
+    runs.setMountWindow(run.runId, { rows: 10, startItemId: 'i20' });
+
+    expect(pass(runs, [rows(100)])[0]).toMatchObject({ mountedFrom: 20, mountedRows: 10 });
+  });
+
+  it('holds its anchored rows as the run grows underneath it', () => {
+    const runs = registry({ windowRows: 10 });
+    const [run] = pass(runs, [rows(60)]);
+    runs.setMountWindow(run.runId, { rows: 10, startItemId: 'i20' });
+    pass(runs, [rows(60)]);
+
+    // 40 more rows stream in below. The reader is not at the tail, so the
+    // window must not slide off what they are reading.
+    expect(pass(runs, [rows(100)])[0].mountedFrom).toBe(20);
+  });
+
+  it('holds them across a head prune that shifts every row index', () => {
+    const runs = registry({ windowRows: 10 });
+    const [run] = pass(runs, [rows(100)]);
+    runs.setMountWindow(run.runId, { rows: 10, startItemId: 'i20' });
+    pass(runs, [rows(100)]);
+
+    // The live-window prune drops i0..i9, so the anchored row moves from
+    // index 20 to index 10 — which an index-keyed window would not survive.
+    const pruned = rows(100).slice(10);
+
+    expect(pass(runs, [pruned])[0].mountedFrom).toBe(10);
+  });
+
+  it('returns to the tail once the window reaches the run end', () => {
+    const runs = registry({ windowRows: 10 });
+    const [run] = pass(runs, [rows(100)]);
+    // Anchored where nothing is left below it: there is nothing to hold on
+    // to, so the window resumes following new activity.
+    runs.setMountWindow(run.runId, { rows: 10, startItemId: 'i95' });
+    expect(pass(runs, [rows(100)])[0].mountedFrom).toBe(90);
+
+    expect(pass(runs, [rows(110)])[0].mountedFrom).toBe(100);
+  });
+
+  it('returns to the tail when its anchored row leaves the run', () => {
+    const runs = registry({ windowRows: 10 });
+    const [run] = pass(runs, [rows(100)]);
+    runs.setMountWindow(run.runId, { rows: 10, startItemId: 'i20' });
+    pass(runs, [rows(100)]);
+
+    const withoutAnchor = rows(100).filter((id) => id !== 'i20');
+
+    expect(pass(runs, [withoutAnchor])[0].mountedFrom).toBe(89);
+  });
+
+  it('counts a group row once, not once per member', () => {
+    const runs = registry({ windowRows: 2 });
+
+    // Three rows, five items: the window is in row space.
+    expect(pass(runs, [['a', ['b', 'c', 'd'], 'e']])[0])
+      .toMatchObject({ mountedFrom: 1, mountedRows: 2 });
+  });
+
+  it('anchors on any item a group row carries', () => {
+    const runs = registry({ windowRows: 1 });
+    const [run] = pass(runs, [['a', ['b', 'c'], 'd', 'e']]);
+
+    // A jump into a subagent card resolves to the card's launch item, which
+    // is not the first id its row carries.
+    runs.setMountWindow(run.runId, { rows: 1, startItemId: 'c' });
+
+    expect(pass(runs, [['a', ['b', 'c'], 'd', 'e']])[0].mountedFrom).toBe(1);
+  });
+});
+
+describe('focus requests', () => {
+  it('hands the request to the first reader and no one else', () => {
+    const runs = registry();
+    const [run] = pass(runs, [rows(40)]);
+
+    runs.requestFocus(run.runId, 'i5');
+
+    expect(runs.takeFocus(run.runId)).toBe('i5');
+    expect(runs.takeFocus(run.runId)).toBeNull();
+  });
+
+  it('reports nothing for a run that was never jumped into', () => {
+    const runs = registry();
+    const [run] = pass(runs, [rows(40)]);
+
+    expect(runs.takeFocus(run.runId)).toBeNull();
+  });
+
+  it('bumps the revision so a row can notice a request it changes nothing else about', () => {
+    const runs = registry();
+    const [run] = pass(runs, [rows(40)]);
+    const before = runs.revision;
+
+    runs.requestFocus(run.runId, 'i39');
+
+    expect(runs.revision).toBeGreaterThan(before);
+  });
+
+  it('survives until the run is mounted, across passes', () => {
+    const runs = registry();
+    const [run] = pass(runs, [rows(40)]);
+    runs.requestFocus(run.runId, 'i5');
+
+    pass(runs, [rows(40)]);
+
+    expect(runs.takeFocus(run.runId)).toBe('i5');
   });
 });
 

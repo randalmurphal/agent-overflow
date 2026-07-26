@@ -19,20 +19,6 @@ export interface TimelineRowUiRetentionRange {
 export interface TimelineRowUiRetentionOptions {
   nodeBuffer: number;
   tailNodeCount: number;
-  /**
-   * How many of an activity run's children to retain. The buffer above is
-   * counted in NODES, and a run collapses many rows into one node — without
-   * a bound of its own, 48 runs of 200 rows inside the band would retain
-   * ~9600 items where the flat timeline retained 96.
-   *
-   * Set to the run tail-window size so this agrees with what a run can
-   * actually mount, by construction rather than by a cross-module accessor.
-   * Rows outside it cannot hold an expansion handle: mounted rows keep their
-   * handle alive through their own lease (disposal is deferred while leased),
-   * and every running/streaming item is retained unconditionally by the
-   * active-item pass in `collectTimelineRowUiRetention`.
-   */
-  runTailNodeCount: number;
   isGroupExpanded(groupKey: string): boolean;
 }
 
@@ -154,8 +140,18 @@ function retainNode(
   }
 
   if (node.kind === 'activity_run') {
-    const start = Math.max(0, node.children.length - options.runTailNodeCount);
-    for (let i = start; i < node.children.length; i += 1) {
+    // The run's mount window, not its whole child list. The buffer above is
+    // counted in NODES and a run collapses many rows into one node, so
+    // without a bound of its own 48 runs of 200 rows inside the band would
+    // retain ~9600 items where the flat timeline retained 96. The window is
+    // exactly what the run can have in the DOM, so this agrees with the
+    // mounted rows by construction. Rows outside it cannot hold an expansion
+    // handle: mounted rows keep theirs alive through their own lease
+    // (disposal is deferred while leased), and every running/streaming item
+    // is retained unconditionally by the active-item pass in
+    // `collectTimelineRowUiRetention`.
+    const end = Math.min(node.children.length, node.mountedFrom + node.mountedRows);
+    for (let i = node.mountedFrom; i < end; i += 1) {
       retainNode(retained, node.children[i], options);
     }
     return;

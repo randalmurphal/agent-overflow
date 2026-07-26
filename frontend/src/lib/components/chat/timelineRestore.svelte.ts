@@ -29,6 +29,7 @@ import {
   setThreadScrollSnapshot,
   type ScrollSnapshot,
 } from '../../utils/threadScrollSnapshots';
+import { revealActivityRunItem } from '../../utils/activityRunWindow';
 import { captureTimelineAnchor } from './timelineScroll';
 import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
 import type { TimelineTargetFlash } from './timelineTargetFlash.svelte';
@@ -481,10 +482,24 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     }
     await tick();
     if (myToken !== restoreToken || !options.getListRef()) return;
-    const idx = options.findTimelineNodeIndex(id);
+    let idx = options.findTimelineNodeIndex(id);
     if (idx < 0) return;
-    const revealedNodes = options.getRevealedNodes();
-    const targetNode = revealedNodes[idx];
+    let targetNode = options.getRevealedNodes()[idx];
+    if (targetNode?.kind === 'activity_run') {
+      // The row is the RUN, and the target may be collapsed into its chip or
+      // outside its mount window — so the run is pointed at the item before
+      // the outer scroll, and the outer scroll then measures the height that
+      // produced. Its own row consumes the focus request once mounted, which
+      // is what makes the order here safe: the run need not be on screen yet.
+      revealActivityRunItem(pane.activityRuns, targetNode, id);
+      await tick();
+      if (myToken !== restoreToken || !options.getListRef()) return;
+      // Expanding a chip re-measures every row after it, so the index is
+      // re-resolved rather than reused.
+      idx = options.findTimelineNodeIndex(id);
+      if (idx < 0) return;
+      targetNode = options.getRevealedNodes()[idx];
+    }
     const targetItemId = targetNode?.kind === 'leaf' ? targetNode.item.id : id;
     // Explicit navigation: escape bottom follow, then jump (the write is
     // chokepoint-tagged via applyScrollTarget).

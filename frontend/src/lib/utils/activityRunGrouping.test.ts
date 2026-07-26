@@ -271,11 +271,26 @@ describe('identity migration', () => {
     expect(run(backfilled, 0).collapsed).toBe(true);
   });
 
-  it('caps mountedRows at the run length and at the window setting', () => {
+  it('resolves the mount window onto the node, in row space', () => {
     const short = project([tool('t1', 'Bash'), tool('t2', 'Bash')]);
-    expect(run(short, 0).mountedRows).toBe(2);
+    expect(run(short, 0)).toMatchObject({ mountedFrom: 0, mountedRows: 2 });
 
     const many = Array.from({ length: 50 }, (_, i) => tool(`t${i}`, 'Bash'));
-    expect(run(project(many), 0).mountedRows).toBe(30);
+    expect(run(project(many), 0)).toMatchObject({ mountedFrom: 20, mountedRows: 30 });
+  });
+
+  it('counts a read group as one row when sizing the window', () => {
+    const id = identity();
+    // 40 rows, but 49 items: a window sized in items would mount the wrong
+    // number of rows.
+    const nodes = [
+      readGroup(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'r10']),
+      ...Array.from({ length: 39 }, (_, i) => tool(`t${i}`, 'Bash')),
+    ];
+
+    expect(run(project(nodes, { identity: id }), 0)).toMatchObject({
+      mountedFrom: 10,
+      mountedRows: 30,
+    });
   });
 });
