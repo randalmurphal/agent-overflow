@@ -24,6 +24,7 @@
     activityRunExpandedHeight,
   } from '../../utils/activityRunClip';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
+  import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
   import ActivityRunChip from './ActivityRunChip.svelte';
 
   let {
@@ -39,6 +40,7 @@
   } = $props();
 
   let clipEl = $state<HTMLElement | undefined>();
+  let contentEl = $state<HTMLElement | undefined>();
   let expandedPx = $state(0);
 
   // Tail window: only the newest `mountedRows` children are in the DOM.
@@ -158,20 +160,27 @@
       use:nestedScroll
       data-testid="activity-run-clip"
     >
-      {#if hiddenCount > 0}
-        <button
-          type="button"
-          class="mb-1 flex w-full cursor-pointer items-center gap-2 bg-transparent py-1 text-left text-[0.6875rem] text-fg-hint hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          onclick={mountOlder}
-          data-testid="activity-run-older"
-        >
-          <span aria-hidden="true">· · ·</span>
-          {hiddenCount} earlier
-        </button>
-      {/if}
-      {#each mountedChildren as child (timelineNodeKey(child))}
-        {@render renderNode(child, depth)}
-      {/each}
+      <div bind:this={contentEl}>
+        {#if hiddenCount > 0}
+          <button
+            type="button"
+            class="mb-1 flex w-full cursor-pointer items-center gap-2 bg-transparent py-1 text-left text-[0.6875rem] text-fg-hint hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            onclick={mountOlder}
+            data-testid="activity-run-older"
+          >
+            <span aria-hidden="true">· · ·</span>
+            {hiddenCount} earlier
+          </button>
+        {/if}
+        {#each mountedChildren as child (timelineNodeKey(child))}
+          {@render renderNode(child, depth)}
+        {/each}
+      </div>
     </div>
+    <OverlayScrollbar
+      target={clipEl}
+      content={contentEl}
+      ariaLabel="Scroll activity run"
+    />
   {/if}
 </div>

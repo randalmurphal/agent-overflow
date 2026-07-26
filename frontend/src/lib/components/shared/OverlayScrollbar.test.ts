@@ -1,0 +1,182 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { fireEvent, render } from '@testing-library/svelte';
+import { tick } from 'svelte';
+import OverlayScrollbar from './OverlayScrollbar.svelte';
+
+// happy-dom reports zero geometry for everything, so the scroller under
+// test is hand-built: real element, stubbed metrics. The math itself is
+// covered exhaustively in utils/scroll/overlayScrollbar.test.ts — what
+// this file pins is the wiring (capture, intent callbacks, live redraw).
+function makeScroller(clientHeight: number, scrollHeight: number): HTMLElement {
+  const el = document.createElement('div');
+  let scrollTop = 0;
+  Object.defineProperty(el, 'clientHeight', { get: () => clientHeight });
+  Object.defineProperty(el, 'scrollHeight', { get: () => scrollHeight });
+  Object.defineProperty(el, 'scrollTop', {
+    get: () => scrollTop,
+    set: (next: number) => {
+      scrollTop = next;
+      el.dispatchEvent(new Event('scroll'));
+    },
+  });
+  document.body.appendChild(el);
+  return el;
+}
+
+function stubTrackHeight(track: Element, px: number): void {
+  Object.defineProperty(track, 'clientHeight', { get: () => px });
+  Object.defineProperty(track, 'getBoundingClientRect', {
+    value: () => ({ top: 0, bottom: px, left: 0, right: 6, width: 6, height: px }),
+  });
+}
+
+/**
+ * happy-dom has no pointer capture. Real browsers do, and the drag depends
+ * on it, so stub rather than soften the component for the test env.
+ */
+function stubPointerCapture(el: Element): void {
+  const target = el as unknown as Record<string, unknown>;
+  target.setPointerCapture = () => {};
+  target.releasePointerCapture = () => {};
+}
+
+function down(el: Element, clientY: number): Promise<unknown> {
+  return fireEvent(el, new MouseEvent('pointerdown', { bubbles: true, clientY, button: 0 }));
+}
+
+function move(el: Element, clientY: number): Promise<unknown> {
+  return fireEvent(el, new MouseEvent('pointermove', { bubbles: true, clientY }));
+}
+
+function up(el: Element, clientY: number): Promise<unknown> {
+  return fireEvent(el, new MouseEvent('pointerup', { bubbles: true, clientY }));
+}
+
+afterEach(() => {
+  document.body.innerHTML = '';
+});
+
+async function mount(options: {
+  clientHeight?: number;
+  scrollHeight?: number;
+  trackPx?: number;
+  onDragStart?: () => void;
+  onDragEnd?: (atBottom: boolean) => void;
+} = {}) {
+  const target = makeScroller(options.clientHeight ?? 100, options.scrollHeight ?? 400);
+  const view = render(OverlayScrollbar, {
+    props: {
+      target,
+      ariaLabel: 'Scroll activity run',
+      onDragStart: options.onDragStart,
+      onDragEnd: options.onDragEnd,
+    },
+  });
+  const track = view.getByTestId('overlay-scrollbar');
+  stubTrackHeight(track, options.trackPx ?? 200);
+  // Re-sample now that the track has a height: the mount pass measured 0.
+  target.scrollTop = 0;
+  await tick();
+  return { ...view, target, track };
+}
+
+describe('<OverlayScrollbar>', () => {
+  it('shows a thumb sized to the visible fraction', async () => {
+    const { getByTestId } = await mount();
+
+    const thumb = getByTestId('overlay-scrollbar-thumb');
+    expect(thumb.style.height).toBe('50px');
+    expect(thumb.style.top).toBe('0px');
+  });
+
+  it('stays out of the way when there is nothing to scroll', async () => {
+    const { queryByTestId, getByTestId } = await mount({ clientHeight: 400, scrollHeight: 400 });
+
+    expect(queryByTestId('overlay-scrollbar-thumb')).toBeNull();
+    // Interactivity is dropped with the thumb — an invisible strip that
+    // still swallowed clicks would be worse than the shift this replaces.
+    expect(getByTestId('overlay-scrollbar').className).toContain('pointer-events-none');
+  });
+
+  it('follows the surface as it scrolls', async () => {
+    const { getByTestId, target } = await mount();
+
+    target.scrollTop = 300;
+    await tick();
+
+    expect(getByTestId('overlay-scrollbar-thumb').style.top).toBe('150px');
+  });
+
+  it('drags the surface, and keeps dragging after the pointer leaves the strip', async () => {
+    const { track, target } = await mount();
+    stubPointerCapture(track);
+
+    await down(track, 25); // on the thumb (0..50)
+    await move(track, 45);
+    await tick();
+
+    expect(target.scrollTop).toBe(40);
+
+    // Pointer capture means later moves still arrive at the track even
+    // though the pointer is nowhere near the 6px strip.
+    await move(track, 175);
+    await tick();
+
+    expect(target.scrollTop).toBe(300);
+  });
+
+  it('states scroll intent on grab and release', async () => {
+    const seen: string[] = [];
+    const { track } = await mount({
+      onDragStart: () => seen.push('start'),
+      onDragEnd: (atBottom) => seen.push(atBottom ? 'end:bottom' : 'end:free'),
+    });
+    stubPointerCapture(track);
+
+    await down(track, 25);
+    await move(track, 45);
+    await up(track, 45);
+
+    expect(seen).toEqual(['start', 'end:free']);
+  });
+
+  it('reports a release at the bottom so the owner can re-stick', async () => {
+    const seen: string[] = [];
+    const { track } = await mount({
+      onDragEnd: (atBottom) => seen.push(atBottom ? 'end:bottom' : 'end:free'),
+    });
+    stubPointerCapture(track);
+
+    await down(track, 25);
+    await move(track, 175);
+    await up(track, 175);
+
+    expect(seen).toEqual(['end:bottom']);
+  });
+
+  it('ignores a move that never started with a grab', async () => {
+    const { track, target } = await mount();
+
+    await move(track, 900);
+
+    expect(target.scrollTop).toBe(0);
+  });
+
+  it('pages toward a click on the track', async () => {
+    const { track, target } = await mount();
+
+    await down(track, 180);
+
+    expect(target.scrollTop).toBe(100);
+  });
+
+  it('does not page when the press lands on the thumb — that gesture is a drag', async () => {
+    const { track, target } = await mount();
+    stubPointerCapture(track);
+
+    await down(track, 25);
+
+    expect(target.scrollTop).toBe(0);
+    expect(track.getAttribute('data-dragging')).toBe('true');
+  });
+});
