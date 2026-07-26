@@ -1,44 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { groupActivityRuns, type ActivityRunIdentity } from './activityRunGrouping';
+import { groupActivityRuns } from './activityRunGrouping';
+import {
+  createThreadActivityRuns,
+  type ThreadActivityRuns,
+} from '../stores/threadActivityRuns.svelte';
 import type { ActivityRunNode, TimelineNode } from './subagentGrouping';
 import type { Item } from '../../lib/types/models';
 import { makeItem } from '../../test/helpers/chat';
 
-// Minimal stand-in for the per-pane registry. Same migration rule as the
-// real one (`stores/threadActivityRuns.svelte.ts`): a stored entry sharing
-// any member with the run being built lends that run its id, earliest match
-// wins, and each entry is claimed at most once per pass.
-function identity(collapsedIds: ReadonlySet<string> = new Set()): ActivityRunIdentity {
-  const entries = new Map<string, Set<string>>();
-  let claimed = new Set<string>();
-  let nextId = 1;
-  return {
-    beginPass() {
-      claimed = new Set();
-    },
-    resolve(memberItemIds) {
-      let bestId: string | null = null;
-      let bestIndex = Number.POSITIVE_INFINITY;
-      for (const [runId, members] of entries) {
-        if (claimed.has(runId)) continue;
-        for (let i = 0; i < memberItemIds.length; i += 1) {
-          if (members.has(memberItemIds[i]) && i < bestIndex) {
-            bestId = runId;
-            bestIndex = i;
-          }
-        }
-      }
-      const runId = bestId ?? `run-${nextId++}`;
-      claimed.add(runId);
-      entries.set(runId, new Set(memberItemIds));
-      return { runId, collapsed: collapsedIds.has(runId) };
-    },
-    endPass() {
-      for (const runId of [...entries.keys()]) {
-        if (!claimed.has(runId)) entries.delete(runId);
-      }
-    },
-  };
+// The real per-pane registry, not a stand-in: identity migration is the
+// subtlest part of this pass, and a fake would only prove the fake works.
+function identity(): ThreadActivityRuns {
+  return createThreadActivityRuns({
+    defaultCollapsed: () => false,
+    windowRows: () => 30,
+  });
 }
 
 let seq = 0;
@@ -90,7 +66,7 @@ function run(nodes: TimelineNode[], index: number): ActivityRunNode {
 /** Group with a live item map, mirroring the pane's `getItemById`. */
 function project(
   nodes: TimelineNode[],
-  options: { identity?: ActivityRunIdentity; live?: Item[] } = {},
+  options: { identity?: ThreadActivityRuns; live?: Item[] } = {},
 ): TimelineNode[] {
   const live = new Map((options.live ?? []).map((item) => [item.id, item]));
   return groupActivityRuns(nodes, {
@@ -375,9 +351,29 @@ describe('identity migration', () => {
   });
 
   it('resolves collapse state onto the node', () => {
-    const id = identity(new Set(['run-1']));
-    const nodes = project([tool('t1', 'Bash')], { identity: id });
+    const id = identity();
+    const runId = run(project([tool('t1', 'Bash')], { identity: id }), 0).runId;
+    id.setCollapsed(runId, true);
 
-    expect(run(nodes, 0).collapsed).toBe(true);
+    expect(run(project([tool('t1', 'Bash')], { identity: id }), 0).collapsed).toBe(true);
+  });
+
+  it('carries a collapse override across a backfill that re-keys nothing', () => {
+    const id = identity();
+    const runId = run(project([tool('t2', 'Bash')], { identity: id }), 0).runId;
+    id.setCollapsed(runId, true);
+
+    const backfilled = project([tool('t1', 'Bash'), tool('t2', 'Bash')], { identity: id });
+
+    expect(run(backfilled, 0).runId).toBe(runId);
+    expect(run(backfilled, 0).collapsed).toBe(true);
+  });
+
+  it('caps mountedRows at the run length and at the window setting', () => {
+    const short = project([tool('t1', 'Bash'), tool('t2', 'Bash')]);
+    expect(run(short, 0).mountedRows).toBe(2);
+
+    const many = Array.from({ length: 50 }, (_, i) => tool(`t${i}`, 'Bash'));
+    expect(run(project(many), 0).mountedRows).toBe(30);
   });
 });

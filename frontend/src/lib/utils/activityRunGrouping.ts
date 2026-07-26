@@ -60,10 +60,15 @@ export const ACTIVITY_RUN_OLDER_CHUNK_ROWS = 25;
 export interface ActivityRunIdentity {
   beginPass(): void;
   /**
-   * Resolve a run's identity and collapse state in one lookup.
-   * `memberItemIds` is in timeline order and never empty.
+   * Resolve a run's identity and its registry-owned render state in one
+   * lookup. `memberItemIds` is in timeline order and never empty;
+   * `childRowCount` is the run's row count, which differs from the member
+   * count because a read or subagent group is many items but one row.
    */
-  resolve(memberItemIds: readonly string[]): { runId: string; collapsed: boolean };
+  resolve(
+    memberItemIds: readonly string[],
+    childRowCount: number,
+  ): { runId: string; collapsed: boolean; mountedRows: number };
   endPass(): void;
 }
 
@@ -186,13 +191,17 @@ function buildRun(
     if (isRunningStatus(item.status)) runningLabel = toolLabel(item);
   }
 
-  const { runId, collapsed } = options.identity.resolve(items.map((item) => item.id));
+  const { runId, collapsed, mountedRows } = options.identity.resolve(
+    items.map((item) => item.id),
+    members.length,
+  );
   return {
     kind: 'activity_run',
     runId,
     threadId: items[0]?.threadId ?? '',
     children: members,
     collapsed,
+    mountedRows,
     counts: aggregateCounts(items),
     hasFailure,
     runningLabel,

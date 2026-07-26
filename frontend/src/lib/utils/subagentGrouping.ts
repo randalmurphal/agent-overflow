@@ -265,6 +265,13 @@ export interface ActivityRunNode {
    * the thread each time one run was toggled.
    */
   collapsed: boolean;
+  /**
+   * How many of the run's newest children are mounted (the tail window).
+   * On the node rather than read from the registry at render time so it
+   * reaches the row signature: mounting another chunk grows a sub-cap run,
+   * and a signature blind to it would replay the pre-growth measured height.
+   */
+  mountedRows: number;
   /** Per-tool aggregation for the collapsed chip. */
   counts: ActivityRunCounts;
   /** A member tool call failed — the chip must not hide that. */

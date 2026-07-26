@@ -83,6 +83,8 @@ import {
 } from './threadStatuses.svelte';
 import { createLiveTodoState } from './liveTodoState.svelte';
 import { createThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
+import { createThreadActivityRuns } from './threadActivityRuns.svelte';
+import { activityRunDefaultCollapsed, activityRunWindowRows } from './activityRunPrefs.svelte';
 import {
   turnRowToSettled,
   type SettledTurn,
@@ -235,6 +237,13 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       subagentMemory.hydrateChildren(rootItemID),
   });
   const pendingInteractiveState = createThreadPendingInteractiveState();
+  // Activity-run registry: stable run identity across window edges, plus
+  // collapse overrides and inner scroll/mount state. Session-only, matching
+  // item-expansion leases; the durable layer is the user setting.
+  const activityRuns = createThreadActivityRuns({
+    defaultCollapsed: () => activityRunDefaultCollapsed(),
+    windowRows: () => activityRunWindowRows(),
+  });
   let contextWindow: ContextWindow | null = $state(null);
   // Rate-limit snapshots live in the global `rateLimitsInfo.svelte.ts`
   // store keyed by provider and account — they are account cache state,
@@ -884,6 +893,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       timelineWindow.resetForFreshThread();
     }
     rowUiState.clear();
+    activityRuns.clear();
     streamingReveal.disposeAll();
     // Reset the live-content stamp so a recent stamp from the OUTGOING
     // thread can't bleed into the incoming one. Without this, switching
@@ -1624,6 +1634,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       replaceTimelineItems([]);
       subagentMemory.clearFolds();
       rowUiState.clear();
+      activityRuns.clear();
       streamingReveal.disposeAll();
       // Clearing to empty: drop the live-content stamp too (see
       // installCacheOrFreshState — keeps a stale stamp from springing the
@@ -2190,6 +2201,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     /** Validity stamp for replaying a measured-size priors snapshot across a
      *  thread switch — see utils/virtual/priors.ts. */
     expansionSignature: rowUiState.expansionSignature,
+    activityRuns,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
     pruneRowUiState: rowUiState.pruneRowUiState,
     // Live smoother-revealed text for a streaming thinking row.
