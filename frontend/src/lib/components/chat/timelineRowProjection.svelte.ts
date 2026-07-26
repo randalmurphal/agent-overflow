@@ -14,6 +14,7 @@ import {
   type TimelineNode,
 } from '../../utils/subagentGrouping';
 import { groupConsecutiveReads } from '../../utils/readGrouping';
+import { timelineNodeHasRail } from '../../utils/timelineRail';
 import { timelineRowDecorations, type TimelineRowDecorationSets } from './timelineRows';
 import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
 import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
@@ -21,29 +22,6 @@ import { filterRedundantNotifications } from '../../utils/notificationFilter';
 import { patchStructuralTimelineNodeItemRefs } from '../../utils/timelineNodePatch';
 import { getActiveTurn } from '../../stores/threadStatuses.svelte';
 
-// Leaf item kinds that participate in the continuous left-border
-// rail. Subagent / wait group containers also participate so the
-// rail stays continuous through nested cards and the agent card's
-// chevron/icon/label gutter aligns with adjacent tool rows — see
-// docs/specs/tool-call-ui-redesign/README.md.
-const RAIL_LEAF_KINDS = new Set<string>([
-  'tool_call',
-  'tool_completion',
-  'thinking',
-]);
-const RAIL_GROUP_KINDS = new Set<string>([
-  'group',
-  'wait_group',
-  'read_group',
-]);
-// Tool rows whose body is a structured full-width card rather than
-// the compact chev/icon/label/preview pattern — these break out of
-// the rail so the vertical line doesn't run alongside the
-// structured body (which would otherwise look like it belongs with
-// the tool gutter even though the card spans the whole row).
-// Proposed-plan rows are the only entry today; extend the set
-// alongside any future card-style payload kind.
-const RAIL_EXEMPT_PAYLOAD_KINDS = new Set<string>(['proposed_plan']);
 const EMPTY_RECEIVER_LABELS = new Map<string, string>();
 
 export interface TimelineRowProjectionOptions {
@@ -68,14 +46,6 @@ export function createTimelineRowProjection(
   function currentTimelineLeafItem(node: TimelineNode): Item | null {
     if (node.kind !== 'leaf') return null;
     return options.getPane().getItemById(node.item.id) ?? node.item;
-  }
-
-  function timelineNodeHasRail(node: TimelineNode, leafItem: Item | null): boolean {
-    if (leafItem) {
-      return RAIL_LEAF_KINDS.has(leafItem.kind)
-        && !RAIL_EXEMPT_PAYLOAD_KINDS.has(leafItem.payloadKind ?? '');
-    }
-    return RAIL_GROUP_KINDS.has(node.kind);
   }
 
   // Two-phase derivation: structuralNodes runs the expensive grouping

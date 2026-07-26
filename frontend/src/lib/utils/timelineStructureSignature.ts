@@ -60,6 +60,13 @@ export function nodeSignature(node: TimelineNode): string {
       return `W:${node.groupKey}:${node.children.length}`;
     case 'read_group':
       return `R:${node.groupKey}:${node.members.length}`;
+    // Collapse state changes the row's height dramatically (one chip line
+    // vs a capped clip), so it belongs in the signature rather than in the
+    // entry-level expansionSig alone. Child count stands in for content:
+    // a run's height is bounded by its clip, so it stops tracking children
+    // once past the cap — but until then each appended row grows it.
+    case 'activity_run':
+      return `A:${node.runId}:${node.collapsed ? 'c' : 'e'}:${node.children.length}`;
     default: {
       // Exhaustiveness guard: a new TimelineNode kind must extend the
       // signature, not silently sign as an empty/identical row (which

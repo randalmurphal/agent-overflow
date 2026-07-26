@@ -19,6 +19,20 @@ export interface TimelineRowUiRetentionRange {
 export interface TimelineRowUiRetentionOptions {
   nodeBuffer: number;
   tailNodeCount: number;
+  /**
+   * How many of an activity run's children to retain. The buffer above is
+   * counted in NODES, and a run collapses many rows into one node — without
+   * a bound of its own, 48 runs of 200 rows inside the band would retain
+   * ~9600 items where the flat timeline retained 96.
+   *
+   * Set to the run tail-window size so this agrees with what a run can
+   * actually mount, by construction rather than by a cross-module accessor.
+   * Rows outside it cannot hold an expansion handle: mounted rows keep their
+   * handle alive through their own lease (disposal is deferred while leased),
+   * and every running/streaming item is retained unconditionally by the
+   * active-item pass in `collectTimelineRowUiRetention`.
+   */
+  runTailNodeCount: number;
   isGroupExpanded(groupKey: string): boolean;
 }
 
@@ -139,6 +153,14 @@ function retainNode(
     return;
   }
 
+  if (node.kind === 'activity_run') {
+    const start = Math.max(0, node.children.length - options.runTailNodeCount);
+    for (let i = start; i < node.children.length; i += 1) {
+      retainNode(retained, node.children[i], options);
+    }
+    return;
+  }
+
   retained.groupKeys.add(node.groupKey);
   retainItem(retained, node.parent);
 
@@ -158,6 +180,16 @@ function retainActiveGroupKeys(
   }
   if (node.kind === 'read_group') {
     return node.members.some((item) => activeItemIds.has(item.id));
+  }
+
+  if (node.kind === 'activity_run') {
+    // A run is a presentation wrapper with no groupKey of its own; walk
+    // through it so a subagent card inside a run still registers its key.
+    let containsActive = false;
+    for (const child of node.children) {
+      if (retainActiveGroupKeys(retained, child, activeItemIds)) containsActive = true;
+    }
+    return containsActive;
   }
 
   let containsActiveItem = activeItemIds.has(node.parent.id);

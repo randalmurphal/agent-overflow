@@ -5,7 +5,7 @@
 
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { ThreadPane } from '../../stores/thread.svelte';
-import type { TimelineNode } from '../../utils/subagentGrouping';
+import { timelineNodeTurnIndex, type TimelineNode } from '../../utils/subagentGrouping';
 import {
   isUiOracleTraceEnabled,
   isUiRenderTraceEnabled,
@@ -83,6 +83,16 @@ export function recordTimelineRenderTrace(
           groupKey: node.groupKey,
           memberCount: node.members.length,
           turnIndex: node.members[0]?.turnIndex ?? 0,
+        };
+      }
+      if (node.kind === 'activity_run') {
+        return {
+          kind: 'activity_run',
+          runId: node.runId,
+          childCount: node.children.length,
+          rowCount: node.counts.total,
+          collapsed: node.collapsed,
+          turnIndex: timelineNodeTurnIndex(node),
         };
       }
       const _exhaustive: never = node;

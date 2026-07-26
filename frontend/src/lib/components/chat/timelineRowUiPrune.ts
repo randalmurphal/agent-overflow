@@ -8,6 +8,7 @@ import { tick } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
+import { ACTIVITY_RUN_WINDOW_ROWS_DEFAULT } from '../../utils/activityRunGrouping';
 import {
   collectTimelineRowUiRetention,
   timelineRowUiPruneSignature,
@@ -96,6 +97,7 @@ export function createTimelineRowUiPrune(
       {
         nodeBuffer: ROW_UI_RETAIN_NODE_BUFFER,
         tailNodeCount: ROW_UI_RETAIN_TAIL_NODE_COUNT,
+        runTailNodeCount: ACTIVITY_RUN_WINDOW_ROWS_DEFAULT,
         isGroupExpanded: pane.isSubagentGroupExpanded,
       },
     );

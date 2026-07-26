@@ -153,6 +153,11 @@ function patchNode(
     case 'group': return patchSubagentGroup(node, getItem, aggregates);
     case 'wait_group': return patchWaitGroup(node, getItem);
     case 'read_group': return patchReadGroup(node, getItem);
+    // Runs are built by the LAST projection pass, after this patch runs, so
+    // one can never reach here. Keeping the structural patch upstream of run
+    // wrapping is deliberate: it scans top-level indexes for child-bearing
+    // roots, and those roots stop being top-level once runs wrap them.
+    case 'activity_run': return node;
   }
 }
 

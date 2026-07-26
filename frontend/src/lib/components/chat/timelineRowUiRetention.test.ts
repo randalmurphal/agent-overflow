@@ -28,6 +28,7 @@ describe('timeline row UI retention', () => {
       {
         nodeBuffer: 0,
         tailNodeCount: 0,
+        runTailNodeCount: 30,
         isGroupExpanded: () => false,
       },
     );
@@ -59,6 +60,7 @@ describe('timeline row UI retention', () => {
       {
         nodeBuffer: 0,
         tailNodeCount: 0,
+        runTailNodeCount: 30,
         isGroupExpanded: () => true,
       },
     );
@@ -98,6 +100,7 @@ describe('timeline row UI retention', () => {
       {
         nodeBuffer: 0,
         tailNodeCount: 0,
+        runTailNodeCount: 30,
         isGroupExpanded: () => false,
       },
     );

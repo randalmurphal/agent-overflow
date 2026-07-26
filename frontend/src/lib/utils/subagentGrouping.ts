@@ -135,7 +135,8 @@ export type TimelineNode =
   | TimelineLeaf
   | SubagentGroupNode
   | WaitGroupNode
-  | ReadGroupNode;
+  | ReadGroupNode
+  | ActivityRunNode;
 
 export interface TimelineLeaf {
   kind: 'leaf';
@@ -228,6 +229,56 @@ export interface ReadGroupNode {
   threadId: string;
   /** Grouped Read tool_call items in timeline order. Always >= 1. */
   members: Item[];
+}
+
+/**
+ * A maximal run of consecutive rail-kind rows (tool calls, completions,
+ * thinking, and the subagent / wait / read group containers) wrapped into
+ * one row so long stretches of activity can be bounded, scrolled in place,
+ * or collapsed to a count chip. Produced by `groupActivityRuns`
+ * (`activityRunGrouping.ts`) as the LAST projection pass, after the
+ * streaming reveal gate.
+ *
+ * Not a stored entity: runs are recomputed every projection pass from
+ * whatever items are loaded. See `runId` for how identity survives that.
+ */
+export interface ActivityRunNode {
+  kind: 'activity_run';
+  /**
+   * Registry-assigned identity, stable across the window edges. Deriving
+   * a key from the first member id instead would remount the row (and
+   * recreate its scroll controller) whenever lazy older-paging extended
+   * the run backward or a live-window prune trimmed its head — the second
+   * of which happens mid-stream on exactly the long runs this node exists
+   * to bound.
+   */
+  runId: string;
+  /** Carried directly because this node has no anchor item of its own. */
+  threadId: string;
+  /** The wrapped rows, in timeline order. Always >= 1. */
+  children: TimelineNode[];
+  /**
+   * Resolved at projection time from the per-pane registry, falling back to
+   * the `activityRunDefault` setting. Carried on the node so the row
+   * signature can price a chip differently from a clip — folding it into
+   * the entry-level `expansionSig` instead would drop every row's prior in
+   * the thread each time one run was toggled.
+   */
+  collapsed: boolean;
+  /** Per-tool aggregation for the collapsed chip. */
+  counts: ActivityRunCounts;
+  /** A member tool call failed — the chip must not hide that. */
+  hasFailure: boolean;
+  /** A member is still running — the chip must not hide that either. */
+  runningLabel: string | null;
+}
+
+/** Tool display name → row count, for the collapsed chip line. */
+export interface ActivityRunCounts {
+  /** Count-descending, thinking last. */
+  entries: { label: string; count: number }[];
+  /** Total rows represented, including every group member. */
+  total: number;
 }
 
 /**
@@ -336,6 +387,9 @@ function timelineNodeRootItem(node: TimelineNode): Item {
   if (node.kind === 'leaf') return node.item;
   if (node.kind === 'group' || node.kind === 'wait_group') return node.parent;
   if (node.kind === 'read_group') return node.members[0];
+  // A run's position is its first member's position — that is what orders
+  // it against prose rows and what the reveal gate compares against.
+  if (node.kind === 'activity_run') return timelineNodeRootItem(node.children[0]);
   const _exhaustive: never = node;
   return _exhaustive;
 }
@@ -364,6 +418,10 @@ function* descendantItems(nodes: TimelineNode[]): Generator<Item> {
     }
     if (node.kind === 'read_group') {
       for (const member of node.members) yield member;
+      continue;
+    }
+    if (node.kind === 'activity_run') {
+      yield* descendantItems(node.children);
       continue;
     }
   }
@@ -426,6 +484,12 @@ export function pickLatestChildSummary(
 function countDescendants(children: TimelineNode[]): number {
   let n = 0;
   for (const child of children) {
+    if (child.kind === 'activity_run') {
+      // A run is a presentation wrapper, not a descendant: count through it
+      // so a card's entry counter is unchanged by how its rows are grouped.
+      n += countDescendants(child.children);
+      continue;
+    }
     n += 1;
     if (child.kind === 'group' || child.kind === 'wait_group') n += child.descendantCount;
     if (child.kind === 'read_group') n += child.members.length - 1;
@@ -477,6 +541,7 @@ export function timelineNodeKey(node: TimelineNode): string {
   if (node.kind === 'group') return `g:${node.parent.threadId}:${node.groupKey}`;
   if (node.kind === 'wait_group') return `wg:${node.parent.threadId}:${node.groupKey}`;
   if (node.kind === 'read_group') return `rg:${node.threadId}:${node.groupKey}`;
+  if (node.kind === 'activity_run') return `ar:${node.threadId}:${node.runId}`;
   const _exhaustive: never = node;
   return _exhaustive;
 }
@@ -486,6 +551,7 @@ export function timelineNodeItemId(node: TimelineNode): string {
   if (node.kind === 'leaf') return node.item.id;
   if (node.kind === 'group' || node.kind === 'wait_group') return node.parent.id;
   if (node.kind === 'read_group') return node.members[0].id;
+  if (node.kind === 'activity_run') return timelineNodeItemId(node.children[0]);
   const _exhaustive: never = node;
   return _exhaustive;
 }
@@ -556,6 +622,12 @@ export function nodeRole(node: TimelineNode): NodeRole {
     node.kind === 'group'
     || node.kind === 'wait_group'
     || node.kind === 'read_group'
+    // A run is the activity block, so it takes the block's role wholesale.
+    // This deliberately gaps junctions that a leading or trailing `thinking`
+    // row used to swallow (thinking is 'other', which short-circuits the
+    // comparison): whether a block opens with thinking or with a Bash call
+    // is arbitrary to a reader who sees "prose, activity, prose" either way.
+    || node.kind === 'activity_run'
   ) return 'tool';
   const k = node.item.kind;
   if (k === 'tool_call' || k === 'tool_completion' || k === 'terminal_interaction') return 'tool';
@@ -626,6 +698,12 @@ export function nodeContainsItem(node: TimelineNode, itemId: string): boolean {
       || node.children.some((child) => nodeContainsItem(child, itemId));
   }
   if (node.kind === 'read_group') return node.members.some((m) => m.id === itemId);
+  // Load-bearing for jump-to-item: a search hit, review jump, target flash,
+  // or restore anchor inside a run must resolve to the run's row so the run
+  // can reveal the item, not fail to scroll.
+  if (node.kind === 'activity_run') {
+    return node.children.some((child) => nodeContainsItem(child, itemId));
+  }
   const _exhaustive: never = node;
   return _exhaustive;
 }
