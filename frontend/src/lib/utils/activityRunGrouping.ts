@@ -58,8 +58,15 @@ export interface ActivityRunIdentity {
    * timeline order and never empty. Grouped by row rather than flattened
    * because the registry resolves its mount window from an item id — see
    * `ActivityRunMountWindow` — and that lookup needs to land on a row index.
+   *
+   * `threadId` scopes those ids: they are unique only within a thread, so the
+   * registry's across-switch archive would otherwise let one thread's run
+   * revive another thread's state.
    */
-  resolve(rowMemberIds: readonly (readonly string[])[]): ActivityRunResolution;
+  resolve(
+    rowMemberIds: readonly (readonly string[])[],
+    threadId: string,
+  ): ActivityRunResolution;
   endPass(): void;
 }
 
@@ -106,7 +113,7 @@ export function activityRunMembershipKey(
 }
 
 /** Every item a run row represents, including group members. */
-export function* activityRunMemberItems(nodes: readonly TimelineNode[]): Generator<Item> {
+function* activityRunMemberItems(nodes: readonly TimelineNode[]): Generator<Item> {
   for (const node of nodes) {
     switch (node.kind) {
       case 'leaf':
@@ -116,15 +123,27 @@ export function* activityRunMemberItems(nodes: readonly TimelineNode[]): Generat
         yield* node.members;
         break;
       case 'group':
-      case 'wait_group':
-        // The launch/carrier row itself. Nested children are deliberately not
-        // walked: they are inside the group's own card, and counting them
-        // would double-count what the card already summarizes.
+        // The launch row itself. Nested children are deliberately not walked:
+        // they are inside the group's own card, and counting them would
+        // double-count what the card already summarizes.
         yield node.parent;
         break;
-      case 'activity_run':
-        yield* activityRunMemberItems(node.children);
+      case 'wait_group':
+        yield node.parent;
+        // Plus the folded completion `WaitGroup` renders AS its header. It is
+        // the only place a finished wait's status lives, so leaving it out
+        // would let a collapsed chip hide an errored or killed wait — exactly
+        // what the chip promises never to do. Counts are unaffected: it pairs
+        // with the carrier (`completionOf === parent.id`), and
+        // `activityRunSummary` counts a paired completion zero times.
+        if (node.completion) yield node.completion;
         break;
+      case 'activity_run':
+        // Unreachable by construction: this pass runs once, over the
+        // pre-run node array, so no run can contain another. Loud rather
+        // than a silent empty yield, which would drop a whole run's
+        // membership and quietly break identity migration.
+        throw new Error('activityRunMemberItems: activity runs cannot nest');
     }
   }
 }
@@ -149,7 +168,7 @@ function buildRun(
     }
     rowMemberIds.push(row);
   }
-  const resolved = options.identity.resolve(rowMemberIds);
+  const resolved = options.identity.resolve(rowMemberIds, threadId);
   return {
     kind: 'activity_run',
     runId: resolved.runId,

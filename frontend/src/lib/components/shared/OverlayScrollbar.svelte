@@ -12,7 +12,7 @@
   // `offsetWidth - clientWidth === 0`, so the scroll package's geometric
   // scrollbar-gutter hit test can never fire for this surface. That is the
   // correct outcome — there is no bar there to hit — but it means a drag
-  // has to announce itself through `onDragStart` / `onDragEnd`, which
+  // has to announce itself through `onUserScrollStart` / `onUserScrollEnd`, which
   // matches the package's own rule that intent is event-sourced, never
   // geometry-inferred.
 
@@ -29,8 +29,8 @@
     target,
     content,
     ariaLabel,
-    onDragStart,
-    onDragEnd,
+    onUserScrollStart,
+    onUserScrollEnd,
   }: {
     /** The scrolling element this bar drives. */
     target: HTMLElement | undefined;
@@ -41,9 +41,15 @@
      */
     content?: HTMLElement | undefined;
     ariaLabel: string;
-    /** Fired on grab / release so the owner can state scroll intent. */
-    onDragStart?: () => void;
-    onDragEnd?: (atBottom: boolean) => void;
+    /**
+     * Fired when the user takes manual control of the position and when they
+     * give it back, with where it landed. Every gesture this control offers
+     * reports through the pair — a thumb drag and a track-click page alike —
+     * because the owner cares that the position is now the user's, not which
+     * gesture said so.
+     */
+    onUserScrollStart?: () => void;
+    onUserScrollEnd?: (atBottom: boolean) => void;
   } = $props();
 
   const IDLE_HIDE_MS = 900;
@@ -131,8 +137,14 @@
     markActive();
 
     if (!onThumb) {
+      // A track click moves the position deliberately, so it states the same
+      // intent a drag does — as a complete gesture, since a click has no
+      // release to wait for. Without it a bottom-following surface never
+      // learns the reader left, and its next growth pulls them back down.
+      onUserScrollStart?.();
       target.scrollTop = scrollTopForTrackClick(offsetY, metrics, trackPx);
       sample();
+      onUserScrollEnd?.(atBottom());
       return;
     }
 
@@ -142,7 +154,7 @@
     // Capture keeps the drag alive once the pointer leaves the 6px strip,
     // which it will immediately — nobody tracks a thin bar precisely.
     trackEl.setPointerCapture(event.pointerId);
-    onDragStart?.();
+    onUserScrollStart?.();
   }
 
   function onPointerMove(event: PointerEvent): void {
@@ -152,13 +164,23 @@
     markActive();
   }
 
+  // Every way a drag can end funnels through here, including the ones the
+  // user did not ask for: `lostpointercapture` fires when the capture is
+  // taken away (the element leaves the DOM, the browser cancels the pointer),
+  // and without it `dragging` would stay true on a gesture that is over —
+  // holding the bar visible forever, leaving a stale `origin` for the next
+  // pointermove to scroll against, and never telling the owner it may
+  // re-stick. Idempotent: the first call clears the flag the rest test.
   function endDrag(event: PointerEvent): void {
     if (!dragging) return;
     dragging = false;
     origin = null;
-    trackEl?.releasePointerCapture(event.pointerId);
+    // Already released when this ran FROM `lostpointercapture`.
+    if (trackEl?.hasPointerCapture(event.pointerId)) {
+      trackEl.releasePointerCapture(event.pointerId);
+    }
     sample();
-    onDragEnd?.(atBottom());
+    onUserScrollEnd?.(atBottom());
   }
 </script>
 
@@ -188,6 +210,7 @@
   onpointermove={onPointerMove}
   onpointerup={endDrag}
   onpointercancel={endDrag}
+  onlostpointercapture={endDrag}
   onpointerenter={markActive}
 >
   {#if thumb.visible}

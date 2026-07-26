@@ -21,7 +21,7 @@
   import { tick } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping';
-  import { timelineNodeKey } from '../../utils/subagentGrouping';
+  import { timelineNodeItemId, timelineNodeKey } from '../../utils/subagentGrouping';
   import {
     activityRunRowIndexOfItem,
     activityRunWindowGrownNewer,
@@ -108,6 +108,11 @@
     run.children.length - run.mountedFrom - run.mountedRows,
   );
 
+  // Run ids are minted per registry, so every pane's first run is `r1`. The
+  // pane scope keeps `aria-controls` unambiguous when two panes are open —
+  // otherwise the rail and chip of one pane point a screen reader at the
+  // other pane's clip.
+  let clipId = $derived(`activity-run-${pane.paneId}-${run.runId}`);
   let maxHeight = $derived(activityRunClipMaxHeight(expandedPx));
   let toggleLabel = $derived(
     run.collapsed ? 'Expand activity run' : 'Collapse activity run',
@@ -118,9 +123,12 @@
   }
 
   async function mountEarlier(): Promise<void> {
+    // Narrowing, not a fallback: the boundary that calls this renders INSIDE
+    // the clip, so the element is bound before any click can reach it.
     const clip = clipEl;
-    const beforeHeight = clip?.scrollHeight ?? 0;
-    const beforeTop = clip?.scrollTop ?? 0;
+    if (!clip) return;
+    const beforeHeight = clip.scrollHeight;
+    const beforeTop = clip.scrollTop;
 
     pane.activityRuns.setMountWindow(run.runId, activityRunWindowGrownOlder(run));
     await tick();
@@ -129,7 +137,6 @@
     // rows added ABOVE the viewport would otherwise push the reading
     // position down by exactly their height. Two reads and a write, after
     // the DOM has the new rows and before the user can see the frame.
-    if (!clip) return;
     const grew = clip.scrollHeight - beforeHeight;
     if (grew > 0) clip.scrollTop = beforeTop + grew;
   }
@@ -246,14 +253,41 @@
     }
   });
 
-  // No head trim, deliberately. Growth cannot accumulate DOM on its own —
-  // the slice above is a window, not a high-water mark, so a run that
-  // streams to 500 rows still mounts `mountedRows` of them, and a jump
-  // relocates the window without enlarging it. The only way past the window
-  // is the user asking for another chunk, and trimming that back would revert
-  // an explicit action: a short run whose boundary is visible without
-  // scrolling would flash the rows in and drop them in the same frame. What
-  // they asked for stays until the run unmounts.
+  // Whether the window follows the run's tail is a question about the READER,
+  // so it is answered here, where the controller that tracks them lives.
+  //
+  // A tail-following window drops one head row for every row appended — an
+  // implicit head trim. Under a reader who has scrolled up inside the clip
+  // that is exactly wrong: the rows they are reading slide up by a row height
+  // per append, and the one they were reading eventually unmounts from under
+  // them. So while the controller is escaped the window pins to its own head
+  // row, and new activity collects behind an "N later" boundary instead.
+  //
+  // Both directions are load-bearing. A pin left behind after the reader
+  // returns to the bottom would strand a live run behind that boundary while
+  // it kept streaming, so returning releases it and the run resumes
+  // following. Declared AFTER the focus effect so a jump — which escapes
+  // deliberately — has stated its intent before this reads it.
+  //
+  // Historical runs have no controller and no tail to follow; they never
+  // slide, so there is nothing here for them to do.
+  $effect(() => {
+    const controller = stick;
+    if (!controller || run.collapsed) return;
+    const head = run.children[run.mountedFrom];
+    pane.activityRuns.setWindowAnchor(
+      run.runId,
+      controller.escapedFromLock && head ? timelineNodeItemId(head) : null,
+    );
+  });
+
+  // No head TRIM, deliberately: the slice above is a window, not a high-water
+  // mark, so a run that streams to 500 rows still mounts `mountedRows` of
+  // them and growth cannot accumulate DOM on its own. Dropping a chunk the
+  // user explicitly asked for would revert an explicit action — a short run
+  // whose boundary is visible without scrolling would flash the rows in and
+  // drop them in the same frame. What they asked for stays until the run
+  // unmounts.
 </script>
 
 <!-- Rail offsets match what the per-row wrapper used to apply:
@@ -267,6 +301,7 @@
   data-rail="true"
   data-run-id={run.runId}
   data-collapsed={run.collapsed ? 'true' : 'false'}
+  data-live={live ? 'true' : 'false'}
 >
   <!-- The rail itself is the collapse control: a hit strip straddling the
        border, in the gutter where no content sits. Absolutely positioned
@@ -277,7 +312,7 @@
     onclick={toggle}
     aria-label={toggleLabel}
     aria-expanded={!run.collapsed}
-    aria-controls="activity-run-{run.runId}"
+    aria-controls={clipId}
     data-testid="activity-run-rail"
   ></button>
 
@@ -292,7 +327,7 @@
          from blocking the chain. -->
     <div
       bind:this={clipEl}
-      id="activity-run-{run.runId}"
+      id={clipId}
       class="activity-run-clip overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
       style:max-height={maxHeight}
       use:nestedScroll
@@ -325,8 +360,8 @@
       target={clipEl}
       content={contentEl}
       ariaLabel="Scroll activity run"
-      onDragStart={stick ? () => stick?.setEscapedFromLock(true) : undefined}
-      onDragEnd={stick ? (atBottom) => { if (atBottom) stick?.markAtBottom(); } : undefined}
+      onUserScrollStart={stick ? () => stick?.setEscapedFromLock(true) : undefined}
+      onUserScrollEnd={stick ? (atBottom) => { if (atBottom) stick?.markAtBottom(); } : undefined}
     />
   {/if}
 </div>

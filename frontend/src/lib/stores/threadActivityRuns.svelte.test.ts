@@ -16,14 +16,15 @@ function registry(overrides: { defaultCollapsed?: boolean; windowRows?: number }
  */
 type RunSpec = (string | string[])[];
 
-/** One projection pass. */
+/** One projection pass. Runs belong to `threadId`, which scopes their ids. */
 function pass(
   runs: ReturnType<typeof registry>,
   specs: RunSpec[],
+  threadId = 'thread-1',
 ): ActivityRunResolution[] {
   runs.beginPass();
   const out = specs.map((spec) =>
-    runs.resolve(spec.map((row) => (typeof row === 'string' ? [row] : row))),
+    runs.resolve(spec.map((row) => (typeof row === 'string' ? [row] : row)), threadId),
   );
   runs.endPass();
   return out;
@@ -185,15 +186,68 @@ describe('mount window', () => {
     expect(pass(runs, [pruned])[0].mountedFrom).toBe(10);
   });
 
-  it('returns to the tail once the window reaches the run end', () => {
+  it('clamps an anchor too late to fit a window, and keeps holding it', () => {
     const runs = registry({ windowRows: 10 });
     const [run] = pass(runs, [rows(100)]);
-    // Anchored where nothing is left below it: there is nothing to hold on
-    // to, so the window resumes following new activity.
+    // Only five rows left below the anchor, so the window starts earlier than
+    // asked rather than mounting five rows and blank space.
     runs.setMountWindow(run.runId, { rows: 10, startItemId: 'i95' });
     expect(pass(runs, [rows(100)])[0].mountedFrom).toBe(90);
 
-    expect(pass(runs, [rows(110)])[0].mountedFrom).toBe(100);
+    // Growth does NOT hand the window back to the tail. An anchor means the
+    // reader is up there, and a window that resumed following on its own
+    // would slide the rows they are reading out from under them.
+    expect(pass(runs, [rows(110)])[0].mountedFrom).toBe(95);
+  });
+
+  it('follows the tail again when the anchor is released, in either direction', () => {
+    const runs = registry({ windowRows: 10 });
+    const [run] = pass(runs, [rows(100)]);
+
+    runs.setWindowAnchor(run.runId, 'i40');
+    expect(pass(runs, [rows(100)])[0].mountedFrom).toBe(40);
+
+    // The reader returned to the clip's bottom. Releasing has to hand the
+    // window back to the tail, or a live run stays stranded behind its "N
+    // later" boundary while it keeps streaming.
+    runs.setWindowAnchor(run.runId, null);
+    expect(pass(runs, [rows(100)])[0].mountedFrom).toBe(90);
+
+    // And re-pinning after a release still works: the flag is state, not a
+    // one-shot.
+    runs.setWindowAnchor(run.runId, 'i40');
+    expect(pass(runs, [rows(100)])[0].mountedFrom).toBe(40);
+  });
+
+  it('a window asking for the current default size stays inherited', () => {
+    let windowRows = 30;
+    const runs = createThreadActivityRuns({
+      defaultCollapsed: () => false,
+      windowRows: () => windowRows,
+    });
+    const [run] = pass(runs, [rows(100)]);
+
+    // What a jump asks for: the size the run already had. Recording that as an
+    // override would pin this run for the rest of the session, and every jump
+    // would pin one more.
+    runs.setMountWindow(run.runId, { rows: 30, startItemId: 'i40' });
+    expect(pass(runs, [rows(100)])[0].mountedRows).toBe(30);
+
+    windowRows = 50;
+    const [wider] = pass(runs, [rows(100)]);
+    expect(wider.mountedRows).toBe(50);
+    expect(wider.mountedFrom).toBe(40);
+  });
+
+  it('anchoring leaves the window size alone', () => {
+    const runs = registry({ windowRows: 10 });
+    const [run] = pass(runs, [rows(100)]);
+    // Mounting an older chunk is a size change; pinning is not. Folding the
+    // two together would freeze this run's size against a later change to the
+    // `activityRunWindowRows` setting.
+    runs.setWindowAnchor(run.runId, 'i40');
+
+    expect(pass(runs, [rows(100)])[0].mountedRows).toBe(10);
   });
 
   it('returns to the tail when its anchored row leaves the run', () => {
@@ -285,6 +339,40 @@ describe('entry lifecycle', () => {
     expect(a.runId).not.toBe(b.runId);
   });
 
+  it('ignores mutations naming a run that does not exist', () => {
+    const runs = registry();
+
+    // `resolve` is the only thing that creates an entry. A stale call — a
+    // click landing after the pass that swept its run, or a typo — must not
+    // seed state for whichever run later mints that id.
+    runs.setCollapsed('r1', true);
+    runs.saveScrollSnapshot('r1', { scrollTop: 400, escaped: true });
+    runs.setWindowAnchor('r1', 'a');
+
+    const [run] = pass(runs, [['a', 'b']]);
+
+    expect(run.runId).toBe('r1');
+    expect(run.collapsed).toBe(false);
+    expect(run.mountedFrom).toBe(0);
+    expect(runs.scrollSnapshot('r1')).toBeNull();
+  });
+
+  it('drops a snapshot saved after the registry was cleared', () => {
+    const runs = registry();
+    const [run] = pass(runs, [['a']]);
+    runs.saveScrollSnapshot(run.runId, { scrollTop: 120, escaped: true });
+
+    // The row tears down AFTER the thread switch cleared the registry. Its
+    // last position is already archived; re-creating the entry here would
+    // leave a memberless ghost that outlives the thread it came from.
+    runs.clear();
+    runs.saveScrollSnapshot(run.runId, { scrollTop: 999, escaped: false });
+    expect(runs.scrollSnapshot(run.runId)).toBeNull();
+
+    const [back] = pass(runs, [['a']]);
+    expect(runs.scrollSnapshot(back.runId)).toEqual({ scrollTop: 120, escaped: true });
+  });
+
   it('drops a swept entry that was never touched', () => {
     const runs = registry();
     pass(runs, [['a']]);
@@ -340,13 +428,30 @@ describe('state across a sweep', () => {
     runs.saveScrollSnapshot(run.runId, { scrollTop: 90, escaped: true });
 
     runs.clear();
-    // The other thread's runs cannot collide: item ids are unique per thread.
-    pass(runs, [['x', 'y']]);
+    pass(runs, [['x', 'y']], 'thread-2');
     runs.clear();
 
     const [back] = pass(runs, [rows(50)]);
     expect(back.mountedRows).toBe(12);
     expect(runs.scrollSnapshot(back.runId)).toEqual({ scrollTop: 90, escaped: true });
+  });
+
+  it('does not hand one thread the state another thread archived', () => {
+    const runs = registry();
+    const [run] = pass(runs, [['think:0:0', 'think:0:1']]);
+    runs.setCollapsed(run.runId, true);
+
+    // Item ids are unique only WITHIN a thread — the store's key is
+    // (thread_id, item_id), and synthesized ids are deterministic per turn —
+    // so the incoming thread's first run really can present the exact ids the
+    // outgoing one just archived.
+    runs.clear();
+    const [other] = pass(runs, [['think:0:0', 'think:0:1']], 'thread-2');
+    expect(other.collapsed).toBe(false);
+
+    // And the thread it belongs to still finds it.
+    runs.clear();
+    expect(pass(runs, [['think:0:0', 'think:0:1']])[0].collapsed).toBe(true);
   });
 
   it('gives a revived run a live id, not the swept one', () => {

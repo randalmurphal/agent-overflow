@@ -28,6 +28,12 @@ export interface TimelineRowUiPruneSignatureInputs {
   revealTurnIndex: number | string;
   revealItemIndex: number | string;
   nodesLength: number;
+  /**
+   * `pane.activityRuns.revision` — a run's mount window changes which of its
+   * children are retained, and it moves without changing structure, node
+   * count, or the visible range.
+   */
+  activityRunRevision: number;
   range: TimelineRowUiRetentionRange;
   items: readonly Item[];
 }
@@ -46,6 +52,7 @@ export function timelineRowUiPruneSignature(inputs: TimelineRowUiPruneSignatureI
     inputs.revealTurnIndex,
     inputs.revealItemIndex,
     inputs.nodesLength,
+    inputs.activityRunRevision,
     inputs.range.first,
     inputs.range.last,
     activeRowUiRetentionSignature(inputs.items),

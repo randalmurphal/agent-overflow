@@ -116,6 +116,11 @@ Operational rules for this directory:
   counts, failure, and the running label resolve from current items through
   `utils/activityRunSummary.ts`; a node field would rebuild the
   virtualizer's data array every chunk.
+- **Whether a run follows its tail is the ROW's call, not the registry's.**
+  While the inner controller is escaped, `ActivityRun.svelte` pins the mount
+  window (`setWindowAnchor`) so appended rows cannot slide the reader's rows
+  up the clip; returning to the clip's bottom releases it. Do not add a
+  geometric release — a pin means "the reader is up here."
 - **A jump into a run goes through `revealActivityRunItem`**
   (`utils/activityRunWindow.ts`), which expands, relocates the window, and
   leaves the focus request together. Do not call the three registry methods

@@ -30,26 +30,45 @@ function stubTrackHeight(track: Element, px: number): void {
   });
 }
 
+const POINTER_ID = 7;
+
 /**
- * happy-dom has no pointer capture. Real browsers do, and the drag depends
- * on it, so stub rather than soften the component for the test env.
+ * happy-dom has no pointer capture. Real browsers do, and the drag depends on
+ * it, so stub rather than soften the component for the test env — faithfully
+ * enough that `hasPointerCapture` answers honestly, which is also what lets a
+ * test assert the component took the capture at all.
  */
-function stubPointerCapture(el: Element): void {
+function stubPointerCapture(el: Element): Set<number> {
+  const captured = new Set<number>();
   const target = el as unknown as Record<string, unknown>;
-  target.setPointerCapture = () => {};
-  target.releasePointerCapture = () => {};
+  target.setPointerCapture = (id: number) => void captured.add(id);
+  target.releasePointerCapture = (id: number) => void captured.delete(id);
+  target.hasPointerCapture = (id: number) => captured.has(id);
+  return captured;
+}
+
+function pointerEvent(type: string, clientY: number): Event {
+  const event = new MouseEvent(type, { bubbles: true, clientY, button: 0 });
+  // happy-dom's MouseEvent carries no pointerId, and the component releases
+  // capture by id.
+  Object.defineProperty(event, 'pointerId', { value: POINTER_ID });
+  return event;
 }
 
 function down(el: Element, clientY: number): Promise<unknown> {
-  return fireEvent(el, new MouseEvent('pointerdown', { bubbles: true, clientY, button: 0 }));
+  return fireEvent(el, pointerEvent('pointerdown', clientY));
 }
 
 function move(el: Element, clientY: number): Promise<unknown> {
-  return fireEvent(el, new MouseEvent('pointermove', { bubbles: true, clientY }));
+  return fireEvent(el, pointerEvent('pointermove', clientY));
 }
 
 function up(el: Element, clientY: number): Promise<unknown> {
-  return fireEvent(el, new MouseEvent('pointerup', { bubbles: true, clientY }));
+  return fireEvent(el, pointerEvent('pointerup', clientY));
+}
+
+function loseCapture(el: Element): Promise<unknown> {
+  return fireEvent(el, pointerEvent('lostpointercapture', 0));
 }
 
 afterEach(() => {
@@ -60,16 +79,16 @@ async function mount(options: {
   clientHeight?: number;
   scrollHeight?: number;
   trackPx?: number;
-  onDragStart?: () => void;
-  onDragEnd?: (atBottom: boolean) => void;
+  onUserScrollStart?: () => void;
+  onUserScrollEnd?: (atBottom: boolean) => void;
 } = {}) {
   const target = makeScroller(options.clientHeight ?? 100, options.scrollHeight ?? 400);
   const view = render(OverlayScrollbar, {
     props: {
       target,
       ariaLabel: 'Scroll activity run',
-      onDragStart: options.onDragStart,
-      onDragEnd: options.onDragEnd,
+      onUserScrollStart: options.onUserScrollStart,
+      onUserScrollEnd: options.onUserScrollEnd,
     },
   });
   const track = view.getByTestId('overlay-scrollbar');
@@ -107,7 +126,7 @@ describe('<OverlayScrollbar>', () => {
     expect(getByTestId('overlay-scrollbar-thumb').style.top).toBe('150px');
   });
 
-  it('drags the surface, and keeps dragging after the pointer leaves the strip', async () => {
+  it('drags the surface by the distance the pointer moved', async () => {
     const { track, target } = await mount();
     stubPointerCapture(track);
 
@@ -117,19 +136,82 @@ describe('<OverlayScrollbar>', () => {
 
     expect(target.scrollTop).toBe(40);
 
-    // Pointer capture means later moves still arrive at the track even
-    // though the pointer is nowhere near the 6px strip.
     await move(track, 175);
     await tick();
 
     expect(target.scrollTop).toBe(300);
   });
 
+  it('takes pointer capture on grab, so a drag survives leaving the strip', async () => {
+    const { track } = await mount();
+    const captured = stubPointerCapture(track);
+
+    await down(track, 25);
+
+    // A declaration check, deliberately. Capture ROUTING — later moves
+    // arriving at the track while the pointer is nowhere near the 6px strip —
+    // is a browser guarantee, and happy-dom implements none of it: a move
+    // dispatched anywhere else simply would not reach the handler, so the
+    // test would pin the shim rather than the behavior. What is falsifiable
+    // here is that the component asked for the capture; deleting the
+    // `setPointerCapture` call fails this.
+    expect(captured.has(POINTER_ID)).toBe(true);
+
+    await up(track, 25);
+    expect(captured.has(POINTER_ID)).toBe(false);
+  });
+
+  it('ends the drag when the capture is taken away, not only on pointerup', async () => {
+    const seen: string[] = [];
+    const { track, target } = await mount({
+      onUserScrollEnd: (atBottom) => seen.push(atBottom ? 'end:bottom' : 'end:free'),
+    });
+    stubPointerCapture(track);
+
+    await down(track, 25);
+    await move(track, 45);
+    await tick();
+    expect(target.scrollTop).toBe(40);
+
+    // The browser fires this when it revokes the capture — the element left
+    // the DOM, or the pointer was cancelled — and no pointerup follows.
+    await loseCapture(track);
+    await tick();
+
+    expect(track.dataset.dragging).toBe('false');
+    expect(seen).toEqual(['end:free']);
+
+    // And the gesture is really over: a bare move must not scroll against
+    // the origin the dead drag left behind.
+    await move(track, 175);
+    await tick();
+    expect(target.scrollTop).toBe(40);
+  });
+
+  it('pages on a track click, and says so, so the owner stops following', async () => {
+    const seen: string[] = [];
+    const { track, target } = await mount({
+      onUserScrollStart: () => seen.push('start'),
+      onUserScrollEnd: (atBottom) => seen.push(atBottom ? 'end:bottom' : 'end:free'),
+    });
+    stubPointerCapture(track);
+
+    // Below the thumb (0..50): a page, not a drag. It has no release, so it
+    // states the whole gesture at once — a live surface that heard nothing
+    // here would re-pin to the bottom on its next growth.
+    await down(track, 120);
+    await tick();
+
+    expect(target.scrollTop).toBeGreaterThan(0);
+    expect(seen).toEqual(['start', 'end:free']);
+    expect(track.dataset.dragging).toBe('false');
+  });
+
   it('states scroll intent on grab and release', async () => {
     const seen: string[] = [];
     const { track } = await mount({
-      onDragStart: () => seen.push('start'),
-      onDragEnd: (atBottom) => seen.push(atBottom ? 'end:bottom' : 'end:free'),
+      onUserScrollStart: () => seen.push('start'),
+      onUserScrollEnd: (atBottom) => seen.push(atBottom ? 'end:bottom' : 'end:free'),
     });
     stubPointerCapture(track);
 
@@ -143,7 +225,7 @@ describe('<OverlayScrollbar>', () => {
   it('reports a release at the bottom so the owner can re-stick', async () => {
     const seen: string[] = [];
     const { track } = await mount({
-      onDragEnd: (atBottom) => seen.push(atBottom ? 'end:bottom' : 'end:free'),
+      onUserScrollEnd: (atBottom) => seen.push(atBottom ? 'end:bottom' : 'end:free'),
     });
     stubPointerCapture(track);
 

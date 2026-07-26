@@ -142,6 +142,7 @@ describe('timeline row UI retention', () => {
       revealTurnIndex: 2,
       revealItemIndex: 7,
       nodesLength: 10,
+      activityRunRevision: 0,
       range: { first: 4, last: 9 },
       items: [streaming],
     };
@@ -155,6 +156,13 @@ describe('timeline row UI retention', () => {
       timelineRowUiPruneSignature(base),
     );
     expect(timelineRowUiPruneSignature({ ...base, timelineRevision: 4 })).not.toBe(
+      timelineRowUiPruneSignature(base),
+    );
+    // A run's mount window moves without touching structure, node count, or
+    // range: same everything, different mounted children. Without this input
+    // the pass would bail as a no-op and keep retaining the window the reader
+    // just left.
+    expect(timelineRowUiPruneSignature({ ...base, activityRunRevision: 1 })).not.toBe(
       timelineRowUiPruneSignature(base),
     );
     const linked = { ...streaming, payloadId: 'payload-1' };

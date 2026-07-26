@@ -17,7 +17,8 @@
 // A run can also vanish entirely and come back — the live-window prune can
 // take every item a head run had, and a thread switch drops the lot — so
 // entries carrying explicit state are ARCHIVED on their way out and revived
-// by the same membership rule. Without that, collapsing a noisy run and then
+// by either edge member (see `archiveEntry` for what that cannot recognize).
+// Without that, collapsing a noisy run and then
 // paging (or switching threads and returning) hands back a default run, which
 // is the run-level form of the position loss `utils/threadScrollSnapshots.ts`
 // exists to prevent.
@@ -68,6 +69,17 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    */
   setMountWindow(runId: string, window: ActivityRunMountWindow): void;
   /**
+   * Pin the window's head to `anchorItemId`, or pass null to release it back
+   * to following the run's tail. Size is untouched: this answers WHERE the
+   * window sits, not how big it is.
+   *
+   * Owned by the run's row, which is the only place that knows whether the
+   * reader is still scrolled up inside it (`ActivityRun.svelte`). A window
+   * that keeps following the tail under an escaped reader drops one head row
+   * per appended row, sliding what they are reading up the clip.
+   */
+  setWindowAnchor(runId: string, anchorItemId: string | null): void;
+  /**
    * Ask the run's row to bring `itemId` into view once it is mounted. Held
    * on the entry rather than passed down a prop because the row may not
    * exist yet — the jump that requests it is usually what scrolls the run
@@ -81,6 +93,14 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
 }
 
 interface RunEntry {
+  /**
+   * The thread this run's items belong to. Taken from the items at resolve
+   * time rather than read from the pane, because the archive is written
+   * during `clear()` — by which point the pane may already point at the
+   * incoming thread, and an entry filed under it would be revived by the
+   * wrong one.
+   */
+  threadId: string;
   members: Set<string>;
   collapsed: boolean | null;
   scroll: ActivityRunScrollSnapshot | null;
@@ -91,9 +111,21 @@ interface RunEntry {
   focus: ActivityRunFocusRequest | null;
 }
 
-/** A swept entry's state, plus the member ids it can be found again by. */
+/**
+ * A swept entry's state, plus the thread-qualified keys it can be found
+ * again by. Item ids are unique only WITHIN a thread — the store's primary
+ * key is `(thread_id, item_id)` and synthesized ids like `think:0:0` recur
+ * in every thread — so a bare item id would let one thread's first run
+ * revive another's state on a switch.
+ */
 interface ArchivedRun extends Omit<RunEntry, 'members' | 'focus'> {
   keys: string[];
+}
+
+function archiveKey(threadId: string, itemId: string): string {
+  // NUL separator: provider-issued item ids are opaque, so the one byte
+  // neither a thread id nor an item id can contain is the only safe joiner.
+  return `${threadId}\u0000${itemId}`;
 }
 
 /**
@@ -104,8 +136,9 @@ interface ArchivedRun extends Omit<RunEntry, 'members' | 'focus'> {
  */
 const ARCHIVE_MAX_KEYS = 128;
 
-function emptyEntry(): RunEntry {
+function emptyEntry(threadId: string): RunEntry {
   return {
+    threadId,
     members: new Set(),
     collapsed: null,
     scroll: null,
@@ -132,11 +165,11 @@ export function createThreadActivityRuns(
   // Reverse index so migration is one lookup per member instead of a scan
   // over every entry. Rebuilt incrementally as entries take new members.
   const runIdByMember = new Map<string, string>();
-  // Swept entries, reachable by the first and last member id each run had.
-  // Two keys because both edges move independently: the older prune takes a
-  // run's first members and the recent prune takes its last, and either one
-  // surviving is enough to recognize the run when it comes back. Insertion
-  // order is the eviction order.
+  // Swept entries, reachable by the first and last member each run had, keyed
+  // per thread. Two keys because both edges move independently: the older
+  // prune takes a run's first members and the recent prune takes its last, and
+  // either one surviving is enough to recognize the run when it comes back.
+  // Insertion order is the eviction order.
   const archive = new Map<string, ArchivedRun>();
   let claimed = new Set<string>();
   let nextRunId = 1;
@@ -150,20 +183,24 @@ export function createThreadActivityRuns(
   // move every inner scroll frame and nothing on the node reads them.
   let revision = $state(0);
 
-  function entryFor(runId: string): RunEntry {
+  // Creation lives here and nowhere else. A run comes into existence by being
+  // projected, so every id a caller can hold already has an entry; a mutator
+  // that minted one instead would seed state for whichever run later happens
+  // to mint that id, and would resurrect an entry `clear()` just archived.
+  function ensureEntry(runId: string, threadId: string): RunEntry {
     let entry = entries.get(runId);
     if (!entry) {
-      entry = emptyEntry();
+      entry = emptyEntry(threadId);
       entries.set(runId, entry);
     }
     return entry;
   }
 
   function indexMembers(
+    entry: RunEntry,
     runId: string,
     rowMemberIds: readonly (readonly string[])[],
   ): void {
-    const entry = entryFor(runId);
     for (const id of entry.members) {
       if (runIdByMember.get(id) === runId) runIdByMember.delete(id);
     }
@@ -180,7 +217,10 @@ export function createThreadActivityRuns(
     claimed = new Set();
   }
 
-  function claimRunId(rowMemberIds: readonly (readonly string[])[]): string {
+  function claimRunId(
+    rowMemberIds: readonly (readonly string[])[],
+    threadId: string,
+  ): string {
     // Earliest matching member wins. That is what makes a split deterministic:
     // the entry follows the sub-run holding its previous first member, and the
     // other sub-run starts fresh from the setting default. On a merge the
@@ -198,10 +238,11 @@ export function createThreadActivityRuns(
     nextRunId += 1;
     for (const row of rowMemberIds) {
       for (const id of row) {
-        const revived = archive.get(id);
+        const revived = archive.get(archiveKey(threadId, id));
         if (!revived) continue;
         for (const key of revived.keys) archive.delete(key);
         entries.set(minted, {
+          threadId,
           members: new Set(),
           collapsed: revived.collapsed,
           scroll: revived.scroll,
@@ -220,16 +261,31 @@ export function createThreadActivityRuns(
    * nothing explicit on them are dropped: reviving one would hand back the
    * same defaults a fresh entry produces, at the cost of an archive slot a
    * real override could have used.
+   *
+   * Only the run's FIRST and LAST member can find it again. A reload that
+   * lands on neither — a jump into the middle of a long run, whose window
+   * loads only interior rows — gets a default run instead. Accepted: keying
+   * every member would scale the archive with run length, and the loss is one
+   * collapse override, recoverable with one click.
    */
   function archiveEntry(entry: RunEntry): void {
-    if (entry.collapsed === null && entry.windowRows === null && entry.scroll === null) {
+    if (
+      entry.collapsed === null
+      && entry.windowRows === null
+      && entry.windowStartItemId === null
+      && entry.scroll === null
+    ) {
       return;
     }
     const ids = [...entry.members];
     if (ids.length === 0) return;
-    const keys = [...new Set([ids[0], ids[ids.length - 1]])];
+    const keys = [...new Set([
+      archiveKey(entry.threadId, ids[0]),
+      archiveKey(entry.threadId, ids[ids.length - 1]),
+    ])];
     const record: ArchivedRun = {
       keys,
+      threadId: entry.threadId,
       collapsed: entry.collapsed,
       scroll: entry.scroll,
       windowRows: entry.windowRows,
@@ -248,11 +304,12 @@ export function createThreadActivityRuns(
 
   function resolve(
     rowMemberIds: readonly (readonly string[])[],
+    threadId: string,
   ): ActivityRunResolution {
-    const runId = claimRunId(rowMemberIds);
+    const runId = claimRunId(rowMemberIds, threadId);
     claimed.add(runId);
-    indexMembers(runId, rowMemberIds);
-    const entry = entryFor(runId);
+    const entry = ensureEntry(runId, threadId);
+    indexMembers(entry, runId, rowMemberIds);
     // A run never mounts more than it has. The stored size only exists once
     // the user has pulled in another chunk or a jump has relocated the
     // window; until then it tracks the current setting, so changing the
@@ -265,14 +322,19 @@ export function createThreadActivityRuns(
     let mountedFrom = tailFrom;
     if (entry.windowStartItemId !== null) {
       const anchored = rowIndexOfMember(rowMemberIds, entry.windowStartItemId);
-      if (anchored >= 0 && anchored < tailFrom) {
-        mountedFrom = anchored;
-      } else {
-        // Either the anchor row has left the loaded window, or the window has
-        // caught up with the run's last row. Both mean nothing is hidden
-        // below it, so it goes back to following the tail — which is how a
-        // jumped-into run resumes showing new activity.
+      if (anchored < 0) {
+        // The anchor row is gone — an older-side prune took it, or a
+        // payloadKind flip split the run and it landed on the other side.
+        // There is nothing left to hold, so the window follows the tail again.
         entry.windowStartItemId = null;
+      } else {
+        // Clamped so a late anchor still mounts a full window. Deliberately
+        // NOT released when the tail catches up: an anchor means "the reader
+        // is up here", which is a fact about the reader, not about geometry.
+        // `ActivityRun.svelte` releases it when they return to the clip's
+        // bottom — that is what resumes tail-following for a jumped-into or
+        // scrolled-up run.
+        mountedFrom = Math.min(anchored, tailFrom);
       }
     }
     return {
@@ -300,8 +362,8 @@ export function createThreadActivityRuns(
   }
 
   function setCollapsed(runId: string, collapsed: boolean): void {
-    const entry = entryFor(runId);
-    if (entry.collapsed === collapsed) return;
+    const entry = entries.get(runId);
+    if (!entry || entry.collapsed === collapsed) return;
     entry.collapsed = collapsed;
     revision += 1;
   }
@@ -322,18 +384,37 @@ export function createThreadActivityRuns(
     toggleCollapsed,
     scrollSnapshot: (runId) => entries.get(runId)?.scroll ?? null,
     saveScrollSnapshot: (runId, snapshot) => {
-      entryFor(runId).scroll = snapshot;
+      // A row torn down AFTER its registry was cleared has nothing to save
+      // into: `clear()` already archived the last per-frame snapshot, and
+      // creating an entry here would leave a memberless ghost behind.
+      const entry = entries.get(runId);
+      if (!entry) return;
+      entry.scroll = snapshot;
     },
     setMountWindow: (runId, window) => {
-      const entry = entryFor(runId);
-      if (entry.windowRows === window.rows
+      const entry = entries.get(runId);
+      if (!entry) return;
+      // A window asking for exactly the current default is not an override.
+      // Storing it would freeze this run's size against a later change to
+      // `activityRunWindowRows` — and a jump-relocated window asks for the
+      // size it already had, so every jump would pin one more run.
+      const rows = window.rows === options.windowRows() ? null : window.rows;
+      if (entry.windowRows === rows
         && entry.windowStartItemId === window.startItemId) return;
-      entry.windowRows = window.rows;
+      entry.windowRows = rows;
       entry.windowStartItemId = window.startItemId;
       revision += 1;
     },
+    setWindowAnchor: (runId, anchorItemId) => {
+      const entry = entries.get(runId);
+      if (!entry || entry.windowStartItemId === anchorItemId) return;
+      entry.windowStartItemId = anchorItemId;
+      revision += 1;
+    },
     requestFocus: (runId, request) => {
-      entryFor(runId).focus = request;
+      const entry = entries.get(runId);
+      if (!entry) return;
+      entry.focus = request;
       revision += 1;
     },
     takeFocus: (runId) => {
@@ -347,9 +428,9 @@ export function createThreadActivityRuns(
     },
     clear: () => {
       // The incoming thread must see no live entry from the outgoing one, but
-      // their state is archived on the way out: item ids are unique per
-      // thread, so a revival can only ever match the thread it came from, and
-      // returning to a thread in this pane finds its runs as it left them.
+      // their state is archived on the way out, under thread-qualified keys
+      // (see `archiveKey`) so only the thread it came from can revive it.
+      // Returning to a thread in this pane finds its runs as it left them.
       for (const entry of entries.values()) archiveEntry(entry);
       entries.clear();
       runIdByMember.clear();

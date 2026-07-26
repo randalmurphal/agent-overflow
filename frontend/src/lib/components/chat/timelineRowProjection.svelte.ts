@@ -23,6 +23,10 @@ import {
   activityRunMembershipKey,
   groupActivityRuns,
 } from '../../utils/activityRunGrouping';
+import {
+  activityRunDefaultCollapsed,
+  activityRunWindowRows,
+} from '../../stores/activityRunPrefs.svelte';
 import { timelineRowDecorations, type TimelineRowDecorationSets } from './timelineRows';
 import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
 import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
@@ -102,11 +106,15 @@ export function createTimelineRowProjection(
   // Run wrapping is the LAST pass, so `revealedNodes` is what it produces.
   // It stays untracked for the same reason `structuralNodes` does: it walks
   // every node in the window, so running it per streaming delta would
-  // rebuild the virtualizer's whole data array on every chunk. The three
-  // tracked reads above it are the complete set of things that can change
-  // its output — structure (`gatedNodes` identity), membership (a
-  // payloadKind flip, which does not bump `timelineRevision`), and the
-  // registry's own state (a collapse toggle, an older chunk mounted).
+  // rebuild the virtualizer's whole data array on every chunk. The reads in
+  // the tracked prelude are the complete set of things that can change its
+  // output — structure (`gatedNodes` identity), membership (a payloadKind
+  // flip, which does not bump `timelineRevision`), the registry's own state
+  // (a collapse toggle, an older chunk mounted), and the two settings the
+  // registry consults for runs with no explicit override. The settings have
+  // to be read HERE: the registry reads them inside `resolve`, which runs
+  // untracked, so on a settled thread nothing else would notice the change
+  // and the new default would not apply until an unrelated structural pass.
   let runMembershipKey = $derived(
     activityRunMembershipKey(gatedNodes, (id) => options.getPane().getItemById(id)),
   );
@@ -115,6 +123,8 @@ export function createTimelineRowProjection(
     runMembershipKey;
     const pane = options.getPane();
     pane.activityRuns.revision;
+    activityRunDefaultCollapsed();
+    activityRunWindowRows();
     return untrack(() =>
       groupActivityRuns(nodes, {
         identity: pane.activityRuns,

@@ -95,6 +95,27 @@ describe('<ActivityRun>', () => {
 
       expect(queryByTestId('activity-run-earlier')).toBeNull();
     });
+
+    it('is live when it holds the timeline tail', async () => {
+      const { getByTestId } = await renderRun([tool('t0', 0), tool('t1', 1)]);
+
+      expect(getByTestId('activity-run').dataset.live).toBe('true');
+    });
+
+    it('is not live when prose closed it, even as the last run in the list', async () => {
+      // Prose after a run closes it: the next activity row starts a NEW run,
+      // so this one can never grow again. A settled turn usually ends
+      // `[…, activity_run, assistant_text]`, so scanning back past the prose
+      // would hand nearly every thread's last run a spring, an observer set,
+      // and intent listeners it can never use.
+      const { getByTestId } = await renderRun([
+        tool('t0', 0),
+        tool('t1', 1),
+        makeItem({ id: 'p0', itemIndex: 2, kind: 'assistant_text', summary: 'done' }),
+      ]);
+
+      expect(getByTestId('activity-run').dataset.live).toBe('false');
+    });
   });
 
   describe('collapsing', () => {
@@ -235,18 +256,39 @@ describe('<ActivityRun>', () => {
       expect(queryByTestId('activity-run-later')).toBeNull();
     });
 
-    it('follows new activity again once the reader mounts the rest', async () => {
+    it('holds the jumped-to window while activity arrives, until the reader scrolls back down', async () => {
       const { getByTestId, queryByTestId, container, pane } = await jumpTo('t20');
 
       await fireEvent.click(getByTestId('activity-run-later'));
       await tick();
       expect(queryByTestId('activity-run-later')).toBeNull();
 
-      pane.upsertItem(tool('t40', 40));
+      pane.upsertItem(tool('t41', 41));
       await tick();
 
-      // Back on the tail: the new row is mounted and nothing is hidden below.
-      expect(container.querySelector('[data-item-id="t40"]')).not.toBeNull();
+      // A jump escapes bottom-follow deliberately, so the window stops
+      // following the tail: new activity collects behind the boundary instead
+      // of sliding the rows the reader jumped to up the clip.
+      expect(container.querySelector('[data-item-id="t41"]')).toBeNull();
+      expect(getByTestId('activity-run-later').textContent).toContain('1 later');
+      expect(container.querySelector('[data-item-id="t15"]')).not.toBeNull();
+
+      // Scrolling back down inside the clip re-sticks the controller, which
+      // releases the window — the other half of the rule, and the half that
+      // would otherwise strand a live run behind a boundary forever.
+      //
+      // The clip's overflow is stubbed the way OverlayScrollbar.test.ts stubs
+      // its scroller: real element, real listeners, measured values supplied.
+      // happy-dom reports zero geometry, and the intent machine correctly
+      // ignores a wheel on a surface that cannot scroll.
+      const clip = getByTestId('activity-run-clip');
+      Object.defineProperty(clip, 'clientHeight', { get: () => 400, configurable: true });
+      Object.defineProperty(clip, 'scrollHeight', { get: () => 1000, configurable: true });
+      clip.scrollTop = 600; // its bottom
+      await fireEvent.wheel(clip, { deltaY: 120 });
+      await tick();
+
+      expect(container.querySelector('[data-item-id="t41"]')).not.toBeNull();
       expect(queryByTestId('activity-run-later')).toBeNull();
     });
   });

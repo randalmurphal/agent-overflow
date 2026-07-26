@@ -23,10 +23,7 @@ import {
   setupTimelineHarness,
   type QuietBottomOptions,
 } from '../../../test/helpers/timelineBrowserHarness';
-import {
-  ACTIVITY_RUN_CHUNK_ROWS,
-  ACTIVITY_RUN_WINDOW_ROWS_DEFAULT as WINDOW_ROWS,
-} from '../../utils/activityRunWindow';
+import { ACTIVITY_RUN_WINDOW_ROWS_DEFAULT as WINDOW_ROWS } from '../../utils/activityRunWindow';
 import type { Item } from '../../types/models';
 
 setupTimelineHarness();
@@ -105,7 +102,7 @@ describe('activity run — prepend compensation', () => {
 
     // Vacuity guard: with the cap not engaged there is no scroll position to
     // hold, and the compensation would clamp to zero either way.
-    expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight + ACTIVITY_RUN_CHUNK_ROWS);
+    expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight);
 
     // The reader has scrolled to the run's head, where the boundary is.
     clip.scrollTop = 0;

@@ -106,12 +106,24 @@ the entry whose member sits earliest wins.
 A run can also vanish and come back — the prune can take every item a head
 run had, and a thread switch drops the lot. Entries carrying explicit state
 are **archived** on their way out (keyed on first and last member, LRU-capped
-at 128 keys ≈ 64 runs) and revived by the same membership rule. Without that,
-collapsing a noisy run and then paging, or switching threads and returning,
-hands back a default run — the run-level form of the position loss
+at 128 keys ≈ 64 runs) and revived by either of those edge members. Without
+that, collapsing a noisy run and then paging, or switching threads and
+returning, hands back a default run — the run-level form of the position loss
 `utils/threadScrollSnapshots.ts` exists to prevent. A live entry always beats
-an archived one. Item ids are unique per thread, so a revival can only ever
-match the thread it came from.
+an archived one.
+
+Two properties of the archive are worth stating exactly, because both are
+easy to assume wrong:
+
+- **Keys are thread-qualified.** Item ids are unique only *within* a thread —
+  the store's primary key is `(thread_id, item_id)`, and synthesized ids like
+  `think:0:0` recur in every thread — so a bare id would let the incoming
+  thread's first run revive the outgoing one's collapse state and scroll
+  offset on a switch.
+- **Only the two edge members can find a run again.** A reload landing on
+  neither — a jump into the middle of a long run, whose window loads only
+  interior rows — gets a default run. Accepted: keying every member would
+  scale the archive with run length, and the loss is one collapse override.
 
 Per `runId` the registry holds: the collapse override (absent → the setting),
 the inner scroll offset plus the controller's escape flag, the mount window,
@@ -213,8 +225,13 @@ form of this guard is unobservable in tests; see
 
 ## The inner controller (live run only)
 
-Only the run holding the live tail (the last `activity_run` in
-`revealedNodes`) gets a `createUseStickToBottomController` — same factory,
+Only the run holding the live tail — the run that IS the last node of
+`revealedNodes`, not merely the last run in it — gets a
+`createUseStickToBottomController`. Prose after a run closes it: the next
+activity row starts a new run, so a run with anything below it can never grow
+again. Since a settled turn usually ends `[…, activity_run, assistant_text]`,
+scanning backward past the prose would hand nearly every thread's last run a
+controller it can never use. Same factory,
 spring constants, fusion floor, and glide compositing as the main pane, so a
 streaming run feels identical to a streaming thread. Historical runs are
 plain `overflow-y: auto` with a restored `scrollTop`: they never chase, so a
@@ -253,13 +270,32 @@ would mount 500 rows the moment its single row entered the buffer.
 The window is `(rows, startItemId)` — a size and an **item id**, never an
 index, because both of a run's edges move and an index would silently slide
 the window across its content. A null start means "the run's tail", which is
-the default and where the window returns as soon as nothing is hidden below
-it. That self-normalization is what lets a jumped-into run resume following
-new activity without a separate gesture.
+the default.
 
 `utils/activityRunWindow.ts` owns the math; the registry resolves the pair to
 `(mountedFrom, mountedRows)` per pass, dropping an anchor whose row has left
-the run.
+the run and clamping one too late to fit a full window.
+
+### Following the tail is a fact about the reader
+
+A tail-following window drops one head row for every row appended — an
+implicit head trim. Under a reader who has scrolled up inside the clip that is
+exactly wrong: the rows they are reading slide up by a row height per append,
+and the one they were reading eventually unmounts from under them.
+
+So the row, not the registry, decides. While the inner controller is escaped,
+`ActivityRun.svelte` pins the window to its own head row
+(`setWindowAnchor`); new activity collects behind the `N later` boundary
+instead. Returning to the clip's bottom re-sticks the controller and releases
+the pin, and the run resumes following. A jump escapes deliberately, so it
+freezes the same way and releases by the same gesture.
+
+Both directions are load-bearing, and the release is the one that bites: a pin
+left behind after the reader returns would strand a live run behind its
+boundary while it kept streaming. The window is deliberately **not** released
+by geometry — an anchor means "the reader is up here", which is not a question
+the tail's position can answer. Historical runs have no controller and no tail
+to follow, so there is nothing to pin.
 
 - Default size is the `activityRunWindowRows` setting (30, clamped
   `[10, 200]`), sized to overfill the cap.
@@ -414,6 +450,14 @@ default window are feel-tuned on the 165Hz setup as with prior scroll work.
    omitted, so a late `payloadKind` can split a run.
 8. **A custom overlay scrollbar** rather than a native bar, because native
    costs width *and* rail alignment.
+9. **The plan's head-trim exemptions became one rule.** The plan said "trim
+   the head back to K — never while the user is scrolled up inside, never a
+   row with an active expansion lease." The window IS the trim, so the
+   exemption is where the behavior lives: it pins while the reader is escaped
+   (above). The expansion-lease exemption is then unnecessary — reaching a
+   body above the tail means scrolling up, which pins the window, and an
+   expansion made at the tail inflates the cap and stays mounted. Retention
+   keeps the state either way.
 
 ## Accepted tradeoffs
 
@@ -433,6 +477,17 @@ default window are feel-tuned on the 165Hz setup as with prior scroll work.
    `tool_completion` pairing into an older run, or a subagent group
    hydrating on expand, grows it without following. Correct — nobody is
    watching it — but an asymmetry, stated rather than assumed.
+
+   The visible edge of it: load-older paging that extends a short run at its
+   HEAD gives that run more children than its window, so the clip — which was
+   showing all of them, unscrolled — starts showing its oldest rows with the
+   ones the reader was looking at below the fold. Holding position across that
+   would mean measuring the clip before and after every mounted-set change,
+   and the mounted set changes on every appended row, so the cheap fix costs a
+   forced layout per streaming chunk on the live run. Left alone deliberately;
+   the frozen-window rule above covers the frequent case (the reader is inside
+   a run that is still streaming), and this one needs the reader to page older
+   while a short run is on screen.
 5. **Per-run state is session-only.** Matches item-expansion leases;
    promoting overrides into per-client `ui_state` later is additive.
 

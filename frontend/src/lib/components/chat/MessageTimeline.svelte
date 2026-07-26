@@ -143,15 +143,20 @@
   const rows = createTimelineRowProjection({ getPane: () => pane });
   let revealedNodes = $derived(rows.revealedNodes);
 
-  // At most one activity run gets a scroll controller: the last one, which
-  // is where new activity lands. Resolved here rather than inside the row
-  // because "last" is a property of the list, not of any node.
+  // At most one activity run gets a scroll controller: the run that IS the
+  // timeline's tail, which is where new activity lands. Resolved here rather
+  // than inside the row because "last" is a property of the list, not of any
+  // node.
+  //
+  // The tail node, not the last run in the list. Prose after a run means the
+  // next activity row starts a NEW run (prose breaks runs), so a run with
+  // anything below it will never grow again — and since a settled turn
+  // usually ends `[…, activity_run, assistant_text]`, scanning backward past
+  // the prose would hand nearly every thread's last run a spring, an
+  // observer set, and intent listeners it can never use.
   let liveRunId = $derived.by(() => {
-    for (let i = revealedNodes.length - 1; i >= 0; i -= 1) {
-      const node = revealedNodes[i];
-      if (node.kind === 'activity_run') return node.runId;
-    }
-    return null;
+    const tail = revealedNodes[revealedNodes.length - 1];
+    return tail?.kind === 'activity_run' ? tail.runId : null;
   });
 
   // Animation mode is keyed on whether LIVE timeline content advanced

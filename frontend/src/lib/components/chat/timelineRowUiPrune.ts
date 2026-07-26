@@ -80,6 +80,12 @@ export function createTimelineRowUiPrune(
     const signature = timelineRowUiPruneSignature({
       threadId: pane.threadId,
       timelineRevision: pane.timelineRevision,
+      // A run's mount window decides which of its children are retained, and
+      // it moves without touching structure: relocating a window mounts a
+      // different set of rows at the same node count, same range, same items.
+      // Without this the pass would bail as a no-op and keep retaining the
+      // window the user just left. One scalar, no tree walk.
+      activityRunRevision: pane.activityRuns.revision,
       revealTurnIndex: pane.revealBoundary?.turnIndex ?? '',
       revealItemIndex: pane.revealBoundary?.itemIndex ?? '',
       nodesLength: revealedNodes.length,

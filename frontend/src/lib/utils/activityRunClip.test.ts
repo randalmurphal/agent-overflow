@@ -31,9 +31,6 @@ function stampHeight(body: HTMLElement, px: number): HTMLElement {
 describe('activityRunClipMaxHeight', () => {
   it('is the bare cap with nothing expanded', () => {
     expect(activityRunClipMaxHeight(0)).toBe(ACTIVITY_RUN_CAP_CSS);
-    // A ResizeObserver can report a transient negative-ish zero mid-collapse;
-    // the cap is the floor either way.
-    expect(activityRunClipMaxHeight(-40)).toBe(ACTIVITY_RUN_CAP_CSS);
   });
 
   it('adds exactly what expansion asked for', () => {

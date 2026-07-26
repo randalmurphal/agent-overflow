@@ -47,6 +47,31 @@ function group(parentId: string, toolName = 'Task'): TimelineNode {
   };
 }
 
+/**
+ * A Codex wait carrier row, optionally with the standalone `wait_agent`
+ * completion that `WaitGroup` folds in as its header once the wait finishes.
+ */
+function waitGroup(parentId: string, completionId?: string): TimelineNode {
+  const parent = makeItem({ id: parentId, kind: 'tool_call', toolName: 'wait_agent' });
+  return {
+    kind: 'wait_group',
+    parent,
+    groupKey: parentId,
+    children: [],
+    descendantCount: 0,
+    loadedDescendantCount: 0,
+    latestChildSummary: '',
+    completion: completionId
+      ? makeItem({
+        id: completionId,
+        kind: 'tool_completion',
+        toolName: 'wait_agent',
+        completionOf: parentId,
+      })
+      : undefined,
+  };
+}
+
 function readGroup(ids: string[]): TimelineNode {
   const members = ids.map((id) => makeItem({ id, kind: 'tool_call', toolName: 'Read' }));
   return {
@@ -177,6 +202,23 @@ describe('member items', () => {
 
     expect(node.memberItemIds).toHaveLength(3);
     expect(node.children).toHaveLength(1);
+  });
+
+  it("lists a wait group's folded completion alongside its carrier", () => {
+    // `WaitGroup` renders the folded completion AS its header, so that item is
+    // where a finished wait's status lives. Leaving it out of the membership
+    // would let a collapsed chip hide an errored or killed wait — the one
+    // thing the chip promises never to do. It pairs with the carrier, so
+    // `activityRunSummary` still counts the wait once.
+    const nodes = project([waitGroup('w1', 'complete:w1'), tool('t1', 'Bash')]);
+
+    expect(run(nodes, 0).memberItemIds).toEqual(['w1', 'complete:w1', 't1']);
+  });
+
+  it('lists a still-running wait group by its carrier alone', () => {
+    const nodes = project([waitGroup('w1'), tool('t1', 'Bash')]);
+
+    expect(run(nodes, 0).memberItemIds).toEqual(['w1', 't1']);
   });
 });
 
