@@ -6,6 +6,7 @@ import { groupItemsBySubagent, timelineNodeKey } from '../../utils/subagentGroup
 import {
   bottomEdgeGeometry,
   captureTimelineAnchor,
+  captureTimelineTailAnchor,
   centeredScrollTop,
   createAutoLoadGate,
   isPureKeyedHeadDrop,
@@ -15,12 +16,24 @@ import {
   timelineRowElementForIndex,
   type AutoLoadGateState,
   type TimelineGeometry,
+  type TimelineTailGeometry,
 } from './timelineScroll';
 
 function geometry(indexForOffset: number, offsetForIndex: number): TimelineGeometry {
   return {
     findItemIndex: vi.fn(() => indexForOffset),
     getItemOffset: vi.fn(() => offsetForIndex),
+  };
+}
+
+function tailGeometry(
+  spec: { index: number; offset: number; size: number; viewport: number },
+): TimelineTailGeometry {
+  return {
+    findItemIndex: vi.fn(() => spec.index),
+    getItemOffset: vi.fn(() => spec.offset),
+    sizeAt: vi.fn(() => spec.size),
+    getViewportSize: vi.fn(() => spec.viewport),
   };
 }
 
@@ -105,6 +118,55 @@ describe('timelineScroll', () => {
       offsetTop: 40,
     });
     expect(g.getItemOffset).toHaveBeenLastCalledWith(1);
+  });
+
+  it('captures a tail anchor from the node under the viewport bottom', () => {
+    const nodes = groupItemsBySubagent([
+      makeItem({ id: 'a', summary: 'first' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
+    ]);
+    const g = tailGeometry({ index: 1, offset: 400, size: 120, viewport: 300 });
+
+    // Viewport bottom is 200 + 300 = 500; node 'b' runs 400..520, so its own
+    // bottom sits 20px past the edge — the gap a restore has to give back.
+    expect(captureTimelineTailAnchor(nodes, g, 200)).toEqual({
+      itemId: 'b',
+      offsetBottom: 20,
+    });
+    // `bottom - 1`: an offset exactly on a boundary belongs to the node below,
+    // which is the one the reader cannot see yet.
+    expect(g.findItemIndex).toHaveBeenCalledWith(499);
+  });
+
+  it('anchors the tail flush when a node ends exactly at the viewport bottom', () => {
+    const nodes = groupItemsBySubagent([makeItem({ id: 'a', summary: 'first' })]);
+    const g = tailGeometry({ index: 0, offset: 200, size: 300, viewport: 300 });
+
+    expect(captureTimelineTailAnchor(nodes, g, 200)?.offsetBottom).toBe(0);
+  });
+
+  it('clamps a tail anchor to the loaded node window', () => {
+    // The engine's index space can outrun the projected nodes mid-prune. The
+    // head anchor makes clamping opt-in; the tail anchor is only ever used for
+    // a deliberate height change, where returning null would silently drop the
+    // reader's position instead.
+    const nodes = groupItemsBySubagent([
+      makeItem({ id: 'a', summary: 'first' }),
+      makeItem({ id: 'b', itemIndex: 1, summary: 'second' }),
+    ]);
+    const g = tailGeometry({ index: 100, offset: 400, size: 120, viewport: 300 });
+
+    expect(captureTimelineTailAnchor(nodes, g, 200)).toEqual({
+      itemId: 'b',
+      offsetBottom: 20,
+    });
+  });
+
+  it('returns null when the virtualizer cannot map the viewport bottom', () => {
+    const nodes = groupItemsBySubagent([makeItem({ id: 'a', summary: 'first' })]);
+    const g = tailGeometry({ index: -1, offset: 0, size: 0, viewport: 300 });
+
+    expect(captureTimelineTailAnchor(nodes, g, 200)).toBeNull();
   });
 
   it('returns null when virtualizer cannot map the offset to a row', () => {

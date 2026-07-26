@@ -12,9 +12,32 @@ export interface TimelineAnchor {
   offsetTop: number;
 }
 
+/**
+ * A node held by its BOTTOM edge instead of its top.
+ *
+ * Which edge is held decides which way a height change moves the page. Holding
+ * a node above the change keeps the timeline growing downward, which is right
+ * when rows are being removed out from under a reader who is not looking at
+ * them (the window prune). Holding a node at the viewport's bottom sends the
+ * change upward instead, which is right when the reader ASKED for it: a run
+ * they expanded should reveal itself above the rows they are already reading,
+ * not shove those rows down the page.
+ */
+export interface TimelineTailAnchor {
+  itemId: string;
+  /** Node bottom minus viewport bottom — 0 when the two are flush. */
+  offsetBottom: number;
+}
+
 export interface TimelineGeometry {
   findItemIndex(offset: number): number;
   getItemOffset(index: number): number;
+}
+
+/** Adds what a bottom-edge anchor needs on top of `TimelineGeometry`. */
+export interface TimelineTailGeometry extends TimelineGeometry {
+  getViewportSize(): number;
+  sizeAt(index: number): number;
 }
 
 /**
@@ -121,6 +144,31 @@ export function captureTimelineAnchor(
   return {
     itemId: timelineNodeItemId(node),
     offsetTop: geometry.getItemOffset(idx) - offset,
+  };
+}
+
+/**
+ * The node the viewport's bottom edge is resting on, and how far past that edge
+ * its own bottom sits.
+ *
+ * `bottom - 1` rather than `bottom`, because an offset exactly on a node
+ * boundary belongs to the node BELOW it — the one the reader cannot see yet.
+ * Anchoring to that one would hold the wrong row still by exactly one row.
+ */
+export function captureTimelineTailAnchor(
+  nodes: readonly TimelineNode[],
+  geometry: TimelineTailGeometry,
+  offset: number,
+): TimelineTailAnchor | null {
+  const bottom = offset + geometry.getViewportSize();
+  const rawIdx = geometry.findItemIndex(Math.max(0, bottom - 1));
+  if (rawIdx < 0) return null;
+  const idx = Math.min(rawIdx, nodes.length - 1);
+  const node = nodes[idx];
+  if (!node) return null;
+  return {
+    itemId: timelineNodeItemId(node),
+    offsetBottom: geometry.getItemOffset(idx) + geometry.sizeAt(idx) - bottom,
   };
 }
 

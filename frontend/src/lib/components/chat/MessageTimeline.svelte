@@ -388,6 +388,7 @@
       stick.preserveScrollAnchor(anchor, action),
     markStructuralContentPending: () => stick.markStructuralContentPending(),
     preserveTimelineWindowAnchor: windowAnchor.preserveTimelineWindowAnchor,
+    preserveViewportBottom: windowAnchor.preserveViewportBottom,
   };
 
   $effect(() => {

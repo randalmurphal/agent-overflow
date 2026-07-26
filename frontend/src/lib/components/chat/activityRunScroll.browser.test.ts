@@ -21,8 +21,10 @@ import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import {
   mountTimeline,
   setupTimelineHarness,
+  userScrollTo,
   type QuietBottomOptions,
 } from '../../../test/helpers/timelineBrowserHarness';
+import { withViewportBottomHeld } from '../../stores/threadPaneShared';
 import { ACTIVITY_RUN_WINDOW_ROWS_DEFAULT as WINDOW_ROWS } from '../../utils/activityRunWindow';
 import type { Item } from '../../types/models';
 
@@ -296,5 +298,111 @@ describe('activity run — jump lands on the target', () => {
     // frame after the write.
     for (let i = 0; i < 30; i += 1) await raf();
     expect(isFullyVisible(clip, TARGET)).toBe(true);
+  });
+});
+
+describe('activity run — a toggle opens upward', () => {
+  // A run with prose BELOW it, so there is content whose position a collapse
+  // or expand could disturb. The whole question this suite asks is which side
+  // of the change absorbs it.
+  const THREAD_ID = 'thread-run-toggle';
+  // Scrollback ABOVE the run, and plenty: a collapse opens upward by taking
+  // scrollTop back, and a run near the top of a short thread has nowhere to
+  // take it from. That clamp is real (nothing can scroll above the first row)
+  // but it is not what these assertions are about.
+  const HEAD_PROSE = 12;
+  const TAIL_PROSE = 8;
+  function items(): Item[] {
+    const built: Item[] = [];
+    for (let i = 0; i < HEAD_PROSE; i += 1) built.push(prose(`h${i}`, i, THREAD_ID));
+    for (let i = 0; i < RUN_ROWS; i += 1) {
+      built.push(tool(`a${i}`, HEAD_PROSE + i, THREAD_ID));
+    }
+    for (let i = 0; i < TAIL_PROSE; i += 1) {
+      built.push(prose(`t${i}`, HEAD_PROSE + RUN_ROWS + i, THREAD_ID));
+    }
+    return built;
+  }
+
+  function rowTop(scrollEl: HTMLElement, itemId: string): number {
+    const row = scrollEl.querySelector(`[data-item-id="${itemId}"]`);
+    if (!(row instanceof HTMLElement)) throw new Error(`row ${itemId} is not rendered`);
+    return row.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
+  }
+
+  /** The toggle plus the frames its converging restore needs. */
+  async function toggleRail(run: HTMLElement): Promise<void> {
+    (run.querySelector('[data-testid="activity-run-rail"]') as HTMLElement).click();
+    await tick();
+    await raf();
+    await raf();
+    await raf();
+  }
+
+  it('holds the rows below a run still across collapse and expand', async () => {
+    const { scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
+    const run = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
+
+    // Put the run at the top of the viewport, so the prose after it fills the
+    // rest and the anchor the transaction picks is genuinely BELOW the change.
+    // A real reader scroll, wheel and all: a bare `scrollTop` write leaves the
+    // controller sticky, and a sticky transaction correctly re-pins the bottom
+    // instead of holding a row — which is the other half of this feature, and
+    // tested as such below.
+    await userScrollTo(
+      scrollEl,
+      scrollEl.scrollTop + run.getBoundingClientRect().top
+        - scrollEl.getBoundingClientRect().top,
+    );
+    await raf();
+
+    const runHeightBefore = run.getBoundingClientRect().height;
+    const proseBefore = rowTop(scrollEl, 't0');
+    expect(proseBefore).toBeGreaterThan(0);
+
+    await toggleRail(run);
+
+    // Vacuity guard: the run really did shrink, by much more than the drift
+    // this assertion tolerates. Without the anchor the prose would have risen
+    // by exactly this much.
+    const collapsedBy = runHeightBefore - run.getBoundingClientRect().height;
+    expect(collapsedBy).toBeGreaterThan(100);
+    expect(Math.abs(rowTop(scrollEl, 't0') - proseBefore)).toBeLessThanOrEqual(DRIFT_PX);
+
+    await toggleRail(run);
+
+    // And expanding gives the height back above the reader rather than pushing
+    // them down the page.
+    expect(run.getBoundingClientRect().height).toBeCloseTo(runHeightBefore, 0);
+    expect(Math.abs(rowTop(scrollEl, 't0') - proseBefore)).toBeLessThanOrEqual(DRIFT_PX);
+  });
+
+  it('stays pinned to the bottom through a bulk toggle, without a spring', async () => {
+    // Mounting settles at the bottom, which is where the spring would otherwise
+    // engage: the growth reaches the controller as "content grew while sticky"
+    // and it animates across the whole delta. Two frames is far inside any
+    // spring — reaching the bottom that fast IS the assertion.
+    const { pane, scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
+    const bottomGap = () => scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+    expect(bottomGap()).toBeLessThanOrEqual(2);
+    const heightBefore = scrollEl.scrollHeight;
+
+    withViewportBottomHeld(pane.scrollController, () => {
+      pane.activityRuns.setAllCollapsed(true);
+    });
+    await tick();
+    await raf();
+    await raf();
+    expect(scrollEl.scrollHeight).toBeLessThan(heightBefore);
+    expect(bottomGap()).toBeLessThanOrEqual(2);
+
+    withViewportBottomHeld(pane.scrollController, () => {
+      pane.activityRuns.setAllCollapsed(false);
+    });
+    await tick();
+    await raf();
+    await raf();
+    expect(scrollEl.scrollHeight).toBeCloseTo(heightBefore, 0);
+    expect(bottomGap()).toBeLessThanOrEqual(2);
   });
 });

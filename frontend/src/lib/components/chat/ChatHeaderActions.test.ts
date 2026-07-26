@@ -134,6 +134,37 @@ describe('<ChatHeaderActions> badge gating', () => {
     expect(pane.activityRuns.bulkCollapsed).toBe(false);
   });
 
+  it('runs the bulk toggle inside the viewport-bottom transaction', async () => {
+    // Collapse-all is the largest height change in the app. Applied bare it
+    // pushes the reader's rows down the page and, from the bottom, springs the
+    // viewport across the whole delta.
+    const pane = await buildPane();
+    const held: Array<() => void> = [];
+    pane.attachScrollController({
+      pauseAutoScroll: () => () => {},
+      observe: () => {},
+      markStructuralContentPending: () => {},
+      preserveScrollAnchor: async () => {},
+      preserveViewportBottom: (change) => {
+        held.push(change);
+      },
+    });
+    installSubscribeMock(status({}));
+    const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+
+    await fireEvent.click(getByTestId('activity-runs-toggle'));
+    await flush();
+
+    // Withheld, so the toggle demonstrably did not reach the registry on its
+    // own — the transaction owns when it applies.
+    expect(held).toHaveLength(1);
+    expect(pane.activityRuns.bulkCollapsed).toBe(false);
+
+    held[0]();
+    expect(pane.activityRuns.bulkCollapsed).toBe(true);
+  });
+
   it('hides the run toggle on a design thread, which has no transcript runs', async () => {
     const pane = await buildPane(makeThread({ mode: 'design' }));
     installSubscribeMock(status({}));

@@ -168,11 +168,41 @@ export interface PaneScrollController {
   preserveTimelineWindowAnchor?(
     operation: TimelineWindowAnchorOperation,
   ): boolean;
+  /**
+   * Run a deliberate height change with the viewport's BOTTOM edge held, so it
+   * opens upward instead of pushing the reader's rows down the page — and
+   * without the spring, which would otherwise animate across the whole delta.
+   *
+   * Optional for the same reason the anchor transaction is: ChannelView
+   * registers a raw controller with no virtualizer behind it. Go through
+   * `withViewportBottomHeld` rather than reaching for it directly.
+   */
+  preserveViewportBottom?(change: () => void): void;
 }
 
 export interface TimelineWindowAnchorOperation {
   keepsItem(itemId: string): boolean;
   run(): void;
+}
+
+/**
+ * Apply `change` with the viewport's bottom edge held, wherever the pane's
+ * controller can do that, and plainly wherever it cannot.
+ *
+ * The fallback is the whole reason this exists: a caller that wrote
+ * `controller?.preserveViewportBottom?.(change)` would silently do NOTHING on a
+ * surface without one, and the run would simply not collapse.
+ */
+export function withViewportBottomHeld(
+  controller: PaneScrollController | null,
+  change: () => void,
+): void {
+  const hold = controller?.preserveViewportBottom;
+  if (!hold) {
+    change();
+    return;
+  }
+  hold.call(controller, change);
 }
 
 export interface ScrollToItemOptions {

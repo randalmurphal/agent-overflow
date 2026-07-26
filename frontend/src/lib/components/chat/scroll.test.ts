@@ -1671,6 +1671,7 @@ describe('scroll integration — useStickToBottom wiring', () => {
     expect(typeof pane.scrollController?.observe).toBe('function');
     expect(typeof pane.scrollController?.preserveScrollAnchor).toBe('function');
     expect(typeof pane.scrollController?.preserveTimelineWindowAnchor).toBe('function');
+    expect(typeof pane.scrollController?.preserveViewportBottom).toBe('function');
   });
 
   it('vetoes timeline-window pruning when it would drop the visible anchor', async () => {

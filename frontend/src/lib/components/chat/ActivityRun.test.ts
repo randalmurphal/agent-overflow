@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { loadSettings, updateSetting } from '../../stores/settings.svelte';
@@ -263,6 +263,23 @@ describe('<ActivityRun>', () => {
 
       expect(getByTestId('activity-run-clip')).toBeInTheDocument();
       expect(getByTestId('activity-run').getAttribute('data-collapsed')).toBe('false');
+    });
+
+    it('collapses from the rail inside the viewport-bottom transaction', async () => {
+      // The rail is a height change the reader asked for, so it opens upward
+      // over the rows above rather than moving the rows below them. Which way
+      // it lands is real geometry (activityRunScroll.browser.test.ts); that the
+      // rail routes through the transaction at all is asserted here.
+      const { getByTestId, pane } = await renderRun([tool('t0', 0), tool('t1', 1)]);
+      const controller = pane.scrollController;
+      if (!controller?.preserveViewportBottom) throw new Error('timeline published no controller');
+      const held = vi.spyOn(controller, 'preserveViewportBottom');
+
+      await fireEvent.click(getByTestId('activity-run-rail'));
+      await tick();
+
+      expect(held).toHaveBeenCalledTimes(1);
+      expect(getByTestId('activity-run').getAttribute('data-collapsed')).toBe('true');
     });
 
     it('keeps no reading position across a collapse', async () => {

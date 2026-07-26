@@ -124,6 +124,13 @@ Operational rules for this directory:
   and window anchor both), so it reopens on its newest row. `saveScrollSnapshot`
   refuses a save for a collapsed run because the chip's own teardown routes
   through it — do not "fix" that by moving the check to the call site.
+- **Every collapse/expand runs inside `withViewportBottomHeld`** (rail, chip,
+  and the header's bulk toggle). It holds the viewport's BOTTOM edge, so the run
+  opens upward over rows the reader is already reading rather than pushing them
+  down the page, and it pauses the spring so a toggle while bottom-pinned is
+  instant instead of an animated ride across the delta. A new caller that
+  mutates run collapse state must go through it —
+  `docs/architecture/frontend-scroll.md` §Reader-Requested Height Changes.
 - **The rail is the only per-run collapse control and it is invisible by
   design.** The header's `activity-runs-toggle` is the visible affordance and
   the bulk action; it renders from `activityRuns.bulkCollapsed`, never from a

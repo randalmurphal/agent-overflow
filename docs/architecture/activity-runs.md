@@ -231,6 +231,25 @@ Reset by `clear()`: it is a view action taken on one thread, and carrying it
 into an unrelated one would surprise. A run the reader toggles afterwards
 takes its own override again, on top.
 
+### A toggle opens upward
+
+Every path that flips collapse state — the rail, the chip, the header's bulk
+toggle — runs inside `withViewportBottomHeld`, which holds the viewport's
+BOTTOM edge across the change (see
+[frontend-scroll.md §Reader-Requested Height Changes](frontend-scroll.md#reader-requested-height-changes)).
+
+Two things follow, and both are the reason it exists. A run expands over the
+rows above it instead of shoving the rows the reader is looking at down the
+page — the change lands on the side of the viewport they are not reading — and
+collapsing gives that height back the same way. And the spring is paused for
+the duration: a toggle while bottom-pinned would otherwise reach the scroll
+controller as content growth and animate across the whole delta, which for a
+collapse-all is most of the conversation.
+
+The one thing it cannot do is open upward past the top of the thread. Opening
+upward spends `scrollTop`, so a run near the start of a short thread clamps at
+0 and the remainder falls downward.
+
 ### Collapsing forgets the reading position
 
 Collapsing drops the run's scroll snapshot **and** its window anchor

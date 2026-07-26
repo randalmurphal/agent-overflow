@@ -20,6 +20,7 @@
   import type { Snippet } from 'svelte';
   import { tick } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { withViewportBottomHeld } from '../../stores/threadPaneShared';
   import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping';
   import { timelineNodeItemId, timelineNodeKey } from '../../utils/subagentGrouping';
   import {
@@ -132,8 +133,15 @@
     run.collapsed ? 'Expand activity run' : 'Collapse activity run',
   );
 
+  // Held at the viewport's bottom edge: a run the reader just expanded opens
+  // UPWARD, above the rows they are already reading, instead of shoving those
+  // rows down the page — and collapsing gives that height back the same way.
+  // The transaction also keeps the spring out of it, so an expand while stuck
+  // at the bottom is instant rather than an animated ride across the delta.
   function toggle(): void {
-    pane.activityRuns.toggleCollapsed(run.runId);
+    withViewportBottomHeld(pane.scrollController, () => {
+      pane.activityRuns.toggleCollapsed(run.runId);
+    });
   }
 
   // Guards `mountEarlier` against overlap. Deliberately a plain local, not

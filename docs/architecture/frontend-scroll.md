@@ -276,6 +276,40 @@ the window they describe, and a folded id arriving again over the wire
 subagent memory is O(active children), not O(transcript), and the window
 cap counts only renderable rows.
 
+## Reader-Requested Height Changes
+
+A height change the reader ASKED for — today, an activity run collapsing or
+expanding, including the header's collapse-all — goes through
+`PaneScrollController.preserveViewportBottom` (`timelineWindowAnchor.svelte.ts`,
+the same module as the prune transaction, reached from components via
+`withViewportBottomHeld`). It shares the prune's shape — capture intent, pause
+the spring, run the change, restore after the flush — and differs in which edge
+it holds:
+
+- **The prune holds the TOP.** Rows vanish from an edge nobody is looking at,
+  so the first visible row keeps its offset and the change is absorbed below.
+- **A toggle holds the BOTTOM** (`captureTimelineTailAnchor`, restored with
+  `scrollToIndex(align: 'end')`). The change is absorbed ABOVE the viewport:
+  an expanded run reveals itself over the rows the reader is already reading
+  instead of shoving them down the page, and collapsing gives the height back
+  the same way. Holding a row above the change is what makes a toggle "open
+  downward", which is the wrong direction for something they clicked.
+
+The `pauseAutoScroll` half is not incidental. Without it an expand while
+bottom-pinned reaches the controller as content growth and springs across the
+whole delta — for a collapse-all, most of the conversation, animated. Under the
+transaction the sticky branch instantly re-pins the new bottom, so there is
+nothing left to animate.
+
+Both restores rely on `scrollToIndex` converging: the target is recomputed as
+measurements land, so one `tick()` is enough to schedule a restore whose rows
+have not been measured yet.
+
+**Bounded by the scrollback that exists.** Opening upward spends `scrollTop`,
+and a run near the top of a thread may not have enough — the write clamps at 0
+and the remainder falls downward. Inherent (nothing scrolls above the first
+row), not a fallback path.
+
 ## Warm-Up And Restore
 
 A fresh timeline mount places unmeasured rows at estimated heights and
