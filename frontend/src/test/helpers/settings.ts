@@ -21,6 +21,8 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     defaultThreadEnvMode: 'local',
     worktreeBranchPrefix: 'ao-',
     paneDensity: 'compact',
+    activityRunDefault: 'expanded',
+    activityRunWindowRows: 30,
     textGenerationProvider: 'codex',
     textGenerationModel: '',
     textGenerationReasoningEffort: 'low',

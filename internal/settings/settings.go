@@ -130,6 +130,18 @@ type Settings struct {
 	// "spacious"}.
 	PaneDensity string `json:"paneDensity"`
 
+	// ActivityRunDefault is the starting state for a run of consecutive
+	// tool/thinking rows in the transcript. One of {"expanded",
+	// "collapsed"}. Applies to every run the user has not explicitly
+	// toggled, including the live one -- with "collapsed" a streaming run
+	// shows as a chip with counts ticking until opened.
+	ActivityRunDefault string `json:"activityRunDefault"`
+
+	// ActivityRunWindowRows is how many of a run's newest rows stay mounted.
+	// Sized to overfill the run's height cap so its tail always has content
+	// below the fold; older rows mount on demand behind an "N earlier" line.
+	ActivityRunWindowRows int `json:"activityRunWindowRows"`
+
 	// TextGenerationProvider selects which CLI drives non-chat text
 	// generation (commit messages today; PR bodies and thread titles
 	// eventually). Mirrors t3-code's RoutingTextGeneration: one of
@@ -277,6 +289,10 @@ var DefaultSettings = Settings{
 	DefaultThreadEnvMode: "local",
 	WorktreeBranchPrefix: "ao-",
 	PaneDensity:          "compact",
+	// Expanded preserves today's visibility semantics: nothing a user can
+	// currently see becomes hidden by upgrading.
+	ActivityRunDefault:    "expanded",
+	ActivityRunWindowRows: 30,
 	// Text-generation defaults: Codex is cheap + fast for short JSON
 	// responses, so it's the sensible default. The model stays empty
 	// so the call site picks the per-provider default; if the user

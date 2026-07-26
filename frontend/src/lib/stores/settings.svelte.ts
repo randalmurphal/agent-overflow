@@ -24,6 +24,8 @@ const DEFAULT_SETTINGS: Settings = {
   defaultThreadEnvMode: "local",
   worktreeBranchPrefix: "ao-",
   paneDensity: "compact",
+  activityRunDefault: "expanded",
+  activityRunWindowRows: 30,
   // Text generation defaults mirror internal/settings.DefaultSettings.
   textGenerationProvider: "codex",
   textGenerationModel: "",

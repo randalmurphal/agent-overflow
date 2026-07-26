@@ -5,6 +5,7 @@
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import PaneDensitySection from './PaneDensitySection.svelte';
+  import ActivityRunSection from './ActivityRunSection.svelte';
   import GitLabHostsSection from './GitLabHostsSection.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
 
@@ -195,6 +196,8 @@
   </section>
 
   <PaneDensitySection />
+
+  <ActivityRunSection />
 
   <section data-testid="settings-thread-defaults">
     <SettingsHeader

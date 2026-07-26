@@ -55,6 +55,10 @@ var (
 		"comfortable": {},
 		"spacious":    {},
 	}
+	allowedActivityRunDefaults = map[string]struct{}{
+		"expanded":  {},
+		"collapsed": {},
+	}
 	allowedProjectSortModes = map[string]struct{}{
 		"lastActivity": {},
 		"createdAt":    {},
@@ -123,6 +127,18 @@ func validateSettings(current Settings) (Settings, error) {
 
 	current.PaneDensity = strings.TrimSpace(current.PaneDensity)
 	if err := validateOption("paneDensity", current.PaneDensity, allowedPaneDensities); err != nil {
+		return Settings{}, err
+	}
+
+	current.ActivityRunDefault = strings.TrimSpace(current.ActivityRunDefault)
+	if err := validateOption(
+		"activityRunDefault",
+		current.ActivityRunDefault,
+		allowedActivityRunDefaults,
+	); err != nil {
+		return Settings{}, err
+	}
+	if err := validateActivityRunWindowRows(current.ActivityRunWindowRows); err != nil {
 		return Settings{}, err
 	}
 
@@ -262,6 +278,13 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.PaneDensity,
 		allowedPaneDensities,
 	)
+	current.ActivityRunDefault = sanitizeOption(
+		"activityRunDefault",
+		current.ActivityRunDefault,
+		DefaultSettings.ActivityRunDefault,
+		allowedActivityRunDefaults,
+	)
+	current.ActivityRunWindowRows = sanitizeActivityRunWindowRows(current.ActivityRunWindowRows)
 
 	current.TextGenerationProvider = sanitizeOption(
 		"textGenerationProvider",
@@ -385,6 +408,50 @@ const (
 	MinFontSize = 10
 	MaxFontSize = 20
 )
+
+// Bounds for ActivityRunWindowRows. The floor keeps the tail window large
+// enough to overfill a run's height cap -- below it the clip would show
+// blank space under the last mounted row. The ceiling is a DOM-cost guard:
+// the whole point of the window is that a run's mounted rows stay O(K)
+// regardless of how long the run is.
+const (
+	MinActivityRunWindowRows = 10
+	MaxActivityRunWindowRows = 200
+)
+
+func validateActivityRunWindowRows(value int) error {
+	if value < MinActivityRunWindowRows || value > MaxActivityRunWindowRows {
+		return fmt.Errorf(
+			"activityRunWindowRows must be between %d and %d",
+			MinActivityRunWindowRows,
+			MaxActivityRunWindowRows,
+		)
+	}
+	return nil
+}
+
+// sanitizeActivityRunWindowRows clamps rather than falling back to the
+// default: an out-of-range value still expresses a direction (the user
+// wanted more or fewer rows), and the nearest legal value honors that.
+// Matches sanitizeRetentionDays; contrast sanitizeFontSize, where an
+// out-of-range point size carries no usable intent.
+func sanitizeActivityRunWindowRows(value int) int {
+	if value < MinActivityRunWindowRows {
+		log.Printf(
+			"settings: activityRunWindowRows %d below %d, clamping",
+			value, MinActivityRunWindowRows,
+		)
+		return MinActivityRunWindowRows
+	}
+	if value > MaxActivityRunWindowRows {
+		log.Printf(
+			"settings: activityRunWindowRows %d exceeds %d, clamping",
+			value, MaxActivityRunWindowRows,
+		)
+		return MaxActivityRunWindowRows
+	}
+	return value
+}
 
 func validateFontSize(field string, value int) error {
 	if value < MinFontSize || value > MaxFontSize {

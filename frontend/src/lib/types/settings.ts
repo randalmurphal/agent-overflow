@@ -38,6 +38,7 @@ export type ThreadEnvMode = "local" | "worktree";
 export type SansFont = "geist" | "hack-nerd" | "system";
 export type MonoFont = "geist" | "hack-nerd" | "system";
 export type PaneDensityMode = "compact" | "comfortable" | "spacious";
+export type ActivityRunDefaultMode = "expanded" | "collapsed";
 export type ProjectSortMode = "lastActivity" | "createdAt" | "manual";
 
 export interface PaneLayoutPersistedPane {
@@ -106,6 +107,8 @@ export interface Settings {
   worktreeBranchPrefix: string;
   /** Minimum pane width preset used by the workspace pane host. */
   paneDensity: PaneDensityMode;
+  activityRunDefault: ActivityRunDefaultMode;
+  activityRunWindowRows: number;
   /**
    * Text generation: which CLI writes commit messages / PR bodies /
    * thread titles. Independent of the chat provider so a user on Claude

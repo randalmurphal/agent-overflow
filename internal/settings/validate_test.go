@@ -28,6 +28,10 @@ func TestUpdateRejectsInvalidEnumeratedValues(t *testing.T) {
 			patch: map[string]any{"textGenerationProvider": "anthropic"},
 		},
 		{
+			name:  "activityRunDefault",
+			patch: map[string]any{"activityRunDefault": "windowed"},
+		},
+		{
 			name:  "textGenerationReasoningEffort",
 			patch: map[string]any{"textGenerationReasoningEffort": "turbo"},
 		},
@@ -615,5 +619,80 @@ func TestUpdateDefaultsBlankBinaryPaths(t *testing.T) {
 	}
 	if got.CodexBinaryPath != DefaultSettings.CodexBinaryPath {
 		t.Fatalf("CodexBinaryPath = %q, want %q", got.CodexBinaryPath, DefaultSettings.CodexBinaryPath)
+	}
+}
+
+func TestActivityRunDefaultsAreExpandedAndThirty(t *testing.T) {
+	got := NewService(t.TempDir()).Get()
+	if got.ActivityRunDefault != "expanded" {
+		t.Fatalf("ActivityRunDefault default = %q, want %q", got.ActivityRunDefault, "expanded")
+	}
+	if got.ActivityRunWindowRows != 30 {
+		t.Fatalf("ActivityRunWindowRows default = %d, want 30", got.ActivityRunWindowRows)
+	}
+}
+
+func TestActivityRunSettingsRoundTrip(t *testing.T) {
+	svc := NewService(t.TempDir())
+
+	got, err := svc.Update(map[string]any{"activityRunDefault": "collapsed"})
+	if err != nil {
+		t.Fatalf("activityRunDefault=collapsed: %v", err)
+	}
+	if got.ActivityRunDefault != "collapsed" {
+		t.Fatalf("ActivityRunDefault = %q, want %q", got.ActivityRunDefault, "collapsed")
+	}
+
+	for _, rows := range []int{MinActivityRunWindowRows, 55, MaxActivityRunWindowRows} {
+		got, err = svc.Update(map[string]any{"activityRunWindowRows": rows})
+		if err != nil {
+			t.Fatalf("activityRunWindowRows=%d: %v", rows, err)
+		}
+		if got.ActivityRunWindowRows != rows {
+			t.Fatalf("ActivityRunWindowRows = %d, want %d", got.ActivityRunWindowRows, rows)
+		}
+	}
+}
+
+func TestActivityRunWindowRowsRejectsOutOfRange(t *testing.T) {
+	svc := NewService(t.TempDir())
+
+	for _, rows := range []int{0, MinActivityRunWindowRows - 1, MaxActivityRunWindowRows + 1} {
+		if _, err := svc.Update(map[string]any{"activityRunWindowRows": rows}); err == nil {
+			t.Fatalf("activityRunWindowRows=%d: expected error, got nil", rows)
+		}
+	}
+}
+
+// Hand-edited files clamp toward the nearest legal value rather than
+// snapping back to the default: an out-of-range row count still expresses
+// a direction, unlike an out-of-range font size.
+func TestActivityRunWindowRowsClampsOnLoad(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want int
+	}{
+		{raw: `{"activityRunWindowRows": 5}`, want: MinActivityRunWindowRows},
+		{raw: `{"activityRunWindowRows": 9999}`, want: MaxActivityRunWindowRows},
+		{raw: `{"activityRunWindowRows": 0}`, want: MinActivityRunWindowRows},
+	} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(tc.raw), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if got := NewService(dir).Get(); got.ActivityRunWindowRows != tc.want {
+			t.Fatalf("%s: ActivityRunWindowRows = %d, want %d", tc.raw, got.ActivityRunWindowRows, tc.want)
+		}
+	}
+}
+
+func TestActivityRunDefaultSanitizesOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	raw := []byte(`{"activityRunDefault": "windowed"}`)
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), raw, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := NewService(dir).Get(); got.ActivityRunDefault != DefaultSettings.ActivityRunDefault {
+		t.Fatalf("ActivityRunDefault = %q, want %q", got.ActivityRunDefault, DefaultSettings.ActivityRunDefault)
 	}
 }
