@@ -25,6 +25,13 @@ function request(overrides: Partial<UserInputRequest> = {}): UserInputRequest {
   };
 }
 
+/** Text of the one visible preview layer inside the side-by-side cell. */
+function activePreviewText(getByTestId: (id: string) => HTMLElement): string {
+  const layer = getByTestId('user-input-preview')
+    .querySelector('[data-user-input-preview][data-active="true"]');
+  return layer?.textContent ?? '';
+}
+
 describe('<ComposerPendingUserInputPanel>', () => {
   it('does not auto-submit when the user clicks an option', async () => {
     // Mouse click should select only — auto-advance/auto-submit is the
@@ -279,14 +286,17 @@ describe('<ComposerPendingUserInputPanel>', () => {
       },
     });
 
-    expect(getByTestId('user-input-preview').textContent ?? '').toContain('first preview');
+    // Every option's preview is laid out (that is what keeps the cell's
+    // height stable); only the active layer is visible, so assert on it
+    // rather than on the cell's full textContent.
+    expect(activePreviewText(getByTestId)).toContain('first preview');
     await fireEvent.keyDown(window, { key: 'ArrowDown' });
-    expect(getByTestId('user-input-preview').textContent ?? '').toContain('second preview');
+    expect(activePreviewText(getByTestId)).toContain('second preview');
     await fireEvent.keyDown(window, { key: 'ArrowUp' });
-    expect(getByTestId('user-input-preview').textContent ?? '').toContain('first preview');
+    expect(activePreviewText(getByTestId)).toContain('first preview');
     // Clamps at top — does not wrap.
     await fireEvent.keyDown(window, { key: 'ArrowUp' });
-    expect(getByTestId('user-input-preview').textContent ?? '').toContain('first preview');
+    expect(activePreviewText(getByTestId)).toContain('first preview');
   });
 
   it('moves DOM focus through options with j/k and down into the composer textarea', async () => {

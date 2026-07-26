@@ -75,9 +75,6 @@
   const hasPreviews = $derived(
     !!question && !question.multiSelect && (question.options?.some((option) => option.preview?.trim()) ?? false),
   );
-  const focusedPreview = $derived(
-    hasPreviews ? (question?.options?.[focusedOptionIndex]?.preview ?? '') : '',
-  );
 
   $effect(() => {
     if (!question) return;
@@ -408,7 +405,11 @@
         class="mt-3 grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-3"
         data-testid="user-input-options"
       >
-        <div class="grid gap-1.5">
+        <!-- content-start: the option column is a stretch-aligned grid item,
+             so without it its auto rows absorb the preview column's spare
+             height and every button grows with the preview. Buttons keep
+             their natural height and pack to the top. -->
+        <div class="grid content-start gap-1.5">
           {#each question.options as option, optionIndex (option.label)}
             {@const selected = selectedAnswers(answers, question).includes(option.label)}
             <UserInputOptionButton
@@ -425,15 +426,42 @@
             />
           {/each}
         </div>
+        <!--
+          Every option's preview is laid out in the SAME grid cell; all but
+          the focused one are `invisible` (which still occupies layout). The
+          cell is therefore sized by the tallest preview and does not change
+          height when focus moves.
+
+          That invariance is load-bearing, not cosmetic. Hover sets focus
+          (UserInputOptionButton's onmouseenter), and this panel lives in the
+          bottom-anchored composer overlay — a focus-sized cell resizes the
+          panel upward under a stationary cursor, slides a different option
+          under the pointer, fires its mouseenter, and oscillates until the
+          user moves the mouse out of the band. Sizing the cell to the option
+          set instead of the selection removes the feedback edge entirely.
+
+          Per-layer max-h-60 + overflow-y-auto (rather than one on the cell)
+          keeps each preview's scroll independent and caps the cell at the
+          same 240px, since the row can only be as tall as its tallest layer.
+        -->
         <div
-          class="max-h-60 overflow-y-auto rounded border border-border-subtle bg-surface-0 px-2.5 py-1.5"
+          class="grid rounded border border-border-subtle bg-surface-0 px-2.5 py-1.5"
           data-testid="user-input-preview"
         >
-          {#if focusedPreview.trim()}
-            <ChatMarkdown source={focusedPreview} {workspacePath} class="text-xs" />
-          {:else}
-            <p class="text-xs text-fg-muted italic">No preview for this option.</p>
-          {/if}
+          {#each question.options as option, previewIndex (option.label)}
+            {@const active = previewIndex === focusedOptionIndex}
+            <div
+              class="col-start-1 row-start-1 min-w-0 max-h-60 overflow-y-auto {active ? '' : 'invisible'}"
+              data-user-input-preview
+              data-active={active ? 'true' : 'false'}
+            >
+              {#if option.preview?.trim()}
+                <ChatMarkdown source={option.preview} {workspacePath} class="text-xs" />
+              {:else}
+                <p class="text-xs text-fg-muted italic">No preview for this option.</p>
+              {/if}
+            </div>
+          {/each}
         </div>
       </div>
     {:else}
