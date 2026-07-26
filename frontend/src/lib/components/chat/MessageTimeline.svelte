@@ -744,6 +744,7 @@
           onscrollend={handleTimelineScrollEnd}
           onCompensation={stick.applyEngineCompensation}
           applyScrollTarget={stick.applyScrollTarget}
+          trackReadingAnchor={() => !stick.isAtBottom || stick.escapedFromLock}
           onContentGeometry={stick.deliverContentGeometry}
         >
           {#snippet children(node: TimelineNode, index: number)}

@@ -110,12 +110,140 @@ describe('applyMeasurements', () => {
     expect(update?.totalSize).toBe(1100);
   });
 
-  it('a row straddling the viewport top does not compensate', () => {
+  it('a row straddling the viewport top does not compensate without attribution', () => {
     const engine = mountedEngine();
     engine.applyScroll(350);
-    // Row 3 spans [300, 400): starts above 350 but ends below it.
+    // Row 3 spans [300, 400): starts above 350 but ends below it. Whole-row
+    // [index, size] cannot say which side of 350 the +100 landed on, so
+    // with no measurer the engine compensates nothing.
     const update = engine.applyMeasurements([[3, 200]]);
     expect(update?.compensation).toBeUndefined();
+  });
+});
+
+describe('applyMeasurements — straddling-row attribution', () => {
+  it('compensates the measured part of the delta that landed above the top', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(350);
+    // Row 3 spans [300, 400) and grows by 100; 40 of it landed above 350.
+    const update = engine.applyMeasurements([[3, 200]], () => 40);
+    expect(update?.compensation).toEqual({ kind: 'remeasure-above', delta: 40, target: 390 });
+  });
+
+  it('asks only about the row that spans the top, and only once', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(350);
+    const asked: number[] = [];
+    // Rows 1 (fully above), 3 (straddling), 6 (fully below) all change.
+    engine.applyMeasurements(
+      [
+        [1, 150],
+        [3, 200],
+        [6, 150],
+      ],
+      (index) => {
+        asked.push(index);
+        return 40;
+      },
+    );
+    expect(asked).toEqual([3]);
+  });
+
+  it('never asks about a row whose height did not actually move', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(350);
+    const asked: number[] = [];
+
+    // First measurement landing exactly on the estimate: recorded
+    // (UNMEASURED → 100) but zero delta, so there is nothing to attribute.
+    expect(engine.applyMeasurements([[3, 100]], (index) => {
+      asked.push(index);
+      return 40;
+    })).not.toBeNull();
+    expect(asked).toEqual([]);
+
+    // Re-delivering the same size filters out before the loop entirely.
+    expect(engine.applyMeasurements([[3, 100]], (index) => {
+      asked.push(index);
+      return 40;
+    })).toBeNull();
+    expect(asked).toEqual([]);
+  });
+
+  it('composes with the exact above-viewport sum', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(350);
+    const update = engine.applyMeasurements(
+      [
+        [0, 160], // fully above: exact +60
+        [3, 200], // straddling: measured +40 of its +100
+      ],
+      () => 40,
+    );
+    expect(update?.compensation?.delta).toBe(100);
+  });
+
+  it('clamps an over-reported shift to the row delta', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(350);
+    // A stale anchor claims 400 of a 100px growth landed above the top.
+    const update = engine.applyMeasurements([[3, 200]], () => 400);
+    expect(update?.compensation?.delta).toBe(100);
+  });
+
+  it('clamps a sign-flipped shift to zero (degrades to compensating nothing)', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(350);
+    // Row grew, measurer says content above the reading position moved UP.
+    const update = engine.applyMeasurements([[3, 200]], () => -400);
+    expect(update?.compensation).toBeUndefined();
+  });
+
+  it('mirrors both clamps for a shrinking row', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(350);
+    expect(engine.applyMeasurements([[3, 40]], () => -30)?.compensation?.delta).toBe(-30);
+
+    const over = mountedEngine();
+    over.applyScroll(350);
+    expect(over.applyMeasurements([[3, 40]], () => -400)?.compensation?.delta).toBe(-60);
+
+    const flipped = mountedEngine();
+    flipped.applyScroll(350);
+    expect(flipped.applyMeasurements([[3, 40]], () => 400)?.compensation).toBeUndefined();
+  });
+
+  it('treats a non-finite measurement as no information', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(350);
+    expect(engine.applyMeasurements([[3, 200]], () => NaN)?.compensation).toBeUndefined();
+  });
+
+  it('does not ask about the row exactly at the viewport top', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(300);
+    // Row 3 starts exactly at 300 — entirely at/below the top, so its
+    // growth pushes content down and needs no compensation at all.
+    const asked: number[] = [];
+    engine.applyMeasurements([[3, 200]], (index) => {
+      asked.push(index);
+      return 40;
+    });
+    expect(asked).toEqual([]);
+  });
+
+  it('does not ask about a row that ends exactly at the viewport top', () => {
+    const engine = mountedEngine();
+    engine.applyScroll(400);
+    // Row 3 spans [300, 400): entirely above, so it compensates exactly and
+    // the measured path must not double-count it.
+    const asked: number[] = [];
+    const update = engine.applyMeasurements([[3, 200]], (index) => {
+      asked.push(index);
+      return 40;
+    });
+    expect(asked).toEqual([]);
+    expect(update?.compensation?.delta).toBe(100);
   });
 
   it('a mixed batch sums only the rows above the viewport', () => {

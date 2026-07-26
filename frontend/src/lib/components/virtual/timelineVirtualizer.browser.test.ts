@@ -47,6 +47,7 @@ function mountHarness(
     onscrollend: () => void;
     onCompensation: (compensation: EngineCompensation) => void;
     onContentGeometry: (sample: ContentGeometrySample) => void;
+    trackReadingAnchor: () => boolean;
   }> = {},
 ) {
   const host = document.createElement('div');
@@ -230,6 +231,142 @@ describe('ownership: the adapter never writes scrollTop', () => {
     );
     expect(rowEl(scrollEl, 'row-0')).toBe(row0Before);
     expect(rowEl(scrollEl, 'prepended')).not.toBeNull();
+  });
+});
+
+describe('straddling-row attribution (reading anchor)', () => {
+  // A tall row spanning the viewport top is the one row whole-row
+  // [index, height] can't classify: growth in its off-screen-above part
+  // shifts everything visible down; growth below the top is ordinary
+  // reflow. The adapter measures the split against a hit-tested anchor and
+  // the engine folds the bounded result into the same compensation.
+  //
+  // Fixture: 10 short rows (1000px), then one 1200px row split into a
+  // 400px head and an 800px body, then more short rows. At scrollTop 1500
+  // the tall row spans [1000, 2200) and the viewport top sits 500px into
+  // it — inside the BODY, 100px past the head. Growing the head therefore
+  // pushes the reading position down by exactly the head's growth.
+  const SHORT_PX = 100;
+  const TALL_PX = 1200;
+  const HEAD_PX = 400;
+  const TALL_INDEX = 10;
+  const STRADDLE_SCROLL_TOP = 1500;
+
+  function straddleRows(): HarnessRow[] {
+    return [
+      ...Array.from({ length: TALL_INDEX }, (_, i) => ({
+        id: `row-${i}`,
+        heightPx: SHORT_PX,
+        label: `Row ${i}`,
+      })),
+      { id: 'tall', heightPx: TALL_PX, headPx: HEAD_PX, label: 'Tall' },
+      ...Array.from({ length: 20 }, (_, i) => ({
+        id: `row-${TALL_INDEX + 1 + i}`,
+        heightPx: SHORT_PX,
+        label: `Row ${TALL_INDEX + 1 + i}`,
+      })),
+    ];
+  }
+
+  async function mountStraddled(trackReadingAnchor?: () => boolean) {
+    const compensations: EngineCompensation[] = [];
+    const { harness, scrollEl } = mountHarness({
+      initialRows: straddleRows(),
+      onCompensation: (c) => compensations.push(c),
+      trackReadingAnchor,
+    });
+    await waitForStableGeometry(scrollEl, 'mount');
+    // The engine tail-seeds until a real scroll input lands, and mount
+    // leaves the DOM at scrollTop 0 — so assigning 0 fires no scroll event
+    // and the window would stay at the tail. Pin to the bottom first (same
+    // note as the head-splice test), then walk back up.
+    await pinToBottomAndSettle(scrollEl, 'bottom settle');
+    scrollEl.scrollTop = 0;
+    await waitFor(() => rowEl(scrollEl, 'row-0') !== null, 'top rows');
+    await waitForStableGeometry(scrollEl, 'top settle');
+    scrollEl.scrollTop = STRADDLE_SCROLL_TOP;
+    await waitFor(() => rowEl(scrollEl, 'tall') !== null, 'tall row to mount');
+    await waitForStableGeometry(scrollEl, 'straddle settle');
+    // Sanity: the fixture really does straddle the viewport top.
+    const handle = harness.handle()!;
+    const top = handle.getItemOffset(TALL_INDEX);
+    expect(top).toBeLessThan(scrollEl.scrollTop);
+    expect(top + TALL_PX).toBeGreaterThan(scrollEl.scrollTop);
+    compensations.length = 0;
+    return { harness, scrollEl, compensations };
+  }
+
+  it('compensates growth that landed above the reading position', async () => {
+    const { harness, scrollEl, compensations } = await mountStraddled();
+    const scrollTopBefore = scrollEl.scrollTop;
+
+    harness.growRowHead('tall', 60);
+    await waitFor(() => compensations.length > 0, 'straddle compensation');
+
+    const total = compensations.reduce((sum, c) => sum + c.delta, 0);
+    expect(total).toBe(60);
+    // Still an observation, never a write — the adapter's ownership
+    // contract is unchanged by sub-row attribution.
+    expect(scrollEl.scrollTop).toBe(scrollTopBefore);
+  });
+
+  it('compensates nothing when the growth landed below the reading position', async () => {
+    const { harness, scrollEl, compensations } = await mountStraddled();
+
+    // Grow the row's TAIL instead: total height up, head unchanged, so
+    // nothing above the reading position moved.
+    harness.resizeRow('tall', TALL_PX + 60);
+    await waitForStableGeometry(scrollEl, 'tail growth settle');
+
+    expect(compensations.reduce((sum, c) => sum + c.delta, 0)).toBe(0);
+  });
+
+  it('reports nothing while the viewport top is not a reading position', async () => {
+    // trackReadingAnchor false models the controller holding bottom-follow
+    // intent: the per-beat pin write already absorbs the growth, so no
+    // anchor is sampled and the engine falls back to attributing nothing.
+    const { harness, compensations } = await mountStraddled(() => false);
+
+    harness.growRowHead('tall', 60);
+    await waitFor(() => compensations.length > 0 || true, 'settle');
+    await raf();
+    await raf();
+
+    expect(compensations.reduce((sum, c) => sum + c.delta, 0)).toBe(0);
+  });
+
+  it('drops a live anchor the moment bottom-follow intent is regained', async () => {
+    // Transition, not state: bottom-follow can be regained with no scroll
+    // event and no measurement pass (markAtBottom, forceStick, the
+    // resolver's setIsAtBottom), so an anchor sampled while scrolled up is
+    // still armed at the flip. If it survived, its correction would land on
+    // top of the pin write as a double move.
+    let tracking = true;
+    const { harness, compensations } = await mountStraddled(() => tracking);
+
+    tracking = false;
+    harness.growRowHead('tall', 60);
+    await raf();
+    await raf();
+    await raf();
+
+    expect(compensations.reduce((sum, c) => sum + c.delta, 0)).toBe(0);
+  });
+
+  it('re-anchors between passes so successive growths each compensate once', async () => {
+    const { harness, scrollEl, compensations } = await mountStraddled();
+    const scrollTopBefore = scrollEl.scrollTop;
+
+    for (const by of [40, 30, 50]) {
+      compensations.length = 0;
+      harness.growRowHead('tall', by);
+      await waitFor(() => compensations.length > 0, `growth of ${by}`);
+      await waitForStableGeometry(scrollEl, `settle after ${by}`);
+      expect(compensations.reduce((sum, c) => sum + c.delta, 0)).toBe(by);
+    }
+    // The anchor is re-sampled post-flush, so nothing accumulated across
+    // passes and the adapter still never wrote.
+    expect(scrollEl.scrollTop).toBe(scrollTopBefore);
   });
 });
 

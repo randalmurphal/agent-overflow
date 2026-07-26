@@ -48,9 +48,18 @@ export interface VirtualEngine {
    * range-equality early-out that makes per-scroll-event work near-free. */
   applyScroll(offset: number): EngineUpdate | null;
   applyViewportResize(size: number): EngineUpdate | null;
-  /** One RO delivery batch of [index, size] pairs. */
+  /** One RO delivery batch of [index, size] pairs.
+   *
+   * `measureStraddleShift` supplies sub-row attribution for the at-most-one
+   * row spanning the viewport top: how much of that row's delta landed
+   * ABOVE the reading position. The engine calls it only for that row and
+   * only when its size actually changed, so there is no call sequence in
+   * which a caller can attribute a shift to the wrong row. Omit it (or
+   * return 0) to compensate nothing for the straddling row. See
+   * `readingAnchor.ts` for the DOM-side measurement. */
   applyMeasurements(
     entries: readonly (readonly [index: number, size: number])[],
+    measureStraddleShift?: (index: number) => number,
   ): EngineUpdate | null;
   /** Data length changed to `count`; `headSplice` rows of that change were
    * inserted (+) / removed (−) at the head (the `shift` one-flush
@@ -104,6 +113,24 @@ export function mergeCompensations(
   };
 }
 
+/**
+ * Clamp a measured straddle shift to what physics allows: the part of a
+ * row's growth that landed above the reading position is a PART of that
+ * row's own delta, so it shares its sign and cannot exceed its magnitude.
+ *
+ * This is what keeps the DOM measurement from being load-bearing. A stale
+ * anchor, a re-rendered subtree, or a row whose internals moved for an
+ * unrelated reason can only ever pull the correction back toward zero —
+ * i.e. toward the historical behavior of compensating nothing — never past
+ * the row's own delta into an over-correction. NaN degrades the same way.
+ */
+export function boundStraddleShift(shift: number, rowDelta: number): number {
+  if (!Number.isFinite(shift)) return 0;
+  return rowDelta >= 0
+    ? Math.min(Math.max(shift, 0), rowDelta)
+    : Math.max(Math.min(shift, 0), rowDelta);
+}
+
 export function createEngine(options: EngineOptions): VirtualEngine {
   const estimate = options.estimate;
   const store = initSizeStore(options.itemCount, (index) => estimate.at(index));
@@ -154,7 +181,7 @@ export function createEngine(options: EngineOptions): VirtualEngine {
       return refresh(undefined, false);
     },
 
-    applyMeasurements(entries) {
+    applyMeasurements(entries, measureStraddleShift) {
       const changed: [number, number][] = [];
       for (const [index, size] of entries) {
         // Stale RO deliveries can trail a removal; drop out-of-range rows.
@@ -168,12 +195,25 @@ export function createEngine(options: EngineOptions): VirtualEngine {
       // of rows entirely above the viewport top moves the reading
       // position; rows at or below it don't (while pinned, the per-beat
       // pin write covers the tail growth instead).
+      //
+      // The at-most-one row SPANNING the top is the mixed case: only the
+      // part of its delta above the reading position shifts what the eye
+      // is holding. Whole-row `[index, size]` cannot express that split,
+      // so the adapter measures it in the DOM (readingAnchor.ts) and the
+      // result is bounded here.
       let delta = 0;
       for (const [index, size] of changed) {
         const top = storeItemOffset(store, index);
         const oldSize = storeItemSize(store, index);
+        const rowDelta = size - oldSize;
         if (top + oldSize <= scrollOffset) {
-          delta += size - oldSize;
+          delta += rowDelta;
+        } else if (measureStraddleShift && rowDelta !== 0 && top < scrollOffset) {
+          // rowDelta !== 0 skips a first measurement that landed exactly on
+          // its estimate (UNMEASURED → same px still counts as changed).
+          // Its bounded shift is necessarily 0, so asking would only cost
+          // the measurer a DOM read.
+          delta += boundStraddleShift(measureStraddleShift(index), rowDelta);
         }
       }
 

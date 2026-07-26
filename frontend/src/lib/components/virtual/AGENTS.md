@@ -12,6 +12,17 @@ paging, row projection) lives with its surface in `components/chat/`.
   (`TimelineVirtualizerHandle` in `utils/virtual/types.ts`).
 - `VirtualRow.svelte` — the per-row mount/measure wrapper.
 
+The adapter also owns the **reading anchor**: the one DOM measurement the
+engine cannot make for itself. Whole-row `[index, height]` cannot say
+whether a straddling row's growth landed above or below the viewport top,
+so the adapter hit-tests the element at the top and tracks its offset
+within its own row (`utils/virtual/readingAnchor.ts`). Consumers opt in
+per-surface with `trackReadingAnchor`; the default is always-track, and
+chat turns it off while the controller holds bottom-follow intent because
+the pin write already covers that case. Rationale and the bounding
+argument: `docs/architecture/frontend-scroll.md` § "The row that spans the
+viewport top".
+
 Ownership contract (see `docs/architecture/frontend-scroll.md`): this
 component NEVER writes scrollTop. Compensations surface as observations;
 imperative scrolls go through the required `applyScrollTarget` prop, so

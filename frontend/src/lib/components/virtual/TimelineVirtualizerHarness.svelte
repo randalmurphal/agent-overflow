@@ -7,6 +7,11 @@
     id: string;
     heightPx: number;
     label: string;
+    /** Height of the row's leading block. The trailing block takes the
+     * remainder, so a row can grow at its HEAD (pushing its own tail down)
+     * rather than uniformly — the shape the straddling-row attribution
+     * exists for. Zero means a single undifferentiated block. */
+    headPx?: number;
   }
 </script>
 
@@ -29,6 +34,7 @@
     onscrollend?: () => void;
     onCompensation?: (compensation: EngineCompensation) => void;
     onContentGeometry?: (sample: ContentGeometrySample) => void;
+    trackReadingAnchor?: () => boolean;
   }
 
   let {
@@ -41,6 +47,7 @@
     onscrollend,
     onCompensation,
     onContentGeometry,
+    trackReadingAnchor,
   }: Props = $props();
 
   // svelte-ignore state_referenced_locally -- seed copy by design; the
@@ -64,6 +71,18 @@
   export function resizeRow(id: string, heightPx: number): void {
     shift = false;
     rows = rows.map((row) => (row.id === id ? { ...row, heightPx } : row));
+  }
+
+  /** Grow a row's LEADING block by `byPx`, pushing its own trailing block
+   * down by the same amount (total height grows, tail content unchanged).
+   * Models late typesetting landing above the reading position. */
+  export function growRowHead(id: string, byPx: number): void {
+    shift = false;
+    rows = rows.map((row) =>
+      row.id === id
+        ? { ...row, headPx: (row.headPx ?? 0) + byPx, heightPx: row.heightPx + byPx }
+        : row,
+    );
   }
 
   export function handle(): TimelineVirtualizerHandle | undefined {
@@ -107,11 +126,17 @@
     {onscrollend}
     {onCompensation}
     {onContentGeometry}
+    {trackReadingAnchor}
     {applyScrollTarget}
   >
     {#snippet children(row: HarnessRow, index: number)}
       <div data-row-index={index} data-row-id={row.id} style="height: {row.heightPx}px;">
-        {row.label}
+        {#if row.headPx}
+          <div data-row-head style="height: {row.headPx}px;">{row.label}</div>
+          <div data-row-body style="height: {row.heightPx - row.headPx}px;"></div>
+        {:else}
+          {row.label}
+        {/if}
       </div>
     {/snippet}
   </TimelineVirtualizer>

@@ -3,6 +3,11 @@
   import { createEngine, mergeCompensations } from '../../utils/virtual/engine';
   import { isPureHeadTailChange, keyedReorderPermutation } from '../../utils/virtual/keys';
   import { createRowEstimate } from '../../utils/virtual/priors';
+  import {
+    measureReadingAnchorShift,
+    sampleReadingAnchor,
+    type ReadingAnchor,
+  } from '../../utils/virtual/readingAnchor';
   import type {
     ContentGeometrySample,
     EngineCompensation,
@@ -76,6 +81,12 @@
      * Required — the adapter can never write scrollTop itself; test
      * harnesses pass a direct writer. */
     applyScrollTarget: (top: number) => void;
+    /** Whether the viewport top is a READING position that must be held
+     * stationary. False while the controller holds bottom-follow intent:
+     * there the per-beat pin write already absorbs growth anywhere in the
+     * content, so tracking a reading anchor would cost a hit-test per
+     * scroll event and change nothing. Defaults to always-track. */
+    trackReadingAnchor?: () => boolean;
     /** Engine-sourced content-geometry samples → the scroll controller's
      * `deliverContentGeometry` (replaces its contentEl ResizeObserver).
      * Delivered post-flush alongside compensations, and only when the
@@ -96,6 +107,7 @@
     onscrollend,
     onCompensation,
     applyScrollTarget,
+    trackReadingAnchor,
     onContentGeometry,
     children,
   }: Props = $props();
@@ -165,6 +177,12 @@
       if (compensation) onCompensation?.(compensation);
       convergeIndexScroll();
       maybeDeliverContentGeometry();
+      // Strictly last: row offsets and the container height are flushed
+      // and the controller has performed any compensation write, so this
+      // is the settled layout the NEXT measurement must be judged against.
+      // Sampling before the write would bake the pre-compensation
+      // position into the anchor and double-count it next pass.
+      refreshReadingAnchor();
     });
   });
 
@@ -296,6 +314,60 @@
   const rowIndexes = new WeakMap<Element, number>();
   let observedScroller: HTMLElement | undefined;
 
+  // ------------------------------------------------------------------
+  // Reading anchor (sub-row attribution for the straddling row)
+  // ------------------------------------------------------------------
+  // Rationale lives in utils/virtual/readingAnchor.ts. The anchor is
+  // sampled whenever the CURRENT layout is the one the next measurement
+  // should be judged against — after a scroll, and after each measurement
+  // pass has flushed and been compensated — so every batch is measured
+  // against the state the previous batch left behind.
+  let readingAnchor: ReadingAnchor | null = null;
+  let anchorScrollTop = -1;
+
+  function rowFor(element: Element): { el: HTMLElement; index: number } | undefined {
+    for (let node: Element | null = element; node; node = node.parentElement) {
+      const index = rowIndexes.get(node);
+      if (index !== undefined) return { el: node as HTMLElement, index };
+      if (node === observedScroller) return undefined;
+    }
+    return undefined;
+  }
+
+  function readingAnchorWanted(): boolean {
+    return trackReadingAnchor?.() ?? true;
+  }
+
+  function refreshReadingAnchor(): void {
+    const scroller = observedScroller;
+    if (!scroller || !readingAnchorWanted()) {
+      readingAnchor = null;
+      anchorScrollTop = -1;
+      return;
+    }
+    readingAnchor = sampleReadingAnchor({ scroller, rowFor });
+    anchorScrollTop = scroller.scrollTop;
+  }
+
+  // Passed to the engine, which calls it ONLY for the row spanning the
+  // viewport top and only when that row's size changed. Identity is
+  // checked against the live element→index map rather than the index
+  // captured at sample time, so a head splice between sample and
+  // measurement can't misattribute the shift to a different row.
+  //
+  // The gate is re-read HERE, not merely at sample time: bottom-follow
+  // intent can be regained without a scroll event or a measurement pass
+  // (markAtBottom, forceStick, the resolver's own setIsAtBottom), which
+  // would otherwise leave a live anchor armed from before the flip and
+  // land a sub-row correction on top of the pin write. Checking at use
+  // makes the sample-time check a pure optimization.
+  function measureStraddleShift(index: number): number {
+    const anchor = readingAnchor;
+    if (!anchor || !readingAnchorWanted()) return 0;
+    if (rowIndexes.get(anchor.rowEl) !== index) return 0;
+    return measureReadingAnchorShift(anchor) ?? 0;
+  }
+
   function handleResizeEntries(entries: ResizeObserverEntry[]): void {
     let viewportHeight: number | undefined;
     const resizes: [number, number][] = [];
@@ -347,7 +419,7 @@
       }
     }
     if (viewportHeight !== undefined) applyUpdate(engine.applyViewportResize(viewportHeight));
-    if (resizes.length) applyUpdate(engine.applyMeasurements(resizes));
+    if (resizes.length) applyUpdate(engine.applyMeasurements(resizes, measureStraddleShift));
   }
 
   function ensureResizeObserver(): ResizeObserver {
@@ -399,6 +471,11 @@
     const offset = scroller.scrollTop;
     applyUpdate(engine.applyScroll(offset));
     onscroll?.(offset);
+    // The viewport top now sits over different content. Re-sample unless
+    // the position is unchanged (the controller's own compensation write
+    // already re-sampled from the post-flush effect, and its scroll event
+    // arrives afterwards with nothing left to move).
+    if (offset !== anchorScrollTop) refreshReadingAnchor();
     armScrollEnd();
   }
 

@@ -425,6 +425,48 @@ cannot clamp. The rationale lives in `TimelineVirtualizer.svelte`
 ("Post-flush write timing"); the regression test is the "write timing"
 describe in `timelineVirtualizer.browser.test.ts`.
 
+### The row that spans the viewport top
+
+Rows entirely above the top compensate by their exact size delta; rows at
+or below it need nothing. The at-most-one row **straddling** the top is
+neither — growth in its off-screen-above part shifts everything visible
+down, growth below the top is ordinary reflow, and whole-row
+`[index, height]` cannot say which happened. It historically compensated
+nothing, leaving up to one row's worth of uncompensated shift whenever a
+tall row's off-screen head grew (late KaTeX/mermaid, a decoding image, a
+width reflow re-wrapping the window).
+
+`utils/virtual/readingAnchor.ts` supplies the missing split by hit-testing
+the element painted at the viewport top and recording its offset **from
+the top of its own row**. Row-relative is the whole trick: rows are
+absolutely positioned at engine offsets, so a row's own position is a pure
+function of the above-rows arithmetic that is already exact. Anything that
+moves the anchor *within* its row is intra-row growth above the reading
+position and nothing else — so the two corrections compose without any
+chance of double-counting.
+
+The engine stays DOM-free: `applyMeasurements` takes an optional measurer
+and calls it only for the straddling row, only when that row's height
+actually moved. `boundStraddleShift` then clamps the answer to the row's
+own delta (same sign, no greater magnitude) — a physical bound, since the
+part above the reading position is a *part* of the whole. That is what
+keeps the DOM measurement non-load-bearing: a stale anchor, a re-rendered
+subtree, or a NaN can only pull the correction back toward zero — toward
+the historical behavior — never past it into an over-correction.
+
+Tracking is gated on `trackReadingAnchor`, which chat wires to "the
+controller does *not* hold bottom-follow intent". While pinned, the
+per-beat pin write already absorbs growth anywhere in the content, so the
+correction is unnecessary and a hit-test per scroll event would be pure
+cost. The gate is re-read when the measurer is *called*, not only when the
+anchor is sampled: bottom-follow can be regained with no scroll event and
+no measurement pass (`markAtBottom`, `forceStick`, the resolver's own
+`setIsAtBottom`), and a stale armed anchor would otherwise land a sub-row
+correction on top of the pin write. Coverage: the "straddling-row
+attribution" describe in `timelineVirtualizer.browser.test.ts` (real
+layout, including that transition), `readingAnchor.test.ts` for the
+measurement, and `engine.test.ts` for the attribution and its bound.
+
 The resolver's decision order (each tier's regression provenance is
 documented at the function):
 
