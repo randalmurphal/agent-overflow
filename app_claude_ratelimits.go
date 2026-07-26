@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -69,6 +70,101 @@ func (a *App) probeClaudeRateLimits(ctx context.Context) {
 	a.emitRateLimitsSnapshot(snap)
 }
 
+// probeSelectedClaudeRateLimits probes the account Agent Overflow currently
+// has selected, refreshing in the canonical home when the token has expired.
+//
+// The selected account's credential IS the canonical one, so its refresh must
+// happen there. Claude serializes refresh-token rotation on a lockfile scoped
+// to the config home and its refresh tokens are single-use: rotating a copy in
+// a temporary home takes a different lock, and the winner's rotation retires
+// the token the canonical home still holds. That is a login the user cannot
+// recover without signing in again — the exact failure this whole path exists
+// to avoid. An inactive account has no canonical copy to fork, which is why
+// probeClaudeRateLimitsForSelection can keep using a temporary home.
+//
+// Returns the canonical credential as it stands after a refresh, or nil when
+// no refresh was needed.
+func (a *App) probeSelectedClaudeRateLimits(
+	ctx context.Context,
+	selection providerAccountSelection,
+	credential []byte,
+) (provider.RateLimitsSnapshot, []byte, error) {
+	snapshot, err := claude.ProbeRateLimitsFromCredentialData(
+		ctx,
+		a.rateLimitProbeClient(),
+		credential,
+	)
+	if !errors.Is(err, claude.ErrOAuthUnauthorized) {
+		return snapshot, nil, err
+	}
+
+	// A zero-turn probe against the canonical home is Claude's own refresh
+	// path, lock and all. It reports who it authenticated as, which is a
+	// stronger check than comparing bytes: a rotation legitimately changes
+	// the credential, but the account behind it must not change.
+	//
+	// CLAUDE_CONFIG_DIR is deliberately left unset (ProbeAccount clears any
+	// inherited value) rather than pointed at the canonical home. Claude
+	// treats the variable's presence — not its value — as "non-default
+	// home", and on macOS a non-default home hashes into a different
+	// Keychain service. Setting it to the default path would send the
+	// rotated credential somewhere Agent Overflow never reads.
+	info, refreshErr := claude.ProbeAccount(ctx, claude.ProbeConfig{
+		Binary: a.providerBinaryPath(string(provider.Claude)),
+	})
+	if refreshErr != nil {
+		return provider.RateLimitsSnapshot{}, nil, fmt.Errorf("refresh Claude credentials: %w", refreshErr)
+	}
+	if providerstatus.ClaudeUnauthenticated(info) {
+		return provider.RateLimitsSnapshot{}, nil, errors.New("Claude credentials expired; log in again")
+	}
+	if err := a.assertSelectedClaudeIdentity(selection, info); err != nil {
+		return provider.RateLimitsSnapshot{}, nil, err
+	}
+	refreshed, readErr := a.providerCredentials.ReadCredentialSnapshot(
+		string(provider.Claude),
+		"",
+		true,
+	)
+	if readErr != nil {
+		return provider.RateLimitsSnapshot{}, nil, fmt.Errorf(
+			"read refreshed Claude credentials: %w",
+			readErr,
+		)
+	}
+	snapshot, retryErr := claude.ProbeRateLimitsFromCredentialData(
+		ctx,
+		a.rateLimitProbeClient(),
+		refreshed.Data,
+	)
+	return snapshot, refreshed.Data, retryErr
+}
+
+// assertSelectedClaudeIdentity refuses to attribute a canonical-home refresh
+// to the selected account when the CLI authenticated as someone else — an
+// external `claude login` during the probe. An empty email cannot contradict
+// anything: Claude reports one only once it has re-derived the identity for
+// the installed credential.
+func (a *App) assertSelectedClaudeIdentity(
+	selection providerAccountSelection,
+	info provider.AccountInfo,
+) error {
+	observed := strings.TrimSpace(info.Email)
+	expected := strings.TrimSpace(selection.Account.Email)
+	if observed == "" || expected == "" || strings.EqualFold(observed, expected) {
+		return nil
+	}
+	return fmt.Errorf(
+		"the active Claude account changed to %s while refreshing usage; retry",
+		observed,
+	)
+}
+
+// probeClaudeRateLimitsForSelection probes an account that is NOT selected,
+// from a temporary home seeded with only its credential. That account has no
+// canonical copy, so it is the only holder of its refresh chain and a
+// temporary home cannot fork anything — see probeSelectedClaudeRateLimits for
+// why the selected account must not take this path.
 func (a *App) probeClaudeRateLimitsForSelection(
 	ctx context.Context,
 	selection claudeRateLimitSelection,
@@ -93,8 +189,8 @@ func (a *App) probeClaudeRateLimitsForSelection(
 
 	// Let Claude own refresh-token rotation exactly as it does before a
 	// normal turn. The zero-turn account probe initializes the CLI without
-	// inference and writes refreshed credentials back to the selected native
-	// home. Retry the usage endpoint only after that native path completes.
+	// inference and writes refreshed credentials back to the temporary home.
+	// Retry the usage endpoint only after that native path completes.
 	info, refreshErr := claude.ProbeAccount(ctx, claude.ProbeConfig{
 		Binary: a.providerBinaryPath(string(provider.Claude)),
 		Env:    selection.Env,

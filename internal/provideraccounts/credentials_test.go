@@ -356,3 +356,85 @@ func assertFileContents(t *testing.T, path, want string) {
 		t.Fatalf("%s = %q, want %q", path, got, want)
 	}
 }
+
+// CredentialPresent answers the question the UI asks before offering an
+// account: could this be selected right now? Anything the activation path
+// would refuse counts as absent, so the two never disagree.
+func TestCredentialPresentMatchesWhatActivationWouldAccept(t *testing.T) {
+	userHome := t.TempDir()
+	credentials, err := NewCredentials(userHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.WriteAccountCredential("codex", "saved", []byte("secret")); err != nil {
+		t.Fatal(err)
+	}
+	slotPath, err := credentials.AccountCredentialPath("codex", "saved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	activePath, err := credentials.ActiveCredentialPath("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertCredentialPresent(t, credentials, "saved", false, true)
+	// Nothing has been activated yet, so the canonical store is empty.
+	assertCredentialPresent(t, credentials, "", true, false)
+
+	if err := credentials.Activate("codex", "", "saved"); err != nil {
+		t.Fatal(err)
+	}
+	assertCredentialPresent(t, credentials, "", true, true)
+
+	// An account with no slot at all: the case metadata outlives.
+	assertCredentialPresent(t, credentials, "never-saved", false, false)
+
+	// A truncated credential reads as empty and would fail activation.
+	if err := os.WriteFile(slotPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertCredentialPresent(t, credentials, "saved", false, false)
+
+	// A symlink is refused by every read path; presence must agree.
+	if err := os.Remove(activePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(slotPath, activePath); err != nil {
+		t.Fatal(err)
+	}
+	assertCredentialPresent(t, credentials, "", true, false)
+}
+
+func TestCredentialPresentRejectsAnUnsafeAccountID(t *testing.T) {
+	credentials, err := NewCredentials(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := credentials.CredentialPresent("codex", "../escape", false); err == nil {
+		t.Fatal("CredentialPresent() accepted an account id that is not a safe path component")
+	}
+}
+
+func assertCredentialPresent(
+	t *testing.T,
+	credentials *Credentials,
+	accountID string,
+	active bool,
+	want bool,
+) {
+	t.Helper()
+	got, err := credentials.CredentialPresent("codex", accountID, active)
+	if err != nil {
+		t.Fatalf("CredentialPresent(%q, active=%v): %v", accountID, active, err)
+	}
+	if got != want {
+		t.Fatalf("CredentialPresent(%q, active=%v) = %v, want %v", accountID, active, got, want)
+	}
+	if !want {
+		return
+	}
+	if _, readErr := credentials.ReadCredential("codex", accountID, active); readErr != nil {
+		t.Fatalf("credential reported present but unreadable: %v", readErr)
+	}
+}

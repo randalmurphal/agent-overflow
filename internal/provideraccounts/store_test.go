@@ -1,6 +1,7 @@
 package provideraccounts
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,6 +84,52 @@ func TestStoreAdvancesGenerationOnlyWhenSelectionChanges(t *testing.T) {
 	}
 	if got := store.Generation("claude"); got != firstGeneration+1 {
 		t.Fatalf("switched generation = %d, want %d", got, firstGeneration+1)
+	}
+}
+
+// Callers write the credential slot keyed by the ID they supply, then
+// commit metadata. Quietly substituting the stored ID for a matching
+// email would strand those bytes in an unreferenced slot and leave the
+// real account on whatever stale credential it already had, so the
+// mismatch has to surface instead.
+func TestStoreRejectsAnIDThatContradictsASavedEmail(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertAndActivate(Account{
+		ID:       "saved-id",
+		Provider: "claude",
+		Email:    "one@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.UpsertAndActivate(Account{
+		ID:       "fresh-id",
+		Provider: "claude",
+		Email:    "ONE@example.com",
+	})
+	if !errors.Is(err, ErrAccountIDMismatch) {
+		t.Fatalf("err = %v, want ErrAccountIDMismatch", err)
+	}
+	accounts := store.List("claude", time.Now())
+	if len(accounts) != 1 || accounts[0].ID != "saved-id" {
+		t.Fatalf("rejected upsert mutated the account set: %+v", accounts)
+	}
+
+	// The same email under its own ID is an ordinary update.
+	updated, err := store.UpsertAndActivate(Account{
+		ID:          "saved-id",
+		Provider:    "claude",
+		Email:       "one@example.com",
+		DisplayName: "One",
+	})
+	if err != nil {
+		t.Fatalf("update under the saved id: %v", err)
+	}
+	if updated.ID != "saved-id" || updated.DisplayName != "One" {
+		t.Fatalf("update = %+v", updated)
 	}
 }
 

@@ -22,11 +22,69 @@ to activate provider-native credentials.
   resulting credential and delete all other temporary provider state.
 - Account IDs are path components. Validate them before joining.
 
+## The account tuple
+
+A login is not always one file. Claude Code splits it: `.credentials.json`
+holds the tokens, and `~/.claude.json`'s `oauthAccount` holds the identity
+the CLI reports, bills against, and caches entitlements for. That identity
+is written from a profile fetch at login and is never re-derived from the
+token on read, so **replacing the credential alone leaves the CLI
+describing the previous account** — including when Agent Overflow's own
+probe asks it who is logged in.
+
+The rule: **Agent Overflow never writes a provider identity, only retires
+one.** `retireProviderIdentity` deletes `oauthAccount` exactly as Claude
+Code's own `/logout` does; the CLI's next start refetches the profile with
+whichever token is installed and writes the identity back itself. The
+provider stays the sole author of its own identity, so no copy exists here
+to fall out of sync, and one account's email can never be paired with
+another's tokens.
+
+Ordering is load-bearing: retire the identity *before* the canonical
+credential write. Every failure then converges (nothing moved, or the
+provider re-derives the identity it already had). The reverse order has a
+failure mode that does not self-heal.
+
+Codex needs none of this — `auth.json` carries the account claims inside
+the credential, so replacing the file replaces the identity.
+
+Temporary homes follow the same rule from the other side: the copied
+`.claude.json` is stripped of `oauthAccount`, or the CLI running there
+would consider its identity already settled and never derive the one
+belonging to the credential it was seeded with.
+
+## Where a refresh is allowed to happen
+
+Claude's refresh tokens are single-use and its rotation is serialized on a
+lockfile scoped to the config home. Two homes holding the same token are two
+processes taking different locks: whichever rotates first retires the other's
+token, and the loser's home is left holding a credential the server will
+never accept again. That is a login the user cannot recover without signing
+in.
+
+So **the selected account refreshes in the canonical home, never a copy of
+it** (`probeSelectedClaudeRateLimits`). An inactive account has no canonical
+copy — its slot is the only holder of its chain — so probing it from a
+temporary home forks nothing and stays the right call.
+
+Never point a canonical-home run at `CLAUDE_CONFIG_DIR`, not even at the
+default path. Claude keys "is this the default home" off the variable being
+*absent*, not off its value, and a non-default home hashes into a different
+macOS Keychain service.
+
+Because a rotation legitimately changes the credential bytes, the guard that
+the canonical home still belongs to the selected account is the identity the
+CLI reports, not a byte comparison.
+
 ## Layout
 
 - `store.go` — thread-safe metadata and last-known quota persistence.
-- `credentials.go` — credential-slot layout and atomic active-credential
-  switching.
+- `credentials.go` — credential-slot layout, atomic active-credential
+  switching, and `CredentialPresent` (can this account be selected at all).
+- `identity.go` — retiring the provider-side identity record that lives
+  outside the credential file.
+- `rollback.go` — capture/restore of one account slot, used to unwind a
+  failed login or adoption without deleting a slot it did not create.
 - `ephemeral_home.go` — short-lived homes for native login and inactive-account
   probes.
 - `claude_keychain.go` — config-home-scoped macOS Keychain credential copying

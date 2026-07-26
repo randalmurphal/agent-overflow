@@ -4,6 +4,7 @@
   import Trash2 from 'lucide-svelte/icons/trash-2';
   import Icon from '../primitives/Icon.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
+  import ProviderAccountLimits from './ProviderAccountLimits.svelte';
   import {
     ListProviderAccounts,
     LoginProviderAccount,
@@ -19,12 +20,10 @@
   import {
     clearProviderRateLimits,
     getProviderRateLimits,
-    rateLimitDisplayName,
     setProviderRateLimits,
   } from '../../stores/rateLimitsInfo.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import type { ProviderID } from '../../types/providers';
-  import { formatResetCountdown } from '../../utils/format';
   import { userFacingError } from '../../utils/userFacingError';
   import { PRIMARY_BUTTON_CLASS, GHOST_BUTTON_CLASS } from './styles';
 
@@ -174,16 +173,18 @@
     return account.displayName || account.email || account.subscriptionType || 'Saved account';
   }
 
-  function limitLabel(limit: { limitId: string; limitName: string; windowMins: number }): string {
-    const name = rateLimitDisplayName(limit);
-    if (limit.windowMins <= 0) return name || 'Usage limit';
-    const window = limit.windowMins === 300
-      ? '5h'
-      : limit.windowMins === 10080
-        ? '7d'
-        : `${Math.max(1, Math.round(limit.windowMins / 60))}h`;
-    if (!name || name.toLowerCase() === window.toLowerCase()) return window;
-    return `${name} · ${window}`;
+  // A saved account whose credential is gone cannot be selected. Logging in
+  // resolves back to this same account by email, so it keeps its usage
+  // history rather than becoming a second card.
+  function cardAction(account: ManagedProviderAccount): () => void {
+    if (account.needsLogin) return () => void login();
+    return () => void switchAccount(account);
+  }
+
+  function cardActionLabel(account: ManagedProviderAccount): string {
+    if (account.needsLogin) return `Sign in again to ${accountName(account)}`;
+    if (account.active) return `${accountName(account)} is active`;
+    return `Switch to ${accountName(account)}`;
   }
 </script>
 
@@ -216,32 +217,44 @@
       {#each accounts as account (account.id)}
         {@const limits = getProviderRateLimits(provider, account.id)}
         <div
-          class="rounded-[var(--radius-field)] border px-3 py-2.5 {account.active
-            ? 'border-accent/45 bg-accent/5'
-            : 'border-border-subtle bg-surface-0'}"
+          class="rounded-[var(--radius-field)] border px-3 py-2.5 {account.needsLogin
+            ? 'border-warning/40 bg-surface-0'
+            : account.active
+              ? 'border-accent/45 bg-accent/5'
+              : 'border-border-subtle bg-surface-0'}"
           data-testid="provider-account-{account.id}"
         >
           <div class="flex items-start justify-between gap-3">
             <button
               type="button"
               class="min-w-0 flex-1 cursor-pointer text-left disabled:cursor-default"
-              disabled={account.active || !!switchingID}
-              onclick={() => void switchAccount(account)}
-              aria-label={account.active
-                ? `${accountName(account)} is active`
-                : `Switch to ${accountName(account)}`}
+              disabled={(account.active && !account.needsLogin)
+                || !!switchingID
+                || (account.needsLogin && loggingIn)}
+              onclick={cardAction(account)}
+              aria-label={cardActionLabel(account)}
             >
               <span class="flex items-center gap-2">
                 <span
-                  class="h-2 w-2 shrink-0 rounded-full border {account.active
-                    ? 'border-accent bg-accent'
-                    : 'border-fg-hint'}"
+                  class="h-2 w-2 shrink-0 rounded-full border {account.needsLogin
+                    ? 'border-warning'
+                    : account.active
+                      ? 'border-accent bg-accent'
+                      : 'border-fg-hint'}"
                   aria-hidden="true"
                 ></span>
-                <span class="truncate text-[0.75rem] font-medium text-fg">
+                <span
+                  class="truncate text-[0.75rem] font-medium {account.needsLogin
+                    ? 'text-fg-muted'
+                    : 'text-fg'}"
+                >
                   {accountName(account)}
                 </span>
-                {#if account.active}
+                {#if account.needsLogin}
+                  <span class="rounded-full bg-warning/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-warning">
+                    Sign in again
+                  </span>
+                {:else if account.active}
                   <span class="rounded-full bg-accent/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-accent">
                     Active
                   </span>
@@ -252,15 +265,22 @@
                   {account.email}
                 </span>
               {/if}
+              {#if account.needsLogin}
+                <span class="mt-0.5 block pl-4 text-[0.6875rem] text-fg-hint">
+                  Its saved {providerLabel} credentials are gone.
+                </span>
+              {/if}
             </button>
 
             <div class="flex shrink-0 items-center gap-1">
               <button
                 type="button"
                 class={GHOST_BUTTON_CLASS}
-                disabled={!!refreshingID || !!removingID}
+                disabled={account.needsLogin || !!refreshingID || !!removingID}
                 onclick={() => void refreshUsage(account)}
-                title="Refresh usage limits"
+                title={account.needsLogin
+                  ? 'Sign in again to refresh usage limits'
+                  : 'Refresh usage limits'}
                 aria-label={`Refresh usage for ${accountName(account)}`}
               >
                 <Icon
@@ -283,31 +303,7 @@
             </div>
           </div>
 
-          {#if limits.length > 0}
-            <div class="mt-2 grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
-              {#each limits as limit (`${limit.limitId}:${limit.windowMins}`)}
-                <div class="min-w-0">
-                  <div class="flex items-center justify-between gap-2 text-[0.65625rem]">
-                    <span class="truncate text-fg-muted">{limitLabel(limit)}</span>
-                    <span class="tabular-nums text-fg-hint">{Math.round(limit.usedPercent)}%</span>
-                  </div>
-                  <div class="mt-1 h-1 overflow-hidden rounded-full bg-surface-3">
-                    <div
-                      class="h-full rounded-full bg-accent"
-                      style:width={`${Math.max(0, Math.min(100, limit.usedPercent))}%`}
-                    ></div>
-                  </div>
-                  {#if limit.resetsAt > 0}
-                    <p class="mt-0.5 text-[0.625rem] text-fg-hint">
-                      {formatResetCountdown(limit.resetsAt)}
-                    </p>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          {:else}
-            <p class="mt-2 pl-4 text-[0.65625rem] text-fg-hint">Usage not checked yet.</p>
-          {/if}
+          <ProviderAccountLimits {limits} />
         </div>
       {/each}
     </div>

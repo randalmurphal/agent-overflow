@@ -181,39 +181,16 @@ func (a *App) reconcileObservedAccountLocked(
 		target.ID = uuid.NewString()
 		target.Provider = providerName
 	}
-	var previous *provideraccounts.CredentialSnapshot
-	if found {
-		snapshot, readErr := a.providerCredentials.ReadCredentialSnapshot(
-			providerName,
-			target.ID,
-			false,
-		)
-		if readErr == nil {
-			previous = &snapshot
-		} else if !provideraccounts.IsCredentialMissing(readErr) {
-			return provideraccounts.Account{}, false, fmt.Errorf(
-				"capture saved %s credentials before external login: %w",
-				providerName,
-				readErr,
-			)
-		}
+	saved, err := a.providerCredentials.CaptureAccountCredential(providerName, target.ID)
+	if err != nil {
+		return provideraccounts.Account{}, false, err
 	}
 	restoreCredentialOnError := true
 	defer func() {
 		if !restoreCredentialOnError || retErr == nil {
 			return
 		}
-		var cleanupErr error
-		if previous != nil {
-			cleanupErr = a.providerCredentials.WriteAccountCredential(
-				providerName,
-				target.ID,
-				previous.Data,
-			)
-		} else {
-			cleanupErr = a.providerCredentials.RemoveAccount(providerName, target.ID)
-		}
-		if cleanupErr != nil {
+		if cleanupErr := a.providerCredentials.RestoreAccountCredential(saved); cleanupErr != nil {
 			retErr = errors.Join(
 				retErr,
 				fmt.Errorf(

@@ -9,6 +9,7 @@ import (
 	"runtime"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/claudeconfig"
 )
 
 const maxConfigBytes = 16 << 20
@@ -72,7 +73,7 @@ func (c *Credentials) newEphemeralHome(
 	}
 	for _, source := range ephemeralConfigSources(paths, providerName) {
 		destination := filepath.Join(path, filepath.Base(source))
-		if err := copyRegularFileIfPresent(source, destination); err != nil {
+		if err := copyRegularFileIfPresent(source, destination, ephemeralConfigFilter(providerName, source)); err != nil {
 			return cleanupOnError(err)
 		}
 	}
@@ -98,7 +99,24 @@ func ephemeralConfigSources(paths ProviderPaths, providerName string) []string {
 	}
 }
 
-func copyRegularFileIfPresent(source, destination string) error {
+// ephemeralConfigFilter rewrites one config file on its way into a
+// temporary home. Only Claude needs it: `~/.claude.json` carries both
+// the preferences a login flow needs and the canonical home's account
+// identity. Copying the identity across would tell the CLI in the
+// temporary home that it already knows who it is, so it would never
+// derive the identity belonging to the credential it was actually
+// seeded with — and a login there would be attributed to the canonical
+// home's account. A nil filter copies bytes through unchanged.
+func ephemeralConfigFilter(providerName, source string) func([]byte) ([]byte, error) {
+	if providerName != "claude" || filepath.Base(source) != ".claude.json" {
+		return nil
+	}
+	return claudeconfig.StripOAuthAccount
+}
+
+// copyRegularFileIfPresent copies source to destination when source
+// exists, optionally passing the contents through filter first.
+func copyRegularFileIfPresent(source, destination string, filter func([]byte) ([]byte, error)) error {
 	info, err := os.Stat(source)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -137,6 +155,12 @@ func copyRegularFileIfPresent(source, destination string) error {
 	}
 	if !os.SameFile(openedInfo, currentInfo) {
 		return fmt.Errorf("provideraccounts: temporary-home config %s changed while reading", source)
+	}
+	if filter != nil {
+		data, err = filter(data)
+		if err != nil {
+			return fmt.Errorf("provideraccounts: filter temporary-home config %s: %w", source, err)
+		}
 	}
 	if err := atomicfile.Write(destination, data); err != nil {
 		return fmt.Errorf("provideraccounts: copy temporary-home config %s: %w", source, err)

@@ -1,11 +1,18 @@
 // Package claudeconfig is the read/write adapter for ~/.claude.json.
 //
-// Claude Code stores its own MCP server configuration in this file:
-//   - top-level `mcpServers` map (user-scope library)
-//   - per-workspace `projects.<path>.disabledMcpServers[]` array
+// Two of Claude Code's own fields are shared with AO:
 //
-// AO reads from and writes to these specific fields so the same UI a
-// user sees in Claude Code's `/mcp` command is in 1:1 sync with the
-// composer popup in AO. Every other top-level key is preserved
-// untouched because Claude writes constantly (metrics, session ids).
+//   - MCP server configuration — the top-level `mcpServers` map
+//     (user-scope library) and the per-workspace
+//     `projects.<path>.disabledMcpServers[]` array. AO reads and writes
+//     these so the same list a user sees in Claude Code's `/mcp`
+//     command is in 1:1 sync with the composer popup in AO.
+//   - `oauthAccount` — the cached identity of the logged-in account.
+//     AO only ever CLEARS it (see identity.go); Claude Code remains the
+//     sole writer, re-deriving it from whichever credential is
+//     installed. Clearing it is the half of an account switch that does
+//     not live in the credential file.
+//
+// Every other top-level key is preserved untouched because Claude
+// writes constantly (metrics, session ids).
 package claudeconfig

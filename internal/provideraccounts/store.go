@@ -152,9 +152,22 @@ func (s *Store) FindByEmail(providerName, email string) (Account, bool) {
 	return Account{}, false
 }
 
-// UpsertAndActivate registers account, deduplicating by a non-empty email
-// within the provider, and makes it current. The caller owns credential-file
-// activation and must call this only after that succeeds.
+// ErrAccountIDMismatch reports that the supplied account ID is not the
+// one this provider already uses for that email. Callers write the
+// credential slot before committing metadata, so silently substituting
+// the stored ID would leave the credential in one slot and the metadata
+// pointing at another. Resolve the ID with FindByEmail first.
+var ErrAccountIDMismatch = errors.New("provideraccounts: account id does not match the saved account for this email")
+
+// UpsertAndActivate registers account and makes it current. The caller
+// owns credential-file activation and must call this only after that
+// succeeds.
+//
+// An email already registered under a different ID is an error, not a
+// silent merge: the caller has by then written a credential under the ID
+// it supplied, and quietly returning a different one strands those bytes
+// in an unreferenced slot while the real account keeps a stale
+// credential. Use FindByEmail to resolve the ID before writing.
 func (s *Store) UpsertAndActivate(account Account) (Account, error) {
 	return s.upsertAndActivate(account, false)
 }
@@ -182,15 +195,22 @@ func (s *Store) upsertAndActivate(
 	now := time.Now().UnixMilli()
 	index := -1
 	for i := range state.Accounts {
-		if state.Accounts[i].ID == account.ID ||
-			(account.Email != "" && strings.EqualFold(state.Accounts[i].Email, account.Email)) {
+		if state.Accounts[i].ID == account.ID {
 			index = i
 			break
+		}
+		if account.Email != "" && strings.EqualFold(state.Accounts[i].Email, account.Email) {
+			return Account{}, fmt.Errorf(
+				"%w: %s account %q is saved as %q",
+				ErrAccountIDMismatch,
+				account.Provider,
+				account.ID,
+				state.Accounts[i].ID,
+			)
 		}
 	}
 	if index >= 0 {
 		existing := state.Accounts[index]
-		account.ID = existing.ID
 		account.AddedAt = existing.AddedAt
 		if account.RateLimits == nil {
 			account.RateLimits = existing.RateLimits

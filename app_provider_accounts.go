@@ -24,6 +24,12 @@ type ManagedProviderAccount struct {
 	provideraccounts.Account
 	Active     bool   `json:"active"`
 	Generation uint64 `json:"generation"`
+	// NeedsLogin marks a saved account whose credential is gone, so
+	// selecting it cannot work until the user signs in again. The card
+	// stays listed — its metadata and quota history are still the user's
+	// record of that account — but it is honest about being unusable
+	// instead of failing with a filesystem error on click.
+	NeedsLogin bool `json:"needsLogin"`
 }
 
 func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
@@ -31,7 +37,6 @@ func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
 		return []ManagedProviderAccount{}, nil
 	}
 	a.providerAccountMu.RLock()
-	defer a.providerAccountMu.RUnlock()
 	now := time.Now()
 	var out []ManagedProviderAccount
 	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
@@ -45,10 +50,57 @@ func (a *App) ListProviderAccounts() ([]ManagedProviderAccount, error) {
 			})
 		}
 	}
+	a.providerAccountMu.RUnlock()
+
+	// Credential presence is filesystem I/O — and on macOS a Keychain read
+	// per account. Resolved after the lock is released so listing accounts
+	// cannot stall a session start behind it.
+	for i := range out {
+		out[i].NeedsLogin = !a.providerAccountCredentialUsable(
+			out[i].Provider,
+			out[i].ID,
+			out[i].Active,
+		)
+	}
 	if out == nil {
 		out = []ManagedProviderAccount{}
 	}
 	return out, nil
+}
+
+// providerAccountCredentialUsable reports whether this account could be
+// activated right now. The selected account is backed by the canonical
+// store; every other account is backed by its saved slot. A presence
+// check that itself fails is reported as usable so a transient
+// filesystem error cannot make every account look signed out — the
+// activation path still validates for real.
+func (a *App) providerAccountCredentialUsable(providerName, accountID string, isActive bool) bool {
+	if a.providerCredentials == nil {
+		return true
+	}
+	present, err := a.providerCredentials.CredentialPresent(providerName, accountID, isActive)
+	if err != nil {
+		return true
+	}
+	return present
+}
+
+// errProviderAccountNeedsLogin describes the one recovery available when an
+// account's saved credential is gone: sign in again. The metadata row stays,
+// so the user is told what to do rather than shown the missing path.
+func errProviderAccountNeedsLogin(providerName string, account provideraccounts.Account) error {
+	label := account.Email
+	if label == "" {
+		label = account.DisplayName
+	}
+	if label == "" {
+		label = account.ID
+	}
+	return fmt.Errorf(
+		"the saved %s credentials for %s are gone; sign in to this account again to reconnect it",
+		providerName,
+		label,
+	)
 }
 
 // LoginProviderAccount runs the provider's native browser login in a
@@ -155,23 +207,16 @@ func (a *App) LoginProviderAccount(
 	}()
 
 	targetID := uuid.NewString()
-	var previousTarget *provideraccounts.CredentialSnapshot
 	if existing, ok := a.providerAccounts.FindByEmail(providerName, info.Email); ok {
 		targetID = existing.ID
-		snapshot, readErr := a.providerCredentials.ReadCredentialSnapshot(
-			providerName,
-			targetID,
-			false,
-		)
-		if readErr == nil {
-			previousTarget = &snapshot
-		} else if !provideraccounts.IsCredentialMissing(readErr) {
-			return ManagedProviderAccount{}, fmt.Errorf(
-				"capture existing %s account credentials: %w",
-				providerName,
-				readErr,
-			)
-		}
+	}
+	// Capture before the write so a failure downstream restores exactly
+	// what was here — including the case where re-logging into a saved
+	// account finds its slot momentarily unreadable. Rolling that back by
+	// deletion would cost the user the very account they were repairing.
+	savedTarget, err := a.providerCredentials.CaptureAccountCredential(providerName, targetID)
+	if err != nil {
+		return ManagedProviderAccount{}, err
 	}
 	if err := a.providerCredentials.WriteAccountCredential(
 		providerName,
@@ -181,14 +226,7 @@ func (a *App) LoginProviderAccount(
 		return ManagedProviderAccount{}, fmt.Errorf("save %s login credentials: %w", providerName, err)
 	}
 	restoreTarget := func() error {
-		if previousTarget != nil {
-			return a.providerCredentials.WriteAccountCredential(
-				providerName,
-				targetID,
-				previousTarget.Data,
-			)
-		}
-		return a.providerCredentials.RemoveAccount(providerName, targetID)
+		return a.providerCredentials.RestoreAccountCredential(savedTarget)
 	}
 
 	current, hasCurrent := a.providerAccounts.Active(providerName, time.Now())
@@ -312,7 +350,8 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 			Generation: a.providerAccounts.Generation(providerName),
 		}, nil
 	}
-	if _, exists := a.providerAccounts.Get(providerName, accountID, time.Now()); !exists {
+	target, exists := a.providerAccounts.Get(providerName, accountID, time.Now())
+	if !exists {
 		return ManagedProviderAccount{}, fmt.Errorf("%s account %q is not saved", providerName, accountID)
 	}
 	targetCredential, err := a.providerCredentials.ReadCredentialSnapshot(
@@ -321,6 +360,9 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 		false,
 	)
 	if err != nil {
+		if provideraccounts.IsCredentialMissing(err) {
+			return ManagedProviderAccount{}, errProviderAccountNeedsLogin(providerName, target)
+		}
 		return ManagedProviderAccount{}, fmt.Errorf(
 			"read selected %s credentials: %w",
 			providerName,
@@ -464,6 +506,10 @@ func (a *App) adoptCurrentProviderAccount(
 	if _, hasActive := a.providerAccounts.Active(providerName, time.Now()); !hasActive &&
 		strings.TrimSpace(info.Email) == "" {
 		accountID := uuid.NewString()
+		saved, err := a.providerCredentials.CaptureAccountCredential(providerName, accountID)
+		if err != nil {
+			return provideraccounts.Account{}, false, err
+		}
 		if err := a.providerCredentials.WriteAccountCredential(
 			providerName,
 			accountID,
@@ -479,7 +525,7 @@ func (a *App) adoptCurrentProviderAccount(
 			accountFromInfo(accountID, providerName, info),
 		)
 		if err != nil {
-			cleanupErr := a.providerCredentials.RemoveAccount(providerName, accountID)
+			cleanupErr := a.providerCredentials.RestoreAccountCredential(saved)
 			return provideraccounts.Account{}, false, errors.Join(err, cleanupErr)
 		}
 		a.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)
@@ -520,21 +566,34 @@ func (a *App) adoptCanonicalProviderAccountLocked(providerName, binary string) e
 	); err != nil {
 		return err
 	}
+	// Resolve the account ID before writing the credential. A canonical
+	// login we are adopting may already be saved under this email from an
+	// earlier session; minting a fresh ID here would put the credential in
+	// a slot the metadata never references, leaving the real account on a
+	// stale credential until the next startup prune deleted the copy.
 	accountID := uuid.NewString()
+	if existing, ok := a.providerAccounts.FindByEmail(providerName, info.Email); ok {
+		accountID = existing.ID
+	}
+	saved, err := a.providerCredentials.CaptureAccountCredential(providerName, accountID)
+	if err != nil {
+		return err
+	}
+	restore := func() {
+		if cleanupErr := a.providerCredentials.RestoreAccountCredential(saved); cleanupErr != nil {
+			log.Printf("provider accounts: restore adoption credential: %v", cleanupErr)
+		}
+	}
 	if err := a.providerCredentials.WriteAccountCredential(
 		providerName,
 		accountID,
 		credential.Data,
 	); err != nil {
-		if cleanupErr := a.providerCredentials.RemoveAccount(providerName, accountID); cleanupErr != nil {
-			log.Printf("provider accounts: clean failed adoption credential: %v", cleanupErr)
-		}
+		restore()
 		return err
 	}
 	if _, err := a.providerAccounts.UpsertAndActivate(accountFromInfo(accountID, providerName, info)); err != nil {
-		if cleanupErr := a.providerCredentials.RemoveAccount(providerName, accountID); cleanupErr != nil {
-			log.Printf("provider accounts: clean failed adoption credential: %v", cleanupErr)
-		}
+		restore()
 		return err
 	}
 	a.rememberProviderCredentialFingerprintLocked(providerName, credential.Data)

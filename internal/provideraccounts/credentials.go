@@ -157,6 +157,37 @@ func (c *Credentials) ensureAccountDirectory(providerName, accountID string) (st
 	return accountDir, nil
 }
 
+// CredentialPresent reports whether the credential this account would be
+// activated from is readable: the canonical native store when active is
+// true, that account's saved slot otherwise.
+//
+// Metadata can outlive its credential — an interrupted registration, a
+// slot lost to an older storage layout, a file removed by hand. Such an
+// account can never be selected, so callers surface it as needing a
+// fresh login rather than letting a switch fail with a raw filesystem
+// error. Unreadable counts as absent: for this question a corrupt or
+// non-regular credential is no more usable than a missing one.
+func (c *Credentials) CredentialPresent(providerName, accountID string, active bool) (bool, error) {
+	home, err := c.credentialLocation(providerName, accountID, active)
+	if err != nil {
+		return false, err
+	}
+	paths, err := c.Paths(providerName)
+	if err != nil {
+		return false, err
+	}
+	if runtime.GOOS == "darwin" && providerName == "claude" {
+		// The Keychain has no cheap existence check; the read is the probe.
+		_, readErr := readClaudeKeychainCredential(home, active)
+		return readErr == nil, nil
+	}
+	info, statErr := os.Lstat(filepath.Join(home, paths.CredentialFile))
+	if statErr != nil {
+		return false, nil
+	}
+	return info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular() && info.Size() > 0, nil
+}
+
 // ReadCredential returns opaque bytes from the canonical native store when
 // active is true, or from one saved account slot otherwise.
 func (c *Credentials) ReadCredential(providerName, accountID string, active bool) ([]byte, error) {
@@ -331,13 +362,32 @@ func (c *Credentials) ActivateWithSnapshot(
 	if err != nil {
 		return fmt.Errorf("provideraccounts: read selected credentials: %w", err)
 	}
+	// Retire the outgoing identity before the incoming credential lands.
+	// Ordered this way every outcome converges on a consistent pair: if
+	// the clear fails nothing has moved, and if the credential write
+	// fails the provider re-derives the identity it already had. The
+	// reverse order has a failure mode that does not self-heal — new
+	// tokens described by the previous account's identity.
+	if currentAccountID != targetAccountID {
+		if err := c.retireProviderIdentity(providerName); err != nil {
+			return err
+		}
+	}
 	if err := c.writeActiveCredential(providerName, data); err != nil {
 		return fmt.Errorf("provideraccounts: activate %s credentials: %w", providerName, err)
 	}
 	return nil
 }
 
+// RemoveActive signs the provider out of its canonical home. The
+// identity record goes with the credential — leaving it behind would
+// describe a login that no longer exists, which is the same split-state
+// bug a switch avoids and exactly what the provider's own logout
+// clears.
 func (c *Credentials) RemoveActive(providerName string) error {
+	if err := c.retireProviderIdentity(providerName); err != nil {
+		return err
+	}
 	if runtime.GOOS == "darwin" && providerName == "claude" {
 		paths, err := c.Paths(providerName)
 		if err != nil {

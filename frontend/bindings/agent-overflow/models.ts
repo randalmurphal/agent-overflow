@@ -1337,6 +1337,15 @@ export class ManagedProviderAccount {
     "active": boolean;
     "generation": number;
 
+    /**
+     * NeedsLogin marks a saved account whose credential is gone, so
+     * selecting it cannot work until the user signs in again. The card
+     * stays listed — its metadata and quota history are still the user's
+     * record of that account — but it is honest about being unusable
+     * instead of failing with a filesystem error on click.
+     */
+    "needsLogin": boolean;
+
     /** Creates a new ManagedProviderAccount instance. */
     constructor($$source: Partial<ManagedProviderAccount> = {}) {
         if (!("id" in $$source)) {
@@ -1356,6 +1365,9 @@ export class ManagedProviderAccount {
         }
         if (!("generation" in $$source)) {
             this["generation"] = 0;
+        }
+        if (!("needsLogin" in $$source)) {
+            this["needsLogin"] = false;
         }
 
         Object.assign(this, $$source);
