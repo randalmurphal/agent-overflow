@@ -25,8 +25,8 @@ describe('counts', () => {
     ]);
 
     expect(counts.entries).toEqual([
-      { label: 'Bash', count: 3 },
-      { label: 'Read', count: 2 },
+      { label: 'Bash', count: 3, isThinking: false },
+      { label: 'Read', count: 2, isThinking: false },
     ]);
     expect(counts.total).toBe(5);
   });
@@ -54,7 +54,7 @@ describe('counts', () => {
       makeItem({ id: 'c1', kind: 'tool_completion', toolName: 'Bash', completionOf: 't1' }),
     ]);
 
-    expect(counts.entries).toEqual([{ label: 'Bash', count: 1 }]);
+    expect(counts.entries).toEqual([{ label: 'Bash', count: 1, isThinking: false }]);
     expect(counts.total).toBe(1);
   });
 
@@ -65,13 +65,13 @@ describe('counts', () => {
       makeItem({ id: 'c1', kind: 'tool_completion', toolName: 'Bash', completionOf: 'gone' }),
     ]);
 
-    expect(counts.entries).toEqual([{ label: 'Bash', count: 1 }]);
+    expect(counts.entries).toEqual([{ label: 'Bash', count: 1, isThinking: false }]);
   });
 
   it('falls back to a generic label for an unnamed tool', () => {
     const { counts } = activityRunSummary([tool('t1', '   ')]);
 
-    expect(counts.entries).toEqual([{ label: 'tool', count: 1 }]);
+    expect(counts.entries).toEqual([{ label: 'tool', count: 1, isThinking: false }]);
   });
 });
 

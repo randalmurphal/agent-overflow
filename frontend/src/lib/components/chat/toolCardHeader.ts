@@ -30,6 +30,32 @@ export type ToolKindIcon =
   | "compaction"
   | "generic";
 
+/**
+ * Tailwind class carrying each kind's hue, from the `--ico-*` token family
+ * (see `app.css` `:root` and the light-mode block).
+ *
+ * Here rather than in `ToolKindIcon.svelte` because the hue is the kind's, not
+ * the icon's: a collapsed activity run tints its tool NAMES with it, where no
+ * icon renders at all. Two copies would let the chip and the icon disagree
+ * about what colour Bash is. Every class is written out statically so the
+ * Tailwind v4 compiler sees it.
+ */
+export const TOOL_KIND_COLOR_CLASS: Record<ToolKindIcon, string> = {
+  terminal: "text-ico-terminal",
+  file: "text-ico-file",
+  eye: "text-ico-eye",
+  search: "text-ico-search",
+  globe: "text-ico-globe",
+  robot: "text-ico-robot",
+  "speech-bubble": "text-ico-speech-bubble",
+  checklist: "text-ico-checklist",
+  puzzle: "text-ico-puzzle",
+  clock: "text-ico-clock",
+  brain: "text-ico-brain",
+  compaction: "text-ico-compaction",
+  generic: "text-ico-generic",
+};
+
 export interface ToolKindVisual {
   /** Icon kind picked by `iconFor`. Rendered via `ToolKindIcon.svelte`. */
   icon: ToolKindIcon;

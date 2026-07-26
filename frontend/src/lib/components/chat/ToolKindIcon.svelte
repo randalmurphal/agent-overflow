@@ -2,32 +2,15 @@
   // Tiny SVG dispatcher — maps a ToolKindIcon name to the matching inline
   // SVG path. Inline to avoid bundling an icon library for nine icons.
   //
-  // Color is keyed by `kind` via the --ico-* token family (see app.css
-  // `:root` and `html.light` blocks). All class names live in Tailwind
-  // strings statically so the v4 compiler picks them up.
+  // Color is keyed by `kind` via the --ico-* token family, shared with
+  // everything else that speaks in tool hues (`TOOL_KIND_COLOR_CLASS`).
 
-  import type { ToolKindIcon } from './toolCardHeader';
-
-  const COLOR_BY_KIND: Record<ToolKindIcon, string> = {
-    terminal: 'text-ico-terminal',
-    file: 'text-ico-file',
-    eye: 'text-ico-eye',
-    search: 'text-ico-search',
-    globe: 'text-ico-globe',
-    robot: 'text-ico-robot',
-    'speech-bubble': 'text-ico-speech-bubble',
-    checklist: 'text-ico-checklist',
-    puzzle: 'text-ico-puzzle',
-    clock: 'text-ico-clock',
-    brain: 'text-ico-brain',
-    compaction: 'text-ico-compaction',
-    generic: 'text-ico-generic',
-  };
+  import { TOOL_KIND_COLOR_CLASS, type ToolKindIcon } from './toolCardHeader';
 
   let { kind, ariaLabel }: { kind: ToolKindIcon; ariaLabel?: string } = $props();
 
   const titleText = $derived(ariaLabel ?? `${kind} tool`);
-  const colorClass = $derived(COLOR_BY_KIND[kind]);
+  const colorClass = $derived(TOOL_KIND_COLOR_CLASS[kind]);
 </script>
 
 <svg

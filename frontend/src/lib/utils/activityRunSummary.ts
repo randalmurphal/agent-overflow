@@ -13,10 +13,27 @@ import type { Item } from '../types/models';
 const THINKING_LABEL = 'thinking';
 const UNNAMED_TOOL_LABEL = 'tool';
 
+/** One `14 Bash` term of the collapsed chip line. */
+export interface ActivityRunCountEntry {
+  label: string;
+  count: number;
+  /**
+   * These rows are thinking, not a tool call.
+   *
+   * A fact about the ITEMS, deliberately — not the icon kind or the colour
+   * class the chip paints with. Those are presentation, they live in
+   * `toolCardHeader.ts`, and resolving them here would point a util at a
+   * component directory to answer a question it does not have to ask. The
+   * chip cannot re-derive this from `label` without matching the string
+   * `'thinking'`, which a tool of that name would then impersonate.
+   */
+  isThinking: boolean;
+}
+
 /** Tool display name → row count, for the collapsed chip line. */
 export interface ActivityRunCounts {
   /** Count-descending, thinking last. */
-  entries: { label: string; count: number }[];
+  entries: ActivityRunCountEntry[];
   /** Total rows represented, including every group member. */
   total: number;
 }
@@ -55,7 +72,10 @@ function isRunningStatus(status: Item['status']): boolean {
  */
 export function activityRunSummary(items: readonly Item[]): ActivityRunSummary {
   const presentIds = new Set(items.map((item) => item.id));
-  const byLabel = new Map<string, number>();
+  // Keyed by kind AND label, so a tool that happens to be NAMED `thinking`
+  // stays its own term. Reading thinking-ness back off the label would make
+  // that tool inherit reasoning's hue and its sort position.
+  const buckets = new Map<string, ActivityRunCountEntry>();
   let total = 0;
   let hasFailure = false;
   let runningLabel: string | null = null;
@@ -71,16 +91,19 @@ export function activityRunSummary(items: readonly Item[]): ActivityRunSummary {
     }
     total += 1;
     const label = activityRunToolLabel(item);
-    byLabel.set(label, (byLabel.get(label) ?? 0) + 1);
+    const isThinking = item.kind === 'thinking';
+    const key = `${isThinking ? 'T' : 'C'}:${label}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.count += 1;
+    else buckets.set(key, { label, count: 1, isThinking });
   }
 
-  const entries = [...byLabel.entries()]
-    .map(([label, count]) => ({ label, count }))
+  const entries = [...buckets.values()]
     .sort((a, b) => {
       // Thinking last regardless of count: it is ambient, and a reader
       // scanning a chip wants the tools first.
-      const aThinking = a.label === THINKING_LABEL;
-      const bThinking = b.label === THINKING_LABEL;
+      const aThinking = a.isThinking;
+      const bThinking = b.isThinking;
       if (aThinking !== bThinking) return aThinking ? 1 : -1;
       if (a.count !== b.count) return b.count - a.count;
       return a.label.localeCompare(b.label);

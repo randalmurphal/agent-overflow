@@ -367,6 +367,41 @@ describe('<ActivityRun>', () => {
         .toBe('2 Bash, 1 Read');
     });
 
+    it('tints each tool name with that tool\'s own icon hue', async () => {
+      const { getByTestId } = await collapsedChip([
+        tool('t0', 0),
+        tool('t1', 1, { toolName: 'Read', summary: 'Read: a.ts' }),
+        makeItem({ id: 't2', itemIndex: 2, kind: 'thinking', summary: 'pondering' }),
+      ]);
+      const counts = getByTestId('activity-run-chip-counts');
+      const hue = (label: string) =>
+        counts.querySelector(`[data-tool-term="${label}"]`)?.className;
+
+      // The same `--ico-*` tokens the expanded run's icons carry, so a chip
+      // reads as the block it stands for rather than a grey tally.
+      expect(hue('Bash')).toBe('text-ico-terminal');
+      expect(hue('Read')).toBe('text-ico-eye');
+      // Reasoning has no tool name to classify — it is named by kind.
+      expect(hue('thinking')).toBe('text-ico-brain');
+      // The counts themselves stay muted: the colour says WHICH tool.
+      expect(counts.className).toContain('text-fg-muted');
+      expect(counts.textContent?.trim()).toBe('1 Bash, 1 Read, 1 thinking');
+    });
+
+    it('leaves an unknown tool the ordinary text colour', async () => {
+      // `generic` resolves to the secondary text token, so a tool this build
+      // does not know reads as plain text instead of borrowing a hue that
+      // means something else.
+      const { getByTestId } = await collapsedChip([
+        tool('t0', 0, { toolName: 'DefinitelyNotAKnownTool' }),
+      ]);
+
+      expect(
+        getByTestId('activity-run-chip-counts')
+          .querySelector('[data-tool-term]')?.className,
+      ).toBe('text-ico-generic');
+    });
+
     it('surfaces a failure it would otherwise hide', async () => {
       const { getByTestId, queryByTestId } = await collapsedChip([
         tool('t0', 0, { status: 'errored' }),

@@ -216,6 +216,27 @@ affordance at all. The chat header's **collapse-all toggle**
 point as well as the bulk action — one button whose direction comes from
 `activityRuns.bulkCollapsed`.
 
+### The chip speaks in tool hues
+
+Each term of the count line wears its own tool's colour — `14 Bash` in the
+terminal hue, `9 thinking` in reasoning's — from the same `--ico-*` tokens the
+expanded run's icons carry. A chip stands in for a block the reader has already
+seen in colour; a grey tally throws that recognition away for no gain. The
+count stays muted: the colour identifies WHICH tool, and tinting the number
+too would only dilute it.
+
+`TOOL_KIND_COLOR_CLASS` moved out of `ToolKindIcon.svelte` into
+`toolCardHeader.ts` for this. The hue belongs to the tool KIND, not to the
+icon — the chip paints text where no icon renders — and a second copy would let
+the two disagree about what colour Bash is.
+
+The chip is a util away from the classifier, so `activityRunSummary` reports
+`isThinking` per entry and the chip resolves kind and colour from it.
+Presentation stays in `components/chat/`, and the alternative — the chip
+matching the label string `'thinking'` — would hand reasoning's hue to any tool
+that happened to be named that. The counts bucket on kind AND label for the
+same reason.
+
 ### Collapsing all
 
 `setAllCollapsed` sets a per-thread default and drops the per-run overrides
