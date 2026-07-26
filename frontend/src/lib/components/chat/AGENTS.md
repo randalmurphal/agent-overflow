@@ -82,6 +82,8 @@ Use these pane registries instead of local row state:
   diff-card expand/collapse overrides. Tri-state: an absent entry
   follows the `collapseDiffPreviews` setting default; pass `undefined`
   to clear the override.
+- `pane.activityRuns` for a run's collapse override, inner scroll position,
+  mount window, and pending jump focus (see "Activity Runs" below).
 
 Payload bytes go through `utils/payloadDataCache.ts`, keyed by
 `(threadId, payloadId, version)` and byte-bounded by its LRU. Per-pane
@@ -90,6 +92,39 @@ registries track expansion intent; the data cache tracks loaded bytes.
 Heavy work such as Mermaid render, syntax-span requests, KaTeX
 typeset, and attachment image load should stay lazy and row-local.
 Module-level singletons in the markdown pipeline keep remounts cheap.
+
+## Activity Runs
+
+Consecutive activity rows (tool calls, completions, thinking, and the group
+cards on the same rail) are wrapped by the projection's last pass into ONE
+`activity_run` row: `ActivityRun.svelte`, a height-capped clip that scrolls
+in place, or `ActivityRunChip.svelte`, a one-line count chip. Architecture:
+[`docs/architecture/activity-runs.md`](../../../../../docs/architecture/activity-runs.md).
+
+Operational rules for this directory:
+
+- **The rail belongs to the run.** One continuous border plus one hit strip
+  per run, not per row — do not reintroduce per-row `isRail` styling.
+- **Rows inside a run are still rows.** They keep their own components,
+  leases, and margins; the run wraps them in a per-child
+  `[data-run-child]` index wrapper (a jump's only handle on a non-leaf row,
+  since only leaves emit `data-item-id`) and mounts a window of them.
+- **A run's own state goes in `pane.activityRuns`**, keyed by the
+  registry-assigned `runId` — never by a member item id, which changes at
+  both window edges.
+- **Nothing that changes per streaming delta belongs on the node.** Chip
+  counts, failure, and the running label resolve from current items through
+  `utils/activityRunSummary.ts`; a node field would rebuild the
+  virtualizer's data array every chunk.
+- **A jump into a run goes through `revealActivityRunItem`**
+  (`utils/activityRunWindow.ts`), which expands, relocates the window, and
+  leaves the focus request together. Do not call the three registry methods
+  separately — a partial application scrolls nowhere or shows nothing.
+- **The clip's scrollbar must consume zero width** and take no gutter, or
+  the run's rows leave the rail and its text re-wraps on every overflow
+  transition. Geometry that depends on that lives in
+  `activityRunClip.browser.test.ts` / `activityRunScroll.browser.test.ts`;
+  happy-dom cannot see any of it.
 
 ## Companion Panes
 

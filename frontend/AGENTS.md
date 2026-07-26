@@ -131,6 +131,9 @@ Read that before touching:
   modules extracted from MessageTimeline)
 - `src/lib/components/virtual/TimelineVirtualizer.svelte`
 - `src/lib/components/discussion/ChannelView.svelte`
+- `src/lib/components/chat/ActivityRun.svelte` + `utils/activityRun*.ts`
+  (the one nested scroller running the pane's physics; see
+  [`docs/architecture/activity-runs.md`](../docs/architecture/activity-runs.md))
 - `src/lib/utils/scroll/` (`index.svelte.ts` controller + resolver/intent/spring/observers)
 - `src/lib/utils/virtual/` (windowing engine + per-thread size priors)
 

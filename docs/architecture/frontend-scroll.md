@@ -118,9 +118,16 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
   - `timelineRowUiPrune.ts` — bounds per-row expansion-handle retention
     to a buffer around the visible range plus the tail, on a prune
     cadence (structural changes + scroll end).
+- `components/chat/ActivityRun.svelte` owns the one nested scroller that runs
+  the same physics as the pane: a height-capped clip over a stretch of
+  activity rows, with a second controller instance on the live run only.
+  Geometry and window math live in `utils/activityRun{Clip,Window}.ts`,
+  per-run state in `stores/threadActivityRuns.svelte.ts`. Full architecture:
+  [`activity-runs.md`](activity-runs.md).
 - `ThreadPane` owns the scroll-controller registration slot so shared
   surfaces can pause or notify scrolling without reaching into component
-  internals.
+  internals. It is **single-occupancy and the timeline's**: a nested
+  controller (activity run, `ChannelView`) never registers.
 - `threadScrollSnapshots.ts` owns semantic per-thread scroll snapshots:
   `{ kind: 'bottom' }` or `{ kind: 'anchor', itemId, offsetTop }`.
 
@@ -694,6 +701,12 @@ holds the center in both states and reserves nothing when idle (no
 always-visible bar). `ChannelView` is left-aligned, so the bar reflows
 only its right edge and needs no gutter — keep this directive chat-only.
 
+A gutter does not transfer to a scroller *inside* the centered column: it
+would inset that box's content relative to the prose above and below. The
+activity-run clip therefore suppresses its native bar to zero width and
+renders an out-of-flow overlay thumb instead — see
+[Nested scrollers](#the-activity-run-a-nested-scroller-with-the-panes-physics).
+
 Status banners are absolute overlays, not reserved layout slots. They
 must not change the scroll surface height on mount/unmount.
 
@@ -727,6 +740,39 @@ attributes correctly against both levels.
 
 Adding a new scrollable row body means adding `use:nestedScroll` to it.
 Contract: [`scroll-contracts.md`](scroll-contracts.md) C7.
+
+### The activity run: a nested scroller with the pane's physics
+
+Most nested bodies are inert boxes. An activity run's clip is not: the run
+holding the live tail gets its own `createUseStickToBottomController`, same
+spring and glide compositing as the pane, so streaming activity chases inside
+the cap while the prose above it stays put. Rules that matter from the outer
+side ([`activity-runs.md`](activity-runs.md) has the rest):
+
+- **Only the live run.** Historical runs are plain `overflow-y: auto` with a
+  restored `scrollTop`; a controller per run in the buffer would be a spring,
+  an observer set, and intent listeners each for physics one of them can use.
+- **The clip's outer height changes only on explicit events** — growth toward
+  the cap, item expansion, a collapse toggle — never from inner streaming.
+  That is what keeps the outer engine quiet, and it keeps `rowDelta === 0` for
+  the straddling row during inner scrolling, so the reading-anchor measurer
+  never sees inner movement.
+- **The nested controller leaves `externalContentGeometry` unset** (no
+  virtualizer inside a run, so its own contentEl ResizeObserver is the right
+  source — the `ChannelView` precedent) and never touches
+  `pane.attachScrollController`.
+- **Inner scroll position lives in the per-pane registry**, keyed by the
+  registry-assigned `runId`, so a run the reader scrolled inside does not snap
+  back to its tail every time the virtualizer evicts its row.
+- **The clip's native scrollbar is suppressed to zero width** and the
+  affordance is a `components/shared/OverlayScrollbar.svelte` in the column's
+  padding. A gutter cannot be used inside the centered column — it would inset
+  the run's rows off the rail the run draws — and a bar that takes width would
+  re-wrap the run's text every time it appeared. The consequence for this
+  package: `offsetWidth - clientWidth === 0`, so `intent.ts`'s geometric
+  scrollbar-drag test can never fire for the clip, and the overlay thumb
+  states its intent instead (`pointerdown` → escape, release at the bottom →
+  `markAtBottom()`). Event-sourced, per C6.
 
 ## Row And Payload State
 
