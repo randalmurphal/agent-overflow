@@ -50,17 +50,23 @@ export interface ThreadActivityRunsOptions {
 
 export interface ThreadActivityRuns extends ActivityRunIdentity {
   /**
-   * Bumps whenever a value `resolve` returns could differ. The projection
+   * Bumps whenever a value this registry resolves onto a run node could differ. The projection
    * pass runs untracked (it walks every node and would otherwise re-run on
    * every streaming delta), so it reads this to know when a rebuild is
    * owed. Scroll snapshots deliberately do NOT bump it: they change on
    * every inner scroll frame and nothing on the node depends on them.
    */
   readonly revision: number;
-  /** Explicit user state, or the thread default when never touched. */
-  isCollapsed(runId: string): boolean;
+  /**
+   * Set whether the run renders without its clip.
+   *
+   * Takes the target state rather than toggling, because the caller is the only
+   * one who knows the state being toggled FROM: a run with no override renders
+   * expanded while it is live regardless of the defaults (see `collapsedFor`),
+   * so a registry-side toggle would read the settled answer and hand back the
+   * state the reader is already looking at.
+   */
   setCollapsed(runId: string, collapsed: boolean): void;
-  toggleCollapsed(runId: string): void;
   /**
    * What a run with no explicit state does in this thread: the bulk override
    * if one has been taken, otherwise the `activityRunDefault` setting.
@@ -82,6 +88,16 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
   setAllCollapsed(collapsed: boolean): void;
   scrollSnapshot(runId: string): ActivityRunScrollSnapshot | null;
   saveScrollSnapshot(runId: string, snapshot: ActivityRunScrollSnapshot): void;
+  /**
+   * State whether the run has a clip on screen. Called by the run's row, the
+   * only thing that knows: collapsing normally closes the clip, but a
+   * collapsed run keeps one while it holds the thread's tail and while it
+   * folds that clip shut.
+   *
+   * Outside the `revision` graph: nothing on the node depends on it, and the
+   * row that sets it would be re-rendering itself.
+   */
+  setClipOpen(runId: string, open: boolean): void;
   /**
    * RESIZE the run's mounted window, recording the size as an explicit
    * override that no longer tracks the `activityRunWindowRows` setting. Set by
@@ -141,6 +157,25 @@ interface RunEntry {
   threadId: string;
   members: Set<string>;
   collapsed: boolean | null;
+  /**
+   * The run currently has a clip on screen to record a position from.
+   *
+   * Not the inverse of `collapsed`, which is why it is stored rather than
+   * derived: a collapsing run keeps its clip for the length of the fold, and a
+   * run whose collapse resolves from the defaults renders open for as long as it
+   * is live. The mounted row is the only thing that knows either, so the mounted
+   * row states it.
+   *
+   * Starts true and is closed by `forgetInnerPosition`, so an entry nobody has
+   * collapsed behaves exactly as it did when this was `!collapsed`. Only a
+   * mounted clip can produce a position to save, so an entry that starts
+   * permissive cannot let a wrong one through — an entry that started closed
+   * could only ever drop a right one.
+   *
+   * Never archived. It describes a DOM state, and a run coming back from the
+   * archive has no rows.
+   */
+  clipOpen: boolean;
   scroll: ActivityRunScrollSnapshot | null;
   /** null → the `activityRunWindowRows` setting. */
   windowRows: number | null;
@@ -156,7 +191,7 @@ interface RunEntry {
  * in every thread — so a bare item id would let one thread's first run
  * revive another's state on a switch.
  */
-interface ArchivedRun extends Omit<RunEntry, 'members' | 'focus'> {
+interface ArchivedRun extends Omit<RunEntry, 'members' | 'focus' | 'clipOpen'> {
   keys: string[];
 }
 
@@ -179,6 +214,7 @@ function emptyEntry(threadId: string): RunEntry {
     threadId,
     members: new Set(),
     collapsed: null,
+    clipOpen: true,
     scroll: null,
     windowRows: null,
     windowStartItemId: null,
@@ -289,6 +325,7 @@ export function createThreadActivityRuns(
           threadId,
           members: new Set(),
           collapsed: revived.collapsed,
+          clipOpen: true,
           scroll: revived.scroll,
           windowRows: revived.windowRows,
           windowStartItemId: revived.windowStartItemId,
@@ -383,7 +420,6 @@ export function createThreadActivityRuns(
     }
     return {
       runId,
-      collapsed: isCollapsed(runId),
       mountedFrom,
       mountedRows: rows,
     };
@@ -405,8 +441,20 @@ export function createThreadActivityRuns(
     return bulkCollapsed ?? options.defaultCollapsed();
   }
 
-  function isCollapsed(runId: string): boolean {
-    return entries.get(runId)?.collapsed ?? threadDefaultCollapsed();
+  function collapsedFor(runId: string, live: boolean): boolean {
+    const override = entries.get(runId)?.collapsed;
+    // An answer about THIS run beats everything, including liveness. A reader
+    // who collapses the run they are watching means now, not when it finishes —
+    // the clip closing is the only evidence the click did anything.
+    if (override !== null && override !== undefined) return override;
+    // Nobody has answered for it, so a working run shows its work. The defaults
+    // — the thread's bulk state and the `activityRunDefault` setting — say how a
+    // run should SIT, and one still filling has not settled into anything yet;
+    // it closes itself when it does, with a fold rather than a jump
+    // (`activityRunFold.ts`). This is the whole reason the parameter exists: the
+    // registry cannot know liveness, which is a claim about items it never
+    // reads, and it is deliberately an input to the FALLBACK only.
+    return live ? false : threadDefaultCollapsed();
   }
 
   function setCollapsed(runId: string, collapsed: boolean): void {
@@ -414,6 +462,7 @@ export function createThreadActivityRuns(
     if (!entry || entry.collapsed === collapsed) return;
     entry.collapsed = collapsed;
     if (collapsed) forgetInnerPosition(entry);
+    else entry.clipOpen = true;
     revision += 1;
   }
 
@@ -438,10 +487,11 @@ export function createThreadActivityRuns(
   function forgetInnerPosition(entry: RunEntry): void {
     entry.scroll = null;
     entry.windowStartItemId = null;
-  }
-
-  function toggleCollapsed(runId: string): void {
-    setCollapsed(runId, !isCollapsed(runId));
+    // Said here rather than at each call site because every caller means the
+    // same thing by it: the clip is going away. A run whose clip survives the
+    // collapse (it still holds the tail) re-states that from its mounted row,
+    // which is the only place that can know.
+    entry.clipOpen = false;
   }
 
   return {
@@ -450,10 +500,9 @@ export function createThreadActivityRuns(
     },
     beginPass,
     resolve,
+    collapsedFor,
     endPass,
-    isCollapsed,
     setCollapsed,
-    toggleCollapsed,
     get bulkCollapsed() {
       return threadDefaultCollapsed();
     },
@@ -466,6 +515,7 @@ export function createThreadActivityRuns(
       for (const entry of entries.values()) {
         entry.collapsed = null;
         if (collapsed) forgetInnerPosition(entry);
+        else entry.clipOpen = true;
       }
       // Archived runs are the ones a bulk action would otherwise miss: they
       // come back as the reader pages, and an override from before the action
@@ -486,14 +536,24 @@ export function createThreadActivityRuns(
       // creating an entry here would leave a memberless ghost behind.
       const entry = entries.get(runId);
       if (!entry) return;
-      // A collapsed run has no inner position to record, and the row that just
-      // became a chip tears its clip down THROUGH this method — so the refusal
+      // A run with no clip has no inner position to record, and the row that
+      // just lost its clip tears it down THROUGH this method — so the refusal
       // has to live here rather than at the one call site. Without it the
       // teardown would write back the offset `forgetInnerPosition` just
       // dropped (0, since a detached element reports no scroll), and every
       // collapse-then-expand would reopen the run at its first row.
-      if (entry.collapsed ?? threadDefaultCollapsed()) return;
+      //
+      // `clipOpen`, not `collapsed`: those said the same thing until a
+      // collapsed run began keeping its clip open while it holds the tail. A
+      // live run refused here would be reset to its newest row the moment it
+      // stopped being live, yanking a reader who had scrolled up inside it.
+      if (!entry.clipOpen) return;
       entry.scroll = snapshot;
+    },
+    setClipOpen: (runId, open) => {
+      const entry = entries.get(runId);
+      if (!entry) return;
+      entry.clipOpen = open;
     },
     setMountWindow: (runId, window) => {
       const entry = entries.get(runId);

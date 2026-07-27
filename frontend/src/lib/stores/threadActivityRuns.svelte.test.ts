@@ -16,16 +16,27 @@ function registry(overrides: { defaultCollapsed?: boolean; windowRows?: number }
  */
 type RunSpec = (string | string[])[];
 
-/** One projection pass. Runs belong to `threadId`, which scopes their ids. */
+/**
+ * One projection pass, resolved in the order `groupActivityRuns` resolves it:
+ * identity and window per run, then collapse once liveness is known.
+ *
+ * `liveIndex` names the run holding the thread's tail — at most one can, and
+ * `-1` means the pass has none (a thread whose last row is prose).
+ */
 function pass(
   runs: ReturnType<typeof registry>,
   specs: RunSpec[],
   threadId = 'thread-1',
-): ActivityRunResolution[] {
+  liveIndex = -1,
+): (ActivityRunResolution & { collapsed: boolean })[] {
   runs.beginPass();
-  const out = specs.map((spec) =>
+  const resolved = specs.map((spec) =>
     runs.resolve(spec.map((row) => (typeof row === 'string' ? [row] : row)), threadId),
   );
+  const out = resolved.map((run, index) => ({
+    ...run,
+    collapsed: runs.collapsedFor(run.runId, index === liveIndex),
+  }));
   runs.endPass();
   return out;
 }
@@ -66,15 +77,56 @@ describe('collapse state', () => {
     expect(pass(runs, [['a']])[0].collapsed).toBe(true);
   });
 
-  it('toggles from the effective state, not from a stale stored one', () => {
+});
+
+describe('collapse state while a run is still working', () => {
+  it('renders open until it settles, when nobody has answered for it', () => {
+    // The defaults say how a run should SIT, and one still filling has not
+    // settled into anything yet — collapsing by default must not mean going
+    // blind to work that is still arriving. Losing the tail is what closes it,
+    // and that is the transition `activityRunFold.ts` animates.
     const runs = registry({ defaultCollapsed: true });
-    const [run] = pass(runs, [['a']]);
+    const [live] = pass(runs, [['a']], 'thread-1', 0);
+    expect(live.collapsed).toBe(false);
 
-    // Never explicitly set, so the first toggle must read the default (true)
-    // and land on false rather than flipping a null to true.
-    runs.toggleCollapsed(run.runId);
+    expect(pass(runs, [['a']])[0].collapsed).toBe(true);
+  });
 
-    expect(runs.isCollapsed(run.runId)).toBe(false);
+  it('closes now when the reader collapses it, and stays closed as it settles', () => {
+    // The click is about this run, right now. A collapse that waited for the run
+    // to finish would leave the reader with nothing to show the click landed —
+    // which is the entire visible effect of collapsing.
+    const runs = registry({ defaultCollapsed: false });
+    const [run] = pass(runs, [['a']], 'thread-1', 0);
+
+    runs.setCollapsed(run.runId, true);
+
+    expect(pass(runs, [['a']], 'thread-1', 0)[0].collapsed).toBe(true);
+    expect(pass(runs, [['a']])[0].collapsed).toBe(true);
+  });
+
+  it('keeps an explicitly expanded run open once it settles', () => {
+    // The other direction of the same rule: an answer about the run outlives
+    // the liveness that would otherwise have decided for it.
+    const runs = registry({ defaultCollapsed: true });
+    const [run] = pass(runs, [['a']], 'thread-1', 0);
+    runs.setCollapsed(run.runId, false);
+
+    expect(pass(runs, [['a']])[0].collapsed).toBe(false);
+  });
+
+  it('is not closed by a bulk collapse, which is a default and not an answer', () => {
+    // `setAllCollapsed` sets the thread's default and DROPS per-run overrides
+    // (that is how a later flip reaches every run), so it is the same kind of
+    // fact as the setting: it governs runs that have settled. The one still
+    // working folds itself shut when it finishes.
+    const runs = registry({ defaultCollapsed: false });
+    pass(runs, [['a']], 'thread-1', 0);
+
+    runs.setAllCollapsed(true);
+
+    expect(pass(runs, [['a']], 'thread-1', 0)[0].collapsed).toBe(false);
+    expect(pass(runs, [['a']])[0].collapsed).toBe(true);
   });
 });
 
@@ -129,7 +181,7 @@ describe('collapsing all', () => {
     const [run] = pass(runs, [['a'], ['b']]);
     runs.setAllCollapsed(true);
 
-    runs.toggleCollapsed(run.runId);
+    runs.setCollapsed(run.runId, false);
 
     expect(pass(runs, [['a'], ['b']]).map((r) => r.collapsed)).toEqual([false, true]);
   });

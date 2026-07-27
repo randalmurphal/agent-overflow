@@ -37,6 +37,7 @@ function run(
     threadId: 'thread-1',
     children,
     collapsed: false,
+    live: false,
     mountedFrom: window.from,
     mountedRows: window.rows,
     memberItemIds: [],

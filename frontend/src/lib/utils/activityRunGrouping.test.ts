@@ -89,12 +89,18 @@ function run(nodes: TimelineNode[], index: number): ActivityRunNode {
 /** Group with a live item map, mirroring the pane's `getItemById`. */
 function project(
   nodes: TimelineNode[],
-  options: { identity?: ThreadActivityRuns; live?: Item[] } = {},
+  options: {
+    identity?: ThreadActivityRuns;
+    live?: Item[];
+    /** Nodes the reveal gate is holding back, which decide tail liveness. */
+    withheld?: TimelineNode[];
+  } = {},
 ): TimelineNode[] {
   const live = new Map((options.live ?? []).map((item) => [item.id, item]));
   return groupActivityRuns(nodes, {
     identity: options.identity ?? identity(),
     getItem: (id) => live.get(id),
+    withheld: options.withheld ?? [],
   });
 }
 
@@ -177,6 +183,64 @@ describe('run boundaries', () => {
 
     expect(project(nodes, { live: [arrived] }).map((n) => n.kind))
       .toEqual(['activity_run', 'leaf', 'activity_run']);
+  });
+});
+
+describe('liveness', () => {
+  // Liveness decides who gets a scroll controller and — since a collapsed run
+  // keeps its clip while live — when that clip folds shut. It is a claim about
+  // the ITEMS, so it cannot be read off the revealed list alone.
+  it('marks the tail run live', () => {
+    const nodes = [prose('p0'), tool('t0', 'Bash')];
+    const out = project(nodes, { live: [] });
+    expect(run(out, 1).live).toBe(true);
+  });
+
+  it('does not mark a run prose has closed', () => {
+    const nodes = [tool('t0', 'Bash'), prose('p0')];
+    const out = project(nodes);
+    expect(run(out, 0).live).toBe(false);
+  });
+
+  it('does not mark a run whose closing prose is still behind the reveal gate', () => {
+    // The prose exists; the reader just cannot see it yet. Calling the run live
+    // here made liveness FLAP every time the gate opened and closed — the
+    // controller was rebuilt each time, and a collapsed run's fold aborted and
+    // restarted mid-animation.
+    const held = prose('p0');
+    const nodes = [tool('t0', 'Bash')];
+    const out = project(nodes, { withheld: [held] });
+    expect(run(out, 0).live).toBe(false);
+  });
+
+  it('stays live when the gate is only holding more of its own activity', () => {
+    // Those rows join THIS run when the gate opens, so it is still the run the
+    // next activity lands in.
+    const held = tool('t1', 'Read');
+    const nodes = [tool('t0', 'Bash')];
+    const out = project(nodes, {
+      withheld: [held],
+      live: [(held as { item: Item }).item],
+    });
+    expect(run(out, 0).live).toBe(true);
+  });
+
+  it('does not mark a run when the gate holds activity AND prose after it', () => {
+    // The prose is what matters: whatever activity is queued ahead of it lands
+    // in this run, but the run still ends there.
+    const heldTool = tool('t1', 'Read');
+    const nodes = [tool('t0', 'Bash')];
+    const out = project(nodes, {
+      withheld: [heldTool, prose('p0')],
+      live: [(heldTool as { item: Item }).item],
+    });
+    expect(run(out, 0).live).toBe(false);
+  });
+
+  it('never marks a trailing prose row', () => {
+    const nodes = [tool('t0', 'Bash'), prose('p0')];
+    const out = project(nodes);
+    expect(out[1].kind).toBe('leaf');
   });
 });
 
@@ -298,6 +362,24 @@ describe('identity migration', () => {
     id.setCollapsed(runId, true);
 
     expect(run(project([tool('t1', 'Bash')], { identity: id }), 0).collapsed).toBe(true);
+  });
+
+  it('resolves collapse AFTER liveness, so a working run can render open', () => {
+    // Ordering, not just ranking. The registry needs `live` to answer for a run
+    // nobody has collapsed, and a run cannot tell from its own members whether
+    // anything follows it — so collapse is stamped in a second sweep, once the
+    // tail is known. Resolved in the first sweep instead, every run would look
+    // settled: the live one would close on the spot and nothing would ever fold.
+    const id = createThreadActivityRuns({
+      defaultCollapsed: () => true,
+      windowRows: () => 30,
+    });
+    const nodes = project([tool('t1', 'Bash'), prose('p1'), tool('t2', 'Bash')], { identity: id });
+
+    expect(run(nodes, 0).live).toBe(false);
+    expect(run(nodes, 0).collapsed).toBe(true);
+    expect(run(nodes, 2).live).toBe(true);
+    expect(run(nodes, 2).collapsed).toBe(false);
   });
 
   it('carries a collapse override across a backfill that re-keys nothing', () => {

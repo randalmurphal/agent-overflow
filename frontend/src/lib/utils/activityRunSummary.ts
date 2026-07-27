@@ -1,11 +1,11 @@
 // What a collapsed activity run says about itself: per-tool counts, plus
-// the two facts a chip must never hide — that something failed, and that
+// the two facts a collapsed run must never hide — that something failed, and
 // something is still going.
 //
 // Deliberately NOT part of the run node. Every value here moves on ordinary
 // streaming deltas (a call completes, a status flips, a tool starts), so
 // baking them into the projected node would rebuild the virtualizer's data
-// array on every chunk. The chip resolves current items and calls this
+// array on every chunk. The header resolves current items and calls this
 // instead, the same way leaf rows resolve their own items.
 
 import type { Item } from '../types/models';
@@ -13,7 +13,7 @@ import type { Item } from '../types/models';
 const THINKING_LABEL = 'thinking';
 const UNNAMED_TOOL_LABEL = 'tool';
 
-/** One `14 Bash` term of the collapsed chip line. */
+/** One `14 Bash` term of a run's header line. */
 export interface ActivityRunCountEntry {
   label: string;
   count: number;
@@ -21,16 +21,16 @@ export interface ActivityRunCountEntry {
    * These rows are thinking, not a tool call.
    *
    * A fact about the ITEMS, deliberately — not the icon kind or the colour
-   * class the chip paints with. Those are presentation, they live in
+   * class the header paints with. Those are presentation, they live in
    * `toolCardHeader.ts`, and resolving them here would point a util at a
    * component directory to answer a question it does not have to ask. The
-   * chip cannot re-derive this from `label` without matching the string
+   * header cannot re-derive this from `label` without matching the string
    * `'thinking'`, which a tool of that name would then impersonate.
    */
   isThinking: boolean;
 }
 
-/** Tool display name → row count, for the collapsed chip line. */
+/** Tool display name → row count, for a run's header line. */
 export interface ActivityRunCounts {
   /** Count-descending, thinking last. */
   entries: ActivityRunCountEntry[];
@@ -54,7 +54,7 @@ export function activityRunToolLabel(item: Item): string {
 
 function isFailedStatus(status: Item['status']): boolean {
   // `declined` is a user decision, not a failure; `killed` and `errored`
-  // are outcomes the user did not choose and must not be hidden by a chip.
+  // are outcomes the user did not choose and a collapsed run must not hide.
   return status === 'errored' || status === 'killed';
 }
 
@@ -63,7 +63,7 @@ function isRunningStatus(status: Item['status']): boolean {
 }
 
 /**
- * Per-tool aggregation for the chip line, e.g. `14 Bash, 6 Read, 9 thinking`.
+ * Per-tool aggregation for the header line, e.g. `14 Bash, 6 Read, 9 thinking`.
  *
  * A `tool_completion` pairs with its call and is not counted separately —
  * one Bash call that finished is one Bash, not two. A completion whose call
@@ -101,7 +101,7 @@ export function activityRunSummary(items: readonly Item[]): ActivityRunSummary {
   const entries = [...buckets.values()]
     .sort((a, b) => {
       // Thinking last regardless of count: it is ambient, and a reader
-      // scanning a chip wants the tools first.
+      // scanning a header wants the tools first.
       const aThinking = a.isThinking;
       const bThinking = b.isThinking;
       if (aThinking !== bThinking) return aThinking ? 1 : -1;

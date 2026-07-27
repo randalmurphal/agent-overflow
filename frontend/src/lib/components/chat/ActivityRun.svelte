@@ -3,14 +3,21 @@
   // thinking, and the group containers that sit on the same rail), rendered
   // as a single timeline row.
   //
-  // Two states, no third. Expanded, the run is a height-capped clip that
-  // scrolls in place — a run shorter than the cap renders exactly as it
-  // did before this component existed, which is why no row-count threshold
-  // is needed. Collapsed, it is one chip line.
+  // A header line that is always there, and under it a height-capped clip
+  // that comes and goes. Expanded, the clip scrolls in place — a run shorter
+  // than the cap renders exactly as it did before this component existed,
+  // which is why no row-count threshold is needed. Collapsed, the header is
+  // all that is left.
+  //
+  // With one overlap: a collapsed run that still holds the thread's tail keeps
+  // its clip, so collapsing a thread never means going blind to what it is
+  // doing right now. When the run finishes, that clip folds shut
+  // (activityRunClipPresence.svelte.ts) rather than vanishing between frames —
+  // and because the header never moves, it is the only thing that does.
   //
   // The rail belongs to the run, not to its rows: one continuous border for
-  // the whole block, doubling as the collapse control. Per-row borders would
-  // draw the same line but could not be clicked as one thing.
+  // the whole block, doubling as a second, larger collapse target. Per-row
+  // borders would draw the same line but could not be clicked as one thing.
   //
   // Only the run holding the live tail gets a scroll controller. Historical
   // runs never chase, so they need no ResizeObserver, no intent listeners,
@@ -34,6 +41,8 @@
     activityRunClipMaxHeight,
     activityRunAtBottom,
     activityRunRowFullyVisible,
+    activityRunRowViewportTop,
+    activityRunScrollTopHoldingRow,
     activityRunShouldMountEarlier,
     observeActivityRunExpansion,
   } from '../../utils/activityRunClip';
@@ -49,8 +58,9 @@
     LIVE_CONTENT_ACTIVE_HOLD_MS,
   } from '../../utils/liveContentActivity';
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
+  import { createActivityRunClipPresence } from './activityRunClipPresence.svelte';
   import ActivityRunBoundary from './ActivityRunBoundary.svelte';
-  import ActivityRunChip from './ActivityRunChip.svelte';
+  import ActivityRunHeader from './ActivityRunHeader.svelte';
 
   let {
     pane,
@@ -69,6 +79,7 @@
 
   let clipEl = $state<HTMLElement | undefined>();
   let contentEl = $state<HTMLElement | undefined>();
+  let foldEl = $state<HTMLElement | undefined>();
   let expandedPx = $state(0);
 
   // The run's identity as a PRIMITIVE. Every projection pass hands this
@@ -80,6 +91,19 @@
   // to prevent. A derived primitive recomputes but does not propagate while
   // its value is unchanged, so the effect sees the identity without the churn.
   let runId = $derived(run.runId);
+
+  // The same treatment, for the same reason, on the two facts the effects
+  // below branch on. Both arrive as plain reads of a prop the projection
+  // replaces on every streamed row — `run.collapsed` off a fresh node object,
+  // and `live` as a pass-through of one — so an effect reading either directly
+  // re-runs every pass even though neither has changed. That was measurable,
+  // not theoretical: it tore the controller down and rebuilt it mid-gesture,
+  // dropping the arming that tells the run a reader is the one scrolling it.
+  let collapsed = $derived(run.collapsed);
+  let isLive = $derived(live);
+  // And on the mount window's head, which the compensation below must react to
+  // exactly when it moves and never on the passes where it has not.
+  let mountedFrom = $derived(run.mountedFrom);
 
   // Built only for the live run, and only while it is live — a run that a
   // later one displaces has no use for a spring, and a controller per run
@@ -96,7 +120,15 @@
   // ResizeObserver is the right geometry source (the ChannelView
   // precedent); the timeline leaves it set because its engine reports
   // geometry the RO would otherwise have to re-derive.
-  let stick = $state<UseStickToBottomController | null>(null);
+  //
+  // `$state.raw` because the controller is compared by identity: a plain
+  // `$state` proxies the object it holds, so `stick === controller` in the
+  // teardown below was permanently false and the slot was never cleared.
+  // Nothing here wants deep reactivity over a controller — its own state is
+  // already reactive from the inside. The pane's own controller slot
+  // (`thread.svelte.ts`) is `raw` for exactly this reason; it had the same
+  // defect, found by the Svelte proxy-equality warning this suite emitted.
+  let stick = $state.raw<UseStickToBottomController | null>(null);
 
   function createStick(): UseStickToBottomController {
     return createUseStickToBottomController({
@@ -118,20 +150,17 @@
   let mountedChildren = $derived(
     run.children.slice(run.mountedFrom, run.mountedFrom + run.mountedRows),
   );
-  let hiddenEarlier = $derived(run.mountedFrom);
+  let hiddenEarlier = $derived(mountedFrom);
   let hiddenLater = $derived(
     run.children.length - run.mountedFrom - run.mountedRows,
   );
 
   // Run ids are minted per REGISTRY, so this one needs the pane scope more
   // than the item-keyed ids do: every pane's first run is `r1`, so two panes
-  // collide even on different threads. Passed to the rail and the chip rather
-  // than rebuilt there (utils/chatDomIds.ts).
+  // collide even on different threads. Passed to the header rather than
+  // rebuilt there (utils/chatDomIds.ts).
   let clipId = $derived(chatRowDomId(pane, 'activity-run', run.runId));
   let maxHeight = $derived(activityRunClipMaxHeight(expandedPx));
-  let toggleLabel = $derived(
-    run.collapsed ? 'Expand activity run' : 'Collapse activity run',
-  );
 
   // Held at the viewport's bottom edge: a run the reader just expanded opens
   // UPWARD, above the rows they are already reading, instead of shoving those
@@ -140,7 +169,11 @@
   // at the bottom is instant rather than an animated ride across the delta.
   function toggle(): void {
     withViewportBottomHeld(pane.scrollController, () => {
-      pane.activityRuns.toggleCollapsed(run.runId);
+      // The state on screen, not the registry's idea of it: a run with no
+      // override renders open while it is live whatever the defaults say, so
+      // asking the registry to invert its own answer would hand back the state
+      // the reader is already looking at.
+      pane.activityRuns.setCollapsed(run.runId, !collapsed);
     });
   }
 
@@ -199,7 +232,7 @@
   // the hot path.
   $effect(() => {
     const clip = clipEl;
-    if (!clip || run.collapsed) {
+    if (!clip) {
       expandedPx = 0;
       return;
     }
@@ -237,7 +270,9 @@
   const FADE_EPSILON_PX = 1;
 
   // Whether the clip should stay on the run's last row as content settles
-  // under it. Plain local, not `$state`: only the settle observer reads it.
+  // under it — and, read the other way, whether the reader has stepped into
+  // the run. `$state` because the auto-fold asks that second question: a run
+  // must not close over somebody reading inside it.
   //
   // A stored answer rather than a geometric one, and that is the whole point.
   // "Is it at the bottom right now" is the wrong question during a settle: the
@@ -247,7 +282,37 @@
   // follow on the first row that resolved, which is why a run reopened by the
   // header's collapse-all landed near its top and stayed there. Growth moves
   // the bottom away from the reader; only the reader can decide to leave it.
-  let followingBottom = false;
+  let followingBottom = $state(false);
+
+  // What makes an automatic fold unwelcome: the reader is somewhere up inside
+  // the run rather than resting on its newest row. Folding then would take the
+  // rows they are reading with it.
+  //
+  // Deliberately not a reason to REFUSE the fold, only to wait for it. The run
+  // is finished either way; folding it is owed as soon as the reader leaves its
+  // newest row alone (see activityRunClipPresence.svelte.ts).
+  //
+  // An expanded body inside the run deliberately does NOT count, though "the
+  // reader opened something in here" sounds like the same thing. `expandedPx`
+  // cannot tell an expansion the reader asked for from one a setting handed
+  // them, and `collapseDiffPreviews` defaults to expanded — so every run
+  // holding an edit would have blocked its own fold forever. A guard that
+  // silently disables the feature for the commonest run there is would be worse
+  // than the case it protects, which is narrow: a reader who expanded something
+  // AND is still pinned to the run's newest row has asked to follow the newest
+  // thing, and after the fold that is the header and whatever came next.
+  let readerEngaged = $derived(!followingBottom);
+
+  // The clip's presence, and the fold that ends it. Given the four questions
+  // it cannot answer itself — all of which live in this file, because all of
+  // them are about the reader in front of this particular run.
+  const clipPresence = createActivityRunClipPresence({
+    isCollapsed: () => collapsed,
+    isLive: () => isLive,
+    isReaderEngaged: () => readerEngaged,
+    getFoldEl: () => foldEl,
+    onClipOpenChange: (open) => pane.activityRuns.setClipOpen(runId, open),
+  });
 
   /**
    * Re-read what the clip's position looks like. Paint only — the fade is the
@@ -354,7 +419,7 @@
     const content = contentEl;
     if (!clip) return;
 
-    const controller = live && content ? createStick() : null;
+    const controller = isLive && content ? createStick() : null;
     stick = controller;
     if (controller && content) controller.attach(clip, content);
 
@@ -434,9 +499,91 @@
     return () => settle.disconnect();
   });
 
+  // Holds the reading position when the mount window's head ADVANCES, and
+  // hands the follow back to the spring afterwards.
+  //
+  // A tail-following window starts at `children.length - rows`, so an appended
+  // row drops one off the head in the same flush. That is not merely a
+  // stationary-content problem, and it is why the run stopped gliding: the
+  // clip's content shrinks by the dropped row and grows by the new one, so with
+  // the two roughly the same height the TOTAL barely changes. The content
+  // observer sees a delta near zero and reports nothing, no spring has anything
+  // to chase, and the rows the reader is watching are displaced upward by a row
+  // height in a single frame. A run glides through its first `mountedRows` rows
+  // and starts teleporting from the next one on — which is exactly what a long
+  // run of tool calls looked like, while thinking text growing 1→2→3 lines
+  // (growth with no slide) kept gliding throughout.
+  //
+  // Two halves of one flush. `$effect.pre` sees the new window against the DOM
+  // that still holds the old one, which is the only moment the departing rows
+  // can be priced; the post-flush effect puts the anchor back and then states
+  // the growth the observer could not see.
+  //
+  // ADVANCES only. A head that retreats is a chunk the reader paged in
+  // (`mountEarlier`, which compensates its own prepend) or a jump relocating the
+  // window (the focus effect, which places its own target) — compensating those
+  // here would be a second write for one change.
+  //
+  // Declared BEFORE the focus effect so a jump wins: this holds a position the
+  // reader did not ask to leave, and a jump is a position they did ask for.
+  let headAdvance: { row: number; viewportTop: number } | null = null;
+  let mountedHeadRow = -1;
+
+  $effect.pre(() => {
+    const row = mountedFrom;
+    const previous = mountedHeadRow;
+    mountedHeadRow = row;
+    headAdvance = null;
+    const clip = clipEl;
+    if (!clip || previous < 0 || row <= previous) return;
+    const viewportTop = activityRunRowViewportTop(clip, row);
+    // The old and new windows do not overlap, so there is no shared row to
+    // hold: a jump relocated this window wholesale and owns where it lands.
+    // Also the path a remounting clip takes, whose own mount write positions it.
+    if (viewportTop === null) return;
+    headAdvance = { row, viewportTop };
+  });
+
+  $effect(() => {
+    // The window, not the node: this must run on the same flush as the
+    // measurement above and on no other.
+    mountedFrom;
+    const clip = clipEl;
+    const advance = headAdvance;
+    headAdvance = null;
+    if (!clip || !advance) return;
+    const target = activityRunScrollTopHoldingRow(clip, advance.row, advance.viewportTop);
+    if (target === null) return;
+    if (stick) {
+      // Routed, not written. An untagged `scrollTop` write on the live run
+      // reads as a reader gesture and escapes bottom-follow; `head-splice` is
+      // the engine's own name for this change — content above the viewport
+      // spliced out, anchor holds — and the resolver applies it verbatim.
+      stick.applyEngineCompensation({
+        kind: 'head-splice',
+        delta: target - clip.scrollTop,
+        target,
+      });
+      // The slide ate the runway the spring would have chased. After the
+      // compensation the appended row sits below the clip's edge, but the
+      // content's total height hardly moved, so the geometry observer has
+      // nothing to report — and this is the seam for precisely that, geometry
+      // the controller's own observers cannot see. The structural mark names
+      // what changed, so the follow glides rather than snapping even once the
+      // liveness stamp has lapsed (a completion pairing into a settled run).
+      stick.markStructuralContentPending();
+      stick.observe('live-content');
+    } else {
+      clip.scrollTop = target;
+    }
+    // Ours, so it is not the reader arriving anywhere; the follow state carries
+    // through untouched, because holding the anchor says nothing new about them.
+    positionWritten(clip, followingBottom);
+  });
+
   // Jump resolution, inner half: a search hit, review jump, or tray row
   // whose item lives in this run has already relocated the mount window and
-  // expanded the run from its chip (`revealActivityRunItem`) — what is left
+  // expanded the run (`revealActivityRunItem`) — what is left
   // is the scroll, which needs the mounted DOM this effect runs after.
   //
   // Declared AFTER the snapshot effect so it wins: a run mounting with both
@@ -491,8 +638,11 @@
   // Historical runs have no controller and no tail to follow; they never
   // slide, so there is nothing here for them to do.
   $effect(() => {
+    // A controller exists only for a mounted clip, so its presence already
+    // says the run has rows to pin — checking the collapse state on top of it
+    // would now be wrong, since a collapsed run keeps its clip while live.
     const controller = stick;
-    if (!controller || run.collapsed) return;
+    if (!controller) return;
     const head = run.children[run.mountedFrom];
     pane.activityRuns.setWindowAnchor(
       run.runId,
@@ -519,100 +669,147 @@
   data-testid="activity-run"
   data-rail="true"
   data-run-id={run.runId}
-  data-collapsed={run.collapsed ? 'true' : 'false'}
-  data-live={live ? 'true' : 'false'}
+  data-collapsed={collapsed ? 'true' : 'false'}
+  data-live={isLive ? 'true' : 'false'}
 >
-  <!-- The rail itself is the collapse control: a hit strip straddling the
-       border, in the gutter where no content sits. Absolutely positioned
-       so it consumes no width and cannot shift the row. -->
+  <!-- A second collapse target on the rail: a hit strip straddling the border,
+       in the gutter where no content sits. Absolutely positioned so it consumes
+       no width and cannot shift the row.
+
+       Pointer-only, deliberately. It duplicates the header below, and an
+       invisible duplicate is worth having for the mouse (the whole block reads
+       as one thing, so clicking its edge should fold it) and worth hiding from
+       everything else: a keyboard user would land a focus ring on a transparent
+       16px strip, and a screen reader would hear the run's state announced twice
+       from two buttons naming one region. `aria-hidden` with `tabindex="-1"`
+       rather than either alone — hiding a focusable element is its own defect.
+       The header is the accessible control, and it is always there. -->
   <button
     type="button"
-    class="absolute inset-y-0 -left-2 w-4 cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    class="absolute inset-y-0 -left-2 w-4 cursor-pointer bg-transparent"
     onclick={toggle}
-    aria-label={toggleLabel}
-    aria-expanded={!run.collapsed}
-    aria-controls={clipId}
+    tabindex="-1"
+    aria-hidden="true"
     data-testid="activity-run-rail"
   ></button>
 
-  {#if run.collapsed}
-    <ActivityRunChip {pane} {run} {clipId} onExpand={toggle} />
-  {:else}
-    <!-- overflow-x is hidden on purpose: a wide preview inside a tool row
-         must not raise a horizontal bar at run level, which would consume
-         HEIGHT and shift every row below. overscroll-behavior stays auto —
-         chaining out at the inner edge is wanted, and gesture correctness
-         comes from attribution (utils/scroll/wheelAttribution.ts), not
-         from blocking the chain. -->
-    <div
-      bind:this={clipEl}
-      id={clipId}
-      class="activity-run-clip overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
-      style:max-height={maxHeight}
-      use:nestedScroll
-      use:readerGestures
-      onscroll={onClipScroll}
-      data-testid="activity-run-clip"
-    >
-      <div bind:this={contentEl}>
-        {#if hiddenEarlier > 0}
-          <ActivityRunBoundary count={hiddenEarlier} edge="earlier" onclick={mountEarlier} />
-        {/if}
-        <!-- The wrapper carries the row's index because that is the only
-             handle a jump has on a non-leaf row: only leaves emit
-             `data-item-id`, and a hit inside a subagent card resolves to the
-             card. A plain div, so row margins keep collapsing exactly as they
-             did when these rows were the virtualizer's own. -->
-        {#each mountedChildren as child, i (timelineNodeKey(child))}
-          <div data-run-child={run.mountedFrom + i}>
-            {@render renderNode(child, depth)}
-          </div>
-        {/each}
-        {#if hiddenLater > 0}
-          <ActivityRunBoundary count={hiddenLater} edge="later" onclick={mountLater} />
-        {/if}
-      </div>
-    </div>
-    <!-- Top fade, the run's own copy of the conversation's: rows dissolve as
-         they rise out of the clip instead of being cut by a hard edge. Same
-         gradient OVERLAY technique for the same reason — a mask on the clip
-         rasterizes a full clip-sized texture on every streaming repaint, while
-         this is a strip that paints once (see MessageTimeline's TOP_FADE_PX).
-         Paint-only either way: no effect on scrollHeight/clientHeight/scrollTop
-         and no content-RO traffic, so it stays clear of the controller.
+  <!-- Always, in both states. The run's summary is also its visible collapse
+       control, so expanding cannot remove the thing the reader just clicked;
+       and because the header never moves, the clip below it is the only thing
+       the fold animates. -->
+  <ActivityRunHeader {pane} {run} {clipId} expanded={!collapsed} onToggle={toggle} />
+  {#if clipPresence.open}
+    <!-- Clip host. Exists so the overlay bar has a box exactly the clip's
+         height to hang beside: measured against the run instead, it would span
+         the header too and put the thumb at the wrong offset for every collapsed
+         live run. -->
+    <div class="relative">
+      <!-- Fold box. Clips the fade to the visible height for free, which is
+           what keeps a fold from ending on a gradient over nothing, and is the
+           element whose height the fold animates. `overflow-hidden` is
+           unconditional: the clip inside is already a block formatting context,
+           so it changes no margin, and it also fixes a short run's fade
+           spilling past the run's own bottom edge. -->
+      <div
+        bind:this={foldEl}
+        class="relative overflow-hidden"
+        style:height={clipPresence.folding ? `${clipPresence.foldFromPx}px` : null}
+        data-testid="activity-run-fold"
+        data-folding={clipPresence.folding ? 'true' : 'false'}
+      >
+        <!-- overflow-x is hidden on purpose: a wide preview inside a tool row
+             must not raise a horizontal bar at run level, which would consume
+             HEIGHT and shift every row below. overscroll-behavior stays auto —
+             chaining out at the inner edge is wanted, and gesture correctness
+             comes from attribution (utils/scroll/wheelAttribution.ts), not
+             from blocking the chain.
 
-         Shorter than the conversation's 32px — a run shows a handful of rows,
-         and a third of one is enough to read as a dissolve without dimming the
-         row behind it. It needs no scrollbar-safe inset: `right-0` is the
-         clip's own right edge, and the overlay bar hangs outside it. -->
-    <div
-      aria-hidden="true"
-      class="pointer-events-none absolute top-0 right-0 left-0 h-6 transition-opacity duration-150"
-      class:opacity-0={!fadedTop}
-      style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
-      data-testid="activity-run-top-fade"
-      data-faded={fadedTop ? 'true' : 'false'}
-    ></div>
-    <!-- A zero-width native bar makes the scroll package's geometric
-         scrollbar-gutter hit test impossible, so a drag states its intent
-         instead of having it inferred.
-         The handlers are unconditional: a bar drag is the reader scrolling
-         whether or not this run holds the live tail, and the controller half
-         is what is optional (`stick?.`). Handing `undefined` for a historical
-         run made a drag the one gesture that armed nothing, so dragging to the
-         top of a run's window paged nothing in. -->
-    <OverlayScrollbar
-      target={clipEl}
-      content={contentEl}
-      ariaLabel="Scroll activity run"
-      ownerDrivenPosition={() => !!stick && !stick.escapedFromLock}
-      onUserScrollStart={() => {
-        armReaderScroll();
-        stick?.setEscapedFromLock(true);
-      }}
-      onUserScrollEnd={(atBottom) => {
-        if (atBottom) stick?.markAtBottom();
-      }}
-    />
+             While folding the clip leaves the flow and pins to the box's
+             BOTTOM at the height it started from. That is the whole shape of
+             the animation: the run closes onto its newest row, older rows
+             leave through the top, and nothing inside reflows or rescrolls
+             while it happens. -->
+        <div
+          bind:this={clipEl}
+          id={clipId}
+          class="activity-run-clip overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
+          class:absolute={clipPresence.folding}
+          class:inset-x-0={clipPresence.folding}
+          class:bottom-0={clipPresence.folding}
+          style:max-height={maxHeight}
+          style:height={clipPresence.folding ? `${clipPresence.foldFromPx}px` : null}
+          use:nestedScroll
+          use:readerGestures
+          onscroll={onClipScroll}
+          data-testid="activity-run-clip"
+        >
+          <div bind:this={contentEl}>
+            {#if hiddenEarlier > 0}
+              <ActivityRunBoundary count={hiddenEarlier} edge="earlier" onclick={mountEarlier} />
+            {/if}
+            <!-- The wrapper carries the row's index because that is the only
+                 handle a jump has on a non-leaf row: only leaves emit
+                 `data-item-id`, and a hit inside a subagent card resolves to
+                 the card. A plain div, so row margins keep collapsing exactly
+                 as they did when these rows were the virtualizer's own. -->
+            {#each mountedChildren as child, i (timelineNodeKey(child))}
+              <div data-run-child={mountedFrom + i}>
+                {@render renderNode(child, depth)}
+              </div>
+            {/each}
+            {#if hiddenLater > 0}
+              <ActivityRunBoundary count={hiddenLater} edge="later" onclick={mountLater} />
+            {/if}
+          </div>
+        </div>
+        <!-- Top fade, the run's own copy of the conversation's: rows dissolve
+             as they rise out of the clip instead of being cut by a hard edge.
+             Same gradient OVERLAY technique for the same reason — a mask on the
+             clip rasterizes a full clip-sized texture on every streaming
+             repaint, while this is a strip that paints once (see
+             MessageTimeline's TOP_FADE_PX). Paint-only either way: no effect on
+             scrollHeight/clientHeight/scrollTop and no content-RO traffic, so
+             it stays clear of the controller.
+
+             Shorter than the conversation's 32px — a run shows a handful of
+             rows, and a third of one is enough to read as a dissolve without
+             dimming the row behind it. It needs no scrollbar-safe inset:
+             `right-0` is the clip's own right edge, and the overlay bar hangs
+             outside it.
+
+             Painted throughout a fold regardless of where the clip is resting:
+             rows are leaving through the top edge for the whole animation,
+             which is precisely the state this exists to soften. -->
+        <div
+          aria-hidden="true"
+          class="pointer-events-none absolute top-0 right-0 left-0 h-6 transition-opacity duration-150"
+          class:opacity-0={!fadedTop && !clipPresence.folding}
+          style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
+          data-testid="activity-run-top-fade"
+          data-faded={fadedTop || clipPresence.folding ? 'true' : 'false'}
+        ></div>
+      </div>
+      <!-- A zero-width native bar makes the scroll package's geometric
+           scrollbar-gutter hit test impossible, so a drag states its intent
+           instead of having it inferred.
+           The handlers are unconditional: a bar drag is the reader scrolling
+           whether or not this run holds the live tail, and the controller half
+           is what is optional (`stick?.`). Handing `undefined` for a historical
+           run made a drag the one gesture that armed nothing, so dragging to
+           the top of a run's window paged nothing in. -->
+      <OverlayScrollbar
+        target={clipEl}
+        content={contentEl}
+        ariaLabel="Scroll activity run"
+        ownerDrivenPosition={() => !!stick && !stick.escapedFromLock}
+        onUserScrollStart={() => {
+          armReaderScroll();
+          stick?.setEscapedFromLock(true);
+        }}
+        onUserScrollEnd={(atBottom) => {
+          if (atBottom) stick?.markAtBottom();
+        }}
+      />
+    </div>
   {/if}
 </div>

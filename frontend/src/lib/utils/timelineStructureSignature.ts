@@ -60,15 +60,20 @@ export function nodeSignature(node: TimelineNode): string {
       return `W:${node.groupKey}:${node.children.length}`;
     case 'read_group':
       return `R:${node.groupKey}:${node.members.length}`;
-    // Collapse state changes the row's height dramatically (one chip line
-    // vs a capped clip), so it belongs here rather than in the entry-level
-    // expansionSig — folding it there would drop every row's prior in the
-    // thread each time one run was toggled. The mount window is here for the
-    // same reason: mounting another chunk grows a run that has not reached
+    // Collapse state changes the row's height dramatically (one header line
+    // vs a header over a capped clip), so it belongs here rather than in the
+    // entry-level expansionSig — folding it there would drop every row's prior
+    // in the thread each time one run was toggled. The mount window is here for
+    // the same reason: mounting another chunk grows a run that has not reached
     // its cap, and moving the window swaps which rows it measures, so a
     // signature blind to either replays a height that no longer applies.
     case 'activity_run':
-      return `A:${node.runId}:${node.collapsed ? 'c' : 'e'}:${node.children.length}:${node.mountedFrom}:${node.mountedRows}`;
+      // TWO shapes, because the header is unconditional: closed is that header
+      // alone, open is the header over a clip. `collapsed` is the whole answer —
+      // it is resolved once per pass, liveness already folded in
+      // (`ActivityRunIdentity.collapsedFor`), so nothing here has to re-decide
+      // whether a live run counts as open.
+      return `A:${node.runId}:${node.collapsed ? 'c' : 'o'}:${node.children.length}:${node.mountedFrom}:${node.mountedRows}`;
     default: {
       // Exhaustiveness guard: a new TimelineNode kind must extend the
       // signature, not silently sign as an empty/identical row (which

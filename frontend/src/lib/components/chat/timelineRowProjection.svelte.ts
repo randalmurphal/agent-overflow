@@ -32,6 +32,8 @@ import { patchStructuralTimelineNodeItemRefs } from '../../utils/timelineNodePat
 import { getActiveTurn } from '../../stores/threadStatuses.svelte';
 
 const EMPTY_RECEIVER_LABELS = new Map<string, string>();
+/** Shared, so the common "gate is holding nothing" case allocates nothing. */
+const NO_WITHHELD_NODES: readonly TimelineNode[] = [];
 
 export interface TimelineRowProjectionOptions {
   getPane(): ThreadPane;
@@ -113,8 +115,16 @@ export function createTimelineRowProjection(
   // which runs untracked, so on a settled thread nothing else would notice the
   // change and the new default would not apply until an unrelated structural
   // pass.
+  // What the gate is holding, for the one consumer that needs it: run liveness
+  // is a claim about the items, and the gated list cannot answer it (see
+  // `GroupActivityRunsOptions.withheld`). Allocates only inside a withhold
+  // window — outside one the two arrays are the same reference.
+  let withheldNodes = $derived(
+    gatedNodes === groupedNodes ? NO_WITHHELD_NODES : groupedNodes.slice(gatedNodes.length),
+  );
   let revealedNodes = $derived.by(() => {
     const nodes = gatedNodes;
+    const withheld = withheldNodes;
     const pane = options.getPane();
     pane.activityRuns.revision;
     activityRunDefaultCollapsed();
@@ -123,6 +133,7 @@ export function createTimelineRowProjection(
       groupActivityRuns(nodes, {
         identity: pane.activityRuns,
         getItem: (id) => pane.getItemById(id),
+        withheld,
       }),
     );
   });

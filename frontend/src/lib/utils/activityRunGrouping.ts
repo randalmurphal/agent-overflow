@@ -31,7 +31,6 @@ import { timelineNodeHasRail } from './timelineRail';
 /** What the registry resolves for one run, per projection pass. */
 export interface ActivityRunResolution {
   runId: string;
-  collapsed: boolean;
   /** Index of the first mounted row. */
   mountedFrom: number;
   /** How many rows are mounted, from `mountedFrom`. */
@@ -72,6 +71,16 @@ export interface ActivityRunIdentity {
     rowMemberIds: readonly (readonly string[])[],
     threadId: string,
   ): ActivityRunResolution;
+  /**
+   * Whether the run renders without its clip.
+   *
+   * Separate from `resolve` because it needs `live`, and liveness is only known
+   * once every run in the pass exists — a run cannot tell from its own members
+   * whether anything follows it. The registry owns the rule (a per-run answer,
+   * then the thread's defaults, with a live run showing its work when nobody has
+   * answered); this pass owns the fact it needs.
+   */
+  collapsedFor(runId: string, live: boolean): boolean;
   endPass(): void;
 }
 
@@ -84,6 +93,21 @@ export interface GroupActivityRunsOptions {
    * a run can split in two mid-stream.
    */
   getItem(id: string): Item | undefined;
+  /**
+   * Nodes the reveal gate is holding back, in order, right now.
+   *
+   * Liveness is the reason this pass needs them. A run is live when the next
+   * activity row would join it, which is a fact about the ITEMS — but this pass
+   * only sees the revealed ones, so a run whose closing prose is still behind
+   * the gate looks like the tail and would be marked live. That flapped: the
+   * run reported finished, then live again, then finished, each time the gate
+   * opened and closed. Anything keyed on liveness flapped with it — the scroll
+   * controller was rebuilt, and a collapsed run's fold aborted and restarted
+   * mid-animation.
+   *
+   * Empty when the gate is holding nothing, which is the common case.
+   */
+  withheld: readonly TimelineNode[];
 }
 
 function currentLeafItem(node: TimelineNode, getItem: (id: string) => Item | undefined): Item | null {
@@ -160,7 +184,10 @@ function buildRun(
     runId: resolved.runId,
     threadId,
     children: members,
-    collapsed: resolved.collapsed,
+    // Both stamped by the caller once the whole array is known: liveness is a
+    // fact about what follows this run, and collapse depends on liveness.
+    collapsed: false,
+    live: false,
     mountedFrom: resolved.mountedFrom,
     mountedRows: resolved.mountedRows,
     memberItemIds,
@@ -199,6 +226,27 @@ export function groupActivityRuns(
     while (j < nodes.length && isRunMember(nodes[j], options.getItem)) j += 1;
     out.push(buildRun(nodes.slice(i, j), options));
     i = j;
+  }
+
+  // The tail run is the live one: the timeline is chronological, so a run with
+  // nothing after it is the run the next activity row joins. Stamped in place
+  // on a node this pass just built, so no caller ever sees an unstamped run.
+  //
+  // Withheld nodes count against it, because they already exist — a run the
+  // gate has not yet let prose past is finished whether or not the reader can
+  // see the prose. Withheld ACTIVITY does not: those rows join this very run
+  // when the gate opens, so it is still the live one.
+  const tail = out[out.length - 1];
+  if (tail?.kind === 'activity_run') {
+    tail.live = options.withheld.every((node) => isRunMember(node, options.getItem));
+  }
+
+  // Then collapse, which reads the liveness just stamped. Every run rather than
+  // only the tail: the rule is one rule, and a second path for the runs where
+  // `live` is false would be a copy of it that could disagree.
+  for (const node of out) {
+    if (node.kind !== 'activity_run') continue;
+    node.collapsed = options.identity.collapsedFor(node.runId, node.live);
   }
 
   options.identity.endPass();

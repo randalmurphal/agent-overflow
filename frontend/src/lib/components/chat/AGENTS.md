@@ -97,8 +97,9 @@ Module-level singletons in the markdown pipeline keep remounts cheap.
 
 Consecutive activity rows (tool calls, completions, thinking, and the group
 cards on the same rail) are wrapped by the projection's last pass into ONE
-`activity_run` row: `ActivityRun.svelte`, a height-capped clip that scrolls
-in place, or `ActivityRunChip.svelte`, a one-line count chip. Architecture:
+`activity_run` row: `ActivityRun.svelte`, an always-present summary header
+(`ActivityRunHeader.svelte`) over a height-capped clip that scrolls in place
+and is what collapsing removes. Architecture:
 [`docs/architecture/activity-runs.md`](../../../../../docs/architecture/activity-runs.md).
 
 Operational rules for this directory:
@@ -112,6 +113,50 @@ Operational rules for this directory:
 - **A run's own state goes in `pane.activityRuns`**, keyed by the
   registry-assigned `runId` — never by a member item id, which changes at
   both window edges.
+- **Collapse is resolved ONCE, by the registry, and `node.collapsed` is the whole
+  answer.** `ActivityRunIdentity.collapsedFor(runId, live)` ranks the three facts:
+  a per-run answer from the reader wins outright, then the thread's bulk state,
+  and only if nobody has said anything does liveness decide — a working run
+  renders open and folds itself shut when it settles
+  (`activityRunClipPresence.svelte.ts`). Downstream, `collapsed` means exactly
+  "renders without its clip": the presence machine, the structure signature and
+  the row estimate all read that one field, and none of them looks at `live`.
+  Do not re-introduce a `!collapsed || live` predicate at a consumer — that is
+  what made the reader's collapse of the live run inert, moving the chevron and
+  nothing else, and it is why the registry now takes liveness as an input to the
+  FALLBACK instead of consumers treating it as an override.
+- **A collapse set by the reader is instant and beats liveness; a collapse that
+  falls out of the defaults is what folds.** `setCollapsed(runId, target)` takes
+  the target state rather than toggling, because only the row knows the state on
+  screen — a registry-side toggle would invert its own settled answer and hand
+  back the state the reader is already looking at. The registry still tracks clip
+  presence separately as `clipOpen` (a fold outlives the flag, and
+  `saveScrollSnapshot` refuses on THAT, never on `collapsed`).
+- **The fold animates a wrapper's height and writes no `scrollTop`.** The
+  shrinking box goes through the virtualizer's row observer like any other row
+  and the controller decides what it means for the reading position. Do not add
+  a scroll write "to keep the bottom pinned" — the engine's compensation and the
+  browser's own clamp already produce the right result from every reader
+  position, and a second writer would fight the spring.
+- **Only a run that stopped being LIVE animates.** Every collapse the reader
+  clicked — header, rail, bulk toggle — is instant, and the fold is deferred
+  (never cancelled) while the reader is off the clip's newest row. If you add a
+  third way to collapse a run, it is manual: it must not acquire the fold by
+  accident.
+  "Something is expanded inside the run" is NOT a deferral reason and must not
+  be re-added as one: `expandedPx` counts default-expanded bodies too, and
+  `collapseDiffPreviews` defaults to expanded, so it would silently block the
+  fold for every run holding an edit.
+- **Anything keyed on liveness must read `node.live`.** It is stamped by the
+  projection from the items, withheld nodes included, precisely so it cannot
+  flap while the reveal gate opens and closes. Re-deriving "is this the tail"
+  from `revealedNodes` reintroduces the flap, which rebuilds the scroll
+  controller and aborts a fold mid-animation.
+- **Props a run's effects branch on go through a `$derived` primitive first.**
+  `run.collapsed` and `live` are plain reads of a prop the projection replaces
+  on every streamed row, so an effect reading either directly re-runs every
+  pass — measurably, it tore the controller down and rebuilt it mid-gesture.
+  Same rule, same reason as `runId`.
 - **A clip following its last row is held there while content settles.** The
   mount write happens before the rows inside finish resolving, so without the
   settle observer an expanded run drifts out from under the reader. Whether it
@@ -122,21 +167,29 @@ Operational rules for this directory:
   top. Only a reader gesture may clear it; every write states it.
 - **Collapsing a run forgets where the reader was inside it** (scroll snapshot
   and window anchor both), so it reopens on its newest row. `saveScrollSnapshot`
-  refuses a save for a collapsed run because the chip's own teardown routes
-  through it — do not "fix" that by moving the check to the call site.
-- **Every collapse/expand runs inside `withViewportBottomHeld`** (rail, chip,
-  and the header's bulk toggle). It holds the viewport's BOTTOM edge, so the run
+  refuses a save for a run with no clip because the closing clip's own teardown
+  routes through it — do not "fix" that by moving the check to the call site.
+- **Every collapse/expand runs inside `withViewportBottomHeld`** (header, rail,
+  and the header bar's bulk toggle). It holds the viewport's BOTTOM edge, so the run
   opens upward over rows the reader is already reading rather than pushing them
   down the page, and it pauses the spring so a toggle while bottom-pinned is
   instant instead of an animated ride across the delta. A new caller that
   mutates run collapse state must go through it —
   `docs/architecture/frontend-scroll.md` §Reader-Requested Height Changes.
-- **The rail is the only per-run collapse control and it is invisible by
-  design.** The header's `activity-runs-toggle` is the visible affordance and
-  the bulk action; it renders from `activityRuns.bulkCollapsed`, never from a
-  survey of the rendered runs.
-- **Nothing that changes per streaming delta belongs on the node.** Chip
-  counts, failure, and the running label resolve from current items through
+- **The run's header is present in BOTH states and is the per-run control.**
+  It used to render only while collapsed, so expanding removed the element the
+  reader had just clicked and left the invisible rail strip as the only way
+  back. Do not make it conditional again — the estimate, the signature, and the
+  fold's seamless landing all now assume a header that never moves. The rail
+  stays as a second, larger target on the same `toggle`, but **pointer-only**
+  (`aria-hidden` + `tabindex="-1"`, both, since hiding a focusable element is
+  its own defect): now that it duplicates a header that is always there, ARIA on
+  it means a focus ring on a transparent 16px strip and the run's state announced
+  twice from two buttons naming one region. The header bar's
+  `activity-runs-toggle` remains the THREAD-level bulk action, rendering from
+  `activityRuns.bulkCollapsed` and never from a survey of the rendered runs.
+- **Nothing that changes per streaming delta belongs on the node.** The
+  header's counts, failure, and running label resolve from current items through
   `utils/activityRunSummary.ts`; a node field would rebuild the
   virtualizer's data array every chunk.
 - **Whether a run follows its tail is the ROW's call, not the registry's.**
@@ -147,6 +200,18 @@ Operational rules for this directory:
   reads the existing pin and starts escaped, for the same reason it carries
   the snapshot's escape flag: a historical run that a jump pinned had no
   controller to record the event on.
+- **A tail-following window's head advance is compensated, and the growth it
+  hides is stated.** An appended row drops one off the head in the same flush,
+  so the clip's total height barely changes: the reader's rows jump up a row
+  height and the controller's own observer sees nothing to chase. The pair of
+  effects in `ActivityRun.svelte` holds the incoming head row's viewport
+  position across the flush, then calls
+  `markStructuralContentPending()` + `observe('live-content')` so the spring
+  glides the new row in. Both halves are load-bearing — the hold alone leaves
+  the run a row short of its newest activity, further short on every append
+  after that. Compensation writes on the live run go through
+  `applyEngineCompensation({ kind: 'head-splice' })`; a bare `scrollTop =`
+  reads as a reader gesture and escapes bottom-follow.
 - **Reaching the top of a run's window pages the next chunk in.** The
   `· · · N earlier` boundary is a button *as well*, not instead — do not make
   it the only way past the window. The trigger refuses a clip that is not

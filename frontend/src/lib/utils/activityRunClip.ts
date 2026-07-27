@@ -191,6 +191,35 @@ export function activityRunChildElement(clip: Element, index: number): HTMLEleme
 }
 
 /**
+ * Where run row `index` sits in `clip`'s viewport, or null when that row is
+ * not mounted.
+ */
+export function activityRunRowViewportTop(clip: HTMLElement, index: number): number | null {
+  const el = activityRunChildElement(clip, index);
+  if (!el) return null;
+  return el.getBoundingClientRect().top - clip.getBoundingClientRect().top;
+}
+
+/**
+ * The `scrollTop` that puts run row `index` back at `viewportTop`, or null
+ * when that row is not mounted.
+ *
+ * Read against the live `scrollTop` rather than against a content-space offset
+ * captured earlier, so the answer holds whether or not the browser has already
+ * clamped the position — a window slide shrinks the clip's content, and a
+ * scroller resting at its end is clamped by the DOM change before this runs.
+ */
+export function activityRunScrollTopHoldingRow(
+  clip: HTMLElement,
+  index: number,
+  viewportTop: number,
+): number | null {
+  const now = activityRunRowViewportTop(clip, index);
+  if (now === null) return null;
+  return clip.scrollTop + now - viewportTop;
+}
+
+/**
  * Whether `row` is entirely inside `clip`'s viewport.
  *
  * Separate from the centering below because the two are combined by a policy

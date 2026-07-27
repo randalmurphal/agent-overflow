@@ -30,6 +30,34 @@ describe('nodeSignature', () => {
     expect(nodeSignature(leaf({ id: 'z', summary: 'hi', status: 'completed', updatedAt: 1 }))).not.toBe(base);
   });
 
+  it('signs an activity run by its rendered shape, and liveness is not one', () => {
+    // A stale prior replaying across a shape change is the failure this whole
+    // signature exists to prevent. A run has TWO shapes, because its header is
+    // unconditional: that header alone, or the header over a capped clip. One
+    // letter would let a closed run replay the height it had while open.
+    const activityRun = (over: { collapsed: boolean; live: boolean }): TimelineNode => ({
+      kind: 'activity_run',
+      runId: 'r1',
+      threadId: 'thread-1',
+      children: [leaf({ id: 'a' })],
+      mountedFrom: 0,
+      mountedRows: 1,
+      memberItemIds: ['a'],
+      ...over,
+    });
+
+    const closed = nodeSignature(activityRun({ collapsed: true, live: false }));
+    const open = nodeSignature(activityRun({ collapsed: false, live: false }));
+    expect(closed).not.toBe(open);
+
+    // And exactly two over the whole 2x2: `collapsed` already has liveness
+    // folded into it (`ActivityRunIdentity.collapsedFor` resolves it once per
+    // pass), so signing on `live` as well would drop a perfectly good prior
+    // every time a later run took the tail — the run's height did not change.
+    expect(nodeSignature(activityRun({ collapsed: true, live: true }))).toBe(closed);
+    expect(nodeSignature(activityRun({ collapsed: false, live: true }))).toBe(open);
+  });
+
   it('signs group nodes by key and member count', () => {
     const group = (members: number): TimelineNode => ({
       kind: 'read_group',

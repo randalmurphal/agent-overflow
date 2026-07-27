@@ -30,6 +30,7 @@ import type { Item } from '../../types/models';
 
 setupTimelineHarness();
 
+
 // The mount settle only has to reach a quiet bottom; 2px absorbs
 // fractional-DPR rounding, matching the other outcome suites.
 const QUIET_BOTTOM: QuietBottomOptions = { epsilonPx: 2, stableFrames: 12, frameBudget: 480 };
@@ -157,7 +158,7 @@ describe('activity run — prepend compensation', () => {
     // position and every assertion below would hold either way.
     expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight);
 
-    // The reader scrolls up inside the run, then collapses it to a chip.
+    // The reader scrolls up inside the run, then collapses it.
     clip.scrollTop = 0;
     await raf();
     (run.querySelector('[data-testid="activity-run-rail"]') as HTMLElement).click();
@@ -165,11 +166,11 @@ describe('activity run — prepend compensation', () => {
     await raf();
     expect(run.querySelector('[data-testid="activity-run-clip"]')).toBeNull();
 
-    (run.querySelector('[data-testid="activity-run-chip"]') as HTMLElement).click();
+    (run.querySelector('[data-testid="activity-run-header"]') as HTMLElement).click();
     await tick();
     await raf();
 
-    // The offset they were reading at is gone with the chip that replaced it,
+    // The offset they were reading at is gone with the clip it belonged to,
     // so the run opens where a never-scrolled one does — its newest activity.
     const reopened = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
     expect(reopened.scrollHeight).toBeGreaterThan(reopened.clientHeight);
@@ -252,6 +253,123 @@ describe('activity run — prepend compensation', () => {
     await raf();
 
     expect(clip.scrollTop).toBe(mid);
+  });
+});
+
+describe('activity run — the tail window slides', () => {
+  // The other edge of the arithmetic above. A tail-following window starts at
+  // `children.length - rows`, so every appended row drops one from the head —
+  // and where a prepend is compensated, that drop was not. The content shrinks
+  // by the dropped row and grows by the new one, so there is almost no scroll
+  // delta left for the spring to animate; instead every row the reader is
+  // watching moves up by a row height in a single frame.
+  //
+  // Which is why a streaming run glides right up until it reaches
+  // `activityRunWindowRows` members and then starts teleporting.
+  const THREAD_ID = 'thread-run-slide';
+  function items(): Item[] {
+    const built: Item[] = [prose('p0', 0, THREAD_ID)];
+    for (let i = 0; i < RUN_ROWS; i += 1) built.push(tool(`a${i}`, i + 1, THREAD_ID));
+    return built;
+  }
+
+  it('holds the rows already on screen when an appended row slides it', async () => {
+    const { pane, scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
+    const run = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
+    // The LIVE run: the one whose growth the reader is watching arrive, and the
+    // only one whose window slides.
+    expect(run.dataset.live).toBe('true');
+    const clip = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+    // Vacuity guards: the window must already be past its head (or nothing
+    // drops), and the clip must be scrollable (or nothing can displace).
+    expect(run.querySelector('[data-testid="activity-run-earlier"]')).not.toBeNull();
+    expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight);
+
+    const anchor = `a${RUN_ROWS - 1}`;
+    const anchorBefore = offsetInClip(clip, anchor);
+
+    pane.upsertItem(tool(`a${RUN_ROWS}`, RUN_ROWS + 1, THREAD_ID));
+    // One flush, no frame: the spring runs on the next one, so this measures
+    // the layout change itself rather than where the spring later put it.
+    await tick();
+
+    // The head really did drop — without this the assertion below passes on a
+    // window that never moved.
+    expect(clip.querySelector(`[data-item-id="a${RUN_ROWS - WINDOW_ROWS}"]`)).toBeNull();
+    // The row the reader was looking at is still under their eye. Uncompensated
+    // it has jumped up by the dropped row's height, and no spring covers it
+    // because the content barely changed size.
+    expect(Math.abs(offsetInClip(clip, anchor) - anchorBefore)).toBeLessThanOrEqual(DRIFT_PX);
+  });
+
+  it('glides over the appended row instead of arriving at it', async () => {
+    // The other half of the same fix, and the half the reader actually
+    // reported. Holding the anchor is what removes the jump; it also opens a
+    // gap at the clip's bottom exactly one row tall, and NOTHING in the
+    // controller's own observers can see it — the content's total height barely
+    // changed, so a delta-driven follow has nothing to chase and the run would
+    // simply sit a row short of its newest activity, further short on every
+    // append after that.
+    const { pane, scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
+    const run = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
+    const clip = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+    expect(run.querySelector('[data-testid="activity-run-earlier"]')).not.toBeNull();
+    const bottomGap = () => clip.scrollHeight - clip.scrollTop - clip.clientHeight;
+    expect(bottomGap()).toBeLessThanOrEqual(DRIFT_PX);
+
+    pane.upsertItem(tool(`a${RUN_ROWS}`, RUN_ROWS + 1, THREAD_ID));
+    await tick();
+
+    // The gap the compensation opened: a whole row, not a rounding error. This
+    // is what proves the samples below are a glide over real distance.
+    const opened = bottomGap();
+    expect(opened).toBeGreaterThan(8);
+
+    const gaps: number[] = [];
+    for (let i = 0; i < 40 && (i === 0 || gaps[gaps.length - 1] > DRIFT_PX); i += 1) {
+      await raf();
+      gaps.push(bottomGap());
+    }
+
+    // Closed, and closed gradually. A snap would land the whole row in one
+    // frame and produce no sample in between.
+    expect(gaps[gaps.length - 1]).toBeLessThanOrEqual(DRIFT_PX);
+    const partial = gaps.filter((gap) => gap > DRIFT_PX && gap < opened - DRIFT_PX);
+    expect(partial.length).toBeGreaterThanOrEqual(2);
+    // Monotone: the run only ever closes on its newest row. A gap that grew
+    // mid-glide would mean a second writer is moving the clip.
+    for (let i = 1; i < gaps.length; i += 1) {
+      expect(gaps[i]).toBeLessThanOrEqual(gaps[i - 1] + DRIFT_PX);
+    }
+  });
+
+  it('does the same for every row after the first', async () => {
+    // The compensation carries state across flushes — the head it last saw, and
+    // the measurement it hands from the pre-flush half to the post-flush one. A
+    // run streams dozens of rows, so the second append matters as much as the
+    // first: a handoff left set, or a head left stale, shows up here and not in
+    // a single-append test.
+    const { pane, scrollEl } = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
+    const run = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
+    const clip = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+    const bottomGap = () => clip.scrollHeight - clip.scrollTop - clip.clientHeight;
+
+    for (let n = 0; n < 4; n += 1) {
+      const anchor = `a${RUN_ROWS + n - 1}`;
+      const anchorBefore = offsetInClip(clip, anchor);
+
+      pane.upsertItem(tool(`a${RUN_ROWS + n}`, RUN_ROWS + n + 1, THREAD_ID));
+      await tick();
+
+      // Same two claims as above, on every row: nothing under the reader
+      // moved, and there is a row's worth of glide left to run.
+      expect(Math.abs(offsetInClip(clip, anchor) - anchorBefore)).toBeLessThanOrEqual(DRIFT_PX);
+      expect(bottomGap()).toBeGreaterThan(8);
+      await waitFor(() => bottomGap() <= DRIFT_PX, `append ${n} to finish gliding`);
+      // The window really is still sliding this deep in — otherwise the later
+      // iterations are just the append case, which the prepend suite covers.
+      expect(run.querySelector('[data-testid="activity-run-earlier"]')).not.toBeNull();
+    }
   });
 });
 

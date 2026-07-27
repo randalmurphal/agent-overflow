@@ -8,6 +8,8 @@ import {
   activityRunClipMaxHeight,
   activityRunExpandedBodies,
   activityRunExpandedHeight,
+  activityRunRowViewportTop,
+  activityRunScrollTopHoldingRow,
   activityRunShouldMountEarlier,
 } from './activityRunClip';
 
@@ -44,6 +46,30 @@ describe('the cap', () => {
 
   it('keeps its px mirror in step, so placement estimates cannot drift', () => {
     expect(ACTIVITY_RUN_CAP_REM_PX).toBe(ACTIVITY_RUN_CAP_REM * 16);
+  });
+});
+
+describe('holding a row across a window slide', () => {
+  // The arithmetic needs real geometry and is asserted in
+  // activityRunScroll.browser.test.ts. What matters here is the ONE answer that
+  // is pure structure: a row the caller cannot find. Both callers treat null as
+  // "no shared row to hold, so leave the position to whoever owns it" — a jump
+  // that relocated the window wholesale, or a clip that just remounted. A zero
+  // in its place would compensate against a row that was never there and drag
+  // the reader to the top of the run.
+  it('reports no answer for a row outside the mount window', () => {
+    const clip = clipWith('<div data-run-child="12"></div>');
+    expect(activityRunRowViewportTop(clip, 40)).toBeNull();
+    expect(activityRunScrollTopHoldingRow(clip, 40, 80)).toBeNull();
+  });
+
+  it('answers for a row that is mounted', () => {
+    // happy-dom lays nothing out, so every rect is zero — the value is a
+    // vacuous 0 and only its presence is meaningful. Asserted so the null above
+    // is known to be the missing-row branch rather than the only branch.
+    const clip = clipWith('<div data-run-child="12"></div>');
+    expect(activityRunRowViewportTop(clip, 12)).not.toBeNull();
+    expect(activityRunScrollTopHoldingRow(clip, 12, 0)).not.toBeNull();
   });
 });
 

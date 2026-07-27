@@ -67,8 +67,8 @@ const ROW_KIND_ESTIMATE_PX: Readonly<Record<string, number>> = {
   wait_group: 36,
 };
 
-/** One chip line, matching ActivityRunChip's `py-0.5` + 12px line box. */
-const ACTIVITY_RUN_CHIP_PX = 24;
+/** One header line, matching ActivityRunHeader's `py-0.5` + 12px line box. */
+const ACTIVITY_RUN_HEADER_PX = 24;
 /**
  * Floor for an expanded run: its rows at the tightest kind height in the
  * table, capped at the clip's own ceiling. Deliberately a floor, matching
@@ -103,11 +103,17 @@ export function timelineRowStructuralSizeFor(
   node: TimelineNode | undefined,
 ): number | undefined {
   if (node?.kind !== 'activity_run') return undefined;
-  if (node.collapsed) return ACTIVITY_RUN_CHIP_PX;
-  return Math.min(
+  // The header is unconditional, so a run is its header plus a clip when it has
+  // one — and `collapsed` is exactly whether it has one, liveness already folded
+  // in by the registry. Pricing a run that renders a clip as header-only would
+  // place a fast scroll past a row that is, right now, the tallest thing on the
+  // screen.
+  if (node.collapsed) return ACTIVITY_RUN_HEADER_PX;
+  const clip = Math.min(
     activityRunCapFloorPx(),
     node.mountedRows * ACTIVITY_RUN_ROW_FLOOR_PX,
   );
+  return ACTIVITY_RUN_HEADER_PX + clip;
 }
 
 export interface TimelineSizePriorsOptions {

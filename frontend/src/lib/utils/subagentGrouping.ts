@@ -266,6 +266,18 @@ export interface ActivityRunNode {
    */
   collapsed: boolean;
   /**
+   * This run holds the timeline's tail, so new activity lands in it.
+   *
+   * On the node rather than re-derived per consumer because two of them are
+   * not components: the row signature has to price a collapsed LIVE run as a
+   * chip over an open clip (it renders both, so a chip-shaped prior would
+   * under-estimate it by the height of the clip), and the size estimate has
+   * to agree. It flips at most twice in a run's life — once when it takes the
+   * tail and once when a later node displaces it — so it costs nothing that
+   * the per-delta fields deliberately kept off this node would have cost.
+   */
+  live: boolean;
+  /**
    * The mounted row window: `mountedRows` children starting at
    * `mountedFrom`. Defaults to the run's tail and relocates when a jump
    * resolves into the run (`utils/activityRunWindow.ts`).

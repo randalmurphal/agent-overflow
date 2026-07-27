@@ -45,6 +45,7 @@ const activityRun: ActivityRunNode = {
   threadId: 'thread-1',
   children: [leaf({ kind: 'tool_call' })],
   collapsed: false,
+  live: false,
   mountedFrom: 0,
   mountedRows: 1,
   memberItemIds: ['i1'],

@@ -5,9 +5,12 @@ import { ACTIVITY_RUN_CAP_REM_PX } from '../../utils/activityRunClip';
 import { timelineRowStructuralSizeFor } from './timelineSizePriors.svelte';
 
 // The estimate for a row the kind table cannot price. Only activity runs
-// qualify: every other node kind has one typical height, a run has two (chip
-// and capped clip) and the engine places unmeasured rows with whichever it is
-// in right now.
+// qualify: every other node kind has one typical height, a run has two — its
+// header alone, or that header over a capped clip — and the engine places
+// unmeasured rows with whichever it is in right now.
+
+/** One header line. Always present, so it is a term in both shapes. */
+const HEADER_PX = 24;
 
 const REAL_INNER_HEIGHT = window.innerHeight;
 
@@ -30,6 +33,7 @@ function run(overrides: Partial<ActivityRunNode> = {}): ActivityRunNode {
     threadId: 'thread-1',
     children,
     collapsed: false,
+    live: false,
     mountedFrom: 0,
     mountedRows: children.length,
     memberItemIds: [],
@@ -38,15 +42,36 @@ function run(overrides: Partial<ActivityRunNode> = {}): ActivityRunNode {
 }
 
 describe('timelineRowStructuralSizeFor', () => {
-  it('prices the same run differently in its two states', () => {
+  it('prices the same run differently in its two shapes', () => {
     const children = Array.from({ length: 10 }, (_, i) => leaf(`i${i}`));
-    const chip = timelineRowStructuralSizeFor(run({ children, collapsed: true }));
-    const clip = timelineRowStructuralSizeFor(run({ children, collapsed: false }));
+    const closed = timelineRowStructuralSizeFor(run({ children, collapsed: true }));
+    const open = timelineRowStructuralSizeFor(run({ children, collapsed: false }));
 
-    // One chip line vs ten mounted rows: the whole reason this is not a
-    // kind-table entry.
-    expect(chip).toBe(24);
-    expect(clip).toBe(200);
+    // One header line vs that header over ten mounted rows: the whole reason
+    // this is not a kind-table entry.
+    expect(closed).toBe(HEADER_PX);
+    expect(open).toBe(HEADER_PX + 200);
+  });
+
+  it('prices the two shapes apart, and prices liveness as neither', () => {
+    // The whole 2x2, because the estimate must read ONE of the two facts. A
+    // closed run is its header; an open one is that header over a capped clip,
+    // and pricing it short would estimate the tallest row on the screen at a
+    // twelfth of its height — a fast scroll past it lands nowhere near where it
+    // aimed.
+    //
+    // Liveness is not the estimate's business: `collapsed` arrives with it
+    // already folded in (`ActivityRunIdentity.collapsedFor`), so a run that
+    // renders open while it works is simply an open run, and pricing on `live`
+    // would move an estimate at the moment the height did not change.
+    const children = Array.from({ length: 10 }, (_, i) => leaf(`i${i}`));
+    const priceOf = (collapsed: boolean, live: boolean) =>
+      timelineRowStructuralSizeFor(run({ children, collapsed, live }));
+
+    expect(priceOf(true, false)).toBe(HEADER_PX);
+    expect(priceOf(true, true)).toBe(HEADER_PX);
+    expect(priceOf(false, true)).toBe(HEADER_PX + 200);
+    expect(priceOf(false, false)).toBe(HEADER_PX + 200);
   });
 
   it('scales with the mounted window, not the run length', () => {
@@ -59,13 +84,14 @@ describe('timelineRowStructuralSizeFor', () => {
       mountedRows: 12,
     });
 
-    expect(timelineRowStructuralSizeFor(long)).toBe(12 * 20);
+    expect(timelineRowStructuralSizeFor(long)).toBe(HEADER_PX + 12 * 20);
   });
 
-  it('never estimates past the clip cap', () => {
+  it('never estimates the clip past its cap', () => {
     // 40 rows of floor height would be 800px; the clip cannot exceed its own
     // ceiling, and an overshooting estimate shrinks totalSize when the real
     // measurement lands — the failure mode this whole table is floored against.
+    // The cap bounds the CLIP; the header sits above it and is not part of it.
     const wide = run({
       children: Array.from({ length: 40 }, (_, i) => leaf(`i${i}`)),
       mountedRows: 40,
@@ -75,10 +101,10 @@ describe('timelineRowStructuralSizeFor', () => {
     // wins depends on the window. Taking the rem half unconditionally would
     // overshoot the real ceiling on a short one.
     setViewportHeight(1400);
-    expect(timelineRowStructuralSizeFor(wide)).toBe(ACTIVITY_RUN_CAP_REM_PX);
+    expect(timelineRowStructuralSizeFor(wide)).toBe(HEADER_PX + ACTIVITY_RUN_CAP_REM_PX);
 
     setViewportHeight(400);
-    expect(timelineRowStructuralSizeFor(wide)).toBe(200);
+    expect(timelineRowStructuralSizeFor(wide)).toBe(HEADER_PX + 200);
   });
 
   it('declines every other node, so the kind table still decides', () => {

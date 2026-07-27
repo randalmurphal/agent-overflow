@@ -10,6 +10,23 @@ import { ACTIVITY_RUN_CAP_CSS } from '../../utils/activityRunClip';
 import type { Item } from '../../types/models';
 import MessageTimeline from './MessageTimeline.svelte';
 
+/**
+ * Prose closes a run: the next activity row starts a new one, so the run can
+ * never grow again. Liveness is what decides whether a COLLAPSED run keeps its
+ * clip open, so a test about the header-only state has to say which it means.
+ */
+function finished(items: Item[]): Item[] {
+  return [
+    ...items,
+    makeItem({
+      id: 'done',
+      itemIndex: items.length,
+      kind: 'assistant_text',
+      summary: 'done',
+    }),
+  ];
+}
+
 function tool(id: string, index: number, overrides: Partial<Item> = {}): Item {
   return makeItem({
     id,
@@ -248,8 +265,44 @@ describe('<ActivityRun>', () => {
   });
 
   describe('collapsing', () => {
-    it('collapses from the rail and expands from the chip', async () => {
-      const { getByTestId, queryByTestId } = await renderRun([tool('t0', 0), tool('t1', 1)]);
+    it('keeps its header while expanded, and collapses from it', async () => {
+      // The header is the run's own control in BOTH directions. It used to
+      // render only while collapsed, so expanding a run removed the very thing
+      // the reader had just clicked and left the invisible rail strip as the
+      // only way back.
+      const { getByTestId, queryByTestId } = await renderRun(
+        finished([tool('t0', 0), tool('t1', 1)]),
+      );
+      const header = getByTestId('activity-run-header');
+      expect(getByTestId('activity-run').dataset.collapsed).toBe('false');
+      // Present while open, and saying so — the chevron and the screen reader
+      // read the same attribute.
+      expect(header.getAttribute('aria-expanded')).toBe('true');
+      expect(header.getAttribute('aria-label')).toContain('Collapse');
+
+      await fireEvent.click(header);
+      await tick();
+
+      expect(getByTestId('activity-run').dataset.collapsed).toBe('true');
+      expect(queryByTestId('activity-run-clip')).toBeNull();
+      // Same element, still there, now offering the other direction.
+      expect(getByTestId('activity-run-header')).toBe(header);
+      expect(header.getAttribute('aria-expanded')).toBe('false');
+      expect(header.getAttribute('aria-label')).toContain('Expand');
+
+      await fireEvent.click(header);
+      await tick();
+
+      expect(getByTestId('activity-run').dataset.collapsed).toBe('false');
+      expect(getByTestId('activity-run-clip')).toBeInTheDocument();
+    });
+
+    it('collapses from the rail and expands from the header', async () => {
+      // Finished, so collapsing means header ONLY. A run still holding the tail
+      // keeps its clip under the header — see "still working" below.
+      const { getByTestId, queryByTestId } = await renderRun(
+        finished([tool('t0', 0), tool('t1', 1)]),
+      );
 
       await fireEvent.click(getByTestId('activity-run-rail'));
       await tick();
@@ -258,7 +311,7 @@ describe('<ActivityRun>', () => {
       expect(getByTestId('activity-run').getAttribute('data-collapsed')).toBe('true');
       expect(queryByTestId('command-output-row')).toBeNull();
 
-      await fireEvent.click(getByTestId('activity-run-chip'));
+      await fireEvent.click(getByTestId('activity-run-header'));
       await tick();
 
       expect(getByTestId('activity-run-clip')).toBeInTheDocument();
@@ -283,7 +336,7 @@ describe('<ActivityRun>', () => {
     });
 
     it('keeps no reading position across a collapse', async () => {
-      // The chip replaced the inside of the run, so there is nothing left to
+      // Collapsing replaced the inside of the run, so there is nothing left to
       // restore and the clip takes the never-scrolled path — its newest row,
       // which is the reason the run is on screen at all. That the write lands
       // at the bottom needs real geometry; happy-dom reports zero for both
@@ -303,7 +356,7 @@ describe('<ActivityRun>', () => {
 
       expect(pane.activityRuns.scrollSnapshot(id)).toBeNull();
 
-      await fireEvent.click(getByTestId('activity-run-chip'));
+      await fireEvent.click(getByTestId('activity-run-header'));
       await tick();
 
       // And the reopened clip did not record one on the way back in either.
@@ -311,7 +364,7 @@ describe('<ActivityRun>', () => {
       expect(pane.activityRuns.scrollSnapshot(id)).toBeNull();
     });
 
-    it('rail and chip name the same pane-scoped clip', async () => {
+    it('names the clip it controls, scoped to the pane', async () => {
       const { getByTestId } = await renderRun([tool('t0', 0), tool('t1', 1)]);
 
       const target = getByTestId('activity-run-clip').id;
@@ -319,24 +372,152 @@ describe('<ActivityRun>', () => {
       // first run is `r1`, so an unscoped id collides across panes even on
       // different threads.
       expect(target).toContain('-main-');
-      expect(getByTestId('activity-run-rail').getAttribute('aria-controls')).toBe(target);
+      expect(getByTestId('activity-run-header').getAttribute('aria-controls')).toBe(target);
 
       await fireEvent.click(getByTestId('activity-run-rail'));
       await tick();
 
-      // The chip takes the clip's place, and must still point at it. Both
-      // halves build the id from one derived value, because a `controls` that
-      // names a string nothing emits fails silently — it looks right and
-      // announces nothing.
-      expect(getByTestId('activity-run-chip').getAttribute('aria-controls')).toBe(target);
+      // The header outlives the clip, and must still point at it. Both halves
+      // build the id from one derived value, because a `controls` that names a
+      // string nothing emits fails silently — it looks right and announces
+      // nothing.
+      expect(getByTestId('activity-run-header').getAttribute('aria-controls')).toBe(target);
+    });
+
+    it('keeps the rail out of the accessibility tree', async () => {
+      // It duplicates the header, and an invisible duplicate is a phantom tab
+      // stop (a focus ring on a transparent 16px strip) plus the run's state
+      // announced twice from two buttons naming one region. Pointer-only: the
+      // whole block reads as one thing, so clicking its edge should still fold
+      // it. Both attributes, because hiding a focusable element is its own
+      // defect.
+      const { getByTestId } = await renderRun([tool('t0', 0), tool('t1', 1)]);
+      const rail = getByTestId('activity-run-rail');
+
+      expect(rail.getAttribute('aria-hidden')).toBe('true');
+      expect(rail.getAttribute('tabindex')).toBe('-1');
+      // And no second `aria-expanded` for the same region.
+      expect(rail.hasAttribute('aria-expanded')).toBe(false);
+      expect(rail.hasAttribute('aria-controls')).toBe(false);
+
+      await fireEvent.click(rail);
+      await tick();
+
+      expect(getByTestId('activity-run').dataset.collapsed).toBe('true');
     });
 
     it('starts collapsed when the setting says so', async () => {
       await updateSetting('activityRunDefault', 'collapsed');
-      const { getByTestId, queryByTestId } = await renderRun([tool('t0', 0)]);
+      const { getByTestId, queryByTestId } = await renderRun(finished([tool('t0', 0)]));
 
       expect(queryByTestId('activity-run-clip')).toBeNull();
-      expect(getByTestId('activity-run-chip')).toBeInTheDocument();
+      expect(getByTestId('activity-run-header')).toBeInTheDocument();
+    });
+
+    it('renders open while it is still working, whatever the default says', async () => {
+      // Collapsing a thread must not mean going blind to what it is doing right
+      // now, so a default of `collapsed` describes how a run SITS once it has
+      // settled — a live one nobody has answered for renders open and folds
+      // itself shut when it finishes.
+      //
+      // And it renders open HONESTLY: the header reports expanded, because a
+      // chevron claiming collapsed over a clip full of streaming rows describes
+      // neither what is on screen nor what the next click will do.
+      await updateSetting('activityRunDefault', 'collapsed');
+      const { getByTestId } = await renderRun([tool('t0', 0), tool('t1', 1)]);
+
+      expect(getByTestId('activity-run').dataset.live).toBe('true');
+      expect(getByTestId('activity-run').dataset.collapsed).toBe('false');
+      expect(getByTestId('activity-run-clip')).toBeInTheDocument();
+      expect(getByTestId('activity-run-header').getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('collapses a live run when asked, without waiting for it to finish', async () => {
+      // The click is an answer about THIS run, and it beats the liveness that
+      // decides for runs nobody has answered for. Previously liveness won, so
+      // the clip stayed and the only thing the click moved was the chevron —
+      // the reader collapsed the run they were watching and nothing closed.
+      await updateSetting('activityRunDefault', 'collapsed');
+      const { getByTestId, queryByTestId } = await renderRun([tool('t0', 0), tool('t1', 1)]);
+      expect(getByTestId('activity-run-clip')).toBeInTheDocument();
+
+      await fireEvent.click(getByTestId('activity-run-header'));
+      await tick();
+
+      expect(queryByTestId('activity-run-clip')).toBeNull();
+      expect(getByTestId('activity-run').dataset.collapsed).toBe('true');
+      // Still the live run — it just is not showing its work any more.
+      expect(getByTestId('activity-run').dataset.live).toBe('true');
+
+      // And back, from the same header.
+      await fireEvent.click(getByTestId('activity-run-header'));
+      await tick();
+
+      expect(getByTestId('activity-run-clip')).toBeInTheDocument();
+    });
+
+    it('closes that clip once the run finishes', async () => {
+      // happy-dom lays nothing out, so the fold measures a zero-height box and
+      // takes its no-motion path — which is the right outcome for a box with
+      // no height, and the reason the animation itself is asserted in
+      // activityRunFold.browser.test.ts. What is asserted here is that
+      // finishing is what closes it.
+      await updateSetting('activityRunDefault', 'collapsed');
+      const { getByTestId, queryByTestId, pane } = await renderRun([
+        tool('t0', 0),
+        tool('t1', 1),
+      ]);
+      expect(getByTestId('activity-run-clip')).toBeInTheDocument();
+
+      pane.upsertItem(makeItem({
+        id: 'p0',
+        itemIndex: 2,
+        kind: 'assistant_text',
+        summary: 'done',
+      }));
+      await tick();
+      await tick();
+
+      expect(getByTestId('activity-run').dataset.live).toBe('false');
+      expect(queryByTestId('activity-run-clip')).toBeNull();
+      expect(getByTestId('activity-run-header')).toBeInTheDocument();
+    });
+
+    it('waits out a reader who is inside the run when it finishes', async () => {
+      // A fold is owed, not forced. Closing a run over somebody reading inside
+      // it is the one thing worse than the jump the fold exists to avoid.
+      await updateSetting('activityRunDefault', 'collapsed');
+      const { getByTestId, queryByTestId, pane } = await renderRun(
+        Array.from({ length: 14 }, (_, i) => tool(`t${i}`, i)),
+      );
+      const clip = getByTestId('activity-run-clip');
+
+      // A gesture that leaves the clip's newest row: the reader is now in it.
+      stampScroll(clip, { scrollTop: 600, clientHeight: 300, scrollHeight: 1500 });
+      await fireEvent.wheel(clip, { deltaY: -120 });
+      await fireEvent.scroll(clip);
+      await tick();
+
+      pane.upsertItem(makeItem({
+        id: 'p0',
+        itemIndex: 20,
+        kind: 'assistant_text',
+        summary: 'done',
+      }));
+      await tick();
+      await tick();
+
+      expect(getByTestId('activity-run').dataset.live).toBe('false');
+      expect(getByTestId('activity-run-clip')).toBeInTheDocument();
+
+      // Back on the newest row, and the debt is paid.
+      stampScroll(clip, { scrollTop: 1200, clientHeight: 300, scrollHeight: 1500 });
+      await fireEvent.wheel(clip, { deltaY: 120 });
+      await fireEvent.scroll(clip);
+      await tick();
+      await tick();
+
+      expect(queryByTestId('activity-run-clip')).toBeNull();
     });
 
     it('keeps the rail in both states so the block stays anchored', async () => {
@@ -350,34 +531,34 @@ describe('<ActivityRun>', () => {
     });
   });
 
-  describe('chip', () => {
-    async function collapsedChip(items: Item[]) {
+  describe('header summary', () => {
+    async function collapsed(items: Item[]) {
       await updateSetting('activityRunDefault', 'collapsed');
       return renderRun(items);
     }
 
     it('tallies per tool name', async () => {
-      const { getByTestId } = await collapsedChip([
+      const { getByTestId } = await collapsed([
         tool('t0', 0),
         tool('t1', 1),
         tool('t2', 2, { toolName: 'Read', summary: 'Read: a.ts' }),
       ]);
 
-      expect(getByTestId('activity-run-chip-counts').textContent?.trim())
+      expect(getByTestId('activity-run-header-counts').textContent?.trim())
         .toBe('2 Bash, 1 Read');
     });
 
     it('tints each tool name with that tool\'s own icon hue', async () => {
-      const { getByTestId } = await collapsedChip([
+      const { getByTestId } = await collapsed([
         tool('t0', 0),
         tool('t1', 1, { toolName: 'Read', summary: 'Read: a.ts' }),
         makeItem({ id: 't2', itemIndex: 2, kind: 'thinking', summary: 'pondering' }),
       ]);
-      const counts = getByTestId('activity-run-chip-counts');
+      const counts = getByTestId('activity-run-header-counts');
       const hue = (label: string) =>
         counts.querySelector(`[data-tool-term="${label}"]`)?.className;
 
-      // The same `--ico-*` tokens the expanded run's icons carry, so a chip
+      // The same `--ico-*` tokens the expanded run's icons carry, so the line
       // reads as the block it stands for rather than a grey tally.
       expect(hue('Bash')).toBe('text-ico-terminal');
       expect(hue('Read')).toBe('text-ico-eye');
@@ -392,41 +573,41 @@ describe('<ActivityRun>', () => {
       // `generic` resolves to the secondary text token, so a tool this build
       // does not know reads as plain text instead of borrowing a hue that
       // means something else.
-      const { getByTestId } = await collapsedChip([
+      const { getByTestId } = await collapsed([
         tool('t0', 0, { toolName: 'DefinitelyNotAKnownTool' }),
       ]);
 
       expect(
-        getByTestId('activity-run-chip-counts')
+        getByTestId('activity-run-header-counts')
           .querySelector('[data-tool-term]')?.className,
       ).toBe('text-ico-generic');
     });
 
     it('surfaces a failure it would otherwise hide', async () => {
-      const { getByTestId, queryByTestId } = await collapsedChip([
+      const { getByTestId, queryByTestId } = await collapsed([
         tool('t0', 0, { status: 'errored' }),
         tool('t1', 1),
       ]);
 
-      expect(queryByTestId('activity-run-chip-failure')).not.toBeNull();
-      expect(getByTestId('activity-run-chip-failure').querySelector('[data-state="error"]'))
+      expect(queryByTestId('activity-run-header-failure')).not.toBeNull();
+      expect(getByTestId('activity-run-header-failure').querySelector('[data-state="error"]'))
         .not.toBeNull();
     });
 
     it('names what is still running', async () => {
-      const { getByTestId } = await collapsedChip([
+      const { getByTestId } = await collapsed([
         tool('t0', 0),
         tool('t1', 1, { toolName: 'Grep', status: 'running' }),
       ]);
 
-      expect(getByTestId('activity-run-chip-running').textContent).toContain('Grep');
+      expect(getByTestId('activity-run-header-running').textContent).toContain('Grep');
     });
 
     it('says nothing about failure or progress on a clean settled run', async () => {
-      const { queryByTestId } = await collapsedChip([tool('t0', 0)]);
+      const { queryByTestId } = await collapsed([tool('t0', 0)]);
 
-      expect(queryByTestId('activity-run-chip-failure')).toBeNull();
-      expect(queryByTestId('activity-run-chip-running')).toBeNull();
+      expect(queryByTestId('activity-run-header-failure')).toBeNull();
+      expect(queryByTestId('activity-run-header-running')).toBeNull();
     });
 
     it('recounts from live items as the run streams', async () => {
@@ -434,13 +615,13 @@ describe('<ActivityRun>', () => {
       const pane = await buildPane(undefined, [tool('t0', 0, { status: 'running' })]);
       const { getByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
 
-      expect(getByTestId('activity-run-chip-running').textContent).toContain('Bash');
+      expect(getByTestId('activity-run-header-running').textContent).toContain('Bash');
 
       pane.upsertItem(tool('t0', 0, { status: 'completed', updatedAt: Date.now() + 1 }));
       await tick();
 
-      expect(getByTestId('activity-run-chip-counts').textContent?.trim()).toBe('1 Bash');
-      expect(queryByTestId('activity-run-chip-running')).toBeNull();
+      expect(getByTestId('activity-run-header-counts').textContent?.trim()).toBe('1 Bash');
+      expect(queryByTestId('activity-run-header-running')).toBeNull();
     });
   });
 
@@ -470,11 +651,13 @@ describe('<ActivityRun>', () => {
       expect(getByTestId('activity-run-later').textContent).toContain('15 later');
     });
 
-    it('expands a run whose chip could not show the hit', async () => {
+    it('expands a run whose header could not show the hit', async () => {
       await updateSetting('activityRunDefault', 'collapsed');
-      const { getByTestId, queryByTestId, container } = await jumpTo('t20');
+      const { getByTestId, container } = await jumpTo('t20');
 
-      expect(queryByTestId('activity-run-chip')).toBeNull();
+      // The header stays — it always does — but it now reports an OPEN run,
+      // which is the only thing that can put the hit on screen.
+      expect(getByTestId('activity-run-header').getAttribute('aria-expanded')).toBe('true');
       expect(getByTestId('activity-run-clip')).toBeInTheDocument();
       expect(container.querySelector('[data-item-id="t20"]')).not.toBeNull();
     });
@@ -551,7 +734,7 @@ describe('<ActivityRun>', () => {
       expect(container.querySelector('[data-item-id="t20"]')).not.toBeNull();
       expect(container.querySelector('[data-item-id="t15"]')).not.toBeNull();
       expect(getByTestId('activity-run-later').textContent).toContain('15 later');
-      expect(queryByTestId('activity-run-chip')).toBeNull();
+      expect(getByTestId('activity-run-header').getAttribute('aria-expanded')).toBe('true');
     });
   });
 });
