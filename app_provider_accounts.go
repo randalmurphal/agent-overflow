@@ -547,13 +547,10 @@ func (a *App) adoptCanonicalProviderAccountLocked(providerName, binary string) e
 	if _, ok := a.providerAccounts.Active(providerName, time.Now()); ok {
 		return nil
 	}
-	probe := func(ctx context.Context) (provider.AccountInfo, error) {
-		if providerName == string(provider.Claude) {
-			return claude.ProbeAccount(ctx, claude.ProbeConfig{Binary: binary})
-		}
-		return codex.ProbeIdentity(ctx, codex.ProbeConfig{Binary: binary})
-	}
-	info, credential, err := a.runStableAccountProbe(providerName, probe)
+	info, credential, err := a.runStableAccountProbe(
+		providerName,
+		canonicalProviderAccountProbe(providerName, binary),
+	)
 	if err != nil {
 		return err
 	}

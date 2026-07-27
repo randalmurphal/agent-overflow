@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"sync"
@@ -71,6 +72,95 @@ func writeCodexIdentityProbeBinary(t *testing.T, email string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// writeRotatingProbeMockBinary answers the identity probe and rewrites the
+// canonical credential the first time it runs — what Claude Code does when its
+// startup finds an expired access token.
+func writeRotatingProbeMockBinary(
+	t *testing.T,
+	credentialPath string,
+	rotated string,
+	accountJSON string,
+) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mock-claude")
+	marker := filepath.Join(dir, "rotated")
+	response := `{"type":"control_response","response":{"subtype":"success",` +
+		`"request_id":"ao-probe-init","response":{"account":` + accountJSON + `}}}`
+	script := "#!/bin/bash\n" +
+		"read -r _ || true\n" +
+		"if [ ! -f " + shellQuote(marker) + " ]; then\n" +
+		"  printf '%s' '" + rotated + "' > " + shellQuote(credentialPath) + "\n" +
+		"  : > " + shellQuote(marker) + "\n" +
+		"fi\n" +
+		"printf '%s\\n' '" + response + "'\n" +
+		"exit 0\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A token rotation during the identity probe is the provider doing its job, not
+// an account switch. Reconciliation has to absorb it and adopt the value the
+// probe left behind: this runs on the send path, so failing here turns an
+// expired access token into a failed send.
+func TestReconciliationAbsorbsARotationDuringTheIdentityProbe(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Claude),
+		"first",
+		"first@example.com",
+		[]byte(`{"claudeAiOauth":{"accessToken":"first"}}`),
+	)
+
+	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const rotated = `{"claudeAiOauth":{"accessToken":"rotated"}}`
+	binary := writeRotatingProbeMockBinary(
+		t,
+		activePath,
+		rotated,
+		`{"email":"first@example.com","subscriptionType":"Claude Max",`+
+			`"tokenSource":"oauth","apiProvider":"firstParty"}`,
+	)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	// An unrecognized canonical value is what sends reconciliation to the probe
+	// in the first place.
+	if err := os.WriteFile(
+		activePath,
+		[]byte(`{"claudeAiOauth":{"accessToken":"external"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.reconcileExternalProviderAccount(string(provider.Claude)); err != nil {
+		t.Fatalf("reconcileExternalProviderAccount: %v", err)
+	}
+
+	saved, err := app.providerCredentials.ReadCredential(string(provider.Claude), "first", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(saved) != rotated {
+		t.Fatalf("saved credential = %s, want the rotated value", saved)
+	}
+	app.providerAccountMu.RLock()
+	fingerprint := app.providerCredentialFingerprints[string(provider.Claude)]
+	app.providerAccountMu.RUnlock()
+	if fingerprint != sha256.Sum256([]byte(rotated)) {
+		t.Fatal("fingerprint was not advanced to the value the probe left behind")
+	}
 }
 
 func TestExternalClaudeLoginReconcilesMetadataAndLiveSessions(t *testing.T) {

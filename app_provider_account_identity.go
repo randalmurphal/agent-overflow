@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -44,38 +45,41 @@ func (a *App) reconcileExternalProviderAccount(providerName string) error {
 func (a *App) reconcileExternalProviderAccountWithMutexHeld(
 	providerName string,
 ) error {
-	before, err := a.providerCredentials.ReadCredentialSnapshot(providerName, "", true)
+	before, present, err := a.readCanonicalCredentialIfPresent(providerName)
 	if err != nil {
-		if provideraccounts.IsCredentialMissing(err) {
-			return nil
-		}
-		return fmt.Errorf("inspect active %s credentials: %w", providerName, err)
+		return err
 	}
-	fingerprint := sha256.Sum256(before.Data)
+	if !present {
+		return nil
+	}
 
 	a.providerAccountMu.RLock()
 	known, observed := a.providerCredentialFingerprints[providerName]
 	a.providerAccountMu.RUnlock()
-	if observed && known == fingerprint {
+	if observed && known == sha256.Sum256(before.Data) {
 		return nil
 	}
 
-	info, err := a.probeCanonicalProviderAccount(providerName)
+	// An external login process does not participate in providerAccountMu, so
+	// the identity has to be paired with a canonical credential value that did
+	// not move across the probe — otherwise one account's email could be stored
+	// against another account's tokens. runStableAccountProbe enforces that
+	// pairing and, unlike a single before/after comparison, tolerates the
+	// provider legitimately rotating the token while its probe initializes.
+	binary := a.providerBinaryPath(providerName)
+	info, credential, err := a.runStableAccountProbe(
+		providerName,
+		canonicalProviderAccountProbe(providerName, binary),
+	)
 	if err != nil {
 		return fmt.Errorf("identify externally selected %s account: %w", providerName, err)
 	}
-
-	// An external login process does not participate in providerAccountMu.
-	// Verify its credential value stayed stable across the identity probe so
-	// an account switch racing this read cannot pair one account's email with
-	// another account's credential bytes.
-	after, err := a.providerCredentials.ReadCredentialSnapshot(providerName, "", true)
-	if err != nil {
-		return fmt.Errorf("recheck active %s credentials: %w", providerName, err)
+	if credential == nil {
+		// The login was signed out while it was being identified. There is
+		// nothing to adopt, and the next reconciliation sees the absence.
+		return nil
 	}
-	if sha256.Sum256(after.Data) != fingerprint {
-		return fmt.Errorf("%s credentials changed while verifying the active account; retry", providerName)
-	}
+	fingerprint := sha256.Sum256(credential.Data)
 
 	a.providerAccountMu.Lock()
 	// Serialize against Agent Overflow's own account switch and repeat the
@@ -106,7 +110,6 @@ func (a *App) reconcileExternalProviderAccountWithMutexHeld(
 		return nil
 	}
 
-	binary := a.providerBinaryPath(providerName)
 	a.invalidateProviderAccountProbe(providerName, binary)
 	a.emitProviderAccount(providerName, account, info, generation)
 
@@ -127,15 +130,24 @@ func (a *App) providerCredentialReconcileMutex(providerName string) *sync.Mutex 
 	return &a.codexCredentialReconcileMu
 }
 
-func (a *App) probeCanonicalProviderAccount(providerName string) (provider.AccountInfo, error) {
-	binary := a.providerBinaryPath(providerName)
-	switch providerName {
-	case string(provider.Claude):
-		return claude.ProbeAccount(a.lifeCtx(), claude.ProbeConfig{Binary: binary})
-	case string(provider.Codex):
-		return codex.ProbeIdentity(a.lifeCtx(), codex.ProbeConfig{Binary: binary})
-	default:
-		return provider.AccountInfo{}, fmt.Errorf("unsupported provider %q", providerName)
+// canonicalProviderAccountProbe asks the provider who is logged in to its
+// canonical native home. It deliberately sets no config-home override: Claude
+// keys "is this the default home" off the variable being absent rather than off
+// its value, and on macOS a non-default home hashes into a different Keychain
+// service.
+func canonicalProviderAccountProbe(
+	providerName string,
+	binary string,
+) func(context.Context) (provider.AccountInfo, error) {
+	return func(ctx context.Context) (provider.AccountInfo, error) {
+		switch providerName {
+		case string(provider.Claude):
+			return claude.ProbeAccount(ctx, claude.ProbeConfig{Binary: binary})
+		case string(provider.Codex):
+			return codex.ProbeIdentity(ctx, codex.ProbeConfig{Binary: binary})
+		default:
+			return provider.AccountInfo{}, fmt.Errorf("unsupported provider %q", providerName)
+		}
 	}
 }
 

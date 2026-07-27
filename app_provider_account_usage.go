@@ -78,19 +78,19 @@ func (a *App) refreshProviderAccountUsage(
 	}
 	a.providerAccountMu.RUnlock()
 
-	// The selected Claude account refreshes in the canonical home, where
-	// Claude's own cross-process refresh lock lives, so it needs no copy of
-	// itself to probe against. See probeSelectedClaudeRateLimits.
-	refreshesInCanonicalHome := isSelected && providerName == string(provider.Claude)
+	refresh := providerUsageRefresh{
+		providerName: providerName,
+		accountID:    accountID,
+		generation:   generation,
+		isSelected:   isSelected,
+		probed:       credential.Data,
+	}
 
 	var (
-		snapshot            provider.RateLimitsSnapshot
-		refreshedCredential []byte
-		ephemeral           *provideraccounts.EphemeralHome
-		// observed stays zero unless the probe itself reported an identity.
-		observed provider.AccountInfo
+		snapshot  provider.RateLimitsSnapshot
+		ephemeral *provideraccounts.EphemeralHome
 	)
-	if !refreshesInCanonicalHome {
+	if !refresh.refreshesInCanonicalHome() {
 		ephemeral, err = a.providerCredentials.NewEphemeralHomeWithCredential(
 			providerName,
 			credential.Data,
@@ -107,14 +107,14 @@ func (a *App) refreshProviderAccountUsage(
 
 	switch providerName {
 	case string(provider.Claude):
-		if refreshesInCanonicalHome {
-			snapshot, refreshedCredential, err = a.probeSelectedClaudeRateLimits(
+		if refresh.refreshesInCanonicalHome() {
+			snapshot, refresh.refreshed, err = a.probeSelectedClaudeRateLimits(
 				ctx,
 				selection,
 				credential.Data,
 			)
 		} else {
-			snapshot, refreshedCredential, err = a.probeClaudeRateLimitsForSelection(
+			snapshot, refresh.refreshed, err = a.probeClaudeRateLimitsForSelection(
 				ctx,
 				claudeRateLimitSelection{
 					providerAccountSelection: selection,
@@ -146,25 +146,16 @@ func (a *App) refreshProviderAccountUsage(
 		if readErr != nil {
 			return fmt.Errorf("capture refreshed Codex credentials: %w", readErr)
 		}
-		refreshedCredential = refreshed.Data
-		observed = info
+		refresh.refreshed = refreshed.Data
+		refresh.observed = info
 	}
 
 	a.providerAccountMu.Lock()
-	commit, err := a.commitProviderUsageRefreshLocked(providerUsageRefresh{
-		providerName:           providerName,
-		accountID:              accountID,
-		generation:             generation,
-		isSelected:             isSelected,
-		probed:                 credential.Data,
-		refreshed:              refreshedCredential,
-		rotatedInCanonicalHome: refreshesInCanonicalHome,
-		observed:               observed,
-	})
+	commit, commitErr := a.commitProviderUsageRefreshLocked(refresh)
 	a.providerAccountMu.Unlock()
-	if err != nil {
-		return err
-	}
+
+	// Metadata the commit enriched is already written, so publish it even when
+	// a later step failed.
 	if commit.account != nil {
 		a.emitProviderAccount(
 			providerName,
@@ -173,13 +164,18 @@ func (a *App) refreshProviderAccountUsage(
 			commit.generation,
 		)
 	}
-	snapshot.Provider = providerName
-	snapshot.AccountID = accountID
-	a.emitRateLimitsSnapshot(snapshot)
-	return nil
+	// The snapshot is what the probe measured. It does not depend on the
+	// credential bookkeeping around it settling, so withholding it on a commit
+	// failure would blank the rings for data that was fetched successfully.
+	if commit.snapshotDescribesAccount {
+		snapshot.Provider = providerName
+		snapshot.AccountID = accountID
+		a.emitRateLimitsSnapshot(snapshot)
+	}
+	return commitErr
 }
 
-// providerUsageRefresh is one completed usage probe awaiting commit.
+// providerUsageRefresh is one usage probe awaiting commit.
 type providerUsageRefresh struct {
 	providerName string
 	accountID    string
@@ -189,17 +185,46 @@ type providerUsageRefresh struct {
 	probed []byte
 	// refreshed is the rotated credential, empty when nothing rotated.
 	refreshed []byte
-	// rotatedInCanonicalHome reports that the provider wrote the rotation
-	// straight into the canonical store, so it is already published there.
-	rotatedInCanonicalHome bool
 	// observed is the identity the provider reported during the probe, when
-	// it reports one at all.
+	// it reports one at all. Stays zero otherwise.
 	observed provider.AccountInfo
+}
+
+// refreshesInCanonicalHome reports that this account's token refresh, if the
+// probe turns out to need one, must happen in the canonical home rather than a
+// copy of it. Only the selected Claude account holds the canonical credential,
+// and Claude's single-use rotation is serialized on a lockfile scoped to the
+// config home — see probeSelectedClaudeRateLimits.
+func (r providerUsageRefresh) refreshesInCanonicalHome() bool {
+	return r.isSelected && r.providerName == string(provider.Claude)
+}
+
+// canonicalCredential is the value the canonical native store must still hold
+// for this probe's outcome to be committable. A rotation performed in the
+// canonical home is already published there; every other outcome leaves
+// canonical holding exactly what the probe started from.
+//
+// Both halves of that condition are load-bearing. Deriving this from "would
+// refresh in the canonical home" alone claimed a publish on every selected
+// Claude probe — including the common one where the token was still valid and
+// nothing rotated at all, which then compared the canonical file against an
+// empty expectation that can never match.
+func (r providerUsageRefresh) canonicalCredential() []byte {
+	if r.refreshesInCanonicalHome() && len(r.refreshed) > 0 {
+		return r.refreshed
+	}
+	return r.probed
 }
 
 type providerUsageCommit struct {
 	account    *provideraccounts.Account
 	generation uint64
+	// snapshotDescribesAccount reports that this probe provably measured
+	// refresh.accountID, so its snapshot stays publishable even when the
+	// credential bookkeeping underneath failed. It is false only where the
+	// attribution itself is in doubt: a selection that moved under the probe,
+	// or a provider that authenticated as somebody else.
+	snapshotDescribesAccount bool
 }
 
 // commitProviderUsageRefreshLocked publishes the outcome of one usage probe:
@@ -218,21 +243,6 @@ func (a *App) commitProviderUsageRefreshLocked(
 	); err != nil {
 		return commit, err
 	}
-
-	// What the canonical store must still hold: the rotated value when the
-	// provider rotated in place, otherwise whatever the probe started from.
-	canonical := refresh.probed
-	if refresh.rotatedInCanonicalHome {
-		canonical = refresh.refreshed
-	}
-	if refresh.isSelected {
-		if err := a.verifyCanonicalProviderCredentialLocked(
-			refresh.providerName,
-			canonical,
-		); err != nil {
-			return commit, err
-		}
-	}
 	if refresh.providerName == string(provider.Codex) {
 		observedAccountID, updated, err := a.accountIDForObservedIdentity(
 			refresh.providerName,
@@ -250,6 +260,21 @@ func (a *App) commitProviderUsageRefreshLocked(
 			)
 		}
 		commit.account = updated
+	}
+	// Everything above decides whether this probe measured refresh.accountID at
+	// all; the identity checks come first for that reason. Past this line the
+	// attribution holds, so the caller may publish the snapshot even if the
+	// credential work below fails.
+	commit.snapshotDescribesAccount = true
+
+	canonical := refresh.canonicalCredential()
+	if refresh.isSelected {
+		if err := a.verifyCanonicalProviderCredentialLocked(
+			refresh.providerName,
+			canonical,
+		); err != nil {
+			return commit, err
+		}
 	}
 
 	// latest is the value every copy of this account must end up holding.
