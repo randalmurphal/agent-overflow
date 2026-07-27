@@ -126,8 +126,19 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
   [`activity-runs.md`](activity-runs.md).
 - `ThreadPane` owns the scroll-controller registration slot so shared
   surfaces can pause or notify scrolling without reaching into component
-  internals. It is **single-occupancy and the timeline's**: a nested
-  controller (activity run, `ChannelView`) never registers.
+  internals. It is **single-occupancy and belongs to the surface that owns
+  the pane's scroll container** — `MessageTimeline`, or `ChannelView` on a
+  discussion pane, whichever is mounted. A controller *nested inside* one
+  of those (the activity run's) never registers.
+
+  The slot is `$state.raw`, and that is load-bearing rather than a
+  micro-optimization: `detachScrollController` decides whether a teardown
+  is stale by comparing the incoming controller against the registered one,
+  and a plain `$state` proxies the object on assignment, so the comparison
+  is false even for the same controller. It never cleared — a torn-down
+  controller, and through it the detached scroll subtree, stayed reachable
+  from the pane for the pane's whole life. A controller is a handle: no
+  consumer reads data through it, they all re-read the slot.
 - `threadScrollSnapshots.ts` owns semantic per-thread scroll snapshots:
   `{ kind: 'bottom' }` or `{ kind: 'anchor', itemId, offsetTop }`.
 

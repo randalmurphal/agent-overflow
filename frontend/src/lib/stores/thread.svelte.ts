@@ -427,7 +427,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * (`PaneScrollController`) — it never depends on the virtualizer or the DOM
    * controller's full type, so the contract stays cheap to honour.
    */
-  let scrollController: PaneScrollController | null = $state(null);
+  // `raw`, and load-bearing: a plain `$state` PROXIES the controller on
+  // assignment, so the object the pane hands back is never `===` the one that
+  // registered. Every identity check against it silently fails —
+  // `detachScrollController`'s "is this still mine" guard never matched, so the
+  // slot was never cleared and a torn-down controller (and through it the whole
+  // detached timeline subtree) stayed reachable from the pane for as long as the
+  // pane lived. A controller is a handle, not reactive data: nothing reads
+  // through it, and every consumer re-reads the slot itself.
+  let scrollController: PaneScrollController | null = $state.raw(null);
 
   // Monotonic token that cancels superseded structural nudges: bumped by
   // every armStructuralSpring() call so only the latest scheduled nudge
@@ -1880,7 +1888,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     detachScrollController(controller: PaneScrollController): void {
       // Only clear if the registered controller matches — protects
       // against a stale teardown disposing a freshly remounted pane's
-      // controller during fast thread switches.
+      // controller during fast thread switches. Depends on the slot being
+      // `$state.raw`; see its declaration.
       if (scrollController === controller) {
         scrollController = null;
       }

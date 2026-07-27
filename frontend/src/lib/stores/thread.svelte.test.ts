@@ -7478,6 +7478,60 @@ describe('createThreadPane', () => {
   // echo, force-closed tool rows). Each arm also schedules a post-flush
   // 'live-content' observe so growth that never fires a content-geometry
   // delta still gets a bottom re-check.
+  describe('scroll-controller registration', () => {
+    // The slot is single-occupancy and its only guard is object identity, so
+    // it has to survive going through the store unchanged. A plain `$state`
+    // proxies it and every `===` against it fails silently: the detach guard
+    // stops matching, the slot never empties, and a torn-down controller —
+    // holding the detached timeline subtree — stays reachable from the pane.
+    function controller(): PaneScrollController {
+      return {
+        pauseAutoScroll: () => () => {},
+        observe: () => {},
+        markStructuralContentPending: () => {},
+        preserveScrollAnchor: () => Promise.resolve(),
+      };
+    }
+
+    it('hands back the same object that registered', () => {
+      const pane = createThreadPane();
+      const stick = controller();
+
+      pane.attachScrollController(stick);
+
+      expect(pane.scrollController).toBe(stick);
+    });
+
+    it('clears the slot when the surface that registered tears down', () => {
+      const pane = createThreadPane();
+      const stick = controller();
+      pane.attachScrollController(stick);
+
+      pane.detachScrollController(stick);
+
+      expect(pane.scrollController).toBeNull();
+    });
+
+    it('ignores a stale teardown from the surface it already replaced', () => {
+      // MessageTimeline → ChannelView (or a fast thread switch): the outgoing
+      // surface's teardown can land after the incoming one has registered, and
+      // must not disown a live controller. Then the incoming one's own teardown
+      // still empties the slot — a guard that rejected everything would look
+      // identical here and leak on the last unmount.
+      const pane = createThreadPane();
+      const outgoing = controller();
+      const incoming = controller();
+      pane.attachScrollController(outgoing);
+      pane.attachScrollController(incoming);
+
+      pane.detachScrollController(outgoing);
+      expect(pane.scrollController).toBe(incoming);
+
+      pane.detachScrollController(incoming);
+      expect(pane.scrollController).toBeNull();
+    });
+  });
+
   describe('structural-append arm (pane data layer)', () => {
     function attachMockScrollController(pane: ReturnType<typeof createThreadPane>) {
       const markStructuralContentPending = vi.fn();
