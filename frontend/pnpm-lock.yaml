@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   svelte-streamdown@3.1.2:
-    hash: 423b4ebb41ade9e706956a9125fb8f8a9511d3afad889e4ece57bb39343f8e90
+    hash: 6f22763ec4fd11ddd12e184766aba1535993867ea020e96adc63eea32d2647ab
     path: patches/svelte-streamdown@3.1.2.patch
   svelte@5.56.3:
     hash: 38cae7ac4402196921d789155b6f30a62383c81a0adaba53ff8261ca69e60443
@@ -66,7 +66,7 @@ importers:
         version: 5.56.3(patch_hash=38cae7ac4402196921d789155b6f30a62383c81a0adaba53ff8261ca69e60443)
       svelte-streamdown:
         specifier: 3.1.2
-        version: 3.1.2(patch_hash=423b4ebb41ade9e706956a9125fb8f8a9511d3afad889e4ece57bb39343f8e90)(svelte@5.56.3(patch_hash=38cae7ac4402196921d789155b6f30a62383c81a0adaba53ff8261ca69e60443))
+        version: 3.1.2(patch_hash=6f22763ec4fd11ddd12e184766aba1535993867ea020e96adc63eea32d2647ab)(svelte@5.56.3(patch_hash=38cae7ac4402196921d789155b6f30a62383c81a0adaba53ff8261ca69e60443))
     devDependencies:
       '@sveltejs/vite-plugin-svelte':
         specifier: 7.0.0
@@ -2760,7 +2760,7 @@ snapshots:
     transitivePeerDependencies:
       - picomatch
 
-  svelte-streamdown@3.1.2(patch_hash=423b4ebb41ade9e706956a9125fb8f8a9511d3afad889e4ece57bb39343f8e90)(svelte@5.56.3(patch_hash=38cae7ac4402196921d789155b6f30a62383c81a0adaba53ff8261ca69e60443)):
+  svelte-streamdown@3.1.2(patch_hash=6f22763ec4fd11ddd12e184766aba1535993867ea020e96adc63eea32d2647ab)(svelte@5.56.3(patch_hash=38cae7ac4402196921d789155b6f30a62383c81a0adaba53ff8261ca69e60443)):
     dependencies:
       '@floating-ui/dom': 1.7.6
       '@shikijs/langs': 3.23.0

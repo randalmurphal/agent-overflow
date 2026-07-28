@@ -361,35 +361,49 @@ corrupt every project on the machine. Use
       ` `` ` line) so the close moment doesn't grow-then-shrink by a
       line. Streaming volatile-tail only. Upstream-PR candidate.
       Regression: `AssistantMessage.test.ts` (fence-seal battery).
-  12. **incremental list lexing** (`marked/index.js`, `Block.svelte`,
-      `index.js` exports) — the volatile tail re-lexed from scratch on
-      every reveal tick, and the boundary splitter cannot commit inside
-      a list, so a list-shaped answer made each tick O(whole list):
-      ~27ms of lexing per tick at 120KB, visible as the "5fps" drain
-      the spring couldn't hide. Two layers, same unit of reuse (a
-      completed list item — append-only growth can only touch the last
-      one). *Block layer:* `incrementalLex` + a per-`Block` instance
+  12. **incremental list/table lexing** (`marked/index.js`,
+      `Block.svelte`, `index.js` exports) — the volatile tail re-lexed
+      from scratch on every reveal tick, and the boundary splitter
+      cannot commit inside a list or table, so a list-shaped answer
+      made each tick O(whole block): ~27ms of lexing per tick at
+      120KB, visible as the "5fps" drain the spring couldn't hide. Two
+      layers, same unit of reuse (a completed list item / table source
+      row — append-only growth can only touch the last one). *Block
+      layer:* `incrementalLex` + a per-`Block` instance
       `createIncrementalLexCache`; when the block grew append-only and
-      the cached tokens are one list, it re-lexes only from the last
-      cached item's offset and splices the fresh tail onto
-      **reference-identical** sealed item tokens, so Svelte's `===`
-      prop equality skips their subtrees entirely. *parseBlocks layer:*
-      a `trailingList` descent record on the cache lets the append path
-      block-lex from the last item instead of the whole trailing list.
+      the cached tokens are one list (or one `[thead, tbody]` table),
+      it re-lexes only from the last item's offset (tables: replays
+      the header bytes over the volatile rows) and splices the fresh
+      tail onto **reference-identical** sealed tokens, so Svelte's
+      `===` prop equality skips their subtrees entirely. *parseBlocks
+      layer:* a `trailingBlock` descent record (kind `list` | `table`)
+      lets the append path block-lex from inside the trailing block.
       Every guard falls back to a full lex — correctness never depends
       on the fast path (`cache.lastPath` is the test breadcrumb).
-      Looseness is monotonic under append-only growth: a tight→loose
-      flip takes the full-lex fallback; an already-loose list gets its
-      tail items loosened exactly as marked's `finalizeList` would.
-      Accepted divergence: a reference-link/footnote definition
-      arriving in the live tail doesn't resolve usages inside sealed
-      items until the settled full parse (mid-stream only, self-heals).
-      Tables/blockquotes still full-lex — follow-up candidates for the
-      same descent pattern if they ever show up at list-like sizes.
-      Regression: `markdown/incrementalLex.test.ts` (byte-equivalence
-      corpus × chunkings + perf contract) and
-      `chat/streamingListIncremental.browser.test.ts` (DOM identity of
-      sealed `<li>`s through a real timeline drain).
+      List looseness is monotonic under append-only growth: a
+      tight→loose flip takes the full-lex fallback; an already-loose
+      list gets its tail items loosened exactly as marked's
+      `finalizeList` would. Table bails: footer-marker rows, rowspan
+      carets in the volatile slice, AND a caret-shaped cell at the
+      cached document's end (a half-arrived `[^t]` momentarily reads
+      as a rowspan mark, whose mutation of the previous row the next
+      characters revoke — sealed rows are untrustworthy until it
+      resolves). Reference-link/footnote definitions are exact, not
+      divergent: a definition DECLARED in the tail bails to full
+      re-lexes while its line streams (marked's first-wins table, and
+      the footnote extension's mutate-the-ref mechanism, cannot
+      survive a still-growing definition), and sealed definitions
+      carry into tail re-lexes by seeding the merge lexer's links
+      table and footnote maps. Cross-block definitions never resolved
+      mid-stream upstream (per-block lexing) — unchanged. Blockquotes
+      deliberately keep the full-lex fallback: an exact seal would
+      replicate marked's per-line strip + lazy-continuation rules, and
+      agent prose doesn't produce blockquotes at sizes where it
+      matters. Regression: `markdown/incrementalLex.test.ts`
+      (byte-equivalence corpus × chunkings + perf contracts for both
+      shapes and both layers) and
+      `chat/streamingIncrementalReuse.browser.test.ts` (DOM identity
+      of sealed `<li>`s and `<tr>`s through a real timeline drain).
 
 ## References
 
