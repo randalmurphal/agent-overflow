@@ -1,17 +1,39 @@
 diff --git a/dist/Block.svelte b/dist/Block.svelte
-index b0a4b6f489414f4ceb7f11d53ab7e420d713958b..707803ff50eed00ed5d22c1f7648dc969f80e6a8 100644
+index b0a4b6f489414f4ceb7f11d53ab7e420d713958b..458cc96ac8f5184bf789c6618ec23d18b4e7ca41 100644
 --- a/dist/Block.svelte
 +++ b/dist/Block.svelte
-@@ -16,7 +16,12 @@
+@@ -1,7 +1,11 @@
+ <script lang="ts">
+ 	import { parseIncompleteMarkdown } from './utils/parse-incomplete-markdown.js';
+ 	import Element from './Elements/Element.svelte';
+-	import { lex, type StreamdownToken } from './marked/index.js';
++	import {
++		createIncrementalLexCache,
++		incrementalLex,
++		type StreamdownToken
++	} from './marked/index.js';
+ 	import AnimatedText from './AnimatedText.svelte';
+ 	import { useStreamdown } from './context.svelte.js';
+ 	import { getContext } from 'svelte';
+@@ -15,8 +19,21 @@
+ 	} = $props();
  
  	const streamdown = useStreamdown();
++	// Per-instance incremental state: a streaming list block re-lexes only
++	// from its last item per update, and sealed items keep their token
++	// references so their subtrees below never re-evaluate. Non-reactive by
++	// design — incrementalLex is idempotent for a given (block, extensions),
++	// so mutation inside the $derived is safe under re-evaluation.
++	const lexCache = createIncrementalLexCache();
  	const tokens = $derived(
 -		lex(isStatic ? block : parseIncompleteMarkdown(block.trim()), streamdown.extensions)
-+		lex(
++		incrementalLex(
++			block,
++			streamdown.extensions,
++			lexCache,
 +			isStatic || streamdown.parseIncompleteMarkdown === false
-+				? block
-+				: parseIncompleteMarkdown(block.trim()),
-+			streamdown.extensions
++				? null
++				: parseIncompleteMarkdown
 +		)
  	);
  	const insidePopover = getContext('POPOVER');
@@ -387,8 +409,71 @@ index 1131b2c3261d104c151289c31e126dea2167ab30..4325191ac0af03ce76ab8c114fb68c1d
      get animationTextStyle() {
          return getContext('POPOVER')
              ? undefined
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index b18697d491ce2763450d13a230e4597b0a54119d..e6b9ba337385928b68e9599375dbbb507aa341e5 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -1,6 +1,6 @@
+ export { default as Streamdown } from './Streamdown.svelte';
+ export { useStreamdown, type StreamdownProps } from './context.svelte.js';
+ export { theme, shadcnTheme, mergeTheme, type Theme } from './theme.js';
+-export { type Extension, type StreamdownToken, lex, parseBlocks } from './marked/index.js';
++export { type Extension, type StreamdownToken, type ParseBlocksCache, type IncrementalLexCache, lex, parseBlocks, createParseBlocksCache, incrementalLex, createIncrementalLexCache } from './marked/index.js';
+ export { parseIncompleteMarkdown, type Plugin, IncompleteMarkdownParser } from './utils/parse-incomplete-markdown.js';
+ export { bundledLanguagesInfo, createLanguageSet, type LanguageInfo } from './utils/bundledLanguages.js';
+diff --git a/dist/index.js b/dist/index.js
+index 847469a4915a969870d8ec4461f51e5d95d0fccd..0f0bfa539a7312b6c325fa7e02e77840bd53e3a3 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1,6 +1,6 @@
+ export { default as Streamdown } from './Streamdown.svelte';
+ export { useStreamdown } from './context.svelte.js';
+ export { theme, shadcnTheme, mergeTheme } from './theme.js';
+-export { lex, parseBlocks } from './marked/index.js';
++export { lex, parseBlocks, createParseBlocksCache, incrementalLex, createIncrementalLexCache } from './marked/index.js';
+ export { parseIncompleteMarkdown, IncompleteMarkdownParser } from './utils/parse-incomplete-markdown.js';
+ export { bundledLanguagesInfo, createLanguageSet } from './utils/bundledLanguages.js';
+diff --git a/dist/marked/index.d.ts b/dist/marked/index.d.ts
+index fb337f5a9882a2c78b81e454da12e6879c1b5496..c198f3447855b6f00e1aecddf189c4b59a5950c0 100644
+--- a/dist/marked/index.d.ts
++++ b/dist/marked/index.d.ts
+@@ -38,7 +38,34 @@ export type ParseBlocksCache = {
+     raws: string[];
+     /** parallel to raws: whether the token is part of the rendered block list */
+     keep: boolean[];
++    /** descent record when the last rendered block is a list with sealed items */
++    trailingList: {
++        rawIndex: number;
++        blockStart: number;
++        sealedLen: number;
++    } | null;
+ };
+ export declare const createParseBlocksCache: () => ParseBlocksCache;
+ export declare const parseBlocks: (markdown: string, extensions?: Extension[], cache?: ParseBlocksCache) => string[];
++/**
++ * Opaque incremental state for `incrementalLex`. Create one per streamed
++ * block (a Block component instance) and pass it on every call. `lastPath`
++ * is a debug breadcrumb ('none' | 'full' | 'list-append') so tests can
++ * assert the fast path actually engaged.
++ */
++export type IncrementalLexCache = {
++    src: string;
++    extKey: Extension[] | null;
++    tokens: StreamdownToken[] | null;
++    lastPath: 'none' | 'full' | 'list-append';
++};
++export declare const createIncrementalLexCache: () => IncrementalLexCache;
++/**
++ * Drop-in replacement for `lex` on streaming content: identical output, but
++ * an append-only update to a document whose single block is a list re-lexes
++ * only from the last cached item, and sealed items keep their token
++ * references. `complete` (the incomplete-markdown pass) runs inside so the
++ * fast path can scope it to the re-lexed slice; pass null to lex verbatim.
++ */
++export declare const incrementalLex: (block: string, extensions: Extension[] | undefined, cache: IncrementalLexCache, complete?: ((markdown: string) => string) | null) => StreamdownToken[];
+ export type { MathToken, AlertToken, FootnoteToken, SubSupToken, BrToken, HrToken, AlignToken, CitationToken, MdxToken };
 diff --git a/dist/marked/index.js b/dist/marked/index.js
-index 4b1a791048a65589bf9c9d9aa75717e64c5ce84f..aed39e4f939ae41fd501fb10304f97a74b110baf 100644
+index 4b1a791048a65589bf9c9d9aa75717e64c5ce84f..90acae86642e06e9ee15e36f85ea1356662d13e2 100644
 --- a/dist/marked/index.js
 +++ b/dist/marked/index.js
 @@ -1,4 +1,31 @@
@@ -423,6 +508,291 @@ index 4b1a791048a65589bf9c9d9aa75717e64c5ce84f..aed39e4f939ae41fd501fb10304f97a7
  import { markedAlert } from './marked-alert.js';
  import { markedFootnote } from './marked-footnotes.js';
  import { markedMath } from './marked-math.js';
+@@ -106,18 +133,115 @@ export const lex = (markdown, extensions = []) => {
+ export const createParseBlocksCache = () => ({
+     content: '',
+     raws: [],
+-    keep: []
++    keep: [],
++    trailingList: null
+ });
+ // Number of trailing rendered blocks that stay "live" (re-lexed every chunk).
+ // 2 covers constructs that merge backward as they stream in — e.g. a paragraph
+ // line becoming a table once its delimiter row arrives, or a setext heading.
+ const SEAL_SLACK = 2;
+ const blockTokensOf = (markdown, extensions) => new Lexer(getBlockOptions(extensions)).blockTokens(markdown, []);
++const isKeptType = (type) => type !== 'space' && type !== 'footnote';
++// A list token's items: `.tokens` from this package's markedList (the lex
++// layer — getLexOptions registers it), `.items` from marked's built-in list
++// tokenizer (the block layer — getBlockOptions deliberately does not).
++const itemsOf = (list) => {
++    if (Array.isArray(list.tokens) && list.tokens.length > 0)
++        return list.tokens;
++    if (Array.isArray(list.items) && list.items.length > 0)
++        return list.items;
++    return null;
++};
++// Byte length of every item except the last — the sealed region of a
++// trailing list. Append-only growth can only touch the last item (extend
++// it or add items after it): earlier items' bullet lines cannot be unmade
++// by later bytes, so their raws are immutable offsets into the document.
++const sealedLengthOf = (list) => {
++    const items = itemsOf(list);
++    if (!items)
++        return 0;
++    let len = 0;
++    for (let i = 0; i < items.length - 1; i++)
++        len += items[i].raw.length;
++    return len;
++};
++// Maintain the trailing-list descent record after a parse pass. `tokens`
++// covers the document from `tokensOffset` (byte) / `rawIndex` (raws slot)
++// to the end. The record points at the last KEPT block iff it is a list
++// with a sealable prefix; anything else clears it. `sealedBias` folds an
++// already-sealed prefix into token 0's accounting (the descent path lexes
++// only the list's tail, so its token 0 is a suffix of the real block).
++const updateTrailingListRecord = (cache, tokens, tokensOffset, rawIndex, sealedBias = 0) => {
++    for (let i = tokens.length - 1; i >= 0; i--) {
++        const token = tokens[i];
++        if (!isKeptType(token.type))
++            continue;
++        const bias = i === 0 ? sealedBias : 0;
++        if (token.type === 'list' &&
++            itemsOf(token) !== null &&
++            sealedLengthOf(token) + bias > 0) {
++            let blockStart = tokensOffset;
++            for (let j = 0; j < i; j++)
++                blockStart += tokens[j].raw.length;
++            cache.trailingList = {
++                rawIndex: rawIndex + i,
++                blockStart: blockStart - bias,
++                sealedLen: sealedLengthOf(token) + bias
++            };
++        }
++        else {
++            cache.trailingList = null;
++        }
++        return;
++    }
++    cache.trailingList = null;
++};
+ export const parseBlocks = (markdown, extensions = [], cache) => {
+     if (cache &&
+         cache.content.length > 0 &&
+         markdown.length > cache.content.length &&
+         markdown.startsWith(cache.content)) {
++        // Trailing-list descent: when the last rendered block is a list, the
++        // block-level tail re-lex below still costs the WHOLE list on every
++        // chunk (one list = one block token, finalizeList included). The
++        // record lets the append start at the list's last item instead, so a
++        // growing list costs O(new content) here like every other block
++        // shape. Any mismatch falls through to the standard append path.
++        const t = cache.trailingList;
++        if (t && t.rawIndex < cache.raws.length) {
++            let blockStart = 0;
++            for (let i = 0; i < t.rawIndex; i++)
++                blockStart += cache.raws[i].length;
++            const sliceStart = t.blockStart + t.sealedLen;
++            if (blockStart === t.blockStart && sliceStart < markdown.length) {
++                const sliceTokens = blockTokensOf(markdown.slice(sliceStart), extensions);
++                const first = sliceTokens[0];
++                let sliceLength = 0;
++                for (const token of sliceTokens)
++                    sliceLength += token.raw.length;
++                // Same contiguity guard as the standard path, plus: the slice
++                // must still open with a list (the sealed items' continuation).
++                if (first && first.type === 'list' && sliceStart + sliceLength === markdown.length) {
++                    cache.raws.length = t.rawIndex;
++                    cache.keep.length = t.rawIndex;
++                    // Sealed source bytes + the tail token's OWN raw — not one
++                    // source slice across the span: blockTokens normalizes a
++                    // single trailing whitespace char into the token raw as
++                    // "\n", and raws must carry what the lexer produced, byte
++                    // for byte, or they diverge from a fresh parse. Lengths
++                    // are 1:1, so every offset in the record stays valid.
++                    cache.raws.push(markdown.slice(t.blockStart, sliceStart) + first.raw);
++                    cache.keep.push(true);
++                    for (let i = 1; i < sliceTokens.length; i++) {
++                        cache.raws.push(sliceTokens[i].raw);
++                        cache.keep.push(isKeptType(sliceTokens[i].type));
++                    }
++                    cache.content = markdown;
++                    updateTrailingListRecord(cache, sliceTokens, sliceStart, t.rawIndex, t.sealedLen);
++                    return cache.raws.filter((_, i) => cache.keep[i]);
++                }
++            }
++        }
+         // Append-only update: seal everything except the last SEAL_SLACK rendered
+         // blocks and re-lex only the tail. cache.raws concatenates exactly to
+         // cache.content (verified by length below), so summed lengths are offsets.
+@@ -142,9 +266,10 @@ export const parseBlocks = (markdown, extensions = [], cache) => {
+             cache.keep.length = cut;
+             for (const token of tailTokens) {
+                 cache.raws.push(token.raw);
+-                cache.keep.push(token.type !== 'space' && token.type !== 'footnote');
++                cache.keep.push(isKeptType(token.type));
+             }
+             cache.content = markdown;
++            updateTrailingListRecord(cache, tailTokens, offset, cut);
+             return cache.raws.filter((_, i) => cache.keep[i]);
+         }
+     }
+@@ -156,7 +281,7 @@ export const parseBlocks = (markdown, extensions = [], cache) => {
+         cache.keep = [];
+         let total = 0;
+         for (const token of tokens) {
+-            const keep = token.type !== 'space' && token.type !== 'footnote';
++            const keep = isKeptType(token.type);
+             cache.raws.push(token.raw);
+             cache.keep.push(keep);
+             total += token.raw.length;
+@@ -165,11 +290,145 @@ export const parseBlocks = (markdown, extensions = [], cache) => {
+         }
+         // Only trust the cache for future appends if raws reconstruct the input.
+         cache.content = total === markdown.length ? markdown : '';
++        if (cache.content.length > 0) {
++            updateTrailingListRecord(cache, tokens, 0, 0);
++        }
++        else {
++            cache.trailingList = null;
++        }
+         return blocks;
+     }
+     for (const token of tokens) {
+-        if (token.type !== 'space' && token.type !== 'footnote')
++        if (isKeptType(token.type))
+             blocks.push(token.raw);
+     }
+     return blocks;
+ };
++// --- Incremental block lexing ----------------------------------------------
++// A streaming block whose shape is a list defeats the block-level
++// incrementality above at the LEX layer too: the whole list is one marked
++// block, so every appended word re-lexed every item (finalizeList
++// block-tokenizes each one, then the inline pass walks them all) and minted
++// fresh token objects throughout — which also forced the Svelte side to
++// re-evaluate every item's subtree, because nothing kept its reference.
++// Measured: ~27ms per re-lex at a 120KB list, linear in list size, on the
++// hottest path the app has (a reveal tick).
++//
++// The unit of reuse is the completed list item. Append-only growth can only
++// touch the LAST item — extend it, or add items after it — so the merge
++// re-lexes from the last cached item's offset and splices the fresh tail
++// items onto the cached, reference-identical sealed items. A consumer
++// diffing by reference (Svelte's prop equality) then skips every sealed
++// item's subtree.
++//
++// Looseness is the one list-global property: a blank line arriving anywhere
++// flips every item to paragraph-wrapped rendering. It is monotonic under
++// append-only growth (a blank line cannot be unwritten), so the merge only
++// detects the tight→loose flip and falls back to one full re-lex; a tail
++// lexed standalone under an already-loose list comes back tight and its
++// items are re-tokenized loose (loosenTailItems), mirroring finalizeList.
++//
++// Accepted divergence: a reference-link definition arriving in the live
++// tail no longer resolves a usage inside a sealed item mid-stream (the
++// settled full parse renders it correctly. The committed/volatile split in
++// consumers already has the same property across blocks.)
++//
++// Incomplete-markdown completion composes cleanly: every completer edit is
++// a suffix operation (seal an open fence at the end, drop a dangling
++// trailing line), so applying `complete` to the re-lexed slice only is not
++// an approximation — sealed items are byte-identical between the completed
++// and raw documents.
++//
++// `cache.lastPath` is a debug breadcrumb for tests ('full' | 'list-append')
++// so descent coverage cannot regress to silent full re-lexes.
++export const createIncrementalLexCache = () => ({
++    src: '',
++    extKey: null,
++    tokens: null,
++    lastPath: 'none'
++});
++// Mirror of finalizeList's loose branch for standalone-lexed tail items:
++// paragraph-wrapped block tokens per item, then the inline pass the outer
++// lex() would have run over its queue.
++const loosenTailItems = (items, extensions) => {
++    const lexer = new Lexer(getLexOptions(extensions));
++    for (const item of items) {
++        item.loose = true;
++        lexer.state.top = true;
++        item.tokens = lexer.blockTokens(item.text, []);
++    }
++    for (let i = 0; i < lexer.inlineQueue.length; i++) {
++        const next = lexer.inlineQueue[i];
++        lexer.inlineTokens(next.src, next.tokens);
++    }
++};
++const mergeTrailingList = (cachedList, base, extensions, complete) => {
++    const sealedLen = sealedLengthOf(cachedList);
++    if (sealedLen <= 0 || sealedLen >= base.length)
++        return null;
++    const tailSrc = base.slice(sealedLen);
++    const tailTokens = lex(complete ? complete(tailSrc) : tailSrc, extensions);
++    if (tailTokens.length !== 1)
++        return null;
++    const tail = tailTokens[0];
++    if (tail.type !== 'list' ||
++        tail.ordered !== cachedList.ordered ||
++        tail.listType !== cachedList.listType ||
++        tail.tokens.length === 0)
++        return null;
++    // Tight → loose flip: a list-global rendering change; one full re-lex.
++    if (tail.loose && !cachedList.loose)
++        return null;
++    if (cachedList.loose && !tail.loose)
++        loosenTailItems(tail.tokens, extensions);
++    const sealed = cachedList.tokens.slice(0, -1);
++    const merged = {
++        ...cachedList,
++        raw: base.slice(0, sealedLen) + tail.raw,
++        loose: cachedList.loose,
++        tokens: sealed.concat(tail.tokens)
++    };
++    if (merged.ordered) {
++        // markedList's expectedValue chain compares item k (k >= 1) against
++        // start + k - 1. The standalone tail lex numbered its items from its
++        // own first item; restamp the spliced ones against the merged chain.
++        const start = merged.start ?? 1;
++        for (let k = sealed.length; k < merged.tokens.length; k++) {
++            const item = merged.tokens[k];
++            item.skipped = k > 0 && item.value !== null && item.value !== start + k - 1;
++        }
++    }
++    return merged;
++};
++// Drop-in replacement for `lex` on streaming content: same output, but an
++// append-only update to a document whose single block is a list re-lexes
++// only from the last cached item. Everything else — first call, non-append
++// update, non-list shapes, any merge surprise — is a full `lex`, so
++// correctness never depends on the fast path. `complete` (the
++// incomplete-markdown pass) runs inside so the fast path can scope it to
++// the re-lexed slice; pass null to lex the input verbatim.
++export const incrementalLex = (block, extensions = [], cache, complete = null) => {
++    const base = complete ? block.trim() : block;
++    const extKey = extensions.length > 0 ? extensions : null;
++    if (cache.tokens && cache.extKey === extKey) {
++        if (base === cache.src)
++            return cache.tokens;
++        if (cache.tokens.length === 1 &&
++            cache.tokens[0].type === 'list' &&
++            base.length > cache.src.length &&
++            base.startsWith(cache.src)) {
++            const merged = mergeTrailingList(cache.tokens[0], base, extensions, complete);
++            if (merged) {
++                cache.src = base;
++                cache.tokens = [merged];
++                cache.lastPath = 'list-append';
++                return cache.tokens;
++            }
++        }
++    }
++    cache.src = base;
++    cache.extKey = extKey;
++    cache.tokens = lex(complete ? complete(base) : base, extensions);
++    cache.lastPath = 'full';
++    return cache.tokens;
++};
 diff --git a/dist/marked/marked-math.js b/dist/marked/marked-math.js
 index 6410baf2e2d586647b47639ab72f9e041cd4a158..92c49d4965aa9273fd2685e2813ba786669fb33e 100644
 --- a/dist/marked/marked-math.js
