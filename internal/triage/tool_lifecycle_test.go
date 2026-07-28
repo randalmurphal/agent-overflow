@@ -496,6 +496,102 @@ func TestToolCompleteOnBackgroundedPromotesMissingFlag(t *testing.T) {
 	}
 }
 
+// TestToolCompleteWatchTaskKeepsRunningButNotQueueBlocking pins the
+// Monitor watch-task flow end to end at the triage/store seam: the
+// completion's `watch_task` marker must land on the launch row's meta
+// (the keep-running flip does a selective one-key merge), the row still
+// counts as live background work (reaper / revert / context-repair
+// consumers), but the flush-queue predicate ignores it — a persistent
+// watch must not starve a queued user send until session end.
+func TestToolCompleteWatchTaskKeepsRunningButNotQueueBlocking(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Monitor",
+		"input":    map[string]any{"command": "bash chain.sh | grep PHASE", "persistent": true},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "watch-tool",
+		ItemType: "Monitor", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	completeMeta, _ := json.Marshal(map[string]any{"is_background": true, "watch_task": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "watch-tool",
+		Meta: completeMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	launches := findItemsByKind(t, st, "t1", itemKindToolCall)
+	if len(launches) != 1 {
+		t.Fatalf("expected 1 launch row, got %d", len(launches))
+	}
+	if !launches[0].IsBackground || launches[0].Status != statusRunning {
+		t.Fatalf("watch launch must stay running background; got background=%v status=%q", launches[0].IsBackground, launches[0].Status)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(launches[0].Meta), &meta); err != nil {
+		t.Fatalf("unmarshal launch meta: %v", err)
+	}
+	if meta["watch_task"] != true {
+		t.Fatalf("watch_task must be merged onto the launch row meta; meta=%v", meta)
+	}
+
+	live, err := st.HasLiveBackgroundToolCall("t1")
+	if err != nil {
+		t.Fatalf("HasLiveBackgroundToolCall: %v", err)
+	}
+	if !live {
+		t.Fatal("a running watch IS live background work (reaper/revert/repair view)")
+	}
+	blocking, err := st.HasQueueBlockingBackgroundToolCall("t1")
+	if err != nil {
+		t.Fatalf("HasQueueBlockingBackgroundToolCall: %v", err)
+	}
+	if blocking {
+		t.Fatal("a watch task must not block the flush-queue drain")
+	}
+}
+
+// TestToolCompleteBackgroundStaysQueueBlocking is the negative guard
+// for the watch-task carve-out: an ordinary backgrounded launch (no
+// watch_task marker) must block the flush-queue drain exactly as
+// before.
+func TestToolCompleteBackgroundStaysQueueBlocking(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Bash",
+		"input":    map[string]any{"command": "make check", "run_in_background": true},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-tool",
+		ItemType: "Bash", Meta: startMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	completeMeta, _ := json.Marshal(map[string]any{"is_background": true})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "bg-tool",
+		Meta: completeMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	blocking, err := st.HasQueueBlockingBackgroundToolCall("t1")
+	if err != nil {
+		t.Fatalf("HasQueueBlockingBackgroundToolCall: %v", err)
+	}
+	if !blocking {
+		t.Fatal("an ordinary backgrounded launch must still block the flush-queue drain")
+	}
+}
+
 // TestToolCompleteWithNoLaunchIsNoop guards against orphan completions
 // (e.g. a partial replay that lost the start). We tolerate missing
 // launches silently — failing here would mean a bad provider stream

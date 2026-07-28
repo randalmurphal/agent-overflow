@@ -1522,6 +1522,10 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	// StopSession during a round).
 	delete(r.currentRoundByThread, threadID)
 	delete(r.latestTodoByThread, threadID)
+	// The harness wakeup timer is in-process CLI state — it dies with the
+	// session, so its record must not outlive it and shield a future
+	// session from the idle reaper.
+	delete(r.pendingWakeupByThread, threadID)
 	_, hadEffectiveModel := r.effectiveModelByThread[threadID]
 	delete(r.effectiveModelByThread, threadID)
 	var effectiveModelRevision uint64
@@ -1628,6 +1632,13 @@ func (r *Router) MarkThreadActive(threadID string) {
 		effectiveModelRevision = r.nextEffectiveModelRevisionLocked(threadID)
 	}
 	r.threadEpochs[threadID]++
+	// A pending harness wakeup is in-process state of the PREVIOUS CLI
+	// process; the replacement session this call commits to never
+	// inherits the timer (the repair-restart path skips CleanupThread,
+	// so this is the sweep that covers it). Without it a stale future
+	// fire time would shield the fresh session from the idle reaper for
+	// up to the wakeup clamp (60 min).
+	delete(r.pendingWakeupByThread, threadID)
 	// Interrupt marks are session-scoped: an in-flight echo cannot
 	// survive the session whose read loop carries it, and a replacement
 	// session after revert REUSES turn indexes — a lingering mark would

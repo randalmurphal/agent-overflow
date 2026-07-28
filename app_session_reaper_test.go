@@ -759,3 +759,73 @@ func TestReapIdleSessionsReapsAfterApprovalResolves(t *testing.T) {
 		t.Fatal("session with resolved approval was not reaped")
 	}
 }
+
+// TestReapIdleSessionsSkipsPendingWakeup confirms a wall-clock-idle
+// session is protected while the Claude harness holds a pending
+// ScheduleWakeup timer (the timer is in-process state a close would
+// silently kill), and becomes reapable again once the fire time plus
+// grace has elapsed — a fired wakeup protects the session through
+// normal turn activity instead.
+func TestReapIdleSessionsSkipsPendingWakeup(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	thread := testThread("thread-pending-wakeup")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	now := time.Now()
+	past := now.Add(-idleReapThreshold - time.Minute)
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Claude),
+		token:    "tok",
+		liveness: newSessionLiveness(past),
+	}
+
+	scheduleWakeup := func(fireAt time.Time) {
+		meta, err := json.Marshal(provider.SessionWakeupMeta{ScheduledForUnixMs: fireAt.UnixMilli()})
+		if err != nil {
+			t.Fatalf("marshal wakeup meta: %v", err)
+		}
+		if err := app.triage.Handle(provider.ProviderEvent{
+			Kind:      provider.EventSessionWakeup,
+			ThreadID:  thread.ID,
+			Meta:      meta,
+			Timestamp: now,
+		}); err != nil {
+			t.Fatalf("handle wakeup: %v", err)
+		}
+	}
+
+	// Future fire time: protected.
+	scheduleWakeup(now.Add(20 * time.Minute))
+	app.reapIdleSessions(now)
+	app.mu.Lock()
+	_, present := app.sessions[thread.ID]
+	app.mu.Unlock()
+	if !present {
+		t.Fatal("session with a pending future wakeup was incorrectly reaped")
+	}
+
+	// Fire time inside the grace window: still protected.
+	scheduleWakeup(now.Add(-wakeupReapGrace / 2))
+	app.reapIdleSessions(now)
+	app.mu.Lock()
+	_, present = app.sessions[thread.ID]
+	app.mu.Unlock()
+	if !present {
+		t.Fatal("session inside the wakeup grace window was incorrectly reaped")
+	}
+
+	// Fire time past the grace window: the wakeup either fired (and its
+	// turn activity would have protected the session) or died with a
+	// stuck harness — reapable again.
+	scheduleWakeup(now.Add(-wakeupReapGrace - time.Minute))
+	app.reapIdleSessions(now)
+	app.mu.Lock()
+	_, present = app.sessions[thread.ID]
+	app.mu.Unlock()
+	if present {
+		t.Fatal("session with an elapsed wakeup must be reapable")
+	}
+}

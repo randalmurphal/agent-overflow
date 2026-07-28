@@ -348,7 +348,10 @@ func (r *Router) hasQueueBlockingWork(threadID string) (bool, error) {
 	if active {
 		return true, nil
 	}
-	active, err = r.store.HasLiveBackgroundToolCall(threadID)
+	// The watch-task-excluding variant: a running Monitor observes
+	// rather than works, and a persistent one runs until session end —
+	// it must not starve a queued user send (claude-wire.md §E7).
+	active, err = r.store.HasQueueBlockingBackgroundToolCall(threadID)
 	if err != nil {
 		return false, err
 	}

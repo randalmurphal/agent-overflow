@@ -339,10 +339,20 @@ type Router struct {
 	// queuedFlushItems is the per-thread "queued user message awaiting
 	// provider boundary" state. Populated when the user types into the
 	// composer mid-turn and submits; drained when no top-level
-	// foreground tool or live background task remains. Lifecycle: spans
+	// foreground tool or queue-blocking background task remains (watch
+	// tasks — Monitor, meta.watch_task — never block the drain; see
+	// HasQueueBlockingBackgroundToolCall). Lifecycle: spans
 	// turn boundaries by design, so NOT swept by clearOpenTurn — only
 	// by CleanupThread on session teardown. See flush_queue.go.
 	queuedFlushItems map[string][]QueuedFlushItem
+	// pendingWakeupByThread is the fire time (epoch ms) of the Claude
+	// harness's pending ScheduleWakeup timer per thread. The timer is
+	// in-process CLI state with no task lifecycle, so this map is the
+	// only record that an idle-looking session will resume itself; the
+	// idle-session reaper reads it via PendingWakeupAt. Session-scoped:
+	// swept by cleanupThread AND MarkThreadActive (a replacement process
+	// never inherits the timer). See session_wakeup.go.
+	pendingWakeupByThread map[string]int64
 	// claimedFlushItems counts batch items mid-handoff between the
 	// queue delete in tryFlushQueue and the dispatcher's synchronous
 	// in-flight record. Folded into QueuedFlushItemCount so the
@@ -537,6 +547,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		interruptMarks:             make(map[string][]interruptMark),
 		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
 		queuedFlushItems:           make(map[string][]QueuedFlushItem),
+		pendingWakeupByThread:      make(map[string]int64),
 		claimedFlushItems:          make(map[string]int),
 		workspacePathByThread:      make(map[string]string),
 		streamingPathRefsLast:      make(map[string]string),
@@ -689,6 +700,8 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		return nil
 	case provider.EventBackgroundTaskNotification:
 		return r.handleBackgroundTaskNotification(evt)
+	case provider.EventSessionWakeup:
+		return r.handleSessionWakeup(evt)
 	case provider.EventSubagentNotification:
 		return r.handleSubagentNotification(evt)
 	case provider.EventSubagentStatus:

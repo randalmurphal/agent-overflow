@@ -67,6 +67,46 @@ func (s *Store) HasLiveBackgroundToolCall(threadID string) (bool, error) {
 	return exists != 0, nil
 }
 
+// HasQueueBlockingBackgroundToolCall is HasLiveBackgroundToolCall minus
+// watch tasks (`meta.watch_task`, Claude's Monitor — claude-wire.md
+// §E7). A watch observes; it never produces the result a queued user
+// send could be waiting on, and a persistent watch runs until session
+// end — counting it would starve the flush queue for hours. Only the
+// flush-queue drain uses this variant: the reaper, revert gate, and
+// context-repair gate all keep the full HasLiveBackgroundToolCall /
+// ListRunningBackgroundToolCalls view because closing or restarting the
+// session WOULD kill a running watch.
+func (s *Store) HasQueueBlockingBackgroundToolCall(threadID string) (bool, error) {
+	var exists int
+	if err := s.db.QueryRow(
+		`SELECT EXISTS(
+		    SELECT 1 FROM items
+		     WHERE thread_id = ?
+		       AND kind = 'tool_call'
+		       AND status = 'running'
+		       AND is_background = 1
+		       AND parent_id = ''
+		       AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+		       AND COALESCE(json_extract(meta, '$.watch_task'), 0) = 0
+		       AND NOT EXISTS (
+		         SELECT 1 FROM pending_background_task_terminals p
+		          WHERE p.thread_id = items.thread_id
+		            AND p.tool_use_id = items.id
+		       )
+		       AND NOT EXISTS (
+		         SELECT 1 FROM items c
+		          WHERE c.thread_id = items.thread_id
+		            AND c.completion_of = items.id
+		       )
+		     LIMIT 1
+		)`,
+		threadID,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: has queue-blocking background tool call for thread %s: %w", threadID, err)
+	}
+	return exists != 0, nil
+}
+
 func (s *Store) CountLiveRunningBackgroundToolCalls(threadID string) (int, error) {
 	var count int
 	if err := s.db.QueryRow(

@@ -1,0 +1,34 @@
+{
+  "what": "Sanitized shape summary for the harness Monitor launch ack (claude-wire.md §E7) and ScheduleWakeup ack (§E8). Documentation summary, not a replayed wire log — shapes verified from the CLI's own session transcript of a live AO-managed stream-json session; the transcript's toolUseResult mirrors the wire's top-level tool_use_result (same relationship every E1-E6 shape uses). Go regression guards: TestAppendToolResultBlock_MonitorLaunchSetsBackgroundFlag, TestAppendToolResultBlock_TaskListAckNotBackground, TestAppendToolResultBlock_ScheduleWakeupEmitsSessionWakeup, TestAppendToolResultBlock_StringToolUseResultNoNewSignals (parse_user_test.go).",
+  "source": {
+    "captured": "2026-07-28",
+    "ao_thread": "b44a738d-3459-4a58-81e4-6a6c71bc86da",
+    "claude_session": "d946175f-131b-43a1-aed9-6542ff427aa4",
+    "cli_context": "Claude Code harness tools (Monitor / ScheduleWakeup / TaskCreate / TaskUpdate / TaskStop / TaskOutput) used by a headless stream-json session under AO"
+  },
+  "monitor_launch": {
+    "tool_use_input_keys": ["command", "description", "persistent", "timeout_ms"],
+    "ack_content_text": "Monitor started (task bpzc8uiti, persistent — runs until TaskStop or session end). You will be notified on each event. Keep working — do not poll or sleep. ...",
+    "tool_use_result_persistent": { "taskId": "bpzc8uiti", "timeoutMs": 0, "persistent": true },
+    "tool_use_result_non_persistent": { "persistent": false, "taskId": "bmh73qh8o", "timeoutMs": 600000 },
+    "tool_use_result_input_error": "InputValidationError: [ { \"code\": \"unrecognized_keys\", ... } ] (STRING, not an object)",
+    "task_started_task_type": "local_bash",
+    "notes": "No run_in_background in input, no backgroundTaskId in the ack. taskId is the id the task lifecycle (task_started / task_notification / task_updated) routes by. Terminal via task_updated (TaskStop → status killed), same channel as E2."
+  },
+  "task_list_ack_collision_guard": {
+    "task_update_ack": { "statusChange": "pending -> in_progress", "success": true, "taskId": "3", "updatedFields": ["status"] },
+    "task_create_ack_keys": ["success", "taskId", "updatedFields"],
+    "task_stop_ack_keys": ["message", "command"],
+    "notes": "TaskCreate/TaskUpdate acks carry a top-level taskId for a task-LIST row, not a process — bare taskId must never classify as a background launch. persistent/timeoutMs presence is the Monitor discriminator; surveyed against every toolUseResult key-shape in the capture session (17 distinct shapes)."
+  },
+  "schedule_wakeup": {
+    "tool_use_input": { "delaySeconds": 1500, "prompt": "Continue the go-port preparation loop: ..." },
+    "ack_content_text": "Next wakeup scheduled for 14:31:00 (in 1559s). Nothing more to do this turn — the harness re-invokes you when the wakeup fires or a task-notification arrives.",
+    "tool_use_result": { "clampedDelaySeconds": 1500, "scheduledFor": 1784917860000, "wasClamped": false },
+    "stop_input": { "stop": true },
+    "stop_ack_content_text": "Loop stopped — no further wakeups scheduled. ...",
+    "stop_tool_use_result": { "scheduledFor": 0, "clampedDelaySeconds": 0, "wasClamped": false, "stopped": true },
+    "observed_delay_seconds_range": [240, 1800],
+    "notes": "scheduledFor is epoch MILLISECONDS. No task lifecycle exists behind the timer — the ack is the only wire signal that the session will resume itself. The fired wakeup arrives as a CLI-injected user turn (session-file queue-operation enqueue → queued_command attachment)."
+  }
+}

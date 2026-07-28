@@ -153,15 +153,24 @@ Summary of what `ParseLine` dispatches:
 - `assistant` — text deltas, tool_use, thinking, exit_plan_mode,
   usage. Subagent messages identified by top-level
   `parent_tool_use_id`.
-- `user` — `tool_result` blocks. Four variants: standard inline,
+- `user` — `tool_result` blocks. Six variants: standard inline,
   backgrounded placeholder, TaskOutput, async `local_agent` launch ack
   (claude-wire.md §E5 — bare "Async agent launched successfully.",
   `isAsync`/`status:"async_launched"`, no `run_in_background` at
   launch and no `backgroundTaskId` on the wire; discriminated from an
   ordinary inline agent completion, which also carries `agentId` but
-  never `isAsync`/`async_launched`). All emit `EventToolComplete`
-  for their own `tool_use_id` (universal tool-lifecycle invariant);
-  TaskOutput ADDITIONALLY emits `EventBackgroundTaskTerminal`.
+  never `isAsync`/`async_launched`), Monitor watch-task launch ack
+  (§E7 — `tool_use_result.{taskId, timeoutMs, persistent}`, a
+  background `local_bash` launch; `taskId` ALONE is not the
+  discriminator — TaskCreate/TaskUpdate task-list acks carry one
+  too), and ScheduleWakeup ack (§E8 —
+  `{clampedDelaySeconds, scheduledFor, wasClamped[, stopped]}`).
+  All emit `EventToolComplete` for their own `tool_use_id` (universal
+  tool-lifecycle invariant); TaskOutput ADDITIONALLY emits
+  `EventBackgroundTaskTerminal`, and the ScheduleWakeup ack
+  ADDITIONALLY emits `EventSessionWakeup` (the pending in-process
+  wakeup timer has NO task lifecycle — this event is the only signal
+  keeping the idle reaper off a session that will resume itself).
 - `stream_event` — streaming deltas (requires
   `include_partial_messages: true`).
 - `result` — **turn-complete signal**. Emits `EventTurnComplete`.
@@ -318,6 +327,16 @@ start and complete. These are load-bearing rules enforced by
   — one turn launching a Task agent. Proves flat `result.usage` is
   PARENT-ONLY while `modelUsage` includes sidechain tokens + per-model
   `costUSD` (`TestParseResult_ModelUsagePreferredOverFlatUsage`).
+- `docs/references/fixtures/claude/monitor_wakeup_20260728.summary.json`
+  — sanitized shape summary for the Monitor watch-task launch ack
+  (§E7: `{taskId, timeoutMs, persistent}` — background `local_bash`
+  launch, both persistent variants, the string-valued error ack, and
+  the TaskCreate/TaskUpdate `taskId` collision guard) and the
+  ScheduleWakeup ack pair (§E8: `scheduledFor` epoch-ms schedule +
+  `stopped:true` stop). Documentation summary from a live AO session
+  transcript; Go regression guards are the four
+  `TestAppendToolResultBlock_{MonitorLaunch…,TaskListAck…,
+  ScheduleWakeup…,StringToolUseResult…}` tests in `parse_user_test.go`.
 
 Use these in tests via file path. When fresh captures prove wire drift,
 refresh the checked-in fixtures from a new `AGENT_OVERFLOW_DEBUG=provider`

@@ -9,6 +9,7 @@ package claude
 
 import (
 	"encoding/json"
+	"log"
 	"strings"
 	"time"
 
@@ -150,7 +151,7 @@ func (p *Parser) appendToolResultBlock(
 	// decision keyed off `is_background` in meta, not a parser-level
 	// drop of the event.
 	//
-	// Three INDEPENDENT signals mark a tool_result as a backgrounded
+	// Four INDEPENDENT signals mark a tool_result as a backgrounded
 	// placeholder (the real terminal arrives later via the task
 	// lifecycle), and any one is sufficient:
 	//
@@ -169,6 +170,12 @@ func (p *Parser) appendToolResultBlock(
 	//      `backgroundTaskId` at all — its own `agentId` IS the task_id
 	//      the later `task_updated`/`task_notification` pair uses. See
 	//      claude-wire.md §E5 "Async local_agent launch (bare ack)".
+	//   4. monitorLaunched — the Monitor watch-task launch ack
+	//      (`{taskId, timeoutMs, persistent}`, §E7). Like (3) it carries
+	//      no `run_in_background` and no `backgroundTaskId`; its `taskId`
+	//      is the `local_bash` task the later `task_updated` terminal
+	//      routes by. Missing this signal is how a live Monitor-watched
+	//      session read as reap-idle (2026-07-28, thread b44a738d).
 	//
 	// ⚠ An INLINE (awaited) agent's real completion also carries
 	// `agentId` + `status:"completed"` in its `tool_use_result`, so
@@ -176,21 +183,22 @@ func (p *Parser) appendToolResultBlock(
 	// — never on mere `agentId` presence — or every inline agent
 	// completion would misclassify as backgrounded.
 	//
-	// Signals (2) and (3) are decoded from `tool_use_result` in a
+	// Signals (2)–(4) are decoded from `tool_use_result` in a
 	// single pass — the sibling can be megabytes of Bash stdout, so
 	// per-signal re-decodes are not acceptable on this path.
 	flaggedAtLaunch := p.isBackground(toolUseID)
 	backgroundSignals := readToolResultBackgroundSignals(toolUseResultRaw)
 	markedOnWire := toolResultBackgrounded(backgroundSignals)
 	asyncAgentID, asyncLaunched := toolResultAsyncLaunch(backgroundSignals)
-	isBackground := flaggedAtLaunch || markedOnWire || asyncLaunched
+	monitorTaskID, monitorLaunched := toolResultMonitorLaunch(backgroundSignals)
+	isBackground := flaggedAtLaunch || markedOnWire || asyncLaunched || monitorLaunched
 	events = appendToolResultCompletion(
 		events, threadID, toolUseID, now, line,
-		isBackground,
+		isBackground, monitorLaunched,
 		block, content, toolUseResultRaw,
 	)
-	// The async ack IS the task lifecycle's task_id ↔ tool_use_id
-	// correlation (normally learned ~4ms earlier from
+	// The async / Monitor ack IS the task lifecycle's task_id ↔
+	// tool_use_id correlation (normally learned ~4ms earlier from
 	// `system/task_started`). Recording it here too means a parser that
 	// reconnected and missed task_started can still resolve the later
 	// `task_updated`/`task_notification` terminal back to this launch.
@@ -198,6 +206,27 @@ func (p *Parser) appendToolResultBlock(
 	// mapping from task_started is a harmless no-op.
 	if asyncLaunched && asyncAgentID != "" {
 		p.rememberTaskToolUse(asyncAgentID, toolUseID)
+	}
+	if monitorLaunched {
+		p.rememberTaskToolUse(monitorTaskID, toolUseID)
+	}
+	// ScheduleWakeup ack: no task lifecycle exists behind the pending
+	// wakeup timer, so surface it as its own session-level event —
+	// triage records the fire time and the idle reaper keeps the
+	// session (and with it the in-process timer) alive until it fires.
+	if scheduledForUnixMs, ok := toolResultScheduledWakeup(backgroundSignals); ok {
+		meta, err := json.Marshal(provider.SessionWakeupMeta{ScheduledForUnixMs: scheduledForUnixMs})
+		if err != nil {
+			log.Printf("claude: marshal session wakeup meta for %s: %v", toolUseID, err)
+		} else {
+			events = append(events, provider.ProviderEvent{
+				Kind:      provider.EventSessionWakeup,
+				ThreadID:  threadID,
+				ItemID:    toolUseID,
+				Meta:      meta,
+				Timestamp: now,
+			})
+		}
 	}
 	// The tool_use_id → is_background correlation is a one-shot: once the
 	// placeholder tool_result echoes, the launch-time flag has served its
@@ -310,6 +339,7 @@ func appendToolResultCompletion(
 	now time.Time,
 	line []byte,
 	isBackground bool,
+	watchTask bool,
 	block map[string]json.RawMessage,
 	content string,
 	toolUseResult json.RawMessage,
@@ -334,6 +364,14 @@ func appendToolResultCompletion(
 	}
 	if isBackground {
 		metaFields["is_background"] = true
+	}
+	if watchTask {
+		// A Monitor watch observes; it never produces the result a queued
+		// user send might be waiting on. Triage copies this marker onto
+		// the launch row so the flush-queue drain ignores watch tasks
+		// while every other background consumer (reaper, revert, context
+		// repair) still counts them as live work.
+		metaFields["watch_task"] = true
 	}
 	if code, ok := extractExitCode(block["content"], toolUseResult); ok {
 		metaFields["exit_code"] = code
@@ -495,8 +533,9 @@ func extractToolResultText(content json.RawMessage) string {
 
 // toolResultBackgroundSignals is the single-pass decode of the
 // `tool_use_result` fields that classify a tool_result as a backgrounded
-// placeholder (claude-wire.md §E2) or an async local_agent launch ack
-// (§E5). It exists so appendToolResultBlock decodes the raw sibling
+// placeholder (claude-wire.md §E2), an async local_agent launch ack
+// (§E5), a Monitor watch-task launch ack (§E7), or a ScheduleWakeup ack
+// (§E8). It exists so appendToolResultBlock decodes the raw sibling
 // exactly ONCE per tool_result: `tool_use_result` can be megabytes for
 // Bash stdout / Read payloads, and each `map[string]json.RawMessage`
 // decode copies value bytes per key — the per-signal readXAtAnyKey
@@ -505,17 +544,28 @@ func extractToolResultText(content json.RawMessage) string {
 // The *Set fields track presence so the defensive array-of-objects
 // fallback keeps the readXAtAnyKey family's first-successful-hit
 // semantics: a later entry must not overwrite a value an earlier entry
-// already decoded.
+// already decoded. For `persistent` and `timeoutMs` presence IS the
+// signal (the Monitor ack carries them for both persistent:true and
+// persistent:false launches), so only the Set flag matters.
 type toolResultBackgroundSignals struct {
 	backgroundTaskID string
 	isAsync          bool
 	status           string
 	agentID          string
+	taskID           string
+	scheduledForMs   int64
+	stopped          bool
 
 	backgroundTaskIDSet bool
 	isAsyncSet          bool
 	statusSet           bool
 	agentIDSet          bool
+	taskIDSet           bool
+	persistentSet       bool
+	timeoutMsSet        bool
+	scheduledForSet     bool
+	clampedDelaySet     bool
+	stoppedSet          bool
 }
 
 // readToolResultBackgroundSignals decodes the background-classification
@@ -547,15 +597,13 @@ func (s *toolResultBackgroundSignals) fill(obj map[string]json.RawMessage) {
 	fillSignalString(obj, "backgroundTaskId", &s.backgroundTaskID, &s.backgroundTaskIDSet)
 	fillSignalString(obj, "status", &s.status, &s.statusSet)
 	fillSignalString(obj, "agentId", &s.agentID, &s.agentIDSet)
-	if !s.isAsyncSet {
-		if raw, ok := obj["isAsync"]; ok {
-			var v bool
-			if json.Unmarshal(raw, &v) == nil {
-				s.isAsync = v
-				s.isAsyncSet = true
-			}
-		}
-	}
+	fillSignalString(obj, "taskId", &s.taskID, &s.taskIDSet)
+	fillSignalBool(obj, "isAsync", &s.isAsync, &s.isAsyncSet)
+	fillSignalBool(obj, "stopped", &s.stopped, &s.stoppedSet)
+	fillSignalInt64(obj, "scheduledFor", &s.scheduledForMs, &s.scheduledForSet)
+	fillSignalKeyPresence(obj, "persistent", &s.persistentSet)
+	fillSignalKeyPresence(obj, "timeoutMs", &s.timeoutMsSet)
+	fillSignalKeyPresence(obj, "clampedDelaySeconds", &s.clampedDelaySet)
 }
 
 // fillSignalString copies obj[key] into dst on the first successful
@@ -572,6 +620,53 @@ func fillSignalString(obj map[string]json.RawMessage, key string, dst *string, s
 	var v string
 	if json.Unmarshal(raw, &v) == nil {
 		*dst = v
+		*set = true
+	}
+}
+
+// fillSignalBool is fillSignalString for bool-valued signals.
+func fillSignalBool(obj map[string]json.RawMessage, key string, dst *bool, set *bool) {
+	if *set {
+		return
+	}
+	raw, ok := obj[key]
+	if !ok {
+		return
+	}
+	var v bool
+	if json.Unmarshal(raw, &v) == nil {
+		*dst = v
+		*set = true
+	}
+}
+
+// fillSignalInt64 is fillSignalString for integer-valued signals. JSON
+// numbers decode through float64-compatible syntax, so it accepts any
+// numeric token and truncates toward zero.
+func fillSignalInt64(obj map[string]json.RawMessage, key string, dst *int64, set *bool) {
+	if *set {
+		return
+	}
+	raw, ok := obj[key]
+	if !ok {
+		return
+	}
+	var v float64
+	if json.Unmarshal(raw, &v) == nil {
+		*dst = int64(v)
+		*set = true
+	}
+}
+
+// fillSignalKeyPresence records that obj carries key at all — for
+// signals where presence itself is the discriminator and the value
+// doesn't matter (Monitor's `persistent` is meaningful whether true or
+// false).
+func fillSignalKeyPresence(obj map[string]json.RawMessage, key string, set *bool) {
+	if *set {
+		return
+	}
+	if _, ok := obj[key]; ok {
 		*set = true
 	}
 }
@@ -623,6 +718,61 @@ func toolResultAsyncLaunch(signals toolResultBackgroundSignals) (agentID string,
 		return "", false
 	}
 	return strings.TrimSpace(signals.agentID), true
+}
+
+// toolResultMonitorLaunch reports whether the decoded `tool_use_result`
+// signals are the Monitor watch-task launch ack — the harness tool that
+// runs a Bash command as a background task and notifies the model on
+// each output event. The ack is `{taskId, timeoutMs, persistent}`
+// ("Monitor started (task <id>, …)"), returned IMMEDIATELY while the
+// spawned process keeps running under the CLI as a `local_bash` task —
+// terminal delivery arrives later via `system/task_updated`, exactly
+// like a backgrounded Bash. Captured live 2026-07-28 (AO thread
+// b44a738d, session d946175f); see claude-wire.md §E7.
+//
+// ⚠ Discriminator subtlety: `taskId` alone is NOT sufficient — the
+// TaskCreate/TaskUpdate task-list acks (`{success, taskId,
+// updatedFields, …}`) also carry a top-level `taskId` and describe a
+// bookkeeping row, not a process. The Monitor ack is the only observed
+// shape pairing `taskId` with `persistent` / `timeoutMs`, and presence
+// of either qualifies (both observed together on every capture; either
+// alone still classifies correctly if a future CLI drops one).
+// `persistent:false` launches ARE still background — a non-persistent
+// Monitor runs until its first matching event or timeout.
+func toolResultMonitorLaunch(signals toolResultBackgroundSignals) (taskID string, ok bool) {
+	if !signals.taskIDSet || (!signals.persistentSet && !signals.timeoutMsSet) {
+		return "", false
+	}
+	taskID = strings.TrimSpace(signals.taskID)
+	if taskID == "" {
+		return "", false
+	}
+	return taskID, true
+}
+
+// toolResultScheduledWakeup reports whether the decoded
+// `tool_use_result` signals are a ScheduleWakeup ack, and if so the
+// absolute fire time. The harness holds the wakeup as an IN-PROCESS
+// timer — no task lifecycle, no wire event until the timer fires and
+// the stored prompt arrives as a fresh user turn — so this ack is the
+// ONLY signal that the session, while looking idle, must be kept
+// alive. Shapes (captured live 2026-07-24/28, claude-wire.md §E8):
+//
+//	schedule: {clampedDelaySeconds, scheduledFor: <epoch-ms>, wasClamped}
+//	stop:     {clampedDelaySeconds: 0, scheduledFor: 0, wasClamped, stopped: true}
+//
+// Returns (0, true) for the stop ack — the caller emits the clearing
+// event. `scheduledFor` alone is not accepted (guarding against an
+// unrelated future shape reusing the key): the sibling
+// `clampedDelaySeconds` / `stopped` keys must corroborate.
+func toolResultScheduledWakeup(signals toolResultBackgroundSignals) (scheduledForUnixMs int64, ok bool) {
+	if !signals.scheduledForSet || (!signals.clampedDelaySet && !signals.stoppedSet) {
+		return 0, false
+	}
+	if (signals.stoppedSet && signals.stopped) || signals.scheduledForMs <= 0 {
+		return 0, true
+	}
+	return signals.scheduledForMs, true
 }
 
 // extractExitCode pulls `exit_code` from either the tool_result block's

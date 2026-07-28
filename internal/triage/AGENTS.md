@@ -59,6 +59,14 @@ none fits.
   `write_stdin` against a backgrounded unified-exec PTY. Non-empty
   stdin persists an "Interacted with background terminal" marker without
   storing stdin bytes.
+- `session_wakeup.go` — Claude-only pending-harness-wakeup record.
+  Handles `EventSessionWakeup` (the ScheduleWakeup ack, claude-wire.md
+  §E8): stores the fire time per thread, clears on the stop ack, and
+  exposes `PendingWakeupAt` for the idle-session reaper — the wakeup
+  timer is in-process CLI state with no task lifecycle, so this map is
+  the only record that an idle-looking session will resume itself.
+  Swept by `cleanupThread` AND `MarkThreadActive` (a replacement
+  process never inherits the timer).
 - `tool_result_file_change.go` — `file_change` tool-result normalisation
   (inline diff projection, unified patch assembly).
 - `tool_paths.go` — file-tool predicates and path normalisers shared by
@@ -124,6 +132,7 @@ none fits.
 | Turn metadata (cost/tokens) | Per-turn deltas from the provider: aggregate onto `turns.token_usage_json` (first-write-wins for display) + one `usage_ledger` row per model on every settle event (`usage_ledger.go`). |
 | Context-window usage | Frontend context meter + `threads.last_token_usage`. |
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
+| Session wakeup (Claude) | Per-thread pending-wakeup fire time in router state only — nothing persists, nothing emits. Consumed by the idle reaper via `PendingWakeupAt`. See `session_wakeup.go`. |
 | Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; typed command completions clear live state and persist normal command rows using the original item id only while a Codex wire round is active. Spawn-agent starts are pending-only; terminal spawn completions persist the visible row and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |
 | Codex terminal interaction | Empty stdin persists/reuses one visible `terminal_interaction` wait carrier on the current open turn while the PTY tracker is live. Non-empty stdin first flushes any active wait for that process, then persists an interaction marker without storing stdin bytes. See `terminal_interaction.go`. |
 | Turn start/complete | Write `turns` row; emit `provider:turn_*` to frontend; force-close orphan tool_calls on complete. |

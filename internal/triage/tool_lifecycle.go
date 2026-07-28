@@ -100,13 +100,21 @@ func (m toolStartMeta) isMetaUpdateOnly() bool {
 }
 
 type toolCompleteMeta struct {
-	IsBackground bool            `json:"is_background"`
-	IsError      bool            `json:"is_error"`
-	ExitCode     *int            `json:"exit_code,omitempty"`
-	ItemStatus   string          `json:"item_status,omitempty"`
-	TaskID       string          `json:"task_id,omitempty"`
-	ToolName     string          `json:"toolName,omitempty"`
-	Input        json.RawMessage `json:"input,omitempty"`
+	IsBackground bool `json:"is_background"`
+	// WatchTask marks a background launch that OBSERVES rather than
+	// works (Claude's Monitor, claude-wire.md §E7): it never produces a
+	// result a queued user send could be waiting on, so the flush-queue
+	// drain ignores it while the reaper/revert/context-repair consumers
+	// still count it as live background work. Copied onto the launch
+	// row's meta by the keep-running flip below so the store predicate
+	// can filter on it.
+	WatchTask  bool            `json:"watch_task"`
+	IsError    bool            `json:"is_error"`
+	ExitCode   *int            `json:"exit_code,omitempty"`
+	ItemStatus string          `json:"item_status,omitempty"`
+	TaskID     string          `json:"task_id,omitempty"`
+	ToolName   string          `json:"toolName,omitempty"`
+	Input      json.RawMessage `json:"input,omitempty"`
 }
 
 func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
@@ -374,6 +382,13 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 			launch.IsBackground = true
 			launch.UpdatedAt = now
 			launch.Summary = r.resumeCarrierSummary(evt.ThreadID, launch.Summary, launch.Meta)
+			if meta.WatchTask {
+				// Selective one-key merge — the full completion meta
+				// (tool_result echo, tool_use_result) must NOT bloat the
+				// launch row; only the watch marker matters downstream
+				// (HasQueueBlockingBackgroundToolCall filters on it).
+				launch.Meta = mergeItemMetaJSON(launch.Meta, []byte(`{"watch_task":true}`))
+			}
 			return r.persistItem(launch, nil)
 		}
 		// Launch row already correctly flagged; the placeholder

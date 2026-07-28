@@ -23,11 +23,12 @@ const (
 	// idleReapThreshold is the inactivity window after which a session
 	// becomes a reap candidate. Treated as a floor: a session that
 	// crossed the threshold mid-sweep is reaped on the next tick rather
-	// than the boundary tick. Lowered from 30 min (t3-code's default) to
-	// 15 min because each Claude process holds ~288 MB RSS; at 18+
-	// threads visited in a session the memory pressure outweighs the
-	// cold-start cost of a lazy respawn.
-	idleReapThreshold = 15 * time.Minute
+	// than the boundary tick. 30 min (t3-code's default): each Claude
+	// process holds ~288 MB RSS, but reaping a session also ends its
+	// harness-backgrounded work (persistent Monitor tasks die at
+	// session end), so the window errs toward keeping quiet-but-working
+	// sessions alive over reclaiming memory a sweep earlier.
+	idleReapThreshold = 30 * time.Minute
 
 	// idleReapInterval is the sweep cadence. Five minutes is long
 	// enough to keep the per-tick cost negligible (one map walk + at
@@ -35,6 +36,13 @@ const (
 	// reaper resolves the leak before a typical desktop session runs
 	// out of memory.
 	idleReapInterval = 5 * time.Minute
+
+	// wakeupReapGrace extends a pending harness wakeup's protection past
+	// its fire time. When the wakeup fires, the CLI starts a turn whose
+	// wire activity bumps lastActivity and protects the session on its
+	// own — the grace only has to cover the firing latency between the
+	// scheduled instant and the first envelope reaching our read loop.
+	wakeupReapGrace = 2 * time.Minute
 )
 
 // startIdleSessionReaper kicks off the background sweeper goroutine.
@@ -111,8 +119,10 @@ func (a *App) reaperNow() time.Time {
 // lastActivity is older than the threshold and whose activeTurns
 // counter is zero, then for each candidate confirms (a) triage holds
 // no user-blocking live state (pending approvals, pending user-input
-// requests, queued flush items, or pending sends) and (b) no running
-// background tool calls exist in the store, before closing the
+// requests, queued flush items, or pending sends), (b) no pending
+// harness wakeup is still due to fire (ScheduleWakeup timers are
+// in-process CLI state a close would silently kill), and (c) no
+// running background tool calls exist in the store, before closing the
 // session. The triage check ensures sessions that the user perceives
 // as active or blocked-on-user are never reaped. The two-phase split
 // keeps a.mu untouched during the triage query, the SQLite probe,
@@ -134,6 +144,14 @@ func (a *App) reapIdleSessions(now time.Time) {
 			return
 		}
 		if a.triage.HasPendingWork(threadID) {
+			continue
+		}
+		// A pending ScheduleWakeup timer lives inside the CLI process
+		// with no task lifecycle — the session looks fully idle until
+		// the harness fires the stored prompt as a fresh turn. Closing
+		// the process would silently kill the timer, so a future fire
+		// time (plus firing-latency grace) blocks the reap.
+		if wakeAt, ok := a.triage.PendingWakeupAt(threadID); ok && now.Before(wakeAt.Add(wakeupReapGrace)) {
 			continue
 		}
 		running, err := a.store.ListRunningBackgroundToolCalls(threadID)

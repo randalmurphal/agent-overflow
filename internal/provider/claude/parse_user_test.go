@@ -328,3 +328,190 @@ func TestAppendToolResultBlock_ErroredCompletionPropagatesIsError(t *testing.T) 
 		t.Fatalf("exit_code: got %v, want 127", meta["exit_code"])
 	}
 }
+
+// TestAppendToolResultBlock_MonitorLaunchSetsBackgroundFlag pins the
+// Monitor watch-task launch ack (claude-wire.md §E7): the harness runs
+// the command as a background `local_bash` task and acks immediately
+// with `tool_use_result: {taskId, timeoutMs, persistent}` — no
+// `run_in_background` in the input, no `backgroundTaskId` on the wire.
+// The completion must carry is_background=true so triage keeps the
+// launch row running and the reaper's ListRunningBackgroundToolCalls
+// sees the live watch (missing this signal is how a live
+// Monitor-watched session read as reap-idle; captured 2026-07-28,
+// session d946175f). Both persistent variants share the shape.
+func TestAppendToolResultBlock_MonitorLaunchSetsBackgroundFlag(t *testing.T) {
+	cases := []struct {
+		name          string
+		toolUseResult string
+	}{
+		{"persistent", `{"taskId":"bpzc8uiti","timeoutMs":0,"persistent":true}`},
+		{"non-persistent", `{"persistent":false,"taskId":"bpzc8uiti","timeoutMs":600000}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := NewParser()
+
+			if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-monitor","name":"Monitor","input":{"command":"bash chain.sh | grep PHASE","persistent":true,"timeout_ms":3600000}}]}}`)); err != nil {
+				t.Fatalf("assistant tool_use: %v", err)
+			}
+
+			line := []byte(`{"type":"user","tool_use_result":` + tc.toolUseResult + `,"message":{"role":"user","content":[{"tool_use_id":"tool-monitor","type":"tool_result","content":"Monitor started (task bpzc8uiti, persistent — runs until TaskStop or session end).","is_error":false}]}}`)
+			events, err := parser.ParseLine(testThread, line)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+			}
+			if events[0].Kind != provider.EventToolComplete {
+				t.Fatalf("Kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if meta["is_background"] != true {
+				t.Fatalf("is_background: got %v, want true (Monitor launch ack)", meta["is_background"])
+			}
+			if meta["watch_task"] != true {
+				t.Fatalf("watch_task: got %v, want true (a Monitor is a watch — must not block the flush queue)", meta["watch_task"])
+			}
+
+			// The ack also seeds the task_id ↔ tool_use_id correlation, so
+			// a later task_updated terminal routes to this launch even when
+			// a reconnect-fresh parser missed system/task_started.
+			terminal, err := parser.ParseLine(testThread, []byte(`{"type":"system","subtype":"task_updated","task_id":"bpzc8uiti","patch":{"status":"killed"}}`))
+			if err != nil {
+				t.Fatalf("task_updated: %v", err)
+			}
+			if len(terminal) != 1 || terminal[0].Kind != provider.EventBackgroundTaskTerminal {
+				t.Fatalf("task_updated must emit one terminal, got %+v", terminal)
+			}
+			if terminal[0].ItemID != "tool-monitor" {
+				t.Fatalf("terminal ItemID: got %q, want tool-monitor", terminal[0].ItemID)
+			}
+		})
+	}
+}
+
+// TestAppendToolResultBlock_TaskListAckNotBackground guards the Monitor
+// discriminator against the task-list tools: TaskCreate/TaskUpdate acks
+// carry a top-level `taskId` too, but describe a bookkeeping row, not a
+// process — `taskId` alone must never classify as backgrounded. The
+// launch here deliberately does NOT stage a pending task mutation (that
+// carve-out intercepts real TaskCreate/TaskUpdate flows before the
+// classifier), so this pins the classifier itself against the ack shape.
+func TestAppendToolResultBlock_TaskListAckNotBackground(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-tasklist","name":"SomeTool","input":{}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+
+	line := []byte(`{"type":"user","tool_use_result":{"statusChange":"pending -> in_progress","success":true,"taskId":"3","updatedFields":["status"]},"message":{"role":"user","content":[{"tool_use_id":"tool-tasklist","type":"tool_result","content":"Updated task #3","is_error":false}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if _, ok := meta["is_background"]; ok {
+		t.Fatalf("is_background must be absent for a task-list ack; meta=%v", meta)
+	}
+}
+
+// TestAppendToolResultBlock_ScheduleWakeupEmitsSessionWakeup pins the
+// ScheduleWakeup ack pair (claude-wire.md §E8): a schedule ack emits
+// EventSessionWakeup carrying the absolute fire time, and the
+// `{stop:true}` ack emits the clearing event (ScheduledForUnixMs 0).
+// Shapes captured live 2026-07-24 (session d946175f).
+func TestAppendToolResultBlock_ScheduleWakeupEmitsSessionWakeup(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-wakeup","name":"ScheduleWakeup","input":{"delaySeconds":1500,"prompt":"continue the loop"}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+
+	line := []byte(`{"type":"user","tool_use_result":{"clampedDelaySeconds":1500,"scheduledFor":1784917860000,"wasClamped":false},"message":{"role":"user","content":[{"tool_use_id":"tool-wakeup","type":"tool_result","content":"Next wakeup scheduled for 14:31:00 (in 1559s).","is_error":false}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected completion + wakeup, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventToolComplete {
+		t.Fatalf("events[0].Kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+	}
+	var completeMeta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &completeMeta); err != nil {
+		t.Fatalf("unmarshal completion meta: %v", err)
+	}
+	if _, ok := completeMeta["is_background"]; ok {
+		t.Fatal("a ScheduleWakeup ack is not a background launch — is_background must be absent")
+	}
+	if events[1].Kind != provider.EventSessionWakeup {
+		t.Fatalf("events[1].Kind: got %q, want %q", events[1].Kind, provider.EventSessionWakeup)
+	}
+	var wakeMeta provider.SessionWakeupMeta
+	if err := json.Unmarshal(events[1].Meta, &wakeMeta); err != nil {
+		t.Fatalf("unmarshal wakeup meta: %v", err)
+	}
+	if wakeMeta.ScheduledForUnixMs != 1784917860000 {
+		t.Fatalf("ScheduledForUnixMs: got %d, want 1784917860000", wakeMeta.ScheduledForUnixMs)
+	}
+
+	// Stop ack clears: same tool, `{stop:true}` input, ack reports
+	// scheduledFor 0 + stopped true.
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-2","role":"assistant","content":[{"type":"tool_use","id":"tool-wakeup-stop","name":"ScheduleWakeup","input":{"stop":true}}]}}`)); err != nil {
+		t.Fatalf("assistant stop tool_use: %v", err)
+	}
+	stopLine := []byte(`{"type":"user","tool_use_result":{"scheduledFor":0,"clampedDelaySeconds":0,"wasClamped":false,"stopped":true},"message":{"role":"user","content":[{"tool_use_id":"tool-wakeup-stop","type":"tool_result","content":"Loop stopped — no further wakeups scheduled.","is_error":false}]}}`)
+	stopEvents, err := parser.ParseLine(testThread, stopLine)
+	if err != nil {
+		t.Fatalf("parse stop: %v", err)
+	}
+	if len(stopEvents) != 2 || stopEvents[1].Kind != provider.EventSessionWakeup {
+		t.Fatalf("expected completion + clearing wakeup, got %+v", stopEvents)
+	}
+	var stopMeta provider.SessionWakeupMeta
+	if err := json.Unmarshal(stopEvents[1].Meta, &stopMeta); err != nil {
+		t.Fatalf("unmarshal stop wakeup meta: %v", err)
+	}
+	if stopMeta.ScheduledForUnixMs != 0 {
+		t.Fatalf("stop ScheduledForUnixMs: got %d, want 0", stopMeta.ScheduledForUnixMs)
+	}
+}
+
+// TestAppendToolResultBlock_StringToolUseResultNoNewSignals confirms a
+// string-valued `tool_use_result` (harness InputValidationError acks
+// arrive this way) decodes to zero signals: no background flag, no
+// wakeup event, no parse error.
+func TestAppendToolResultBlock_StringToolUseResultNoNewSignals(t *testing.T) {
+	parser := NewParser()
+
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-err","name":"Monitor","input":{"command":"x","timeout":1}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+
+	line := []byte(`{"type":"user","tool_use_result":"InputValidationError: Unrecognized key \"timeout\"","message":{"role":"user","content":[{"tool_use_id":"tool-err","type":"tool_result","content":"<tool_use_error>InputValidationError</tool_use_error>","is_error":true}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if _, ok := meta["is_background"]; ok {
+		t.Fatal("error ack must not classify as background")
+	}
+}

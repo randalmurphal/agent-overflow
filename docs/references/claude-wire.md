@@ -1113,6 +1113,109 @@ task_started / ack / task_updated / task_notification, twice — the
 second round's `task_started` and `tool_use_id`s are the resuming
 tool's own).
 
+### E7 — Monitor watch-task launch ack
+
+The harness's `Monitor` tool runs a Bash command as a **background
+`local_bash` task** that notifies the model on each output event
+(`persistent: true` runs until `TaskStop` or session end;
+`persistent: false` runs until its first matching event or `timeoutMs`).
+Like E5, the launch input carries NO `run_in_background` flag and the
+ack carries NO `backgroundTaskId` — a fourth background-launch shape.
+Captured live 2026-07-28 (AO thread `b44a738d`, session `d946175f`;
+shape summary:
+[`monitor_wakeup_20260728.summary.json`](fixtures/claude/monitor_wakeup_20260728.summary.json)):
+
+```json
+{"type": "user",
+ "message": {"role": "user", "content": [{
+   "tool_use_id": "toolu_015DPAp7hi8LaywoMtec4c3Y",
+   "type": "tool_result",
+   "content": "Monitor started (task bpzc8uiti, persistent — runs until TaskStop or session end). You will be notified on each event. ..."
+ }]},
+ "tool_use_result": {"taskId": "bpzc8uiti", "timeoutMs": 0, "persistent": true}}
+```
+
+Non-persistent variant (same keys, different values):
+`{"persistent": false, "taskId": "bmh73qh8o", "timeoutMs": 600000}`.
+Input-validation failures ack with a STRING `tool_use_result`
+(`"InputValidationError: …"`), which decodes to zero signals.
+
+**Marker: `taskId` + presence of `persistent` / `timeoutMs`.**
+`taskId` ALONE is **NOT** a valid discriminator — the task-list tools'
+acks (`TaskCreate`/`TaskUpdate`: `{success, taskId, updatedFields,
+statusChange?}`) carry a top-level `taskId` too and describe a
+bookkeeping row, not a process. `TaskStop` acks (`{message, command}`)
+and `TaskOutput` acks (task nested under `task`) carry no top-level
+`taskId` at all. Surveyed across every `toolUseResult` shape in the
+capture session — the Monitor ack is the only shape pairing `taskId`
+with `persistent`/`timeoutMs`; `toolResultMonitorLaunch` in
+`parse_user.go` accepts either sibling key so a future CLI dropping one
+still classifies.
+
+Lifecycle correlation is standard: `system/task_started` fires with
+`task_type: "local_bash"` binding `taskId ↔ tool_use_id` (~ms before
+the ack), each Monitor event arrives via `system/task_notification` (or
+the queued `<task-notification>` user-turn injection), and terminal
+delivery is the same `system/task_updated` channel E2 uses (`TaskStop`
+→ `status:"killed"`). Parser behavior mirrors E5: the completion emits
+`is_background: true` so triage's keep-running flip holds the launch
+row at `status=running` (reaper protection), and the ack re-seeds
+`rememberTaskToolUse` for reconnected parsers.
+
+The completion additionally carries `watch_task: true`, which the
+keep-running flip copies onto the launch row's meta. A Monitor
+OBSERVES — it never produces the result a queued user send could be
+waiting on, and a persistent one runs until session end — so the
+flush-queue drain uses the store's watch-excluding predicate
+(`HasQueueBlockingBackgroundToolCall`) and dispatches queued sends
+past a running watch, while the reaper / revert / context-repair
+consumers still count the watch as live background work (closing or
+restarting the session WOULD kill it).
+
+Missing this signal was found the hard way: a session whose only live
+work was a persistent Monitor read as fully idle to the reaper, and
+closing it would have killed the watched multi-hour job (2026-07-28,
+thread `b44a738d`).
+
+### E8 — ScheduleWakeup ack (pending in-process wakeup, NO task lifecycle)
+
+The harness's `ScheduleWakeup` tool arms an **in-process timer** (delay
+clamped to [60s, 3600s]); when it fires, the CLI injects the stored
+prompt as a fresh user turn. There is NO task behind it — no
+`task_started`, no `task_updated`, no wire traffic of any kind between
+the ack and the fire — so a session waiting on a wakeup is
+indistinguishable from an abandoned one by every other signal. Captured
+live 2026-07-24 (session `d946175f`; same summary fixture as E7):
+
+```json
+{"tool_use_result": {"clampedDelaySeconds": 1500, "scheduledFor": 1784917860000, "wasClamped": false}}
+```
+
+`scheduledFor` is the absolute fire time in epoch **milliseconds**. The
+`{stop: true}` input ends the loop and acks with:
+
+```json
+{"tool_use_result": {"scheduledFor": 0, "clampedDelaySeconds": 0, "wasClamped": false, "stopped": true}}
+```
+
+**Marker: `scheduledFor` corroborated by `clampedDelaySeconds` /
+`stopped`** (`toolResultScheduledWakeup` in `parse_user.go` requires a
+sibling key so an unrelated future shape reusing `scheduledFor` alone
+does not classify). The parser emits `EventSessionWakeup`
+(`SessionWakeupMeta.ScheduledForUnixMs`; `<= 0` clears) alongside the
+normal `EventToolComplete` — the ack is NOT a background launch and
+carries no `is_background`.
+
+Operationally: triage records the fire time per thread
+(`internal/triage/session_wakeup.go`) and the idle-session reaper
+refuses to close a session whose wakeup is still in the future (plus a
+firing-latency grace) — closing the process would silently kill the
+timer. The record is swept on session teardown AND on
+replacement-session commit: the timer never survives its CLI process.
+When the wakeup fires, the injected turn's own wire activity takes over
+protection; observed delays run 240–1800s, so a wakeup can legally
+exceed the idle-reap threshold on its own.
+
 ---
 
 ## `assistant` envelope

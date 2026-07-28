@@ -76,6 +76,19 @@ const (
 	// mark a task complete or failed by itself.
 	EventBackgroundTaskNotification EventKind = "background_task_notification"
 
+	// EventSessionWakeup is the Claude-only signal that the CLI harness
+	// holds (or dropped) an in-process wakeup timer for the session: the
+	// ScheduleWakeup tool's ack carries the absolute fire time, and the
+	// harness later injects the stored prompt as a fresh user turn when
+	// it fires. There is NO task lifecycle behind it — no task_started,
+	// no task_updated terminal — so the pending timer is invisible to
+	// the background-tool-call machinery. Triage records the fire time
+	// per thread and the idle-session reaper refuses to close a session
+	// whose wakeup is still in the future: closing the process would
+	// silently kill the timer. A meta with ScheduledForUnixMs <= 0
+	// clears the pending state (the `{stop:true}` ack).
+	EventSessionWakeup EventKind = "session_wakeup"
+
 	// EventSubagentNotification surfaces Codex's `<subagent_notification>`
 	// tag detections (session.go parser → triage handler →
 	// provider:subagent_notification on the frontend event bus). Emitted
@@ -156,6 +169,7 @@ var AllEventKinds = []EventKind{
 	EventContentBlockStop,
 	EventBackgroundTaskTerminal,
 	EventBackgroundTaskNotification,
+	EventSessionWakeup,
 	EventSubagentNotification,
 	EventSubagentStatus,
 	EventCodexExecResult,
@@ -252,6 +266,15 @@ type TruncatedTurnCompleteMeta struct {
 }
 
 func (*TruncatedTurnCompleteMeta) isTurnCompleteMeta() {}
+
+// SessionWakeupMeta is the typed payload for EventSessionWakeup.
+// ScheduledForUnixMs is the absolute wall-clock fire time (epoch ms, the
+// provider clock — same host as ours) from the ScheduleWakeup ack's
+// `scheduledFor`; a value <= 0 clears the thread's pending-wakeup state
+// (the `{stop:true}` ack reports `scheduledFor: 0, stopped: true`).
+type SessionWakeupMeta struct {
+	ScheduledForUnixMs int64 `json:"scheduledForUnixMs"`
+}
 
 // TaskCreateMeta is the typed payload for EventTaskCreate.
 // Triage decodes it from ProviderEvent.Meta via json.Unmarshal.
