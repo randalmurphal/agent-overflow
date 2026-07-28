@@ -311,19 +311,6 @@ func commitArgs(subject, body string) []string {
 	return args
 }
 
-func (c *Core) currentBranch(cwd string) (string, error) {
-	stdout, _, err := c.Execute(cwd, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return "", err
-	}
-
-	branch := strings.TrimSpace(stdout)
-	if branch == "" || branch == "HEAD" {
-		return "", fmt.Errorf("cannot operate on detached HEAD")
-	}
-	return branch, nil
-}
-
 func (c *Core) branchHasUpstream(cwd string) (bool, error) {
 	result, err := c.run(cwd, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 	if err != nil {

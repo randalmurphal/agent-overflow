@@ -4,13 +4,19 @@
 // context. Critical because the original code path was "no thread →
 // toast and bail", which left Ctrl+N inert from a fresh app launch.
 
-import { beforeEach, describe, expect, it } from 'vitest';
-import { resolveDraftTargetProject } from './threadCreation.svelte';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  openDraftThreadForProject,
+  resolveDraftTargetProject,
+} from './threadCreation.svelte';
 import { createThreadPane } from './thread.svelte';
 import {
   addProjectLocal,
   resetProjectsForTest,
 } from './projects.svelte';
+import { resetPaneLayoutForTest } from './paneLayout.svelte';
+import { setBindingMock } from '../../test/mocks/bindings-app';
+import type { ThreadDefaults } from './bindings';
 import type { Project, Thread } from '../types/models';
 
 function makeProject(overrides: Partial<Project> = {}): Project {
@@ -41,6 +47,33 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     archived: false,
     ...overrides,
   };
+}
+
+function makeDefaults(
+  overrides: Partial<ThreadDefaults> = {},
+): ThreadDefaults {
+  return {
+    provider: 'codex',
+    model: 'gpt-5.4',
+    reasoningEffort: 'high',
+    fastMode: false,
+    contextWindow: 200000,
+    runtimeMode: 'full-access',
+    branch: 'main',
+    workspacePath: '/tmp/p1',
+    ...overrides,
+  };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 describe('resolveDraftTargetProject', () => {
@@ -108,5 +141,144 @@ describe('resolveDraftTargetProject', () => {
     const resolved = resolveDraftTargetProject(pane, 'design');
 
     expect(resolved).toEqual({ projectId: 'project-1', mode: 'design' });
+  });
+});
+
+describe('openDraftThreadForProject', () => {
+  beforeEach(() => {
+    resetProjectsForTest();
+    resetPaneLayoutForTest();
+  });
+
+  it('waits for authoritative composer defaults before opening the placeholder', async () => {
+    const project = makeProject();
+    addProjectLocal(project);
+    const pane = createThreadPane({ paneId: 'main' });
+    pane.replaceThread(makeThread());
+    const pendingDefaults = deferred<ThreadDefaults>();
+    setBindingMock('GetThreadDefaults', () => pendingDefaults.promise);
+
+    const opening = openDraftThreadForProject({
+      projectId: project.id,
+      mode: 'chat',
+      targetPane: pane,
+    });
+
+    expect(pane.thread?.id).toBe('thread-1');
+
+    pendingDefaults.resolve(makeDefaults());
+    await expect(opening).resolves.toBe(pane);
+
+    expect(pane.thread).toMatchObject({
+      projectId: project.id,
+      model: 'gpt-5.4',
+      reasoningEffort: 'high',
+      runtimeMode: 'full-access',
+      branch: 'main',
+      isDraft: true,
+    });
+  });
+
+  it('does not let an older defaults response replace a newer draft request', async () => {
+    const firstProject = makeProject();
+    const secondProject = makeProject({
+      id: 'project-2',
+      path: '/tmp/p2',
+      name: 'Project Two',
+    });
+    addProjectLocal(firstProject);
+    addProjectLocal(secondProject);
+    const pane = createThreadPane({ paneId: 'main' });
+    const firstDefaults = deferred<ThreadDefaults>();
+    const secondDefaults = deferred<ThreadDefaults>();
+    setBindingMock('GetThreadDefaults', (opts: { projectId: string }) => {
+      return opts.projectId === firstProject.id
+        ? firstDefaults.promise
+        : secondDefaults.promise;
+    });
+
+    const firstOpening = openDraftThreadForProject({
+      projectId: firstProject.id,
+      mode: 'chat',
+      targetPane: pane,
+    });
+    const secondOpening = openDraftThreadForProject({
+      projectId: secondProject.id,
+      mode: 'design',
+      targetPane: pane,
+    });
+
+    secondDefaults.resolve(makeDefaults({
+      model: 'gpt-5.4-mini',
+      branch: 'feature/newer',
+      workspacePath: secondProject.path,
+    }));
+    await expect(secondOpening).resolves.toBe(pane);
+    firstDefaults.resolve(makeDefaults({
+      model: 'stale-model',
+      branch: 'stale-branch',
+    }));
+    await expect(firstOpening).resolves.toBeNull();
+
+    expect(pane.thread).toMatchObject({
+      projectId: secondProject.id,
+      mode: 'design',
+      model: 'gpt-5.4-mini',
+      branch: 'feature/newer',
+    });
+  });
+
+  it('does not replace a thread selected while defaults are loading', async () => {
+    const project = makeProject();
+    addProjectLocal(project);
+    const pane = createThreadPane({ paneId: 'main' });
+    const pendingDefaults = deferred<ThreadDefaults>();
+    setBindingMock('GetThreadDefaults', () => pendingDefaults.promise);
+
+    const opening = openDraftThreadForProject({
+      projectId: project.id,
+      mode: 'chat',
+      targetPane: pane,
+    });
+
+    const selectedThread = makeThread({
+      id: 'selected-thread',
+      title: 'Selected while loading',
+    });
+    pane.clear();
+    pane.replaceThread(selectedThread);
+    pendingDefaults.resolve(makeDefaults());
+    await opening;
+
+    expect(pane.thread).toEqual(selectedThread);
+    expect(pane.hasDraftPlaceholder).toBe(false);
+  });
+
+  it('opens a usable placeholder when defaults cannot be loaded', async () => {
+    const project = makeProject();
+    addProjectLocal(project);
+    const pane = createThreadPane({ paneId: 'main' });
+    setBindingMock('GetThreadDefaults', async () => {
+      throw new Error('defaults unavailable');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(openDraftThreadForProject({
+        projectId: project.id,
+        mode: 'chat',
+        targetPane: pane,
+      })).resolves.toBe(pane);
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(pane.hasDraftPlaceholder).toBe(true);
+    expect(pane.thread).toMatchObject({
+      projectId: project.id,
+      provider: 'codex',
+      model: '',
+      isDraft: true,
+    });
   });
 });

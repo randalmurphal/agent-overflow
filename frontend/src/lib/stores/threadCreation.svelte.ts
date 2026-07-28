@@ -16,6 +16,67 @@ import type { Project, Thread } from '../types/models';
 
 export type DraftMode = 'chat' | 'design';
 
+interface DraftDefaultsRequest {
+  token: object;
+  switchGeneration: number;
+  threadId: string | null;
+}
+
+const latestDraftDefaultsRequest = new WeakMap<ThreadPane, object>();
+
+function beginDraftDefaultsRequest(pane: ThreadPane): DraftDefaultsRequest {
+  const token = {};
+  latestDraftDefaultsRequest.set(pane, token);
+  return {
+    token,
+    switchGeneration: pane.switchGeneration,
+    threadId: pane.thread?.id ?? null,
+  };
+}
+
+function draftDefaultsRequestIsCurrent(
+  pane: ThreadPane,
+  request: DraftDefaultsRequest,
+): boolean {
+  return latestDraftDefaultsRequest.get(pane) === request.token
+    && pane.switchGeneration === request.switchGeneration
+    && (pane.thread?.id ?? null) === request.threadId;
+}
+
+function finishDraftDefaultsRequest(
+  pane: ThreadPane,
+  request: DraftDefaultsRequest,
+): void {
+  if (latestDraftDefaultsRequest.get(pane) === request.token) {
+    latestDraftDefaultsRequest.delete(pane);
+  }
+}
+
+async function loadAndStartDraftPlaceholder(
+  pane: ThreadPane,
+  project: Project,
+  mode: DraftMode,
+): Promise<boolean> {
+  // Reserve the pane before the RPC. A second "+ New" request or a thread
+  // switch must win even if this older defaults response resolves last.
+  const request = beginDraftDefaultsRequest(pane);
+  let defaults: DraftPlaceholderDefaults | undefined;
+  try {
+    defaults = await GetThreadDefaults({ projectId: project.id, mode });
+  } catch (err) {
+    console.warn('GetThreadDefaults failed; using empty placeholder defaults', err);
+  }
+
+  if (!draftDefaultsRequestIsCurrent(pane, request)) {
+    finishDraftDefaultsRequest(pane, request);
+    return false;
+  }
+
+  pane.startDraftPlaceholder(project, mode, defaults);
+  finishDraftDefaultsRequest(pane, request);
+  return true;
+}
+
 /**
  * Fetch fresh seed defaults and replace the pane's draft placeholder
  * with one keyed on the new (project, mode). The composer pickers
@@ -34,13 +95,7 @@ export async function flipPaneDraftPlaceholder(
   project: Project,
   mode: DraftMode,
 ): Promise<void> {
-  let defaults: DraftPlaceholderDefaults | undefined;
-  try {
-    defaults = await GetThreadDefaults({ projectId: project.id, mode });
-  } catch (err) {
-    console.warn('GetThreadDefaults failed; using empty placeholder defaults', err);
-  }
-  pane.startDraftPlaceholder(project, mode, defaults);
+  await loadAndStartDraftPlaceholder(pane, project, mode);
 }
 
 /**
@@ -84,12 +139,12 @@ export interface OpenDraftThreadOptions {
  * action simply replaces the prior placeholder, so the user can spin up
  * and discard threads freely.
  *
- * Returns the pane the placeholder was opened in so callers can layer
- * additional state (e.g. seed-from-plan flows) on top.
+ * Returns the pane when this request opened the placeholder, or null when a
+ * newer draft request/navigation superseded it while defaults were loading.
  */
 export async function openDraftThreadForProject(
   options: OpenDraftThreadOptions,
-): Promise<ThreadPane> {
+): Promise<ThreadPane | null> {
   const { projectId, mode, targetPane, openInNewPane = false } = options;
   expandProject(projectId);
   const project = getProject(projectId)?.project;
@@ -108,14 +163,8 @@ export async function openDraftThreadForProject(
   // and workspace strip don't render "no model / no branch" before
   // materialization. Failure here is tolerable — we still want the
   // placeholder to appear; the user can pick from the toolbar.
-  let defaults: DraftPlaceholderDefaults | undefined;
-  try {
-    defaults = await GetThreadDefaults({ projectId, mode });
-  } catch (err) {
-    console.warn('GetThreadDefaults failed; using empty placeholder defaults', err);
-  }
-  pane.startDraftPlaceholder(project, mode, defaults);
-  return pane;
+  const opened = await loadAndStartDraftPlaceholder(pane, project, mode);
+  return opened ? pane : null;
 }
 
 export interface OpenTerminalThreadOptions {

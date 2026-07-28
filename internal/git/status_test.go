@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -441,6 +442,64 @@ func TestRepositoryRootReturnsErrorForNonRepo(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "git rev-parse --show-toplevel failed") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCurrentBranchReturnsMain(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+
+	if got := NewCore().CurrentBranch(repo); got != "main" {
+		t.Fatalf("CurrentBranch() = %q, want main", got)
+	}
+}
+
+func TestCurrentBranchReturnsUnbornBranch(t *testing.T) {
+	repo := t.TempDir()
+	testutil.RunGit(t, repo, "init", "-q", "-b", "new-repo")
+
+	if got := NewCore().CurrentBranch(repo); got != "new-repo" {
+		t.Fatalf("CurrentBranch() = %q, want new-repo", got)
+	}
+}
+
+func TestCurrentBranchReturnsEmptyForDetachedHEAD(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "checkout", "--detach", "HEAD")
+
+	if got := NewCore().CurrentBranch(repo); got != "" {
+		t.Fatalf("CurrentBranch() on detached HEAD = %q, want empty", got)
+	}
+}
+
+func TestCurrentBranchReturnsEmptyOutsideRepository(t *testing.T) {
+	if got := NewCore().CurrentBranch(t.TempDir()); got != "" {
+		t.Fatalf("CurrentBranch() outside repository = %q, want empty", got)
+	}
+}
+
+func TestCurrentBranchDoesNotRunForgeLookup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock gh is unix-only")
+	}
+
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "remote", "add", "origin", "https://github.com/example/project.git")
+
+	binDir := t.TempDir()
+	markerPath := filepath.Join(binDir, "gh-called")
+	ghPath := filepath.Join(binDir, "gh")
+	script := "#!/bin/sh\nprintf called > \"$AO_CURRENT_BRANCH_GH_MARKER\"\n"
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock gh: %v", err)
+	}
+	t.Setenv("AO_CURRENT_BRANCH_GH_MARKER", markerPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if got := NewCore().CurrentBranch(repo); got != "main" {
+		t.Fatalf("CurrentBranch() = %q, want main", got)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("CurrentBranch invoked gh; marker stat error = %v", err)
 	}
 }
 

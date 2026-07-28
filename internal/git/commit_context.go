@@ -50,23 +50,6 @@ func (c *Core) StagedPatch(cwd string) (string, error) {
 	return limitSection(result.stdout, StagedPatchLimit), nil
 }
 
-// CurrentBranchName returns the current branch name or an empty string on
-// a detached HEAD. Distinct from the unexported currentBranch method,
-// which errors on detached HEAD; this variant is safe to call from
-// commit-message generation where a detached HEAD is a legitimate state
-// we want to describe as "(detached)" rather than fail on.
-func (c *Core) CurrentBranchName(cwd string) string {
-	result, err := c.run(cwd, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil || result.exitCode != 0 {
-		return ""
-	}
-	branch := strings.TrimSpace(result.stdout)
-	if branch == "HEAD" {
-		return ""
-	}
-	return branch
-}
-
 // limitSection caps s at maxBytes, appending a "\n\n[truncated]" marker
 // so the reader (human or model) knows bytes were dropped. Mirrors
 // t3-code's limitSection in git/Utils.ts.

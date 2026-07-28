@@ -168,16 +168,37 @@ func (c *Core) WorkingTreeDiff(cwd string) (string, error) {
 	return combineDiffs(headDiff.stdout, cachedDiff.stdout), nil
 }
 
-// CurrentBranch returns the branch name reported by Status, or "" when
-// the call fails (detached HEAD, non-repo path, transient git error).
-// Callers treat "" as "unknown" — distinct from a deliberate empty
-// branch — so the helper never propagates the underlying error.
+func (c *Core) currentBranch(cwd string) (string, error) {
+	result, err := c.run(cwd, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if result.exitCode != 0 {
+		if stderr := strings.TrimSpace(result.stderr); stderr != "" {
+			return "", fmt.Errorf("git symbolic-ref HEAD failed: %s", stderr)
+		}
+		return "", fmt.Errorf("cannot operate on detached HEAD")
+	}
+	branch := strings.TrimSpace(result.stdout)
+	if branch == "" {
+		return "", fmt.Errorf("git symbolic-ref HEAD returned an empty branch")
+	}
+	return branch, nil
+}
+
+// CurrentBranch returns the current branch name without computing the rest of
+// repository status. symbolic-ref works for both committed and unborn branches;
+// detached HEAD, non-repository paths, and transient git errors return "".
+//
+// Keep this branch-only: draft-thread creation calls it while assembling the
+// composer defaults, where running Status would also scan changes and perform a
+// forge PR lookup before the composer can mount.
 func (c *Core) CurrentBranch(cwd string) string {
-	status, err := c.Status(cwd)
+	branch, err := c.currentBranch(cwd)
 	if err != nil {
 		return ""
 	}
-	return status.Branch
+	return branch
 }
 
 // RepositoryRoot resolves the canonical git top-level directory for cwd.

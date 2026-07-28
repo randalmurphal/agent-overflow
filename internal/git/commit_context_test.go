@@ -94,32 +94,6 @@ func TestStagedSummaryEmptyOnCleanRepo(t *testing.T) {
 	}
 }
 
-func TestCurrentBranchNameReturnsMain(t *testing.T) {
-	dir := seedRepo(t)
-	core := NewCore()
-	if got := core.CurrentBranchName(dir); got != "main" {
-		t.Errorf("CurrentBranchName = %q, want main", got)
-	}
-}
-
-func TestCurrentBranchNameDetachedHEADReturnsEmpty(t *testing.T) {
-	dir := seedRepo(t)
-	core := NewCore()
-	// Detach HEAD onto the current commit.
-	cmd := exec.Command("git", "checkout", "--detach", "HEAD")
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=Tester", "GIT_AUTHOR_EMAIL=t@t",
-		"GIT_COMMITTER_NAME=Tester", "GIT_COMMITTER_EMAIL=t@t",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("detach: %v\n%s", err, out)
-	}
-	if got := core.CurrentBranchName(dir); got != "" {
-		t.Errorf("CurrentBranchName on detached HEAD = %q, want empty", got)
-	}
-}
-
 func TestLimitSectionTruncationMarker(t *testing.T) {
 	in := strings.Repeat("x", 100)
 	out := limitSection(in, 50)

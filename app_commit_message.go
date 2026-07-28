@@ -119,7 +119,7 @@ func (a *App) gatherStagedDiffForCommit(thread store.Thread) (summary, patch, br
 	if err != nil {
 		return "", "", "", fmt.Errorf("staged patch: %w", err)
 	}
-	branch = core.CurrentBranchName(workspace)
+	branch = core.CurrentBranch(workspace)
 	return summary, patch, branch, nil
 }
 
