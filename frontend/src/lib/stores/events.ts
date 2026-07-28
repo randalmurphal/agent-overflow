@@ -71,6 +71,7 @@ import {
   applyUsageEvent,
   applyProviderStatus,
   applyProviderAccount,
+  hydrateProviderAccounts,
   applyProviderSessionAccount,
   applyTurnStarted,
   applyTurnCompleted,
@@ -192,13 +193,20 @@ export function setupEventListeners(): () => void {
 
   const cancelProviderStatus = wailsEventOn<ProviderStatusEvent>('provider:status', applyProviderStatus);
 
-  // provider:account — startup probe result (one event per provider).
-  // Hydrates the global accountInfo store; the rate-limit ring popover
-  // reads it for the "Plan: <planType>" line.
+  // provider:account — account probe result on cache miss, plus login /
+  // switch / removal transitions. Hydrates the global accountInfo store; the
+  // rate-limit ring popover reads it for the "Plan: <planType>" line. The
+  // startup probe can complete before this listener exists (its cache then
+  // suppresses re-emits for the process lifetime), so after installing the
+  // live listener, pull the current selection the same way the rate-limit
+  // snapshots are pulled above.
   const cancelProviderAccount = wailsEventOn<ProviderAccountEvent>(
     'provider:account',
     applyProviderAccount,
   );
+  void hydrateProviderAccounts().catch((error) => {
+    console.warn('events: hydrate provider accounts failed', error);
+  });
   const cancelProviderSessionAccount = wailsEventOn<ProviderSessionAccountEvent>(
     'provider:session_account',
     applyProviderSessionAccount,

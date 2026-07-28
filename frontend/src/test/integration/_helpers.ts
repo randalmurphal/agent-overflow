@@ -90,6 +90,7 @@ export function installAppDefaults(): void {
   setBindingMock('GetProviderStatuses', async () => []);
   setBindingMock('GetModelsForProvider', async () => []);
   setBindingMock('GetRateLimitsSnapshots', async () => []);
+  setBindingMock('ListProviderAccounts', async () => []);
   // Sidebar fetches projects on mount. Default to an empty list — tests
   // that need visible threads should seed a project via seedProject().
   setBindingMock('ListProjects', async () => []);

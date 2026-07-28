@@ -8,6 +8,7 @@ import { iterPanes } from './panes.svelte';
 import { GetThread } from './bindings';
 import { refreshSidebarProjections, syncThreadRow } from './eventsThreadRows';
 import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
+import { hydrateProviderAccounts } from './eventsProvider';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 
 // The handler matches on the channel name we lost rather than each
@@ -31,6 +32,15 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
         if (!pane.threadId) continue;
         void pane.refreshFromBackend();
       }
+      return;
+    }
+    case 'provider:account': {
+      // A missed login/switch/removal event leaves the composer rings keyed
+      // to the wrong account. Re-pull the selection; the store's generation
+      // guard discards this snapshot if a newer live event lands first.
+      void hydrateProviderAccounts().catch((err: unknown) => {
+        console.warn(`events: refresh provider accounts after provider:account gap: ${err}`);
+      });
       return;
     }
     case 'provider:usage': {

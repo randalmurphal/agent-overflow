@@ -78,6 +78,7 @@ describe('setupEventListeners', () => {
     resetProviderStatuses();
     setBindingMock('AutoResumeThread', async () => {});
     setBindingMock('GetRateLimitsSnapshots', async () => []);
+    setBindingMock('ListProviderAccounts', async () => []);
     resetPanesForTest();
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
@@ -140,6 +141,42 @@ describe('setupEventListeners', () => {
       expect(getProviderRateLimit('codex', 300)?.usedPercent).toBe(31);
       expect(getProviderRateLimit('codex', 10080)?.usedPercent).toBe(30);
     });
+  });
+
+  it('hydrates the selected provider account when connecting after the startup probe', async () => {
+    const accountInfo = await import('./accountInfo.svelte');
+    cleanup();
+    accountInfo.resetForTest();
+    // The backend probed at boot and cached the result, so no
+    // provider:account event will ever arrive on this connection. The
+    // pull is the only hydration path.
+    setBindingMock('ListProviderAccounts', async () => [
+      {
+        id: 'claude-account',
+        provider: 'claude',
+        email: 'user@example.com',
+        subscriptionType: 'Claude Max',
+        active: true,
+        generation: 7,
+      },
+      {
+        id: 'claude-other',
+        provider: 'claude',
+        email: 'other@example.com',
+        subscriptionType: 'Claude Max',
+        active: false,
+        generation: 7,
+      },
+    ]);
+
+    cleanup = setupEventListeners();
+    await vi.waitFor(() => {
+      expect(accountInfo.getProviderAccount('claude')?.accountId).toBe('claude-account');
+      expect(accountInfo.getProviderAccount('claude')?.subscriptionType).toBe('Claude Max');
+    });
+    // Codex reported no accounts at all — the selection must read as
+    // signed out, not as whatever an earlier session left behind.
+    expect(accountInfo.getProviderAccount('codex')).toBeNull();
   });
 
   it('routes item_event upserts only to the matching pane', async () => {

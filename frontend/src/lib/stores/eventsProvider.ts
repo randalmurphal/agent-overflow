@@ -17,7 +17,9 @@ import type {
   UserInputEvent,
 } from '../types/events';
 import { clearProviderAccount, setProviderAccount } from './accountInfo.svelte';
-import { asProviderID } from '../types/providers';
+import { asProviderID, type ProviderID } from '../types/providers';
+import { ListProviderAccounts } from './bindings';
+import type { ManagedProviderAccount } from './bindings';
 import { invalidateProviderModels } from './providerModels.svelte';
 import { iterPanes } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
@@ -242,6 +244,31 @@ export function applyProviderStatus(evt: ProviderStatusEvent): void {
     // pane as before.
     if (evt.threadId && pane.threadId !== evt.threadId) continue;
     pane.setProviderBanner(evt.threadId ? banner : undefined);
+  }
+}
+
+// The `provider:account` push fires only when the backend's account probe
+// misses its cache, so a webview that (re)connects after the startup probe
+// completed never receives one. Pull the selection instead — the same
+// first-connect race GetRateLimitsSnapshots closes for the rings' data, closed
+// here for the account identity those rings are keyed by. setProviderAccount's
+// generation guard keeps a concurrent live event ahead of this snapshot.
+export async function hydrateProviderAccounts(): Promise<void> {
+  const accounts = await ListProviderAccounts();
+  const activeByProvider = new Map<ProviderID, ManagedProviderAccount>();
+  for (const account of accounts) {
+    const provider = asProviderID(account.provider);
+    if (provider && account.active) activeByProvider.set(provider, account);
+  }
+  // Only the managed-account providers: claude-tui shares claude's login and
+  // never has rows of its own, so clearing it here would be meaningless.
+  for (const provider of ['claude', 'codex'] as const) {
+    const active = activeByProvider.get(provider);
+    if (active) {
+      setProviderAccount(provider, active, active.id, active.generation);
+    } else {
+      clearProviderAccount(provider);
+    }
   }
 }
 
