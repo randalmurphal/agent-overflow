@@ -105,7 +105,10 @@ and is what collapsing removes. Architecture:
 Operational rules for this directory:
 
 - **The rail belongs to the run.** One continuous border plus one hit strip
-  per run, not per row — do not reintroduce per-row `isRail` styling.
+  per run, not per row — do not reintroduce per-row `isRail` styling. Both
+  span the CLIP only: the header sits outside the rail with its chevron
+  centred on the rail's x, and the strip folds with the clip (a collapsed
+  run has no edge left to click — the header is the whole run then).
 - **Rows inside a run are still rows.** They keep their own components,
   leases, and margins; the run wraps them in a per-child
   `[data-run-child]` index wrapper (a jump's only handle on a non-leaf row,

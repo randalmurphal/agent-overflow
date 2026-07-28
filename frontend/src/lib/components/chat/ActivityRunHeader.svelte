@@ -28,6 +28,7 @@
     clipId,
     expanded,
     onToggle,
+    class: className = '',
   }: {
     pane: ThreadPane;
     run: ActivityRunNode;
@@ -35,6 +36,9 @@
     clipId: string;
     expanded: boolean;
     onToggle: () => void;
+    /** Extra classes from `ActivityRun` — the chevron-on-rail alignment
+     * lives there, next to the rail offsets it must stay in sync with. */
+    class?: string;
   } = $props();
 
   // Resolved here, not on the node: counts, failure, and the running label
@@ -72,7 +76,7 @@
   {ariaLabel}
   controls={clipId}
   {onToggle}
-  class="py-0.5"
+  class={['py-0.5', className].filter(Boolean).join(' ')}
 >
   {#snippet children()}
     <!-- One text run, no gaps: the separators are literal text so the line

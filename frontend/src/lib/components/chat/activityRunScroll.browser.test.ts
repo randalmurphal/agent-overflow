@@ -448,9 +448,11 @@ describe('activity run — a toggle opens upward', () => {
     return row.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
   }
 
-  /** The toggle plus the frames its converging restore needs. */
-  async function toggleRail(run: HTMLElement): Promise<void> {
-    (run.querySelector('[data-testid="activity-run-rail"]') as HTMLElement).click();
+  /** The toggle plus the frames its converging restore needs. The header,
+   * not the rail strip: the strip folds with the clip, so it cannot expand
+   * a collapsed run — the header is the control present in both states. */
+  async function toggleHeader(run: HTMLElement): Promise<void> {
+    (run.querySelector('[data-testid="activity-run-header"]') as HTMLElement).click();
     await tick();
     await raf();
     await raf();
@@ -478,7 +480,7 @@ describe('activity run — a toggle opens upward', () => {
     const proseBefore = rowTop(scrollEl, 't0');
     expect(proseBefore).toBeGreaterThan(0);
 
-    await toggleRail(run);
+    await toggleHeader(run);
 
     // Vacuity guard: the run really did shrink, by much more than the drift
     // this assertion tolerates. Without the anchor the prose would have risen
@@ -487,7 +489,7 @@ describe('activity run — a toggle opens upward', () => {
     expect(collapsedBy).toBeGreaterThan(100);
     expect(Math.abs(rowTop(scrollEl, 't0') - proseBefore)).toBeLessThanOrEqual(DRIFT_PX);
 
-    await toggleRail(run);
+    await toggleHeader(run);
 
     // And expanding gives the height back above the reader rather than pushing
     // them down the page.

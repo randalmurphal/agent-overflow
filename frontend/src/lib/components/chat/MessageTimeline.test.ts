@@ -600,7 +600,12 @@ describe('<MessageTimeline>', () => {
     const runs = container.querySelectorAll('[data-testid="activity-run"]');
     expect(runs).toHaveLength(1);
     expect(runs[0].getAttribute('data-rail')).toBe('true');
-    expect(runs[0].className).toContain('border-l');
+    // The rail border is one per run, drawn by the clip wrapper inside —
+    // the header sits outside it, so the run's root carries no border.
+    expect(runs[0].className).not.toContain('border-l');
+    expect(
+      [...runs[0].children].some((el) => el.className.includes('border-l')),
+    ).toBe(true);
     // One border for the block, not one per row.
     expect(wrappers[0].querySelector('[data-testid="activity-run"]')).toBeNull();
     expect(wrappers[2].querySelector('[data-testid="activity-run"]')).toBeNull();

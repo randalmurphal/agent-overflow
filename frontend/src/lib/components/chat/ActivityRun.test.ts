@@ -552,14 +552,24 @@ describe('<ActivityRun>', () => {
       expect(pane.activityRuns.scrollSnapshot(runId)?.escaped).toBe(false);
     });
 
-    it('keeps the rail in both states so the block stays anchored', async () => {
-      const { getByTestId } = await renderRun([tool('t0', 0)]);
+    it('folds the rail strip with the clip, keeping the run marker', async () => {
+      // The border and its hit strip span the CLIP only — a collapsed run has
+      // no edge left to click, and the header is the whole run then. The
+      // `data-rail` marker stays in both states: it names what the row IS
+      // (grouped rail activity, which is how the timeline suites identify a
+      // run), not what is currently drawn.
+      const { getByTestId, queryByTestId } = await renderRun([tool('t0', 0)]);
       const run = () => getByTestId('activity-run');
 
       expect(run().getAttribute('data-rail')).toBe('true');
       await fireEvent.click(getByTestId('activity-run-rail'));
       await tick();
       expect(run().getAttribute('data-rail')).toBe('true');
+      expect(queryByTestId('activity-run-rail')).toBeNull();
+
+      await fireEvent.click(getByTestId('activity-run-header'));
+      await tick();
+      expect(queryByTestId('activity-run-rail')).not.toBeNull();
     });
   });
 

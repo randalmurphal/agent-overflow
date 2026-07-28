@@ -175,8 +175,10 @@ is the header alone; open is both, and `collapsed` on the node is exactly which
 — liveness is already folded into it upstream, see [A working run shows what it
 is doing](#a-working-run-shows-what-it-is-doing).
 
-**Header** (`ActivityRunHeader.svelte`) — one line at rail indent: a chevron,
-per-tool counts (count-descending, thinking last: `14 Bash, 6 Read, 3 Edit, 9
+**Header** (`ActivityRunHeader.svelte`) — one line whose chevron sits centred
+on the rail's x, OUTSIDE the rail itself (the border spans only the clip below,
+so the header is not walled behind a second edge and a collapse reads as the
+rail folding up into its control): a chevron, per-tool counts (count-descending, thinking last: `14 Bash, 6 Read, 3 Edit, 9
 thinking`), a failure marker when a member failed, and the display label of
 anything still running. Claude keeps its human-readable native tool names;
 Codex protocol categories use the same aliases as their rows, capitalized for
@@ -237,10 +239,13 @@ a run collapsing off-screen changes nothing about where its header sits.
   Blink honors it, and there the browser's own anchoring would fight the
   compensation. Same reason the outer scroller carries it.
 
-The rail belongs to the run: one continuous border for the whole block,
+The rail belongs to the run: one continuous border for the block of rows,
 doubling as a second collapse target (an absolutely positioned hit strip in the
 gutter, consuming no width). The per-row `isRail` styling in
-`MessageTimeline`'s wrapper retired.
+`MessageTimeline`'s wrapper retired. It spans the CLIP only — the header sits
+outside it with its chevron marking the rail's x, and the strip folds with the
+clip, since a collapsed run has no edge left to click and the header is the
+whole run then.
 
 Consuming no width is what makes it invisible, so it cannot be the only
 control — the run's own header is the discoverable one, in both directions, and

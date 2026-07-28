@@ -18,8 +18,11 @@
   // component renders presence, it never decides it.
   //
   // The rail belongs to the run, not to its rows: one continuous border for
-  // the whole block, doubling as a second, larger collapse target. Per-row
+  // the block of rows, doubling as a second, larger collapse target. Per-row
   // borders would draw the same line but could not be clicked as one thing.
+  // It spans the CLIP only — the header is the run's own boundary, and a
+  // line beside it doubled that edge; instead the header's chevron sits
+  // centred on the rail's x, reading as the line folded into its control.
   //
   // Only the run holding the live tail gets a scroll controller. Historical
   // runs never chase, so they need no ResizeObserver, no intent listeners,
@@ -628,136 +631,156 @@
   // unmounts.
 </script>
 
-<!-- Rail offsets match what the per-row wrapper used to apply:
-     ml-[14px] places the border 14px into the row column (under the
-     chevron gutter) and pl-[18px] shifts the body past the icon and
-     label gutters. Applying them once here rather than per row is what
-     makes the border one continuous line instead of N abutting ones. -->
 <div
-  class="relative ml-[14px] border-l border-border-subtle pl-[18px]"
+  class="relative"
   data-testid="activity-run"
   data-rail="true"
   data-run-id={run.runId}
   data-collapsed={collapsed ? 'true' : 'false'}
   data-live={isLive ? 'true' : 'false'}
 >
-  <!-- A second collapse target on the rail: a hit strip straddling the border,
-       in the gutter where no content sits. Absolutely positioned so it consumes
-       no width and cannot shift the row.
-
-       Pointer-only, deliberately. It duplicates the header below, and an
-       invisible duplicate is worth having for the mouse (the whole block reads
-       as one thing, so clicking its edge should fold it) and worth hiding from
-       everything else: a keyboard user would land a focus ring on a transparent
-       16px strip, and a screen reader would hear the run's state announced twice
-       from two buttons naming one region. `aria-hidden` with `tabindex="-1"`
-       rather than either alone — hiding a focusable element is its own defect.
-       The header is the accessible control, and it is always there. -->
-  <button
-    type="button"
-    class="absolute inset-y-0 -left-2 w-4 cursor-pointer bg-transparent"
-    onclick={toggle}
-    tabindex="-1"
-    aria-hidden="true"
-    data-testid="activity-run-rail"
-  ></button>
-
   <!-- Always, in both states. The run's summary is also its visible collapse
        control, so expanding cannot remove the thing the reader just clicked;
        and because the header never moves, a run collapsing off-screen changes
-       nothing the engine's anchoring has to guess about. -->
-  <ActivityRunHeader {pane} {run} {clipId} expanded={!collapsed} onToggle={toggle} />
-  {#if !collapsed}
-    <!-- Clip host. Exists so the overlay bar has a box exactly the clip's
-         height to hang beside: measured against the run instead, it would span
-         the header too and put the thumb at the wrong offset for every collapsed
-         live run. -->
-    <div class="relative">
-      <!-- Fade clip. The top fade below is a 24px overlay strip; on a run
-           shorter than that it would spill past the run's own bottom edge, so
-           this box clips it to the visible height. `overflow-hidden` is
-           unconditional: the clip inside is already a block formatting
-           context, so it changes no margin. -->
-      <div class="relative overflow-hidden">
-        <!-- overflow-x is hidden on purpose: a wide preview inside a tool row
-             must not raise a horizontal bar at run level, which would consume
-             HEIGHT and shift every row below. overscroll-behavior stays auto —
-             chaining out at the inner edge is wanted, and gesture correctness
-             comes from attribution (utils/scroll/wheelAttribution.ts), not
-             from blocking the chain. -->
-        <div
-          bind:this={clipEl}
-          id={clipId}
-          class="activity-run-clip overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
-          style:max-height={maxHeight}
-          use:nestedScroll
-          use:readerGestures
-          onscroll={onClipScroll}
-          data-testid="activity-run-clip"
-        >
-          <div bind:this={contentEl}>
-            {#if hiddenEarlier > 0}
-              <ActivityRunBoundary count={hiddenEarlier} edge="earlier" onclick={mountEarlier} />
-            {/if}
-            <!-- The wrapper carries the row's index because that is the only
-                 handle a jump has on a non-leaf row: only leaves emit
-                 `data-item-id`, and a hit inside a subagent card resolves to
-                 the card. A plain div, so row margins keep collapsing exactly
-                 as they did when these rows were the virtualizer's own. -->
-            {#each mountedChildren as child, i (timelineNodeKey(child))}
-              <div data-run-child={mountedFrom + i}>
-                {@render renderNode(child, depth)}
-              </div>
-            {/each}
-            {#if hiddenLater > 0}
-              <ActivityRunBoundary count={hiddenLater} edge="later" onclick={mountLater} />
-            {/if}
-          </div>
-        </div>
-        <!-- Top fade, the run's own copy of the conversation's: rows dissolve
-             as they rise out of the clip instead of being cut by a hard edge.
-             Same gradient OVERLAY technique for the same reason — a mask on the
-             clip rasterizes a full clip-sized texture on every streaming
-             repaint, while this is a strip that paints once (see
-             MessageTimeline's TOP_FADE_PX). Paint-only either way: no effect on
-             scrollHeight/clientHeight/scrollTop and no content-RO traffic, so
-             it stays clear of the controller.
+       nothing the engine's anchoring has to guess about.
 
-             Shorter than the conversation's 32px — a run shows a handful of
-             rows, and a third of one is enough to read as a dissolve without
-             dimming the row behind it. It needs no scrollbar-safe inset:
-             `right-0` is the clip's own right edge, and the overlay bar hangs
-             outside it. -->
-        <div
-          aria-hidden="true"
-          class="pointer-events-none absolute top-0 right-0 left-0 h-6 transition-opacity duration-150"
-          class:opacity-0={!fadedTop}
-          style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
-          data-testid="activity-run-top-fade"
-          data-faded={fadedTop ? 'true' : 'false'}
-        ></div>
+       pl-[8.5px] centres the 12px chevron on the rail border below (drawn at
+       14px + 1px wide): the header sits OUTSIDE the rail, its chevron marking
+       the line's x, so collapsing reads as the rail folding up into its
+       control. Padding rather than margin — the header is w-full, and a
+       margin would push it past the row's box. -->
+  <ActivityRunHeader
+    {pane}
+    {run}
+    {clipId}
+    expanded={!collapsed}
+    onToggle={toggle}
+    class="pl-[8.5px]"
+  />
+  {#if !collapsed}
+    <!-- Rail offsets match what the per-row wrapper used to apply:
+         ml-[14px] places the border 14px into the row column (under the
+         chevron gutter) and pl-[18px] shifts the rows past the icon and
+         label gutters. Applying them once here rather than per row is what
+         makes the border one continuous line instead of N abutting ones —
+         and wrapping only the clip is what keeps the header from sitting
+         behind a second edge. -->
+    <div class="relative ml-[14px] border-l border-border-subtle pl-[18px]">
+      <!-- A second collapse target on the rail: a hit strip straddling the
+           border, in the gutter where no content sits. Absolutely positioned so
+           it consumes no width and cannot shift the row; it folds with the clip,
+           because a collapsed run has no edge left to click — the header is the
+           whole run then.
+
+           Pointer-only, deliberately. It duplicates the header above, and an
+           invisible duplicate is worth having for the mouse (the block of rows
+           reads as one thing, so clicking its edge should fold it) and worth
+           hiding from everything else: a keyboard user would land a focus ring
+           on a transparent 16px strip, and a screen reader would hear the run's
+           state announced twice from two buttons naming one region.
+           `aria-hidden` with `tabindex="-1"` rather than either alone — hiding
+           a focusable element is its own defect. The header is the accessible
+           control, and it is always there. -->
+      <button
+        type="button"
+        class="absolute inset-y-0 -left-2 w-4 cursor-pointer bg-transparent"
+        onclick={toggle}
+        tabindex="-1"
+        aria-hidden="true"
+        data-testid="activity-run-rail"
+      ></button>
+
+      <!-- Clip host. Exists so the overlay bar has a box exactly the clip's
+           height to hang beside: measured against the run instead, it would span
+           the header too and put the thumb at the wrong offset for every collapsed
+           live run. -->
+      <div class="relative">
+        <!-- Fade clip. The top fade below is a 24px overlay strip; on a run
+             shorter than that it would spill past the run's own bottom edge, so
+             this box clips it to the visible height. `overflow-hidden` is
+             unconditional: the clip inside is already a block formatting
+             context, so it changes no margin. -->
+        <div class="relative overflow-hidden">
+          <!-- overflow-x is hidden on purpose: a wide preview inside a tool row
+               must not raise a horizontal bar at run level, which would consume
+               HEIGHT and shift every row below. overscroll-behavior stays auto —
+               chaining out at the inner edge is wanted, and gesture correctness
+               comes from attribution (utils/scroll/wheelAttribution.ts), not
+               from blocking the chain. -->
+          <div
+            bind:this={clipEl}
+            id={clipId}
+            class="activity-run-clip overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
+            style:max-height={maxHeight}
+            use:nestedScroll
+            use:readerGestures
+            onscroll={onClipScroll}
+            data-testid="activity-run-clip"
+          >
+            <div bind:this={contentEl}>
+              {#if hiddenEarlier > 0}
+                <ActivityRunBoundary count={hiddenEarlier} edge="earlier" onclick={mountEarlier} />
+              {/if}
+              <!-- The wrapper carries the row's index because that is the only
+                   handle a jump has on a non-leaf row: only leaves emit
+                   `data-item-id`, and a hit inside a subagent card resolves to
+                   the card. A plain div, so row margins keep collapsing exactly
+                   as they did when these rows were the virtualizer's own. -->
+              {#each mountedChildren as child, i (timelineNodeKey(child))}
+                <div data-run-child={mountedFrom + i}>
+                  {@render renderNode(child, depth)}
+                </div>
+              {/each}
+              {#if hiddenLater > 0}
+                <ActivityRunBoundary count={hiddenLater} edge="later" onclick={mountLater} />
+              {/if}
+            </div>
+          </div>
+          <!-- Top fade, the run's own copy of the conversation's: rows dissolve
+               as they rise out of the clip instead of being cut by a hard edge.
+               Same gradient OVERLAY technique for the same reason — a mask on the
+               clip rasterizes a full clip-sized texture on every streaming
+               repaint, while this is a strip that paints once (see
+               MessageTimeline's TOP_FADE_PX). Paint-only either way: no effect on
+               scrollHeight/clientHeight/scrollTop and no content-RO traffic, so
+               it stays clear of the controller.
+
+               Shorter than the conversation's 32px — a run shows a handful of
+               rows, and a third of one is enough to read as a dissolve without
+               dimming the row behind it. It needs no scrollbar-safe inset:
+               `right-0` is the clip's own right edge, and the overlay bar hangs
+               outside it. -->
+          <div
+            aria-hidden="true"
+            class="pointer-events-none absolute top-0 right-0 left-0 h-6 transition-opacity duration-150"
+            class:opacity-0={!fadedTop}
+            style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
+            data-testid="activity-run-top-fade"
+            data-faded={fadedTop ? 'true' : 'false'}
+          ></div>
+        </div>
+        <!-- A zero-width native bar makes the scroll package's geometric
+             scrollbar-gutter hit test impossible, so a drag states its intent
+             instead of having it inferred.
+             The handlers are unconditional: a bar drag is the reader scrolling
+             whether or not this run holds the live tail, and the controller half
+             is what is optional (`stick?.`). Handing `undefined` for a historical
+             run made a drag the one gesture that armed nothing, so dragging to
+             the top of a run's window paged nothing in. -->
+        <OverlayScrollbar
+          target={clipEl}
+          content={contentEl}
+          ariaLabel="Scroll activity run"
+          ownerDrivenPosition={() => !!stick && !stick.escapedFromLock}
+          onUserScrollStart={() => {
+            armReaderScroll();
+            stick?.setEscapedFromLock(true);
+          }}
+          onUserScrollEnd={(atBottom) => {
+            if (atBottom) stick?.markAtBottom();
+          }}
+        />
       </div>
-      <!-- A zero-width native bar makes the scroll package's geometric
-           scrollbar-gutter hit test impossible, so a drag states its intent
-           instead of having it inferred.
-           The handlers are unconditional: a bar drag is the reader scrolling
-           whether or not this run holds the live tail, and the controller half
-           is what is optional (`stick?.`). Handing `undefined` for a historical
-           run made a drag the one gesture that armed nothing, so dragging to
-           the top of a run's window paged nothing in. -->
-      <OverlayScrollbar
-        target={clipEl}
-        content={contentEl}
-        ariaLabel="Scroll activity run"
-        ownerDrivenPosition={() => !!stick && !stick.escapedFromLock}
-        onUserScrollStart={() => {
-          armReaderScroll();
-          stick?.setEscapedFromLock(true);
-        }}
-        onUserScrollEnd={(atBottom) => {
-          if (atBottom) stick?.markAtBottom();
-        }}
-      />
     </div>
   {/if}
 </div>
