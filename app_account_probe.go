@@ -39,7 +39,7 @@ func (a *App) probeStartupAccountInfo() {
 
 	go func() {
 		if _, err := a.ProbeClaudeAccount(); err == nil {
-			a.probeClaudeRateLimits(a.lifeCtx())
+			a.claudeUsageGate().Request()
 		}
 	}()
 	go func() { _, _ = a.ProbeCodexAccount() }()

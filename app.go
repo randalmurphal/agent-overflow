@@ -420,11 +420,15 @@ type App struct {
 	// store and snapshot the session map.
 	retentionCleanupStop chan struct{}
 	retentionCleanupWG   sync.WaitGroup
-	// codexRateLimitProbeRunning coalesces explicit Codex rate-limit refreshes.
-	// Each refresh spawns a short-lived app-server subprocess, so concurrent
-	// turn-complete and periodic triggers should share "already refreshing"
-	// semantics rather than fan out processes for the same account snapshot.
-	codexRateLimitProbeRunning atomic.Bool
+	// Per-provider usage-probe gates (app_usage_probe_gate.go): every
+	// automatic rate-limit refresh trigger funnels through one so bursts
+	// coalesce, a cooldown bounds request rate, and a server 429 holds
+	// probing until its backoff expires. Lazily built via
+	// claudeUsageGate() / codexUsageGate().
+	claudeUsageGateOnce sync.Once
+	claudeUsageGateVal  *usageProbeGate
+	codexUsageGateOnce  sync.Once
+	codexUsageGateVal   *usageProbeGate
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn        func(string) error
 	stopSessionFn         func(string) error

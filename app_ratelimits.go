@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log"
 	"sort"
 	"strconv"
@@ -24,10 +23,13 @@ const rateLimitProbeInterval = 2 * time.Minute
 // timestamp.
 const rateLimitResetJitterTolerance = time.Minute
 
+// rateLimitProbeLoop's probe is a usageProbeGate.Request: the gate owns
+// coalescing, cooldown, backoff, and the probe's context (lifeCtx, so
+// shutdown still aborts an in-flight HTTP call mid-request).
 type rateLimitProbeLoop struct {
 	probeImmediately bool
 	hasActiveSession func() bool
-	probe            func(context.Context)
+	probe            func()
 }
 
 func (a *App) rememberRateLimitsEvent(name string, data any) {
@@ -263,7 +265,7 @@ func (a *App) startRateLimitProbeLoop(loop rateLimitProbeLoop) {
 	ctx := a.lifeCtx()
 	go func() {
 		if loop.probeImmediately {
-			loop.probe(ctx)
+			loop.probe()
 		}
 
 		ticker := time.NewTicker(rateLimitProbeInterval)
@@ -276,7 +278,7 @@ func (a *App) startRateLimitProbeLoop(loop rateLimitProbeLoop) {
 				if !loop.hasActiveSession() {
 					continue
 				}
-				loop.probe(ctx)
+				loop.probe()
 			}
 		}
 	}()

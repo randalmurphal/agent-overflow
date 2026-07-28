@@ -16,11 +16,15 @@ type ProbeConfig struct {
 	Binary  string // default: "claude"
 	WorkDir string
 	Env     map[string]string
-	Timeout time.Duration // default: 8s
+	Timeout time.Duration // default: 20s
 }
 
-// defaultProbeTimeout is the per-spawn deadline.
-const defaultProbeTimeout = 8 * time.Second
+// defaultProbeTimeout is the per-spawn deadline. Generous: a cold CLI start
+// (node boot, plugins, hooks) plus a native refresh-token exchange can
+// legitimately take double-digit seconds on a slow host, and a timed-out
+// probe fails the operation that needed it — a send, a login, a usage
+// refresh — so tight is worse than slow here.
+const defaultProbeTimeout = 20 * time.Second
 
 // DefaultProbeTTL is how long a successful probe result stays cached for a
 // given binary path.

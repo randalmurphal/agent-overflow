@@ -340,6 +340,95 @@ func TestProbeRateLimits_Unauthorized(t *testing.T) {
 	}
 }
 
+// TestProbeRateLimits_TooManyRequests surfaces a typed RateLimitedError
+// carrying the server's Retry-After so the app-level probe gate can hold
+// automatic probes for exactly as long as the server asked.
+func TestProbeRateLimits_TooManyRequests(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	credsDir := filepath.Join(tmpHome, ".claude")
+	_ = os.MkdirAll(credsDir, 0o700)
+	_ = os.WriteFile(filepath.Join(credsDir, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"hot-token"}}`), 0o600)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "45")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	srvURL, _ := url.Parse(srv.URL)
+	client := &http.Client{Transport: redirectTransport{target: srvURL, inner: http.DefaultTransport}}
+
+	_, err := ProbeRateLimits(context.Background(), client)
+	var limited *RateLimitedError
+	if !errors.As(err, &limited) {
+		t.Fatalf("err: got %v, want *RateLimitedError", err)
+	}
+	if limited.RetryAfter != 45*time.Second {
+		t.Errorf("RetryAfter: got %v, want 45s", limited.RetryAfter)
+	}
+	if !strings.Contains(limited.Error(), "429") {
+		t.Errorf("Error(): got %q, want one containing '429'", limited.Error())
+	}
+}
+
+// TestProbeRateLimits_TooManyRequestsNoRetryAfter keeps the typed error
+// with a zero RetryAfter when the header is absent — callers pick their
+// own default backoff for zero.
+func TestProbeRateLimits_TooManyRequestsNoRetryAfter(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	credsDir := filepath.Join(tmpHome, ".claude")
+	_ = os.MkdirAll(credsDir, 0o700)
+	_ = os.WriteFile(filepath.Join(credsDir, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"hot-token"}}`), 0o600)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	srvURL, _ := url.Parse(srv.URL)
+	client := &http.Client{Transport: redirectTransport{target: srvURL, inner: http.DefaultTransport}}
+
+	_, err := ProbeRateLimits(context.Background(), client)
+	var limited *RateLimitedError
+	if !errors.As(err, &limited) {
+		t.Fatalf("err: got %v, want *RateLimitedError", err)
+	}
+	if limited.RetryAfter != 0 {
+		t.Errorf("RetryAfter: got %v, want 0", limited.RetryAfter)
+	}
+}
+
+func TestRetryAfterDuration(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "empty", value: "", want: 0},
+		{name: "seconds", value: "45", want: 45 * time.Second},
+		{name: "seconds with spaces", value: "  120  ", want: 120 * time.Second},
+		{name: "zero seconds", value: "0", want: 0},
+		{name: "negative seconds", value: "-5", want: 0},
+		{name: "http date in future", value: now.Add(90 * time.Second).Format(http.TimeFormat), want: 90 * time.Second},
+		{name: "http date in past", value: now.Add(-time.Minute).Format(http.TimeFormat), want: 0},
+		{name: "garbage", value: "soon", want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := retryAfterDuration(tt.value, now); got != tt.want {
+				t.Errorf("retryAfterDuration(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
 // redirectTransport rewrites every outbound request to point at the
 // httptest server, then delegates to the underlying RoundTripper.
 // Keeps tests honest about the request path / headers / method while

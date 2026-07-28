@@ -47,10 +47,10 @@ const (
 	anthropicVersion = "2023-06-01"
 
 	// rateLimitProbeTimeout caps the HTTP call. Generous because the
-	// probe runs on a background ticker — slow networks shouldn't break
-	// it, but a hung connection also shouldn't park a goroutine
-	// indefinitely.
-	rateLimitProbeTimeout = 15 * time.Second
+	// probe runs on a background ticker — a slow network or a slow
+	// server should produce a late ring update, not a failed one — but
+	// a hung connection also shouldn't park a goroutine indefinitely.
+	rateLimitProbeTimeout = 30 * time.Second
 )
 
 const maxCredentialFileBytes = 16 << 20
@@ -142,6 +142,44 @@ var ErrNoCredentials = errors.New("claude: oauth credentials not found")
 // refresh-token path before retrying the read-only usage request.
 var ErrOAuthUnauthorized = errors.New("claude: oauth bearer expired or invalid")
 
+// RateLimitedError is the usage endpoint's 429. RetryAfter carries the
+// server's Retry-After when it sent a usable one, zero otherwise — callers
+// pick their own default backoff for zero.
+type RateLimitedError struct {
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitedError) Error() string {
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf(
+			"claude: usage endpoint returned 429 Too Many Requests (retry after %s)",
+			e.RetryAfter.Round(time.Second),
+		)
+	}
+	return "claude: usage endpoint returned 429 Too Many Requests"
+}
+
+// retryAfterDuration parses an HTTP Retry-After value — delta-seconds or
+// HTTP-date. Zero means absent or unusable.
+func retryAfterDuration(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		if d := at.Sub(now); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
 func readCredentialFile(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -226,6 +264,11 @@ func executeUsageProbe(ctx context.Context, httpClient *http.Client, bearer stri
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, nil, fmt.Errorf("claude: usage probe unauthorized: %w", ErrOAuthUnauthorized)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, nil, &RateLimitedError{
+			RetryAfter: retryAfterDuration(resp.Header.Get("Retry-After"), time.Now()),
+		}
 	}
 	if resp.StatusCode >= 400 {
 		return nil, resp.Header, fmt.Errorf("claude: usage endpoint returned %s", resp.Status)

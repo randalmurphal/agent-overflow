@@ -90,23 +90,3 @@ func TestProbeCodexRateLimits_EmitsRateLimitsWithoutAccount(t *testing.T) {
 		t.Fatalf("limits = %+v, want 39/36 used", evt.RateLimits.Limits)
 	}
 }
-
-func TestProbeCodexRateLimits_CoalescesWhileRunning(t *testing.T) {
-	app := newTestAppWithStore(t)
-	app.settings = settings.NewService(t.TempDir())
-	app.codexRateLimitProbeRunning.Store(true)
-
-	var emitted bool
-	app.testEmitHook = func(string, any) {
-		emitted = true
-	}
-
-	app.probeCodexRateLimits(context.Background())
-
-	if emitted {
-		t.Fatal("probe emitted while another Codex rate-limit probe was already running")
-	}
-	if !app.codexRateLimitProbeRunning.Load() {
-		t.Fatal("probe cleared running flag it did not acquire")
-	}
-}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -195,7 +194,7 @@ func TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel(t *testing.T) {
 
 	probeFired := make(chan struct{}, 4)
 	hasActive := func() bool { return true }
-	probe := func(ctx context.Context) {
+	probe := func() {
 		select {
 		case probeFired <- struct{}{}:
 		default:

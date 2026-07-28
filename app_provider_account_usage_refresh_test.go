@@ -8,11 +8,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
 )
 
@@ -319,6 +322,73 @@ func usageClientWritingCredential(
 		w.Header().Set("Anthropic-Ratelimit-Unified-5h-Reset", "1778479200")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":"usage"}`))
+	}))
+	t.Cleanup(server.Close)
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Client{
+		Transport: redirectRoundTripper{target: target, inner: http.DefaultTransport},
+	}
+}
+
+// A manual refresh during a server-imposed backoff must refuse up front —
+// retrying into a 429 only extends the penalty — and must do so without
+// sending anything: the tripwire transport fails the test on any request.
+func TestManualUsageRefreshRefusesDuringBackoff(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installUsageTestAccounts(t, app, usageTestAccount{
+		"selected",
+		[]byte(`{"claudeAiOauth":{"accessToken":"original"}}`),
+	})
+	app.rateLimitProbeClientOverride = &http.Client{Transport: tripwireRoundTripper{t: t}}
+
+	app.claudeUsageGate().NoteResult(&claude.RateLimitedError{RetryAfter: time.Minute})
+
+	err := app.RefreshProviderAccountUsage(string(provider.Claude), "selected")
+	if err == nil || !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("refresh error = %v, want the backoff reported", err)
+	}
+}
+
+// A manual refresh that earns a 429 must feed that outcome back into the
+// gate, so automatic probes hold instead of piling onto the same penalty.
+func TestManualUsageRefreshReportsRateLimitToTheGate(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installUsageTestAccounts(t, app, usageTestAccount{
+		"selected",
+		[]byte(`{"claudeAiOauth":{"accessToken":"original"}}`),
+	})
+	app.rateLimitProbeClientOverride = rateLimitedUsageClient(t, "45")
+
+	err := app.RefreshProviderAccountUsage(string(provider.Claude), "selected")
+	var limited *claude.RateLimitedError
+	if !errors.As(err, &limited) {
+		t.Fatalf("refresh error = %v, want *claude.RateLimitedError", err)
+	}
+	remaining := app.claudeUsageGate().BackoffRemaining()
+	if remaining <= 0 || remaining > 45*time.Second {
+		t.Fatalf("BackoffRemaining = %v, want (0s, 45s] from the manual 429", remaining)
+	}
+}
+
+// tripwireRoundTripper fails the test on any outbound request.
+type tripwireRoundTripper struct{ t *testing.T }
+
+func (rt tripwireRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	rt.t.Error("HTTP request sent while the usage endpoint backoff held")
+	return nil, errors.New("request blocked by test tripwire")
+}
+
+// rateLimitedUsageClient answers every request with 429 + Retry-After.
+func rateLimitedUsageClient(t *testing.T, retryAfter string) *http.Client {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", retryAfter)
+		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	t.Cleanup(server.Close)
 	target, err := url.Parse(server.URL)

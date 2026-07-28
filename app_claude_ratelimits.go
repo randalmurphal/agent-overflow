@@ -25,49 +25,52 @@ var rateLimitProbeHTTPClient = &http.Client{}
 // so the event carries no threadId — the frontend store keys it by provider,
 // account, limit ID, and duration.
 //
-// Returns silently on ErrNoCredentials — the user simply hasn't run
+// Every automatic trigger reaches this through claudeUsageGate(), never
+// directly — the gate coalesces bursts and holds probing through a 429
+// backoff, which is why the error (a claude.RateLimitedError in that case)
+// is returned rather than swallowed.
+//
+// Returns nil on ErrNoCredentials — the user simply hasn't run
 // `claude login` yet and there's nothing useful to do until they do.
-// Other errors are logged at the standard log level: rate-limit data
-// is non-critical (the rings just stay at their last-known value), so
-// transient failures should not surface a banner.
-func (a *App) probeClaudeRateLimits(ctx context.Context) {
+// Other errors are also logged here: rate-limit data is non-critical
+// (the rings just stay at their last-known value), so transient
+// failures should not surface a banner.
+func (a *App) probeClaudeRateLimits(ctx context.Context) error {
 	// Cheap fail-fast: ctx cancellation would also short-circuit the
 	// HTTP call below, but skipping the credential read and HTTP setup
 	// is cheaper than letting them allocate and immediately abort.
 	if a.shuttingDown.Load() {
-		return
+		return nil
 	}
 	if err := a.reconcileExternalProviderAccount(string(provider.Claude)); err != nil {
 		log.Printf("claude: reconcile external account before rate-limit probe: %v", err)
-		return
+		return err
 	}
 	selection := a.captureProviderAccountSelection(string(provider.Claude))
 	if selection.AccountID != "" {
-		if err := a.refreshProviderAccountUsage(
+		err := a.refreshProviderAccountUsage(
 			ctx,
 			string(provider.Claude),
 			selection.AccountID,
-		); err != nil {
+		)
+		if err != nil {
 			if errors.Is(err, claude.ErrNoCredentials) {
-				return
+				return nil
 			}
 			log.Printf("claude: rate-limit probe: %v", err)
 		}
-		return
+		return err
 	}
-	var (
-		snap provider.RateLimitsSnapshot
-		err  error
-	)
-	snap, err = claude.ProbeRateLimits(ctx, a.rateLimitProbeClient())
+	snap, err := claude.ProbeRateLimits(ctx, a.rateLimitProbeClient())
 	if err != nil {
 		if errors.Is(err, claude.ErrNoCredentials) {
-			return
+			return nil
 		}
 		log.Printf("claude: rate-limit probe: %v", err)
-		return
+		return err
 	}
 	a.emitRateLimitsSnapshot(snap)
+	return nil
 }
 
 // probeSelectedClaudeRateLimits probes the account Agent Overflow currently
@@ -253,7 +256,7 @@ func (a *App) startClaudeRateLimitProbeLoop() {
 		// an existing native login, so the snapshot is account-scoped.
 		probeImmediately: false,
 		hasActiveSession: a.hasActiveClaudeSession,
-		probe:            a.probeClaudeRateLimits,
+		probe:            a.claudeUsageGate().Request,
 	})
 }
 

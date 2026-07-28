@@ -20,10 +20,24 @@ import (
 // and fingerprint validation. The selected Claude account is probed in the
 // canonical home instead, because a refresh must not fork its rotation chain —
 // see probeSelectedClaudeRateLimits.
+//
+// This manual path deliberately bypasses the usage gate's cooldown — a user
+// demand should not silently coalesce away — but it still honors a
+// server-imposed 429 backoff (retrying into one only extends it), and it
+// reports its own outcome so a 429 here holds the automatic probes too.
 func (a *App) RefreshProviderAccountUsage(
 	providerName,
 	accountID string,
 ) (retErr error) {
+	if providerName == string(provider.Claude) {
+		if remaining := a.claudeUsageGate().BackoffRemaining(); remaining > 0 {
+			return fmt.Errorf(
+				"the Claude usage endpoint is rate limited; try again in %s",
+				remaining.Round(time.Second),
+			)
+		}
+		defer func() { a.claudeUsageGate().NoteResult(retErr) }()
+	}
 	return a.refreshProviderAccountUsage(a.lifeCtx(), providerName, accountID)
 }
 

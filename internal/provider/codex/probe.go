@@ -35,7 +35,7 @@ type ProbeConfig struct {
 	Binary  string // default: "codex"
 	WorkDir string
 	Env     map[string]string
-	Timeout time.Duration // default: 8s, mirroring the Claude probe.
+	Timeout time.Duration // default: 20s, mirroring the Claude probe.
 
 	// OnSnapshot, when non-nil, fires once with the rate-limit snapshot
 	// extracted from the same `account/rateLimits/read` response that
@@ -50,7 +50,11 @@ type ProbeConfig struct {
 }
 
 const (
-	defaultProbeTimeout = 8 * time.Second
+	// defaultProbeTimeout mirrors the Claude probe's deadline and its
+	// rationale: a cold app-server start can take double-digit seconds on
+	// a slow host, and a timed-out probe fails the operation that needed
+	// it, so tight is worse than slow.
+	defaultProbeTimeout = 20 * time.Second
 
 	// DefaultProbeTTL — process-global cache lifetime for a successful
 	// probe result. Matches the Claude probe so both providers share

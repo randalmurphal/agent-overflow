@@ -96,14 +96,18 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		if evt.Kind == provider.EventTurnComplete {
 			// Rate-limit refresh on turn completion: piggy-back on the
 			// event the user already triggered so the rings reflect the
-			// cost of the turn that just finished. Fires in a goroutine
-			// so the provider-specific probe doesn't block downstream
-			// event handlers.
+			// cost of the turn that just finished. Routed through the
+			// usage gate because one logical turn emits several
+			// EventTurnComplete (soft round closes at intermediate
+			// message boundaries plus the result envelope) — the gate
+			// coalesces the burst into one probe plus one trailing
+			// probe. Fires in a goroutine so the probe doesn't block
+			// downstream event handlers.
 			switch providerType {
 			case string(provider.Claude):
-				go a.probeClaudeRateLimits(a.lifeCtx())
+				go a.claudeUsageGate().Request()
 			case string(provider.Codex):
-				go a.probeCodexRateLimits(a.lifeCtx())
+				go a.codexUsageGate().Request()
 			}
 		}
 
