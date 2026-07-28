@@ -256,6 +256,12 @@ func FirstNonEmptyMessage(candidates ...string) string {
 // file and reads the structured response back from the output file.
 // Returns the raw output bytes for the caller to decode.
 //
+// The prompt is self-contained, so `--ignore-user-config` (codex 0.122+)
+// skips ~/.codex/config.toml — without it every run starts a real thread
+// and boots all of the user's configured MCP servers. Auth still reads
+// auth.json from CODEX_HOME, and `--ephemeral` already keeps the run
+// out of persisted session history.
+//
 // extraArgs are inserted between the standard --output-* flags and the
 // trailing "-" stdin sentinel — use them for task-specific flags such
 // as repeated `--image PATH`.
@@ -277,6 +283,7 @@ func RunCodex(
 	args := []string{
 		"exec",
 		"--ephemeral",
+		"--ignore-user-config",
 		"--skip-git-repo-check",
 		"-s", "read-only",
 		"--model", cfg.Model,
@@ -305,6 +312,13 @@ func RunCodex(
 // RunClaude drives `claude -p` with a JSON schema. Returns the raw
 // stdout for the caller to decode via DecodeClaudeStructuredLastLine.
 //
+// The prompt is self-contained, so `--safe-mode` (CLI 2.1.169+) skips the
+// workspace's hooks, plugins, MCP servers, and CLAUDE.md — none of which
+// should fire for a commit-message or title generation — while OAuth
+// inference works normally. `--no-session-persistence` keeps these runs
+// out of the workspace's ~/.claude/projects resume list, where each one
+// otherwise lands as a resumable transcript.
+//
 // extraArgs are appended after the standard flags; use them for
 // task-specific flags like --effort or --dangerously-skip-permissions.
 func RunClaude(
@@ -320,6 +334,8 @@ func RunClaude(
 		"-p",
 		"--output-format", "json",
 		"--json-schema", schemaJSON,
+		"--safe-mode",
+		"--no-session-persistence",
 	}
 	if cfg.Model != "" {
 		args = append(args, "--model", cfg.Model)

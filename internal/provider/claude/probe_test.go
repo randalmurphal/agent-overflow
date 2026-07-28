@@ -151,7 +151,10 @@ func TestProbeAccountBuildsMaxTurnsZeroArgs(t *testing.T) {
 		t.Fatalf("probe args missing --max-turns 0: %v", args)
 	}
 
-	wantFlags := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}
+	// --safe-mode keeps the probe from firing the user's hooks, plugins,
+	// MCP servers, and CLAUDE.md discovery; unlike --bare it leaves OAuth
+	// (and so the native token refresh) working normally.
+	wantFlags := []string{"--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--safe-mode"}
 	for _, want := range wantFlags {
 		var found bool
 		for _, arg := range args {

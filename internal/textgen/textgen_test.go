@@ -29,6 +29,109 @@ func TestLimitPromptSection_AppendsTruncatedMarker(t *testing.T) {
 	}
 }
 
+// A textgen prompt is self-contained, so the Claude invocation must run
+// isolated from the workspace's customizations: --safe-mode keeps hooks,
+// plugins, MCP servers, and CLAUDE.md out of a commit-message run, and
+// --no-session-persistence keeps the run out of the workspace's resume
+// list. (--bare would be wrong here: it disables OAuth, which subscription
+// users authenticate with.)
+func TestRunClaude_IsolatesFromWorkspaceCustomizations(t *testing.T) {
+	var got CLISpec
+	cfg := Config{
+		Binary: "claude",
+		Model:  "claude-haiku-4-5",
+		Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
+			got = spec
+			return CLIResult{Stdout: `{"structured_output":{}}`}, nil
+		},
+	}
+
+	if _, err := RunClaude(
+		context.Background(),
+		cfg,
+		"/workspace",
+		`{"type":"object"}`,
+		[]string{"--extra"},
+		"prompt",
+		time.Minute,
+	); err != nil {
+		t.Fatalf("RunClaude: %v", err)
+	}
+
+	for _, want := range []string{
+		"-p", "--json-schema", "--safe-mode", "--no-session-persistence", "--extra",
+	} {
+		found := false
+		for _, arg := range got.Args {
+			if arg == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("claude args missing %q: %v", want, got.Args)
+		}
+	}
+	if got.Cwd != "/workspace" || got.Stdin != "prompt" {
+		t.Errorf("spec cwd/stdin = %q/%q, want /workspace/prompt", got.Cwd, got.Stdin)
+	}
+}
+
+// The Codex counterpart of the isolation contract: --ignore-user-config
+// keeps a textgen run from booting every MCP server in ~/.codex/config.toml
+// (codex exec starts a real thread, so they would all spawn), and
+// --ephemeral keeps it out of persisted session history. Auth still reads
+// auth.json from CODEX_HOME.
+func TestRunCodex_IsolatesFromUserConfig(t *testing.T) {
+	var got CLISpec
+	cfg := Config{
+		Binary: "codex",
+		Model:  "gpt-5.6-sol",
+		Effort: "low",
+		Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
+			got = spec
+			for i, arg := range spec.Args {
+				if arg == "--output-last-message" && i+1 < len(spec.Args) {
+					if err := os.WriteFile(spec.Args[i+1], []byte(`{}`), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			return CLIResult{}, nil
+		},
+	}
+
+	if _, err := RunCodex(
+		context.Background(),
+		cfg,
+		"/workspace",
+		`{"type":"object"}`,
+		[]string{"--extra"},
+		"prompt",
+		time.Minute,
+	); err != nil {
+		t.Fatalf("RunCodex: %v", err)
+	}
+
+	for _, want := range []string{
+		"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--extra",
+	} {
+		found := false
+		for _, arg := range got.Args {
+			if arg == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("codex args missing %q: %v", want, got.Args)
+		}
+	}
+	if got.Args[len(got.Args)-1] != "-" {
+		t.Errorf("codex args must end with the stdin sentinel; got %v", got.Args)
+	}
+}
+
 func TestExecCLI_StreamsExitCodeWithoutError(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")

@@ -96,12 +96,21 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 // buildProbeArgs returns the CLI flags used by ProbeAccount. Kept
 // separate so the zero-token guarantee (`--max-turns 0`) is visible
 // and testable without running a full session.
+//
+// `--safe-mode` (CLI 2.1.169+) skips every customization a probe must not
+// trigger — hooks, plugins, MCP servers, CLAUDE.md discovery — while OAuth
+// and the native token refresh work normally (spike-verified on 2.1.219:
+// the initialize control_response still carries the full `account` object).
+// `--bare` is NOT a substitute: it never reads OAuth at all, which would
+// report every subscription login as unauthenticated and disable the
+// refresh path this probe exists to drive.
 func buildProbeArgs() []string {
 	return []string{
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--max-turns", "0",
+		"--safe-mode",
 	}
 }
 
