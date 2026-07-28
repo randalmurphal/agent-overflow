@@ -89,15 +89,26 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
   scrollSnapshot(runId: string): ActivityRunScrollSnapshot | null;
   saveScrollSnapshot(runId: string, snapshot: ActivityRunScrollSnapshot): void;
   /**
-   * State whether the run has a clip on screen. Called by the run's row, the
-   * only thing that knows: collapsing normally closes the clip, but a
-   * collapsed run keeps one while it holds the thread's tail and while it
-   * folds that clip shut.
-   *
-   * Outside the `revision` graph: nothing on the node depends on it, and the
-   * row that sets it would be re-rendering itself.
+   * Runs still rendering open because they opened while live and nobody has
+   * answered for them since — the candidates the timeline's auto-collapse
+   * gate walks (`components/chat/timelineActivityRunAutoCollapse.ts`).
+   * Includes the run that is STILL live: the registry cannot know liveness
+   * (see `collapsedFor`), so the gate filters on `node.live`.
    */
-  setClipOpen(runId: string, open: boolean): void;
+  openedLiveRunIds(): string[];
+  /**
+   * Let a settled run take the thread's defaults again, dropping the
+   * open-because-live hold `collapsedFor` recorded. Called by the
+   * auto-collapse gate once the reader is provably elsewhere — never from a
+   * click, which goes through `setCollapsed` and beats this hold outright.
+   *
+   * When the defaults say collapsed this IS the auto-collapse: the run's
+   * next projection renders it as a chip, and its inner position is
+   * forgotten the same way a clicked collapse forgets it. When they say
+   * expanded, nothing visible changes — the hold is simply retired, so a
+   * later default flip treats the run like any other settled one.
+   */
+  releaseOpenedLive(runId: string): void;
   /**
    * RESIZE the run's mounted window, recording the size as an explicit
    * override that no longer tracks the `activityRunWindowRows` setting. Set by
@@ -160,22 +171,40 @@ interface RunEntry {
   /**
    * The run currently has a clip on screen to record a position from.
    *
-   * Not the inverse of `collapsed`, which is why it is stored rather than
-   * derived: a collapsing run keeps its clip for the length of the fold, and a
-   * run whose collapse resolves from the defaults renders open for as long as it
-   * is live. The mounted row is the only thing that knows either, so the mounted
-   * row states it.
+   * Not the inverse of the entry's `collapsed` override, which is why it is
+   * stored: a run whose collapse resolves from the defaults renders open
+   * while it is live and while `openedLive` holds it, and only `collapsedFor`
+   * sees the whole resolution — so `collapsedFor` records its own answer
+   * here on every pass. `forgetInnerPosition` closes it eagerly on the same
+   * flush as the collapse that makes the clip go away, so a save arriving
+   * between the collapse and the next projection is refused too.
    *
-   * Starts true and is closed by `forgetInnerPosition`, so an entry nobody has
-   * collapsed behaves exactly as it did when this was `!collapsed`. Only a
-   * mounted clip can produce a position to save, so an entry that starts
-   * permissive cannot let a wrong one through — an entry that started closed
-   * could only ever drop a right one.
+   * Starts true, so an entry nobody has collapsed behaves exactly as it did
+   * when this was `!collapsed`. Only a mounted clip can produce a position to
+   * save, so an entry that starts permissive cannot let a wrong one through —
+   * an entry that started closed could only ever drop a right one.
    *
    * Never archived. It describes a DOM state, and a run coming back from the
    * archive has no rows.
    */
   clipOpen: boolean;
+  /**
+   * The run rendered open because it was LIVE, with nobody having answered
+   * for it — recorded by `collapsedFor` at the moment it resolves that way.
+   *
+   * This is what keeps a settled run from snapping shut the instant its
+   * closing prose arrives: the flag outlives liveness, so the run keeps
+   * rendering open until the timeline's auto-collapse gate releases it
+   * (`releaseOpenedLive`) once the reader is provably elsewhere — or until
+   * the reader answers directly (`setCollapsed` / `setAllCollapsed`), which
+   * clears it, because an explicit answer beats a hold that exists only to
+   * avoid moving things under them.
+   *
+   * Never archived, deliberately: a run revived after a sweep or a thread
+   * switch mounts fresh rows the reader is not looking at, so it follows the
+   * defaults like any other settled run.
+   */
+  openedLive: boolean;
   scroll: ActivityRunScrollSnapshot | null;
   /** null → the `activityRunWindowRows` setting. */
   windowRows: number | null;
@@ -191,7 +220,7 @@ interface RunEntry {
  * in every thread — so a bare item id would let one thread's first run
  * revive another's state on a switch.
  */
-interface ArchivedRun extends Omit<RunEntry, 'members' | 'focus' | 'clipOpen'> {
+interface ArchivedRun extends Omit<RunEntry, 'members' | 'focus' | 'clipOpen' | 'openedLive'> {
   keys: string[];
 }
 
@@ -215,6 +244,7 @@ function emptyEntry(threadId: string): RunEntry {
     members: new Set(),
     collapsed: null,
     clipOpen: true,
+    openedLive: false,
     scroll: null,
     windowRows: null,
     windowStartItemId: null,
@@ -326,6 +356,7 @@ export function createThreadActivityRuns(
           members: new Set(),
           collapsed: revived.collapsed,
           clipOpen: true,
+          openedLive: false,
           scroll: revived.scroll,
           windowRows: revived.windowRows,
           windowStartItemId: revived.windowStartItemId,
@@ -442,24 +473,51 @@ export function createThreadActivityRuns(
   }
 
   function collapsedFor(runId: string, live: boolean): boolean {
-    const override = entries.get(runId)?.collapsed;
+    const entry = entries.get(runId);
+    const collapsed = resolveCollapsed(entry, live);
+    // The resolved answer IS clip presence — the row renders its clip from
+    // exactly this — and only this resolution sees all three inputs, so it
+    // records its own answer rather than having the row report back what it
+    // was just told (see the field's declaration).
+    if (entry) entry.clipOpen = !collapsed;
+    return collapsed;
+  }
+
+  function resolveCollapsed(entry: RunEntry | undefined, live: boolean): boolean {
     // An answer about THIS run beats everything, including liveness. A reader
     // who collapses the run they are watching means now, not when it finishes —
     // the clip closing is the only evidence the click did anything.
+    const override = entry?.collapsed;
     if (override !== null && override !== undefined) return override;
-    // Nobody has answered for it, so a working run shows its work. The defaults
-    // — the thread's bulk state and the `activityRunDefault` setting — say how a
-    // run should SIT, and one still filling has not settled into anything yet;
-    // it closes itself when it does, with a fold rather than a jump
-    // (`activityRunFold.ts`). This is the whole reason the parameter exists: the
-    // registry cannot know liveness, which is a claim about items it never
-    // reads, and it is deliberately an input to the FALLBACK only.
-    return live ? false : threadDefaultCollapsed();
+    // Nobody has answered for it, so a working run shows its work — recorded,
+    // because rendering open is a commitment that outlives the turn: snapping
+    // shut on the exact frame the run settles would remove a viewport of
+    // content in front of whoever was watching it stream. This is the whole
+    // reason the parameter exists: the registry cannot know liveness, which is
+    // a claim about items it never reads, and it is deliberately an input to
+    // the FALLBACK only.
+    if (live) {
+      if (entry) entry.openedLive = true;
+      return false;
+    }
+    // Settled, but it opened as a live run and nobody has reconciled that yet.
+    // It keeps rendering open until the timeline's auto-collapse gate releases
+    // it off-screen (`releaseOpenedLive`) or the reader answers directly.
+    if (entry?.openedLive) return false;
+    // The defaults — the thread's bulk state and the `activityRunDefault`
+    // setting — say how a run should SIT, and this one has settled into them.
+    return threadDefaultCollapsed();
   }
 
   function setCollapsed(runId: string, collapsed: boolean): void {
     const entry = entries.get(runId);
-    if (!entry || entry.collapsed === collapsed) return;
+    if (!entry) return;
+    // An explicit answer retires the open-because-live hold even when the
+    // rendered state does not change: the hold exists to avoid moving things
+    // under a reader, and the reader just spoke. A run still live re-records
+    // it if this override is later dropped while it is still filling.
+    entry.openedLive = false;
+    if (entry.collapsed === collapsed) return;
     entry.collapsed = collapsed;
     if (collapsed) forgetInnerPosition(entry);
     else entry.clipOpen = true;
@@ -511,9 +569,14 @@ export function createThreadActivityRuns(
       // Per-run overrides are dropped rather than overwritten so the runs go
       // back to following the thread, which is what makes a later flip apply
       // to them too. Collapsing also forgets each run's inner position, for
-      // the same reason a single collapse does.
+      // the same reason a single collapse does. Open-because-live holds are
+      // retired the same way `setCollapsed` retires them — "all" includes the
+      // settled runs those holds were keeping open — and the run that is
+      // STILL live simply re-records its hold on the next pass, which is what
+      // keeps a bulk collapse from blinding the reader to work in flight.
       for (const entry of entries.values()) {
         entry.collapsed = null;
+        entry.openedLive = false;
         if (collapsed) forgetInnerPosition(entry);
         else entry.clipOpen = true;
       }
@@ -550,10 +613,28 @@ export function createThreadActivityRuns(
       if (!entry.clipOpen) return;
       entry.scroll = snapshot;
     },
-    setClipOpen: (runId, open) => {
+    openedLiveRunIds: () => {
+      const held: string[] = [];
+      for (const [runId, entry] of entries) {
+        if (entry.openedLive) held.push(runId);
+      }
+      return held;
+    },
+    releaseOpenedLive: (runId) => {
       const entry = entries.get(runId);
-      if (!entry) return;
-      entry.clipOpen = open;
+      if (!entry?.openedLive) return;
+      entry.openedLive = false;
+      // No override check: a hold only exists while nobody has answered —
+      // `resolveCollapsed` records it under a null override and every
+      // `setCollapsed` write retires it — so the defaults alone decide here.
+      // Only an actual auto-collapse rebuilds and forgets. With the defaults
+      // saying expanded the run keeps rendering exactly as it was — dropping
+      // its inner position then would yank a still-open clip to its tail, and
+      // a revision bump would rebuild the projection to change nothing.
+      if (threadDefaultCollapsed()) {
+        forgetInnerPosition(entry);
+        revision += 1;
+      }
     },
     setMountWindow: (runId, window) => {
       const entry = entries.get(runId);

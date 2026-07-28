@@ -2210,6 +2210,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     /** Validity stamp for replaying a measured-size priors snapshot across a
      *  thread switch — see utils/virtual/priors.ts. */
     expansionSignature: rowUiState.expansionSignature,
+    hasUserExpansionWithin: rowUiState.hasUserExpansionWithin,
     activityRuns,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
     pruneRowUiState: rowUiState.pruneRowUiState,

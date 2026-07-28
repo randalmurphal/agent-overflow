@@ -287,15 +287,25 @@ the window they describe, and a folded id arriving again over the wire
 subagent memory is O(active children), not O(transcript), and the window
 cap counts only renderable rows.
 
-## Reader-Requested Height Changes
+## Run Height Changes
 
-A height change the reader ASKED for — today, an activity run collapsing or
-expanding, including the header's collapse-all — goes through
+A deliberate change to a run's height goes through
 `PaneScrollController.preserveViewportBottom` (`timelineWindowAnchor.svelte.ts`,
 the same module as the prune transaction, reached from components via
-`withViewportBottomHeld`). It shares the prune's shape — capture intent, pause
-the spring, run the change, restore after the flush — and differs in which edge
-it holds:
+`withViewportBottomHeld`). Today that is every activity-run collapse or
+expand: the ones the reader asked for (a toggle, the header's collapse-all)
+and the auto-collapse gate's batched off-screen releases. The releases are
+not reader-requested — the gate fires precisely because the reader is
+provably elsewhere — but they ride the same transaction: the runs they
+change are out of sight by construction, and the anchor restore is what
+makes that a guarantee for a mid-list reader rather than a property of
+engine estimate compensation. One caveat follows from being unasked: the
+gate defers while `autoScrollInFlight()` reports a glide running or armed,
+because the transaction's bottom-pinned restore is a direct write and would
+snap an animation the reader is watching; explicit clicks keep their
+instant behavior — for them the snap IS the intent. The transaction shares the prune's shape —
+capture intent, pause the spring, run the change, restore after the flush —
+and differs in which edge it holds:
 
 - **The prune holds the TOP.** Rows vanish from an edge nobody is looking at,
   so the first visible row keeps its offset and the change is absorbed below.

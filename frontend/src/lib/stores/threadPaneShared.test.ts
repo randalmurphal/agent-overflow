@@ -1,24 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
+import { stubScrollController } from '../../test/helpers/chat';
 import { withViewportBottomHeld, type PaneScrollController } from './threadPaneShared';
-
-function controller(
-  overrides: Partial<PaneScrollController> = {},
-): PaneScrollController {
-  return {
-    pauseAutoScroll: () => () => {},
-    observe: () => {},
-    markStructuralContentPending: () => {},
-    preserveScrollAnchor: async () => {},
-    ...overrides,
-  };
-}
 
 describe('withViewportBottomHeld', () => {
   it('hands the change to a controller that can hold the bottom edge', () => {
     const change = vi.fn();
     const hold = vi.fn((run: () => void) => run());
 
-    withViewportBottomHeld(controller({ preserveViewportBottom: hold }), change);
+    withViewportBottomHeld(
+      stubScrollController({ preserveViewportBottom: hold }),
+      change,
+    );
 
     expect(hold).toHaveBeenCalledTimes(1);
     expect(change).toHaveBeenCalledTimes(1);
@@ -32,7 +24,7 @@ describe('withViewportBottomHeld', () => {
     // reader clicked simply never collapses.
     const change = vi.fn();
 
-    withViewportBottomHeld(controller(), change);
+    withViewportBottomHeld(stubScrollController(), change);
     withViewportBottomHeld(null, change);
 
     expect(change).toHaveBeenCalledTimes(2);
@@ -43,7 +35,7 @@ describe('withViewportBottomHeld', () => {
     // called bare, `this` would be undefined inside an implementation that
     // reads its own state.
     let self: unknown = null;
-    const ctrl: PaneScrollController = controller({
+    const ctrl: PaneScrollController = stubScrollController({
       preserveViewportBottom(this: unknown, run: () => void) {
         self = this;
         run();

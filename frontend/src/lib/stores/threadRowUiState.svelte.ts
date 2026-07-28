@@ -9,6 +9,7 @@ import type {
   AttachmentPreviewCache,
   ImagePreviewItem,
 } from '../utils/attachmentPreview.svelte';
+import { subagentGroupKeysFor } from '../utils/subagentGrouping';
 
 interface ThreadRowUiStateOptions {
   getItemById(itemId: string): Item | undefined;
@@ -56,6 +57,21 @@ export interface ThreadRowUiState {
    * rows) cannot match a freshly-mounted timeline and is correctly refused.
    */
   expansionSignature(): string;
+  /**
+   * Whether the reader has EXPLICITLY expanded anything belonging to these
+   * items: a diff card overridden to expanded, a subagent / wait / read
+   * group, or a payload body whose default is collapsed. The same "user
+   * deviations from default" contract as `expansionSignature` — an expansion
+   * a setting handed them stamps nothing this can mistake for a reader: a
+   * `collapseDiffPreviews` default-open diff leaves no override, a
+   * `loadOnMount` entry (auto-loaded diff bodies, plan cards) is skipped
+   * wholesale via `autoExpands`, and a diff card overridden back to
+   * COLLAPSED is an answer, not engagement. Non-creating: pure reads, no
+   * registry entries minted. The activity-run auto-collapse gate is the
+   * caller — a run the reader opened something inside must not close under
+   * them.
+   */
+  hasUserExpansionWithin(itemIds: Iterable<string>): boolean;
   attachmentCacheFor(itemId: string): AttachmentPreviewCache;
   disposeItems(items: Iterable<Item>): void;
   pruneRowUiState(retention: RowUiStateRetention): void;
@@ -177,6 +193,13 @@ interface ExpansionRegistryEntry {
   key: string;
   leases: number;
   disposeRequested: boolean;
+  /**
+   * The row asked for `loadOnMount`, so `handle.expanded` flips true with no
+   * reader involved (auto-loaded diffs, plan cards). `hasUserExpansionWithin`
+   * skips these wholesale: on an auto entry the expanded bit is the setting's
+   * doing, so it can never witness a reader deviation.
+   */
+  autoExpands: boolean;
 }
 
 type ExpansionRegistryOwner =
@@ -274,6 +297,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         itemId,
         stateKey,
       },
+      rowOptions.loadOnMount === true,
       () => createPayloadExpansion(
         () => getCurrentItem()?.payloadId,
         () => getCurrentItem()?.threadId,
@@ -351,6 +375,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         threadId,
         payloadId,
       },
+      payloadOptions.loadOnMount === true,
       () => createPayloadExpansion(
         () => payloadId,
         () => threadId,
@@ -373,6 +398,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   function createRegistryExpansion(
     key: string,
     owner: ExpansionRegistryOwner,
+    autoExpands: boolean,
     create: () => PayloadExpansionHandle,
   ): ExpansionRegistryEntry {
     let handle: PayloadExpansionHandle | undefined;
@@ -396,6 +422,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       key,
       leases: 0,
       disposeRequested: false,
+      autoExpands,
     };
   }
 
@@ -543,8 +570,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         disposePayloadExpansionStates(item.threadId, item.payloadId);
       }
       disposeAttachmentBlobsForItem(itemId);
-      const groupKeys = [itemId, `wait:${itemId}`, `reads:${itemId}`];
-      for (const groupKey of groupKeys) {
+      for (const groupKey of subagentGroupKeysFor(itemId)) {
         if (!subagentGroupExpanded.has(groupKey)) continue;
         if (!nextGroupExpanded) nextGroupExpanded = new Set(subagentGroupExpanded);
         nextGroupExpanded.delete(groupKey);
@@ -730,6 +756,56 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     return parts.join('|');
   }
 
+  // See the interface doc. Each structure is checked through its own index so
+  // the cost scales with the queried items, not with the thread: subagent and
+  // diff maps by direct lookup, expansion entries through
+  // `itemExpansionKeysByState` / `payloadExpansionKeysByPayload`. Both entry
+  // maps are consulted because a leased-pruned entry is still live user state
+  // — a row holding its lease keeps rendering the expansion this reports.
+  function hasUserExpansionWithin(itemIds: Iterable<string>): boolean {
+    for (const itemId of itemIds) {
+      for (const groupKey of subagentGroupKeysFor(itemId)) {
+        if (subagentGroupExpanded.has(groupKey)) return true;
+      }
+      const files = diffCardExpandedOverrides.get(itemId);
+      if (files) {
+        for (const expanded of files.values()) {
+          if (expanded) return true;
+        }
+      }
+      const states = itemExpansionKeysByState.get(itemId);
+      if (states) {
+        for (const keys of states.values()) {
+          for (const key of keys) {
+            if (userExpandedEntry(key)) return true;
+          }
+        }
+      }
+      // Payload-keyed expansions reach the same body through the payload id
+      // rather than the item, so the item's payload is checked too — resolved
+      // here rather than passed in, because which id a row keyed its state by
+      // is this registry's implementation detail, not the caller's.
+      const item = options.getItemById(itemId);
+      if (!item?.payloadId) continue;
+      const payloadKeys = payloadExpansionKeysByPayload.get(
+        payloadExpansionRegistryKey(item.threadId, item.payloadId),
+      );
+      if (!payloadKeys) continue;
+      for (const key of payloadKeys) {
+        if (userExpandedEntry(key)) return true;
+      }
+    }
+    return false;
+  }
+
+  // An `autoExpands` entry's expanded bit is `loadOnMount`'s doing (see the
+  // field's declaration), so only a manual-mode entry can witness a reader.
+  function userExpandedEntry(key: string): boolean {
+    const entry = expansionStates.get(key) ?? leasedPrunedExpansionStates.get(key);
+    if (!entry || entry.autoExpands) return false;
+    return entry.handle.expanded;
+  }
+
   return {
     expansionStateFor,
     retainExpansionStateFor,
@@ -741,6 +817,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     diffCardExpandedOverride,
     setDiffCardExpanded,
     expansionSignature,
+    hasUserExpansionWithin,
     attachmentCacheFor,
     disposeItems,
     pruneRowUiState,

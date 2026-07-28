@@ -447,6 +447,41 @@ function* descendantItems(nodes: TimelineNode[]): Generator<Item> {
 }
 
 /**
+ * Every item id rendered somewhere inside `nodes` — the reach of the
+ * auto-collapse gate's engagement peek (`hasUserExpansionWithin`), which
+ * must see an expansion on ANY row a reader can touch, however deeply the
+ * grouping nested it. Unlike `descendantItems` (the collapsed-header
+ * preview scope) this includes a wait group's folded completion: that row
+ * renders AS the group header, and its payload expands like any other.
+ */
+export function* renderedItemIdsWithin(
+  nodes: readonly TimelineNode[],
+): Generator<string> {
+  for (const node of nodes) {
+    switch (node.kind) {
+      case 'leaf':
+        yield node.item.id;
+        break;
+      case 'read_group':
+        for (const member of node.members) yield member.id;
+        break;
+      case 'group':
+        yield node.parent.id;
+        yield* renderedItemIdsWithin(node.children);
+        break;
+      case 'wait_group':
+        yield node.parent.id;
+        if (node.completion) yield node.completion.id;
+        yield* renderedItemIdsWithin(node.children);
+        break;
+      case 'activity_run':
+        yield* renderedItemIdsWithin(node.children);
+        break;
+    }
+  }
+}
+
+/**
  * Pick the descendant whose summary should appear in the collapsed
  * SubagentGroup header. Prefers active (running/streaming) descendants
  * so the preview tracks what the subagent is doing now; falls back to
@@ -547,6 +582,27 @@ function subagentGroupNode(
     loadedDescendantCount,
     latestChildSummary: pickLatestChildSummary(children, fold) || decorated.summary,
   };
+}
+
+/**
+ * The derived `subagentGroupExpanded` registry keys an anchor item can own
+ * next to its bare id (a subagent group's `groupKey` IS its parent id):
+ * `wait:` minted for wait groups below, `reads:` by `groupConsecutiveReads`
+ * (`readGrouping.ts`). Minting, clearing (`disposeItems`), and the
+ * engagement peek (`hasUserExpansionWithin`) all build the keys here, so a
+ * new derived key cannot join one side and silently miss the others.
+ */
+export function waitGroupKey(anchorItemId: string): string {
+  return `wait:${anchorItemId}`;
+}
+
+export function readGroupKey(anchorItemId: string): string {
+  return `reads:${anchorItemId}`;
+}
+
+/** Every `subagentGroupExpanded` key `itemId` can own. */
+export function subagentGroupKeysFor(itemId: string): [string, string, string] {
+  return [itemId, waitGroupKey(itemId), readGroupKey(itemId)];
 }
 
 /**
@@ -964,7 +1020,7 @@ export function groupItemsBySubagent(
       return {
         kind: 'wait_group',
         parent: item,
-        groupKey: `wait:${item.id}`,
+        groupKey: waitGroupKey(item.id),
         completion: waitCompletionByCarrierID.get(item.id),
         children,
         descendantCount: children.length,

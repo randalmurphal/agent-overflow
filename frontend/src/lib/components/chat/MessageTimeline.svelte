@@ -33,6 +33,7 @@
   import { createTimelineRowProjection } from './timelineRowProjection.svelte';
   import { createTimelineDiagnostics } from './timelineDiagnostics';
   import { createTimelineRowUiPrune } from './timelineRowUiPrune';
+  import { createTimelineActivityRunAutoCollapse } from './timelineActivityRunAutoCollapse';
   import { coldLoadPriors, coldLoadWarmEdge } from '../../utils/coldLoadTrace';
 
   // Extra buffer rendered above + below the viewport so fast scrolls
@@ -349,6 +350,16 @@
     isTest: IS_TEST,
   });
 
+  // Rides the prune's cadence exactly (same triggers, same tick debounce):
+  // both ask "now that the dust settled, is anything retained/held that
+  // should not be", and both must stay off the per-frame scroll path.
+  const runAutoCollapse = createTimelineActivityRunAutoCollapse({
+    getPane: () => pane,
+    getListRef: () => listRef,
+    getRevealedNodes: () => revealedNodes,
+    isTest: IS_TEST,
+  });
+
   // Depends on windowAnchor (module 4), so declared here rather than
   // alongside the rest of the node-derivation pipeline above.
   let virtualizerShiftAtHead = $derived(
@@ -371,6 +382,7 @@
     preserveScrollAnchor: (anchor, action) =>
       stick.preserveScrollAnchor(anchor, action),
     markStructuralContentPending: () => stick.markStructuralContentPending(),
+    autoScrollInFlight: () => stick.autoScrollInFlight(),
     preserveTimelineWindowAnchor: windowAnchor.preserveTimelineWindowAnchor,
     preserveViewportBottom: windowAnchor.preserveViewportBottom,
   };
@@ -535,12 +547,17 @@
     // chunk, a jump), never a streaming delta.
     pane.activityRuns.revision;
     prune.schedule();
+    // New items push settled runs further from the tail, and a release bumps
+    // the same revision this effect watches — the follow-up pass then finds
+    // no held runs and costs one Map scan.
+    runAutoCollapse.schedule();
   });
 
   $effect(() => {
     listRef;
     scrollEl;
     prune.schedule();
+    runAutoCollapse.schedule();
   });
 
 
@@ -567,6 +584,10 @@
   function handleTimelineScrollEnd(): void {
     restore.saveScrollSnapshot();
     prune.schedule();
+    // Scroll end is also how tail growth with no structural bump reaches the
+    // gate: the bottom pin's scrollTop writes end in a synthesized scrollend
+    // once streaming goes quiet.
+    runAutoCollapse.schedule();
   }
 
   $effect.pre(() => {
@@ -603,6 +624,7 @@
 
   onDestroy(() => {
     prune.invalidate();
+    runAutoCollapse.invalidate();
     restore.invalidateRestore();
     restore.saveSnapshotOnDestroy();
     targetFlash.clear();

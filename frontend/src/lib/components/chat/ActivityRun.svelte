@@ -9,11 +9,13 @@
   // which is why no row-count threshold is needed. Collapsed, the header is
   // all that is left.
   //
-  // With one overlap: a collapsed run that still holds the thread's tail keeps
-  // its clip, so collapsing a thread never means going blind to what it is
-  // doing right now. When the run finishes, that clip folds shut
-  // (activityRunClipPresence.svelte.ts) rather than vanishing between frames —
-  // and because the header never moves, it is the only thing that does.
+  // With one overlap: a run the thread's defaults would collapse still keeps
+  // its clip while it is LIVE, so collapsing a thread never means going blind
+  // to what it is doing right now — and it keeps it after settling, too,
+  // until the timeline's gate collapses it off-screen
+  // (timelineActivityRunAutoCollapse.ts). Both are the registry's resolution
+  // (`collapsedFor`), so `run.collapsed` is the whole answer here: this
+  // component renders presence, it never decides it.
   //
   // The rail belongs to the run, not to its rows: one continuous border for
   // the whole block, doubling as a second, larger collapse target. Per-row
@@ -58,7 +60,6 @@
     LIVE_CONTENT_ACTIVE_HOLD_MS,
   } from '../../utils/liveContentActivity';
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
-  import { createActivityRunClipPresence } from './activityRunClipPresence.svelte';
   import ActivityRunBoundary from './ActivityRunBoundary.svelte';
   import ActivityRunHeader from './ActivityRunHeader.svelte';
 
@@ -79,7 +80,6 @@
 
   let clipEl = $state<HTMLElement | undefined>();
   let contentEl = $state<HTMLElement | undefined>();
-  let foldEl = $state<HTMLElement | undefined>();
   let expandedPx = $state(0);
 
   // The run's identity as a PRIMITIVE. Every projection pass hands this
@@ -271,8 +271,7 @@
 
   // Whether the clip should stay on the run's last row as content settles
   // under it — and, read the other way, whether the reader has stepped into
-  // the run. `$state` because the auto-fold asks that second question: a run
-  // must not close over somebody reading inside it.
+  // the run.
   //
   // A stored answer rather than a geometric one, and that is the whole point.
   // "Is it at the bottom right now" is the wrong question during a settle: the
@@ -283,36 +282,6 @@
   // header's collapse-all landed near its top and stayed there. Growth moves
   // the bottom away from the reader; only the reader can decide to leave it.
   let followingBottom = $state(false);
-
-  // What makes an automatic fold unwelcome: the reader is somewhere up inside
-  // the run rather than resting on its newest row. Folding then would take the
-  // rows they are reading with it.
-  //
-  // Deliberately not a reason to REFUSE the fold, only to wait for it. The run
-  // is finished either way; folding it is owed as soon as the reader leaves its
-  // newest row alone (see activityRunClipPresence.svelte.ts).
-  //
-  // An expanded body inside the run deliberately does NOT count, though "the
-  // reader opened something in here" sounds like the same thing. `expandedPx`
-  // cannot tell an expansion the reader asked for from one a setting handed
-  // them, and `collapseDiffPreviews` defaults to expanded — so every run
-  // holding an edit would have blocked its own fold forever. A guard that
-  // silently disables the feature for the commonest run there is would be worse
-  // than the case it protects, which is narrow: a reader who expanded something
-  // AND is still pinned to the run's newest row has asked to follow the newest
-  // thing, and after the fold that is the header and whatever came next.
-  let readerEngaged = $derived(!followingBottom);
-
-  // The clip's presence, and the fold that ends it. Given the four questions
-  // it cannot answer itself — all of which live in this file, because all of
-  // them are about the reader in front of this particular run.
-  const clipPresence = createActivityRunClipPresence({
-    isCollapsed: () => collapsed,
-    isLive: () => isLive,
-    isReaderEngaged: () => readerEngaged,
-    getFoldEl: () => foldEl,
-    onClipOpenChange: (open) => pane.activityRuns.setClipOpen(runId, open),
-  });
 
   /**
    * Re-read what the clip's position looks like. Paint only — the fade is the
@@ -695,49 +664,32 @@
 
   <!-- Always, in both states. The run's summary is also its visible collapse
        control, so expanding cannot remove the thing the reader just clicked;
-       and because the header never moves, the clip below it is the only thing
-       the fold animates. -->
+       and because the header never moves, a run collapsing off-screen changes
+       nothing the engine's anchoring has to guess about. -->
   <ActivityRunHeader {pane} {run} {clipId} expanded={!collapsed} onToggle={toggle} />
-  {#if clipPresence.open}
+  {#if !collapsed}
     <!-- Clip host. Exists so the overlay bar has a box exactly the clip's
          height to hang beside: measured against the run instead, it would span
          the header too and put the thumb at the wrong offset for every collapsed
          live run. -->
     <div class="relative">
-      <!-- Fold box. Clips the fade to the visible height for free, which is
-           what keeps a fold from ending on a gradient over nothing, and is the
-           element whose height the fold animates. `overflow-hidden` is
-           unconditional: the clip inside is already a block formatting context,
-           so it changes no margin, and it also fixes a short run's fade
-           spilling past the run's own bottom edge. -->
-      <div
-        bind:this={foldEl}
-        class="relative overflow-hidden"
-        style:height={clipPresence.folding ? `${clipPresence.foldFromPx}px` : null}
-        data-testid="activity-run-fold"
-        data-folding={clipPresence.folding ? 'true' : 'false'}
-      >
+      <!-- Fade clip. The top fade below is a 24px overlay strip; on a run
+           shorter than that it would spill past the run's own bottom edge, so
+           this box clips it to the visible height. `overflow-hidden` is
+           unconditional: the clip inside is already a block formatting
+           context, so it changes no margin. -->
+      <div class="relative overflow-hidden">
         <!-- overflow-x is hidden on purpose: a wide preview inside a tool row
              must not raise a horizontal bar at run level, which would consume
              HEIGHT and shift every row below. overscroll-behavior stays auto —
              chaining out at the inner edge is wanted, and gesture correctness
              comes from attribution (utils/scroll/wheelAttribution.ts), not
-             from blocking the chain.
-
-             While folding the clip leaves the flow and pins to the box's
-             BOTTOM at the height it started from. That is the whole shape of
-             the animation: the run closes onto its newest row, older rows
-             leave through the top, and nothing inside reflows or rescrolls
-             while it happens. -->
+             from blocking the chain. -->
         <div
           bind:this={clipEl}
           id={clipId}
           class="activity-run-clip overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
-          class:absolute={clipPresence.folding}
-          class:inset-x-0={clipPresence.folding}
-          class:bottom-0={clipPresence.folding}
           style:max-height={maxHeight}
-          style:height={clipPresence.folding ? `${clipPresence.foldFromPx}px` : null}
           use:nestedScroll
           use:readerGestures
           onscroll={onClipScroll}
@@ -775,18 +727,14 @@
              rows, and a third of one is enough to read as a dissolve without
              dimming the row behind it. It needs no scrollbar-safe inset:
              `right-0` is the clip's own right edge, and the overlay bar hangs
-             outside it.
-
-             Painted throughout a fold regardless of where the clip is resting:
-             rows are leaving through the top edge for the whole animation,
-             which is precisely the state this exists to soften. -->
+             outside it. -->
         <div
           aria-hidden="true"
           class="pointer-events-none absolute top-0 right-0 left-0 h-6 transition-opacity duration-150"
-          class:opacity-0={!fadedTop && !clipPresence.folding}
+          class:opacity-0={!fadedTop}
           style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
           data-testid="activity-run-top-fade"
-          data-faded={fadedTop || clipPresence.folding ? 'true' : 'false'}
+          data-faded={fadedTop ? 'true' : 'false'}
         ></div>
       </div>
       <!-- A zero-width native bar makes the scroll package's geometric

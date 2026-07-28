@@ -39,7 +39,11 @@ import {
 } from '../../stores/paneLayout.svelte';
 import { setPaneDensityMode } from '../../stores/paneDensity.svelte';
 import { resetSettingsForTest } from '../../stores/settings.svelte';
-import { installThreadSwitchMocks, makeThread } from '../../../test/helpers/chat';
+import {
+  installThreadSwitchMocks,
+  makeThread,
+  stubScrollController,
+} from '../../../test/helpers/chat';
 import { prependThread } from '../../stores/threads.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
@@ -608,18 +612,8 @@ describe('PaneHost', () => {
 
     const leftObserve = vi.fn();
     const rightObserve = vi.fn();
-    leftPane.attachScrollController({
-      pauseAutoScroll: () => () => {},
-      observe: leftObserve,
-      markStructuralContentPending: () => {},
-      preserveScrollAnchor: () => Promise.resolve(),
-    });
-    rightPane.attachScrollController({
-      pauseAutoScroll: () => () => {},
-      observe: rightObserve,
-      markStructuralContentPending: () => {},
-      preserveScrollAnchor: () => Promise.resolve(),
-    });
+    leftPane.attachScrollController(stubScrollController({ observe: leftObserve }));
+    rightPane.attachScrollController(stubScrollController({ observe: rightObserve }));
 
     let nextFrameId = 1;
     const pendingFrames = new Map<number, FrameRequestCallback>();

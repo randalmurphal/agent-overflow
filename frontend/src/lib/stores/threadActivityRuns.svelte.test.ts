@@ -80,16 +80,33 @@ describe('collapse state', () => {
 });
 
 describe('collapse state while a run is still working', () => {
-  it('renders open until it settles, when nobody has answered for it', () => {
+  it('renders open while live, and stays open once settled until released', () => {
     // The defaults say how a run should SIT, and one still filling has not
     // settled into anything yet — collapsing by default must not mean going
-    // blind to work that is still arriving. Losing the tail is what closes it,
-    // and that is the transition `activityRunFold.ts` animates.
+    // blind to work that is still arriving. And losing the tail is NOT what
+    // closes it: snapping shut on the settle frame would remove a viewport of
+    // content in front of whoever watched it stream, so the open-because-live
+    // hold outlives liveness until the timeline's gate releases it off-screen
+    // (`releaseOpenedLive`).
     const runs = registry({ defaultCollapsed: true });
     const [live] = pass(runs, [['a']], 'thread-1', 0);
     expect(live.collapsed).toBe(false);
 
+    const [settled] = pass(runs, [['a']]);
+    expect(settled.collapsed).toBe(false);
+
+    runs.releaseOpenedLive(settled.runId);
     expect(pass(runs, [['a']])[0].collapsed).toBe(true);
+  });
+
+  it('a run that arrives already settled follows the default outright', () => {
+    // No pass ever resolved it open-because-live — a history load, or a
+    // thread switch back — so there is no hold and nothing owed: nobody was
+    // watching this run stream.
+    const runs = registry({ defaultCollapsed: true });
+
+    expect(pass(runs, [['a']])[0].collapsed).toBe(true);
+    expect(runs.openedLiveRunIds()).toEqual([]);
   });
 
   it('closes now when the reader collapses it, and stays closed as it settles', () => {
@@ -119,14 +136,154 @@ describe('collapse state while a run is still working', () => {
     // `setAllCollapsed` sets the thread's default and DROPS per-run overrides
     // (that is how a later flip reaches every run), so it is the same kind of
     // fact as the setting: it governs runs that have settled. The one still
-    // working folds itself shut when it finishes.
+    // working keeps showing its work — it re-records its open-because-live
+    // hold on the very next pass — and once it settles, the gate collapses it
+    // off-screen like any other held-open run.
     const runs = registry({ defaultCollapsed: false });
     pass(runs, [['a']], 'thread-1', 0);
 
     runs.setAllCollapsed(true);
 
     expect(pass(runs, [['a']], 'thread-1', 0)[0].collapsed).toBe(false);
+    const [settled] = pass(runs, [['a']]);
+    expect(settled.collapsed).toBe(false);
+
+    runs.releaseOpenedLive(settled.runId);
     expect(pass(runs, [['a']])[0].collapsed).toBe(true);
+  });
+});
+
+describe('the open-because-live hold', () => {
+  // The auto-collapse gate's registry half. Sequences, not states: the hold
+  // is persistent side-state recorded by `collapsedFor`, so every path that
+  // retires it has to be exercised as a transition from a pass that set it.
+
+  it('lists held runs for the gate, including the one still live', () => {
+    // The registry cannot know liveness, so it cannot filter the live run
+    // out — the gate does, from `node.live`.
+    const runs = registry({ defaultCollapsed: true });
+    const [run] = pass(runs, [['a']], 'thread-1', 0);
+
+    expect(runs.openedLiveRunIds()).toEqual([run.runId]);
+
+    pass(runs, [['a']]);
+    expect(runs.openedLiveRunIds()).toEqual([run.runId]);
+
+    runs.releaseOpenedLive(run.runId);
+    expect(runs.openedLiveRunIds()).toEqual([]);
+  });
+
+  it('release applies the default, forgets the inner position, and rebuilds', () => {
+    const runs = registry({ defaultCollapsed: true });
+    const [run] = pass(runs, [['a', 'b']], 'thread-1', 0);
+    pass(runs, [['a', 'b']]);
+    // Held open, so the clip is real and its position recordable.
+    runs.saveScrollSnapshot(run.runId, { scrollTop: 240, escaped: false });
+    expect(runs.scrollSnapshot(run.runId)).toEqual({ scrollTop: 240, escaped: false });
+    const before = runs.revision;
+
+    runs.releaseOpenedLive(run.runId);
+
+    // The run became a chip: same forgetting as a clicked collapse, and a
+    // revision bump so the projection actually renders the change.
+    expect(runs.revision).toBeGreaterThan(before);
+    expect(runs.scrollSnapshot(run.runId)).toBeNull();
+    expect(pass(runs, [['a', 'b']])[0].collapsed).toBe(true);
+  });
+
+  it('release under an expanded default changes nothing it would have to undo', () => {
+    // The run keeps rendering exactly as it was, so dropping its inner
+    // position would yank a still-open clip to its tail, and a revision bump
+    // would rebuild the projection to change nothing.
+    const overrides = { defaultCollapsed: false };
+    const runs = registry(overrides);
+    const [run] = pass(runs, [['a', 'b']], 'thread-1', 0);
+    pass(runs, [['a', 'b']]);
+    runs.saveScrollSnapshot(run.runId, { scrollTop: 240, escaped: true });
+    const before = runs.revision;
+
+    runs.releaseOpenedLive(run.runId);
+
+    expect(runs.revision).toBe(before);
+    expect(runs.scrollSnapshot(run.runId)).toEqual({ scrollTop: 240, escaped: true });
+    expect(pass(runs, [['a', 'b']])[0].collapsed).toBe(false);
+    // Retired all the same: a later default flip treats this run like any
+    // other settled one instead of finding a years-old hold.
+    expect(runs.openedLiveRunIds()).toEqual([]);
+    overrides.defaultCollapsed = true;
+    expect(pass(runs, [['a', 'b']])[0].collapsed).toBe(true);
+  });
+
+  it('release is idempotent and ignores a run that does not exist', () => {
+    const runs = registry({ defaultCollapsed: true });
+    const [run] = pass(runs, [['a']], 'thread-1', 0);
+    pass(runs, [['a']]);
+
+    runs.releaseOpenedLive(run.runId);
+    const after = runs.revision;
+    runs.releaseOpenedLive(run.runId);
+    runs.releaseOpenedLive('r99');
+
+    expect(runs.revision).toBe(after);
+  });
+
+  it('a reader collapse retires the hold, in both directions of the click', () => {
+    const runs = registry({ defaultCollapsed: true });
+    const [run] = pass(runs, [['a']], 'thread-1', 0);
+    pass(runs, [['a']]);
+
+    runs.setCollapsed(run.runId, true);
+    expect(runs.openedLiveRunIds()).toEqual([]);
+    expect(pass(runs, [['a']])[0].collapsed).toBe(true);
+
+    // Expanding afterwards is an override, not a revived hold.
+    runs.setCollapsed(run.runId, false);
+    expect(runs.openedLiveRunIds()).toEqual([]);
+    expect(pass(runs, [['a']])[0].collapsed).toBe(false);
+  });
+
+  it('a bulk action retires every hold it can reach', () => {
+    const runs = registry({ defaultCollapsed: true });
+    pass(runs, [['a']], 'thread-1', 0);
+    pass(runs, [['a']]);
+
+    runs.setAllCollapsed(true);
+
+    expect(runs.openedLiveRunIds()).toEqual([]);
+    expect(pass(runs, [['a']])[0].collapsed).toBe(true);
+  });
+
+  it('re-arms when a released run becomes live again', () => {
+    // A completion pairing into a settled run can hand it the tail back. The
+    // hold is not a one-shot: opening because live is the same commitment the
+    // second time.
+    const runs = registry({ defaultCollapsed: true });
+    const [run] = pass(runs, [['a']], 'thread-1', 0);
+    pass(runs, [['a']]);
+    runs.releaseOpenedLive(run.runId);
+    expect(pass(runs, [['a']])[0].collapsed).toBe(true);
+
+    expect(pass(runs, [['a']], 'thread-1', 0)[0].collapsed).toBe(false);
+    const [settled] = pass(runs, [['a']]);
+    expect(settled.collapsed).toBe(false);
+    expect(runs.openedLiveRunIds()).toEqual([settled.runId]);
+  });
+
+  it('does not survive a sweep — a revived run follows the default', () => {
+    // A run coming back from the archive mounts fresh rows nobody was
+    // watching stream; holding it open would preserve a courtesy for a
+    // reader who is no longer there.
+    const runs = registry({ defaultCollapsed: true });
+    const [run] = pass(runs, [['a', 'b']], 'thread-1', 0);
+    pass(runs, [['a', 'b']]);
+    // Something explicit so the sweep archives the entry at all.
+    runs.saveScrollSnapshot(run.runId, { scrollTop: 120, escaped: false });
+
+    pass(runs, [['z']]);
+    const [back] = pass(runs, [['a', 'b']]);
+
+    expect(back.collapsed).toBe(true);
+    expect(runs.openedLiveRunIds()).toEqual([]);
   });
 });
 
@@ -239,6 +396,18 @@ describe('scroll snapshots', () => {
     runs.setCollapsed(run.runId, true);
 
     runs.saveScrollSnapshot(run.runId, { scrollTop: 0, escaped: false });
+
+    expect(runs.scrollSnapshot(run.runId)).toBeNull();
+  });
+
+  it('refuses a save for a run that renders without a clip', () => {
+    // Presence is recorded by `collapsedFor` itself — the resolution IS what
+    // the row renders — so a run sitting collapsed under the defaults has no
+    // clip to have produced this save, whoever claims otherwise.
+    const runs = registry({ defaultCollapsed: true });
+    const [run] = pass(runs, [['a', 'b']]);
+
+    runs.saveScrollSnapshot(run.runId, { scrollTop: 120, escaped: false });
 
     expect(runs.scrollSnapshot(run.runId)).toBeNull();
   });

@@ -10,7 +10,11 @@ import type { GitStatus } from '../../types/git';
 import type { Thread } from '../../types/models';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
-import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
+import {
+  buildPane as buildRegisteredPane,
+  makeThread as makeBaseThread,
+  stubScrollController,
+} from '../../../test/helpers/chat';
 
 vi.mock('../../stores/threadCreation.svelte', () => ({ openTerminalThread: vi.fn() }));
 
@@ -140,15 +144,13 @@ describe('<ChatHeaderActions> badge gating', () => {
     // viewport across the whole delta.
     const pane = await buildPane();
     const held: Array<() => void> = [];
-    pane.attachScrollController({
-      pauseAutoScroll: () => () => {},
-      observe: () => {},
-      markStructuralContentPending: () => {},
-      preserveScrollAnchor: async () => {},
-      preserveViewportBottom: (change) => {
-        held.push(change);
-      },
-    });
+    pane.attachScrollController(
+      stubScrollController({
+        preserveViewportBottom: (change) => {
+          held.push(change);
+        },
+      }),
+    );
     installSubscribeMock(status({}));
     const { getByTestId } = render(ChatHeaderActions, { props: { pane } });
     await flush();

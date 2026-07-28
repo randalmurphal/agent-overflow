@@ -194,17 +194,24 @@ describe("<WaitGroup>", () => {
       descendantCount: children.length,
     };
 
-    const { getByTestId, queryByText, getByText } = render(WaitGroup, {
-      props: { pane, group },
-    });
+    const view = render(WaitGroup, { props: { pane, group } });
 
-    expect(getByText(/Spawned Agent 24 -> done/)).toBeInTheDocument();
-    expect(queryByText(/Spawned Agent 25 -> done/)).not.toBeInTheDocument();
+    expect(view.getByText(/Spawned Agent 24 -> done/)).toBeInTheDocument();
+    expect(view.queryByText(/Spawned Agent 25 -> done/)).not.toBeInTheDocument();
 
-    const showAll = getByTestId("wait-group-show-all");
+    const showAll = view.getByTestId("wait-group-show-all");
     expect(showAll.textContent).toContain("Show 5 more");
     await fireEvent.click(showAll);
 
-    expect(getByText(/Spawned Agent 29 -> done/)).toBeInTheDocument();
+    expect(view.getByText(/Spawned Agent 29 -> done/)).toBeInTheDocument();
+
+    // The answer lives in the pane registry under the `wait:` key, not in
+    // the row: a windowing remount keeps the full list, and the activity-run
+    // auto-collapse gate reads it as engagement with the carrier item.
+    expect(pane.isSubagentGroupExpanded("wait:wait-many")).toBe(true);
+    expect(pane.hasUserExpansionWithin(["wait-many"])).toBe(true);
+    view.unmount();
+    const remounted = render(WaitGroup, { props: { pane, group } });
+    expect(remounted.getByText(/Spawned Agent 29 -> done/)).toBeInTheDocument();
   });
 });

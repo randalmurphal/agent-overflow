@@ -1131,6 +1131,7 @@ export function createUseStickToBottomController(
     pauseAutoScroll,
     observe,
     markStructuralContentPending: spring.markStructuralAppend,
+    autoScrollInFlight: () => spring.isActive() || spring.structuralAppendPending(),
     preserveScrollAnchor,
     attach,
     detach,

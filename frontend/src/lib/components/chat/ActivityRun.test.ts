@@ -12,8 +12,9 @@ import MessageTimeline from './MessageTimeline.svelte';
 
 /**
  * Prose closes a run: the next activity row starts a new one, so the run can
- * never grow again. Liveness is what decides whether a COLLAPSED run keeps its
- * clip open, so a test about the header-only state has to say which it means.
+ * never grow again. A run that arrives ALREADY settled follows the defaults
+ * outright — it was never resolved open-because-live, so it carries no hold —
+ * which is what makes this the fixture for the header-only state.
  */
 function finished(items: Item[]): Item[] {
   return [
@@ -417,8 +418,9 @@ describe('<ActivityRun>', () => {
     it('renders open while it is still working, whatever the default says', async () => {
       // Collapsing a thread must not mean going blind to what it is doing right
       // now, so a default of `collapsed` describes how a run SITS once it has
-      // settled — a live one nobody has answered for renders open and folds
-      // itself shut when it finishes.
+      // settled — a live one nobody has answered for renders open, and stays
+      // open past its settle until the timeline's gate collapses it off-screen
+      // (timelineActivityRunAutoCollapse.ts).
       //
       // And it renders open HONESTLY: the header reports expanded, because a
       // chevron claiming collapsed over a clip full of streaming rows describes
@@ -456,18 +458,21 @@ describe('<ActivityRun>', () => {
       expect(getByTestId('activity-run-clip')).toBeInTheDocument();
     });
 
-    it('closes that clip once the run finishes', async () => {
-      // happy-dom lays nothing out, so the fold measures a zero-height box and
-      // takes its no-motion path — which is the right outcome for a box with
-      // no height, and the reason the animation itself is asserted in
-      // activityRunFold.browser.test.ts. What is asserted here is that
-      // finishing is what closes it.
+    it('keeps its clip when it finishes, until the gate releases it', async () => {
+      // Settling is not what closes a run any more — snapping shut on the
+      // settle frame removed a viewport of content in front of whoever was
+      // watching it stream, and the fold animation that used to soften the
+      // snap was rejected too. The run stays open under its recorded
+      // open-because-live hold; the timeline's gate releases that hold once
+      // the run is provably out of sight, and only then does the default
+      // apply — instantly, because by then nobody can see it happen.
       await updateSetting('activityRunDefault', 'collapsed');
       const { getByTestId, queryByTestId, pane } = await renderRun([
         tool('t0', 0),
         tool('t1', 1),
       ]);
       expect(getByTestId('activity-run-clip')).toBeInTheDocument();
+      const runId = getByTestId('activity-run').dataset.runId!;
 
       pane.upsertItem(makeItem({
         id: 'p0',
@@ -479,18 +484,55 @@ describe('<ActivityRun>', () => {
       await tick();
 
       expect(getByTestId('activity-run').dataset.live).toBe('false');
+      expect(getByTestId('activity-run').dataset.collapsed).toBe('false');
+      expect(getByTestId('activity-run-clip')).toBeInTheDocument();
+
+      // What the gate does when the run is out of sight and untouched.
+      pane.activityRuns.releaseOpenedLive(runId);
+      await tick();
+
       expect(queryByTestId('activity-run-clip')).toBeNull();
+      expect(getByTestId('activity-run').dataset.collapsed).toBe('true');
       expect(getByTestId('activity-run-header')).toBeInTheDocument();
     });
 
-    it('waits out a reader who is inside the run when it finishes', async () => {
-      // A fold is owed, not forced. Closing a run over somebody reading inside
-      // it is the one thing worse than the jump the fold exists to avoid.
+    it('collapses a settled held-open run instantly when asked', async () => {
+      // The hold exists to avoid moving things under the reader; a click IS
+      // the reader, so it beats the hold the same way it beats liveness.
       await updateSetting('activityRunDefault', 'collapsed');
-      const { getByTestId, queryByTestId, pane } = await renderRun(
+      const { getByTestId, queryByTestId, pane } = await renderRun([
+        tool('t0', 0),
+        tool('t1', 1),
+      ]);
+      pane.upsertItem(makeItem({
+        id: 'p0',
+        itemIndex: 2,
+        kind: 'assistant_text',
+        summary: 'done',
+      }));
+      await tick();
+      await tick();
+      expect(getByTestId('activity-run-clip')).toBeInTheDocument();
+
+      await fireEvent.click(getByTestId('activity-run-header'));
+      await tick();
+
+      expect(queryByTestId('activity-run-clip')).toBeNull();
+      expect(getByTestId('activity-run').dataset.collapsed).toBe('true');
+    });
+
+    it('records an escaped reader for the gate to respect', async () => {
+      // The row no longer decides when a finished run closes — but it is the
+      // only thing that can KNOW the reader scrolled up inside the clip, and
+      // the gate reads that fact from the registry snapshot after the rows
+      // are long unmounted. Losing this write would let the gate collapse a
+      // run over the exact reader the engagement rule exists to protect.
+      await updateSetting('activityRunDefault', 'collapsed');
+      const { getByTestId, pane } = await renderRun(
         Array.from({ length: 14 }, (_, i) => tool(`t${i}`, i)),
       );
       const clip = getByTestId('activity-run-clip');
+      const runId = getByTestId('activity-run').dataset.runId!;
 
       // A gesture that leaves the clip's newest row: the reader is now in it.
       stampScroll(clip, { scrollTop: 600, clientHeight: 300, scrollHeight: 1500 });
@@ -498,26 +540,16 @@ describe('<ActivityRun>', () => {
       await fireEvent.scroll(clip);
       await tick();
 
-      pane.upsertItem(makeItem({
-        id: 'p0',
-        itemIndex: 20,
-        kind: 'assistant_text',
-        summary: 'done',
-      }));
-      await tick();
-      await tick();
+      expect(pane.activityRuns.scrollSnapshot(runId)?.escaped).toBe(true);
 
-      expect(getByTestId('activity-run').dataset.live).toBe('false');
-      expect(getByTestId('activity-run-clip')).toBeInTheDocument();
-
-      // Back on the newest row, and the debt is paid.
+      // Returning to the newest row hands the follow back — and with it, the
+      // gate's permission.
       stampScroll(clip, { scrollTop: 1200, clientHeight: 300, scrollHeight: 1500 });
       await fireEvent.wheel(clip, { deltaY: 120 });
       await fireEvent.scroll(clip);
       await tick();
-      await tick();
 
-      expect(queryByTestId('activity-run-clip')).toBeNull();
+      expect(pane.activityRuns.scrollSnapshot(runId)?.escaped).toBe(false);
     });
 
     it('keeps the rail in both states so the block stays anchored', async () => {

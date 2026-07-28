@@ -874,4 +874,173 @@ describe('createThreadRowUiState', () => {
       expect(rowUiState.expansionSignature()).toBe('');
     });
   });
+
+  describe('hasUserExpansionWithin', () => {
+    // The activity-run auto-collapse gate's engagement peek. Same "user
+    // deviations from default" contract as expansionSignature: only what the
+    // reader explicitly opened counts, so a setting that defaults something
+    // open must not pin every run that contains one.
+
+    it('reports nothing for items at their defaults', () => {
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+
+      expect(rowUiState.hasUserExpansionWithin(['item-a', 'item-b'])).toBe(false);
+    });
+
+    it('counts a diff card overridden to expanded, not one overridden to collapsed', () => {
+      // An override back to collapsed is an ANSWER about the card, not
+      // engagement with the run — and with collapseDiffPreviews defaulting
+      // diffs open, collapse overrides are the common override to find.
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+      rowUiState.setDiffCardExpanded('item-a', 'src/a.ts', false);
+      expect(rowUiState.hasUserExpansionWithin(['item-a'])).toBe(false);
+
+      rowUiState.setDiffCardExpanded('item-a', 'src/b.ts', true);
+      expect(rowUiState.hasUserExpansionWithin(['item-a'])).toBe(true);
+
+      rowUiState.setDiffCardExpanded('item-a', 'src/b.ts', undefined);
+      expect(rowUiState.hasUserExpansionWithin(['item-a'])).toBe(false);
+    });
+
+    it('counts an expanded subagent card under any of its derived group keys', () => {
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+
+      for (const groupKey of ['item-a', 'wait:item-a', 'reads:item-a']) {
+        rowUiState.toggleSubagentGroupExpanded(groupKey);
+        expect(rowUiState.hasUserExpansionWithin(['item-a'])).toBe(true);
+        rowUiState.toggleSubagentGroupExpanded(groupKey);
+        expect(rowUiState.hasUserExpansionWithin(['item-a'])).toBe(false);
+      }
+    });
+
+    it('tracks an item-keyed payload body across expand and collapse', async () => {
+      setBindingMock('GetPayloadPreview', async () => ({
+        data: 'x',
+        nextOffset: 1,
+        totalSize: 1,
+        isComplete: true,
+      }));
+      const items = new Map<string, Item>();
+      const item = makeItem({
+        id: 'tool:0:0',
+        kind: 'tool_call',
+        payloadId: 'payload-a',
+        threadId: 'thread-a',
+      });
+      items.set(item.id, item);
+      const rowUiState = createThreadRowUiState({
+        getItemById: (itemId) => items.get(itemId),
+      });
+
+      const expansion = rowUiState.expansionStateFor(item);
+      expect(rowUiState.hasUserExpansionWithin([item.id])).toBe(false);
+
+      await expansion.expand();
+      expect(rowUiState.hasUserExpansionWithin([item.id])).toBe(true);
+      // And scoped: engagement with this item says nothing about others.
+      expect(rowUiState.hasUserExpansionWithin(['item-elsewhere'])).toBe(false);
+
+      expansion.collapse();
+      expect(rowUiState.hasUserExpansionWithin([item.id])).toBe(false);
+    });
+
+    it('reaches a payload-keyed body through the item that carries the payload', async () => {
+      // Some rows key their expansion by payloadId rather than itemId; the
+      // gate only knows member item ids, so the peek resolves the item's
+      // payload itself.
+      setBindingMock('GetPayloadPreview', async () => ({
+        data: 'x',
+        nextOffset: 1,
+        totalSize: 1,
+        isComplete: true,
+      }));
+      const items = new Map<string, Item>();
+      const item = makeItem({
+        id: 'tool:0:0',
+        kind: 'tool_call',
+        payloadId: 'payload-a',
+        threadId: 'thread-a',
+      });
+      items.set(item.id, item);
+      const rowUiState = createThreadRowUiState({
+        getItemById: (itemId) => items.get(itemId),
+      });
+
+      const expansion = rowUiState.expansionStateForPayload('payload-a', 'thread-a');
+      await expansion.expand();
+
+      expect(rowUiState.hasUserExpansionWithin([item.id])).toBe(true);
+    });
+
+    it('never counts a loadOnMount entry, whose expanded bit is the setting\'s doing', async () => {
+      // DiffFileStack and plan cards create their state with `loadOnMount:
+      // true`, which drives expand() with no reader involved — a held run
+      // full of auto-opened diff bodies must not be pinned by them. The skip
+      // is wholesale (`autoExpands`), so even an expand() a reader triggered
+      // on an auto entry stays invisible: on those entries the expanded bit
+      // cannot distinguish the setting from the reader, and the accepted
+      // reading is the setting.
+      setBindingMock('GetPayloadPreview', async () => ({
+        data: 'x',
+        nextOffset: 1,
+        totalSize: 1,
+        isComplete: true,
+      }));
+      const items = new Map<string, Item>();
+      const item = makeItem({
+        id: 'tool:0:0',
+        kind: 'tool_call',
+        payloadId: 'payload-a',
+        threadId: 'thread-a',
+      });
+      items.set(item.id, item);
+      const rowUiState = createThreadRowUiState({
+        getItemById: (itemId) => items.get(itemId),
+      });
+
+      const payloadKeyed = rowUiState.expansionStateForPayload('payload-a', 'thread-a', {
+        loadOnMount: true,
+      });
+      await payloadKeyed.expand();
+      expect(payloadKeyed.expanded).toBe(true);
+      expect(rowUiState.hasUserExpansionWithin([item.id])).toBe(false);
+
+      const itemKeyed = rowUiState.expansionStateFor(item, { loadOnMount: true });
+      await itemKeyed.expand();
+      expect(itemKeyed.expanded).toBe(true);
+      expect(rowUiState.hasUserExpansionWithin([item.id])).toBe(false);
+    });
+
+    it('still sees an expansion whose entry was pruned but is leased', async () => {
+      // A leased-pruned entry is live user state — the row holding the lease
+      // keeps rendering the expansion — so the run containing it is still
+      // engaged-with even though the prune moved the entry aside.
+      setBindingMock('GetPayloadPreview', async () => ({
+        data: 'x',
+        nextOffset: 1,
+        totalSize: 1,
+        isComplete: true,
+      }));
+      const items = new Map<string, Item>();
+      const item = makeItem({
+        id: 'tool:0:0',
+        kind: 'tool_call',
+        payloadId: 'payload-a',
+        threadId: 'thread-a',
+      });
+      items.set(item.id, item);
+      const rowUiState = createThreadRowUiState({
+        getItemById: (itemId) => items.get(itemId),
+      });
+
+      const lease = rowUiState.retainExpansionStateFor(item);
+      await lease.handle.expand();
+      rowUiState.pruneRowUiState({ itemIds: [], payloads: [], groupKeys: [] });
+
+      expect(rowUiState.hasUserExpansionWithin([item.id])).toBe(true);
+
+      lease.release();
+      expect(rowUiState.hasUserExpansionWithin([item.id])).toBe(false);
+    });
+  });
 });

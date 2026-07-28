@@ -119,6 +119,18 @@ export interface UseStickToBottomController {
    */
   markStructuralContentPending(): void;
   /**
+   * A reader-visible auto-scroll is in motion or armed to start: the
+   * spring chase is active, or a structural-append mark sits inside its
+   * spring window with the glide it licenses not yet begun. Callers that
+   * act UNASKED and route through a direct-write restore — the
+   * activity-run auto-collapse gate — defer while this is true, because
+   * preempting the chase turns an animation the reader is watching into a
+   * snap. The settle that ends the chase synthesizes a scrollend, which
+   * is already those callers' quiet-moment trigger, so deferral costs
+   * nothing.
+   */
+  autoScrollInFlight(): boolean;
+  /**
    * Run an explicit user disclosure action while preserving the user's
    * current follow intent. Sticky users stay pinned to bottom; escaped
    * users keep the clicked anchor at the same viewport position.

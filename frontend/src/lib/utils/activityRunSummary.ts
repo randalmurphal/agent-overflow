@@ -58,6 +58,23 @@ function isFailedStatus(status: Item['status']): boolean {
   return status === 'errored' || status === 'killed';
 }
 
+/**
+ * `ActivityRunSummary.hasFailure` alone, without building the counts — for
+ * the auto-collapse gate, which asks per run per pass and needs nothing else.
+ * Same failure rule as the summary; an item that has left the window cannot
+ * fail a run it is no longer in.
+ */
+export function activityRunHasFailure(
+  itemIds: readonly string[],
+  getItem: (id: string) => Item | undefined,
+): boolean {
+  for (const id of itemIds) {
+    const item = getItem(id);
+    if (item && isFailedStatus(item.status)) return true;
+  }
+  return false;
+}
+
 function isRunningStatus(status: Item['status']): boolean {
   return status === 'running' || status === 'streaming';
 }

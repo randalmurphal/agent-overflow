@@ -2,10 +2,31 @@ import { registerPaneForTest } from '../../lib/stores/panes.svelte';
 import { upsertProposedPlanForTests } from '../../lib/stores/proposedPlans.svelte';
 import { getQueueForThread } from '../../lib/stores/sendQueue.svelte';
 import { createThreadPane, type ThreadPane } from '../../lib/stores/thread.svelte';
+import type { PaneScrollController } from '../../lib/stores/threadPaneShared';
 import type { ItemDeltaEvent } from '../../lib/types/events';
 import type { Item, Thread } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import { emitWailsEvent } from '../mocks/wailsio-runtime';
+
+/**
+ * A no-op `PaneScrollController` satisfying every required member, for tests
+ * that attach a controller to observe one seam of it. Build stubs here rather
+ * than as inline object literals: when the interface grows a required member,
+ * one default lands it everywhere instead of breaking every test file that
+ * hand-rolled the shape.
+ */
+export function stubScrollController(
+  overrides: Partial<PaneScrollController> = {},
+): PaneScrollController {
+  return {
+    pauseAutoScroll: () => () => {},
+    autoScrollInFlight: () => false,
+    observe: () => {},
+    markStructuralContentPending: () => {},
+    preserveScrollAnchor: async () => {},
+    ...overrides,
+  };
+}
 
 export function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {

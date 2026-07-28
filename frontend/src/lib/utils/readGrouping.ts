@@ -18,7 +18,7 @@
 // The function is pure — fresh array out, no mutation of `nodes`.
 
 import type { Item } from '../types/models';
-import type { TimelineLeaf, TimelineNode } from './subagentGrouping';
+import { readGroupKey, type TimelineLeaf, type TimelineNode } from './subagentGrouping';
 
 function isReadLeaf(node: TimelineNode): node is TimelineLeaf {
   if (node.kind !== 'leaf') return false;
@@ -52,7 +52,7 @@ export function groupConsecutiveReads(nodes: TimelineNode[]): TimelineNode[] {
     }
     out.push({
       kind: 'read_group',
-      groupKey: `reads:${members[0].id}`,
+      groupKey: readGroupKey(members[0].id),
       threadId: members[0].threadId,
       members,
     });

@@ -89,15 +89,16 @@ Two facts about that shape are load-bearing:
   an open one and a moved window differently from a still one. A signature
   blind to either replays a measured height that no longer applies. `collapsed`
   arrives with liveness already resolved into it, so neither of them has to know
-  what `live` means. `live` is on the node anyway, for the fold's trigger and the
-  controller's lifetime — and to stop two consumers re-deriving "is this the
-  tail" from a list they would each have to hold onto.
+  what `live` means. `live` is on the node anyway, for the auto-collapse gate's
+  settled check and the controller's lifetime — and to stop two consumers
+  re-deriving "is this the tail" from a list they would each have to hold onto.
 - **Liveness counts withheld nodes**, so it is a fact about the items rather
   than about what the reveal gate has let through. The pass runs after
   `sliceRevealedNodes`, so without `GroupActivityRunsOptions.withheld` a run
   whose closing prose is still behind the gate looks like the tail. That
   flapped — finished, live, finished — every time the gate opened, rebuilding
-  the scroll controller and aborting a fold mid-animation. Withheld ACTIVITY
+  the scroll controller each time (and, when this shipped with a settle
+  animation, aborting it mid-flight). Withheld ACTIVITY
   does not count against it: those rows join this very run when the gate
   opens.
 - **Counts are NOT on the node.** Per-tool counts, the failure marker, and
@@ -189,7 +190,7 @@ reader had just clicked and left the rail — invisible by construction, see
 below — as the only way back. Three other things now depend on the header
 never moving: the row estimate is `header + clip-when-open` rather than three
 separate shapes, the structure signature has two letters rather than three, and
-the fold animates the clip under a header that holds still.
+a run collapsing off-screen changes nothing about where its header sits.
 
 **The clip** — the rows inside a height-capped box:
 
@@ -285,91 +286,121 @@ while it is `live`: the default — the `activityRunDefault` setting, or the
 thread's collapse-all state — says how a run should sit once it has settled, and
 one still filling has not settled into anything yet.
 
-Three facts, ranked once, in the registry
+Four facts, ranked once, in the registry
 (`ActivityRunIdentity.collapsedFor(runId, live)`):
 
 1. **The reader's answer for this run** wins outright. Including against
    liveness: somebody who collapses the run they are watching means now, and the
    clip going away is the only evidence the click landed at all.
-2. **The thread's collapse-all state**, then the setting behind it. Both are
+2. **Liveness**: live renders open when nobody has answered — and rendering
+   open is RECORDED (`openedLive` on the entry), because it is a commitment
+   that outlives the turn.
+3. **The recorded hold.** A run that opened because it was live keeps
+   rendering open after it settles, until the timeline's auto-collapse gate
+   releases it (below) or the reader answers directly.
+4. **The thread's collapse-all state**, then the setting behind it. Both are
    defaults — `setAllCollapsed` sets the thread's and DROPS per-run overrides,
    which is what lets a later flip reach every run — so both are answers about
-   how runs sit, not about the one that is working.
-3. **Liveness**, only when nobody has answered: live renders open.
+   how runs sit, not about the one that is working or the one nobody has
+   moved past yet.
 
 Everything downstream then reads one field. `collapsed` on the node means
-"renders without its clip", and the presence machine, the structure signature and
+"renders without its clip", and the row's template, the structure signature and
 the row estimate all take it at face value; none of them looks at `live`. That
 ranking is the fix for a real defect: while liveness was an OVERRIDE applied at
 each consumer, collapsing the live run moved the chevron and nothing else, and
 the header claimed collapsed over a clip full of streaming rows.
 
-It also leaves exactly one transition nobody asked for: the run stops being live,
-its collapse falls back to the default, and the clip has to go. Every collapse
-the reader clicked is instant, which is right — a state they requested should
-land immediately. This one folds instead
-(`components/chat/activityRunClipPresence.svelte.ts`).
+### Auto-collapse happens off-screen, or not at all
 
-**The fold is a height animation on a wrapper, not a scroll write.** The clip
-sits inside a `overflow-hidden` fold box whose height animates to zero through
-the Web Animations API. For its duration the clip leaves the flow and pins to
-that box's BOTTOM at the height it started from, which is the whole shape of
-the motion: the run closes ONTO its newest row, the older ones leave through
-the top, and nothing inside reflows or re-scrolls while it happens. Anchored
-the other way the newest row would be the first thing cut — the run would go
-blank while closing.
+The transition nobody asked for — the run settles and its collapse would fall
+back to a `collapsed` default — is not allowed to happen in front of the
+reader. Snapping shut on the settle frame removes up to a viewport of content
+under the eyes of whoever watched the run stream. Animating the removal was
+built first and rejected in use: the clip is capped near half the viewport,
+and no duration or easing makes losing that much height pleasant while you
+are looking at it — the change every physics tweak was softening was one the
+reader never wanted to see. (Survey result, for the record: no shipping
+desktop agent UI solves this either; the closest issue upstream was closed
+"not planned".)
 
-Nothing here touches `scrollTop`. The shrinking box is measured by the
-virtualizer's row observer like any other row, the engine restates the offsets
-below it, and what that means for the reading position is the scroll
-controller's decision — the same path every layout change already takes. That
-also makes every reader position correct for free: the engine compensates only
-for rows entirely above the viewport top, so a run above the reader holds
-their line, a visible one closes with the rows below sliding up to meet it,
-and a bottom-pinned reader gets the browser's own `scrollTop` clamp, which is
-exactly "everything above slides down onto the pinned tail".
+So the collapse is not softened, it is **scheduled**. The
+`openedLive` hold keeps the settled run open, and a gate on the timeline
+(`components/chat/timelineActivityRunAutoCollapse.ts`) releases it only when
+applying the default is provably invisible and provably unwanted by nobody:
 
-Four ways it does not run:
+- **Fully outside the viewport**, by a 48px margin
+  (`utils/activityRunAutoCollapse.ts`) — a run a scrollbar-nudge from view
+  must not be found mysteriously collapsed.
+- **More than a viewport behind the thread's tail**, measured in content
+  space from the run's bottom to the end of the timeline. Distance from the
+  TAIL, deliberately not "has left the viewport": a reader who scrolls up to
+  check something and returns to the bottom must find the latest runs exactly
+  as they left them. Their viewport went somewhere; the conversation did not
+  move on.
+- **Nothing inside is engaged.** The reader has not pinned the run's mount
+  window or scrolled up inside it (`windowAnchor`, the snapshot's `escaped`
+  flag — registry facts precisely because the rows unmount), and has not
+  explicitly expanded anything within it (`hasUserExpansionWithin`, below).
+- **No unaddressed failure.** A run holding an errored or killed tool call is
+  exempt until the reader deals with it — collapsing it would hide exactly
+  what the header's failure marker exists to keep visible. The exemption is
+  permanent-until-answered: an explicit collapse still wins.
 
-- **The reader is inside it.** A fold is owed, not forced. While they are off
-  the clip's newest row the debt keeps and the run stays open; returning to that
-  row pays it. A run they never come back to simply stays open, which is the one
-  outcome that never moves anything under them.
+Released, the run takes the defaults instantly — no animation, because by
+construction nobody can see it happen — and its inner position is forgotten
+the same way a clicked collapse forgets it. The gate runs on the row-UI
+prune's cadence (structural changes + scroll end, one-tick debounced, never
+per scroll frame), reads only the engine's cached geometry, and pays nothing
+when no holds exist. It also stands down while a reader-visible glide is in
+flight or armed (`PaneScrollController.autoScrollInFlight`): a release
+routes through the bottom-held transaction, whose pinned restore is a
+direct write, and landing that mid-glide — or in the armed gap before the
+spring's first frame — would turn the animation into a snap to the bottom.
+Deferring loses nothing, because the settle that ends the glide synthesizes
+the scrollend that re-runs the gate in quiet. Runs that never opened live — history loads, revived
+archive entries, thread switches — carry no hold and follow the defaults
+outright, which is why a loaded thread does not arrive as a wall of clips.
 
-  An expanded body inside the run deliberately does not count, even though "the
-  reader opened something in here" is the same instinct. `expandedPx` cannot
-  distinguish an expansion the reader asked for from one a setting handed them,
-  and `collapseDiffPreviews` defaults to expanded — so every run holding an edit
-  would have blocked its own fold permanently. The case that guard would have
-  covered is narrow (expanded something AND still pinned to the newest row,
-  which is a request to follow the newest thing), and a guard that silently
-  disables the feature for the commonest run there is costs more than it buys.
-- **The box has no height, or is not on screen.** Nothing to animate.
-- **`prefers-reduced-motion`.** It closes the way a click would.
-- **Somebody clicked.** A collapse the reader asked for — header, rail, or the
-  chat header's bulk toggle — is instant, on a live run as much as a settled one.
-  The debt is what distinguishes them: only a run that stopped being live owes a
-  fold.
+The engagement peek (`ThreadPane.hasUserExpansionWithin`, on the row-UI
+registry) answers "did the reader explicitly expand anything in these items"
+— diff cards overridden to expanded, subagent / wait / read groups, payload
+bodies whose default is collapsed. It shares `expansionSignature`'s "user
+deviations from default" contract, which is what makes it safe where raw
+`expandedPx` was not: `collapseDiffPreviews` defaults diffs to expanded, so
+a pixel-based guard would have pinned every run holding an edit forever,
+while a deviation-based one counts only what the reader opened. The same
+rule reaches expansion entries through `autoExpands`: an entry created with
+`loadOnMount` (auto-loaded diff bodies, plan cards) flips expanded with no
+reader involved, so those entries are skipped wholesale. An override back to
+COLLAPSED is an answer about that card, not engagement.
 
-A fold in flight is abandoned if the reader expands the run, and the animation
-carries a `setTimeout` deadline that calls `finish()` — a backgrounded tab stops
-advancing animations but keeps firing timers, and that is the only way the clip
-could otherwise stay open forever. The deadline resolves through the SAME
-`onfinish` handler, so there is one closing path, not two that can drift.
+The peek's scope is the run's RENDERED items
+(`renderedItemIdsWithin(run.children)`), not its identity membership:
+`memberItemIds` deliberately stops at group parents, but a reader's
+expansion can sit on any row a group renders — a wait group's children or
+its folded completion, an opened subagent card's transcript. Failure keeps
+the membership scope, matching what the collapsed chip summarizes.
 
-The top fade is painted for the fold's whole duration regardless of where the
-clip is resting, because rows are leaving through the top edge the entire time.
-The fold box clips it to the visible height for free, so the fold never ends on
-a gradient over nothing.
+The release itself is batched through `withViewportBottomHeld`, the same
+anchored transaction every reader-clicked collapse uses. For a bottom-pinned
+reader the browser's own `scrollTop` clamp already cancels a shrink above the
+viewport; the transaction is what makes zero motion deterministic for
+everyone else — a reader parked mid-list below a released run gets their
+anchor row put back after the flush instead of trusting the engine to
+compensate an estimate-driven height change above them. The zero-motion claim
+is asserted per-frame in real Chromium, for a mounted run and for one whose
+row has left the virtualizer's buffer entirely
+(`activityRunAutoCollapse.browser.test.ts`).
 
-The registry learns about all of this through one flag. `saveScrollSnapshot`
-refuses a save for a run with no clip — the refusal has to be central, because
-the row that just lost its clip tears it down THROUGH that method — and that
-condition used to be `collapsed`. It is now `clipOpen`, stated by the mounted
-row, because a fold outlives the flag: `collapsed` flips as the animation
-STARTS, and a refusal keyed on it would drop the reading position of a clip
-still on screen — so the run restored nothing when it reopened and reset to its
-newest row, yanking a reader who had scrolled up inside it.
+The registry learns about clip presence from the same resolution.
+`saveScrollSnapshot` refuses a save for a run with no clip — the refusal has
+to be central, because the row that just lost its clip tears it down THROUGH
+that method — and the `clipOpen` flag it checks is recorded by `collapsedFor`
+itself: the resolved answer IS what the row renders, and only the resolution
+sees all four facts. `forgetInnerPosition` still closes it eagerly on the
+same flush as the collapse, so a save arriving between the collapse and the
+next projection is refused too.
 
 ### Collapsing all
 
@@ -387,8 +418,11 @@ into an unrelated one would surprise. A run the reader toggles afterwards
 takes its own override again, on top.
 
 Because it is a default rather than a per-run answer, it does not close the run
-that is still working — that one keeps showing its work and folds itself shut
-when it finishes. This follows from what the action IS: it drops overrides
+that is still working — that one keeps showing its work (it re-records its
+open-because-live hold on the next pass) and is auto-collapsed off-screen once
+it settles, like any other held-open run. The bulk action does retire every
+hold it can reach: "all" includes the settled runs those holds were keeping
+open. This follows from what the action IS: it drops overrides
 instead of writing them, precisely so a later flip still reaches every run, and
 a fact that governs runs it has never seen governs how they sit rather than what
 the reader wants from one of them. Collapsing the live run is one more click on
@@ -397,9 +431,10 @@ its own header, and that click is instant.
 ### A toggle opens upward
 
 Every path that flips collapse state — the header, the rail, the chat header's
-bulk toggle — runs inside `withViewportBottomHeld`, which holds the viewport's
+bulk toggle, and the auto-collapse gate's batch release — runs inside
+`withViewportBottomHeld`, which holds the viewport's
 BOTTOM edge across the change (see
-[frontend-scroll.md §Reader-Requested Height Changes](frontend-scroll.md#reader-requested-height-changes)).
+[frontend-scroll.md §Run Height Changes](frontend-scroll.md#run-height-changes)).
 
 Two things follow, and both are the reason it exists. A run expands over the
 rows above it instead of shoving the rows the reader is looking at down the
@@ -815,7 +850,9 @@ of N estimated ones.
 - `activityRunDefault`: `expanded` | `collapsed`, default `expanded`
   (preserves prior visibility). Applies to the live run too, which is where the
   collapsed-but-open state comes from: with `collapsed`, a streaming run shows
-  its header AND its work, then folds shut when it finishes. This is the durable
+  its header AND its work, keeps showing it after it settles, and collapses
+  only once the reader is provably past it (the auto-collapse gate). This is
+  the durable
   layer under the chat header's per-thread bulk toggle, which overrides it for
   one thread and dies with the pane.
 - `activityRunWindowRows`: default 30, clamped `[10, 200]` — validated
@@ -838,11 +875,14 @@ split / merge, window resolution in row space),
 `activityRunClip.test.ts` (which bodies lift the cap),
 `threadActivityRuns.svelte.test.ts` (overrides, snapshots, the mount window
 surviving a head prune, focus requests, state across a sweep and a
-revival), `ActivityRun.test.ts` (both shapes and the header that toggles
+revival, the open-because-live hold's full transition matrix),
+`ActivityRun.test.ts` (both shapes and the header that toggles
 between them, its counts/failure/running, rail click, boundaries, jumps, the
-collapsed-but-open state and what closes it),
-`activityRunFold.test.ts` (the fold's curve, its bounds, and the
-reduced-motion read), `wheelAttribution.test.ts` +
+collapsed-but-open state and the release that closes it),
+`activityRunAutoCollapse.test.ts` (the out-of-sight predicate over its
+geometry matrix), `timelineActivityRunAutoCollapse.test.ts` (the gate over a
+real registry: release, and every refusal — live, visible, near-tail,
+pinned/escaped/expanded/failed, unmeasured), `wheelAttribution.test.ts` +
 `intent.test.ts`, `overlayScrollbar.test.ts` + `OverlayScrollbar.test.ts`.
 Go: enum rejection, defaults, round-trip, out-of-range clamps on load.
 
@@ -855,13 +895,13 @@ window sliding under an appended row without displacing the rows on screen,
 and the appended row then GLIDING in over several frames rather than arriving
 — on the first append and on every one after it; a jump
 centering an off-window target and the live run's spring not dragging it
-back) and `activityRunFold.browser.test.ts` (the fold closing over several
-frames rather than between two, monotonically; the newest row holding its
-place against the closing edge; the end state measuring the same as a run that
-was never open; a reader standing inside deferring it and returning paying it).
-The last two are the ones happy-dom cannot see at all — there a zero-height box
-takes the fold's no-motion path, so the unit suite can only assert that the
-clip eventually leaves.
+back) and `activityRunAutoCollapse.browser.test.ts` (the zero-motion proof:
+per-frame anchor sampling across a release, for a mounted run and for one
+whose row left the virtualizer's buffer; the settled run staying open in the
+real trigger cascade; a visible run refused and released only after the
+reader leaves; the end state measuring the same as a run that was never
+open). The motion claims are the ones happy-dom cannot see at all — it lays
+nothing out, so the unit suites assert state, never displacement.
 
 **The scrollbar-width invariant cannot be asserted geometrically.** Headless
 Chromium reserves no width for a scrollbar — measured: a 300px box holding
@@ -924,15 +964,27 @@ default window are feel-tuned on the 165Hz setup as with prior scroll work.
    `!collapsed || live`, which made "collapsed" and "has no clip" different
    states — and made the reader's collapse of the live run do nothing at all
    except rotate the chevron, because the clip they were trying to close was held
-   open by the same rule that had drawn a collapsed chevron over it. The three
-   facts are now ranked once, in the registry (`collapsedFor(runId, live)`): the
-   reader's answer for this run, then the thread's defaults, then liveness. That
-   makes `collapsed` mean "renders without its clip" everywhere downstream, so
+   open by the same rule that had drawn a collapsed chevron over it. The facts
+   are now ranked once, in the registry (`collapsedFor(runId, live)`), with the
+   reader's answer for this run outranking liveness — the full current order,
+   which delta 12 later extended with the recorded hold, is under "Four facts"
+   above. That makes `collapsed` mean "renders without its clip" everywhere
+   downstream, so
    the predicate that used to reconcile the two is gone, the signature and the
    estimate each read one field, and the header cannot disagree with what is on
    screen. What the old rule was protecting is intact — a run nobody has answered
-   for still shows its work while it works, and still folds itself shut when it
-   finishes — because that was always a statement about DEFAULTS.
+   for still shows its work while it works — because that was always a statement
+   about DEFAULTS.
+
+12. **The settle transition stopped being an animation.** The design (and the
+   first shipped version) closed a settled run in place with a height fold.
+   Rejected in use: the clip is capped near half the viewport, and no easing
+   makes losing that much height acceptable while the reader is watching the
+   exact spot it happens. Replaced by the `openedLive` hold plus the
+   off-screen auto-collapse gate — the same end state, scheduled for when it
+   is invisible instead of softened while it is not. The fold machinery
+   (`activityRunClipPresence.svelte.ts`, `utils/activityRunFold.ts`) was
+   deleted with it, and the row's clip renders from `collapsed` alone.
 
 ## Accepted tradeoffs
 
@@ -988,9 +1040,8 @@ becomes load-bearing.
 | Clip cap | `min(50vh, 18rem)` | `ACTIVITY_RUN_CAP_CSS` |
 | Rows the cap shows | 8 × 2.25rem | `ACTIVITY_RUN_CAP_ROWS`, `ACTIVITY_RUN_ROW_REM` |
 | Top fade | 24px | `ActivityRun.svelte` |
-| Fold duration | `320–600ms`, `320 + 0.45 × px` | `utils/activityRunFold.ts` |
-| Fold easing | `cubic-bezier(0.3, 0.2, 0.8, 1)` | `ACTIVITY_RUN_FOLD_EASING` |
-| Fold deadline | duration + 400ms | `activityRunFoldDeadlineMs` |
+| Auto-collapse viewport margin | 48px | `AUTO_COLLAPSE_VIEWPORT_MARGIN_PX` |
+| Auto-collapse tail distance | 1 viewport | `AUTO_COLLAPSE_TAIL_DISTANCE_VIEWPORTS` |
 | Default window rows | 30, clamped `[10, 200]` | setting + `activityRunWindow.ts` |
 | Boundary chunk | 25 rows | `ACTIVITY_RUN_CHUNK_ROWS` |
 | Scroll-to-mount runway | 96px | `MOUNT_EARLIER_PREFETCH_PX` |
@@ -1007,8 +1058,10 @@ becomes load-bearing.
 | Registry + archive | `stores/threadActivityRuns.svelte.ts` |
 | Settings accessor | `stores/activityRunPrefs.svelte.ts` |
 | Row, clip, inner controller | `components/chat/ActivityRun.svelte` |
-| Clip presence + the automatic fold | `components/chat/activityRunClipPresence.svelte.ts` |
-| Fold curve, deadline, reduced motion | `utils/activityRunFold.ts` |
+| Auto-collapse gate (reader half) | `components/chat/timelineActivityRunAutoCollapse.ts` |
+| Auto-collapse predicate (geometry half) | `utils/activityRunAutoCollapse.ts` |
+| Engagement peek | `stores/threadRowUiState.svelte.ts` `hasUserExpansionWithin` |
+| Engagement scope (rendered items) | `utils/subagentGrouping.ts` `renderedItemIdsWithin` |
 | Header, boundaries | `components/chat/ActivityRun{Header,Boundary}.svelte` |
 | Overlay scrollbar | `utils/scroll/overlayScrollbar.ts`, `components/shared/OverlayScrollbar.svelte` |
 | Wheel attribution | `utils/scroll/wheelAttribution.ts` |

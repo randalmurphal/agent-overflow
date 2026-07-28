@@ -23,7 +23,11 @@
     codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
   } = $props();
 
-  let showAllChildren = $state(false);
+  // Registry state, not local: `group.groupKey` is the `wait:` key in the
+  // pane's subagent-expansion registry, so the reader's "Show N more" answer
+  // survives a windowing remount and reads as engagement to the activity-run
+  // auto-collapse gate (`hasUserExpansionWithin`) while the row is off-screen.
+  let showAllChildren = $derived(pane.isSubagentGroupExpanded(group.groupKey));
   let visibleChildren = $derived(
     showAllChildren ? group.children : group.children.slice(0, INITIAL_VISIBLE_WAIT_CHILDREN),
   );
@@ -65,7 +69,7 @@
         <button
           type="button"
           class="my-1 rounded-[var(--radius-control)] px-2 py-1 text-[0.6875rem] text-fg-muted hover:bg-surface-2/40 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-          onclick={(event) => preservePaneScrollAnchor(pane, event, () => { showAllChildren = true; })}
+          onclick={(event) => preservePaneScrollAnchor(pane, event, () => { pane.toggleSubagentGroupExpanded(group.groupKey); })}
           data-testid="wait-group-show-all"
         >
           Show {hiddenChildCount} more

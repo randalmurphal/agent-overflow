@@ -24,7 +24,12 @@ import {
 import { transportGapChannel } from '../transport/wsClient';
 import { emitWailsEvent, resetWailsMocks, wailsListenerCount } from '../../test/mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
+import {
+  buildPane,
+  makeItem,
+  makeThread,
+  stubScrollController,
+} from '../../test/helpers/chat';
 import type { ProviderStatusEvent } from '../types/events';
 import type { Item, ProjectWithCounts } from '../types/models';
 
@@ -568,12 +573,9 @@ describe('setupEventListeners', () => {
       makeItem({ id: 'seed', threadId: 'thread-a', turnIndex: 0, itemIndex: 0 }),
     ]);
     const markStructuralContentPending = vi.fn();
-    pane.attachScrollController({
-      pauseAutoScroll: () => () => {},
-      observe: () => {},
-      markStructuralContentPending,
-      preserveScrollAnchor: () => Promise.resolve(),
-    });
+    pane.attachScrollController(
+      stubScrollController({ markStructuralContentPending }),
+    );
     expect(pane.lastLiveContentAt).toBe(0);
 
     const notification = makeItem({

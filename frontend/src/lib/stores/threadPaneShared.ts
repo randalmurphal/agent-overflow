@@ -145,6 +145,13 @@ export type LoadOlderResult = {
  */
 export interface PaneScrollController {
   pauseAutoScroll(): () => void;
+  /**
+   * A reader-visible auto-scroll glide is animating or armed to start.
+   * Unasked mutators whose transaction restores with a direct write (the
+   * activity-run auto-collapse gate) defer while true — see
+   * `UseStickToBottomController.autoScrollInFlight` for the contract.
+   */
+  autoScrollInFlight(): boolean;
   observe(kind: ScrollObservationKind): void;
   /**
    * One-shot structural-append spring arm (250ms TTL in the controller).

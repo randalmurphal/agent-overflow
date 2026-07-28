@@ -4,7 +4,6 @@ import {
   __setSmoothingClockForTest,
   createThreadPane,
   LIVE_TODO_AUTOHIDE_MS,
-  type PaneScrollController,
   type TimelineWindowAnchorOperation,
 } from './thread.svelte';
 import {
@@ -37,7 +36,12 @@ import {
   resetBindingMocks,
   setBindingMock,
 } from '../../test/mocks/bindings-app';
-import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
+import {
+  buildPane,
+  makeItem,
+  makeThread,
+  stubScrollController,
+} from '../../test/helpers/chat';
 import {
   clearAllThreadSizePriorsForTest,
   peekThreadSizePriorsForTest,
@@ -4280,13 +4284,9 @@ describe('createThreadPane', () => {
         operation.run();
         return true;
       });
-      pane.attachScrollController({
-        pauseAutoScroll: () => () => {},
-        observe: () => {},
-        markStructuralContentPending: () => {},
-        preserveScrollAnchor: () => Promise.resolve(),
-        preserveTimelineWindowAnchor,
-      } satisfies PaneScrollController);
+      pane.attachScrollController(
+        stubScrollController({ preserveTimelineWindowAnchor }),
+      );
 
       pane.settleTurn({
         turnId: 'turn-800',
@@ -4337,13 +4337,9 @@ describe('createThreadPane', () => {
       );
 
       const preserveTimelineWindowAnchor = vi.fn(() => false);
-      pane.attachScrollController({
-        pauseAutoScroll: () => () => {},
-        observe: () => {},
-        markStructuralContentPending: () => {},
-        preserveScrollAnchor: () => Promise.resolve(),
-        preserveTimelineWindowAnchor,
-      } satisfies PaneScrollController);
+      pane.attachScrollController(
+        stubScrollController({ preserveTimelineWindowAnchor }),
+      );
 
       pane.settleTurn({
         turnId: 'turn-800',
@@ -4369,13 +4365,9 @@ describe('createThreadPane', () => {
         operation.run();
         return true;
       });
-      pane.attachScrollController({
-        pauseAutoScroll: () => () => {},
-        observe: () => {},
-        markStructuralContentPending: () => {},
-        preserveScrollAnchor: () => Promise.resolve(),
-        preserveTimelineWindowAnchor: retryPreserve,
-      } satisfies PaneScrollController);
+      pane.attachScrollController(
+        stubScrollController({ preserveTimelineWindowAnchor: retryPreserve }),
+      );
 
       pane.retryDeferredRecentWindowPrune();
 
@@ -4416,13 +4408,9 @@ describe('createThreadPane', () => {
       );
 
       const preserveTimelineWindowAnchor = vi.fn(() => true);
-      pane.attachScrollController({
-        pauseAutoScroll: () => () => {},
-        observe: () => {},
-        markStructuralContentPending: () => {},
-        preserveScrollAnchor: () => Promise.resolve(),
-        preserveTimelineWindowAnchor,
-      } satisfies PaneScrollController);
+      pane.attachScrollController(
+        stubScrollController({ preserveTimelineWindowAnchor }),
+      );
 
       pane.settleTurn({
         turnId: 'turn-800',
@@ -4508,13 +4496,9 @@ describe('createThreadPane', () => {
       pane.setActiveTurn({ turnId: 'turn-x', turnIndex: 800, startedAt: 1 });
 
       const preserveTimelineWindowAnchor = vi.fn(() => false);
-      pane.attachScrollController({
-        pauseAutoScroll: () => () => {},
-        observe: () => {},
-        markStructuralContentPending: () => {},
-        preserveScrollAnchor: () => Promise.resolve(),
-        preserveTimelineWindowAnchor,
-      } satisfies PaneScrollController);
+      pane.attachScrollController(
+        stubScrollController({ preserveTimelineWindowAnchor }),
+      );
 
       pane.upsertItems(
         Array.from({ length: 800 }, (_, index) =>
@@ -4576,13 +4560,9 @@ describe('createThreadPane', () => {
       );
 
       const preserveTimelineWindowAnchor = vi.fn(() => false);
-      pane.attachScrollController({
-        pauseAutoScroll: () => () => {},
-        observe: () => {},
-        markStructuralContentPending: () => {},
-        preserveScrollAnchor: () => Promise.resolve(),
-        preserveTimelineWindowAnchor,
-      } satisfies PaneScrollController);
+      pane.attachScrollController(
+        stubScrollController({ preserveTimelineWindowAnchor }),
+      );
 
       pane.settleTurn({
         turnId: 'turn-800',
@@ -7484,18 +7464,9 @@ describe('createThreadPane', () => {
     // proxies it and every `===` against it fails silently: the detach guard
     // stops matching, the slot never empties, and a torn-down controller —
     // holding the detached timeline subtree — stays reachable from the pane.
-    function controller(): PaneScrollController {
-      return {
-        pauseAutoScroll: () => () => {},
-        observe: () => {},
-        markStructuralContentPending: () => {},
-        preserveScrollAnchor: () => Promise.resolve(),
-      };
-    }
-
     it('hands back the same object that registered', () => {
       const pane = createThreadPane();
-      const stick = controller();
+      const stick = stubScrollController();
 
       pane.attachScrollController(stick);
 
@@ -7504,7 +7475,7 @@ describe('createThreadPane', () => {
 
     it('clears the slot when the surface that registered tears down', () => {
       const pane = createThreadPane();
-      const stick = controller();
+      const stick = stubScrollController();
       pane.attachScrollController(stick);
 
       pane.detachScrollController(stick);
@@ -7519,8 +7490,8 @@ describe('createThreadPane', () => {
       // still empties the slot — a guard that rejected everything would look
       // identical here and leak on the last unmount.
       const pane = createThreadPane();
-      const outgoing = controller();
-      const incoming = controller();
+      const outgoing = stubScrollController();
+      const incoming = stubScrollController();
       pane.attachScrollController(outgoing);
       pane.attachScrollController(incoming);
 
@@ -7536,12 +7507,9 @@ describe('createThreadPane', () => {
     function attachMockScrollController(pane: ReturnType<typeof createThreadPane>) {
       const markStructuralContentPending = vi.fn();
       const observe = vi.fn();
-      pane.attachScrollController({
-        pauseAutoScroll: () => () => {},
-        observe,
-        markStructuralContentPending,
-        preserveScrollAnchor: () => Promise.resolve(),
-      });
+      pane.attachScrollController(
+        stubScrollController({ observe, markStructuralContentPending }),
+      );
       return { markStructuralContentPending, observe };
     }
 
