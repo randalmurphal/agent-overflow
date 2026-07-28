@@ -304,6 +304,75 @@ describe('activity run — auto-collapse off-screen', () => {
     expect(runEl(scrollEl, runId)!.dataset.collapsed).toBe('true');
   });
 
+  it('the restore a release leaves behind never yanks the glide that follows', async () => {
+    // A release's bottom restore goes through scrollToIndex, whose pending
+    // convergence outlives the transaction by settle windows of real time.
+    // The completion-shaped sequence — release at the quiet moment, a new
+    // glide right after (next turn, stragglers), a late re-measure above
+    // the viewport (highlight spans, images) — used to make that stale
+    // navigation re-fire its absolute target mid-glide: the viewport
+    // visibly snapped back, then the spring re-chased. The takeover guard
+    // in the virtualizer cancels the navigation the moment the glide moves
+    // the viewport, so the re-measure lands as pure compensation.
+    const mounted = await mountHeldOpenSettledRun();
+    const { pane, scrollEl, runId } = mounted;
+    pane.setDiffCardExpanded('a5', 'src/blocker.ts', true);
+    await growTail(mounted, 6, true);
+    pane.setDiffCardExpanded('a5', 'src/blocker.ts', undefined);
+    scrollEl.dispatchEvent(new Event('scroll'));
+    await waitFor(
+      () => runEl(scrollEl, runId)?.dataset.collapsed === 'true',
+      'release',
+    );
+
+    // Immediately inside the restore's settle window: the next glide.
+    pane.upsertItem(prose('g0', AFTER_RUN_INDEX + 20, THREAD_ID, true));
+    pane.upsertItem(prose('g1', AFTER_RUN_INDEX + 21, THREAD_ID, true));
+
+    // Track what the reader sees: the incoming row's viewport-relative
+    // top. A glide only ever walks it UP the screen; compensation for
+    // above-viewport growth never moves it; only a stale write can shove
+    // it back down.
+    const paneTop = scrollEl.getBoundingClientRect().top;
+    const rectTops: number[] = [];
+    let quietFrames = 0;
+    for (let i = 0; i < 600 && quietFrames < 10; i += 1) {
+      await raf();
+      const el = scrollEl.querySelector('[data-item-id="g1"]') as HTMLElement | null;
+      if (el) rectTops.push(el.getBoundingClientRect().top - paneTop);
+      if (i === 3) {
+        // Mid-glide, a row far above the viewport re-measures taller —
+        // the late-typesetting shape that moves the stale target.
+        pane.upsertItem(
+          makeItem({
+            id: 't0',
+            threadId: THREAD_ID,
+            itemIndex: AFTER_RUN_INDEX + 1,
+            summary: Array.from(
+              { length: 8 },
+              (_, p) =>
+                `Late-measured paragraph ${p}: enough wrapped text that the row genuinely grows against the production cascade when the re-measure lands.`,
+            ).join('\n\n'),
+            createdAt: AFTER_RUN_INDEX + 1,
+            updatedAt: 99999,
+          }),
+        );
+      }
+      if (distanceToBottom(scrollEl) <= QUIET_BOTTOM.epsilonPx) quietFrames += 1;
+      else quietFrames = 0;
+    }
+    expect(quietFrames).toBe(10);
+
+    // The glide really ran, and no frame ever moved the incoming row DOWN
+    // the screen — the yank's only possible signature.
+    expect(rectTops.length).toBeGreaterThan(10);
+    const deltas = rectTops.slice(1).map((top, i) => top - rectTops[i]);
+    expect(deltas.some((d) => d < -5)).toBe(true);
+    for (const delta of deltas) {
+      expect(delta).toBeLessThanOrEqual(DRIFT_PX);
+    }
+  });
+
   it('never collapses a run the reader is looking at, and waits for them to leave', async () => {
     const mounted = await mountHeldOpenSettledRun();
     const { pane, scrollEl, runId } = mounted;

@@ -58,6 +58,11 @@
   // measure; each pass renews a 150ms settle window (upstream timing).
   const INDEX_SCROLL_SETTLE_MS = 150;
   const INDEX_SCROLL_MAX_PASSES = 8;
+  // How far the live position may sit from where a pending index scroll
+  // left it before a convergence pass treats the viewport as taken over.
+  // Covers fractional scrollTop quantization; real takeovers (a spring
+  // frame, a wheel tick) move whole tens of pixels.
+  const INDEX_SCROLL_TAKEOVER_TOLERANCE_PX = 2;
 
   interface Props {
     data: readonly T[];
@@ -174,7 +179,16 @@
     const compensation = pendingCompensation;
     pendingCompensation = null;
     untrack(() => {
-      if (compensation) onCompensation?.(compensation);
+      if (compensation && onCompensation) {
+        onCompensation(compensation);
+        // The controller's compensation write moves the position by the
+        // content shift it preserves across; a pending index scroll's
+        // takeover check must expect the same shift or it would read its
+        // own side's write as a takeover and die mid-restore. Only when a
+        // consumer is attached: undelivered compensation writes nothing,
+        // so the expectation must not move either.
+        noteCompensationForIndexScroll(compensation.delta);
+      }
       convergeIndexScroll();
       maybeDeliverContentGeometry();
       // Strictly last: row offsets and the container height are flushed
@@ -539,6 +553,10 @@
     align: ScrollToIndexAlign;
     extraOffset: number;
     lastTarget: number;
+    /** Where the last pass's write left the viewport (clamped to the max
+     * scroll of that layout), shifted by every compensation delivered
+     * since. NaN until the first pass writes. */
+    expectedPosition: number;
     passesLeft: number;
     settleTimer: ReturnType<typeof setTimeout> | undefined;
   }
@@ -551,12 +569,53 @@
     pendingIndexScroll = undefined;
   }
 
+  function noteCompensationForIndexScroll(delta: number): void {
+    const pending = pendingIndexScroll;
+    if (pending && Number.isFinite(pending.expectedPosition)) {
+      pending.expectedPosition += delta;
+    }
+  }
+
   // Destination rows may be unmeasured; each measurement batch can move
   // the target. Re-write until the target is stable, a settle window
   // passes without movement, or the pass budget runs out.
+  //
+  // A pass may only continue a journey nobody else has redirected. The
+  // pending scroll survives across real time (settle windows, up to 8
+  // passes), and an engine update inside that window used to re-fire the
+  // stale absolute target over whatever motion had taken over — a spring
+  // glide yanked back mid-animation by a late row re-measure was the
+  // visible form (auto-collapse release restores armed exactly that).
+  // So each pass first checks the live position against where its own
+  // last write left it — adjusted for compensations the effect above
+  // delivered, which move the position on the navigation's behalf. Moved
+  // beyond tolerance means a reader gesture or the controller's follow
+  // owns the viewport now: the navigation is stale and dies, it never
+  // fights.
   function convergeIndexScroll(): void {
     const pending = pendingIndexScroll;
     if (!pending) return;
+    const scroller = observedScroller;
+    if (scroller && Number.isFinite(pending.expectedPosition)) {
+      // Where should the viewport be if nobody but this navigation (and
+      // the compensations delivered on its behalf) has moved it? The
+      // expectation, re-clamped against the CURRENT layout: when the
+      // content under the navigation shrinks (a run collapsing in view),
+      // the browser clamps scrollTop with no write from anyone — that is
+      // the navigation's own ground shifting, not a takeover, and the
+      // restore pass that follows is exactly the one that puts the
+      // anchored row back.
+      const maxScroll = Math.max(0, engine.getTotalSize() - engine.getViewportSize());
+      const expected = Math.min(pending.expectedPosition, maxScroll);
+      // Live DOM read, not engine.getScrollOffset(): the engine's offset
+      // lags its own write until the scroll event lands, and a stale
+      // offset here would read the navigation's own write as a takeover.
+      // Cold path — only runs while a navigation is pending.
+      if (Math.abs(scroller.scrollTop - expected) > INDEX_SCROLL_TAKEOVER_TOLERANCE_PX) {
+        clearIndexScroll();
+        return;
+      }
+    }
     const target = engine.targetOffsetFor(pending.index, pending.align, pending.extraOffset);
     if (target === pending.lastTarget) return;
     if (pending.passesLeft <= 0) {
@@ -568,6 +627,13 @@
     if (pending.settleTimer !== undefined) clearTimeout(pending.settleTimer);
     pending.settleTimer = setTimeout(clearIndexScroll, INDEX_SCROLL_SETTLE_MS);
     applyScrollTarget(target);
+    // The browser clamps a write past the end of the CURRENT layout; the
+    // engine's max is that same bound (spacer height IS totalSize, and
+    // viewport excludes the padding both sides share).
+    pending.expectedPosition = Math.min(
+      Math.max(0, target),
+      Math.max(0, engine.getTotalSize() - engine.getViewportSize()),
+    );
   }
 
   export function scrollToIndex(
@@ -580,6 +646,7 @@
       align: opts.align ?? 'start',
       extraOffset: opts.offset ?? 0,
       lastTarget: Number.NaN,
+      expectedPosition: Number.NaN,
       passesLeft: INDEX_SCROLL_MAX_PASSES,
       settleTimer: undefined,
     };

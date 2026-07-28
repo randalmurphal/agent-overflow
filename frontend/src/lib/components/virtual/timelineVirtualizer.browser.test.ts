@@ -617,6 +617,59 @@ describe('scrollToIndex', () => {
     const scrollRect = scrollEl.getBoundingClientRect();
     expect(Math.abs(row.getBoundingClientRect().bottom - scrollRect.bottom)).toBeLessThanOrEqual(1);
   });
+
+  it('a viewport taken over mid-convergence is never yanked back', async () => {
+    // A pending index scroll outlives its first write by settle windows of
+    // real time — the shape every bottom-held restore leaves behind. If the
+    // reader (or the spring) moves the viewport inside that window, a later
+    // engine update must not re-fire the stale absolute target over them:
+    // that write was the release-then-glide "snaps mid-animation" bug.
+    const { harness, scrollEl } = mountHarness();
+    await waitForStableGeometry(scrollEl, 'mount');
+    await pinToBottomAndSettle(scrollEl, 'bottom settle');
+    const handle = harness.handle()!;
+
+    handle.scrollToIndex(ROW_COUNT - 1, { align: 'end' });
+    await raf();
+
+    // Takeover: scroll away from where the navigation's write left things.
+    const takeover = scrollEl.scrollTop - 350;
+    scrollEl.scrollTop = takeover;
+    await raf();
+
+    // A mounted row above the new viewport re-measures, moving the stale
+    // target — the late-typesetting shape that used to re-fire it.
+    const grownIndex = mountedRowIndexes(scrollEl)[0];
+    harness.resizeRow(`row-${grownIndex}`, ROW_PX + 200);
+    await waitForStableGeometry(scrollEl, 'remeasure settle');
+
+    expect(Math.abs(scrollEl.scrollTop - takeover)).toBeLessThanOrEqual(2);
+  });
+
+  it('keeps converging when compensation writes move the position on its behalf', async () => {
+    // The production topology: a consumer (the controller) performs every
+    // compensation write. Converging into unmeasured content triggers
+    // above-viewport re-measures whose compensations move the position for
+    // the navigation's own good — the takeover check must expect those
+    // shifts, not read its own side's writes as a takeover and die early.
+    const ctx = mountHarness({
+      onCompensation: (c) => {
+        ctx.scrollEl.scrollTop = c.target;
+      },
+    });
+    const { harness, scrollEl } = ctx;
+    await waitForStableGeometry(scrollEl, 'mount');
+    const handle = harness.handle()!;
+
+    handle.scrollToIndex(30, { align: 'start' });
+    await waitForStableGeometry(scrollEl, 'index scroll settle');
+
+    expect(Math.abs(scrollEl.scrollTop - handle.getItemOffset(30))).toBeLessThanOrEqual(2);
+    const row = rowEl(scrollEl, 'row-30')!;
+    expect(
+      Math.abs(row.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top),
+    ).toBeLessThanOrEqual(2);
+  });
 });
 
 describe('scrollend synthesis', () => {

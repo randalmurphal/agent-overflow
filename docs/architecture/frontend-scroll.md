@@ -324,7 +324,16 @@ nothing left to animate.
 
 Both restores rely on `scrollToIndex` converging: the target is recomputed as
 measurements land, so one `tick()` is enough to schedule a restore whose rows
-have not been measured yet.
+have not been measured yet. The pending navigation outlives the transaction by
+settle windows of real time, so it carries a takeover guard: a pass only
+continues while the viewport still sits where the navigation's own writes (and
+compensations delivered on its behalf, and the browser's clamp when the
+content under it shrinks) left it. Anything else moving the viewport — a
+reader gesture, the spring's next glide — cancels it, because a stale
+absolute target re-fired over new motion is a visible yank (the
+release-then-glide "snaps mid-animation" bug; regression:
+`timelineVirtualizer.browser.test.ts` takeover tests,
+`activityRunAutoCollapse.browser.test.ts` glide-yank test).
 
 **Bounded by the scrollback that exists.** Opening upward spends `scrollTop`,
 and a run near the top of a thread may not have enough — the write clamps at 0

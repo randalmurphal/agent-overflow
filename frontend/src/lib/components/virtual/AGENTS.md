@@ -30,3 +30,12 @@ each consumer decides who owns the write — chat passes the scroll
 controller chokepoint, simpler surfaces may pass a direct writer they
 own. Do not add chat imports here; the dependency runs one way only
 (surfaces import the adapter, never the reverse).
+
+A pending `scrollToIndex` converges across measurement passes but may
+only continue a journey nobody else has redirected: each pass checks the
+live position against where its own last write left it (compensation
+writes and the browser's shrink-clamp count as its own side) and cancels
+on any other motion. A stale absolute target re-fired over a reader
+gesture or a spring glide is a visible yank — do not weaken this guard
+to "keep converging harder"; a navigation that lost the viewport has
+nothing left to navigate.
