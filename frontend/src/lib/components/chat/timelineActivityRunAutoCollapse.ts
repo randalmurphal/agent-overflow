@@ -30,7 +30,7 @@ import {
   type TimelineNode,
 } from '../../utils/subagentGrouping';
 import { activityRunOutOfSight } from '../../utils/activityRunAutoCollapse';
-import { activityRunHasFailure } from '../../utils/activityRunSummary';
+import { activityRunHasFailure } from './activityRunSummary';
 
 export interface TimelineActivityRunAutoCollapseOptions {
   getPane(): ThreadPane;

@@ -105,7 +105,8 @@ Two facts about that shape are load-bearing:
   the running label all move on ordinary streaming deltas, so baking them in
   would rebuild the virtualizer's data array on every chunk. The header
   resolves current items behind `memberItemIds` and calls
-  `utils/activityRunSummary.ts` — the same rule leaf rows already follow.
+  `components/chat/activityRunSummary.ts` — the same rule leaf rows already
+  follow.
 
 A fifth `kind` had to be threaded through every node dispatcher.
 Compile- or runtime-enforced: `timelineNodeKey`, `timelineNodeItemId`,
@@ -176,10 +177,14 @@ is doing](#a-working-run-shows-what-it-is-doing).
 
 **Header** (`ActivityRunHeader.svelte`) — one line at rail indent: a chevron,
 per-tool counts (count-descending, thinking last: `14 Bash, 6 Read, 3 Edit, 9
-thinking`), a failure marker when a member failed, and the tool name of
-anything still running. Collapsing must hide neither that something went wrong
-nor that something is still going; ticking counts alone do not answer "what is
-it doing". All of it stays while the run is OPEN, because an open run mounts
+thinking`), a failure marker when a member failed, and the display label of
+anything still running. Claude keeps its human-readable native tool names;
+Codex protocol categories use the same aliases as their rows, capitalized for
+the header (`command_execution` → `Bash`, `file_change` → `Edit`,
+`collab_agent` → `Agent`), and nameless terminal interactions read `Wait`.
+Collapsing must hide neither that something went wrong nor that something is
+still going; ticking counts alone do not answer "what is it doing". All of it
+stays while the run is OPEN, because an open run mounts
 only `activityRunWindowRows` of its rows — a failure or a running tool can sit
 outside that window exactly the way a closed run hides one, and the header is
 the only place the run's full size can be stated at all.
@@ -266,17 +271,14 @@ in colour; a grey tally throws that recognition away for no gain. The count
 stays muted: the colour identifies WHICH tool, and tinting the number too would
 only dilute it.
 
-`TOOL_KIND_COLOR_CLASS` moved out of `ToolKindIcon.svelte` into
-`toolCardHeader.ts` for this. The hue belongs to the tool KIND, not to the
-icon — the header paints text where no icon renders — and a second copy would
-let the two disagree about what colour Bash is.
-
-The header is a util away from the classifier, so `activityRunSummary` reports
-`isThinking` per entry and the header resolves kind and colour from it.
-Presentation stays in `components/chat/`, and the alternative — the header
-matching the label string `'thinking'` — would hand reasoning's hue to any tool
-that happened to be named that. The counts bucket on kind AND label for the
-same reason.
+`TOOL_KIND_COLOR_CLASS` lives in `toolCardHeader.ts` for this. The hue belongs
+to the tool KIND, not to the icon — the header paints text where no icon
+renders — and a second copy would let the two disagree about what colour Bash
+is. `activityRunSummary.ts` therefore lives beside the header in
+`components/chat/`: it composes provider-aware display labels with the
+canonical classifier and carries the resolved icon kind on each count entry.
+Thinking and tool buckets have distinct presentation identities, so a tool
+named `thinking` cannot inherit reasoning's hue or sort position.
 
 ### A working run shows what it is doing
 
@@ -1052,7 +1054,7 @@ becomes load-bearing.
 | Concern | File |
 |---|---|
 | Projection pass, identity contract | `utils/activityRunGrouping.ts` |
-| Header counts, failure, running label | `utils/activityRunSummary.ts` |
+| Header counts, failure, running label | `components/chat/activityRunSummary.ts` |
 | Mount window, jump math, reveal | `utils/activityRunWindow.ts` |
 | Cap geometry, disclosure observer, centering | `utils/activityRunClip.ts` |
 | Registry + archive | `stores/threadActivityRuns.svelte.ts` |

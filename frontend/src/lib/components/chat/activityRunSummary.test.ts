@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { activityRunHasFailure, activityRunSummary } from './activityRunSummary';
-import type { Item } from '../types/models';
-import { makeItem } from '../../test/helpers/chat';
+import type { Item } from '../../types/models';
+import { makeItem } from '../../../test/helpers/chat';
 
 let seq = 0;
 function tool(id: string, toolName: string, overrides: Partial<Item> = {}): Item {
@@ -22,17 +22,20 @@ describe('counts', () => {
       tool('c', 'Bash'),
       tool('d', 'Bash'),
       tool('e', 'Read'),
-    ]);
+    ], 'claude');
 
-    expect(counts.entries).toEqual([
-      { label: 'Bash', count: 3, isThinking: false },
-      { label: 'Read', count: 2, isThinking: false },
+    expect(counts.entries.map(({ label, count, icon }) => ({ label, count, icon }))).toEqual([
+      { label: 'Bash', count: 3, icon: 'terminal' },
+      { label: 'Read', count: 2, icon: 'eye' },
     ]);
     expect(counts.total).toBe(5);
   });
 
   it('breaks a count tie alphabetically so the line is stable', () => {
-    const { counts } = activityRunSummary([tool('a', 'Write'), tool('b', 'Edit')]);
+    const { counts } = activityRunSummary(
+      [tool('a', 'Write'), tool('b', 'Edit')],
+      'claude',
+    );
 
     expect(counts.entries.map((e) => e.label)).toEqual(['Edit', 'Write']);
   });
@@ -43,7 +46,7 @@ describe('counts', () => {
       thinking('th2'),
       thinking('th3'),
       tool('a', 'Bash'),
-    ]);
+    ], 'claude');
 
     expect(counts.entries.map((e) => e.label)).toEqual(['Bash', 'thinking']);
   });
@@ -52,9 +55,11 @@ describe('counts', () => {
     const { counts } = activityRunSummary([
       tool('t1', 'Bash'),
       makeItem({ id: 'c1', kind: 'tool_completion', toolName: 'Bash', completionOf: 't1' }),
-    ]);
+    ], 'claude');
 
-    expect(counts.entries).toEqual([{ label: 'Bash', count: 1, isThinking: false }]);
+    expect(counts.entries.map(({ label, count }) => ({ label, count }))).toEqual([
+      { label: 'Bash', count: 1 },
+    ]);
     expect(counts.total).toBe(1);
   });
 
@@ -63,15 +68,99 @@ describe('counts', () => {
     // left of that tool, and dropping it would under-report the run.
     const { counts } = activityRunSummary([
       makeItem({ id: 'c1', kind: 'tool_completion', toolName: 'Bash', completionOf: 'gone' }),
-    ]);
+    ], 'claude');
 
-    expect(counts.entries).toEqual([{ label: 'Bash', count: 1, isThinking: false }]);
+    expect(counts.entries.map(({ label, count }) => ({ label, count }))).toEqual([
+      { label: 'Bash', count: 1 },
+    ]);
   });
 
-  it('falls back to a generic label for an unnamed tool', () => {
-    const { counts } = activityRunSummary([tool('t1', '   ')]);
+  it('capitalizes the generic label for an unnamed tool', () => {
+    const { counts } = activityRunSummary([tool('t1', '   ')], 'claude');
 
-    expect(counts.entries).toEqual([{ label: 'tool', count: 1, isThinking: false }]);
+    expect(counts.entries.map(({ label, count }) => ({ label, count }))).toEqual([
+      { label: 'Tool', count: 1 },
+    ]);
+  });
+
+  it('preserves and capitalizes Claude native tool names', () => {
+    const { counts } = activityRunSummary([
+      tool('a', 'ScheduleWakeup'),
+      tool('b', 'advisor'),
+    ], 'claude');
+
+    expect(counts.entries.map((entry) => entry.label)).toEqual(['Advisor', 'ScheduleWakeup']);
+  });
+
+  it('aliases and capitalizes the Codex run from the regression report', () => {
+    const items: Item[] = [
+      makeItem({
+        id: 'agent-result',
+        itemIndex: 0,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        completionOf: 'launch-outside-run',
+      }),
+      tool('edit-1', 'file_change'),
+      tool('command-1', 'command_execution'),
+      tool('command-2', 'command_execution'),
+      tool('edit-2', 'file_change'),
+      tool('command-3', 'command_execution'),
+      tool('command-4', 'command_execution'),
+      tool('command-5', 'command_execution'),
+      makeItem({
+        id: 'terminal-wait',
+        itemIndex: 8,
+        kind: 'terminal_interaction',
+        toolName: '',
+      }),
+    ];
+
+    const { counts } = activityRunSummary(items, 'codex');
+
+    expect(counts.entries.map(({ label, count, icon }) => ({ label, count, icon }))).toEqual([
+      { label: 'Bash', count: 5, icon: 'terminal' },
+      { label: 'Edit', count: 2, icon: 'file' },
+      { label: 'Agent', count: 1, icon: 'robot' },
+      { label: 'Wait', count: 1, icon: 'clock' },
+    ]);
+  });
+
+  it('merges Codex wire aliases by their presented identity', () => {
+    const { counts } = activityRunSummary([
+      tool('command-camel', 'commandExecution'),
+      tool('command-snake', 'command_execution'),
+      tool('file-camel', 'fileChange'),
+      tool('file-snake', 'file_change'),
+    ], 'codex');
+
+    expect(counts.entries.map(({ label, count }) => ({ label, count }))).toEqual([
+      { label: 'Bash', count: 2 },
+      { label: 'Edit', count: 2 },
+    ]);
+  });
+
+  it('keeps MCP uppercase in a Codex header', () => {
+    const { counts } = activityRunSummary([tool('mcp', 'MCP/lookup')], 'codex');
+
+    expect(counts.entries[0].label).toBe('MCP');
+  });
+
+  it('keeps agent waiting distinct from a terminal wait', () => {
+    const summary = activityRunSummary([
+      makeItem({
+        id: 'terminal-wait',
+        itemIndex: 0,
+        kind: 'terminal_interaction',
+      }),
+      tool('agent-wait', 'wait_agent', { status: 'running' }),
+    ], 'codex');
+
+    expect(summary.counts.entries.map(({ label, icon }) => ({ label, icon }))).toEqual([
+      { label: 'Wait', icon: 'clock' },
+      { label: 'Waiting', icon: 'robot' },
+    ]);
+    expect(summary.runningLabel).toBe('Waiting');
   });
 });
 
@@ -80,24 +169,30 @@ describe('attention state', () => {
     const summary = activityRunSummary([
       tool('t1', 'Bash', { status: 'errored' }),
       tool('t2', 'Read'),
-    ]);
+    ], 'claude');
 
     expect(summary.hasFailure).toBe(true);
   });
 
   it('treats a killed member as a failure', () => {
-    expect(activityRunSummary([tool('t1', 'Bash', { status: 'killed' })]).hasFailure).toBe(true);
+    expect(activityRunSummary(
+      [tool('t1', 'Bash', { status: 'killed' })],
+      'claude',
+    ).hasFailure).toBe(true);
   });
 
   it('does not treat a declined member as a failure — that was a user decision', () => {
-    expect(activityRunSummary([tool('t1', 'Bash', { status: 'declined' })]).hasFailure).toBe(false);
+    expect(activityRunSummary(
+      [tool('t1', 'Bash', { status: 'declined' })],
+      'claude',
+    ).hasFailure).toBe(false);
   });
 
   it('names the newest running member', () => {
     const summary = activityRunSummary([
       tool('t1', 'Read', { status: 'running' }),
       tool('t2', 'Bash', { status: 'running' }),
-    ]);
+    ], 'claude');
 
     expect(summary.runningLabel).toBe('Bash');
   });
@@ -115,18 +210,26 @@ describe('attention state', () => {
         completionOf: 't1',
         status: 'running',
       }),
-    ]);
+    ], 'claude');
 
     expect(summary.runningLabel).toBe('Bash');
     expect(summary.counts.total).toBe(1);
   });
 
   it('reports no running label once everything settles', () => {
-    expect(activityRunSummary([tool('t1', 'Bash')]).runningLabel).toBeNull();
+    expect(activityRunSummary([tool('t1', 'Bash')], 'claude').runningLabel).toBeNull();
+  });
+
+  it('aliases a running Codex tool name', () => {
+    const summary = activityRunSummary([
+      tool('t1', 'command_execution', { status: 'running' }),
+    ], 'codex');
+
+    expect(summary.runningLabel).toBe('Bash');
   });
 
   it('says nothing about an empty run', () => {
-    expect(activityRunSummary([])).toEqual({
+    expect(activityRunSummary([], 'claude')).toEqual({
       counts: { entries: [], total: 0 },
       hasFailure: false,
       runningLabel: null,

@@ -208,7 +208,7 @@ Operational rules for this directory:
   `activityRuns.bulkCollapsed` and never from a survey of the rendered runs.
 - **Nothing that changes per streaming delta belongs on the node.** The
   header's counts, failure, and running label resolve from current items through
-  `utils/activityRunSummary.ts`; a node field would rebuild the
+  `components/chat/activityRunSummary.ts`; a node field would rebuild the
   virtualizer's data array every chunk.
 - **Whether a run follows its tail is the ROW's call, not the registry's.**
   While the inner controller is escaped, `ActivityRun.svelte` pins the mount

@@ -17,8 +17,8 @@
 
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ActivityRunNode } from '../../utils/subagentGrouping';
-  import { activityRunSummary } from '../../utils/activityRunSummary';
-  import { classifyToolName, TOOL_KIND_COLOR_CLASS } from './toolCardHeader';
+  import { activityRunSummary } from './activityRunSummary';
+  import { TOOL_KIND_COLOR_CLASS } from './toolCardHeader';
   import Indicator from './Indicator.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
@@ -44,7 +44,7 @@
       .map((id) => pane.getItemById(id))
       .filter((item) => item !== undefined),
   );
-  let summary = $derived(activityRunSummary(items));
+  let summary = $derived(activityRunSummary(items, pane.thread?.provider));
   // Each term wears its tool's own hue — the same `--ico-*` token the run's
   // own icons use, so the summary is recognisable as the block it describes
   // rather than a grey tally. The count stays muted: the colour identifies
@@ -57,10 +57,7 @@
   let terms = $derived(
     summary.counts.entries.map((entry) => ({
       ...entry,
-      key: `${entry.isThinking ? 'T' : 'C'}:${entry.label}`,
-      colorClass: TOOL_KIND_COLOR_CLASS[
-        entry.isThinking ? 'brain' : classifyToolName(entry.label).icon
-      ],
+      colorClass: TOOL_KIND_COLOR_CLASS[entry.icon],
     })),
   );
   let ariaLabel = $derived(

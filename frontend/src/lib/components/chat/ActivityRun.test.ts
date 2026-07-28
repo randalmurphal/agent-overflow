@@ -3,11 +3,11 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { loadSettings, updateSetting } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { buildPane, makeItem } from '../../../test/helpers/chat';
+import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { makeSettings } from '../../../test/helpers/settings';
 import { clearThreadScrollSnapshotsForTest } from '../../utils/threadScrollSnapshots';
 import { ACTIVITY_RUN_CAP_CSS } from '../../utils/activityRunClip';
-import type { Item } from '../../types/models';
+import type { Item, Thread } from '../../types/models';
 import MessageTimeline from './MessageTimeline.svelte';
 
 /**
@@ -39,8 +39,8 @@ function tool(id: string, index: number, overrides: Partial<Item> = {}): Item {
   });
 }
 
-async function renderRun(items: Item[]) {
-  const pane = await buildPane(undefined, items);
+async function renderRun(items: Item[], provider: Thread['provider'] = 'claude') {
+  const pane = await buildPane(makeThread({ provider }), items);
   return { ...render(MessageTimeline, { props: { pane } }), pane };
 }
 
@@ -564,9 +564,9 @@ describe('<ActivityRun>', () => {
   });
 
   describe('header summary', () => {
-    async function collapsed(items: Item[]) {
+    async function collapsed(items: Item[], provider: Thread['provider'] = 'claude') {
       await updateSetting('activityRunDefault', 'collapsed');
-      return renderRun(items);
+      return renderRun(items, provider);
     }
 
     it('tallies per tool name', async () => {
@@ -578,6 +578,28 @@ describe('<ActivityRun>', () => {
 
       expect(getByTestId('activity-run-header-counts').textContent?.trim())
         .toBe('2 Bash, 1 Read');
+    });
+
+    it('uses capitalized Codex aliases, including nameless terminal waits', async () => {
+      const { getByTestId } = await collapsed([
+        tool('command-1', 0, { toolName: 'command_execution' }),
+        tool('command-2', 1, { toolName: 'command_execution' }),
+        tool('edit-1', 2, { toolName: 'file_change' }),
+        makeItem({
+          id: 'terminal-wait',
+          itemIndex: 3,
+          kind: 'terminal_interaction',
+          summary: 'Waited for background terminal',
+          meta: JSON.stringify({ has_stdin: false }),
+        }),
+      ], 'codex');
+
+      expect(getByTestId('activity-run-header-counts').textContent?.trim())
+        .toBe('2 Bash, 1 Edit, 1 Wait');
+      expect(
+        getByTestId('activity-run-header-counts')
+          .querySelector('[data-tool-term="Wait"]')?.className,
+      ).toBe('text-ico-clock');
     });
 
     it('tints each tool name with that tool\'s own icon hue', async () => {
