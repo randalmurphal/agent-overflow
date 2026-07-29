@@ -53,4 +53,7 @@ and `app_runtime_mode.go`, which compose this package's pieces.
   the store; routing those through `ValidateCreate` would let any UI
   caller produce orphaned discussion shells with no deliberation channel.
   Workflow phase threads similarly require an engine run record and schema;
-  studio and triage threads require their owning workflow entry points.
+  `workflow-triage` threads require the run's hand-off entry point. Nothing
+  creates `workflow-studio` threads any more (D32) — the mode stays legal
+  because shipped databases hold rows in it and the hidden-mode exclusion has
+  to keep hiding them.

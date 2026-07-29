@@ -116,10 +116,12 @@ func TestSendMessageExpandsComposerCommandOnTheWireOnly(t *testing.T) {
 
 	const commandText = "/workflow start the release run"
 	const plainText = "and then tell me what happened"
-	if err := app.sendMessage(thread.ID, commandText, nil); err != nil {
+	// The bound wire method, not the internal helper: expansion is an
+	// explicit opt-in that only the composer-facing entry points set.
+	if err := app.SendMessage(thread.ID, commandText, nil); err != nil {
 		t.Fatalf("send command message: %v", err)
 	}
-	if err := app.sendMessage(thread.ID, plainText, nil); err != nil {
+	if err := app.SendMessage(thread.ID, plainText, nil); err != nil {
 		t.Fatalf("send plain message: %v", err)
 	}
 	_ = sess.Close()
@@ -170,9 +172,10 @@ func TestSendMessageExpandsComposerCommandOnTheWireOnly(t *testing.T) {
 }
 
 // TestSendMessageSkipsExpansionForInjectedText proves the app's own injectors
-// keep their text byte-for-byte: PreserveDraft marks a message the app
-// composed, and expanding a `/…` opener inside one would rewrite a prompt no
-// user typed.
+// keep their text byte-for-byte: expansion is an explicit opt-in
+// (ExpandComposerCommands) that only the composer-facing wire entry points
+// set, so an internal caller — here the workflow wake's PreserveDraft shape —
+// never expands a `/…` opener inside a prompt no user typed.
 func TestSendMessageSkipsExpansionForInjectedText(t *testing.T) {
 	app, _ := newComposerTestApp(t)
 	thread := composerSeedThread(t, app, "thr-command-injected", "")

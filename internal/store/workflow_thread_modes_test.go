@@ -62,30 +62,3 @@ func TestHiddenWorkflowModesStayOutOfNormalListsSearchAndCounts(t *testing.T) {
 		t.Fatalf("project counts = %+v, want one normal thread", projects)
 	}
 }
-
-func TestFindWorkflowTriageAgentExcludesItemLinkedThreads(t *testing.T) {
-	s := newTestStore(t)
-	itemThread := makeThread("item-triage", "codex")
-	itemThread.Mode = threadmode.ModeWorkflowTriage
-	agentThread := makeThread("agent-triage", "codex")
-	agentThread.Mode = threadmode.ModeWorkflowTriage
-	agentThread.CreatedAt++
-	for _, thread := range []Thread{itemThread, agentThread} {
-		if err := s.CreateThread(thread); err != nil {
-			t.Fatal(err)
-		}
-	}
-	item := testWorkItem("workflow-item", defaultTestProjectID, "needs-human", 1)
-	item.Reason = "stuck"
-	item.TriageThreadID = itemThread.ID
-	if err := s.CreateWorkItem(item); err != nil {
-		t.Fatal(err)
-	}
-	got, found, err := s.FindWorkflowTriageAgentThread(defaultTestProjectID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found || got.ID != agentThread.ID {
-		t.Fatalf("triage agent = %+v found=%v, want %s", got, found, agentThread.ID)
-	}
-}

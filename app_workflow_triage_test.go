@@ -18,7 +18,7 @@ import (
 	"agent-overflow/internal/workflow/runner"
 )
 
-func TestWorkflowOpenTriageThreadSeedsOnceAndPersistsAssociation(t *testing.T) {
+func TestWorkflowTriageThreadSeedsOnceAndPersistsAssociation(t *testing.T) {
 	app := newTestAppWithStore(t)
 	dataRoot := t.TempDir()
 	if err := app.initWorkflowEngine(dataRoot); err != nil {
@@ -75,11 +75,11 @@ func TestWorkflowOpenTriageThreadSeedsOnceAndPersistsAssociation(t *testing.T) {
 		})
 	}
 
-	first, err := app.WorkflowOpenTriageThread(item.ID)
+	first, err := app.workflowOpenTriageThread(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := app.WorkflowOpenTriageThread(item.ID)
+	second, err := app.workflowOpenTriageThread(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,13 +120,13 @@ func TestWorkflowOpenTriageThreadSeedsOnceAndPersistsAssociation(t *testing.T) {
 	if err := app.store.CreateWorkItem(done); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.WorkflowOpenTriageThread(done.ID); err != nil {
+	if _, err := app.workflowOpenTriageThread(done.ID); err != nil {
 		t.Fatalf("done item triage: %v", err)
 	}
 	if err := app.store.UpdateWorkItemState(item.ID, string(engine.StateRunning), "", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.WorkflowOpenTriageThread(item.ID); err == nil || !strings.Contains(err.Error(), "want needs-human, failed, or done") {
+	if _, err := app.workflowOpenTriageThread(item.ID); err == nil || !strings.Contains(err.Error(), "want needs-human, failed, or done") {
 		t.Fatalf("running item triage error = %v", err)
 	}
 	failedKickoff := item
@@ -139,7 +139,7 @@ func TestWorkflowOpenTriageThreadSeedsOnceAndPersistsAssociation(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.sendMessageFn = func(string, string, []string) error { return fmt.Errorf("provider unavailable") }
-	if _, err := app.WorkflowOpenTriageThread(failedKickoff.ID); err == nil {
+	if _, err := app.workflowOpenTriageThread(failedKickoff.ID); err == nil {
 		t.Fatal("kickoff failure returned nil")
 	}
 	reloaded, err := app.store.GetWorkItem(failedKickoff.ID)
@@ -240,60 +240,5 @@ func TestReadWorkflowNarrativeBoundsFileRead(t *testing.T) {
 	}
 	if len(narrative) != workflowTriageNarrativeReadMaxBytes {
 		t.Fatalf("narrative bytes = %d, want bounded read of %d", len(narrative), workflowTriageNarrativeReadMaxBytes)
-	}
-}
-
-func TestWorkflowOpenTriageAgentUsesRestartSafeUnlinkedSingleton(t *testing.T) {
-	app := newTestAppWithStore(t)
-	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = app.workflowEngine.Close() })
-	var sends int
-	app.sendMessageFn = func(threadID string, content string, _ []string) error {
-		sends++
-		if content != workflowTriageAgentFraming {
-			t.Fatalf("framing = %q", content)
-		}
-		return app.store.InsertItem(store.Item{
-			ID: "triage-agent-seed", ThreadID: threadID, TurnIndex: 1,
-			Kind: "user_text", Role: "user", Status: "completed", Summary: content,
-			CreatedAt: 10, UpdatedAt: 10,
-		})
-	}
-	first, err := app.WorkflowOpenTriageAgent(defaultTestProjectID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := app.WorkflowOpenTriageAgent(defaultTestProjectID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.ID != second.ID || sends != 1 || first.Mode != threadmode.ModeWorkflowTriage {
-		t.Fatalf("triage agent first=%+v second=%+v sends=%d", first, second, sends)
-	}
-	if first.WorkspacePath != "/tmp/workspace" || first.Title != "Workflow triage agent" {
-		t.Fatalf("triage agent shell = %+v", first)
-	}
-	if linked, err := app.store.GetWorkItemByPhaseThread(first.ID); err == nil || linked.ID != "" {
-		t.Fatalf("triage agent unexpectedly linked to item: %+v err=%v", linked, err)
-	}
-
-	// Simulate a process restart by constructing a new runner/engine over the
-	// same store; the singleton query must still return the persisted thread.
-	if err := app.workflowEngine.Close(); err != nil {
-		t.Fatal(err)
-	}
-	app.workflowEngine = nil
-	app.workflowRunner = nil
-	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := app.WorkflowOpenTriageAgent(defaultTestProjectID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reopened.ID != first.ID || sends != 1 {
-		t.Fatalf("restart singleton = %s, want %s; sends=%d", reopened.ID, first.ID, sends)
 	}
 }

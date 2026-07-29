@@ -50,6 +50,8 @@ func (a *App) SteerMessageWithOptions(threadID string, content string, opts Send
 		RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
+		// Wire entry: this text was typed into a composer (D31).
+		ExpandComposerCommands: true,
 	}); err != nil {
 		return store.Thread{}, err
 	}
@@ -100,7 +102,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		// expansion applies here exactly as it does on the direct path
 		// (D31). Anything else would make the same typed message mean two
 		// different things depending on whether a turn happened to be open.
-		expandComposerCommands: opts.composerAuthored(),
+		expandComposerCommands: opts.ExpandComposerCommands,
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("steer message: %w", err)

@@ -1,9 +1,9 @@
 <script lang="ts">
-  // A workflow definition on home (UI-SPEC §3.2 item 3): name + chain summary
-  // + Edit (a studio thread). Its automations render inline on the row —
-  // trigger, next fire, skipped fires, enable/disable, Run now — and nothing
-  // richer: changing cron, seeds or conditions is studio work over files, not
-  // a form (§11, non-goal in §11 of the UI spec).
+  // A workflow definition on home (UI-SPEC §3.2 item 3): name + chain summary.
+  // Its automations render inline on the row — trigger, next fire, skipped
+  // fires, enable/disable, Run now — and nothing richer: changing cron, seeds
+  // or conditions is work over the definition files, not a form (§11).
+  // Authoring is out of this surface entirely (D32).
   //
   // R2: no variables, no envelopes, no schemas here. A definition that fails
   // dry-run validation shows its FIRST error inline, hint-toned.
@@ -15,15 +15,13 @@
   import { isViewOnlySession } from '../../transport/runMode';
   import type { WorkflowAutomationView, WorkflowDefinitionListing } from '../../types/workflow';
   import { workflowChainSummary, workflowCountdown, workflowDefinitionMeta, workflowMetaLine } from '../../stores/workflowData';
-  import { openWorkflowStudioThread } from '../../stores/workflowThreads';
   import { refreshWorkflowRunsSoon } from '../../stores/workflowRuns.svelte';
 
   interface Props {
-    projectId: string;
     definition: WorkflowDefinitionListing;
     automations: readonly WorkflowAutomationView[];
   }
-  let { projectId, definition, automations }: Props = $props();
+  let { definition, automations }: Props = $props();
 
   let viewOnly = $derived(isViewOnlySession());
   const localOnly = $derived(viewOnly ? 'Local only' : undefined);
@@ -74,13 +72,6 @@
       <span class="shrink-0 rounded bg-surface-2 px-1 text-[0.625rem] text-fg-muted">shared</span>
     {/if}
     <span class="min-w-0 flex-1 truncate text-[0.6875rem] text-fg-muted">{chain}</span>
-    <button
-      class="shrink-0 text-[0.6875rem] text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
-      onclick={() => { void openWorkflowStudioThread(projectId, definition.id); }}
-      disabled={viewOnly}
-      title={localOnly}
-      data-testid="workflow-definition-edit"
-    >Edit</button>
   </div>
 
   {#if !definition.valid && definition.firstValidationError}

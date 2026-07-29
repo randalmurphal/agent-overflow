@@ -22,7 +22,6 @@ export type WorkflowResolutionKind =
 export type WorkflowActionId =
   | 'approve'
   | 'request-changes'
-  | 'take-over'
   | 'rerun'
   | 'resume'
   | 'retry-unit'
@@ -31,7 +30,6 @@ export type WorkflowActionId =
   | 'complete-takeover'
   | 'merge'
   | 'create-pr'
-  | 'open-in-thread'
   | 'open-phase-thread'
   | 'pause'
   | 'cancel'
@@ -96,10 +94,6 @@ export interface WorkflowActionRowInput {
   kind: WorkflowResolutionKind;
   /** Names the phase an approved gate routes to; falls back to "next phase". */
   nextPhaseId?: string;
-  /** A bound run already has a thread; an unbound one can seed one (D17). */
-  bound: boolean;
-  /** A child run resolves inside its parent's tree — no bind, no notify (D18). */
-  isChild: boolean;
 }
 
 export function workflowActionRow(input: WorkflowActionRowInput): WorkflowActionButton[] {
@@ -108,35 +102,29 @@ export function workflowActionRow(input: WorkflowActionRowInput): WorkflowAction
       return [
         { id: 'approve', label: `Approve → ${input.nextPhaseId || 'next phase'}`, key: 'a', variant: 'primary' },
         { id: 'request-changes', label: 'Request changes', key: 'r', variant: 'secondary' },
-        { id: 'take-over', label: 'Take over', key: 't', variant: 'ghost' },
       ];
     case 'question':
-      return [
-        { id: 'take-over', label: 'Take over instead', key: 't', variant: 'ghost' },
-      ];
+      // No buttons: a question is answered by typing, and the footer's answer
+      // input is the whole affordance (D32 removed the thread escape).
+      return [];
     case 'failed':
       return [
-        { id: 'take-over', label: 'Continue with agent', key: 't', variant: 'primary' },
-        { id: 'rerun', label: 'Rerun with guidance', key: 'a', variant: 'secondary' },
+        { id: 'rerun', label: 'Rerun with guidance', key: 'a', variant: 'primary' },
         { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
       ];
     case 'blocked':
       // The paused row's shape, and for the paused row's reason: both stopped
-      // short of a result and both continue once the human clears the way. Six
-      // of the seven reasons that land here are environmental (an unbound
-      // check, a secret that would not resolve, a budget ceiling, a watchdog),
-      // so resuming after fixing the thing outside the run is the common case,
-      // and it is the primary. The seventh is the agent's own `stuck` — for
-      // that one the hand-off is the better move, and it keeps its key.
+      // short of a result and both continue once the human clears the way. The
+      // reasons that land here are environmental (an unbound check, a secret
+      // that would not resolve, a budget ceiling, a watchdog), so resuming
+      // after fixing the thing outside the run is the common case.
       return [
         { id: 'resume', label: 'Resume', key: 'a', variant: 'primary' },
-        { id: 'take-over', label: 'Continue with agent', key: 't', variant: 'ghost' },
         { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
       ];
     case 'paused':
       return [
         { id: 'resume', label: 'Resume', key: 'a', variant: 'primary' },
-        { id: 'take-over', label: 'Take over', key: 't', variant: 'ghost' },
         { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
       ];
     case 'unit-failed':
@@ -149,24 +137,18 @@ export function workflowActionRow(input: WorkflowActionRowInput): WorkflowAction
     case 'taken-over':
       // Not in the §4.3 table: a run under human control has one engine edge
       // back (`CompleteTakeover` runs the finalize turn on the steered thread),
-      // and the thread itself is where the work continues.
+      // and the thread it is already being steered in is where the work
+      // continues — the run got here because a human sent into that thread.
       return [
         { id: 'complete-takeover', label: 'Finish takeover', key: 'a', variant: 'primary' },
-        { id: 'take-over', label: 'Continue with agent', key: 't', variant: 'ghost' },
         { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
       ];
-    case 'done': {
-      const row: WorkflowActionButton[] = [
+    case 'done':
+      return [
         { id: 'merge', label: 'Merge to base', key: 'a', variant: 'primary' },
         { id: 'create-pr', label: 'Create PR', variant: 'secondary' },
-        { id: 'take-over', label: 'Continue with agent ↗', key: 't', variant: 'ghost' },
         { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
       ];
-      if (!input.bound && !input.isChild) {
-        row.splice(3, 0, { id: 'open-in-thread', label: 'Open in thread', variant: 'ghost' });
-      }
-      return row;
-    }
     case 'running':
       return [
         { id: 'pause', label: 'Pause', variant: 'secondary' },
@@ -205,7 +187,7 @@ export function workflowDigestFallback(
     case 'question':
       return { whatHappened: `${phase} paused on a question.`, whatItNeeds: 'Answer it and the phase resumes where it yielded.' };
     case 'paused':
-      return { whatHappened: `${phase} stopped before it produced a result.`, whatItNeeds: 'Resume it or take it over.' };
+      return { whatHappened: `${phase} stopped before it produced a result.`, whatItNeeds: 'Resume it or discard it.' };
     case 'unit-failed':
       return { whatHappened: 'A fan-out unit failed; its siblings finished.', whatItNeeds: 'Retry the unit, drop it, or take it over.' };
     case 'taken-over':
@@ -217,7 +199,7 @@ export function workflowDigestFallback(
     case 'cancelled':
       return { whatHappened: 'The run was stopped.', whatItNeeds: 'Nothing — discard it when you are done with the worktree.' };
     case 'failed':
-      return { whatHappened: `${phase} could not finish.`, whatItNeeds: 'Continue with an agent, rerun it, or discard it.' };
+      return { whatHappened: `${phase} could not finish.`, whatItNeeds: 'Rerun it with guidance, or discard it.' };
     case 'blocked':
       // Says that resuming starts the phase over, because the word "resume"
       // means continuing the same session one row up and the two must not be

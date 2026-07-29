@@ -78,7 +78,32 @@ describe('WorkflowActionRow', () => {
       .map((node) => node.textContent?.trim());
     expect(labels[0]).toContain('Approve → docs');
     expect(labels[0]).toContain('a');
-    expect(labels).toHaveLength(3);
+    expect(labels).toHaveLength(2);
+  });
+
+  // D32: no row spawns a thread any more. The unit row keeps `Take over unit`,
+  // which detaches the unit and opens the thread it is already running in.
+  it('offers no thread-spawning action on a parked run', () => {
+    for (const over of [
+      { reason: 'gate' }, { reason: 'question' }, { reason: 'stuck' },
+      { reason: 'paused' }, { reason: 'taken-over' },
+      { state: 'failed', reason: 'check-failed-genuine' }, { state: 'done', reason: '' },
+    ]) {
+      const view = mount(over);
+      const ids = [...view.container.querySelectorAll('[data-testid="workflow-action"]')]
+        .map((node) => node.getAttribute('data-action-id'));
+      expect(ids).not.toContain('take-over');
+      expect(ids).not.toContain('open-in-thread');
+      view.unmount();
+    }
+  });
+
+  it('takes over a failed unit through the engine edge before opening its thread', async () => {
+    setBindingMock('WorkflowTakeOverUnit', async () => undefined);
+    setBindingMock('GetThread', async () => ({ id: 'unit-thread', title: 'unit' }));
+    const view = mount({ reason: 'unit-failed' }, { failedUnitId: 'port-3', failedUnitThreadId: 'unit-thread' });
+    await fireEvent.click(actionButton(view, 'take-over-unit'));
+    await waitFor(() => expect(getBindingMock('WorkflowTakeOverUnit')).toHaveBeenCalledWith('run-1', 'port-3'));
   });
 
   it('approves through the verified decision string', async () => {

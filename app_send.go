@@ -40,25 +40,21 @@ type sendMessageOptions struct {
 	RevisionSourceDiffCommentIDs []string
 	OutputSchema                 json.RawMessage
 	// PreserveDraft keeps the thread's durable composer draft. Set by the
-	// app-internal injectors (a workflow wake, a seeded triage/open-in-thread
-	// turn) whose text did not come from the composer: a user send consumes the
-	// draft, but a system-injected message that cleared it would silently
-	// destroy text the user typed and has not sent.
+	// app-internal injectors (the workflow wake) whose text did not come from
+	// the composer: a user send consumes the draft, but a system-injected
+	// message that cleared it would silently destroy text the user typed and
+	// has not sent.
 	PreserveDraft bool
-}
-
-// composerAuthored reports whether this message's text came from a human
-// typing into a composer, which is the one class of send that may carry a
-// `/command` word for send-time expansion (D31).
-//
-// Both exclusions are the same fact from two directions: PreserveDraft marks
-// the app-internal injectors (workflow wake, seeded triage / open-in-thread
-// turns) whose text the app composed, and an OutputSchema marks a
-// schema-driven workflow phase send. Neither text passed through a composer,
-// and expanding a `/…` opener inside one would rewrite a prompt the app itself
-// wrote.
-func (o sendMessageOptions) composerAuthored() bool {
-	return !o.PreserveDraft && len(o.OutputSchema) == 0
+	// ExpandComposerCommands admits a leading `/command` word for send-time
+	// expansion (D31). Explicit opt-in, set ONLY where text a human typed
+	// into a composer enters the app: the bound SendMessage /
+	// SendMessageWithOptions / SteerMessageWithOptions wire methods and the
+	// flush-queue dispatch of previously queued composer text. Every
+	// app-internal caller (workflow wake, seeded triage/PR turns,
+	// schema-driven phase sends, discussion drive) leaves it false by
+	// default, so a new internal send path can never expand a `/…` opener
+	// in a prompt the app itself wrote just by forgetting a flag.
+	ExpandComposerCommands bool
 }
 
 // userMessageInputs is the projection of fields shared by every
@@ -76,9 +72,9 @@ type userMessageInputs struct {
 	// expandComposerCommands admits a leading `/command` word for
 	// send-time expansion (D31). True for everything a human typed into a
 	// composer — direct send, Codex steer, queued flush — and false for
-	// app-internal injectors (workflow wake, seeded triage/open-in-thread
-	// turns, schema-driven workflow sends), whose text did not come from a
-	// composer and must reach the provider byte-for-byte as composed.
+	// app-internal injectors (the workflow wake, schema-driven workflow
+	// sends), whose text did not come from a composer and must reach the
+	// provider byte-for-byte as composed.
 	expandComposerCommands bool
 }
 
@@ -298,7 +294,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		revisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
 		revisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		revisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
-		expandComposerCommands:       opts.composerAuthored(),
+		expandComposerCommands:       opts.ExpandComposerCommands,
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)

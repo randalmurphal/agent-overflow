@@ -156,7 +156,7 @@ and that output also becomes the variables the next phase consumes.
     (§5): a bound origin thread gets the wake with failure details; otherwise
     the overlay + OS notification. Recovery actions: retry the failed unit,
     drop it (join proceeds over survivors, recorded in the gate trace), or
-    take over its thread (§7).
+    take over its thread — the one it is already running in (§7).
   - the **join** is an ordinary unit (agent or tool) that runs after all units
     rest; its envelope is the phase's envelope. What a join *does* — synthesis
     or merge — is the author's choice (§9).
@@ -389,8 +389,8 @@ Grantable first-party capabilities (phase-side):
 - **update job notes** — a terminal phase may rewrite its job's continuity
   notes (§11); a no-op rewrite is a normal outcome;
 - **introspection** — run status / outputs / records, for the agents that
-  manage the system (the §7 triage agent, the §8 studio, a woken origin
-  thread investigating a failure).
+  manage the system (a woken origin thread investigating a failure, an agent
+  a human pointed at the workflow files).
 
 **Deferred (post-v1): agent-invoked inter-agent discussions** — an agent
 questioning another agent via AO's native discussions. Additive, not
@@ -526,8 +526,9 @@ Resolve by:
   the answer; it runs as the **next turn in the same session with the same
   schema attached** — straight to the envelope. No interrupt, no finalize
   turn, no provider-level suspension mechanic.
-- **Take over** — drive it yourself, exactly as above (steer free-form →
-  Complete or discard + re-run).
+- **Take over** — drive it yourself, exactly as above: open the phase's
+  thread from the run tree and send (steer free-form → Complete or discard +
+  re-run). The send is what takes over; there is no take-over button (D32).
 - **Unit recovery** — for `unit-failed` parks: retry the unit, drop it (join
   proceeds over survivors), or open its thread.
 
@@ -542,27 +543,27 @@ completed via a finalize turn, or has its fields filled by hand, the result is
 the *same* typed envelope constrained by the *same* output schema. The gate
 never needs to know which produced it.
 
-### Resolving at scale — sweep, hand-off, and the triage agent
+### Resolving at scale — the sweep
 
 - **Needs-attention sweep.** Run detail (§10) steps parked runs one at a time
   (`j`/`k` next/prev), each leading with a short generated digest ("what
-  happened / what it needs") and inline approve / answer / take over / rerun /
-  discard. The morning-after throughput path.
-- **Hand off to an agent.** Every failed/parked run offers a one-click
-  **triage thread** — pre-seeded with the run record, envelopes, diff, and
-  typed reason, in the item's worktree — for when transferring context beats
-  fixing it yourself. (A thread-bound run already did this automatically via
-  the wake, §5.)
-- **Triage agent.** A conversational agent over the same data ("figure out
-  what needs my attention and set up the conversations for it"): read-only
-  introspection across items / reasons / records, spawns seeded triage
-  threads (plus an optional framing note distilled from the conversation),
-  and takes actions (start runs, gate approve/reject) through AO's normal
-  interactive approval UX.
+  happened / what it needs") and inline approve / answer / resume / rerun /
+  retry-unit / discard. The morning-after throughput path.
+- **Handing work to an agent is the wake, not a button (D32).** A run bound to
+  a thread (§5) delivers its digest into that conversation on every resting
+  transition, and the agent there resolves it through the CLI. The overlay's
+  one-click "spawn me a triage thread" affordances — per-run hand-off and the
+  per-project triage agent — were removed: the useful hand-off already happens
+  through the binding the CLI made, and a button that opens a fresh
+  conversation about a run was context transfer without a conversation to
+  transfer it into. A better primitive may replace it later.
+- **Taking a run over is a send.** Open the phase's thread from the run tree
+  and type: the send interrupts the turn, detaches the attempt, and parks the
+  run `needs-human(taken-over)`. No thread is created for it.
 
 **No internals on human surfaces.** Variables, envelopes, JSON, and gate
 traces never render in the human UI — they exist to make workflows manageable
-*by agents* (the §8 studio, the triage agent). Human phase detail = narrative
+*by agents* through the `agent-overflow` CLI. Human phase detail = narrative
 digest, diff, checks, cost.
 
 ## 8. Intake — creating and starting runs
@@ -612,13 +613,13 @@ snapshot, below). A workflow's identity is a **declared `id`** inside the
 file, not its filename; **resolution is project → shared**, project winning on
 `id` collision. Edit a file → the next start picks it up.
 
-**Authoring is agent-first — the workflow studio.** Creating or editing a
-workflow or profile is a **studio thread**: an agent granted the definition
-schema, the dry-run validator, and write access to the workflow dirs +
-profiles — no dedicated editor surface. Entry points: `/workflow` in any
-thread, the overlay's new-workflow / edit / "open in studio" from any run
-(pre-loaded with its record + frozen snapshot). Studio threads never appear in
-normal thread lists (§10).
+**Authoring is file work, started by the human.** Creating or editing a
+workflow or profile means editing the definition files — `agent-overflow
+workflow new` scaffolds one, `agent-overflow workflow validate` dry-runs it,
+and an agent can be pointed at them from any thread the human opens. There is
+no dedicated editor surface and **no button that spawns an authoring thread**:
+D32 removed the studio spawner from the overlay, because a surface that starts
+a conversation for you is not how this authoring actually gets done.
 
 A **project profile** is an app-managed per-project **`profile.yaml`** (same
 never-in-repo rule) holding the per-project **bindings**: the base branch, the
@@ -759,8 +760,8 @@ base branch is ever touched.
 auto-merges by default** — a project profile may opt into
 **auto-merge-on-done** (§8; side projects; production stays manual), which
 proceeds only on a clean merge from a green terminal state. **Any conflict or
-dirty base refuses and parks `needs-human(disposition)`** with a pre-seeded
-triage thread — never forced, never silent.
+dirty base refuses and parks `needs-human(disposition)`** — never forced,
+never silent.
 
 ## 10. The surface — the workflows overlay and per-phase threads
 
@@ -773,21 +774,24 @@ settings pattern, which swaps the surface out and forces pane remounts.)
 There is no workflows pane, no per-project sidebar section, and no workflow
 presence in normal thread lists — **phase, unit, studio, and triage threads
 are excluded from thread lists**, reachable from the overlay (and openable as
-normal thread panes beside it once summoned).
+normal thread panes beside it once summoned). Studio and triage-agent threads
+are no longer created (D32); the exclusion keeps existing ones hidden.
 
 **Overlay structure — project-grouped, drill-down:**
 
-- **Home**: per project — its workflow definitions (with edit / studio entry
-  points) and its runs: active first (live state, current phase, waiting-on
-  markers), then resting (needs-attention leading), then recent history.
-  Scheduled automations (§11) show trigger + next fire inline.
+- **Home**: per project — its workflow definitions (read-only rows; authoring
+  is file work, §8) and its runs: active first (live state, current phase,
+  waiting-on markers), then resting (needs-attention leading), then recent
+  history. Scheduled automations (§11) show trigger + next fire inline.
 - **Run detail**: the run **tree** — phases in order; a fan-out phase expands
   to its units; a call phase expands to its child run (recursively). Leads
   with the digest, diff, checks, and cost; hosts the resolution actions
-  (approve / reject / answer / pause / resume / rerun / retry-unit / take
-  over / discard-with-preview / disposition / open-in-thread / bind-thread)
-  plus the §7 needs-attention sweep. Every phase/unit attempt links its
-  thread — completed, failed, and superseded attempts included.
+  (approve / reject / answer / pause / resume / rerun / retry-unit /
+  take-over-unit / finish-takeover / discard-with-preview / disposition /
+  bind-thread) plus the §7 needs-attention sweep. Every phase/unit attempt
+  links its thread — completed, failed, and superseded attempts included.
+  Every one of those opens a thread that already exists; **no action here
+  creates one** (D32).
 - Threads always break out of the overlay into normal panes; the overlay is
   for state and action, not for chatting.
 
@@ -894,7 +898,7 @@ starts a run.
 **Minimal in-overlay management + Run now.** The overlay (§10) shows an
 automation's trigger, enable/disable, next fire, and skipped fires, plus a
 **Run now** button. Anything richer (changing cron, seeds, conditions) is §8
-studio-agent work over the automation config, not forms.
+file work over the automation config, not forms.
 
 **Job continuity notes.** A scheduled/triggered job carries **per-job notes**
 (a markdown blob) for cross-run continuity: visible and editable in the UI,

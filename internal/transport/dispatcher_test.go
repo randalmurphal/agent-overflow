@@ -720,9 +720,6 @@ func (p *privilegedApp) WorkflowListItems() string             { return "ok" }
 func (p *privilegedApp) WorkflowListItemCosts() string         { return "ok" }
 func (p *privilegedApp) WorkflowGetItem() string               { return "ok" }
 func (p *privilegedApp) WorkflowCompleteTakeover() string      { return "ok" }
-func (p *privilegedApp) WorkflowOpenTriageThread() string      { return "ok" }
-func (p *privilegedApp) WorkflowOpenTriageAgent() string       { return "ok" }
-func (p *privilegedApp) WorkflowOpenStudioThread() string      { return "ok" }
 func (p *privilegedApp) WorkflowMergeItem() string             { return "ok" }
 func (p *privilegedApp) WorkflowCreateItemPR() string          { return "ok" }
 func (p *privilegedApp) WorkflowDiscardItem() string           { return "ok" }
@@ -749,7 +746,6 @@ func (p *privilegedApp) WorkflowAgentSetNotes() string          { return "ok" }
 func (p *privilegedApp) WorkflowPauseItem() string              { return "ok" }
 func (p *privilegedApp) WorkflowBindThread() string             { return "ok" }
 func (p *privilegedApp) WorkflowUnbindThread() string           { return "ok" }
-func (p *privilegedApp) WorkflowOpenInThread() string           { return "ok" }
 func (p *privilegedApp) WorkflowDiscardPreview() string         { return "ok" }
 func (p *privilegedApp) ProjectDeletionPreview() string         { return "ok" }
 func (p *privilegedApp) WorkflowCreateAutomation() string       { return "ok" }

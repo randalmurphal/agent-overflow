@@ -27,13 +27,28 @@ func TestWorkflowBoundMethodsRegisteredOnApp(t *testing.T) {
 		"WorkflowAnswerQuestion", "WorkflowResolveGate", "WorkflowRerunItem",
 		"WorkflowSetGlobalPause", "WorkflowGetEngineState",
 		"WorkflowListItems", "WorkflowListUnresolvedItems", "WorkflowListItemCosts", "WorkflowGetItem",
-		"WorkflowCompleteTakeover", "WorkflowOpenTriageThread", "WorkflowOpenTriageAgent", "WorkflowOpenStudioThread",
+		"WorkflowCompleteTakeover",
 		"WorkflowMergeItem", "WorkflowCreateItemPR", "WorkflowDiscardItem",
 		"WorkflowFetchPRReviewComments", "WorkflowSendPRReviewCommentsToThread", "WorkflowDiscussPR",
 		"WorkflowGetJobNotes", "WorkflowSetJobNotes", "WorkflowListDefinitions",
 	} {
 		if _, ok := appType.MethodByName(name); !ok {
 			t.Errorf("App method %s is not registered", name)
+		}
+	}
+}
+
+// D32 deleted every workflow affordance that spawned a NEW chat thread. A bound
+// method is a wire RPC and a generated TS binding, so re-exporting one of these
+// would silently put the removed surface back within reach of any caller.
+func TestWorkflowThreadSpawningMethodsAreNotBound(t *testing.T) {
+	appType := reflect.TypeOf((*App)(nil))
+	for _, name := range []string{
+		"WorkflowOpenTriageThread", "WorkflowOpenTriageAgent",
+		"WorkflowOpenStudioThread", "WorkflowOpenInThread",
+	} {
+		if _, ok := appType.MethodByName(name); ok {
+			t.Errorf("App method %s is bound again; D32 removed it", name)
 		}
 	}
 }

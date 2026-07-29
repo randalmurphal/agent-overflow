@@ -3427,58 +3427,6 @@ export function WorkflowMergeItem(itemID: string): $CancellablePromise<$models.W
 }
 
 /**
- * WorkflowOpenInThread opens a conversation about a run and binds it, so the
- * run's future results land in the same place. The thread starts with the run's
- * current state as its first user message — the same composed wake a resting
- * transition delivers — so the agent begins with the run's results in context
- * rather than being asked about a run it knows nothing about.
- * 
- * A run that is already bound to a usable thread returns that thread untouched:
- * the point of the binding is that there is one conversation per run, and
- * opening it twice must not fork that conversation.
- * 
- * LocalOnly: it creates a local thread and starts a provider session.
- */
-export function WorkflowOpenInThread(itemID: string): $CancellablePromise<store$0.Thread> {
-    return $Call.ByID(2757959479, itemID).then(($result: any) => {
-        return $$createType1($result);
-    });
-}
-
-/**
- * WorkflowOpenStudioThread opens or returns the project/workflow-specific
- * studio shell. Studio tooling and kickoff prompts land in M4; this RPC only
- * creates the correctly scoped thread and title.
- */
-export function WorkflowOpenStudioThread(projectID: string, workflowID: string): $CancellablePromise<store$0.Thread> {
-    return $Call.ByID(304020682, projectID, workflowID).then(($result: any) => {
-        return $$createType1($result);
-    });
-}
-
-/**
- * WorkflowOpenTriageAgent opens or returns the per-project singleton triage
- * shell. The absence of a work_items.triage_thread_id link distinguishes this
- * shell durably from item hand-off threads.
- */
-export function WorkflowOpenTriageAgent(projectID: string): $CancellablePromise<store$0.Thread> {
-    return $Call.ByID(1552981489, projectID).then(($result: any) => {
-        return $$createType1($result);
-    });
-}
-
-/**
- * WorkflowOpenTriageThread opens or returns the item-linked hand-off thread,
- * seeding a newly created thread as its first user turn so work starts
- * immediately.
- */
-export function WorkflowOpenTriageThread(itemID: string): $CancellablePromise<store$0.Thread> {
-    return $Call.ByID(3525577760, itemID).then(($result: any) => {
-        return $$createType1($result);
-    });
-}
-
-/**
  * WorkflowPauseItem parks a run tree `needs-human(paused)`: in-flight turns are
  * interrupted now, resources are released, and every live member of the tree
  * comes down through the engine's one teardown path. Resuming continues on the

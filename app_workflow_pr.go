@@ -47,7 +47,7 @@ func (a *App) WorkflowSendPRReviewCommentsToThread(itemID string) (store.Thread,
 	if err != nil {
 		return store.Thread{}, err
 	}
-	thread, err := a.WorkflowOpenTriageThread(itemID)
+	thread, err := a.workflowOpenTriageThread(itemID)
 	if err != nil {
 		return store.Thread{}, err
 	}
@@ -78,7 +78,7 @@ func (a *App) WorkflowDiscussPR(itemID string) (store.Thread, error) {
 	}
 	current, _ := currentWorkflowPhaseAttempt(phases)
 	digest := workflowTemplateDigest(coordinates.Item, current.PhaseID, current.OutputEnvelope, "")
-	thread, err := a.WorkflowOpenTriageThread(itemID)
+	thread, err := a.workflowOpenTriageThread(itemID)
 	if err != nil {
 		return store.Thread{}, err
 	}

@@ -1067,11 +1067,16 @@ verdict it now is, with what the first attempt got wrong.
   invocation, and the row must say so even when the project had nothing
   to add. An unknown `/word` is ordinary text, not an error.
 
-  **App-authored messages are exempt.** A workflow wake, a seeded triage
-  turn, and a schema-driven phase send never pass through a composer, so
-  they are sent byte-for-byte as the app composed them
-  (`sendMessageOptions.composerAuthored()`). Expanding a `/…` opener
-  inside a prompt the app wrote would be the app rewriting itself.
+  **App-authored messages are exempt, structurally.** Expansion is an
+  explicit opt-in (`sendMessageOptions.ExpandComposerCommands`) set only
+  where composer-typed text enters the app: the bound SendMessage /
+  SendMessageWithOptions / SteerMessageWithOptions wire methods and the
+  flush-queue dispatch. A workflow wake, a seeded triage turn, a
+  discussion-drive prompt, and a schema-driven phase send never set it,
+  and a future internal caller that forgets the flag gets the safe
+  behaviour — byte-for-byte delivery — not an accidental expansion.
+  Expanding a `/…` opener inside a prompt the app wrote would be the app
+  rewriting itself.
 
   **Two registries, one authority.** The Go table
   (`app_composer_commands.go`) decides what expands; the frontend list
@@ -1080,3 +1085,74 @@ verdict it now is, with what the first attempt got wrong.
   generated — one entry each today — and the backend is authoritative: a
   word the frontend colours but the table does not know expands to
   nothing and is marked as nothing.
+
+## Workflow surfaces do not spawn threads (user ruling, 2026-07-29)
+
+- **D32. Every affordance that started a NEW chat thread from a workflow
+  surface is deleted; opening a thread the run already has stays.** Four
+  buttons go, with everything that existed only to serve them:
+
+  1. **"Continue with agent" / "Take over"** — the run-level action on
+     the gate, question, failed, blocked, paused, taken-over and done
+     rows. It never took a run over: it created a second,
+     `workflow-triage`-mode thread seeded with the run record and
+     dropped the human into it. The bound method
+     (`WorkflowOpenTriageThread`) is unexported;
+     `takeOverWorkflowRun` and the `take-over` action id are gone.
+  2. **"Open in thread"** — the D17 seed-and-bind affordance on an
+     unbound done run. `WorkflowOpenInThread` and
+     `workflowOriginThreadOptions` are deleted, and with them the
+     `bound` / `isChild` inputs to the action-row table, which existed
+     only to decide whether to offer it.
+  3. **The triage agent** — the per-project conversational shell behind
+     the home header's `Triage` control. `WorkflowOpenTriageAgent`, its
+     framing prompt, and `store.FindWorkflowTriageAgentThread` (the
+     unlinked-singleton query that distinguished the shell from item
+     hand-off threads) are deleted.
+  4. **The workflow studio** — `+ New workflow`, the definition row's
+     `Edit`, and the empty state's `+ New workflow`. The whole
+     `app_workflow_studio.go` RPC is deleted.
+
+  **Why.** These were the surface offering to *start a conversation for
+  you*, and that is not how any of this work actually gets done. A run
+  worth continuing already has the thread to continue it in — the phase
+  thread it ran in, or the origin thread the CLI bound it to. A button
+  that opens a fresh, pre-seeded conversation transfers context into a
+  place with no context, which is the opposite of the problem it was
+  built for. Authoring a workflow is file work (`agent-overflow workflow
+  new` + an editor, or an agent the human points at the files), not a
+  thread the overlay conjures.
+
+  **What stays, and why the lines fall where they do.**
+
+  - **"Open phase thread"** and every openable phase/unit/attempt row in
+    the run tree stay. They open a thread that already exists; that was
+    never the objection.
+  - **Unit take-over** (`Take over unit`, `t` on the unit-failed row)
+    stays whole — `WorkflowTakeOverUnit` runs the engine edge and then
+    opens the thread the unit was ALREADY running in. It is the only
+    `t` binding left in §8.
+  - **The take-over FSM is untouched.** `Engine.TakeOver` /
+    `CompleteTakeover` and the runner's detach/schema-swap bookkeeping
+    are driven by *sending into a live phase thread* (`app_send.go`
+    `prepareWorkflowTakeoverSend`), not by the deleted button. The
+    `needs-human(taken-over)` row and its `Finish takeover` action are
+    therefore still reachable and still correct.
+  - **The wake loop is untouched.** A run bound by `agent-overflow run
+    start` (or by `WorkflowBindThread` against an existing thread) still
+    injects its digest into that thread on every resting transition.
+    Binding never created a thread; only the deleted button did.
+  - **`workflowOpenTriageThread` survives unexported** because
+    `WorkflowSendPRReviewCommentsToThread` and `WorkflowDiscussPR` (§4.7)
+    ride the run's ONE linked thread and this is what makes it one. The
+    helper served a removed button and a kept path; the button's entry
+    point went, the helper did not.
+  - **`threads.mode` keeps `workflow-studio`.** Nothing mints one any
+    more, but shipped databases hold them and the hidden-mode exclusion
+    must keep hiding them. The mode is data compatibility, not a live
+    affordance.
+
+  **A better primitive may replace this later.** The removal is clean —
+  no dead code, no commented-out buttons, no orphaned bindings — so that
+  whatever replaces it starts from the behaviour that is actually wanted
+  rather than from this one's shape.

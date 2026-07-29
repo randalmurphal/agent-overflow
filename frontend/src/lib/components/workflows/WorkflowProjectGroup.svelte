@@ -41,7 +41,6 @@
     <div class="mt-2 space-y-0.5" data-testid="workflow-definition-list">
       {#each definitions as definition (definition.scope + ':' + definition.id)}
         <WorkflowDefinitionRow
-          projectId={group.projectId}
           {definition}
           automations={automations.filter((automation) => automation.workflowId === definition.id)}
         />

@@ -2,7 +2,8 @@
 
 > Implementation-facing spec for the workflows surface, bound by
 > `../workflows-system.md` **rev 2** and `../workflows-system-decisions.md`
-> (D16–D23 + the rev-2 D11 amendment). Rev 2 replaces rev 1's pane + sidebar
+> (D16–D23 + the rev-2 D11 amendment + **D32**, which removed every
+> thread-spawning affordance). Rev 2 replaces rev 1's pane + sidebar
 > section with a **full-surface overlay**; the queue surfaces (toggle, Queues
 > section, drag priority, drain summaries) and the chat-enqueue confirm card
 > are **deleted**, not restyled. Rev 1's run-state grammar, evidence blocks,
@@ -33,11 +34,13 @@ plain ("Runs", "History", "Needs you"); the surface is always called
   never render on any human surface. Human evidence = narrative digest, diff,
   checks, cost. The word "variables" MUST NOT appear in UI copy — typed seeds
   render as plain form fields.
-- **R3 — Only threads break out.** The overlay owns all workflow navigation
-  internally; any thread (phase, unit, triage, studio) opens as a **normal
-  thread pane**, never inside the overlay. Opening a thread **closes the
-  overlay** (the pane tree underneath was never unmounted, so this is
-  instant); reopening the overlay restores its stack.
+- **R3 — Only threads break out, and the surface never creates one.** The
+  overlay owns all workflow navigation internally; a thread the run already has
+  (phase, unit, the thread it is bound to) opens as a **normal thread pane**,
+  never inside the overlay. Opening a thread **closes the overlay** (the pane
+  tree underneath was never unmounted, so this is instant); reopening the
+  overlay restores its stack. No affordance on this surface *starts* a
+  conversation — every thread-spawning button was removed (D32).
 - **R4 — Copy tone.** Terse, human, past-tense receipts ("Merged to main —
   fast-forward 3af92c1 · worktree cleaned"); metadata as `·`-separated
   fragments ("parked 7h", "2/5 · 14m · $1.84"). No exclamations, no emoji.
@@ -97,8 +100,10 @@ automations.
 | Pause all | The §6 global kill switch: `❚❚` / `▶`. Tooltip "Pause stops new phase starts everywhere; in-flight turns finish". Toast on toggle. Not a queue — no ordering, no counts. |
 | Project filter | All projects → each project. Filters groups and the sweep set. |
 | `+ New run` | Opens intake (§7). |
-| `+ New workflow` | Opens a **studio thread** as a normal thread pane (closes the overlay, R3). |
-| Triage | Opens/resumes the **triage agent** thread pane. |
+
+`+ New run` is the only entry point. Authoring a workflow is work over the
+definition files (`agent-overflow workflow new`, then an editor or a thread the
+human opens themselves), not a button here (D32).
 
 At narrow widths, controls past Pause-all collapse into `⋯`; row metadata
 truncates end-first.
@@ -118,11 +123,11 @@ Within a group, in order:
    WHAT-spec). Live-activity line below in italic hint tone. Hover cancel
    `✕` arms to `stop this run?`; second click cancels; Esc disarms.
 3. **Workflows** — the project's definitions (and shared ones, marked
-   `shared`): name + chain summary (`plan → port ⇉ merge → validate ↺`) +
-   **Edit** (studio thread). Automations render inline on their workflow
-   row: `every 6h · next in 3h 40m · 2 skipped` + enable/disable + **Run
-   now**. A definition failing dry-run validation renders its first error
-   inline, hint-toned.
+   `shared`): name + chain summary (`plan → port ⇉ merge → validate ↺`).
+   Read-only — editing a definition is file work, not a row action (D32).
+   Automations render inline on their workflow row: `every 6h · next in
+   3h 40m · 2 skipped` + enable/disable + **Run now**. A definition failing
+   dry-run validation renders its first error inline, hint-toned.
 4. **Recent** — collapsed by default (`▶ Recent · 12`): terminal runs, most
    recent first, receipt meta (`merged · 2d · $1.75`, `cancelled · worktree
    kept`, `discarded — branch dropped, record kept`). Rows open historical
@@ -173,19 +178,26 @@ Action row is a fixed footer, primary first; keys per §8.
 
 | State | Evidence | Action row |
 |---|---|---|
-| **gate** | Checks row; diff file list expanding hunks in place; full review → the real ReviewPane (§4.7). | `Approve → <next>` (a, primary) · `Request changes` (r — inline optional note, Enter commits; rides as loop feedback) · `Take over` (t) |
-| **question** | Question quote block; suggested answers as digit-hinted buttons; answer input ("Answer — the phase resumes where it yielded") + Send. | `Take over instead` (t). Digits pick + send; `a` focuses input; Enter sends. |
-| **failed** (`check-failed-genuine`, `child-failed`) | Failing check line; latest diagnosis quote. | `Continue with agent` (t, primary) · `Rerun with guidance` (a — new attempt seeded with the diagnosis as feedback) · `Discard` (r, danger, §4.5) |
-| **blocked** (every other `needs-human` reason: stuck, agent-error, wiring-error, setup-failed, budget-exhausted, stalled, retries-exhausted) | Same evidence as **failed** — a run that could not finish asks the same question whichever state it stopped in. | `Resume` (a, primary — re-enters the phase with a fresh attempt, after the human clears whatever blocked it) · `Continue with agent` (t) · `Discard` (r, danger, §4.5) |
-| **paused / interrupted** | Receipt line (`paused by you · yesterday` / `interrupted — the app was restarted`); partial-envelope digest if one was captured. | `Resume` (a, primary — next attempt, same provider thread, continue message) · `Take over` (t) · `Discard` (r, danger, §4.5) |
-| **unit-failed** | The failed unit's row highlighted in the tree; its failing check/diagnosis inline; survivors' states visible above. | `Retry unit` (a, primary) · `Drop unit — join proceeds without it` (recorded in the gate trace) · `Take over unit` (t) · `Discard` (r, danger, §4.5) |
-| **done** | Checks row; disposition block (manual: merge / PR / discard; auto-merge projects show the receipt + policy + undo line). After Create PR: the PR block with `Review comments (N)` + `Discuss this PR` riding the linked thread (§4.7). Outputs block (§4.8). | Manual: `Merge to main` (a, primary) · `Create PR` · `Continue with agent ↗` (t) · `Discard` (r, danger, §4.5). Unbound runs add `Open in thread` (seeds + binds, D17); any run adds `Bind to thread…` in the `⋯` menu. |
+| **gate** | Checks row; diff file list expanding hunks in place; full review → the real ReviewPane (§4.7). | `Approve → <next>` (a, primary) · `Request changes` (r — inline optional note, Enter commits; rides as loop feedback) |
+| **question** | Question quote block; suggested answers as digit-hinted buttons; answer input ("Answer — the phase resumes where it yielded") + Send. | None — the answer input IS the affordance. Digits pick + send; `a` focuses input; Enter sends. |
+| **failed** (`check-failed-genuine`, `child-failed`) | Failing check line; latest diagnosis quote. | `Rerun with guidance` (a, primary — new attempt seeded with the diagnosis as feedback) · `Discard` (r, danger, §4.5) |
+| **blocked** (every other `needs-human` reason: stuck, agent-error, wiring-error, setup-failed, budget-exhausted, stalled, retries-exhausted) | Same evidence as **failed** — a run that could not finish asks the same question whichever state it stopped in. | `Resume` (a, primary — re-enters the phase with a fresh attempt, after the human clears whatever blocked it) · `Discard` (r, danger, §4.5) |
+| **paused / interrupted** | Receipt line (`paused by you · yesterday` / `interrupted — the app was restarted`); partial-envelope digest if one was captured. | `Resume` (a, primary — next attempt, same provider thread, continue message) · `Discard` (r, danger, §4.5) |
+| **unit-failed** | The failed unit's row highlighted in the tree; its failing check/diagnosis inline; survivors' states visible above. | `Retry unit` (a, primary) · `Drop unit — join proceeds without it` (recorded in the gate trace) · `Take over unit` (t — detaches the unit and opens the thread it is ALREADY running in) · `Discard` (r, danger, §4.5) |
+| **taken-over** | The steered phase thread's state; the run is under human control. | `Finish takeover` (a, primary — one finalize turn re-attaches the schema) · `Discard` (r, danger, §4.5) |
+| **done** | Checks row; disposition block (manual: merge / PR / discard; auto-merge projects show the receipt + policy + undo line). After Create PR: the PR block with `Review comments (N)` + `Discuss this PR` riding the linked thread (§4.7). Outputs block (§4.8). | Manual: `Merge to main` (a, primary) · `Create PR` · `Discard` (r, danger, §4.5). Any run adds `Bind to thread…` in the `⋯` menu — it binds an EXISTING thread and never creates one. |
 | **running** | The run tree, live. | `Pause` (interrupt in-flight turns → park paused) · `Open phase thread` · `Stop this run` (danger, teardown → cancelled) |
 | **cancelled** | Receipt `cancelled · worktree kept`. | `Discard` (danger, §4.5) · `Back` |
 | **resolved (this session)** | Digest + green receipt ("Approved — routing to docs", "Resumed — the phase continues its session", "Unit dropped — join proceeds over 4 of 5"). | `Back` (esc) |
 
 Merge MUST refuse on conflict/dirty base and park `needs-human(disposition)`
 — never forced, never silent.
+
+**Taking a run over is a send, not a button (D32).** Open the phase thread from
+the tree and type: the send path interrupts the in-flight turn, detaches the
+attempt from engine control, and parks the run `needs-human(taken-over)`, from
+where `Finish takeover` hands it back. No row here spawns a thread to take a
+run over in — the thread the phase is already running in is the one to steer.
 
 ### 4.4 Needs-attention sweep (j/k)
 
@@ -287,6 +299,11 @@ Rev 1's per-project sidebar section (`WorkflowsSection.svelte`) is
 `threads.mode` values and MUST NEVER appear in normal thread lists, search,
 or pickers — excluded by mode in `utils/sidebarTree.ts` /
 `ProjectThreadList.svelte` / `UnifiedThreadPicker.svelte`, never by title.
+The exclusion covers three modes but only two are still minted: D32 removed
+the studio spawner, and `workflow-triage` is now written only by the PR
+follow-up surfaces (§4.7), which reuse the run's one linked thread. Existing
+rows in either mode stay hidden — the mode plumbing is data compatibility, not
+a live affordance.
 Once opened (from the overlay or a wake message reference) they behave as
 completely normal thread panes. **Exception by design**: a thread a run is
 *bound to* (§4.1) is a normal user thread that was never mode-excluded —
@@ -318,9 +335,9 @@ open overlay; suppressed while a text field has focus.
 | `Esc` | home | close the overlay |
 | `Backspace` | run detail | back to home |
 | `j`/`→`/`↓` · `k`/`←`/`↑` | run detail, parked set | next / previous needs-attention run (wraps) |
-| `a` | gate / question / failed / paused / unit-failed / done | primary action (approve / focus answer / rerun / resume / retry unit / merge) |
-| `r` | gate / failed / done / paused | request changes / discard (opens the §4.5 preview) |
-| `t` | any parked state | thread action (take over / continue with agent) |
+| `a` | gate / question / failed / blocked / paused / unit-failed / taken-over / done | primary action (approve / focus answer / rerun / resume / retry unit / finish takeover / merge) |
+| `r` | gate / failed / blocked / paused / unit-failed / taken-over / done / cancelled | request changes / discard (opens the §4.5 preview) |
+| `t` | unit-failed | take over the failed unit — the only `t` binding left (D32) |
 | `1`–`9` | question | pick + send the nth suggested answer |
 | `Enter` | gate / question input | toggle first diff file / send answer |
 
@@ -328,10 +345,10 @@ open overlay; suppressed while a text field has focus.
 
 ## 9. Empty + quiet states
 
-- Nothing defined anywhere → single empty state: short line + `+ New
-  workflow`. A project with definitions but no runs → its Workflows list
-  only. No parked runs → footer badge shows no count; sweep entered empty →
-  all-clear directly.
+- Nothing defined anywhere → single empty state: one short line saying what a
+  workflow is, and no button (D32 removed the only one it had). A project with
+  definitions but no runs → its Workflows list only. No parked runs → footer
+  badge shows no count; sweep entered empty → all-clear directly.
 - The normal-view test stands: **workflows are invisible until they have a
   reason not to be** — a quiet system is one footer row.
 
@@ -351,7 +368,10 @@ out.
 ## 11. Non-goals (normative)
 
 - NO variables / envelope / JSON / schema / gate-trace rendering on any
-  human surface — those exist for agents (studio, triage, `ao` CLI).
+  human surface — those exist for agents through the `agent-overflow` CLI.
+- NO affordance that spawns a chat thread (D32): no "Continue with agent",
+  no "Open in thread" seed+bind, no triage-agent shell, no studio thread.
+  Opening a thread the run ALREADY has (phase, unit, bound) stays.
 - NO queue surfaces: no toggle, no Queues section, no drag priority, no
   position predictions, no drain summaries.
 - NO workflows pane, NO per-project sidebar section, NO pane-kind or
@@ -388,7 +408,7 @@ As shipped. Paths under `frontend/src/lib/` unless noted.
 | Deep links (§7) | `stores/notificationActivationQueue.ts` → `openWorkflowRunInOverlay` |
 | Keyboard (§8) | commands in `stores/workflowCommands.svelte.ts`, flags in `stores/builtinCommands.svelte.ts`, chords in `internal/keybindings/keybindings.go` |
 | Signals (R1) | `utils/workflowRunSignal.ts` — the one place a state maps to a hue |
-| Thread hand-off (R3) | `stores/workflowThreads.ts`; thread exclusion by mode in `utils/sidebarTree.ts`, `ProjectThreadList.svelte`, `UnifiedThreadPicker.svelte` |
+| Thread opens (R3) | `stores/workflowThreads.ts` — opens existing threads only, never creates one; thread exclusion by mode in `utils/sidebarTree.ts`, `ProjectThreadList.svelte`, `UnifiedThreadPicker.svelte` |
 | PR review | `stores/reviewPane.svelte.ts` companion flow (overlay closes; ReviewPane opens as a pane) |
 | `/workflow` command (§5.2) | registry + trigger rules in `components/composer/slashCommands.ts`, menu state in `composerSlash.svelte.ts`, popover `ComposerSlashPopover.svelte`, accent word `ComposerCommandHighlight.svelte` (composer) and `chat/UserMessage.svelte` (history, from `utils/userMessageMeta.ts`); send-time expansion in `app_composer_commands.go` over the block `app_workflow_composer.go` resolves |
 | Toasts | `stores/toast.svelte.ts` |

@@ -24,18 +24,21 @@ import (
 	"agent-overflow/internal/workflow/runner"
 )
 
-const workflowTriageAgentFraming = `You are the workflow triage agent for this project. Help the user identify workflow runs that need attention and decide which focused conversations to open. First-party workflow tools are not available yet; be explicit about that limitation and work from context the user provides.`
-
 const (
 	workflowTriageNarrativeMaxRunes     = 4_000
 	workflowTriageNarrativeReadMaxBytes = workflowTriageNarrativeMaxRunes*utf8.UTFMax + 1
 	workflowTriageContextMaxRunes       = 23_000
 )
 
-// WorkflowOpenTriageThread opens or returns the item-linked hand-off thread,
+// workflowOpenTriageThread opens or returns the item-linked hand-off thread,
 // seeding a newly created thread as its first user turn so work starts
 // immediately.
-func (a *App) WorkflowOpenTriageThread(itemID string) (store.Thread, error) {
+//
+// Not a bound method: D32 removed every UI affordance that spawned a thread
+// from a workflow surface. It survives as the PR follow-up surfaces' thread
+// (`WorkflowSendPRReviewCommentsToThread`, `WorkflowDiscussPR`, §4.7) — those
+// ride the run's ONE linked conversation, and this is what makes it one.
+func (a *App) workflowOpenTriageThread(itemID string) (store.Thread, error) {
 	if _, err := a.requireWorkflowEngine(); err != nil {
 		return store.Thread{}, err
 	}
@@ -86,7 +89,6 @@ func (a *App) WorkflowOpenTriageThread(itemID string) (store.Thread, error) {
 		thread = a.newWorkflowTriageThread(
 			uuid.NewString(), project, workspace, item.Branch,
 			threadtitle.Sanitize("Workflow triage: "+item.Goal), providerName, model,
-			true,
 		)
 		if err := a.store.CreateWorkItemTriageThread(item.ID, thread); err != nil {
 			return store.Thread{}, err
@@ -99,43 +101,7 @@ func (a *App) WorkflowOpenTriageThread(itemID string) (store.Thread, error) {
 	return a.store.GetThread(thread.ID)
 }
 
-// WorkflowOpenTriageAgent opens or returns the per-project singleton triage
-// shell. The absence of a work_items.triage_thread_id link distinguishes this
-// shell durably from item hand-off threads.
-func (a *App) WorkflowOpenTriageAgent(projectID string) (store.Thread, error) {
-	if _, err := a.requireWorkflowEngine(); err != nil {
-		return store.Thread{}, err
-	}
-	unlock := a.threadLocks().Lock("workflow-project-triage:" + projectID)
-	defer unlock()
-	thread, found, err := a.store.FindWorkflowTriageAgentThread(projectID)
-	if err != nil {
-		return store.Thread{}, err
-	}
-	if found && !thread.IsDraft {
-		return thread, nil
-	}
-	project, err := a.store.GetProject(projectID)
-	if err != nil {
-		return store.Thread{}, err
-	}
-	if !found {
-		seed := a.seedChatModelProfile("", "")
-		thread = a.newWorkflowTriageThread(
-			uuid.NewString(), project, project.Path, "", "Workflow triage agent", seed.Provider, seed.Model, false,
-		)
-		if err := a.store.CreateThread(thread); err != nil {
-			return store.Thread{}, fmt.Errorf("create workflow triage thread: %w", err)
-		}
-	}
-	if _, err := a.sendMessageWithOptions(thread.ID, workflowTriageAgentFraming, sendMessageOptions{}); err != nil {
-		cleanupErr := a.DeleteThread(thread.ID)
-		return store.Thread{}, errors.Join(fmt.Errorf("open workflow triage agent: kick off agent: %w", err), cleanupErr)
-	}
-	return a.store.GetThread(thread.ID)
-}
-
-func (a *App) newWorkflowTriageThread(threadID string, project store.Project, workspace, branch, title, providerName, model string, fullAccess bool) store.Thread {
+func (a *App) newWorkflowTriageThread(threadID string, project store.Project, workspace, branch, title, providerName, model string) store.Thread {
 	seed := a.seedChatModelProfile(providerName, model)
 	now := time.Now().UnixMilli()
 	thread := store.Thread{
@@ -143,18 +109,19 @@ func (a *App) newWorkflowTriageThread(threadID string, project store.Project, wo
 		Title: title, Provider: seed.Provider, Model: seed.Model,
 		WorkspacePath: workspace, Mode: threadmode.ModeWorkflowTriage,
 		ReasoningEffort: seed.ReasoningEffort, FastMode: seed.FastMode,
-		ContextWindow: seed.ContextWindow, RuntimeMode: seed.RuntimeMode,
-		CreatedAt: now, UpdatedAt: now,
-	}
-	if fullAccess {
-		thread.RuntimeMode = string(provider.RuntimeFullAccess)
+		ContextWindow: seed.ContextWindow,
+		// The thread works the run's own worktree, which the engine already
+		// wrote to autonomously; asking for approvals it never asked for
+		// during the run would be theatre.
+		RuntimeMode: string(provider.RuntimeFullAccess),
+		CreatedAt:   now, UpdatedAt: now,
 	}
 	if !gitops.SameFilesystemPath(workspace, project.Path) {
 		thread.WorktreePath = workspace
 		thread.Branch = branch
 	}
 	// sanitizeThreadModelSettings does not touch RuntimeMode (see its doc
-	// comment), so the fullAccess override set above survives it.
+	// comment), so the full-access setting above survives it.
 	thread = a.sanitizeThreadModelSettings(thread)
 	thread.DisabledMcpServers = a.snapshotDisabledMcpServers(thread.Provider, thread.WorkspacePath)
 	return thread

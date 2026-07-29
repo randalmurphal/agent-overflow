@@ -273,9 +273,6 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowResolveGate":                  true,
 	"WorkflowSetGlobalPause":               true,
 	"WorkflowCompleteTakeover":             true,
-	"WorkflowOpenTriageThread":             true,
-	"WorkflowOpenTriageAgent":              true,
-	"WorkflowOpenStudioThread":             true,
 	"WorkflowMergeItem":                    true,
 	"WorkflowCreateItemPR":                 true,
 	"WorkflowDiscardItem":                  true,
@@ -297,11 +294,9 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowRunAutomationNow":     true,
 	// Thread binding wires a run's results into a local provider session: a
 	// bound run injects user turns into that thread from a background
-	// goroutine, and WorkflowOpenInThread creates the thread and starts the
-	// session outright.
+	// goroutine.
 	"WorkflowBindThread":   true,
 	"WorkflowUnbindThread": true,
-	"WorkflowOpenInThread": true,
 	// Discard preview reads local checkouts and repository history — dirty
 	// paths and unmerged commit subjects — which is the same local-disclosure
 	// class as the diff bindings. ProjectDeletionPreview reads the same local

@@ -307,10 +307,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowListItems", ID: 3037887964},                    // main.App.WorkflowListItems
 	{Name: "WorkflowListUnresolvedItems", ID: 3613211765},          // main.App.WorkflowListUnresolvedItems
 	{Name: "WorkflowMergeItem", ID: 3006532931},                    // main.App.WorkflowMergeItem
-	{Name: "WorkflowOpenInThread", ID: 2757959479},                 // main.App.WorkflowOpenInThread
-	{Name: "WorkflowOpenStudioThread", ID: 304020682},              // main.App.WorkflowOpenStudioThread
-	{Name: "WorkflowOpenTriageAgent", ID: 1552981489},              // main.App.WorkflowOpenTriageAgent
-	{Name: "WorkflowOpenTriageThread", ID: 3525577760},             // main.App.WorkflowOpenTriageThread
 	{Name: "WorkflowPauseItem", ID: 3764767257},                    // main.App.WorkflowPauseItem
 	{Name: "WorkflowRerunItem", ID: 1986594501},                    // main.App.WorkflowRerunItem
 	{Name: "WorkflowResolveGate", ID: 3348479803},                  // main.App.WorkflowResolveGate

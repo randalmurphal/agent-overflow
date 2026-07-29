@@ -389,30 +389,6 @@ func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
 	return threads, rows.Err()
 }
 
-// FindWorkflowTriageAgentThread returns the oldest live project-level triage
-// shell. Item hand-off threads are excluded by their persisted work-item link.
-func (s *Store) FindWorkflowTriageAgentThread(projectID string) (Thread, bool, error) {
-	row := s.db.QueryRow(
-		`SELECT `+threadColumns+` FROM threads
-		 WHERE project_id = ? AND mode = ? AND archived = 0
-		   AND NOT EXISTS (
-		       SELECT 1 FROM work_items
-		        WHERE work_items.triage_thread_id = threads.id
-		          AND work_items.triage_thread_id <> ''
-		   )
-		 ORDER BY created_at ASC LIMIT 1`,
-		projectID, threadmode.ModeWorkflowTriage,
-	)
-	thread, err := scanThread(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Thread{}, false, nil
-	}
-	if err != nil {
-		return Thread{}, false, fmt.Errorf("store: find workflow triage agent thread for project %s: %w", projectID, err)
-	}
-	return thread, true, nil
-}
-
 func hiddenThreadModesClause(column string) (string, []any) {
 	modes := threadmode.HiddenModes()
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(modes)), ",")

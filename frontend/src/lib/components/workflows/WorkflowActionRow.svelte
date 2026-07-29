@@ -24,13 +24,8 @@
   import { workflowActionConfirmationKey, type WorkflowActionRequest } from '../../stores/workflowActions';
   import { resolveWorkflowRun } from '../../stores/workflowResolve';
   import { registerWorkflowsActionTarget } from '../../stores/workflowCommands.svelte';
-  import {
-    openWorkflowRunInThread,
-    openWorkflowThreadById,
-    takeOverWorkflowRun,
-    takeOverWorkflowUnit,
-  } from '../../stores/workflowThreads';
-  import { recordWorkflowReceipt, getWorkflowReceipt } from '../../stores/workflowRuns.svelte';
+  import { openWorkflowThreadById, takeOverWorkflowUnit } from '../../stores/workflowThreads';
+  import { getWorkflowReceipt } from '../../stores/workflowRuns.svelte';
   import {
     closeWorkflowsOverlay,
     getWorkflowArmedAction,
@@ -61,12 +56,7 @@
   let viewOnly = $derived(isViewOnlySession());
   const localOnly = $derived(viewOnly ? 'Local only' : undefined);
   let kind = $derived(workflowResolutionKind(item));
-  let row = $derived(workflowActionRow({
-    kind,
-    nextPhaseId,
-    bound: Boolean(item.originThreadId),
-    isChild: Boolean(item.parentItemId),
-  }));
+  let row = $derived(workflowActionRow({ kind, nextPhaseId }));
   let receipt = $derived(getWorkflowReceipt(item.id));
   let armed = $derived(getWorkflowArmedAction());
   let latestThreadId = $derived([...(detail.phases ?? [])].reverse().find((phase) => phase.threadId)?.threadId ?? '');
@@ -104,26 +94,16 @@
     else if (noteFor === 'rerun') void act({ kind: 'rerun', guidance: note.trim() });
   }
 
-  async function handOff(action: 'take-over' | 'open-in-thread' | 'take-over-unit'): Promise<void> {
+  // The only thread hand-off left on this row: detach one live unit from engine
+  // control and open the thread it is already running in. Nothing here creates
+  // a thread — every run-level spawn was removed (D32).
+  async function takeOverUnit(): Promise<void> {
     if (viewOnly || busy) return;
-    if (action === 'take-over-unit') {
-      if (!failedUnitId) {
-        addToast('warning', 'No failed unit to take over.');
-        return;
-      }
-      await takeOverWorkflowUnit(item.id, failedUnitId, failedUnitThreadId);
+    if (!failedUnitId) {
+      addToast('warning', 'No failed unit to take over.');
       return;
     }
-    const paneId = action === 'take-over'
-      ? await takeOverWorkflowRun(item.id)
-      : await openWorkflowRunInThread(item.id);
-    if (!paneId) return;
-    // A hand-off resolves the human's obligation to this run: it is now a
-    // thread they own, so it records a receipt like any other resolution.
-    const message = action === 'take-over'
-      ? "Continuing with an agent — the thread opened in the run's worktree"
-      : 'Opened in a thread — the run is bound to it';
-    recordWorkflowReceipt({ itemId: item.id, kind: 'handed-off', message, costUsd });
+    await takeOverWorkflowUnit(item.id, failedUnitId, failedUnitThreadId);
   }
 
   function run(action: WorkflowActionButton): void {
@@ -150,9 +130,7 @@
         if (!failedUnitId) addToast('warning', 'No failed unit to drop.');
         else void act({ kind: 'drop-unit', unitId: failedUnitId, note: '' });
         return;
-      case 'take-over':
-      case 'take-over-unit':
-      case 'open-in-thread': void handOff(action.id); return;
+      case 'take-over-unit': void takeOverUnit(); return;
       case 'merge': void act({ kind: 'merge' }); return;
       case 'create-pr': void act({ kind: 'create-pr' }); return;
       case 'open-phase-thread': void openWorkflowThreadById(latestThreadId); return;

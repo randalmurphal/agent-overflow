@@ -1,7 +1,8 @@
 <script lang="ts">
   // Home header controls (UI-SPEC §3.1). Pause-all is the one global kill
-  // switch — not a queue: no ordering, no counts. Everything else is an entry
-  // point: intake, a studio thread, the triage agent.
+  // switch — not a queue: no ordering, no counts. The project filter is view
+  // state, and intake is the one entry point: D32 removed the studio-thread and
+  // triage-agent spawners.
   //
   // Remote posture (§10): every control here mutates, so all of them disable
   // with a "Local only" tooltip in a view-only session; the project filter is
@@ -18,15 +19,11 @@
     setWorkflowProjectFilter,
     setWorkflowsOverlayDialog,
   } from '../../stores/workflowsOverlay.svelte';
-  import { openWorkflowStudioThread, openWorkflowTriageAgent } from '../../stores/workflowThreads';
 
   let viewOnly = $derived(isViewOnlySession());
   let paused = $derived(isWorkflowEnginePaused());
   let projects = $derived(getProjects());
   let filter = $derived(getWorkflowProjectFilter());
-  // Studio and triage both need a project; the filtered one when there is one,
-  // otherwise the first — never a silent no-op on a hidden default.
-  let targetProjectId = $derived(filter || projects[0]?.project.id || '');
   let pausing = $state(false);
 
   const localOnly = $derived(viewOnly ? 'Local only' : undefined);
@@ -79,19 +76,5 @@
       title={localOnly}
       data-testid="workflows-new-run"
     >+ New run</button>
-    <button
-      class="rounded-md border border-border-subtle px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
-      onclick={() => { void openWorkflowStudioThread(targetProjectId, ''); }}
-      disabled={viewOnly || !targetProjectId}
-      title={localOnly}
-      data-testid="workflows-new-workflow"
-    >+ New workflow</button>
-    <button
-      class="rounded-md border border-border-subtle px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
-      onclick={() => { void openWorkflowTriageAgent(targetProjectId); }}
-      disabled={viewOnly || !targetProjectId}
-      title={localOnly}
-      data-testid="workflows-triage"
-    >Triage</button>
   </div>
 </div>

@@ -1,7 +1,10 @@
-// R3 — only threads break out. Every workflow thread (phase, unit, triage,
-// studio) and the full-review pane open as NORMAL panes beside the pane tree
-// that was never unmounted; opening one closes the overlay, and reopening the
-// overlay restores its stack.
+// R3 — only threads break out. Every workflow thread (phase, unit) and the
+// full-review pane open as NORMAL panes beside the pane tree that was never
+// unmounted; opening one closes the overlay, and reopening the overlay restores
+// its stack.
+//
+// Nothing here creates a thread. D32 removed every affordance that spawned one
+// from a workflow surface; what is left opens a thread the run already has.
 //
 // Workflow-mode threads are excluded from `ListThreads` by mode, so they are
 // not in the frontend thread registry: every open here resolves the row
@@ -10,14 +13,7 @@
 // (§6), never by title.
 
 import type { Thread } from '../types/models';
-import {
-  GetThread,
-  WorkflowOpenInThread,
-  WorkflowOpenStudioThread,
-  WorkflowOpenTriageAgent,
-  WorkflowOpenTriageThread,
-  WorkflowTakeOverUnit,
-} from './bindings';
+import { GetThread, WorkflowTakeOverUnit } from './bindings';
 import { getThreadById } from './threads.svelte';
 import { findPaneShowingThread, openThreadInPane } from './panes.svelte';
 import { openReviewCompanion } from './reviewPane.svelte';
@@ -60,47 +56,6 @@ export async function openWorkflowThreadById(threadId: string): Promise<string |
     addToast('error', userFacingError(err, 'Could not open that thread.'));
     return null;
   }
-}
-
-async function openFromRpc(
-  load: () => Promise<Thread>,
-  failure: string,
-): Promise<string | null> {
-  try {
-    const thread = await load();
-    if (!thread?.id) {
-      addToast('error', failure);
-      return null;
-    }
-    return await openWorkflowThread(thread);
-  } catch (err) {
-    addToast('error', userFacingError(err, failure));
-    return null;
-  }
-}
-
-/** "Take over" / "Continue with agent" — the seeded hand-off thread. */
-export function takeOverWorkflowRun(itemId: string): Promise<string | null> {
-  return openFromRpc(() => WorkflowOpenTriageThread(itemId) as Promise<Thread>, 'Could not open the hand-off thread.');
-}
-
-/** Unbound done runs (D17): seed a thread with the result, then bind it. */
-export function openWorkflowRunInThread(itemId: string): Promise<string | null> {
-  return openFromRpc(() => WorkflowOpenInThread(itemId) as Promise<Thread>, 'Could not open this run in a thread.');
-}
-
-export function openWorkflowStudioThread(projectId: string, workflowId: string): Promise<string | null> {
-  return openFromRpc(
-    () => WorkflowOpenStudioThread(projectId, workflowId) as Promise<Thread>,
-    'Could not open the workflow studio thread.',
-  );
-}
-
-export function openWorkflowTriageAgent(projectId: string): Promise<string | null> {
-  return openFromRpc(
-    () => WorkflowOpenTriageAgent(projectId) as Promise<Thread>,
-    'Could not open the triage agent.',
-  );
 }
 
 /**

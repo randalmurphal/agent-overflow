@@ -594,7 +594,14 @@ func (a *App) SendMessage(threadID string, content string, attachmentIDs []strin
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
-	return a.sendMessage(threadID, content, attachmentIDs)
+	_, err := a.sendMessageWithOptions(threadID, content, sendMessageOptions{
+		AttachmentIDs: attachmentIDs,
+		// Wire entry: this text was typed into a composer (D31). The internal
+		// a.sendMessage helper deliberately does NOT set this — its other
+		// caller (discussion drive) sends app-composed prompts.
+		ExpandComposerCommands: true,
+	})
+	return err
 }
 
 // SendMessageWithOptions applies send-time composer settings and dispatches the
@@ -612,6 +619,8 @@ func (a *App) SendMessageWithOptions(threadID string, content string, opts SendM
 		RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
+		// Wire entry: this text was typed into a composer (D31).
+		ExpandComposerCommands: true,
 	}); err != nil {
 		return store.Thread{}, err
 	}

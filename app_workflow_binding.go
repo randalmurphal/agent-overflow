@@ -4,10 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadmode"
-	"agent-overflow/internal/threadtitle"
 )
 
 // Thread binding (decision D17).
@@ -16,6 +13,11 @@ import (
 // transition composes a wake and injects it as a user message, so the agent (or
 // human) that started the run is told the run finished where they were working,
 // rather than having to watch an overlay.
+//
+// A binding is always made against a thread that already exists — the CLI's
+// `run start` auto-bind to its origin thread, or an explicit bind here. D32
+// removed the seed-a-new-thread-and-bind-it affordance; nothing on a workflow
+// surface creates a conversation any more.
 //
 // Only a ROOT run carries a binding. A called run's results reach its caller
 // through the call phase, and its parks surface at the root — giving it a
@@ -65,89 +67,6 @@ func (a *App) WorkflowUnbindThread(itemID string) (store.WorkItem, error) {
 		return store.WorkItem{}, err
 	}
 	return a.store.GetWorkItem(item.ID)
-}
-
-// WorkflowOpenInThread opens a conversation about a run and binds it, so the
-// run's future results land in the same place. The thread starts with the run's
-// current state as its first user message — the same composed wake a resting
-// transition delivers — so the agent begins with the run's results in context
-// rather than being asked about a run it knows nothing about.
-//
-// A run that is already bound to a usable thread returns that thread untouched:
-// the point of the binding is that there is one conversation per run, and
-// opening it twice must not fork that conversation.
-//
-// LocalOnly: it creates a local thread and starts a provider session.
-func (a *App) WorkflowOpenInThread(itemID string) (store.Thread, error) {
-	item, err := a.workflowBindableItem(itemID)
-	if err != nil {
-		return store.Thread{}, err
-	}
-	unlock := a.threadLocks().Lock("workflow-item-origin:" + item.ID)
-	defer unlock()
-	// Re-read under the lock: two clicks race here, and the second must see the
-	// binding the first one wrote.
-	item, err = a.store.GetWorkItem(item.ID)
-	if err != nil {
-		return store.Thread{}, err
-	}
-	if item.OriginThreadID != "" {
-		if threadID, ok := a.resolveWakeThread(item); ok {
-			return a.store.GetThread(threadID)
-		}
-	}
-	message, err := a.composeWorkflowWake(item, nil)
-	if err != nil {
-		return store.Thread{}, fmt.Errorf("open workflow run %s in a thread: %w", item.ID, err)
-	}
-	opts, err := a.workflowOriginThreadOptions(item)
-	if err != nil {
-		return store.Thread{}, err
-	}
-	thread, err := a.CreateThread(opts)
-	if err != nil {
-		return store.Thread{}, fmt.Errorf("open workflow run %s in a thread: %w", item.ID, err)
-	}
-	if err := a.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
-		return store.Thread{}, err
-	}
-	if _, err := a.sendMessageWithOptions(thread.ID, message, sendMessageOptions{PreserveDraft: true}); err != nil {
-		// The thread exists and is bound; the seed turn is what failed. Leave
-		// both in place — deleting a thread the user can already see would be a
-		// worse outcome than an empty one they can type into — and report it.
-		return thread, fmt.Errorf("open workflow run %s in a thread: kick off agent: %w", item.ID, err)
-	}
-	return a.store.GetThread(thread.ID)
-}
-
-// workflowOriginThreadOptions builds the new thread in the run's own workspace
-// when it still has one, so the conversation can inspect the work it is about.
-// A run whose worktree was disposed of falls back to the project root; that is
-// an expected end state, not a failure.
-func (a *App) workflowOriginThreadOptions(item store.WorkItem) (CreateThreadOptions, error) {
-	project, err := a.store.GetProject(item.ProjectID)
-	if err != nil {
-		return CreateThreadOptions{}, err
-	}
-	opts := CreateThreadOptions{
-		ProjectID: item.ProjectID,
-		Mode:      threadmode.ModeChat,
-		Title:     threadtitle.Sanitize("Workflow run: " + item.Goal),
-	}
-	worktreePath := strings.TrimSpace(item.WorktreePath)
-	if worktreePath == "" || gitops.SameFilesystemPath(worktreePath, project.Path) {
-		return opts, nil
-	}
-	worktree, found, err := a.findWorktree(project.Path, worktreePath)
-	if err != nil {
-		return CreateThreadOptions{}, fmt.Errorf("open workflow run %s in a thread: %w", item.ID, err)
-	}
-	if !found {
-		return opts, nil
-	}
-	opts.WorktreePath = worktree.Path
-	opts.Branch = worktree.Branch
-	return opts, nil
 }
 
 // workflowBindableItem loads a run and refuses the ones a binding cannot
