@@ -333,19 +333,21 @@ describe('PerItemSmoother — adaptive rate ceiling', () => {
   }
 
   it('drains a large burst at (not above) the rate ceiling on a 60Hz display', () => {
-    // Word-unit quantization under the 14-char per-tick cap lands
-    // below the ceiling with this 5-char word mix (2 units/tick =
-    // 600cps) — acceptable; the ceiling is an upper bound.
+    // Ceiling-relative bounds: word-unit quantization and fractional
+    // budget land a touch below the exact ceiling — acceptable; the
+    // ceiling is an upper bound, and the lower bound proves the drain
+    // genuinely runs NEAR it rather than at the 160cps base rate.
     const revealed = revealAfterOneSecond(1000 / 60);
-    expect(revealed).toBeGreaterThan(500);
+    expect(revealed).toBeGreaterThan(MAX_ADAPTIVE_CHARS_PER_SEC * 0.8);
     expect(revealed).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC + 20);
   });
 
   it('holds the ceiling on a 165Hz display instead of scaling with refresh', () => {
     const at165 = revealAfterOneSecond(1000 / 165);
-    expect(at165).toBeGreaterThan(500);
+    expect(at165).toBeGreaterThan(MAX_ADAPTIVE_CHARS_PER_SEC * 0.8);
     // THE regression bound: the per-tick-only ceiling revealed
-    // cap × 165 ≈ 2310 chars here; the rate clamp holds ≤ 840.
+    // cap × 165 ≈ 2310 chars here; the rate clamp holds it at the
+    // refresh-independent ceiling.
     expect(at165).toBeLessThanOrEqual(MAX_ADAPTIVE_CHARS_PER_SEC + 20);
   });
 

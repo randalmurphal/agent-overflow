@@ -101,7 +101,7 @@ const SPRING_CARRY_VELOCITY_CEILING = 4;
 // that stays readable.
 //
 // INVARIANT: this cap must stay comfortably ABOVE the peak STEADY
-// reveal-driven content growth rate (~1070 px/s — catch-up under
+// reveal-driven content growth rate (~430 px/s — catch-up under
 // MAX_ADAPTIVE_CHARS_PER_SEC, markdown/smoothing/PerItemSmoother.ts).
 // The follower being faster than the growth is what keeps steady-state
 // follow lag-free at ANY wire speed — reveal rate-limits rendered

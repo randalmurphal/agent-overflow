@@ -84,29 +84,39 @@ export const MIN_REVEAL_TICK_INTERVAL_MS = 15;
 // Ceiling on the adaptive catch-up RATE. When a fat wire burst (an
 // Anthropic-API paragraph landing in one chunk) opens a large lag, the
 // adaptive rate (`lag / 0.5s`) wants thousands of chars/sec; this
-// clamps the reveal to a bounded "rushing but followable" pace
-// instead. Refresh-rate independent by construction — the per-tick
-// cap below used to be the only ceiling, and since rAF ticks at
-// display refresh it allowed cap × Hz chars/sec: ~840 cps on the
-// 60Hz panel the cap was sized against, but ~2310 cps on a 165Hz
-// panel (2026-07-04 report: "catches up by speeding up a ton...too
-// fast at its peak"). Originally 840 (the intended 60Hz ceiling);
-// raised to 1000 in 2026-07 alongside the removal of the oversized-
-// backlog reveal snap — with no snap valve, catch-up leans on this
-// ceiling alone, and the bump keeps it brisk. The scroll spring's
-// follow cap must stay comfortably above the px/s this implies
-// (~1070 px/s; see scroll/spring.ts SPRING_MAX_VELOCITY_PX_PER_FRAME)
-// — raise the two in step.
-export const MAX_ADAPTIVE_CHARS_PER_SEC = 1000;
+// clamps the reveal to a bounded pace instead. Refresh-rate
+// independent by construction — the per-tick cap below used to be the
+// only ceiling, and since rAF ticks at display refresh it allowed
+// cap × Hz chars/sec: ~840 cps on the 60Hz panel the cap was sized
+// against, but ~2310 cps on a 165Hz panel (2026-07-04 report:
+// "catches up by speeding up a ton...too fast at its peak").
+// Originally 840 (the intended 60Hz ceiling); raised to 1000 in
+// 2026-07 alongside the removal of the oversized-backlog reveal snap;
+// lowered to 400 (2.5× steady) on 2026-07-29: a mid-turn wire stall
+// resuming into a fat backlog rode the 1000cps ceiling for seconds,
+// and the sustained rush read as an unwanted zoom — there is no
+// urgency to visually catch up, and the ~60Hz DOM-mutation churn it
+// sustains is exactly the load that aggravates presentation-side
+// frame drops on fragile compositors (per-line stutter under
+// WSL2/WebView2). The drain motion itself measures smooth at either
+// rate (2026-07-29 harness profile: 3-5px/frame, spring.tick writes
+// only); the ceiling is a taste-and-load dial, and a backlog simply
+// takes proportionally longer to finish revealing. The scroll
+// spring's follow cap must stay comfortably above the px/s this
+// implies (~430 px/s; see scroll/spring.ts
+// SPRING_MAX_VELOCITY_PX_PER_FRAME) — raise the two in step.
+export const MAX_ADAPTIVE_CHARS_PER_SEC = 400;
 // Hard cap on how many characters the smoother may reveal in a single
 // PROCESSED tick, regardless of accumulated budget. With the rate
 // ceiling above owning speed, this is purely the per-frame WORK
 // bound: one tick's markdown re-parse + DOM mutation stays bounded
 // even right after a stalled frame (where dt, and so the tick's
-// budget, is large). Sized so the 1000cps ceiling stays reachable at
-// the slowest throttled cadence (144Hz panels process every third
-// frame ≈ 48Hz: 1000/48 ≈ 20.8 → 21; ~3 short words per processed
-// tick). Excess budget is clamped after each tick (not rolled over)
+// budget, is large). 21 keeps the 400cps ceiling reachable at the
+// slowest throttled cadence with recovery headroom: the floor is
+// 400/48 ≈ 8.4 chars per processed tick, and the extra room lets a
+// jittered stretch (a ~50ms gap at 400cps ≈ 20 chars of accrued
+// budget) catch back up in one tick instead of throttling the average
+// below the ceiling. Excess budget is clamped after each tick (not rolled over)
 // so a stall can't burst a multi-tick chunk; the backlog drains at
 // the elevated fast-drain cap only when a successor row is waiting. A
 // solo tail row's end-of-turn backlog drains at the steady cadence —
