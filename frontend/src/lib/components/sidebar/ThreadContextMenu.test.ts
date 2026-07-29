@@ -33,7 +33,6 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 function renderMenu(thread: Thread) {
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
   const pane = createThreadPane();
   const anchor = document.createElement('div');
   document.body.appendChild(anchor);

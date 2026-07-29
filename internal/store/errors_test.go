@@ -58,9 +58,6 @@ func TestStoreMethodsReturnErrorsAfterClose(t *testing.T) {
 	if _, err := s.GetPayloadData(payload.ID); err == nil {
 		t.Fatal("expected GetPayloadData to fail after store close")
 	}
-	if _, err := s.ListPayloadMetas(thread.ID); err == nil {
-		t.Fatal("expected ListPayloadMetas to fail after store close")
-	}
 	if err := s.InsertItem(item); err == nil {
 		t.Fatal("expected InsertItem to fail after store close")
 	}

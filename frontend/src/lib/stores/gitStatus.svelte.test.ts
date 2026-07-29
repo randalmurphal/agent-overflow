@@ -56,7 +56,6 @@ function status(overrides: Partial<GitStatus> = {}): GitStatus {
 async function buildPane(thread = makeThread()) {
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
   setBindingMock('ListRecentTurns', async () => []);
   const pane = createThreadPane();
   await pane.switchThread(thread);

@@ -55,7 +55,6 @@ export {
   GetPayloadChunk,
   GetPayloadData,
   ListItems,
-  ListPayloadMetas,
 
   // Settings
   GetSettings,

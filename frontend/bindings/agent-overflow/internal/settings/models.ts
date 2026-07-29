@@ -297,6 +297,22 @@ export class Settings {
     "paneDensity": string;
 
     /**
+     * ActivityRunDefault is the starting state for a run of consecutive
+     * tool/thinking rows in the transcript. One of {"expanded",
+     * "collapsed"}. Applies to every run the user has not explicitly
+     * toggled, including the live one -- with "collapsed" a streaming run
+     * shows as a chip with counts ticking until opened.
+     */
+    "activityRunDefault": string;
+
+    /**
+     * ActivityRunWindowRows is how many of a run's newest rows stay mounted.
+     * Sized to overfill the run's height cap so its tail always has content
+     * below the fold; older rows mount on demand behind an "N earlier" line.
+     */
+    "activityRunWindowRows": number;
+
+    /**
      * TextGenerationProvider selects which CLI drives non-chat text
      * generation (commit messages today; PR bodies and thread titles
      * eventually). Mirrors t3-code's RoutingTextGeneration: one of
@@ -503,6 +519,12 @@ export class Settings {
         if (!("paneDensity" in $$source)) {
             this["paneDensity"] = "";
         }
+        if (!("activityRunDefault" in $$source)) {
+            this["activityRunDefault"] = "";
+        }
+        if (!("activityRunWindowRows" in $$source)) {
+            this["activityRunWindowRows"] = 0;
+        }
         if (!("textGenerationProvider" in $$source)) {
             this["textGenerationProvider"] = "";
         }
@@ -565,12 +587,12 @@ export class Settings {
         const $$createField6_0 = $$createType0;
         const $$createField17_0 = $$createType0;
         const $$createField18_0 = $$createType0;
-        const $$createField32_0 = $$createType1;
-        const $$createField33_0 = $$createType2;
-        const $$createField34_0 = $$createType3;
-        const $$createField35_0 = $$createType0;
-        const $$createField36_0 = $$createType5;
-        const $$createField40_0 = $$createType6;
+        const $$createField34_0 = $$createType1;
+        const $$createField35_0 = $$createType2;
+        const $$createField36_0 = $$createType3;
+        const $$createField37_0 = $$createType0;
+        const $$createField38_0 = $$createType5;
+        const $$createField42_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
@@ -582,22 +604,22 @@ export class Settings {
             $$parsedSource["codexHiddenModels"] = $$createField18_0($$parsedSource["codexHiddenModels"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField32_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField34_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField33_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField35_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField34_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField36_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField35_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField37_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField36_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField38_0($$parsedSource["remoteEndpoints"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField40_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField42_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

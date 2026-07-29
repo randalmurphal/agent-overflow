@@ -161,7 +161,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListMcpServersForThread", ID: 2790948120},              // main.App.ListMcpServersForThread
 	{Name: "ListPRCommits", ID: 4110818691},                        // main.App.ListPRCommits
 	{Name: "ListPRReviewThreads", ID: 763649720},                   // main.App.ListPRReviewThreads
-	{Name: "ListPayloadMetas", ID: 1007133701},                     // main.App.ListPayloadMetas
 	{Name: "ListPendingInteractiveRequests", ID: 4186874978},       // main.App.ListPendingInteractiveRequests
 	{Name: "ListProjects", ID: 2721360259},                         // main.App.ListProjects
 	{Name: "ListProposedPlanComments", ID: 2030403250},             // main.App.ListProposedPlanComments

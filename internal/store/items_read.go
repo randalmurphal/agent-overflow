@@ -84,29 +84,6 @@ func (s *Store) ListItemsForTurn(threadID string, turnIndex int) ([]Item, error)
 	return items, rows.Err()
 }
 
-func (s *Store) LatestAssistantTextSummaryForParent(threadID, parentID string) (string, bool, error) {
-	var summary string
-	err := s.db.QueryRow(
-		`SELECT summary
-		   FROM items
-		  WHERE thread_id = ?
-		    AND parent_id = ?
-		    AND kind = 'assistant_text'
-		    AND summary <> ''
-		  ORDER BY turn_index DESC, item_index DESC
-		  LIMIT 1`,
-		threadID,
-		parentID,
-	).Scan(&summary)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("store: latest assistant text summary for parent %s/%s: %w", threadID, parentID, err)
-	}
-	return summary, true, nil
-}
-
 func (s *Store) LastTurnIndex(threadID string) (int, error) {
 	var maxIndex sql.NullInt64
 	err := s.db.QueryRow(

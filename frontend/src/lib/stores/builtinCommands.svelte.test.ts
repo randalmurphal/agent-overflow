@@ -84,7 +84,6 @@ function readyPane(overrides: Partial<Thread> = {}): ReturnType<typeof createThr
     hasMore: false,
   }));
   setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
   const pane = createThreadPane();
   const thread: Thread = {
     id: 'thread-1',
@@ -1155,7 +1154,6 @@ describe('thread.fork command', () => {
     sidebar.collapseProject('project-fork');
 
     setBindingMock('ListItems', async () => []);
-    setBindingMock('ListPayloadMetas', async () => []);
     setBindingMock('SwitchThread', async () => ({
       id: 'fork-1',
       title: 'Test thread (fork)',

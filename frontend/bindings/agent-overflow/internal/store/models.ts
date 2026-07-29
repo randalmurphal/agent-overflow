@@ -651,42 +651,6 @@ export class PagedItems {
 }
 
 /**
- * PayloadMeta is the meta-only view (no data blob).
- */
-export class PayloadMeta {
-    "id": string;
-    "kind": string;
-    "meta": string;
-    "createdAt": number;
-
-    /** Creates a new PayloadMeta instance. */
-    constructor($$source: Partial<PayloadMeta> = {}) {
-        if (!("id" in $$source)) {
-            this["id"] = "";
-        }
-        if (!("kind" in $$source)) {
-            this["kind"] = "";
-        }
-        if (!("meta" in $$source)) {
-            this["meta"] = "";
-        }
-        if (!("createdAt" in $$source)) {
-            this["createdAt"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new PayloadMeta instance from a string or object.
-     */
-    static createFrom($$source: any = {}): PayloadMeta {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new PayloadMeta($$parsedSource as Partial<PayloadMeta>);
-    }
-}
-
-/**
  * Project represents a user-defined grouping of threads rooted at a
  * directory. Threads belong to a project via the project_id FK; the
  * project's path is the canonical workspace root, though individual

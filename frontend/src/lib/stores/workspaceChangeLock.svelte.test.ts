@@ -47,7 +47,6 @@ function backgroundLaunch(overrides: Partial<Item> = {}): Item {
 async function buildPane(thread: Thread = makeThread()): Promise<ThreadPane> {
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
   const pane = createThreadPane();
   await pane.switchThread(thread);
   return pane;

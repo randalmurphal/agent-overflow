@@ -215,8 +215,8 @@ var LocalOnlyMethods = map[string]bool{
 	// through the thread record — keep with the rest of the local-CLI
 	// invocations for doctrine consistency.
 	"SearchWorkspaceFiles": true,
-	// Payload reads (GetPayloadPreview, GetPayloadChunk, GetPayloadData,
-	// ListPayloadMetas) moved to wireSafeMethods — remote clients need
+	// Payload reads (GetPayloadPreview, GetPayloadChunk,
+	// GetPayloadData) moved to wireSafeMethods — remote clients need
 	// tool-call output, command results, and thinking blocks to render
 	// the timeline. Authorization is enforced by getThreadPayloadMeta's
 	// (threadID, payloadID) linkage check; the token is the security

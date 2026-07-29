@@ -148,7 +148,6 @@ export const GetPayloadPreview = dispatch('GetPayloadPreview');
 export const GetPayloadChunk = dispatch('GetPayloadChunk');
 export const GetPayloadData = dispatch('GetPayloadData');
 export const ListItems = dispatch('ListItems');
-export const ListPayloadMetas = dispatch('ListPayloadMetas');
 export const GetRateLimitsSnapshots = dispatch('GetRateLimitsSnapshots');
 export const ListProviderAccounts = dispatch('ListProviderAccounts');
 export const LoginProviderAccount = dispatch('LoginProviderAccount');

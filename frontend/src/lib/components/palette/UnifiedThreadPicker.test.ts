@@ -39,7 +39,6 @@ beforeEach(async () => {
   resetThreadStatuses();
   setBindingMock('SwitchThread', async () => {});
   setBindingMock('ListItems', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
   await seedThreads([]);
 });
 

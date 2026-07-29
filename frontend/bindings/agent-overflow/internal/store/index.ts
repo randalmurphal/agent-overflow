@@ -16,7 +16,6 @@ export {
     DiscussionSettings,
     Item,
     PagedItems,
-    PayloadMeta,
     Project,
     ProjectWithCounts,
     ProposedPlanComment,

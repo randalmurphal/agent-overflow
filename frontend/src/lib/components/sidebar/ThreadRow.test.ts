@@ -370,7 +370,6 @@ describe('<ThreadRow> fork lineage affordance', () => {
     await refreshThreads();
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
-    setBindingMock('ListPayloadMetas', async () => []);
 
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
@@ -386,7 +385,6 @@ describe('<ThreadRow> fork lineage affordance', () => {
     await refreshThreads();
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
-    setBindingMock('ListPayloadMetas', async () => []);
 
     let rowSelectCalled = 0;
     const pane = createThreadPane();
@@ -1016,7 +1014,6 @@ describe('<ThreadRow> nested row chrome', () => {
     const pane = createThreadPane();
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
-    setBindingMock('ListPayloadMetas', async () => []);
 
     const { getByTestId } = render(ThreadRow, {
       props: {

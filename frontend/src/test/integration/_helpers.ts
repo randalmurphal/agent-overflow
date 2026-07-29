@@ -180,7 +180,6 @@ export function installThreadViewDefaults(): void {
   // to an empty list so tests that don't care about turn history don't
   // need to set the mock themselves.
   setBindingMock('ListRecentTurns', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
   setBindingMock('GetGitStatus', async () => makeGitStatus());
   // GitActionsControl now subscribes to backend gitwatch instead of
   // polling. Default to a successful subscribe returning the same

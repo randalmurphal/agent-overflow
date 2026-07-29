@@ -23,7 +23,6 @@ beforeEach(async () => {
     hasMore: false,
   }));
   setBindingMock('ListRecentTurns', async () => []);
-  setBindingMock('ListPayloadMetas', async () => []);
 });
 
 function makePane() {

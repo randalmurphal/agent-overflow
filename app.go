@@ -665,8 +665,3 @@ func (a *App) ListItems(threadID string) ([]store.Item, error) {
 }
 
 // --- Payload operations ---
-
-// ListPayloadMetas returns all payload metadata for a thread without the body.
-func (a *App) ListPayloadMetas(threadID string) ([]store.PayloadMeta, error) {
-	return a.store.ListPayloadMetas(threadID)
-}

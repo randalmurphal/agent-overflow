@@ -104,7 +104,6 @@ var wireSafeMethods = map[string]bool{
 	"GetPayloadPreview": true,
 	"GetPayloadChunk":   true,
 	"GetPayloadData":    true,
-	"ListPayloadMetas":  true,
 
 	// Edits-scope review reads: SQLite-only projections of persisted
 	// tool-call diff payloads (no FS, no git, no provider session).
