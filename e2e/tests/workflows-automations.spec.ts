@@ -270,7 +270,9 @@ test('Run now starts the automation through the one start path and refuses to ov
 
   const phaseThread = detail.phases[0]?.threadId ?? '';
   expect(phaseThread).toBeTruthy();
-  const items = await harness.rpc<ThreadItem[]>('ListItems', phaseThread);
+  // An itemless thread answers `null`; coalescing keeps a missing prompt a
+  // legible assertion failure instead of a TypeError on `.find`.
+  const items = (await harness.rpc<ThreadItem[] | null>('ListItems', phaseThread)) ?? [];
   const prompt = items.find((item) => item.kind === 'user_text');
   expect(prompt?.summary ?? '').toContain('last run left migration 42 half applied');
 });

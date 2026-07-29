@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// `ao run …`. The shared skeleton — session resolution, usage and exit codes,
+// `agent-overflow run …`. The shared skeleton — session resolution, usage and exit codes,
 // the refusal paths — is exercised in exec_test.go against the same fake
 // backend; these are the command-specific contracts. Seed parsing and `--json`
-// fidelity are asserted here because `ao run start` is where a caller meets
-// them, and `ao schedule` takes the identical flags.
+// fidelity are asserted here because `agent-overflow run start` is where a caller meets
+// them, and `agent-overflow schedule` takes the identical flags.
 
 func TestRunStartSendsSeedsAsJSONWhenTheyParse(t *testing.T) {
 	backend := newFakeBackend(t)

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import * as path from 'node:path';
+import * as nodePath from 'node:path';
 
 import { test, expect, type HarnessMockEvent } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
@@ -14,19 +14,25 @@ import {
   type WorkflowDetail,
 } from './workflows-helpers.js';
 
-// The `ao` execution surface (spec §5, D15/D17) driven by the REAL binary
+// The CLI execution surface (spec §5, D15/D17, D30) driven by the REAL binary
 // against the REAL backend with the REAL credential.
 //
-// The mock provider has no exec step, so it cannot shell out to `ao` the way a
-// live agent would. Instead each spec reads the AO_* environment the app
-// injected into a live session (`HarnessSessionEnv` — a read of the token
-// registry, never a mint) and spawns `bin/ao` with exactly that env. Everything
-// downstream of the process boundary is production code: the CLI's own flag
-// parsing, its HTTP POST to the scoped route, token authentication, grant
-// authorization, and the bound methods.
+// The CLI is the app binary itself, dispatched by verb: the same
+// `bin/agent-overflow` the harness backend runs is what a session invokes as
+// `agent-overflow run start …`. There is no second binary, so this spec proves
+// the verb dispatch as well as everything behind it.
+//
+// The mock provider has no exec step, so it cannot shell out the way a live
+// agent would. Instead each spec reads the AO_* environment the app injected
+// into a live session (`HarnessSessionEnv` — a read of the token registry,
+// never a mint) and spawns the binary with exactly that env. Everything
+// downstream of the process boundary is production code: the entry dispatch,
+// the CLI's own flag parsing, its HTTP POST to the scoped route, token
+// authentication, grant authorization, and the bound methods.
 
-const repoRoot = path.resolve(import.meta.dirname, '..', '..');
-const aoBinary = path.join(repoRoot, 'bin', 'ao');
+const repoRoot = nodePath.resolve(import.meta.dirname, '..', '..');
+const appBinary =
+  process.env.AO_HARNESS_BIN ?? nodePath.join(repoRoot, 'bin', 'agent-overflow');
 
 interface CommandResult {
   code: number;
@@ -34,20 +40,21 @@ interface CommandResult {
   stderr: string;
 }
 
-// runAO spawns the CLI with a deliberately minimal environment: the session
-// variables under test plus what any process needs to run. Inheriting the
-// suite's environment wholesale would let an ambient AO_* leak decide the
-// outcome of a spec about AO_*.
-async function runAO(
+// spawnCLI runs one command and collects its exit code and streams. The
+// environment is deliberately minimal — the session variables under test plus
+// what any process needs to run — because inheriting the suite's environment
+// wholesale would let an ambient AO_* leak decide the outcome of a spec about
+// AO_*. `path` is the PATH the child gets, which is also the lookup PATH Node
+// uses to resolve a bare command name.
+async function spawnCLI(
+  command: string,
+  path: string,
   sessionEnv: Record<string, string>,
-  ...args: string[]
+  args: string[],
 ): Promise<CommandResult> {
-  if (!existsSync(aoBinary)) {
-    throw new Error(`${aoBinary} is missing; run \`make aocli\` (make e2e does this for you)`);
-  }
   return await new Promise<CommandResult>((resolve, reject) => {
-    const child = spawn(aoBinary, args, {
-      env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...sessionEnv },
+    const child = spawn(command, args, {
+      env: { PATH: path, HOME: process.env.HOME ?? '', ...sessionEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -59,11 +66,43 @@ async function runAO(
   });
 }
 
+// runAO invokes the harness-built binary by absolute path — what every case
+// below uses, so a spec failure is about the CLI and not about where it lives.
+async function runAO(
+  sessionEnv: Record<string, string>,
+  ...args: string[]
+): Promise<CommandResult> {
+  if (!existsSync(appBinary)) {
+    throw new Error(`${appBinary} is missing; run \`make harness-build\` (make e2e does this for you)`);
+  }
+  return await spawnCLI(appBinary, process.env.PATH ?? '', sessionEnv, args);
+}
+
+// runPublishedAO resolves the command the way a provider session does: by bare
+// name, through the single directory the app publishes under its config root
+// (D30) and prepends to every session's PATH. PATH is *only* that directory,
+// so a pass means the canonical-name link exists, points at a working binary,
+// and dispatches the verb — not that some other agent-overflow was on PATH.
+async function runPublishedAO(
+  harness: HarnessApp,
+  sessionEnv: Record<string, string>,
+  ...args: string[]
+): Promise<CommandResult> {
+  return await spawnCLI(
+    'agent-overflow',
+    nodePath.join(harness.bootstrap.dataDir, 'bin'),
+    sessionEnv,
+    args,
+  );
+}
+
 function parseJSON<T>(result: CommandResult): T {
   try {
     return JSON.parse(result.stdout) as T;
   } catch (err) {
-    throw new Error(`ao did not print JSON (${err})\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+    throw new Error(
+      `agent-overflow did not print JSON (${err})\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+    );
   }
 }
 
@@ -86,7 +125,7 @@ interface RunDocument {
 
 // sessionEnv reads the live session's injected environment. A thread with no
 // session answers with an empty object, which is what a spawned process would
-// see, so the helper insists on a credential rather than running `ao` against
+// see, so the helper insists on a credential rather than running the CLI against
 // an env the app never issued.
 async function sessionEnv(harness: HarnessApp, threadId: string): Promise<Record<string, string>> {
   const env = await harness.rpc<Record<string, string>>('HarnessSessionEnv', threadId);
@@ -97,7 +136,7 @@ async function sessionEnv(harness: HarnessApp, threadId: string): Promise<Record
 }
 
 // A workflow whose single phase reports done, with a workflow-level output so
-// `ao run output` has something to print.
+// `agent-overflow run output` has something to print.
 function cliFlowYaml(id: string): string {
   return `id: ${id}
 name: ${id}
@@ -163,7 +202,7 @@ phases:
 cleanup: manual
 `;
 
-test('an interactive session starts, waits on, and reads a run through the ao binary', async ({
+test('an interactive session starts, waits on, and reads a run through the app binary', async ({
   harness,
 }) => {
   await setClaudeScenario(harness, 'cli-interactive', [
@@ -189,9 +228,15 @@ test('an interactive session starts, waits on, and reads a run through the ao bi
   expect(env.AO_THREAD_ID).toBe(thread.id);
   expect(env.AO_ENDPOINT).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
   // A conversation is not inside a run: the phase half of the contract is
-  // absent, which is how `ao` knows it is interactive.
+  // absent, which is how the CLI knows it is interactive.
   expect(env.AO_RUN_ID).toBeUndefined();
   expect(env.AO_PHASE_ID).toBeUndefined();
+
+  // D30: the command resolves by bare name through the directory the app puts
+  // on a session's PATH, with no runs started yet.
+  const byName = await runPublishedAO(harness, env, 'run', 'list', '--json');
+  expect(byName.code, byName.stderr).toBe(0);
+  expect(parseJSON<RunDocument[]>(byName)).toEqual([]);
 
   const started = await runAO(env, 'run', 'start', 'cli-flow', '--seed', 'goal=Ship the CLI', '--json');
   expect(started.code, started.stderr).toBe(0);
@@ -322,7 +367,7 @@ test('a granted phase starts a run once and a re-entered call surfaces the prior
   expect(scheduled.stderr).toContain("phase's grants");
 
   // A method outside the scoped allow-list does not exist for this token at all
-  // — the surface stays unenumerable from a compromised agent session. `ao` has
+  // — the surface stays unenumerable from a compromised agent session. the CLI has
   // no command for it, so this one goes over the same route by hand.
   const response = await fetch(`${env.AO_ENDPOINT}/rpc`, {
     method: 'POST',

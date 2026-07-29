@@ -4,7 +4,7 @@ package aocli
 // is readable in one place, and so adding a subcommand without documenting it is
 // an obvious omission rather than a hidden one.
 
-const rootUsage = `Usage: ao [--config-root <path>] <command> [options]
+const rootUsage = `Usage: agent-overflow [--config-root <path>] <command> [options]
 
 Offline commands (work anywhere):
   workflow new       Scaffold a workflow definition
@@ -20,7 +20,7 @@ Session commands (run inside an Agent Overflow agent session):
 Exit codes: 0 success, 1 a run finished in a state other than done, 2 error.
 `
 
-const workflowUsage = `Usage: ao workflow <command> [options]
+const workflowUsage = `Usage: agent-overflow workflow <command> [options]
 
 Commands:
   new       Scaffold a workflow definition
@@ -29,8 +29,8 @@ Commands:
   schema    Print the workflow authoring JSON schema
 `
 
-const validateUsage = `Usage: ao workflow validate [options] <path>
-       ao workflow validate [options] --id <id>
+const validateUsage = `Usage: agent-overflow workflow validate [options] <path>
+       agent-overflow workflow validate [options] --id <id>
 
 Options:
   --config-root <path>  override the Agent Overflow config root
@@ -39,7 +39,7 @@ Options:
   --project <slug>      include workflows for the project slug
 `
 
-const listUsage = `Usage: ao workflow list [options]
+const listUsage = `Usage: agent-overflow workflow list [options]
 
 Options:
   --config-root <path>  override the Agent Overflow config root
@@ -47,13 +47,13 @@ Options:
   --project <slug>      include workflows for the project slug
 `
 
-const schemaUsage = `Usage: ao workflow schema
+const schemaUsage = `Usage: agent-overflow workflow schema
 
 Prints the JSON schema every workflow definition is authored against. Offline:
 it is compiled into this binary and needs no running app.
 `
 
-const runUsage = `Usage: ao run <command> [options]
+const runUsage = `Usage: agent-overflow run <command> [options]
 
 Commands:
   start <workflow-id>     Start a run and print its id
@@ -69,7 +69,7 @@ Commands:
                           Re-run one failed unit of a parked fan-out attempt
 `
 
-const runStartUsage = `Usage: ao run start [options] <workflow-id>
+const runStartUsage = `Usage: agent-overflow run start [options] <workflow-id>
 
 Options:
   --base-branch <name>  branch the run's worktree starts from
@@ -82,52 +82,52 @@ Options:
   --wait                block until the run stops doing work
 `
 
-const runStatusUsage = `Usage: ao run status [--json] <run-id>
+const runStatusUsage = `Usage: agent-overflow run status [--json] <run-id>
 `
 
-const runWaitUsage = `Usage: ao run wait [--json] [--timeout <duration>] <run-id>
+const runWaitUsage = `Usage: agent-overflow run wait [--json] [--timeout <duration>] <run-id>
 
 Exits 0 when the run finished done, 1 when it rested in any other state.
 `
 
-const runOutputUsage = `Usage: ao run output [--json] <run-id>
+const runOutputUsage = `Usage: agent-overflow run output [--json] <run-id>
 `
 
-const runListUsage = `Usage: ao run list [--active] [--json]
+const runListUsage = `Usage: agent-overflow run list [--active] [--json]
 `
 
-const runPauseUsage = `Usage: ao run pause [--json] <run-id>
+const runPauseUsage = `Usage: agent-overflow run pause [--json] <run-id>
 `
 
-const runResumeUsage = `Usage: ao run resume [--json] [--phase <phase-id>] <run-id>
+const runResumeUsage = `Usage: agent-overflow run resume [--json] [--phase <phase-id>] <run-id>
 `
 
-const runCancelUsage = `Usage: ao run cancel [--json] <run-id>
+const runCancelUsage = `Usage: agent-overflow run cancel [--json] <run-id>
 `
 
-const runRerunUsage = `Usage: ao run rerun [--json] [--guidance <text>] <run-id>
+const runRerunUsage = `Usage: agent-overflow run rerun [--json] [--guidance <text>] <run-id>
 `
 
-const runRetryUnitUsage = `Usage: ao run retry-unit [--json] [--note <text>] <run-id> <unit-id>
+const runRetryUnitUsage = `Usage: agent-overflow run retry-unit [--json] [--note <text>] <run-id> <unit-id>
 `
 
-const notesUsage = `Usage: ao notes <command> [options]
+const notesUsage = `Usage: agent-overflow notes <command> [options]
 
 Commands:
   get <automation-id>  Print an automation's continuity notes
   set <automation-id>  Replace them with stdin, or with --file
 `
 
-const notesGetUsage = `Usage: ao notes get [--json] <automation-id>
+const notesGetUsage = `Usage: agent-overflow notes get [--json] <automation-id>
 `
 
-const notesSetUsage = `Usage: ao notes set [--json] [--file <path>] <automation-id>
+const notesSetUsage = `Usage: agent-overflow notes set [--json] [--file <path>] <automation-id>
 
 Reads the new notes from stdin unless --file names a file. Empty input clears
 the notes.
 `
 
-const scheduleUsage = `Usage: ao schedule [options] --cron <expr> <workflow-id>
+const scheduleUsage = `Usage: agent-overflow schedule [options] --cron <expr> <workflow-id>
 
 Options:
   --cron <expr>       five-field cron expression naming when to start (required)

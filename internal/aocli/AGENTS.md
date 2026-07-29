@@ -1,17 +1,28 @@
 # internal/aocli/
 
-Command routing and presentation for the `ao` binary. Keep provider,
-persistence, and app lifecycle concerns out of this package. Command functions
-accept arguments and writers directly so tests do not spawn subprocesses.
+Command routing and presentation for the CLI. Keep provider, persistence, and
+app lifecycle concerns out of this package. Command functions accept arguments
+and writers directly so tests do not spawn subprocesses.
 
-The binary has two halves:
+**There is no separate CLI binary (D30).** The CLI *is* the app binary,
+dispatched by verb: `agent-overflow run start <id>`, `agent-overflow workflow
+list`. `main.go` matches `os.Args[1]` against `Commands()` — this package's
+dispatch table, exported so no second copy of the verb set can rot — and hands
+the whole argv to `Run`. Agent sessions find the binary because boot publishes
+a canonical-name symlink at `<configDir>/bin/agent-overflow` and
+`sessionProcessEnv` prepends that directory to every session's PATH. Every
+user-facing string here therefore says `agent-overflow`, never `ao`; the AO_*
+environment variable names are an internal contract and keep their prefix.
 
-- **Offline** (`ao workflow …`) — scope discovery, definition validation,
-  listing, scaffolding, and the embedded authoring schema. Needs no running
-  app and no credential.
-- **Execution** (`ao run …`, `ao notes …`, `ao schedule …`) — one HTTP POST per
-  invocation against a running Agent Overflow, authenticated with the scoped
-  credential the app injected into the calling agent's session (spec §5, D15).
+The CLI has two halves:
+
+- **Offline** (`agent-overflow workflow …`) — scope discovery, definition
+  validation, listing, scaffolding, and the embedded authoring schema. Needs no
+  running app and no credential.
+- **Execution** (`agent-overflow run …`, `agent-overflow notes …`,
+  `agent-overflow schedule …`) — one HTTP POST per invocation against a running
+  Agent Overflow, authenticated with the scoped credential the app injected
+  into the calling agent's session (spec §5, D15).
 
 Workflow definition behavior belongs to `internal/workflow/def`; this package
 discovers scopes, loads project profiles for binding checks, copies embedded
@@ -74,7 +85,7 @@ Binary-wide, offline and execution alike:
 ## Command tree
 
 ```
-ao [--config-root <path>] <command>
+agent-overflow [--config-root <path>] <command>
   workflow new|validate|list|schema            offline
   run start <workflow-id> [--scope|--goal|--seed k=v|--base-branch|--step|--wait|--timeout|--json]
   run status|wait|output <run-id> [--json] [--timeout]
@@ -97,8 +108,8 @@ overwrite.
 
 Flags may appear before, after, or between positionals (`parsePermuted`): Go's
 `flag` package stops at the first non-flag token, which would make
-`ao run start flow --wait` read `--wait` as a second workflow id. A literal `--`
-still ends flag parsing.
+`agent-overflow run start flow --wait` read `--wait` as a second workflow id. A
+literal `--` still ends flag parsing.
 
 ## Grants and refusals
 
@@ -112,10 +123,14 @@ row-level refusal naming the phase that may act only on the runs it started.
 
 `composer.go` is the pure renderer behind the `/workflow` composer command: it
 takes a resolved `ComposerContext` (project name, workflow source directories,
-available workflows, active runs, whether the thread has a live session) and
-returns the text block injected into the conversation. Lists are bounded
-(`MaxComposerWorkflows`, `MaxComposerRuns`) and truncation is stated in the
-block, never silent. The app-side RPC that resolves the live data is
+available workflows, active runs, whether the thread has a live session,
+whether boot published the command on PATH) and returns the text block injected
+into the conversation. Lists are bounded (`MaxComposerWorkflows`,
+`MaxComposerRuns`) and truncation is stated in the block, never silent. A
+`CommandOnPath: false` block says so outright — it is the one place an agent
+reads before typing the command, so a boot that could not publish the symlink
+must not leave "command not found" as the first news of it. The app-side RPC
+that resolves the live data is
 `WorkflowComposerContext` (`app_workflow_composer.go`); the split exists so the
 block format is unit-testable without a database.
 
@@ -123,11 +138,12 @@ block format is unit-testable without a database.
 
 | File | Responsibility |
 |---|---|
-| `run.go` | Root command routing, config-root discovery, offline workflow commands, exit codes. |
+| `run.go` | Root dispatch table (`Commands` / `IsCommand` / `Run`), offline workflow commands, exit codes, output helpers. |
+| `workflow_scopes.go` | Scope discovery and resolution: config-root, source directories, `ResolveConfigured`, call resolvers, listing. |
 | `usage.go` | Every usage string. |
 | `session.go` | The AO_* contract, session resolution, and the scoped HTTP RPC client. |
 | `exec.go` | Execution-command skeleton: seed parsing, permuted flag parsing, JSON/human rendering. |
-| `exec_run.go` | `ao run …`. |
-| `exec_automation.go` | `ao notes …` and `ao schedule`. |
+| `exec_run.go` | `agent-overflow run …`. |
+| `exec_automation.go` | `agent-overflow notes …` and `agent-overflow schedule`. |
 | `composer.go` | The `/workflow` block renderer. |
 | `workflow_files.go`, `workflow_new.go`, `profile.go` | Definition discovery, scaffolding, profile binding checks. |

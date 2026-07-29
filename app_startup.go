@@ -60,6 +60,12 @@ func (a *App) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Publish this executable as the `agent-overflow` command before any
+	// session can be started, so the very first session already has it on
+	// PATH. Best-effort by design: the helper logs its own failure and
+	// returns "", which sessionProcessEnv reads as "nothing to prepend".
+	a.cliBinDir = a.ensureCLIBinDir(dbDir)
+
 	phaseStarted = time.Now()
 	if err := a.initObservability(ctx, dbDir); err != nil {
 		logBootPhase("app.init_observability", phaseStarted)

@@ -57,19 +57,23 @@ headless, isolated data dir, mocked providers. Full harness guide:
   minute, so tick arithmetic is unit-tested against a fake clock in
   `internal/workflow/scheduler` instead of costing a minute of wall clock per
   assertion.
-- `tests/workflows-cli.spec.ts` — the `ao` execution surface (§5, D15/D17) driven
-  by the REAL `bin/ao` binary as a subprocess: an interactive session starting a
-  run that binds to its thread, `run wait` / `run output` / `run list`, one-shot
-  `run start --wait`, and the credential dying with its session. Then a phase
-  holding `grants: [start-run, introspect]` starting a child run, the identical
-  call surfacing the prior start instead of firing twice, a row-level refusal on
-  a run it did not start, a typed `grant_required` refusal for `ao schedule`, and
-  `ListThreads` coming back `method_not_found` for a scoped token. The mock
-  provider has no exec step and cannot shell out, so the spec reads the AO_*
-  environment of a LIVE session via `HarnessSessionEnv` (a read of the token
-  registry, never a mint) and spawns `ao` with exactly that env — everything past
-  the process boundary is production code. Requires `bin/ao`; `make e2e` builds
-  it.
+- `tests/workflows-cli.spec.ts` — the CLI execution surface (§5, D15/D17, D30)
+  driven by the REAL `bin/agent-overflow` binary as a subprocess. The CLI is the
+  app binary dispatched by verb, so this spec proves the entry dispatch too:
+  an interactive session starting a run that binds to its thread, `run wait` /
+  `run output` / `run list`, one-shot `run start --wait`, and the credential
+  dying with its session. Then a phase holding `grants: [start-run, introspect]`
+  starting a child run, the identical call surfacing the prior start instead of
+  firing twice, a row-level refusal on a run it did not start, a typed
+  `grant_required` refusal for `agent-overflow schedule`, and `ListThreads`
+  coming back `method_not_found` for a scoped token. The mock provider has no
+  exec step and cannot shell out, so the spec reads the AO_* environment of a
+  LIVE session via `HarnessSessionEnv` (a read of the token registry, never a
+  mint) and spawns the binary with exactly that env — everything past the
+  process boundary is production code. One case resolves the command the way a
+  session does: by bare name, with PATH set to *only* `<dataDir>/bin`, which
+  passes exactly when boot published the canonical-name symlink. Requires
+  `bin/agent-overflow`; `make e2e` builds it.
 - `tests/workflows-overlay.spec.ts` — the workflows overlay
   (`docs/specs/workflows-system-ui/UI-SPEC.md`) driven through the REAL UI: the
   sidebar footer badge opening home and a parked gate resolving from its detail,

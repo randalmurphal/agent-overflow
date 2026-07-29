@@ -360,19 +360,25 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 // sessionProcessEnv is the ONE place a provider subprocess's environment is
 // assembled, so anything the app injects reaches Claude and Codex identically:
 // the boot-mode overrides (providerExtraEnv — the harness's mock-control
-// credentials) and the session's `ao` credential (AO_ENDPOINT / AO_TOKEN /
-// AO_THREAD_ID, plus AO_RUN_ID / AO_PHASE_ID for a workflow phase).
+// credentials), the session's CLI credential (AO_ENDPOINT / AO_TOKEN /
+// AO_THREAD_ID, plus AO_RUN_ID / AO_PHASE_ID for a workflow phase), and the
+// PATH entry that makes `agent-overflow` resolve to this executable (D30).
 //
 // Precedence is provider config < boot-mode overrides < AO credential. The AO
 // names are the app's own contract with the CLI, so nothing may shadow them.
 // The contract itself — which variable is set for which kind of session, and
 // what the CLI does when one is missing — lives in internal/aocli/AGENTS.md,
 // next to the code that reads it.
+//
+// PATH is the one entry that merges rather than wins: whatever a provider
+// config or boot-mode override put there is kept, with the CLI's directory in
+// front. A session that can reach the command but lost its own PATH would be a
+// worse trade than the other way round.
 func (a *App) sessionProcessEnv(env map[string]string, credential aoSessionCredential) map[string]string {
-	if len(a.providerExtraEnv) == 0 && len(credential.env) == 0 {
+	if len(a.providerExtraEnv) == 0 && len(credential.env) == 0 && a.cliBinDir == "" {
 		return env
 	}
-	merged := make(map[string]string, len(env)+len(a.providerExtraEnv)+len(credential.env))
+	merged := make(map[string]string, len(env)+len(a.providerExtraEnv)+len(credential.env)+1)
 	for k, v := range env {
 		merged[k] = v
 	}
@@ -381,6 +387,9 @@ func (a *App) sessionProcessEnv(env map[string]string, credential aoSessionCrede
 	}
 	for k, v := range credential.env {
 		merged[k] = v
+	}
+	if a.cliBinDir != "" {
+		prependCLIBinDir(merged, a.cliBinDir)
 	}
 	return merged
 }

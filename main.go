@@ -4,8 +4,6 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
 	"io/fs"
 	"log"
@@ -21,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/diagenv"
@@ -101,6 +100,25 @@ func main() {
 		return
 	}
 
+	// This binary is also the workflow CLI (D30): there is no separate `ao`
+	// executable, and a provider session finds this one on its PATH under the
+	// canonical name (see ensureCLISymlink). The two sidecars above are internal
+	// re-execs of our own making and win the argv outright; everything from here
+	// is somebody typing a command.
+	switch mode := decideEntry(os.Args[1:], os.LookupEnv); mode {
+	case entryCLI:
+		os.Exit(aocli.Run(os.Args[1:], os.Stdout, os.Stderr))
+	case entryRefuse:
+		refuseInSessionBoot(os.Args[1:])
+	case entryBoot:
+		// Fall through to flag parsing and the mode switch below.
+	default:
+		// A mode added to entryMode without a branch here would otherwise
+		// boot silently, which is the one outcome this dispatch exists to
+		// prevent.
+		fatalf("entry dispatch: unhandled mode %d", mode)
+	}
+
 	flags, err := parseFlags(os.Args[1:])
 	if err != nil {
 		fatalf("%v", err)
@@ -162,104 +180,6 @@ func syncShellEnvForBoot() {
 		log.Printf("shellenv: %v", err)
 	}
 	logBootPhase("shellenv.sync", started)
-}
-
-// cliFlags carries the parsed command-line state. Four modes are
-// mutually exclusive: --connect (Phase F remote-client), --print-url-fd
-// (Phase D headless), --harness (agent test harness), and the default
-// desktop boot. parseFlags enforces the pairwise conflicts so mode
-// selection is unambiguous.
-type cliFlags struct {
-	listenAddr string
-	printURLFD int
-	headless   bool
-	connect    string
-	// dataDir overrides the data directory root (app data lives in
-	// <dataDir>/agent-overflow). Usable with any local-backend mode;
-	// required by --harness so a harness can never touch real data.
-	dataDir string
-	// harness boots the agent test harness: headless transport, isolated
-	// data dir + HOME, mock providers, and the Harness RPC surface.
-	harness bool
-	// mockProvider optionally overrides where --harness finds the
-	// ao-mockprovider binary (default: next to this executable).
-	mockProvider string
-}
-
-// parseFlags pulls the command-line flags. The flag set is independent
-// of the Wails CLI's argument parsing — Wails' alpha builds shell out
-// to subprocesses with custom flags and we don't want our flags to
-// leak into the wails3 dev/build argv. The defaults preserve the
-// desktop launch behaviour.
-//
-// Returns a typed error rather than calling fatalf so the conflict
-// branches are unit-testable. main() converts errors into the
-// stderr-and-exit shape callers expect.
-func parseFlags(args []string) (cliFlags, error) {
-	flagSet := flag.NewFlagSet("agent-overflow", flag.ContinueOnError)
-	flagSet.SetOutput(os.Stderr)
-	listen := flagSet.String("listen", "", "transport bind address (e.g. 127.0.0.1:0). Empty means use the default loopback + ephemeral port.")
-	fdFlag := flagSet.String("print-url-fd", "", "run headless and write {port,token} to this file descriptor as JSON. Falls back to a stdout sentinel when the fd isn't open.")
-	connect := flagSet.String("connect", "", "Phase F remote client mode: attach the desktop window to a remote backend at ws://host:port/?token=<value>. Skips local transport boot.")
-	dataDir := flagSet.String("data-dir", "", "data directory root override; app data lives in <data-dir>/agent-overflow. Required by --harness.")
-	harness := flagSet.Bool("harness", false, "agent test harness mode: headless boot on an isolated --data-dir with mock providers and the Harness RPC surface. See docs/architecture/agent-harness.md.")
-	mockProvider := flagSet.String("mock-provider", "", "harness mode only: path to the ao-mockprovider binary (default: alongside this executable).")
-	if err := flagSet.Parse(args); err != nil {
-		return cliFlags{}, fmt.Errorf("parse flags: %w", err)
-	}
-
-	out := cliFlags{
-		listenAddr:   *listen,
-		connect:      *connect,
-		dataDir:      *dataDir,
-		harness:      *harness,
-		mockProvider: *mockProvider,
-	}
-
-	if out.connect != "" && *fdFlag != "" {
-		return cliFlags{}, errors.New("cannot combine --connect with --print-url-fd")
-	}
-	if out.harness {
-		if out.connect != "" {
-			return cliFlags{}, errors.New("cannot combine --harness with --connect")
-		}
-		if *fdFlag != "" {
-			// Harness mode prints its own bootstrap line (the harness JSON
-			// includes strictly more than {port,token}); a second bootstrap
-			// channel would just be a divergence risk.
-			return cliFlags{}, errors.New("cannot combine --harness with --print-url-fd")
-		}
-		if out.dataDir == "" {
-			return cliFlags{}, errors.New("--harness requires --data-dir (the harness refuses to run against real app data)")
-		}
-	}
-	if out.dataDir != "" && out.connect != "" {
-		// --connect has no local backend, so a --data-dir would be
-		// silently ignored. Reject so the operator notices.
-		return cliFlags{}, errors.New("cannot combine --data-dir with --connect")
-	}
-	if out.mockProvider != "" && !out.harness {
-		return cliFlags{}, errors.New("--mock-provider requires --harness")
-	}
-	if out.connect != "" && out.listenAddr != "" {
-		// --listen configures the *local* transport bind. In --connect
-		// mode there is no local transport (we attach to a remote
-		// backend instead), so a --listen value would be silently
-		// dropped. Reject explicitly so the operator notices the
-		// conflict before the desktop window opens against the wrong
-		// origin.
-		return cliFlags{}, errors.New("cannot combine --connect with --listen")
-	}
-
-	if *fdFlag != "" {
-		n, err := strconv.Atoi(*fdFlag)
-		if err != nil {
-			return cliFlags{}, fmt.Errorf("parse --print-url-fd: %w", err)
-		}
-		out.printURLFD = n
-		out.headless = true
-	}
-	return out, nil
 }
 
 // bootTransport is the shared boot path used by runDesktop and

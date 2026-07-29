@@ -496,6 +496,13 @@ type App struct {
 	// (terminals, git hooks, and other children must not inherit them).
 	// Set once before Start; never mutated afterwards.
 	providerExtraEnv map[string]string
+	// cliBinDir is the directory holding the canonical-name link to this
+	// executable (D30, app_cli_path.go). sessionProcessEnv prepends it to
+	// every provider session's PATH so an agent can type `agent-overflow`.
+	// Empty means boot could not publish the link and sessions run without
+	// the command — the `/workflow` composer block says so. Written once by
+	// Start, read-only afterwards.
+	cliBinDir string
 	// providerBinaryOverride, when non-empty, wins over the settings-
 	// backed provider binary paths in providerBinaryPath. Harness mode
 	// points it at ao-mockprovider so the "providers are always mocked"

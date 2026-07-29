@@ -1186,7 +1186,7 @@ run. The composed message itself is bounded and quoted per invariant 34.
 
 ---
 
-## 33. A scoped `ao` token lives exactly as long as its session and can call exactly what its phase was granted
+## 33. A scoped CLI token lives exactly as long as its session and can call exactly what its phase was granted
 
 **Rule.** Three closed sets, all enforced outside the method bodies:
 

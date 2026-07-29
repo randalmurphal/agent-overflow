@@ -10,9 +10,11 @@ import (
 	"time"
 )
 
-// `ao run …` — start, observe, and control runs from inside an agent session.
+// `agent-overflow run …` — start, observe, and control runs from inside an
+// agent session.
 
-// startInput is the request body of `ao run start`. Fields are omitted when
+// startInput is the request body of `agent-overflow run start`. Fields are
+// omitted when
 // unset so an unseeded start sends no seeds at all rather than a null the app
 // would have to special-case.
 type startInput struct {
@@ -96,14 +98,14 @@ func runCommand(args []string, lookupEnv func(string) (string, bool), stdout, st
 	case "retry-unit":
 		return runRetryUnitCommand.run(args[1:], lookupEnv, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "ao run: unknown command %q\n", args[0])
+		fmt.Fprintf(stderr, "agent-overflow run: unknown command %q\n", args[0])
 		_ = writeOutput(stderr, runUsage)
 		return exitError
 	}
 }
 
 var runStartCommand = execCommand{
-	name:  "ao run start",
+	name:  "agent-overflow run start",
 	usage: runStartUsage,
 	bind: func(flags *flag.FlagSet) func(*client, []string, io.Writer) (int, error) {
 		scope := flags.String("scope", "", "resolve the workflow in this scope (shared|project)")
@@ -116,7 +118,7 @@ var runStartCommand = execCommand{
 		seeds := &seedFlag{}
 		flags.Var(seeds, "seed", "seed one declared input as key=value (repeatable; JSON values are parsed)")
 		return func(c *client, args []string, stdout io.Writer) (int, error) {
-			if err := requireArgs("ao run start", args, 1, "exactly one workflow id"); err != nil {
+			if err := requireArgs("agent-overflow run start", args, 1, "exactly one workflow id"); err != nil {
 				return exitError, err
 			}
 			encodedSeeds, err := seeds.encode()
@@ -148,12 +150,12 @@ var runStartCommand = execCommand{
 }
 
 var runStatusCommand = execCommand{
-	name:  "ao run status",
+	name:  "agent-overflow run status",
 	usage: runStatusUsage,
 	bind: func(flags *flag.FlagSet) func(*client, []string, io.Writer) (int, error) {
 		jsonOutput := flags.Bool("json", false, "write the app's result as JSON")
 		return func(c *client, args []string, stdout io.Writer) (int, error) {
-			if err := requireArgs("ao run status", args, 1, "exactly one run id"); err != nil {
+			if err := requireArgs("agent-overflow run status", args, 1, "exactly one run id"); err != nil {
 				return exitError, err
 			}
 			var view runView
@@ -167,13 +169,13 @@ var runStatusCommand = execCommand{
 }
 
 var runWaitCommand = execCommand{
-	name:  "ao run wait",
+	name:  "agent-overflow run wait",
 	usage: runWaitUsage,
 	bind: func(flags *flag.FlagSet) func(*client, []string, io.Writer) (int, error) {
 		timeout := flags.Duration("timeout", defaultWaitTimeout, "give up waiting after this long")
 		jsonOutput := flags.Bool("json", false, "write the app's result as JSON")
 		return func(c *client, args []string, stdout io.Writer) (int, error) {
-			if err := requireArgs("ao run wait", args, 1, "exactly one run id"); err != nil {
+			if err := requireArgs("agent-overflow run wait", args, 1, "exactly one run id"); err != nil {
 				return exitError, err
 			}
 			return waitForRun(c, args[0], *timeout, *jsonOutput, stdout)
@@ -182,12 +184,12 @@ var runWaitCommand = execCommand{
 }
 
 var runOutputCommand = execCommand{
-	name:  "ao run output",
+	name:  "agent-overflow run output",
 	usage: runOutputUsage,
 	bind: func(flags *flag.FlagSet) func(*client, []string, io.Writer) (int, error) {
 		jsonOutput := flags.Bool("json", false, "write the app's result as JSON")
 		return func(c *client, args []string, stdout io.Writer) (int, error) {
-			if err := requireArgs("ao run output", args, 1, "exactly one run id"); err != nil {
+			if err := requireArgs("agent-overflow run output", args, 1, "exactly one run id"); err != nil {
 				return exitError, err
 			}
 			var outputs struct {
@@ -221,14 +223,14 @@ var runOutputCommand = execCommand{
 }
 
 var runListCommand = execCommand{
-	name:  "ao run list",
+	name:  "agent-overflow run list",
 	usage: runListUsage,
 	bind: func(flags *flag.FlagSet) func(*client, []string, io.Writer) (int, error) {
 		active := flags.Bool("active", false, "list only runs that are running or need a human")
 		jsonOutput := flags.Bool("json", false, "write the app's result as JSON")
 		return func(c *client, args []string, stdout io.Writer) (int, error) {
 			if len(args) != 0 {
-				return exitError, usageError("ao run list", "unexpected positional arguments")
+				return exitError, usageError("agent-overflow run list", "unexpected positional arguments")
 			}
 			var views []runView
 			raw, err := c.callInto(&views, "WorkflowAgentListRuns", *active)
@@ -279,30 +281,30 @@ func runControl(name, usage, method string, extra func(*flag.FlagSet) func() []a
 	}
 }
 
-var runPauseCommand = runControl("ao run pause", runPauseUsage, "WorkflowPauseItem", nil)
+var runPauseCommand = runControl("agent-overflow run pause", runPauseUsage, "WorkflowPauseItem", nil)
 
-var runCancelCommand = runControl("ao run cancel", runCancelUsage, "WorkflowCancelItem", nil)
+var runCancelCommand = runControl("agent-overflow run cancel", runCancelUsage, "WorkflowCancelItem", nil)
 
-var runResumeCommand = runControl("ao run resume", runResumeUsage, "WorkflowResumeItem",
+var runResumeCommand = runControl("agent-overflow run resume", runResumeUsage, "WorkflowResumeItem",
 	func(flags *flag.FlagSet) func() []any {
 		phase := flags.String("phase", "", "re-enter this phase instead of continuing where the run parked")
 		return func() []any { return []any{*phase} }
 	})
 
-var runRerunCommand = runControl("ao run rerun", runRerunUsage, "WorkflowRerunItem",
+var runRerunCommand = runControl("agent-overflow run rerun", runRerunUsage, "WorkflowRerunItem",
 	func(flags *flag.FlagSet) func() []any {
 		guidance := flags.String("guidance", "", "text carried into the new attempt alongside the failure diagnosis")
 		return func() []any { return []any{*guidance} }
 	})
 
 var runRetryUnitCommand = execCommand{
-	name:  "ao run retry-unit",
+	name:  "agent-overflow run retry-unit",
 	usage: runRetryUnitUsage,
 	bind: func(flags *flag.FlagSet) func(*client, []string, io.Writer) (int, error) {
 		note := flags.String("note", "", "text carried into the unit's next try")
 		jsonOutput := flags.Bool("json", false, "write the app's result as JSON")
 		return func(c *client, args []string, stdout io.Writer) (int, error) {
-			if err := requireArgs("ao run retry-unit", args, 2, "a run id and a unit id"); err != nil {
+			if err := requireArgs("agent-overflow run retry-unit", args, 2, "a run id and a unit id"); err != nil {
 				return exitError, err
 			}
 			if _, err := c.call("WorkflowRetryUnit", args[0], args[1], *note); err != nil {
@@ -332,10 +334,10 @@ const (
 
 // waitForRun blocks until the run stops doing work. A run resting anywhere other
 // than `done` exits 1: the command succeeded, the run did not, and a caller
-// scripting `ao run wait && …` needs those to differ.
+// scripting `agent-overflow run wait && …` needs those to differ.
 func waitForRun(c *client, itemID string, timeout time.Duration, asJSON bool, stdout io.Writer) (int, error) {
 	if timeout <= 0 {
-		return exitError, usageError("ao run wait", "--timeout must be positive")
+		return exitError, usageError("agent-overflow run wait", "--timeout must be positive")
 	}
 	deadline := time.Now().Add(timeout)
 	interval := initialWaitInterval
@@ -357,7 +359,7 @@ func waitForRun(c *client, itemID string, timeout time.Duration, asJSON bool, st
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return exitError, fmt.Errorf(
-				"ao run wait: run %s was still %s after %s; it is still going, so wait again or check `ao run status`",
+				"agent-overflow run wait: run %s was still %s after %s; it is still going, so wait again or check `agent-overflow run status`",
 				itemID, view.State, timeout)
 		}
 		if interval > remaining {
@@ -375,5 +377,5 @@ func waitForRun(c *client, itemID string, timeout time.Duration, asJSON bool, st
 
 // stateDone is the one run state that makes a wait a success. Mirrored rather
 // than imported: the CLI reads it off the wire, and pulling the engine package
-// into the `ao` binary for one string would drag the whole FSM with it.
+// into the CLI for one string would drag the whole FSM with it.
 const stateDone = "done"

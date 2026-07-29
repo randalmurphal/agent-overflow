@@ -1,4 +1,4 @@
-.PHONY: install dev dev-wsl build build-wsl test check verify release go-build go-test test-race provider-smoke mockprovider aocli harness-build harness e2e
+.PHONY: install dev dev-wsl build build-wsl test check verify release go-build go-test test-race provider-smoke mockprovider harness-build harness e2e
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing and raw provider
@@ -242,18 +242,13 @@ HARNESS_DATA_DIR ?= /tmp/agent-overflow-harness$(subst /,-,$(CURDIR))
 mockprovider:
 	go build -o bin/ao-mockprovider ./cmd/ao-mockprovider
 
-# aocli builds the `ao` binary the workflows CLI e2e spec executes. It is a
-# real subprocess run against the live harness backend, which is the only way
-# to prove the AO_* session environment actually works end to end.
-aocli:
-	go build -o bin/ao ./cmd/ao
-
 # harness-build produces bin/agent-overflow with the production SPA
 # embedded, plus the sibling ao-mockprovider the harness resolves by
-# default and the `ao` CLI the workflows spec drives. UI_TRACE=1 bakes the
-# render-trace instrumentation into the SPA (see the flag docs at the top
-# of this file).
-harness-build: mockprovider aocli
+# default. That same bin/agent-overflow is the workflow CLI the workflows
+# spec drives by verb (D30) — there is no second binary to build. UI_TRACE=1
+# bakes the render-trace instrumentation into the SPA (see the flag docs at
+# the top of this file).
+harness-build: mockprovider
 	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) pnpm run build
 	go build -o bin/agent-overflow .
 

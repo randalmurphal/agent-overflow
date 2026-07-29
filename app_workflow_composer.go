@@ -10,9 +10,9 @@ import (
 )
 
 // The `/workflow` composer context (spec §5, D15). Selecting `/workflow` in a
-// chat composer inserts a text block telling the agent that `ao` exists, that
-// its credentials are already in the environment, which workflows this project
-// has, and what is already running.
+// chat composer inserts a text block telling the agent that the
+// `agent-overflow` command exists, that its credentials are already in the
+// environment, which workflows this project has, and what is already running.
 //
 // The block's format is owned by internal/aocli (pure, unit-tested); this method
 // resolves the live data behind it.
@@ -33,7 +33,13 @@ func (a *App) WorkflowComposerContext(threadID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	context := aocli.ComposerContext{SessionReady: len(a.sessionAOEnv(threadID)) > 0}
+	context := aocli.ComposerContext{
+		SessionReady: len(a.sessionAOEnv(threadID)) > 0,
+		// Boot publishes the command under its canonical name and hands the
+		// directory to every session's PATH (D30); an empty cliBinDir means
+		// that failed and the block has to say so.
+		CommandOnPath: a.cliBinDir != "",
+	}
 	slug := ""
 	if strings.TrimSpace(thread.ProjectID) != "" {
 		projectRow, err := a.store.GetProject(thread.ProjectID)

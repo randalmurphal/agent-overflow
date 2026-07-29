@@ -401,11 +401,27 @@ func TestWorkflowComposerContextRendersTheProjectSurface(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"ao run start", "ao workflow list", aocli.EnvEndpoint, "tool-flow (shared)", fixture.configRoot,
+		"agent-overflow run start", "agent-overflow workflow list",
+		aocli.EnvEndpoint, "tool-flow (shared)", fixture.configRoot,
 	} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("composer block is missing %q:\n%s", want, block)
 		}
+	}
+	// This fixture's App never ran Start, so it published no command; the block
+	// has to say so instead of instructing an agent to run something it cannot
+	// resolve. The reachable case is covered in app_cli_path_test.go and by the
+	// e2e spec that resolves the name through the published directory alone.
+	if !strings.Contains(block, "could not publish `agent-overflow`") {
+		t.Fatalf("composer block promised a command the app never published:\n%s", block)
+	}
+	fixture.app.cliBinDir = t.TempDir()
+	published, err := fixture.app.WorkflowComposerContext(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(published, "could not publish") {
+		t.Fatalf("a published command was reported as missing:\n%s", published)
 	}
 	// The run above finished, so it is not active and must not be listed.
 	if strings.Contains(block, item.ID) {

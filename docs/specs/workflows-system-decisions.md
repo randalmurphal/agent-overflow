@@ -953,3 +953,56 @@ verdict it now is, with what the first attempt got wrong.
   The ceiling is read live at each expansion (§6), never frozen into the run
   snapshot, so lowering it takes effect on the next attempt of a run already
   under way.
+
+## CLI distribution (user ruling, 2026-07-29)
+
+- **D30. The CLI is the app binary, reached by verb; there is no `ao`
+  binary and no `ao` name.** `cmd/ao` was a second `package main` that
+  nothing shipped, nothing installed, and no `PATH` ever contained, so
+  every `ao run start …` an agent typed answered "command not found" —
+  the whole D15 surface existed and was unreachable. It is deleted.
+  `main.go` now matches `os.Args[1]` against `aocli.Commands()` and hands
+  the argv to `aocli.Run`: `agent-overflow run start <id>`,
+  `agent-overflow workflow list`. The verb set is exported from the
+  package's own dispatch table rather than restated in `main`, because a
+  hand-kept second copy is exactly how a verb becomes unreachable again.
+
+  **Sessions find it on PATH, under a canonical-name symlink.** Boot
+  writes `<configDir>/bin/agent-overflow` pointing at `os.Executable()`
+  and `sessionProcessEnv` prepends that directory to every provider
+  session's environment (`provider.BuildEnvironment` already treats a
+  `PATH` override as additive, so the session keeps its own PATH behind
+  ours). The symlink exists because the running executable's *name* is
+  not stable — `bin/agent-overflow` in a dev build, a temp binary under
+  `wails3 dev`, `Agent Overflow.app/Contents/MacOS/Agent Overflow` in a
+  bundle — while the name an agent types has to be exactly one thing.
+  The directory holds nothing else, so putting it first on PATH exposes
+  this command and no other. Replacement is symlink-to-temp + rename, so
+  a session resolving the name during a restart sees the old target or
+  the new one, never a gap. Non-Windows only: the Windows binary is a
+  launcher for the WSL backend and spawns no provider children, so the
+  sessions that need the command are published by the Linux backend's
+  own boot. A failure to publish is logged and carried, never fatal —
+  `cliBinDir` stays empty, PATH is untouched, and the `/workflow`
+  composer block says the command may not resolve rather than leaving
+  "command not found" as the agent's first news of it.
+
+  **Bare invocation inside a session refuses instead of booting.** With
+  `AO_ENDPOINT` set, an argv that names no verb — no arguments, an
+  unknown verb, an unknown flag — prints CLI help and exits 2. A second
+  GUI process against the same SQLite file is never what an agent meant.
+  The decision is a pure function of (args, env) so every branch is
+  table-tested: a verb is the CLI in or out of a session; outside a
+  session nothing changes and the desktop boots as it always has; and
+  inside a session a leading flag the binary actually declares
+  (`--harness`, `--connect`, `--data-dir`, `--listen`, `--print-url-fd`,
+  `--mock-provider`) still boots, because `make e2e` run from an agent
+  session inherits `AO_ENDPOINT` and must stay runnable. "Declared" is
+  asked of the same `flag.FlagSet` `parseFlags` uses, not of a list
+  beside it.
+
+  **The AO_* variable names do not change.** They are the app's contract
+  with its own reader (`internal/aocli/session.go`), never typed by a
+  human, and renaming them would churn the injection site, the CLI, the
+  harness surface, and every spec for no reader's benefit. Only
+  user-facing text moved from `ao` to `agent-overflow`.

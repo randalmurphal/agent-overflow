@@ -342,7 +342,7 @@ granted to a phase" *is* that grant. From an interactive chat thread the same
 CLI rides the provider's normal bash-approval UX with the user's full
 authority.
 
-**The CLI surface** (workflow-facing): `ao workflow validate | list | schema |
+**The CLI surface** (workflow-facing): `agent-overflow workflow validate | list | schema |
 new` (authoring) · `run | status | result | list-runs` (execution) · `pause |
 resume | cancel | rerun | retry-unit` (control). `run` starts a run
 immediately and returns the run id; it does not block.
@@ -573,7 +573,7 @@ required** — this app controls many repos; it scopes the item for display and
 is the repo its worktree is cut from.
 
 **Producers of that same shape, all calling one start path:** a human in the
-overlay (§10); **an agent from any chat thread** via `ao workflow run` (§5 —
+overlay (§10); **an agent from any chat thread** via `agent-overflow run start` (§5 —
 the run binds to the thread and wakes it); a phase via the **start-run
 capability** (§5 decomposition); the **§11 scheduler** on a trigger. Manual is
 just the n=1 case; every producer emits the identical item.
@@ -585,7 +585,7 @@ the composer (or the overlay's "author in a thread" button opens a thread
 pre-seeded the same way): it injects one compact block — the `ao` binary path,
 this project's workflow directory and scope rules, the §5 command cheat-sheet,
 and links to the project's active runs. Everything deeper is discovered via
-`--help` and `ao workflow schema`. This replaces rev 1's chat-enqueue MCP
+`--help` and `agent-overflow workflow schema`. This replaces rev 1's chat-enqueue MCP
 server and its proposal/confirm flow entirely: the agent starts runs directly
 through the CLI under normal bash approval, and the human control point is the
 overlay and the workflow's own gates — not a pre-start confirmation click.

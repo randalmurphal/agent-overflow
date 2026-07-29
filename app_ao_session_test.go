@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -257,10 +258,83 @@ func TestSessionProcessEnvPrecedence(t *testing.T) {
 	}
 
 	// An empty credential contributes nothing at all — no blank AO_* variables
-	// that would make `ao` believe it is inside a session it cannot reach.
+	// that would make the CLI believe it is inside a session it cannot reach.
 	env = app.sessionProcessEnv(nil, aoSessionCredential{})
 	if _, present := env[aocli.EnvToken]; present {
 		t.Fatalf("a credential-less session got %s: %#v", aocli.EnvToken, env)
+	}
+}
+
+// D30: every session, of every provider, gets the directory holding the
+// canonical-name link at the front of its PATH — that is how `agent-overflow`
+// resolves inside an agent's shell. The table walks the shapes a provider
+// config actually arrives in.
+func TestSessionProcessEnvPublishesTheCLIOnPath(t *testing.T) {
+	separator := string(os.PathListSeparator)
+	tests := []struct {
+		name      string
+		binDir    string
+		extraEnv  map[string]string
+		configEnv map[string]string
+		wantPath  string
+	}{
+		{
+			name:     "a config with no PATH gains one",
+			binDir:   "/cfg/bin",
+			wantPath: "/cfg/bin",
+		},
+		{
+			name:      "a config PATH keeps its entries behind ours",
+			binDir:    "/cfg/bin",
+			configEnv: map[string]string{"PATH": "/opt/tools"},
+			wantPath:  "/cfg/bin" + separator + "/opt/tools",
+		},
+		{
+			name:     "a boot-mode PATH override keeps its entries behind ours",
+			binDir:   "/cfg/bin",
+			extraEnv: map[string]string{"PATH": "/harness/bin"},
+			wantPath: "/cfg/bin" + separator + "/harness/bin",
+		},
+		{
+			// A boot that could not publish the command must not invent a PATH
+			// entry pointing at nothing.
+			name:      "an unpublished command leaves PATH alone",
+			binDir:    "",
+			configEnv: map[string]string{"PATH": "/opt/tools"},
+			wantPath:  "/opt/tools",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app := &App{cliBinDir: test.binDir, providerExtraEnv: test.extraEnv}
+			credential := aoSessionCredential{env: map[string]string{aocli.EnvToken: "tok"}}
+			// The caller's map is an input, not a scratch buffer: mutating it
+			// would leak one session's PATH into the next config built from it,
+			// stacking the bin dir on every restart.
+			configPathBefore, hadConfigPath := test.configEnv["PATH"]
+			env := app.sessionProcessEnv(test.configEnv, credential)
+			if env["PATH"] != test.wantPath {
+				t.Fatalf("PATH = %q, want %q (env %#v)", env["PATH"], test.wantPath, env)
+			}
+			if env[aocli.EnvToken] != "tok" {
+				t.Fatalf("the credential did not survive: %#v", env)
+			}
+			after, hasConfigPath := test.configEnv["PATH"]
+			if hasConfigPath != hadConfigPath || after != configPathBefore {
+				t.Fatalf("sessionProcessEnv mutated its caller's map: PATH %q -> %q", configPathBefore, after)
+			}
+		})
+	}
+}
+
+// A session with no credential at all still gets the command: an interactive
+// thread outside a project can legitimately have no scoped token, and
+// `agent-overflow workflow …` works offline.
+func TestSessionProcessEnvPublishesTheCLIWithoutACredential(t *testing.T) {
+	app := &App{cliBinDir: "/cfg/bin"}
+	env := app.sessionProcessEnv(nil, aoSessionCredential{})
+	if env["PATH"] != "/cfg/bin" {
+		t.Fatalf("PATH = %q, want the published bin dir", env["PATH"])
 	}
 }
 

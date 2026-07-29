@@ -9,11 +9,12 @@ import (
 	"strings"
 )
 
-// `ao notes …` and `ao schedule` — the automation half of the execution surface
-// (spec §11). Notes are the continuity a scheduled run leaves for its next
-// occurrence; a schedule is a standing instruction to start one.
+// `agent-overflow notes …` and `agent-overflow schedule` — the automation half
+// of the execution surface (spec §11). Notes are the continuity a scheduled run
+// leaves for its next occurrence; a schedule is a standing instruction to start
+// one.
 
-// scheduleInput is the request body of `ao schedule`.
+// scheduleInput is the request body of `agent-overflow schedule`.
 type scheduleInput struct {
 	WorkflowID string          `json:"workflowId"`
 	Scope      string          `json:"scope,omitempty"`
@@ -38,19 +39,19 @@ func notesCommand(args []string, lookupEnv func(string) (string, bool), stdout, 
 	case "set":
 		return notesSetCommand.run(args[1:], lookupEnv, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "ao notes: unknown command %q\n", args[0])
+		fmt.Fprintf(stderr, "agent-overflow notes: unknown command %q\n", args[0])
 		_ = writeOutput(stderr, notesUsage)
 		return exitError
 	}
 }
 
 var notesGetCommand = execCommand{
-	name:  "ao notes get",
+	name:  "agent-overflow notes get",
 	usage: notesGetUsage,
 	bind: func(flags *flag.FlagSet) func(*client, []string, io.Writer) (int, error) {
 		jsonOutput := flags.Bool("json", false, "write the app's result as JSON")
 		return func(c *client, args []string, stdout io.Writer) (int, error) {
-			if err := requireArgs("ao notes get", args, 1, "exactly one automation id"); err != nil {
+			if err := requireArgs("agent-overflow notes get", args, 1, "exactly one automation id"); err != nil {
 				return exitError, err
 			}
 			var notes string
@@ -66,13 +67,13 @@ var notesGetCommand = execCommand{
 }
 
 var notesSetCommand = execCommand{
-	name:  "ao notes set",
+	name:  "agent-overflow notes set",
 	usage: notesSetUsage,
 	bind: func(flags *flag.FlagSet) func(*client, []string, io.Writer) (int, error) {
 		file := flags.String("file", "", "read the notes from this file instead of stdin")
 		jsonOutput := flags.Bool("json", false, "write the app's result as JSON")
 		return func(c *client, args []string, stdout io.Writer) (int, error) {
-			if err := requireArgs("ao notes set", args, 1, "exactly one automation id"); err != nil {
+			if err := requireArgs("agent-overflow notes set", args, 1, "exactly one automation id"); err != nil {
 				return exitError, err
 			}
 			notes, err := readNotes(*file)
@@ -114,7 +115,7 @@ func readNotes(file string) (string, error) {
 }
 
 var scheduleCommand = execCommand{
-	name:  "ao schedule",
+	name:  "agent-overflow schedule",
 	usage: scheduleUsage,
 	bind: func(flags *flag.FlagSet) func(*client, []string, io.Writer) (int, error) {
 		cron := flags.String("cron", "", "five-field cron expression naming when to start the workflow")
@@ -124,11 +125,11 @@ var scheduleCommand = execCommand{
 		seeds := &seedFlag{}
 		flags.Var(seeds, "seed", "seed one declared input as key=value (repeatable; JSON values are parsed)")
 		return func(c *client, args []string, stdout io.Writer) (int, error) {
-			if err := requireArgs("ao schedule", args, 1, "exactly one workflow id"); err != nil {
+			if err := requireArgs("agent-overflow schedule", args, 1, "exactly one workflow id"); err != nil {
 				return exitError, err
 			}
 			if strings.TrimSpace(*cron) == "" {
-				return exitError, usageError("ao schedule", "--cron is required")
+				return exitError, usageError("agent-overflow schedule", "--cron is required")
 			}
 			encodedSeeds, err := seeds.encode()
 			if err != nil {

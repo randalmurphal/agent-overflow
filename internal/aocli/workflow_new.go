@@ -44,7 +44,7 @@ func runNew(args []string, inheritedConfigRoot string, stdout, stderr io.Writer)
 		return exitOK
 	}
 	starterName := args[0]
-	flags := flag.NewFlagSet("ao workflow new", flag.ContinueOnError)
+	flags := flag.NewFlagSet("agent-overflow workflow new", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	configRoot := flags.String("config-root", inheritedConfigRoot, "override the Agent Overflow config root")
 	id := flags.String("id", "", "id for the scaffolded workflow")
@@ -57,16 +57,16 @@ func runNew(args []string, inheritedConfigRoot string, stdout, stderr io.Writer)
 			}
 			return exitOK
 		}
-		fmt.Fprintf(stderr, "ao workflow new: %v\n", err)
+		fmt.Fprintf(stderr, "agent-overflow workflow new: %v\n", err)
 		_ = writeNewUsage(stderr)
 		return exitError
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "ao workflow new: unexpected positional arguments")
+		fmt.Fprintln(stderr, "agent-overflow workflow new: unexpected positional arguments")
 		return exitError
 	}
 	if *id == "" {
-		fmt.Fprintln(stderr, "ao workflow new: --id is required")
+		fmt.Fprintln(stderr, "agent-overflow workflow new: --id is required")
 		return exitError
 	}
 	if !workflowIDPattern.MatchString(*id) {
@@ -276,7 +276,7 @@ func ensureAuthoringSchema(configRoot, targetDir string) (path string, created b
 
 func writeNewUsage(output io.Writer) error {
 	var usage strings.Builder
-	usage.WriteString("Usage: ao workflow new <starter|blank> --id <new-id> [options]\n\nStarters:\n")
+	usage.WriteString("Usage: agent-overflow workflow new <starter|blank> --id <new-id> [options]\n\nStarters:\n")
 	for _, name := range append(starters.List(), "blank") {
 		fmt.Fprintf(&usage, "  %s\n", name)
 	}

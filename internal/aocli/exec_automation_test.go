@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// `ao notes …` and `ao schedule`.
+// `agent-overflow notes …` and `agent-overflow schedule`.
 
 func TestNotesSetReadsAFileOrStdin(t *testing.T) {
 	backend := newFakeBackend(t)

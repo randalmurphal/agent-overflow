@@ -15,8 +15,9 @@ import (
 )
 
 // The AO_* environment contract (spec §5). Agent Overflow injects these into
-// every provider session it starts; an `ao` process inherits them and needs no
-// configuration, no discovery, and no credential of its own. The names are
+// every provider session it starts; an `agent-overflow` process inherits them
+// and needs no configuration, no discovery, and no credential of its own. The
+// names are
 // declared here rather than at the injection site so the writer (the app's
 // session env assembly) and the reader (this package) cannot drift apart.
 //
@@ -35,7 +36,7 @@ const (
 	EnvPhaseID  = "AO_PHASE_ID"
 )
 
-// Session is the ambient credential an `ao` process inherits.
+// Session is the ambient credential an `agent-overflow` process inherits.
 type Session struct {
 	Endpoint string
 	Token    string
@@ -55,7 +56,7 @@ func (s Session) InsidePhase() bool { return s.RunID != "" && s.PhaseID != "" }
 var errNoSession = errors.New(
 	"not inside an Agent Overflow session: " + EnvEndpoint + " and " + EnvToken +
 		" are unset. These commands run from an agent session Agent Overflow started; " +
-		"`ao workflow` commands work anywhere")
+		"`agent-overflow workflow` commands work anywhere")
 
 // SessionFromEnv reads the contract above. lookup is injected so tests exercise
 // the parsing without mutating process environment.

@@ -12,7 +12,8 @@ import (
 
 // The execution surface: the commands that talk to a running Agent Overflow
 // over the scoped RPC route (spec §5, D15). Everything here needs the AO_*
-// session environment; `ao workflow …` stays offline and needs none of it.
+// session environment; `agent-overflow workflow …` stays offline and needs none
+// of it.
 //
 // Exit codes follow the binary-wide scheme established by the offline commands:
 // 0 success (a surface-and-skip replay included — the effect exists, which is
@@ -102,8 +103,9 @@ func (c execCommand) run(args []string, lookupEnv func(string) (string, bool), s
 
 // parsePermuted parses flags that may appear before, after, or between
 // positional arguments. Go's flag package stops at the first non-flag token, so
-// `ao run start flow --wait` would otherwise read `--wait` as a second workflow
-// id — an ordering rule no other CLI has and no caller would guess.
+// `agent-overflow run start flow --wait` would otherwise read `--wait` as a
+// second workflow id — an ordering rule no other CLI has and no caller would
+// guess.
 //
 // The idiom is to parse repeatedly, peeling one positional off each time. A
 // literal `--` still terminates flag parsing: everything after it is positional,

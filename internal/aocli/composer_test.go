@@ -8,7 +8,7 @@ import (
 
 func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
 	block := RenderComposerContext(ComposerContext{
-		ProjectName: "Agent Overflow", SessionReady: true,
+		ProjectName: "Agent Overflow", SessionReady: true, CommandOnPath: true,
 		SharedDir: "/config/workflows", ProjectDir: "/config/projects/ao/workflows",
 		Workflows: []ComposerWorkflow{
 			{ID: "release", Name: "Release train", Scope: "project"},
@@ -20,7 +20,7 @@ func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
 		},
 	})
 	for _, want := range []string{
-		"ao run start", "ao run list", "ao workflow schema", "--json",
+		"agent-overflow run start", "agent-overflow run list", "agent-overflow workflow list|validate", "--json",
 		EnvEndpoint, EnvToken, EnvThreadID,
 		"/config/workflows", "/config/projects/ao/workflows", "Agent Overflow",
 		"audit (shared) — Dependency audit", "release (project) — Release train",
@@ -31,12 +31,35 @@ func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
 			t.Fatalf("block is missing %q:\n%s", want, block)
 		}
 	}
+	// The block names the app binary, never the retired `ao` one: an agent that
+	// copies a line out of it has to get a command that exists.
+	for _, gone := range []string{"  ao ", "`ao`", "`ao "} {
+		if strings.Contains(block, gone) {
+			t.Fatalf("block still names the retired `ao` command (%q):\n%s", gone, block)
+		}
+	}
 	// Workflows sort by id so the same project renders the same block twice.
 	if strings.Index(block, "audit (shared)") > strings.Index(block, "release (project)") {
 		t.Fatalf("workflows were not sorted by id:\n%s", block)
 	}
 	if strings.Contains(block, "no live session yet") {
 		t.Fatalf("a ready session was described as absent:\n%s", block)
+	}
+	if strings.Contains(block, "could not publish") {
+		t.Fatalf("a reachable command was described as unpublished:\n%s", block)
+	}
+}
+
+// A boot that could not publish the command says so in the one place an agent
+// reads before running it, rather than leaving "command not found" as the
+// first news of it.
+func TestRenderComposerContextSaysWhenTheCommandIsNotOnPath(t *testing.T) {
+	block := RenderComposerContext(ComposerContext{
+		ProjectName: "Agent Overflow", SessionReady: true, CommandOnPath: false,
+		SharedDir: "/config/workflows",
+	})
+	if !strings.Contains(block, "could not publish `agent-overflow` on this session's PATH") {
+		t.Fatalf("block did not report the unpublished command:\n%s", block)
 	}
 }
 
@@ -53,7 +76,7 @@ func TestRenderComposerContextHandlesAnEmptyProject(t *testing.T) {
 }
 
 func TestComposerListsAreBounded(t *testing.T) {
-	context := ComposerContext{SessionReady: true, SharedDir: "/config/workflows"}
+	context := ComposerContext{SessionReady: true, CommandOnPath: true, SharedDir: "/config/workflows"}
 	for i := 0; i < MaxComposerWorkflows+7; i++ {
 		context.Workflows = append(context.Workflows, ComposerWorkflow{
 			ID: fmt.Sprintf("wf-%02d", i), Name: "W", Scope: "shared",
