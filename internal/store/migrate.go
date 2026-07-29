@@ -1467,6 +1467,43 @@ CREATE INDEX idx_work_items_automation_source_ref
   ON work_items(source_ref, state)
   WHERE source = 'automation' AND source_ref <> '';`,
 	},
+	{
+		Version: 41,
+		Name:    "items_running_bg_tool_calls_index",
+		// Startup's orphaned-background-task sweep
+		// (ListRecoverableClaudeBackgroundLaunches) filters items on exactly
+		// this predicate with no thread scope. Without a matching partial
+		// index it full-scans items — measured 12s of cold I/O on a multi-GB
+		// history DB (2026-07-28), spent inside ServiceStartup while the SPA
+		// is still gated on readiness. The existing idx_items_live_background
+		// can't serve it: that index additionally requires parent_id = '',
+		// and subagent-scoped background launches carry a parent. The index
+		// stays small (settled launches keep their completion sibling but the
+		// launch row stays `running`, so entries accumulate slowly — a few
+		// thousand rows across months of history).
+		SQL: `CREATE INDEX idx_items_running_bg_tool_calls
+    ON items(thread_id, id)
+ WHERE kind = 'tool_call'
+   AND status = 'running'
+   AND is_background = 1
+   AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0;`,
+	},
+	{
+		Version: 42,
+		Name:    "items_running_fg_tool_calls_index",
+		// HasRunningTopLevelForegroundToolCall runs at every flush-queue
+		// boundary and matches at most a handful of rows (a foreground tool
+		// call is transient), but without a matching partial index it walks
+		// the thread's whole slice of items — 11ms per probe on a 38k-item
+		// thread. The predicate mirrors the query textually so the partial
+		// index qualifies.
+		SQL: `CREATE INDEX idx_items_running_fg_tool_calls
+    ON items(thread_id)
+ WHERE kind = 'tool_call'
+   AND status = 'running'
+   AND is_background = 0
+   AND parent_id = '';`,
+	},
 }
 
 // workItemsReasonCheckV38 is the typed park-reason CHECK shipped by v38;

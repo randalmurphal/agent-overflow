@@ -57,6 +57,7 @@ func (s *Store) HasLiveBackgroundToolCall(threadID string) (bool, error) {
 		         SELECT 1 FROM items c
 		          WHERE c.thread_id = items.thread_id
 		            AND c.completion_of = items.id
+		            AND c.completion_of <> ''
 		       )
 		     LIMIT 1
 		)`,
@@ -97,6 +98,7 @@ func (s *Store) HasQueueBlockingBackgroundToolCall(threadID string) (bool, error
 		         SELECT 1 FROM items c
 		          WHERE c.thread_id = items.thread_id
 		            AND c.completion_of = items.id
+		            AND c.completion_of <> ''
 		       )
 		     LIMIT 1
 		)`,
@@ -149,6 +151,7 @@ func (s *Store) HasLiveCodexSubagentLaunch(threadID string) (bool, error) {
 		         SELECT 1 FROM items c
 		          WHERE c.thread_id = items.thread_id
 		            AND c.completion_of = items.id
+		            AND c.completion_of <> ''
 		       )
 		     LIMIT 1
 		)`,
@@ -202,6 +205,7 @@ func (s *Store) MarkLiveCodexSubagentLaunchesInactive(threadID string, updatedAt
 		      SELECT 1 FROM items c
 		       WHERE c.thread_id = items.thread_id
 		         AND c.completion_of = items.id
+		         AND c.completion_of <> ''
 		    )`,
 		updatedAt,
 		threadID,
@@ -240,6 +244,7 @@ func (s *Store) MarkLiveBackgroundToolCallsInactive(threadID string, updatedAt i
 		      SELECT 1 FROM items c
 		       WHERE c.thread_id = items.thread_id
 		         AND c.completion_of = items.id
+		         AND c.completion_of <> ''
 		    )`,
 		updatedAt,
 		threadID,
@@ -381,6 +386,7 @@ func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) 
 		      SELECT 1 FROM items c
 		       WHERE c.thread_id = items.thread_id
 		         AND c.completion_of = items.id
+		         AND c.completion_of <> ''
 		    )
 		  ORDER BY items.turn_index, items.item_index`,
 		threadID,
@@ -414,6 +420,7 @@ func (s *Store) ListIncompleteCodexSubagentLaunches(threadID string) ([]Item, er
 		      SELECT 1 FROM items c
 		       WHERE c.thread_id = items.thread_id
 		         AND c.completion_of = items.id
+		         AND c.completion_of <> ''
 		    )
 		  ORDER BY items.turn_index, items.item_index`,
 		threadID,
@@ -457,6 +464,7 @@ func (s *Store) ListLiveCodexSubagentLaunches(threadID string) ([]Item, error) {
 		        SELECT 1 FROM items c
 		         WHERE c.thread_id = items.thread_id
 		           AND c.completion_of = items.id
+		           AND c.completion_of <> ''
 		      )
 		      OR json_extract(items.meta, '$.live_background_active') = 1
 		    )
@@ -493,6 +501,7 @@ func (s *Store) GetIncompleteCodexSubagentLaunch(threadID, itemID string) (Item,
 		      SELECT 1 FROM items c
 		       WHERE c.thread_id = items.thread_id
 		         AND c.completion_of = items.id
+		         AND c.completion_of <> ''
 		    )`,
 		threadID,
 		itemID,
@@ -534,6 +543,12 @@ func (s *Store) GetIncompleteCodexSubagentLaunch(threadID, itemID string) (Item,
 // synthesising the completion sibling, so the user sees the real exit
 // state rather than a generic session_died/killed badge.
 func (s *Store) ListRecoverableClaudeBackgroundLaunches() ([]Item, error) {
+	// This is the one query in the file with no thread scope, so its plan
+	// matters at multi-GB history sizes: the outer predicate is served by
+	// the partial idx_items_running_bg_tool_calls (v41 — keep the WHERE
+	// terms textually in sync with it), and the `c.completion_of <> ''`
+	// term exists solely so the NOT EXISTS probe qualifies for the partial
+	// idx_items_completion_of instead of scanning each candidate's thread.
 	rows, err := s.db.Query(
 		`SELECT ` + itemColumns + `
 		   FROM items
@@ -548,6 +563,7 @@ func (s *Store) ListRecoverableClaudeBackgroundLaunches() ([]Item, error) {
 		      SELECT 1 FROM items c
 		       WHERE c.thread_id = items.thread_id
 		         AND c.completion_of = items.id
+		         AND c.completion_of <> ''
 		    )`,
 	)
 	if err != nil {

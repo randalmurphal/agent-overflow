@@ -124,11 +124,13 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 		            SELECT 1 FROM items c
 		             WHERE c.thread_id = items.thread_id
 		               AND c.completion_of = items.id
+		               AND c.completion_of <> ''
 		          )
 		          OR EXISTS (
 		            SELECT 1 FROM items c
 		             WHERE c.thread_id = items.thread_id
 		               AND c.completion_of = items.id
+		               AND c.completion_of <> ''
 		               AND c.created_at >= ?
 		          )
 		        )

@@ -2753,3 +2753,78 @@ func TestMigrationV40AddsAutomationFireRecord(t *testing.T) {
 		 WHERE source = 'automation' AND source_ref = ? AND source_ref <> ''
 		   AND state IN ('running','needs-human')`, "auto-v40")
 }
+
+// seedRunningToolCallFixtures inserts one thread with a matching and a
+// non-matching tool_call row for the v41/v42 running-tool-call partial
+// indexes. isBackground selects which index's membership is under test.
+func seedRunningToolCallFixtures(t *testing.T, db *sql.DB, isBackground int) {
+	t.Helper()
+	mustExec(t, db, `INSERT INTO projects
+		(id, path, name, slug, created_at, updated_at)
+		VALUES ('project-idx', '/tmp/idx', 'Idx', 'idx', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads
+		(id, project_id, title, provider, workspace_path, created_at, updated_at)
+		VALUES ('thread-idx', 'project-idx', 'Idx', 'claude', '/tmp/idx', 1, 1)`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO items
+		(id, thread_id, turn_index, item_index, kind, role, status, is_background, created_at, updated_at)
+		VALUES ('tc-live', 'thread-idx', 0, 0, 'tool_call', 'assistant', 'running', %d, 2, 2)`, isBackground))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO items
+		(id, thread_id, turn_index, item_index, kind, role, status, is_background, created_at, updated_at)
+		VALUES ('tc-settled', 'thread-idx', 0, 1, 'tool_call', 'assistant', 'completed', %d, 2, 2)`, isBackground))
+}
+
+func TestMigrationV41AddsRunningBackgroundToolCallIndex(t *testing.T) {
+	db := migrateThrough(t, 40)
+	seedRunningToolCallFixtures(t, db, 1)
+
+	if err := applyMigration(db, migrationByVersion(t, 41)); err != nil {
+		t.Fatalf("apply migration v41: %v", err)
+	}
+
+	readIndexSQL(t, db, "idx_items_running_bg_tool_calls")
+	// Membership: only the still-running background launch is in the index.
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM items INDEXED BY idx_items_running_bg_tool_calls
+		 WHERE kind = 'tool_call' AND status = 'running' AND is_background = 1
+		   AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0`).Scan(&count); err != nil {
+		t.Fatalf("count via index: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("index membership = %d, want 1", count)
+	}
+	// The startup recovery scan (ListRecoverableClaudeBackgroundLaunches'
+	// outer predicate) must be served by the partial index, not a table scan.
+	assertPlanUses(t, db, "idx_items_running_bg_tool_calls",
+		`EXPLAIN QUERY PLAN SELECT items.id FROM items
+		  JOIN threads ON threads.id = items.thread_id
+		 WHERE threads.provider IN ('claude', 'claude-tui')
+		   AND items.kind = 'tool_call'
+		   AND items.status = 'running'
+		   AND items.is_background = 1
+		   AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0`)
+}
+
+func TestMigrationV42AddsRunningForegroundToolCallIndex(t *testing.T) {
+	db := migrateThrough(t, 41)
+	seedRunningToolCallFixtures(t, db, 0)
+
+	if err := applyMigration(db, migrationByVersion(t, 42)); err != nil {
+		t.Fatalf("apply migration v42: %v", err)
+	}
+
+	readIndexSQL(t, db, "idx_items_running_fg_tool_calls")
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM items INDEXED BY idx_items_running_fg_tool_calls
+		 WHERE kind = 'tool_call' AND status = 'running' AND is_background = 0
+		   AND parent_id = ''`).Scan(&count); err != nil {
+		t.Fatalf("count via index: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("index membership = %d, want 1", count)
+	}
+	// HasRunningTopLevelForegroundToolCall's probe must qualify for the index.
+	assertPlanUses(t, db, "idx_items_running_fg_tool_calls",
+		`EXPLAIN QUERY PLAN SELECT 1 FROM items
+		 WHERE thread_id = ? AND kind = 'tool_call' AND status = 'running'
+		   AND is_background = 0 AND parent_id = '' LIMIT 1`, "thread-idx")
+}

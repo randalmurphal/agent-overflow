@@ -248,9 +248,12 @@ func (s *Store) FindNotificationItemByTaskID(threadID, taskID string) (Item, boo
 	if taskID == "" {
 		return Item{}, false, nil
 	}
+	// INDEXED BY: without stats the planner walks the thread's ordering
+	// index newest-first probing meta per row instead of using the narrow
+	// partial expression index (13ms vs 0.04ms on a 38k-item thread).
 	row := s.db.QueryRow(
 		`SELECT `+itemColumns+`
-		   FROM items
+		   FROM items INDEXED BY idx_items_meta_task_id
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
 		  WHERE items.thread_id = ?
 		    AND items.kind = 'notification'

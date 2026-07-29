@@ -396,7 +396,9 @@ func (s *Store) FindWorkflowTriageAgentThread(projectID string) (Thread, bool, e
 		`SELECT `+threadColumns+` FROM threads
 		 WHERE project_id = ? AND mode = ? AND archived = 0
 		   AND NOT EXISTS (
-		       SELECT 1 FROM work_items WHERE work_items.triage_thread_id = threads.id
+		       SELECT 1 FROM work_items
+		        WHERE work_items.triage_thread_id = threads.id
+		          AND work_items.triage_thread_id <> ''
 		   )
 		 ORDER BY created_at ASC LIMIT 1`,
 		projectID, threadmode.ModeWorkflowTriage,

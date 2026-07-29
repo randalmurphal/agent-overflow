@@ -300,6 +300,26 @@ baseline:
   work-item indexes, the query repeats `source_ref <> ''` so the planner can
   prove the predicate.
 
+## Recent schema changes (v41-v42) — running tool-call partial indexes
+
+- `idx_items_running_bg_tool_calls` (v41) serves the startup orphan sweep
+  (`ListRecoverableClaudeBackgroundLaunches`), the one items query with no
+  thread scope — measured 12s of cold full-table I/O on a multi-GB history DB
+  without it. `idx_items_live_background` can't serve it because that index
+  additionally requires `parent_id = ''` and subagent-scoped launches carry a
+  parent.
+- `idx_items_running_fg_tool_calls` (v42) serves
+  `HasRunningTopLevelForegroundToolCall`, probed at every flush-queue boundary.
+- **Partial-index qualification rule** (applies to every probe in
+  `items_lifecycle.go` / `thread_aggregates.go`): SQLite only uses a partial
+  index when the query's predicates textually imply the index's WHERE clause.
+  A correlated `c.completion_of = items.id` does NOT imply
+  `completion_of <> ''`, so every completion-sibling EXISTS/NOT-EXISTS probe
+  repeats `AND c.completion_of <> ''` — semantically redundant, but it is what
+  lets `idx_items_completion_of` serve the probe instead of scanning the
+  thread's whole items slice (seconds per call on large threads). Keep the
+  term when writing new probes.
+
 ## Extension points
 
 - To add a new column / index / CHECK: write a new migration — never
