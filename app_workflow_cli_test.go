@@ -278,6 +278,82 @@ func TestScopedRunActionsAreConfinedToWhatAPhaseStarted(t *testing.T) {
 	}
 }
 
+// `run status` is the only CLI surface that can name a run's failed units, and
+// those ids are the second argument of `run retry-unit`. Reporting
+// needs-human(unit-failed) without them tells an agent a fan-out needs repair
+// and leaves the ids only in the app — the one place a scoped credential cannot
+// look. The parent rides along for the same reason: a campaign's runs are a
+// tree, and a view that never names the caller renders it flat.
+func TestAgentRunStatusNamesTheParentAndTheFailedUnits(t *testing.T) {
+	fixture := newCLIFixture(t)
+	root, err := fixture.app.WorkflowStartRun(
+		fixture.project.ID, "tool-flow", "shared", "wave 1", json.RawMessage(`{}`), nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, fixture.app, root.ID, engine.StateDone, "")
+	child := store.WorkItem{
+		ID: "wave-2", ProjectID: fixture.project.ID, Goal: "wave 2", WorkflowID: "tool-flow",
+		WorkflowScope: "shared", State: string(engine.StateNeedsHuman),
+		Reason: string(engine.ReasonUnitFailed), Source: engine.WorkItemSourceCall,
+		ParentItemID: root.ID, ParentPhaseID: "advance", ParentAttempt: 1, CallDepth: 1,
+		CreatedAt: 2,
+	}
+	if err := fixture.app.store.CreateWorkItem(child); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.app.store.CreateWorkItemUnits([]store.WorkItemUnit{
+		{ItemID: child.ID, PhaseID: "fan", Attempt: 1, UnitID: "lane-1", UnitIndex: 0,
+			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed, UnitAttempt: 2},
+		{ItemID: child.ID, PhaseID: "fan", Attempt: 1, UnitID: "lane-2", UnitIndex: 1,
+			Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitDone, UnitAttempt: 1},
+		// A failed join is the phase's own closing step, not a unit a human
+		// retries — the same exclusion `run retry-failed-units` applies.
+		{ItemID: child.ID, PhaseID: "fan", Attempt: 1, UnitID: "merge", UnitIndex: 2,
+			Kind: store.WorkItemUnitKindJoin, Status: store.WorkItemUnitFailed, UnitAttempt: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	thread, err := fixture.app.CreateThread(CreateThreadOptions{
+		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	interactive := transport.WithCallerScope(context.Background(), interactiveScope(fixture, thread.ID))
+	view, err := fixture.app.WorkflowAgentRunStatus(interactive, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.ParentItemID != root.ID {
+		t.Fatalf("status parent = %q, want %q", view.ParentItemID, root.ID)
+	}
+	if len(view.FailedUnits) != 1 || view.FailedUnits[0].UnitID != "lane-1" || view.FailedUnits[0].UnitAttempt != 2 {
+		t.Fatalf("status failed units = %#v, want only lane-1 on its second try", view.FailedUnits)
+	}
+
+	// A run that is not parked on a failed fan-out carries none, and neither
+	// does the list: one unit query per listed run is a fan-out of its own, and
+	// a list is for locating a run rather than repairing one.
+	rootView, err := fixture.app.WorkflowAgentRunStatus(interactive, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rootView.FailedUnits) != 0 {
+		t.Fatalf("a done run reported failed units: %#v", rootView.FailedUnits)
+	}
+	views, err := fixture.app.WorkflowAgentListRuns(interactive, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, listed := range views {
+		if len(listed.FailedUnits) != 0 {
+			t.Fatalf("run %s carried failed units in a list: %#v", listed.ItemID, listed.FailedUnits)
+		}
+	}
+}
+
 // Deliverable of the campaign shape: a run started from a conversation calls
 // itself for the next wave, so the run that needs repairing is almost never the
 // one the human started. The interactive credential the bound thread's session

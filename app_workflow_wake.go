@@ -256,20 +256,17 @@ func (a *App) wakeReferences(
 	return references, nil
 }
 
-// workflowFailedUnitReferences lists one run's units that are resting failed,
-// as pointers a repair verb takes. `label` names whose units they are, because
-// a descendant park carries the descendant's rather than the root's and a
-// reader must never mistake one for the other.
+// workflowFailedUnitReferences renders one run's failed units as pointers a
+// repair verb takes. `label` names whose units they are, because a descendant
+// park carries the descendant's rather than the root's and a reader must never
+// mistake one for the other.
 func (a *App) workflowFailedUnitReferences(itemID, label string) ([]wake.Reference, error) {
-	units, err := a.store.ListWorkItemUnits(itemID)
+	units, err := a.workflowFailedUnits(itemID)
 	if err != nil {
-		return nil, fmt.Errorf("list fan-out units of %s: %w", itemID, err)
+		return nil, err
 	}
 	var references []wake.Reference
 	for _, unit := range units {
-		if unit.Kind == store.WorkItemUnitKindJoin || unit.Status != store.WorkItemUnitFailed {
-			continue
-		}
 		value := unit.UnitID
 		if unit.ThreadID != "" {
 			value += " (thread " + unit.ThreadID + ")"

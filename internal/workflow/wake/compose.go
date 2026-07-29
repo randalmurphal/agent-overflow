@@ -29,12 +29,24 @@ const (
 	MaxChainRuns = 6
 )
 
-// reasonCheckpoint is `engine.ReasonCheckpoint`, mirrored rather than imported:
-// this package is pure text assembly over a flat input and pulling the engine in
-// for one string would drag the whole FSM with it. It is the one reason whose
-// closing is not "something went wrong" — the run stopped exactly where it was
-// asked to — so saying so is worth the mirrored constant.
-const reasonCheckpoint = "checkpoint"
+// The resting states and park reasons the closing branches on, mirrored from
+// `engine` rather than imported: this package is pure text assembly over a flat
+// input and pulling the engine in for a handful of strings would drag the whole
+// FSM with it. Each one earns its mirror by changing what the closing says —
+// `checkpoint` because the run stopped exactly where it was asked to, and the
+// rest because each names a different repair verb (or names none, deliberately).
+const (
+	stateNeedsHuman   = "needs-human"
+	stateFailed       = "failed"
+	stateDone         = "done"
+	stateCancelled    = "cancelled"
+	reasonCheckpoint  = "checkpoint"
+	reasonUnitFailed  = "unit-failed"
+	reasonPaused      = "paused"
+	reasonInterrupted = "interrupted"
+	reasonGate        = "gate"
+	reasonQuestion    = "question"
+)
 
 // dataNotice is the one framing line. Everything quoted below it came out of a
 // model or a ticket; the receiving agent must read it as data.
@@ -253,31 +265,79 @@ func writeReferences(out *strings.Builder, references []Reference) {
 // somebody resolves it, and a root waiting on a parked descendant is blocked on
 // that descendant rather than on itself.
 func closing(in Input) string {
-	if in.Descendant != nil {
-		if in.Descendant.Reason == reasonCheckpoint {
+	if child := in.Descendant; child != nil {
+		if child.Reason == reasonCheckpoint {
 			return fmt.Sprintf(
-				"This is the stop that was asked for, not a failure: run %s reached the checkpoint and did not start the next one. Resume run %s to take the call it skipped, or leave it parked.",
-				untrustedtext.Field(in.Descendant.ItemID), untrustedtext.Field(in.Descendant.ItemID))
+				"This is the stop that was asked for, not a failure: run %s reached the checkpoint and did not start the next one. %s takes the call it skipped, or leave it parked.",
+				untrustedtext.Field(child.ItemID), resumeCommand(child.ItemID))
 		}
-		return fmt.Sprintf(
+		return join(fmt.Sprintf(
 			"Run %s cannot continue until called run %s is resolved; act on run %s, not on %s.",
-			untrustedtext.Field(in.Run.ItemID), untrustedtext.Field(in.Descendant.ItemID),
-			untrustedtext.Field(in.Descendant.ItemID), untrustedtext.Field(in.Run.ItemID))
+			untrustedtext.Field(in.Run.ItemID), untrustedtext.Field(child.ItemID),
+			untrustedtext.Field(child.ItemID), untrustedtext.Field(in.Run.ItemID),
+		), repairSentence(child.ItemID, child.State, child.Reason))
 	}
 	switch in.Run.State {
-	case "needs-human":
+	case stateNeedsHuman:
 		if in.Run.Reason == reasonCheckpoint {
-			return fmt.Sprintf(
-				"This is the stop that was asked for, not a failure. Resume run %s to take the call it skipped, or leave it parked.",
-				untrustedtext.Field(in.Run.ItemID))
+			return "This is the stop that was asked for, not a failure. " +
+				resumeCommand(in.Run.ItemID) + " takes the call it skipped, or leave it parked."
 		}
-		return fmt.Sprintf("Run %s is parked and does not continue until this is resolved.",
-			untrustedtext.Field(in.Run.ItemID))
-	case "done":
+		return join(fmt.Sprintf("Run %s is parked and does not continue until this is resolved.",
+			untrustedtext.Field(in.Run.ItemID)),
+			repairSentence(in.Run.ItemID, in.Run.State, in.Run.Reason))
+	case stateFailed:
+		return join("The run is over.", repairSentence(in.Run.ItemID, in.Run.State, in.Run.Reason))
+	case stateDone:
 		return "The run finished; nothing is waiting on a reply."
-	case "cancelled":
+	case stateCancelled:
 		return "The run was stopped on purpose; nothing is waiting on a reply."
 	default:
 		return "The run is over; nothing is waiting on a reply."
 	}
+}
+
+// repairSentence names the exact command that acts on a run resting this way,
+// or the fact that no command does. Naming the run without naming the verb is
+// the gap a cold agent falls into: it knows which run to act on, guesses at how,
+// and either picks the wrong verb or answers a question that was never its to
+// answer. The reasons with no CLI verb say so rather than being left out, so
+// silence never reads as "there must be one I haven't found".
+func repairSentence(itemID, state, reason string) string {
+	id := untrustedtext.Field(itemID)
+	if state == stateFailed {
+		return fmt.Sprintf("`agent-overflow run rerun %s` starts its last phase again once the cause is fixed.", id)
+	}
+	if state != stateNeedsHuman {
+		return ""
+	}
+	switch reason {
+	case reasonUnitFailed:
+		return fmt.Sprintf(
+			"Repair it with `agent-overflow run retry-failed-units %s`, or `agent-overflow run retry-unit %s <unit-id>` for one of the failed units above.",
+			id, id)
+	case reasonPaused, reasonInterrupted:
+		return resumeCommand(itemID) + " returns it to running."
+	case reasonGate, reasonQuestion:
+		return "Only a human decides this, in the app; surface it rather than answering it, because no CLI verb resolves it."
+	default:
+		// Every other reason names its own cause and is repaired by fixing that
+		// cause, so there is no one verb to print. Inventing a generic "resume"
+		// here would be the guess this function exists to prevent.
+		return ""
+	}
+}
+
+// resumeCommand renders the literal invocation rather than the word "resume",
+// which a reader has to map onto one of four verbs that all sound like stopping
+// and starting. The run id stays quoted — it is still untrusted run data.
+func resumeCommand(itemID string) string {
+	return "`agent-overflow run resume " + untrustedtext.Field(itemID) + "`"
+}
+
+func join(sentence, next string) string {
+	if next == "" {
+		return sentence
+	}
+	return sentence + " " + next
 }

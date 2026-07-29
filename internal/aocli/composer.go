@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // The `/workflow` composer context (spec §5, D15). Typing `/workflow` in a chat
@@ -62,10 +63,13 @@ type ComposerContext struct {
 	RunOverflow      int           `json:"runOverflow"`
 }
 
-// composerCommands is the command table the block prints. Purposes are padded
-// into one column at render time rather than by hand, so changing an
-// invocation cannot leave the table misaligned in an agent's context window.
-var composerCommands = []struct{ invocation, purpose string }{
+// composerRow is one row of a two-column table in the block. The left cell is
+// padded into one column at render time rather than by hand, so editing a row
+// cannot leave the table misaligned in an agent's context window.
+type composerRow struct{ left, right string }
+
+// composerCommands is the command table the block prints: invocation, purpose.
+var composerCommands = []composerRow{
 	{"agent-overflow run start <workflow-id> [--goal <text>] [--seed k=v] [--wait]", "start a run"},
 	{"agent-overflow run status|output|wait <run-id>", "check on one"},
 	{"agent-overflow run list [--active]", "see this project's runs"},
@@ -74,6 +78,15 @@ var composerCommands = []struct{ invocation, purpose string }{
 	{"agent-overflow run soft-stop <run-id> [--clear]", "stop after the current wave"},
 	{"agent-overflow workflow list|validate <path>|schema", "author one"},
 	{"agent-overflow <command> --help", "full options"},
+}
+
+// composerRepair is the reason→verb map. A cold agent reads a park reason and
+// still has to work out which verb acts on it, and the CLI deliberately has no
+// verb for the human-judgment reasons — so the map has to say which reasons it
+// covers AND that the rest are not CLI-repairable, or an agent will invent one.
+var composerRepair = []composerRow{
+	{"paused|interrupted|checkpoint → run resume", "unit-failed → run retry-failed-units (retry-unit for one)"},
+	{"state failed → run rerun", "gate|question → a human decides in the app; surface it, don't answer it"},
 }
 
 // TrimComposerLists applies the bounds and records the overflow. Workflows sort
@@ -115,16 +128,12 @@ func RenderComposerContext(context ComposerContext) string {
 	block.WriteString("\n")
 
 	block.WriteString("Commands:\n")
-	width := 0
-	for _, entry := range composerCommands {
-		if len(entry.invocation) > width {
-			width = len(entry.invocation)
-		}
-	}
-	for _, entry := range composerCommands {
-		fmt.Fprintf(&block, "  %-*s   %s\n", width, entry.invocation, entry.purpose)
-	}
-	block.WriteString("Every command takes --json. `agent-overflow run wait` exits 1 if the run ends anywhere but done.\n\n")
+	writeComposerRows(&block, composerCommands)
+	block.WriteString("Every command takes --json. `agent-overflow run wait` exits 1 if the run ends anywhere but done.\n")
+
+	block.WriteString("When a run needs a human, the reason picks the fix:\n")
+	writeComposerRows(&block, composerRepair)
+	block.WriteString("`run status` names a run's failed units and its parent; any other reason names its own cause — read that run in the app.\n\n")
 
 	fmt.Fprintf(&block, "Workflow definitions for %s live in:\n", displayName(context.ProjectName))
 	fmt.Fprintf(&block, "  %s   (shared with every project)\n", displayPath(context.SharedDir))
@@ -158,6 +167,19 @@ func RenderComposerContext(context ComposerContext) string {
 		}
 	}
 	return block.String()
+}
+
+// writeComposerRows renders a two-column table with the left column padded to a
+// common width. The width is counted in RUNES because that is what fmt's `%-*s`
+// pads to; a byte count would silently over-pad any row carrying a `→`.
+func writeComposerRows(block *strings.Builder, rows []composerRow) {
+	width := 0
+	for _, row := range rows {
+		width = max(width, utf8.RuneCountInString(row.left))
+	}
+	for _, row := range rows {
+		fmt.Fprintf(block, "  %-*s   %s\n", width, row.left, row.right)
+	}
 }
 
 func displayName(name string) string {

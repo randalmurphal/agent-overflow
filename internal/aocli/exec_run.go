@@ -38,10 +38,22 @@ type runView struct {
 	CurrentPhaseID      string `json:"currentPhaseId"`
 	CurrentPhaseOrdinal int    `json:"currentPhaseOrdinal"`
 	PhaseCount          int    `json:"phaseCount"`
+	ParentItemID        string `json:"parentItemId"`
 	Resting             bool   `json:"resting"`
 	Skipped             bool   `json:"skipped"`
 	BoundThreadID       string `json:"boundThreadId"`
 	BindingWarning      string `json:"bindingWarning"`
+	// FailedUnits is present only on `run status` for a run parked on a failed
+	// fan-out; the line prints the ids because they are the second argument of
+	// `run retry-unit`.
+	FailedUnits []runFailedUnit `json:"failedUnits"`
+}
+
+// runFailedUnit is the one field of a failed unit the human line prints. The
+// app's document carries more (the unit's try count); `--json` forwards that
+// one verbatim, as it does for every other field this CLI does not model.
+type runFailedUnit struct {
+	UnitID string `json:"unitId"`
 }
 
 func (v runView) line() string {
@@ -49,12 +61,21 @@ func (v runView) line() string {
 	if phase != "" && v.PhaseCount > 0 {
 		phase = fmt.Sprintf("%s(%d/%d)", phase, v.CurrentPhaseOrdinal, v.PhaseCount)
 	}
+	units := make([]string, 0, len(v.FailedUnits))
+	for _, unit := range v.FailedUnits {
+		units = append(units, unit.UnitID)
+	}
 	return fields(
 		"run="+v.ItemID,
+		// Parent sits next to the run id because it is the same fact: which run
+		// this is. A campaign's `run list` is otherwise a flat list of ids with
+		// the tree that relates them invisible.
+		optionalField("parent", v.ParentItemID),
 		optionalField("workflow", v.WorkflowID),
 		"state="+v.State,
 		optionalField("reason", v.Reason),
 		optionalField("phase", phase),
+		optionalField("failed-units", strings.Join(units, ",")),
 		skippedField(v.Skipped),
 	)
 }
@@ -240,6 +261,16 @@ var runListCommand = execCommand{
 			raw, err := c.callInto(&views, "WorkflowAgentListRuns", *active)
 			if err != nil {
 				return exitError, err
+			}
+			// An empty human list would print one blank line, which reads as a
+			// command that did not work rather than as an answer. --json keeps
+			// the app's own document: `[]` is already unambiguous there.
+			if len(views) == 0 {
+				empty := "No runs in this project."
+				if *active {
+					empty = "No active runs in this project."
+				}
+				return exitOK, render(stdout, *jsonOutput, raw, empty)
 			}
 			var human strings.Builder
 			for _, view := range views {

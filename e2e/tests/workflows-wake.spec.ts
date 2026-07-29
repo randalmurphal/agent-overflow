@@ -502,7 +502,12 @@ test('a soft stop parks a campaign at its next call boundary and the root hears 
   expect(wake).toContain(`Call chain: "${root.id}" → "${childId}".`);
   expect(wake).toContain('needs-human (checkpoint)');
   expect(wake).toContain('the stop that was asked for, not a failure');
-  expect(wake).toContain(`Resume run "${childId}" to take the call it skipped`);
+  // The literal command, against the CHILD's id (D38): the run to act on is one
+  // the reader has never seen, and "resume" is one of four control verbs it
+  // could otherwise be mapped onto.
+  expect(wake).toContain(
+    `\`agent-overflow run resume "${childId}"\` takes the call it skipped, or leave it parked.`,
+  );
 
   // The boundary consumed the request, so a resume continues the campaign
   // instead of stopping at the very next wave again.

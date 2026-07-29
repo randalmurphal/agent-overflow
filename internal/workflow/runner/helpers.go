@@ -163,6 +163,12 @@ func PromptSuffix(narrativePath string, feedback *engine.Feedback) (string, erro
 	prompt.WriteString("Write a concise narrative of the work performed, decisions made, and validation results to this file:\n")
 	prompt.WriteString(narrativePath)
 	prompt.WriteString("\nThe narrative is for human inspection and is not part of the control envelope.\n")
+	// The engine hands a phase a workspace and a branch and expects to find the
+	// work there when the phase rests: a call tree shares one branch down the
+	// stack (§3a/§9), so a phase that switches or merges on its own initiative
+	// moves every later phase's ground. Stated as a default the authored prompt
+	// overrides, because a landing phase's whole job is to do exactly this.
+	prompt.WriteString("Work only in this workspace on its current branch; do not switch branches, merge, or push unless your prompt says to.\n")
 	if feedback != nil {
 		values := feedback.Values
 		if values == nil {
@@ -188,11 +194,17 @@ func PromptSuffix(narrativePath string, feedback *engine.Feedback) (string, erro
 	// providers routinely attach a courtesy `reason` to a done envelope, which
 	// fails post-validation and burns the single envelope retry on a mistake
 	// the phase was never warned about.
+	//
+	// `question` and `stuck` carry their meaning as well as their mechanics:
+	// both park the run for a human, so a phase that reads them as "ask a
+	// clarifying question" or "this attempt went badly" parks a run that should
+	// have kept going. The semantic rides on the bullet that already exists
+	// rather than a paragraph of its own.
 	prompt.WriteString("Your final message must satisfy the attached schema; status must be done, question, or stuck.\n")
 	prompt.WriteString("Exactly one branch may be populated, and the other two fields must be null:\n")
 	prompt.WriteString("- status done: outputs must be non-null; question and reason must both be null.\n")
-	prompt.WriteString("- status question: question must be a non-empty string; outputs and reason must both be null.\n")
-	prompt.WriteString("- status stuck: reason must be a non-empty string; outputs and question must both be null.\n")
+	prompt.WriteString("- status question: a decision only a human can make; question must be a non-empty string; outputs and reason must both be null.\n")
+	prompt.WriteString("- status stuck: you cannot proceed and retrying will not change that; reason must be a non-empty string; outputs and question must both be null.\n")
 	prompt.WriteString("</workflow-system-instructions>")
 	return prompt.String(), nil
 }

@@ -431,7 +431,10 @@ func TestWorkflowCheckpointParkReadsAsTheStopThatWasAskedFor(t *testing.T) {
 	for _, want := range []string{
 		"needs-human (checkpoint)",
 		`run "checkpoint-wave" reached the checkpoint and did not start the next one`,
-		`Resume run "checkpoint-wave" to take the call it skipped, or leave it parked.`,
+		// The literal command, against the DESCENDANT's id: the run to act on is
+		// one the reader has never seen, and "resume" is one of four control
+		// verbs it could otherwise be mapped onto.
+		"`agent-overflow run resume \"checkpoint-wave\"` takes the call it skipped, or leave it parked.",
 	} {
 		if !strings.Contains(sends[0], want) {
 			t.Fatalf("checkpoint wake missing %q:\n%s", want, sends[0])

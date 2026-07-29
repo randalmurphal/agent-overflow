@@ -66,7 +66,7 @@ func TestComposeFailedRunStatesItsReasonAndPhase(t *testing.T) {
 	mustContain(t, message,
 		`Run "run-2" (workflow "repair") is failed (agent-error) — goal "Fix flake".`,
 		`Phase "patch": "the CLI exited before writing an envelope"`,
-		"The run is over; nothing is waiting on a reply.",
+		"The run is over. `agent-overflow run rerun \"run-2\"` starts its last phase again once the cause is fixed.",
 	)
 }
 
@@ -82,7 +82,11 @@ func TestComposeQuestionParkCarriesTheQuestionAndBlocks(t *testing.T) {
 		`is needs-human (question)`,
 		`Phase "plan": "Should the backfill run in one transaction?"`,
 		`Run "run-3" is parked and does not continue until this is resolved.`,
+		"Only a human decides this, in the app; surface it rather than answering it, because no CLI verb resolves it.",
 	)
+	// The CLI has no verb that answers a question. Naming one — even a plausible
+	// one — is what turns a wake into an agent answering for the human.
+	mustNotContain(t, message, "run resume", "run rerun", "retry-")
 }
 
 func TestComposeUnitFailureNamesTheFailedUnitThread(t *testing.T) {
@@ -100,7 +104,52 @@ func TestComposeUnitFailureNamesTheFailedUnitThread(t *testing.T) {
 		`is needs-human (unit-failed)`,
 		`- "failed unit": "pkg-store (thread thread-77)"`,
 		`- "phase thread": "thread-40"`,
+		"Repair it with `agent-overflow run retry-failed-units \"run-4\"`, "+
+			"or `agent-overflow run retry-unit \"run-4\" <unit-id>` for one of the failed units above.",
 	)
+}
+
+// The verbs a parked run names must be the ones that act on it. A closing that
+// says which run to act on but not how leaves a cold agent to map a reason onto
+// one of four control verbs that all sound alike.
+func TestComposeParkedRunNamesTheVerbThatRepairsIt(t *testing.T) {
+	for _, test := range []struct {
+		reason string
+		want   string
+	}{
+		{"paused", "`agent-overflow run resume \"run-11\"` returns it to running."},
+		{"interrupted", "`agent-overflow run resume \"run-11\"` returns it to running."},
+		{"gate", "Only a human decides this, in the app;"},
+	} {
+		message := Compose(Input{Run: Run{
+			ItemID: "run-11", Goal: "g", WorkflowID: "w", State: "needs-human", Reason: test.reason,
+		}})
+		mustContain(t, message, `Run "run-11" is parked and does not continue until this is resolved.`, test.want)
+	}
+	// A reason with no single repair prints no verb at all: the reason names the
+	// cause, and a generic "resume" would be exactly the wrong guess.
+	stalled := Compose(Input{Run: Run{
+		ItemID: "run-12", Goal: "g", WorkflowID: "w", State: "needs-human", Reason: "stalled",
+	}})
+	mustContain(t, stalled, `Run "run-12" is parked and does not continue until this is resolved.`)
+	mustNotContain(t, stalled, "agent-overflow run")
+}
+
+// A descendant park is the case the verb matters most for: the run to act on is
+// one the reader has never seen, so the command must carry the DESCENDANT's id.
+func TestComposeDescendantParkNamesTheVerbAgainstTheDescendant(t *testing.T) {
+	message := Compose(Input{
+		Run: Run{ItemID: "root-8", Goal: "g", WorkflowID: "campaign", State: "running"},
+		Descendant: &Descendant{
+			ItemID: "wave-4", WorkflowID: "wave", State: "needs-human", Reason: "unit-failed", Depth: 4,
+		},
+	})
+	mustContain(t, message,
+		`act on run "wave-4", not on "root-8".`,
+		"Repair it with `agent-overflow run retry-failed-units \"wave-4\"`, "+
+			"or `agent-overflow run retry-unit \"wave-4\" <unit-id>` for one of the failed units above.",
+	)
+	mustNotContain(t, message, `retry-failed-units "root-8"`)
 }
 
 func TestComposeDescendantParkReportsTheRootAsWaiting(t *testing.T) {
@@ -177,7 +226,7 @@ func TestComposeCheckpointParkReadsAsTheStopThatWasAskedFor(t *testing.T) {
 	mustContain(t, root,
 		`is needs-human (checkpoint)`,
 		"This is the stop that was asked for, not a failure.",
-		`Resume run "root-3" to take the call it skipped, or leave it parked.`,
+		"`agent-overflow run resume \"root-3\"` takes the call it skipped, or leave it parked.",
 	)
 	mustNotContain(t, root, "does not continue until this is resolved")
 
@@ -189,7 +238,7 @@ func TestComposeCheckpointParkReadsAsTheStopThatWasAskedFor(t *testing.T) {
 	})
 	mustContain(t, descendant,
 		`run "wave-7" reached the checkpoint and did not start the next one`,
-		`Resume run "wave-7" to take the call it skipped, or leave it parked.`,
+		"`agent-overflow run resume \"wave-7\"` takes the call it skipped, or leave it parked.",
 	)
 	mustNotContain(t, descendant, "cannot continue until called run")
 }

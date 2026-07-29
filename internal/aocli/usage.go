@@ -57,10 +57,10 @@ const runUsage = `Usage: agent-overflow run <command> [options]
 
 Commands:
   start <workflow-id>     Start a run and print its id
-  status <run-id>         Print one run's current state
+  status <run-id>         Print one run's state, its caller, and any failed units
   wait <run-id>           Block until a run stops doing work
   output <run-id>         Print a run's declared outputs and artifacts
-  list                    List this project's runs
+  list                    List this project's runs and how they call each other
   pause <run-id>          Park a run and everything below it
   resume <run-id>         Return a parked run to running
   cancel <run-id>         Stop a run for good

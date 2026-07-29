@@ -41,11 +41,15 @@ func TestBuildPromptSuffixShape(t *testing.T) {
 	const envelopeRules = "Your final message must satisfy the attached schema; status must be done, question, or stuck.\n" +
 		"Exactly one branch may be populated, and the other two fields must be null:\n" +
 		"- status done: outputs must be non-null; question and reason must both be null.\n" +
-		"- status question: question must be a non-empty string; outputs and reason must both be null.\n" +
-		"- status stuck: reason must be a non-empty string; outputs and question must both be null.\n"
+		"- status question: a decision only a human can make; question must be a non-empty string; outputs and reason must both be null.\n" +
+		"- status stuck: you cannot proceed and retrying will not change that; reason must be a non-empty string; outputs and question must both be null.\n"
 	header := "Goal: ship\n\n<workflow-system-instructions>\n" +
 		"Write a concise narrative of the work performed, decisions made, and validation results to this file:\n" + narrative +
-		"\nThe narrative is for human inspection and is not part of the control envelope.\n"
+		"\nThe narrative is for human inspection and is not part of the control envelope.\n" +
+		// The workspace default is system-owned and unconditional: a phase that
+		// switches branches on its own moves the ground under every later phase
+		// of the same call tree, which shares one branch down the stack.
+		"Work only in this workspace on its current branch; do not switch branches, merge, or push unless your prompt says to.\n"
 	want := header +
 		"<workflow-feedback>\nNote:\naddress review\nValues:\n```json\n{\n  \"review.ok\": false\n}\n```\n</workflow-feedback>\n" +
 		envelopeRules +

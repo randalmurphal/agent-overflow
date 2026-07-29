@@ -104,6 +104,27 @@ func (a *App) WorkflowTakeOverUnit(itemID, unitID string) error {
 	return nil
 }
 
+// workflowFailedUnits lists one run's units resting `failed` — exactly the set
+// WorkflowRetryFailedUnits acts on. The join is excluded because it is the
+// phase's own closing step rather than a unit a human repairs, and that rule
+// lives here so the surfaces that REPORT the set (the wake's failed-unit
+// references, `agent-overflow run status`) cannot disagree with the verb that
+// repairs it.
+func (a *App) workflowFailedUnits(itemID string) ([]store.WorkItemUnit, error) {
+	units, err := a.store.ListWorkItemUnits(itemID)
+	if err != nil {
+		return nil, fmt.Errorf("list fan-out units of %s: %w", itemID, err)
+	}
+	failed := make([]store.WorkItemUnit, 0, len(units))
+	for _, unit := range units {
+		if unit.Kind == store.WorkItemUnitKindJoin || unit.Status != store.WorkItemUnitFailed {
+			continue
+		}
+		failed = append(failed, unit)
+	}
+	return failed, nil
+}
+
 // currentWorkflowUnit resolves one unit of a run's current phase attempt. Unit
 // ids are unique inside an attempt, not inside a run, so the attempt is what
 // makes the lookup unambiguous.

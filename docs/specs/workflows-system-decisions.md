@@ -1653,3 +1653,46 @@ verdict it now is, with what the first attempt got wrong.
   live — an automation's job notes — is now a start-time input, which is
   a real loss of a knob and the reason repo context files are prompted
   for explicitly.
+
+## Every parked state names its own verb (2026-07-29)
+
+- **D38. A surface that reports a parked run must name the command that
+  repairs it — and say so plainly when no command does.** The park reason
+  was already on every surface; the mapping from reason to verb lived
+  only in the heads of people who had read the FSM. A cold agent reading
+  `needs-human (unit-failed)` knows something is wrong, has four control
+  verbs that all sound like stopping and starting, and guesses.
+
+  **The map, once, in three places.** `/workflow`'s composer block
+  carries it as a four-line table (`composerRepair`); a wake's closing
+  carries the one line that applies to the run it is about
+  (`wake.repairSentence`); the phase prompt suffix carries the two the
+  phase itself can trigger. `paused|interrupted|checkpoint` →
+  `run resume`, state `failed` → `run rerun`, `unit-failed` →
+  `run retry-failed-units` (or `run retry-unit <unit-id>`).
+
+  **Naming the absence is half the ruling.** `gate` and `question` have
+  no CLI verb on purpose — they are the judgments the system exists to
+  route to a human — and every other reason (stuck, stalled,
+  agent-error, wiring-error, setup-failed, budget/retries-exhausted,
+  check-failed-genuine, taken-over, child-failed, disposition) is
+  repaired by fixing the cause the reason already names. Leaving those
+  out of the map would read as "there is a verb I have not found yet",
+  so the map states that they are not CLI-repairable rather than
+  omitting them. A generic "resume" printed for every reason would be
+  precisely the wrong guess made confidently.
+
+  **The verb needs its arguments, so the arguments became readable.**
+  `run status` now carries the run's `failedUnits` (the second argument
+  of `run retry-unit`, resolved on the single-run read only — a list
+  would pay one unit query per row) and both `status` and `list` render
+  `parent=<run-id>`, so a campaign's flat list shows the tree that
+  relates its waves. The wake's command interpolates the id of the run
+  being acted on, which for a descendant park is the **descendant's**.
+  Run ids stay `untrustedtext`-quoted inside the command: they are still
+  model-adjacent data, and a paste-able command is not a reason to stop
+  quoting one.
+
+  **`run list` with no rows says so.** Printing nothing reads as a
+  command that failed, which sends an agent looking for a broken
+  session. `--json` is unchanged: `[]` was never ambiguous.

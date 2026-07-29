@@ -210,6 +210,9 @@ func TestWorkflowTriageSeedUsesNewestBoundedNarrativesInWorkflowOrder(t *testing
 		`Phase "missing" attempt 1: narrative unavailable`,
 		"[truncated]",
 		"Read the existing worktree directly for code-level details",
+		// The seed says how the takeover ends, so the session knows the state it
+		// has to leave behind rather than discovering it at the finalize turn.
+		"summarize the result into the workflow's control envelope",
 	} {
 		if !strings.Contains(seed, required) {
 			t.Fatalf("seed missing %q:\n%s", required, seed)

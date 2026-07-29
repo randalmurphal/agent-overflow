@@ -403,9 +403,10 @@ run records an optional **bound thread**:
   it needs: the **call chain** from the root down to the parked run (elided in
   the middle past six runs, with the elision stating its own size), the parked
   run's **own** failed units labelled as such, and a closing that names which
-  run to act on. A campaign's sixth wave is a run the reader has never seen, so
-  the message has to be enough to issue `agent-overflow run retry-failed-units
-  <child-run-id>` without a second command to work out the tree (D36a).
+  run to act on **and the literal command that acts on it** (D38). A campaign's
+  sixth wave is a run the reader has never seen, so the message has to be enough
+  to issue `agent-overflow run retry-failed-units <child-run-id>` without a
+  second command to work out the tree (D36a).
 
 If a bound thread has been deleted, the run falls back to the unbound surface
 — a wake is never silently lost.
@@ -639,8 +640,9 @@ thread is about to author or drive workflows, the user invokes `/workflow` in
 the composer (or the overlay's "author in a thread" button opens a thread
 pre-seeded the same way): it injects one compact block — the `ao` binary path,
 this project's workflow directory and scope rules, the §5 command cheat-sheet,
-and links to the project's active runs. Everything deeper is discovered via
-`--help` and `agent-overflow workflow schema`. This replaces rev 1's chat-enqueue MCP
+the **reason→verb repair map** (D38, including the reasons only a human
+settles), and links to the project's active runs. Everything deeper is
+discovered via `--help` and `agent-overflow workflow schema`. This replaces rev 1's chat-enqueue MCP
 server and its proposal/confirm flow entirely: the agent starts runs directly
 through the CLI under normal bash approval, and the human control point is the
 overlay and the workflow's own gates — not a pre-start confirmation click.

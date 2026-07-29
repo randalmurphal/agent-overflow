@@ -72,6 +72,7 @@ export {
     UpdateAvailability,
     VerifyEditDiffsRequest,
     VerifyEditDiffsResult,
+    WorkflowAgentFailedUnit,
     WorkflowAgentNotesResult,
     WorkflowAgentRunOutputs,
     WorkflowAgentRunView,

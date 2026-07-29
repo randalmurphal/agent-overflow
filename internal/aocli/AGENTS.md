@@ -107,6 +107,14 @@ stop at, so the request is accepted and simply never fires (D36). A verb that
 succeeds and then does nothing has to say so where the caller is already
 looking.
 
+The human lines carry what the next verb needs (D38): `runView.line()` renders
+`parent=<run-id>` so a campaign's flat `run list` shows its tree, and
+`failed-units=<ids>` on `run status` so `run retry-unit`'s second argument is
+readable from the CLI. Failed units are resolved on the single-run read only —
+a list would pay one unit query per row. A `run list` with no rows prints `No
+runs in this project.` rather than nothing, because a blank answer reads as a
+command that did not work; `--json` still prints the app's own `[]`.
+
 `--seed k=v` parses the value as JSON when it parses, and treats it as a string
 otherwise: `--seed count=3` seeds a number, `--seed name=alice` seeds a string,
 with no shell quote round trip. A repeated key is an error, not a silent
@@ -142,6 +150,12 @@ block format is unit-testable without a database. That resolver is NOT a bound
 method — the block never reaches the frontend. The composer holds only the
 literal word `/workflow`, and the send path appends the block to the
 provider-bound payload (D31, `app_composer_commands.go`).
+
+The block also carries the **reason→verb repair map** (`composerRepair`, D38):
+which park reasons a CLI verb repairs, and — just as load-bearing — that gates
+and questions are decided by a human in the app. Both tables render through
+`writeComposerRows`, which pads the left column in runes at render time, so
+editing a row cannot leave the block ragged.
 
 ## Files
 

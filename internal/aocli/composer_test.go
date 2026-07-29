@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
@@ -26,6 +27,15 @@ func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
 		"audit (shared) — Dependency audit", "release (project) — Release train",
 		"run-1 workflow=release state=running phase=build",
 		"run-2 workflow=audit state=needs-human reason=gate",
+		// The repair map: a reason an agent can act on names its verb, and the
+		// ones only a human can settle say that rather than being omitted — an
+		// omission reads as "there must be a verb I haven't found".
+		"When a run needs a human, the reason picks the fix:",
+		"paused|interrupted|checkpoint → run resume",
+		"unit-failed → run retry-failed-units (retry-unit for one)",
+		"state failed → run rerun",
+		"gate|question → a human decides in the app; surface it, don't answer it",
+		"`run status` names a run's failed units and its parent; any other reason names its own cause",
 	} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("block is missing %q:\n%s", want, block)
@@ -36,6 +46,19 @@ func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
 	for _, gone := range []string{"  ao ", "`ao`", "`ao "} {
 		if strings.Contains(block, gone) {
 			t.Fatalf("block still names the retired `ao` command (%q):\n%s", gone, block)
+		}
+	}
+	// Both tables pad their left column at render time, so an edit to one row
+	// cannot leave the block ragged in an agent's context window.
+	for _, table := range [][]composerRow{composerCommands, composerRepair} {
+		width := 0
+		for _, row := range table {
+			width = max(width, utf8.RuneCountInString(row.left))
+		}
+		for _, row := range table {
+			if !strings.Contains(block, "  "+row.left+strings.Repeat(" ", width-utf8.RuneCountInString(row.left))+"   "+row.right) {
+				t.Fatalf("row %q was not padded into one column:\n%s", row.left, block)
+			}
 		}
 	}
 	// Workflows sort by id so the same project renders the same block twice.

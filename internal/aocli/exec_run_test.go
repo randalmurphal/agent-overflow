@@ -187,7 +187,8 @@ func TestRunListRendersOneLinePerRun(t *testing.T) {
 	backend.reply("WorkflowAgentListRuns", []map[string]any{
 		{"itemId": "run-1", "workflowId": "flow", "state": "running", "currentPhaseId": "build",
 			"currentPhaseOrdinal": 2, "phaseCount": 3},
-		{"itemId": "run-2", "workflowId": "flow", "state": "needs-human", "reason": "gate"},
+		{"itemId": "run-2", "workflowId": "flow", "state": "needs-human", "reason": "gate",
+			"parentItemId": "run-1"},
 	})
 	code, stdout, stderr := runCLI([]string{"run", "list", "--active"}, backend.env())
 	if code != exitOK {
@@ -199,9 +200,63 @@ func TestRunListRendersOneLinePerRun(t *testing.T) {
 	if !strings.Contains(stdout, "reason=gate") {
 		t.Fatalf("list output = %q", stdout)
 	}
+	// A campaign's runs are a tree; a flat list that never names the parent
+	// leaves the reader unable to tell a wave from the root that called it.
+	if !strings.Contains(stdout, "run=run-2 parent=run-1") {
+		t.Fatalf("list output did not name the calling run:\n%s", stdout)
+	}
 	calls := backend.recorded("WorkflowAgentListRuns")
 	if len(calls) != 1 || string(calls[0].Params[0]) != "true" {
 		t.Fatalf("--active was not sent: %#v", calls)
+	}
+}
+
+// Zero rows is an answer, not a failure. Printing nothing reads as a command
+// that did not work, which is the reading that sends an agent looking for a
+// broken session.
+func TestRunListSaysSoWhenThereAreNoRuns(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.reply("WorkflowAgentListRuns", []map[string]any{})
+	code, stdout, stderr := runCLI([]string{"run", "list"}, backend.env())
+	if code != exitOK {
+		t.Fatalf("exit = %d (%s)", code, stderr)
+	}
+	if stdout != "No runs in this project.\n" {
+		t.Fatalf("empty list output = %q", stdout)
+	}
+	if code, stdout, stderr = runCLI([]string{"run", "list", "--active"}, backend.env()); code != exitOK {
+		t.Fatalf("exit = %d (%s)", code, stderr)
+	}
+	if stdout != "No active runs in this project.\n" {
+		t.Fatalf("empty --active list output = %q", stdout)
+	}
+	// --json still promises exactly the app's document, empty array included.
+	if code, stdout, stderr = runCLI([]string{"run", "list", "--json"}, backend.env()); code != exitOK {
+		t.Fatalf("exit = %d (%s)", code, stderr)
+	}
+	if strings.Contains(stdout, "No runs") || !strings.Contains(stdout, "[]") {
+		t.Fatalf("--json empty list output = %q", stdout)
+	}
+}
+
+// The reason says a fan-out needs repair; the ids are what `run retry-unit`
+// takes, and an agent holding only a CLI has no other way to learn them.
+func TestRunStatusNamesTheFailedUnits(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.reply("WorkflowAgentRunStatus", map[string]any{
+		"itemId": "run-1", "workflowId": "flow", "state": "needs-human", "reason": "unit-failed",
+		"resting": true,
+		"failedUnits": []map[string]any{
+			{"unitId": "lane-3", "unitAttempt": 2},
+			{"unitId": "lane-7", "unitAttempt": 1},
+		},
+	})
+	code, stdout, stderr := runCLI([]string{"run", "status", "run-1"}, backend.env())
+	if code != exitOK {
+		t.Fatalf("exit = %d (%s)", code, stderr)
+	}
+	if !strings.Contains(stdout, "failed-units=lane-3,lane-7") {
+		t.Fatalf("status output did not name the failed units:\n%s", stdout)
 	}
 }
 

@@ -35,10 +35,20 @@ The compact message a resting root run injects into its bound thread
 - **`checkpoint` is the one reason whose closing is not a fault.** The
   run stopped exactly where it was asked to (D36), so both the root and
   the descendant closing say that and point at the resume rather than at
-  a resolution. The reason string is mirrored here as a package constant
-  rather than imported from the engine — this package is pure text
-  assembly over a flat input, and importing the engine for one string
-  would drag the whole FSM in.
+  a resolution.
+- **A closing names the verb, not just the run (D38).** `repairSentence`
+  appends the literal command to the closing: `run resume` for
+  paused/interrupted/checkpoint, `run rerun` for a failed state,
+  `run retry-failed-units` / `run retry-unit` for `unit-failed`, and for
+  `gate`/`question` the fact that only a human decides them — no CLI verb
+  does. Every other reason prints no verb, because the reason names its
+  own cause and a generic "resume" would be exactly the wrong guess. The
+  command carries the id of the run being acted on, which for a
+  descendant park is the DESCENDANT's, still quoted as untrusted data.
+  The states and reasons the closing branches on are mirrored here as
+  package constants rather than imported from the engine — this package
+  is pure text assembly over a flat input, and importing the engine for a
+  handful of strings would drag the whole FSM in.
 
 ## Extension points
 

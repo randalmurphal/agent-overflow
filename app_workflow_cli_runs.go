@@ -62,6 +62,21 @@ type WorkflowAgentRunView struct {
 	Resting             bool   `json:"resting"`
 	StartedAt           int64  `json:"startedAt,omitempty"`
 	EndedAt             int64  `json:"endedAt,omitempty"`
+	// FailedUnits names the units `run retry-unit` takes, populated only by
+	// `run status` on a run resting needs-human(unit-failed). The reason already
+	// says a fan-out needs repair; without the ids the caller has to find them in
+	// the app, which is the one thing an agent holding a CLI cannot do. It is
+	// deliberately absent from `run list` — one extra query per run is a fan-out
+	// of its own, and a list is for locating a run, not for repairing one.
+	FailedUnits []WorkflowAgentFailedUnit `json:"failedUnits,omitempty"`
+}
+
+// WorkflowAgentFailedUnit is one unit of a parked fan-out that is resting
+// failed. The attempt count rides along because "this unit has already been
+// retried twice" is what decides between retrying it again and reading it.
+type WorkflowAgentFailedUnit struct {
+	UnitID      string `json:"unitId"`
+	UnitAttempt int    `json:"unitAttempt"`
 }
 
 // WorkflowAgentRunOutputs is `ao run output`: the run's declared outputs plus
@@ -272,7 +287,18 @@ func (a *App) WorkflowAgentRunStatus(ctx context.Context, itemID string) (Workfl
 	if err != nil {
 		return WorkflowAgentRunView{}, err
 	}
-	return workflowAgentRunView(summary), nil
+	view := workflowAgentRunView(summary)
+	if engine.State(summary.State) == engine.StateNeedsHuman && engine.Reason(summary.Reason) == engine.ReasonUnitFailed {
+		units, err := a.workflowFailedUnits(summary.ID)
+		if err != nil {
+			return WorkflowAgentRunView{}, err
+		}
+		for _, unit := range units {
+			view.FailedUnits = append(view.FailedUnits,
+				WorkflowAgentFailedUnit{UnitID: unit.UnitID, UnitAttempt: unit.UnitAttempt})
+		}
+	}
+	return view, nil
 }
 
 // WorkflowAgentListRuns is `ao run list`, scoped to the caller's project.

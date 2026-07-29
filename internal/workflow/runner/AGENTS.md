@@ -16,6 +16,23 @@ Pure helper functions for app-owned workflow phase execution.
   before reporting a successful phase completion. Cleanup remains inert until
   disposition support lands; unlanded worktrees are never discarded.
 
+## What `PromptSuffix` states, and why
+
+Everything in `<workflow-system-instructions>` is there because the phase would
+otherwise get it wrong and the engine could not tell it so afterwards:
+
+- **The narrative path.** For human inspection; not part of the envelope.
+- **Workspace discipline** (D38) — work in this workspace on its current
+  branch; no branch switch, merge, or push unless the prompt says to. A call
+  tree shares one branch down the stack (§3a/§9), so a phase that moves it on
+  its own initiative moves every later phase's ground. Phrased as a default the
+  authored prompt overrides, because a landing phase's whole job is to do this.
+- **The envelope branch rules**, which `def.ValidateEnvelope` enforces and the
+  schema cannot express (D2a). The `question` and `stuck` bullets carry their
+  MEANING as well as their mechanics — both park the run for a human, so a
+  phase reading `question` as "ask a clarifying question" parks a run that
+  should have kept going.
+
 ## Fan-out units
 
 - A unit's app-managed files nest under its phase attempt's directory
