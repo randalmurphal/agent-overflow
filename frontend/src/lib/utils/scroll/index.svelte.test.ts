@@ -3128,6 +3128,128 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(800);
     });
 
+    // The mid-flight absorb contract (absorbedByActiveSpring): the
+    // instant fallback of BOTH notify paths defers to a chase already
+    // in flight. Liveness (500ms) and the structural one-shot (250ms)
+    // are short clocks that mid-chase retargets deliberately don't
+    // refresh, so a glide extended by async row settling outlives both
+    // while still animating — the tool-call-boundary state where a
+    // composer-rail resize used to land as an instant write over the
+    // running animation (the "spring starts, then snaps to the bottom"
+    // bug). These four pin the contract's edges: no snap mid-flight for
+    // either observation kind, idle behavior intact once the chase is
+    // gone, and the large-overshoot instant snap preserved.
+    it("observe('composer-geometry') mid-chase with lapsed liveness rides the glide instead of snapping", async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      // Live growth starts a chase (the reveal-gate release stamp).
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await advanceUntil(() => geom.scrollTop > 400);
+      const midGlide = geom.scrollTop;
+      expect(midGlide).toBeLessThan(800);
+
+      // The tool executes silently: liveness lapses mid-flight, then a
+      // composer-rail resize lands.
+      liveContent = false;
+      controller.observe('composer-geometry');
+
+      // No instant write over the animation…
+      expect(geom.scrollTop).toBe(midGlide);
+      // …and the chase still completes on its own.
+      await advanceUntil(() => geom.scrollTop === 800);
+    });
+
+    it("observe('content') mid-chase defers to the active spring instead of snapping", async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await advanceUntil(() => geom.scrollTop > 400);
+      const midGlide = geom.scrollTop;
+      expect(midGlide).toBeLessThan(800);
+
+      liveContent = false;
+      controller.observe('content');
+
+      expect(geom.scrollTop).toBe(midGlide);
+      await advanceUntil(() => geom.scrollTop === 800);
+    });
+
+    it('lapsed-liveness observation after the chase arrives still sync-pins (absorb is mid-flight only)', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await advanceUntil(() => geom.scrollTop === 800);
+
+      // Liveness lapses; the post-arrival sentinel cancels on its next
+      // tick, leaving no active chase.
+      liveContent = false;
+      for (let i = 0; i < 3; i++) await nextFrame();
+
+      // Idle geometry change must still sync-pin — the designed
+      // composer-draft behavior the absorb must not swallow.
+      geom.scrollHeight = 1600;
+      geom.contentHeight = 1400;
+      controller.observe('composer-geometry');
+
+      expect(geom.scrollTop).toBe(1000);
+    });
+
+    it('keeps the instant snap for a large overshoot even while a chase is in flight', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await advanceUntil(() => geom.scrollTop > 400);
+
+      // Content collapses out from under the viewport: the target moves
+      // far ABOVE the glide. Animating upward across that is the
+      // artifact the overshoot threshold exists to prevent — instant.
+      liveContent = false;
+      geom.scrollHeight = 900;
+      geom.contentHeight = 700;
+      controller.observe('composer-geometry');
+
+      expect(geom.scrollTop).toBe(300);
+    });
+
+    it('damps a small overshoot through the active chase instead of snapping', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150); // warm
+
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      ro.fire(contentEl, 1200);
+      await advanceUntil(() => geom.scrollTop > 500);
+      const midGlide = geom.scrollTop;
+
+      // The target retreats to just under the glide position (≤ the
+      // overshoot snap threshold): the symmetric spring damps back.
+      liveContent = false;
+      const shrink = 800 - (midGlide - 30);
+      geom.scrollHeight = 1400 - shrink;
+      geom.contentHeight = 1200 - shrink;
+      controller.observe('composer-geometry');
+
+      expect(geom.scrollTop).toBe(midGlide);
+      await advanceUntil(() => Math.abs(geom.scrollTop - (midGlide - 30)) <= 1);
+    });
+
     it('structural append mark spring-chases the next positive delta even when animation mode is instant', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800);
@@ -3294,25 +3416,34 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
 
     describe('stuck spring from instant pin during active chase', () => {
-      // When observe('content') (composer-height RO) fires during an
-      // active spring chase, instantPinAfterExternalGeometryChange writes
-      // scrollTop = target. On the next tick: diff = 0, the velocity
-      // update block is skipped, velocity stays frozen at its mid-chase
-      // value (e.g., 28). When content then grows slightly (+10px), the
+      // When an external instant write lands while a chase is active,
+      // the next tick sees diff = 0, the velocity update block is
+      // skipped, and velocity stays frozen at its mid-chase value
+      // (e.g., 28). When content then grows slightly (+10px), the
       // frozen velocity causes an immediate overshoot+clamp instead of
       // the smooth interpolation a clean sentinel would produce.
       //
-      // These three cases also pin the carry rule's safety bound. The
+      // Historically the vehicle here was observe('content') — the
+      // composer RO routed there and its mid-chase pin was the write.
+      // The absorb contract (absorbedByActiveSpring) now defers
+      // observation-driven pins to the running chase, so the writes
+      // that remain mid-chase are the large-overshoot carve-out and
+      // the resolver's width-reflow / cross-target paths — the first
+      // and second cases below. The third pins the absorb itself:
+      // a deferred observation must leave the chase's integration
+      // untouched for the growth that follows.
+      //
+      // These cases also pin the carry rule's safety bound. The
       // momentum-carry behavior (see the sibling 'momentum carry across
       // catch-up' describe) keeps upward velocity across diff === 0,
       // CLAMPED to the carry ceiling (4) instead of zeroed. The remnant
-      // velocities here (~28, ~8, ~14) all exceed the ceiling, so each
-      // clamps down to 4, which is provably snap-safe for the small
-      // follow-up growths below. The assertions still demand a smooth
+      // velocities here (~28, ~8) exceed the ceiling, so each clamps
+      // down to 4, which is provably snap-safe for the small follow-up
+      // growths below. The assertions still demand a smooth
       // partial-progress first frame, which a carried-above-bound
       // remnant would violate by cross-clamping instantly.
 
-      it('content growth after instant pin during spring should chase smoothly, not overshoot+clamp', async () => {
+      it('content growth after an overshoot instant pin during spring should chase smoothly, not overshoot+clamp', async () => {
         const ro = getRO();
         ro.fire(contentEl, 800);
         await waitMs(150);
@@ -3326,30 +3457,36 @@ describe('createUseStickToBottomController — spring chase', () => {
         expect(geom.scrollTop).toBeGreaterThan(400);
         expect(geom.scrollTop).toBeLessThan(800);
 
-        // Composer height change fires instant pin to target.
-        controller.observe('content');
-        expect(geom.scrollTop).toBe(800);
+        // Content collapses far below the glide (negative delta is
+        // suppressed mid-spring), then an observation lands: the
+        // large-overshoot carve-out instant-pins mid-chase — the one
+        // observation-driven write the absorb deliberately lets
+        // through.
+        geom.scrollHeight = 900;
+        geom.contentHeight = 700;
+        ro.fire(contentEl, 700);
+        controller.observe('composer-geometry'); // target = 300
+        expect(geom.scrollTop).toBe(300);
 
-        // In production, the composer RO and content RO fire in
-        // separate delivery loops (~3ms gap). Advance one frame so
-        // the spring tick sees diff=0 and zeroes velocity.
+        // Advance one frame so the spring tick sees diff=0 and zeroes
+        // velocity.
         await nextFrame();
 
         // Small content growth (+10px). If velocity was properly
-        // zeroed (diff=0 branch), the spring chases smoothly from
-        // 800 toward 810 (~0.4px per frame). If velocity stayed
-        // frozen at ~28 (no zeroing), the spring overshoots to 816+
-        // and cross-target clamps to 810 on the first frame.
-        geom.scrollHeight = 1410;
-        geom.contentHeight = 1210;
-        ro.fire(contentEl, 1210); // target = 810
+        // zeroed, the spring chases smoothly from 300 toward 310
+        // (~0.4px per frame). If velocity stayed frozen at ~28 (no
+        // zeroing), the spring overshoots and cross-target clamps to
+        // 310 on the first frame.
+        geom.scrollHeight = 910;
+        geom.contentHeight = 710;
+        ro.fire(contentEl, 710); // target = 310
 
         await nextFrame();
-        // DESIRED: smooth chase — scrollTop moved partway toward 810
+        // DESIRED: smooth chase — scrollTop moved partway toward 310
         // but did NOT arrive in a single frame.
-        // BUG: frozen velocity causes overshoot → clamp → scrollTop = 810.
-        expect(geom.scrollTop).toBeGreaterThan(800);
-        expect(geom.scrollTop).toBeLessThan(810);
+        // BUG: frozen velocity causes overshoot → clamp → scrollTop = 310.
+        expect(geom.scrollTop).toBeGreaterThan(300);
+        expect(geom.scrollTop).toBeLessThan(310);
       });
 
       it('cross-target clamped spring zeros velocity so subsequent small growth chases smoothly', async () => {
@@ -3388,7 +3525,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         expect(geom.scrollTop).toBeLessThan(nearTarget + 3);
       });
 
-      it("observe('content') during spring followed by small growth starts clean chase", async () => {
+      it("observe('content') during spring defers to the chase, and follow-up growth stays smooth", async () => {
         const ro = getRO();
         ro.fire(contentEl, 800);
         await waitMs(150);
@@ -3398,26 +3535,22 @@ describe('createUseStickToBottomController — spring chase', () => {
         geom.contentHeight = 1000;
         ro.fire(contentEl, 1000); // target = 600
         for (let i = 0; i < 3; i++) await nextFrame();
-        expect(geom.scrollTop).toBeGreaterThan(400);
+        const midGlide = geom.scrollTop;
+        expect(midGlide).toBeGreaterThan(400);
 
-        // Instant pin kills the active chase.
+        // Absorbed: no write over the running animation.
         controller.observe('content');
-        expect(geom.scrollTop).toBe(600);
+        expect(geom.scrollTop).toBe(midGlide);
 
-        // Advance frames with diff=0. Without the fix, velocity stays
-        // frozen at ~14; with the fix, velocity is zeroed immediately.
-        for (let i = 0; i < 3; i++) await nextFrame();
-
-        // Small content growth (+5px). With clean velocity (0), the
-        // spring chases smoothly from 600 toward 605 (~0.2px/frame).
-        // With frozen velocity (~14), accumulated exceeds 5px on the
-        // first frame → overshoot+clamp to 605.
+        // Small content growth (+5px) retargets the SAME chase — the
+        // deferred observation must not have corrupted its integration
+        // state: still smooth, no snap, and it lands exactly.
         geom.scrollHeight = 1205;
         geom.contentHeight = 1005;
         ro.fire(contentEl, 1005); // target = 605
 
         await nextFrame();
-        expect(geom.scrollTop).toBeGreaterThan(600);
+        expect(geom.scrollTop).toBeGreaterThan(midGlide);
         expect(geom.scrollTop).toBeLessThan(605);
 
         await advanceUntil(() => geom.scrollTop === 605);
@@ -4433,12 +4566,12 @@ describe('createUseStickToBottomController — spring chase', () => {
       await nextFrame();
       expect(geom.scrollTop).toBeGreaterThan(400);
 
-      // Instant pin to target.
+      // Absorbed by the active chase (no write), which then arrives on
+      // its own.
+      const midGlide = geom.scrollTop;
       controller.observe('content');
-      expect(geom.scrollTop).toBe(800);
-
-      // Advance to let the spring arrive (velocity zeroed by the fix).
-      for (let i = 0; i < 30; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(midGlide);
+      await advanceUntil(() => geom.scrollTop === 800);
 
       // Turn ends. Mode flips to instant. Spring should cancel.
       liveContent = false;

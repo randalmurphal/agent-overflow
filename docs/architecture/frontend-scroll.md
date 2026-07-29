@@ -643,7 +643,17 @@ Two consumers, neither of them the physics choice:
    point also carries *viewport* changes — the composer growing under a
    multi-line draft — where an instant pin is correct while the thread
    is idle. Liveness (or a pending structural append) is what
-   distinguishes the two there.
+   distinguishes the two there — but only from rest. A chase already in
+   flight absorbs the observation regardless of liveness
+   (`absorbedByActiveSpring`, shared with the plain content path): both
+   clocks are short (500ms hold / 250ms one-shot) and mid-chase
+   retargets deliberately refresh neither, so a glide extended by async
+   row settling (payload previews, highlight spans) outlives them while
+   still animating — the tool-call boundary where a composer-rail
+   resize used to land as an instant write over the running animation.
+   Only a large overshoot (content collapsed out from under the
+   viewport) still snaps through, matching the resolver's mid-spring
+   threshold.
 
 Getting liveness wrong is cheap by construction: the worst outcome is a
 sentinel restart or one extra rAF, never a teleport. The 500ms hold is
@@ -745,9 +755,10 @@ The composer ResizeObserver writes `--composer-height` directly before
 observing `'composer-geometry'` on the scroll controller. Waiting for
 Svelte's microtask flush would pin against stale layout. Idle composer
 geometry resolves to the same same-paint pin as a `'content'`
-observation; when live content is inside the spring hold window, the
-live-capable path keeps following the moving bottom instead of
-sync-pinning mid-chase.
+observation; when live content is inside the spring hold window — or a
+chase is already in flight, however stale the hold
+(`absorbedByActiveSpring`) — the live-capable path keeps following the
+moving bottom instead of sync-pinning mid-chase.
 
 `overflow-anchor: none` belongs on the outer scroll container (and is
 also set on the virtualizer's spacer). Browser scroll anchoring otherwise

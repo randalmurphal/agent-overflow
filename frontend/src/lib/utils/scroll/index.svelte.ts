@@ -869,10 +869,37 @@ export function createUseStickToBottomController(
     writeScrollTop(caller, targetScrollTop());
   }
 
+  // Mid-flight, the bottom target belongs to the chase. Both notify
+  // paths fall back to an instant pin for geometry the spring has no
+  // business animating (idle composer growth, warm-up, reduced motion,
+  // no-distance nudges) — but when a chase is ALREADY in flight that
+  // fallback is an instant write over a running animation: the visible
+  // "glide starts, then snaps to the bottom" defect. The gap it fired
+  // in is structural: liveness (500ms) and the structural one-shot
+  // (250ms) are short clocks that mid-chase retargets deliberately do
+  // not refresh, so a glide extended by async row settling (payload
+  // previews, highlight spans) outlives both while still animating,
+  // and a composer-rail resize in that window used to stomp it. Not
+  // writing IS handling the observation — the tick re-reads
+  // `targetScrollTop()` every frame, so the chase follows the moved
+  // bottom on its own; `markTargetChanged` refreshes the retain window
+  // for when liveness returns. A large overshoot keeps the instant
+  // snap: content collapsed out from under the viewport, and animating
+  // upward across it is the same artifact the resolver's mid-spring
+  // threshold exists to prevent.
+  function absorbedByActiveSpring(): boolean {
+    if (!scrollEl || !spring.isActive()) return false;
+    const overshoot = scrollEl.scrollTop - targetScrollTop();
+    if (overshoot > SPRING_OVERSHOOT_INSTANT_SNAP_THRESHOLD_PX) return false;
+    spring.markTargetChanged();
+    return true;
+  }
+
   function notifyContentMaybeGrew(): void {
     const gate = readNotifyContentGate();
     if (isUiRenderTraceEnabled()) trace('scroll.notifyContentMaybeGrew', () => ({
       willPin: gate.canPin,
+      springActive: spring.isActive(),
       gateScrollEl: gate.gateScrollEl,
       gateEscape: gate.gateEscape,
       gatePause: gate.gatePause,
@@ -885,6 +912,7 @@ export function createUseStickToBottomController(
       target: scrollEl ? Math.round(targetScrollTop()) : null,
     }));
     if (!gate.canPin) return;
+    if (absorbedByActiveSpring()) return;
     instantPinAfterExternalGeometryChange('notifyContentMaybeGrew');
   }
 
@@ -906,6 +934,7 @@ export function createUseStickToBottomController(
     if (isUiRenderTraceEnabled()) trace('scroll.notifyLiveContentMaybeGrew', () => ({
       canPin: gate.canPin,
       willSpring,
+      springActive: spring.isActive(),
       gateScrollEl: gate.gateScrollEl,
       gateEscape: gate.gateEscape,
       gatePause: gate.gatePause,
@@ -953,7 +982,9 @@ export function createUseStickToBottomController(
 
     // Same instant fallback as notifyContentMaybeGrew for non-spring
     // modes, warm-up, reduced-motion users, and no-distance/overshoot
-    // nudges where a spring has nothing useful to chase.
+    // nudges where a spring has nothing useful to chase — but never
+    // over a chase already in flight (absorbedByActiveSpring).
+    if (absorbedByActiveSpring()) return;
     instantPinAfterExternalGeometryChange('notifyLiveContentMaybeGrew');
   }
 
