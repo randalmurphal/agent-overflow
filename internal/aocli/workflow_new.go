@@ -214,7 +214,36 @@ func rewriteDefinition(data []byte, oldID, newID string, prompts map[string]stri
 		}
 		text = strings.ReplaceAll(text, field, "prompt: "+newName)
 	}
-	return []byte(text), nil
+	return []byte(rewriteSelfCalls(text, oldID, newID)), nil
+}
+
+// selfCallEdge matches a `call:` line naming a workflow id, on a phase or on a
+// fan-out unit. The whole value is captured so a longer id that merely starts
+// with the starter's own (`port-campaign-extra`) cannot be partially rewritten.
+var selfCallEdge = regexp.MustCompile(`(?m)^(\s*call:[ \t]*)([a-z0-9-]+)[ \t]*$`)
+
+// rewriteSelfCalls renames a starter's SELF-call edges along with its id.
+//
+// A workflow that calls itself is how a campaign iterates (spec §3a): the last
+// phase invokes the same id for the next round. Renaming the definition without
+// renaming those edges would scaffold a workflow whose loop points at a
+// definition the user did not create — valid YAML, a dry-run finding, and a
+// confusing one, because nothing the user typed mentions the old name.
+//
+// Calls to OTHER workflows are deliberately untouched: the scaffolder is
+// renaming this definition, and it has no idea what the user called the
+// companion ones. Those edges keep the id the starter documented.
+func rewriteSelfCalls(text, oldID, newID string) string {
+	if oldID == newID {
+		return text
+	}
+	return selfCallEdge.ReplaceAllStringFunc(text, func(line string) string {
+		groups := selfCallEdge.FindStringSubmatch(line)
+		if groups[2] != oldID {
+			return line
+		}
+		return groups[1] + newID
+	})
 }
 
 func ensureWorkflowIDAvailable(targetDir string, scope def.Scope, id string) error {

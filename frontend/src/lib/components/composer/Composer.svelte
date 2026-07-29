@@ -25,7 +25,7 @@
     handleSlashPopoverKeydown,
   } from './composerKeyboard';
   import { createComposerSlash } from './composerSlash.svelte';
-  import { leadingSlashCommand, slashCommandWord } from './slashCommands';
+  import { slashCommandMatches } from './slashCommands';
   import { createComposerImagePlaceholders } from './composerImagePlaceholders';
   import { deriveComposerInputState } from './composerInputState';
   import { createComposerMentions } from './composerMentions.svelte';
@@ -221,18 +221,19 @@
   let inputValue = $derived(inputState.value);
   let placeholder = $derived(inputState.placeholder);
 
-  // Accent-coloured leading command word (D31). Derived from the same value
-  // the textarea renders, so it tracks every edit path — typing, completion,
+  // Accent-coloured command words (D31). Derived from the same value the
+  // textarea renders, so they track every edit path — typing, completion,
   // paste, image-placeholder reconciliation — without a listener of its own.
+  // Every occurrence is painted, because every one of them is live: the
+  // backend expands the command once no matter how often the draft names it.
   // Suppressed during IME composition and while a selection is live; see
   // ComposerCommandHighlight for why each is a lie the overlay must not tell.
   let composingText = $state(false);
   let textareaScrollTop = $state(0);
   let selectionCollapsed = $state(true);
-  let commandWord = $derived.by(() => {
-    if (hasUserInputPrompt || inputDisabled || composingText || !selectionCollapsed) return '';
-    const command = leadingSlashCommand(inputValue);
-    return command ? slashCommandWord(command) : '';
+  let commandRanges = $derived.by(() => {
+    if (hasUserInputPrompt || inputDisabled || composingText || !selectionCollapsed) return [];
+    return slashCommandMatches(inputValue);
   });
   $effect(() => {
     activeUserInput?.requestId;
@@ -976,8 +977,13 @@
         ></textarea>
 
         <!-- After the textarea in DOM order as well as above it in paint
-             order, so the accent word covers the glyphs it replaces. -->
-        <ComposerCommandHighlight word={commandWord} scrollTop={textareaScrollTop} />
+             order, so each accent word covers the glyphs it replaces. -->
+        <ComposerCommandHighlight
+          value={inputValue}
+          ranges={commandRanges}
+          scrollTop={textareaScrollTop}
+          {textarea}
+        />
       </div>
 
     </div>

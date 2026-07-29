@@ -23,7 +23,7 @@ serialisation boundary.
 | `AttachmentMeta` | Per-attachment slice element. The frontend renders these alongside the user row; storage-internal columns (path, hashes, timestamps) deliberately do not appear. |
 | `Input` | The per-entry-point projection `Marshal` encodes. A struct, not a positional list: several fields share a type, so a swapped pair used to compile clean. |
 | `Marshal(in Input) (string, error)` | Builds the JSON blob from the per-entry-point inputs. Returns `("", nil)` when every input is zero-valued so callers can persist an empty Meta column. |
-| `LeadingCommandWord(content) string` | The composer slash command a message invokes, without its slash, or `""` (D31). Shape only — whether the name is REGISTERED is the caller's question, and the table lives in the main package. |
+| `CommandWords(content) []string` | Every command-shaped word in a message, in order of appearance and without its slash (D31). Any word position counts, duplicates are preserved. Shape only — whether a name is REGISTERED is the caller's question, and the table lives in the main package. |
 | `FromItem(item store.Item) (Meta, error)` | Decodes the persisted blob back into a `Meta`. Empty / whitespace-only Meta decodes to the zero `Meta` with no error. |
 | `EncodeDraftSource(ref *store.ProposedPlanSourceRef) (string, error)` | JSON-encodes the draft's `PendingPlanImplementation` column. Returns `("", nil)` for a nil ref or an empty ItemID so the column stores SQL NULL and the partial index `idx_thread_drafts_pending_plan_impl` stays selective. |
 
@@ -37,11 +37,13 @@ serialisation boundary.
 - `Meta.Command` records which composer slash command expanded on a send
   (D31). The stored `Summary` is what the user typed; the expansion
   exists only in the provider payload, so this marker is the only record
-  that one happened — and chat history colours the leading word from it
-  rather than from a live registry match, so a row cannot start or stop
-  claiming an expansion when the registry changes. The parse that decides
-  what a leading command word IS lives here (`command.go`) because both
-  the send path and history rendering must agree on it.
+  that one happened — and chat history colours every occurrence of that
+  word from the marker rather than from a live registry match, so a row
+  cannot start or stop claiming an expansion when the registry changes.
+  The parse that decides what a command word IS lives here (`command.go`)
+  because both the send path and history rendering must agree on it. A
+  command named more than once expands once and is marked once; the
+  repetition is a rendering fact, not a payload one.
 - The composer-draft builders that consume `Meta`
   (`composerDraftFromUserItem*` in `app_draft.go`) stay in main
   because they bind `a.attachments` for cross-thread cloning.

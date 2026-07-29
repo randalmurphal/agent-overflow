@@ -7,36 +7,97 @@ import (
 	"agent-overflow/internal/store"
 )
 
-func TestLeadingCommandWord(t *testing.T) {
+func TestCommandWords(t *testing.T) {
 	cases := []struct {
 		name    string
 		content string
-		want    string
+		want    []string
 	}{
-		{"bare command", "/workflow", "workflow"},
-		{"command then instruction", "/workflow start the release run", "workflow"},
-		{"command then newline", "/workflow\nstart it", "workflow"},
-		{"command then tab", "/workflow\tstart it", "workflow"},
-		{"hyphenated and numbered names parse", "/run-2 go", "run-2"},
-		{"no slash", "workflow start", ""},
-		{"slash not first", "please /workflow", ""},
-		{"leading space is not a command", " /workflow", ""},
-		{"bare slash", "/", ""},
-		{"slash space", "/ workflow", ""},
-		{"absolute path", "/tmp/scratch is where it went", ""},
-		{"uppercase is not a command", "/Workflow", ""},
-		{"digit-led name is not a command", "/2fast", ""},
-		{"hyphen-led name is not a command", "/-x", ""},
-		{"empty", "", ""},
+		{"bare command", "/workflow", []string{"workflow"}},
+		{"command then instruction", "/workflow start the release run", []string{"workflow"}},
+		{"command then newline", "/workflow\nstart it", []string{"workflow"}},
+		{"command then tab", "/workflow\tstart it", []string{"workflow"}},
+		{"hyphenated and numbered names parse", "/run-2 go", []string{"run-2"}},
+		// D31 as amended: a command word counts at ANY word position, not only
+		// the first. Start of a line, mid-sentence, after a newline.
+		{"mid sentence", "please run /workflow now", []string{"workflow"}},
+		{"leading space", " /workflow", []string{"workflow"}},
+		{"after a newline", "do this:\n/workflow", []string{"workflow"}},
+		{"end of text", "and then /workflow", []string{"workflow"}},
+		{"repeated, in order, duplicates kept", "/workflow then /workflow", []string{"workflow", "workflow"}},
+		{"unregistered shapes are still shapes, in order", "check /tmp then /workflow", []string{"tmp", "workflow"}},
+		{"no slash", "workflow start", nil},
+		{"bare slash", "/", nil},
+		{"slash space", "/ workflow", nil},
+		{"path is one word and not a command", "/tmp/scratch is where it went", nil},
+		{"path mid sentence is not a command", "see /tmp/scratch/workflow for it", nil},
+		{"uppercase is not a command", "/Workflow", nil},
+		{"digit-led name is not a command", "/2fast", nil},
+		{"hyphen-led name is not a command", "/-x", nil},
+		{"trailing punctuation is part of the word", "run /workflow, then stop", nil},
+		{"empty", "", nil},
 		// The word must END at whitespace: a longer word that merely starts
 		// with a command's name is a different word, and the registry lookup
 		// must never see a prefix.
-		{"longer word is its own word", "/workflows are nice", "workflows"},
+		{"longer word is its own word", "/workflows are nice", []string{"workflows"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := LeadingCommandWord(tc.content); got != tc.want {
-				t.Fatalf("LeadingCommandWord(%q) = %q, want %q", tc.content, got, tc.want)
+			got := CommandWords(tc.content)
+			if len(got) != len(tc.want) {
+				t.Fatalf("CommandWords(%q) = %q, want %q", tc.content, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("CommandWords(%q) = %q, want %q", tc.content, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestCommandWordsPicksTheFirstRegistered mirrors, case for case, the
+// `slashCommandMatches` table in
+// `frontend/src/lib/components/composer/slashCommands.test.ts`. The two
+// matchers are parallel by hand, so the tables are the parity check: a change
+// on one side that is not made on the other shows up as a failing twin.
+func TestCommandWordsPicksTheFirstRegistered(t *testing.T) {
+	registered := map[string]bool{"workflow": true}
+	first := func(content string) string {
+		for _, name := range CommandWords(content) {
+			if registered[name] {
+				return name
+			}
+		}
+		return ""
+	}
+	cases := []struct {
+		content string
+		want    string
+	}{
+		{"/workflow", "workflow"},
+		{"/workflow start the release", "workflow"},
+		{"/workflow\nstart the release", "workflow"},
+		{"/workflow\tstart", "workflow"},
+		{"ask about /workflow later", "workflow"},
+		{" /workflow", "workflow"},
+		{"line one\n/workflow", "workflow"},
+		{"first /tmp then /workflow", "workflow"},
+		{"/workflow and again /workflow", "workflow"},
+		{"/workflows are nice", ""},
+		{"/Workflow", ""},
+		{"/", ""},
+		{"/ workflow", ""},
+		{"/tmp/scratch has the log", ""},
+		{"see /tmp/scratch/workflow", ""},
+		{"a/workflow is not a word start", ""},
+		{"workflow", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.content, func(t *testing.T) {
+			if got := first(tc.content); got != tc.want {
+				t.Fatalf("first registered of %q = %q, want %q", tc.content, got, tc.want)
 			}
 		})
 	}

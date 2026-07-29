@@ -6,218 +6,215 @@ The mechanics are in [`../specs/workflows-system.md`](../specs/workflows-system.
 this is the authoring layer above them: which shapes to reach for, why
 each one exists, and how to drive the thing while it runs.
 
-The shipped reference is the `port-campaign` starter
-(`internal/workflow/starters/content/port-campaign/`). Scaffold your own
-copy and edit it:
+The shipped reference is a **pair** of starters — the campaign spine and
+the task lane it calls. Scaffold both and edit them:
 
 ```
-agent-overflow workflow new port-campaign --id my-campaign --project <slug>
+agent-overflow workflow new port-one-task --id port-one-task --project <slug>
+agent-overflow workflow new port-campaign --id my-campaign  --project <slug>
 agent-overflow workflow validate --id my-campaign --project <slug>
 ```
 
-## The campaign wave
+Scaffold the **lane first**, and under its own id: the spine's fan-out
+calls it by name, and `workflow new` renames only the definition it is
+creating. (It does rename a definition's calls to *itself*, which is how
+the spine's next-wave edge follows `--id`.) If you rename the lane, edit
+the one `call:` line in the spine to match — `workflow validate` names it
+if you forget.
 
-A campaign is not one run. **One run is one wave**, and waves chain
-through an automation. There is no wave-level loop primitive and no
-second orchestration engine — the loop lives in the scheduler (D34).
+## One campaign is one call tree
+
+A campaign is **one root run**. Each wave is one traversal of the spine's
+graph, and the spine's last phase **calls itself** for the next wave — so
+wave N+1 is a child run of wave N, every wave shares the root's worktree
+and branch, and the whole campaign is a single tree you can pause, stop,
+or discard as a unit (§3a).
 
 ```
-survey ─► plan ─┬─► implement ─┬─► review ─┬─► verify ─┬─► done
- tool     agent │   fan-out    │  fan-out  │   tool    │
-                │      │       │     │     │           ├─► loop review (max 2)
-                │      └─► resolve-  │     └─► fix ────┘
-                │          conflicts │         agent   └─► park wave-verification-failed
-                │              └─► park merge-unresolved
-                └─► park campaign-complete / campaign-stalled
+root run ── wave 1 ── plan ─► implement ─► verify ─► next-wave ──┐
+                        │        │                                │
+                        │        └─ unit ─► port-one-task (child, own worktree)
+                        │           unit ─► port-one-task
+                        │           unit ─► port-one-task
+                        │                                        │
+                        └─ done (planner reported complete)      │
+                                                                 ▼
+                                              wave 2 ── plan ─► implement ─► …
 ```
+
+Nothing chains it from outside: no automation, no cron, no
+alternating-trigger pair. The loop is a call edge, which is the primitive
+the spec gives for "loop with an exit condition" (§3a) — each wave is a
+fresh child run with fresh loop counters, fresh budget accounting of its
+own, and a **freshly resolved definition**.
+
+### The spine, phase by phase
 
 | Phase | Driver | Job |
 |---|---|---|
-| `survey` | tool (`wave-survey`) | Run the build/tests; emit failures as structured data. A red tree is not an error here — it is the queue. |
-| `plan` | agent, read-only | Turn survey failures plus the next unported slice into a typed `tasks[]` array. Reports what it left out. |
-| `implement` | fan-out over `plan.tasks` | One Codex unit per task, each in its own sub-worktree/branch. Join is a **tool** that git-merges the branches. |
-| `resolve-conflicts` | agent, write | Only on a dirty merge. Bounded: unresolvable conflicts park. |
-| `review` | fan-out, 3 static lenses | Read-only reviewers told to **refute**. Join adjudicates claims against the tree. |
-| `fix` | agent, write | Applies only confirmed findings, severity-ordered. |
-| `verify` | tool (`build-and-test`) | The deterministic gate. A red verify loops back to `review` rather than to `fix` — something got past the reviewers, so re-arm them. Bounded at 2, then parks. |
+| `plan` | agent, **Claude**, read-only | Read the campaign's state and either schedule this wave's tasks or report `complete`. Emits `tasks[]`, the next wave's number, whether a checkpoint is due, and the handoff to the next planner. |
+| `implement` | fan-out over `plan.tasks`, **every unit is a call** | One `port-one-task` child run per task, each in its own sub-worktree on its own branch. Join is a **tool** that git-merges the branches. |
+| `resolve-conflicts` | agent, write | Only on a dirty merge. Unresolvable conflicts park. |
+| `verify` | tool (`build-and-test`) | The integration gate: the whole wave, merged, on the campaign branch. |
+| `integration-fix` | agent, write | Only on a red verify — what breaks when the tasks meet. Loops back to `verify`, bounded at 2, then parks. |
+| `next-wave` | **call: itself** | The next wave. Skipped entirely when the planner reported `complete`. |
+
+### The lane, phase by phase
+
+| Phase | Driver | Job |
+|---|---|---|
+| `implement` | agent, **Codex**, write | Implement one task inside the unit's sub-worktree. |
+| `review` | fan-out, **two lenses on two models** | A Codex *fidelity* lens and a Claude *consequence* lens, both told to refute. The join adjudicates their claims against the branch. |
+| `fix` | agent, Codex, write | Applies the adjudicated findings, then loops back to `review` (bounded at 2) — a fix is a change nobody has reviewed yet. |
+
+**Fable plans, GPT works, both review.** The planner is Claude because
+choosing what a campaign does next is the judgment call. The lanes are
+Codex. The review phase runs one of each, because two copies of one model
+miss the same things twice.
 
 Two structural facts do most of the work:
 
-- **The implement join is a command, not an agent.** Nothing an
-  implementer *said* crosses into review — only the merged tree and the
-  commit it is diffed from. Split context is a property of the graph,
-  not of prompt wording.
-- **`implement.passed` is the tool driver's own output.** The gate reads
-  it; the phase never declares it. `passed` and `exit-code` are reserved
-  on any phase whose envelope comes from a command — declaring one is a
-  validation finding.
+- **The unit IS the isolation boundary, and the child is the work**
+  (D35). A call-bound unit gets its own sub-worktree and runs a whole
+  workflow inside it, so per-task review and fix happen on the task's own
+  branch, before the merge — and the spine's `verify` is left doing the
+  only job that needs the merged tree.
+- **The implement join is a command, not an agent.** Nothing the lane
+  *said* crosses into the campaign's next phase — only the merged tree
+  and the exit status. Split context is a property of the graph, not of
+  prompt wording. `implement.passed` is the tool driver's own output; the
+  gate reads it and the phase never declares it.
 
 ## Patterns, and why
 
-**Adversarial verify.** Reviewers are prompted to *break* the change,
-not to approve it. An approval prompt gets approval: the cheapest way to
-satisfy "does this look right" is to say yes. Refutation has a cost
-function that points at defects. Pair it with **split context** —
-reviewers see the artifact, never the author's reasoning. A reviewer
-handed the implementer's rationale is grading an argument, and a
-plausible argument is exactly what a wrong change comes with.
+**Adversarial review.** Reviewers are prompted to *break* the change, not
+to approve it. An approval prompt gets approval: the cheapest way to
+satisfy "does this look right" is to say yes. Pair it with **split
+context** — a reviewer sees the branch and the task entry, never the
+implementer's reasoning. A reviewer handed the rationale is grading an
+argument, and a plausible argument is exactly what a wrong change comes
+with.
 
-**Perspective-diverse review.** Three reviewers with *different lenses*
-(port fidelity / failure modes / cross-entry integration), not three
-copies of one reviewer. Identical reviewers correlate: they find the
-same things and miss the same things, so the second and third cost
-tokens and buy nothing. Lenses decorrelate what gets looked at. The
-adjudicating join then treats every claim as a **lead, not a verdict**
-and reproduces it in the tree before it becomes a finding — otherwise
-the fix phase spends the wave on things that were never wrong.
+**Decorrelate by model *and* by lens.** Identical reviewers find the same
+things and miss the same things, so the second one costs tokens and buys
+nothing. The lane's two reviewers differ on both axes: different model,
+and different question (did the behavior land / what does this do to
+everything else). The adjudicating join then treats every claim as a
+**lead, not a verdict** and reproduces it against the branch before it
+becomes a finding — otherwise the fix phase spends the task on things
+that were never wrong.
 
-**Loop until dry.** Discovery of unknown size does not finish on a
-schedule. The campaign keeps firing waves while `plan` reports work, and
-stops when `scheduled` and `deferred` are both zero — which parks
-`campaign-complete` and halts the chain, because a parked run blocks
-every later fire. A fixed wave count either stops early with a tail of
-missed work or burns budget on empty waves. If you want the stricter
-form, require *K consecutive* empty waves before stopping: carry the
-count in the automation's job notes and have `plan` read it.
+**Review after the fix, too.** The lane loops `fix → review`, not `fix →
+done`. The fix is a change like any other and nobody has looked at it.
 
-**Completeness critic.** `plan` is the next round's critic: it looks at
-the tree the last wave left and asks what is still missing. That is why
-`survey` runs *first* — the wave's own build failures are re-derived
-from the workspace rather than plumbed across runs. Anything you want
-carried between waves that is not visible in the repo has to travel
-through job notes.
+**Loop until dry, not for N waves.** Discovery of unknown size does not
+finish on a schedule. The campaign keeps calling waves while the planner
+schedules work and ends when it reports `complete` — which is expressed
+as the run finishing *without* taking the self-call, so the whole tree
+unwinds wave by wave. A fixed wave count either stops early with a tail
+of missed work or burns budget on empty waves.
+
+**Completeness critic.** `plan` is the next round's critic: it reads the
+tree the last wave left and asks what is still missing. Everything that
+landed is in the workspace — the campaign branch is shared by every wave
+— so the planner's evidence is the repository, not a report. What the
+repository *cannot* show (work deliberately deferred, ordering decisions,
+risks noticed and not addressed) travels in `carry-forward`, the one
+string each planner writes for the next one.
 
 **No silent caps.** Every phase that bounds its own coverage reports the
-bound: `plan` emits `deferred` (count) and `dropped` (prose); the review
-join emits `unreviewed`. A phase that quietly truncates reads downstream
-as full coverage, and a gap that looks like coverage survives every
-later wave. The system takes the same line at the engine level:
-`max_fan_out_width` **refuses** an over-wide expansion rather than
-running the first N (D29).
+bound: `plan` emits `carry-forward`, the review join emits `unreviewed`.
+A phase that quietly truncates reads downstream as full coverage, and a
+gap that looks like coverage survives every later wave. The engine takes
+the same line: `max_fan_out_width` **refuses** an over-wide expansion
+rather than running the first N (D29).
 
-**Compiler errors as the work queue.** `survey` is a bound command that
-writes `failures[]` to `$AO_ENVELOPE`, so a red tree arrives as typed
-data the planner sorts, not as prose a model has to re-read. Failures
-sort ahead of new work: nothing new is worth starting while the compiler
-disagrees with the port.
+**Humans change rules, not code.** Do not hand-fix what a wave produced —
+the next wave regresses it and you never learn the rule was wrong. Change
+what the campaign *decides*; see steering, next.
 
-**Humans edit rules, not code.** The three knobs are the automation's
-seeds (`campaign-goal`, `max-tasks`), its **job notes** (injected as
-`job-notes` into every wave, editable in the overlay or via
-`agent-overflow notes set`), and the prompt files. Change how the
-campaign *decides*; do not hand-fix the code it produces, or the next
-wave regresses it and you never learn the rule was wrong.
+## Steering a running campaign
 
-## Chaining the waves
+Three knobs, and the difference between them is *when* they take effect.
 
-**Automations are per-project rows, not files** — they live in SQLite,
-so they cannot ship inside a starter. The starter ships the wave; this
-is the wiring.
+**Prompt files — next wave.** Every call resolves its target from disk,
+definition **and prompt bodies**, per invocation (§3a). So editing
+`my-campaign-plan.md` while wave 7 runs changes wave 8. The wave in
+flight keeps what it started with, which is what freezing is for.
 
-**The only automation-creating surface today is `agent-overflow
-schedule`**, and it creates a cron trigger with seeds. The overlay
-lists automations, toggles them, and offers **Run now**; it has no
-create/edit form, so event triggers and run-if conditions — both fully
-supported by the scheduler — have no user-reachable authoring path yet.
-Everything below the cron recipe describes what the engine will do once
-one exists.
+**Repo context files — next wave.** The planner is told to read the
+project's own campaign notes (a porting document, a checklist, a tracking
+file) out of the workspace. They are ordinary files on the campaign
+branch, editable any time, and the next planner reads whatever is there.
+This is the fastest steering path and the one that leaves a record in the
+repository.
 
-Shipped recipe — **cron + skip-if-running**, from any agent session in
-the project:
+**Workflow inputs — campaign start only.** `campaign-goal`, `max-tasks`,
+`job-notes`, and `checkpoint-every` are seeded at the root and passed
+down the self-call unchanged. They are the campaign's standing brief; to
+change one, stop the tree and start a new campaign from the branch it
+built.
 
-```
-agent-overflow schedule my-campaign \
-  --cron '*/10 * * * *' \
-  --name 'Port campaign' \
-  --seed campaign-goal='Port ai-foundations from Python to Go; ...' \
-  --seed max-tasks=8
-```
+Two more controls exist for *stopping*, not steering:
 
-Why this shape:
+**Stop after this wave.** `agent-overflow run soft-stop <root-run-id>`
+arms a standing request on the root; the next wave boundary parks the run
+`needs-human(checkpoint)` instead of calling (D36). Nothing in flight is
+interrupted — the wave that is running finishes. `--clear` withdraws the
+request. `agent-overflow run resume <run-id>` takes the call the park
+skipped. A workflow with no call edge has no boundary to stop at, so the
+request is accepted and simply never fires; the campaign spine has one,
+at `next-wave`.
 
-- **skip-if-running is automatic and per-automation.** A fire while the
-  previous run is `running` *or* `needs-human` is skipped and recorded
-  on the row. Waves never double up, and a parked wave halts the
-  campaign until a human clears it — which is what `campaign-complete`,
-  `campaign-stalled`, `merge-unresolved`, and
-  `wave-verification-failed` all rely on.
-- **An automation cannot chain itself on an event.** A run started by
-  automation A whose completion re-matches A's trigger is refused as
-  `self-chain` (`internal/workflow/scheduler/fire.go`). Cycles across
-  *two* automations are legal, so an event chain needs a pair — see
-  below.
-- **The tick leaves room for disposition.** Auto-merge and the
-  scheduler's event feed are both queued off the same terminal
-  transition and race. A cron tick is at least a minute out; a local
-  merge is milliseconds.
-
-**Set `disposition: auto-merge` in the project profile.** Each run cuts
-its worktree from the base branch, so without it every wave starts from
-the same commit and replans the same work. The starter sets
-`cleanup: auto`, which discards a worktree only *after* a disposition
-has landed — 40 waves otherwise means 40 worktrees.
-
-Lower-latency variant, **once an authoring surface exists** — two event
-automations that alternate. Both carry this trigger and both start the
-campaign workflow; whichever one started the finished run
-self-chain-skips, so exactly one fires:
-
-```json
-{"kind":"event","on":"item-done","workflowId":"my-campaign"}
-```
-
-Two caveats, both real: seed the chain with **Run now** on one of the
-pair (a manual start belongs to neither, so *both* fire and you get two
-concurrent waves), and the auto-merge race above is live. Reach for it
-only when wave latency matters more than the extra discipline.
-
-**What a run-if can and cannot ask.** The condition is evaluated against
-exactly the map the run would be seeded with — the automation's stored
-seeds plus the reserved `trigger` and `job-notes`. It cannot read the
-previous run's outputs. "Is there work left" therefore lives in the
-graph, not the condition: work remaining ends the wave `done` and the
-next fire proceeds; nothing remaining parks and every later fire skips.
-
-What the condition *is* good for is an arming switch you can flip
-without deleting the automation:
-
-```json
-{"eq":{"ref":"campaign-armed","value":true}}
-```
-
-paired with `--seed campaign-armed=true`. Automation seeds are not
-type-checked against the workflow's declared inputs (only agent-started
-runs are), so a seed the condition reads and no phase declares is inert
-to the run. Flip it to `false` and every fire records `condition false`
-on the row instead of starting a wave. Until an editing surface lands,
-the same effect is one click: disable the automation in the overlay.
+**Scheduled checkpoints.** `--seed checkpoint-every=5` makes the planner
+mark every fifth wave, and `verify`'s gate turns that into a **human
+route**: approve continues into the next wave, reject carries your note
+back into a fresh plan for this wave (bounded at 2). `0` never asks. It
+is the standing-appointment version of soft-stop, for a campaign you want
+to look at periodically without watching it.
 
 ## Operating a running campaign
 
-**From a chat session.** Type `/workflow` in the composer: it expands at
-send into the project's workflow sources, the available definitions, the
-active runs, and whether `agent-overflow` resolved on PATH (D31). That
-block is what an agent reads before it types anything. Every verb below
-works from any session in the project.
+**From a chat session.** Type `/workflow` anywhere in a message: it
+expands at send into the project's workflow sources, the available
+definitions, the active runs, and whether `agent-overflow` resolved on
+PATH (D31). That block is what an agent reads before it types anything.
+Every verb below works from any session in the project.
 
 ```
+agent-overflow run start my-campaign --seed campaign-goal='...' \
+  --seed max-tasks=6 --seed wave-number=1 --seed checkpoint-every=0
 agent-overflow run list --active
 agent-overflow run status <run-id>
 agent-overflow run output <run-id>          # declared workflow outputs
+agent-overflow run soft-stop <run-id> [--clear]
 agent-overflow run pause <run-id>
 agent-overflow run resume <run-id> [--phase <id>]
 agent-overflow run retry-failed-units <run-id> [--note '...']
+agent-overflow run retry-unit <run-id> <unit-id> [--note '...']
+agent-overflow run rerun <run-id> [--guidance '...']
 agent-overflow run cancel <run-id>
 ```
 
-**Pause / fix / resume.** Pause interrupts the in-flight turn and parks
-the run `needs-human(paused)`; resume continues on the sessions it
-parked on, or re-enters a phase you name with `--phase`. A paused run is
-`needs-human`, so the automation skips while you work — the campaign
-stops for exactly as long as you do. Definitions are **frozen at run
-start**: a prompt edit reaches the next run, never the one you are
-watching. To put an edit into flight, cancel the wave; the next tick
-starts a fresh one on the edited files.
+`wave-number` starts at 1 and every later wave is handed its number by
+the wave before it. Keep `max-tasks` at or under the project's
+`max_fan_out_width` — a plan that overshoots costs the whole wave.
+
+**Monitoring from the bound thread.** A run started from a chat session
+is bound to that thread (§5), and the binding is on the ROOT. When
+anything in the tree needs a human, the wake message arrives in that
+thread and **names the run to act on** — which matters here, because the
+run that parked is usually a descendant many waves down and the verb has
+to be aimed at it, not at the root you started. Descendant runs never
+bind threads and never notify on their own; they surface through the
+root's binding and through the run tree in the overlay.
+
+**Which run takes which verb.**
+
+| Verb | Aim it at |
+|---|---|
+| `soft-stop`, `pause`, `cancel` | the **root**. All three act on the whole tree, and the engine refuses them on a called run, naming the run that called it. |
+| `resume`, `retry-unit`, `retry-failed-units`, `rerun`, answering a question | the run that **parked** — the id in the wake message. |
 
 **Usage limits.** A wide fan-out hits a provider wall and most of its
 units fail against it within a minute. The wave parks
@@ -230,37 +227,65 @@ agent-overflow run retry-failed-units <run-id> --note 'quota reset'
 
 One engine command, not N (D33): the failed set is collected before the
 first write, so no other command sees a half-repaired fan-out. Repaired
-units re-queue through normal admission — twenty units against a
-provider bound of two starts two. Units under human takeover are left
-alone. The single-unit `run retry-unit` stays for the other shape: one
-unit failing on its own merits.
+units re-queue through normal admission — twenty units against a provider
+bound of two starts two. Units under human takeover are left alone. The
+single-unit `run retry-unit` stays for the other shape: one unit failing
+on its own merits. From a bound thread the credential that reaches these
+verbs is the thread's own, which is why a descendant's park is actionable
+from the thread that started the campaign at all.
+
+**Take over.** A phase you want to drive yourself: open its thread from
+the run tree and send a message. That interrupts the turn and hands you
+the worktree; finish with **Complete** (one schema-attached finalize turn
+becomes the phase's envelope) or discard and re-run the phase. A call
+unit has no session to steer — take over the **child run's** phase
+instead.
+
+**A parked descendant stops the campaign.** A wave waiting on a parked
+child is `running` and holds nothing; the tree simply does not advance
+until you clear the park. That is the intended behavior for
+`campaign-stalled`, `merge-unresolved`, `wave-verification-failed`, and
+`review-unresolved`.
+
+**Disposition is manual.** The campaign branch is the deliverable, and
+nothing merges it to a base branch on its own. The starter sets `cleanup:
+manual`; every wave shares the root's worktree, so a long campaign is one
+checkout, not forty.
 
 **Bounds worth setting before you walk away.**
 
 | Knob | Where | Default |
 |---|---|---|
-| `max_fan_out_width` | project profile | **32.** Absolute ceiling on units per fan-out attempt. Refuses, never truncates (D29). Per project, never per workflow. Minimum 1; there is no unlimited setting. |
-| `reliability.per_item_budget` | project profile | **None.** Exactly one of `tokens`, `usd`, `wall_clock`. Unset means *no ceiling* — an unattended campaign is exactly the case that wants one. |
-| `capacities.provider:codex` | project profile | 2. How many agent turns run at once. Throttles; does not refuse. |
+| `max_fan_out_width` | project profile | **32.** Absolute ceiling on units per fan-out attempt. Refuses, never truncates (D29). Per project, never per workflow. |
+| `reliability.per_item_budget` | project profile | **None.** Exactly one of `tokens`, `usd`, `wall_clock`. Budgets are enforced against the **root** across the whole tree (§12), so one ceiling bounds the entire campaign — an unattended campaign is exactly the case that wants one. |
+| `capacities.provider:codex` / `provider:claude` | project profile | 2. How many agent turns run at once, across every wave and lane. Throttles; does not refuse. |
 | `reliability.watchdog` | project profile | Inactivity kill for a silent phase; parks `stalled`. |
 
 `max_fan_out_width` and the capacity bound are different statements and
 both stand: inside the ceiling but over capacity is pacing, over the
-ceiling is a refusal to start. Keep the workflow's own `max-tasks` seed
-at or under the ceiling — a plan that overshoots costs the whole wave.
+ceiling is a refusal to start.
 
-## Bindings the starter needs
+**Depth.** The spine declares `max_depth: 200` on its self-call — the
+campaign's wave ceiling — under the engine's absolute `MaxCallDepth` of
+256, with room for each wave's lanes below it. Raise it and you approach
+a limit that parks `needs-human(wiring-error)`; a campaign that long
+wants a new root anyway.
 
-`port-campaign` resolves three names through the project profile:
+## Bindings the starters need
+
+`port-campaign` resolves two names through the project profile:
 
 | Name | Kind | Contract |
 |---|---|---|
-| `build-and-test` | check | The deterministic gate. Exit status is the whole answer. |
-| `wave-survey` | command | Must write `$AO_ENVELOPE` with `outputs.failures[]` (`{kind, location, detail}`) and `outputs.summary`. Non-zero exit on a red tree is expected. |
-| `merge-unit-branches` | command | Merges the fan-out's unit branches into the item branch. Must write `outputs.conflicts[]` and `outputs.diff-base` (captured **before** the first merge). Non-zero exit on conflict. Bind `"{{units}}"` as an argv element to receive the units as JSON. |
+| `build-and-test` | check | The integration gate on the merged campaign branch. Exit status is the whole answer. |
+| `merge-unit-branches` | command | Merges the fan-out's unit branches into the item branch. Must write `outputs.conflicts[]` (workspace-relative paths, empty when clean) to `$AO_ENVELOPE`. Non-zero exit on conflict. Bind `"{{units}}"` as an argv element to receive the units as JSON — `id`, `status`, `branch`, `worktree` per entry. |
 
-Capacities: `campaign-workers`, `review-workers`, `validation-slot`.
+Capacity: `validation-slot`, held by `verify`.
 
-A bound command that writes no envelope fails post-validation rather
-than advancing on an invented contract — required outputs are never
+`port-one-task` binds **nothing**. Its phases are all agent phases, so
+the only resource they take is the implicit `provider:<name>` bound every
+agent phase acquires.
+
+A bound command that writes no envelope fails post-validation rather than
+advancing on an invented contract — required outputs are never
 synthesized.

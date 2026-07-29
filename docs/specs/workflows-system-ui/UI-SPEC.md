@@ -279,24 +279,27 @@ Agents start runs through the `agent-overflow` CLI under normal bash approval
 bound run delivers, which is an ordinary user-role message — no custom card.
 
 **`/workflow` is a composer slash command (D31), not a palette action.** Typing
-`/` as the first character of a draft opens a completion menu of registered
-commands — the same popover family as the `@`-mention completion, filtering as
-the user types, arrow / Enter / Tab / click to select, Escape to dismiss.
-Selecting one completes the **word** and nothing else: the draft then reads
-`/workflow ` plus whatever the user goes on to type. There is no token, no
-chip, and no inserted block.
+`/` at the start of any **word** in a draft opens a completion menu of
+registered commands — the same popover family as the `@`-mention completion,
+and the same word-boundary rule, filtering as the user types, arrow / Enter /
+Tab / click to select, Escape to dismiss. Selecting one completes the **word**
+in place and nothing else. There is no token, no chip, and no inserted block. A
+`/` inside a word (`src/lib`) is a path, and never opens the menu.
 
-While the draft's leading word matches a registered command it renders in the
-accent colour, in the composer and in the sent message in chat history. That is
-the whole visual vocabulary.
+Every word in the draft matching a registered command renders in the accent
+colour, in the composer and in the sent message in chat history. That is the
+whole visual vocabulary — and it is also the notice that a mid-sentence mention
+of `/workflow` is a real invocation, which is the accepted consequence of
+matching at any word position.
 
-**Expansion happens at send time, on the backend.** When a sent message's first
-word names a registered command, the send path appends the command's block to
+**Expansion happens at send time, on the backend.** When a sent message names a
+registered command anywhere in it, the send path appends the command's block to
 the payload the PROVIDER receives — typed text first (it is the instruction),
 block second (it is context) — and stores the user row with exactly what was
-typed plus a meta marker naming the command that expanded. History colours the
-word from that marker, never from a live registry match, so a row stays
-truthful about what actually ran. The session's system prompt is never touched:
+typed plus a meta marker naming the command that expanded. Naming the same
+command more than once expands it once. History colours the word from that
+marker, never from a live registry match, so a row stays truthful about what
+actually ran. The session's system prompt is never touched:
 a per-thread system prompt would invalidate provider prompt caching for every
 turn to serve one message.
 

@@ -1,35 +1,41 @@
 # yaml-language-server: $schema=../workflow.schema.json
 # Required project profile bindings (names must match exactly):
 # checks: build-and-test
-# commands: wave-survey, merge-unit-branches
-# capacities: campaign-workers, review-workers, validation-slot
+# commands: merge-unit-branches
+# capacities: validation-slot
 #
-# One run is one campaign wave: survey the tree, plan the wave's work list,
-# implement it in parallel, review it adversarially, fix what the review
-# confirms, and verify. Waves chain through an automation, never through a loop
-# inside this graph - see docs/architecture/workflow-campaigns.md for the
-# recipe and for every pattern this file encodes.
+# Also required: the `port-one-task` workflow, in a scope this one resolves
+# (`agent-overflow workflow new port-one-task --id port-one-task`). Each
+# implement unit CALLS it, so without it every wave refuses at its fan-out.
 #
-# Both bound commands must write their control envelope to $AO_ENVELOPE; a
-# command that writes nothing fails post-validation instead of advancing on an
-# invented contract.
-#   wave-survey          outputs.failures (array of {kind, location, detail})
-#                        and outputs.summary. A red tree is this wave's work
-#                        queue, so a non-zero exit is expected and not a stop.
-#   merge-unit-branches  outputs.conflicts (workspace-relative paths, empty when
-#                        clean) and outputs.diff-base (the commit the wave is
-#                        diffed from, captured before the first merge). Exit
-#                        non-zero on conflict; the gate reads the exit status
-#                        through the tool driver's own passed output.
-# The units to merge reach the command as one JSON argv element: bind it with
-# "{{units}}" and read id, status, branch, and worktree from each entry.
+# A campaign is ONE root run. Each wave is this graph; the last phase calls
+# THIS workflow again for the next wave, so wave N+1 is a child of wave N and
+# the whole campaign is one call tree in one worktree on one branch. Nothing
+# chains it from outside - no automation, no cron, no second orchestration
+# engine. See docs/architecture/workflow-campaigns.md.
 #
-# Set the project profile's disposition to auto-merge so each green wave lands
-# on the base branch before the next wave cuts its worktree. Without it every
-# wave starts from the same commit and replans the same work.
+# Fable plans, GPT works. The planner is Claude because deciding what the
+# campaign does next is the judgment call; the task lanes are Codex, and the
+# lane's own review phase is where a Claude lens looks at the result.
+#
+# Two things end a campaign, and neither is a wave count:
+#   - the planner reports `complete`, and this run finishes WITHOUT taking the
+#     self-call, which unwinds the whole tree wave by wave;
+#   - a human stops it - `agent-overflow run soft-stop <root-run-id>` parks the
+#     tree at its next call boundary (D36), and `checkpoint-every` below parks
+#     it on a schedule.
+#
+# `merge-unit-branches` must write its control envelope to $AO_ENVELOPE:
+# outputs.conflicts (workspace-relative paths, empty when clean). It exits
+# non-zero on conflict; the gate reads that through the tool driver's own
+# `passed` output. The units to merge reach it as one JSON argv element - bind
+# it with "{{units}}" and read id, status, branch, and worktree from each entry.
+#
+# Disposition is MANUAL. The campaign branch is the deliverable and it stays
+# where a human can read it; nothing here merges to a base branch on its own.
 id: port-campaign
-name: Port campaign wave
-description: Run one wave of a long-running port campaign - survey, plan the work list, implement it as a fan-out, review it adversarially with split context, fix confirmed findings, and verify.
+name: Port campaign
+description: Run a long port campaign as one call tree - a Claude planner schedules each wave, every task runs as its own child workflow in its own worktree, the wave is merged and verified on the campaign branch, and the final phase calls the next wave.
 inputs:
   campaign-goal:
     schema:
@@ -40,53 +46,44 @@ inputs:
     schema:
       type: number
       minimum: 1
-      description: Upper bound on the work items this wave schedules. Keep it at or under the project's max_fan_out_width, which refuses a wider expansion rather than truncating it.
+      description: Upper bound on the tasks one wave schedules. Keep it at or under the project's max_fan_out_width, which refuses a wider expansion rather than truncating it.
+  wave-number:
+    schema:
+      type: number
+      minimum: 1
+      description: Which wave this run is. Start a campaign at 1; every later wave is handed its number by the wave before it.
+  checkpoint-every:
+    schema:
+      type: number
+      minimum: 0
+      description: Ask a human to approve continuing every Nth wave. 0 never asks, and a human can still stop the tree at any wave boundary with `agent-overflow run soft-stop`.
   job-notes:
     schema:
       type: string
       multiline: true
-      description: Continuity notes carried between waves by the automation that starts them. Edit these to change how the campaign plans; they are the process knob, not the code.
+      description: Standing instructions for every wave, fixed for the campaign. Steering that has to change mid-campaign belongs in the repo context files the planner reads, or in these prompt files - both are re-read from disk on every wave.
+    optional: true
+  carried-notes:
+    schema:
+      type: string
+      multiline: true
+      description: The previous wave's handoff to this one. Written by that wave's planner, not by a human; leave it empty when starting a campaign.
     optional: true
 outputs:
-  work-list:
-    from: plan.tasks
-  review:
-    from: review.consolidated-review
+  scheduled:
+    from: plan.scheduled
+  complete:
+    from: plan.complete
+  next-wave-number:
+    from: plan.next-wave-number
+  carry-forward:
+    from: plan.carry-forward
 phases:
-  - id: survey
-    name: Survey the tree for standing failures
-    driver: tool
-    command: wave-survey
-    resources: [validation-slot]
-    outputs:
-      failures:
-        schema:
-          type: array
-          description: Compiler, type-check, and test failures standing in the tree at wave start.
-          items:
-            type: object
-            properties:
-              kind:
-                type: string
-              location:
-                type: string
-              detail:
-                type: string
-            required: [kind, location, detail]
-            additionalProperties: false
-      summary:
-        schema:
-          type: string
-    gate:
-      routes:
-        # A red tree is not a failure of this phase: it is the wave's work
-        # queue, and the plan phase is what turns it into one.
-        - to: plan
   - id: plan
-    name: Plan this wave's work list
+    name: Plan this wave
     driver: agent
-    provider: codex
-    model: gpt-5.6-sol
+    provider: claude
+    model: claude-fable-5
     prompt: plan.md
     access: read-only
     inputs:
@@ -98,33 +95,29 @@ phases:
         schema:
           type: number
           minimum: 1
+      wave-number:
+        schema:
+          type: number
+          minimum: 1
+      checkpoint-every:
+        schema:
+          type: number
+          minimum: 0
       job-notes:
         schema:
           type: string
           multiline: true
         optional: true
-      survey.failures:
-        schema:
-          type: array
-          items:
-            type: object
-            properties:
-              kind:
-                type: string
-              location:
-                type: string
-              detail:
-                type: string
-            required: [kind, location, detail]
-            additionalProperties: false
-      survey.summary:
+      carried-notes:
         schema:
           type: string
+          multiline: true
+        optional: true
     outputs:
       tasks:
         schema:
           type: array
-          description: The disjoint work items this wave implements, one fan-out unit each.
+          description: The disjoint tasks this wave implements, one fan-out unit each.
           items:
             type: object
             properties:
@@ -147,29 +140,35 @@ phases:
           type: number
           minimum: 0
           description: Number of entries in tasks. Reported separately so the gate can route on it.
-      deferred:
+      complete:
+        schema:
+          type: boolean
+          description: True only when the campaign goal is fully met and nothing is left to schedule. This is the campaign's exit - the run finishes here and never takes the self-call.
+      next-wave-number:
         schema:
           type: number
-          minimum: 0
-          description: Known remaining work this wave did not schedule. Zero here plus zero scheduled is what ends the campaign.
-      dropped:
+          minimum: 1
+          description: This wave's number plus one. Handed to the next wave through the self-call's args.
+      checkpoint-due:
+        schema:
+          type: boolean
+          description: Whether a human is asked to approve continuing after this wave.
+      carry-forward:
         schema:
           type: string
           multiline: true
-          description: What this phase bounded out of the wave and why, or the word none. Never left blank when work was excluded.
+          description: What the next wave's planner must know that the repository does not show - deferred work, ordering decisions, standing risks.
     gate:
       routes:
+        # The campaign's exit. Nothing calls the next wave, so this run rests
+        # done and every wave waiting on it above unwinds the same way.
         - when:
-            all:
-              - eq:
-                  ref: plan.scheduled
-                  value: 0
-              - eq:
-                  ref: plan.deferred
-                  value: 0
-          park: campaign-complete
+            eq:
+              ref: plan.complete
+              value: true
+          to: done
         # Work is known but none was scheduled: the campaign cannot advance on
-        # its own, so it stops here instead of firing empty waves forever.
+        # its own, so it stops here instead of calling empty waves forever.
         - when:
             eq:
               ref: plan.scheduled
@@ -177,9 +176,8 @@ phases:
           park: campaign-stalled
         - to: implement
   - id: implement
-    name: Implement the work list in parallel
+    name: Run every task as its own workflow
     shape: fan-out
-    resources: [campaign-workers]
     over: plan.tasks
     as: task
     inputs:
@@ -194,23 +192,20 @@ phases:
           description: Workspace-relative paths the merge could not reconcile. Empty on a clean merge.
           items:
             type: string
-      diff-base:
-        schema:
-          type: string
-          description: Commit the wave's work is diffed from, captured before the first merge.
+    # One unit per planned task, and each unit is a whole `port-one-task` run in
+    # the unit's own sub-worktree. The lane owns implement, review and fix for
+    # its task; this phase owns only isolation and the merge.
     unit:
       id: port
-      provider: codex
-      model: gpt-5.6-sol
-      prompt: implement-task.md
-      access: write
-      outputs:
-        summary:
-          schema:
-            type: string
-        changed:
-          schema:
-            type: boolean
+      call: port-one-task
+      args:
+        campaign-goal: campaign-goal
+        task-id: task.id
+        task-title: task.title
+        task-intent: task.intent
+        task-sources: task.sources
+        task-targets: task.targets
+        task-acceptance: task.acceptance
     join:
       id: merge
       command: merge-unit-branches
@@ -222,7 +217,7 @@ phases:
             eq:
               ref: implement.passed
               value: true
-          to: review
+          to: verify
         - to: resolve-conflicts
   - id: resolve-conflicts
     name: Resolve the merge conflicts
@@ -248,181 +243,96 @@ phases:
       summary:
         schema:
           type: string
+          multiline: true
     gate:
       routes:
         - when:
             eq:
               ref: resolve-conflicts.resolved
               value: true
-          to: review
+          to: verify
         - park: merge-unresolved
-  - id: review
-    name: Refute the wave in parallel and adjudicate
-    shape: fan-out
-    resources: [review-workers]
-    inputs:
-      campaign-goal:
-        schema:
-          type: string
-          multiline: true
-      plan.tasks:
-        schema:
-          type: array
-          items:
-            type: object
-            properties:
-              id:
-                type: string
-              title:
-                type: string
-              intent:
-                type: string
-              sources:
-                type: string
-              targets:
-                type: string
-              acceptance:
-                type: string
-            required: [id, title, intent, sources, targets, acceptance]
-            additionalProperties: false
-      implement.diff-base:
-        schema:
-          type: string
+  - id: verify
+    name: Verify the merged campaign branch
+    driver: tool
+    check: build-and-test
+    resources: [validation-slot]
     outputs:
-      verdict:
-        schema:
-          type: string
-          enum: [clean, defects-found]
-      consolidated-review:
+      details:
         schema:
           type: string
           multiline: true
-      findings:
-        schema:
-          type: array
-          description: Defects the adjudication confirmed against the workspace. Refuted claims are dropped here and accounted for in the narrative.
-          items:
-            type: object
-            properties:
-              id:
-                type: string
-              severity:
-                type: string
-                enum: [blocking, material, minor]
-              location:
-                type: string
-              claim:
-                type: string
-              evidence:
-                type: string
-            required: [id, severity, location, claim, evidence]
-            additionalProperties: false
-      unreviewed:
-        schema:
-          type: string
-          multiline: true
-          description: What the reviewers did not cover and why, or the word none. Silence here would read as full coverage.
-    fan_out:
-      - id: port-fidelity
-        provider: codex
-        model: gpt-5.6-sol
-        prompt: review-port-fidelity.md
-        access: read-only
-      - id: failure-modes
-        provider: codex
-        model: gpt-5.6-sol
-        prompt: review-failure-modes.md
-        access: read-only
-      - id: integration
-        provider: codex
-        model: gpt-5.6-sol
-        prompt: review-integration.md
-        access: read-only
-    join:
-      id: adjudicate
-      provider: codex
-      model: gpt-5.6-sol
-      prompt: review-adjudicate.md
-      access: read-only
+        optional: true
     gate:
       routes:
+        # Every task was reviewed on its own branch; what fails here is what only
+        # exists once they are together, so an integration fix is its own phase.
         - when:
             eq:
-              ref: review.verdict
-              value: clean
-          to: verify
-        - to: fix
-  - id: fix
-    name: Apply the confirmed findings
+              ref: verify.passed
+              value: false
+          to: integration-fix
+        # The scheduled checkpoint. Approve continues into the next wave; reject
+        # carries the human's note back into a fresh plan for this wave instead,
+        # which is the only other thing a run can do at its own call boundary.
+        - when:
+            eq:
+              ref: plan.checkpoint-due
+              value: true
+          human:
+            approve: next-wave
+            reject:
+              loop: plan
+              max: 2
+              feedback: [verify.details]
+        - to: next-wave
+  - id: integration-fix
+    name: Fix what only breaks once the wave is merged
     driver: agent
     provider: codex
     model: gpt-5.6-sol
-    prompt: fix.md
+    prompt: integration-fix.md
     access: write
     inputs:
       campaign-goal:
         schema:
           type: string
           multiline: true
-      review.consolidated-review:
+      verify.details:
         schema:
           type: string
           multiline: true
-      review.findings:
-        schema:
-          type: array
-          items:
-            type: object
-            properties:
-              id:
-                type: string
-              severity:
-                type: string
-                enum: [blocking, material, minor]
-              location:
-                type: string
-              claim:
-                type: string
-              evidence:
-                type: string
-            required: [id, severity, location, claim, evidence]
-            additionalProperties: false
+        optional: true
     outputs:
       summary:
         schema:
           type: string
+          multiline: true
       changed:
         schema:
           type: boolean
     gate:
       routes:
-        - to: verify
-  - id: verify
-    name: Verify the wave
-    driver: tool
-    check: build-and-test
-    resources: [validation-slot]
-    inputs:
-      fix.changed:
-        schema:
-          type: boolean
-        optional: true
-    outputs:
-      details:
-        schema:
-          type: string
-        optional: true
+        - loop: verify
+          max: 2
+          feedback: [integration-fix.summary]
+        - park: wave-verification-failed
+  - id: next-wave
+    name: Call the next wave
+    shape: call
+    call: port-campaign
+    # The campaign's wave ceiling. Each wave is one more level of the call tree,
+    # and the engine refuses past its own absolute depth of 256 - so this stays
+    # comfortably under it, with room for each wave's task lanes below.
+    max_depth: 200
+    args:
+      campaign-goal: campaign-goal
+      max-tasks: max-tasks
+      wave-number: plan.next-wave-number
+      checkpoint-every: checkpoint-every
+      job-notes: job-notes
+      carried-notes: plan.carry-forward
     gate:
       routes:
-        - when:
-            eq:
-              ref: verify.passed
-              value: true
-          to: done
-        # A red wave after a clean review means the reviewers missed something,
-        # so the loop re-arms them rather than replaying the fix blindly.
-        - loop: review
-          max: 2
-          feedback: [verify.details]
-        - park: wave-verification-failed
-cleanup: auto
+        - to: done
+cleanup: manual

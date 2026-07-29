@@ -1020,26 +1020,56 @@ verdict it now is, with what the first attempt got wrong.
   draft's readability, and it makes the user carry the block through
   every edit and every re-read of their own message.
 
-  **Typing.** `/` as the FIRST character of a draft opens a filtering
+  **Typing.** `/` at the start of any WORD in the draft opens a filtering
   completion menu of registered commands, reusing the `@`-mention
   completion machinery (the `Popover` primitive, the `popoverNav`
   reducer, the same insert-through-`execCommand` path so completions stay
-  in the native undo stack). Arrow / Enter / Tab / click select; Escape
+  in the native undo stack) — and the same word-boundary rule that
+  machinery already uses. Arrow / Enter / Tab / click select; Escape
   dismisses; typing past every match closes it and leaves the text alone.
-  `/` anywhere else in the draft is a path, a fraction, or prose, and is
-  never hijacked. Selecting completes the WORD — the draft reads
-  `/workflow ` and nothing more.
+  A `/` INSIDE a word (`src/lib`, `/tmp/scratch`) is a path, a fraction,
+  or prose, and is never hijacked. Selecting completes the WORD in place —
+  the draft reads `… /workflow ` and nothing more.
 
   **Colour is the entire visual vocabulary.** No token, no chip, no
-  pill, nothing removable-as-a-unit. While the leading word matches a
-  registered command it renders in `--accent`, in the composer and in the
-  sent message in chat history. The composer's paint is one word drawn at
-  the textarea's content origin rather than a full mirror behind a
-  transparent textarea: transparent text hides the IME preedit string and
-  the selection highlight, which is not a trade a message composer may
-  make. The overlay stands down during IME composition and while a
+  pill, nothing removable-as-a-unit. Every word matching a registered
+  command renders in `--accent`, in the composer and in the sent message
+  in chat history. The composer's paint is an invisible mirror of the
+  draft — same font, same width, same wrapping, every character
+  transparent — whose only ink is the command words, each drawn over an
+  opaque `bg-card` background. The TEXTAREA is never made transparent:
+  that hides the IME preedit string and the selection highlight, which is
+  not a trade a message composer may make. Layout, not measurement, is
+  what puts each word in its place, so a word that wraps, sits on the
+  fifth line, or moves because the line above grew is still painted
+  correctly. The overlay stands down during IME composition and while a
   selection is live, because in both states it would be showing something
   that is not true.
+
+  **Amended 2026-07-29 (user ruling): a command counts at ANY word
+  position, not only the first.** The first-word rule shipped as written
+  above and was rejected on contact — "it only works if its the first
+  word. Thats dumb, not what i intended." A person writing "before you
+  start, /workflow" means it, and a rule that silently declines to expand
+  because the invocation arrived mid-sentence teaches nothing except
+  distrust. The rule is now: a word is a maximal run of non-whitespace, a
+  command word is `/` + `[a-z][a-z0-9-]*`, and the first such word the
+  registry claims is the command the message invokes — an unregistered
+  shape (`/tmp`) is skipped rather than ending the search.
+
+  **The accepted consequence** (explicit, by the user) is that a prose
+  mention of `/workflow` genuinely invokes it. There is no heuristic that
+  separates "mentioning the command" from "using the command", and one
+  that guessed would be wrong silently. The colour is the signal: the
+  word is accented from the moment it matches, so the invocation is
+  visible before Enter and remains visible in the transcript afterwards.
+
+  **A command named more than once expands ONCE, and colours
+  everywhere.** The block is context; the same context twice is only
+  cost, and which occurrence "won" is unanswerable anyway because the
+  block is appended after the whole typed text either way. One expansion,
+  one `meta.command` marker — and every occurrence accented, because
+  every one of them is live.
 
   **Expansion is a send-path concern, and the system prompt is not
   touched.** Putting the block in the session's system prompt was
@@ -1058,7 +1088,9 @@ verdict it now is, with what the first attempt got wrong.
   command expanded because the send that wrote it expanded one. A command
   later removed from the registry keeps its colour on the rows it really
   ran on, and an old row whose text merely looks like a command never
-  gains one.
+  gains one. WHERE the colour goes is a fresh parse of the stored text
+  against the marked name, so the transcript accents the same words the
+  composer did.
 
   **Failure is loud and the expansion is never silently skipped.** A
   resolver error aborts the send before the user row is persisted, so the
@@ -1294,6 +1326,25 @@ verdict it now is, with what the first attempt got wrong.
   the wave's `cleanup: auto` discards a worktree only after a disposition
   has landed.
 
+  **SUPERSEDED IN PART by D37 (2026-07-29).** Everything above about
+  *what a starter is* stands: the campaign is content, never an engine
+  mode, and split-context adversarial review is still its default review
+  shape. What does not stand is the **chaining**. Every paragraph above
+  describing waves chaining through the scheduler — the cron +
+  skip-if-running recipe, the alternating-automation pair, the
+  `self-chain` refusal, what a run-if can and cannot ask, and the
+  `disposition: auto-merge` prerequisite that existed only because each
+  fire cut a fresh worktree — is superseded. Waves now chain through a
+  self-call, which is the primitive §3a gives for exactly this and which
+  did not exist in usable form when D34 was written. The user's verdict
+  on the automation-chained starter was "frankenstein shit", and the
+  reasoning holds up: it needed a scheduler row that could not ship in
+  the file, an authoring surface that does not exist, a landing policy in
+  the project profile, and a worktree per wave — four moving parts
+  outside the definition to express one loop. The scheduler facts
+  recorded above remain true of automations; they are simply no longer
+  how a campaign iterates.
+
 ## A fan-out unit can be a call (2026-07-29)
 
 - **D35. A fan-out unit binds to exactly one of `prompt:`, `command:`,
@@ -1505,3 +1556,100 @@ verdict it now is, with what the first attempt got wrong.
   number once and both `RetryWorkItemUnit` and the later
   `StartWorkItemUnit` persist that same value. The four call sites that
   had each open-coded the reopen now share `Engine.reopenUnit`.
+
+## The campaign is a call tree (user ruling, 2026-07-29)
+
+- **D37. The campaign starter is two workflows: a spine that calls itself
+  once per wave, and a lane that each implement unit calls once per
+  task.** The Wave E starter was one wave chained from outside by an
+  automation (D34); the user rejected it — "frankenstein shit" — and
+  everything it worked around now exists natively. §3a call phases
+  re-resolve their target from disk **per invocation**, definition and
+  prompt bodies both. D35 made a fan-out unit able to *be* a whole child
+  workflow in its own sub-worktree. D36 gave a tree a stop that fires at
+  a call boundary. So the loop is a call edge, the isolation is a unit,
+  and the campaign is one root run instead of forty unrelated ones.
+
+  **`port-campaign` — the spine.** `plan` (agent, **Claude**,
+  read-only) → `implement` (fan-out over `plan.tasks`, every unit a
+  `call: port-one-task`, join is the profile-bound merge command) →
+  `resolve-conflicts` (only on a dirty merge) → `verify` (tool check on
+  the merged campaign branch) → `integration-fix` (only on red, loops
+  back to `verify` bounded at 2) → `next-wave` (`call: port-campaign`,
+  `max_depth: 200`). Fable plans because choosing what a campaign does
+  next is the judgment call; the work is GPT's.
+
+  **`port-one-task` — the lane.** `implement` (Codex, write) → `review`
+  (fan-out: one Codex *fidelity* lens beside one Claude *consequence*
+  lens, join adjudicates their claims against the branch) → `fix`
+  (Codex, write) → **back to `review`**, bounded at 2. Two models
+  because two copies of one model miss the same things twice; the fix
+  re-enters review because a fix is a change nobody has looked at yet.
+  The lane cuts no worktree of its own and merges nothing: D35 gives it
+  the unit's sub-worktree, and the spine's join owns the merge.
+
+  **The exit is the absence of a call, not a park.** The planner emits
+  `complete`, and `plan`'s first gate route sends a complete wave `to:
+  done`. The run finishes without ever reaching `next-wave`, which
+  settles the wave that called it, which settles the one above — the
+  whole tree unwinds. Expressing the exit as "do not take the call edge"
+  rather than as a park is what makes a finished campaign a *done* tree
+  instead of a stack of runs each waiting for a human.
+
+  **`checkpoint-every` is a human gate the planner arms.** A gate
+  predicate cannot do arithmetic — the language is comparisons,
+  membership, existence, and combinators (§4) — and `args:` are
+  references, not expressions, so "wave % N == 0" is not expressible in
+  `def`. The wave number is therefore engine-carried (a required input,
+  handed forward as `wave-number: plan.next-wave-number` through the
+  self-call's args, which the dry-run type-checks) and the *comparison*
+  is a planner output: `plan` emits `checkpoint-due`, and `verify`'s
+  gate turns it into a `human:` route — approve advances to
+  `next-wave`, reject loops back to `plan` with the human's note. A
+  `park:` would have been wrong here: a park resumes by re-running the
+  phase that parked, so it would re-evaluate the same gate and park
+  again forever, and only a `human:` route has an approve edge that
+  advances. This is the one place a model computes something the engine
+  could have: getting it wrong costs one missed or one extra pause, and
+  the alternative — a bound command whose only job is modulo — would
+  have added a profile binding to every campaign for it.
+
+  **The loop bound is a literal, and stays one.** `max:` on a loop route
+  is validated statically (`gate.loop-max`, `max >= 1`) and cannot read
+  a variable, so the lane's review↔fix bound cannot come from a workflow
+  input. It ships as `2` with the YAML saying, at that line, that
+  raising it is an edit to the number. In a system where the workflow is
+  a file the user scaffolds and owns, editing the file *is* the
+  flexibility; inventing a counter output so a gate could compare
+  against an input would put a model in charge of a bound whose whole
+  job is to be a bound.
+
+  **Two starters, not one set with two definitions.** A `Set` is a flat
+  directory scaffolded under one `--id`, so a two-definition set would
+  need the scaffolder to invent an id for the second one and would
+  collide with itself on a second campaign. Shipping them as two names
+  keeps `--id` meaning what it says and lets several campaigns share one
+  lane. The cost is that the spine's `call: port-one-task` names an id
+  the scaffolder cannot rename — so scaffolding the spine alone produces
+  one `call.target` finding, printed at scaffold time, naming exactly
+  what is missing. `workflow new` **does** now rewrite a definition's
+  calls to *itself* (`rewriteSelfCalls`), because a self-call is part of
+  the definition being renamed and leaving it stale would point a
+  campaign's loop at a workflow the user never created.
+
+  **Disposition is manual and the campaign is one branch** (user
+  ruling). Workspace flows down the call stack (§3a/§9), so every wave
+  runs in the root's worktree on the root's branch: the planner's
+  evidence is the tree every previous wave landed in, no landing step is
+  needed between waves, and D34's `disposition: auto-merge` prerequisite
+  is dropped rather than restated. The branch is the deliverable and a
+  human decides what happens to it.
+
+  **Steering has three speeds, and the guide states which is which.**
+  Prompt files and repo context files take effect on the **next wave**
+  (calls re-resolve from disk); workflow inputs are fixed for the
+  campaign; and stopping is `run soft-stop` (any wave boundary, on
+  demand) or `checkpoint-every` (on a schedule). The one that used to be
+  live — an automation's job notes — is now a start-time input, which is
+  a real loss of a knob and the reason repo context files are prompted
+  for explicitly.

@@ -13,27 +13,88 @@ import (
 	"agent-overflow/internal/workflow/starters"
 )
 
+// TestEveryStarterCanBeScaffolded scaffolds the whole shipped set into ONE
+// scope and validates each definition against the others. A starter may call
+// another starter — the campaign spine calls the task lane for every unit and
+// calls itself for the next wave — so validating one in isolation would only
+// prove that a call edge cannot be checked, which is not the question.
 func TestEveryStarterCanBeScaffolded(t *testing.T) {
+	configRoot := t.TempDir()
+	targetDir := filepath.Join(configRoot, "workflows")
+	definitionPaths := make(map[string]string, len(starters.List()))
+	for _, name := range starters.List() {
+		// Scaffolded under the id the starter documents, which is the id a
+		// sibling's `call:` edge names.
+		files, definitionPath, err := scaffoldFiles(name, name, targetDir)
+		if err != nil {
+			t.Fatalf("scaffold %q: %v", name, err)
+		}
+		if err := writeScaffold(files, configRoot, targetDir); err != nil {
+			t.Fatalf("write %q: %v", name, err)
+		}
+		definitionPaths[name] = definitionPath
+	}
+	calls, err := NewCallResolver(configRoot, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range starters.List() {
 		t.Run(name, func(t *testing.T) {
-			configRoot := t.TempDir()
-			targetDir := filepath.Join(configRoot, "workflows")
-			files, definitionPath, err := scaffoldFiles(name, "custom-"+name, targetDir)
+			workflow, err := def.ParseFile(definitionPaths[name])
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := writeScaffold(files, configRoot, targetDir); err != nil {
-				t.Fatal(err)
-			}
-			workflow, err := def.ParseFile(definitionPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			result := def.Validate(def.ResolvedWorkflow{Workflow: workflow, Scope: def.ScopeShared, Path: definitionPath}, nil, nil)
+			result := def.Validate(
+				def.ResolvedWorkflow{Workflow: workflow, Scope: def.ScopeShared, Path: definitionPaths[name]},
+				nil, calls,
+			)
 			if !result.Valid() {
 				t.Fatalf("scaffold findings = %+v", result.Findings)
 			}
 		})
+	}
+}
+
+// TestScaffoldRenamesSelfCallEdges pins the one rewrite a renamed definition
+// cannot do without: a workflow that calls ITSELF for the next round must call
+// the id it was scaffolded under, or the loop points at a definition the user
+// never created. Calls to a companion workflow keep the starter's documented
+// id, because the scaffolder does not know what the user called that one.
+func TestScaffoldRenamesSelfCallEdges(t *testing.T) {
+	targetDir := filepath.Join(t.TempDir(), "workflows")
+	files, definitionPath, err := scaffoldFiles("port-campaign", "my-campaign", targetDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data []byte
+	for _, file := range files {
+		if file.path == definitionPath {
+			data = file.data
+		}
+	}
+	if data == nil {
+		t.Fatalf("scaffold produced no definition at %q", definitionPath)
+	}
+	workflow, err := def.ParseBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selfCalls, unitCalls []string
+	for _, phase := range workflow.Phases {
+		if phase.IsCall() {
+			selfCalls = append(selfCalls, phase.CallTarget())
+		}
+		for _, unit := range phase.UnitDefinitions() {
+			if unit.IsCall() {
+				unitCalls = append(unitCalls, unit.CallTarget())
+			}
+		}
+	}
+	if len(selfCalls) != 1 || selfCalls[0] != "my-campaign" {
+		t.Fatalf("self-call targets = %v, want [my-campaign]", selfCalls)
+	}
+	if len(unitCalls) != 1 || unitCalls[0] != "port-one-task" {
+		t.Fatalf("unit call targets = %v, want [port-one-task]", unitCalls)
 	}
 }
 

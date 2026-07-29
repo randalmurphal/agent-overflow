@@ -4,13 +4,23 @@
 // Nothing here expands anything. A command is literal text in the draft —
 // `/workflow` and whatever the user types after it — and the backend resolves
 // the expansion at send time (`app_composer_commands.go`). This module exists
-// so the composer can offer the words and colour one when it matches, and it
+// so the composer can offer the words and colour the ones that match, and it
 // is deliberately pure: no bindings, no stores, no DOM.
 //
 // The backend's parse of the same rule is `internal/usermessage/command.go`
 // and its table is `app_composer_commands.go`. The two sides are parallel by
 // hand rather than generated; the backend is authoritative, so a name added
 // here without one there would colour a word that expands to nothing.
+//
+// Where a command may SIT in the text is not decided here — `utils/commandWords`
+// owns that, because the transcript needs the same answer.
+
+import {
+  commandWordRanges,
+  hasWordSeparator,
+  isWordSeparator,
+  type CommandWordRange,
+} from '../../utils/commandWords';
 
 export interface SlashCommand {
   /** The word the user types, without its leading slash. */
@@ -31,20 +41,29 @@ export function slashCommandWord(command: SlashCommand): string {
   return `/${command.name}`;
 }
 
+export interface SlashCommandMatch extends CommandWordRange {
+  command: SlashCommand;
+}
+
 /**
- * The leading command word of a draft, when it invokes a registered one.
+ * Every registered command word in `value`, in order of appearance.
  *
- * Rules, mirrored exactly by the Go parser:
- * - the very first character must be `/` — a draft starting with whitespace
- *   is not an invocation;
- * - the word runs to the first whitespace character (or the end);
- * - the word must match a registered command EXACTLY, so `/workflows`,
- *   `/Workflow`, and `/tmp/log` are ordinary text.
+ * A command counts at ANY word position (D31, amended): the front of the
+ * draft, mid-sentence, after a newline. Word shape comes from
+ * `commandWordRanges`, mirrored exactly by the Go parser; this adds the one
+ * question the registry can answer, which is whether anything claims the name.
+ *
+ * The list is what the composer paints. What it SENDS is decided on the other
+ * side of the wire — the backend expands the first registered word once, no
+ * matter how many times the draft names it.
  */
-export function leadingSlashCommand(value: string): SlashCommand | null {
-  if (!value.startsWith('/')) return null;
-  const word = value.slice(1).split(/\s/, 1)[0] ?? '';
-  return SLASH_COMMANDS.find((command) => command.name === word) ?? null;
+export function slashCommandMatches(value: string): SlashCommandMatch[] {
+  const matches: SlashCommandMatch[] = [];
+  for (const range of commandWordRanges(value)) {
+    const command = SLASH_COMMANDS.find((entry) => entry.name === range.name);
+    if (command) matches.push({ ...range, command });
+  }
+  return matches;
 }
 
 /** Registered commands whose name starts with `query`, in registry order. */
@@ -57,7 +76,7 @@ export interface SlashTrigger {
   query: string;
   /** Commands matching `query`, in registry order. Never empty. */
   results: SlashCommand[];
-  /** Inclusive index of the `/` — always 0; carried so the caller replaces a range. */
+  /** Inclusive index of the `/`. Carried so the caller replaces a range. */
   start: number;
   /** Exclusive end of the replacement range: the caret. */
   end: number;
@@ -66,20 +85,26 @@ export interface SlashTrigger {
 /**
  * Detect an open slash-command completion at the caret, or null.
  *
- * The trigger only ever opens on the FIRST word of the draft: `/` anywhere
- * else is a path, a fraction, or prose, and hijacking it would make the
- * composer unusable for the text people actually type. The caret must still
- * be inside that first word — moving past the space closes the menu — and at
- * least one command must match, so typing past a full name (`/workflowish`)
- * simply leaves the text alone.
+ * Word-boundary rules, deliberately the same shape as `detectMentionTrigger`:
+ * the `/` must sit at the start of the value or immediately after a separator,
+ * and the caret must still be inside that word — a space between the `/` and
+ * the caret closes the menu. At least one command must match, so typing past a
+ * full name (`/workflowish`) simply leaves the text alone, and a path segment
+ * (`src/lib`) never opens the menu because its `/` follows a letter.
+ *
+ * "Separator" is `commandWordRanges`' separator, not a second definition of
+ * one: the menu must never offer a completion for a word the matcher would
+ * then refuse to colour.
  */
 export function detectSlashTrigger(value: string, caret: number): SlashTrigger | null {
   if (caret < 1 || caret > value.length) return null;
-  if (!value.startsWith('/')) return null;
   const before = value.slice(0, caret);
-  if (/\s/.test(before)) return null;
-  const query = before.slice(1);
+  const slash = before.lastIndexOf('/');
+  if (slash < 0) return null;
+  if (slash > 0 && !isWordSeparator(before[slash - 1])) return null;
+  const query = before.slice(slash + 1);
+  if (hasWordSeparator(query)) return null;
   const results = matchSlashCommands(query);
   if (results.length === 0) return null;
-  return { query, results, start: 0, end: caret };
+  return { query, results, start: slash, end: caret };
 }

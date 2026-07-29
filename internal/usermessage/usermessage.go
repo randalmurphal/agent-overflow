@@ -30,12 +30,14 @@ type Meta struct {
 	RevisionSourceDiffCommentIDs []string                     `json:"revisionSourceDiffCommentIds,omitempty"`
 	// Command names the composer slash command that was recognised on
 	// this message and expanded into the provider-bound payload (D31),
-	// without the leading slash: "workflow" for a `/workflow …` send.
-	// The stored Summary keeps exactly what the user typed, so this
-	// marker is the only record that an expansion happened — chat
-	// history colours the leading word from THIS field rather than from
-	// a live registry match, so a row stays truthful about what actually
-	// expanded when the registry later changes.
+	// without the leading slash: "workflow" for a message naming
+	// `/workflow` at any word position. The stored Summary keeps exactly
+	// what the user typed, so this marker is the only record that an
+	// expansion happened — chat history colours every occurrence of the
+	// word from THIS field rather than from a live registry match, so a
+	// row stays truthful about what actually expanded when the registry
+	// later changes. One marker per row: naming a command twice expands
+	// it once.
 	Command string `json:"command,omitempty"`
 }
 

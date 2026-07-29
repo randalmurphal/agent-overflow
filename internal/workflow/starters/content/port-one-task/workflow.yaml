@@ -1,0 +1,290 @@
+# yaml-language-server: $schema=../workflow.schema.json
+# Required project profile bindings (names must match exactly):
+# checks: (none)
+# commands: (none)
+# capacities: (none)
+#
+# One run is ONE task of a campaign wave. `port-campaign` fans out over its
+# planned tasks and each unit CALLS this workflow, so this run executes inside
+# the unit's own sub-worktree on the unit's own branch - it must never cut a
+# worktree of its own, and no phase here merges anything. The spine's join is
+# what merges the branches after every unit rests.
+#
+# GPT does the work and both models review it: implement and fix are Codex,
+# and the review phase runs one Codex lens beside one Claude lens. Two models
+# looking at the same diff miss different things; two copies of one model miss
+# the same things twice.
+#
+# The review -> fix loop is bounded at 2 traversals. That bound is a literal
+# because a gate's `max:` is validated statically - it cannot read a workflow
+# input - so raising or lowering the number is an edit to THIS line, and the
+# campaign's other knobs stay where they are.
+id: port-one-task
+name: Port one task
+description: Implement one planned task in its own worktree, review it with a Codex lens and a Claude lens, adjudicate the claims, and fix what survives adjudication.
+inputs:
+  campaign-goal:
+    schema:
+      type: string
+      multiline: true
+      description: What the campaign is porting, to what, and the standing rules every task must respect.
+  task-id:
+    schema:
+      type: string
+      description: Stable id the wave's planner gave this task. Echoed back so the spine's join can match a unit to its plan entry.
+  task-title:
+    schema:
+      type: string
+  task-intent:
+    schema:
+      type: string
+      multiline: true
+      description: The behavior this task must end up with.
+  task-sources:
+    schema:
+      type: string
+      multiline: true
+      description: What to port from.
+  task-targets:
+    schema:
+      type: string
+      multiline: true
+      description: Where the change lands. An edit outside these is a merge conflict the campaign pays for.
+  task-acceptance:
+    schema:
+      type: string
+      multiline: true
+      description: How the review proves the task landed.
+outputs:
+  task-id:
+    from: implement.task-id
+  verdict:
+    from: review.verdict
+  summary:
+    from: review.summary
+  unreviewed:
+    from: review.unreviewed
+phases:
+  - id: implement
+    name: Implement the task
+    driver: agent
+    provider: codex
+    model: gpt-5.6-sol
+    prompt: implement.md
+    access: write
+    inputs:
+      campaign-goal:
+        schema:
+          type: string
+          multiline: true
+      task-id:
+        schema:
+          type: string
+      task-title:
+        schema:
+          type: string
+      task-intent:
+        schema:
+          type: string
+          multiline: true
+      task-sources:
+        schema:
+          type: string
+          multiline: true
+      task-targets:
+        schema:
+          type: string
+          multiline: true
+      task-acceptance:
+        schema:
+          type: string
+          multiline: true
+    outputs:
+      task-id:
+        schema:
+          type: string
+          description: The id of the task that was implemented, copied from the input. It is how the campaign's join matches this run's branch back to its plan entry, so it is declared here rather than assumed.
+      summary:
+        schema:
+          type: string
+          multiline: true
+      changed:
+        schema:
+          type: boolean
+    gate:
+      routes:
+        - to: review
+  - id: review
+    name: Review the task from two models
+    shape: fan-out
+    inputs:
+      campaign-goal:
+        schema:
+          type: string
+          multiline: true
+      task-intent:
+        schema:
+          type: string
+          multiline: true
+      task-targets:
+        schema:
+          type: string
+          multiline: true
+      task-acceptance:
+        schema:
+          type: string
+          multiline: true
+    outputs:
+      verdict:
+        schema:
+          type: string
+          enum: [clean, defects-found]
+      summary:
+        schema:
+          type: string
+          multiline: true
+          description: What the branch now does, written after adjudication so it describes the code rather than the intent.
+      findings:
+        schema:
+          type: array
+          description: Claims the adjudication reproduced against the branch. A claim it could not reproduce is dropped here and accounted for in the narrative.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum: [blocking, material, minor]
+              location:
+                type: string
+              claim:
+                type: string
+              evidence:
+                type: string
+            required: [id, severity, location, claim, evidence]
+            additionalProperties: false
+      unreviewed:
+        schema:
+          type: string
+          multiline: true
+          description: What neither lens covered and why, or the word none. Silence here would read as full coverage.
+    fan_out:
+      - id: codex-lens
+        provider: codex
+        model: gpt-5.6-sol
+        prompt: review-codex.md
+        access: read-only
+        outputs:
+          claims:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  location:
+                    type: string
+                  claim:
+                    type: string
+                  why-it-matters:
+                    type: string
+                required: [location, claim, why-it-matters]
+                additionalProperties: false
+          summary:
+            schema:
+              type: string
+              multiline: true
+      - id: claude-lens
+        provider: claude
+        model: claude-fable-5
+        prompt: review-claude.md
+        access: read-only
+        outputs:
+          claims:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  location:
+                    type: string
+                  claim:
+                    type: string
+                  why-it-matters:
+                    type: string
+                required: [location, claim, why-it-matters]
+                additionalProperties: false
+          summary:
+            schema:
+              type: string
+              multiline: true
+    join:
+      id: adjudicate
+      provider: codex
+      model: gpt-5.6-sol
+      prompt: adjudicate.md
+      access: read-only
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: review.verdict
+              value: clean
+          to: done
+        - to: fix
+  - id: fix
+    name: Apply the adjudicated findings
+    driver: agent
+    provider: codex
+    model: gpt-5.6-sol
+    prompt: fix.md
+    access: write
+    inputs:
+      campaign-goal:
+        schema:
+          type: string
+          multiline: true
+      task-acceptance:
+        schema:
+          type: string
+          multiline: true
+      review.summary:
+        schema:
+          type: string
+          multiline: true
+      review.findings:
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum: [blocking, material, minor]
+              location:
+                type: string
+              claim:
+                type: string
+              evidence:
+                type: string
+            required: [id, severity, location, claim, evidence]
+            additionalProperties: false
+    outputs:
+      summary:
+        schema:
+          type: string
+          multiline: true
+      changed:
+        schema:
+          type: boolean
+    gate:
+      routes:
+        # Back to the reviewers, not straight to done: the fix is a change like
+        # any other and has not been looked at yet.
+        - loop: review
+          max: 2
+          feedback: [fix.summary]
+        - park: review-unresolved
+cleanup: manual

@@ -2682,11 +2682,24 @@ describe('<Composer>', () => {
       await waitFor(() => expect(queryByTestId('slash-popover')).toBeNull());
     });
 
-    it('never opens for a slash that is not the first character', async () => {
+    it('opens mid-text and completes in place, leaving the words around it alone', async () => {
+      const { textarea, draft, getAllByTestId, queryByTestId } = await mountComposer();
+
+      await typeInto(textarea, 'before we start /w');
+      await waitFor(() => expect(queryByTestId('slash-popover')).not.toBeNull());
+
+      await fireEvent.click(getAllByTestId('slash-option')[0]);
+      await tick();
+
+      expect(textarea.value).toBe('before we start /workflow ');
+      expect(draft.content).toBe('before we start /workflow ');
+    });
+
+    it('never opens for a slash inside a word, so paths stay text', async () => {
       const { textarea, queryByTestId } = await mountComposer();
-      await typeInto(textarea, 'see /w');
+      await typeInto(textarea, 'see src/w');
       expect(queryByTestId('slash-popover')).toBeNull();
-      await typeInto(textarea, ' /w');
+      await typeInto(textarea, '/tmp/w');
       expect(queryByTestId('slash-popover')).toBeNull();
     });
 
@@ -2734,19 +2747,29 @@ describe('<Composer>', () => {
       await waitFor(() => expect(queryByTestId('slash-popover')).not.toBeNull());
     });
 
-    it('paints the leading command word in the accent colour, and only while it matches', async () => {
-      const { textarea, queryByTestId } = await mountComposer();
+    it('paints every command word in the accent colour, and only while one matches', async () => {
+      const { textarea, container, queryByTestId } = await mountComposer();
+
+      const painted = () =>
+        Array.from(container.querySelectorAll('[data-command-word]')).map((el) => el.textContent);
 
       await typeInto(textarea, '/workflow start the release');
       await waitFor(() => {
         const overlay = queryByTestId('composer-command-highlight');
-        expect(overlay?.textContent).toBe('/workflow');
+        // The overlay mirrors the whole draft so each word lands where the
+        // textarea wrapped it; only the command words carry ink.
+        expect(overlay?.textContent).toBe('/workflow start the release');
       });
+      expect(painted()).toEqual(['/workflow']);
+
+      // Any word position, and every occurrence (D31, amended).
+      await typeInto(textarea, 'first /workflow then /workflow again');
+      await waitFor(() => expect(painted()).toEqual(['/workflow', '/workflow']));
 
       await typeInto(textarea, '/workflows start the release');
       await waitFor(() => expect(queryByTestId('composer-command-highlight')).toBeNull());
 
-      // A selection would be drawn under the opaque word, so the paint stands
+      // A selection would be drawn under the opaque words, so the paint stands
       // down until the selection collapses again.
       await typeInto(textarea, '/workflow start the release');
       await waitFor(() => expect(queryByTestId('composer-command-highlight')).not.toBeNull());

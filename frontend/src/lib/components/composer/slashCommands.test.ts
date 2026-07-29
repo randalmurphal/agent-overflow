@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   SLASH_COMMANDS,
   detectSlashTrigger,
-  leadingSlashCommand,
   matchSlashCommands,
+  slashCommandMatches,
   slashCommandWord,
 } from './slashCommands';
 
@@ -26,27 +26,49 @@ describe('slash command registry', () => {
   });
 });
 
-describe('leadingSlashCommand', () => {
+describe('slashCommandMatches', () => {
+  // Mirrors, case for case, TestCommandWordsPicksTheFirstRegistered in
+  // `internal/usermessage/command_test.go`. The matchers are parallel by hand,
+  // so these tables are the parity check — a rule changed on one side and not
+  // the other shows up as a failing twin.
   const cases: Array<[string, string | null]> = [
     ['/workflow', 'workflow'],
     ['/workflow start the release', 'workflow'],
     ['/workflow\nstart the release', 'workflow'],
     ['/workflow\tstart', 'workflow'],
+    ['ask about /workflow later', 'workflow'],
+    [' /workflow', 'workflow'],
+    ['line one\n/workflow', 'workflow'],
+    ['first /tmp then /workflow', 'workflow'],
+    ['/workflow and again /workflow', 'workflow'],
     ['/workflows are nice', null],
     ['/Workflow', null],
     ['/', null],
     ['/ workflow', null],
     ['/tmp/scratch has the log', null],
-    [' /workflow', null],
-    ['ask about /workflow later', null],
+    ['see /tmp/scratch/workflow', null],
+    ['a/workflow is not a word start', null],
     ['workflow', null],
     ['', null],
   ];
   for (const [value, want] of cases) {
     it(`${JSON.stringify(value)} → ${want ?? 'no command'}`, () => {
-      expect(leadingSlashCommand(value)?.name ?? null).toBe(want);
+      expect(slashCommandMatches(value)[0]?.command.name ?? null).toBe(want);
     });
   }
+
+  it('returns every occurrence, in order, with the range each one occupies', () => {
+    const value = '/workflow now and /workflow again';
+    expect(slashCommandMatches(value).map((match) => [match.start, match.end])).toEqual([
+      [0, 9],
+      [18, 27],
+    ]);
+    expect(value.slice(18, 27)).toBe('/workflow');
+  });
+
+  it('skips an unregistered word rather than stopping at it', () => {
+    expect(slashCommandMatches('check /tmp then /workflow').map((m) => m.start)).toEqual([16]);
+  });
 });
 
 describe('detectSlashTrigger', () => {
@@ -61,13 +83,19 @@ describe('detectSlashTrigger', () => {
     expect(detectSlashTrigger('/deploy', 7)).toBeNull();
   });
 
-  it('never triggers away from the start of the draft', () => {
-    expect(detectSlashTrigger('hello /w', 8)).toBeNull();
-    expect(detectSlashTrigger(' /w', 3)).toBeNull();
-    expect(detectSlashTrigger('/workflow now /w', 16)).toBeNull();
+  it('triggers on a word anywhere in the draft', () => {
+    expect(detectSlashTrigger('hello /w', 8)).toMatchObject({ query: 'w', start: 6, end: 8 });
+    expect(detectSlashTrigger(' /w', 3)).toMatchObject({ query: 'w', start: 1, end: 3 });
+    expect(detectSlashTrigger('/workflow now /w', 16)).toMatchObject({ query: 'w', start: 14 });
+    expect(detectSlashTrigger('line one\n/wo', 12)).toMatchObject({ query: 'wo', start: 9 });
   });
 
-  it('closes once the caret leaves the first word', () => {
+  it('never triggers on a slash inside a word, so paths stay text', () => {
+    expect(detectSlashTrigger('src/w', 5)).toBeNull();
+    expect(detectSlashTrigger('/tmp/w', 6)).toBeNull();
+  });
+
+  it('closes once the caret leaves the word', () => {
     // Caret after the space: the word is settled, the menu is done.
     expect(detectSlashTrigger('/workflow ', 10)).toBeNull();
     expect(detectSlashTrigger('/workflow do it', 15)).toBeNull();

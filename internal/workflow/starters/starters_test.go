@@ -1,6 +1,7 @@
 package starters
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -36,54 +37,108 @@ func (b documentedBindings) Capacity(name string) (int, bool) {
 // its own gets.
 func (b documentedBindings) DeclaredMaxFanOutWidth() int { return 0 }
 
+// starterCalls resolves one starter's call edges against the rest of the
+// embedded set. It exists because a starter may CALL another one — the campaign
+// spine calls itself for the next wave and calls the task lane for every unit —
+// and a dry-run with no resolver reports `call.unresolved` per edge rather than
+// pronouncing an unchecked call graph valid. Resolving against the embedded set
+// is also the assertion that matters: the pair a user scaffolds has to compose.
+type starterCalls struct {
+	workflows map[string]def.ResolvedWorkflow
+}
+
+func (c starterCalls) ResolveCall(id string) (def.ResolvedWorkflow, error) {
+	resolved, ok := c.workflows[id]
+	if !ok {
+		return def.ResolvedWorkflow{}, fmt.Errorf("no embedded starter declares workflow id %q", id)
+	}
+	return resolved, nil
+}
+
+// materializedStarter is one embedded starter written to disk, which is what
+// prompt-template validation needs: the definition's path is how sibling prompt
+// files are found, for a child workflow exactly as for the root.
+type materializedStarter struct {
+	resolved   def.ResolvedWorkflow
+	documented documentedBindings
+}
+
 func TestEmbeddedStartersAreCompleteAndValid(t *testing.T) {
-	if got, want := List(), []string{"build-and-validate", "multi-lens-review", "poll-jira-and-start", "port-campaign"}; !reflect.DeepEqual(got, want) {
+	want := []string{"build-and-validate", "multi-lens-review", "poll-jira-and-start", "port-campaign", "port-one-task"}
+	if got := List(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("List() = %v, want %v", got, want)
 	}
+
+	// Every starter is written out and parsed before any of them is validated,
+	// so a call edge resolves to the same definition a user would have on disk.
+	starters := make(map[string]materializedStarter, len(want))
+	calls := starterCalls{workflows: make(map[string]def.ResolvedWorkflow, len(want))}
+	for _, name := range List() {
+		resolved, documented := materializeStarter(t, name)
+		if existing, duplicate := starters[resolved.Workflow.ID]; duplicate {
+			t.Fatalf("starters %q and %q both declare workflow id %q", existing.resolved.Path, resolved.Path, resolved.Workflow.ID)
+		}
+		starters[resolved.Workflow.ID] = materializedStarter{resolved: resolved, documented: documented}
+		calls.workflows[resolved.Workflow.ID] = resolved
+	}
+
 	for _, name := range List() {
 		t.Run(name, func(t *testing.T) {
-			set, err := Fetch(name)
-			if err != nil {
-				t.Fatal(err)
+			// The starter directory name is the workflow id: `workflow new
+			// port-campaign` has to reach the definition that calls
+			// `port-one-task` by that name, and the call edge names the id.
+			starter, ok := starters[name]
+			if !ok {
+				t.Fatalf("no embedded starter declares workflow id %q", name)
 			}
-			dir := t.TempDir()
-			var definitionPath string
-			var definitionData []byte
-			for _, file := range set.Files {
-				path := filepath.Join(dir, file.Name)
-				if err := os.WriteFile(path, file.Data, 0o600); err != nil {
-					t.Fatalf("write starter file %q: %v", file.Name, err)
-				}
-				if file.Name == "workflow.yaml" {
-					definitionPath = path
-					definitionData = file.Data
-				} else if filepath.Ext(file.Name) == ".md" {
-					assertPromptContract(t, file.Name, string(file.Data))
-				}
-			}
-			if definitionPath == "" {
-				t.Fatal("starter has no workflow.yaml")
-			}
-			workflow, err := def.ParseFile(definitionPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			documented := parseDocumentedBindings(t, definitionData)
-			used := usedBindings(workflow)
-			assertSameNames(t, "checks", documented.checks, used.checks)
-			assertSameNames(t, "commands", documented.commands, used.commands)
-			assertSameNames(t, "capacities", documented.capacities, used.capacities)
-			result := def.Validate(def.ResolvedWorkflow{
-				Workflow: workflow,
-				Scope:    def.ScopeShared,
-				Path:     definitionPath,
-			}, documented, nil)
+			used := usedBindings(starter.resolved.Workflow)
+			assertSameNames(t, "checks", starter.documented.checks, used.checks)
+			assertSameNames(t, "commands", starter.documented.commands, used.commands)
+			assertSameNames(t, "capacities", starter.documented.capacities, used.capacities)
 
+			result := def.Validate(starter.resolved, starter.documented, calls)
 			if !result.Valid() || result.BindingStatus != def.BindingsChecked {
 				t.Fatalf("starter validation = %+v", result)
 			}
 		})
 	}
+}
+
+// materializeStarter writes one starter to its own directory, checks its prompt
+// contract, and returns it resolved.
+func materializeStarter(t *testing.T, name string) (def.ResolvedWorkflow, documentedBindings) {
+	t.Helper()
+	set, err := Fetch(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	var definitionPath string
+	var definitionData []byte
+	for _, file := range set.Files {
+		path := filepath.Join(dir, file.Name)
+		if err := os.WriteFile(path, file.Data, 0o600); err != nil {
+			t.Fatalf("write starter file %q: %v", file.Name, err)
+		}
+		if file.Name == "workflow.yaml" {
+			definitionPath = path
+			definitionData = file.Data
+		} else if filepath.Ext(file.Name) == ".md" {
+			assertPromptContract(t, name+"/"+file.Name, string(file.Data))
+		}
+	}
+	if definitionPath == "" {
+		t.Fatalf("starter %q has no workflow.yaml", name)
+	}
+	workflow, err := def.ParseFile(definitionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return def.ResolvedWorkflow{
+		Workflow: workflow,
+		Scope:    def.ScopeShared,
+		Path:     definitionPath,
+	}, parseDocumentedBindings(t, definitionData)
 }
 
 func TestFetchReturnsIsolatedData(t *testing.T) {

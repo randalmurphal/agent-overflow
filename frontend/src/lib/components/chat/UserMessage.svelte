@@ -17,8 +17,9 @@
   import {
     parseUserMessageAttachments,
     parseUserMessageMeta,
-    userMessageCommandWord,
+    userMessageCommandRanges,
   } from '../../utils/userMessageMeta';
+  import { commandSegments } from '../../utils/commandWords';
   import { formatTimeOfDay } from '../../utils/format';
   import type { UserMessageActions } from './userMessageActions';
 
@@ -88,11 +89,14 @@
   const visibleSummary = $derived(
     item.summary.replace(/\n\n!\[[^\]]*]\(attachment:\/\/[^\s)]+\)/g, '').trimEnd(),
   );
-  // A composer command that expanded at send time (D31) keeps its word in the
-  // transcript — the block it added is never stored — and the word renders in
-  // the accent colour, exactly as the composer showed it while typing.
-  const commandWord = $derived(userMessageCommandWord(item.meta, visibleSummary));
-  const summaryAfterCommand = $derived(visibleSummary.slice(commandWord.length));
+  // A composer command that expanded at send time (D31) keeps its words in the
+  // transcript — the block it added is never stored — and every occurrence
+  // renders in the accent colour, exactly as the composer showed them while
+  // typing.
+  const commandRanges = $derived(userMessageCommandRanges(item.meta, visibleSummary));
+  const summarySegments = $derived(
+    commandRanges.length > 0 ? commandSegments(visibleSummary, commandRanges) : [],
+  );
 
   async function expandAttachment(id: string): Promise<void> {
     if (!onImageExpand) return;
@@ -171,7 +175,9 @@
              break opportunities in min-content, so the 82% cap holds.
              Guard: userMessageOverflow.browser.test.ts -->
         <p class="whitespace-pre-wrap wrap-anywhere"
-        >{#if commandWord}<span class="text-accent" data-testid="user-message-command">{commandWord}</span>{/if}{summaryAfterCommand}</p>
+        >{#if summarySegments.length > 0}{#each summarySegments as segment, index (index)}{#if segment.command}<span
+                class="text-accent"
+                data-testid="user-message-command">{segment.text}</span>{:else}{segment.text}{/if}{/each}{:else}{visibleSummary}{/if}</p>
       {/if}
     </div>
     <div class="mt-1 flex items-center justify-end gap-1.5 pr-1 text-[0.625rem] text-fg-hint">

@@ -24,6 +24,7 @@ var names = []string{
 	"multi-lens-review",
 	"poll-jira-and-start",
 	"port-campaign",
+	"port-one-task",
 }
 
 //go:embed content/*/*

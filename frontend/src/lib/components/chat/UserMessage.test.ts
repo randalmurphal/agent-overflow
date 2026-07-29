@@ -489,7 +489,7 @@ describe('<UserMessage>', () => {
       });
     }
 
-    it('colours the leading word when the meta says it expanded', () => {
+    it('colours the command word when the meta says it expanded', () => {
       const { getByTestId } = renderSummary(
         '/workflow start the release',
         JSON.stringify({ command: 'workflow' }),
@@ -512,9 +512,32 @@ describe('<UserMessage>', () => {
       expect(queryByTestId('user-message-command')).toBeNull();
     });
 
-    it('leaves the row plain when the marked command is not what the text says', () => {
-      const { queryByTestId } = renderSummary(
+    it('colours a mid-sentence command, because that is what invoked it', () => {
+      const { getByTestId } = renderSummary(
         'we talked about /workflow yesterday',
+        JSON.stringify({ command: 'workflow' }),
+      );
+      expect(getByTestId('user-message-command').textContent).toBe('/workflow');
+      expect(getByTestId('user-message-bubble').textContent).toContain(
+        'we talked about /workflow yesterday',
+      );
+    });
+
+    it('colours every occurrence, though the send expanded once', () => {
+      const { getAllByTestId, getByTestId } = renderSummary(
+        '/workflow now and /workflow again',
+        JSON.stringify({ command: 'workflow' }),
+      );
+      expect(getAllByTestId('user-message-command').map((el) => el.textContent)).toEqual([
+        '/workflow',
+        '/workflow',
+      ]);
+      expect(getByTestId('user-message-bubble').textContent).toContain('/workflow now and /workflow again');
+    });
+
+    it('leaves the row plain when the marked command is nowhere in the text', () => {
+      const { queryByTestId } = renderSummary(
+        'we talked about it yesterday',
         JSON.stringify({ command: 'workflow' }),
       );
       expect(queryByTestId('user-message-command')).toBeNull();

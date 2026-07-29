@@ -5,6 +5,7 @@ import {
   type Attachment,
 } from '../types/attachment';
 import type { Item, SourceProposedPlan } from '../types/models';
+import { commandWordRanges, type CommandWordRange } from './commandWords';
 
 export interface AttachmentPreviewSource {
   id: string;
@@ -47,24 +48,28 @@ export function parseUserMessageMeta(meta: string | undefined): UserMessageMeta 
 }
 
 /**
- * The leading command word to colour on a persisted user row, or ''.
+ * Where to colour command words on a persisted user row.
  *
  * Keyed on the meta marker the send path wrote (D31), NOT on a live registry
  * match: history must say what actually expanded, so a command removed from
  * the registry keeps its colour on the rows it really ran on, and a word that
  * merely looks like a command on an old row never gains one. The word still
- * has to be there — a row whose text no longer opens with the marked command
+ * has to be there — a row whose text no longer contains the marked command
  * (a revert-rehydrated draft the user edited, say) renders plain rather than
- * colouring a prefix that means nothing.
+ * colouring something that means nothing.
+ *
+ * Every occurrence is returned, at any word position, exactly as the composer
+ * painted them while the message was being typed. The expansion still happened
+ * once; the colour is about which words were live, not how many blocks were
+ * appended.
  */
-export function userMessageCommandWord(meta: string | undefined, summary: string): string {
+export function userMessageCommandRanges(
+  meta: string | undefined,
+  summary: string,
+): CommandWordRange[] {
   const command = parseUserMessageMeta(meta).command;
-  if (typeof command !== 'string' || command === '') return '';
-  const word = `/${command}`;
-  if (!summary.startsWith(word)) return '';
-  const next = summary.charAt(word.length);
-  if (next !== '' && !/\s/.test(next)) return '';
-  return word;
+  if (typeof command !== 'string' || command === '') return [];
+  return commandWordRanges(summary).filter((range) => range.name === command);
 }
 
 export function sourceProposedPlanFromUserMessageMeta(value: unknown): SourceProposedPlan | null {

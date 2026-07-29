@@ -39,7 +39,10 @@ func TestExpandComposerCommandTransitions(t *testing.T) {
 		{"unknown command is ordinary text", "/deploy now", "", false},
 		{"a longer word is not the command", "/workflows are nice", "", false},
 		{"a path is not a command", "/tmp/scratch has the log", "", false},
-		{"mid-message slash is not a command", "look at /workflow later", "", false},
+		// D31 as amended: the word counts wherever it sits.
+		{"mid-message command", "look at /workflow later", "workflow", true},
+		{"command after a newline", "here is the plan\n/workflow", "workflow", true},
+		{"unregistered word does not shadow a later command", "check /tmp then /workflow", "workflow", true},
 	}
 	for _, step := range steps {
 		t.Run(step.name, func(t *testing.T) {
@@ -68,6 +71,31 @@ func TestExpandComposerCommandTransitions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestExpandComposerCommandFiresOnceForRepeats pins the accepted consequence of
+// matching at any word position (D31, amended): a message that names the same
+// command three times still gets ONE block. The composer colours all three
+// words, because every one of them is live; the payload carries the context
+// once, because context repeated is only cost.
+func TestExpandComposerCommandFiresOnceForRepeats(t *testing.T) {
+	app, _ := newComposerTestApp(t)
+	thread := composerSeedThread(t, app, "thr-expand-repeat", "")
+
+	const content = "/workflow now, /workflow again, and /workflow once more"
+	expanded, command, err := app.expandComposerCommand(thread.ID, content)
+	if err != nil {
+		t.Fatalf("expandComposerCommand: %v", err)
+	}
+	if command != "workflow" {
+		t.Fatalf("command = %q, want %q", command, "workflow")
+	}
+	if got := strings.Count(expanded, "Agent Overflow workflows are available"); got != 1 {
+		t.Fatalf("block appended %d times, want 1 (payload: %q)", got, expanded)
+	}
+	if !strings.HasPrefix(expanded, content+"\n\n") {
+		t.Fatalf("typed text was rewritten: %q", expanded)
 	}
 }
 

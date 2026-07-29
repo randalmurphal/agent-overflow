@@ -230,7 +230,9 @@ test('/workflow completes in the composer and expands on the wire, not in the tr
   harness,
   page,
 }) => {
-  await setClaudeScenario(harness, 'overlay-composer', oneDoneTurn);
+  // Two turns: one invoking the command at the front of the draft, one
+  // invoking it mid-sentence. Both are real invocations (D31, amended).
+  await setClaudeScenario(harness, 'overlay-composer', [...oneDoneTurn, ...oneDoneTurn]);
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
       {
@@ -287,6 +289,34 @@ test('/workflow completes in the composer and expands on the wire, not in the tr
   await expect(bubble).toHaveText('/workflow start the release');
   await expect(bubble.getByTestId('user-message-command')).toHaveText('/workflow');
   expect(await bubble.textContent()).not.toContain('agent-overflow run start');
+
+  // Let the first turn finish, so the next Enter sends rather than queues.
+  await harness.waitForEvent('provider:turn_completed');
+
+  // Same command, mid-sentence. The menu opens on a word that is not the
+  // first, the completion lands in place, and the word is coloured where it
+  // sits — the accent is the signal that a prose mention is live.
+  await composer.click();
+  await composer.pressSequentially('now check the /wo');
+  await expect(page.getByTestId('slash-popover')).toBeVisible();
+  await page.getByTestId('slash-option').filter({ hasText: '/workflow' }).click();
+  await expect(composer).toHaveValue('now check the /workflow ');
+  await composer.pressSequentially('list');
+  await expect(page.getByTestId('composer-command-highlight')).toContainText('/workflow');
+
+  const secondReceived = harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (event) => event.report.kind === 'user_input',
+  );
+  await page.keyboard.press('Enter');
+  const secondWireText = (await secondReceived).report.input ?? '';
+
+  expect(secondWireText.startsWith('now check the /workflow list\n\n')).toBe(true);
+  expect(secondWireText).toContain('Agent Overflow workflows are available');
+
+  const secondBubble = page.getByTestId('user-message-bubble').last();
+  await expect(secondBubble).toHaveText('now check the /workflow list');
+  await expect(secondBubble.getByTestId('user-message-command')).toHaveText('/workflow');
 });
 
 test('a view-only session disables every mutating affordance', async ({ harness, page }) => {

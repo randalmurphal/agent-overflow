@@ -1,7 +1,8 @@
 package main
 
-// Composer slash commands (spec §5.2, D31). A composer message whose first
-// word is `/name` is expanded at SEND TIME, on this side of the wire:
+// Composer slash commands (spec §5.2, D31). A composer message containing the
+// word `/name` — at any word position — is expanded at SEND TIME, on this side
+// of the wire:
 //
 //	provider payload = <exactly what the user typed> + "\n\n" + <command block>
 //	stored user row  = <exactly what the user typed>, meta.command = "name"
@@ -52,32 +53,46 @@ func lookupComposerCommand(name string) (composerCommand, bool) {
 	return composerCommand{}, false
 }
 
-// expandComposerCommand resolves a leading composer command in content.
+// firstRegisteredComposerCommand returns the first command-shaped word in
+// content that this table claims.
+//
+// Words the table does not claim are skipped rather than ending the search: a
+// message can mention `/tmp` and still invoke `/workflow` in the same sentence,
+// and an unknown `/foo` is ordinary text, not an error.
+func firstRegisteredComposerCommand(content string) (composerCommand, bool) {
+	for _, name := range usermessage.CommandWords(content) {
+		if command, ok := lookupComposerCommand(name); ok {
+			return command, true
+		}
+	}
+	return composerCommand{}, false
+}
+
+// expandComposerCommand resolves a composer command invoked anywhere in content.
 //
 // Returns the provider-bound payload and the recognised command name. Content
-// that opens with no command word, or with a word no command claims, comes
-// back unchanged with an empty name — an unknown `/foo` is ordinary text, not
-// an error, because the user may simply have typed a path or a fraction.
+// that names no registered command comes back unchanged with an empty name.
+//
+// A command named more than once expands ONCE — the block is context, and the
+// same context twice is only cost. Which occurrence "won" is not a question
+// the payload can answer anyway: the block is appended after the whole typed
+// text either way.
 //
 // A registered command whose block resolves EMPTY still reports its name: the
 // message was a command invocation and the row must say so, even when the
 // project had nothing to add.
 func (a *App) expandComposerCommand(threadID, content string) (string, string, error) {
-	name := usermessage.LeadingCommandWord(content)
-	if name == "" {
-		return content, "", nil
-	}
-	command, ok := lookupComposerCommand(name)
+	command, ok := firstRegisteredComposerCommand(content)
 	if !ok {
 		return content, "", nil
 	}
 	block, err := command.expand(a, threadID)
 	if err != nil {
-		return "", "", fmt.Errorf("expand /%s: %w", name, err)
+		return "", "", fmt.Errorf("expand /%s: %w", command.name, err)
 	}
 	block = strings.TrimSpace(block)
 	if block == "" {
-		return content, name, nil
+		return content, command.name, nil
 	}
-	return strings.TrimRight(content, " \t\r\n") + "\n\n" + block, name, nil
+	return strings.TrimRight(content, " \t\r\n") + "\n\n" + block, command.name, nil
 }
