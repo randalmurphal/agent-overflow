@@ -446,32 +446,45 @@ func (c *Credentials) RemoveAccount(providerName, accountID string) error {
 }
 
 // PruneOrphanedAccounts removes credential slots that have no corresponding
-// metadata account. A crash can leave one behind between credential creation
-// and metadata commit; registered account directories are never inspected or
-// modified by this sweep.
+// metadata account and returns the IDs it removed, so the caller can record
+// each destruction. A crash can leave one slot behind between credential
+// creation and metadata commit; registered account directories are never
+// inspected or modified by this sweep.
+//
+// An empty keep-set prunes nothing. Zero registered accounts cannot be told
+// apart from a process reading a different metadata store than the one these
+// slots belong to — a fresh --data-dir, a test overriding the config root
+// but not the home — and the slots hold logins whose refresh tokens are
+// single-use and unrecoverable, so the sweep refuses to guess. The crash
+// orphan it exists for is cleaned on the first sweep after any account is
+// registered again.
 func (c *Credentials) PruneOrphanedAccounts(
 	providerName string,
 	keepAccountIDs map[string]bool,
-) error {
+) ([]string, error) {
 	paths, err := c.Paths(providerName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	rootPath := filepath.Join(paths.SharedHome, accountDirectoryName)
 	info, err := os.Lstat(rootPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return fmt.Errorf("provideraccounts: inspect managed account root: %w", err)
+		return nil, fmt.Errorf("provideraccounts: inspect managed account root: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("provideraccounts: managed account root %s is not a directory", rootPath)
+		return nil, fmt.Errorf("provideraccounts: managed account root %s is not a directory", rootPath)
+	}
+	if len(keepAccountIDs) == 0 {
+		return nil, nil
 	}
 	entries, err := os.ReadDir(rootPath)
 	if err != nil {
-		return fmt.Errorf("provideraccounts: list managed accounts: %w", err)
+		return nil, fmt.Errorf("provideraccounts: list managed accounts: %w", err)
 	}
+	var pruned []string
 	var pruneErrs []error
 	for _, entry := range entries {
 		accountID := entry.Name()
@@ -487,9 +500,11 @@ func (c *Credentials) PruneOrphanedAccounts(
 		}
 		if err := c.RemoveAccount(providerName, accountID); err != nil {
 			pruneErrs = append(pruneErrs, err)
+			continue
 		}
+		pruned = append(pruned, accountID)
 	}
-	return errors.Join(pruneErrs...)
+	return pruned, errors.Join(pruneErrs...)
 }
 
 func readCredentialSnapshot(path string) (CredentialSnapshot, error) {

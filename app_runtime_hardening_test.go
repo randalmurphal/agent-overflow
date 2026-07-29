@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"agent-overflow/internal/provideraccounts"
 )
 
 func TestInitStoresRepairsAppOwnedPermissions(t *testing.T) {
@@ -12,6 +14,14 @@ func TestInitStoresRepairsAppOwnedPermissions(t *testing.T) {
 		t.Skip("Unix permission bits are not stable on Windows")
 	}
 	configRoot := t.TempDir()
+	// initStores builds the provider credential store from os.UserHomeDir(),
+	// and its startup prune deletes credential slots. Without this redirect
+	// the test sweeps the DEVELOPER'S real ~/.claude and ~/.codex saved
+	// logins (incident 2026-07-29: every `make go-test` silently destroyed
+	// the machine's saved provider accounts).
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
 	t.Setenv("AGENT_OVERFLOW_DEBUG", "provider")
 
 	dbDir := filepath.Join(configRoot, "agent-overflow")
@@ -94,6 +104,50 @@ func TestInitStoresRepairsAppOwnedPermissions(t *testing.T) {
 		t.Fatalf("provider event log count = %d, want 1 (%v)", len(logFiles), logFiles)
 	}
 	assertAppMode(t, logFiles[0], 0o600)
+}
+
+// initStores' startup prune sweeps the credential slots under the user's
+// HOME while its keep-set comes from the metadata store under the data dir.
+// When those roots disagree — a fresh --data-dir, a test overriding the
+// config root but not the home — the metadata lists no accounts, and before
+// the empty-keep-set guard the prune then deleted every saved login on the
+// machine (incident 2026-07-29). A boot over empty metadata must leave
+// existing slots untouched.
+func TestInitStoresKeepsCredentialSlotsWhenMetadataIsEmpty(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+
+	seeded, err := provideraccounts.NewCredentials(homeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, providerName := range []string{"claude", "codex"} {
+		if err := seeded.WriteAccountCredential(
+			providerName,
+			"saved-login",
+			[]byte(`{"account":"precious"}`),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	app := NewApp()
+	app.dataDirOverride = t.TempDir()
+	_, st, err := app.initStores()
+	if err != nil {
+		t.Fatalf("initStores: %v", err)
+	}
+	defer st.Close()
+	if app.logger != nil {
+		defer app.logger.Close()
+	}
+
+	for _, providerName := range []string{"claude", "codex"} {
+		if _, err := seeded.ReadCredential(providerName, "saved-login", false); err != nil {
+			t.Fatalf("%s slot destroyed by a boot with empty metadata: %v", providerName, err)
+		}
+	}
 }
 
 func TestPrepareAppSensitiveFileRejectsSymlink(t *testing.T) {

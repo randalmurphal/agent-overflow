@@ -214,7 +214,18 @@ func (a *App) initStores() (string, *store.Store, error) {
 		for _, account := range a.providerAccounts.List(providerName, time.Now()) {
 			keep[account.ID] = true
 		}
-		if err := a.providerCredentials.PruneOrphanedAccounts(providerName, keep); err != nil {
+		pruned, err := a.providerCredentials.PruneOrphanedAccounts(providerName, keep)
+		// A removed slot is an unrecoverable login (Claude refresh tokens are
+		// single-use), so every one is announced — silent destruction here
+		// once cost days of "sign in again" debugging.
+		for _, accountID := range pruned {
+			log.Printf(
+				"provider accounts: removed orphaned %s credential slot %s (no saved account references it)",
+				providerName,
+				accountID,
+			)
+		}
+		if err != nil {
 			closeErr := st.Close()
 			return "", nil, errors.Join(
 				fmt.Errorf("clean orphaned %s account credentials: %w", providerName, err),
