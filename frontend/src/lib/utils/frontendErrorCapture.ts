@@ -1,4 +1,5 @@
 import { ReportFrontendErrorBatch } from '../stores/bindings';
+import { wsClient } from '../transport/wsClient';
 import { UI_TRACE_MAX_LINE_BYTES } from './uiTraceLimits';
 import { redactDiagnosticText } from './diagnosticRedaction';
 
@@ -72,6 +73,13 @@ export function installFrontendErrorCapture(): void {
   if (listenerAbort !== null || typeof window === 'undefined') return;
   listenerAbort = new AbortController();
   const { signal } = listenerAbort;
+
+  // Transport outage summaries (reconnect duration, close code, failed
+  // attempts, watchdog force-closes) land in the same error log —
+  // they're the after-the-fact evidence for "the UI stalled" reports.
+  // Injected here rather than imported by the transport so wsClient
+  // stays free of stores/bindings dependencies.
+  wsClient.setDiagnosticsSink(reportFrontendDiagnostic);
 
   window.addEventListener('error', (event: ErrorEvent) => {
     // Synthetic or resource-flavored `error` events can arrive with no
@@ -305,6 +313,7 @@ function isMethodUnavailable(err: unknown): boolean {
 
 /** Test hook: detach listeners and reset module state between cases. */
 export function resetFrontendErrorCaptureForTest(): void {
+  wsClient.setDiagnosticsSink(null);
   signatureCounts.clear();
   pendingLines.length = 0;
   if (flushTimer !== null && typeof window !== 'undefined') {

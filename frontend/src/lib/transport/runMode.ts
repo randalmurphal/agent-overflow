@@ -15,9 +15,9 @@
 // We read once at module load and cache. The value can't change during
 // the SPA's lifetime — a different mode means a different process boot.
 
-import type { RunMode } from './wsClient';
+import type { RunMode } from './bootstrap';
 import { createSubscriber } from 'svelte/reactivity';
-export type { RunMode } from './wsClient';
+export type { RunMode } from './bootstrap';
 
 interface InjectedBootstrap {
   mode?: unknown;

@@ -12,6 +12,21 @@
 //   - gap event fires both console.warn and the synthetic
 //     transport:gap channel
 //   - exponential backoff: second reconnect waits >first delay
+//   - backoff collapse: an RPC / page resume / triggerReconnect fires a
+//     queued backoff attempt immediately; the RPC path is rate-floored
+//     (one attempt per RECONNECT_INITIAL_MS); resume-while-hidden no-ops
+//   - triggerReconnect: settles the scheduled promise for queued
+//     awaiters; no-ops while an attempt is in flight
+//   - stale-socket watchdog: force-close after the traffic threshold,
+//     armed per-connection by the first ping frame (version-skew guard,
+//     reset across sockets); heartbeats keep the socket alive; remote
+//     backends with in-flight RPCs are exempt mid-transfer
+//   - superseded-socket identity guard: a stale socket's late events
+//     can't clobber the live connection
+//   - backoff caps: local vs remote ceiling, sticky across bootstrap
+//     invalidation
+//   - bootstrap cache invalidated every 2 consecutive pre-open failures
+//   - outage diagnostics: one summary line per outage on reconnect
 //   - bootstrap fetch validation: 404, malformed JSON, missing fields,
 //     non-ws scheme
 //   - close() during pending reconnect cancels the timer
@@ -24,7 +39,12 @@ import {
   DisconnectedError,
   MAX_PENDING_RPCS,
   MAX_REPLAY_CHANNELS,
+  RECONNECT_INITIAL_MS,
+  RECONNECT_MAX_LOCAL_MS,
+  RECONNECT_MAX_REMOTE_MS,
   RPC_TIMEOUT_MS,
+  STALE_TRAFFIC_THRESHOLD_MS,
+  STALE_CHECK_INTERVAL_MS,
   TransportError,
   transportGapChannel,
 } from './wsClient';
@@ -67,8 +87,8 @@ class MockWebSocket {
     this.sent.push(JSON.parse(data) as Record<string, unknown>);
   }
 
-  close(_code?: number, _reason?: string): void {
-    this.triggerClose();
+  close(code?: number, _reason?: string): void {
+    this.triggerClose(code ?? 1005);
   }
 
   addEventListener(type: 'open', listener: () => void): void;
@@ -99,10 +119,13 @@ class MockWebSocket {
     for (const fn of [...this.listeners.message]) fn(ev);
   }
 
-  triggerClose(): void {
+  // Default code 1006 (abnormal closure) — the shape of a network
+  // death, which is what most tests simulate and what the outage
+  // diagnostics record.
+  triggerClose(code = 1006): void {
     if (this.readyState === 3) return;
     this.readyState = 3; // CLOSED
-    const ev = new CloseEvent('close');
+    const ev = new CloseEvent('close', { code });
     for (const fn of [...this.listeners.close]) fn(ev);
   }
 
@@ -1007,6 +1030,541 @@ describe('WSClient', () => {
     // A second socket exists immediately, without waiting on the
     // exponential backoff that scheduleReconnect would otherwise impose.
     expect(MockWebSocket.instances).toHaveLength(2);
+
+    client.close();
+  });
+
+  it('an RPC dispatched during a queued backoff fires the attempt immediately', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Escalate the ladder so the queued delay (500ms) clearly exceeds
+    // the collapse floor: close → attempt (125ms) → close → attempt
+    // (250ms) → close, leaving a 500ms backoff queued.
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(130);
+    MockWebSocket.instances[1]!.triggerClose();
+    await vi.advanceTimersByTimeAsync(260);
+    MockWebSocket.instances[2]!.triggerClose();
+    expect(MockWebSocket.instances).toHaveLength(3);
+
+    // Sit out the rate floor (the last attempt just started), then
+    // dispatch an RPC — the demand collapse must start the attempt
+    // right away instead of waiting out the remaining ~240ms.
+    await vi.advanceTimersByTimeAsync(RECONNECT_INITIAL_MS + 10);
+    expect(MockWebSocket.instances).toHaveLength(3);
+    const p = client.callByID(9, ['now']);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(MockWebSocket.instances).toHaveLength(4);
+
+    // The RPC rides the accelerated attempt: same scheduled
+    // connectPromise settles on open and the frame goes out.
+    const fourth = MockWebSocket.instances[3]!;
+    fourth.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const rpcFrame = fourth.sent.find((f) => f.type === 'rpc')!;
+    expect(rpcFrame).toMatchObject({ methodId: 9, params: ['now'] });
+    fourth.pushFrame({ type: 'rpc', id: rpcFrame.id, result: 'ok' });
+    await expect(p).resolves.toBe('ok');
+
+    // The original backoff timer was cancelled — advancing past it must
+    // not mint a fifth socket.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(MockWebSocket.instances).toHaveLength(4);
+
+    client.close();
+  });
+
+  it('rate-floors the RPC demand collapse so background RPCs cannot defeat backoff', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    first.triggerClose();
+    // The failed attempt just started; an RPC arriving inside the
+    // RECONNECT_INITIAL_MS floor (e.g. the diagnostics flush reacting
+    // to the disconnect) must NOT fire the queued attempt early.
+    const p = client.callByID(9, ['later']).catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    // The queued backoff still runs on its own schedule and the RPC
+    // rides that attempt.
+    await vi.advanceTimersByTimeAsync(130);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    client.close();
+    await p;
+  });
+
+  it('page resume fires the queued attempt immediately and resets the ladder', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Escalate the ladder with two failed visible-session attempts:
+    // close -> attempt (125ms) -> close -> attempt (250ms) -> close.
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(130);
+    MockWebSocket.instances[1]!.triggerClose();
+    await vi.advanceTimersByTimeAsync(260);
+    MockWebSocket.instances[2]!.triggerClose();
+    expect(MockWebSocket.instances).toHaveLength(3);
+
+    // Third backoff is now queued at base 250*2^2=1000 -> 500ms with
+    // random=0.5. A resume signal must not wait for it.
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(MockWebSocket.instances).toHaveLength(4);
+
+    // The reset also applies to the NEXT failure: dropping the resumed
+    // attempt schedules at the initial delay again (125ms), not the
+    // escalated one.
+    MockWebSocket.instances[3]!.triggerClose();
+    await vi.advanceTimersByTimeAsync(130);
+    expect(MockWebSocket.instances).toHaveLength(5);
+
+    client.close();
+  });
+
+  it('a resume signal while the page is still hidden does not fire the queued attempt', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'hidden',
+    });
+    try {
+      first.triggerClose();
+      // A visibilitychange that lands while STILL hidden (minimise, tab
+      // switch away) is not a resume — the queued backoff must keep its
+      // schedule instead of firing early.
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(MockWebSocket.instances).toHaveLength(1);
+      // The ladder keeps escalating normally while hidden; the queued
+      // attempt fires on its own schedule (249ms with random=0.999).
+      await vi.advanceTimersByTimeAsync(250);
+      expect(MockWebSocket.instances).toHaveLength(2);
+    } finally {
+      delete (document as { visibilityState?: unknown }).visibilityState;
+    }
+
+    client.close();
+  });
+
+  it('triggerReconnect settles the scheduled connectPromise for queued awaiters', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    first.triggerClose();
+    // Queue a real awaiter behind the backoff: the RPC lands inside the
+    // collapse rate floor, so it parks on the scheduled connectPromise.
+    const p = client.callByID(11, ['queued']);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    client.triggerReconnect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The retried attempt is the scheduled one — its replay frame went
+    // out on the new socket, and the queued RPC rode it instead of
+    // hanging on an abandoned promise.
+    expect(second.sent[0]).toMatchObject({ type: 'replay' });
+    const rpcFrame = second.sent.find((f) => f.type === 'rpc')!;
+    expect(rpcFrame).toMatchObject({ methodId: 11, params: ['queued'] });
+    second.pushFrame({ type: 'rpc', id: rpcFrame.id, result: 'rode-retry' });
+    await expect(p).resolves.toBe('rode-retry');
+
+    // The cancelled backoff timer must not produce a third socket later.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    client.close();
+  });
+
+  it('triggerReconnect no-ops while a connect attempt is already in flight', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    first.triggerClose();
+    // Let the backoff fire so an attempt is mid-flight (socket #2 is
+    // CONNECTING, no backoff queued).
+    await vi.advanceTimersByTimeAsync(130);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    // Retry clicked while the attempt runs: racing a second connect
+    // would mint a parallel socket and orphan this one.
+    client.triggerReconnect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    MockWebSocket.instances[1]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('connected');
+
+    client.close();
+  });
+
+  it('force-closes a stale socket once the server has proven it heartbeats', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const diagnostics: string[] = [];
+    client.setDiagnosticsSink((m) => diagnostics.push(m));
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // One heartbeat arms the watchdog; then the socket goes silent
+    // (half-open: no close event will ever fire on its own).
+    first.pushFrame({ type: 'ping' });
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + 10_000);
+    // Drain the post-close backoff so the reconnect attempt fires.
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    // The watchdog force-closed the socket and the reconnect path took
+    // over: a second socket exists after the (collapsed-cap) backoff.
+    expect(first.readyState).toBe(3);
+    expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(2);
+    expect(diagnostics.some((m) => m.includes('no traffic'))).toBe(true);
+
+    client.close();
+  });
+
+  it('keeps a socket alive while heartbeats keep arriving', async () => {
+    vi.useFakeTimers();
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    for (let i = 0; i < 6; i++) {
+      first.pushFrame({ type: 'ping' });
+      await vi.advanceTimersByTimeAsync(20_000);
+    }
+    expect(first.readyState).toBe(1);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    client.close();
+  });
+
+  it('never force-closes when the server has not sent a heartbeat (version skew guard)', async () => {
+    vi.useFakeTimers();
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A heartbeat-less (older) server with an idle-but-healthy socket
+    // must not get reconnect-looped by the watchdog.
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS * 3);
+    expect(first.readyState).toBe(1);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    client.close();
+  });
+
+  it('resets the heartbeat proof per connection and re-arms on the next ping', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Socket #1 proves heartbeats, goes silent, and is force-closed.
+    first.pushFrame({ type: 'ping' });
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(first.readyState).toBe(3);
+    const second = MockWebSocket.instances.at(-1)!;
+    expect(second).not.toBe(first);
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Socket #2 has NOT proven heartbeats — the proof is per
+    // connection, so a rolled-back (heartbeat-less) backend can't get
+    // reconnect-looped by evidence from the previous socket.
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS * 3);
+    expect(second.readyState).toBe(1);
+
+    // And the watchdog re-arms cleanly: one ping on socket #2, silence,
+    // force-close again.
+    second.pushFrame({ type: 'ping' });
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
+    expect(second.readyState).toBe(3);
+
+    client.close();
+  });
+
+  it('does not force-close a remote socket while RPCs are in flight (mid-transfer guard)', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote: true }),
+    });
+    const p = client.callByID(5, []);
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.pushFrame({ type: 'ping' });
+
+    // Silence past the threshold with the RPC still pending: a single
+    // huge response frame can legitimately hold the wire that long on a
+    // remote link, so the watchdog must stand down and let the RPC
+    // timeout arbitrate.
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
+    expect(first.readyState).toBe(1);
+
+    // Once the response lands (no pending RPCs), renewed silence
+    // force-closes as usual.
+    const rpcFrame = first.sent.find((f) => f.type === 'rpc')!;
+    first.pushFrame({ type: 'rpc', id: rpcFrame.id, result: 'ok' });
+    await expect(p).resolves.toBe('ok');
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
+    expect(first.readyState).toBe(3);
+
+    client.close();
+  });
+
+  it('a superseded socket closing late cannot clobber the live connection', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.pushFrame({ type: 'ping' });
+
+    // Simulate the real browser CLOSING window: close() moves the
+    // socket out of OPEN but the close event arrives later.
+    first.close = () => {
+      first.readyState = 2; // CLOSING, no event yet
+    };
+    await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS + STALE_CHECK_INTERVAL_MS);
+    expect(first.readyState).toBe(2);
+
+    // Fresh demand mints a successor while #1 is still CLOSING.
+    const p = client.callByID(3, []);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('connected');
+
+    // Socket #1's close event finally lands. It must not null the live
+    // socket, fail #2's pending RPCs, or schedule a reconnect.
+    first.triggerClose();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('connected');
+
+    const rpcFrame = second.sent.find((f) => f.type === 'rpc')!;
+    second.pushFrame({ type: 'rpc', id: rpcFrame.id, result: 'alive' });
+    await expect(p).resolves.toBe('alive');
+
+    // No reconnect was scheduled by the stale close.
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    client.close();
+  });
+
+  it('caps backoff at the local ceiling for a same-machine backend', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    MockWebSocket.instances[0]!.triggerClose();
+
+    // Fail enough visible attempts that an uncapped ladder would sit
+    // far above the local ceiling (250 * 2^6 = 16s).
+    for (let i = 0; i < 6; i++) {
+      const before = MockWebSocket.instances.length;
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
+      expect(MockWebSocket.instances.length).toBe(before + 1);
+      MockWebSocket.instances.at(-1)!.triggerClose();
+    }
+
+    const snap = client.getStatus();
+    expect(snap.status).toBe('reconnecting');
+    expect(snap.nextAttemptAt).not.toBeNull();
+    expect(snap.nextAttemptAt! - Date.now()).toBeLessThanOrEqual(RECONNECT_MAX_LOCAL_MS);
+    // Prove escalation actually happened before hitting the cap.
+    expect(snap.nextAttemptAt! - Date.now()).toBeGreaterThan(RECONNECT_MAX_LOCAL_MS / 2);
+
+    client.close();
+  });
+
+  it('keeps the remote ceiling for a remote backend, across bootstrap invalidation', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote: true }),
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    MockWebSocket.instances[0]!.triggerClose();
+
+    // 6 pre-open failures also trip the bootstrap-cache invalidation;
+    // the sticky remoteBackend flag must keep the remote ceiling anyway.
+    for (let i = 0; i < 6; i++) {
+      const before = MockWebSocket.instances.length;
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
+      expect(MockWebSocket.instances.length).toBe(before + 1);
+      MockWebSocket.instances.at(-1)!.triggerClose();
+    }
+
+    const snap = client.getStatus();
+    expect(snap.nextAttemptAt).not.toBeNull();
+    expect(snap.nextAttemptAt! - Date.now()).toBeGreaterThan(RECONNECT_MAX_LOCAL_MS);
+
+    client.close();
+  });
+
+  it('refetches bootstrap after two consecutive close-before-open failures', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const fetchSpy = vi
+      .fn<() => Promise<{ wsUrl: string; token: string }>>()
+      .mockResolvedValue({ wsUrl: 'ws://example/ws', token: 't' });
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap: fetchSpy });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // Simulate a restarted backend refusing the stale token: every new
+    // socket dies before open. Attempts 1 and 2 reuse the cached
+    // bootstrap; the failure threshold then drops the cache so attempt
+    // 3 refetches.
+    MockWebSocket.instances[0]!.triggerClose();
+    for (let i = 0; i < 2; i++) {
+      const before = MockWebSocket.instances.length;
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
+      expect(MockWebSocket.instances.length).toBe(before + 1);
+      MockWebSocket.instances.at(-1)!.triggerClose();
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // The counter reset at invalidation: attempt 3's failure is failure
+    // #1 of the next window, so attempt 4 still uses the cache…
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    // …and the second pair of failures invalidates again: attempt 5
+    // refetches. Cadence is every 2 failures, not every failure.
+    MockWebSocket.instances.at(-1)!.triggerClose();
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+    client.close();
+  });
+
+  it('reports an outage summary through the diagnostics sink on reconnect', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const diagnostics: Array<{ message: string; detail?: string }> = [];
+    client.setDiagnosticsSink((message, detail) => diagnostics.push({ message, detail }));
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(diagnostics).toHaveLength(0);
+
+    first.triggerClose();
+    // One failed reconnect attempt, then a successful one.
+    await vi.advanceTimersByTimeAsync(1_000);
+    MockWebSocket.instances[1]!.triggerClose();
+    await vi.advanceTimersByTimeAsync(1_000);
+    MockWebSocket.instances[2]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(diagnostics).toHaveLength(1);
+    // Fixed message (the persistence layer dedupes by it); varying
+    // numbers in detail, carrying the original close code (1006).
+    expect(diagnostics[0]!.message).toBe('transport: reconnected after outage');
+    expect(diagnostics[0]!.detail).toMatch(/^down \d+\.\ds, close code 1006, 1 failed attempts$/);
 
     client.close();
   });

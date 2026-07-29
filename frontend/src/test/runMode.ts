@@ -4,7 +4,7 @@
 // cache invalidation. Centralising the pair here keeps the three
 // settings-section tests from drifting on copy-paste.
 
-import type { RunMode } from '../lib/transport/wsClient';
+import type { RunMode } from '../lib/transport/bootstrap';
 import { __resetRunModeForTest } from '../lib/transport/runMode';
 
 // setRunMode flips the bootstrap-injected mode the SPA reads. 'client'

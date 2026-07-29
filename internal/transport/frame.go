@@ -10,6 +10,7 @@ const (
 	frameTypeReplay    = "replay"
 	frameTypeSubscribe = "subscribe"
 	frameTypeBatch     = "batch"
+	frameTypePing      = "ping"
 )
 
 // MaxReplayChannels caps the number of channels a single replay request
@@ -67,6 +68,10 @@ type ClientFrame struct {
 //   - "batch": coalesced pushed events in the batchFrame envelope below.
 //   - "replay": completion marker sent after a replay request. Replay and
 //     live pushes can interleave, so strict-order consumers buffer until it.
+//   - "ping": server keepalive heartbeat (conn.go keepalive loop). Carries
+//     no other fields. Clients treat its arrival as a liveness signal for
+//     stale-connection detection and otherwise ignore it; consumers that
+//     switch on known types skip it for free.
 type ServerFrame struct {
 	Type    string          `json:"type"`
 	ID      string          `json:"id,omitempty"`

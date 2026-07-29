@@ -155,6 +155,9 @@ on the wire at all. Rules for any future receiver:
     coalesced events (any connection; multi-event windows only)
   - `{type:"replay", id?}` — completion marker for a replay request;
     strict-order consumers buffer interleaved live events until this arrives
+  - `{type:"ping"}` — keepalive heartbeat (see below). Consumers that
+    switch on known frame types skip it for free; the SPA uses its
+    arrival as the liveness signal for stale-socket detection
 
 `gap:true` is the "your replay seq fell outside the in-memory ring,
 re-fetch via list endpoints" signal. The server cannot reconstruct
@@ -189,6 +192,48 @@ exported `App` method without regenerating fails the test.
 
 The profile is immutable for the connection's lifetime. Replay events
 (`handleReplay`) always use immediate dispatch regardless of profile.
+
+## Keepalive and connection-death detection
+
+Every connection runs a keepalive loop (conn.go `keepalive`; cadence
+and pong timeout default to 10s and are overridable per server via
+`Config.KeepaliveInterval` / `Config.KeepalivePongTimeout` — test
+knobs, not production tuning):
+
+- A client-visible `{type:"ping"}` frame every keepalive interval.
+  Two jobs: keeps intermediary connection state warm — the
+  Windows↔WSL2 localhost relay tore down mid-session connections with
+  a clean FIN (incident 2026-07-28) — and gives browser clients, which
+  cannot observe protocol pings, a guaranteed traffic floor. The SPA's
+  stale-socket watchdog (`wsClient.ts STALE_TRAFFIC_THRESHOLD_MS`, 3
+  heartbeat periods) force-closes a connected socket that has received
+  nothing for that long: a half-open TCP (peer gone, no FIN) never
+  fires a close event on its own. The watchdog arms per connection —
+  the first ping frame proves this server heartbeats, and the proof
+  resets on close — so version/deployment skew in either direction
+  can't reconnect-loop an idle-but-healthy connection. It also stands
+  down while a remote backend has RPCs in flight (a single large
+  response frame can legitimately silence the wire past the
+  threshold). Keep the two constants in ratio when changing either.
+- Every 3rd tick additionally round-trips a protocol-level ping with a
+  pong timeout, detecting half-open connections server-side (writes
+  into a dead TCP window buffer silently). Pongs are only surfaced
+  while the read loop sits in `ws.Read`, so a missed pong is only
+  treated as fatal when the reader was actually parked in Read with no
+  recent frame (`inRead` + `lastReadAt`) — a reader busy streaming a
+  replay or waiting on the RPC semaphore proves nothing about the
+  peer. On a convicting timeout the conn is closed so the handler
+  tears down instead of lingering.
+- Every wire write goes through `writeRaw`, bounded by `writeTimeout`
+  (30s). A peer that stops draining would otherwise block a write
+  forever while holding `writeMu`, wedging the event pump and the
+  keepalive loop; on expiry coder/websocket tears the connection down.
+
+Every connection close logs ONE line — graceful closes included — with
+peer address, duration, and close reason (`closeReason`): close status
+1005 with no close frame is the intermediary-teardown signature, 1006
+a network drop, 1000/1001 a client navigation. Per-write errors on an
+already-closed conn stay suppressed (`isClosedError`).
 
 ## Conventions specific to this package
 

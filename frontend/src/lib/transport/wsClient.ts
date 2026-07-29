@@ -4,8 +4,9 @@
 // code work whether we ship inside a Wails webview or against a remote
 // HTTP+WS server.
 //
-// Wire protocol is defined in /internal/transport/frame.go. Frames are
-// JSON text messages of these shapes:
+// Wire protocol is defined in /internal/transport/frame.go; the frame
+// shapes live in ./frames.ts. Frames are JSON text messages of these
+// shapes:
 //
 //   Client → Server:
 //     {type:"rpc", id, methodId?, method?, params:[...]}
@@ -17,6 +18,7 @@
 //     {type:"event", channel, seq, data, gap?}               // push
 //     {type:"batch", events:[{channel,seq,data,gap?},...]}   // coalesced push
 //     {type:"replay", id?}                                  // replay complete
+//     {type:"ping"}                                         // keepalive heartbeat
 //
 // The client owns:
 //   - The (single) WebSocket connection and its lifecycle.
@@ -28,7 +30,16 @@
 // Anything that needs the WS goes through this module's exported
 // `wsClient` singleton — there is no second path.
 
-import { setViewOnlySessionFromBootstrap } from './runMode';
+import { documentHidden } from '../utils/pageVisibility';
+import { type Bootstrap, defaultBootstrap, appendToken } from './bootstrap';
+import {
+  type ClientFrame,
+  type ClientRPCFrame,
+  type ServerEventFrame,
+  type ServerFrame,
+  clampString,
+  extractRpcIdFromOversizedFrame,
+} from './frames';
 
 // Test-visible exports for the bound constants. We keep the const
 // names for the production code paths (clearer at the call site than
@@ -41,8 +52,28 @@ import { setViewOnlySessionFromBootstrap } from './runMode';
 // last-resort guard for a live-but-stuck server; dead connections are
 // handled by the WS close path rejecting all pending RPCs.
 export const RPC_TIMEOUT_MS = 60_000;
-const RECONNECT_INITIAL_MS = 250;
-const RECONNECT_MAX_MS = 30_000;
+export const RECONNECT_INITIAL_MS = 250;
+// Backoff cap by backend locality (bootstrap `remote` flag). The 30s
+// cap is remote-client sizing — polite to a LAN server that may be
+// genuinely down. Against a same-machine backend a failed attempt is a
+// refused loopback connect (~µs), so a long cap buys nothing and costs
+// stale event streams: demand collapse (queuedAttempt.fire) only fires
+// when the user acts, so a passive viewer would otherwise stare at a
+// frozen stream for up to the cap after a relay flap.
+export const RECONNECT_MAX_LOCAL_MS = 5_000;
+export const RECONNECT_MAX_REMOTE_MS = 30_000;
+// Stale-socket watchdog. The server heartbeats every 10s — 3× that
+// cadence with no traffic at all means the socket is half-open; the
+// full rationale lives in internal/transport/AGENTS.md §Keepalive.
+// Only armed per-connection after its first ping frame proves this
+// server heartbeats (version/deployment skew must not turn an
+// idle-but-healthy connection into a reconnect loop). Check cadence is
+// coarse — precision is not the point.
+export const STALE_TRAFFIC_THRESHOLD_MS = 30_000;
+export const STALE_CHECK_INTERVAL_MS = 10_000;
+// Consecutive close-before-open failures that invalidate the cached
+// bootstrap (see preOpenFailures).
+export const BOOTSTRAP_INVALIDATE_AFTER_FAILURES = 2;
 const TRANSPORT_GAP_CHANNEL = 'transport:gap';
 // Cap matches server-side MaxReplayChannels (frame.go) so the replay
 // frame can't exceed the wire limit.
@@ -68,97 +99,6 @@ export const MAX_PENDING_RPCS = 10_000;
 // hundreds of turns), where spending the memory once per thread switch
 // is the right tradeoff vs. forcing pagination on every load.
 export const MAX_FRAME_BYTES = 75 * 1024 * 1024;
-// Logged strings (channel names, error messages) get clamped before
-// reaching console / toast surfaces. Caps the worst-case noise from a
-// pathological remote without losing the prefix that identifies the
-// channel.
-const LOG_STRING_MAX = 256;
-
-// RunMode marks how the SPA is attached to its backend:
-//   - 'local'    — desktop binary booted a local transport in the same
-//                  process. The default whenever the bootstrap omits
-//                  the field, since /bootstrap.json on the local
-//                  transport doesn't carry mode.
-//   - 'client'   — desktop binary launched with --connect; the local
-//                  process owns only a stub HTTP server and the SPA
-//                  RPCs flow to a remote backend. Local-only settings
-//                  panels must hide / placeholder in this mode.
-//   - 'headless' — reserved for the WSL launcher path. Not currently
-//                  emitted by any boot flow (the Windows-side WebView2
-//                  bootstrap-injected page doesn't inject mode), but
-//                  defined here so a future Phase D bootstrap can mark
-//                  itself without an enum widening.
-export type RunMode = 'local' | 'client' | 'headless';
-
-// Bootstrap is the JSON the SPA fetches at /bootstrap.json on first load.
-// Mirror the Go-side shape (internal/transport/server.go Bootstrap).
-// `mode` is optional on the wire — only the clientmode injection
-// emits it today; the local /bootstrap.json path leaves it absent and
-// the SPA treats absence as 'local'.
-interface Bootstrap {
-  wsUrl: string;
-  token: string;
-  mode?: RunMode;
-  remote?: boolean;
-  /**
-   * Durable UI-state client identity minted by the local shell
-   * (--connect injection only; the embedded-webview paths carry it as
-   * the ?cid= URL param instead). Consumed by stores/appStorage.ts at
-   * module init, not by the transport itself.
-   */
-  clientId?: string;
-}
-
-// Frame shapes — match internal/transport/frame.go ServerFrame /
-// ClientFrame. We allow `unknown` for `result` and `data` because the
-// generated bindings unpack them via Create.* factories on the caller's
-// side, not here.
-interface ServerRPCFrame {
-  type: 'rpc';
-  id: string;
-  result?: unknown;
-  error?: { code: string; message: string };
-}
-
-interface ServerEventFrame {
-  type: 'event';
-  channel: string;
-  seq: number;
-  data: unknown;
-  gap?: boolean;
-}
-
-interface ServerBatchFrame {
-  type: 'batch';
-  events: Array<{
-    channel: string;
-    seq: number;
-    data: unknown;
-    gap?: boolean;
-  }>;
-}
-
-interface ServerReplayFrame {
-  type: 'replay';
-  id?: string;
-}
-
-type ServerFrame = ServerRPCFrame | ServerEventFrame | ServerBatchFrame | ServerReplayFrame;
-
-interface ClientRPCFrame {
-  type: 'rpc';
-  id: string;
-  methodId?: number;
-  method?: string;
-  params: unknown[];
-}
-
-interface ClientReplayFrame {
-  type: 'replay';
-  lastSeqByChannel: Record<string, number>;
-}
-
-type ClientFrame = ClientRPCFrame | ClientReplayFrame;
 
 // DisconnectedError is what we reject pending RPCs with when the socket
 // closes underneath them. Subclassing Error keeps `instanceof` checks
@@ -189,20 +129,6 @@ interface Pending {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
-}
-
-// extractRpcIdFromOversizedFrame pulls the `id` out of the leading
-// portion of a frame too large to JSON.parse safely. ServerFrame's
-// `id` is an RPC uuid emitted by call() and is always present at the
-// frame's top level; a tolerant regex over the first ~256 chars is
-// sufficient to recover it without parsing megabytes of payload.
-// Returns null when the prefix doesn't contain an obvious id (frame
-// is not an rpc response or shape changed).
-const oversizedIdRegex = /"id"\s*:\s*"([^"]{1,128})"/;
-function extractRpcIdFromOversizedFrame(text: string): string | null {
-  const prefix = text.slice(0, 256);
-  const m = oversizedIdRegex.exec(prefix);
-  return m ? m[1] : null;
 }
 
 type EventHandler = (data: unknown) => void;
@@ -271,141 +197,25 @@ interface WSClientOptions {
   maxFrameBytes?: number;
 }
 
-// clampString truncates noisy / hostile log content before it reaches
-// console or toast surfaces. The `…` suffix preserves the visual signal
-// that the value was abbreviated.
-function clampString(value: string, max = LOG_STRING_MAX): string {
-  if (value.length <= max) return value;
-  return `${value.slice(0, max)}…`;
+// ConnectAttempt is the per-attempt settlement state shared by one
+// socket's open and close handlers. `settled` flips once the attempt's
+// promise has been resolved/rejected; settling an already-settled
+// promise is a no-op, so late events on a superseded socket can safely
+// re-settle defensively.
+interface ConnectAttempt {
+  settled: boolean;
+  resolve: () => void;
+  reject: (reason: unknown) => void;
 }
 
-// Session-scoped stash for the bootstrap token. The token arrives once
-// as `?t=` and is immediately scrubbed from the URL (see replaceState
-// below), so without this stash any reload — browser F5, the Ctrl+R
-// uikeys binding in the embedded webview, a Playwright page.reload() —
-// loses the token and every subsequent /bootstrap.json fetch 404s.
-// sessionStorage is per-tab and dies with it, matching the token's
-// soft-secret posture. Access is fault-tolerant: sandboxed frames and
-// some embeddings throw on storage access, and a broken stash must
-// degrade to "reload needs the tokened URL again", not a crash.
-const TOKEN_STORAGE_KEY = 'ao:bootstrap-token';
-
-function readStoredToken(): string {
-  try {
-    return window.sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-function writeStoredToken(token: string): void {
-  try {
-    window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
-  } catch {
-    // Stash unavailable — reloads will need the tokened URL again.
-  }
-}
-
-function clearStoredToken(): void {
-  try {
-    window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-  } catch {
-    // Nothing to clear if the stash itself is unreadable.
-  }
-}
-
-// Default bootstrap fetcher: read from window.__AO_BOOTSTRAP__ (set by
-// Phase F's `--connect` flow) or fall back to `/bootstrap.json?t=<token>`
-// where the token comes from `?t=` in window.location.search, or — on a
-// reload, after the URL was scrubbed — from sessionStorage. This runs
-// the first time anyone calls `ensureConnected`; subsequent calls reuse
-// the cached promise.
-async function defaultBootstrap(): Promise<Bootstrap> {
-  const injected = (globalThis as { __AO_BOOTSTRAP__?: Bootstrap }).__AO_BOOTSTRAP__;
-  if (injected && typeof injected.wsUrl === 'string' && typeof injected.token === 'string') {
-    validateWsUrl(injected.wsUrl);
-    const normalized = { ...injected, mode: normalizeRunMode(injected.mode), remote: injected.remote === true };
-    setViewOnlySessionFromBootstrap(normalized.remote);
-    return normalized;
-  }
-  const search = typeof window !== 'undefined' ? window.location.search : '';
-  const params = new URLSearchParams(search);
-  const urlToken = params.get('t') ?? '';
-  const token = urlToken !== '' ? urlToken : readStoredToken();
-  const url = `/bootstrap.json?t=${encodeURIComponent(token)}`;
-  const resp = await fetch(url, { credentials: 'same-origin' });
-  if (!resp.ok) {
-    if (urlToken === '' && token !== '') {
-      // The stashed token was refused — stale after a backend restart
-      // (tokens are minted per boot). Drop it so retries surface the
-      // real "no valid token" state instead of re-presenting it.
-      clearStoredToken();
-    }
-    throw new Error(`bootstrap fetch failed: HTTP ${resp.status}`);
-  }
-  const contentType = resp.headers.get('content-type') ?? '';
-  if (!contentType.toLowerCase().startsWith('application/json')) {
-    throw new Error(`bootstrap response not JSON: content-type ${clampString(contentType)}`);
-  }
-  const data = (await resp.json()) as Bootstrap;
-  if (!data || typeof data !== 'object') {
-    throw new Error('bootstrap response not an object');
-  }
-  if (typeof data.wsUrl !== 'string' || typeof data.token !== 'string') {
-    throw new Error('bootstrap response missing wsUrl/token');
-  }
-  validateWsUrl(data.wsUrl);
-  data.mode = normalizeRunMode(data.mode);
-  data.remote = data.remote === true;
-  setViewOnlySessionFromBootstrap(data.remote);
-  // Stash the server-confirmed token so the tab survives reloads once
-  // the URL is scrubbed below.
-  writeStoredToken(data.token);
-  // Removes the token from history, Referer, and Performance Resource
-  // Timing entries. Same-origin redirects and tab-history scrubbing both
-  // benefit. Skip when history.replaceState isn't available (older
-  // happy-dom builds, weird host pages).
-  if (
-    typeof window !== 'undefined' &&
-    typeof window.history !== 'undefined' &&
-    typeof window.history.replaceState === 'function' &&
-    urlToken !== ''
-  ) {
-    try {
-      window.history.replaceState(null, '', window.location.pathname + window.location.hash);
-    } catch {
-      // Some embeddings throw on replaceState; the token-on-URL is
-      // already a soft secret, so swallowing is acceptable.
-    }
-  }
-  return data;
-}
-
-// normalizeRunMode coerces an incoming mode value to the typed enum.
-// Anything outside the known set falls back to 'local' — same as
-// absent. Keeping this loose-and-default-safe is intentional: a future
-// backend that sends an unrecognised mode shouldn't crash the SPA;
-// the worst case is a remote-mode panel rendering when the user is
-// actually local, which is benign.
-function normalizeRunMode(mode: unknown): RunMode {
-  if (mode === 'client' || mode === 'headless' || mode === 'local') return mode;
-  return 'local';
-}
-
-// validateWsUrl rejects bootstrap responses pointing the client at a
-// scheme other than ws:/wss:. A boostrap fetch is over same-origin
-// HTTP(S), but defending here means a hijacked bootstrap response can't
-// pivot the WS connection to an arbitrary URL handler.
-function validateWsUrl(wsUrl: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(wsUrl);
-  } catch {
-    throw new Error(`bootstrap wsUrl invalid: ${clampString(wsUrl)}`);
-  }
-  if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
-    throw new Error(`bootstrap wsUrl scheme not ws/wss: ${clampString(parsed.protocol)}`);
-  }
+// One outage's bookkeeping for the diagnostics sink: opened by the
+// first close after a connected period, settled (formatted + cleared)
+// when a reconnect lands. Keeping the three fields in one nullable
+// record means "reset every field" is a single assignment.
+interface OutageRecord {
+  startedAt: number;
+  closeCode: number;
+  attempts: number;
 }
 
 // WSClient is the single transport client. Instances are stateful — the
@@ -426,8 +236,57 @@ export class WSClient {
   private connectPromise: Promise<void> | null = null;
   private closed = false;
   private reconnectAttempt = 0;
-  // Stored so close() can cancel a pending backoff.
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  // Non-null exactly while a backoff timer is queued (no attempt in
+  // flight). fire() cancels the timer and runs the scheduled attempt
+  // NOW, settling the same connectPromise the timer would have — so
+  // awaiters queued behind the backoff are carried through instead of
+  // stranded. Timer and callback live in one field so they cannot fall
+  // out of lockstep. Cleared when the attempt fires (from either path)
+  // and on close(). This is how fresh demand — a user RPC, a page
+  // resume, the banner's Retry — skips the remaining backoff instead
+  // of waiting it out.
+  private queuedAttempt: { timer: ReturnType<typeof setTimeout>; fire: () => void } | null = null;
+  // Wall-clock start of the most recent connect attempt. The RPC
+  // demand-collapse refuses to fire a queued attempt sooner than
+  // RECONNECT_INITIAL_MS after the previous attempt began, so an
+  // RPC-issuing background loop (the diagnostics flush itself is an
+  // RPC) can't turn the backoff into a tight retry storm.
+  private lastAttemptStartedAt = 0;
+  // Detaches the page-lifecycle listeners registered in the
+  // constructor; null in non-DOM environments.
+  private readonly detachLifecycleListeners: (() => void) | null;
+
+  // Stale-socket watchdog state. lastFrameAt is refreshed on every
+  // inbound message (heartbeats included); the timer runs only while a
+  // socket is open, and only force-closes once serverSendsHeartbeats
+  // has proven the traffic floor exists (see STALE_TRAFFIC_THRESHOLD_MS).
+  private lastFrameAt = 0;
+  private staleTimer: ReturnType<typeof setInterval> | null = null;
+  // Per-connection: set by the first ping frame, reset on close. Each
+  // connection re-proves the traffic floor within one heartbeat period,
+  // so a backend rollback to a heartbeat-less build can't leave the
+  // watchdog armed against a server that will never feed it.
+  private serverSendsHeartbeats = false;
+
+  // Consecutive connect attempts that died before reaching OPEN. Every
+  // BOOTSTRAP_INVALIDATE_AFTER_FAILURES failures, the cached bootstrap
+  // is dropped (and the counter reset) so the next attempt refetches —
+  // a backend that restarted (new token) is unreachable forever on the
+  // stale credentials, and one refetch per couple of outage-retries is
+  // cheap. Reset on open.
+  private preOpenFailures = 0;
+  // Sticky locality from the last resolved bootstrap. Read by the
+  // backoff-cap selection instead of `this.bootstrap` so invalidating
+  // the bootstrap cache mid-outage doesn't flip a remote client onto
+  // the aggressive local retry cadence.
+  private remoteBackend = false;
+
+  // The sink (wired by frontendErrorCapture at install) persists one
+  // summary line per outage into the always-on ui-trace error log.
+  // `message` is a fixed string (it is the dedupe signature on the
+  // other side); the varying numbers travel in `detail`.
+  private diagnosticsSink: ((message: string, detail?: string) => void) | null = null;
+  private outage: OutageRecord | null = null;
 
   // RPC state.
   private readonly pending = new Map<string, Pending>();
@@ -454,6 +313,51 @@ export class WSClient {
     this.WebSocketCtor = opts.WebSocketCtor ??
       ((globalThis as { WebSocket?: WSConstructor }).WebSocket as WSConstructor);
     this.maxFrameBytes = opts.maxFrameBytes ?? MAX_FRAME_BYTES;
+    this.detachLifecycleListeners = this.attachLifecycleListeners();
+  }
+
+  // attachLifecycleListeners wires page thaw/restore signals into the
+  // reconnect path. The Windows launcher suspends the WebView2 after
+  // 30s minimised (webviewtrim.go); the frozen page's WS dies and its
+  // throttled reconnect attempts fail without meaning, so on thaw the
+  // client would otherwise sit out a full max backoff (up to 30s)
+  // before the next scheduled attempt — the "Ctrl+Shift+` takes 30s
+  // after restoring the window" failure. `visibilitychange` covers
+  // restore-from-minimise; `resume` (Page Lifecycle API) covers thaw
+  // without a visibility flip. Both funnel into the same idempotent
+  // handler.
+  private attachLifecycleListeners(): (() => void) | null {
+    if (typeof document === 'undefined') return null;
+    const onLifecycleResume = (): void => {
+      this.handleLifecycleResume();
+    };
+    document.addEventListener('visibilitychange', onLifecycleResume);
+    document.addEventListener('resume', onLifecycleResume);
+    return () => {
+      document.removeEventListener('visibilitychange', onLifecycleResume);
+      document.removeEventListener('resume', onLifecycleResume);
+    };
+  }
+
+  // handleLifecycleResume fires the queued reconnect attempt the moment
+  // the page becomes interactive again. Attempts made while hidden or
+  // frozen carry no signal about server health, so the ladder restarts
+  // from zero — the visible session earns its own backoff. No-ops when
+  // nothing is queued: connected needs nothing, and an attempt already
+  // in flight is left to finish (racing a second connect against it
+  // would clobber `this.ws`).
+  private handleLifecycleResume(): void {
+    if (this.closed) return;
+    if (documentHidden()) return;
+    if (this.ws !== null && this.ws.readyState === WS_OPEN) {
+      // The watchdog's interval clock froze with the page; judge
+      // staleness from fresh post-thaw evidence, otherwise every thaw
+      // whose socket survived suspension force-closes it spuriously.
+      this.lastFrameAt = Date.now();
+    }
+    if (this.queuedAttempt === null) return;
+    this.reconnectAttempt = 0;
+    this.queuedAttempt.fire();
   }
 
   // callByID sends an `rpc` frame with a numeric methodId and resolves
@@ -516,21 +420,95 @@ export class WSClient {
   /**
    * Force a reconnect attempt immediately. Cancels any queued backoff
    * timer and kicks off a fresh connect. Safe to call from a UI button
-   * — when already in flight, this is a no-op.
+   * — when an attempt is already in flight, this is a no-op.
    */
   triggerReconnect(): void {
     if (this.closed) return;
-    if (this.ws && this.ws.readyState === WS_OPEN) return;
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+    if (this.ws && this.ws.readyState === WS_OPEN) {
+      // A half-open socket also reads as OPEN. An explicit retry
+      // deserves the watchdog's staleness verdict now rather than at
+      // its next interval; on a genuinely live socket this is a no-op.
+      this.checkStaleness();
+      return;
     }
     // Reset the backoff so a manual retry starts at the lowest delay.
     this.reconnectAttempt = 0;
-    this.connectPromise = null;
+    if (this.queuedAttempt !== null) {
+      // Run the scheduled attempt now. Going through fire() (rather
+      // than cancelling the timer and starting a fresh connect)
+      // settles the scheduled connectPromise, so RPCs already queued
+      // behind the backoff ride the retried attempt instead of hanging
+      // on an abandoned promise until their 60s timeout.
+      this.queuedAttempt.fire();
+      return;
+    }
+    if (this.connectPromise !== null) {
+      // An attempt is in flight. Racing a second connect against it
+      // would mint a parallel socket and orphan one of the two — let
+      // it finish; its close path reschedules on failure.
+      return;
+    }
     void this.ensureConnected().catch((err) => {
       console.warn('wsClient: triggerReconnect failed', err);
     });
+  }
+
+  /**
+   * Register the sink that persists transport diagnostics (one summary
+   * line per outage on reconnect, watchdog force-closes). Wired to the
+   * always-on frontend error log by installFrontendErrorCapture;
+   * injected rather than imported so the transport package stays free
+   * of stores/bindings dependencies (which call back into this client).
+   * `message` must be a stable string — it feeds the log's per-signature
+   * dedupe — with the varying numbers in `detail`.
+   */
+  setDiagnosticsSink(sink: ((message: string, detail?: string) => void) | null): void {
+    this.diagnosticsSink = sink;
+  }
+
+  // The staleness watchdog runs only while a socket is open. It fires
+  // only after serverSendsHeartbeats — a server that heartbeats every
+  // 10s but has delivered nothing for STALE_TRAFFIC_THRESHOLD_MS is
+  // half-open (relay died without a FIN; no close event is coming), so
+  // force-closing is the only way the reconnect path ever runs.
+  private startStaleWatchdog(): void {
+    this.lastFrameAt = Date.now();
+    if (this.staleTimer !== null) return;
+    this.staleTimer = setInterval(() => {
+      this.checkStaleness();
+    }, STALE_CHECK_INTERVAL_MS);
+  }
+
+  private stopStaleWatchdog(): void {
+    if (this.staleTimer !== null) {
+      clearInterval(this.staleTimer);
+      this.staleTimer = null;
+    }
+  }
+
+  private checkStaleness(): void {
+    if (this.closed || !this.serverSendsHeartbeats) return;
+    if (!this.ws || this.ws.readyState !== WS_OPEN) return;
+    // A single huge response frame on a slow remote link yields no
+    // message event until fully received — and it blocks the
+    // heartbeats queued behind it on the wire. While RPCs are in
+    // flight against a remote backend, let their own 60s timeout
+    // arbitrate instead of killing a socket mid-transfer.
+    if (this.remoteBackend && this.pending.size > 0) return;
+    const idleMs = Date.now() - this.lastFrameAt;
+    if (idleMs <= STALE_TRAFFIC_THRESHOLD_MS) return;
+    const idleSeconds = Math.round(idleMs / 1000);
+    console.warn(`wsClient: no traffic for ${idleSeconds}s on an open socket; forcing reconnect`);
+    this.diagnosticsSink?.(
+      'transport: no traffic on an open socket; forcing reconnect',
+      `idle ${idleSeconds}s`,
+    );
+    try {
+      this.ws.close();
+    } catch {
+      // ignore — socket may already be closing; the close event still
+      // drives the reconnect path either way.
+    }
   }
 
   // close shuts the client down permanently. After this returns, calls
@@ -538,9 +516,11 @@ export class WSClient {
   // singleton is never closed during normal operation.
   close(): void {
     this.closed = true;
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+    this.detachLifecycleListeners?.();
+    this.stopStaleWatchdog();
+    if (this.queuedAttempt !== null) {
+      clearTimeout(this.queuedAttempt.timer);
+      this.queuedAttempt = null;
     }
     if (this.ws) {
       try {
@@ -592,6 +572,18 @@ export class WSClient {
       if (typeof spec.methodId === 'number' && spec.methodId !== 0) frame.methodId = spec.methodId;
       if (typeof spec.method === 'string') frame.method = spec.method;
 
+      // An RPC is live demand: if reconnection is sitting in a queued
+      // backoff, run the attempt now instead of making the caller wait
+      // it out (up to the backoff cap of nothing-visibly-happening for
+      // whatever UI action issued this call). Rate-floored: an attempt
+      // must be at least RECONNECT_INITIAL_MS old before demand starts
+      // the next one, so an RPC-issuing background loop can't defeat
+      // the backoff entirely. The attempt counter is deliberately NOT
+      // reset — against a genuinely down server the ladder keeps its
+      // height; this only collapses the idle wait.
+      if (Date.now() - this.lastAttemptStartedAt >= RECONNECT_INITIAL_MS) {
+        this.queuedAttempt?.fire();
+      }
       this.ensureConnected().then(
         () => {
           // The connect may have been replaced by a reconnect that
@@ -638,12 +630,17 @@ export class WSClient {
   // leave the client permanently broken until the next user-initiated
   // RPC.
   private async connect(): Promise<void> {
+    this.lastAttemptStartedAt = Date.now();
     let bootstrap: Bootstrap;
     try {
       bootstrap = await this.getBootstrap();
     } catch (err) {
       this.connectPromise = null;
       console.warn('wsClient: bootstrap failed', err);
+      // Bootstrap-stage failures count toward the outage's attempt
+      // tally too (when one is open), so the reconnect summary reflects
+      // server-unreachable retries and not just WS-stage deaths.
+      if (this.outage !== null) this.outage.attempts += 1;
       // Re-raise so the awaiter sees the rejection, but also kick off a
       // reconnect so a transient bootstrap failure recovers without
       // requiring fresh user input.
@@ -657,7 +654,7 @@ export class WSClient {
     const url = appendToken(bootstrap.wsUrl, bootstrap.token);
 
     return await new Promise<void>((resolve, reject) => {
-      let settled = false;
+      const attempt: ConnectAttempt = { settled: false, resolve, reject };
       let ws: WSLike;
       try {
         ws = new this.WebSocketCtor(url);
@@ -667,66 +664,8 @@ export class WSClient {
         return;
       }
       this.ws = ws;
-
-      ws.addEventListener('open', () => {
-        settled = true;
-        this.reconnectAttempt = 0;
-        // First-frame after open: replay any missed events. The server
-        // only acts on this if the map is non-empty; it's still cheap
-        // to send unconditionally since channel-by-channel reconciliation
-        // is exactly what a reconnect needs.
-        const replay: Record<string, number> = {
-          [NOTIFICATION_ACTIVATED_CHANNEL]: loadNotificationActivationSeq(bootstrap.token),
-        };
-        this.notificationCheckpointScope = bootstrap.token;
-        this.notificationReplayPending = true;
-        this.notificationReplayBuffer = [];
-        for (const [channel, seq] of this.lastSeqByChannel) {
-          replay[channel] = seq;
-        }
-        this.sendFrame({
-          type: 'replay',
-          lastSeqByChannel: replay,
-        });
-        this.connectPromise = null;
-        this.setStatus({ status: 'connected', nextAttemptAt: null });
-        resolve();
-      });
-
-      ws.addEventListener('message', (ev: MessageEvent) => {
-        const text = typeof ev.data === 'string' ? ev.data : '';
-        if (!text) return;
-        if (text.length > this.maxFrameBytes) {
-          // Don't silently drop: previous behavior left the matching
-          // RPC pending until its 30 s timeout fired, leaving the UI
-          // stuck in `loading=true`. Surface it now — extract the RPC
-          // id with a tolerant regex (a full JSON parse of an
-          // oversized payload would itself fail), reject the matching
-          // pending RPC, and fail loud.
-          const id = extractRpcIdFromOversizedFrame(text);
-          const err = new TransportError(
-            'frame_too_large',
-            `frame ${text.length} bytes exceeds cap ${this.maxFrameBytes} (rpc=${id ?? 'unknown'})`,
-          );
-          console.error('wsClient:', err.message);
-          if (id !== null) {
-            const pending = this.pending.get(id);
-            if (pending) {
-              this.pending.delete(id);
-              clearTimeout(pending.timer);
-              pending.reject(err);
-            }
-          }
-          return;
-        }
-        try {
-          const frame = JSON.parse(text) as ServerFrame;
-          this.handleFrame(frame);
-        } catch (err) {
-          console.warn('wsClient: malformed frame', err);
-        }
-      });
-
+      ws.addEventListener('open', () => this.handleSocketOpen(ws, bootstrap, attempt));
+      ws.addEventListener('message', (ev: MessageEvent) => this.handleSocketMessage(ws, ev));
       ws.addEventListener('error', (errEv: Event) => {
         // The browser-spec WebSocket error event fires before close.
         // We don't reject here — the close event delivers the canonical
@@ -735,30 +674,157 @@ export class WSClient {
         // reason is opaque.
         console.warn('wsClient: socket error', errEv);
       });
-
-      ws.addEventListener('close', () => {
-        // Drop pending RPCs from this socket; they will not get a
-        // response on this connection. The reconnect path resends a
-        // replay frame, but RPCs themselves are not retried (the caller
-        // sees DisconnectedError and decides whether to retry at the
-        // app layer).
-        this.failPending(new DisconnectedError('socket closed'));
-        this.notificationReplayPending = false;
-        this.notificationReplayBuffer = [];
-        this.ws = null;
-        if (!settled) {
-          // First-attempt failure: surface to the awaiter so the call
-          // that triggered ensureConnected sees the error rather than
-          // hanging on a Promise that never resolves.
-          settled = true;
-          this.connectPromise = null;
-          reject(new DisconnectedError('socket closed before open'));
-        }
-        if (this.closed) return;
-        this.setStatus({ status: 'reconnecting', nextAttemptAt: null });
-        this.scheduleReconnect();
-      });
+      ws.addEventListener('close', (ev: CloseEvent) => this.handleSocketClose(ws, ev, attempt));
     });
+  }
+
+  // handleSocketOpen finishes a successful connect attempt: replay
+  // handshake, watchdog arm, outage settlement, promise resolution.
+  // Guarded on socket identity — a socket superseded while CONNECTING
+  // (the watchdog force-closed its predecessor and fresh demand minted
+  // a successor before the close event landed) must not serve traffic
+  // or touch the live connection's state.
+  private handleSocketOpen(ws: WSLike, bootstrap: Bootstrap, attempt: ConnectAttempt): void {
+    if (this.ws !== ws) {
+      try {
+        ws.close(1000, 'superseded');
+      } catch {
+        // ignore — already closing.
+      }
+      return;
+    }
+    attempt.settled = true;
+    this.reconnectAttempt = 0;
+    // First-frame after open: replay any missed events. The server
+    // only acts on this if the map is non-empty; it's still cheap
+    // to send unconditionally since channel-by-channel reconciliation
+    // is exactly what a reconnect needs.
+    const replay: Record<string, number> = {
+      [NOTIFICATION_ACTIVATED_CHANNEL]: loadNotificationActivationSeq(bootstrap.token),
+    };
+    this.notificationCheckpointScope = bootstrap.token;
+    this.notificationReplayPending = true;
+    this.notificationReplayBuffer = [];
+    for (const [channel, seq] of this.lastSeqByChannel) {
+      replay[channel] = seq;
+    }
+    this.sendFrame({
+      type: 'replay',
+      lastSeqByChannel: replay,
+    });
+    this.connectPromise = null;
+    this.preOpenFailures = 0;
+    this.startStaleWatchdog();
+    this.setStatus({ status: 'connected', nextAttemptAt: null });
+    if (this.outage !== null) {
+      const downSeconds = ((Date.now() - this.outage.startedAt) / 1000).toFixed(1);
+      const detail =
+        `down ${downSeconds}s, close code ${this.outage.closeCode}, ${this.outage.attempts} failed attempts`;
+      // Console too, not just the sink: remote clients can't persist
+      // through ReportFrontendErrorBatch (LocalOnly), and the console
+      // line is then the only surviving evidence of the outage.
+      console.info(`wsClient: reconnected after outage (${detail})`);
+      this.diagnosticsSink?.('transport: reconnected after outage', detail);
+      this.outage = null;
+    }
+    attempt.resolve();
+  }
+
+  private handleSocketMessage(ws: WSLike, ev: MessageEvent): void {
+    // Frames from a superseded socket must not reach the live
+    // connection's state (seq tracking, pending RPCs, watchdog).
+    if (this.ws !== ws) return;
+    // Any inbound frame is proof of life — refresh the staleness
+    // watchdog before any validation can reject the frame.
+    this.lastFrameAt = Date.now();
+    const text = typeof ev.data === 'string' ? ev.data : '';
+    if (!text) return;
+    if (text.length > this.maxFrameBytes) {
+      // Don't silently drop: previous behavior left the matching
+      // RPC pending until its 30 s timeout fired, leaving the UI
+      // stuck in `loading=true`. Surface it now — extract the RPC
+      // id with a tolerant regex (a full JSON parse of an
+      // oversized payload would itself fail), reject the matching
+      // pending RPC, and fail loud.
+      const id = extractRpcIdFromOversizedFrame(text);
+      const err = new TransportError(
+        'frame_too_large',
+        `frame ${text.length} bytes exceeds cap ${this.maxFrameBytes} (rpc=${id ?? 'unknown'})`,
+      );
+      console.error('wsClient:', err.message);
+      if (id !== null) {
+        const pending = this.pending.get(id);
+        if (pending) {
+          this.pending.delete(id);
+          clearTimeout(pending.timer);
+          pending.reject(err);
+        }
+      }
+      return;
+    }
+    try {
+      const frame = JSON.parse(text) as ServerFrame;
+      this.handleFrame(frame);
+    } catch (err) {
+      console.warn('wsClient: malformed frame', err);
+    }
+  }
+
+  // handleSocketClose tears down after a socket dies: outage
+  // bookkeeping, pending-RPC rejection, bootstrap-cache invalidation,
+  // attempt settlement, and the reconnect schedule. A superseded
+  // socket's close only settles its own attempt — the live socket's
+  // state is not its to touch.
+  private handleSocketClose(ws: WSLike, ev: CloseEvent, attempt: ConnectAttempt): void {
+    if (this.ws !== ws) {
+      attempt.settled = true;
+      attempt.reject(new DisconnectedError('socket superseded'));
+      return;
+    }
+    this.stopStaleWatchdog();
+    this.serverSendsHeartbeats = false;
+    // Outage bookkeeping: the first close opens the outage record
+    // (its code names the original cause — 1006 network death vs
+    // 1000/1001 graceful); later closes during the same outage are
+    // failed reconnect attempts.
+    if (this.outage === null) {
+      this.outage = { startedAt: Date.now(), closeCode: ev.code, attempts: 0 };
+    }
+    // Drop pending RPCs from this socket; they will not get a
+    // response on this connection. The reconnect path resends a
+    // replay frame, but RPCs themselves are not retried (the caller
+    // sees DisconnectedError and decides whether to retry at the
+    // app layer).
+    this.failPending(new DisconnectedError('socket closed'));
+    this.notificationReplayPending = false;
+    this.notificationReplayBuffer = [];
+    this.ws = null;
+    if (!attempt.settled) {
+      this.outage.attempts += 1;
+      this.preOpenFailures += 1;
+      if (this.preOpenFailures >= BOOTSTRAP_INVALIDATE_AFTER_FAILURES && this.bootstrap !== null) {
+        // Consecutive attempts died before OPEN: the cached bootstrap
+        // may be stale — a restarted backend mints a new token, and
+        // reconnecting with the old one is refused forever. Drop the
+        // cache so the next attempt refetches; if the server is simply
+        // down, the refetch fails into the same backoff it would have
+        // anyway. Counter resets so the refetch happens every
+        // BOOTSTRAP_INVALIDATE_AFTER_FAILURES failures, not on every
+        // failure from here on.
+        this.bootstrap = null;
+        this.bootstrapPromise = null;
+        this.preOpenFailures = 0;
+      }
+      // First-attempt failure: surface to the awaiter so the call
+      // that triggered ensureConnected sees the error rather than
+      // hanging on a Promise that never resolves.
+      attempt.settled = true;
+      this.connectPromise = null;
+      attempt.reject(new DisconnectedError('socket closed before open'));
+    }
+    if (this.closed) return;
+    this.setStatus({ status: 'reconnecting', nextAttemptAt: null });
+    this.scheduleReconnect();
   }
 
   // scheduleReconnect waits an exponentially-backoff'd delay and then
@@ -774,7 +840,7 @@ export class WSClient {
   // strictly the safety net for the no-awaiter path.
   private scheduleReconnect(): void {
     if (this.closed) return;
-    if (this.reconnectTimer !== null) {
+    if (this.queuedAttempt !== null) {
       // A reconnect is already queued — let it run; doubling up would
       // drop the pending close-handler attempt and risk synchronising
       // multiple reconnects on a flaky socket.
@@ -782,7 +848,8 @@ export class WSClient {
     }
     const attempt = this.reconnectAttempt;
     this.reconnectAttempt = attempt + 1;
-    const base = Math.min(RECONNECT_INITIAL_MS * 2 ** attempt, RECONNECT_MAX_MS);
+    const cap = this.remoteBackend ? RECONNECT_MAX_REMOTE_MS : RECONNECT_MAX_LOCAL_MS;
+    const base = Math.min(RECONNECT_INITIAL_MS * 2 ** attempt, cap);
     // Full jitter — picked uniformly in [0, base]. Floor protects
     // against zero-delay reconnect on Math.random() => 0; without it
     // a degenerate RNG could spin a tight reconnect loop.
@@ -790,8 +857,16 @@ export class WSClient {
     const nextAttemptAt = Date.now() + delay;
     this.setStatus({ status: 'reconnecting', nextAttemptAt });
     const promise = new Promise<void>((resolve, reject) => {
-      this.reconnectTimer = setTimeout(() => {
-        this.reconnectTimer = null;
+      // The attempt body is shared between the backoff timer and
+      // queuedAttempt.fire so early demand (an RPC, a page resume, the
+      // Retry button) runs THIS scheduled attempt — settling this same
+      // promise for anyone already awaiting connectPromise — rather
+      // than racing a second connect against it.
+      const fire = (): void => {
+        if (this.queuedAttempt !== null) {
+          clearTimeout(this.queuedAttempt.timer);
+          this.queuedAttempt = null;
+        }
         if (this.closed) {
           reject(new DisconnectedError('client closed'));
           return;
@@ -800,7 +875,8 @@ export class WSClient {
         // stops counting down while the connect promise resolves.
         this.setStatus({ status: 'reconnecting', nextAttemptAt: null });
         this.connect().then(resolve, reject);
-      }, delay);
+      };
+      this.queuedAttempt = { timer: setTimeout(fire, delay), fire };
     });
     this.connectPromise = promise;
     // Swallow rejections on this branch — see comment above.
@@ -817,7 +893,14 @@ export class WSClient {
     if (this.bootstrap) return Promise.resolve(this.bootstrap);
     if (!this.bootstrapPromise) {
       const p = this.fetchBootstrap().then((b) => {
-        this.bootstrap = b;
+        // Only a still-current fetch may populate the cache: the close
+        // handler nulls bootstrapPromise mid-flight when it invalidates
+        // the cache, and a superseded fetch landing late must not
+        // overwrite the newer fetch's result (or flip remoteBackend).
+        if (this.bootstrapPromise === p) {
+          this.bootstrap = b;
+          this.remoteBackend = b.remote === true;
+        }
         return b;
       });
       // Null the cached promise on rejection so the next call retries.
@@ -862,6 +945,14 @@ export class WSClient {
   // by id; event pushes fan out to subscribers; batch frames iterate
   // their event array through the same per-event path.
   private handleFrame(frame: ServerFrame): void {
+    if (frame.type === 'ping') {
+      // Server keepalive heartbeat. The message listener already
+      // refreshed lastFrameAt; the first ping additionally proves this
+      // connection provides the traffic floor the staleness watchdog
+      // assumes, arming it until the socket closes.
+      this.serverSendsHeartbeats = true;
+      return;
+    }
     if (frame.type === 'rpc') {
       const pending = this.pending.get(frame.id);
       if (!pending) return;
@@ -1035,22 +1126,6 @@ function storeNotificationActivationSeq(scope: string, seq: number): void {
       notificationCheckpointStoreWarningLogged = true;
       console.warn('wsClient: could not store notification activation checkpoint', error);
     }
-  }
-}
-
-// appendToken adds `?token=<value>` to the WS URL. Handles URLs that
-// already carry query params via the URL constructor.
-function appendToken(wsUrl: string, token: string): string {
-  try {
-    const parsed = new URL(wsUrl);
-    parsed.searchParams.set('token', token);
-    return parsed.toString();
-  } catch {
-    // Relative or otherwise un-parseable — fall back to a plain
-    // concatenation. We bias toward letting the browser's WS
-    // implementation reject a bad URL rather than silently mutating it.
-    const sep = wsUrl.includes('?') ? '&' : '?';
-    return `${wsUrl}${sep}token=${encodeURIComponent(token)}`;
   }
 }
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { documentHidden } from './lib/utils/pageVisibility';
   import { ensureMainPane, getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
   import {
     OPEN_SETTINGS_EVENT,
@@ -368,7 +369,7 @@
       void flushAppStorage();
     };
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
+      if (documentHidden()) {
         flushPaneLayout();
         return;
       }

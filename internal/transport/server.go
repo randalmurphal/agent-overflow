@@ -112,6 +112,17 @@ type Config struct {
 	// DefaultMaxConcurrentRPCs (64).
 	MaxConcurrentRPCs int
 
+	// KeepaliveInterval overrides the per-connection heartbeat cadence.
+	// Zero defaults to defaultKeepaliveInterval (10s). The frontend's
+	// stale-socket watchdog threshold is sized as 3× the default —
+	// production code should not change this; it exists so tests can
+	// exercise the keepalive loop without multi-second sleeps.
+	KeepaliveInterval time.Duration
+	// KeepalivePongTimeout overrides the protocol-ping pong wait. Zero
+	// defaults to defaultKeepalivePongTimeout (10s). Test knob, like
+	// KeepaliveInterval.
+	KeepalivePongTimeout time.Duration
+
 	// OriginPatterns is the WS origin allow-list. Empty (default) uses
 	// InsecureSkipVerify — appropriate for loopback. Phase E (LAN bind
 	// toggle) populates this with the configured remote origins.
@@ -748,6 +759,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	profile := connProfile{
 		isLoopback: isLoopback,
+		remoteAddr: r.RemoteAddr,
 	}
 
 	if !isLoopback {
@@ -757,7 +769,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Use the server's root context so Shutdown can cancel us promptly,
 	// not r.Context() which net/http only cancels on connection close.
-	runConnHandler(s.rootCtx, conn, s.cfg.Dispatcher, s.cfg.EventBus, s.cfg.ReadLimit, s.cfg.MaxConcurrentRPCs, profile)
+	runConnHandler(s.rootCtx, conn, s.cfg.Dispatcher, s.cfg.EventBus, connSettings{
+		readLimit:         s.cfg.ReadLimit,
+		maxConcurrentRPCs: s.cfg.MaxConcurrentRPCs,
+		keepaliveInterval: s.cfg.KeepaliveInterval,
+		pongTimeout:       s.cfg.KeepalivePongTimeout,
+	}, profile)
 	// Best-effort close. Read errors above already represent a closed
 	// connection; any normal-closure send here is for the other half
 	// of the bidirectional handshake.

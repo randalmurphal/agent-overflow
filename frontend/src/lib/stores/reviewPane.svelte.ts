@@ -1,4 +1,5 @@
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+import { documentHidden } from '../utils/pageVisibility';
 import {
   GetBranchBaseDiff,
   GetCommitDiff,
@@ -284,10 +285,6 @@ function unregisterPRReviewState(subscriptionId: string): void {
 
 export function applyPRUpdatedEvent(event: PRUpdatedEvent): void {
   prStatesBySubscription.get(event.subscriptionId)?.applyPRUpdate(event);
-}
-
-function documentHidden(): boolean {
-  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
 }
 
 function setPRUpdatesActive(subscriptionId: string, active: boolean): void {

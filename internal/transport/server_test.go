@@ -28,6 +28,12 @@ type serverFixture struct {
 }
 
 func newServerFixture(t *testing.T) *serverFixture {
+	return newServerFixtureWith(t, nil)
+}
+
+// newServerFixtureWith lets a test adjust the server Config (e.g. the
+// keepalive timing knobs) before Start.
+func newServerFixtureWith(t *testing.T, mutate func(*Config)) *serverFixture {
 	t.Helper()
 	d := NewDispatcher()
 	app := &fakeApp{}
@@ -35,11 +41,15 @@ func newServerFixture(t *testing.T) *serverFixture {
 		t.Fatalf("register: %v", err)
 	}
 	bus := NewEventBus(20)
-	srv, err := New(Config{
+	cfg := Config{
 		Dispatcher: d,
 		EventBus:   bus,
 		Token:      "test-token",
-	})
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -1737,3 +1747,68 @@ func newHeaderRecorder() *headerRecorder             { return &headerRecorder{h:
 func (r *headerRecorder) Header() http.Header        { return r.h }
 func (r *headerRecorder) Write(b []byte) (int, error) { return len(b), nil }
 func (r *headerRecorder) WriteHeader(int)             {}
+
+// TestServer_KeepaliveHeartbeat verifies the per-connection keepalive
+// loop delivers client-visible ping frames at its cadence, and that a
+// healthy connection survives past a protocol-ping tick (tick 3 —
+// coder/websocket answers the ping automatically inside our Read
+// loop). The short cadence is fixture-scoped via Config, so parallel
+// runs don't interfere.
+func TestServer_KeepaliveHeartbeat(t *testing.T) {
+	t.Parallel()
+	f := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.KeepaliveInterval = 30 * time.Millisecond
+	})
+	conn := f.dial(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pings := 0
+	for pings < 4 {
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("ws read after %d pings: %v", pings, err)
+		}
+		var frame ServerFrame
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode frame: %v", err)
+		}
+		if frame.Type == frameTypePing {
+			pings++
+		}
+	}
+}
+
+func TestServer_KeepalivePongTimeoutTearsDownConnection(t *testing.T) {
+	t.Parallel()
+	f := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.KeepaliveInterval = 25 * time.Millisecond
+		cfg.KeepalivePongTimeout = 100 * time.Millisecond
+	})
+	conn := f.dial(t)
+
+	// Don't read: coder/websocket only answers protocol pings from
+	// inside Read, so a non-reading client never pongs — the half-open
+	// signature from the server's perspective. The server's keepalive
+	// must CloseNow the connection after its pong timeout; once it
+	// does, our own reads (which first drain the buffered heartbeat
+	// frames) terminate with a close error instead of running to the
+	// outer deadline. The sleep must comfortably cover first-ping
+	// (3 ticks) + pong timeout (~175ms nominal): once we start reading
+	// we answer pings again, so the teardown has to have happened
+	// before then.
+	time.Sleep(600 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		_, _, err := conn.Read(ctx)
+		if err == nil {
+			continue // buffered heartbeat frame
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("server never tore down the unresponsive connection: %v", err)
+		}
+		return // closed by the server — the behavior under test
+	}
+}

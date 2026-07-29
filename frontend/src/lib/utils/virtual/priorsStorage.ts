@@ -24,6 +24,7 @@
 
 import type { SizePriorsEntry, SizePriorsStorageAdapter } from './priors';
 import { setSizePriorsStorageAdapter } from './priors';
+import { documentHidden } from '../pageVisibility';
 
 const PREFIX = 'agent-overflow.sizePriors.';
 const VERSION_PREFIX = `${PREFIX}v1.`;
@@ -189,7 +190,7 @@ function flushNow(): void {
 }
 
 function handleVisibilityChange(): void {
-  if (document.visibilityState === 'hidden') flushNow();
+  if (documentHidden()) flushNow();
 }
 
 function validateStoredEntry(parsed: unknown): SizePriorsEntry | undefined {

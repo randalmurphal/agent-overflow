@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/netip"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -31,6 +34,44 @@ const DefaultReadLimit = 75 * 1024 * 1024
 // fire ~30 GetPayloadData in parallel).
 const DefaultMaxConcurrentRPCs = 64
 
+const (
+	// defaultKeepaliveInterval is how often the per-connection keepalive
+	// loop writes a client-visible {"type":"ping"} frame — full
+	// rationale in AGENTS.md §Keepalive; the frontend
+	// STALE_TRAFFIC_THRESHOLD_MS is 3× this cadence, keep them in
+	// ratio. Config.KeepaliveInterval overrides (tests shrink it).
+	defaultKeepaliveInterval = 10 * time.Second
+	// Every keepalivePingEvery-th heartbeat tick additionally sends a
+	// protocol-level ping and waits for the pong, detecting half-open
+	// TCP (peer gone, no FIN — writes buffer silently) server-side.
+	keepalivePingEvery = 3
+	// defaultKeepalivePongTimeout bounds the pong wait. Generous vs the
+	// ~ms loopback RTT: pong delivery needs the peer's read loop, and a
+	// busy streaming client may lag. Config.KeepalivePongTimeout
+	// overrides (tests shrink it).
+	defaultKeepalivePongTimeout = 10 * time.Second
+	// writeTimeout bounds every WS write. A half-open connection
+	// accepts writes into a dead TCP window until the send buffer
+	// fills, then blocks forever — holding writeMu and wedging the
+	// event pump and the keepalive loop with it. On expiry
+	// coder/websocket closes the connection (a frame can't be safely
+	// abandoned mid-write), which is exactly the teardown that peer
+	// needs. Sized for the largest legitimate frame (a tens-of-MiB
+	// thread load) crossing a slow WAN link.
+	writeTimeout = 30 * time.Second
+)
+
+// heartbeatFrame is the keepalive frame, encoded once from the same
+// ServerFrame shape every other server frame uses so the wire string
+// can never drift from frameTypePing.
+var heartbeatFrame = func() []byte {
+	buf, err := json.Marshal(ServerFrame{Type: frameTypePing})
+	if err != nil {
+		panic(fmt.Sprintf("transport: marshal heartbeat frame: %v", err))
+	}
+	return buf
+}()
+
 // connProfile captures per-connection transport policy, determined once
 // at upgrade time from the peer's RemoteAddr. Immutable for the
 // connection's lifetime. Compression is negotiated separately at
@@ -39,6 +80,18 @@ type connProfile struct {
 	// isLoopback records whether the peer is on a loopback interface.
 	// Threaded into dispatcher origin checks and event visibility.
 	isLoopback bool
+	// remoteAddr is the peer's kernel-reported address, carried for the
+	// per-connection close log so concurrent clients' lines correlate.
+	remoteAddr string
+}
+
+// connSettings carries the server-config knobs runConnHandler needs.
+// Zero values take the package defaults.
+type connSettings struct {
+	readLimit         int64
+	maxConcurrentRPCs int
+	keepaliveInterval time.Duration
+	pongTimeout       time.Duration
 }
 
 // connHandler owns one upgraded WebSocket. It pumps client frames into
@@ -65,6 +118,22 @@ type connHandler struct {
 	// goroutines and the event-pump goroutine share the connection;
 	// concurrent writes corrupt the frame stream.
 	writeMu sync.Mutex
+
+	// keepaliveInterval / pongTimeout are the resolved timing knobs
+	// (connSettings with defaults applied).
+	keepaliveInterval time.Duration
+	pongTimeout       time.Duration
+
+	// inRead is true exactly while the read loop sits in ws.Read.
+	// coder/websocket only surfaces pongs from inside Read, so a
+	// missing pong while the reader is off processing a frame
+	// (streaming a replay, waiting on rpcSem) says nothing about the
+	// peer — the keepalive loop skips its teardown verdict then.
+	inRead atomic.Bool
+	// lastReadAt (unix nanos) is stamped after each successful Read.
+	// Second guard for the same race: a reader that re-entered Read
+	// moments ago may not have had time to surface a pong yet.
+	lastReadAt atomic.Int64
 }
 
 // runConnHandler runs the per-connection lifecycle until the client
@@ -74,23 +143,32 @@ type connHandler struct {
 // transport policy. profile.isLoopback is forwarded to every
 // dispatcher resolution so LocalOnlyMethods gets enforced for
 // non-loopback peers.
-func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus *EventBus, readLimit int64, maxConcurrent int, profile connProfile) {
-	if readLimit <= 0 {
-		readLimit = DefaultReadLimit
+func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus *EventBus, settings connSettings, profile connProfile) {
+	if settings.readLimit <= 0 {
+		settings.readLimit = DefaultReadLimit
 	}
-	if maxConcurrent <= 0 {
-		maxConcurrent = DefaultMaxConcurrentRPCs
+	if settings.maxConcurrentRPCs <= 0 {
+		settings.maxConcurrentRPCs = DefaultMaxConcurrentRPCs
 	}
-	ws.SetReadLimit(readLimit)
+	if settings.keepaliveInterval <= 0 {
+		settings.keepaliveInterval = defaultKeepaliveInterval
+	}
+	if settings.pongTimeout <= 0 {
+		settings.pongTimeout = defaultKeepalivePongTimeout
+	}
+	ws.SetReadLimit(settings.readLimit)
 
 	h := &connHandler{
-		ws:         ws,
-		dispatcher: d,
-		bus:        bus,
-		sub:        bus.Subscribe(),
-		profile:    profile,
-		rpcSem:     make(chan struct{}, maxConcurrent),
+		ws:                ws,
+		dispatcher:        d,
+		bus:               bus,
+		sub:               bus.Subscribe(),
+		profile:           profile,
+		rpcSem:            make(chan struct{}, settings.maxConcurrentRPCs),
+		keepaliveInterval: settings.keepaliveInterval,
+		pongTimeout:       settings.pongTimeout,
 	}
+	h.lastReadAt.Store(time.Now().UnixNano())
 	defer h.sub.Close()
 
 	connCtx, cancel := context.WithCancel(ctx)
@@ -110,31 +188,114 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// channels).
 	go h.pumpEvents(connCtx)
 
-	h.readLoop(connCtx)
+	// Keepalive: heartbeat frames + periodic protocol pings. Exits on
+	// ctx cancel or the first failed write/pong (the read loop owns
+	// teardown; on pong timeout the keepalive closes the conn itself
+	// to unblock it).
+	go h.keepalive(connCtx)
+
+	started := time.Now()
+	readErr := h.readLoop(connCtx)
+	// One line per connection lifetime, graceful closes included — the
+	// close signature (status vs raw error) is what distinguishes a
+	// client navigation from a relay teardown or a network drop after
+	// the fact, and suppressing graceful closes made the 2026-07-28
+	// relay-flap diagnosis needlessly indirect.
+	log.Printf("transport: ws %s closed after %s (loopback=%t): %s",
+		profile.remoteAddr, time.Since(started).Round(time.Millisecond),
+		profile.isLoopback, closeReason(readErr))
 
 	// Wait for in-flight RPC handlers to finish writing their
 	// responses before we let the parent close the WS underneath them.
 	h.rpcWG.Wait()
 }
 
-// readLoop processes inbound frames until the client closes or an
-// unrecoverable error occurs. RPC responses are dispatched on a
-// bounded worker pool; replay frames pull from the bus and stream
-// missed events synchronously before the live pump resumes.
-func (h *connHandler) readLoop(ctx context.Context) {
-	for {
-		mt, data, err := h.ws.Read(ctx)
-		if err != nil {
-			// Normal closure (StatusNormalClosure, StatusGoingAway,
-			// NoStatusRcvd) is not an error. Other read errors get
-			// logged at INFO. AbnormalClosure (1006) IS noteworthy —
-			// it can indicate a network drop or misbehaving peer, so
-			// we log it.
-			if !isClosedError(err) {
-				log.Printf("transport: ws read: %v", err)
-			}
+// keepalive runs the per-connection heartbeat loop. Every tick writes
+// the client-visible ping frame; every keepalivePingEvery-th tick also
+// round-trips a protocol ping. A failed heartbeat write means the conn
+// is already closed/closing — the read loop is handling teardown, so
+// just exit. A pong timeout means the conn is half-open (writes still
+// buffering into a dead TCP window): close it so the read loop exits
+// and the client's reconnect takes over.
+func (h *connHandler) keepalive(ctx context.Context) {
+	ticker := time.NewTicker(h.keepaliveInterval)
+	defer ticker.Stop()
+	for tick := 1; ; tick++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if err := h.writeRaw(ctx, heartbeatFrame); err != nil {
+			// Conn already closed/closing (or the write bound tore it
+			// down) — the read loop owns teardown.
 			return
 		}
+		if tick%keepalivePingEvery != 0 {
+			continue
+		}
+		pingCtx, cancel := context.WithTimeout(ctx, h.pongTimeout)
+		pingErr := h.ws.Ping(pingCtx)
+		cancel()
+		if pingErr == nil {
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		// A missing pong only convicts the peer when our own read loop
+		// was in a position to surface one: pongs are processed inside
+		// ws.Read, so a reader that is off processing a frame (or only
+		// just returned to Read) leaves the pong undelivered on a
+		// perfectly live connection. Skip the verdict and re-judge on a
+		// later tick — a genuinely dead conn keeps the reader parked in
+		// Read with an old lastReadAt.
+		if !h.inRead.Load() || time.Since(time.Unix(0, h.lastReadAt.Load())) < h.pongTimeout {
+			continue
+		}
+		if errors.Is(pingErr, context.DeadlineExceeded) {
+			log.Printf("transport: keepalive: no pong within %s; closing connection", h.pongTimeout)
+		} else if !isClosedError(pingErr) {
+			log.Printf("transport: keepalive: ping failed: %v", pingErr)
+		}
+		_ = h.ws.CloseNow()
+		return
+	}
+}
+
+// closeReason renders readLoop's terminal error (always non-nil — the
+// loop only exits by returning a Read error) for the per-connection
+// close log line. WS-level close statuses (1000 normal, 1001 going
+// away, 1005 no-status/clean FIN, 1006 abnormal) are surfaced as their
+// code — 1005 with no close frame is the signature of an intermediary
+// (e.g. the WSL2 localhost relay) tearing the connection down, which a
+// raw error string would obscure. The raw-error fallback is quoted and
+// clamped: it can carry peer-influenced text.
+func closeReason(err error) string {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "server shutdown"
+	}
+	if status := websocket.CloseStatus(err); status != -1 {
+		return fmt.Sprintf("close status %d", status)
+	}
+	return fmt.Sprintf("%.200q", err.Error())
+}
+
+// readLoop processes inbound frames until the client closes or an
+// unrecoverable error occurs, returning the terminal read error for
+// the caller's per-connection close line (which replaces the old
+// abnormal-only inline logging). RPC responses are dispatched on a
+// bounded worker pool; replay frames pull from the bus and stream
+// missed events synchronously before the live pump resumes.
+func (h *connHandler) readLoop(ctx context.Context) error {
+	for {
+		h.inRead.Store(true)
+		mt, data, err := h.ws.Read(ctx)
+		h.inRead.Store(false)
+		if err != nil {
+			return err
+		}
+		h.lastReadAt.Store(time.Now().UnixNano())
 		if mt != websocket.MessageText {
 			h.writeError(ctx, "", &FrameError{
 				Code:    ErrCodeBadParams,
@@ -326,9 +487,7 @@ func (h *connHandler) writeBatchFrame(ctx context.Context, events []Event) {
 		log.Printf("transport: marshal batch frame: %v", err)
 		return
 	}
-	h.writeMu.Lock()
-	defer h.writeMu.Unlock()
-	if err := h.ws.Write(ctx, websocket.MessageText, buf); err != nil {
+	if err := h.writeRaw(ctx, buf); err != nil {
 		if !isClosedError(err) {
 			log.Printf("transport: ws write batch: %v", err)
 		}
@@ -342,9 +501,7 @@ func (h *connHandler) writeBatchFrame(ctx context.Context, events []Event) {
 // Event without pre-encoding still gets a valid wire frame.
 func (h *connHandler) writeEventFrame(ctx context.Context, e Event) {
 	if len(e.WireBytes) > 0 {
-		h.writeMu.Lock()
-		defer h.writeMu.Unlock()
-		if err := h.ws.Write(ctx, websocket.MessageText, e.WireBytes); err != nil {
+		if err := h.writeRaw(ctx, e.WireBytes); err != nil {
 			if !isClosedError(err) {
 				log.Printf("transport: ws write: %v", err)
 			}
@@ -360,22 +517,40 @@ func (h *connHandler) writeEventFrame(ctx context.Context, e Event) {
 	})
 }
 
-// writeFrame marshals + writes a frame under the write lock. Errors
-// from the WS are logged but not returned — the read loop will see
-// the closed connection and exit.
+// writeFrame marshals + writes a frame. Errors from the WS are logged
+// but not returned — the read loop will see the closed connection and
+// exit.
 func (h *connHandler) writeFrame(ctx context.Context, frame ServerFrame) {
 	buf, err := json.Marshal(frame)
 	if err != nil {
 		log.Printf("transport: marshal server frame: %v", err)
 		return
 	}
-	h.writeMu.Lock()
-	defer h.writeMu.Unlock()
-	if err := h.ws.Write(ctx, websocket.MessageText, buf); err != nil {
+	if err := h.writeRaw(ctx, buf); err != nil {
 		if !isClosedError(err) {
 			log.Printf("transport: ws write: %v", err)
 		}
 	}
+}
+
+// writeRaw is the single wire-write chokepoint: pre-encoded bytes go
+// out under the write lock with the shared write bound. A write that
+// exhausts writeTimeout means the peer stopped draining (half-open TCP
+// with a full send window) — coder/websocket tears the connection down
+// on the expired context, so writeMu can never be held hostage by a
+// dead peer. That case is logged here, once, so callers' isClosedError
+// suppression (the expiry surfaces as context.DeadlineExceeded)
+// doesn't bury the one write failure that carries a diagnosis.
+func (h *connHandler) writeRaw(ctx context.Context, buf []byte) error {
+	wctx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	h.writeMu.Lock()
+	err := h.ws.Write(wctx, websocket.MessageText, buf)
+	h.writeMu.Unlock()
+	if err != nil && wctx.Err() != nil && ctx.Err() == nil {
+		log.Printf("transport: ws write timed out after %s; peer not draining — closing connection", writeTimeout)
+	}
+	return err
 }
 
 func (h *connHandler) writeError(ctx context.Context, id string, fe *FrameError) {
@@ -386,9 +561,11 @@ func (h *connHandler) writeError(ctx context.Context, id string, fe *FrameError)
 	})
 }
 
-// isClosedError reports whether err represents a normal client
-// disconnect or context cancellation. AbnormalClosure (1006) is NOT
-// in this set — it can indicate a network drop, so it gets logged.
+// isClosedError reports whether a write error represents a peer that
+// already disconnected normally (or a cancelled context) — cases the
+// write paths suppress rather than log, because the read loop's close
+// line already covers them. AbnormalClosure (1006) is NOT in this set:
+// it can indicate a network drop mid-write, so it gets logged.
 func isClosedError(err error) bool {
 	if err == nil {
 		return false
