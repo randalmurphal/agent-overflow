@@ -150,6 +150,14 @@ func (e *Engine) takeOverUnit(itemID, unitID string) error {
 	if unit == nil {
 		return fmt.Errorf("take over unit %q of item %q: unit is not part of attempt %s/%d", unitID, itemID, item.phaseID, item.attempt)
 	}
+	if unit.definition.IsCall() {
+		// There is no session to steer: the unit's work is a child run with threads
+		// of its own. Taking one of those over is an action on that run.
+		return fmt.Errorf(
+			"take over unit %q of item %q: the unit runs a child workflow and holds no session; act on the child run instead",
+			unitID, itemID,
+		)
+	}
 	if unit.runnerStarting {
 		return fmt.Errorf("take over unit %q of item %q: unit runner is still starting", unitID, itemID)
 	}
@@ -297,7 +305,60 @@ func (e *Engine) resumeRepairedFanOut(item *runtimeItem) error {
 		return nil
 	}
 	item.acquired = acquired
+	// Call units the pause retained are still linked to children that were paused
+	// alongside them; those children are what re-enters this attempt, so they have
+	// to come back with it or the run would wait on a run nothing will restart.
+	if err := e.resumeUnitCallChildren(item); err != nil {
+		return err
+	}
+	if item.fan == nil || State(item.item.State) != StateRunning {
+		return nil
+	}
 	return e.advanceFanOut(item)
+}
+
+// resumeUnitCallChildren returns each retained call unit of a resumed attempt to
+// waiting on a live child. It is the unit-scoped twin of resumeCallPhase: the
+// unit row is reopened by having stayed `running`, so the child is resumed in
+// place rather than replaced by a second invocation of the same unit.
+func (e *Engine) resumeUnitCallChildren(item *runtimeItem) error {
+	if item.fan == nil {
+		return nil
+	}
+	var errs []error
+	for _, unit := range restingCallUnits(item.fan) {
+		if item.fan == nil || State(item.item.State) != StateRunning {
+			break
+		}
+		child, found, err := e.unitCallChildOf(item, unit.id)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if !found {
+			// The stop landed between the unit row and the child's creation.
+			// Invoking the call again is exactly what crash recovery does with the
+			// same gap.
+			errs = append(errs, e.startUnitCall(item, unit))
+			continue
+		}
+		switch State(child.State) {
+		case StateRunning:
+			// Already live; the unit is simply waiting on it again.
+		case StateNeedsHuman:
+			if ResumableReason(Reason(child.Reason)) {
+				errs = append(errs, e.resumeItem(child.ID))
+			}
+			// A child parked for a reason of its own keeps its park. The unit is
+			// back to waiting on it, which is the correct resting shape: the
+			// child's resolution re-enters this attempt exactly as it would have.
+		default:
+			// The child finished while the attempt was parked, so nothing will
+			// re-enter the unit on its own. Settle it now.
+			errs = append(errs, e.settleUnitCallChild(item, child))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func retryFeedback(note string) *Feedback {

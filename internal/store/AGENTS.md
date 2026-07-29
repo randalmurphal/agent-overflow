@@ -320,6 +320,27 @@ baseline:
   thread's whole items slice (seconds per call on large threads). Keep the
   term when writing new probes.
 
+## Recent schema changes (v43) — unit call linkage
+
+- The v43 rebuild adds `work_items.parent_unit_id`: the fan-out unit whose call
+  created a run. v38's linkage identifies an invocation by (item, phase,
+  attempt), which is unique for a `shape: call` phase — it makes exactly one
+  call — but not for a fan-out phase, where every call-bound unit of one attempt
+  would otherwise be indistinguishable from its siblings. Empty means "called by
+  the phase", which is what keeps the two cases apart without a second column.
+  `ListWorkItemCallChildren` now filters `parent_unit_id = ''` and
+  `ListWorkItemUnitCallChildren` is the per-unit read.
+- A fifth CHECK, `parent_unit_id = '' OR parent_item_id <> ''`, keeps the
+  linkage all-or-nothing in the direction the other four already do: a unit id
+  with no parent item would name a unit of no run.
+- The rebuild text is derived from v39's, so it restates the indexes added
+  *after* v39 — v40's `idx_work_items_automation_source_ref` — and extends
+  v39's copy list with `origin_thread_id`, the column v39 itself created and
+  therefore did not copy. Both are the failure mode this derivation style
+  invites: a rebuild that silently drops what shipped between the text it was
+  derived from and now. Any future work_items rebuild has to re-check the same
+  two lists.
+
 ## Extension points
 
 - To add a new column / index / CHECK: write a new migration — never

@@ -1,8 +1,10 @@
 import { test, expect } from './fixtures.js';
 import {
+  doneEnvelope,
   doneResult,
   seedWorkflowProject,
   setClaudeScenario,
+  setCodexScenario,
   start,
   waitForWorkflowState,
   type WorkflowDetail,
@@ -268,4 +270,163 @@ test('a bounded self-call recursion completes inside its declared max_depth', as
   expect(second.phases[1]?.outputEnvelope).toMatchObject({ status: 'done', outputs: { depth: 3 } });
   expect(second.item.worktreePath ?? '').toBe(root.item.worktreePath ?? '');
   expect(third.item.worktreePath ?? '').toBe(root.item.worktreePath ?? '');
+});
+
+// A fan-out whose units are call edges: each unit runs a whole sub-workflow in
+// its own sub-worktree, and the join consolidates them (spec §3, §3a, §9). This
+// is the campaign shape — the isolation belongs to the unit, and what runs
+// inside it is a child run rather than a turn.
+const callFanOutYaml = `id: call-fanout
+name: Call fan-out
+inputs:
+  goal:
+    schema:
+      type: string
+phases:
+  - id: plan
+    driver: agent
+    provider: claude
+    model: claude-opus-4-7
+    prompt: plan.md
+    access: read-only
+    inputs:
+      goal:
+        schema:
+          type: string
+    outputs:
+      sections:
+        schema:
+          type: array
+          items:
+            type: string
+    gate:
+      routes:
+        - to: wave
+  - id: wave
+    shape: fan-out
+    over: plan.sections
+    as: section
+    unit:
+      id: wave-unit
+      call: call-fanout-child
+      args:
+        subject: section
+    join:
+      id: merge
+      provider: codex
+      model: gpt-5.5
+      prompt: merge.md
+      access: read-only
+    inputs:
+      plan.sections:
+        schema:
+          type: array
+          items:
+            type: string
+    gate:
+      routes:
+        - to: done
+cleanup: manual
+`;
+
+// The child writes, which is what gives the whole tree a worktree and every
+// unit a sub-worktree to cut from it.
+const callFanOutChildYaml = `id: call-fanout-child
+name: Call fan-out child
+inputs:
+  subject:
+    schema:
+      type: string
+phases:
+  - id: edit
+    driver: agent
+    provider: codex
+    model: gpt-5.5
+    prompt: edit.md
+    access: write
+    inputs:
+      subject:
+        schema:
+          type: string
+    gate:
+      routes:
+        - to: done
+cleanup: manual
+`;
+
+test('a call-bound fan-out unit runs its child in the unit sub-worktree', async ({ harness }) => {
+  await setClaudeScenario(harness, 'call-fanout-plan', [
+    { steps: [{ emit: { lines: [doneResult({ sections: ['alpha', 'beta'] })] } }] },
+  ]);
+  // Neither the child's phase nor the join declares outputs, so one
+  // control-only envelope answers every codex turn in this run.
+  await setCodexScenario(harness, 'call-fanout-units', doneEnvelope({}));
+  const project = await seedWorkflowProject(
+    harness,
+    'workflow-call-fanout-project',
+    [
+      {
+        name: 'call-fanout',
+        yaml: callFanOutYaml,
+        prompts: {
+          'plan.md': 'Plan {{goal}} and return the sections.',
+          'merge.md': 'Consolidate {{units}} and return the envelope.',
+        },
+      },
+      {
+        name: 'call-fanout-child',
+        yaml: callFanOutChildYaml,
+        prompts: { 'edit.md': 'Port {{subject}} and return the envelope.' },
+      },
+    ],
+    [],
+    'base_branch: main\n',
+  );
+
+  const item = await start(harness, project.projectId, 'call-fanout');
+  await waitForWorkflowState(harness, item.id, 'done');
+
+  const detail = await harness.rpc<WorkflowDetail>('WorkflowGetItem', item.id);
+  expect(detail.units.map((unit) => unit.unitId)).toEqual(['wave-unit-0', 'wave-unit-1', 'merge']);
+  expect(detail.units.map((unit) => unit.status)).toEqual(['done', 'done', 'done']);
+
+  const units = detail.units.filter((unit) => unit.kind === 'unit');
+  // A call unit holds no session of its own — its work is a child run — but it
+  // is isolated exactly like a writing agent unit is.
+  for (const unit of units) {
+    expect(unit.threadId ?? '').toBe('');
+    expect(unit.branch?.startsWith(`${detail.item.branch}-`)).toBe(true);
+  }
+  expect(units[0]?.branch).not.toBe(units[1]?.branch);
+
+  // One child per unit, each naming the unit that called it.
+  expect(detail.children).toHaveLength(2);
+  const childByUnit = new Map(detail.children.map((child) => [child.parentUnitId, child]));
+  expect([...childByUnit.keys()].sort()).toEqual(['wave-unit-0', 'wave-unit-1']);
+
+  const worktrees = new Set<string>();
+  for (const unit of units) {
+    const child = childByUnit.get(unit.unitId);
+    expect(child?.state).toBe('done');
+    expect(child?.parentPhaseId).toBe('wave');
+    expect(child?.callDepth).toBe(1);
+    const childDetail = await harness.rpc<WorkflowDetail>('WorkflowGetItem', child!.itemId);
+    expect(childDetail.item.parentUnitId).toBe(unit.unitId);
+    // The child ran in its unit's sub-worktree, not in the caller's: isolation
+    // is introduced by fan-out and a child provisions nothing of its own.
+    expect(childDetail.item.branch).toBe(unit.branch);
+    expect(childDetail.item.worktreePath).toBeTruthy();
+    expect(childDetail.item.worktreePath).not.toBe(detail.item.worktreePath);
+    expect(childDetail.item.baseBranch).toBe(detail.item.branch);
+    worktrees.add(childDetail.item.worktreePath ?? '');
+    expect(childDetail.phases.map((phase) => phase.phaseId)).toEqual(['edit']);
+    expect(childDetail.phases[0]?.threadId).toBeTruthy();
+  }
+  expect(worktrees.size).toBe(2);
+
+  // The join is the attempt's own turn, and its envelope is the phase's.
+  const merge = detail.units.find((unit) => unit.kind === 'join');
+  expect(merge?.threadId).toBeTruthy();
+  expect(detail.phases[1]?.threadId).toBe(merge?.threadId);
+  expect(detail.phases[1]?.outputEnvelope).toMatchObject({ status: 'done' });
 });

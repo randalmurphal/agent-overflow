@@ -12,36 +12,40 @@ import (
 
 // WorkItem is one persisted workflow run record.
 type WorkItem struct {
-	ID                  string          `json:"id"`
-	ProjectID           string          `json:"projectId"`
-	Goal                string          `json:"goal"`
-	WorkflowID          string          `json:"workflowId"`
-	WorkflowScope       string          `json:"workflowScope"`
-	Snapshot            json.RawMessage `json:"snapshot,omitempty"`
-	State               string          `json:"state"`
-	Reason              string          `json:"reason,omitempty"`
-	Seeds               json.RawMessage `json:"seeds,omitempty"`
-	StepMode            bool            `json:"stepMode"`
-	WorktreePath        string          `json:"worktreePath,omitempty"`
-	Branch              string          `json:"branch,omitempty"`
-	BaseBranch          string          `json:"baseBranch,omitempty"`
-	Budget              json.RawMessage `json:"budget,omitempty"`
-	Source              string          `json:"source"`
-	SourceRef           string          `json:"sourceRef,omitempty"`
-	TriageThreadID      string          `json:"triageThreadId,omitempty"`
-	OriginThreadID      string          `json:"originThreadId,omitempty"`
-	Disposition         json.RawMessage `json:"disposition,omitempty"`
-	Digest              json.RawMessage `json:"digest,omitempty"`
-	ParentItemID        string          `json:"parentItemId,omitempty"`
-	ParentPhaseID       string          `json:"parentPhaseId,omitempty"`
-	ParentAttempt       int             `json:"parentAttempt,omitempty"`
-	CallDepth           int             `json:"callDepth,omitempty"`
-	CreatedAt           int64           `json:"createdAt"`
-	StartedAt           int64           `json:"startedAt,omitempty"`
-	EndedAt             int64           `json:"endedAt,omitempty"`
-	CurrentPhaseID      string          `json:"currentPhaseId,omitempty"`
-	CurrentPhaseOrdinal int             `json:"currentPhaseOrdinal,omitempty"`
-	PhaseCount          int             `json:"phaseCount,omitempty"`
+	ID             string          `json:"id"`
+	ProjectID      string          `json:"projectId"`
+	Goal           string          `json:"goal"`
+	WorkflowID     string          `json:"workflowId"`
+	WorkflowScope  string          `json:"workflowScope"`
+	Snapshot       json.RawMessage `json:"snapshot,omitempty"`
+	State          string          `json:"state"`
+	Reason         string          `json:"reason,omitempty"`
+	Seeds          json.RawMessage `json:"seeds,omitempty"`
+	StepMode       bool            `json:"stepMode"`
+	WorktreePath   string          `json:"worktreePath,omitempty"`
+	Branch         string          `json:"branch,omitempty"`
+	BaseBranch     string          `json:"baseBranch,omitempty"`
+	Budget         json.RawMessage `json:"budget,omitempty"`
+	Source         string          `json:"source"`
+	SourceRef      string          `json:"sourceRef,omitempty"`
+	TriageThreadID string          `json:"triageThreadId,omitempty"`
+	OriginThreadID string          `json:"originThreadId,omitempty"`
+	Disposition    json.RawMessage `json:"disposition,omitempty"`
+	Digest         json.RawMessage `json:"digest,omitempty"`
+	ParentItemID   string          `json:"parentItemId,omitempty"`
+	ParentPhaseID  string          `json:"parentPhaseId,omitempty"`
+	// ParentUnitID is set only when a call-bound fan-out unit created this run.
+	// It is what distinguishes the children of one fan-out attempt from each
+	// other; a `shape: call` phase makes one call per attempt and leaves it empty.
+	ParentUnitID        string `json:"parentUnitId,omitempty"`
+	ParentAttempt       int    `json:"parentAttempt,omitempty"`
+	CallDepth           int    `json:"callDepth,omitempty"`
+	CreatedAt           int64  `json:"createdAt"`
+	StartedAt           int64  `json:"startedAt,omitempty"`
+	EndedAt             int64  `json:"endedAt,omitempty"`
+	CurrentPhaseID      string `json:"currentPhaseId,omitempty"`
+	CurrentPhaseOrdinal int    `json:"currentPhaseOrdinal,omitempty"`
+	PhaseCount          int    `json:"phaseCount,omitempty"`
 }
 
 // WorkItemAttentionContext is the narrow item/phase projection used while an
@@ -77,13 +81,13 @@ func qualifiedUnresolvedWorkItemsPredicate(prefix string) string {
 const workItemColumns = `id, project_id, goal, workflow_id, workflow_scope,
 snapshot, state, reason, seeds, step_mode, worktree_path,
 branch, base_branch, budget, source, source_ref, triage_thread_id, origin_thread_id,
-disposition, digest, parent_item_id, parent_phase_id, parent_attempt, call_depth,
+disposition, digest, parent_item_id, parent_phase_id, parent_unit_id, parent_attempt, call_depth,
 created_at, started_at, ended_at`
 
 const workItemSummaryListColumns = `w.id, w.project_id, w.goal, w.workflow_id, w.workflow_scope,
 '', w.state, w.reason, '', w.step_mode, w.worktree_path,
 w.branch, w.base_branch, '', w.source, w.source_ref, w.triage_thread_id, w.origin_thread_id,
-w.disposition, '', w.parent_item_id, w.parent_phase_id, w.parent_attempt, w.call_depth,
+w.disposition, '', w.parent_item_id, w.parent_phase_id, w.parent_unit_id, w.parent_attempt, w.call_depth,
 w.created_at, w.started_at, w.ended_at`
 
 const workItemSummaryProgressJoin = `
@@ -117,7 +121,7 @@ func scanWorkItem(scanner interface{ Scan(...any) error }, includeProgress bool)
 		&snapshot, &item.State, &item.Reason, &seeds, &stepMode,
 		&item.WorktreePath, &item.Branch, &item.BaseBranch, &budget, &item.Source,
 		&item.SourceRef, &item.TriageThreadID, &item.OriginThreadID, &disposition, &digest,
-		&item.ParentItemID, &item.ParentPhaseID, &item.ParentAttempt, &item.CallDepth,
+		&item.ParentItemID, &item.ParentPhaseID, &item.ParentUnitID, &item.ParentAttempt, &item.CallDepth,
 		&item.CreatedAt, &item.StartedAt, &item.EndedAt,
 	}
 	if includeProgress {
@@ -138,13 +142,13 @@ func scanWorkItem(scanner interface{ Scan(...any) error }, includeProgress bool)
 func (s *Store) CreateWorkItem(item WorkItem) error {
 	_, err := s.db.Exec(
 		`INSERT INTO work_items (`+workItemColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ProjectID, item.Goal, item.WorkflowID, item.WorkflowScope,
 		jsonText(item.Snapshot), item.State, item.Reason,
 		jsonText(item.Seeds), boolToInt(item.StepMode), item.WorktreePath, item.Branch,
 		item.BaseBranch, jsonText(item.Budget), item.Source, item.SourceRef,
 		item.TriageThreadID, item.OriginThreadID, jsonText(item.Disposition), jsonText(item.Digest),
-		item.ParentItemID, item.ParentPhaseID, item.ParentAttempt, item.CallDepth,
+		item.ParentItemID, item.ParentPhaseID, item.ParentUnitID, item.ParentAttempt, item.CallDepth,
 		item.CreatedAt, item.StartedAt, item.EndedAt,
 	)
 	if err != nil {
@@ -258,10 +262,14 @@ func (s *Store) ListWorkItemChildren(parentItemID string) ([]WorkItem, error) {
 	)
 }
 
-// ListWorkItemCallChildren narrows ListWorkItemChildren to the runs one call
-// *attempt* created. A rerun of a call phase is a new attempt with a new child,
-// so the attempt — not the phase — is what identifies the invocation a parent is
-// waiting on.
+// ListWorkItemCallChildren narrows ListWorkItemChildren to the runs one
+// `shape: call` phase *attempt* created. A rerun of a call phase is a new
+// attempt with a new child, so the attempt — not the phase — is what identifies
+// the invocation a parent is waiting on.
+//
+// Unit-call children are excluded structurally rather than by the caller
+// happening to ask about a call phase: a fan-out attempt's children share this
+// (item, phase, attempt) key and are told apart only by `parent_unit_id`.
 func (s *Store) ListWorkItemCallChildren(parentItemID, parentPhaseID string, parentAttempt int) ([]WorkItem, error) {
 	if parentItemID == "" || parentPhaseID == "" {
 		return nil, fmt.Errorf("store: list work item call children: parent id and phase id are required")
@@ -269,9 +277,32 @@ func (s *Store) ListWorkItemCallChildren(parentItemID, parentPhaseID string, par
 	return s.queryWorkItems(
 		`SELECT `+workItemColumns+` FROM work_items
 		 WHERE parent_item_id = ? AND parent_item_id <> ''
-		   AND parent_phase_id = ? AND parent_attempt = ?
+		   AND parent_phase_id = ? AND parent_attempt = ? AND parent_unit_id = ''
 		 ORDER BY created_at ASC, id ASC`,
 		"list work item call children", parentItemID, parentPhaseID, parentAttempt,
+	)
+}
+
+// ListWorkItemUnitCallChildren is the fan-out counterpart: the runs one
+// call-bound unit of one phase attempt created, oldest-first. A retried unit
+// makes a new child on the same key, so more than one row is possible and the
+// LAST one is the invocation the unit is waiting on — which makes the order a
+// correctness property here rather than a display choice.
+//
+// That is why the tiebreak is `rowid` and not `id`: two invocations can land in
+// the same millisecond, and a random uuid would then decide which child the
+// engine believes it is waiting on. `rowid` is insertion order, so the last row
+// is the last invocation whatever the clock did.
+func (s *Store) ListWorkItemUnitCallChildren(parentItemID, parentPhaseID string, parentAttempt int, parentUnitID string) ([]WorkItem, error) {
+	if parentItemID == "" || parentPhaseID == "" || parentUnitID == "" {
+		return nil, fmt.Errorf("store: list work item unit call children: parent id, phase id, and unit id are required")
+	}
+	return s.queryWorkItems(
+		`SELECT `+workItemColumns+` FROM work_items
+		 WHERE parent_item_id = ? AND parent_item_id <> ''
+		   AND parent_phase_id = ? AND parent_attempt = ? AND parent_unit_id = ?
+		 ORDER BY created_at ASC, rowid ASC`,
+		"list work item unit call children", parentItemID, parentPhaseID, parentAttempt, parentUnitID,
 	)
 }
 

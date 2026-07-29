@@ -60,7 +60,11 @@ func PhaseOutputs(phase Phase) map[string]Variable {
 // envelopes answer their own contracts and reach the gate only through the join.
 func PhaseProducesToolEnvelope(phase Phase) bool {
 	if phase.EffectiveShape() == ShapeFanOut {
-		return phase.Join != nil && phase.Join.EffectiveDriver() == DriverTool
+		if phase.Join == nil {
+			return false
+		}
+		driver, runsWork := phase.Join.EffectiveDriver()
+		return runsWork && driver == DriverTool
 	}
 	return phase.Driver == DriverTool
 }
@@ -69,11 +73,14 @@ func PhaseProducesToolEnvelope(phase Phase) bool {
 // is discriminated by its binding rather than declared, so this is the same
 // rule PhaseOutputs applies: a unit that runs a command always reports `passed`
 // and `exit-code` on top of whatever it declared, and an agent unit reports
-// exactly what it declared — nothing when it declared nothing.
+// exactly what it declared — nothing when it declared nothing. A call unit runs
+// no command, so it reports what its child workflow declares and nothing is
+// merged over it.
 //
 // The returned map is read-only, like PhaseOutputs'.
 func UnitOutputs(unit Unit) map[string]Variable {
-	if unit.EffectiveDriver() != DriverTool {
+	driver, runsWork := unit.EffectiveDriver()
+	if !runsWork || driver != DriverTool {
 		return unit.Outputs
 	}
 	return withToolOutputs(unit.Outputs)

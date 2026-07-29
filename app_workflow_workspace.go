@@ -72,13 +72,18 @@ func (r *workflowAppRunner) resolveWorkspace(ctx context.Context, request engine
 	return r.provisionWorkspace(ctx, item, request.Workflow.ID, project)
 }
 
-// resolveCalledWorkspace answers for a run a call phase created. A called run
-// provisions nothing of its own (§9): it executes where its tree's root does, so
-// a recursive workflow iterates in one worktree instead of cutting one per
-// level. The stamped columns are the fast path — the call phase copies the
-// caller's workspace onto the child row when it creates it — and the root is the
-// authority whenever they are empty, which is what makes a workflow whose *first*
-// phase is a call still run its child in an isolated worktree.
+// resolveCalledWorkspace answers for a run a call created. A called run
+// provisions nothing of its own (§9): it executes in its caller's workspace
+// context, so a recursive workflow iterates in one worktree instead of cutting
+// one per level. The stamped columns are the fast path — a serial call copies
+// the caller's workspace onto the child row when it creates it — and the linkage
+// is the authority whenever they are empty, which is what makes a workflow whose
+// *first* phase is a call still run its child in an isolated worktree.
+//
+// Which workspace context that is depends on where the call was declared.
+// Isolation is introduced by fan-out and only by fan-out, so a run a *unit*
+// called executes in that unit's sub-worktree, and one a phase called executes
+// in the tree's own worktree.
 func (r *workflowAppRunner) resolveCalledWorkspace(
 	ctx context.Context, item store.WorkItem, project store.Project,
 ) (preparedWorkflowWorkspace, error) {
@@ -95,11 +100,20 @@ func (r *workflowAppRunner) resolveCalledWorkspace(
 		return preparedWorkflowWorkspace{}, err
 	}
 	if need == def.WorkspaceProjectRoot {
+		// Nothing in the tree writes, so there is no branch to isolate from and
+		// nothing to isolate. This covers the unit-call case too: a fan-out of
+		// read-only sub-workflows shares the project root exactly as its phases do.
 		return preparedWorkflowWorkspace{path: project.Path, project: project}, nil
 	}
 	prepared, err := r.prepareRootWorkspace(ctx, root, project)
 	if err != nil {
 		return preparedWorkflowWorkspace{}, err
+	}
+	if item.ParentUnitID != "" {
+		prepared, err = r.resolveUnitCallWorkspace(ctx, item, prepared)
+		if err != nil {
+			return preparedWorkflowWorkspace{}, err
+		}
 	}
 	// Record the answer on the child so its run record shows where it ran, and so
 	// every later phase of this child resolves through the fast path above.
@@ -111,6 +125,37 @@ func (r *workflowAppRunner) resolveCalledWorkspace(
 		return preparedWorkflowWorkspace{}, fmt.Errorf("stamp called run %q workspace: %w", item.ID, err)
 	}
 	return prepared, nil
+}
+
+// resolveUnitCallWorkspace resolves the sub-worktree a call-bound fan-out unit's
+// child run executes in (§9). It is the same isolation an agent unit gets and
+// the same code that cuts it: one branch off the item's branch per unit try,
+// registered on the unit row before anything runs in it, so the checkout is
+// discoverable — by the join that merges it, by the discard preview, by a
+// crash-recovery sweep — from the moment it exists.
+//
+// The try number comes from the unit row rather than from the child, so a
+// retried unit's second child cuts a fresh checkout instead of inheriting what
+// the failed try left behind, exactly as a retried agent unit does.
+func (r *workflowAppRunner) resolveUnitCallWorkspace(
+	ctx context.Context, item store.WorkItem, primary preparedWorkflowWorkspace,
+) (preparedWorkflowWorkspace, error) {
+	unit, found, err := r.app.store.GetWorkItemUnit(
+		item.ParentItemID, item.ParentPhaseID, item.ParentAttempt, item.ParentUnitID,
+	)
+	if err != nil {
+		return preparedWorkflowWorkspace{}, err
+	}
+	if !found {
+		return preparedWorkflowWorkspace{}, fmt.Errorf(
+			"called run %q names fan-out unit %s/%s/%d/%s, which has no persisted row",
+			item.ID, item.ParentItemID, item.ParentPhaseID, item.ParentAttempt, item.ParentUnitID,
+		)
+	}
+	return r.provisionUnitWorktree(ctx, workflowUnitWorkspaceRef{
+		projectID: item.ProjectID, itemID: item.ParentItemID, phaseID: item.ParentPhaseID,
+		attempt: item.ParentAttempt, unitID: item.ParentUnitID, unitAttempt: unit.UnitAttempt,
+	}, primary)
 }
 
 // prepareRootWorkspace provisions (or adopts) the root's workspace under the
@@ -259,6 +304,21 @@ func (r *workflowAppRunner) provisionWorkspace(
 	}, nil
 }
 
+// workflowUnitWorkspaceRef names the fan-out unit a sub-worktree belongs to.
+// It exists because the two callers of provisionUnitWorktree identify that unit
+// from different places: the unit's own runner start knows it from the
+// `engine.RunRequest`, while a unit-call child run knows it only from its
+// parent linkage plus the persisted unit row. Passing the coordinates instead
+// of a request keeps one provisioning path for both.
+type workflowUnitWorkspaceRef struct {
+	projectID   string
+	itemID      string
+	phaseID     string
+	attempt     int
+	unitID      string
+	unitAttempt int
+}
+
 // provisionUnitWorktree cuts one writing fan-out unit's isolated sub-worktree
 // from the item's branch (spec §9). The branch and path are registered on the
 // unit row before the session starts, so a crash between `git worktree add` and
@@ -268,9 +328,11 @@ func (r *workflowAppRunner) provisionWorkspace(
 // unit id, and the unit's try number: re-entering the same try finds its own
 // worktree and adopts it instead of cutting a second, and a retry (a new try
 // number) always cuts fresh from the item branch rather than inheriting what
-// the failed try left behind.
+// the failed try left behind. That adoption is also what makes a call-bound
+// unit work: its child run resolves the same coordinates and lands in the
+// checkout the unit already owns.
 func (r *workflowAppRunner) provisionUnitWorktree(
-	ctx context.Context, request engine.RunRequest, primary preparedWorkflowWorkspace,
+	ctx context.Context, ref workflowUnitWorkspaceRef, primary preparedWorkflowWorkspace,
 ) (preparedWorkflowWorkspace, error) {
 	if primary.branch == "" {
 		// DeriveWorkspaceNeed counts a writing unit, so an item whose units write
@@ -278,10 +340,15 @@ func (r *workflowAppRunner) provisionUnitWorktree(
 		// frozen definition and the provisioned workspace disagree.
 		return preparedWorkflowWorkspace{}, fmt.Errorf(
 			"unit %q declares write access but item %q has no branch to cut from",
-			request.Key.UnitID, request.Key.ItemID,
+			ref.unitID, ref.itemID,
 		)
 	}
-	branch := workflowUnitBranch(primary.branch, request.Key.UnitID, request.UnitAttempt)
+	if ref.unitAttempt < 1 {
+		return preparedWorkflowWorkspace{}, fmt.Errorf(
+			"unit %q of item %q has no try number to name its worktree from", ref.unitID, ref.itemID,
+		)
+	}
+	branch := workflowUnitBranch(primary.branch, ref.unitID, ref.unitAttempt)
 	if err := gitops.ValidateBranchName(branch); err != nil {
 		return preparedWorkflowWorkspace{}, fmt.Errorf("unit branch %q: %w", branch, err)
 	}
@@ -306,11 +373,11 @@ func (r *workflowAppRunner) provisionUnitWorktree(
 		return cause
 	}
 	if err := r.app.store.AttachWorkItemUnitWorkspace(
-		request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt, request.Key.UnitID, branch, worktreePath,
+		ref.itemID, ref.phaseID, ref.attempt, ref.unitID, branch, worktreePath,
 	); err != nil {
 		return preparedWorkflowWorkspace{}, rollback(fmt.Errorf("register unit workspace: %w", err))
 	}
-	projectProfile, err := r.projectProfile(ctx, request.Item.ProjectID)
+	projectProfile, err := r.projectProfile(ctx, ref.projectID)
 	if err != nil {
 		return preparedWorkflowWorkspace{}, err
 	}
@@ -319,7 +386,9 @@ func (r *workflowAppRunner) provisionUnitWorktree(
 	if err := runWorkflowWorktreeSetup(ctx, primary.project.Path, worktreePath, projectProfile.WorktreeSetup); err != nil {
 		return preparedWorkflowWorkspace{}, err
 	}
-	return preparedWorkflowWorkspace{path: worktreePath, branch: branch, project: primary.project}, nil
+	return preparedWorkflowWorkspace{
+		path: worktreePath, branch: branch, baseBranch: primary.branch, project: primary.project,
+	}, nil
 }
 
 // existingUnitWorktree finds the worktree already checked out on a unit's

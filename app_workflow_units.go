@@ -57,11 +57,21 @@ func (r *workflowAppRunner) startUnit(ctx context.Context, request engine.RunReq
 		)
 	}
 	unit := *request.Unit
+	driver, runsWork := unit.EffectiveDriver()
+	if !runsWork {
+		// A call unit's work is a child run the engine starts and settles; it never
+		// reaches a runner. One arriving here is a scheduling bug, not a definition
+		// problem, and starting a turn for it would run an unbound prompt.
+		return fmt.Errorf(
+			"workflow runner: unit %q of phase %q invokes workflow %q and runs no turn of its own",
+			request.Key.UnitID, request.Key.PhaseID, unit.CallTarget(),
+		)
+	}
 	plan, err := r.planUnit(ctx, request, unit)
 	if err != nil {
 		return err
 	}
-	if unit.EffectiveDriver() == def.DriverTool {
+	if driver == def.DriverTool {
 		if request.FinalizeTakeover {
 			return fmt.Errorf("workflow runner: tool %s cannot finalize a takeover", plan.label)
 		}
@@ -108,7 +118,10 @@ func (r *workflowAppRunner) planUnit(ctx context.Context, request engine.RunRequ
 	// The join never gets one — it consolidates the units' branches, and the
 	// result it produces is the phase's, which belongs on the item's branch.
 	if plan.kind != engine.UnitJoin && unit.EffectiveAccess() == def.AccessWrite {
-		sub, err := r.provisionUnitWorktree(ctx, request, primary)
+		sub, err := r.provisionUnitWorktree(ctx, workflowUnitWorkspaceRef{
+			projectID: request.Item.ProjectID, itemID: request.Key.ItemID, phaseID: request.Key.PhaseID,
+			attempt: request.Key.Attempt, unitID: request.Key.UnitID, unitAttempt: plan.unitAttempt,
+		}, primary)
 		if err != nil {
 			return workflowUnitPlan{}, errors.Join(engine.ErrSetupFailed, err)
 		}

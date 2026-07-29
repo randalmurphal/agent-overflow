@@ -129,31 +129,70 @@ const (
 
 // Unit configures one fan-out worker or its required join.
 //
+// A unit carries exactly one of three bindings, and the one it carries is the
+// discriminator for how it runs: `prompt` (with provider/model) runs an agent
+// turn, `command` runs deterministically like a tool phase, and `call` invokes
+// another workflow as a child run instead of running work of its own. The three
+// are mutually exclusive and one is required; validation refuses every other
+// combination, so nothing downstream has to guess.
+//
 // Outputs is the unit's own envelope contract, declared exactly like a phase's
 // and never merged with one: a unit reports to its join, not to the gate. A
 // unit that declares none returns the control-only envelope (status, question,
 // reason), which is all a join reading branches and worktrees needs. The join
 // itself declares none — its envelope IS the phase's, so it answers the
-// phase's `outputs:` and declaring its own is a validation finding.
+// phase's `outputs:` and declaring its own is a validation finding. A call unit
+// declares none either: its envelope is synthesized from the child workflow's
+// declared `outputs:`, exactly as a call phase's is (§3a).
 type Unit struct {
 	ID       string              `yaml:"id" json:"id"`
 	Provider string              `yaml:"provider,omitempty" json:"provider,omitempty"`
 	Model    string              `yaml:"model,omitempty" json:"model,omitempty"`
 	Prompt   string              `yaml:"prompt,omitempty" json:"prompt,omitempty"`
 	Command  string              `yaml:"command,omitempty" json:"command,omitempty"`
+	Call     string              `yaml:"call,omitempty" json:"call,omitempty"`
+	Args     map[string]string   `yaml:"args,omitempty" json:"args,omitempty"`
+	MaxDepth int                 `yaml:"max_depth,omitempty" json:"maxDepth,omitempty"`
 	Access   Access              `yaml:"access,omitempty" json:"access,omitempty"`
 	Outputs  map[string]Variable `yaml:"outputs,omitempty" json:"outputs,omitempty"`
 }
 
-// EffectiveDriver resolves how a unit executes. Units never declare `driver`:
-// the binding they carry is the discriminator — a `command` runs deterministically
-// like a tool phase, anything else runs an agent turn. Validation refuses a unit
-// that carries both kinds of binding or neither, so this can never guess.
-func (u Unit) EffectiveDriver() Driver {
-	if strings.TrimSpace(u.Command) != "" {
-		return DriverTool
+// CallTarget is the workflow id a call unit invokes. Like a call phase's it is
+// always a static id, which is what lets the dry-run validate the whole call
+// graph — unit edges included — before anything runs.
+func (u Unit) CallTarget() string { return strings.TrimSpace(u.Call) }
+
+// IsCall reports whether the unit invokes another workflow instead of running
+// work of its own. It is the unit-level mirror of Phase.IsCall.
+func (u Unit) IsCall() bool { return u.CallTarget() != "" }
+
+// EffectiveShape resolves what a unit is: `call` when it invokes a workflow,
+// `single` when it runs one piece of work itself. It reuses the phase-level
+// vocabulary for the same distinction rather than inventing a second one, so
+// "does this run work of its own" reads identically at both levels.
+func (u Unit) EffectiveShape() Shape {
+	if u.IsCall() {
+		return ShapeCall
 	}
-	return DriverAgent
+	return ShapeSingle
+}
+
+// EffectiveDriver resolves how a unit's own work executes. Units never declare
+// `driver`: the binding they carry is the discriminator — a `command` runs
+// deterministically like a tool phase, a prompt runs an agent turn.
+//
+// The second result is false for a call unit, which runs no work of its own and
+// therefore has no driver: the child workflow's phases carry the drivers. It is
+// reported rather than defaulted so a caller cannot silently treat a call unit
+// as an agent one and demand a provider it never declares.
+func (u Unit) EffectiveDriver() (Driver, bool) {
+	if u.IsCall() {
+		return "", false
+	}
+	if strings.TrimSpace(u.Command) != "" {
+		return DriverTool, true
+	}
+	return DriverAgent, true
 }
 
 // Gate contains ordered, first-match-wins routes.

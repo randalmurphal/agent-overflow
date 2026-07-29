@@ -37,8 +37,15 @@ func phaseResources(phase def.Phase) ([]string, error) {
 // capacity, and nothing else. The phase's declared resources stay phase-scoped
 // — acquired once at phase entry and held for the whole attempt — so a
 // `live-stack` mutex is taken once by the attempt, not once per unit.
+//
+// A call unit takes nothing, for the same reason a call phase takes nothing: it
+// runs no turn. Its child run's phases acquire what they need through the same
+// project semaphores while the unit rests, so the tree's provider bound is
+// respected without the resting unit holding a slot its own child would then
+// have to wait for.
 func unitResources(unit def.Unit) ([]string, error) {
-	if unit.EffectiveDriver() != def.DriverAgent {
+	driver, runsWork := unit.EffectiveDriver()
+	if !runsWork || driver != def.DriverAgent {
 		return nil, nil
 	}
 	provider := strings.TrimSpace(unit.Provider)
@@ -330,5 +337,5 @@ func (e *Engine) releaseWaitingUnit(item *runtimeItem, unit *unitRun) (bool, err
 	}
 	unit.acquired = acquired
 	e.removeWaiting(item, unit)
-	return true, e.startUnitRunner(item, unit)
+	return true, e.startUnitWork(item, unit)
 }

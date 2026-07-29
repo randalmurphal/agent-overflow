@@ -123,8 +123,25 @@
       "properties": {
         "id": {"type": "string", "pattern": "^[a-z0-9-]+$"}, "provider": {"type": "string"}, "model": {"type": "string"},
         "prompt": {"type": "string"}, "command": {"type": "string"}, "access": {"enum": ["read-only", "write"]},
+        "call": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+        "args": {"type": "object", "additionalProperties": {"type": "string"}},
+        "max_depth": {"type": "integer", "minimum": 1},
         "outputs": {"$ref": "#/$defs/variables"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"required": ["call"]},
+          "then": {
+            "not": {"anyOf": [
+              {"required": ["provider"]}, {"required": ["model"]}, {"required": ["prompt"]},
+              {"required": ["command"]}, {"required": ["access"]}, {"required": ["outputs"]}
+            ]}
+          },
+          "else": {
+            "not": {"anyOf": [{"required": ["args"]}, {"required": ["max_depth"]}]}
+          }
+        }
+      ]
     },
     "gate": {
       "type": "object", "additionalProperties": false, "required": ["routes"],

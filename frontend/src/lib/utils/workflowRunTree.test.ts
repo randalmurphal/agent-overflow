@@ -90,6 +90,45 @@ describe('buildWorkflowRunTree', () => {
     }), NOW);
     expect(nodes[0].children.map((child) => child.itemId)).toEqual(['child-a', 'child-b']);
     expect(nodes[1].children.map((child) => child.itemId)).toEqual(['child-c']);
+    expect(nodes[0].units).toEqual([]);
+  });
+
+  it('hangs a call-bound unit\'s child under its unit row, never flat under the phase', () => {
+    const [node] = buildWorkflowRunTree(detail({
+      phases: [phase('port', 1, 'running', 100)],
+      units: [unit('port-a', 0, 'running'), unit('port-b', 1, 'running')],
+      children: [
+        { itemId: 'child-b', parentPhaseId: 'port', parentAttempt: 1, parentUnitId: 'port-b' },
+        { itemId: 'child-a2', parentPhaseId: 'port', parentAttempt: 1, parentUnitId: 'port-a' },
+        { itemId: 'child-a1', parentPhaseId: 'port', parentAttempt: 1, parentUnitId: 'port-a' },
+        // A phase call on the same attempt is a different edge and stays where it was.
+        { itemId: 'child-phase', parentPhaseId: 'port', parentAttempt: 1 },
+      ] as WorkflowItemDetail['children'],
+    }), NOW);
+    expect(node.units[0].children.map((child) => child.itemId)).toEqual(['child-a1', 'child-a2']);
+    expect(node.units[1].children.map((child) => child.itemId)).toEqual(['child-b']);
+    expect(node.children.map((child) => child.itemId)).toEqual(['child-phase']);
+  });
+
+  it('gives every unit row a children array so a call unit is not a special case downstream', () => {
+    const [node] = buildWorkflowRunTree(detail({
+      phases: [phase('port', 1, 'running', 100)],
+      units: [unit('port-a', 0, 'running')],
+    }), NOW);
+    expect(node.units[0].children).toEqual([]);
+  });
+
+  it('does not confuse a unit id with the same name on another attempt', () => {
+    const nodes = buildWorkflowRunTree(detail({
+      phases: [phase('port', 1, 'failed', 100), phase('port', 2, 'running', 200)],
+      units: [unit('port-a', 0, 'failed'), unit('port-a', 0, 'running', { attempt: 2 })],
+      children: [
+        { itemId: 'child-1', parentPhaseId: 'port', parentAttempt: 1, parentUnitId: 'port-a' },
+        { itemId: 'child-2', parentPhaseId: 'port', parentAttempt: 2, parentUnitId: 'port-a' },
+      ] as WorkflowItemDetail['children'],
+    }), NOW);
+    expect(nodes[0].units[0].children.map((child) => child.itemId)).toEqual(['child-1']);
+    expect(nodes[1].units[0].children.map((child) => child.itemId)).toEqual(['child-2']);
   });
 
   it('carries every openable thread through to its row', () => {

@@ -2828,3 +2828,109 @@ func TestMigrationV42AddsRunningForegroundToolCallIndex(t *testing.T) {
 		 WHERE thread_id = ? AND kind = 'tool_call' AND status = 'running'
 		   AND is_background = 0 AND parent_id = '' LIMIT 1`, "thread-idx")
 }
+
+func TestMigrationV43AddsUnitCallLinkage(t *testing.T) {
+	db := migrateThrough(t, 42)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+		 seeds, step_mode, worktree_path, branch, base_branch, budget,
+		 source, source_ref, triage_thread_id, origin_thread_id, disposition, digest,
+		 parent_item_id, parent_phase_id, parent_attempt, call_depth,
+		 created_at, started_at, ended_at)
+		VALUES ('item-v43', 'project-v43', 'keep goal', 'wf', 'shared', '{"id":"wf"}',
+		 'needs-human', 'unit-failed', '{"ticket":"AO-43"}', 1, '/tmp/wt', 'ao-v43', 'main', '{}',
+		 'manual', 'ref-v43', 'triage-v43', 'thread-v43', '{"action":"merged"}', '{"whatHappened":"x"}',
+		 '', '', 0, 0, 7, 8, 9)`)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, source,
+		 parent_item_id, parent_phase_id, parent_attempt, call_depth, created_at)
+		VALUES ('child-v43', 'project-v43', 'called run', 'child-wf', 'shared', 'running', 'call',
+		 'item-v43', 'audit', 1, 1, 10)`)
+	if _, err := db.Exec(`UPDATE work_items SET parent_unit_id = 'u' WHERE id = 'child-v43'`); err == nil {
+		t.Fatal("work_items already had parent_unit_id before v43")
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 43)); err != nil {
+		t.Fatalf("apply migration v43: %v", err)
+	}
+
+	// The rebuild derives its copy list textually from v39's, so the column v39
+	// itself added is exactly the one a careless derivation would drop.
+	var preserved int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_items
+		WHERE id = 'item-v43' AND project_id = 'project-v43' AND goal = 'keep goal'
+		  AND workflow_id = 'wf' AND workflow_scope = 'shared' AND snapshot = '{"id":"wf"}'
+		  AND state = 'needs-human' AND reason = 'unit-failed' AND seeds = '{"ticket":"AO-43"}'
+		  AND step_mode = 1 AND worktree_path = '/tmp/wt' AND branch = 'ao-v43'
+		  AND base_branch = 'main' AND budget = '{}' AND source = 'manual'
+		  AND source_ref = 'ref-v43' AND triage_thread_id = 'triage-v43'
+		  AND origin_thread_id = 'thread-v43'
+		  AND disposition = '{"action":"merged"}' AND digest = '{"whatHappened":"x"}'
+		  AND parent_item_id = '' AND parent_unit_id = '' AND call_depth = 0
+		  AND created_at = 7 AND started_at = 8 AND ended_at = 9`).Scan(&preserved); err != nil {
+		t.Fatalf("read preserved work item: %v", err)
+	}
+	if preserved != 1 {
+		t.Fatal("v43 rebuild did not preserve the work item row, or dropped its thread binding")
+	}
+	// An existing call-phase child keeps its linkage and defaults to no unit,
+	// which is what makes "called by a phase" the meaning of the empty value.
+	var child int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_items
+		WHERE id = 'child-v43' AND parent_item_id = 'item-v43' AND parent_phase_id = 'audit'
+		  AND parent_attempt = 1 AND call_depth = 1 AND parent_unit_id = ''`).Scan(&child); err != nil {
+		t.Fatalf("read preserved child: %v", err)
+	}
+	if child != 1 {
+		t.Fatal("v43 rebuild did not preserve the call linkage of a child run")
+	}
+
+	mustExec(t, db, `UPDATE work_items SET parent_unit_id = 'port-section' WHERE id = 'child-v43'`)
+	// A unit id with no parent item would name a unit of no run: the linkage is
+	// all-or-nothing in the same direction the other four CHECKs make it.
+	if _, err := db.Exec(`UPDATE work_items SET parent_unit_id = 'port-section' WHERE id = 'item-v43'`); err == nil {
+		t.Fatal("work_items accepted a parent unit on a run nothing called")
+	}
+	if _, err := db.Exec(`INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, source, parent_unit_id, created_at)
+		VALUES ('orphan-v43', 'project-v43', 'orphan', 'wf', 'shared', 'running', 'call', 'u', 11)`); err == nil {
+		t.Fatal("work_items accepted an orphan unit linkage")
+	}
+	// Two units of one attempt are told apart only by this column, which is the
+	// whole reason it exists.
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, source,
+		 parent_item_id, parent_phase_id, parent_unit_id, parent_attempt, call_depth, created_at)
+		VALUES ('sibling-v43', 'project-v43', 'called run', 'child-wf', 'shared', 'running', 'call',
+		 'item-v43', 'audit', 'port-other', 1, 1, 12)`)
+	var siblings int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_items
+		WHERE parent_item_id = 'item-v43' AND parent_item_id <> ''
+		  AND parent_phase_id = 'audit' AND parent_attempt = 1
+		  AND parent_unit_id <> ''`).Scan(&siblings); err != nil {
+		t.Fatalf("read unit children: %v", err)
+	}
+	if siblings != 2 {
+		t.Fatalf("unit children of one attempt = %d, want 2", siblings)
+	}
+
+	for _, index := range []string{
+		"idx_work_items_project_state_created", "idx_work_items_project_created",
+		"idx_work_items_state_created", "idx_work_items_triage_thread",
+		"idx_work_items_agent_source_ref", "idx_work_items_parent",
+		"idx_work_items_origin_thread", "idx_work_items_automation_source_ref",
+	} {
+		readIndexSQL(t, db, index)
+	}
+	assertPlanUses(t, db, "idx_work_items_parent",
+		`EXPLAIN QUERY PLAN SELECT id FROM work_items
+		 WHERE parent_item_id = ? AND parent_item_id <> ''`, "item-v43")
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("foreign_key_check reported a violation after v43 rebuild")
+	}
+}

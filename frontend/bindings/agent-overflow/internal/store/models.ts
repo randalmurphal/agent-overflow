@@ -1435,6 +1435,13 @@ export class WorkItem {
     "digest"?: json$0.RawMessage;
     "parentItemId"?: string;
     "parentPhaseId"?: string;
+
+    /**
+     * ParentUnitID is set only when a call-bound fan-out unit created this run.
+     * It is what distinguishes the children of one fan-out attempt from each
+     * other; a `shape: call` phase makes one call per attempt and leaves it empty.
+     */
+    "parentUnitId"?: string;
     "parentAttempt"?: number;
     "callDepth"?: number;
     "createdAt": number;

@@ -38,10 +38,13 @@ headless, isolated data dir, mocked providers. Full harness guide:
   share a worktree and any difference in permission mode / sandbox came from
   `access` alone. The Go unit tests cover the mapping; this covers the wiring
   surviving to argv and thread-start params.
-- `tests/workflows-call.spec.ts` — `shape: call` phases (§3a, D18): a call phase
+- `tests/workflows-call.spec.ts` — call edges (§3a, D18/D35): a call phase
   whose child run lands in the *caller's* worktree rather than provisioning one,
-  completing the parent on the child's declared outputs, and a bounded
-  self-call recursion terminating inside its declared `max_depth`.
+  completing the parent on the child's declared outputs; a bounded
+  self-call recursion terminating inside its declared `max_depth`; and a
+  call-bound fan-out unit whose child runs in that unit's own sub-worktree
+  instead — the one place a child's workspace is not its caller's, because
+  isolation is introduced by fan-out (§9).
 - `tests/workflows-wake.spec.ts` — thread binding and disposal (§5, D17/D23): a
   run bound to a chat thread waking it with its declared outputs when it rests,
   a pause interrupting a held turn and a resume continuing as turn 2 of the very

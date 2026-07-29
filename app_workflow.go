@@ -559,8 +559,11 @@ type WorkflowItemView struct {
 	// Parent linkage is present only on a called run (§3a). It names the caller,
 	// the caller's call phase, and the attempt of it that invoked this run, so a
 	// child is always navigable back to the exact invocation that created it.
+	// ParentUnitID narrows that to one fan-out unit when the call was declared on
+	// a unit rather than on the phase; it is empty for a phase call.
 	ParentItemID  string `json:"parentItemId,omitempty"`
 	ParentPhaseID string `json:"parentPhaseId,omitempty"`
+	ParentUnitID  string `json:"parentUnitId,omitempty"`
 	ParentAttempt int    `json:"parentAttempt,omitempty"`
 	CallDepth     int    `json:"callDepth,omitempty"`
 	CreatedAt     int64  `json:"createdAt"`
@@ -572,11 +575,15 @@ type WorkflowItemView struct {
 // a detail page of its own; this is the caller-side summary — enough to render
 // the call phase's progress without loading the child's timeline.
 type WorkflowItemChildView struct {
-	ItemID              string `json:"itemId"`
-	WorkflowID          string `json:"workflowId"`
-	State               string `json:"state"`
-	Reason              string `json:"reason,omitempty"`
-	ParentPhaseID       string `json:"parentPhaseId"`
+	ItemID        string `json:"itemId"`
+	WorkflowID    string `json:"workflowId"`
+	State         string `json:"state"`
+	Reason        string `json:"reason,omitempty"`
+	ParentPhaseID string `json:"parentPhaseId"`
+	// ParentUnitID is empty for a phase call and names the fan-out unit that
+	// called this run otherwise, which is what lets the run tree hang the child
+	// under its unit row instead of flat under the fan-out phase.
+	ParentUnitID        string `json:"parentUnitId,omitempty"`
 	ParentAttempt       int    `json:"parentAttempt"`
 	CallDepth           int    `json:"callDepth"`
 	CurrentPhaseID      string `json:"currentPhaseId,omitempty"`
@@ -700,6 +707,7 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 		childViews = append(childViews, WorkflowItemChildView{
 			ItemID: child.ID, WorkflowID: child.WorkflowID, State: child.State,
 			Reason: child.Reason, ParentPhaseID: child.ParentPhaseID,
+			ParentUnitID:  child.ParentUnitID,
 			ParentAttempt: child.ParentAttempt, CallDepth: child.CallDepth,
 			CurrentPhaseID: child.CurrentPhaseID, CurrentPhaseOrdinal: child.CurrentPhaseOrdinal,
 			PhaseCount: child.PhaseCount, StartedAt: child.StartedAt, EndedAt: child.EndedAt,
@@ -714,6 +722,7 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 			Source: item.Source, SourceRef: item.SourceRef, TriageThreadID: item.TriageThreadID,
 			Disposition: item.Disposition, Digest: item.Digest,
 			ParentItemID: item.ParentItemID, ParentPhaseID: item.ParentPhaseID,
+			ParentUnitID:  item.ParentUnitID,
 			ParentAttempt: item.ParentAttempt, CallDepth: item.CallDepth,
 			CreatedAt: item.CreatedAt, StartedAt: item.StartedAt, EndedAt: item.EndedAt,
 		},

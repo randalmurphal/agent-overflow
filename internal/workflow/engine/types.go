@@ -311,6 +311,7 @@ type persistence interface {
 	UpdateWorkItemPhaseIntervention(string, string, int, json.RawMessage) error
 	ListWorkItemChildren(string) ([]store.WorkItem, error)
 	ListWorkItemCallChildren(string, string, int) ([]store.WorkItem, error)
+	ListWorkItemUnitCallChildren(string, string, int, string) ([]store.WorkItem, error)
 	CreateWorkItemUnits([]store.WorkItemUnit) error
 	StartWorkItemUnit(string, string, int, string, int, string, int64) error
 	CompleteWorkItemUnit(string, string, int, string, string, json.RawMessage, string, int64) error

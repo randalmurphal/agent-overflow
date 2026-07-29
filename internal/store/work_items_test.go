@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -667,5 +668,70 @@ func TestDeleteProjectWorkflowRecords(t *testing.T) {
 	}
 	if _, err := s.GetAutomationCursor("auto-b", "item-done"); err != nil {
 		t.Fatalf("surviving cursor: %v", err)
+	}
+}
+
+// The last unit-call child is the invocation its unit is waiting on, so the
+// order has to survive two invocations landing in the same millisecond — a uuid
+// tiebreak would decide it at random.
+func TestListWorkItemUnitCallChildrenIsInsertionOrdered(t *testing.T) {
+	s := newTestStore(t)
+	parent := WorkItem{
+		ID: "parent", ProjectID: "project-a", Goal: "campaign", WorkflowID: "campaign",
+		WorkflowScope: "shared", State: "running", Source: "manual", CreatedAt: 1,
+	}
+	if err := s.CreateWorkItem(parent); err != nil {
+		t.Fatal(err)
+	}
+	child := func(id string) WorkItem {
+		return WorkItem{
+			ID: id, ProjectID: "project-a", Goal: "wave", WorkflowID: "child",
+			WorkflowScope: "shared", State: "running", Source: "call",
+			ParentItemID: "parent", ParentPhaseID: "wave", ParentUnitID: "wave-unit-0",
+			ParentAttempt: 1, CallDepth: 1, CreatedAt: 7,
+		}
+	}
+	// Ids chosen so lexical order is the reverse of insertion order.
+	for _, id := range []string{"zeta", "mid", "alpha"} {
+		if err := s.CreateWorkItem(child(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A sibling unit's child shares the attempt key and must not appear.
+	sibling := child("sibling")
+	sibling.ID, sibling.ParentUnitID = "sibling", "wave-unit-1"
+	if err := s.CreateWorkItem(sibling); err != nil {
+		t.Fatal(err)
+	}
+	// A phase call on the same attempt is a different edge and must not appear.
+	phaseCall := child("phase-call")
+	phaseCall.ID, phaseCall.ParentUnitID = "phase-call", ""
+	if err := s.CreateWorkItem(phaseCall); err != nil {
+		t.Fatal(err)
+	}
+
+	children, err := s.ListWorkItemUnitCallChildren("parent", "wave", 1, "wave-unit-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 0, len(children))
+	for _, row := range children {
+		ids = append(ids, row.ID)
+	}
+	if strings.Join(ids, ",") != "zeta,mid,alpha" {
+		t.Fatalf("unit call children = %v, want insertion order", ids)
+	}
+
+	// The phase-call read is the mirror image: unit children are excluded
+	// structurally, not by the caller happening to ask about a call phase.
+	phaseChildren, err := s.ListWorkItemCallChildren("parent", "wave", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(phaseChildren) != 1 || phaseChildren[0].ID != "phase-call" {
+		t.Fatalf("call children = %+v, want only the phase call", phaseChildren)
+	}
+	if _, err := s.ListWorkItemUnitCallChildren("parent", "wave", 1, ""); err == nil {
+		t.Fatal("an empty unit id must be refused, not read as a phase call")
 	}
 }

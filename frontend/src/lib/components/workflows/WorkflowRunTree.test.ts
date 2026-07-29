@@ -85,6 +85,33 @@ describe('WorkflowRunTree', () => {
     await waitFor(() => expect(view.getAllByTestId('workflow-run-tree')).toHaveLength(1));
   });
 
+  it('expands a call-bound unit into its own child run, nested under that unit', async () => {
+    const campaign = detail({
+      phases: [{ itemId: 'run-1', phaseId: 'wave', attempt: 1, status: 'running', startedAt: 100 }],
+      units: [
+        { itemId: 'run-1', phaseId: 'wave', attempt: 1, unitId: 'wave-a', unitIndex: 0, kind: 'unit', status: 'running', unitAttempt: 1 },
+        { itemId: 'run-1', phaseId: 'wave', attempt: 1, unitId: 'wave-join', unitIndex: 9, kind: 'join', status: 'pending', unitAttempt: 1 },
+      ],
+      children: [
+        {
+          itemId: 'child-1', workflowId: 'audit', state: 'running', parentPhaseId: 'wave',
+          parentUnitId: 'wave-a', parentAttempt: 1, callDepth: 1, currentPhaseOrdinal: 1, phaseCount: 2,
+        },
+      ],
+    } as Partial<WorkflowItemDetail>);
+    const view = render(WorkflowRunTree, { detail: campaign, onOpenThread: vi.fn() });
+
+    // The child row lives inside the unit list, not as a sibling of the phase.
+    const childRun = view.getByTestId('workflow-child-run');
+    expect(childRun.closest('[data-testid="workflow-unit-list"]')).not.toBeNull();
+    expect(childRun.closest('li')?.querySelector('[data-unit-id]')?.getAttribute('data-unit-id'))
+      .toBe('wave-a');
+
+    await fireEvent.click(view.getByTestId('workflow-child-toggle'));
+    await waitFor(() => expect(view.getAllByTestId('workflow-run-tree')).toHaveLength(2));
+    expect(view.getAllByTestId('workflow-run-tree')[1]).toHaveTextContent('audit');
+  });
+
   it('highlights the unit a unit-failed park is about', () => {
     const failing = detail({
       phases: [{ itemId: 'run-1', phaseId: 'port', attempt: 1, status: 'parked', startedAt: 100 }],

@@ -97,22 +97,38 @@ func PropagatedWorkspaceNeed(workflow Workflow, calls CallResolver) (WorkspaceNe
 
 // CallTargets returns every workflow id this definition calls, deduplicated and
 // sorted so traversals over the call graph are deterministic.
+//
+// Both call edges count: a `shape: call` phase and a call-bound fan-out unit
+// reach a child workflow the same way, so workspace propagation and cycle
+// detection have to see them identically. A workflow whose *unit* calls a
+// writing workflow is write-needing exactly as one whose phase does.
 func CallTargets(workflow Workflow) []string {
 	seen := make(map[string]struct{})
 	targets := make([]string, 0)
-	for _, phase := range workflow.Phases {
-		if !phase.IsCall() {
-			continue
-		}
-		target := phase.CallTarget()
+	add := func(target string) {
 		if target == "" {
-			continue
+			return
 		}
 		if _, exists := seen[target]; exists {
-			continue
+			return
 		}
 		seen[target] = struct{}{}
 		targets = append(targets, target)
+	}
+	for _, phase := range workflow.Phases {
+		if phase.IsCall() {
+			add(phase.CallTarget())
+			continue
+		}
+		for _, unit := range phase.UnitDefinitions() {
+			add(unit.CallTarget())
+		}
+		if phase.Join != nil {
+			// A join may not be a call (validation refuses it), but a frozen
+			// snapshot is decoded and never re-validated, so a definition that
+			// predates the rule still has to propagate its workspace need.
+			add(phase.Join.CallTarget())
+		}
 	}
 	sort.Strings(targets)
 	return targets

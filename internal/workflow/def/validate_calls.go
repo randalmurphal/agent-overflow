@@ -121,64 +121,154 @@ func validateCallGraph(
 	copiedPhases := false
 	var findings []Finding
 	for index, phase := range workflow.Phases {
-		if !phase.IsCall() {
+		if phase.IsCall() {
+			element := fmt.Sprintf("workflow %q phase %q", workflow.ID, phase.ID)
+			child, edgeFindings, resolved := validateCallEdge(
+				phase.CallTarget(), element, phase.MaxDepth, bindings, calls, state,
+			)
+			findings = append(findings, edgeFindings...)
+			if !resolved {
+				continue
+			}
+			findings = append(findings, validateCallArgs(workflow, phaseIndex, graph, index, phase, child, element)...)
+			if outputs := CallPhaseOutputs(child); len(outputs) > 0 {
+				if !copiedPhases {
+					effective.Phases = append([]Phase(nil), workflow.Phases...)
+					copiedPhases = true
+				}
+				effective.Phases[index].Outputs = outputs
+			}
 			continue
 		}
-		target := phase.CallTarget()
-		if target == "" || !idPattern.MatchString(target) {
-			continue // validateCall already reported the target itself.
-		}
-		element := fmt.Sprintf("workflow %q phase %q", workflow.ID, phase.ID)
-		if calls == nil {
-			// A workflow with call edges cannot be dry-run without resolution: its
-			// arguments, its child's validity, and its cycles are all facts about
-			// definitions this validation cannot see. Reporting it beats calling a
-			// call graph valid on the strength of never having looked at it.
-			findings = append(findings, finding("call.unresolved", element,
-				fmt.Sprintf("call target %q cannot be checked: no workflow resolver was supplied", target)))
+		if phase.EffectiveShape() != ShapeFanOut {
 			continue
 		}
-		resolved, err := calls.ResolveCall(target)
-		if err != nil {
-			findings = append(findings, finding("call.target", element,
-				fmt.Sprintf("call target %q does not resolve: %v", target, err)))
-			continue
-		}
-		child := resolved.Workflow
-		if state.visiting[target] {
-			// This edge closes a cycle. Recursion is allowed and bounded: the edge
-			// that closes the cycle is the one that has to declare its ceiling.
-			if phase.MaxDepth < 1 {
-				state.cycles = append(state.cycles, finding("call.unbounded-cycle", element, fmt.Sprintf(
-					"call to %q closes the call cycle %s; declare max_depth on this call edge",
-					target, state.cycleFrom(target),
-				)))
+		// A call-bound fan-out unit is a call edge like any other: it resolves the
+		// same way, closes cycles the same way, and its child is validated once per
+		// dry-run alongside every phase-called one. What differs is only where its
+		// arguments come from — a unit references the phase's inputs and the
+		// element binding, not the workflow's phase-output graph.
+		declarations := ResolveUnitDeclarations(workflow, phase)
+		for _, unit := range phase.UnitDefinitions() {
+			if !unit.IsCall() {
+				continue
 			}
-		} else {
-			childResult, validated := state.results[target]
-			if !validated {
-				state.visiting[target] = true
-				state.stack = append(state.stack, target)
-				childResult = validateWorkflow(resolved, bindings, calls, state)
-				state.stack = state.stack[:len(state.stack)-1]
-				delete(state.visiting, target)
-				state.results[target] = childResult
+			element := fmt.Sprintf("workflow %q phase %q fan-out unit %q", workflow.ID, phase.ID, unit.ID)
+			child, edgeFindings, resolved := validateCallEdge(
+				unit.CallTarget(), element, unit.MaxDepth, bindings, calls, state,
+			)
+			findings = append(findings, edgeFindings...)
+			if !resolved {
+				continue
 			}
-			if !childResult.Valid() {
-				findings = append(findings, finding("call.child-invalid", element,
-					fmt.Sprintf("child workflow %q fails validation: %s", target, summarizeFindings(childResult.Findings))))
-			}
-		}
-		findings = append(findings, validateCallArgs(workflow, phaseIndex, graph, index, phase, child, element)...)
-		if outputs := CallPhaseOutputs(child); len(outputs) > 0 {
-			if !copiedPhases {
-				effective.Phases = append([]Phase(nil), workflow.Phases...)
-				copiedPhases = true
-			}
-			effective.Phases[index].Outputs = outputs
+			findings = append(findings, validateUnitCallArgs(unit, child, declarations, element)...)
 		}
 	}
 	return findings, effective
+}
+
+// validateCallEdge resolves one call edge — a `shape: call` phase's or a
+// call-bound fan-out unit's — and applies everything that is true of both:
+// resolution, the cycle bound, and the child's own dry-run. It reports the
+// resolved child and whether anything downstream (arguments, output surface) can
+// be checked against it.
+//
+// maxDepth is the edge's declared ceiling. It is the edge that closes a cycle
+// which has to carry one, and a unit edge closes one exactly as a phase edge
+// does — a campaign whose units call the campaign back would otherwise recurse
+// with nothing but the engine's absolute bound behind it.
+func validateCallEdge(
+	target, element string, maxDepth int,
+	bindings Bindings, calls CallResolver, state *callValidation,
+) (Workflow, []Finding, bool) {
+	if target == "" || !idPattern.MatchString(target) {
+		return Workflow{}, nil, false // The shape check already reported the target itself.
+	}
+	if calls == nil {
+		// A workflow with call edges cannot be dry-run without resolution: its
+		// arguments, its child's validity, and its cycles are all facts about
+		// definitions this validation cannot see. Reporting it beats calling a
+		// call graph valid on the strength of never having looked at it.
+		return Workflow{}, []Finding{finding("call.unresolved", element,
+			fmt.Sprintf("call target %q cannot be checked: no workflow resolver was supplied", target))}, false
+	}
+	resolved, err := calls.ResolveCall(target)
+	if err != nil {
+		return Workflow{}, []Finding{finding("call.target", element,
+			fmt.Sprintf("call target %q does not resolve: %v", target, err))}, false
+	}
+	var findings []Finding
+	if state.visiting[target] {
+		// This edge closes a cycle. Recursion is allowed and bounded: the edge
+		// that closes the cycle is the one that has to declare its ceiling.
+		if maxDepth < 1 {
+			state.cycles = append(state.cycles, finding("call.unbounded-cycle", element, fmt.Sprintf(
+				"call to %q closes the call cycle %s; declare max_depth on this call edge",
+				target, state.cycleFrom(target),
+			)))
+		}
+		return resolved.Workflow, findings, true
+	}
+	childResult, validated := state.results[target]
+	if !validated {
+		state.visiting[target] = true
+		state.stack = append(state.stack, target)
+		childResult = validateWorkflow(resolved, bindings, calls, state)
+		state.stack = state.stack[:len(state.stack)-1]
+		delete(state.visiting, target)
+		state.results[target] = childResult
+	}
+	if !childResult.Valid() {
+		findings = append(findings, finding("call.child-invalid", element,
+			fmt.Sprintf("child workflow %q fails validation: %s", target, summarizeFindings(childResult.Findings))))
+	}
+	return resolved.Workflow, findings, true
+}
+
+// validateUnitCallArgs checks a call unit's argument map against the child's
+// declared inputs. It is validateCallArgs' unit-scoped twin: the same "every
+// required input supplied, every supplied name declared, every reference
+// resolves with an accepted type" contract, resolved against what a unit may
+// reference — the phase's declared inputs plus the `as:` element binding a
+// dynamic fan-out stamps it with.
+//
+// There is no dominance check here because there is nothing unit-local to
+// dominate: every name a unit can reference is a phase input (already
+// dominance-checked where it is declared) or the element of the array the phase
+// fans out over (checked by validateOverReference).
+func validateUnitCallArgs(unit Unit, child Workflow, declarations map[string]Variable, element string) []Finding {
+	var findings []Finding
+	names := make([]string, 0, len(unit.Args))
+	for name := range unit.Args {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		ref := unit.Args[name]
+		argElement := fmt.Sprintf("%s arg %q", element, name)
+		input, declared := child.Inputs[name]
+		if !declared {
+			findings = append(findings, finding("call.arg", argElement,
+				fmt.Sprintf("child workflow %q declares no input %q", child.ID, name)))
+			continue
+		}
+		producer, resolves := declarationForPath(declarations, ref)
+		if !resolves {
+			findings = append(findings, finding("call.arg-ref", argElement,
+				fmt.Sprintf("reference %q is not declared by phase inputs or the fan-out element binding", ref)))
+			continue
+		}
+		if producer.Optional && !input.Optional {
+			findings = append(findings, finding("call.arg-optionality", argElement,
+				fmt.Sprintf("optional producer %q cannot satisfy required child input %q", ref, name)))
+		}
+		if !schemasCompatible(producer.Schema, input.Schema) {
+			findings = append(findings, finding("call.arg-type", argElement,
+				fmt.Sprintf("reference %q is %q but child input %q is %q", ref, producer.Schema.Type, name, input.Schema.Type)))
+		}
+	}
+	findings = append(findings, missingChildInputs(child, unit.Args, element)...)
+	return findings
 }
 
 // validateCallArgs checks the argument map against the child's declared inputs:
@@ -224,13 +314,22 @@ func validateCallArgs(
 				fmt.Sprintf("reference %q is %q but child input %q is %q", ref, producer.Schema.Type, name, input.Schema.Type)))
 		}
 	}
+	return append(findings, missingChildInputs(child, phase.Args, element)...)
+}
+
+// missingChildInputs reports every required child input the argument map does
+// not supply. Both call edges answer to it: arguments are the only way a value
+// crosses into a child run, so a required input nobody supplies fails the child
+// mid-run instead of at the dry-run.
+func missingChildInputs(child Workflow, args map[string]string, element string) []Finding {
 	required := make([]string, 0, len(child.Inputs))
 	for name, input := range child.Inputs {
-		if _, supplied := phase.Args[name]; !supplied && !input.Optional {
+		if _, supplied := args[name]; !supplied && !input.Optional {
 			required = append(required, name)
 		}
 	}
 	sort.Strings(required)
+	findings := make([]Finding, 0, len(required))
 	for _, name := range required {
 		findings = append(findings, finding("call.args", element,
 			fmt.Sprintf("child workflow %q requires input %q; add it to args", child.ID, name)))

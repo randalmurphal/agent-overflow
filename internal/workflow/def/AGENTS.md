@@ -46,6 +46,18 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   (`over:` an array-typed variable, `as:` an element binding, `unit:` one
   template). The two forms are mutually exclusive, both require a `join:`, and
   both require `shape: fan-out`.
+- **A unit binds to exactly one of three things: `prompt:` (agent),
+  `command:` (tool), or `call:` (another workflow).** `EffectiveDriver()`
+  answers `(Driver, bool)` rather than a bare driver precisely so a call unit —
+  which runs no driver at all — cannot be read as an agent unit by a caller
+  that forgot the third case; it answers `EffectiveShape() == ShapeCall`
+  instead, reusing the phase-level shape rather than a parallel discriminator.
+  Every combination other than exactly one binding is a finding, and on a call
+  unit so are provider/model/prompt, command, access, and `outputs:` — the
+  child workflow's phases carry all of it, and a unit's outputs *are* the
+  child's declared outputs, so a declaration here is either a duplicate or a
+  lie. `args:` and `max_depth:` require `call:` for the mirror-image reason.
+  See "Call authoring" for what a unit's call edge shares with a phase's.
 - A fan-out phase **runs no work of its own**, so every field that would
   configure some — `driver`, `provider`/`model`/`prompt`,
   `check`/`command`/`commands`, `access` — is a finding, exactly as it is on a
@@ -94,6 +106,18 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
 
 ## Call authoring
 
+- **Two kinds of edge, one traversal.** A `shape: call` phase and a call-bound
+  fan-out unit are both call edges: `validateCallEdge` resolves the target,
+  applies the cycle bound with *that edge's* `max_depth`, and validates the
+  child once per dry-run, for both. `CallTargets` (and so
+  `PropagatedWorkspaceNeed`) walks unit edges too — a fan-out of writing
+  sub-workflows needs a worktree to cut sub-worktrees from. What differs is
+  only where the arguments resolve: a phase's against the workflow's
+  phase-output graph with a dominance check, a unit's against
+  `ResolveUnitDeclarations` (phase inputs plus the `as:` element binding),
+  which is exactly what a unit *prompt* may reference, so the two cannot
+  disagree about scope. A unit edge has nothing unit-local to dominate, so
+  there is no dominance check on it.
 - A `shape: call` phase declares a **static** workflow id (`call:`), an argument
   map (`args:` — child input name to a reference in the caller), an optional
   `max_depth:`, and its gate. Nothing else: every field that configures work of
@@ -167,9 +191,16 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   declares none gets the control-only envelope: `status`, `question`, `reason`,
   and `outputs` present but empty — the run still has to learn done/question/
   stuck from it.
+- A **call unit** declares none either, and for the opposite reason: its
+  envelope is the *child workflow's* declared `outputs:`, synthesized from the
+  child run rather than authored, so any declaration here duplicates or
+  contradicts a contract this definition does not own.
 - A **join** declares none at all: its envelope IS the phase's, so the only
   contract it can answer is the phase's `outputs:`, and a second declaration
-  would name outputs the gate never reads. That also means what produces a
+  would name outputs the gate never reads. A join may not be a `call:` for the
+  same reason it declares no outputs — the phase's continuations
+  (`Answer`, `CompleteTakeover`, a resume in place) are continuations of the
+  join's own session, and a child run is not one. That also means what produces a
   phase's envelope follows the join — `PhaseProducesToolEnvelope` reports true
   for a fan-out whose join is a command, so `PhaseOutputs` merges `passed` /
   `exit-code` exactly as it does for a `driver: tool` phase and the synthesized

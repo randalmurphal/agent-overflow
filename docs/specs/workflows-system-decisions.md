@@ -1293,3 +1293,106 @@ verdict it now is, with what the first attempt got wrong.
   policy, which is exactly the split §8 draws; the guide states it, and
   the wave's `cleanup: auto` discards a worktree only after a disposition
   has landed.
+
+## A fan-out unit can be a call (2026-07-29)
+
+- **D35. A fan-out unit binds to exactly one of `prompt:`, `command:`,
+  or `call:`, and a call-bound unit runs its child in that unit's own
+  sub-worktree.** §3a's workspace rule already said a call executes in
+  "the unit's sub-worktree when called from inside a fan-out", but the
+  unit template had no `call:` to reach that sentence with. This closes
+  the gap: `def.Unit` gains `call` / `args` / `max_depth`, the engine
+  spawns a child run per call unit, and the child's declared `outputs:`
+  become the unit's envelope.
+
+  **It exists because a campaign's unit of work is a sub-workflow, not
+  a turn.** The shape the campaign wants is "each work item gets its own
+  implement → review → fix loop, on its own branch, and the join merges
+  what survives". Without a unit call, the only way to express that was
+  one enormous unit prompt doing all four steps in a single session —
+  the exact opposite of the split-context reason D34 gives for making
+  review a separate phase in the first place.
+
+  **Three exclusive bindings, not a `driver:` with a third value.**
+  `Unit.EffectiveDriver()` now answers `(Driver, bool)` rather than a
+  bare driver, so no caller can read a call unit as an agent unit by
+  forgetting the case; a call unit answers `EffectiveShape() ==
+  ShapeCall`, reusing the phase-level shape rather than inventing a
+  parallel discriminator. Everything a call unit could otherwise
+  declare — provider/model/prompt, command, access, and **outputs** — is
+  a validation finding, on the same reasoning `validateCall` refuses
+  them on a call phase: the child workflow's phases carry all of it.
+  Refusing `outputs:` outright is stronger than "a mismatch with the
+  child is a finding", and deliberately so — a unit's outputs *are* the
+  child's declared outputs, so any declaration is either a duplicate or
+  a lie, and there is no third case worth admitting.
+
+  **A join may not be a call.** Its envelope IS the phase's, and every
+  phase-level continuation (`Answer`, `CompleteTakeover`, a resume in
+  place) is a continuation of the join's own session. A call join would
+  leave those actions with nothing to continue, so it is refused with a
+  message pointing at the unit.
+
+  **Unit call edges are call-graph edges everywhere, not only in the
+  engine.** `CallTargets`, `PropagatedWorkspaceNeed`, the dry-run's
+  cycle detection, the child-validity memo, and the argument checks all
+  traverse unit edges through the same `validateCallEdge` a phase edge
+  uses. A unit's `args:` resolve against `ResolveUnitDeclarations` — the
+  phase's inputs plus the `as:` element binding — which is exactly what
+  a unit *prompt* could reference, so the two cannot disagree about what
+  is in scope. A cycle closed by a unit edge needs `max_depth` on that
+  unit, counted per (workflow, phase, unit) so siblings never spend each
+  other's budget.
+
+  **The unit's sub-worktree is the app's answer, not a new engine
+  concept.** The engine stamps *no* workspace on a unit-call child
+  (`callInvocation.inheritWorkspace` is false only here) and the app
+  resolves it through `ParentUnitID` linkage, calling the same
+  `provisionUnitWorktree` a writing agent unit goes through, keyed on
+  the unit row's try number. So the checkout is adopted-or-cut once,
+  registered on the unit row before anything runs in it, and the join,
+  the discard preview, and `retireUnitWorktrees` all find it without
+  knowing a child run was involved.
+
+  **Outcome mapping.** A `done` child settles the unit `done` with the
+  child's declared outputs; a `failed` **or** `cancelled` child settles
+  it `failed` with a note naming the run (there is no cancelled unit
+  status, and to a fan-out both are "this unit produced no result"); a
+  `needs-human` child is not terminal, so the unit keeps resting. A
+  `done` child whose declared outputs cannot be read fails that unit
+  rather than the attempt — the siblings' work is durable. From there
+  the ordinary unit-failure policy applies: stop new launches, let
+  in-flight units finish, park `needs-human(unit-failed)`.
+
+  **Recovery.** A call unit's `running` row is a live relationship, not
+  a dead runner, so the crash sweep must not fail it. `recoverFanOutCalls`
+  fails the runner-backed rows, restores the fan, and re-links each
+  resting call unit to its newest child (re-invoking in place when the
+  crash landed between the unit row and the child, which is why the row
+  is written first). Pause keeps those children via
+  `retainCallChildren`, and resume re-links them rather than starting
+  replacements. Cancel and discard cascade through them by reading the
+  children from the *store*, because the rebuild path tears an attempt
+  down with no in-memory fan at all — the one case where a stranded
+  grandchild would otherwise survive a restart.
+
+  **Child definitions were already re-resolved per invocation; the
+  campaign depends on it, so it is now covered.** `startCall` /
+  `startUnitCall` both call `DefinitionSource.ResolveCall`, which
+  resolves from disk and re-inlines prompt bodies every time
+  (`app_workflow.go` `resolve` → `def.InlinePrompts`). The caller's own
+  remaining phases keep their frozen snapshot; the next wave gets the
+  file as it is now. Nothing changed here — a regression test was added
+  because a cache introduced later would silently break the workflow the
+  campaign is built around.
+
+  **`MaxCallDepth` rises from 32 to 256.** `def` never capped
+  `max_depth` (only `< 1` is refused, and the authoring schema states no
+  maximum), so a campaign declaring 120 validates — but the engine's
+  absolute ceiling would have refused wave 33. The ceiling exists to
+  stop recursion that live resolution introduced after a dry-run, and 32
+  was sized for accidental recursion, not for a deliberately long chain.
+  The cost of depth is the O(depth) parent walks (call chain, budget
+  root, workspace root, pause/cancel subtree), each an indexed point
+  read, so hundreds is bounded by arithmetic; runaway recursion still
+  dies here, hundreds of runs before anything else notices.

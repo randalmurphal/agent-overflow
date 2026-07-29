@@ -122,7 +122,10 @@ and that output also becomes the variables the next phase consumes.
   fixed list) or **dynamically**: `over:` names an array variable, `as:` binds
   the element, and one unit template stamps per element — the unit count is a
   runtime fact (e.g. a plan phase emits `sections`, the port phase fans out
-  over them). Each unit names its **own driver/provider/model/access** (mixed
+  over them). A unit is bound to **exactly one** of three things — a `prompt:`
+  (agent), a `command:` (tool), or a `call:` (another workflow, §3a) — and any
+  other combination is a validation error. Each unit names its
+  **own driver/provider/model/access** (mixed
   Claude/Codex fan-outs are a feature, not an accident) — and only the units
   and the join do: **a fan-out phase runs no work of its own, so declaring a
   driver, provider, model, prompt, command, or access on the phase is a
@@ -157,6 +160,18 @@ and that output also becomes the variables the next phase consumes.
     the overlay + OS notification. Recovery actions: retry the failed unit,
     drop it (join proceeds over survivors, recorded in the gate trace), or
     take over its thread — the one it is already running in (§7).
+  - a **call-bound unit** runs a whole sub-workflow instead of a turn: it
+    starts a child run (§3a) in the unit's own sub-worktree and rests until
+    that run is terminal, and the child's declared `outputs:` become the
+    unit's envelope. This is what expresses "each work item gets its own
+    implement → review → fix loop on its own branch, then the join merges" —
+    the unit is the isolation boundary and the child is the work. A call unit
+    declares `call:`, `args:`, and optionally `max_depth:` and nothing else:
+    provider/model/prompt, command, access, and outputs are all the child
+    workflow's to declare. A **join may not be a call**: its envelope IS the
+    phase's, and every phase-level continuation (an answer, a takeover
+    finalize, a resume in place) is a continuation of the join's own session;
+    fan out to a call unit instead.
   - the **join** is an ordinary unit (agent or tool) that runs after all units
     rest; its envelope is the phase's envelope. What a join *does* — synthesis
     or merge — is the author's choice (§9).
@@ -172,7 +187,8 @@ phase that polls.)
 A **call phase** names a workflow `id` (statically — resolution follows §8
 scoping; never a variable, so the dry-run can validate the whole call graph)
 plus an argument map from the caller's variables to the child's declared
-inputs.
+inputs. A **fan-out unit** may carry the same binding (§3); everything below is
+true of both edges, and where they differ is stated per point.
 
 - **The child is a real run**: its own item row, phase history, loop counters,
   budgets accounting, and run-record — linked to the parent and rendered as a
@@ -181,13 +197,24 @@ inputs.
 - **Workspace flows down the call stack** (§9): the child executes in the
   caller's workspace context. Isolation is introduced only by fan-out, never
   by nesting — so a self-call loop iterates in one worktree instead of
-  spraying them.
+  spraying them. For a **unit** call the caller's workspace context *is* that
+  unit's sub-worktree, cut from the item's branch exactly as a writing agent
+  unit's is and registered on the unit row before the child starts; the child
+  provisions nothing of its own, and the join merges the unit's branch without
+  caring whether a turn or a sub-workflow produced it.
 - **Recursion is allowed and bounded.** A cyclic call graph (including
-  self-call) requires a declared **`max_depth`** on the cycle's call edge;
+  self-call, and including a cycle closed by a fan-out unit's call edge)
+  requires a declared **`max_depth`** on the cycle's call edge;
   exceeding it parks `needs-human(wiring-error)` with the call chain in the
-  trace. Budgets (§12) are enforced against the **root item's** envelope
-  across the entire tree, so a runaway recursion hits the token/USD/wall-clock
-  ceiling even under a generous depth bound.
+  trace. The declared bound counts the edge — for a unit, the
+  (workflow, phase, unit) triple — so sibling units of one attempt never spend
+  each other's budget. Budgets (§12) are enforced against the **root item's**
+  envelope across the entire tree, so a runaway recursion hits the
+  token/USD/wall-clock ceiling even under a generous depth bound.
+- **A child is resolved from disk per invocation.** The caller's own remaining
+  phases keep the definition the run froze at start, but every call reads its
+  target fresh (§8 scoping) — which is what makes a campaign's next wave pick
+  up a prompt the human edited while the previous wave ran.
 - **"Loop with an exit condition" is a call**: a workflow whose final gate
   either routes to a call of itself (next batch / next round) or to done. Each
   invocation is a fresh child run with fresh loop counters — per-iteration
@@ -730,7 +757,11 @@ item's).
 cut from the item's branch at unit start. Sub-worktrees and their branches are
 **registered in the run record** and torn down through the §12 contract —
 a crashed run can never strand them silently; the §7 discard preview lists
-them.
+them. A **call-bound unit** (§3) gets exactly the same checkout, cut and
+registered on the same unit row: what runs inside it is a child run rather
+than a turn, which the join, the discard preview, and the crash sweep are all
+indifferent to. Its try number names the branch, so a retried unit's next
+child cuts fresh instead of inheriting what the failed try left behind.
 
 **Two join patterns — the author picks by what the join does:**
 

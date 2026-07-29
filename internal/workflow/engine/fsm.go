@@ -109,7 +109,7 @@ func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 	// live child subtree comes down before the phase releases anything of its
 	// own. Any exit from a waiting call phase — cancel, rerun, takeover, crash
 	// park — therefore leaves no descendant running with nothing to consume it.
-	if err := e.teardownUnits(item, request.phaseStatus); err != nil {
+	if err := e.teardownUnits(item, request.phaseStatus, request.retainCallChildren); err != nil {
 		errs = append(errs, err)
 	}
 	if !request.retainCallChildren {
@@ -144,7 +144,7 @@ func (e *Engine) teardown(item *runtimeItem, request teardownRequest) error {
 	// Sweep the persisted rows last: after a crash no in-memory unit state
 	// existed to tear down, and a row left claiming `running` would make a
 	// rebuilt attempt look live forever.
-	if err := e.sweepPersistedUnits(item, request.phaseStatus); err != nil {
+	if err := e.sweepPersistedUnits(item, request.phaseStatus, request.retainCallChildren); err != nil {
 		errs = append(errs, err)
 	}
 	item.fan = nil

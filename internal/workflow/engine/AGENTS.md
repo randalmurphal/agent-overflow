@@ -216,6 +216,16 @@ resource semaphores, and startup recovery.
 
 ## Call phases
 
+- **Two call edges share one implementation.** `invokeCall` is everything up to
+  the workspace decision — the ancestry walk, both depth bounds, the live
+  `ResolveCall`, and the linkage that makes the child recoverable — and both a
+  `shape: call` phase (`startCall`) and a call-bound fan-out unit
+  (`startUnitCall`) go through it. `callEdge` is what tells them apart:
+  `{phase}` for one, `{phase, unit}` for the other, which is also how a
+  declared `max_depth` is counted (per (workflow, phase, unit), so sibling
+  units never spend each other's budget) and how a child's `SourceRef` reads
+  (`item/phase[unit]/attempt`). See "Call units" below for what only the unit
+  edge does.
 - A `shape: call` phase runs no work of its own: it resolves its static target
   **at call time** (a fresh `DefinitionSource.ResolveCall` per invocation, §8
   scoping), evaluates its `args:` against the caller's variable context, and
@@ -268,11 +278,61 @@ resource semaphores, and startup recovery.
   through `SpendSource.TreeSpend`. A child carries no budget of its own —
   `startNewItem` refuses one — and the item parked is the one whose check
   tripped, not the root.
-- Teardown is tree-aware: leaving a call phase for any reason (cancel, rerun
-  after failure, takeover, crash park) brings the live descendant subtree down
-  first, deepest child before its parent, through the same teardown contract. A
-  descendant the scheduler evicted (parked) is transitioned in place — it holds
-  no resources and no runner, so the transition *is* its teardown.
+- Teardown is tree-aware (`call_cancel.go`): leaving a call phase for any reason
+  (cancel, rerun after failure, takeover, crash park) brings the live descendant
+  subtree down first, deepest child before its parent, through the same teardown
+  contract. A descendant the scheduler evicted (parked) is transitioned in place
+  — it holds no resources and no runner, so the transition *is* its teardown.
+
+## Call units
+
+- A **call-bound fan-out unit** (`unit_calls.go`) is the phase-scoped call one
+  level down: `startUnitCall` persists the unit `running`, evaluates its args
+  against `unitVars` (the attempt's variables plus the `as:` binding), and
+  invokes the edge. The unit then rests holding no runner, no resources, and no
+  provider capacity — `unitResources` returns nil for it, and `resting()`
+  counts a `running` status with no runner flags as resting, which is a
+  legitimate state **for a call unit and only for a call unit**. That is what
+  makes it the safe discriminator every recovery path keys on.
+- **The child gets no stamped workspace.** `callInvocation.inheritWorkspace` is
+  false here alone: isolation is introduced by fan-out (§9), so the child runs
+  in the *unit's* sub-worktree, which the app resolves through the child's
+  `parent_unit_id` linkage and cuts with the same `provisionUnitWorktree` a
+  writing agent unit goes through. Stamping the caller's worktree would put
+  every unit's child back in the one checkout the fan-out exists to keep them
+  out of.
+- **Outcome mapping** (`settleUnitCallChild`): `done` → the unit `done` with
+  the child workflow's declared outputs as its envelope; `failed` **or**
+  `cancelled` → the unit `failed` with a note naming the run (there is no
+  cancelled unit status, and to a fan-out both mean "this unit produced no
+  result"); `needs-human` → not terminal, the unit keeps waiting. A `done`
+  child whose declared outputs cannot be read fails *that unit*, not the
+  attempt — the siblings' work is durable. From there the ordinary unit-failure
+  policy applies. A completion from a child the unit is no longer waiting on (a
+  retry replaced it) is stale and ignored, decided by comparing against the
+  newest child of that unit key rather than by any in-memory flag.
+- **A call that cannot be made is not a unit failure.** Unresolvable args, a
+  depth refusal, or a failed persist park the whole attempt under the
+  phase-level reason a single-shape phase would take, with the cause written
+  into the attempt's envelope — nothing runnable was ever produced, so there is
+  no unit outcome to record.
+- **Recovery keeps the children.** `recoverFanOutCalls` is the rebuild's
+  adoption path: it fails the attempt's runner-backed rows (that process is
+  gone), restores the fan, and — if any call unit is still resting — acquires
+  the phase's resources and re-links each one. A unit with no child re-invokes
+  in place, which is safe because the unit row is written before the child
+  exists; the reverse order would leave a child no unit row claims. If the
+  resources are held by work this rebuild already adopted, it declines and the
+  run takes the ordinary interrupted park, bringing its children down with it.
+  `resumeUnitCallChildren` is the same re-link for a resume, and pause reaches
+  it through `retainCallChildren`, which keeps a running call unit's row and
+  its child intact.
+- **`cancelCallChildren` (`call_cancel.go`) reads a fan-out's children from the store**, not from
+  `item.fan`. The crash-rebuild path tears an attempt down with no in-memory
+  unit state at all, and that is exactly the case where a stranded grandchild
+  would otherwise survive the restart.
+- **`TakeOverUnit` refuses a call unit.** There is no session to steer; the
+  action belongs on the child run.
 
 ## Boundaries
 

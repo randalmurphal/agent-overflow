@@ -101,7 +101,13 @@ func (e *Engine) teardownUnit(item *runtimeItem, unit *unitRun, status string, e
 // teardownUnits brings an attempt's in-flight units down with the attempt. A
 // unit that never started stays pending — it holds nothing and did nothing, so
 // a resumed or retried attempt can still launch it.
-func (e *Engine) teardownUnits(item *runtimeItem, phaseStatus string) error {
+//
+// retainCallChildren is pause's one difference, and it reaches units for the
+// same reason it reaches a call phase: pause does not abandon the attempt, so a
+// call unit whose child is being paused alongside it stays `running` and resume
+// re-links to that child. Every other exit leaves the attempt for good, and its
+// call units come down failed with everything else.
+func (e *Engine) teardownUnits(item *runtimeItem, phaseStatus string, retainCallChildren bool) error {
 	if item.fan == nil {
 		return nil
 	}
@@ -110,6 +116,11 @@ func (e *Engine) teardownUnits(item *runtimeItem, phaseStatus string) error {
 	for _, unit := range item.fan.all() {
 		if unit.status != store.WorkItemUnitRunning {
 			e.removeWaiting(item, unit)
+			continue
+		}
+		if retainCallChildren && unit.definition.IsCall() {
+			e.removeWaiting(item, unit)
+			errs = append(errs, e.releaseUnitResources(item, unit))
 			continue
 		}
 		errs = append(errs, e.teardownUnit(item, unit, store.WorkItemUnitFailed, unit.envelope, note))
@@ -122,8 +133,14 @@ func (e *Engine) teardownUnits(item *runtimeItem, phaseStatus string) error {
 // knows about; this covers the attempt nobody was tracking — the crash-restart
 // sweep, where the rows are the only surviving state. Those rows are left
 // `failed` with an interrupted note, which is exactly what RetryUnit recovers.
-func (e *Engine) sweepPersistedUnits(item *runtimeItem, phaseStatus string) error {
-	if item.phaseID == "" || item.attempt < 1 {
+//
+// A retaining teardown skips it entirely. Pause is its only trigger and it
+// refuses a persisted-running run the scheduler does not hold, so the attempt is
+// always resident with live unit state there — the sweep would find nothing
+// except the call units retained on purpose, and fail exactly the rows resume
+// needs to re-link.
+func (e *Engine) sweepPersistedUnits(item *runtimeItem, phaseStatus string, retainCallChildren bool) error {
+	if retainCallChildren || item.phaseID == "" || item.attempt < 1 {
 		return nil
 	}
 	phase, ok := findPhase(item.workflow, item.phaseID)
@@ -206,10 +223,14 @@ func restoreUnit(unit *unitRun, rows map[string]store.WorkItemUnit) (*unitRun, e
 	if !ok {
 		return nil, fmt.Errorf("unit %q has no persisted row", unit.id)
 	}
-	if row.Status == store.WorkItemUnitRunning {
+	if row.Status == store.WorkItemUnitRunning && !unit.definition.IsCall() {
 		// Teardown marks running rows failed on every exit path, so a row that
 		// still claims to be running outlived the process that wrote it. Adopting
 		// it would make a dead unit look live forever.
+		//
+		// A call unit is the exception, and it is the same exception a call phase
+		// makes: it holds no runner, so `running` means "its child run is still
+		// the thing that reports", and the child is re-linked rather than swept.
 		return nil, fmt.Errorf("unit %q is persisted running with no live runner", unit.id)
 	}
 	unit.status = row.Status

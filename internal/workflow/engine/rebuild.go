@@ -86,6 +86,27 @@ func (e *Engine) rebuild() error {
 				}
 				continue
 			}
+			// A fan-out attempt whose call units are still linked to live child runs
+			// is recoverable in place for the same reason a call phase is: those
+			// units hold no process state, and the children rebuild as ordinary runs
+			// of their own. Anything the recovery cannot adopt falls through to the
+			// ordinary crash park below, which is what a fan-out of agent units gets.
+			if hasCurrent && current.Status == "running" {
+				recovered, err := e.recoverFanOutCalls(item, current)
+				if err != nil {
+					recoverErr := fmt.Errorf("recover fan-out call units for item %q: %w", storedItem.ID, err)
+					if State(item.item.State) == StateRunning {
+						recoverErr = errors.Join(recoverErr, e.teardown(item, teardownRequest{
+							phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonWiringError,
+						}))
+					}
+					e.emitError(storedItem.ID, recoverErr)
+					continue
+				}
+				if recovered {
+					continue
+				}
+			}
 			if !hasCurrent || !terminalEnvelope(current.OutputEnvelope) {
 				item.runnerActive = hasCurrent && current.Status == "running"
 				if err := e.teardown(item, teardownRequest{

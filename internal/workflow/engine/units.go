@@ -97,9 +97,16 @@ func (f *fanOutRun) blocked() (Reason, json.RawMessage) {
 
 // resting reports that no unit is running, starting, or queued for capacity —
 // the condition under which the attempt either parks or runs its join.
+//
+// A `running` status counts on its own, not only a live runner: a call unit is
+// running while its child run is, and it holds no runner at all. For every other
+// unit the status adds nothing — teardownUnit is the only path out of `running`
+// and it is also what clears the runner flags — so this is one predicate rather
+// than a kind-dependent pair.
 func (f *fanOutRun) resting() bool {
 	for _, unit := range f.all() {
-		if unit.runnerActive || unit.runnerStarting || unit.waiting {
+		if unit.runnerActive || unit.runnerStarting || unit.waiting ||
+			unit.status == store.WorkItemUnitRunning {
 			return false
 		}
 	}
@@ -298,6 +305,17 @@ func (e *Engine) startUnitOrWait(item *runtimeItem, unit *unitRun) error {
 		return nil
 	}
 	unit.acquired = acquired
+	return e.startUnitWork(item, unit)
+}
+
+// startUnitWork begins one admitted unit: a child run for a call unit, a runner
+// for every other. It is the single dispatch every admission path goes through
+// — the first launch, a released waiter, a repaired retry — so a call unit can
+// never reach a runner that has no turn to start for it.
+func (e *Engine) startUnitWork(item *runtimeItem, unit *unitRun) error {
+	if unit.definition.IsCall() {
+		return e.startUnitCall(item, unit)
+	}
 	return e.startUnitRunner(item, unit)
 }
 

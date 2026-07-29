@@ -37,6 +37,9 @@ export interface WorkflowChild {
   state: string;
   reason?: string;
   parentPhaseId: string;
+  // Empty for a phase call; names the fan-out unit that called this run
+  // otherwise (§3a at unit scope).
+  parentUnitId?: string;
   parentAttempt: number;
   callDepth: number;
   currentPhaseId?: string;
@@ -48,8 +51,10 @@ export interface WorkflowDetail {
   item: WorkflowItem & {
     worktreePath?: string;
     branch?: string;
+    baseBranch?: string;
     parentItemId?: string;
     parentPhaseId?: string;
+    parentUnitId?: string;
     parentAttempt?: number;
     callDepth?: number;
   };

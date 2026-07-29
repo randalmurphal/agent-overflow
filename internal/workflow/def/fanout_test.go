@@ -567,12 +567,46 @@ func TestDynamicFanOutWidthIsNeverReported(t *testing.T) {
 	}
 }
 
+// EffectiveDriver answers a pair rather than a bare driver so a call-bound unit
+// — which runs no driver at all — cannot be silently read as an agent unit by a
+// caller that never considered the third binding.
 func TestUnitEffectiveDriver(t *testing.T) {
-	if got := (Unit{ID: "a", Command: "merge"}).EffectiveDriver(); got != DriverTool {
-		t.Fatalf("command unit driver = %q", got)
-	}
-	if got := (Unit{ID: "a", Provider: "claude", Model: "m", Prompt: "p.md"}).EffectiveDriver(); got != DriverAgent {
-		t.Fatalf("agent unit driver = %q", got)
+	for _, testCase := range []struct {
+		name     string
+		unit     Unit
+		driver   Driver
+		runsWork bool
+		shape    Shape
+	}{
+		{
+			name: "command", unit: Unit{ID: "a", Command: "merge"},
+			driver: DriverTool, runsWork: true, shape: ShapeSingle,
+		},
+		{
+			name: "agent", unit: Unit{ID: "a", Provider: "claude", Model: "m", Prompt: "p.md"},
+			driver: DriverAgent, runsWork: true, shape: ShapeSingle,
+		},
+		{
+			name: "call", unit: Unit{ID: "a", Call: "child"},
+			driver: "", runsWork: false, shape: ShapeCall,
+		},
+		{
+			name: "call with surrounding space", unit: Unit{ID: "a", Call: "  child  "},
+			driver: "", runsWork: false, shape: ShapeCall,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			driver, runsWork := testCase.unit.EffectiveDriver()
+			if driver != testCase.driver || runsWork != testCase.runsWork {
+				t.Fatalf("driver = (%q, %t), want (%q, %t)", driver, runsWork, testCase.driver, testCase.runsWork)
+			}
+			if got := testCase.unit.EffectiveShape(); got != testCase.shape {
+				t.Fatalf("shape = %q, want %q", got, testCase.shape)
+			}
+			if got := testCase.unit.IsCall(); got != (testCase.shape == ShapeCall) {
+				t.Fatalf("IsCall = %t", got)
+			}
+		})
 	}
 }
 

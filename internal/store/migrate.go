@@ -1504,7 +1504,67 @@ CREATE INDEX idx_work_items_automation_source_ref
    AND is_background = 0
    AND parent_id = '';`,
 	},
+	{
+		Version: 43,
+		Name:    "work_item_unit_call_linkage",
+		SQL:     rebuildWorkItemsUnitCallLinkageV43SQL,
+		Rebuild: true,
+	},
 }
+
+// rebuildWorkItemsUnitCallLinkageV43SQL adds `parent_unit_id`: the fan-out unit
+// whose call created a run. v38's linkage identifies an invocation by (item,
+// phase, attempt), which is unique for a `shape: call` phase — it makes exactly
+// one call — but not for a fan-out phase, where every call-bound unit of one
+// attempt would otherwise be indistinguishable from its siblings and a parent
+// could not tell which child it was waiting on.
+//
+// The fifth CHECK keeps the linkage all-or-nothing in the same direction the
+// other four do: a unit id without a parent item would name a unit of no run.
+// The column is empty for a phase call, which is what makes "this child came
+// from a call phase" and "this child came from a fan-out unit" distinguishable
+// without a second nullable column.
+//
+// SQLite can alter neither a CHECK nor a column list in place, so this follows
+// the established table-rebuild pattern, derived from the shipped v39 text
+// rather than retyped. The derivation EXTENDS v39's copy list with
+// `origin_thread_id` — v39's own new column, absent from the list it inherited
+// from v38 — because re-running that text against a v39 table would otherwise
+// unbind every run from the thread it reports into.
+var rebuildWorkItemsUnitCallLinkageV43SQL = mustReplaceOnce(
+	mustReplaceOnce(
+		mustReplaceOnce(
+			mustReplaceOnce(
+				rebuildWorkItemsThreadBindingV39SQL,
+				"    parent_phase_id  TEXT    NOT NULL DEFAULT '',",
+				"    parent_phase_id  TEXT    NOT NULL DEFAULT '',\n    parent_unit_id   TEXT    NOT NULL DEFAULT '',",
+			),
+			"    CHECK(parent_item_id = '' OR origin_thread_id = '')",
+			"    CHECK(parent_item_id = '' OR origin_thread_id = ''),\n    CHECK(parent_unit_id = '' OR parent_item_id <> '')",
+		),
+		workItemsCopyColumnsV39+"\n)",
+		workItemsCopyColumnsV43+"\n)",
+	),
+	workItemsCopyColumnsV39+"\nFROM work_items;",
+	workItemsCopyColumnsV43+"\nFROM work_items;",
+) + `
+CREATE INDEX idx_work_items_automation_source_ref
+  ON work_items(source_ref, state)
+  WHERE source = 'automation' AND source_ref <> '';
+`
+
+// The v39 text this rebuild is derived from recreates the indexes that existed
+// when *it* shipped, so every work_items index added after v39 has to be
+// restated here or the rebuild silently drops it — v40's automation-overlap
+// index above is the one that qualifies. No index is added for `parent_unit_id`
+// itself: every read of it is already scoped to one parent through
+// `idx_work_items_parent`, which bounds the row set to one run's children.
+
+// workItemsCopyColumnsV43 is workItemsCopyColumnsV39 plus `origin_thread_id`,
+// the column v39 itself created and therefore did not copy.
+const workItemsCopyColumnsV43 = `    source, source_ref, triage_thread_id, origin_thread_id, disposition, digest,
+    parent_item_id, parent_phase_id, parent_attempt, call_depth,
+    created_at, started_at, ended_at`
 
 // workItemsReasonCheckV38 is the typed park-reason CHECK shipped by v38;
 // workItemsReasonCheckV39 is the same constraint widened with `paused`, the

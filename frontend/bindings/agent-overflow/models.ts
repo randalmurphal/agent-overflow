@@ -3613,6 +3613,13 @@ export class WorkflowItemChildView {
     "state": string;
     "reason"?: string;
     "parentPhaseId": string;
+
+    /**
+     * ParentUnitID is empty for a phase call and names the fan-out unit that
+     * called this run otherwise, which is what lets the run tree hang the child
+     * under its unit row instead of flat under the fan-out phase.
+     */
+    "parentUnitId"?: string;
     "parentAttempt": number;
     "callDepth": number;
     "currentPhaseId"?: string;
@@ -3884,9 +3891,12 @@ export class WorkflowItemView {
      * Parent linkage is present only on a called run (§3a). It names the caller,
      * the caller's call phase, and the attempt of it that invoked this run, so a
      * child is always navigable back to the exact invocation that created it.
+     * ParentUnitID narrows that to one fan-out unit when the call was declared on
+     * a unit rather than on the phase; it is empty for a phase call.
      */
     "parentItemId"?: string;
     "parentPhaseId"?: string;
+    "parentUnitId"?: string;
     "parentAttempt"?: number;
     "callDepth"?: number;
     "createdAt": number;

@@ -24,7 +24,16 @@ const WorkItemSourceCall = "call"
 // an edit that introduces a cycle after the parent's dry-run would otherwise
 // recurse until the process died. This is the structural stop; a declared
 // max_depth is the author's much tighter one.
-const MaxCallDepth = 32
+//
+// It is sized for the deliberate long chain, not for the accident. A campaign —
+// a root run whose final gate calls itself for the next wave — is one call per
+// wave, and a campaign of a hundred-plus waves is the shape this exists to
+// permit rather than refuse. The cost of depth is the O(depth) parent walks
+// (`callChain`, budget-root and workspace-root resolution, the pause and cancel
+// subtree walks), each a point read on an indexed primary key, so a ceiling in
+// the hundreds is bounded by arithmetic rather than by risk. Runaway recursion
+// still dies here, hundreds of runs before anything else notices.
+const MaxCallDepth = 256
 
 // startCall enters a call phase: it resolves the child workflow at call time,
 // evaluates the argument map, enforces the depth bounds, and starts the child
@@ -34,66 +43,105 @@ const MaxCallDepth = 32
 // capacity while the child runs — the child's terminal state is what re-enters
 // it (settleCallChild).
 func (e *Engine) startCall(item *runtimeItem, phase def.Phase, vars map[string]any) error {
-	target := phase.CallTarget()
-	if target == "" {
+	if phase.CallTarget() == "" {
 		return e.parkCallSetup(item, ReasonWiringError,
 			fmt.Errorf("call phase %q of item %q names no workflow", phase.ID, item.item.ID))
-	}
-	chain, err := e.callChain(item)
-	if err != nil {
-		return e.parkCallSetup(item, ReasonSetupFailed, err)
-	}
-	if err := checkCallDepth(chain, item.workflow.ID, phase, target); err != nil {
-		// A cycle past its declared bound is the definition and the run disagreeing
-		// about how far this may go: a wiring error, carrying the chain that got
-		// here so the human can see the recursion.
-		return e.parkCallSetup(item, ReasonWiringError, err)
 	}
 	args, err := callArgs(phase, vars)
 	if err != nil {
 		return e.parkCallSetup(item, ReasonWiringError,
 			fmt.Errorf("call %s/%s/%d: %w", item.item.ID, phase.ID, item.attempt, err))
 	}
-	seeds, err := json.Marshal(args)
-	if err != nil {
-		return e.parkCallSetup(item, ReasonWiringError,
-			fmt.Errorf("call %s/%s/%d: encode args: %w", item.item.ID, phase.ID, item.attempt, err))
+	reason, err := e.invokeCall(item, callInvocation{
+		edge:   callEdge{phaseID: phase.ID, maxDepth: phase.MaxDepth},
+		target: phase.CallTarget(),
+		args:   args,
+		// Workspace flows down the call stack (§9): a serial call's child executes
+		// in the caller's own workspace and provisions nothing of its own.
+		inheritWorkspace: true,
+	})
+	if reason != "" {
+		return e.parkCallSetup(item, reason, err)
 	}
-	resolved, err := e.definitions.ResolveCall(e.ctx, item.item.ProjectID, target)
+	return err
+}
+
+// callInvocation is one call edge's whole request: where it is declared, what it
+// invokes, the evaluated arguments the child is seeded with, and whether the
+// child inherits the caller's workspace.
+//
+// inheritWorkspace is false for a fan-out unit's call. Isolation is introduced
+// by fan-out (§9), so that child runs in the *unit's* sub-worktree rather than
+// the caller's — and the sub-worktree belongs to the app, which resolves it
+// through the child's parent linkage when the child's first phase starts.
+// Stamping the caller's worktree here would put every unit's child back in the
+// one checkout the fan-out exists to keep them out of.
+type callInvocation struct {
+	edge             callEdge
+	target           string
+	args             map[string]any
+	inheritWorkspace bool
+}
+
+// invokeCall creates and starts one call edge's child run. It is shared by
+// `shape: call` phases and call-bound fan-out units, because everything up to
+// the workspace decision is identical: the ancestry, both depth bounds, the
+// live definition resolution, and the linkage that makes the child recoverable.
+//
+// A non-empty Reason means the caller should park under it with the returned
+// cause. An empty Reason with a non-nil error is a child that could not be
+// admitted at all; the parent is left as it is, exactly as it was before, and
+// rebuild re-invokes the call from the persisted attempt.
+func (e *Engine) invokeCall(item *runtimeItem, invocation callInvocation) (Reason, error) {
+	site := fmt.Sprintf("call %s/%s/%d", item.item.ID, invocation.edge, item.attempt)
+	chain, err := e.callChain(item)
 	if err != nil {
-		return e.parkCallSetup(item, ReasonWiringError,
-			fmt.Errorf("call %s/%s/%d: resolve workflow %q: %w", item.item.ID, phase.ID, item.attempt, target, err))
+		return ReasonSetupFailed, err
 	}
-	// The workspace is provisioned by the runner and persisted on the row, so the
-	// engine's in-memory copy of it is stale by construction — re-read before
-	// stamping a child with it, and keep the refreshed values so later calls in
-	// this run stamp from the same fact.
-	if err := e.refreshWorkspace(item); err != nil {
-		return e.parkCallSetup(item, ReasonSetupFailed,
-			fmt.Errorf("call %s/%s/%d: %w", item.item.ID, phase.ID, item.attempt, err))
+	if err := checkCallDepth(chain, item.workflow.ID, invocation.edge, invocation.target); err != nil {
+		// A cycle past its declared bound is the definition and the run disagreeing
+		// about how far this may go: a wiring error, carrying the chain that got
+		// here so the human can see the recursion.
+		return ReasonWiringError, err
+	}
+	seeds, err := json.Marshal(invocation.args)
+	if err != nil {
+		return ReasonWiringError, fmt.Errorf("%s: encode args: %w", site, err)
+	}
+	resolved, err := e.definitions.ResolveCall(e.ctx, item.item.ProjectID, invocation.target)
+	if err != nil {
+		return ReasonWiringError, fmt.Errorf("%s: resolve workflow %q: %w", site, invocation.target, err)
 	}
 	child := store.WorkItem{
 		ID: uuid.NewString(), ProjectID: item.item.ProjectID, Goal: item.item.Goal,
 		WorkflowID: resolved.Workflow.ID, WorkflowScope: string(resolved.Scope),
 		State: string(StateRunning), Seeds: seeds, StepMode: item.item.StepMode,
-		// Workspace flows down the call stack (§9): the child executes in the
-		// caller's workspace and provisions nothing of its own, so it is stamped
-		// with the caller's worktree. It can legitimately be empty here — a tree
-		// running read-only on the project root has none, and a call that is the
-		// root's first phase runs before one is cut — in which case the child
-		// resolves its tree's root workspace when it starts its own first phase.
-		WorktreePath: item.item.WorktreePath, Branch: item.item.Branch,
-		BaseBranch: item.item.BaseBranch,
-		Source:     WorkItemSourceCall, SourceRef: callSourceRef(item, phase),
-		ParentItemID: item.item.ID, ParentPhaseID: phase.ID, ParentAttempt: item.attempt,
+		Source: WorkItemSourceCall, SourceRef: callSourceRef(item, invocation.edge),
+		ParentItemID: item.item.ID, ParentPhaseID: invocation.edge.phaseID,
+		ParentUnitID: invocation.edge.unitID, ParentAttempt: item.attempt,
 		CallDepth: item.item.CallDepth + 1,
 		CreatedAt: e.timestamp(),
+	}
+	if invocation.inheritWorkspace {
+		// The workspace is provisioned by the runner and persisted on the row, so
+		// the engine's in-memory copy of it is stale by construction — re-read
+		// before stamping a child with it, and keep the refreshed values so later
+		// calls in this run stamp from the same fact.
+		if err := e.refreshWorkspace(item); err != nil {
+			return ReasonSetupFailed, fmt.Errorf("%s: %w", site, err)
+		}
+		// It can legitimately be empty here — a tree running read-only on the
+		// project root has none, and a call that is the root's first phase runs
+		// before one is cut — in which case the child resolves its tree's root
+		// workspace when it starts its own first phase.
+		child.WorktreePath, child.Branch = item.item.WorktreePath, item.item.Branch
+		child.BaseBranch = item.item.BaseBranch
 	}
 	// The parent attempt row is persisted before the child exists (enterPhase
 	// wrote it with these same args), so a crash between the two leaves an
 	// attempt with no child — which rebuild re-invokes. The reverse order would
 	// leave a child whose parent has no record of calling it.
-	return e.startNewItem(child, &resolved)
+	return "", e.startNewItem(child, &resolved)
 }
 
 // refreshWorkspace re-reads the workspace columns the runner owns. The engine
@@ -110,10 +158,10 @@ func (e *Engine) refreshWorkspace(item *runtimeItem) error {
 	return nil
 }
 
-// callSourceRef records which attempt of which parent phase invoked a child, so
-// a child row explains its own existence without a join.
-func callSourceRef(item *runtimeItem, phase def.Phase) string {
-	return fmt.Sprintf("%s/%s/%d", item.item.ID, phase.ID, item.attempt)
+// callSourceRef records which attempt of which call site invoked a child, so a
+// child row explains its own existence without a join.
+func callSourceRef(item *runtimeItem, edge callEdge) string {
+	return fmt.Sprintf("%s/%s/%d", item.item.ID, edge, item.attempt)
 }
 
 func (e *Engine) parkCallSetup(item *runtimeItem, reason Reason, cause error) error {
@@ -126,11 +174,29 @@ func (e *Engine) parkCallSetup(item *runtimeItem, reason Reason, cause error) er
 	)
 }
 
+// callEdge identifies one call site inside a workflow: the phase it lives on
+// and, for a fan-out unit's call, that unit. Depth is counted per edge, so a
+// phase call and a unit call on the same phase are different edges with
+// independent bounds — which is what lets a campaign's fan-out unit recurse
+// under its own ceiling while the root's self-call keeps its own.
+type callEdge struct {
+	phaseID  string
+	unitID   string
+	maxDepth int
+}
+
+func (e callEdge) String() string {
+	if e.unitID == "" {
+		return e.phaseID
+	}
+	return e.phaseID + "[" + e.unitID + "]"
+}
+
 // callChainStep is one edge of the ancestry that produced the current item: the
-// workflow that called, and the phase it called from.
+// workflow that called, and the call site it called from.
 type callChainStep struct {
 	workflowID string
-	phaseID    string
+	edge       callEdge
 	itemID     string
 }
 
@@ -152,7 +218,9 @@ func (e *Engine) callChain(item *runtimeItem) ([]callChainStep, error) {
 			return nil, fmt.Errorf("load parent %q of item %q: %w", current.ParentItemID, current.ID, err)
 		}
 		reversed = append(reversed, callChainStep{
-			workflowID: parent.WorkflowID, phaseID: current.ParentPhaseID, itemID: parent.ID,
+			workflowID: parent.WorkflowID,
+			edge:       callEdge{phaseID: current.ParentPhaseID, unitID: current.ParentUnitID},
+			itemID:     parent.ID,
 		})
 		current = parent
 	}
@@ -168,64 +236,74 @@ func (e *Engine) callChain(item *runtimeItem) ([]callChainStep, error) {
 //
 // A declared max_depth bounds how many times *this edge* may appear in one
 // ancestry chain, which is what makes a self-call loop terminate: the Nth
-// invocation is refused rather than the (N+1)th silently starting.
-func checkCallDepth(chain []callChainStep, workflowID string, phase def.Phase, target string) error {
+// invocation is refused rather than the (N+1)th silently starting. A fan-out
+// unit's call edge is counted by (workflow, phase, unit), so sibling units of
+// one attempt do not spend each other's budget and a unit edge does not spend
+// the budget of a phase edge on the same phase.
+func checkCallDepth(chain []callChainStep, workflowID string, edge callEdge, target string) error {
 	if len(chain) >= MaxCallDepth {
 		return fmt.Errorf(
-			"call to %q from phase %q exceeds the maximum call depth of %d; chain: %s",
-			target, phase.ID, MaxCallDepth, renderCallChain(chain, workflowID, phase.ID),
+			"call to %q from %q exceeds the maximum call depth of %d; chain: %s",
+			target, edge, MaxCallDepth, renderCallChain(chain, workflowID, edge),
 		)
 	}
-	if phase.MaxDepth < 1 {
+	if edge.maxDepth < 1 {
 		return nil
 	}
 	traversals := 0
 	for _, step := range chain {
-		if step.workflowID == workflowID && step.phaseID == phase.ID {
+		if step.workflowID == workflowID && step.edge.phaseID == edge.phaseID && step.edge.unitID == edge.unitID {
 			traversals++
 		}
 	}
-	if traversals >= phase.MaxDepth {
+	if traversals >= edge.maxDepth {
 		return fmt.Errorf(
-			"call to %q from phase %q reached its max_depth of %d; chain: %s",
-			target, phase.ID, phase.MaxDepth, renderCallChain(chain, workflowID, phase.ID),
+			"call to %q from %q reached its max_depth of %d; chain: %s",
+			target, edge, edge.maxDepth, renderCallChain(chain, workflowID, edge),
 		)
 	}
 	return nil
 }
 
-// renderCallChain writes the ancestry as `workflow.phase -> workflow.phase`,
+// renderCallChain writes the ancestry as `workflow.call-site -> workflow.call-site`,
 // ending at the edge being refused, so a parked wiring error shows the
 // recursion instead of just naming its bound.
-func renderCallChain(chain []callChainStep, workflowID, phaseID string) string {
+func renderCallChain(chain []callChainStep, workflowID string, edge callEdge) string {
 	parts := make([]string, 0, len(chain)+1)
 	for _, step := range chain {
-		parts = append(parts, step.workflowID+"."+step.phaseID)
+		parts = append(parts, step.workflowID+"."+step.edge.String())
 	}
-	parts = append(parts, workflowID+"."+phaseID)
+	parts = append(parts, workflowID+"."+edge.String())
 	return strings.Join(parts, " -> ")
 }
 
 // callArgs evaluates a call phase's argument map against the caller's variable
-// context. Every argument is a reference into the caller's variables; a
-// reference that does not resolve is a wiring error rather than a silently
-// absent child input, because the child would then fail its own input
-// validation with no trace of where the value was supposed to come from.
+// context.
 func callArgs(phase def.Phase, vars map[string]any) (map[string]any, error) {
-	if len(phase.Args) == 0 {
+	return resolveCallArgs(phase.Args, vars)
+}
+
+// resolveCallArgs evaluates one call edge's argument map. Every argument is a
+// reference into the caller's variable context — a phase's for a call phase, a
+// unit's (the phase inputs plus its `as:` element binding) for a call unit — and
+// a reference that does not resolve is a wiring error rather than a silently
+// absent child input, because the child would then fail its own input validation
+// with no trace of where the value was supposed to come from.
+func resolveCallArgs(declared map[string]string, vars map[string]any) (map[string]any, error) {
+	if len(declared) == 0 {
 		return map[string]any{}, nil
 	}
-	names := make([]string, 0, len(phase.Args))
-	for name := range phase.Args {
+	names := make([]string, 0, len(declared))
+	for name := range declared {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	args := make(map[string]any, len(phase.Args))
+	args := make(map[string]any, len(declared))
 	var missing []string
 	for _, name := range names {
-		value, ok := def.LookupVariable(vars, phase.Args[name])
+		value, ok := def.LookupVariable(vars, declared[name])
 		if !ok {
-			missing = append(missing, fmt.Sprintf("%s (%s)", name, phase.Args[name]))
+			missing = append(missing, fmt.Sprintf("%s (%s)", name, declared[name]))
 			continue
 		}
 		args[name] = value
@@ -270,6 +348,9 @@ func (e *Engine) settleCallChild(child store.WorkItem) error {
 	if parent.phaseID != child.ParentPhaseID || parent.attempt != child.ParentAttempt ||
 		State(parent.item.State) != StateRunning {
 		return nil // The parent moved on; this completion is stale, not an error.
+	}
+	if child.ParentUnitID != "" {
+		return e.settleUnitCallChild(parent, child)
 	}
 	phase, ok := findPhase(parent.workflow, parent.phaseID)
 	if !ok || !phase.IsCall() {
@@ -353,69 +434,6 @@ func childOutcomeEnvelope(child store.WorkItem, outcome string) json.RawMessage 
 		return nil
 	}
 	return envelope
-}
-
-// cancelCallChildren brings a parent's whole live child subtree down before the
-// parent itself moves, which is the tree-aware half of the teardown contract
-// (§12, D23). A descendant whose parent has left its call phase can never be
-// consumed by anything, so leaving one running would strand a real provider
-// session with no reader.
-func (e *Engine) cancelCallChildren(item *runtimeItem) error {
-	if item.phaseID == "" {
-		return nil
-	}
-	phase, ok := findPhase(item.workflow, item.phaseID)
-	if !ok || !phase.IsCall() {
-		// Only a call phase can have live children: it is the one phase that does
-		// not finish until its child is terminal.
-		return nil
-	}
-	return e.cancelDescendants(item.item.ID, 0)
-}
-
-// cancelDescendants cancels every non-terminal descendant of an item, deepest
-// first. Resident runs go through the same teardown every cancel uses; a parked
-// descendant holds nothing and is transitioned in place, because the engine
-// evicts parked items from memory and it must still come down with its tree.
-func (e *Engine) cancelDescendants(itemID string, depth int) error {
-	if depth > MaxCallDepth {
-		return fmt.Errorf("cancel descendants of %q: tree is deeper than %d", itemID, MaxCallDepth)
-	}
-	children, err := e.store.ListWorkItemChildren(itemID)
-	if err != nil {
-		return fmt.Errorf("list children of %q: %w", itemID, err)
-	}
-	var errs []error
-	for _, child := range children {
-		state := State(child.State)
-		if state != StateRunning && state != StateNeedsHuman {
-			continue
-		}
-		if err := e.cancelDescendants(child.ID, depth+1); err != nil {
-			errs = append(errs, err)
-		}
-		resident, tracked := e.items[child.ID]
-		if tracked {
-			errs = append(errs, e.teardown(resident, teardownRequest{
-				phaseStatus: "cancelled", nextState: StateCancelled, reason: ReasonInterrupted,
-			}))
-			continue
-		}
-		errs = append(errs, e.cancelEvictedChild(child))
-	}
-	return errors.Join(errs...)
-}
-
-// cancelEvictedChild cancels a parked descendant the scheduler no longer holds
-// in memory. It owns no resources and no runner — parking released both — so
-// the transition is the whole teardown for it.
-func (e *Engine) cancelEvictedChild(child store.WorkItem) error {
-	endedAt := e.timestamp()
-	if err := e.store.UpdateWorkItemState(child.ID, string(StateCancelled), string(ReasonInterrupted), endedAt); err != nil {
-		return fmt.Errorf("cancel parked child %q: %w", child.ID, err)
-	}
-	e.emitItemState(child.ID, child.ProjectID, State(child.State), StateCancelled, ReasonInterrupted)
-	return nil
 }
 
 // callPhase reports whether a frozen phase id names a call phase, which is what

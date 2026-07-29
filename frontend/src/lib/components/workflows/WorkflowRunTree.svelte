@@ -1,7 +1,9 @@
 <script lang="ts">
   // The run tree (UI-SPEC §4.2). Ordered phase attempts; two node kinds
   // expand: a fan-out phase to its units (the join last), and a call phase to
-  // its child run inline — recursively, via this component's self-import.
+  // its child run inline — recursively, via this component's self-import. A
+  // call-bound unit expands the same way, under its own unit row, which is why
+  // the child-run row is a snippet rather than markup written twice.
   //
   // Every row with a thread is openable, which closes the overlay and mounts
   // the thread as a normal pane (R3). Child runs carry no bind or notify
@@ -9,7 +11,7 @@
   // row, which is why nothing here is actionable.
 
   import Self from './WorkflowRunTree.svelte';
-  import type { WorkflowItemDetail } from '../../types/workflow';
+  import type { WorkItemChild, WorkflowItemDetail } from '../../types/workflow';
   import { buildWorkflowRunTree, workflowNodeTone } from '../../utils/workflowRunTree';
   import { workflowMetaLine } from '../../stores/workflowData';
   import { workflowRunSignal } from '../../utils/workflowRunSignal';
@@ -37,6 +39,36 @@
     expanded = next;
   }
 </script>
+
+{#snippet childRun(child: WorkItemChild)}
+  {@const childDetail = getWorkflowDetail(child.itemId)}
+  {@const signal = workflowRunSignal(child.state, child.reason)}
+  <div class="ml-4 border-l border-border-subtle pl-2" data-testid="workflow-child-run" data-child-item-id={child.itemId}>
+    <button
+      class="flex w-full items-baseline gap-2 rounded px-1.5 py-1 text-left text-xs hover:bg-surface-2/50"
+      onclick={() => toggleChild(child.itemId)}
+      aria-expanded={expanded.has(child.itemId)}
+      data-testid="workflow-child-toggle"
+    >
+      <span class="shrink-0 text-fg-muted">{expanded.has(child.itemId) ? '▼' : '▶'}</span>
+      <span class="min-w-0 flex-1 truncate text-fg">{child.workflowId}</span>
+      <span class={['shrink-0 text-[0.6875rem]', signal.tone].join(' ')}>
+        {workflowMetaLine([
+          signal.label || child.state,
+          child.phaseCount > 0 ? `phase ${child.currentPhaseOrdinal}/${child.phaseCount}` : '',
+          depth >= 1 ? `↳ depth ${depth + 1}` : '',
+        ])}
+      </span>
+    </button>
+    {#if expanded.has(child.itemId)}
+      {#if childDetail}
+        <Self detail={childDetail} depth={depth + 1} {onOpenThread} />
+      {:else}
+        <p class="px-1.5 py-1 text-[0.6875rem] text-fg-muted">Loading…</p>
+      {/if}
+    {/if}
+  </div>
+{/snippet}
 
 <ul class="space-y-0.5" data-testid="workflow-run-tree" data-depth={depth}>
   {#each nodes as node (node.phaseId + ':' + node.attempt)}
@@ -73,39 +105,16 @@
                 <span class="min-w-0 flex-1 truncate text-fg">{row.label}</span>
                 <span class="shrink-0 text-[0.6875rem] text-fg-muted">{row.meta}</span>
               </button>
+              {#each row.children as child (child.itemId)}
+                {@render childRun(child)}
+              {/each}
             </li>
           {/each}
         </ul>
       {/if}
 
       {#each node.children as child (child.itemId)}
-        {@const childDetail = getWorkflowDetail(child.itemId)}
-        {@const signal = workflowRunSignal(child.state, child.reason)}
-        <div class="ml-4 border-l border-border-subtle pl-2" data-testid="workflow-child-run" data-child-item-id={child.itemId}>
-          <button
-            class="flex w-full items-baseline gap-2 rounded px-1.5 py-1 text-left text-xs hover:bg-surface-2/50"
-            onclick={() => toggleChild(child.itemId)}
-            aria-expanded={expanded.has(child.itemId)}
-            data-testid="workflow-child-toggle"
-          >
-            <span class="shrink-0 text-fg-muted">{expanded.has(child.itemId) ? '▼' : '▶'}</span>
-            <span class="min-w-0 flex-1 truncate text-fg">{child.workflowId}</span>
-            <span class={['shrink-0 text-[0.6875rem]', signal.tone].join(' ')}>
-              {workflowMetaLine([
-                signal.label || child.state,
-                child.phaseCount > 0 ? `phase ${child.currentPhaseOrdinal}/${child.phaseCount}` : '',
-                depth >= 1 ? `↳ depth ${depth + 1}` : '',
-              ])}
-            </span>
-          </button>
-          {#if expanded.has(child.itemId)}
-            {#if childDetail}
-              <Self detail={childDetail} depth={depth + 1} {onOpenThread} />
-            {:else}
-              <p class="px-1.5 py-1 text-[0.6875rem] text-fg-muted">Loading…</p>
-            {/if}
-          {/if}
-        </div>
+        {@render childRun(child)}
       {/each}
     </li>
   {/each}

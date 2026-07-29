@@ -152,25 +152,83 @@ func validateElementBinding(workflow Workflow, phase Phase, phaseElement string)
 	return findings
 }
 
-// validateUnitDefinition enforces that a unit carries exactly one runnable
-// binding and that whatever it declares as outputs is a contract a provider can
-// be held to. A unit has no `driver:` field — the binding it declares is the
-// discriminator behind Unit.EffectiveDriver, so a unit with both or neither
-// would make the driver a guess.
+// validateUnitDefinition enforces that a unit carries exactly one of the three
+// runnable bindings and that whatever it declares as outputs is a contract a
+// provider can be held to. A unit has no `driver:` field — the binding it
+// declares is the discriminator behind Unit.EffectiveShape / EffectiveDriver, so
+// a unit with two of them or none would make the discriminator a guess.
 func validateUnitDefinition(unit Unit, element, role string) []Finding {
 	var findings []Finding
+	command := strings.TrimSpace(unit.Command)
+	agentFields := strings.TrimSpace(unit.Provider) != "" || strings.TrimSpace(unit.Model) != "" || unit.Prompt != ""
+	if unit.IsCall() {
+		return append(findings, validateUnitCallShape(unit, element, role, command, agentFields)...)
+	}
 	if unit.Access != "" && unit.Access != AccessReadOnly && unit.Access != AccessWrite {
 		findings = append(findings, finding("phase.access", element, "access must be read-only or write"))
 	}
-	command := strings.TrimSpace(unit.Command)
-	agentFields := strings.TrimSpace(unit.Provider) != "" || strings.TrimSpace(unit.Model) != "" || unit.Prompt != ""
+	if len(unit.Args) > 0 || unit.MaxDepth != 0 {
+		findings = append(findings, finding("phase.fan-out-unit", element,
+			"args and max_depth require call: the id of the workflow this unit invokes"))
+	}
 	switch {
 	case command != "" && agentFields:
-		findings = append(findings, finding("phase.fan-out-unit", element, "a unit declares a command or provider/model/prompt, not both"))
+		findings = append(findings, finding("phase.fan-out-unit", element, "a unit declares a command, provider/model/prompt, or call, not more than one"))
 	case command == "" && (strings.TrimSpace(unit.Provider) == "" || strings.TrimSpace(unit.Model) == "" || unit.Prompt == ""):
-		findings = append(findings, finding("phase.fan-out-unit", element, "an agent unit requires provider, model, and prompt; a tool unit requires a command"))
+		findings = append(findings, finding("phase.fan-out-unit", element, "an agent unit requires provider, model, and prompt; a tool unit requires a command; a call unit requires call"))
 	}
 	return append(findings, validateUnitOutputs(unit, element, role)...)
+}
+
+// validateUnitCallShape enforces the call unit's authoring shape (§3a at unit
+// scope). A call unit runs no work of its own — it invokes another workflow as a
+// child run and adopts that run's declared outputs as its envelope — so every
+// field that configures work is refused here rather than silently ignored at run
+// time, exactly as validateCall refuses them on a call phase.
+//
+// The join is deliberately excluded. Its envelope IS the phase's, and every
+// phase-level continuation (Answer, CompleteTakeover, a resume in place) is a
+// continuation of the join's own session; a join with no session of its own
+// would leave those actions with nothing to continue. A fan-out that wants to
+// call a workflow calls it from a unit.
+func validateUnitCallShape(unit Unit, element, role, command string, agentFields bool) []Finding {
+	var findings []Finding
+	add := func(message string) {
+		findings = append(findings, finding("phase.fan-out-unit", element, message))
+	}
+	if role == unitRoleJoin {
+		add("a join consolidates its units in the phase's own workspace and answers the phase's envelope; call a workflow from a unit instead")
+		return findings
+	}
+	target := unit.CallTarget()
+	if !idPattern.MatchString(target) {
+		add(fmt.Sprintf("call target %q must match [a-z0-9-]+; a call names a static workflow id, never a variable", target))
+	}
+	if unit.MaxDepth < 0 {
+		add("max_depth must be >= 1")
+	}
+	// One message per forbidden group, naming the fields the author actually
+	// wrote, so a miswired call unit reads as one problem instead of a wall.
+	forbidden := []struct {
+		fields  []string
+		present bool
+		message string
+	}{
+		{[]string{"provider", "model", "prompt"}, agentFields,
+			"a call unit runs no turn of its own; the child workflow's phases declare their own provider, model, and prompt"},
+		{[]string{"command"}, command != "",
+			"a call unit runs no command of its own; bind commands in the child workflow's phases"},
+		{[]string{"access"}, unit.Access != "",
+			"a call unit touches no workspace directly; access is declared by the child workflow's phases, and the child executes in this unit's sub-worktree"},
+		{[]string{"outputs"}, len(unit.Outputs) > 0,
+			"a call unit's outputs are the child workflow's declared outputs:; remove the declaration"},
+	}
+	for _, group := range forbidden {
+		if group.present {
+			add(fmt.Sprintf("%s is not valid on a call unit: %s", strings.Join(group.fields, "/"), group.message))
+		}
+	}
+	return findings
 }
 
 // validateUnitOutputs applies the phase-output rules to a unit's own contract:
@@ -194,7 +252,7 @@ func validateUnitOutputs(unit Unit, element, role string) []Finding {
 		if !idPattern.MatchString(name) {
 			findings = append(findings, finding("output.name", outputElement, "name must match [a-z0-9-]+"))
 		}
-		if unit.EffectiveDriver() == DriverTool && ReservedToolOutput(name) {
+		if driver, runsWork := unit.EffectiveDriver(); runsWork && driver == DriverTool && ReservedToolOutput(name) {
 			findings = append(findings, finding("output.reserved", outputElement, "the tool driver always supplies this output; remove the declaration"))
 		}
 		findings = append(findings, validateSchemaDefinition(output.Schema, outputElement)...)
@@ -225,7 +283,9 @@ func fanOutWidthReports(workflow Workflow, bindings Bindings) []Finding {
 		widths := make(map[string]int, 2)
 		order := make([]string, 0, 2)
 		for _, unit := range phase.FanOut {
-			if unit.EffectiveDriver() != DriverAgent {
+			// A call unit takes no provider capacity of its own; the child run's
+			// phases acquire what they need, on their own project bounds.
+			if driver, runsWork := unit.EffectiveDriver(); !runsWork || driver != DriverAgent {
 				continue
 			}
 			provider := strings.TrimSpace(unit.Provider)

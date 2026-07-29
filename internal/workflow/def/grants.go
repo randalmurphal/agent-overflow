@@ -94,14 +94,23 @@ func validateGrants(phase Phase, phaseElement string) []Finding {
 // scopes every unit's token from the *phase's* frozen grants
 // (`frozenPhaseGrants`, keyed by phase id), so the declaration belongs there and
 // is dead only when nothing under it runs an agent.
+//
+// A call unit contributes nothing here for the same reason a call phase grants
+// nothing: it runs no session, and the child workflow's own phases declare what
+// they may do.
 func phaseHoldsAgentSession(phase Phase) bool {
 	if phase.EffectiveShape() != ShapeFanOut {
 		return phase.Driver != DriverTool
 	}
 	for _, unit := range phase.UnitDefinitions() {
-		if unit.EffectiveDriver() == DriverAgent {
+		if unitRunsAgent(unit) {
 			return true
 		}
 	}
-	return phase.Join != nil && phase.Join.EffectiveDriver() == DriverAgent
+	return phase.Join != nil && unitRunsAgent(*phase.Join)
+}
+
+func unitRunsAgent(unit Unit) bool {
+	driver, runsWork := unit.EffectiveDriver()
+	return runsWork && driver == DriverAgent
 }
