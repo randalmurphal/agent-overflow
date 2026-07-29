@@ -9,19 +9,19 @@ import (
 	"agent-overflow/internal/workflow/engine"
 )
 
-// The `/workflow` composer context (spec §5, D15). Selecting `/workflow` in a
-// chat composer inserts a text block telling the agent that the
+// The `/workflow` composer context (spec §5, D15/D31). Sending a message that
+// starts with `/workflow` appends a text block telling the agent that the
 // `agent-overflow` command exists, that its credentials are already in the
 // environment, which workflows this project has, and what is already running.
 //
-// The block's format is owned by internal/aocli (pure, unit-tested); this method
-// resolves the live data behind it.
+// The block's format is owned by internal/aocli (pure, unit-tested); this
+// resolver produces the live data behind it. It is NOT a bound method: the
+// block never reaches the frontend — the send path
+// (app_composer_commands.go) is its only caller, and it appends the block to
+// the provider payload only.
 
-// WorkflowComposerContext renders the `/workflow` block for one thread.
-//
-// LocalOnly: it reads the app's workflow config directories off local disk and
-// reports whether a live provider session holds a credential.
-func (a *App) WorkflowComposerContext(threadID string) (string, error) {
+// workflowComposerBlock renders the `/workflow` block for one thread.
+func (a *App) workflowComposerBlock(threadID string) (string, error) {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
 		return "", fmt.Errorf("workflow composer context: thread id is required")

@@ -12,6 +12,7 @@
 // etc.
 
 import type { ComposerMentionsHandle } from './composerMentions.svelte';
+import type { ComposerSlashHandle } from './composerSlash.svelte';
 export type PopoverAction =
   | { kind: 'move'; nextIndex: number }
   | { kind: 'insert' }
@@ -92,6 +93,48 @@ export function handleMentionPopoverKeydown(
     }
   }
 
+  return false;
+}
+
+/**
+ * Handle a keydown against an open slash-command popover. Same contract as
+ * `handleMentionPopoverKeydown` — `true` means consumed — and the same
+ * navigation reducer, so the two menus cannot drift on what Enter or Escape
+ * does. The two are mutually exclusive in practice (`/` only triggers at the
+ * start of the draft, `@` only after whitespace), but the caller still
+ * dispatches them in a fixed order rather than relying on that.
+ */
+export function handleSlashPopoverKeydown(
+  e: KeyboardEvent,
+  slash: ComposerSlashHandle,
+): boolean {
+  // Shift+Tab stays the global `mode.cycle` chord, exactly as for mentions.
+  if (e.key === 'Tab' && e.shiftKey) return false;
+  if (!slash.slashTrigger) return false;
+
+  const action = popoverNav({
+    key: e.key,
+    activeIndex: slash.slashActiveIndex,
+    itemCount: slash.slashResults.length,
+  });
+  if (action.kind === 'move') {
+    e.preventDefault();
+    slash.setSlashActiveIndex(action.nextIndex);
+    return true;
+  }
+  if (action.kind === 'insert') {
+    const target = slash.slashResults[slash.slashActiveIndex];
+    if (target) {
+      e.preventDefault();
+      slash.insertCommand(target);
+      return true;
+    }
+  }
+  if (action.kind === 'close') {
+    e.preventDefault();
+    slash.closeSlash();
+    return true;
+  }
   return false;
 }
 

@@ -10,7 +10,7 @@ import (
 )
 
 func TestMarshalReturnsEmptyForZeroInputs(t *testing.T) {
-	got, err := Marshal(nil, nil, nil, nil, nil, nil)
+	got, err := Marshal(Input{})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestMarshalIncludesAttachments(t *testing.T) {
 	attachments := []store.Attachment{
 		{ID: "a1", ThreadID: "t1", Filename: "shot.png", MimeType: "image/png", Size: 12345},
 	}
-	got, err := Marshal(attachments, nil, nil, nil, nil, nil)
+	got, err := Marshal(Input{Attachments: attachments})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
@@ -46,7 +46,13 @@ func TestMarshalIncludesSourceAndRevisionContext(t *testing.T) {
 	src := &store.ProposedPlanSourceRef{ThreadID: "t1", ItemID: "p1"}
 	revPlan := &store.ProposedPlanSourceRef{ThreadID: "t1", ItemID: "p2"}
 	revDiff := &store.DiffReviewSourceRef{ThreadID: "t1", Scope: "working-tree", SourceKey: "k"}
-	got, err := Marshal(nil, src, revPlan, []string{"c1"}, revDiff, []string{"d1"})
+	got, err := Marshal(Input{
+		SourcePlan:             src,
+		RevisionSourcePlan:     revPlan,
+		RevisionCommentIDs:     []string{"c1"},
+		RevisionSourceDiff:     revDiff,
+		RevisionDiffCommentIDs: []string{"d1"},
+	})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
@@ -74,9 +80,9 @@ func TestMarshalIncludesSourceAndRevisionContext(t *testing.T) {
 func TestMarshalJSONShapeMatchesContract(t *testing.T) {
 	// The JSON tags are the wire shape the frontend reads.
 	// Field names must remain camelCase and `omitempty`.
-	got, err := Marshal([]store.Attachment{
+	got, err := Marshal(Input{Attachments: []store.Attachment{
 		{ID: "a", ThreadID: "t", Filename: "f.png", MimeType: "image/png", Size: 1},
-	}, nil, nil, nil, nil, nil)
+	}})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
@@ -109,9 +115,9 @@ func TestFromItemEmptyMeta(t *testing.T) {
 }
 
 func TestFromItemRoundTrip(t *testing.T) {
-	encoded, err := Marshal([]store.Attachment{
+	encoded, err := Marshal(Input{Attachments: []store.Attachment{
 		{ID: "a", ThreadID: "t", Filename: "f.png", MimeType: "image/png", Size: 12},
-	}, nil, nil, nil, nil, nil)
+	}})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}

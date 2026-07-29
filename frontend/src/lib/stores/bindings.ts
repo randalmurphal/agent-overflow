@@ -322,7 +322,6 @@ export {
   WorkflowAnswerQuestion,
   WorkflowBindThread,
   WorkflowCancelItem,
-  WorkflowComposerContext,
   WorkflowCompleteTakeover,
   WorkflowCreateAutomation,
   WorkflowCreateItemPR,

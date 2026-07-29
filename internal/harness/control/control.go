@@ -75,9 +75,10 @@ const (
 // Report is a progress event from mock to backend. The backend wraps
 // it (with MockID, Cwd) into a harness:mock bus event.
 type Report struct {
-	// Kind: "registered", "turn_started", "turn_interrupted",
-	// "step_started", "step_completed", "waiting_signal",
-	// "approval_pending", "approval_decided", "scenario_done", "exiting".
+	// Kind: "registered", "user_input", "turn_started",
+	// "turn_interrupted", "step_started", "step_completed",
+	// "waiting_signal", "approval_pending", "approval_decided",
+	// "scenario_done", "exiting".
 	Kind string `json:"kind"`
 	// Turn is the 1-based user-turn index (0 for lifecycle reports).
 	Turn int `json:"turn,omitempty"`
@@ -86,6 +87,12 @@ type Report struct {
 	// Detail is kind-specific: step action name, wait-gate name,
 	// approval decision, exit code.
 	Detail string `json:"detail,omitempty"`
+	// Input is the user text the mock received on the wire, set only on
+	// ReportUserInput. It is the ONLY surface that answers "what did the
+	// app actually send the provider" — the transcript stores what the
+	// user typed, which is deliberately not the same string once the send
+	// path expands a composer command.
+	Input string `json:"input,omitempty"`
 	// SessionConfig is set only on ReportSessionConfig reports.
 	SessionConfig *SessionConfig `json:"sessionConfig,omitempty"`
 }
@@ -93,7 +100,12 @@ type Report struct {
 // Report kinds. Tests await these via harness:mock events; renaming any
 // is a breaking change to e2e helpers.
 const (
-	ReportRegistered      = "registered"
+	ReportRegistered = "registered"
+	// ReportUserInput carries the text of one inbound user message, posted
+	// by the protocol adapter the moment the app writes it — before the
+	// turn's steps run, so a test can await the input and the turn's
+	// completion independently.
+	ReportUserInput       = "user_input"
 	ReportTurnStarted     = "turn_started"
 	ReportTurnInterrupted = "turn_interrupted"
 	ReportStepStarted     = "step_started"

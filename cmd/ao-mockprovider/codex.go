@@ -115,8 +115,22 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// Response first (real server order), then the turn's steps
 		// stream as notifications from the engine goroutine.
 		n, vars := a.e.beginTurn()
+		a.e.rep.report(control.Report{
+			Kind: control.ReportUserInput, Turn: n, Input: codexInputText(params),
+		})
 		a.respond(id, method, vars)
 		a.e.enqueueTurn(n)
+	case "turn/steer":
+		// A steer is user text reaching the provider mid-turn. It reports on
+		// the same surface as a turn/start's input — a test asserting what the
+		// provider received must not have to know which path the app took —
+		// and carries the already-running turn's number, because a steer
+		// starts no scenario turn of its own. The response template stays the
+		// generic empty result the default branch would have produced.
+		a.e.rep.report(control.Report{
+			Kind: control.ReportUserInput, Turn: a.e.currentTurn(), Input: codexInputText(params),
+		})
+		a.respond(id, method, a.e.currentVars())
 	case "turn/interrupt":
 		// The real app-server replies when TurnAborted arrives, immediately
 		// before publishing turn/completed{status:interrupted}. Preserve that
@@ -261,6 +275,26 @@ func approvalCommandString(step *scenario.ApprovalStep, vars scenario.Vars) stri
 		}
 	}
 	return step.ToolName
+}
+
+// codexInputText joins the text of a turn/start or turn/steer `input` vec in
+// wire order (localImage entries contribute nothing), which is the text the
+// app actually sent. An unrecognised shape reports empty rather than guessing.
+func codexInputText(params json.RawMessage) string {
+	var items []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(readParamRaw(params, "input"), &items) != nil {
+		return ""
+	}
+	var parts []string
+	for _, item := range items {
+		if item.Type == "text" {
+			parts = append(parts, item.Text)
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 func readParamString(params json.RawMessage, key string) string {

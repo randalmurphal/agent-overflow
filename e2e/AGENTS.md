@@ -81,8 +81,10 @@ headless, isolated data dir, mocked providers. Full harness guide:
   the discard loss preview proving nothing is destroyed before it is confirmed,
   `+ New run` starting a run, a question answered from the footer input (which
   also proves the §8 letter keys stay letters while a field has focus), the
-  `/workflow` composer command appending below an in-progress draft, and a
-  view-only session with every mutating affordance dead. The view-only case
+  `/workflow` composer command completing from the slash menu and expanding at
+  send time (the provider's received text carries the block, the transcript
+  carries only the typed words — D31), and a view-only session with every
+  mutating affordance dead. The view-only case
   rewrites `remote` on the `/bootstrap.json` response because the harness binds
   loopback only and that bit is computed from the peer's locality — the SPA
   still receives exactly the manifest a LAN browser would, and everything

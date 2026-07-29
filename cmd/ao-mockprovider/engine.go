@@ -108,6 +108,15 @@ func (e *engine) varsForTurn(n int) scenario.Vars {
 	return vars
 }
 
+// currentTurn returns the most recently begun user-turn number (0 before the
+// first). Used by reports that belong to a turn already under way rather than
+// to one they begin, such as a mid-turn steer.
+func (e *engine) currentTurn() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.turnSeq
+}
+
 // currentVars snapshots vars for the most recently begun turn — used
 // by control "emit" commands and non-turn codex responses.
 func (e *engine) currentVars() scenario.Vars {

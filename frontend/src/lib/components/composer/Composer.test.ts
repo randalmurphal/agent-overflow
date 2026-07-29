@@ -2644,4 +2644,131 @@ describe('<Composer>', () => {
     expect(event.defaultPrevented).toBe(true);
     expect(document.activeElement).toBe(textarea);
   });
+
+  // Slash-command completion (D31). The menu is an affordance for text the
+  // user could type by hand: selecting a command completes the WORD and
+  // nothing else — no token, no inserted block.
+  describe('slash command menu', () => {
+    async function mountComposer() {
+      const pane = await buildPane();
+      const draft = await buildDraft();
+      const rendered = render(Composer, { props: { pane, draft } });
+      const textarea = rendered.getByLabelText('Message Input') as HTMLTextAreaElement;
+      await waitFor(() => expect(textarea.disabled).toBe(false));
+      return { ...rendered, draft, textarea };
+    }
+
+    // fireEvent.input alone leaves selectionStart at 0 in happy-dom, and the
+    // trigger reads the caret — so type like a human does: value, then caret.
+    async function typeInto(textarea: HTMLTextAreaElement, value: string) {
+      await fireEvent.input(textarea, { target: { value } });
+      textarea.setSelectionRange(value.length, value.length);
+      await fireEvent.select(textarea);
+      await tick();
+    }
+
+    it('opens on a leading slash, filters, and closes when nothing matches', async () => {
+      const { textarea, queryByTestId, getAllByTestId } = await mountComposer();
+
+      await typeInto(textarea, '/');
+      await waitFor(() => expect(queryByTestId('slash-popover')).not.toBeNull());
+      expect(getAllByTestId('slash-option').map((el) => el.getAttribute('data-command')))
+        .toEqual(['workflow']);
+
+      await typeInto(textarea, '/work');
+      expect(queryByTestId('slash-popover')).not.toBeNull();
+
+      await typeInto(textarea, '/workflowish');
+      await waitFor(() => expect(queryByTestId('slash-popover')).toBeNull());
+    });
+
+    it('never opens for a slash that is not the first character', async () => {
+      const { textarea, queryByTestId } = await mountComposer();
+      await typeInto(textarea, 'see /w');
+      expect(queryByTestId('slash-popover')).toBeNull();
+      await typeInto(textarea, ' /w');
+      expect(queryByTestId('slash-popover')).toBeNull();
+    });
+
+    it('completes the word on click and leaves the draft as plain text', async () => {
+      const { textarea, draft, getAllByTestId, queryByTestId } = await mountComposer();
+      await typeInto(textarea, '/w');
+      await waitFor(() => expect(queryByTestId('slash-popover')).not.toBeNull());
+
+      await fireEvent.click(getAllByTestId('slash-option')[0]);
+      await tick();
+
+      expect(textarea.value).toBe('/workflow ');
+      expect(draft.content).toBe('/workflow ');
+      expect(queryByTestId('slash-popover')).toBeNull();
+    });
+
+    it('completes on Enter and does not send that keystroke', async () => {
+      const send = setBindingMock('SendMessageWithOptions', async () => makeTestThread());
+      const { textarea, draft, queryByTestId } = await mountComposer();
+      await typeInto(textarea, '/wo');
+      await waitFor(() => expect(queryByTestId('slash-popover')).not.toBeNull());
+
+      await fireEvent.keyDown(textarea, { key: 'Enter' });
+      await tick();
+
+      expect(draft.content).toBe('/workflow ');
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('closes on Escape and stays closed while the same word is being typed', async () => {
+      const { textarea, queryByTestId } = await mountComposer();
+      await typeInto(textarea, '/w');
+      await waitFor(() => expect(queryByTestId('slash-popover')).not.toBeNull());
+
+      await fireEvent.keyDown(textarea, { key: 'Escape' });
+      await tick();
+      expect(queryByTestId('slash-popover')).toBeNull();
+
+      await typeInto(textarea, '/wor');
+      expect(queryByTestId('slash-popover')).toBeNull();
+
+      // Clearing the draft ends the dismissal: the next slash is a fresh ask.
+      await typeInto(textarea, '');
+      await typeInto(textarea, '/w');
+      await waitFor(() => expect(queryByTestId('slash-popover')).not.toBeNull());
+    });
+
+    it('paints the leading command word in the accent colour, and only while it matches', async () => {
+      const { textarea, queryByTestId } = await mountComposer();
+
+      await typeInto(textarea, '/workflow start the release');
+      await waitFor(() => {
+        const overlay = queryByTestId('composer-command-highlight');
+        expect(overlay?.textContent).toBe('/workflow');
+      });
+
+      await typeInto(textarea, '/workflows start the release');
+      await waitFor(() => expect(queryByTestId('composer-command-highlight')).toBeNull());
+
+      // A selection would be drawn under the opaque word, so the paint stands
+      // down until the selection collapses again.
+      await typeInto(textarea, '/workflow start the release');
+      await waitFor(() => expect(queryByTestId('composer-command-highlight')).not.toBeNull());
+      textarea.setSelectionRange(0, 5);
+      await fireEvent.select(textarea);
+      await tick();
+      expect(queryByTestId('composer-command-highlight')).toBeNull();
+    });
+
+    it('sends the typed text unchanged — expansion is the backend\'s job', async () => {
+      const thread = makeTestThread();
+      const send = setBindingMock('SendMessageWithOptions', async () => thread);
+      const { textarea, getByTestId } = await mountComposer();
+
+      await typeInto(textarea, '/workflow start the release');
+      await fireEvent.click(getByTestId('composer-send'));
+
+      await waitFor(() => expect(send).toHaveBeenCalledWith(
+        thread.id,
+        '/workflow start the release',
+        { attachmentIds: [] },
+      ));
+    });
+  });
 });

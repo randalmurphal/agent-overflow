@@ -47,6 +47,20 @@ type sendMessageOptions struct {
 	PreserveDraft bool
 }
 
+// composerAuthored reports whether this message's text came from a human
+// typing into a composer, which is the one class of send that may carry a
+// `/command` word for send-time expansion (D31).
+//
+// Both exclusions are the same fact from two directions: PreserveDraft marks
+// the app-internal injectors (workflow wake, seeded triage / open-in-thread
+// turns) whose text the app composed, and an OutputSchema marks a
+// schema-driven workflow phase send. Neither text passed through a composer,
+// and expanding a `/…` opener inside one would rewrite a prompt the app itself
+// wrote.
+func (o sendMessageOptions) composerAuthored() bool {
+	return !o.PreserveDraft && len(o.OutputSchema) == 0
+}
+
 // userMessageInputs is the projection of fields shared by every
 // user-message entry point (send, steer, flush). The shape is
 // sendMessageOptions minus RuntimeMode and matches flushQueuePayload's
@@ -59,6 +73,13 @@ type userMessageInputs struct {
 	revisionSourceCommentIDs     []string
 	revisionSourceDiffReview     *SourceDiffReview
 	revisionSourceDiffCommentIDs []string
+	// expandComposerCommands admits a leading `/command` word for
+	// send-time expansion (D31). True for everything a human typed into a
+	// composer — direct send, Codex steer, queued flush — and false for
+	// app-internal injectors (workflow wake, seeded triage/open-in-thread
+	// turns, schema-driven workflow sends), whose text did not come from a
+	// composer and must reach the provider byte-for-byte as composed.
+	expandComposerCommands bool
 }
 
 // resolvedUserMessage bundles everything resolveUserMessageEnvelope
@@ -67,7 +88,18 @@ type userMessageInputs struct {
 // plan/diff references and their comment id lists, and the marshaled
 // userMessageMeta the caller writes into store.Item.Meta.
 type resolvedUserMessage struct {
-	content                string
+	content string
+	// providerContent is what goes on the wire. It equals content except
+	// when a composer command expanded (D31), where it carries the typed
+	// text followed by the command's context block. Every entry point
+	// persists `content` and sends `providerContent` — the pair exists so
+	// a send path cannot accidentally store the block or ship the message
+	// without it.
+	providerContent string
+	// command is the composer command that expanded, without its slash
+	// ("workflow"), or "" when the message invoked none. Recorded in the
+	// stored item's meta.
+	command                string
 	providerAttachments    []provider.ImageAttachment
 	persistedAttachments   []store.Attachment
 	sourcePlan             *SourceProposedPlan
@@ -144,20 +176,39 @@ func (a *App) resolveUserMessageEnvelope(
 		revisionSourceDiff = &strippedRef
 	}
 
-	userMeta, err := usermessage.Marshal(
-		persistedAttachments,
-		sourcePlan,
-		revisionSourcePlan,
-		revisionCommentIDs,
-		revisionSourceDiff,
-		revisionDiffCommentIDs,
-	)
+	// Composer command expansion (D31) runs last so the block lands after
+	// everything the message already carries, and BEFORE the meta is
+	// marshaled so the recognised command is recorded on the row. A
+	// resolution failure aborts the whole send: the caller has not yet
+	// persisted the user row, so the composer restores the draft and shows
+	// the error rather than silently sending the message without the
+	// context it asked for.
+	providerContent := content
+	command := ""
+	if inputs.expandComposerCommands {
+		providerContent, command, err = a.expandComposerCommand(threadID, content)
+		if err != nil {
+			return resolvedUserMessage{}, fmt.Errorf("composer command: %w", err)
+		}
+	}
+
+	userMeta, err := usermessage.Marshal(usermessage.Input{
+		Attachments:            persistedAttachments,
+		SourcePlan:             sourcePlan,
+		RevisionSourcePlan:     revisionSourcePlan,
+		RevisionCommentIDs:     revisionCommentIDs,
+		RevisionSourceDiff:     revisionSourceDiff,
+		RevisionDiffCommentIDs: revisionDiffCommentIDs,
+		Command:                command,
+	})
 	if err != nil {
 		return resolvedUserMessage{}, fmt.Errorf("user meta: %w", err)
 	}
 
 	return resolvedUserMessage{
 		content:                content,
+		providerContent:        providerContent,
+		command:                command,
 		providerAttachments:    providerAttachments,
 		persistedAttachments:   persistedAttachments,
 		sourcePlan:             sourcePlan,
@@ -247,11 +298,17 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		revisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
 		revisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		revisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
+		expandComposerCommands:       opts.composerAuthored(),
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)
 	}
 	content = resolved.content
+	// The wire payload and the persisted row diverge only here: a `/command`
+	// send puts the command's context block on the wire (D31) and keeps the
+	// typed text in the transcript, the draft-rename heuristic, and the
+	// generated thread title below.
+	providerContent := resolved.providerContent
 	providerAttachments := resolved.providerAttachments
 	persistedAttachments := resolved.persistedAttachments
 	sourcePlan := resolved.sourcePlan
@@ -389,7 +446,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// provider-injected user envelope can never mispair with it.
 	a.triage.RegisterPendingSendExpecting(threadID, userItem.ID, turnIndex, sendUUID)
 
-	if err := sendToProvider(sess, threadID, content, provider.NormalizeInteractionMode(thread.Mode), providerAttachments, sendUUID, opts.OutputSchema); err != nil {
+	if err := sendToProvider(sess, threadID, providerContent, provider.NormalizeInteractionMode(thread.Mode), providerAttachments, sendUUID, opts.OutputSchema); err != nil {
 		// Drop the pending-send marker before persisting the error row.
 		// Without this, the marker would still be live when the next AO
 		// send registers a new entry, and a stale wire init for an orphaned

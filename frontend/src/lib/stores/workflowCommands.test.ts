@@ -1,14 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ComposerDraftStore } from './composerDraft.svelte';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommandContext } from './commandRegistry.svelte';
 import { clearCommandRegistry, getCommand, listCommands, runCommand } from './commandRegistry.svelte';
-import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
-import { getToasts, removeToast } from './toast.svelte';
-import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { setViewOnlySessionFromBootstrap } from '../transport/runMode';
 import {
   getWorkflowsActionTargetForTest,
-  insertWorkflowComposerContext,
   registerWorkflowCommands,
   registerWorkflowsActionTarget,
 } from './workflowCommands.svelte';
@@ -23,16 +17,7 @@ import {
 } from './workflowsOverlay.svelte';
 import { resetAppStorageForTest } from './appStorage';
 
-const BLOCK = '## Workflows\n\nport → check';
-
-function draft(initial = ''): ComposerDraftStore & { content: string } {
-  let content = initial;
-  return {
-    get content() { return content; },
-    setContent(next: string) { content = next; },
-  } as unknown as ComposerDraftStore & { content: string };
-}
-
+/** The palette/keybinding call shape the overlay commands are dispatched with. */
 function ctx(over: Record<string, unknown> = {}): CommandContext {
   const flags = {
     workflowsOverlayOpen: true,
@@ -48,80 +33,6 @@ function ctx(over: Record<string, unknown> = {}): CommandContext {
   } as unknown as CommandContext;
 }
 
-function clearToasts(): void {
-  for (const toast of [...getToasts()]) removeToast(toast.id);
-}
-
-describe('/workflow composer command', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetComposerDraftRegistryForTest();
-    setViewOnlySessionFromBootstrap(false);
-    clearToasts();
-    setBindingMock('WorkflowComposerContext', async () => BLOCK);
-  });
-
-  afterEach(() => {
-    setViewOnlySessionFromBootstrap(false);
-    resetBindingMocks();
-    clearToasts();
-  });
-
-  it('injects the block into an empty composer', async () => {
-    const store = draft();
-    registerComposerDraft('pane-1', store);
-    await insertWorkflowComposerContext(ctx());
-    expect(store.content).toBe(BLOCK);
-  });
-
-  it('appends below an in-progress prompt instead of clobbering it', async () => {
-    const store = draft('  half a thought  ');
-    registerComposerDraft('pane-1', store);
-    await insertWorkflowComposerContext(ctx());
-    expect(store.content).toBe(`half a thought\n\n${BLOCK}`);
-  });
-
-  it('warns and injects nothing when no thread is open', async () => {
-    registerComposerDraft('pane-1', draft());
-    await insertWorkflowComposerContext(ctx({ pane: { paneId: 'pane-1', threadId: '' } }));
-    expect(getToasts().at(-1)).toMatchObject({
-      type: 'warning', message: 'Open a thread before inserting workflow context.',
-    });
-  });
-
-  it('warns and injects nothing when the pane has no composer', async () => {
-    await insertWorkflowComposerContext(ctx());
-    expect(getToasts().at(-1)).toMatchObject({ type: 'warning', message: 'This pane has no composer.' });
-  });
-
-  it('refuses in a view-only session (§10) without calling the RPC', async () => {
-    const store = draft();
-    registerComposerDraft('pane-1', store);
-    setViewOnlySessionFromBootstrap(true);
-    await insertWorkflowComposerContext(ctx());
-    expect(store.content).toBe('');
-    expect(getToasts().at(-1)).toMatchObject({ type: 'warning', message: 'Local only' });
-  });
-
-  it('says so when the project has no workflow context yet', async () => {
-    const store = draft();
-    registerComposerDraft('pane-1', store);
-    setBindingMock('WorkflowComposerContext', async () => '   ');
-    await insertWorkflowComposerContext(ctx());
-    expect(store.content).toBe('');
-    expect(getToasts().at(-1)).toMatchObject({ type: 'info' });
-  });
-
-  it('surfaces a backend failure as an error toast, never a silent no-op', async () => {
-    const store = draft();
-    registerComposerDraft('pane-1', store);
-    setBindingMock('WorkflowComposerContext', async () => { throw new Error('no such thread'); });
-    await insertWorkflowComposerContext(ctx());
-    expect(store.content).toBe('');
-    expect(getToasts().at(-1)).toMatchObject({ type: 'error' });
-  });
-});
-
 describe('overlay commands', () => {
   beforeEach(() => {
     clearCommandRegistry();
@@ -130,9 +41,8 @@ describe('overlay commands', () => {
     registerWorkflowCommands();
   });
 
-  it('registers exactly the §8 vocabulary plus the composer command', () => {
+  it('registers exactly the §8 vocabulary — the composer command is not a palette entry (D31)', () => {
     expect(listCommands().map((command) => command.id).sort()).toEqual([
-      'workflow.composerContext',
       'workflows.action.enter',
       'workflows.action.primary',
       'workflows.action.reject',
@@ -153,7 +63,9 @@ describe('overlay commands', () => {
       // editable-target chords for editableReachable commands.
       expect(command.editableReachable ?? false).toBe(false);
     }
-    expect(getCommand('workflow.composerContext')?.when).toBe('hasActiveThread');
+    // `/workflow` is typed into the composer and expanded by the send path
+    // (D31); it must not come back as a palette action that pastes text.
+    expect(getCommand('workflow.composerContext')).toBeUndefined();
   });
 
   it('toggles the overlay from the one unscoped command', () => {

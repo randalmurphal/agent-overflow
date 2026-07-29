@@ -28,6 +28,29 @@ type Meta struct {
 	RevisionSourceCommentIDs     []string                     `json:"revisionSourceCommentIds,omitempty"`
 	RevisionSourceDiffReview     *store.DiffReviewSourceRef   `json:"revisionSourceDiffReview,omitempty"`
 	RevisionSourceDiffCommentIDs []string                     `json:"revisionSourceDiffCommentIds,omitempty"`
+	// Command names the composer slash command that was recognised on
+	// this message and expanded into the provider-bound payload (D31),
+	// without the leading slash: "workflow" for a `/workflow …` send.
+	// The stored Summary keeps exactly what the user typed, so this
+	// marker is the only record that an expansion happened — chat
+	// history colours the leading word from THIS field rather than from
+	// a live registry match, so a row stays truthful about what actually
+	// expanded when the registry later changes.
+	Command string `json:"command,omitempty"`
+}
+
+// Input is the per-entry-point projection Marshal encodes. A struct
+// rather than a positional list because every field is optional and
+// several are the same type — a caller that swapped two of the
+// positional refs used to compile clean.
+type Input struct {
+	Attachments            []store.Attachment
+	SourcePlan             *store.ProposedPlanSourceRef
+	RevisionSourcePlan     *store.ProposedPlanSourceRef
+	RevisionCommentIDs     []string
+	RevisionSourceDiff     *store.DiffReviewSourceRef
+	RevisionDiffCommentIDs []string
+	Command                string
 }
 
 // AttachmentMeta is the per-attachment slice element. The Go side
@@ -43,27 +66,22 @@ type AttachmentMeta struct {
 }
 
 // Marshal returns the JSON-encoded user-message meta for the given
-// attachments + plan/diff revision context. When every input is
-// zero-valued the function returns ("", nil) so callers can persist
-// an empty Meta column and the frontend's omit-empty branches
-// continue to work.
-func Marshal(
-	attachments []store.Attachment,
-	sourcePlan, revisionSourcePlan *store.ProposedPlanSourceRef,
-	revisionCommentIDs []string,
-	revisionSourceDiff *store.DiffReviewSourceRef,
-	revisionDiffCommentIDs []string,
-) (string, error) {
-	if len(attachments) == 0 &&
-		sourcePlan == nil &&
-		revisionSourcePlan == nil &&
-		len(revisionCommentIDs) == 0 &&
-		revisionSourceDiff == nil &&
-		len(revisionDiffCommentIDs) == 0 {
+// attachments + plan/diff revision context + recognised command. When
+// every input is zero-valued the function returns ("", nil) so callers
+// can persist an empty Meta column and the frontend's omit-empty
+// branches continue to work.
+func Marshal(in Input) (string, error) {
+	if len(in.Attachments) == 0 &&
+		in.SourcePlan == nil &&
+		in.RevisionSourcePlan == nil &&
+		len(in.RevisionCommentIDs) == 0 &&
+		in.RevisionSourceDiff == nil &&
+		len(in.RevisionDiffCommentIDs) == 0 &&
+		in.Command == "" {
 		return "", nil
 	}
-	metaAttachments := make([]AttachmentMeta, 0, len(attachments))
-	for _, attachment := range attachments {
+	metaAttachments := make([]AttachmentMeta, 0, len(in.Attachments))
+	for _, attachment := range in.Attachments {
 		metaAttachments = append(metaAttachments, AttachmentMeta{
 			ID:       attachment.ID,
 			ThreadID: attachment.ThreadID,
@@ -74,11 +92,12 @@ func Marshal(
 	}
 	meta := Meta{
 		Attachments:                  metaAttachments,
-		SourceProposedPlan:           sourcePlan,
-		RevisionSourceProposedPlan:   revisionSourcePlan,
-		RevisionSourceCommentIDs:     revisionCommentIDs,
-		RevisionSourceDiffReview:     revisionSourceDiff,
-		RevisionSourceDiffCommentIDs: revisionDiffCommentIDs,
+		SourceProposedPlan:           in.SourcePlan,
+		RevisionSourceProposedPlan:   in.RevisionSourcePlan,
+		RevisionSourceCommentIDs:     in.RevisionCommentIDs,
+		RevisionSourceDiffReview:     in.RevisionSourceDiff,
+		RevisionSourceDiffCommentIDs: in.RevisionDiffCommentIDs,
+		Command:                      in.Command,
 	}
 	data, err := json.Marshal(meta)
 	if err != nil {

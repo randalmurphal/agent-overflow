@@ -475,4 +475,54 @@ describe('<UserMessage>', () => {
       expect(getAttachmentThumbnail).toHaveBeenCalledWith('thread-1', 'att-1');
     });
   });
+
+  // Composer commands (D31): the row shows exactly what was typed, with the
+  // command word in the accent colour. Colouring keys off the meta marker the
+  // send path wrote, never a live registry match, so history stays truthful
+  // about what actually expanded.
+  describe('composer command word', () => {
+    function renderSummary(summary: string, meta?: string) {
+      return render(UserMessage, {
+        props: {
+          item: makeItem({ kind: 'user_text', role: 'user', summary, meta }),
+        },
+      });
+    }
+
+    it('colours the leading word when the meta says it expanded', () => {
+      const { getByTestId } = renderSummary(
+        '/workflow start the release',
+        JSON.stringify({ command: 'workflow' }),
+      );
+      const word = getByTestId('user-message-command');
+      expect(word.textContent).toBe('/workflow');
+      expect(word.className).toContain('text-accent');
+      // The rest of the message is untouched, and the bubble still reads as
+      // one continuous line of text.
+      expect(getByTestId('user-message-bubble').textContent).toContain('/workflow start the release');
+    });
+
+    it('colours a bare command with no instruction after it', () => {
+      const { getByTestId } = renderSummary('/workflow', JSON.stringify({ command: 'workflow' }));
+      expect(getByTestId('user-message-command').textContent).toBe('/workflow');
+    });
+
+    it('leaves a command-looking message plain when nothing expanded', () => {
+      const { queryByTestId } = renderSummary('/workflow start the release');
+      expect(queryByTestId('user-message-command')).toBeNull();
+    });
+
+    it('leaves the row plain when the marked command is not what the text says', () => {
+      const { queryByTestId } = renderSummary(
+        'we talked about /workflow yesterday',
+        JSON.stringify({ command: 'workflow' }),
+      );
+      expect(queryByTestId('user-message-command')).toBeNull();
+    });
+
+    it('does not colour a longer word that merely starts with the command', () => {
+      const { queryByTestId } = renderSummary('/workflows are nice', JSON.stringify({ command: 'workflow' }));
+      expect(queryByTestId('user-message-command')).toBeNull();
+    });
+  });
 });

@@ -290,7 +290,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowBindThread", ID: 1931806823},                   // main.App.WorkflowBindThread
 	{Name: "WorkflowCancelItem", ID: 4158962817},                   // main.App.WorkflowCancelItem
 	{Name: "WorkflowCompleteTakeover", ID: 3393508470},             // main.App.WorkflowCompleteTakeover
-	{Name: "WorkflowComposerContext", ID: 3805024085},              // main.App.WorkflowComposerContext
 	{Name: "WorkflowCreateAutomation", ID: 3011758347},             // main.App.WorkflowCreateAutomation
 	{Name: "WorkflowCreateItemPR", ID: 1792283305},                 // main.App.WorkflowCreateItemPR
 	{Name: "WorkflowDeleteAutomation", ID: 1133480652},             // main.App.WorkflowDeleteAutomation

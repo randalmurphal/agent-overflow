@@ -40,6 +40,8 @@ export interface HarnessMockEvent {
     turn?: number;
     step?: number;
     detail?: string;
+    /** Set on `user_input`: the text the mock received on the wire. */
+    input?: string;
   };
 }
 

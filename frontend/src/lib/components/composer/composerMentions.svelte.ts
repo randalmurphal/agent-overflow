@@ -14,6 +14,7 @@ import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import type { WorkspaceFile, WorkspaceFileSearchResult } from '../../types/workspaceFile';
 import { detectMentionTrigger, type MentionTrigger } from './mentionHelpers';
+import { replaceTextareaRange } from './textareaEdit';
 
 export interface ComposerMentionsOptions {
   /** Returns the textarea DOM element. May be undefined before mount. */
@@ -97,18 +98,11 @@ export function createComposerMentions(opts: ComposerMentionsOptions): ComposerM
   function insertMention(file: WorkspaceFile): void {
     const textarea = opts.getTextarea();
     if (!mentionTrigger || !textarea) return;
-    // execCommand routes the replacement through the browser's input
-    // pipeline, which keeps it in the native undo stack. The synthetic
+    // replaceTextareaRange routes the replacement through the browser's
+    // input pipeline, which keeps it in the native undo stack. The resulting
     // `input` event drives `handleInput` in Composer.svelte, which calls
     // `draft.setContent(textarea.value)` — store update is automatic.
-    const replacement = `@${file.path} `;
-    // preventScroll: DOM focus must never scroll the pane strip (see
-    // paneComposerFocus.ts) — mouse-selecting a mention option holds focus
-    // on the clicked button, and reclaiming it must not nudge a
-    // partially-visible pane.
-    textarea.focus({ preventScroll: true });
-    textarea.setSelectionRange(mentionTrigger.start, mentionTrigger.end);
-    document.execCommand('insertText', false, replacement);
+    replaceTextareaRange(textarea, mentionTrigger.start, mentionTrigger.end, `@${file.path} `);
     closeMention();
   }
 

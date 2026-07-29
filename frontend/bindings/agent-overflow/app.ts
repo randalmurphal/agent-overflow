@@ -3268,16 +3268,6 @@ export function WorkflowCompleteTakeover(itemID: string): $CancellablePromise<vo
 }
 
 /**
- * WorkflowComposerContext renders the `/workflow` block for one thread.
- * 
- * LocalOnly: it reads the app's workflow config directories off local disk and
- * reports whether a live provider session holds a credential.
- */
-export function WorkflowComposerContext(threadID: string): $CancellablePromise<string> {
-    return $Call.ByID(3805024085, threadID);
-}
-
-/**
  * WorkflowCreateAutomation validates and persists a new automation, then
  * recomputes the schedule so its first fire is armed without a restart.
  */

@@ -381,7 +381,7 @@ func TestWorkflowAgentMethodsRequireAScope(t *testing.T) {
 	}
 }
 
-func TestWorkflowComposerContextRendersTheProjectSurface(t *testing.T) {
+func TestWorkflowComposerBlockRendersTheProjectSurface(t *testing.T) {
 	fixture := newCLIFixture(t)
 	thread, err := fixture.app.CreateThread(CreateThreadOptions{
 		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
@@ -396,7 +396,7 @@ func TestWorkflowComposerContextRendersTheProjectSurface(t *testing.T) {
 	}
 	waitForWorkflowItem(t, fixture.app, item.ID, engine.StateDone, "")
 
-	block, err := fixture.app.WorkflowComposerContext(thread.ID)
+	block, err := fixture.app.workflowComposerBlock(thread.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func TestWorkflowComposerContextRendersTheProjectSurface(t *testing.T) {
 		t.Fatalf("composer block promised a command the app never published:\n%s", block)
 	}
 	fixture.app.cliBinDir = t.TempDir()
-	published, err := fixture.app.WorkflowComposerContext(thread.ID)
+	published, err := fixture.app.workflowComposerBlock(thread.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestWorkflowComposerContextRendersTheProjectSurface(t *testing.T) {
 	if !strings.Contains(block, "no live session yet") {
 		t.Fatalf("composer block claimed a session that does not exist:\n%s", block)
 	}
-	if _, err := fixture.app.WorkflowComposerContext(""); err == nil {
+	if _, err := fixture.app.workflowComposerBlock(""); err == nil {
 		t.Fatal("an empty thread id produced a block")
 	}
 }

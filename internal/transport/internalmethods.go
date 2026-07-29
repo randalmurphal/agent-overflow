@@ -331,9 +331,6 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowAgentSchedule":  true,
 	"WorkflowAgentGetNotes":  true,
 	"WorkflowAgentSetNotes":  true,
-	// The /workflow composer block reads local workflow-config directory paths
-	// and reports whether a local session holds a credential.
-	"WorkflowComposerContext": true,
 	// ConcludeDiscussion is lifecycle control over the deliberation's
 	// provider-session turn loop — same class as PostChannelMessage: it
 	// removes the in-memory FSM (a.deliberations) and can race an

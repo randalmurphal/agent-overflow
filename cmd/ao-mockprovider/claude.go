@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
+	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
 )
 
@@ -112,6 +114,9 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		// doc) are written synchronously here so they precede every
 		// scenario step of the turn.
 		n, vars := a.e.beginTurn()
+		a.e.rep.report(control.Report{
+			Kind: control.ReportUserInput, Turn: n, Input: claudeUserText(line),
+		})
 		a.writeInit(vars)
 		a.echoUserEnvelope(line)
 		a.e.enqueueTurn(n)
@@ -154,6 +159,42 @@ func (a *claudeAdapter) writeInit(vars scenario.Vars) {
 		"tools":               []string{"Task", "Bash", "Read", "Write", "Edit"},
 		"claude_code_version": mockVersionNumber,
 	}), 0, 0)
+}
+
+// claudeUserText extracts the text the app sent inside a user envelope:
+// `message.content` is either a plain string or the block array
+// buildUserMessageBlocks produces, in which case the text blocks are joined
+// in wire order (image blocks contribute nothing). Reported verbatim so a
+// test can assert on what the provider received rather than on what the app
+// stored. A shape this doesn't recognise reports empty rather than guessing —
+// an assertion failing on "" is honest; a fabricated string is not.
+func claudeUserText(line []byte) string {
+	var env struct {
+		Message struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(line, &env); err != nil || len(env.Message.Content) == 0 {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(env.Message.Content, &text) == nil {
+		return text
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(env.Message.Content, &blocks) != nil {
+		return ""
+	}
+	var parts []string
+	for _, block := range blocks {
+		if block.Type == "text" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 // echoUserEnvelope mirrors the CLI's --replay-user-messages behaviour:

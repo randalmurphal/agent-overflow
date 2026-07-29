@@ -53,12 +53,12 @@ func TestFromPartsWithAttachmentsAndPlan(t *testing.T) {
 
 func TestFromUserItemRoundTripsAttachmentsAndSourcePlan(t *testing.T) {
 	src := &store.ProposedPlanSourceRef{ThreadID: "src", ItemID: "p1"}
-	meta, err := usermessage.Marshal(
-		[]store.Attachment{
+	meta, err := usermessage.Marshal(usermessage.Input{
+		Attachments: []store.Attachment{
 			{ID: "att-1", ThreadID: "t-src", Filename: "shot.png", MimeType: "image/png", Size: 12},
 		},
-		src, nil, nil, nil, nil,
-	)
+		SourcePlan: src,
+	})
 	if err != nil {
 		t.Fatalf("usermessage.Marshal: %v", err)
 	}
@@ -97,13 +97,12 @@ func TestFromUserItemSkipsBlankAttachmentIDs(t *testing.T) {
 	// Marshal directly using usermessage so the JSON shape stays
 	// authoritative; then patch in a blank-ID attachment to mimic an
 	// older / corrupt row.
-	meta, err := usermessage.Marshal(
-		[]store.Attachment{
+	meta, err := usermessage.Marshal(usermessage.Input{
+		Attachments: []store.Attachment{
 			{ID: "  ", ThreadID: "t-src", Filename: "x.png", MimeType: "image/png", Size: 1},
 			{ID: "att-2", ThreadID: "t-src", Filename: "y.png", MimeType: "image/png", Size: 1},
 		},
-		nil, nil, nil, nil, nil,
-	)
+	})
 	if err != nil {
 		t.Fatalf("usermessage.Marshal: %v", err)
 	}

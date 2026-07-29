@@ -18,6 +18,7 @@ export interface UserMessageMeta {
   attachments?: unknown;
   sourceProposedPlan?: unknown;
   wire_only?: unknown;
+  command?: unknown;
 }
 
 function stringField(value: unknown): string {
@@ -43,6 +44,27 @@ export function parseUserMessageMeta(meta: string | undefined): UserMessageMeta 
   } catch {
     return {};
   }
+}
+
+/**
+ * The leading command word to colour on a persisted user row, or ''.
+ *
+ * Keyed on the meta marker the send path wrote (D31), NOT on a live registry
+ * match: history must say what actually expanded, so a command removed from
+ * the registry keeps its colour on the rows it really ran on, and a word that
+ * merely looks like a command on an old row never gains one. The word still
+ * has to be there — a row whose text no longer opens with the marked command
+ * (a revert-rehydrated draft the user edited, say) renders plain rather than
+ * colouring a prefix that means nothing.
+ */
+export function userMessageCommandWord(meta: string | undefined, summary: string): string {
+  const command = parseUserMessageMeta(meta).command;
+  if (typeof command !== 'string' || command === '') return '';
+  const word = `/${command}`;
+  if (!summary.startsWith(word)) return '';
+  const next = summary.charAt(word.length);
+  if (next !== '' && !/\s/.test(next)) return '';
+  return word;
 }
 
 export function sourceProposedPlanFromUserMessageMeta(value: unknown): SourceProposedPlan | null {

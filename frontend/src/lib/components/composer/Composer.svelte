@@ -9,7 +9,9 @@
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
   import ComposerAttachmentRow from './ComposerAttachmentRow.svelte';
+  import ComposerCommandHighlight from './ComposerCommandHighlight.svelte';
   import ComposerMentionPopover from './ComposerMentionPopover.svelte';
+  import ComposerSlashPopover from './ComposerSlashPopover.svelte';
   import ComposerTerminalChip from './ComposerTerminalChip.svelte';
   import ComposerToolbar from './toolbar/ComposerToolbar.svelte';
   import ActivityRail from './ActivityRail.svelte';
@@ -20,7 +22,10 @@
   import {
     focusTextareaAtEnd,
     handleMentionPopoverKeydown,
+    handleSlashPopoverKeydown,
   } from './composerKeyboard';
+  import { createComposerSlash } from './composerSlash.svelte';
+  import { leadingSlashCommand, slashCommandWord } from './slashCommands';
   import { createComposerImagePlaceholders } from './composerImagePlaceholders';
   import { deriveComposerInputState } from './composerInputState';
   import { createComposerMentions } from './composerMentions.svelte';
@@ -84,6 +89,8 @@
     getThreadId: () => pane.threadId,
   });
 
+  const slash = createComposerSlash({ getTextarea: () => textarea });
+
   const uploads = createComposerUploads({
     getThreadId: threadIdForUpload,
     ensureThreadId: ensureThreadIdForUpload,
@@ -100,7 +107,7 @@
     addAttachment: (attachment) => draft.addAttachment(attachment),
     removeAttachment: (id) => draft.removeAttachment(id),
     deleteAttachmentRecord: (id) => void uploads.deleteAttachmentRecord(id),
-    refreshTriggers: () => mentions.refreshTriggers(),
+    refreshTriggers: () => refreshCompletionTriggers(),
     autosizeTextarea,
     hasUserInputPrompt: () => hasUserInputPrompt,
   });
@@ -213,6 +220,20 @@
   let inputDisabled = $derived(inputState.disabled);
   let inputValue = $derived(inputState.value);
   let placeholder = $derived(inputState.placeholder);
+
+  // Accent-coloured leading command word (D31). Derived from the same value
+  // the textarea renders, so it tracks every edit path — typing, completion,
+  // paste, image-placeholder reconciliation — without a listener of its own.
+  // Suppressed during IME composition and while a selection is live; see
+  // ComposerCommandHighlight for why each is a lie the overlay must not tell.
+  let composingText = $state(false);
+  let textareaScrollTop = $state(0);
+  let selectionCollapsed = $state(true);
+  let commandWord = $derived.by(() => {
+    if (hasUserInputPrompt || inputDisabled || composingText || !selectionCollapsed) return '';
+    const command = leadingSlashCommand(inputValue);
+    return command ? slashCommandWord(command) : '';
+  });
   $effect(() => {
     activeUserInput?.requestId;
     userInputCustomAnswer = '';
@@ -630,14 +651,16 @@
     // guard skips this branch when the popover is open, but
     // `handleMentionPopoverKeydown` below has its own Shift+Tab
     // bail-out so the chord still reaches the global dispatcher.
-    if (e.key === 'Tab' && e.shiftKey && !mentions.mentionTrigger) {
+    if (e.key === 'Tab' && e.shiftKey && !mentions.mentionTrigger && !slash.slashTrigger) {
       return;
     }
 
     // Plain Tab (no popover) is a no-op inside the composer. Browser
     // default would advance focus out of the textarea, which we don't
-    // want — users navigate panes/sidebar via explicit chords.
-    if (e.key === 'Tab' && !e.shiftKey && !mentions.mentionTrigger) {
+    // want — users navigate panes/sidebar via explicit chords. With either
+    // completion menu open, Tab belongs to the menu (it completes) and the
+    // dispatch below claims it.
+    if (e.key === 'Tab' && !e.shiftKey && !mentions.mentionTrigger && !slash.slashTrigger) {
       e.preventDefault();
       return;
     }
@@ -645,6 +668,7 @@
     // Popover dispatch short-circuits when the keystroke was consumed;
     // otherwise we fall through to the send guard below.
     if (handleMentionPopoverKeydown(e, mentions)) return;
+    if (handleSlashPopoverKeydown(e, slash)) return;
 
     if (imagePlaceholders.handleAtomicPlaceholderKeydown(e)) return;
 
@@ -676,7 +700,23 @@
       }
     }
     autosizeTextarea();
+    refreshCompletionTriggers();
+  }
+
+  // Both completion menus read the same (value, caret) pair, so they refresh
+  // together — a caret move that closes one must be able to open the other.
+  function refreshCompletionTriggers() {
     mentions.refreshTriggers();
+    slash.refreshTrigger();
+    syncSelectionState();
+  }
+
+  // The command overlay hides while a selection covers text (its opaque word
+  // would punch a hole in the highlight) and follows the textarea's scroll.
+  function syncSelectionState() {
+    if (!textarea) return;
+    selectionCollapsed = textarea.selectionStart === textarea.selectionEnd;
+    textareaScrollTop = textarea.scrollTop;
   }
 
   function blockPromptAttachment(event: DragEvent | ClipboardEvent, notify = true): boolean {
@@ -749,7 +789,19 @@
   }
 
   function handleSelectionChange() {
-    mentions.refreshTriggers();
+    refreshCompletionTriggers();
+  }
+
+  function handleCompositionStart() {
+    composingText = true;
+  }
+
+  function handleCompositionEnd() {
+    composingText = false;
+  }
+
+  function handleTextareaScroll() {
+    if (textarea) textareaScrollTop = textarea.scrollTop;
   }
 
   function handleToggleChip(id: string) {
@@ -893,6 +945,16 @@
           onHover={(idx) => mentions.setMentionActiveIndex(idx)}
         />
 
+        <ComposerSlashPopover
+          anchor={textarea}
+          open={slash.slashTrigger !== null}
+          results={slash.slashResults}
+          activeIndex={slash.slashActiveIndex}
+          onSelect={slash.insertCommand}
+          onClose={slash.closeSlash}
+          onHover={(idx) => slash.setSlashActiveIndex(idx)}
+        />
+
         <textarea
           bind:this={textarea}
           onbeforeinput={imagePlaceholders.handleBeforeInput}
@@ -901,6 +963,9 @@
           onselect={handleSelectionChange}
           onkeyup={handleSelectionChange}
           onclick={handleSelectionChange}
+          oncompositionstart={handleCompositionStart}
+          oncompositionend={handleCompositionEnd}
+          onscroll={handleTextareaScroll}
           onpaste={handlePaste}
           disabled={inputDisabled}
           placeholder={placeholder}
@@ -909,6 +974,10 @@
           value={inputValue}
           class="w-full resize-none bg-transparent px-1 py-1 text-[0.8125rem] leading-[1.55] text-fg placeholder:text-fg-hint focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
         ></textarea>
+
+        <!-- After the textarea in DOM order as well as above it in paint
+             order, so the accent word covers the glyphs it replaces. -->
+        <ComposerCommandHighlight word={commandWord} scrollTop={textareaScrollTop} />
       </div>
 
     </div>

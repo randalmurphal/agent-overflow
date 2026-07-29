@@ -243,13 +243,34 @@ typed seed inputs as plain fields · step-mode checkbox. Footer: primary
 **`Start`** (the run starts immediately — no position, no prediction) ·
 `Cancel`. Toast: "Started — <workflow> on <project>".
 
-### 5.2 From chat — deleted surface
+### 5.2 From chat — the `/workflow` command
 
 Rev 1's proposal confirm card (§7.2) and its MCP plumbing are **removed**.
-Agents start runs through the `ao` CLI under normal bash approval (D17); the
-`/workflow` composer command injects the context block on demand. The only
-run-shaped UI in a chat timeline is the **wake message** a bound run
-delivers, which is an ordinary user-role message — no custom card.
+Agents start runs through the `agent-overflow` CLI under normal bash approval
+(D17, D30). The only run-shaped UI in a chat timeline is the **wake message** a
+bound run delivers, which is an ordinary user-role message — no custom card.
+
+**`/workflow` is a composer slash command (D31), not a palette action.** Typing
+`/` as the first character of a draft opens a completion menu of registered
+commands — the same popover family as the `@`-mention completion, filtering as
+the user types, arrow / Enter / Tab / click to select, Escape to dismiss.
+Selecting one completes the **word** and nothing else: the draft then reads
+`/workflow ` plus whatever the user goes on to type. There is no token, no
+chip, and no inserted block.
+
+While the draft's leading word matches a registered command it renders in the
+accent colour, in the composer and in the sent message in chat history. That is
+the whole visual vocabulary.
+
+**Expansion happens at send time, on the backend.** When a sent message's first
+word names a registered command, the send path appends the command's block to
+the payload the PROVIDER receives — typed text first (it is the instruction),
+block second (it is context) — and stores the user row with exactly what was
+typed plus a meta marker naming the command that expanded. History colours the
+word from that marker, never from a live registry match, so a row stays
+truthful about what actually ran. The session's system prompt is never touched:
+a per-thread system prompt would invalidate provider prompt caching for every
+turn to serve one message.
 
 ---
 
@@ -369,7 +390,7 @@ As shipped. Paths under `frontend/src/lib/` unless noted.
 | Signals (R1) | `utils/workflowRunSignal.ts` — the one place a state maps to a hue |
 | Thread hand-off (R3) | `stores/workflowThreads.ts`; thread exclusion by mode in `utils/sidebarTree.ts`, `ProjectThreadList.svelte`, `UnifiedThreadPicker.svelte` |
 | PR review | `stores/reviewPane.svelte.ts` companion flow (overlay closes; ReviewPane opens as a pane) |
-| `/workflow` command (§5.2) | `stores/workflowCommands.svelte.ts` registered from `stores/builtinCommands.svelte.ts`; block rendered by `App.WorkflowComposerContext` |
+| `/workflow` command (§5.2) | registry + trigger rules in `components/composer/slashCommands.ts`, menu state in `composerSlash.svelte.ts`, popover `ComposerSlashPopover.svelte`, accent word `ComposerCommandHighlight.svelte` (composer) and `chat/UserMessage.svelte` (history, from `utils/userMessageMeta.ts`); send-time expansion in `app_composer_commands.go` over the block `app_workflow_composer.go` resolves |
 | Toasts | `stores/toast.svelte.ts` |
 | e2e | `e2e/tests/workflows-overlay.spec.ts` |
 

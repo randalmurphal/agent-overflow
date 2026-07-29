@@ -129,10 +129,13 @@ into the conversation. Lists are bounded (`MaxComposerWorkflows`,
 `MaxComposerRuns`) and truncation is stated in the block, never silent. A
 `CommandOnPath: false` block says so outright — it is the one place an agent
 reads before typing the command, so a boot that could not publish the symlink
-must not leave "command not found" as the first news of it. The app-side RPC
-that resolves the live data is
-`WorkflowComposerContext` (`app_workflow_composer.go`); the split exists so the
-block format is unit-testable without a database.
+must not leave "command not found" as the first news of it. The app-side
+resolver that produces the live data is
+`workflowComposerBlock` (`app_workflow_composer.go`); the split exists so the
+block format is unit-testable without a database. That resolver is NOT a bound
+method — the block never reaches the frontend. The composer holds only the
+literal word `/workflow`, and the send path appends the block to the
+provider-bound payload (D31, `app_composer_commands.go`).
 
 ## Files
 

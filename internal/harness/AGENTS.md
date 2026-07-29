@@ -34,6 +34,10 @@ this file covers the package boundaries.
 - The mock engine reports `turn_interrupted` when a provider interrupt wins an
   active scenario turn. This is the deterministic assertion surface for cancel
   and watchdog tests; adapter terminal frames remain provider stdout traffic.
+- Both mock adapters report `user_input` carrying the text they received when a
+  turn starts (and when a Codex turn is steered). It is the only surface that
+  answers "what did the app actually send the provider", which is not the stored
+  transcript whenever the send path expands a composer command (D31).
 
 ## Invariants
 

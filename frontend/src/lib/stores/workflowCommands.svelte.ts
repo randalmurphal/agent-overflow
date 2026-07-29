@@ -1,7 +1,7 @@
-// Workflow commands: the overlay's keyboard vocabulary (UI-SPEC §8) and the
-// `/workflow` composer command (§5.2, D17). Registered from
-// registerBuiltinCommands so they live in the one command registry the palette
-// and the keybinding dispatcher both read; the shipped chords are in
+// Workflow commands: the overlay's keyboard vocabulary (UI-SPEC §8).
+// Registered from registerBuiltinCommands so they live in the one command
+// registry the palette and the keybinding dispatcher both read; the shipped
+// chords are in
 // `internal/keybindings` Defaults, gated on `workflowsOverlayOpen` /
 // `workflowsRunDetail`, so a bare `a` or `j` is inert everywhere else and
 // suppressed entirely while a text field has focus.
@@ -11,12 +11,7 @@
 // note field, the selected unit, the first diff file — so WorkflowRunDetail
 // registers a target here and the commands dispatch through it.
 
-import { registerCommand, type CommandContext } from './commandRegistry.svelte';
-import { addToast } from './toast.svelte';
-import { userFacingError } from '../utils/userFacingError';
-import { WorkflowComposerContext } from './bindings';
-import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
-import { isViewOnlySession } from '../transport/runMode';
+import { registerCommand } from './commandRegistry.svelte';
 import type { WorkflowActionKey } from '../utils/workflowActionRows';
 import {
   consumeWorkflowsOverlayEscape,
@@ -50,40 +45,6 @@ export function registerWorkflowsActionTarget(target: WorkflowsActionTarget): ()
 
 export function getWorkflowsActionTargetForTest(): WorkflowsActionTarget | null {
   return actionTarget;
-}
-
-/**
- * Insert the `/workflow` context block into a thread's composer (D17: nothing
- * workflow-shaped sits in context until invoked). Appends below whatever is
- * already drafted so an in-progress prompt is never clobbered.
- */
-export async function insertWorkflowComposerContext(ctx: CommandContext): Promise<void> {
-  const pane = ctx.pane;
-  const threadId = pane?.threadId ?? '';
-  if (!pane || !threadId) {
-    addToast('warning', 'Open a thread before inserting workflow context.');
-    return;
-  }
-  if (isViewOnlySession()) {
-    addToast('warning', 'Local only');
-    return;
-  }
-  const draft = getComposerDraftForPane(pane.paneId);
-  if (!draft) {
-    addToast('warning', 'This pane has no composer.');
-    return;
-  }
-  try {
-    const block = String((await WorkflowComposerContext(threadId)) ?? '').trim();
-    if (!block) {
-      addToast('info', 'No workflow context for this project yet.');
-      return;
-    }
-    const existing = draft.content.trim();
-    draft.setContent(existing ? `${existing}\n\n${block}` : block);
-  } catch (err) {
-    addToast('error', userFacingError(err, 'Could not load workflow context.'));
-  }
 }
 
 export function registerWorkflowCommands(): void {
@@ -148,17 +109,5 @@ export function registerWorkflowCommands(): void {
     label: 'Workflows: Confirm',
     when: 'workflowsRunDetail',
     run: () => actionTarget?.enter(),
-  });
-
-  registerCommand({
-    id: 'workflow.composerContext',
-    label: 'Workflow: Insert /workflow Context',
-    description:
-      'Insert the workflow cheat-sheet, project workflow directory, and active runs into this thread’s composer.',
-    icon: '⧉',
-    when: 'hasActiveThread',
-    run: (ctx) => {
-      void insertWorkflowComposerContext(ctx);
-    },
   });
 }

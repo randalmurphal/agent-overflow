@@ -222,11 +222,14 @@ into provider spawns only (`App.providerExtraEnv`), never exported
 process-wide — terminals, git hooks, and other harness children don't
 inherit the control credentials. The mock then long-polls for
 commands and posts progress reports — `registered`, `turn_started`,
-`step_started`, `step_completed`, `waiting_signal`,
+`user_input`, `step_started`, `step_completed`, `waiting_signal`,
 `approval_pending`, `approval_decided`, `turn_interrupted`, `scenario_done`, `exiting` —
 which the harness re-emits as `harness:mock` events
 (`{mockId, protocol, cwd, scenario, report}`). Tests await these
-instead of sleeping. A mock that reported `exiting` refuses further
+instead of sleeping. `user_input` additionally carries `report.input`,
+the text the adapter actually received — the only assertion surface for
+what the app put on the wire, which differs from the stored transcript
+whenever the send path expands a composer command (D31). A mock that reported `exiting` refuses further
 `HarnessMockCommand`s (nothing would consume them). Without the env
 vars (or if the harness dies), the mock falls back to scenario-file /
 builtin behaviour and still works standalone.

@@ -831,11 +831,19 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		revisionSourceCommentIDs:     payload.RevisionSourceCommentIDs,
 		revisionSourceDiffReview:     payload.RevisionSourceDiffReview,
 		revisionSourceDiffCommentIDs: payload.RevisionSourceDiffCommentIDs,
+		// Every queued message was typed into the composer, so `/command`
+		// expansion applies (D31). It resolves HERE, at dispatch, not at
+		// enqueue: the block names the runs that are live when the message
+		// actually reaches the provider, and a message that waited out a
+		// long turn would otherwise carry a stale picture. Nothing about
+		// the block is persisted, so a requeue re-resolves it too.
+		expandComposerCommands: true,
 	})
 	if err != nil {
 		return QueueFlushedItem{}, false, requeue, err
 	}
 	content := resolved.content
+	providerContent := resolved.providerContent
 	providerAttachments := resolved.providerAttachments
 	userMeta := resolved.userMessageMeta
 
@@ -968,7 +976,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		UserMessageUUID: sendUUID,
 	}
 
-	dispatchErr := a.dispatchFlushToProvider(sess, content, sendOpts)
+	dispatchErr := a.dispatchFlushToProvider(sess, providerContent, sendOpts)
 	if dispatchErr != nil {
 		if codex.IsAmbiguousSteerTimeout(dispatchErr) {
 			log.Printf("flush dispatch: thread=%s item=%s: codex steer timed out after write; leaving pending confirmation for provider echo", threadID, item.ID)
@@ -993,7 +1001,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			// here, so the re-registered entry keeps FIFO consumption.
 			a.triage.RegisterPendingFlushSendWithEnqueuedAt(threadID, item.ID, userItem, item.EnqueuedAt, sendUUID)
 			sess.liveness.bumpActivity(time.Now())
-			if sendErr := sess.codex.Send(context.Background(), content, sendOpts); sendErr != nil {
+			if sendErr := sess.codex.Send(context.Background(), providerContent, sendOpts); sendErr != nil {
 				if codex.IsAmbiguousTurnStartTimeout(sendErr) {
 					// Same ambiguity as the steer timeout above: the
 					// turn/start was written and the echo may already be

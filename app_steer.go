@@ -95,11 +95,18 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		revisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
 		revisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		revisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
+		// A steer IS a composer send — the mid-turn path a Codex thread
+		// takes when the user types while a turn runs — so `/command`
+		// expansion applies here exactly as it does on the direct path
+		// (D31). Anything else would make the same typed message mean two
+		// different things depending on whether a turn happened to be open.
+		expandComposerCommands: opts.composerAuthored(),
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("steer message: %w", err)
 	}
 	content = resolved.content
+	providerContent := resolved.providerContent
 	providerAttachments := resolved.providerAttachments
 	userMeta := resolved.userMessageMeta
 
@@ -168,7 +175,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	// a slow Steer-and-respawn against its own teardown. Mirrors the
 	// pre-Send stamp in sendToProvider.
 	sess.liveness.bumpActivity(time.Now())
-	steerErr := codexSess.Steer(context.Background(), content, provider.SendOptions{
+	steerErr := codexSess.Steer(context.Background(), providerContent, provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:     providerAttachments,
 	})

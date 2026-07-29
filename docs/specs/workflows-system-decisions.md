@@ -1006,3 +1006,77 @@ verdict it now is, with what the first attempt got wrong.
   human, and renaming them would churn the injection site, the CLI, the
   harness surface, and every spec for no reader's benefit. Only
   user-facing text moved from `ao` to `agent-overflow`.
+
+## Composer commands (user ruling, 2026-07-29)
+
+- **D31. `/workflow` is a composer slash command that expands at send
+  time on the backend; the composer only ever holds the word.** The
+  palette entry that pasted the context block into the draft
+  (`workflow.composerContext` / `insertWorkflowComposerContext`) is
+  deleted, along with the `WorkflowComposerContext` binding it was the
+  only caller of. A slash command that answers by dumping a wall of text
+  into the composer is not what a slash command is: it is undiscoverable
+  (nobody types `/workflow` into a command palette), it destroys the
+  draft's readability, and it makes the user carry the block through
+  every edit and every re-read of their own message.
+
+  **Typing.** `/` as the FIRST character of a draft opens a filtering
+  completion menu of registered commands, reusing the `@`-mention
+  completion machinery (the `Popover` primitive, the `popoverNav`
+  reducer, the same insert-through-`execCommand` path so completions stay
+  in the native undo stack). Arrow / Enter / Tab / click select; Escape
+  dismisses; typing past every match closes it and leaves the text alone.
+  `/` anywhere else in the draft is a path, a fraction, or prose, and is
+  never hijacked. Selecting completes the WORD — the draft reads
+  `/workflow ` and nothing more.
+
+  **Colour is the entire visual vocabulary.** No token, no chip, no
+  pill, nothing removable-as-a-unit. While the leading word matches a
+  registered command it renders in `--accent`, in the composer and in the
+  sent message in chat history. The composer's paint is one word drawn at
+  the textarea's content origin rather than a full mirror behind a
+  transparent textarea: transparent text hides the IME preedit string and
+  the selection highlight, which is not a trade a message composer may
+  make. The overlay stands down during IME composition and while a
+  selection is live, because in both states it would be showing something
+  that is not true.
+
+  **Expansion is a send-path concern, and the system prompt is not
+  touched.** Putting the block in the session's system prompt was
+  rejected outright: it would invalidate provider prompt caching for
+  every turn of the thread to serve one message that asked for context.
+  Instead `sendMessageWithOptions`, `steerMessageWithOptions`, and the
+  flush-queue dispatch all resolve through one place
+  (`resolveUserMessageEnvelope` → `expandComposerCommand`), which returns
+  BOTH the content to persist and the content to send. The provider gets
+  the typed text, a blank line, and the block; SQLite gets the typed text
+  and a `command` marker in the user row's meta. A queued message expands
+  at DISPATCH, not at enqueue, so the block names the runs that are live
+  when it actually reaches the model.
+
+  **History colours from the marker, not from a match.** A row says a
+  command expanded because the send that wrote it expanded one. A command
+  later removed from the registry keeps its colour on the rows it really
+  ran on, and an old row whose text merely looks like a command never
+  gains one.
+
+  **Failure is loud and the expansion is never silently skipped.** A
+  resolver error aborts the send before the user row is persisted, so the
+  composer restores the draft and shows the error. A block that resolves
+  EMPTY still sends and still marks the meta: the message was an
+  invocation, and the row must say so even when the project had nothing
+  to add. An unknown `/word` is ordinary text, not an error.
+
+  **App-authored messages are exempt.** A workflow wake, a seeded triage
+  turn, and a schema-driven phase send never pass through a composer, so
+  they are sent byte-for-byte as the app composed them
+  (`sendMessageOptions.composerAuthored()`). Expanding a `/…` opener
+  inside a prompt the app wrote would be the app rewriting itself.
+
+  **Two registries, one authority.** The Go table
+  (`app_composer_commands.go`) decides what expands; the frontend list
+  (`components/composer/slashCommands.ts`) decides what the menu offers
+  and what gets coloured. They are parallel by hand rather than
+  generated — one entry each today — and the backend is authoritative: a
+  word the frontend colours but the table does not know expands to
+  nothing and is marked as nothing.

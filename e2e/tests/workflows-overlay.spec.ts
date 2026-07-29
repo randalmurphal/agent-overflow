@@ -7,8 +7,9 @@
 //
 // The overlay is a sibling of the pane host, so nothing here navigates panes:
 // opening a thread is the one action that breaks out of the overlay (R3), and
-// it is covered by the `/workflow` case, which never opens the overlay at all.
-import { test, expect, type SeedResult } from './fixtures.js';
+// it is covered by the `/workflow` case, which never opens the overlay at all —
+// it types the command in a real composer and reads what the provider got.
+import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 import {
   doneResult,
   humanGateWorkflow,
@@ -19,9 +20,6 @@ import {
   startWorkflow,
   waitForWorkflowState,
 } from './workflows-helpers.js';
-
-/** The chord `mod+shift+k` resolves to on the browser Playwright drives. */
-const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
 
 const oneDoneTurn = [{ steps: [{ emit: { lines: [doneResult({ complete: true })] } }] }];
 
@@ -228,10 +226,11 @@ test('a question answers from the footer input, and typing there never fires the
   await done;
 });
 
-test('/workflow inserts the workflow context block below an in-progress draft', async ({
+test('/workflow completes in the composer and expands on the wire, not in the transcript', async ({
   harness,
   page,
 }) => {
+  await setClaudeScenario(harness, 'overlay-composer', oneDoneTurn);
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
       {
@@ -257,18 +256,37 @@ test('/workflow inserts the workflow context block below an in-progress draft', 
   await page.goto(harness.url);
   await page.getByText('Composer thread').click();
   const composer = page.getByLabel('Message Input');
-  await composer.fill('draft in progress');
+  await composer.click();
 
-  await page.keyboard.press(`${MOD}+Shift+KeyK`);
-  const query = page.getByTestId('command-palette-input');
-  await query.click();
-  await query.fill('Insert /workflow Context');
-  await page.getByRole('option').filter({ hasText: 'Insert /workflow Context' }).click();
+  // D31: `/` at the start of the draft offers the registered commands, and
+  // selecting one completes the WORD — no token, no pasted block.
+  await composer.pressSequentially('/wo');
+  await expect(page.getByTestId('slash-popover')).toBeVisible();
+  await page.getByTestId('slash-option').filter({ hasText: '/workflow' }).click();
+  await expect(composer).toHaveValue('/workflow ');
+  await composer.pressSequentially('start the release');
 
-  // D17: nothing workflow-shaped is in context until it is invoked, and the
-  // block lands BELOW whatever was already drafted.
-  await expect(composer).toHaveValue(/^draft in progress\n\nAgent Overflow workflows/);
-  await expect(composer).toHaveValue(/Configured workflows:[\s\S]*ctx-flow/);
+  // The mock reports the text it receives on the wire, which is the only
+  // place the expansion exists.
+  const received = harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (event) => event.report.kind === 'user_input',
+  );
+  await page.keyboard.press('Enter');
+  const wireText = (await received).report.input ?? '';
+
+  // Typed text first (it is the instruction), block second (it is context).
+  expect(wireText.startsWith('/workflow start the release\n\n')).toBe(true);
+  expect(wireText).toContain('Agent Overflow workflows are available');
+  expect(wireText).toContain('agent-overflow run start');
+  expect(wireText).toContain('ctx-flow');
+
+  // The transcript keeps exactly what was typed, with the command word in the
+  // accent colour — the block is never persisted and never rendered.
+  const bubble = page.getByTestId('user-message-bubble').last();
+  await expect(bubble).toHaveText('/workflow start the release');
+  await expect(bubble.getByTestId('user-message-command')).toHaveText('/workflow');
+  expect(await bubble.textContent()).not.toContain('agent-overflow run start');
 });
 
 test('a view-only session disables every mutating affordance', async ({ harness, page }) => {

@@ -164,7 +164,6 @@ export const WorkflowAnswerQuestion = dispatch('WorkflowAnswerQuestion');
 export const WorkflowBindThread = dispatch('WorkflowBindThread');
 export const WorkflowCancelItem = dispatch('WorkflowCancelItem');
 export const WorkflowCompleteTakeover = dispatch('WorkflowCompleteTakeover');
-export const WorkflowComposerContext = dispatch('WorkflowComposerContext');
 export const WorkflowCreateAutomation = dispatch('WorkflowCreateAutomation');
 export const WorkflowCreateItemPR = dispatch('WorkflowCreateItemPR');
 export const WorkflowDeleteAutomation = dispatch('WorkflowDeleteAutomation');
