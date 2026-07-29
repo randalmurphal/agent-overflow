@@ -418,7 +418,11 @@ export interface SpringChase {
   markStructuralAppend(): void;
   structuralAppendPending(): boolean;
   clearStructuralAppend(): void;
-  /** Sentinel-entry target for the resolver snapshot; -1 = not in sentinel. */
+  /**
+   * Sentinel-entry target for the resolver snapshot, rebased by any
+   * clientHeight drift since entry so the stranded-oscillation check
+   * compares content heights; -1 = not in sentinel.
+   */
   sentinelTarget(): number;
 }
 
@@ -460,7 +464,27 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   // after a chase (not on re-entry), so the value reflects the target
   // at the moment the spring settled. Cleared on cancel() and
   // when the spring exits sentinel with a different target.
+  //
+  // The oscillation being guarded is a CONTENT-height dip-and-restore,
+  // but `target` is scrollHeight − clientHeight — so a raw comparison
+  // conflates the two components. If clientHeight moves while the
+  // sentinel idles (the composer/ActivityRail resizing at a tool
+  // boundary), the browser clamps scrollTop with the dropped target,
+  // and the next APPENDED row of about the rail-row's height brings the
+  // target back to the entry value: a composition change misread as a
+  // restore, snapped instead of glided (the 2026-07-29 tool-boundary
+  // jump; regression: appendAfterQuiet.browser.test.ts test C). Both
+  // compare sites therefore rebase the entry by the clientHeight drift
+  // (`rebasedSentinelEntryTarget`), making the comparison purely
+  // content-height: entry scrollHeight == current scrollHeight ⇔
+  // current target == entryTarget + (entryClientHeight − clientHeight).
   let sentinelEntryTarget = -1;
+  let sentinelEntryClientHeight = 0;
+
+  function rebasedSentinelEntryTarget(clientHeightNow: number): number {
+    if (sentinelEntryTarget < 0) return -1;
+    return sentinelEntryTarget + (sentinelEntryClientHeight - clientHeightNow);
+  }
   // Target seen by the previous tick; -1 = none yet this chase.
   // Telemetry-only (drives the target-change counter); untouched when
   // tracing is disabled.
@@ -749,7 +773,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         // triggers on exact inequality filtered by arrival-readback
         // acceptance (the outer branch condition), not the 1px stranded
         // band — see the predicate's call-site map before unifying.
-        if (sentinelEntryTarget >= 0 && withinArrivalBand(target, sentinelEntryTarget)) {
+        if (
+          sentinelEntryTarget >= 0
+          && withinArrivalBand(target, rebasedSentinelEntryTarget(el.clientHeight))
+        ) {
           snapOscillationToBottom('spring.oscillationSnap', target);
         } else {
           deps.arrival.clear();
@@ -990,6 +1017,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           if (chaseTelemetry) chaseTelemetry.sentinelTicks += 1;
           if (sentinelEntryTarget < 0) {
             sentinelEntryTarget = target;
+            sentinelEntryClientHeight = el.clientHeight;
             if (chaseTelemetry) chaseTelemetry.sentinelEntries += 1;
           }
           springFrameHandle = requestFrame(tick);
@@ -1034,6 +1062,14 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       structuralAppendSpringUntil = 0;
       springStartedFromStructuralAppend = false;
     },
-    sentinelTarget: () => sentinelEntryTarget,
+    sentinelTarget: () => {
+      // Rebased at sample time so the resolver's stranded-oscillation
+      // comparison stays content-height-based even when the viewport
+      // resized mid-sentinel (see the field's declaration). Layout is
+      // clean here: every sampling delivery just computed the target.
+      const el = deps.getScrollEl();
+      if (!el) return sentinelEntryTarget;
+      return rebasedSentinelEntryTarget(el.clientHeight);
+    },
   };
 }

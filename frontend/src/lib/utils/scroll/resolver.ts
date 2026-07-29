@@ -93,8 +93,12 @@ export interface ResolverState {
   /** setEscapedFromLock(true) requested the spring to stop. */
   springStopRequested: boolean;
   /**
-   * Bottom target captured when the spring sentinel was first entered;
-   * -1 when not sentinel-idle. Drives the stranded-oscillation recovery.
+   * Bottom target captured when the spring sentinel was first entered,
+   * rebased by the sampler for any clientHeight change since entry (so
+   * comparing it against the current target compares CONTENT heights —
+   * a viewport resize mid-sentinel must not make an appended row look
+   * like an oscillation restore); -1 when not sentinel-idle. Drives the
+   * stranded-oscillation recovery.
    */
   sentinelEntryTarget: number;
 }
