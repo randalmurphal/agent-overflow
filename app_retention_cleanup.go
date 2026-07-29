@@ -187,6 +187,21 @@ func (a *App) runRetentionSweep(now time.Time) {
 		if err := a.store.PassiveCheckpoint(); err != nil {
 			log.Printf("app: retention sweep: passive checkpoint: %v", err)
 		}
+		// Reclaim freed file space once the sweep has deleted history.
+		// VacuumIfFragmented self-gates on the freelist thresholds, so
+		// most sweeps skip it; when it runs it holds an exclusive lock
+		// for seconds, which is why it only runs here (a controlled
+		// background moment) and not during shutdown, where it would
+		// stall the quit. SQLITE_BUSY from a concurrent long reader is
+		// benign — the next qualifying sweep retries.
+		if !a.shuttingDown.Load() {
+			start := time.Now()
+			if ran, err := a.store.VacuumIfFragmented(); err != nil {
+				log.Printf("app: retention sweep: vacuum: %v", err)
+			} else if ran {
+				log.Printf("app: retention sweep: vacuum reclaimed freed space in %s", time.Since(start).Round(time.Millisecond))
+			}
+		}
 	}
 }
 

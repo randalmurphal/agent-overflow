@@ -321,6 +321,113 @@ func TestDeleteThreadCascadesToItems(t *testing.T) {
 	}
 }
 
+// TestDeleteThreadDrainsItemsAcrossChunks crosses the chunked item-drain
+// boundary (deleteThreadItemChunk) and confirms nothing survives: no
+// items, no thread row, and no orphan payloads — the per-row GC triggers
+// must fire for chunk-drained items exactly as they do for the cascade.
+func TestDeleteThreadDrainsItemsAcrossChunks(t *testing.T) {
+	s := newTestStore(t)
+
+	if err := s.CreateThread(makeThread("t1", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	total := deleteThreadItemChunk + 2
+	for i := 0; i < total; i++ {
+		pid := fmt.Sprintf("p%d", i)
+		if err := s.InsertPayload(Payload{
+			ID: pid, Kind: "tool_result", Meta: "{}", Data: []byte("out"), CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("insert payload %d: %v", i, err)
+		}
+		if err := s.InsertItem(Item{
+			ID: fmt.Sprintf("i%d", i), ThreadID: "t1", TurnIndex: 0, ItemIndex: i,
+			Kind: "tool_call", Role: "assistant", Summary: "x", PayloadID: pid,
+			CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("insert item %d: %v", i, err)
+		}
+	}
+
+	if err := s.DeleteThread("t1"); err != nil {
+		t.Fatalf("delete thread: %v", err)
+	}
+
+	var items, payloads int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM items WHERE thread_id = 't1'`).Scan(&items); err != nil {
+		t.Fatalf("count items: %v", err)
+	}
+	if items != 0 {
+		t.Errorf("expected 0 items after chunked delete, got %d", items)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM payloads`).Scan(&payloads); err != nil {
+		t.Fatalf("count payloads: %v", err)
+	}
+	if payloads != 0 {
+		t.Errorf("expected 0 payloads after chunked delete, got %d", payloads)
+	}
+	if _, err := s.GetThread("t1"); err == nil {
+		t.Fatal("expected error getting deleted thread, got nil")
+	}
+}
+
+func TestVacuumIfFragmented(t *testing.T) {
+	s := newTestStore(t)
+
+	// A fresh store has (almost) no freelist: below thresholds, no run.
+	ran, err := s.vacuumIfFragmented(1<<20, 0.2)
+	if err != nil {
+		t.Fatalf("vacuum probe on fresh store: %v", err)
+	}
+	if ran {
+		t.Fatal("fresh store should not qualify for vacuum")
+	}
+
+	// Free a meaningful number of pages: one fat payload, then delete
+	// the thread that owns it.
+	if err := s.CreateThread(makeThread("t1", "claude")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := s.InsertPayload(Payload{
+		ID: "p1", Kind: "tool_result", Meta: "{}", Data: make([]byte, 2<<20), CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert payload: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "i1", ThreadID: "t1", TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Summary: "x", PayloadID: "p1",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+	if err := s.DeleteThread("t1"); err != nil {
+		t.Fatalf("delete thread: %v", err)
+	}
+
+	var freed int64
+	if err := s.db.QueryRow("PRAGMA freelist_count").Scan(&freed); err != nil {
+		t.Fatalf("freelist_count: %v", err)
+	}
+	if freed == 0 {
+		t.Fatal("expected freed pages after deleting a 2MB payload")
+	}
+
+	ran, err = s.vacuumIfFragmented(4096, 0.01)
+	if err != nil {
+		t.Fatalf("vacuum: %v", err)
+	}
+	if !ran {
+		t.Fatal("expected vacuum to run above thresholds")
+	}
+	if err := s.db.QueryRow("PRAGMA freelist_count").Scan(&freed); err != nil {
+		t.Fatalf("freelist_count after vacuum: %v", err)
+	}
+	if freed != 0 {
+		t.Fatalf("expected empty freelist after vacuum, got %d pages", freed)
+	}
+}
+
 func TestArchiveThread(t *testing.T) {
 	s := newTestStore(t)
 

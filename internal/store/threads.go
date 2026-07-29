@@ -763,7 +763,41 @@ func (s *Store) explainProviderSwitchNoRows(threadID, previousProvider string) e
 	return fmt.Errorf("store: guarded provider switch for thread %s: %w", threadID, sql.ErrNoRows)
 }
 
+// deleteThreadItemChunk bounds how many items a single DELETE statement
+// (and therefore a single write transaction) removes while a thread is
+// being deleted. Each item delete fires the two payload-GC triggers, so
+// a 38k-item thread deleted through the FK cascade alone is one ~6s
+// write transaction — longer than the 5s busy_timeout, meaning any
+// concurrent writer errors SQLITE_BUSY instead of briefly waiting.
+// 500-item chunks keep every write transaction in the tens of
+// milliseconds.
+const deleteThreadItemChunk = 500
+
+// DeleteThread removes a thread row and everything that cascades from
+// it. The thread's items are drained first in bounded chunks, each its
+// own implicit transaction, so no single write transaction ever spans a
+// large thread's whole item set. Draining items before the thread row
+// is safe under the app layer's idempotent-retry model: the thread row
+// is the resumability anchor, and a crash mid-drain leaves a thread a
+// retried delete completes.
 func (s *Store) DeleteThread(id string) error {
+	for {
+		result, err := s.db.Exec(
+			`DELETE FROM items
+			  WHERE rowid IN (SELECT rowid FROM items WHERE thread_id = ? LIMIT ?)`,
+			id, deleteThreadItemChunk,
+		)
+		if err != nil {
+			return fmt.Errorf("store: delete thread %s items: %w", id, err)
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("store: delete thread %s items count: %w", id, err)
+		}
+		if n < deleteThreadItemChunk {
+			break
+		}
+	}
 	result, err := s.db.Exec(`DELETE FROM threads WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("store: delete thread %s: %w", id, err)

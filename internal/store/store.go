@@ -56,6 +56,53 @@ func (s *Store) PassiveCheckpoint() error {
 	return err
 }
 
+// Freed pages accumulate on the freelist forever (auto_vacuum is off —
+// measured 3.8x slower large deletes from pointer-map maintenance), so
+// space is reclaimed with a plain VACUUM at controlled moments instead.
+// The two thresholds gate that: both must hold before a VACUUM is worth
+// its cost (an exclusive lock for roughly a second per live GB). The
+// fraction keeps a mostly-live file from being rewritten to reclaim
+// scraps; the absolute floor keeps small databases from vacuuming over
+// megabytes.
+const (
+	vacuumMinFreelistFraction = 0.2
+	vacuumMinFreelistBytes    = 64 << 20
+)
+
+// VacuumIfFragmented runs VACUUM when the freelist exceeds both
+// thresholds above, and reports whether it ran. Callers pick the
+// moment: VACUUM takes an exclusive lock for its duration and briefly
+// needs up to twice the live data size on disk, so it belongs after a
+// sweep that actually deleted history, never on a user-facing path.
+func (s *Store) VacuumIfFragmented() (bool, error) {
+	return s.vacuumIfFragmented(vacuumMinFreelistBytes, vacuumMinFreelistFraction)
+}
+
+func (s *Store) vacuumIfFragmented(minFreeBytes int64, minFreeFraction float64) (bool, error) {
+	var pageSize, pageCount, freelistCount int64
+	for _, p := range []struct {
+		pragma string
+		dest   *int64
+	}{
+		{"page_size", &pageSize},
+		{"page_count", &pageCount},
+		{"freelist_count", &freelistCount},
+	} {
+		if err := s.db.QueryRow("PRAGMA " + p.pragma).Scan(p.dest); err != nil {
+			return false, fmt.Errorf("store: vacuum probe %s: %w", p.pragma, err)
+		}
+	}
+	if pageCount == 0 ||
+		freelistCount*pageSize < minFreeBytes ||
+		float64(freelistCount)/float64(pageCount) < minFreeFraction {
+		return false, nil
+	}
+	if _, err := s.db.Exec("VACUUM"); err != nil {
+		return false, fmt.Errorf("store: vacuum: %w", err)
+	}
+	return true, nil
+}
+
 // runMigrations is defined in migrate.go.
 
 // Thread represents a conversation thread.
