@@ -1216,3 +1216,80 @@ verdict it now is, with what the first attempt got wrong.
   `retry-unit` would make its second positional conditionally required —
   the shape where a mistyped invocation silently repairs the wrong thing
   — so the two are separate verbs and each refuses the other's arity.
+
+## Campaign waves are content, not an engine (user ruling, 2026-07-29)
+
+- **D34. The multi-wave campaign ships as a starter, with split-context
+  adversarial review as its default review shape, and chains through
+  automations rather than through a loop primitive.** `port-campaign`
+  (`internal/workflow/starters/content/port-campaign/`) is one campaign
+  *wave* — survey, plan, fan-out implement, adversarial review, fix,
+  verify — plus an authoring guide
+  (`docs/architecture/workflow-campaigns.md`) for the patterns and the
+  wiring around it.
+
+  **It is a starter, never a built-in tier.** Everything the campaign
+  needs already exists as authoring surface: dynamic fan-out over a typed
+  array output, per-unit providers, tool joins, ordered gates, bounded
+  loops, and §11 automations. A campaign "mode" in the engine would be a
+  second definition of what a run is, and D1's rule — disk is the source
+  of truth, the engine loads no hidden definitions — is what keeps
+  `agent-overflow workflow validate` an honest answer. So the campaign is
+  a file the user scaffolds and edits, and the only code change is one
+  more name in `starters.List()`.
+
+  **Split context is structural, not a prompt convention.** The
+  implement phase's join is a `command:` (the profile-bound merge), not
+  an agent, so the only things crossing from implementation to review are
+  the merged tree and the commit it is diffed from — no implementer
+  narrative, no unit summary, nothing a reviewer could grade instead of
+  the code. Reviewers are prompted to *refute*, three lenses rather than
+  three copies, and the join treats every claim as a lead it has to
+  reproduce before it becomes a finding. Approval-shaped prompts get
+  approval; identical reviewers correlate; an unadjudicated claim spends
+  the next phase on something that was never wrong.
+
+  **Waves chain through the scheduler, and the shipped recipe is cron +
+  skip-if-running, not an internal-event chain.** The loop is meant to
+  live in a trigger plus its run-if (Core Principle 1: no second
+  orchestration engine), and that part stands. What does *not* work is
+  the obvious form of it: an event-triggered automation that starts the
+  same workflow it triggers on is refused as `self-chain`
+  (`scheduler/fire.go`) — deliberately, because it would chain forever.
+  A pair of alternating automations is legal and documented, but it has
+  two sharp edges: a seed run started outside the pair matches *both*
+  triggers and starts two concurrent waves, and the event feed races
+  auto-disposition off the same terminal transition, so the next wave can
+  cut its worktree before the previous one's merge lands. A cron trigger
+  has neither problem — skip-if-running is per-automation and already
+  refuses a fire while the previous run is `running` **or**
+  `needs-human`, so the campaign advances unattended, never doubles up,
+  and halts on any park until a human clears it. The event pair stays in
+  the guide as the low-latency variant with its caveats stated.
+
+  **There is also no surface that could author the event pair today.**
+  `agent-overflow schedule` creates a cron trigger with seeds and
+  nothing else; the overlay lists automations, toggles them, and offers
+  Run now, but has no create/edit form, so event triggers and run-if
+  conditions have no user-reachable authoring path even though
+  `WorkflowCreateAutomation` accepts both. Shipping the campaign against
+  a shape nobody can type would have made the guide fiction. The gap is
+  noted rather than closed here — an automation editor is its own scope
+  conversation, not a rider on a starter.
+
+  **A run-if cannot ask "is there work left".** Conditions are evaluated
+  against the seed map alone — stored seeds plus the reserved `trigger`
+  and `job-notes` — and cannot read the finished run's outputs. So the
+  question is answered structurally instead: a wave with work remaining
+  ends `done` and the next fire proceeds; a wave with nothing left parks
+  `campaign-complete`, and a parked run blocks every later fire. The
+  run-if keeps a real job — an arming switch that stops the campaign
+  without deleting the automation.
+
+  **`disposition: auto-merge` is a documented prerequisite, not a
+  default we added.** Each run cuts its worktree from the base branch, so
+  without a landing step every wave replans the same work. Making the
+  starter assume it would have been a workflow reaching into project
+  policy, which is exactly the split §8 draws; the guide states it, and
+  the wave's `cleanup: auto` discards a worktree only after a disposition
+  has landed.

@@ -37,7 +37,7 @@ func (b documentedBindings) Capacity(name string) (int, bool) {
 func (b documentedBindings) DeclaredMaxFanOutWidth() int { return 0 }
 
 func TestEmbeddedStartersAreCompleteAndValid(t *testing.T) {
-	if got, want := List(), []string{"build-and-validate", "multi-lens-review", "poll-jira-and-start"}; !reflect.DeepEqual(got, want) {
+	if got, want := List(), []string{"build-and-validate", "multi-lens-review", "poll-jira-and-start", "port-campaign"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("List() = %v, want %v", got, want)
 	}
 	for _, name := range List() {

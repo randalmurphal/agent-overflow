@@ -1,0 +1,428 @@
+# yaml-language-server: $schema=../workflow.schema.json
+# Required project profile bindings (names must match exactly):
+# checks: build-and-test
+# commands: wave-survey, merge-unit-branches
+# capacities: campaign-workers, review-workers, validation-slot
+#
+# One run is one campaign wave: survey the tree, plan the wave's work list,
+# implement it in parallel, review it adversarially, fix what the review
+# confirms, and verify. Waves chain through an automation, never through a loop
+# inside this graph - see docs/architecture/workflow-campaigns.md for the
+# recipe and for every pattern this file encodes.
+#
+# Both bound commands must write their control envelope to $AO_ENVELOPE; a
+# command that writes nothing fails post-validation instead of advancing on an
+# invented contract.
+#   wave-survey          outputs.failures (array of {kind, location, detail})
+#                        and outputs.summary. A red tree is this wave's work
+#                        queue, so a non-zero exit is expected and not a stop.
+#   merge-unit-branches  outputs.conflicts (workspace-relative paths, empty when
+#                        clean) and outputs.diff-base (the commit the wave is
+#                        diffed from, captured before the first merge). Exit
+#                        non-zero on conflict; the gate reads the exit status
+#                        through the tool driver's own passed output.
+# The units to merge reach the command as one JSON argv element: bind it with
+# "{{units}}" and read id, status, branch, and worktree from each entry.
+#
+# Set the project profile's disposition to auto-merge so each green wave lands
+# on the base branch before the next wave cuts its worktree. Without it every
+# wave starts from the same commit and replans the same work.
+id: port-campaign
+name: Port campaign wave
+description: Run one wave of a long-running port campaign - survey, plan the work list, implement it as a fan-out, review it adversarially with split context, fix confirmed findings, and verify.
+inputs:
+  campaign-goal:
+    schema:
+      type: string
+      multiline: true
+      description: What the campaign is porting, to what, and the standing rules every wave must respect.
+  max-tasks:
+    schema:
+      type: number
+      minimum: 1
+      description: Upper bound on the work items this wave schedules. Keep it at or under the project's max_fan_out_width, which refuses a wider expansion rather than truncating it.
+  job-notes:
+    schema:
+      type: string
+      multiline: true
+      description: Continuity notes carried between waves by the automation that starts them. Edit these to change how the campaign plans; they are the process knob, not the code.
+    optional: true
+outputs:
+  work-list:
+    from: plan.tasks
+  review:
+    from: review.consolidated-review
+phases:
+  - id: survey
+    name: Survey the tree for standing failures
+    driver: tool
+    command: wave-survey
+    resources: [validation-slot]
+    outputs:
+      failures:
+        schema:
+          type: array
+          description: Compiler, type-check, and test failures standing in the tree at wave start.
+          items:
+            type: object
+            properties:
+              kind:
+                type: string
+              location:
+                type: string
+              detail:
+                type: string
+            required: [kind, location, detail]
+            additionalProperties: false
+      summary:
+        schema:
+          type: string
+    gate:
+      routes:
+        # A red tree is not a failure of this phase: it is the wave's work
+        # queue, and the plan phase is what turns it into one.
+        - to: plan
+  - id: plan
+    name: Plan this wave's work list
+    driver: agent
+    provider: codex
+    model: gpt-5.6-sol
+    prompt: plan.md
+    access: read-only
+    inputs:
+      campaign-goal:
+        schema:
+          type: string
+          multiline: true
+      max-tasks:
+        schema:
+          type: number
+          minimum: 1
+      job-notes:
+        schema:
+          type: string
+          multiline: true
+        optional: true
+      survey.failures:
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              kind:
+                type: string
+              location:
+                type: string
+              detail:
+                type: string
+            required: [kind, location, detail]
+            additionalProperties: false
+      survey.summary:
+        schema:
+          type: string
+    outputs:
+      tasks:
+        schema:
+          type: array
+          description: The disjoint work items this wave implements, one fan-out unit each.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              title:
+                type: string
+              intent:
+                type: string
+              sources:
+                type: string
+              targets:
+                type: string
+              acceptance:
+                type: string
+            required: [id, title, intent, sources, targets, acceptance]
+            additionalProperties: false
+      scheduled:
+        schema:
+          type: number
+          minimum: 0
+          description: Number of entries in tasks. Reported separately so the gate can route on it.
+      deferred:
+        schema:
+          type: number
+          minimum: 0
+          description: Known remaining work this wave did not schedule. Zero here plus zero scheduled is what ends the campaign.
+      dropped:
+        schema:
+          type: string
+          multiline: true
+          description: What this phase bounded out of the wave and why, or the word none. Never left blank when work was excluded.
+    gate:
+      routes:
+        - when:
+            all:
+              - eq:
+                  ref: plan.scheduled
+                  value: 0
+              - eq:
+                  ref: plan.deferred
+                  value: 0
+          park: campaign-complete
+        # Work is known but none was scheduled: the campaign cannot advance on
+        # its own, so it stops here instead of firing empty waves forever.
+        - when:
+            eq:
+              ref: plan.scheduled
+              value: 0
+          park: campaign-stalled
+        - to: implement
+  - id: implement
+    name: Implement the work list in parallel
+    shape: fan-out
+    resources: [campaign-workers]
+    over: plan.tasks
+    as: task
+    inputs:
+      campaign-goal:
+        schema:
+          type: string
+          multiline: true
+    outputs:
+      conflicts:
+        schema:
+          type: array
+          description: Workspace-relative paths the merge could not reconcile. Empty on a clean merge.
+          items:
+            type: string
+      diff-base:
+        schema:
+          type: string
+          description: Commit the wave's work is diffed from, captured before the first merge.
+    unit:
+      id: port
+      provider: codex
+      model: gpt-5.6-sol
+      prompt: implement-task.md
+      access: write
+      outputs:
+        summary:
+          schema:
+            type: string
+        changed:
+          schema:
+            type: boolean
+    join:
+      id: merge
+      command: merge-unit-branches
+      access: write
+    gate:
+      routes:
+        # passed comes from the tool driver and is never declared above.
+        - when:
+            eq:
+              ref: implement.passed
+              value: true
+          to: review
+        - to: resolve-conflicts
+  - id: resolve-conflicts
+    name: Resolve the merge conflicts
+    driver: agent
+    provider: codex
+    model: gpt-5.6-sol
+    prompt: resolve-conflicts.md
+    access: write
+    inputs:
+      campaign-goal:
+        schema:
+          type: string
+          multiline: true
+      implement.conflicts:
+        schema:
+          type: array
+          items:
+            type: string
+    outputs:
+      resolved:
+        schema:
+          type: boolean
+      summary:
+        schema:
+          type: string
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: resolve-conflicts.resolved
+              value: true
+          to: review
+        - park: merge-unresolved
+  - id: review
+    name: Refute the wave in parallel and adjudicate
+    shape: fan-out
+    resources: [review-workers]
+    inputs:
+      campaign-goal:
+        schema:
+          type: string
+          multiline: true
+      plan.tasks:
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              title:
+                type: string
+              intent:
+                type: string
+              sources:
+                type: string
+              targets:
+                type: string
+              acceptance:
+                type: string
+            required: [id, title, intent, sources, targets, acceptance]
+            additionalProperties: false
+      implement.diff-base:
+        schema:
+          type: string
+    outputs:
+      verdict:
+        schema:
+          type: string
+          enum: [clean, defects-found]
+      consolidated-review:
+        schema:
+          type: string
+          multiline: true
+      findings:
+        schema:
+          type: array
+          description: Defects the adjudication confirmed against the workspace. Refuted claims are dropped here and accounted for in the narrative.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum: [blocking, material, minor]
+              location:
+                type: string
+              claim:
+                type: string
+              evidence:
+                type: string
+            required: [id, severity, location, claim, evidence]
+            additionalProperties: false
+      unreviewed:
+        schema:
+          type: string
+          multiline: true
+          description: What the reviewers did not cover and why, or the word none. Silence here would read as full coverage.
+    fan_out:
+      - id: port-fidelity
+        provider: codex
+        model: gpt-5.6-sol
+        prompt: review-port-fidelity.md
+        access: read-only
+      - id: failure-modes
+        provider: codex
+        model: gpt-5.6-sol
+        prompt: review-failure-modes.md
+        access: read-only
+      - id: integration
+        provider: codex
+        model: gpt-5.6-sol
+        prompt: review-integration.md
+        access: read-only
+    join:
+      id: adjudicate
+      provider: codex
+      model: gpt-5.6-sol
+      prompt: review-adjudicate.md
+      access: read-only
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: review.verdict
+              value: clean
+          to: verify
+        - to: fix
+  - id: fix
+    name: Apply the confirmed findings
+    driver: agent
+    provider: codex
+    model: gpt-5.6-sol
+    prompt: fix.md
+    access: write
+    inputs:
+      campaign-goal:
+        schema:
+          type: string
+          multiline: true
+      review.consolidated-review:
+        schema:
+          type: string
+          multiline: true
+      review.findings:
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              severity:
+                type: string
+                enum: [blocking, material, minor]
+              location:
+                type: string
+              claim:
+                type: string
+              evidence:
+                type: string
+            required: [id, severity, location, claim, evidence]
+            additionalProperties: false
+    outputs:
+      summary:
+        schema:
+          type: string
+      changed:
+        schema:
+          type: boolean
+    gate:
+      routes:
+        - to: verify
+  - id: verify
+    name: Verify the wave
+    driver: tool
+    check: build-and-test
+    resources: [validation-slot]
+    inputs:
+      fix.changed:
+        schema:
+          type: boolean
+        optional: true
+    outputs:
+      details:
+        schema:
+          type: string
+        optional: true
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: verify.passed
+              value: true
+          to: done
+        # A red wave after a clean review means the reviewers missed something,
+        # so the loop re-arms them rather than replaying the fix blindly.
+        - loop: review
+          max: 2
+          feedback: [verify.details]
+        - park: wave-verification-failed
+cleanup: auto

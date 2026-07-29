@@ -39,6 +39,7 @@ Deep-dive design docs under [`architecture/`](architecture/).
 | [`revert-modes.md`](architecture/revert-modes.md) | Message anchors, fork-from-message, and Stop/Esc conversation rollback. |
 | [`discussion-deliberation.md`](architecture/discussion-deliberation.md) | Multi-agent discussion coordination FSM. |
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
+| [`workflow-campaigns.md`](architecture/workflow-campaigns.md) | Authoring guide for long multi-wave campaigns on the workflows system: the wave shape, the review/verification patterns and why, automation wiring, and the operating knobs. |
 
 ## References
 
