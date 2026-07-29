@@ -64,14 +64,16 @@ is expressed as a *phase* waiting on resource capacity (§6), never as an item
 waiting in a line.
 
 **Every `failed` / `needs-human` / `cancelled` transition carries a typed
-reason** (gate, question, stuck, stalled, paused, interrupted,
+reason** (gate, question, stuck, stalled, paused, interrupted, checkpoint,
 budget-exhausted, retries-exhausted, check-failed-genuine, agent-error,
 wiring-error, disposition, setup-failed, unit-failed) — recorded in the run
 record (§10) and shown on the run's row, so a stopped item is never a silent
-dead end. `paused` (a human or graceful shutdown chose to stop it, §12) and
-`interrupted` (the app died out from under it, §12) are distinct reasons with
-the identical resume path, so the morning-after view tells you *why* it
-stopped without changing *how* you continue it.
+dead end. `paused` (a human or graceful shutdown chose to stop it, §12),
+`interrupted` (the app died out from under it, §12), and `checkpoint` (it
+reached the call boundary it was asked to stop at, §12) are distinct reasons
+with the identical resume path, so the morning-after view tells you *why* it
+stopped without changing *how* you continue it. `checkpoint` is the only one of
+the three that is not a fault at all — the run did exactly what it was told.
 
 ## 3. Phases and the variable system
 
@@ -371,7 +373,7 @@ authority.
 
 **The CLI surface** (workflow-facing): `agent-overflow workflow validate | list | schema |
 new` (authoring) · `run | status | result | list-runs` (execution) · `pause |
-resume | cancel | rerun | retry-unit | retry-failed-units` (control). `run`
+resume | cancel | rerun | retry-unit | retry-failed-units | soft-stop` (control). `run`
 starts a run
 immediately and returns the run id; it does not block.
 
@@ -397,7 +399,13 @@ run records an optional **bound thread**:
   still waiting produces the **root's** wake and notification, composed to name
   the parked descendant (its run id, workflow, typed reason, and parked phase) —
   a subtree blocked on a question is never invisible just because the run
-  holding it is not the one a human is watching.
+  holding it is not the one a human is watching. The wake carries what acting on
+  it needs: the **call chain** from the root down to the parked run (elided in
+  the middle past six runs, with the elision stating its own size), the parked
+  run's **own** failed units labelled as such, and a closing that names which
+  run to act on. A campaign's sixth wave is a run the reader has never seen, so
+  the message has to be enough to issue `agent-overflow run retry-failed-units
+  <child-run-id>` without a second command to work out the tree (D36a).
 
 If a bound thread has been deleted, the run falls back to the unbound surface
 — a wake is never silently lost.
@@ -505,6 +513,16 @@ provider thread** with a continue message — the identical mechanics as
 answering a question below, so the agent keeps its session context across the
 pause. Pausing a run with active fan-out units interrupts every in-flight
 unit; each unit resumes on its own thread.
+
+**Stopping after this wave is the deferred half of pause (§12, D36).** Where
+pause stops the run *now*, `Stop after this wave` asks the tree to stop at its
+next call boundary: nothing in flight is interrupted, the wave that is running
+finishes, and the run parks `needs-human(checkpoint)` instead of invoking the
+next one. It is the affordance for a long campaign a human wants to end
+cleanly rather than cut short, and **Resume** takes the call it skipped. The
+request is one piece of state — arming and withdrawing both go through one
+verb — and the boundary that fires consumes it, so the resume does not stop
+again.
 
 **Sending a message takes over.** If the turn is **in-flight**, sending
 **interrupts it first** (forces it to yield); your messages then run as
@@ -1009,6 +1027,20 @@ never leave a grandchild running or a sub-worktree stranded.
   path**: quitting the app pauses every active run (interrupt in-flight turns
   → teardown → park `needs-human(paused)`) before exit. Same resume as
   `interrupted`; the distinct reason tells you whether it stopped on purpose.
+
+- **Soft stop ("stop after this wave").** A standing request set on a **root**
+  run and honoured by its whole tree: at its next **call boundary** — the moment
+  before a `shape: call` phase would invoke the next run — the run parks
+  `needs-human(checkpoint)` instead of calling. Nothing in flight is
+  interrupted and nothing is spent; the wave that was running finished. Resume
+  takes the call it skipped, so a campaign continues exactly where it stopped.
+  The firing boundary **consumes** the request, so the resume does not stop
+  again. It is refused on a called run (a tree is stopped as a tree, like
+  pause) and on a run that is not running (there is no next boundary to reach);
+  withdrawal is legal in every state. A workflow with no call edge accepts the
+  request and simply never fires it. Deliberately NOT checked at a fan-out
+  unit's call edge: a unit call is work *inside* a wave, and stopping there
+  would strand the siblings its join is waiting for. (D36)
 
 - **Inactivity watchdog.** §2 names "genuinely stuck," but a headless turn can
   hang silently. A phase whose **active turn emits no stream event for T** (a

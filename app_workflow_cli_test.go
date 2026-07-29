@@ -278,6 +278,78 @@ func TestScopedRunActionsAreConfinedToWhatAPhaseStarted(t *testing.T) {
 	}
 }
 
+// Deliverable of the campaign shape: a run started from a conversation calls
+// itself for the next wave, so the run that needs repairing is almost never the
+// one the human started. The interactive credential the bound thread's session
+// holds is PROJECT-scoped, so it reaches the whole tree; a phase credential
+// stays limited to what that phase itself started, descendants included.
+func TestAnInteractiveScopeActsOnDescendantRunsAndAPhaseScopeDoesNot(t *testing.T) {
+	fixture := newCLIFixture(t)
+	root, err := fixture.app.WorkflowStartRun(
+		fixture.project.ID, "tool-flow", "shared", "wave 1", json.RawMessage(`{}`), nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, fixture.app, root.ID, engine.StateDone, "")
+
+	// The engine writes these rows when a `shape: call` phase invokes the next
+	// wave; the test writes them directly so the authorization question is asked
+	// without a second provider run in the way.
+	child := store.WorkItem{
+		ID: "wave-2", ProjectID: fixture.project.ID, Goal: "wave 2", WorkflowID: "tool-flow",
+		WorkflowScope: "shared", State: string(engine.StateNeedsHuman),
+		Reason: string(engine.ReasonUnitFailed), Source: engine.WorkItemSourceCall,
+		ParentItemID: root.ID, ParentPhaseID: "advance", ParentAttempt: 1, CallDepth: 1,
+		CreatedAt: 2,
+	}
+	if err := fixture.app.store.CreateWorkItem(child); err != nil {
+		t.Fatal(err)
+	}
+	grandchild := child
+	grandchild.ID = "wave-3"
+	grandchild.Goal = "wave 3"
+	grandchild.ParentItemID = child.ID
+	grandchild.CallDepth = 2
+	grandchild.CreatedAt = 3
+	if err := fixture.app.store.CreateWorkItem(grandchild); err != nil {
+		t.Fatal(err)
+	}
+
+	thread, err := fixture.app.CreateThread(CreateThreadOptions{
+		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	interactive := transport.WithCallerScope(context.Background(), interactiveScope(fixture, thread.ID))
+	for _, itemID := range []string{root.ID, child.ID, grandchild.ID} {
+		for _, action := range []string{"retry every failed unit", "resume workflow run", "pause workflow run"} {
+			if err := fixture.app.authorizeScopedRunAction(interactive, itemID, action); err != nil {
+				t.Fatalf("an interactive session was refused %q on %s: %v", action, itemID, err)
+			}
+		}
+		if _, err := fixture.app.WorkflowAgentRunStatus(interactive, itemID); err != nil {
+			t.Fatalf("an interactive session could not read %s: %v", itemID, err)
+		}
+	}
+
+	// Project confinement is the boundary that remains: another project's tree is
+	// refused whatever its shape.
+	elsewhere := transport.WithCallerScope(context.Background(), transport.CallerScope{
+		Kind: transport.ScopeKindInteractive, ThreadID: thread.ID, ProjectID: "other-project",
+	})
+	if err := fixture.app.authorizeScopedRunAction(elsewhere, grandchild.ID, "resume workflow run"); err == nil {
+		t.Fatal("an interactive session acted on a run outside its project")
+	}
+
+	// A phase credential that started the ROOT still may not touch what the root
+	// called: its grant is frozen to the runs it started itself.
+	phase := transport.WithCallerScope(context.Background(), phaseScope(fixture, root.ID, def.GrantStartRun))
+	if err := fixture.app.authorizeScopedRunAction(phase, grandchild.ID, "resume workflow run"); err == nil {
+		t.Fatal("a phase credential acted on a descendant it did not start")
+	}
+}
+
 func TestWorkflowAgentNotesAndScheduleRecordOneEffect(t *testing.T) {
 	fixture := newCLIFixture(t)
 	scope := phaseScope(fixture, "caller-item", def.GrantSchedule, def.GrantUpdateNotes)

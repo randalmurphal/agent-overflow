@@ -84,6 +84,11 @@ type resumeItemCommand struct {
 	itemID string
 	reply  chan response
 }
+type softStopCommand struct {
+	itemID string
+	armed  bool
+	reply  chan response
+}
 type humanGateCommand struct {
 	itemID   string
 	decision HumanDecision
@@ -184,6 +189,9 @@ func (e *Engine) request(command any) error {
 		command.reply = reply
 		e.commands <- command
 	case resumeItemCommand:
+		command.reply = reply
+		e.commands <- command
+	case softStopCommand:
 		command.reply = reply
 		e.commands <- command
 	case humanGateCommand:
@@ -355,6 +363,12 @@ func (e *Engine) loop() {
 		case resumeItemCommand:
 			err = e.resumeItem(command.itemID)
 			command.reply <- e.itemCommandResponse(command.itemID, err)
+		case softStopCommand:
+			// Recording an intention starts nothing: the request is consumed at a
+			// boundary a later command reaches, never here.
+			err = e.setSoftStop(command.itemID, command.armed)
+			e.commandStarts = nil
+			command.reply <- response{err: err}
 		case humanGateCommand:
 			err = errors.Join(e.resolveHumanGate(command.itemID, command.decision, command.note), e.startWaiting())
 			command.reply <- e.itemCommandResponse(command.itemID, err)

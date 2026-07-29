@@ -99,6 +99,8 @@ func runCommand(args []string, lookupEnv func(string) (string, bool), stdout, st
 		return runRetryUnitCommand.run(args[1:], lookupEnv, stdout, stderr)
 	case "retry-failed-units":
 		return runRetryFailedUnitsCommand.run(args[1:], lookupEnv, stdout, stderr)
+	case "soft-stop":
+		return runSoftStopCommand.run(args[1:], lookupEnv, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "agent-overflow run: unknown command %q\n", args[0])
 		_ = writeOutput(stderr, runUsage)
@@ -311,6 +313,18 @@ var runRetryFailedUnitsCommand = runControl(
 	func(flags *flag.FlagSet) func() []any {
 		note := flags.String("note", "", "text carried into every repaired unit's next try")
 		return func() []any { return []any{*note} }
+	})
+
+// soft-stop is the deferred half of pause: it interrupts nothing and starts
+// nothing, it just decides whether the run takes its next call. `--clear`
+// withdraws the request rather than being a second verb, because arming and
+// withdrawing are one piece of state and a caller that could only arm would have
+// no way to change its mind.
+var runSoftStopCommand = runControl(
+	"agent-overflow run soft-stop", runSoftStopUsage, "WorkflowRequestSoftStop",
+	func(flags *flag.FlagSet) func() []any {
+		clear := flags.Bool("clear", false, "withdraw a pending stop instead of asking for one")
+		return func() []any { return []any{!*clear} }
 	})
 
 var runRetryUnitCommand = execCommand{

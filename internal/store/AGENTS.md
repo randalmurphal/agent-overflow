@@ -341,6 +341,25 @@ baseline:
   derived from and now. Any future work_items rebuild has to re-check the same
   two lists.
 
+## Recent schema changes (v44) — the soft-stop request and its park reason
+
+- The v44 rebuild adds `work_items.soft_stop` (`INTEGER NOT NULL DEFAULT 0
+  CHECK(soft_stop IN (0,1))`) and widens the `reason` CHECK with `checkpoint`
+  (D36). `SetWorkItemSoftStop` is the only writer, and it is called only from
+  the workflow engine's command loop — the engine owns the flag's read/clear
+  pair, so a second writer would open the window that ordering closes.
+- The rebuild text is derived from v43's the same way v43's was derived from
+  v39's, so the same two lists had to be re-checked: the indexes added after
+  v43 (none) and the copy list, which gains nothing because `soft_stop` is the
+  column this migration creates and therefore does not copy. A future
+  `work_items` rebuild inherits both checks.
+- `work_item_units.RetryWorkItemUnit` takes the unit's new try number and the
+  retry note and PERSISTS both alongside the `pending` reset (D36b). It used to
+  reset the row and write neither, so a retried unit that was evicted and
+  restored came back on its old try with no feedback. The signature refuses a
+  try number below 1 rather than accepting a value only the engine's own
+  arithmetic makes correct.
+
 ## Extension points
 
 - To add a new column / index / CHECK: write a new migration — never

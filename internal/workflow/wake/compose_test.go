@@ -1,6 +1,7 @@
 package wake
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -118,11 +119,79 @@ func TestComposeDescendantParkReportsTheRootAsWaiting(t *testing.T) {
 	mustContain(t, message,
 		`Run "root-5" (workflow "release") is waiting — goal "Release train".`,
 		`A called run 2 levels down parked: run "child-9" (workflow "verify") is needs-human (question) in phase "smoke": "Which staging host should I hit?"`,
-		`Run "root-5" cannot continue until called run "child-9" is resolved.`,
+		`Run "root-5" cannot continue until called run "child-9" is resolved; act on run "child-9", not on "root-5".`,
 	)
 	// The root did not rest; reporting its raw state would read as "nothing
 	// happened", which is the opposite of why the message was sent.
 	mustNotContain(t, message, "is running —")
+}
+
+// The chain is what makes a deep park actionable: a reader has to be able to
+// name the run a repair verb takes, and the waves between it and the root.
+func TestComposeDescendantParkNamesTheRunsBetweenRootAndPark(t *testing.T) {
+	message := Compose(Input{
+		Run: Run{ItemID: "root-1", Goal: "Port the campaign", WorkflowID: "campaign", State: "running"},
+		Descendant: &Descendant{
+			ItemID: "wave-3", WorkflowID: "wave", State: "needs-human", Reason: "unit-failed",
+			Depth: 3, Chain: []string{"root-1", "wave-1", "wave-2", "wave-3"},
+		},
+	})
+	mustContain(t, message, `Call chain: "root-1" → "wave-1" → "wave-2" → "wave-3".`)
+}
+
+func TestComposeElidesTheMiddleOfADeepCallChain(t *testing.T) {
+	chain := make([]string, 0, 12)
+	for index := 0; index < 12; index++ {
+		chain = append(chain, fmt.Sprintf("wave-%d", index))
+	}
+	message := Compose(Input{
+		Run: Run{ItemID: "wave-0", Goal: "g", WorkflowID: "campaign", State: "running"},
+		Descendant: &Descendant{
+			ItemID: "wave-11", WorkflowID: "wave", State: "needs-human", Reason: "gate",
+			Depth: 11, Chain: chain,
+		},
+	})
+	mustContain(t, message, `Call chain: "wave-0" → "wave-1" → "wave-2" → …6 more… → "wave-9" → "wave-10" → "wave-11".`)
+	// Elision states its own size; a silently shortened chain would let a reader
+	// believe the park is three levels down when it is eleven.
+	mustNotContain(t, message, `"wave-5"`)
+}
+
+// A chain of one is the root alone, which the headline already named.
+func TestComposeOmitsAChainThatSaysNothing(t *testing.T) {
+	message := Compose(Input{
+		Run:        Run{ItemID: "root-2", Goal: "g", WorkflowID: "w", State: "running"},
+		Descendant: &Descendant{ItemID: "root-2", WorkflowID: "w", State: "needs-human", Depth: 0, Chain: []string{"root-2"}},
+	})
+	mustNotContain(t, message, "Call chain:")
+}
+
+// A checkpoint park is the one stop that is not a fault, at either level.
+func TestComposeCheckpointParkReadsAsTheStopThatWasAskedFor(t *testing.T) {
+	root := Compose(Input{
+		Run: Run{
+			ItemID: "root-3", Goal: "Port the campaign", WorkflowID: "campaign",
+			State: "needs-human", Reason: "checkpoint",
+		},
+	})
+	mustContain(t, root,
+		`is needs-human (checkpoint)`,
+		"This is the stop that was asked for, not a failure.",
+		`Resume run "root-3" to take the call it skipped, or leave it parked.`,
+	)
+	mustNotContain(t, root, "does not continue until this is resolved")
+
+	descendant := Compose(Input{
+		Run: Run{ItemID: "root-4", Goal: "g", WorkflowID: "campaign", State: "running"},
+		Descendant: &Descendant{
+			ItemID: "wave-7", WorkflowID: "wave", State: "needs-human", Reason: "checkpoint", Depth: 7,
+		},
+	})
+	mustContain(t, descendant,
+		`run "wave-7" reached the checkpoint and did not start the next one`,
+		`Resume run "wave-7" to take the call it skipped, or leave it parked.`,
+	)
+	mustNotContain(t, descendant, "cannot continue until called run")
 }
 
 func TestComposeDirectChildParkReadsAsOneLevel(t *testing.T) {

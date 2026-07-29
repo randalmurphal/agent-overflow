@@ -43,6 +43,18 @@ const MaxCallDepth = 256
 // capacity while the child runs — the child's terminal state is what re-enters
 // it (settleCallChild).
 func (e *Engine) startCall(item *runtimeItem, phase def.Phase, vars map[string]any) error {
+	// The soft stop's one checkpoint (D36). It is read here — before the target
+	// is resolved, before a child row exists, before anything is spent — because
+	// this is the moment the next wave would begin, and it is the only moment at
+	// which stopping costs nothing.
+	root, stop, err := e.softStopArmed(item)
+	if err != nil {
+		return e.parkCallSetup(item, ReasonSetupFailed,
+			fmt.Errorf("call %s/%s/%d: %w", item.item.ID, phase.ID, item.attempt, err))
+	}
+	if stop {
+		return e.parkSoftStop(item, root)
+	}
 	if phase.CallTarget() == "" {
 		return e.parkCallSetup(item, ReasonWiringError,
 			fmt.Errorf("call phase %q of item %q names no workflow", phase.ID, item.item.ID))

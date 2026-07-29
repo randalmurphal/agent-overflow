@@ -3440,6 +3440,24 @@ export function WorkflowPauseItem(itemID: string): $CancellablePromise<void> {
 }
 
 /**
+ * WorkflowRequestSoftStop arms or clears a run tree's request to stop at its
+ * next call boundary (D36). Nothing is interrupted and nothing starts: the run
+ * keeps going and, the next time it would invoke a call, parks
+ * `needs-human(checkpoint)` instead. Resuming takes the call it skipped.
+ * 
+ * It is one method with a flag rather than a pair, because the two directions
+ * are one piece of state: a clear has to be able to undo an arm through exactly
+ * the path that set it, and a caller that can only ever arm would have no way to
+ * change its mind.
+ * 
+ * LocalOnly: the request decides whether the next wave of autonomous provider
+ * sessions runs, which is the same control plane as pause.
+ */
+export function WorkflowRequestSoftStop(itemID: string, armed: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2570221545, itemID, armed);
+}
+
+/**
  * WorkflowRerunItem starts a failed run's last phase again immediately,
  * carrying its latest diagnosis, plus the caller's optional guidance, into the
  * new attempt.

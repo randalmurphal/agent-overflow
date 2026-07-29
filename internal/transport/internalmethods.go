@@ -282,6 +282,10 @@ var LocalOnlyMethods = map[string]bool{
 	"WorkflowSetJobNotes":                  true,
 	"WorkflowRerunItem":                    true,
 	"WorkflowPauseItem":                    true,
+	// A soft stop starts nothing by itself, but it decides whether the next wave
+	// of autonomous sessions runs at all — the same control plane pause is on,
+	// reached one boundary later.
+	"WorkflowRequestSoftStop": true,
 	// Automation CRUD is the same control plane one step removed: an automation
 	// is a standing instruction to start autonomous full-access provider sessions
 	// on a schedule, so arming, editing, disabling, or deleting one is session

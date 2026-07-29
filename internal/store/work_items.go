@@ -37,9 +37,14 @@ type WorkItem struct {
 	// ParentUnitID is set only when a call-bound fan-out unit created this run.
 	// It is what distinguishes the children of one fan-out attempt from each
 	// other; a `shape: call` phase makes one call per attempt and leaves it empty.
-	ParentUnitID        string `json:"parentUnitId,omitempty"`
-	ParentAttempt       int    `json:"parentAttempt,omitempty"`
-	CallDepth           int    `json:"callDepth,omitempty"`
+	ParentUnitID  string `json:"parentUnitId,omitempty"`
+	ParentAttempt int    `json:"parentAttempt,omitempty"`
+	CallDepth     int    `json:"callDepth,omitempty"`
+	// SoftStop is a standing request to stop this run tree at its next call
+	// boundary (D36). It is only ever set on a ROOT run — the tree is the unit a
+	// human stops — and the engine consumes it: the boundary that fires clears
+	// it, so arming is a one-shot rather than a mode a resume would re-trip on.
+	SoftStop            bool   `json:"softStop,omitempty"`
 	CreatedAt           int64  `json:"createdAt"`
 	StartedAt           int64  `json:"startedAt,omitempty"`
 	EndedAt             int64  `json:"endedAt,omitempty"`
@@ -82,13 +87,13 @@ const workItemColumns = `id, project_id, goal, workflow_id, workflow_scope,
 snapshot, state, reason, seeds, step_mode, worktree_path,
 branch, base_branch, budget, source, source_ref, triage_thread_id, origin_thread_id,
 disposition, digest, parent_item_id, parent_phase_id, parent_unit_id, parent_attempt, call_depth,
-created_at, started_at, ended_at`
+soft_stop, created_at, started_at, ended_at`
 
 const workItemSummaryListColumns = `w.id, w.project_id, w.goal, w.workflow_id, w.workflow_scope,
 '', w.state, w.reason, '', w.step_mode, w.worktree_path,
 w.branch, w.base_branch, '', w.source, w.source_ref, w.triage_thread_id, w.origin_thread_id,
 w.disposition, '', w.parent_item_id, w.parent_phase_id, w.parent_unit_id, w.parent_attempt, w.call_depth,
-w.created_at, w.started_at, w.ended_at`
+w.soft_stop, w.created_at, w.started_at, w.ended_at`
 
 const workItemSummaryProgressJoin = `
  LEFT JOIN work_item_phases AS current_phase ON current_phase.rowid = (
@@ -115,14 +120,14 @@ func jsonText(value json.RawMessage) string {
 func scanWorkItem(scanner interface{ Scan(...any) error }, includeProgress bool) (WorkItem, error) {
 	var item WorkItem
 	var snapshot, seeds, budget, disposition, digest string
-	var stepMode int
+	var stepMode, softStop int
 	fields := []any{
 		&item.ID, &item.ProjectID, &item.Goal, &item.WorkflowID, &item.WorkflowScope,
 		&snapshot, &item.State, &item.Reason, &seeds, &stepMode,
 		&item.WorktreePath, &item.Branch, &item.BaseBranch, &budget, &item.Source,
 		&item.SourceRef, &item.TriageThreadID, &item.OriginThreadID, &disposition, &digest,
 		&item.ParentItemID, &item.ParentPhaseID, &item.ParentUnitID, &item.ParentAttempt, &item.CallDepth,
-		&item.CreatedAt, &item.StartedAt, &item.EndedAt,
+		&softStop, &item.CreatedAt, &item.StartedAt, &item.EndedAt,
 	}
 	if includeProgress {
 		fields = append(fields, &item.CurrentPhaseID, &item.CurrentPhaseOrdinal, &item.PhaseCount)
@@ -136,20 +141,21 @@ func scanWorkItem(scanner interface{ Scan(...any) error }, includeProgress bool)
 	item.Disposition = json.RawMessage(disposition)
 	item.Digest = json.RawMessage(digest)
 	item.StepMode = stepMode != 0
+	item.SoftStop = softStop != 0
 	return item, nil
 }
 
 func (s *Store) CreateWorkItem(item WorkItem) error {
 	_, err := s.db.Exec(
 		`INSERT INTO work_items (`+workItemColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ProjectID, item.Goal, item.WorkflowID, item.WorkflowScope,
 		jsonText(item.Snapshot), item.State, item.Reason,
 		jsonText(item.Seeds), boolToInt(item.StepMode), item.WorktreePath, item.Branch,
 		item.BaseBranch, jsonText(item.Budget), item.Source, item.SourceRef,
 		item.TriageThreadID, item.OriginThreadID, jsonText(item.Disposition), jsonText(item.Digest),
 		item.ParentItemID, item.ParentPhaseID, item.ParentUnitID, item.ParentAttempt, item.CallDepth,
-		item.CreatedAt, item.StartedAt, item.EndedAt,
+		boolToInt(item.SoftStop), item.CreatedAt, item.StartedAt, item.EndedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create work item %s: %w", item.ID, err)
@@ -544,6 +550,25 @@ func (s *Store) UpdateWorkItemOriginThread(id, threadID string) error {
 		return fmt.Errorf("store: update work item origin thread %s: %w", id, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: update work item origin thread %s", id))
+}
+
+// SetWorkItemSoftStop arms or disarms the standing request to stop this run
+// tree at its next call boundary (D36). It is a plain assignment rather than a
+// toggle, so setting the state it is already in is a no-op that still succeeds
+// — a human pressing the button twice and an agent re-issuing the verb after a
+// dropped response must not disagree about what the row says.
+//
+// Only a root run's row is ever written; the engine enforces that, because
+// "which run may hold this" is a fact about the tree rather than about the
+// column.
+func (s *Store) SetWorkItemSoftStop(id string, armed bool) error {
+	result, err := s.db.Exec(
+		`UPDATE work_items SET soft_stop = ? WHERE id = ?`, boolToInt(armed), id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set work item soft stop %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: set work item soft stop %s", id))
 }
 
 // ClearWorkItemOriginThreads unbinds every run pointing at a thread that no

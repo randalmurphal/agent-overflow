@@ -12,6 +12,7 @@ function bindings(): WorkflowActionBindings {
     dropUnit: vi.fn(async () => undefined),
     mergeItem: vi.fn(async () => ({ base: 'release', mode: 'ff', sha: '1234567890' })),
     pauseItem: vi.fn(async () => undefined),
+    requestSoftStop: vi.fn(async () => undefined),
     resolveGate: vi.fn(async () => undefined),
     resumeItem: vi.fn(async () => undefined),
     rerunItem: vi.fn(async () => undefined),
@@ -106,12 +107,20 @@ describe('workflow action dispatch', () => {
     });
   });
 
-  it('returns no receipt for the two actions that park rather than resolve', async () => {
+  it('returns no receipt for the actions that do not resolve the run', async () => {
     const deps = bindings();
     expect(await dispatchWorkflowAction(item, { kind: 'pause' }, 1, deps)).toBeNull();
     expect(await dispatchWorkflowAction(item, { kind: 'cancel' }, 1, deps)).toBeNull();
     expect(deps.pauseItem).toHaveBeenCalledWith('run');
     expect(deps.cancelItem).toHaveBeenCalledWith('run');
+  });
+
+  it('carries both directions of the stop request to the one binding', async () => {
+    const deps = bindings();
+    expect(await dispatchWorkflowAction(item, { kind: 'soft-stop', armed: true }, 1, deps)).toBeNull();
+    expect(deps.requestSoftStop).toHaveBeenCalledWith('run', true);
+    expect(await dispatchWorkflowAction(item, { kind: 'soft-stop', armed: false }, 1, deps)).toBeNull();
+    expect(deps.requestSoftStop).toHaveBeenLastCalledWith('run', false);
   });
 
   it('dispatches every remaining action to its exact binding', async () => {

@@ -22,7 +22,19 @@ const (
 	MaxDetailRunes = 800
 	// MaxGoalRunes bounds the run goal echoed in the headline.
 	MaxGoalRunes = 240
+	// MaxChainRuns bounds the ancestry rendered between the root and a parked
+	// descendant. A campaign is one call per wave, so a run a hundred waves deep
+	// has a hundred ancestors and none of the middle ones are actionable — the
+	// ends are what a reader navigates from.
+	MaxChainRuns = 6
 )
+
+// reasonCheckpoint is `engine.ReasonCheckpoint`, mirrored rather than imported:
+// this package is pure text assembly over a flat input and pulling the engine in
+// for one string would drag the whole FSM with it. It is the one reason whose
+// closing is not "something went wrong" — the run stopped exactly where it was
+// asked to — so saying so is worth the mirrored constant.
+const reasonCheckpoint = "checkpoint"
 
 // dataNotice is the one framing line. Everything quoted below it came out of a
 // model or a ticket; the receiving agent must read it as data.
@@ -58,6 +70,11 @@ type Descendant struct {
 	// Depth is how far below the root the parked run sits, 1 for a direct
 	// child. It is what tells a reader "this is not the run you started".
 	Depth int
+	// Chain is the run ids from the root down to (and including) the parked run,
+	// root first. Depth says how far away the park is; this says which runs are
+	// between here and there, so an agent that needs to act on an intermediate
+	// wave can name it without walking the tree through a second command.
+	Chain []string
 }
 
 // Output is one declared workflow output the run produced.
@@ -94,6 +111,10 @@ func Compose(in Input) string {
 	if in.Descendant != nil {
 		out.WriteByte('\n')
 		out.WriteString(descendantLine(*in.Descendant))
+		if line := chainLine(in.Descendant.Chain); line != "" {
+			out.WriteByte('\n')
+			out.WriteString(line)
+		}
 	} else if line := detailLine(in.Run); line != "" {
 		out.WriteByte('\n')
 		out.WriteString(line)
@@ -158,6 +179,36 @@ func descendantLine(child Descendant) string {
 	return line + "."
 }
 
+// chainLine renders the run ids between the root and the park, elided in the
+// middle when the tree is deep. A campaign's hundredth wave has ninety-eight
+// ancestors nobody will act on; the ends are what a reader navigates from, and
+// the elision states how many were left out rather than quietly dropping them.
+//
+// A chain of one is the root alone, which the headline already named, so it
+// contributes no line.
+func chainLine(chain []string) string {
+	if len(chain) < 2 {
+		return ""
+	}
+	rendered := make([]string, 0, MaxChainRuns+1)
+	if len(chain) <= MaxChainRuns {
+		for _, itemID := range chain {
+			rendered = append(rendered, untrustedtext.Field(itemID))
+		}
+	} else {
+		head := MaxChainRuns / 2
+		tail := MaxChainRuns - head
+		for _, itemID := range chain[:head] {
+			rendered = append(rendered, untrustedtext.Field(itemID))
+		}
+		rendered = append(rendered, fmt.Sprintf("…%d more…", len(chain)-MaxChainRuns))
+		for _, itemID := range chain[len(chain)-tail:] {
+			rendered = append(rendered, untrustedtext.Field(itemID))
+		}
+	}
+	return "Call chain: " + strings.Join(rendered, " → ") + "."
+}
+
 // ordinalDepth keeps the depth readable without a pluralization table: a direct
 // child is "one level", anything deeper states the number.
 func ordinalDepth(depth int) string {
@@ -203,12 +254,23 @@ func writeReferences(out *strings.Builder, references []Reference) {
 // that descendant rather than on itself.
 func closing(in Input) string {
 	if in.Descendant != nil {
+		if in.Descendant.Reason == reasonCheckpoint {
+			return fmt.Sprintf(
+				"This is the stop that was asked for, not a failure: run %s reached the checkpoint and did not start the next one. Resume run %s to take the call it skipped, or leave it parked.",
+				untrustedtext.Field(in.Descendant.ItemID), untrustedtext.Field(in.Descendant.ItemID))
+		}
 		return fmt.Sprintf(
-			"Run %s cannot continue until called run %s is resolved.",
-			untrustedtext.Field(in.Run.ItemID), untrustedtext.Field(in.Descendant.ItemID))
+			"Run %s cannot continue until called run %s is resolved; act on run %s, not on %s.",
+			untrustedtext.Field(in.Run.ItemID), untrustedtext.Field(in.Descendant.ItemID),
+			untrustedtext.Field(in.Descendant.ItemID), untrustedtext.Field(in.Run.ItemID))
 	}
 	switch in.Run.State {
 	case "needs-human":
+		if in.Run.Reason == reasonCheckpoint {
+			return fmt.Sprintf(
+				"This is the stop that was asked for, not a failure. Resume run %s to take the call it skipped, or leave it parked.",
+				untrustedtext.Field(in.Run.ItemID))
+		}
 		return fmt.Sprintf("Run %s is parked and does not continue until this is resolved.",
 			untrustedtext.Field(in.Run.ItemID))
 	case "done":

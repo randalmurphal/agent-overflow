@@ -57,15 +57,21 @@ const (
 	// distinct reason is what tells a human whether the run stopped on purpose
 	// or because the process died (spec §12, D23).
 	ReasonPaused Reason = "paused"
+	// ReasonCheckpoint is the soft stop firing: the run reached the call
+	// boundary its tree was asked to stop at, and parked instead of invoking
+	// the next call (spec §12, D36). Nothing was interrupted — the attempt
+	// never started work — so resuming takes the call edge the park skipped.
+	ReasonCheckpoint Reason = "checkpoint"
 )
 
-// ResumableReason reports whether a park continues on the provider session it
-// parked on. Both members stopped an attempt mid-flight without the phase
-// producing a result, so the next turn is a continuation of that session rather
-// than a fresh attempt — the difference between them is provenance, not
-// recovery.
+// ResumableReason reports whether a park continues where it stopped rather than
+// being re-entered from scratch. Every member stopped an attempt before the
+// phase produced a result, so the next step is a continuation — of the provider
+// session for a `paused`/`interrupted` turn, of the skipped invocation for a
+// `checkpoint` call boundary. The reasons differ for the human reading the run
+// list, not for the recovery.
 func ResumableReason(reason Reason) bool {
-	return reason == ReasonPaused || reason == ReasonInterrupted
+	return reason == ReasonPaused || reason == ReasonInterrupted || reason == ReasonCheckpoint
 }
 
 type OutcomeKind string
@@ -302,6 +308,7 @@ type persistence interface {
 	GetWorkItem(string) (store.WorkItem, error)
 	ListWorkItems(store.WorkItemListFilter) ([]store.WorkItem, error)
 	UpdateWorkItemState(string, string, string, int64) error
+	SetWorkItemSoftStop(string, bool) error
 	UpdateWorkItemRunStart(string, json.RawMessage, string, string, string, int64) error
 	CreateWorkItemPhase(store.WorkItemPhase) error
 	CompleteWorkItemPhase(string, string, int, json.RawMessage, json.RawMessage, string, int64) error
@@ -315,7 +322,7 @@ type persistence interface {
 	CreateWorkItemUnits([]store.WorkItemUnit) error
 	StartWorkItemUnit(string, string, int, string, int, string, int64) error
 	CompleteWorkItemUnit(string, string, int, string, string, json.RawMessage, string, int64) error
-	RetryWorkItemUnit(string, string, int, string) error
+	RetryWorkItemUnit(string, string, int, string, int, string) error
 	FailRunningWorkItemUnits(string, string, int, string, int64) (int64, error)
 	ListWorkItemPhaseUnits(string, string, int) ([]store.WorkItemUnit, error)
 	ListProjects() ([]store.Project, error)

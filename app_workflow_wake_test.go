@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -311,6 +312,133 @@ func TestWorkflowDescendantParkIsSilentOnceTheRootRests(t *testing.T) {
 	h.drain()
 	if sends, queued, _, _ := h.snapshot(); len(sends) != 0 || len(queued) != 0 {
 		t.Fatalf("descendant park duplicated the root's own surface: sends=%d queued=%d", len(sends), len(queued))
+	}
+}
+
+// A descendant park is only actionable if the wake carries what the repair verb
+// takes: the parked run's id, the waves between it and the root, and the failed
+// units of THAT run rather than of the root.
+func TestWorkflowDescendantParkCarriesTheChainAndItsOwnFailedUnits(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-campaign")
+	root := h.run(t, "campaign-root", engine.StateRunning, "")
+	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	// The root has a failed unit of its own from an earlier wave. It must not be
+	// reported as the parked run's, or a repair verb would be pointed at the
+	// wrong run.
+	if err := h.app.store.CreateWorkItemUnits([]store.WorkItemUnit{{
+		ItemID: root.ID, PhaseID: "fan", Attempt: 1, UnitID: "root-unit", UnitIndex: 0,
+		Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed, ThreadID: "root-unit-thread",
+		Provider: string(provider.Claude), Model: "sonnet",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	parent := root
+	for wave := 1; wave <= 2; wave++ {
+		child := store.WorkItem{
+			ID:            fmt.Sprintf("campaign-wave-%d", wave),
+			ProjectID:     defaultTestProjectID,
+			Goal:          fmt.Sprintf("wave %d", wave),
+			WorkflowID:    "wave",
+			WorkflowScope: "shared",
+			State:         string(engine.StateRunning),
+			Source:        engine.WorkItemSourceCall,
+			ParentItemID:  parent.ID,
+			ParentPhaseID: "advance",
+			ParentAttempt: 1,
+			CallDepth:     wave,
+			CreatedAt:     int64(wave + 1),
+		}
+		if err := h.app.store.CreateWorkItem(child); err != nil {
+			t.Fatal(err)
+		}
+		parent = child
+	}
+	parked := parent
+	if err := h.app.store.UpdateWorkItemState(
+		parked.ID, string(engine.StateNeedsHuman), string(engine.ReasonUnitFailed), 20,
+	); err != nil {
+		t.Fatal(err)
+	}
+	parked.State = string(engine.StateNeedsHuman)
+	parked.Reason = string(engine.ReasonUnitFailed)
+	h.phase(t, parked.ID, "fan", 1, "parked", "wave-thread",
+		json.RawMessage(`{"status":"stuck","reason":"two units failed"}`))
+	if err := h.app.store.CreateWorkItemUnits([]store.WorkItemUnit{{
+		ItemID: parked.ID, PhaseID: "fan", Attempt: 1, UnitID: "pkg-engine", UnitIndex: 0,
+		Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitFailed, ThreadID: "wave-unit-thread",
+		Provider: string(provider.Claude), Model: "sonnet",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: parked.ID, ProjectID: parked.ProjectID,
+		From: engine.StateRunning, To: engine.StateNeedsHuman,
+	})
+	h.drain()
+
+	sends, _, _, _ := h.snapshot()
+	if len(sends) != 1 {
+		t.Fatalf("descendant park produced %d wakes, want one", len(sends))
+	}
+	for _, want := range []string{
+		`Call chain: "campaign-root" → "campaign-wave-1" → "campaign-wave-2".`,
+		`- "called run": "campaign-wave-2"`,
+		`- "called run failed unit": "pkg-engine (thread wave-unit-thread)"`,
+		`act on run "campaign-wave-2", not on "campaign-root"`,
+	} {
+		if !strings.Contains(sends[0], want) {
+			t.Fatalf("campaign wake missing %q:\n%s", want, sends[0])
+		}
+	}
+	if strings.Contains(sends[0], "root-unit") {
+		t.Fatalf("campaign wake reported the root's failed unit as the parked run's:\n%s", sends[0])
+	}
+}
+
+// The one park that is not a fault: the stop a human asked for. It must not read
+// like every other one, at either level of the tree.
+func TestWorkflowCheckpointParkReadsAsTheStopThatWasAskedFor(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-checkpoint")
+	root := h.run(t, "checkpoint-root", engine.StateRunning, "")
+	if err := h.app.store.UpdateWorkItemOriginThread(root.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	child := store.WorkItem{
+		ID: "checkpoint-wave", ProjectID: defaultTestProjectID, Goal: "wave 2", WorkflowID: "wave",
+		WorkflowScope: "shared", State: string(engine.StateNeedsHuman),
+		Reason: string(engine.ReasonCheckpoint), Source: engine.WorkItemSourceCall,
+		ParentItemID: root.ID, ParentPhaseID: "advance", ParentAttempt: 1, CallDepth: 1, CreatedAt: 2,
+	}
+	if err := h.app.store.CreateWorkItem(child); err != nil {
+		t.Fatal(err)
+	}
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: child.ID, ProjectID: child.ProjectID,
+		From: engine.StateRunning, To: engine.StateNeedsHuman,
+	})
+	h.drain()
+
+	sends, _, _, _ := h.snapshot()
+	if len(sends) != 1 {
+		t.Fatalf("checkpoint park produced %d wakes, want one", len(sends))
+	}
+	for _, want := range []string{
+		"needs-human (checkpoint)",
+		`run "checkpoint-wave" reached the checkpoint and did not start the next one`,
+		`Resume run "checkpoint-wave" to take the call it skipped, or leave it parked.`,
+	} {
+		if !strings.Contains(sends[0], want) {
+			t.Fatalf("checkpoint wake missing %q:\n%s", want, sends[0])
+		}
+	}
+	if strings.Contains(sends[0], "cannot continue until called run") {
+		t.Fatalf("checkpoint wake read as a failure:\n%s", sends[0])
 	}
 }
 

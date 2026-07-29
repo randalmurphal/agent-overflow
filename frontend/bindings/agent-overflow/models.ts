@@ -3670,6 +3670,14 @@ export class WorkflowItemChildView {
 export class WorkflowItemDetailView {
     "item": WorkflowItemView;
     "checkPhaseIds": string[];
+
+    /**
+     * CallPhaseIDs names the frozen phases that invoke another run. Empty means
+     * this run has no call boundary, which is the one thing a soft stop needs to
+     * know before offering itself: a request that can never fire must not be
+     * presented as a stop that will happen.
+     */
+    "callPhaseIds": string[];
     "phases": WorkflowItemPhaseView[];
     "units": WorkflowItemUnitView[];
     "children": WorkflowItemChildView[];
@@ -3684,6 +3692,9 @@ export class WorkflowItemDetailView {
         }
         if (!("checkPhaseIds" in $$source)) {
             this["checkPhaseIds"] = [];
+        }
+        if (!("callPhaseIds" in $$source)) {
+            this["callPhaseIds"] = [];
         }
         if (!("phases" in $$source)) {
             this["phases"] = [];
@@ -3713,12 +3724,13 @@ export class WorkflowItemDetailView {
     static createFrom($$source: any = {}): WorkflowItemDetailView {
         const $$createField0_0 = $$createType65;
         const $$createField1_0 = $$createType4;
-        const $$createField2_0 = $$createType67;
-        const $$createField3_0 = $$createType69;
-        const $$createField4_0 = $$createType71;
-        const $$createField5_0 = $$createType51;
-        const $$createField6_0 = $$createType73;
-        const $$createField7_0 = $$createType74;
+        const $$createField2_0 = $$createType4;
+        const $$createField3_0 = $$createType67;
+        const $$createField4_0 = $$createType69;
+        const $$createField5_0 = $$createType71;
+        const $$createField6_0 = $$createType51;
+        const $$createField7_0 = $$createType73;
+        const $$createField8_0 = $$createType74;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("item" in $$parsedSource) {
             $$parsedSource["item"] = $$createField0_0($$parsedSource["item"]);
@@ -3726,23 +3738,26 @@ export class WorkflowItemDetailView {
         if ("checkPhaseIds" in $$parsedSource) {
             $$parsedSource["checkPhaseIds"] = $$createField1_0($$parsedSource["checkPhaseIds"]);
         }
+        if ("callPhaseIds" in $$parsedSource) {
+            $$parsedSource["callPhaseIds"] = $$createField2_0($$parsedSource["callPhaseIds"]);
+        }
         if ("phases" in $$parsedSource) {
-            $$parsedSource["phases"] = $$createField2_0($$parsedSource["phases"]);
+            $$parsedSource["phases"] = $$createField3_0($$parsedSource["phases"]);
         }
         if ("units" in $$parsedSource) {
-            $$parsedSource["units"] = $$createField3_0($$parsedSource["units"]);
+            $$parsedSource["units"] = $$createField4_0($$parsedSource["units"]);
         }
         if ("children" in $$parsedSource) {
-            $$parsedSource["children"] = $$createField4_0($$parsedSource["children"]);
+            $$parsedSource["children"] = $$createField5_0($$parsedSource["children"]);
         }
         if ("outputs" in $$parsedSource) {
-            $$parsedSource["outputs"] = $$createField5_0($$parsedSource["outputs"]);
+            $$parsedSource["outputs"] = $$createField6_0($$parsedSource["outputs"]);
         }
         if ("artifacts" in $$parsedSource) {
-            $$parsedSource["artifacts"] = $$createField6_0($$parsedSource["artifacts"]);
+            $$parsedSource["artifacts"] = $$createField7_0($$parsedSource["artifacts"]);
         }
         if ("usage" in $$parsedSource) {
-            $$parsedSource["usage"] = $$createField7_0($$parsedSource["usage"]);
+            $$parsedSource["usage"] = $$createField8_0($$parsedSource["usage"]);
         }
         return new WorkflowItemDetailView($$parsedSource as Partial<WorkflowItemDetailView>);
     }
@@ -3899,6 +3914,13 @@ export class WorkflowItemView {
     "parentUnitId"?: string;
     "parentAttempt"?: number;
     "callDepth"?: number;
+
+    /**
+     * SoftStop is the standing request to stop this run tree at its next call
+     * boundary (D36). Only a root run carries one; the overlay reads it to show
+     * the request as armed rather than as a state change that has not happened.
+     */
+    "softStop": boolean;
     "createdAt": number;
     "startedAt"?: number;
     "endedAt"?: number;
@@ -3928,6 +3950,9 @@ export class WorkflowItemView {
         }
         if (!("source" in $$source)) {
             this["source"] = "";
+        }
+        if (!("softStop" in $$source)) {
+            this["softStop"] = false;
         }
         if (!("createdAt" in $$source)) {
             this["createdAt"] = 0;

@@ -99,8 +99,13 @@ var ScopedTokenMethods = map[string][]string{
 	"WorkflowCancelItem":    {"start-run"},
 	"WorkflowPauseItem":     {"start-run"},
 	"WorkflowResumeItem":    {"start-run"},
-	"WorkflowRerunItem":     {"start-run"},
-	"WorkflowRetryUnit":     {"start-run"},
+	// Asking a run to stop at its next call boundary is the same authority as
+	// pausing it outright, deferred to a point where nothing is interrupted. A
+	// babysitting session is the one that notices "this campaign has done
+	// enough for tonight", so it is the one that needs the verb.
+	"WorkflowRequestSoftStop": {"start-run"},
+	"WorkflowRerunItem":       {"start-run"},
+	"WorkflowRetryUnit":       {"start-run"},
 	// Repairing every failed unit at once is the same authority as repairing one
 	// at a time: same edge, same admission, N times in one command. A babysitting
 	// session is the one that notices a usage limit reset, so it is the one that

@@ -184,6 +184,7 @@ export const WorkflowMergeItem = dispatch('WorkflowMergeItem');
 export const WorkflowRerunItem = dispatch('WorkflowRerunItem');
 export const WorkflowSendPRReviewCommentsToThread = dispatch('WorkflowSendPRReviewCommentsToThread');
 export const WorkflowPauseItem = dispatch('WorkflowPauseItem');
+export const WorkflowRequestSoftStop = dispatch('WorkflowRequestSoftStop');
 export const WorkflowResolveGate = dispatch('WorkflowResolveGate');
 export const WorkflowResumeItem = dispatch('WorkflowResumeItem');
 export const WorkflowRetryFailedUnits = dispatch('WorkflowRetryFailedUnits');

@@ -131,14 +131,31 @@ func (s *Store) StartWorkItemUnit(itemID, phaseID string, attempt int, unitID st
 // RetryWorkItemUnit returns a settled unit to `pending` so its attempt can
 // launch it again. The row is reused rather than superseded — a unit's identity
 // inside a phase attempt is its id, and `unit_attempt` counts the tries — so the
-// previous try's envelope and timestamps are cleared. Its feedback is kept until
-// the next start overwrites it, which is what explains the pending row.
-func (s *Store) RetryWorkItemUnit(itemID, phaseID string, attempt int, unitID string) error {
+// previous try's envelope and timestamps are cleared.
+//
+// The reopen writes the try the unit is now ON and the feedback that try will
+// carry, rather than leaving both to the eventual start. A repair that leaves
+// the run parked (one unit retried while another still rests failed, a
+// retry-all with a taken-over unit) evicts the item from memory, so anything
+// held only in memory is lost and the unit's next start would inherit the
+// previous FAILURE note as its input and a try count one behind the truth. The
+// row is the only thing that survives the park, so the row is what carries it.
+//
+// `unitAttempt` is the value StartWorkItemUnit will later write again for the
+// same try. That is not a double bump: the caller bumps its counter once and
+// both writes persist the same number, so a start that never happens (the run
+// stays parked, the process dies) leaves the record exactly where the reopen
+// put it.
+func (s *Store) RetryWorkItemUnit(itemID, phaseID string, attempt int, unitID string, unitAttempt int, feedback string) error {
+	if unitAttempt < 1 {
+		return fmt.Errorf("store: retry work item unit %s/%s/%d/%s: unit attempt must be >= 1", itemID, phaseID, attempt, unitID)
+	}
 	result, err := s.db.Exec(
 		`UPDATE work_item_units
-		 SET status = 'pending', envelope = '', started_at = 0, ended_at = 0
+		 SET status = 'pending', unit_attempt = ?, feedback = ?, envelope = '',
+		     started_at = 0, ended_at = 0
 		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
-		itemID, phaseID, attempt, unitID,
+		unitAttempt, feedback, itemID, phaseID, attempt, unitID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: retry work item unit %s/%s/%d/%s: %w", itemID, phaseID, attempt, unitID, err)

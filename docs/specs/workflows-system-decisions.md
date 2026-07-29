@@ -1396,3 +1396,112 @@ verdict it now is, with what the first attempt got wrong.
   root, workspace root, pause/cancel subtree), each an indexed point
   read, so hundreds is bounded by arithmetic; runaway recursion still
   dies here, hundreds of runs before anything else notices.
+
+## Stopping a campaign, and hearing about a wave that stopped itself (2026-07-29)
+
+- **D36. A run tree gains a standing request to stop at its next CALL
+  boundary, parking `needs-human(checkpoint)`; and a descendant's park
+  carries enough at the root's bound thread to be acted on without a
+  second command.** `Engine.SetSoftStop` →
+  `App.WorkflowRequestSoftStop(itemID, armed)` → the `Stop after this
+  wave` button on a running root's action row and `agent-overflow run
+  soft-stop <run-id> [--clear]`.
+
+  **Why a third stop.** Pause interrupts the turn in flight; cancel ends
+  the run. Neither is what a human wants at 2am watching a campaign that
+  has three good waves behind it: they want the wave that is running to
+  finish, and the next one not to start. Before this, the only way to get
+  that was to watch for the boundary and press Pause inside it — which is
+  a race a human loses, and which costs the interrupted turn's work when
+  they lose it.
+
+  **The boundary is the call, and only the call.** `startCall` reads the
+  request before it resolves a target, evaluates args, or writes a child
+  row: the wave that just ran is complete, the next one has not begun, and
+  stopping costs nothing. It is deliberately NOT checked at a fan-out
+  unit's call edge — a unit call is work *inside* a wave, and stopping
+  mid-fan-out would strand the siblings the join is waiting for, which is
+  the interruption this feature exists to avoid.
+
+  **The request lives on the root, and the firing boundary consumes it.**
+  A tree is stopped as a tree, exactly like pause (§12), so `SetSoftStop`
+  refuses a called run and names the run to set it on instead. Every
+  descendant's boundary reads the ROOT's row, which is what lets a
+  request made against the run a human is watching stop a wave forty deep.
+  The boundary that fires clears the flag before it parks — so a resume
+  takes the call it skipped instead of re-parking on the same boundary
+  forever, and a cleared flag with a failed park is a loud error rather
+  than a tree that can never move again.
+
+  **The engine is the only writer.** `SetSoftStop` goes through the
+  command loop rather than writing the row from the caller's goroutine,
+  because the boundary's read and its clear are on that loop too. Writing
+  from outside would open a window where a request lands between a
+  boundary's read and its clear and is silently lost. For the same
+  reason the boundary re-reads the root row from the store instead of
+  trusting the resident copy.
+
+  **`checkpoint` is a new typed reason, not a reuse of `paused`.**
+  Migration v44 widens the `work_items.reason` CHECK and adds the
+  `soft_stop` column (one rebuild, derived from v43's text). It resumes
+  through exactly the `paused` / `interrupted` edge — same continuation,
+  same `ResumableReason` set — but it reads differently everywhere a
+  human looks, because it is the one park that is not a fault: the run
+  did what it was told. Calling it `paused` would have made the benign
+  stop indistinguishable from the six that need diagnosing.
+
+  **Arming refuses a run that is not going; clearing never refuses.** A
+  request on a parked or finished run has no next boundary to reach and
+  would fire at whatever a later rerun did first. Withdrawal stays legal
+  in every state, because "I changed my mind" must never be the thing
+  that errors. Both directions are idempotent and both travel through the
+  one method with a flag, so a caller that can only arm cannot exist.
+
+  **A workflow with no call edge accepts the request and never fires it.**
+  That is stated in `agent-overflow run soft-stop --help` and is why the
+  UI offers the button only when the run's frozen snapshot actually has a
+  call phase (`WorkflowItemDetailView.CallPhaseIDs`): a request that could
+  never fire must not be presented as a stop that will happen.
+
+- **D36a. A descendant's park was already announced at the root; what it
+  said was not enough to act on.** `surfaceDescendantPark` (spec §5
+  amendment, 2026-07-25) has always fired for a park below a running
+  root. The wake now also carries the call chain root→park
+  (`wake.Descendant.Chain`, elided in the middle past `MaxChainRuns` with
+  the elision stating its own size), the parked run's OWN failed units
+  rather than the root's, and a closing that says which run to act on.
+
+  **Why the chain.** A campaign is one run per wave, so "a called run 6
+  levels down parked" names a run the reader has never seen, in a tree
+  they would otherwise have to walk with a second command to understand.
+  The chain is cheap — the ancestry walk that resolves the root already
+  visits every row — and it is what makes `agent-overflow run
+  retry-failed-units <child-run-id>` a command an agent can issue from
+  the message alone.
+
+  **Why the descendant's units and not the root's.** The most common
+  thing the woken agent is there to do is repair the parked run's failed
+  units. Reporting the root's would point the repair verb at the wrong
+  run, so the reference label names whose units they are
+  (`called run failed unit`) and the root's are not collected at all.
+
+  **The authority to act on them was already correct.** An interactive
+  scoped token (the credential a bound thread's session holds) is
+  PROJECT-scoped: `app_workflow_cli.go`'s `scopedRun` checks
+  `item.ProjectID != scope.ProjectID` and then returns for any non-phase
+  scope, so a descendant run is reachable without widening anything. A
+  phase token stays limited to the runs it started itself, descendants
+  included. A test now pins both.
+
+- **D36b. `store.RetryWorkItemUnit` persisted neither the retry note nor
+  the attempt bump.** The engine incremented `unit.attempt` and attached
+  the feedback in memory, and the store reset the row to `pending`
+  without writing either — so a retried unit that was evicted and
+  restored came back on its old try number with no feedback, and the
+  repaired unit's prompt lost the note that told it what to do
+  differently. The store call now takes both and writes both; the restore
+  path reads them back; the test that pinned the old behaviour asserts
+  the new one. There is no double-bump: the engine computes the next
+  number once and both `RetryWorkItemUnit` and the later
+  `StartWorkItemUnit` persist that same value. The four call sites that
+  had each open-coded the reopen now share `Engine.reopenUnit`.

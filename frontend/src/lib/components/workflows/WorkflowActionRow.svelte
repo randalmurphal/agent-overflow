@@ -56,7 +56,15 @@
   let viewOnly = $derived(isViewOnlySession());
   const localOnly = $derived(viewOnly ? 'Local only' : undefined);
   let kind = $derived(workflowResolutionKind(item));
-  let row = $derived(workflowActionRow({ kind, nextPhaseId }));
+  // A stop request only exists where a boundary exists to honour it: the ROOT
+  // of a tree, whose workflow has a call phase. Offering it anywhere else would
+  // promise a stop that could never arrive.
+  let softStop = $derived(
+    !item.parentItemId && (detail.callPhaseIds?.length ?? 0) > 0
+      ? { armed: item.softStop === true }
+      : undefined,
+  );
+  let row = $derived(workflowActionRow({ kind, nextPhaseId, softStop }));
   let receipt = $derived(getWorkflowReceipt(item.id));
   let armed = $derived(getWorkflowArmedAction());
   let latestThreadId = $derived([...(detail.phases ?? [])].reverse().find((phase) => phase.threadId)?.threadId ?? '');
@@ -142,6 +150,8 @@
       case 'create-pr': void act({ kind: 'create-pr' }); return;
       case 'open-phase-thread': void openWorkflowThreadById(latestThreadId); return;
       case 'pause': void act({ kind: 'pause' }); return;
+      case 'soft-stop': void act({ kind: 'soft-stop', armed: true }); return;
+      case 'clear-soft-stop': void act({ kind: 'soft-stop', armed: false }); return;
       case 'cancel': void act({ kind: 'cancel' }); return;
       // Preview is consent (§4.5): discard never destroys from this row.
       case 'discard': setWorkflowsOverlayDialog('discard'); return;

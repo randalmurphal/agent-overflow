@@ -1444,6 +1444,14 @@ export class WorkItem {
     "parentUnitId"?: string;
     "parentAttempt"?: number;
     "callDepth"?: number;
+
+    /**
+     * SoftStop is a standing request to stop this run tree at its next call
+     * boundary (D36). It is only ever set on a ROOT run — the tree is the unit a
+     * human stops — and the engine consumes it: the boundary that fires clears
+     * it, so arming is a one-shot rather than a mode a resume would re-trip on.
+     */
+    "softStop"?: boolean;
     "createdAt": number;
     "startedAt"?: number;
     "endedAt"?: number;

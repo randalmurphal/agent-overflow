@@ -173,19 +173,14 @@ func (e *Engine) continueFanOutJoin(item *runtimeItem, threadID string, feedback
 			action, item.item.ID, reason,
 		)
 	}
-	if err := e.store.RetryWorkItemUnit(item.item.ID, item.phaseID, item.attempt, join.id); err != nil {
+	if err := e.reopenUnit(item, join, feedback); err != nil {
 		return fmt.Errorf("%s %q: reopen join: %w", action, item.item.ID, err)
 	}
-	join.status = store.WorkItemUnitPending
-	join.attempt++
-	join.envelope = nil
-	join.feedback = feedback
 	item.fan.joinStarted = false
 	// Consumed by startUnitRunner when it launches the join, exactly as
 	// startRunner consumes them for a single-shape phase.
 	item.priorThreadID = threadID
 	item.takeoverFinalize = finalize
-	e.emitUnitState(item, join)
 	return e.resumeRepairedFanOut(item)
 }
 

@@ -22,6 +22,7 @@ import type {
   WorkflowItemStateEvent,
   WorkflowPhaseStateEvent,
   WorkflowResolvedReceipt,
+  WorkflowSoftStopEvent,
 } from '../types/workflow';
 import {
   WorkflowGetEngineState,
@@ -34,7 +35,7 @@ import {
 } from './bindings';
 import { addToast } from './toast.svelte';
 import { userFacingError } from '../utils/userFacingError';
-import { patchWorkflowItems, workflowAttentionCount } from './workflowData';
+import { patchWorkflowItems, patchWorkflowSoftStop, workflowAttentionCount } from './workflowData';
 
 const REFRESH_DEBOUNCE_MS = 200;
 
@@ -315,6 +316,13 @@ export function applyWorkflowPhaseState(event: WorkflowPhaseStateEvent): void {
     status: event.status ?? '',
     unitId: event.unitId ?? '',
   });
+  if (details.has(event.itemId)) void loadWorkflowDetail(event.itemId, true);
+}
+
+export function applyWorkflowSoftStop(event: WorkflowSoftStopEvent): void {
+  if (!event || typeof event.itemId !== 'string' || event.itemId === '') return;
+  if (typeof event.armed !== 'boolean') return;
+  runs = patchWorkflowSoftStop(runs, event.itemId, event.armed);
   if (details.has(event.itemId)) void loadWorkflowDetail(event.itemId, true);
 }
 

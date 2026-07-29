@@ -137,8 +137,8 @@ func (e *Engine) resumeItem(itemID string) error {
 	}
 	if !ResumableReason(Reason(item.item.Reason)) {
 		return fmt.Errorf(
-			"resume item %q: item is parked %q; continuing a parked session applies to %s and %s",
-			itemID, item.item.Reason, ReasonPaused, ReasonInterrupted,
+			"resume item %q: item is parked %q; continuing a parked run applies to %s, %s, and %s",
+			itemID, item.item.Reason, ReasonPaused, ReasonInterrupted, ReasonCheckpoint,
 		)
 	}
 	if _, tracked := e.items[itemID]; tracked {
@@ -214,14 +214,9 @@ func (e *Engine) resumeFanOutAttempt(item *runtimeItem, threadID string, feedbac
 		if unit.status != store.WorkItemUnitFailed {
 			continue
 		}
-		if err := e.store.RetryWorkItemUnit(itemID, item.phaseID, item.attempt, unit.id); err != nil {
+		if err := e.reopenUnit(item, unit, feedback); err != nil {
 			return fmt.Errorf("resume item %q: reopen unit %q: %w", itemID, unit.id, err)
 		}
-		unit.status = store.WorkItemUnitPending
-		unit.attempt++
-		unit.envelope = nil
-		unit.feedback = feedback
-		e.emitUnitState(item, unit)
 	}
 	if item.fan.join.status == store.WorkItemUnitPending {
 		// The join never ran, so the units are the whole attempt: relaunch the
@@ -256,10 +251,18 @@ func (e *Engine) resumableThread(item *runtimeItem, threadID string) (string, er
 // not be continued is stated in the note rather than logged and forgotten: it
 // is the only place the next turn learns that its predecessor's context is
 // gone, and the only place a human reading the attempt input sees it.
+//
+// `checkpoint` is listed even though a soft stop can only park a call phase,
+// which resumes through resumeCallPhase and never reaches here: a note that
+// said "after a pause" for a reason that is not one would be a small lie
+// waiting for the day a second boundary kind exists.
 func resumeNote(reason Reason, sessionLost bool) string {
 	note := "resumed after a pause"
-	if reason == ReasonInterrupted {
+	switch reason {
+	case ReasonInterrupted:
 		note = "resumed after the run was interrupted"
+	case ReasonCheckpoint:
+		note = "resumed after the run stopped at the requested checkpoint"
 	}
 	if sessionLost {
 		return note + "; the previous attempt's provider session no longer exists, so its context is gone — redo the phase from its inputs"

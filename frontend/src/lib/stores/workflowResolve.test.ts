@@ -34,6 +34,7 @@ function bindings(over: Partial<WorkflowActionBindings> = {}): WorkflowActionBin
     dropUnit: vi.fn(async () => undefined),
     mergeItem: vi.fn(async () => ({ base: 'main', mode: 'ff', sha: 'abc' })),
     pauseItem: vi.fn(async () => undefined),
+    requestSoftStop: vi.fn(async () => undefined),
     resolveGate: vi.fn(async () => undefined),
     resumeItem: vi.fn(async () => undefined),
     rerunItem: vi.fn(async () => undefined),

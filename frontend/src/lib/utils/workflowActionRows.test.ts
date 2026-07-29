@@ -17,7 +17,8 @@ function ids(kind: WorkflowResolutionKind): string[] {
 }
 
 const ALL_KINDS: WorkflowResolutionKind[] = [
-  'gate', 'question', 'failed', 'blocked', 'paused', 'unit-failed', 'taken-over', 'done', 'running', 'cancelled',
+  'gate', 'question', 'failed', 'blocked', 'paused', 'checkpoint', 'unit-failed', 'taken-over', 'done', 'running',
+  'cancelled',
 ];
 
 describe('workflowResolutionKind', () => {
@@ -33,6 +34,7 @@ describe('workflowResolutionKind', () => {
     ['needs-human', 'taken-over', 'taken-over'],
     ['needs-human', 'paused', 'paused'],
     ['needs-human', 'interrupted', 'paused'],
+    ['needs-human', 'checkpoint', 'checkpoint'],
     ['needs-human', 'disposition', 'done'],
     ['needs-human', 'stuck', 'blocked'],
     ['needs-human', 'agent-error', 'blocked'],
@@ -67,6 +69,7 @@ describe('workflowActionRow', () => {
     ['failed', ['rerun', 'discard']],
     ['blocked', ['resume', 'discard']],
     ['paused', ['resume', 'discard']],
+    ['checkpoint', ['resume', 'discard']],
     ['unit-failed', ['retry-unit', 'retry-failed-units', 'drop-unit', 'take-over-unit', 'discard']],
     ['taken-over', ['complete-takeover', 'discard']],
     ['done', ['merge', 'create-pr', 'discard']],
@@ -111,6 +114,34 @@ describe('workflowActionRow', () => {
     expect(armed('done')).toEqual([]);
     expect(armed('failed')).toEqual([]);
     expect(armed('blocked')).toEqual([]);
+  });
+
+  // The stop request is the one row entry that is not a function of the run's
+  // state: it exists only where a call boundary can honour it, and its label is
+  // the only place a human sees that a stop is already pending.
+  it('offers no stop when the run has no boundary to stop at', () => {
+    expect(ids('running')).toEqual(['pause', 'open-phase-thread', 'cancel']);
+  });
+
+  it.each([
+    [false, 'soft-stop', 'Stop after this wave'],
+    [true, 'clear-soft-stop', 'Stopping after this wave — undo'],
+  ] as const)('renders the stop request armed=%s as %s', (isArmed, id, label) => {
+    const row = workflowActionRow({ kind: 'running', softStop: { armed: isArmed } });
+    expect(row.map((action) => action.id)).toEqual(['pause', id, 'open-phase-thread', 'cancel']);
+    expect(row[1]).toMatchObject({ label });
+    // Nothing is destroyed either way, so neither direction arms a confirm.
+    expect(row[1].arms).toBeUndefined();
+  });
+
+  it('gives the stop request no key, leaving §8 bindings untouched', () => {
+    const row = workflowActionRow({ kind: 'running', softStop: { armed: false } });
+    expect(row.find((action) => action.id === 'soft-stop')?.key).toBeUndefined();
+  });
+
+  it('offers a checkpoint park the resume edge in its own words', () => {
+    const row = workflowActionRow({ kind: 'checkpoint' });
+    expect(row[0]).toMatchObject({ id: 'resume', label: 'Continue the run', key: 'a' });
   });
 
   it('binds at most one action per key on every row', () => {

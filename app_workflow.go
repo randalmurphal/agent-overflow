@@ -566,9 +566,13 @@ type WorkflowItemView struct {
 	ParentUnitID  string `json:"parentUnitId,omitempty"`
 	ParentAttempt int    `json:"parentAttempt,omitempty"`
 	CallDepth     int    `json:"callDepth,omitempty"`
-	CreatedAt     int64  `json:"createdAt"`
-	StartedAt     int64  `json:"startedAt,omitempty"`
-	EndedAt       int64  `json:"endedAt,omitempty"`
+	// SoftStop is the standing request to stop this run tree at its next call
+	// boundary (D36). Only a root run carries one; the overlay reads it to show
+	// the request as armed rather than as a state change that has not happened.
+	SoftStop  bool  `json:"softStop"`
+	CreatedAt int64 `json:"createdAt"`
+	StartedAt int64 `json:"startedAt,omitempty"`
+	EndedAt   int64 `json:"endedAt,omitempty"`
 }
 
 // WorkflowItemChildView is one run this item called. A child is a real run with
@@ -634,14 +638,19 @@ type WorkflowItemUnitView struct {
 }
 
 type WorkflowItemDetailView struct {
-	Item          WorkflowItemView        `json:"item"`
-	CheckPhaseIDs []string                `json:"checkPhaseIds"`
-	Phases        []WorkflowItemPhaseView `json:"phases"`
-	Units         []WorkflowItemUnitView  `json:"units"`
-	Children      []WorkflowItemChildView `json:"children"`
-	Outputs       map[string]any          `json:"outputs"`
-	Artifacts     []WorkflowArtifact      `json:"artifacts"`
-	Usage         store.WorkItemUsage     `json:"usage"`
+	Item          WorkflowItemView `json:"item"`
+	CheckPhaseIDs []string         `json:"checkPhaseIds"`
+	// CallPhaseIDs names the frozen phases that invoke another run. Empty means
+	// this run has no call boundary, which is the one thing a soft stop needs to
+	// know before offering itself: a request that can never fire must not be
+	// presented as a stop that will happen.
+	CallPhaseIDs []string                `json:"callPhaseIds"`
+	Phases       []WorkflowItemPhaseView `json:"phases"`
+	Units        []WorkflowItemUnitView  `json:"units"`
+	Children     []WorkflowItemChildView `json:"children"`
+	Outputs      map[string]any          `json:"outputs"`
+	Artifacts    []WorkflowArtifact      `json:"artifacts"`
+	Usage        store.WorkItemUsage     `json:"usage"`
 }
 
 func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
@@ -667,7 +676,7 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 	if err != nil {
 		return WorkflowItemDetailView{}, err
 	}
-	checkPhaseIDs, err := workflowCheckPhaseIDs(item.Snapshot)
+	checkPhaseIDs, callPhaseIDs, err := workflowSnapshotPhaseIDs(item.Snapshot)
 	if err != nil {
 		return WorkflowItemDetailView{}, fmt.Errorf("workflow item %s snapshot: %w", itemID, err)
 	}
@@ -724,9 +733,11 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 			ParentItemID: item.ParentItemID, ParentPhaseID: item.ParentPhaseID,
 			ParentUnitID:  item.ParentUnitID,
 			ParentAttempt: item.ParentAttempt, CallDepth: item.CallDepth,
+			SoftStop:  item.SoftStop,
 			CreatedAt: item.CreatedAt, StartedAt: item.StartedAt, EndedAt: item.EndedAt,
 		},
-		CheckPhaseIDs: checkPhaseIDs, Phases: phaseViews, Units: unitViews,
+		CheckPhaseIDs: checkPhaseIDs, CallPhaseIDs: callPhaseIDs,
+		Phases: phaseViews, Units: unitViews,
 		Children: childViews, Outputs: outputs, Artifacts: artifacts, Usage: usage,
 	}, nil
 }
@@ -774,19 +785,27 @@ func workflowNamedOutputs(payload json.RawMessage, phases []store.WorkItemPhaseT
 	return outputs, nil
 }
 
-func workflowCheckPhaseIDs(payload json.RawMessage) ([]string, error) {
-	ids := make([]string, 0)
+// workflowSnapshotPhaseIDs projects the two phase classifications the detail
+// view carries: the deterministic checks a gate's evidence block names, and the
+// call sites a soft stop can fire at. Both come off the same frozen snapshot, so
+// they are read in one decode rather than two — the snapshot is the largest
+// column in the row and decoding it twice per detail load is pure waste.
+func workflowSnapshotPhaseIDs(payload json.RawMessage) (checks, calls []string, err error) {
+	checks, calls = make([]string, 0), make([]string, 0)
 	if len(payload) == 0 {
-		return ids, nil
+		return checks, calls, nil
 	}
 	var snapshot engine.Snapshot
 	if err := json.Unmarshal(payload, &snapshot); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, phase := range snapshot.Workflow.Phases {
 		if phase.Driver == def.DriverTool && phase.Check != "" {
-			ids = append(ids, phase.ID)
+			checks = append(checks, phase.ID)
+		}
+		if phase.IsCall() {
+			calls = append(calls, phase.ID)
 		}
 	}
-	return ids, nil
+	return checks, calls, nil
 }

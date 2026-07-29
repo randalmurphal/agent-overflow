@@ -33,6 +33,7 @@ const attentionLabels: Record<string, string> = {
   stalled: 'Stalled',
   paused: 'Paused',
   interrupted: 'Interrupted',
+  checkpoint: 'Stopped at checkpoint',
   'unit-failed': 'Unit failed',
   'child-failed': 'Child failed',
   disposition: 'Disposition',

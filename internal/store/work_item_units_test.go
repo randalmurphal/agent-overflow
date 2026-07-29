@@ -117,6 +117,65 @@ func TestWorkItemUnitRetryReusesTheRowLineage(t *testing.T) {
 	}
 }
 
+// The reopen itself is the durable record of a repair. A unit returned to
+// `pending` carries the try it is now on and the note that try will be given,
+// because the engine's copy of both dies with the parked run: the row is what
+// the eventual start reads back.
+func TestRetryWorkItemUnitPersistsTheTryAndItsFeedback(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateWorkItemUnits([]WorkItemUnit{pendingUnit("port-0", 0, WorkItemUnitKindUnit, "claude")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartWorkItemUnit("item", "port", 1, "port-0", 1, "", 100); err != nil {
+		t.Fatal(err)
+	}
+	failed := json.RawMessage(`{"status":"stuck","outputs":null}`)
+	if err := s.CompleteWorkItemUnit(
+		"item", "port", 1, "port-0", WorkItemUnitFailed, failed, "unit outcome execution-failure", 110,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RetryWorkItemUnit("item", "port", 1, "port-0", 2, "the limit reset"); err != nil {
+		t.Fatal(err)
+	}
+	unit, found, err := s.GetWorkItemUnit("item", "port", 1, "port-0")
+	if err != nil || !found {
+		t.Fatalf("reopened unit: found=%v err=%v", found, err)
+	}
+	if unit.Status != WorkItemUnitPending || unit.UnitAttempt != 2 ||
+		unit.Feedback != "the limit reset" || len(unit.Envelope) != 0 ||
+		unit.StartedAt != 0 || unit.EndedAt != 0 {
+		t.Fatalf("reopened unit = %#v", unit)
+	}
+
+	// The start writes the same try the reopen did. Two writes, one bump.
+	if err := s.StartWorkItemUnit("item", "port", 1, "port-0", 2, "the limit reset", 120); err != nil {
+		t.Fatal(err)
+	}
+	started, _, err := s.GetWorkItemUnit("item", "port", 1, "port-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.UnitAttempt != 2 {
+		t.Fatalf("started unit attempt = %d, want the reopen's try rather than a second bump", started.UnitAttempt)
+	}
+}
+
+// A reopen below the first try is a caller bug, not a row to write: it would
+// make the record claim the unit is on a try it already finished.
+func TestRetryWorkItemUnitRefusesAnInvalidTry(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateWorkItemUnits([]WorkItemUnit{pendingUnit("port-0", 0, WorkItemUnitKindUnit, "claude")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RetryWorkItemUnit("item", "port", 1, "port-0", 0, ""); err == nil {
+		t.Fatal("retry with unit attempt 0 = nil, want a refusal")
+	}
+	if err := s.RetryWorkItemUnit("item", "port", 1, "absent", 1, ""); err == nil {
+		t.Fatal("retry of an absent unit = nil, want a refusal")
+	}
+}
+
 // The teardown contract's store half: nothing may stay `running` after an
 // attempt stops, and a unit that never started stays launchable.
 func TestFailRunningWorkItemUnitsLeavesPendingLaunchable(t *testing.T) {

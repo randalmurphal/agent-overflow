@@ -100,6 +100,11 @@ func workflowTemplateDigest(
 			digest.WhatHappened = fmt.Sprintf("The run is stuck in %s%s.", phase, optionalDigestDetail(ctx.Stuck))
 		case engine.ReasonDisposition:
 			digest.WhatHappened = "The work finished, but its branch could not be disposed cleanly."
+		case engine.ReasonCheckpoint:
+			// The one park that is not a problem: the run did exactly what it was
+			// told. Saying "paused because …" here would read as a fault report
+			// for the human's own instruction.
+			digest.WhatHappened = "The run stopped at the checkpoint you asked for, before starting the next call."
 		default:
 			digest.WhatHappened = fmt.Sprintf("The run paused in %s because %s.", phase, workflowReasonText(reason))
 		}
@@ -136,6 +141,8 @@ func workflowTemplateDigest(
 		digest.WhatItNeeds = "Finish the human takeover or return the phase to the workflow."
 	case engine.ReasonAgentError:
 		digest.WhatItNeeds = "Review the agent failure and decide whether to retry or take over."
+	case engine.ReasonCheckpoint:
+		digest.WhatItNeeds = "Resume the run to continue, or leave it stopped."
 	default:
 		digest.WhatItNeeds = "Review the run and choose whether to retry, take over, or discard it."
 	}

@@ -1510,7 +1510,67 @@ CREATE INDEX idx_work_items_automation_source_ref
 		SQL:     rebuildWorkItemsUnitCallLinkageV43SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 44,
+		Name:    "work_item_soft_stop",
+		SQL:     rebuildWorkItemsSoftStopV44SQL,
+		Rebuild: true,
+	},
 }
+
+// rebuildWorkItemsSoftStopV44SQL adds `soft_stop` — a standing request to stop
+// this run tree at its next call boundary — and widens the typed park reason
+// set with `checkpoint`, the reason a run takes when that boundary fires (D36).
+//
+// The two ship together because they are one feature and one of them forces a
+// rebuild regardless: SQLite cannot alter a CHECK in place, so widening `reason`
+// costs a table rewrite that `soft_stop` may as well ride along with rather
+// than paying for a second one.
+//
+// `soft_stop` is deliberately NOT constrained to root runs by a CHECK, unlike
+// the call-linkage columns above. "Is this run a root" is readable from
+// `parent_item_id`, so a CHECK would be expressible — but the rule it would
+// encode is about who may *ask*, which the engine enforces before it writes,
+// and a column-level refusal would surface as a corrupt-write error rather than
+// as the refusal a human needs to read. The linkage CHECKs exist because a
+// half-written linkage makes the tree unreadable; a soft stop on a child would
+// merely never fire.
+//
+// Derived from the shipped v43 text, and the derivation extends v43's copy list
+// with `parent_unit_id` — v43's own new column, absent from the list it
+// inherited from v39. Same failure mode the v43 comment names: a rebuild
+// derived from an earlier text silently drops whatever shipped in between.
+// `soft_stop` itself is not copied; it is new here and defaults to disarmed.
+var rebuildWorkItemsSoftStopV44SQL = mustReplaceOnce(
+	mustReplaceOnce(
+		mustReplaceOnce(
+			mustReplaceOnce(
+				rebuildWorkItemsUnitCallLinkageV43SQL,
+				workItemsReasonCheckV39, workItemsReasonCheckV44,
+			),
+			"    step_mode        INTEGER NOT NULL DEFAULT 0 CHECK(step_mode IN (0,1)),",
+			"    step_mode        INTEGER NOT NULL DEFAULT 0 CHECK(step_mode IN (0,1)),\n"+
+				"    soft_stop        INTEGER NOT NULL DEFAULT 0 CHECK(soft_stop IN (0,1)),",
+		),
+		workItemsCopyColumnsV43+"\n)",
+		workItemsCopyColumnsV44+"\n)",
+	),
+	workItemsCopyColumnsV43+"\nFROM work_items;",
+	workItemsCopyColumnsV44+"\nFROM work_items;",
+)
+
+// workItemsCopyColumnsV44 is workItemsCopyColumnsV43 plus `parent_unit_id`, the
+// column v43 itself created and therefore did not copy.
+const workItemsCopyColumnsV44 = `    source, source_ref, triage_thread_id, origin_thread_id, disposition, digest,
+    parent_item_id, parent_phase_id, parent_unit_id, parent_attempt, call_depth,
+    created_at, started_at, ended_at`
+
+// workItemsReasonCheckV44 is workItemsReasonCheckV39 widened with `checkpoint`:
+// the park a soft stop produces when a run reaches the call boundary it was
+// asked to stop at. It is deliberately not `paused` — both resume the same way,
+// and the reason is what tells a human (and the wake message) that the run
+// stopped exactly where they asked rather than being interrupted.
+const workItemsReasonCheckV44 = `reason           TEXT    NOT NULL DEFAULT '' CHECK(reason IN ('','gate','question','stuck','stalled','budget-exhausted','retries-exhausted','check-failed-genuine','agent-error','wiring-error','disposition','setup-failed','interrupted','taken-over','unit-failed','child-failed','paused','checkpoint')),`
 
 // rebuildWorkItemsUnitCallLinkageV43SQL adds `parent_unit_id`: the fan-out unit
 // whose call created a run. v38's linkage identifies an invocation by (item,

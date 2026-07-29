@@ -17,6 +17,7 @@ import {
   WorkflowPauseItem,
   WorkflowResolveGate,
   WorkflowResumeItem,
+  WorkflowRequestSoftStop,
   WorkflowRerunItem,
   WorkflowRetryFailedUnits,
   WorkflowRetryUnit,
@@ -36,6 +37,7 @@ export type WorkflowActionRequest =
   | { kind: 'create-pr' }
   | { kind: 'discard' }
   | { kind: 'pause' }
+  | { kind: 'soft-stop'; armed: boolean }
   | { kind: 'cancel' };
 
 export interface WorkflowActionBindings {
@@ -48,6 +50,7 @@ export interface WorkflowActionBindings {
   mergeItem: (itemId: string) => Promise<{ base?: string; mode?: string; sha?: string; cleanupFailed?: boolean }>;
   pauseItem: (itemId: string) => Promise<void>;
   resolveGate: (itemId: string, decision: string, note: string) => Promise<void>;
+  requestSoftStop: (itemId: string, armed: boolean) => Promise<void>;
   resumeItem: (itemId: string, targetPhase: string) => Promise<void>;
   rerunItem: (itemId: string, guidance: string) => Promise<void>;
   retryUnit: (itemId: string, unitId: string, note: string) => Promise<void>;
@@ -64,6 +67,7 @@ const liveBindings: WorkflowActionBindings = {
   mergeItem: WorkflowMergeItem,
   pauseItem: WorkflowPauseItem,
   resolveGate: WorkflowResolveGate,
+  requestSoftStop: WorkflowRequestSoftStop,
   resumeItem: WorkflowResumeItem,
   rerunItem: WorkflowRerunItem,
   retryUnit: WorkflowRetryUnit,
@@ -161,6 +165,12 @@ export async function dispatchWorkflowAction(
       await bindings.pauseItem(item.id);
       // Pause parks the run; the park's own digest is the receipt a human
       // reads, so the sweep must not treat this as resolved and skip past it.
+      return null;
+    case 'soft-stop':
+      await bindings.requestSoftStop(item.id, action.armed);
+      // The run is still running either way, so there is nothing for the sweep
+      // to advance past. The armed state shows on the row itself; a receipt
+      // banner would claim a resolution that has not happened yet.
       return null;
     case 'cancel':
       await bindings.cancelItem(item.id);

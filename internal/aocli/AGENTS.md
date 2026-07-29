@@ -91,6 +91,7 @@ agent-overflow [--config-root <path>] <command>
   run status|wait|output <run-id> [--json] [--timeout]
   run list [--active] [--json]
   run pause|cancel <run-id> [--json]
+  run soft-stop <run-id> [--clear] [--json]
   run resume <run-id> [--phase <id>] [--json]
   run rerun <run-id> [--guidance <text>] [--json]
   run retry-unit <run-id> <unit-id> [--note <text>] [--json]
@@ -100,7 +101,11 @@ agent-overflow [--config-root <path>] <command>
 ```
 
 Every usage string lives in `usage.go` so adding a subcommand without
-documenting it is an obvious omission.
+documenting it is an obvious omission. `run soft-stop`'s help states the one
+thing its exit code cannot: a workflow with no call edge has no boundary to
+stop at, so the request is accepted and simply never fires (D36). A verb that
+succeeds and then does nothing has to say so where the caller is already
+looking.
 
 `--seed k=v` parses the value as JSON when it parses, and treats it as a string
 otherwise: `--seed count=3` seeds a number, `--seed name=alice` seeds a string,

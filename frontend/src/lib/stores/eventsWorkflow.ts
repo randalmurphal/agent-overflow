@@ -7,6 +7,7 @@ import type {
   WorkflowErrorEvent,
   WorkflowItemStateEvent,
   WorkflowPhaseStateEvent,
+  WorkflowSoftStopEvent,
 } from '../types/workflow';
 import { addToast } from './toast.svelte';
 import {
@@ -14,6 +15,7 @@ import {
   applyWorkflowEngineState,
   applyWorkflowItemState,
   applyWorkflowPhaseState,
+  applyWorkflowSoftStop,
 } from './workflowRuns.svelte';
 
 const MAX_ERROR_DEDUPE_KEYS = 100;
@@ -38,6 +40,10 @@ export function applyWorkflowItemStateEvent(event: WorkflowItemStateEvent): void
 
 export function applyWorkflowPhaseStateEvent(event: WorkflowPhaseStateEvent): void {
   applyWorkflowPhaseState(event);
+}
+
+export function applyWorkflowSoftStopEvent(event: WorkflowSoftStopEvent): void {
+  applyWorkflowSoftStop(event);
 }
 
 export function applyWorkflowEngineStateEvent(event: WorkflowEngineStateEvent): void {

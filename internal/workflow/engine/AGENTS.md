@@ -84,18 +84,32 @@ resource semaphores, and startup recovery.
   scheduler does not hold is an error, not a skip — it would be a run nothing
   could ever stop. `PauseAllActive` is the same path over every active root
   and is what graceful quit calls before provider sessions die.
-- **`paused` and `interrupted` resume identically.** Both stopped an attempt
-  before it produced a result, so `ResumeItem` continues on the session that
-  parked rather than re-entering the phase: a single-shape attempt through
-  `continueParkedAttempt`, a fan-out through the same repair `RetryUnit`
-  applies (every unit resting `failed` reopened at once) and then either
-  relaunch or `continueFanOutJoin`, a call phase by reopening the attempt and
-  recursing into the child. Descendants parked for another reason stay parked
-  and the root returns to waiting on them. The reasons differ for the human
-  reading the run list, not for the recovery. A parked attempt whose thread no
-  longer exists falls back to a fresh attempt whose feedback says so — the
-  `ThreadExists` probe exists so a deleted session parks as itself instead of
-  as an `agent-error` from a failed runner start.
+- **A soft stop is checked at call boundaries and nowhere else (D36).**
+  `SetSoftStop` arms a standing request on the tree's ROOT (it refuses a called
+  run, and refuses arming a run that is not `running`); `startCall` reads it
+  before it resolves a target or writes a child row, and `parkSoftStop` clears
+  it and parks that run `needs-human(checkpoint)`. The clear happens BEFORE the
+  teardown: a cleared flag with a failed park is a loud error, while a set flag
+  with a successful park would re-park the tree on every resume. It is
+  deliberately NOT checked in `startUnitCall` — a unit call is work inside a
+  wave, and stopping there strands the siblings its join waits for. The request
+  is written only from the command loop, because the boundary's read and its
+  clear live there too; `treeRoot` always re-reads the root row for the same
+  reason.
+- **`paused`, `interrupted`, and `checkpoint` resume identically.** All three
+  stopped a run before the phase it was in produced a result, so `ResumeItem`
+  continues on the session that parked rather than re-entering the phase: a
+  single-shape attempt through `continueParkedAttempt`, a fan-out through the
+  same repair `RetryUnit` applies (every unit resting `failed` reopened at
+  once) and then either relaunch or `continueFanOutJoin`, a call phase by
+  reopening the attempt and recursing into the child. Descendants parked for
+  another reason stay parked and the root returns to waiting on them. A
+  `checkpoint` park has no session to continue — its call phase never started
+  one — so its resume is the call edge the stop skipped. The reasons differ
+  for the human reading the run list, not for the recovery. A parked attempt
+  whose thread no longer exists falls back to a fresh attempt whose feedback
+  says so — the `ThreadExists` probe exists so a deleted session parks as
+  itself instead of as an `agent-error` from a failed runner start.
 - `RerunFailed` is the only `failed → running` edge. It re-stamps the run start
   before the transition and carries the previous attempt's failure feedback into
   the new one; the attempt begins immediately, subject to resources and pause.
@@ -182,6 +196,15 @@ resource semaphores, and startup recovery.
   branch, worktree, thread) under the reserved `units` variable, and its
   envelope *is* the phase's envelope — so a join failure is an ordinary phase
   failure (`agent-error`), not the unit-failure policy.
+- **Reopening a unit goes through `reopenUnit`.** Bumping the try number,
+  attaching the feedback, clearing the envelope, and persisting all of it via
+  `store.RetryWorkItemUnit` is one helper shared by `RetryUnit`,
+  `RetryFailedUnits`, the fan-out resume, and the join continuation. The try
+  number and the note are PERSISTED, not only held in memory, so an evicted and
+  restored attempt comes back on the try it is actually on with the note that
+  told it what to do differently. The engine computes the next number once and
+  the later `StartWorkItemUnit` writes the same value, so there is no
+  double-bump.
 - `RetryUnit` / `RetryFailedUnits` / `DropUnit` / `TakeOverUnit` repair an
   attempt rather than replacing it: the phase attempt row is reopened (`ReopenWorkItemPhase`) so
   finished units keep their results, and the run only returns to `running` when

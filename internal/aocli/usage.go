@@ -69,6 +69,7 @@ Commands:
                           Re-run one failed unit of a parked fan-out attempt
   retry-failed-units <run-id>
                           Re-run every failed unit of a parked fan-out attempt
+  soft-stop <run-id>      Stop a run tree at its next call boundary
 `
 
 const runStartUsage = `Usage: agent-overflow run start [options] <workflow-id>
@@ -118,6 +119,22 @@ const runRetryFailedUnitsUsage = `Usage: agent-overflow run retry-failed-units [
 Re-runs every unit of the parked fan-out attempt that is resting failed, in one
 action. Finished units keep their results, units under human steering are left
 alone, and the repaired ones queue for provider capacity like any other work.
+`
+
+const runSoftStopUsage = `Usage: agent-overflow run soft-stop [--json] [--clear] <run-id>
+
+Asks a run tree to stop at its NEXT call boundary: the run keeps going, nothing
+in flight is interrupted, and the next time it would invoke another run it parks
+needs-human(checkpoint) instead. Resuming takes the call it skipped, so a
+campaign continues exactly where it stopped.
+
+The request is set on the ROOT of a tree and every run below it honours it; a
+called run is refused with the run to set it on instead. Setting it twice is one
+request, and --clear withdraws it. The boundary that fires consumes the request,
+so a resume does not stop again.
+
+A run whose workflow makes no calls has no boundary to stop at. The request is
+accepted and simply never fires — nothing else is interrupted in its place.
 `
 
 const notesUsage = `Usage: agent-overflow notes <command> [options]

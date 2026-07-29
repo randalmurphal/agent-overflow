@@ -52,14 +52,9 @@ func (e *Engine) retryUnit(itemID, unitID, note string) error {
 	if err := repairable(itemID, unitID, "retry unit", unit); err != nil {
 		return err
 	}
-	if err := e.store.RetryWorkItemUnit(itemID, item.phaseID, item.attempt, unitID); err != nil {
+	if err := e.reopenUnit(item, unit, retryFeedback(note)); err != nil {
 		return fmt.Errorf("retry unit %q of item %q: %w", unitID, itemID, err)
 	}
-	unit.status = store.WorkItemUnitPending
-	unit.attempt++
-	unit.envelope = nil
-	unit.feedback = retryFeedback(note)
-	e.emitUnitState(item, unit)
 	return e.resumeRepairedFanOut(item)
 }
 
@@ -93,20 +88,15 @@ func (e *Engine) retryFailedUnits(itemID, note string) error {
 		)
 	}
 	for _, unit := range failed {
-		if err := e.store.RetryWorkItemUnit(itemID, item.phaseID, item.attempt, unit.id); err != nil {
+		// One Feedback per unit rather than one shared pointer: the note is the
+		// same text, but the value rides each unit's next start independently.
+		if err := e.reopenUnit(item, unit, retryFeedback(note)); err != nil {
 			// A write that fails here leaves the units before it reopened and the
 			// run still parked, which is a state the same action recovers from:
 			// reopened units rest `pending`, and the next repair relaunches them
 			// alongside whatever is still failed.
 			return fmt.Errorf("%s of item %q: reopen unit %q: %w", action, itemID, unit.id, err)
 		}
-		unit.status = store.WorkItemUnitPending
-		unit.attempt++
-		unit.envelope = nil
-		// One Feedback per unit rather than one shared pointer: the note is the
-		// same text, but the value rides each unit's next start independently.
-		unit.feedback = retryFeedback(note)
-		e.emitUnitState(item, unit)
 	}
 	// The repaired units re-enter through the same resume a single retry uses, so
 	// they are admitted one by one through acquireUnitResources and queue in the
@@ -114,6 +104,36 @@ func (e *Engine) retryFailedUnits(itemID, note string) error {
 	// than the provider bound starts what fits and holds the rest, never a burst.
 	// A unit still resting `taken-over` keeps the attempt parked.
 	return e.resumeRepairedFanOut(item)
+}
+
+// reopenUnit is the ONE way a settled unit returns to `pending`, shared by the
+// single retry, the retry-all, the resume's fan-out repair, and the join's
+// continuation. It bumps the try, persists the reopen with that try and the
+// feedback the next start will carry, and only then updates memory — so a
+// repair that leaves the run parked (and therefore evicts it) is fully readable
+// off the row, and a failed write leaves the in-memory unit exactly as it was
+// rather than one try ahead of the record.
+//
+// Every caller previously wrote these four fields itself around a store call
+// that persisted none of them; the duplication is what let the bug hide in one
+// copy at a time.
+func (e *Engine) reopenUnit(item *runtimeItem, unit *unitRun, feedback *Feedback) error {
+	next := unit.attempt + 1
+	note := ""
+	if feedback != nil {
+		note = feedback.Note
+	}
+	if err := e.store.RetryWorkItemUnit(
+		item.item.ID, item.phaseID, item.attempt, unit.id, next, note,
+	); err != nil {
+		return err
+	}
+	unit.status = store.WorkItemUnitPending
+	unit.attempt = next
+	unit.envelope = nil
+	unit.feedback = feedback
+	e.emitUnitState(item, unit)
+	return nil
 }
 
 func (e *Engine) dropUnit(itemID, unitID, note string) error {

@@ -26,7 +26,19 @@ The compact message a resting root run injects into its bound thread
   the headline is the root's (still `running` — it is *waiting*) and the
   body names the parked descendant, its depth, and what it is parked on.
   This is what turns "a grandchild is stuck" into one message on the
-  surface a human or agent actually watches.
+  surface a human or agent actually watches. The body also carries the
+  **call chain** root→park (`Descendant.Chain`, elided in the middle
+  past `MaxChainRuns` with the elision stating how many it dropped) and
+  a closing naming which run to act on, because a campaign's sixth wave
+  is a run the reader has never seen and the message has to be enough to
+  issue a repair verb against it without a second command (D36a).
+- **`checkpoint` is the one reason whose closing is not a fault.** The
+  run stopped exactly where it was asked to (D36), so both the root and
+  the descendant closing say that and point at the resume rather than at
+  a resolution. The reason string is mirrored here as a package constant
+  rather than imported from the engine — this package is pure text
+  assembly over a flat input, and importing the engine for one string
+  would drag the whole FSM in.
 
 ## Extension points
 

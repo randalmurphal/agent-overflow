@@ -356,3 +356,175 @@ test('discard previews the loss and then removes every checkout and branch', asy
   const empty = await harness.rpc<DiscardPreview>('WorkflowDiscardPreview', item.id);
   expect(empty.worktrees).toEqual([]);
 });
+
+// A campaign is one run per wave: the root's last phase calls the same workflow
+// again, so the tree grows downwards and the run a human is watching is almost
+// never the one that stops. These two behaviours are the pair that makes that
+// shape supervisable — a stop that lands at a wave boundary instead of mid-turn
+// (D36), and a park deep in the tree that reports at the ROOT's bound thread.
+const campaignYaml = `id: campaign-flow
+name: Campaign flow
+inputs:
+  goal:
+    schema:
+      type: string
+outputs:
+  more:
+    from: wave.more
+phases:
+  - id: wave
+    driver: agent
+    provider: claude
+    model: claude-opus-4-7
+    prompt: campaign-flow.md
+    access: read-only
+    inputs:
+      goal:
+        schema:
+          type: string
+    outputs:
+      more:
+        schema:
+          type: boolean
+    gate:
+      routes:
+        - when:
+            eq:
+              ref: wave.more
+              value: true
+          to: advance
+        - to: done
+  - id: advance
+    shape: call
+    call: campaign-flow
+    args:
+      goal: goal
+    max_depth: 4
+    gate:
+      routes:
+        - to: done
+cleanup: manual
+`;
+
+// heldWave registers the next wave's mock and returns once it is parked on the
+// signal, which is the only moment a spec can act on a run tree with nothing
+// in flight and nothing yet decided.
+async function heldWave(harness: HarnessApp, seen: Set<string>): Promise<string> {
+  const registered = await harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (event) =>
+      event.scenario === 'campaign-wave' &&
+      event.report.kind === 'registered' &&
+      !seen.has(event.mockId),
+  );
+  seen.add(registered.mockId);
+  await harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (event) =>
+      event.mockId === registered.mockId &&
+      event.report.kind === 'waiting_signal' &&
+      event.report.detail === 'hold-wave',
+  );
+  return registered.mockId;
+}
+
+test('a soft stop parks a campaign at its next call boundary and the root hears about it', async ({
+  harness,
+}) => {
+  // Every wave holds on the same signal, so each one is released by the spec
+  // rather than by timing. The scenario is swapped for the terminating one
+  // before the last wave's session exists.
+  await setClaudeScenario(harness, 'campaign-wave', [
+    {
+      steps: [
+        { waitSignal: { name: 'hold-wave' } },
+        { emit: { lines: [doneResult({ more: true })] } },
+      ],
+    },
+  ]);
+  const project = await seedWorkflow(
+    harness,
+    'workflow-campaign-project',
+    'campaign-flow',
+    campaignYaml,
+  );
+
+  await setGlobalPause(harness, true);
+  const root = await start(harness, project.projectId, 'campaign-flow');
+  const thread = await harness.rpc<{ id: string }>('CreateThread', {
+    projectId: project.projectId,
+    title: 'Campaign origin',
+    provider: 'claude',
+    model: 'claude-opus-4-7',
+    mode: 'chat',
+  });
+  await harness.rpc('WorkflowBindThread', root.id, thread.id);
+  await setGlobalPause(harness, false);
+
+  // Wave 1 runs to its call boundary with no request standing, so the root
+  // calls: the stop must not fire on a boundary that was crossed before it was
+  // asked for.
+  const seen = new Set<string>();
+  const firstWave = await heldWave(harness, seen);
+  await harness.rpc('HarnessMockCommand', firstWave, { type: 'advance', name: 'hold-wave' });
+
+  // Wave 2 exists and is mid-turn. Arming here proves the request never
+  // interrupts work in flight — this turn finishes before anything stops.
+  const secondWave = await heldWave(harness, seen);
+  const child = await harness.rpc<WorkflowDetail>('WorkflowGetItem', root.id);
+  expect(child.children).toHaveLength(1);
+  const childId = child.children[0]!.itemId;
+  expect(child.callPhaseIds).toEqual(['advance']);
+
+  await harness.rpc('WorkflowRequestSoftStop', root.id, true);
+  // Setting it twice is one request, not two.
+  await harness.rpc('WorkflowRequestSoftStop', root.id, true);
+  const armed = await harness.rpc<WorkflowDetail>('WorkflowGetItem', root.id);
+  expect(armed.item.softStop).toBe(true);
+  expect(armed.item.state).toBe('running');
+
+  await harness.rpc('HarnessMockCommand', secondWave, { type: 'advance', name: 'hold-wave' });
+
+  // The turn that was in flight finished, and THEN the boundary refused to call.
+  await waitForWorkflowState(harness, childId, 'needs-human', 'checkpoint');
+  const parked = await harness.rpc<WorkflowDetail>('WorkflowGetItem', childId);
+  expect(parked.phases.map((phase) => phase.phaseId)).toEqual(['wave', 'advance']);
+  expect(parked.phases[0]?.status).toBe('completed');
+  expect(parked.phases[1]?.status).toBe('parked');
+  expect(parked.children).toHaveLength(0);
+
+  // The root is still running — it is waiting on the call it made — so the park
+  // reaches a human through the root's bound thread, not the child's silence.
+  const wake = await waitForUserMessage(harness, thread.id, (summary) =>
+    summary.includes('Call chain:'),
+  );
+  expect(wake).toContain(`Run "${root.id}"`);
+  expect(wake).toContain(`Call chain: "${root.id}" → "${childId}".`);
+  expect(wake).toContain('needs-human (checkpoint)');
+  expect(wake).toContain('the stop that was asked for, not a failure');
+  expect(wake).toContain(`Resume run "${childId}" to take the call it skipped`);
+
+  // The boundary consumed the request, so a resume continues the campaign
+  // instead of stopping at the very next wave again.
+  const afterPark = await harness.rpc<WorkflowDetail>('WorkflowGetItem', root.id);
+  expect(afterPark.item.softStop).toBe(false);
+  expect(afterPark.item.state).toBe('running');
+
+  await setClaudeScenario(harness, 'campaign-wave', [
+    { steps: [{ emit: { lines: [doneResult({ more: false })] } }] },
+  ]);
+  await harness.rpc('WorkflowResumeItem', childId, '');
+  await waitForWorkflowState(harness, root.id, 'done');
+
+  const resumed = await harness.rpc<WorkflowDetail>('WorkflowGetItem', childId);
+  expect(resumed.item.state).toBe('done');
+  // Resume took the edge the stop skipped: wave 3 exists and it is the child's.
+  expect(resumed.children).toHaveLength(1);
+  const grandchild = await harness.rpc<WorkflowDetail>(
+    'WorkflowGetItem',
+    resumed.children[0]!.itemId,
+  );
+  expect(grandchild.item.state).toBe('done');
+  expect(grandchild.item.callDepth).toBe(2);
+  expect(grandchild.children).toHaveLength(0);
+});

@@ -293,19 +293,78 @@ func TestRetryFailedUnitsInterleavesWithSingleRetryAndDrop(t *testing.T) {
 	if started.Feedback == nil || started.Feedback.Note != "the limit reset" {
 		t.Fatalf("repaired unit feedback = %+v, want the retry-all's note", started.Feedback)
 	}
-	// Unit 0 is relaunched, not re-repaired. It carries what its ROW carries,
-	// which pins a pre-existing single-retry wart rather than anything this
-	// action does: a repair that leaves the run parked evicts the item, so the
-	// note and the attempt bump RetryUnit only held in memory are lost and the
-	// unit's next start inherits the failure note instead. Fixing that means
-	// persisting the reopen (store.RetryWorkItemUnit writes neither), which is
-	// its own change; if it lands, this assertion is the one that should fail.
+	// Unit 0 is relaunched, not re-repaired, and it carries what its ROW carries
+	// — which is now the single retry's own note and try count. The repair that
+	// reopened it left the run parked, so the item was evicted and rebuilt from
+	// persistence before this launch: everything the retry decided had to be on
+	// the row to survive that round trip.
 	byHand := h.runner.startFor(t, unitKey(item, "work", 1, "work-unit-0"))
-	if byHand.Feedback == nil || byHand.Feedback.Note != "unit outcome execution-failure" {
-		t.Fatalf("already-reopened unit feedback = %+v, want the note its row carried", byHand.Feedback)
+	if byHand.Feedback == nil || byHand.Feedback.Note != "by hand" {
+		t.Fatalf("already-reopened unit feedback = %+v, want the single retry's note", byHand.Feedback)
 	}
-	if byHand.UnitAttempt != 1 {
-		t.Fatalf("already-reopened unit attempt = %d, want the row's own try count", byHand.UnitAttempt)
+	if byHand.UnitAttempt != 2 {
+		t.Fatalf("already-reopened unit attempt = %d, want the single retry's bumped try", byHand.UnitAttempt)
+	}
+}
+
+// The reopen is durable on its own, without a second repair to carry it: a
+// retry that leaves the run parked is evicted, and the unit that eventually
+// starts must be on the try the retry put it on, carrying the note the retry
+// gave it rather than the failure note it replaced.
+func TestRetryUnitPersistsItsNoteAndTryAcrossEviction(t *testing.T) {
+	h := newFanOutHarness(t, 2)
+	h.limitProviderCapacity("project", 2)
+	item := startFanOut(t, h, "fan")
+	for index := 0; index < 2; index++ {
+		h.runner.completeRun(t, unitKey(item, "work", 1, fmt.Sprintf("work-unit-%d", index)),
+			Outcome{Kind: OutcomeExecutionFailure, Envelope: failureEnvelope("boom")})
+	}
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonUnitFailed)
+
+	// Repairing one of two failed units leaves the run parked on the other, so
+	// the item is evicted with the reopen holding nothing but the row.
+	if err := h.engine.RetryUnit(item, "work-unit-0", "the limit reset"); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonUnitFailed)
+
+	reopened, found, err := h.store.GetWorkItemUnit(item, "work", 1, "work-unit-0")
+	if err != nil || !found {
+		t.Fatalf("reopened unit row: found=%v err=%v", found, err)
+	}
+	if reopened.Status != store.WorkItemUnitPending {
+		t.Fatalf("reopened unit status = %q, want %q", reopened.Status, store.WorkItemUnitPending)
+	}
+	if reopened.UnitAttempt != 2 {
+		t.Fatalf("reopened unit attempt = %d, want the bumped try persisted", reopened.UnitAttempt)
+	}
+	if reopened.Feedback != "the limit reset" {
+		t.Fatalf("reopened unit feedback = %q, want the retry note persisted", reopened.Feedback)
+	}
+
+	// Clearing the other unit relaunches the repaired one from the restored
+	// record alone.
+	if err := h.engine.DropUnit(item, "work-unit-1", ""); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateRunning, "")
+	started := h.runner.startFor(t, unitKey(item, "work", 1, "work-unit-0"))
+	if started.Feedback == nil || started.Feedback.Note != "the limit reset" {
+		t.Fatalf("relaunched unit feedback = %+v, want the retry note", started.Feedback)
+	}
+	if started.UnitAttempt != 2 {
+		t.Fatalf("relaunched unit attempt = %d, want 2", started.UnitAttempt)
+	}
+	// The start persists the same try the reopen wrote — one bump, two writes.
+	running, found, err := h.store.GetWorkItemUnit(item, "work", 1, "work-unit-0")
+	if err != nil || !found {
+		t.Fatalf("running unit row: found=%v err=%v", found, err)
+	}
+	if running.UnitAttempt != 2 {
+		t.Fatalf("started unit attempt = %d, want the reopen's try rather than a second bump", running.UnitAttempt)
 	}
 }
 

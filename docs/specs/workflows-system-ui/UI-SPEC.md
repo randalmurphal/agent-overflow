@@ -147,8 +147,9 @@ queue rows; the phase list becomes a **tree**.
 ### 4.1 Header block
 
 - Row 1: project chip · **state word** (amber "Review gate" / "Question" /
-  "Paused" / "Interrupted" / "Unit failed"; red "Failed"; neutral "Done" /
-  "Running" / "Cancelled") · sweep counter when parked (§4.4).
+  "Paused" / "Interrupted" / "Stopped at checkpoint" / "Unit failed"; red
+  "Failed"; neutral "Done" / "Running" / "Cancelled") · sweep counter when
+  parked (§4.4).
 - Row 2: run title. Row 3 (hint): `workflow · phase 4/5 · parked 7h · $3.10`
   — cost is the **root-tree total** (children included); automation runs add
   `spawned by jira-poll · every 6h`; a bound run adds `→ <thread title>`
@@ -183,15 +184,30 @@ Action row is a fixed footer, primary first; keys per §8.
 | **failed** (`check-failed-genuine`, `child-failed`) | Failing check line; latest diagnosis quote. | `Rerun with guidance` (a, primary — new attempt seeded with the diagnosis as feedback) · `Discard` (r, danger, §4.5) |
 | **blocked** (every other `needs-human` reason: stuck, agent-error, wiring-error, setup-failed, budget-exhausted, stalled, retries-exhausted) | Same evidence as **failed** — a run that could not finish asks the same question whichever state it stopped in. | `Resume` (a, primary — re-enters the phase with a fresh attempt, after the human clears whatever blocked it) · `Discard` (r, danger, §4.5) |
 | **paused / interrupted** | Receipt line (`paused by you · yesterday` / `interrupted — the app was restarted`); partial-envelope digest if one was captured. | `Resume` (a, primary — next attempt, same provider thread, continue message) · `Discard` (r, danger, §4.5) |
+| **checkpoint** | Same shape as **paused**, in its own words: `stopped at your checkpoint · 3m ago`, plus the partial outputs of the wave that finished. This is the one park that is not a fault — the run did what it was asked. | `Continue the run` (a, primary — takes the call the stop skipped) · `Discard` (r, danger, §4.5) |
 | **unit-failed** | The failed unit's row highlighted in the tree; its failing check/diagnosis inline; survivors' states visible above. | `Retry unit` (a, primary) · `Retry all failed units` (u — repairs every failed unit of the attempt in one action, D33) · `Drop unit — join proceeds without it` (recorded in the gate trace) · `Take over unit` (t — detaches the unit and opens the thread it is ALREADY running in) · `Discard` (r, danger, §4.5) |
 | **taken-over** | The steered phase thread's state; the run is under human control. | `Finish takeover` (a, primary — one finalize turn re-attaches the schema) · `Discard` (r, danger, §4.5) |
 | **done** | Checks row; disposition block (manual: merge / PR / discard; auto-merge projects show the receipt + policy + undo line). After Create PR: the PR block with `Review comments (N)` + `Discuss this PR` riding the linked thread (§4.7). Outputs block (§4.8). | Manual: `Merge to main` (a, primary) · `Create PR` · `Discard` (r, danger, §4.5). Any run adds `Bind to thread…` in the `⋯` menu — it binds an EXISTING thread and never creates one. |
-| **running** | The run tree, live. | `Pause` (interrupt in-flight turns → park paused) · `Open phase thread` · `Stop this run` (danger, teardown → cancelled) |
+| **running** | The run tree, live. | `Pause` (interrupt in-flight turns → park paused) · `Stop after this wave` / `Stopping after this wave — undo` (D36, root runs with a call phase only — see below) · `Open phase thread` · `Stop this run` (danger, teardown → cancelled) |
 | **cancelled** | Receipt `cancelled · worktree kept`. | `Discard` (danger, §4.5) · `Back` |
 | **resolved (this session)** | Digest + green receipt ("Approved — routing to docs", "Resumed — the phase continues its session", "Unit dropped — join proceeds over 4 of 5"). | `Back` (esc) |
 
 Merge MUST refuse on conflict/dirty base and park `needs-human(disposition)`
 — never forced, never silent.
+
+**The soft stop sits next to Pause because it answers the same question at a
+different cost (D36).** Pause stops the run now and interrupts the turn in
+flight; `Stop after this wave` stops it at the next call boundary and
+interrupts nothing. It binds **no §8 key** — the letter row is for resolving a
+parked run, and this is a request against one that is still going — and it
+**arms no confirm**, because neither direction destroys anything. The armed
+label is the only place a human sees that a stop is pending, which is why it
+reads as a state (`Stopping after this wave — undo`) rather than as a second
+verb. It appears **only** on a root run (`item.parentItemId` empty) whose
+frozen snapshot has a call phase (`detail.callPhaseIds` non-empty): a request
+that could never fire must not be presented as a stop that will happen. The
+row updates live off the `workflow:soft-stop` event, which is its own channel
+because nothing about the run's *state* changed.
 
 **Taking a run over is a send, not a button (D32).** Open the phase thread from
 the tree and type: the send path interrupts the in-flight turn, detaches the
@@ -402,6 +418,7 @@ As shipped. Paths under `frontend/src/lib/` unless noted.
 | Run detail (§4.1–§4.2) | `WorkflowRunDetail.svelte` (coordinator), `WorkflowRunHeader.svelte`, `WorkflowRunTree.svelte`, and the pure tree assembly in `utils/workflowRunTree.ts` |
 | Evidence (§4.3) | `WorkflowEvidence.svelte` dispatching to `WorkflowGateDiff.svelte` / `WorkflowDiff.svelte` / `WorkflowFailureEvidence.svelte` / `WorkflowDisposition.svelte` / `WorkflowOutputs.svelte` / `WorkflowJobNotes.svelte`; envelope reads in `utils/workflowEnvelope.ts` |
 | Action row (§4.3) | `WorkflowActionRow.svelte` over the pure table in `utils/workflowActionRows.ts`; dispatch in `stores/workflowActions.ts`; receipts/toasts/auto-advance in `stores/workflowResolve.ts` |
+| Soft stop (§4.3, D36) | `WorkflowRequestSoftStop` binding; row entry in `utils/workflowActionRows.ts` (`softStop` input), dispatch case in `stores/workflowActions.ts`, live update via the `workflow:soft-stop` channel through `stores/eventsWorkflow.ts` → `patchWorkflowSoftStop` |
 | Sweep (§4.4) | `stores/workflowSweep.ts` over `workflowData`'s sweep helpers; `WorkflowAllClear.svelte` |
 | Discard (§4.5) | `WorkflowDiscardDialog.svelte` — loss preview is consent, and it resolves through the same `stores/workflowResolve.ts` |
 | Intake (§5.1) | `WorkflowIntakeDialog.svelte` + `WorkflowSeedFields.svelte` over `utils/workflowIntake.ts`, on the `components/primitives/Modal.svelte` shell |

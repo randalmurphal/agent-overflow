@@ -7,6 +7,7 @@ import {
   isWorkflowResolved,
   isWorkflowRootRun,
   patchWorkflowItems,
+  patchWorkflowSoftStop,
   stepWorkflowSweep,
   workflowAge,
   workflowAttentionCount,
@@ -34,6 +35,16 @@ describe('workflow run projections', () => {
     });
     expect(patched[0]).toMatchObject({ state: 'needs-human', reason: 'gate' });
     expect(patched[1]).toBe(rows[1]);
+  });
+
+  it('patches the stop request in both directions and leaves the run state alone', () => {
+    const rows = [item('a', 'running', 1, { softStop: true }), item('b', 'running', 2)];
+    const armed = patchWorkflowSoftStop(rows, 'b', true);
+    expect(armed[1]).toMatchObject({ state: 'running', softStop: true });
+    expect(armed[0]).toBe(rows[0]);
+    const cleared = patchWorkflowSoftStop(armed, 'a', false);
+    expect(cleared[0]).toMatchObject({ state: 'running', softStop: false });
+    expect(patchWorkflowSoftStop(rows, 'missing', true)).toEqual(rows);
   });
 
   it('resolves any disposition-bearing run out of the parked and sweep sets', () => {

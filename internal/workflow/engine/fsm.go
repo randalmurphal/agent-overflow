@@ -45,7 +45,7 @@ func reasonAllowed(reason Reason) bool {
 		ReasonBudgetExhausted, ReasonRetriesExhausted,
 		ReasonCheckFailedGenuine, ReasonAgentError, ReasonWiringError,
 		ReasonDisposition, ReasonSetupFailed, ReasonInterrupted, ReasonTakenOver,
-		ReasonUnitFailed, ReasonChildFailed, ReasonPaused:
+		ReasonUnitFailed, ReasonChildFailed, ReasonPaused, ReasonCheckpoint:
 		return true
 	default:
 		return false

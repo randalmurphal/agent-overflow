@@ -45,11 +45,15 @@
   let partialOutputs = $derived(workflowPartialOutputs(detail));
   let disposition = $derived(parseWorkflowDisposition(item.disposition));
 
-  let pausedReceipt = $derived(
-    item.reason === 'interrupted'
-      ? 'interrupted — the app was restarted'
-      : `paused by you · ${workflowAge(item.endedAt || item.startedAt || item.createdAt)} ago`,
-  );
+  let pausedReceipt = $derived.by(() => {
+    const ago = `${workflowAge(item.endedAt || item.startedAt || item.createdAt)} ago`;
+    if (item.reason === 'interrupted') return 'interrupted — the app was restarted';
+    // A checkpoint park is the one stop nobody has to diagnose: it happened
+    // because it was asked for, and the partial outputs below it are a wave's
+    // worth of finished work rather than the wreckage of an unfinished one.
+    if (item.reason === 'checkpoint') return `stopped at your checkpoint · ${ago}`;
+    return `paused by you · ${ago}`;
+  });
 
   function checkTone(status: string): string {
     if (status === 'completed') return 'text-success';
@@ -92,7 +96,7 @@
     <WorkflowFailureEvidence {detail} />
   {/if}
 
-  {#if kind === 'paused'}
+  {#if kind === 'paused' || kind === 'checkpoint'}
     <section class="space-y-1 text-sm" data-testid="workflow-paused-receipt">
       <p class="text-fg-muted">{pausedReceipt}</p>
       {#if partialOutputs.length > 0}

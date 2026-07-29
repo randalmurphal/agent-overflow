@@ -75,6 +75,15 @@ export function patchWorkflowItems(items: WorkItem[], event: WorkflowItemStateEv
     : item);
 }
 
+/**
+ * A run tree's stop request changed (D36). It is a separate patch from the
+ * state one because it is a separate fact: the run did not transition, it
+ * acquired (or lost) an appointment to stop at its next call boundary.
+ */
+export function patchWorkflowSoftStop(items: WorkItem[], itemId: string, armed: boolean): WorkItem[] {
+  return items.map((item) => item.id === itemId ? { ...item, softStop: armed } as WorkItem : item);
+}
+
 // A disposition receipt is the resolution record for any state — the
 // frontend mirror of the store's unresolved predicate. Cancellation
 // resolves without a receipt.

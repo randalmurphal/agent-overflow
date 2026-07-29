@@ -42,6 +42,7 @@ export type WorkflowRunReason =
   | 'paused'
   | 'unit-failed'
   | 'child-failed'
+  | 'checkpoint'
   | 'taken-over';
 
 export interface WorkflowItemStateEvent {
@@ -50,6 +51,17 @@ export interface WorkflowItemStateEvent {
   from: WorkflowRunState;
   to: WorkflowRunState;
   reason?: WorkflowRunReason;
+}
+
+/**
+ * WorkflowSoftStopEvent is the `workflow:soft-stop` payload: a run tree's
+ * standing request to stop at its next call boundary was armed or withdrawn.
+ * It is not an item-state transition because nothing about the run's state
+ * changed — the run is still running, it simply now has an appointment.
+ */
+export interface WorkflowSoftStopEvent {
+  itemId: string;
+  armed: boolean;
 }
 
 /**

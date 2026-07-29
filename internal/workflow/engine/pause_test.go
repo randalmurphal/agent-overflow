@@ -191,7 +191,7 @@ func TestResumeRefusesReasonsThatAreNotAContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := h.engine.ResumeItem(item.ID)
-	if err == nil || !strings.Contains(err.Error(), "continuing a parked session applies to") {
+	if err == nil || !strings.Contains(err.Error(), "continuing a parked run applies to") {
 		t.Fatalf("resume of a question park = %v, want a typed refusal", err)
 	}
 	// The run is untouched: a refusal is not a state change.

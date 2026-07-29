@@ -13,6 +13,7 @@ export type WorkflowResolutionKind =
   | 'failed'
   | 'blocked'
   | 'paused'
+  | 'checkpoint'
   | 'unit-failed'
   | 'taken-over'
   | 'done'
@@ -33,6 +34,8 @@ export type WorkflowActionId =
   | 'create-pr'
   | 'open-phase-thread'
   | 'pause'
+  | 'soft-stop'
+  | 'clear-soft-stop'
   | 'cancel'
   | 'discard'
   | 'back';
@@ -49,6 +52,8 @@ export interface WorkflowActionButton {
   arms?: boolean;
 }
 
+// The two reasons that share the paused ROW. `checkpoint` takes the same engine
+// edge back but gets a row of its own, so it is deliberately not here.
 const RESUMABLE_REASONS = new Set(['paused', 'interrupted']);
 const DONE_REASONS = new Set(['disposition']);
 
@@ -86,6 +91,10 @@ export function workflowResolutionKind(item: Pick<WorkItem, 'state' | 'reason'>)
   if (reason === 'question') return 'question';
   if (reason === 'unit-failed') return 'unit-failed';
   if (reason === 'taken-over') return 'taken-over';
+  // Same edge back as `paused` — resume — but its own row: this run stopped
+  // where it was asked to, and reading it as a fault is exactly the confusion
+  // the separate reason exists to prevent.
+  if (reason === 'checkpoint') return 'checkpoint';
   if (RESUMABLE_REASONS.has(reason)) return 'paused';
   if (DONE_REASONS.has(reason)) return 'done';
   return 'blocked';
@@ -95,6 +104,13 @@ export interface WorkflowActionRowInput {
   kind: WorkflowResolutionKind;
   /** Names the phase an approved gate routes to; falls back to "next phase". */
   nextPhaseId?: string;
+  /**
+   * The run's stop request (D36), present only where one can exist: a ROOT run
+   * whose workflow has a call phase to stop at. Omitted, the running row offers
+   * no stop — a request that could never fire must not be presented as a stop
+   * that will happen.
+   */
+  softStop?: { armed: boolean };
 }
 
 export function workflowActionRow(input: WorkflowActionRowInput): WorkflowActionButton[] {
@@ -128,6 +144,14 @@ export function workflowActionRow(input: WorkflowActionRowInput): WorkflowAction
         { id: 'resume', label: 'Resume', key: 'a', variant: 'primary' },
         { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
       ];
+    case 'checkpoint':
+      // The paused row's edges, its own words: this run did what it was told,
+      // so "Continue the run" reads as the resumption of a plan rather than the
+      // repair of a fault.
+      return [
+        { id: 'resume', label: 'Continue the run', key: 'a', variant: 'primary' },
+        { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
+      ];
     case 'unit-failed':
       // Two retries, because a fan-out fails at two scales. One unit failing on
       // its own is the `a` case. One CAUSE failing many units at once — a
@@ -155,12 +179,24 @@ export function workflowActionRow(input: WorkflowActionRowInput): WorkflowAction
         { id: 'create-pr', label: 'Create PR', variant: 'secondary' },
         { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
       ];
-    case 'running':
-      return [
-        { id: 'pause', label: 'Pause', variant: 'secondary' },
+    case 'running': {
+      // Pause stops now; the soft stop stops at the next call boundary. They sit
+      // next to each other because they answer the same question ("make it
+      // stop") with different costs — one interrupts a turn, the other waits for
+      // the wave to finish — and the armed label is the only place a human sees
+      // that the second one is pending.
+      const row: WorkflowActionButton[] = [{ id: 'pause', label: 'Pause', variant: 'secondary' }];
+      if (input.softStop) {
+        row.push(input.softStop.armed
+          ? { id: 'clear-soft-stop', label: 'Stopping after this wave — undo', variant: 'primary' }
+          : { id: 'soft-stop', label: 'Stop after this wave', variant: 'secondary' });
+      }
+      row.push(
         { id: 'open-phase-thread', label: 'Open phase thread', variant: 'ghost' },
         { id: 'cancel', label: 'Stop this run', variant: 'danger-outline', arms: true },
-      ];
+      );
+      return row;
+    }
     case 'cancelled':
       return [
         { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
@@ -194,6 +230,11 @@ export function workflowDigestFallback(
       return { whatHappened: `${phase} paused on a question.`, whatItNeeds: 'Answer it and the phase resumes where it yielded.' };
     case 'paused':
       return { whatHappened: `${phase} stopped before it produced a result.`, whatItNeeds: 'Resume it or discard it.' };
+    case 'checkpoint':
+      return {
+        whatHappened: 'The run stopped where you asked, before starting the next one.',
+        whatItNeeds: 'Resume it to continue, or leave it stopped.',
+      };
     case 'unit-failed':
       return { whatHappened: 'A fan-out unit failed; its siblings finished.', whatItNeeds: 'Retry the unit (or every failed one), drop it, or take it over.' };
     case 'taken-over':

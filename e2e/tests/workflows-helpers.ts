@@ -57,8 +57,11 @@ export interface WorkflowDetail {
     parentUnitId?: string;
     parentAttempt?: number;
     callDepth?: number;
+    // The standing request to stop this tree at its next call boundary (D36).
+    softStop?: boolean;
   };
   checkPhaseIds: string[];
+  callPhaseIds?: string[];
   phases: WorkflowPhase[];
   units: WorkflowUnit[];
   children: WorkflowChild[];

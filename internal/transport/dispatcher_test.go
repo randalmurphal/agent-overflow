@@ -745,6 +745,7 @@ func (p *privilegedApp) WorkflowAgentSchedule() string          { return "ok" }
 func (p *privilegedApp) WorkflowAgentGetNotes() string          { return "ok" }
 func (p *privilegedApp) WorkflowAgentSetNotes() string          { return "ok" }
 func (p *privilegedApp) WorkflowPauseItem() string              { return "ok" }
+func (p *privilegedApp) WorkflowRequestSoftStop() string        { return "ok" }
 func (p *privilegedApp) WorkflowBindThread() string             { return "ok" }
 func (p *privilegedApp) WorkflowUnbindThread() string           { return "ok" }
 func (p *privilegedApp) WorkflowDiscardPreview() string         { return "ok" }

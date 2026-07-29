@@ -57,17 +57,23 @@ func (a *App) afterWorkflowResting(item store.WorkItem) {
 // reason of its own, that transition is the surface and this one would be a
 // duplicate.
 func (a *App) surfaceDescendantPark(child store.WorkItem) {
-	root, depth, err := a.workflowRootOf(child)
+	chain, err := a.workflowAncestry(child)
 	if err != nil {
 		log.Printf("workflow wake %s: resolve root: %v", child.ID, err)
 		return
 	}
+	root := chain[0]
 	if root.ID == child.ID || root.State != string(engine.StateRunning) {
 		return
 	}
+	ids := make([]string, 0, len(chain))
+	for _, ancestor := range chain {
+		ids = append(ids, ancestor.ID)
+	}
 	descendant := &wake.Descendant{
 		ItemID: child.ID, WorkflowID: child.WorkflowID,
-		State: child.State, Reason: child.Reason, Depth: depth,
+		State: child.State, Reason: child.Reason,
+		Depth: child.CallDepth - root.CallDepth, Chain: ids,
 	}
 	phase, envelope, err := a.workflowRestingPhase(child.ID)
 	if err != nil {
@@ -82,6 +88,15 @@ func (a *App) surfaceDescendantPark(child store.WorkItem) {
 		WhatHappened: fmt.Sprintf("A called run parked %s.", workflowStateText(child.State, child.Reason)),
 		WhatItNeeds:  fmt.Sprintf("Resolve called run %s before this run can continue.", child.ID),
 	}
+	if engine.Reason(child.Reason) == engine.ReasonCheckpoint {
+		// A checkpoint is not something to resolve; it is the stop that was
+		// asked for. Telling a human to "resolve" their own instruction would
+		// make the one benign park read like every other one.
+		digest = WorkflowDigest{
+			WhatHappened: "The run stopped at the checkpoint you asked for, before starting the next call.",
+			WhatItNeeds:  fmt.Sprintf("Resume called run %s to continue, or leave it stopped.", child.ID),
+		}
+	}
 	go a.sendWorkflowItemNotification(root, digest)
 	if root.OriginThreadID == "" {
 		return
@@ -94,22 +109,33 @@ func (a *App) surfaceDescendantPark(child store.WorkItem) {
 	a.deliverWorkflowWake(root, message)
 }
 
-// workflowRootOf walks call linkage to the tree's root and reports how far below
-// it the supplied run sits. Linkage is immutable, so the answer is a stable fact
-// about the run rather than live state.
-func (a *App) workflowRootOf(item store.WorkItem) (store.WorkItem, int, error) {
+// workflowAncestry walks call linkage to the tree's root and returns the path
+// root-first, ending at the supplied run. Linkage is immutable, so the answer is
+// a stable fact about the run rather than live state.
+//
+// The whole path is returned rather than just the root because a park deep in a
+// campaign is only actionable if a reader can name the runs between: the root is
+// what the human is watching, the parked run is what a repair verb takes, and
+// the ones in between are the waves that already finished.
+func (a *App) workflowAncestry(item store.WorkItem) ([]store.WorkItem, error) {
+	reversed := []store.WorkItem{item}
 	current := item
 	for depth := 0; current.ParentItemID != ""; depth++ {
 		if depth >= engine.MaxCallDepth {
-			return store.WorkItem{}, 0, fmt.Errorf("run %s has more than %d ancestors", item.ID, engine.MaxCallDepth)
+			return nil, fmt.Errorf("run %s has more than %d ancestors", item.ID, engine.MaxCallDepth)
 		}
 		parent, err := a.store.GetWorkItem(current.ParentItemID)
 		if err != nil {
-			return store.WorkItem{}, 0, fmt.Errorf("load parent %s of %s: %w", current.ParentItemID, current.ID, err)
+			return nil, fmt.Errorf("load parent %s of %s: %w", current.ParentItemID, current.ID, err)
 		}
+		reversed = append(reversed, parent)
 		current = parent
 	}
-	return current, item.CallDepth - current.CallDepth, nil
+	chain := make([]store.WorkItem, 0, len(reversed))
+	for index := len(reversed) - 1; index >= 0; index-- {
+		chain = append(chain, reversed[index])
+	}
+	return chain, nil
 }
 
 // composeWorkflowWake resolves the run record into the composer's flat input.
@@ -195,7 +221,15 @@ func (a *App) wakeReferences(
 		if narrative, ok := a.workflowRestingNarrative(descendant.ItemID); ok {
 			references = append(references, wake.Reference{Label: "called run narrative", Value: narrative})
 		}
-		return references, nil
+		// The descendant's own failed units, not the root's. Without them a
+		// reader can see that a called run is parked but not whether it is the
+		// repairable kind — and "retry every failed unit of that run" is the
+		// single most common thing the woken agent is there to do.
+		failed, err := a.workflowFailedUnitReferences(descendant.ItemID, "called run failed unit")
+		if err != nil {
+			return nil, err
+		}
+		return append(references, failed...), nil
 	}
 	if phase, ok := currentWorkflowPhaseTimelineAttempt(timeline); ok {
 		if narrative, err := workflowrunner.NarrativePath(
@@ -207,10 +241,31 @@ func (a *App) wakeReferences(
 			references = append(references, wake.Reference{Label: "phase thread", Value: phase.ThreadID})
 		}
 	}
-	units, err := a.store.ListWorkItemUnits(item.ID)
+	failed, err := a.workflowFailedUnitReferences(item.ID, "failed unit")
 	if err != nil {
-		return nil, fmt.Errorf("list fan-out units: %w", err)
+		return nil, err
 	}
+	references = append(references, failed...)
+	artifacts, err := listWorkflowArtifacts(a.workflowDataRoot(), item.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list artifacts: %w", err)
+	}
+	for _, artifact := range artifacts {
+		references = append(references, wake.Reference{Label: "artifact", Value: artifact.Path})
+	}
+	return references, nil
+}
+
+// workflowFailedUnitReferences lists one run's units that are resting failed,
+// as pointers a repair verb takes. `label` names whose units they are, because
+// a descendant park carries the descendant's rather than the root's and a
+// reader must never mistake one for the other.
+func (a *App) workflowFailedUnitReferences(itemID, label string) ([]wake.Reference, error) {
+	units, err := a.store.ListWorkItemUnits(itemID)
+	if err != nil {
+		return nil, fmt.Errorf("list fan-out units of %s: %w", itemID, err)
+	}
+	var references []wake.Reference
 	for _, unit := range units {
 		if unit.Kind == store.WorkItemUnitKindJoin || unit.Status != store.WorkItemUnitFailed {
 			continue
@@ -219,14 +274,7 @@ func (a *App) wakeReferences(
 		if unit.ThreadID != "" {
 			value += " (thread " + unit.ThreadID + ")"
 		}
-		references = append(references, wake.Reference{Label: "failed unit", Value: value})
-	}
-	artifacts, err := listWorkflowArtifacts(a.workflowDataRoot(), item.ID)
-	if err != nil {
-		return nil, fmt.Errorf("list artifacts: %w", err)
-	}
-	for _, artifact := range artifacts {
-		references = append(references, wake.Reference{Label: "artifact", Value: artifact.Path})
+		references = append(references, wake.Reference{Label: label, Value: value})
 	}
 	return references, nil
 }

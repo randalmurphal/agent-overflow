@@ -124,6 +124,7 @@ import type {
   WorkflowErrorEvent,
   WorkflowItemStateEvent,
   WorkflowPhaseStateEvent,
+  WorkflowSoftStopEvent,
 } from '../types/workflow';
 import {
   applyWorkflowDefinitionsChangedEvent,
@@ -131,6 +132,7 @@ import {
   applyWorkflowErrorEvent,
   applyWorkflowItemStateEvent,
   applyWorkflowPhaseStateEvent,
+  applyWorkflowSoftStopEvent,
 } from './eventsWorkflow';
 import { addToast } from './toast.svelte';
 
@@ -402,6 +404,11 @@ export function setupEventListeners(): () => void {
   const cancelWorkflowEngineState = wailsEventOn<WorkflowEngineStateEvent>(
     'workflow:engine-state', applyWorkflowEngineStateEvent,
   );
+  // soft-stop is its own channel because it is not a transition: the run keeps
+  // running, it has just been asked to stop at its next call boundary (D36).
+  const cancelWorkflowSoftStop = wailsEventOn<WorkflowSoftStopEvent>(
+    'workflow:soft-stop', applyWorkflowSoftStopEvent,
+  );
   const cancelWorkflowDefinitions = wailsEventOn(
     'workflow:definitions-changed', applyWorkflowDefinitionsChangedEvent,
   );
@@ -456,6 +463,7 @@ export function setupEventListeners(): () => void {
     cancelWorkflowItemState();
     cancelWorkflowPhaseState();
     cancelWorkflowEngineState();
+    cancelWorkflowSoftStop();
     cancelWorkflowDefinitions();
     cancelHighlightSeed();
     cancelHighlightDiffSeed();

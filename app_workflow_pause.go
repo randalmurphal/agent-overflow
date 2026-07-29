@@ -27,6 +27,29 @@ func (a *App) WorkflowPauseItem(ctx context.Context, itemID string) error {
 	return workflowEngine.PauseItem(itemID)
 }
 
+// WorkflowRequestSoftStop arms or clears a run tree's request to stop at its
+// next call boundary (D36). Nothing is interrupted and nothing starts: the run
+// keeps going and, the next time it would invoke a call, parks
+// `needs-human(checkpoint)` instead. Resuming takes the call it skipped.
+//
+// It is one method with a flag rather than a pair, because the two directions
+// are one piece of state: a clear has to be able to undo an arm through exactly
+// the path that set it, and a caller that can only ever arm would have no way to
+// change its mind.
+//
+// LocalOnly: the request decides whether the next wave of autonomous provider
+// sessions runs, which is the same control plane as pause.
+func (a *App) WorkflowRequestSoftStop(ctx context.Context, itemID string, armed bool) error {
+	workflowEngine, err := a.requireWorkflowEngine()
+	if err != nil {
+		return err
+	}
+	if err := a.authorizeScopedRunAction(ctx, itemID, "request a workflow soft stop"); err != nil {
+		return err
+	}
+	return workflowEngine.SetSoftStop(itemID, armed)
+}
+
 // pauseWorkflowRunsForShutdown is the graceful-quit half: every active root run
 // is paused before the process tears its provider sessions down, so a restart
 // finds resumable `needs-human(paused)` runs rather than crash-parked ones.

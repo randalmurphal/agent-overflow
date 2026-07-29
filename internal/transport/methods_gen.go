@@ -308,6 +308,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowListUnresolvedItems", ID: 3613211765},          // main.App.WorkflowListUnresolvedItems
 	{Name: "WorkflowMergeItem", ID: 3006532931},                    // main.App.WorkflowMergeItem
 	{Name: "WorkflowPauseItem", ID: 3764767257},                    // main.App.WorkflowPauseItem
+	{Name: "WorkflowRequestSoftStop", ID: 2570221545},              // main.App.WorkflowRequestSoftStop
 	{Name: "WorkflowRerunItem", ID: 1986594501},                    // main.App.WorkflowRerunItem
 	{Name: "WorkflowResolveGate", ID: 3348479803},                  // main.App.WorkflowResolveGate
 	{Name: "WorkflowResumeItem", ID: 3138507556},                   // main.App.WorkflowResumeItem

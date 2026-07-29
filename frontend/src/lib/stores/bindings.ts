@@ -341,6 +341,7 @@ export {
   WorkflowListUnresolvedItems,
   WorkflowMergeItem,
   WorkflowPauseItem,
+  WorkflowRequestSoftStop,
   WorkflowResolveGate,
   WorkflowResumeItem,
   WorkflowRerunItem,

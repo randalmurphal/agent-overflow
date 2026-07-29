@@ -34,7 +34,7 @@ func (e *Engine) enforceBudget(item *runtimeItem) (bool, error) {
 }
 
 func (e *Engine) checkBudget(item *runtimeItem) (bool, error) {
-	root, err := e.budgetRoot(item)
+	root, err := e.treeRoot(item)
 	if err != nil {
 		return false, err
 	}
@@ -73,33 +73,35 @@ func (e *Engine) checkBudget(item *runtimeItem) (bool, error) {
 	return exceeded, nil
 }
 
-// budgetRoot resolves the run tree's root — the item whose budget envelope and
-// start time the whole tree is measured against. Parent linkage is immutable, so
-// the root id is cached on the resident item; the row itself is re-read because
-// its start time is re-stamped by a rerun.
-func (e *Engine) budgetRoot(item *runtimeItem) (store.WorkItem, error) {
-	if item.item.ParentItemID == "" {
-		item.rootID = item.item.ID
-		return item.item, nil
-	}
+// treeRoot resolves the run tree's root — the item every tree-wide fact is read
+// off: the budget envelope and start time the whole tree is measured against
+// (§12), and the soft-stop request the next call boundary consults (D36).
+// Parent linkage is immutable, so the root id is cached on the resident item;
+// the row itself is re-read every time, because both of those facts change
+// under the tree (a rerun re-stamps the start, a human arms the stop mid-run).
+//
+// The row is read even when the caller IS the root, because the resident item's
+// copy is not authoritative for either field: both are written from outside the
+// command loop's view of the item, and a stale read here would silently ignore
+// a stop a human armed a second ago.
+func (e *Engine) treeRoot(item *runtimeItem) (store.WorkItem, error) {
 	if item.rootID == "" {
 		current := item.item
 		for depth := 0; current.ParentItemID != ""; depth++ {
 			if depth > MaxCallDepth {
-				return store.WorkItem{}, fmt.Errorf("resolve budget root of item %q: tree is deeper than %d", item.item.ID, MaxCallDepth)
+				return store.WorkItem{}, fmt.Errorf("resolve tree root of item %q: tree is deeper than %d", item.item.ID, MaxCallDepth)
 			}
 			parent, err := e.store.GetWorkItem(current.ParentItemID)
 			if err != nil {
-				return store.WorkItem{}, fmt.Errorf("resolve budget root of item %q: %w", item.item.ID, err)
+				return store.WorkItem{}, fmt.Errorf("resolve tree root of item %q: %w", item.item.ID, err)
 			}
 			current = parent
 		}
 		item.rootID = current.ID
-		return current, nil
 	}
 	root, err := e.store.GetWorkItem(item.rootID)
 	if err != nil {
-		return store.WorkItem{}, fmt.Errorf("resolve budget root of item %q: %w", item.item.ID, err)
+		return store.WorkItem{}, fmt.Errorf("resolve tree root of item %q: %w", item.item.ID, err)
 	}
 	return root, nil
 }

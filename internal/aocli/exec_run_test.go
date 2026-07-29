@@ -204,6 +204,34 @@ func TestRunListRendersOneLinePerRun(t *testing.T) {
 		t.Fatalf("--active was not sent: %#v", calls)
 	}
 }
+
+// --clear is the same verb withdrawing the request, so it must reach the app as
+// the state asked for rather than as a different call the server would have to
+// tell apart.
+func TestRunSoftStopClearSendsTheWithdrawal(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.reply("WorkflowRequestSoftStop", nil)
+	backend.reply("WorkflowAgentRunStatus", map[string]any{"itemId": "run-1", "state": "running"})
+
+	code, _, stderr := runCLI([]string{"run", "soft-stop", "run-1", "--clear"}, backend.env())
+	if code != exitOK {
+		t.Fatalf("soft-stop --clear exit = %d (%s)", code, stderr)
+	}
+	calls := backend.recorded("WorkflowRequestSoftStop")
+	if len(calls) != 1 {
+		t.Fatalf("WorkflowRequestSoftStop called %d times", len(calls))
+	}
+	want := []string{`"run-1"`, `false`}
+	if len(calls[0].Params) != len(want) {
+		t.Fatalf("soft-stop --clear params = %v, want %v", calls[0].Params, want)
+	}
+	for index, expected := range want {
+		if string(calls[0].Params[index]) != expected {
+			t.Fatalf("soft-stop --clear param %d = %s, want %s", index, calls[0].Params[index], expected)
+		}
+	}
+}
+
 func TestRunControlCommandsSendTheirExtraArguments(t *testing.T) {
 	backend := newFakeBackend(t)
 	backend.reply("WorkflowRerunItem", nil)
@@ -212,6 +240,7 @@ func TestRunControlCommandsSendTheirExtraArguments(t *testing.T) {
 	backend.reply("WorkflowRetryFailedUnits", nil)
 	backend.reply("WorkflowPauseItem", nil)
 	backend.reply("WorkflowCancelItem", nil)
+	backend.reply("WorkflowRequestSoftStop", nil)
 	backend.reply("WorkflowAgentRunStatus", map[string]any{"itemId": "run-1", "state": "running"})
 
 	for _, test := range []struct {
@@ -231,6 +260,12 @@ func TestRunControlCommandsSendTheirExtraArguments(t *testing.T) {
 			[]string{`"run-1"`, `"limit reset"`}},
 		{[]string{"run", "pause", "run-1"}, "WorkflowPauseItem", []string{`"run-1"`}},
 		{[]string{"run", "cancel", "run-1"}, "WorkflowCancelItem", []string{`"run-1"`}},
+		// The soft stop's two directions are one verb and one flag, so the wire
+		// carries the state asked for rather than which of two verbs was typed.
+		// (--clear is TestRunSoftStopClearSendsTheWithdrawal; one row per method
+		// here, because this table asserts each method was called exactly once.)
+		{[]string{"run", "soft-stop", "run-1"}, "WorkflowRequestSoftStop",
+			[]string{`"run-1"`, `true`}},
 	} {
 		code, stdout, stderr := runCLI(test.args, backend.env())
 		if code != exitOK {
