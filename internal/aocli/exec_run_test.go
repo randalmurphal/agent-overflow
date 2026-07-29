@@ -209,6 +209,7 @@ func TestRunControlCommandsSendTheirExtraArguments(t *testing.T) {
 	backend.reply("WorkflowRerunItem", nil)
 	backend.reply("WorkflowResumeItem", nil)
 	backend.reply("WorkflowRetryUnit", nil)
+	backend.reply("WorkflowRetryFailedUnits", nil)
 	backend.reply("WorkflowPauseItem", nil)
 	backend.reply("WorkflowCancelItem", nil)
 	backend.reply("WorkflowAgentRunStatus", map[string]any{"itemId": "run-1", "state": "running"})
@@ -224,6 +225,10 @@ func TestRunControlCommandsSendTheirExtraArguments(t *testing.T) {
 			[]string{`"run-1"`, `"verify"`}},
 		{[]string{"run", "retry-unit", "run-1", "beta", "--note", "fixed"}, "WorkflowRetryUnit",
 			[]string{`"run-1"`, `"beta"`, `"fixed"`}},
+		// One run id and a note, no unit id: the arity is what separates the
+		// whole-attempt repair from the single-unit one.
+		{[]string{"run", "retry-failed-units", "run-1", "--note", "limit reset"}, "WorkflowRetryFailedUnits",
+			[]string{`"run-1"`, `"limit reset"`}},
 		{[]string{"run", "pause", "run-1"}, "WorkflowPauseItem", []string{`"run-1"`}},
 		{[]string{"run", "cancel", "run-1"}, "WorkflowCancelItem", []string{`"run-1"`}},
 	} {

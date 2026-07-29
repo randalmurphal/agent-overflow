@@ -62,6 +62,7 @@ describe('WorkflowActionRow', () => {
     setBindingMock('WorkflowCancelItem', async () => undefined);
     setBindingMock('WorkflowDropUnit', async () => undefined);
     setBindingMock('WorkflowRetryUnit', async () => undefined);
+    setBindingMock('WorkflowRetryFailedUnits', async () => undefined);
     openWorkflowsOverlay();
     pushWorkflowRunDetail('run-1');
   });
@@ -161,9 +162,26 @@ describe('WorkflowActionRow', () => {
     const view = mount({ reason: 'unit-failed' }, { failedUnitId: '' });
     await fireEvent.click(actionButton(view, 'retry-unit'));
     expect(getBindingMock('WorkflowRetryUnit')).not.toHaveBeenCalled();
+    await fireEvent.click(actionButton(view, 'retry-failed-units'));
+    expect(getBindingMock('WorkflowRetryFailedUnits')).not.toHaveBeenCalled();
+  });
+
+  // The usage-limit recovery: one action for the whole attempt, no unit id, and
+  // no confirm to arm — it re-runs work rather than destroying any.
+  it('repairs every failed unit in one call, without arming', async () => {
+    const view = mount({ reason: 'unit-failed' }, { failedUnitId: 'port-3' });
+    await fireEvent.click(actionButton(view, 'retry-failed-units'));
+    await waitFor(() => expect(getBindingMock('WorkflowRetryFailedUnits')).toHaveBeenCalledWith('run-1', ''));
+    expect(getBindingMock('WorkflowRetryUnit')).not.toHaveBeenCalled();
   });
 
   describe('§8 key target', () => {
+    it('binds `u` to the whole-attempt repair on the unit-failed row', async () => {
+      mount({ reason: 'unit-failed' }, { failedUnitId: 'port-3' });
+      getWorkflowsActionTargetForTest()?.action('u');
+      await waitFor(() => expect(getBindingMock('WorkflowRetryFailedUnits')).toHaveBeenCalledWith('run-1', ''));
+    });
+
     it('maps a / r / t onto this row and Enter onto the first diff file', async () => {
       const onToggleFirstDiff = vi.fn();
       mount({}, { onToggleFirstDiff });
@@ -223,6 +241,14 @@ describe('WorkflowActionRow', () => {
       mount();
       getWorkflowsActionTargetForTest()?.action('a');
       expect(getBindingMock('WorkflowResolveGate')).not.toHaveBeenCalled();
+    });
+
+    it('refuses the whole-attempt repair in a view-only session, by click and by key', async () => {
+      setViewOnlySessionFromBootstrap(true);
+      const view = mount({ reason: 'unit-failed' }, { failedUnitId: 'port-3' });
+      await fireEvent.click(actionButton(view, 'retry-failed-units'));
+      getWorkflowsActionTargetForTest()?.action('u');
+      expect(getBindingMock('WorkflowRetryFailedUnits')).not.toHaveBeenCalled();
     });
   });
 });

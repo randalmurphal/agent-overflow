@@ -67,6 +67,8 @@ Commands:
   rerun <run-id>          Start a failed run's last phase again
   retry-unit <run-id> <unit-id>
                           Re-run one failed unit of a parked fan-out attempt
+  retry-failed-units <run-id>
+                          Re-run every failed unit of a parked fan-out attempt
 `
 
 const runStartUsage = `Usage: agent-overflow run start [options] <workflow-id>
@@ -109,6 +111,13 @@ const runRerunUsage = `Usage: agent-overflow run rerun [--json] [--guidance <tex
 `
 
 const runRetryUnitUsage = `Usage: agent-overflow run retry-unit [--json] [--note <text>] <run-id> <unit-id>
+`
+
+const runRetryFailedUnitsUsage = `Usage: agent-overflow run retry-failed-units [--json] [--note <text>] <run-id>
+
+Re-runs every unit of the parked fan-out attempt that is resting failed, in one
+action. Finished units keep their results, units under human steering are left
+alone, and the repaired ones queue for provider capacity like any other work.
 `
 
 const notesUsage = `Usage: agent-overflow notes <command> [options]

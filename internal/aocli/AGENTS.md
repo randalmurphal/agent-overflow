@@ -94,6 +94,7 @@ agent-overflow [--config-root <path>] <command>
   run resume <run-id> [--phase <id>] [--json]
   run rerun <run-id> [--guidance <text>] [--json]
   run retry-unit <run-id> <unit-id> [--note <text>] [--json]
+  run retry-failed-units <run-id> [--note <text>] [--json]
   notes get|set <automation-id> [--file <path>] [--json]
   schedule <workflow-id> --cron <expr> [--name|--scope|--seed k=v|--json]
 ```

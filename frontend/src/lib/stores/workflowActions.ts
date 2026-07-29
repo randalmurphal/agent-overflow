@@ -18,6 +18,7 @@ import {
   WorkflowResolveGate,
   WorkflowResumeItem,
   WorkflowRerunItem,
+  WorkflowRetryFailedUnits,
   WorkflowRetryUnit,
 } from './bindings';
 
@@ -29,6 +30,7 @@ export type WorkflowActionRequest =
   | { kind: 'resume' }
   | { kind: 'complete-takeover' }
   | { kind: 'retry-unit'; unitId: string; note: string }
+  | { kind: 'retry-failed-units'; note: string }
   | { kind: 'drop-unit'; unitId: string; note: string }
   | { kind: 'merge' }
   | { kind: 'create-pr' }
@@ -49,6 +51,7 @@ export interface WorkflowActionBindings {
   resumeItem: (itemId: string, targetPhase: string) => Promise<void>;
   rerunItem: (itemId: string, guidance: string) => Promise<void>;
   retryUnit: (itemId: string, unitId: string, note: string) => Promise<void>;
+  retryFailedUnits: (itemId: string, note: string) => Promise<void>;
 }
 
 const liveBindings: WorkflowActionBindings = {
@@ -64,6 +67,7 @@ const liveBindings: WorkflowActionBindings = {
   resumeItem: WorkflowResumeItem,
   rerunItem: WorkflowRerunItem,
   retryUnit: WorkflowRetryUnit,
+  retryFailedUnits: WorkflowRetryFailedUnits,
 };
 
 export function workflowActionConfirmationKey(kind: string, item: WorkItem): string {
@@ -111,6 +115,14 @@ export async function dispatchWorkflowAction(
     case 'retry-unit':
       await bindings.retryUnit(item.id, action.unitId, action.note);
       return { itemId: item.id, kind: 'restarted', message: `Retrying ${action.unitId} — its siblings keep their results`, costUsd };
+    case 'retry-failed-units':
+      await bindings.retryFailedUnits(item.id, action.note);
+      return {
+        itemId: item.id,
+        kind: 'restarted',
+        message: 'Retrying every failed unit — finished units keep their results',
+        costUsd,
+      };
     case 'drop-unit':
       await bindings.dropUnit(item.id, action.unitId, action.note);
       return { itemId: item.id, kind: 'restarted', message: `Unit dropped — the join proceeds without ${action.unitId}`, costUsd };

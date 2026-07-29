@@ -70,6 +70,7 @@ var composerCommands = []struct{ invocation, purpose string }{
 	{"agent-overflow run status|output|wait <run-id>", "check on one"},
 	{"agent-overflow run list [--active]", "see this project's runs"},
 	{"agent-overflow run pause|resume|cancel|rerun <run-id>", "control one"},
+	{"agent-overflow run retry-unit <run-id> <unit-id>|retry-failed-units <run-id>", "repair a fan-out"},
 	{"agent-overflow workflow list|validate <path>|schema", "author one"},
 	{"agent-overflow <command> --help", "full options"},
 }

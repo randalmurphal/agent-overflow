@@ -734,6 +734,7 @@ func (p *privilegedApp) WorkflowSetJobNotes() string            { return "ok" }
 func (p *privilegedApp) WorkflowListDefinitions() string        { return "ok" }
 func (p *privilegedApp) WorkflowRerunItem() string              { return "ok" }
 func (p *privilegedApp) WorkflowRetryUnit() string              { return "ok" }
+func (p *privilegedApp) WorkflowRetryFailedUnits() string       { return "ok" }
 func (p *privilegedApp) WorkflowDropUnit() string               { return "ok" }
 func (p *privilegedApp) WorkflowTakeOverUnit() string           { return "ok" }
 func (p *privilegedApp) WorkflowAgentStartRun() string          { return "ok" }

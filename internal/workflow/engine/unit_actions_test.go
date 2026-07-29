@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -118,6 +119,285 @@ func TestRetryUnitLeavesTheRunParkedWhileAnotherUnitIsStillFailed(t *testing.T) 
 	requireItemState(t, h.store, item, StateRunning, "")
 	if got := h.runner.startedUnitIDs()[3:]; !reflect.DeepEqual(got, []string{"work-unit-0", "work-unit-1"}) {
 		t.Fatalf("restarted units = %v, want both repaired units launched together", got)
+	}
+}
+
+// The wave's whole reason: a provider usage limit fails most of a wide fan-out,
+// the human waits it out, and one action puts every failed unit back on the
+// same attempt — finished units untouched, each repaired unit on a fresh try
+// carrying the same note.
+func TestRetryFailedUnitsRepairsEveryFailedUnitAtOnce(t *testing.T) {
+	h := newFanOutHarness(t, 3)
+	h.limitProviderCapacity("project", 3)
+	item := startFanOut(t, h, "fan")
+	for index := 0; index < 2; index++ {
+		h.runner.completeRun(t, unitKey(item, "work", 1, fmt.Sprintf("work-unit-%d", index)),
+			Outcome{Kind: OutcomeExecutionFailure, Envelope: failureEnvelope("usage limit reached")})
+	}
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-unit-2"),
+		Outcome{Kind: OutcomeDone, Envelope: unitDoneEnvelope("c")})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonUnitFailed)
+
+	if err := h.engine.RetryFailedUnits(item, "the limit reset"); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateRunning, "")
+	if got := h.runner.startedUnitIDs()[3:]; !reflect.DeepEqual(got, []string{"work-unit-0", "work-unit-1"}) {
+		t.Fatalf("restarted units = %v, want both failed units and only them", got)
+	}
+	h.requireUnitStatuses(t, item, "work", 1, map[string]string{
+		"work-unit-0": store.WorkItemUnitRunning,
+		"work-unit-1": store.WorkItemUnitRunning,
+		"work-unit-2": store.WorkItemUnitDone,
+		"work-join":   store.WorkItemUnitPending,
+	})
+	for _, unitID := range []string{"work-unit-0", "work-unit-1"} {
+		retried := h.runner.startFor(t, unitKey(item, "work", 1, unitID))
+		if retried.Feedback == nil || retried.Feedback.Note != "the limit reset" {
+			t.Fatalf("unit %q retry feedback = %+v, want the human's note", unitID, retried.Feedback)
+		}
+	}
+	rows, err := h.store.ListWorkItemPhaseUnits(item, "work", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		switch row.UnitID {
+		case "work-unit-0", "work-unit-1":
+			if row.UnitAttempt != 2 || row.Feedback != "the limit reset" {
+				t.Fatalf("repaired unit row = %+v, want a second try carrying the note", row)
+			}
+		case "work-unit-2":
+			if row.UnitAttempt != 1 || row.Status != store.WorkItemUnitDone {
+				t.Fatalf("finished unit row = %+v, want its first attempt preserved", row)
+			}
+		}
+	}
+	phases, err := h.store.ListWorkItemPhases(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(phases) != 1 || phases[0].Status != "running" || phases[0].EndedAt != 0 {
+		t.Fatalf("phase attempts = %+v, want the same attempt reopened", phases)
+	}
+
+	for index := 0; index < 2; index++ {
+		h.runner.completeRun(t, unitKey(item, "work", 1, fmt.Sprintf("work-unit-%d", index)),
+			Outcome{Kind: OutcomeDone, Envelope: unitDoneEnvelope("v")})
+	}
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-join"), Outcome{Kind: OutcomeDone, Envelope: doneEnvelope(true)})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateDone, "")
+	h.requireNoHeldResources(t)
+}
+
+// Repairing everything is still admitted one unit at a time: the retry-all
+// re-enters through the same acquisition the single retry uses, so a set wider
+// than the project's provider bound starts what fits and queues the rest in the
+// shared FIFO. A burst here would be the one way this action could outrun the
+// bound a usage limit is the reason to respect.
+func TestRetryFailedUnitsQueuesBeyondProviderCapacity(t *testing.T) {
+	h := newFanOutHarness(t, 3)
+	h.limitProviderCapacity("project", 3)
+	item := startFanOut(t, h, "fan")
+	for index := 0; index < 3; index++ {
+		h.runner.completeRun(t, unitKey(item, "work", 1, fmt.Sprintf("work-unit-%d", index)),
+			Outcome{Kind: OutcomeExecutionFailure, Envelope: failureEnvelope("usage limit reached")})
+	}
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonUnitFailed)
+
+	// The account the human switched to admits one session at a time. Capacity is
+	// read live at every acquisition, so the repair sees this bound, not the one
+	// the attempt originally started under.
+	h.limitProviderCapacity("project", 1)
+	if err := h.engine.RetryFailedUnits(item, ""); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateRunning, "")
+	if got := h.runner.startedUnitIDs()[3:]; !reflect.DeepEqual(got, []string{"work-unit-0"}) {
+		t.Fatalf("restarted units = %v, want only the one capacity admits", got)
+	}
+	h.requireUnitStatuses(t, item, "work", 1, map[string]string{
+		"work-unit-0": store.WorkItemUnitRunning,
+		"work-unit-1": store.WorkItemUnitPending,
+		"work-unit-2": store.WorkItemUnitPending,
+		"work-join":   store.WorkItemUnitPending,
+	})
+
+	for index := 0; index < 3; index++ {
+		h.runner.completeRun(t, unitKey(item, "work", 1, fmt.Sprintf("work-unit-%d", index)),
+			Outcome{Kind: OutcomeDone, Envelope: unitDoneEnvelope("v")})
+		if err := h.engine.Sync(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := h.runner.startedUnitIDs()[3:]; !reflect.DeepEqual(got, []string{
+		"work-unit-0", "work-unit-1", "work-unit-2", "work-join",
+	}) {
+		t.Fatalf("launch order = %v, want each queued unit released in turn", got)
+	}
+}
+
+// The repairs compose through the command loop rather than around it: a single
+// retry that left one unit pending and a drop that resolved another are both
+// facts the retry-all reads off the record, and it repairs exactly what is
+// still failed while resuming everything the attempt still owes.
+func TestRetryFailedUnitsInterleavesWithSingleRetryAndDrop(t *testing.T) {
+	h := newFanOutHarness(t, 4)
+	h.limitProviderCapacity("project", 4)
+	item := startFanOut(t, h, "fan")
+	for index := 0; index < 3; index++ {
+		h.runner.completeRun(t, unitKey(item, "work", 1, fmt.Sprintf("work-unit-%d", index)),
+			Outcome{Kind: OutcomeExecutionFailure, Envelope: failureEnvelope("boom")})
+	}
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-unit-3"),
+		Outcome{Kind: OutcomeDone, Envelope: unitDoneEnvelope("d")})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonUnitFailed)
+
+	if err := h.engine.RetryUnit(item, "work-unit-0", "by hand"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.DropUnit(item, "work-unit-1", "not worth another try"); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonUnitFailed)
+
+	if err := h.engine.RetryFailedUnits(item, "the limit reset"); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateRunning, "")
+	h.requireUnitStatuses(t, item, "work", 1, map[string]string{
+		"work-unit-0": store.WorkItemUnitRunning,
+		"work-unit-1": store.WorkItemUnitDropped,
+		"work-unit-2": store.WorkItemUnitRunning,
+		"work-unit-3": store.WorkItemUnitDone,
+		"work-join":   store.WorkItemUnitPending,
+	})
+	// Only unit 2 was still failed, so only unit 2 is the retry-all's repair, and
+	// it is the one carrying the retry-all's note on a second try.
+	started := h.runner.startFor(t, unitKey(item, "work", 1, "work-unit-2"))
+	if started.Feedback == nil || started.Feedback.Note != "the limit reset" {
+		t.Fatalf("repaired unit feedback = %+v, want the retry-all's note", started.Feedback)
+	}
+	// Unit 0 is relaunched, not re-repaired. It carries what its ROW carries,
+	// which pins a pre-existing single-retry wart rather than anything this
+	// action does: a repair that leaves the run parked evicts the item, so the
+	// note and the attempt bump RetryUnit only held in memory are lost and the
+	// unit's next start inherits the failure note instead. Fixing that means
+	// persisting the reopen (store.RetryWorkItemUnit writes neither), which is
+	// its own change; if it lands, this assertion is the one that should fail.
+	byHand := h.runner.startFor(t, unitKey(item, "work", 1, "work-unit-0"))
+	if byHand.Feedback == nil || byHand.Feedback.Note != "unit outcome execution-failure" {
+		t.Fatalf("already-reopened unit feedback = %+v, want the note its row carried", byHand.Feedback)
+	}
+	if byHand.UnitAttempt != 1 {
+		t.Fatalf("already-reopened unit attempt = %d, want the row's own try count", byHand.UnitAttempt)
+	}
+}
+
+// Nothing failed is a refusal, and it is a refusal that wrote nothing: the
+// failed set is collected before the first store write, so an action with no
+// work to do cannot half-repair an attempt on its way to saying so.
+func TestRetryFailedUnitsWithNoFailedUnitIsARefusalThatChangesNothing(t *testing.T) {
+	h := newFanOutHarness(t, 2)
+	item := startFanOut(t, h, "fan")
+	if err := h.engine.TakeOverUnit(item, "work-unit-0"); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-unit-1"),
+		Outcome{Kind: OutcomeDone, Envelope: unitDoneEnvelope("b")})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonTakenOver)
+
+	before := h.runner.startedUnitIDs()
+	if err := h.engine.RetryFailedUnits(item, ""); err == nil ||
+		!strings.Contains(err.Error(), "no unit of attempt") {
+		t.Fatalf("retry-all with nothing failed = %v, want a refusal", err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonTakenOver)
+	h.requireUnitStatuses(t, item, "work", 1, map[string]string{
+		"work-unit-0": store.WorkItemUnitTakenOver,
+		"work-unit-1": store.WorkItemUnitDone,
+		"work-join":   store.WorkItemUnitPending,
+	})
+	if got := h.runner.startedUnitIDs(); !reflect.DeepEqual(got, before) {
+		t.Fatalf("started units = %v, want nothing started by a refusal (was %v)", got, before)
+	}
+}
+
+// A unit under human steering is the human's, so the retry-all leaves it and
+// the attempt stays parked on it — exactly what retrying each failed unit by
+// hand would have produced.
+func TestRetryFailedUnitsLeavesATakenOverUnitAndItsPark(t *testing.T) {
+	h := newFanOutHarness(t, 3)
+	h.limitProviderCapacity("project", 3)
+	item := startFanOut(t, h, "fan")
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-unit-0"),
+		Outcome{Kind: OutcomeExecutionFailure, Envelope: failureEnvelope("boom")})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.engine.TakeOverUnit(item, "work-unit-1"); err != nil {
+		t.Fatal(err)
+	}
+	h.runner.completeRun(t, unitKey(item, "work", 1, "work-unit-2"),
+		Outcome{Kind: OutcomeDone, Envelope: unitDoneEnvelope("c")})
+	if err := h.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonTakenOver)
+
+	if err := h.engine.RetryFailedUnits(item, "the limit reset"); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, item, StateNeedsHuman, ReasonTakenOver)
+	h.requireUnitStatuses(t, item, "work", 1, map[string]string{
+		"work-unit-0": store.WorkItemUnitPending,
+		"work-unit-1": store.WorkItemUnitTakenOver,
+		"work-unit-2": store.WorkItemUnitDone,
+		"work-join":   store.WorkItemUnitPending,
+	})
+	if got := h.runner.startedUnitIDs(); len(got) != 3 {
+		t.Fatalf("started units = %v, want nothing relaunched while a unit is steered", got)
+	}
+}
+
+func TestRetryFailedUnitsRejectsRunsItCannotRepair(t *testing.T) {
+	h := newFanOutHarness(t, 2)
+	item := startFanOut(t, h, "fan")
+	if err := h.engine.RetryFailedUnits(item, ""); err == nil ||
+		!strings.Contains(err.Error(), "still active") {
+		t.Fatalf("retry-all on a live run = %v, want a refusal", err)
+	}
+
+	workflow := onePhaseWorkflow("single", nil, []def.Route{{To: "done"}})
+	single := newHarness(t, Config{}, map[string]def.Workflow{"single": workflow}, []string{"project"}, nil)
+	if err := single.engine.StartItem(testItem("item", "project", "single", 0)); err != nil {
+		t.Fatal(err)
+	}
+	single.runner.complete(t, "item", Outcome{Kind: OutcomeQuestion, Envelope: questionEnvelope()})
+	if err := single.engine.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := single.engine.RetryFailedUnits("item", ""); err == nil ||
+		!strings.Contains(err.Error(), "unit recovery applies to") {
+		t.Fatalf("retry-all on a question park = %v, want a refusal", err)
 	}
 }
 

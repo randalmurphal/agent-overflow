@@ -97,6 +97,8 @@ func runCommand(args []string, lookupEnv func(string) (string, bool), stdout, st
 		return runRerunCommand.run(args[1:], lookupEnv, stdout, stderr)
 	case "retry-unit":
 		return runRetryUnitCommand.run(args[1:], lookupEnv, stdout, stderr)
+	case "retry-failed-units":
+		return runRetryFailedUnitsCommand.run(args[1:], lookupEnv, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "agent-overflow run: unknown command %q\n", args[0])
 		_ = writeOutput(stderr, runUsage)
@@ -295,6 +297,20 @@ var runRerunCommand = runControl("agent-overflow run rerun", runRerunUsage, "Wor
 	func(flags *flag.FlagSet) func() []any {
 		guidance := flags.String("guidance", "", "text carried into the new attempt alongside the failure diagnosis")
 		return func() []any { return []any{*guidance} }
+	})
+
+// retry-failed-units is its own verb rather than a --all on retry-unit: the two
+// differ in arity, not in options. `retry-unit` needs a unit id and this one
+// refuses to be given one, so a flag would have made the second positional
+// conditionally required — the shape where a typo silently repairs the wrong
+// thing. It joins the pause/resume/cancel/rerun family for the same reason they
+// share it: one run id, an optional note, and "what state is it in now" as the
+// only useful answer.
+var runRetryFailedUnitsCommand = runControl(
+	"agent-overflow run retry-failed-units", runRetryFailedUnitsUsage, "WorkflowRetryFailedUnits",
+	func(flags *flag.FlagSet) func() []any {
+		note := flags.String("note", "", "text carried into every repaired unit's next try")
+		return func() []any { return []any{*note} }
 	})
 
 var runRetryUnitCommand = execCommand{

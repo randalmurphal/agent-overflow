@@ -311,6 +311,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "WorkflowRerunItem", ID: 1986594501},                    // main.App.WorkflowRerunItem
 	{Name: "WorkflowResolveGate", ID: 3348479803},                  // main.App.WorkflowResolveGate
 	{Name: "WorkflowResumeItem", ID: 3138507556},                   // main.App.WorkflowResumeItem
+	{Name: "WorkflowRetryFailedUnits", ID: 2846965054},             // main.App.WorkflowRetryFailedUnits
 	{Name: "WorkflowRetryUnit", ID: 1648002260},                    // main.App.WorkflowRetryUnit
 	{Name: "WorkflowRunAutomationNow", ID: 2615697354},             // main.App.WorkflowRunAutomationNow
 	{Name: "WorkflowSendPRReviewCommentsToThread", ID: 1172404443}, // main.App.WorkflowSendPRReviewCommentsToThread

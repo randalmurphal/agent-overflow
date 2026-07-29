@@ -344,7 +344,8 @@ authority.
 
 **The CLI surface** (workflow-facing): `agent-overflow workflow validate | list | schema |
 new` (authoring) · `run | status | result | list-runs` (execution) · `pause |
-resume | cancel | rerun | retry-unit` (control). `run` starts a run
+resume | cancel | rerun | retry-unit | retry-failed-units` (control). `run`
+starts a run
 immediately and returns the run id; it does not block.
 
 **Thread binding and wake — one mechanism, three entry points.** Every root
@@ -517,7 +518,8 @@ suspended provider-side. It surfaces (overlay + notification, §10) with its
 **blocking reason**, a short **digest**, and the **diff / checks / cost /
 narrative** — never raw internals (below). If the run is thread-bound (§5),
 the wake message carries the same digest to the origin agent, which may
-resolve it through the CLI (answer, retry-unit, rerun) or escalate to you.
+resolve it through the CLI (answer, retry-unit, retry-failed-units, rerun) or
+escalate to you.
 Resolve by:
 
 - **Gate decision** — approve / reject (optional note). A click; the gate
@@ -529,8 +531,14 @@ Resolve by:
 - **Take over** — drive it yourself, exactly as above: open the phase's
   thread from the run tree and send (steer free-form → Complete or discard +
   re-run). The send is what takes over; there is no take-over button (D32).
-- **Unit recovery** — for `unit-failed` parks: retry the unit, drop it (join
-  proceeds over survivors), or open its thread.
+- **Unit recovery** — for `unit-failed` parks: retry the unit, retry every
+  failed unit of the attempt at once, drop it (join proceeds over survivors),
+  or open its thread. The whole-attempt repair (D33) is the usage-limit case:
+  one cause fails most of a wide fan-out, the human waits the limit out (or
+  switches account) and repairs all of it with one action — the same edge, the
+  same reopened attempt, and the same admission through the project's
+  semaphores as repairing each unit in turn, so a wide repair queues instead of
+  bursting. Units under human steering are left alone.
 
 | Phase turn state | Sending a message → |
 |---|---|
@@ -548,7 +556,8 @@ never needs to know which produced it.
 - **Needs-attention sweep.** Run detail (§10) steps parked runs one at a time
   (`j`/`k` next/prev), each leading with a short generated digest ("what
   happened / what it needs") and inline approve / answer / resume / rerun /
-  retry-unit / discard. The morning-after throughput path.
+  retry-unit / retry-failed-units / discard. The morning-after throughput
+  path.
 - **Handing work to an agent is the wake, not a button (D32).** A run bound to
   a thread (§5) delivers its digest into that conversation on every resting
   transition, and the agent there resolves it through the CLI. The overlay's
@@ -787,8 +796,8 @@ are no longer created (D32); the exclusion keeps existing ones hidden.
   to its units; a call phase expands to its child run (recursively). Leads
   with the digest, diff, checks, and cost; hosts the resolution actions
   (approve / reject / answer / pause / resume / rerun / retry-unit /
-  take-over-unit / finish-takeover / discard-with-preview / disposition /
-  bind-thread) plus the §7 needs-attention sweep. Every phase/unit attempt
+  retry-failed-units / take-over-unit / finish-takeover / discard-with-preview /
+  disposition / bind-thread) plus the §7 needs-attention sweep. Every phase/unit attempt
   links its thread — completed, failed, and superseded attempts included.
   Every one of those opens a thread that already exists; **no action here
   creates one** (D32).

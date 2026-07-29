@@ -103,6 +103,7 @@ export function registerWorkflowCommands(): void {
   actionCommand('workflows.action.primary', 'Workflows: Primary Action', 'a');
   actionCommand('workflows.action.reject', 'Workflows: Request Changes / Discard', 'r');
   actionCommand('workflows.action.thread', 'Workflows: Thread Action', 't');
+  actionCommand('workflows.action.retry-units', 'Workflows: Retry All Failed Units', 'u');
 
   registerCommand({
     id: 'workflows.action.enter',

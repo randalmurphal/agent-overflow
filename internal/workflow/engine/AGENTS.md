@@ -182,12 +182,24 @@ resource semaphores, and startup recovery.
   branch, worktree, thread) under the reserved `units` variable, and its
   envelope *is* the phase's envelope — so a join failure is an ordinary phase
   failure (`agent-error`), not the unit-failure policy.
-- `RetryUnit` / `DropUnit` / `TakeOverUnit` repair an attempt rather than
-  replacing it: the phase attempt row is reopened (`ReopenWorkItemPhase`) so
+- `RetryUnit` / `RetryFailedUnits` / `DropUnit` / `TakeOverUnit` repair an
+  attempt rather than replacing it: the phase attempt row is reopened (`ReopenWorkItemPhase`) so
   finished units keep their results, and the run only returns to `running` when
   no unit is left blocking it. A unit that cannot *start* is not a unit failure
   — it parks the attempt under the same sentinel-mapped reason a single-shape
   phase would, because nothing runnable was ever produced.
+- `RetryFailedUnits` is `RetryUnit` over every unit resting `failed`, as ONE
+  command (D33). It exists because the failure it repairs usually has one cause
+  hitting many units at once — a provider usage limit stopping most of a wide
+  fan-out — and it is one command rather than N submitted retries because the
+  loop serializes commands but not the gaps between them: a half-repaired
+  attempt must not be observable by a concurrent drop or single retry. It
+  collects the failed set before its first write, so "nothing was failed" is a
+  refusal that changed nothing; it leaves `taken-over` units to the human and
+  the attempt parked on them; and it resumes through `resumeRepairedFanOut`
+  like the single retry, so the repaired units are admitted one at a time
+  through `acquireUnitResources` and queue in the shared FIFO rather than
+  bursting past the provider bound.
 - A phase-level continuation of a fan-out attempt is a continuation of its
   **join**, because the join's envelope is the phase's: `Answer` and
   `CompleteTakeover` route through `continueFanOutJoin`, which re-runs only the

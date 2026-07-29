@@ -183,7 +183,7 @@ Action row is a fixed footer, primary first; keys per §8.
 | **failed** (`check-failed-genuine`, `child-failed`) | Failing check line; latest diagnosis quote. | `Rerun with guidance` (a, primary — new attempt seeded with the diagnosis as feedback) · `Discard` (r, danger, §4.5) |
 | **blocked** (every other `needs-human` reason: stuck, agent-error, wiring-error, setup-failed, budget-exhausted, stalled, retries-exhausted) | Same evidence as **failed** — a run that could not finish asks the same question whichever state it stopped in. | `Resume` (a, primary — re-enters the phase with a fresh attempt, after the human clears whatever blocked it) · `Discard` (r, danger, §4.5) |
 | **paused / interrupted** | Receipt line (`paused by you · yesterday` / `interrupted — the app was restarted`); partial-envelope digest if one was captured. | `Resume` (a, primary — next attempt, same provider thread, continue message) · `Discard` (r, danger, §4.5) |
-| **unit-failed** | The failed unit's row highlighted in the tree; its failing check/diagnosis inline; survivors' states visible above. | `Retry unit` (a, primary) · `Drop unit — join proceeds without it` (recorded in the gate trace) · `Take over unit` (t — detaches the unit and opens the thread it is ALREADY running in) · `Discard` (r, danger, §4.5) |
+| **unit-failed** | The failed unit's row highlighted in the tree; its failing check/diagnosis inline; survivors' states visible above. | `Retry unit` (a, primary) · `Retry all failed units` (u — repairs every failed unit of the attempt in one action, D33) · `Drop unit — join proceeds without it` (recorded in the gate trace) · `Take over unit` (t — detaches the unit and opens the thread it is ALREADY running in) · `Discard` (r, danger, §4.5) |
 | **taken-over** | The steered phase thread's state; the run is under human control. | `Finish takeover` (a, primary — one finalize turn re-attaches the schema) · `Discard` (r, danger, §4.5) |
 | **done** | Checks row; disposition block (manual: merge / PR / discard; auto-merge projects show the receipt + policy + undo line). After Create PR: the PR block with `Review comments (N)` + `Discuss this PR` riding the linked thread (§4.7). Outputs block (§4.8). | Manual: `Merge to main` (a, primary) · `Create PR` · `Discard` (r, danger, §4.5). Any run adds `Bind to thread…` in the `⋯` menu — it binds an EXISTING thread and never creates one. |
 | **running** | The run tree, live. | `Pause` (interrupt in-flight turns → park paused) · `Open phase thread` · `Stop this run` (danger, teardown → cancelled) |
@@ -338,6 +338,7 @@ open overlay; suppressed while a text field has focus.
 | `a` | gate / question / failed / blocked / paused / unit-failed / taken-over / done | primary action (approve / focus answer / rerun / resume / retry unit / finish takeover / merge) |
 | `r` | gate / failed / blocked / paused / unit-failed / taken-over / done / cancelled | request changes / discard (opens the §4.5 preview) |
 | `t` | unit-failed | take over the failed unit — the only `t` binding left (D32) |
+| `u` | unit-failed | retry every failed unit of the attempt at once (D33) — the usage-limit recovery, where pressing `a` once per unit is the same repair typed N times |
 | `1`–`9` | question | pick + send the nth suggested answer |
 | `Enter` | gate / question input | toggle first diff file / send answer |
 

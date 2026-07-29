@@ -8,6 +8,7 @@ import {
   setCodexScenario,
   start,
   stuckEnvelope,
+  stuckResult,
   waitForWorkflowState,
   type WorkflowDetail,
   type WorkflowUnit,
@@ -343,6 +344,67 @@ test('a failed unit parks the attempt and WorkflowRetryUnit repairs it in place'
   expect(repaired.phases).toHaveLength(1);
   expect(repaired.phases[0]?.attempt).toBe(1);
   expect(repaired.phases[0]?.threadId).toBe(unitById(repaired, 'merge').threadId);
+  expect(repaired.phases[0]?.outputEnvelope).toMatchObject({
+    status: 'done',
+    outputs: { report: 'ok' },
+  });
+});
+
+// The many-at-once shape: one cause — a provider usage limit — takes down every
+// unit of the attempt, and the human repairs all of them with one call after
+// waiting the limit out. The mixed-provider fan-out is what makes it a real
+// test: both providers had to fail and both had to be repaired by the same
+// command.
+test('WorkflowRetryFailedUnits repairs every failed unit of a parked attempt at once', async ({
+  harness,
+}) => {
+  await setClaudeScenario(harness, 'fanout-retry-all-claude-stuck', [
+    { steps: [{ emit: { lines: [stuckResult('alpha slice hit the usage limit')] } }] },
+  ]);
+  await setCodexScenario(harness, 'fanout-retry-all-codex-stuck', stuckEnvelope('beta slice hit the usage limit'));
+  const project = await seedWorkflowProject(
+    harness,
+    'workflow-fanout-retry-all-project',
+    [
+      {
+        name: 'fanout-recovery',
+        yaml: mixedFanOutYaml,
+        prompts: {
+          'alpha.md': 'Port the alpha slice and return the envelope.',
+          'beta.md': 'Port the beta slice and return the envelope.',
+          'merge.md': 'Consolidate {{units}} and return the envelope.',
+        },
+      },
+    ],
+    [],
+    'base_branch: main\n',
+  );
+
+  const item = await start(harness, project.projectId, 'fanout-recovery');
+  await waitForWorkflowState(harness, item.id, 'needs-human', 'unit-failed');
+
+  const parked = await harness.rpc<WorkflowDetail>('WorkflowGetItem', item.id);
+  expect(unitById(parked, 'alpha').status).toBe('failed');
+  expect(unitById(parked, 'beta').status).toBe('failed');
+  expect(unitById(parked, 'merge').status).toBe('pending');
+
+  // The limit reset: every session started after this point gets the repaired
+  // behaviour, on both providers.
+  await setClaudeScenario(harness, 'fanout-retry-all-claude-done', [
+    { steps: [{ emit: { lines: [doneResult({ report: 'ok' })] } }] },
+  ]);
+  await setCodexScenario(harness, 'fanout-retry-all-codex-done', doneEnvelope({}));
+  await harness.rpc('WorkflowRetryFailedUnits', item.id, 'the usage limit reset');
+  await waitForWorkflowState(harness, item.id, 'done');
+
+  const repaired = await harness.rpc<WorkflowDetail>('WorkflowGetItem', item.id);
+  expect(repaired.units.map((unit) => unit.status)).toEqual(['done', 'done', 'done']);
+  // Every failed unit was repaired in place: same rows, one more try each, and
+  // the attempt they belong to was reopened rather than replaced.
+  expect(unitById(repaired, 'alpha').unitAttempt).toBe(2);
+  expect(unitById(repaired, 'beta').unitAttempt).toBe(2);
+  expect(repaired.phases).toHaveLength(1);
+  expect(repaired.phases[0]?.attempt).toBe(1);
   expect(repaired.phases[0]?.outputEnvelope).toMatchObject({
     status: 'done',
     outputs: { report: 'ok' },

@@ -344,6 +344,7 @@ export {
   WorkflowResolveGate,
   WorkflowResumeItem,
   WorkflowRerunItem,
+  WorkflowRetryFailedUnits,
   WorkflowRetryUnit,
   WorkflowRunAutomationNow,
   WorkflowSendPRReviewCommentsToThread,

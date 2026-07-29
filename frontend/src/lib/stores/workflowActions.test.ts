@@ -16,6 +16,7 @@ function bindings(): WorkflowActionBindings {
     resumeItem: vi.fn(async () => undefined),
     rerunItem: vi.fn(async () => undefined),
     retryUnit: vi.fn(async () => undefined),
+    retryFailedUnits: vi.fn(async () => undefined),
   };
 }
 
@@ -88,6 +89,21 @@ describe('workflow action dispatch', () => {
     expect(deps.dropUnit).toHaveBeenCalledWith('run', 'port-3', '');
     expect(retried?.message).toContain('port-3');
     expect(dropped?.message).toBe('Unit dropped — the join proceeds without port-3');
+  });
+
+  // The whole-attempt repair names no unit — it has no single one to name — so
+  // its receipt says what survives instead.
+  it('repairs every failed unit with one call and no unit id', async () => {
+    const deps = bindings();
+    const receipt = await dispatchWorkflowAction(item, { kind: 'retry-failed-units', note: 'limit reset' }, 3, deps);
+    expect(deps.retryFailedUnits).toHaveBeenCalledWith('run', 'limit reset');
+    expect(deps.retryUnit).not.toHaveBeenCalled();
+    expect(receipt).toMatchObject({
+      itemId: 'run',
+      kind: 'restarted',
+      message: 'Retrying every failed unit — finished units keep their results',
+      costUsd: 3,
+    });
   });
 
   it('returns no receipt for the two actions that park rather than resolve', async () => {

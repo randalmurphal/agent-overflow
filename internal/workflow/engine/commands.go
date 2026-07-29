@@ -96,6 +96,11 @@ type retryUnitCommand struct {
 	note   string
 	reply  chan response
 }
+type retryFailedUnitsCommand struct {
+	itemID string
+	note   string
+	reply  chan response
+}
 type dropUnitCommand struct {
 	itemID string
 	unitID string
@@ -185,6 +190,9 @@ func (e *Engine) request(command any) error {
 		command.reply = reply
 		e.commands <- command
 	case retryUnitCommand:
+		command.reply = reply
+		e.commands <- command
+	case retryFailedUnitsCommand:
 		command.reply = reply
 		e.commands <- command
 	case dropUnitCommand:
@@ -352,6 +360,9 @@ func (e *Engine) loop() {
 			command.reply <- e.itemCommandResponse(command.itemID, err)
 		case retryUnitCommand:
 			err = e.retryUnit(command.itemID, command.unitID, command.note)
+			command.reply <- e.itemCommandResponse(command.itemID, err)
+		case retryFailedUnitsCommand:
+			err = e.retryFailedUnits(command.itemID, command.note)
 			command.reply <- e.itemCommandResponse(command.itemID, err)
 		case dropUnitCommand:
 			err = e.dropUnit(command.itemID, command.unitID, command.note)

@@ -101,6 +101,11 @@ var ScopedTokenMethods = map[string][]string{
 	"WorkflowResumeItem":    {"start-run"},
 	"WorkflowRerunItem":     {"start-run"},
 	"WorkflowRetryUnit":     {"start-run"},
+	// Repairing every failed unit at once is the same authority as repairing one
+	// at a time: same edge, same admission, N times in one command. A babysitting
+	// session is the one that notices a usage limit reset, so it is the one that
+	// needs the verb.
+	"WorkflowRetryFailedUnits": {"start-run"},
 	// Reading run state: project-wide with introspect, own-started-only with
 	// start-run alone.
 	"WorkflowAgentRunStatus": {"introspect", "start-run"},

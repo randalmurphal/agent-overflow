@@ -67,7 +67,7 @@ describe('workflowActionRow', () => {
     ['failed', ['rerun', 'discard']],
     ['blocked', ['resume', 'discard']],
     ['paused', ['resume', 'discard']],
-    ['unit-failed', ['retry-unit', 'drop-unit', 'take-over-unit', 'discard']],
+    ['unit-failed', ['retry-unit', 'retry-failed-units', 'drop-unit', 'take-over-unit', 'discard']],
     ['taken-over', ['complete-takeover', 'discard']],
     ['done', ['merge', 'create-pr', 'discard']],
     ['running', ['pause', 'open-phase-thread', 'cancel']],
@@ -118,7 +118,7 @@ describe('workflowActionRow', () => {
       const row = workflowActionRow({ kind });
       const keys = row.map((action) => action.key).filter(Boolean);
       expect(new Set(keys).size).toBe(keys.length);
-      for (const key of keys) expect(['a', 'r', 't']).toContain(key);
+      for (const key of keys) expect(['a', 'r', 't', 'u']).toContain(key);
     }
   });
 });

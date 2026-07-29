@@ -25,6 +25,7 @@ export type WorkflowActionId =
   | 'rerun'
   | 'resume'
   | 'retry-unit'
+  | 'retry-failed-units'
   | 'drop-unit'
   | 'take-over-unit'
   | 'complete-takeover'
@@ -36,7 +37,7 @@ export type WorkflowActionId =
   | 'discard'
   | 'back';
 
-export type WorkflowActionKey = 'a' | 'r' | 't';
+export type WorkflowActionKey = 'a' | 'r' | 't' | 'u';
 
 export interface WorkflowActionButton {
   id: WorkflowActionId;
@@ -128,8 +129,13 @@ export function workflowActionRow(input: WorkflowActionRowInput): WorkflowAction
         { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
       ];
     case 'unit-failed':
+      // Two retries, because a fan-out fails at two scales. One unit failing on
+      // its own is the `a` case. One CAUSE failing many units at once — a
+      // provider usage limit stopping most of a wide fan-out — is the `u` case,
+      // and pressing `a` N times for it is the same repair typed N times.
       return [
         { id: 'retry-unit', label: 'Retry unit', key: 'a', variant: 'primary' },
+        { id: 'retry-failed-units', label: 'Retry all failed units', key: 'u', variant: 'secondary' },
         { id: 'drop-unit', label: 'Drop unit — join proceeds without it', variant: 'secondary', arms: true },
         { id: 'take-over-unit', label: 'Take over unit', key: 't', variant: 'ghost' },
         { id: 'discard', label: 'Discard', key: 'r', variant: 'danger-outline' },
@@ -189,7 +195,7 @@ export function workflowDigestFallback(
     case 'paused':
       return { whatHappened: `${phase} stopped before it produced a result.`, whatItNeeds: 'Resume it or discard it.' };
     case 'unit-failed':
-      return { whatHappened: 'A fan-out unit failed; its siblings finished.', whatItNeeds: 'Retry the unit, drop it, or take it over.' };
+      return { whatHappened: 'A fan-out unit failed; its siblings finished.', whatItNeeds: 'Retry the unit (or every failed one), drop it, or take it over.' };
     case 'taken-over':
       return { whatHappened: `${phase} is under your control.`, whatItNeeds: 'Finish the takeover to hand it back.' };
     case 'done':

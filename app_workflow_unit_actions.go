@@ -35,6 +35,26 @@ func (a *App) WorkflowRetryUnit(ctx context.Context, itemID, unitID, note string
 	return nil
 }
 
+// WorkflowRetryFailedUnits re-runs every failed unit of a parked fan-out
+// attempt in one action. It is the recovery for a cause that hit many units at
+// once — a provider usage limit stopping most of a wide fan-out — where
+// repairing unit by unit is the same action typed N times. The note explains
+// the retry in the run record and reaches every repaired unit's next try as
+// feedback.
+func (a *App) WorkflowRetryFailedUnits(ctx context.Context, itemID, note string) error {
+	workflowEngine, err := a.requireWorkflowEngine()
+	if err != nil {
+		return err
+	}
+	if err := a.authorizeScopedRunAction(ctx, itemID, "retry failed workflow units"); err != nil {
+		return err
+	}
+	// Nothing to release here, unlike the single-unit retry: this repairs units
+	// resting `failed`, and a unit under human steering rests `taken-over`. Its
+	// registration stays because the unit does — the human is still driving it.
+	return workflowEngine.RetryFailedUnits(itemID, note)
+}
+
 // WorkflowDropUnit accepts a failed or taken-over unit's absence. The unit is
 // recorded `dropped`, its join sees it as such, and the attempt resumes.
 func (a *App) WorkflowDropUnit(itemID, unitID, note string) error {

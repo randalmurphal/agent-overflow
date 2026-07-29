@@ -316,17 +316,25 @@ cleanup: manual
 
 // writeFanOutClaude answers every turn with a done envelope and appends the
 // working directory it ran in, so the test can see where each unit executed.
-// When failMarker is set, the first turn whose prompt names the beta unit is
-// stuck instead — one deterministic unit failure per run.
-func writeFanOutClaude(t *testing.T, cwdLog, failMarker string) string {
+//
+// Each token in failFirstTurn names a unit whose FIRST turn is stuck instead —
+// one deterministic failure per named unit, recorded by a marker file under
+// markerDir so the retry succeeds. Naming one unit is the single-failure park;
+// naming several is the shape a provider usage limit produces, where one cause
+// takes down most of a fan-out at once.
+func writeFanOutClaude(t *testing.T, cwdLog, markerDir string, failFirstTurn ...string) string {
 	t.Helper()
 	done := `{"status":"done","outputs":{"report":"ok"},"question":null,"reason":null}`
-	stuck := `{"status":"stuck","outputs":null,"question":null,"reason":"beta slice does not build"}`
+	stuck := `{"status":"stuck","outputs":null,"question":null,"reason":"slice does not build"}`
 	failure := ""
-	if failMarker != "" {
-		failure = `
-  if [[ "$line" == *BETA-UNIT* && ! -f ` + workflowShellQuote(failMarker) + ` ]]; then
-    : > ` + workflowShellQuote(failMarker) + `
+	for _, token := range failFirstTurn {
+		if markerDir == "" {
+			t.Fatalf("writeFanOutClaude: failing %q needs a marker directory", token)
+		}
+		marker := workflowShellQuote(filepath.Join(markerDir, token+".failed"))
+		failure += `
+  if [[ "$line" == *` + token + `* && ! -f ` + marker + ` ]]; then
+    : > ` + marker + `
     printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"structured_output":` + stuck + `}'
     continue
   fi`

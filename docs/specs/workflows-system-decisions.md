@@ -1156,3 +1156,63 @@ verdict it now is, with what the first attempt got wrong.
   no dead code, no commented-out buttons, no orphaned bindings — so that
   whatever replaces it starts from the behaviour that is actually wanted
   rather than from this one's shape.
+
+## Repairing a fan-out is one action, not N (user ruling, 2026-07-29)
+
+- **D33. A parked fan-out gains one action that retries EVERY failed unit
+  at once, alongside the per-unit retry that stays.** `Engine.RetryFailedUnits`
+  → `App.WorkflowRetryFailedUnits(itemID, note)` → the `Retry all failed
+  units` button (`u`, §8) and `agent-overflow run retry-failed-units
+  <run-id> [--note]`.
+
+  **Why.** The failure this repairs almost never arrives one unit at a
+  time. A wide fan-out hits a provider usage limit and most of its units
+  fail against the same wall inside a minute of each other. The human
+  clears that cause exactly once — waits for the reset, or switches
+  account — and then has one decision to make about the whole attempt.
+  Making them press `a` once per unit turns a single decision into N
+  identical clicks, each of which reloads the detail and re-picks the
+  next failed unit. The single-unit retry stays because the other shape
+  is real too: one unit failing on its own merits, which is a decision
+  about that unit.
+
+  **It is one engine command, not N submitted retries.** The command
+  loop serializes commands but not the gaps between them, so N
+  `RetryUnit` calls could interleave with a concurrent drop or single
+  retry and reach the second half of the set against an attempt the
+  first half had already returned to `running`. The retry-all reads the
+  failed set, reopens every member, and resumes the attempt inside one
+  turn of the loop, so no other command ever observes a half-repaired
+  fan-out. The set is collected before the first store write, which is
+  what makes "no unit is failed" a refusal that changed nothing rather
+  than a repair that happened to write none.
+
+  **No new admission path, and therefore no burst.** It resumes through
+  the same `resumeRepairedFanOut` the single retry uses: the attempt row
+  is reopened (finished units keep their results), the item returns to
+  `running`, and each repaired unit is then admitted one at a time
+  through `acquireUnitResources` — queuing in the same FIFO a held phase
+  start uses when the project is at capacity. Repairing twenty units
+  against a provider bound of two starts two and holds eighteen. Anything
+  else would make the action that recovers FROM a usage limit the one
+  action that ignores the bound modelling it.
+
+  **Units under human steering are not repaired.** `taken-over` is the
+  human driving; the retry-all leaves those units and the attempt stays
+  parked on them — exactly what retrying each failed unit by hand would
+  have produced. The action's contract is "every failed unit", not
+  "return this run to running".
+
+  **Agent-callable under the grant the single retry already carries**
+  (`start-run`, `ScopedTokenMethods`). The session babysitting a campaign
+  run is the one that notices the reset — it is polling `agent-overflow
+  run status` while the human is asleep — so the verb has to exist where
+  that session is. Repairing every failed unit at once is not more
+  authority than repairing them one at a time: same edge, same admission,
+  same rows, one command.
+
+  **CLI shape: a sibling verb, not a flag.** `retry-failed-units` differs
+  from `retry-unit` in arity, not in options. A `--all` flag on
+  `retry-unit` would make its second positional conditionally required —
+  the shape where a mistyped invocation silently repairs the wrong thing
+  — so the two are separate verbs and each refuses the other's arity.

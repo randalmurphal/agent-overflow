@@ -309,9 +309,10 @@ var LocalOnlyMethods = map[string]bool{
 	// starts a provider session or a local command, a drop rewrites what the
 	// join consolidates, and a takeover restarts a session schema-less so a
 	// human can steer it.
-	"WorkflowRetryUnit":    true,
-	"WorkflowDropUnit":     true,
-	"WorkflowTakeOverUnit": true,
+	"WorkflowRetryUnit":        true,
+	"WorkflowRetryFailedUnits": true,
+	"WorkflowDropUnit":         true,
+	"WorkflowTakeOverUnit":     true,
 	// The `ao` CLI surface. Every one of these is reachable only with a scoped
 	// token minted for a local provider session (see scopedtoken.go), and the
 	// scoped route is loopback-only in its own right — but they are classified

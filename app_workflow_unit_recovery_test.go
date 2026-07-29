@@ -25,7 +25,7 @@ import (
 // intact, WorkflowRetryUnit re-runs only the failed unit on a fresh try, and the
 // join then produces the phase's envelope.
 func TestWorkflowUnitFailureParksAndRetryCompletesTheRun(t *testing.T) {
-	app, item, repo := startFailingFanOutRun(t)
+	app, item, repo := startFailingFanOutRun(t, "BETA-UNIT")
 	item = waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonUnitFailed)
 
 	units := unitsByID(t, app, item.ID)
@@ -97,7 +97,7 @@ func TestWorkflowUnitFailureParksAndRetryCompletesTheRun(t *testing.T) {
 // recovery: the human accepts the unit's absence and the attempt finishes
 // without it.
 func TestWorkflowDropUnitLetsTheJoinProceedOverSurvivors(t *testing.T) {
-	app, item, repo := startFailingFanOutRun(t)
+	app, item, repo := startFailingFanOutRun(t, "BETA-UNIT")
 	item = waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonUnitFailed)
 
 	if err := app.WorkflowDropUnit(item.ID, "beta", "not needed for this port"); err != nil {
@@ -128,9 +128,81 @@ func TestWorkflowDropUnitLetsTheJoinProceedOverSurvivors(t *testing.T) {
 	}
 }
 
-// startFailingFanOutRun boots a fan-out run whose `beta` unit fails on its first
-// try and succeeds on any later one, and returns once the run has started.
-func startFailingFanOutRun(t *testing.T) (*App, store.WorkItem, string) {
+// TestWorkflowRetryFailedUnitsRepairsEveryFailedUnitAtOnce is the many-at-once
+// half of unit recovery: one cause — a provider usage limit — fails every unit
+// of the attempt, and one call puts all of them back on the same attempt. The
+// per-unit outcome is the same as calling WorkflowRetryUnit on each: a fresh
+// try on a fresh branch cut from the item's, on the attempt row that already
+// exists.
+func TestWorkflowRetryFailedUnitsRepairsEveryFailedUnitAtOnce(t *testing.T) {
+	app, item, repo := startFailingFanOutRun(t, "ALPHA-UNIT", "BETA-UNIT")
+	item = waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonUnitFailed)
+
+	units := unitsByID(t, app, item.ID)
+	for _, id := range []string{"alpha", "beta"} {
+		if units[id].Status != store.WorkItemUnitFailed {
+			t.Fatalf("unit %q status = %q, want every unit failed", id, units[id].Status)
+		}
+	}
+	if units["merge"].Status != store.WorkItemUnitPending {
+		t.Fatalf("join status = %q, want pending over a wholly failed attempt", units["merge"].Status)
+	}
+	for _, id := range []string{"alpha", "beta"} {
+		failedWorktree := units[id].WorktreePath
+		if failedWorktree == "" {
+			t.Fatalf("failed unit %q lost its isolation: %+v", id, units[id])
+		}
+		t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, failedWorktree, true) })
+	}
+
+	if err := app.WorkflowRetryFailedUnits(context.Background(), item.ID, "the usage limit reset"); err != nil {
+		t.Fatal(err)
+	}
+	item = waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
+	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, item.WorktreePath, true) })
+
+	units = unitsByID(t, app, item.ID)
+	for _, id := range []string{"alpha", "beta", "merge"} {
+		if units[id].Status != store.WorkItemUnitDone {
+			t.Fatalf("after retry-all unit %q status = %q", id, units[id].Status)
+		}
+	}
+	for _, id := range []string{"alpha", "beta"} {
+		if units[id].UnitAttempt != 2 {
+			t.Fatalf("repaired unit %q try = %d, want 2", id, units[id].UnitAttempt)
+		}
+		if want := workflowUnitBranch(item.Branch, id, 2); units[id].Branch != want {
+			t.Fatalf("repaired unit %q branch = %q, want %q", id, units[id].Branch, want)
+		}
+	}
+	phases, err := app.store.ListWorkItemPhases(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(phases) != 1 || phases[0].Attempt != 1 {
+		t.Fatalf("repairing every unit replaced the attempt: %+v", phases)
+	}
+}
+
+// A run with nothing failed is refused rather than quietly resumed: the CLI
+// caller that mistimed a usage-reset poll has to see that its repair did not
+// happen.
+func TestWorkflowRetryFailedUnitsRefusesARunWithNothingFailed(t *testing.T) {
+	app, item, repo := startFailingFanOutRun(t)
+	item = waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
+	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, item.WorktreePath, true) })
+
+	if err := app.WorkflowRetryFailedUnits(context.Background(), item.ID, ""); err == nil {
+		t.Fatal("WorkflowRetryFailedUnits accepted a run that has nothing to repair")
+	}
+}
+
+// startFailingFanOutRun boots a fan-out run whose named units fail on their
+// first try and succeed on any later one, and returns once the run has started.
+// The tokens are the unit markers in the prompt bodies (`ALPHA-UNIT`,
+// `BETA-UNIT`), so a caller picks between the one-unit park and the
+// many-at-once park a usage limit produces.
+func startFailingFanOutRun(t *testing.T, failFirstTurn ...string) (*App, store.WorkItem, string) {
 	t.Helper()
 	app, _ := setupE2EApp(t)
 	configRoot := t.TempDir()
@@ -146,7 +218,7 @@ reliability:
 `)
 	cwdLog := filepath.Join(t.TempDir(), "cwds.txt")
 	if _, err := app.settings.Update(map[string]any{
-		"claudeBinaryPath": writeFanOutClaude(t, cwdLog, filepath.Join(t.TempDir(), "beta-failed")),
+		"claudeBinaryPath": writeFanOutClaude(t, cwdLog, t.TempDir(), failFirstTurn...),
 	}); err != nil {
 		t.Fatal(err)
 	}

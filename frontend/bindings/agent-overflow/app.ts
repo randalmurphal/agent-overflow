@@ -3465,6 +3465,18 @@ export function WorkflowResumeItem(itemID: string, targetPhase: string): $Cancel
 }
 
 /**
+ * WorkflowRetryFailedUnits re-runs every failed unit of a parked fan-out
+ * attempt in one action. It is the recovery for a cause that hit many units at
+ * once — a provider usage limit stopping most of a wide fan-out — where
+ * repairing unit by unit is the same action typed N times. The note explains
+ * the retry in the run record and reaches every repaired unit's next try as
+ * feedback.
+ */
+export function WorkflowRetryFailedUnits(itemID: string, note: string): $CancellablePromise<void> {
+    return $Call.ByID(2846965054, itemID, note);
+}
+
+/**
  * WorkflowRetryUnit re-runs one failed or taken-over unit of a parked fan-out
  * attempt. The note explains the retry in the run record and reaches the unit's
  * next try as feedback.

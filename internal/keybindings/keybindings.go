@@ -186,6 +186,7 @@ var Defaults = []Keybinding{
 	{Key: "a", Command: "workflows.action.primary", When: "workflowsRunDetail", DefaultID: "workflows.action.primary"},
 	{Key: "r", Command: "workflows.action.reject", When: "workflowsRunDetail", DefaultID: "workflows.action.reject"},
 	{Key: "t", Command: "workflows.action.thread", When: "workflowsRunDetail", DefaultID: "workflows.action.thread"},
+	{Key: "u", Command: "workflows.action.retry-units", When: "workflowsRunDetail", DefaultID: "workflows.action.retry-units"},
 	{Key: "enter", Command: "workflows.action.enter", When: "workflowsRunDetail", DefaultID: "workflows.action.enter"},
 	// UI-SPEC §8 also lists 1–9 for "pick + send the nth suggested answer".
 	// The phase envelope (internal/workflow/def/envelope.go) carries a single

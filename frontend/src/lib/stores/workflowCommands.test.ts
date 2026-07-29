@@ -46,6 +46,7 @@ describe('overlay commands', () => {
       'workflows.action.enter',
       'workflows.action.primary',
       'workflows.action.reject',
+      'workflows.action.retry-units',
       'workflows.action.thread',
       'workflows.back',
       'workflows.escape',

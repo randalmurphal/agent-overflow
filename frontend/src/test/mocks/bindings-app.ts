@@ -186,6 +186,7 @@ export const WorkflowSendPRReviewCommentsToThread = dispatch('WorkflowSendPRRevi
 export const WorkflowPauseItem = dispatch('WorkflowPauseItem');
 export const WorkflowResolveGate = dispatch('WorkflowResolveGate');
 export const WorkflowResumeItem = dispatch('WorkflowResumeItem');
+export const WorkflowRetryFailedUnits = dispatch('WorkflowRetryFailedUnits');
 export const WorkflowRetryUnit = dispatch('WorkflowRetryUnit');
 export const WorkflowRunAutomationNow = dispatch('WorkflowRunAutomationNow');
 export const WorkflowSetAutomationEnabled = dispatch('WorkflowSetAutomationEnabled');

@@ -15,6 +15,21 @@ func (e *Engine) RetryUnit(itemID, unitID, note string) error {
 	return e.request(retryUnitCommand{itemID: itemID, unitID: unitID, note: note})
 }
 
+// RetryFailedUnits re-runs every currently failed unit of a parked fan-out
+// attempt at once. It is exactly RetryUnit applied to all of them — the same
+// reopened attempt, the same per-unit attempt bookkeeping, the same admission
+// through the project's semaphores — and it exists because the failure it
+// repairs is usually one cause hitting many units at the same time (a provider
+// usage limit stopping most of a wide fan-out). The human clears that cause
+// once, so they repair it once.
+//
+// Units a human took over are left alone, exactly as retrying each failed unit
+// by hand would leave them: the human is driving those, and the attempt stays
+// parked until they decide.
+func (e *Engine) RetryFailedUnits(itemID, note string) error {
+	return e.request(retryFailedUnitsCommand{itemID: itemID, note: note})
+}
+
 // DropUnit accepts a failed unit's absence. The unit is recorded `dropped`, its
 // result reaches the join as such, and the attempt resumes.
 func (e *Engine) DropUnit(itemID, unitID, note string) error {
@@ -45,6 +60,59 @@ func (e *Engine) retryUnit(itemID, unitID, note string) error {
 	unit.envelope = nil
 	unit.feedback = retryFeedback(note)
 	e.emitUnitState(item, unit)
+	return e.resumeRepairedFanOut(item)
+}
+
+// retryFailedUnits is deliberately ONE command rather than N RetryUnit calls.
+// The loop serializes commands but not the gaps between them, so a fan-out
+// repaired by N submitted retries could interleave with a drop or a single
+// retry and reach the second half of the set against an attempt the first half
+// already returned to running. Here the failed set is read, reopened, and
+// resumed inside one turn of the loop, so no other command observes the
+// half-repaired attempt.
+func (e *Engine) retryFailedUnits(itemID, note string) error {
+	const action = "retry failed units"
+	item, err := e.parkedFanOut(itemID, action)
+	if err != nil {
+		return err
+	}
+	// Collected before anything is written, so "nothing was failed" is
+	// structurally a no-op refusal rather than a repair that happened to write
+	// nothing. The join is not in this list: `fan.units` excludes it, and it is
+	// not repairable in any case (see repairable).
+	failed := make([]*unitRun, 0, len(item.fan.units))
+	for _, unit := range item.fan.units {
+		if unit.status == store.WorkItemUnitFailed {
+			failed = append(failed, unit)
+		}
+	}
+	if len(failed) == 0 {
+		return fmt.Errorf(
+			"%s of item %q: no unit of attempt %s/%d is failed",
+			action, itemID, item.phaseID, item.attempt,
+		)
+	}
+	for _, unit := range failed {
+		if err := e.store.RetryWorkItemUnit(itemID, item.phaseID, item.attempt, unit.id); err != nil {
+			// A write that fails here leaves the units before it reopened and the
+			// run still parked, which is a state the same action recovers from:
+			// reopened units rest `pending`, and the next repair relaunches them
+			// alongside whatever is still failed.
+			return fmt.Errorf("%s of item %q: reopen unit %q: %w", action, itemID, unit.id, err)
+		}
+		unit.status = store.WorkItemUnitPending
+		unit.attempt++
+		unit.envelope = nil
+		// One Feedback per unit rather than one shared pointer: the note is the
+		// same text, but the value rides each unit's next start independently.
+		unit.feedback = retryFeedback(note)
+		e.emitUnitState(item, unit)
+	}
+	// The repaired units re-enter through the same resume a single retry uses, so
+	// they are admitted one by one through acquireUnitResources and queue in the
+	// shared waiting FIFO when the project is at capacity — a retry-all wider
+	// than the provider bound starts what fits and holds the rest, never a burst.
+	// A unit still resting `taken-over` keeps the attempt parked.
 	return e.resumeRepairedFanOut(item)
 }
 
@@ -103,33 +171,47 @@ func (e *Engine) takeOverUnit(itemID, unitID string) error {
 	return e.advanceFanOut(item)
 }
 
-// parkedUnit loads a parked run, rebuilds its fan-out attempt, and resolves one
-// unit inside it. Recovery actions address units of an attempt that is no
-// longer resident, so the state they act on is reconstructed from the record
-// every time rather than kept alive in memory.
-func (e *Engine) parkedUnit(itemID, unitID, action string) (*runtimeItem, *unitRun, error) {
-	if strings.TrimSpace(unitID) == "" {
-		return nil, nil, fmt.Errorf("%s of item %q: unit id is required", action, itemID)
-	}
+// parkedFanOut loads a parked run and rebuilds the fan-out attempt a recovery
+// action addresses. Recovery actions address an attempt that is no longer
+// resident, so the state they act on is reconstructed from the record every
+// time rather than kept alive in memory.
+//
+// `action` is the whole subject of every refusal it raises — "retry unit
+// \"beta\"", "retry failed units" — so a message names the verb the human used
+// and, where there is one, the unit they named.
+func (e *Engine) parkedFanOut(itemID, action string) (*runtimeItem, error) {
 	if _, tracked := e.items[itemID]; tracked {
-		return nil, nil, fmt.Errorf("%s %q of item %q: the run is still active", action, unitID, itemID)
+		return nil, fmt.Errorf("%s of item %q: the run is still active", action, itemID)
 	}
 	item, err := e.loadParked(itemID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if !recoverableUnitPark(Reason(item.item.Reason)) {
-		return nil, nil, fmt.Errorf(
-			"%s %q of item %q: item is parked %q; unit recovery applies to runs parked %s, %s, or %s",
-			action, unitID, itemID, item.item.Reason,
+		return nil, fmt.Errorf(
+			"%s of item %q: item is parked %q; unit recovery applies to runs parked %s, %s, or %s",
+			action, itemID, item.item.Reason,
 			ReasonUnitFailed, ReasonInterrupted, ReasonTakenOver,
 		)
 	}
 	if item.phaseID == "" || item.attempt < 1 {
-		return nil, nil, fmt.Errorf("%s %q of item %q: current phase attempt is missing", action, unitID, itemID)
+		return nil, fmt.Errorf("%s of item %q: current phase attempt is missing", action, itemID)
 	}
 	if err := e.restoreFanOut(item); err != nil {
-		return nil, nil, fmt.Errorf("%s %q of item %q: %w", action, unitID, itemID, err)
+		return nil, fmt.Errorf("%s of item %q: %w", action, itemID, err)
+	}
+	return item, nil
+}
+
+// parkedUnit is parkedFanOut plus the one unit inside it a per-unit action
+// names.
+func (e *Engine) parkedUnit(itemID, unitID, action string) (*runtimeItem, *unitRun, error) {
+	if strings.TrimSpace(unitID) == "" {
+		return nil, nil, fmt.Errorf("%s of item %q: unit id is required", action, itemID)
+	}
+	item, err := e.parkedFanOut(itemID, fmt.Sprintf("%s %q", action, unitID))
+	if err != nil {
+		return nil, nil, err
 	}
 	unit := item.fan.find(unitID)
 	if unit == nil {

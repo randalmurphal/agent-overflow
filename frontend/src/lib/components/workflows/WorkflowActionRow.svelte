@@ -126,6 +126,13 @@
         if (!failedUnitId) addToast('warning', 'No failed unit to retry.');
         else void act({ kind: 'retry-unit', unitId: failedUnitId, note: '' });
         return;
+      case 'retry-failed-units':
+        // The same emptiness guard as the single retry: `failedUnitId` is the
+        // detail's first failed unit, so no id means the park has no failed
+        // unit for either verb to repair.
+        if (!failedUnitId) addToast('warning', 'No failed units to retry.');
+        else void act({ kind: 'retry-failed-units', note: '' });
+        return;
       case 'drop-unit':
         if (!failedUnitId) addToast('warning', 'No failed unit to drop.');
         else void act({ kind: 'drop-unit', unitId: failedUnitId, note: '' });

@@ -28,8 +28,10 @@ headless, isolated data dir, mocked providers. Full harness guide:
 - `tests/workflows-fanout.spec.ts` — fan-out phases: a static two-unit fan-out
   where each writing unit is isolated on its own branch and the join drives the
   gate, a dynamic `over:` fan-out whose width comes from a prior phase's array
-  (claude plan phase, codex units), and a mixed-provider fan-out whose failed
-  unit parks the run until `WorkflowRetryUnit` repairs it in place.
+  (claude plan phase, codex units), a mixed-provider fan-out whose failed
+  unit parks the run until `WorkflowRetryUnit` repairs it in place, and the
+  same fan-out with BOTH units failed — the usage-limit shape — repaired by one
+  `WorkflowRetryFailedUnits` call (D33).
 - `tests/workflows-access.spec.ts` — `access` enforced at the provider session
   (§9, D22), asserted from the launch config each mock observed: one run per
   provider whose read-only phase is followed by a write phase, so both sessions

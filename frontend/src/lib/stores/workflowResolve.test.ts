@@ -38,6 +38,7 @@ function bindings(over: Partial<WorkflowActionBindings> = {}): WorkflowActionBin
     resumeItem: vi.fn(async () => undefined),
     rerunItem: vi.fn(async () => undefined),
     retryUnit: vi.fn(async () => undefined),
+    retryFailedUnits: vi.fn(async () => undefined),
     ...over,
   };
 }
@@ -70,6 +71,16 @@ describe('resolveWorkflowRun', () => {
   it('records the session receipt and toasts it', async () => {
     expect(await resolveWorkflowRun(parked[0], { kind: 'approve' }, 1.5, bindings())).toBe(true);
     expect(getWorkflowReceipt('run-1')).toMatchObject({ kind: 'approved', costUsd: 1.5 });
+    expect(getToasts().at(-1)).toMatchObject({ type: 'success' });
+  });
+
+  // The whole-attempt repair is not a second path: it goes through the same
+  // dispatch → receipt → toast → sweep steps every other action does.
+  it('runs the whole-attempt unit repair through the one resolution path', async () => {
+    const deps = bindings();
+    expect(await resolveWorkflowRun(parked[0], { kind: 'retry-failed-units', note: '' }, 4, deps)).toBe(true);
+    expect(deps.retryFailedUnits).toHaveBeenCalledWith('run-1', '');
+    expect(getWorkflowReceipt('run-1')).toMatchObject({ kind: 'restarted', costUsd: 4 });
     expect(getToasts().at(-1)).toMatchObject({ type: 'success' });
   });
 
