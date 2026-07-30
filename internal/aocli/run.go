@@ -38,8 +38,8 @@ var topLevelCommands = []topLevelCommand{
 		}
 		return exitOK
 	}},
-	{name: "workflow", run: func(args []string, configRoot string, _ func(string) (string, bool), stdout, stderr io.Writer) int {
-		return runWorkflow(args, configRoot, stdout, stderr)
+	{name: "workflow", run: func(args []string, configRoot string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
+		return runWorkflow(args, configRoot, lookupEnv, stdout, stderr)
 	}},
 	{name: "run", run: func(args []string, _ string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 		return runCommand(args, lookupEnv, stdout, stderr)
@@ -118,7 +118,10 @@ func RunWithEnv(args []string, lookupEnv func(string) (string, bool), stdout, st
 	return exitError
 }
 
-func runWorkflow(args []string, configRoot string, stdout, stderr io.Writer) int {
+// runWorkflow dispatches the offline half. lookupEnv reaches the read commands
+// because AO_PROJECT is what supplies their project scope inside a session; the
+// scaffolder deliberately does not take it (see runNew).
+func runWorkflow(args []string, configRoot string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		_ = writeOutput(stderr, workflowUsage)
 		return exitError
@@ -133,9 +136,9 @@ func runWorkflow(args []string, configRoot string, stdout, stderr io.Writer) int
 	case "new":
 		return runNew(args[1:], configRoot, stdout, stderr)
 	case "validate":
-		return runValidate(args[1:], configRoot, stdout, stderr)
+		return runValidate(args[1:], configRoot, lookupEnv, stdout, stderr)
 	case "list":
-		return runList(args[1:], configRoot, stdout, stderr)
+		return runList(args[1:], configRoot, lookupEnv, stdout, stderr)
 	case "schema":
 		return runSchema(args[1:], stdout, stderr)
 	default:
@@ -171,7 +174,7 @@ func runSchema(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Writer) int {
+func runValidate(args []string, inheritedConfigRoot string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("agent-overflow workflow validate", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	configRoot := flags.String("config-root", inheritedConfigRoot, "override the Agent Overflow config root")
@@ -199,13 +202,19 @@ func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Wr
 		fmt.Fprintln(stderr, "agent-overflow workflow validate: --project requires --id")
 		return exitError
 	}
-	if err := validateProjectSlug(*projectSlug); err != nil {
-		return operationalError(stderr, err)
-	}
 
 	root, err := resolveConfigRoot(*configRoot)
 	if err != nil {
 		return operationalError(stderr, err)
+	}
+	// Only the --id form reads a scope; validating a path reads that one file, so
+	// it neither needs a project nor may inherit one from the session.
+	scopeSlug := ""
+	if *id != "" {
+		scopeSlug, err = workflowProjectScope(*projectSlug, lookupEnv)
+		if err != nil {
+			return operationalError(stderr, err)
+		}
 	}
 	var resolved def.ResolvedWorkflow
 	if *id == "" {
@@ -215,7 +224,7 @@ func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Wr
 		}
 		resolved = def.ResolvedWorkflow{Workflow: workflow, Path: paths[0], Scope: def.ScopeShared}
 	} else {
-		workflows, err := ResolveConfigured(root, *projectSlug)
+		workflows, err := ResolveConfigured(root, scopeSlug)
 		if err != nil {
 			return operationalError(stderr, err)
 		}
@@ -228,18 +237,21 @@ func runValidate(args []string, inheritedConfigRoot string, stdout, stderr io.Wr
 			}
 		}
 		if !found {
-			return operationalError(stderr, fmt.Errorf("workflow id %q was not found", *id))
+			// A skipped directory is the likeliest reason an id a human can see on
+			// disk resolves to nothing, so the failure carries the explanation
+			// rather than leaving it a directory listing away.
+			return operationalError(stderr, unresolvedWorkflowError(root, scopeSlug, *id))
 		}
 	}
 
-	bindings, err := loadProjectBindings(root, *projectSlug)
+	bindings, err := loadProjectBindings(root, scopeSlug)
 	if err != nil {
 		return operationalError(stderr, err)
 	}
 	// A call edge is resolved against the same configured scopes a run start
 	// uses, so `agent-overflow workflow validate` sees the call graph the engine
 	// will.
-	calls, err := NewCallResolver(root, *projectSlug)
+	calls, err := NewCallResolver(root, scopeSlug)
 	if err != nil {
 		return operationalError(stderr, err)
 	}
@@ -281,7 +293,23 @@ type listEntry struct {
 	Findings      []def.Finding     `json:"findings"`
 }
 
-func runList(args []string, inheritedConfigRoot string, stdout, stderr io.Writer) int {
+// unresolvedWorkflowError reports an id that resolved to nothing, carrying the
+// skipped-directory notes that explain the most common cause. A note that cannot
+// be gathered is appended as itself: the caller's problem is still the missing
+// id, and swallowing the second failure would hide a broken config root.
+func unresolvedWorkflowError(configRoot, projectSlug, id string) error {
+	message := fmt.Sprintf("workflow id %q was not found", id)
+	notes, err := skippedWorkflowDirNotes(configRoot, projectSlug)
+	if err != nil {
+		return errors.Join(errors.New(message), err)
+	}
+	if len(notes) == 0 {
+		return errors.New(message)
+	}
+	return errors.New(message + "\n" + strings.Join(notes, "\n"))
+}
+
+func runList(args []string, inheritedConfigRoot string, lookupEnv func(string) (string, bool), stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("agent-overflow workflow list", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	configRoot := flags.String("config-root", inheritedConfigRoot, "override the Agent Overflow config root")
@@ -302,21 +330,31 @@ func runList(args []string, inheritedConfigRoot string, stdout, stderr io.Writer
 		fmt.Fprintln(stderr, "agent-overflow workflow list: unexpected positional arguments")
 		return exitError
 	}
-	if err := validateProjectSlug(*projectSlug); err != nil {
-		return operationalError(stderr, err)
-	}
-
 	root, err := resolveConfigRoot(*configRoot)
 	if err != nil {
 		return operationalError(stderr, err)
 	}
-	bindings, err := loadProjectBindings(root, *projectSlug)
+	scopeSlug, err := workflowProjectScope(*projectSlug, lookupEnv)
 	if err != nil {
 		return operationalError(stderr, err)
 	}
-	entries, err := listConfigured(root, *projectSlug, bindings)
+	bindings, err := loadProjectBindings(root, scopeSlug)
 	if err != nil {
 		return operationalError(stderr, err)
+	}
+	entries, err := listConfigured(root, scopeSlug, bindings)
+	if err != nil {
+		return operationalError(stderr, err)
+	}
+	// Notes go to stderr in both modes: they describe the state of the directory
+	// rather than the requested result, so --json's document stays exactly the
+	// list and a machine reader still cannot lose the information.
+	notes, err := skippedWorkflowDirNotes(root, scopeSlug)
+	if err != nil {
+		return operationalError(stderr, err)
+	}
+	for _, note := range notes {
+		fmt.Fprintln(stderr, note)
 	}
 	if *jsonOutput {
 		if err := writeJSON(stdout, entries); err != nil {
@@ -327,6 +365,15 @@ func runList(args []string, inheritedConfigRoot string, stdout, stderr io.Writer
 	var output strings.Builder
 	for _, entry := range entries {
 		fmt.Fprintf(&output, "id=%s\tname=%q\tscope=%s\tpath=%q\tshadows-shared=%t\tbindings=%s\tfindings=%d\n", entry.ID, entry.Name, entry.Scope, entry.Path, entry.ShadowsShared, entry.BindingStatus, len(entry.Findings))
+	}
+	// Printing nothing reads as a command that did not work — the same reason
+	// `run list` says so — and when no project scope was resolved at all, the
+	// blank answer has a specific cause worth naming.
+	if len(entries) == 0 {
+		output.WriteString("No workflows are configured here.\n")
+		if scopeSlug == "" {
+			fmt.Fprintf(&output, "Project workflows need --project <slug>, or a session that sets %s.\n", EnvProject)
+		}
 	}
 	if err := writeOutput(stdout, output.String()); err != nil {
 		return operationalError(stderr, err)

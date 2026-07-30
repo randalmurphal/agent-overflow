@@ -123,11 +123,35 @@ func (a *App) mintAOCredential(thread store.Thread) (aoSessionCredential, error)
 		aocli.EnvToken:    token,
 		aocli.EnvThreadID: thread.ID,
 	}
+	// The project's slug, not its id: the offline half of the CLI resolves
+	// project-scoped workflow definitions from a directory named by slug, and it
+	// has no app to translate an id with. A scope always carries a project (a
+	// projectless thread gets no credential at all), so a missing slug here is a
+	// project row that predates slugs rather than a session without a project.
+	slug, err := a.projectSlug(scope.ProjectID)
+	if err != nil {
+		return aoSessionCredential{}, err
+	}
+	if slug != "" {
+		env[aocli.EnvProject] = slug
+	}
 	if scope.IsPhase() {
 		env[aocli.EnvRunID] = scope.ItemID
 		env[aocli.EnvPhaseID] = scope.PhaseID
 	}
 	return aoSessionCredential{token: token, scope: scope, env: env}, nil
+}
+
+// projectSlug resolves one project's stable user-facing identifier.
+func (a *App) projectSlug(projectID string) (string, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return "", nil
+	}
+	project, err := a.store.GetProject(projectID)
+	if err != nil {
+		return "", fmt.Errorf("ao session env: load project %s: %w", projectID, err)
+	}
+	return project.Slug, nil
 }
 
 // aoEndpointFromAppURL strips the webview's query string (which carries the

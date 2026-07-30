@@ -37,6 +37,7 @@ Options:
   --id <id>             resolve and validate a workflow by id
   --json                write the typed validation result as JSON
   --project <slug>      include workflows for the project slug
+                        (defaults to AO_PROJECT inside an app session)
 `
 
 const listUsage = `Usage: agent-overflow workflow list [options]
@@ -45,6 +46,7 @@ Options:
   --config-root <path>  override the Agent Overflow config root
   --json                write the resolved workflow list as JSON
   --project <slug>      include workflows for the project slug
+                        (defaults to AO_PROJECT inside an app session)
 `
 
 const schemaUsage = `Usage: agent-overflow workflow schema

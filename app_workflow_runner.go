@@ -45,11 +45,17 @@ type workflowAppRunner struct {
 // capture and sub-worktree retirement happen for a tool join exactly as they do
 // for an agent one.
 type workflowCompletion struct {
-	key         engine.RunKey
-	unitKind    engine.UnitKind
-	workflow    def.Workflow
-	workspace   string
-	projectPath string
+	key      engine.RunKey
+	unitKind engine.UnitKind
+	workflow def.Workflow
+	// narrativePath is where this piece of work's human-readable account lives.
+	// It is part of the completion contract rather than a per-driver field
+	// because every path owes the run one: a tool run writes it from its output,
+	// and an agent run that ended without one has it recovered from its final
+	// message.
+	narrativePath string
+	workspace     string
+	projectPath   string
 }
 
 // producesPhaseEnvelope reports whether this work's envelope is the phase's own
@@ -197,7 +203,7 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 
 	var prompt string
 	if request.FinalizeTakeover {
-		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(narrativePath)
+		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(narrativePath, request.Phase.EffectiveAccess())
 	} else {
 		prompt, err = workflowrunner.BuildPrompt(request.Phase, request.Vars, narrativePath, request.Feedback)
 	}
@@ -212,7 +218,7 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 	}
 	attempt := &workflowAttempt{
 		workflowCompletion: workflowCompletion{
-			key: request.Key, workflow: request.Workflow,
+			key: request.Key, workflow: request.Workflow, narrativePath: narrativePath,
 			workspace: workspace, projectPath: preparedWorkspace.project.Path,
 		},
 		threadID: threadID,
@@ -310,6 +316,15 @@ func (r *workflowAppRunner) finish(runKey string, outcome engine.Outcome) {
 	}
 	attempt.sendMu.Lock()
 	attempt.sendMu.Unlock()
+	// An accepted envelope means the turn ended the way the element was told to
+	// end it, so this is the last moment its narrative can still be recovered —
+	// the engine transition that follows is what the wake and the triage seed
+	// read it for. It runs before `complete` on every branch, including the
+	// asynchronous done one, so neither surface can observe a missing file that
+	// was about to appear.
+	if workflowOutcomeCarriesEnvelope(outcome.Kind) {
+		r.recoverAttemptNarrative(attempt, outcome.Envelope)
+	}
 	if outcome.Kind == engine.OutcomeDone {
 		go func() {
 			r.settleDone(attempt.workflowCompletion, outcome.Envelope)
@@ -318,6 +333,20 @@ func (r *workflowAppRunner) finish(runKey string, outcome engine.Outcome) {
 		return
 	}
 	attempt.complete(outcome)
+}
+
+// workflowOutcomeCarriesEnvelope reports whether an outcome is one the element
+// produced through a validated control envelope. The three envelope statuses are
+// enumerated rather than defaulted, because every other outcome — a failure, a
+// stall, an exhausted retry — reached `finish` without the element having said
+// anything the run can quote.
+func workflowOutcomeCarriesEnvelope(kind engine.OutcomeKind) bool {
+	switch kind {
+	case engine.OutcomeDone, engine.OutcomeQuestion, engine.OutcomeStuck:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *workflowAppRunner) schemaForThread(threadID string) json.RawMessage {

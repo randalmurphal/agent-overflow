@@ -42,6 +42,11 @@ type ComposerRun struct {
 // package decides what it looks like.
 type ComposerContext struct {
 	ProjectName string `json:"projectName"`
+	// ProjectSlug is what `--project` takes. It is in the block because the
+	// offline commands cannot infer it: a session carries it as AO_PROJECT, but a
+	// reader who lost the environment (or is reading the block to write a command
+	// for somewhere else) has no other place to find it.
+	ProjectSlug string `json:"projectSlug"`
 	// SharedDir and ProjectDir are the two directories `agent-overflow workflow`
 	// resolves definitions from. ProjectDir is empty when the project has no
 	// workflow directory yet, which is worth saying: it is where a new one goes.
@@ -137,7 +142,8 @@ func RenderComposerContext(context ComposerContext) string {
 
 	fmt.Fprintf(&block, "Workflow definitions for %s live in:\n", displayName(context.ProjectName))
 	fmt.Fprintf(&block, "  %s   (shared with every project)\n", displayPath(context.SharedDir))
-	fmt.Fprintf(&block, "  %s   (this project only, and shadows a shared id)\n", displayPath(context.ProjectDir))
+	fmt.Fprintf(&block, "  %s   (this project only — %s; shadows a shared id)\n",
+		displayPath(context.ProjectDir), projectScopeFlag(context.ProjectSlug))
 
 	block.WriteString("\n")
 	if len(context.Workflows) == 0 {
@@ -187,6 +193,16 @@ func displayName(name string) string {
 		return "(unnamed)"
 	}
 	return name
+}
+
+// projectScopeFlag renders the flag that reaches the project scope, with this
+// project's slug filled in when there is one. Without a slug the placeholder is
+// still worth printing: it says the flag exists and takes a value.
+func projectScopeFlag(slug string) string {
+	if strings.TrimSpace(slug) == "" {
+		return "--project <slug>"
+	}
+	return "--project " + slug
 }
 
 func displayPath(path string) string {

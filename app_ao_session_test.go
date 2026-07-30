@@ -338,6 +338,55 @@ func TestSessionProcessEnvPublishesTheCLIWithoutACredential(t *testing.T) {
 	}
 }
 
+// AO_PROJECT is the offline half's only way to learn which project it is in:
+// `agent-overflow workflow list` resolves project-scoped definitions from a
+// directory named by slug, and it has no app to translate a project id with.
+//
+// It rides the same credential every other AO_* does, so the two ends of the
+// contract are asserted together: a session that gets a credential gets the slug,
+// and a thread that gets no credential gets no AO_* at all.
+func TestMintAOCredentialCarriesTheProjectSlug(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.SetTransportServer(startTestTransportServer(t))
+	projectRow := store.Project{ID: "slug-project", Path: t.TempDir(), Name: "Repo A", CreatedAt: 1, UpdatedAt: 1}
+	if err := app.store.CreateProject(projectRow); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := app.store.GetProject(projectRow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Slug == "" {
+		t.Fatal("the project row has no slug to inject")
+	}
+
+	credential, err := app.mintAOCredential(store.Thread{
+		ID: "chat", ProjectID: projectRow.ID, Mode: threadmode.ModeChat,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential.env[aocli.EnvProject] != stored.Slug {
+		t.Fatalf("%s = %q, want the project slug %q", aocli.EnvProject, credential.env[aocli.EnvProject], stored.Slug)
+	}
+	// It reaches the subprocess through the same merge as the rest of the
+	// credential, so the writer and the reader cannot disagree.
+	env := app.sessionProcessEnv(nil, credential)
+	if env[aocli.EnvProject] != stored.Slug {
+		t.Fatalf("session env %s = %q, want %q", aocli.EnvProject, env[aocli.EnvProject], stored.Slug)
+	}
+
+	// A projectless thread is scoped to nothing and gets no credential at all —
+	// so no AO_PROJECT either, rather than a blank one the CLI would trust.
+	projectless, err := app.mintAOCredential(store.Thread{ID: "loose", Mode: threadmode.ModeChat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projectless.env) != 0 {
+		t.Fatalf("a projectless thread minted %#v", projectless.env)
+	}
+}
+
 // The provider env helper is shared, so pin that it merges rather than replaces.
 func TestBuildEnvironmentMergesOverrides(t *testing.T) {
 	env := provider.BuildEnvironment(map[string]string{"AO_TEST_ONLY": "1"})

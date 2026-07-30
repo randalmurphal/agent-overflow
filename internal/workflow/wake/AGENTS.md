@@ -54,6 +54,13 @@ The compact message a resting root run injects into its bound thread
 
 - A new reference kind is a new `Reference{Label, Value}` at the call
   site — the composer does not enumerate kinds.
+- **A reference must resolve.** The composer renders whatever it is
+  handed, so the rule lives with the resolver
+  (`app_workflow_wake.go` → `workflowNarrativeReference`): a narrative
+  path is included only when the file is on disk. An agent that opens a
+  reference and finds nothing has spent a tool call learning that the
+  message was wrong, which is worse than a message with one fewer
+  pointer. Same for the descendant's `called run narrative`.
 - A new resting state gets a `closing` branch. The default already
   reads correctly for a terminal state, so the branch is about
   precision, not correctness.

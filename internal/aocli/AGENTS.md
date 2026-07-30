@@ -32,14 +32,17 @@ content and embedding belong to `internal/workflow/starters`.
 ## The AO_* session contract
 
 `session.go` owns these names — the reader of the contract declares them so the
-writer (`sessionProcessEnv` in `app_session.go`, the one place a provider
-subprocess's environment is assembled) cannot drift from it.
+writer cannot drift from it. The writer is `mintAOCredential`
+(`app_ao_session.go`), which builds the map; `sessionProcessEnv`
+(`app_session.go`) is the one place it is merged into a provider subprocess's
+environment.
 
 | Variable | Set for | Meaning |
 |---|---|---|
 | `AO_ENDPOINT` | every app-started session | the app's loopback base URL, no token, no path |
 | `AO_TOKEN` | every app-started session | scoped credential, valid exactly as long as the session |
 | `AO_THREAD_ID` | every app-started session | the thread the session belongs to |
+| `AO_PROJECT` | every app-started session with a project | the project's **slug** — what `--project` takes |
 | `AO_RUN_ID` | workflow phase / unit sessions | the run this session is a phase of |
 | `AO_PHASE_ID` | workflow phase / unit sessions | the phase (a unit carries its phase's id) |
 
@@ -55,6 +58,19 @@ Rules the package enforces:
   words; there is no retry and no re-mint.
 - A session with no credential (no transport server, no project, an
   unresolvable phase) gets no AO_* at all. Partial authority is never injected.
+- `AO_PROJECT` is the **offline** half's only input. The execution commands scope
+  themselves from the token, but `workflow list` / `workflow validate --id`
+  resolve project definitions from a directory named by slug and have no app to
+  ask — so `workflowProjectScope` defaults their scope from it, and an explicit
+  `--project` always wins. An empty answer therefore means neither input was
+  present, which is what lets an empty listing say why. A malformed value is
+  reported as `AO_PROJECT: invalid project slug …`, because the fix is not
+  something the caller typed.
+- `workflow new` deliberately does **not** inherit it. `--project` is that
+  command's write destination, not a filter: inheriting it would silently
+  redirect where files land and leave no way to scaffold into the shared scope
+  from inside a session. Shared scope is always included by the read commands, so
+  a shared scaffold is still listed and validated by the next command run.
 
 ## Wire
 
@@ -115,6 +131,23 @@ a list would pay one unit query per row. A `run list` with no rows prints `No
 runs in this project.` rather than nothing, because a blank answer reads as a
 command that did not work; `--json` still prints the app's own `[]`.
 
+`workflow list` follows the same rule and adds the one cause a blank answer has:
+with no rows it prints `No workflows are configured here.`, plus — when no
+project scope was resolved from either input — `Project workflows need --project
+<slug>, or a session that sets AO_PROJECT.` A hint that cannot apply is worse
+than none, so the second line appears only when the scope really is missing.
+
+Both `workflow list` and a failed `workflow validate --id` also report
+**skipped directories** (`def.SkippedDirs`): discovery is flat, so a
+hand-authored `<id>/workflow.yaml` resolves to nothing at all, and "not found"
+for an id whose file is visibly on disk is otherwise unexplainable. The note is
+`note: <path> is a directory and was skipped — a workflow is a flat <id>.yaml
+beside its <id>-*.md prompts`. It goes to **stderr** in both modes, including
+`--json`: it describes the state of the directory rather than a row of the
+requested result, so the JSON document stays exactly the list and a machine
+reader still cannot lose the information. `validate --id` carries the same notes
+inside the not-found error, where the caller is already looking.
+
 `--seed k=v` parses the value as JSON when it parses, and treats it as a string
 otherwise: `--seed count=3` seeds a number, `--seed name=alice` seeds a string,
 with no shell quote round trip. A repeated key is an error, not a silent
@@ -136,14 +169,18 @@ row-level refusal naming the phase that may act only on the runs it started.
 ## `/workflow` composer context
 
 `composer.go` is the pure renderer behind the `/workflow` composer command: it
-takes a resolved `ComposerContext` (project name, workflow source directories,
-available workflows, active runs, whether the thread has a live session,
-whether boot published the command on PATH) and returns the text block injected
+takes a resolved `ComposerContext` (project name and **slug**, workflow source
+directories, available workflows, active runs, whether the thread has a live
+session, whether boot published the command on PATH) and returns the text block
+injected
 into the conversation. Lists are bounded (`MaxComposerWorkflows`,
 `MaxComposerRuns`) and truncation is stated in the block, never silent. A
 `CommandOnPath: false` block says so outright — it is the one place an agent
 reads before typing the command, so a boot that could not publish the symlink
-must not leave "command not found" as the first news of it. The app-side
+must not leave "command not found" as the first news of it. The project-scope
+line names the slug `--project` takes (`--project <slug>` when there is none),
+because the offline commands cannot infer it and a reader who has only the block
+must still be able to write the flag. The app-side
 resolver that produces the live data is
 `workflowComposerBlock` (`app_workflow_composer.go`); the split exists so the
 block format is unit-testable without a database. That resolver is NOT a bound

@@ -24,12 +24,19 @@ func newNetworkTestApp(t *testing.T) (*App, *transport.Server) {
 	app := &App{
 		settings: settings.NewService(t.TempDir()),
 	}
+	srv := startTestTransportServer(t)
+	app.SetTransportServer(srv)
+	return app, srv
+}
 
-	d := transport.NewDispatcher()
-	bus := transport.NewEventBus(8)
+// startTestTransportServer boots a loopback transport server and shuts it down
+// with the test. It is shared with the AO-credential tests, which need a live
+// server only because a session's credential is minted from its URL.
+func startTestTransportServer(t *testing.T) *transport.Server {
+	t.Helper()
 	srv, err := transport.New(transport.Config{
-		Dispatcher: d,
-		EventBus:   bus,
+		Dispatcher: transport.NewDispatcher(),
+		EventBus:   transport.NewEventBus(8),
 		Token:      "test-network-token",
 	})
 	if err != nil {
@@ -43,8 +50,7 @@ func newNetworkTestApp(t *testing.T) (*App, *transport.Server) {
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 	})
-	app.SetTransportServer(srv)
-	return app, srv
+	return srv
 }
 
 func TestGetNetworkSettings_DefaultsToLoopback(t *testing.T) {

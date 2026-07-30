@@ -84,8 +84,10 @@ func pathSegment(value, name string) error {
 }
 
 // NarrativePath returns the absolute system-owned narrative path for one phase
-// attempt. Agent phases are told to write it; the runner writes it for tool
-// phases. The caller owns directory creation.
+// attempt. A writing agent phase is told to write it; the runner writes it for
+// tool phases, and for any agent phase that ended without one (`RecoverNarrative`
+// — which is every read-only phase, since its session cannot write files at
+// all). The caller owns directory creation.
 func NarrativePath(dataRoot, itemID, phaseID string, attempt int) (string, error) {
 	dir, err := AttemptDir(dataRoot, itemID, phaseID, attempt)
 	if err != nil {
@@ -107,7 +109,7 @@ func EnvelopePath(dataRoot, itemID, phaseID string, attempt int) (string, error)
 // BuildPrompt interpolates an inlined runtime phase prompt and appends the
 // system-owned workflow instructions shared by both providers.
 func BuildPrompt(phase def.Phase, vars map[string]any, narrativePath string, feedback *engine.Feedback) (string, error) {
-	prompt, err := buildPrompt(phase.Prompt, phase.Inputs, vars, narrativePath, feedback)
+	prompt, err := buildPrompt(phase.Prompt, phase.Inputs, vars, narrativePath, phase.EffectiveAccess(), feedback)
 	if err != nil {
 		return "", fmt.Errorf("build workflow prompt for phase %q: %w", phase.ID, err)
 	}
@@ -117,21 +119,26 @@ func BuildPrompt(phase def.Phase, vars map[string]any, narrativePath string, fee
 // BuildUnitPrompt is BuildPrompt for one fan-out unit. Declarations differ per
 // role — a work unit reads the phase's inputs plus its element binding, a join
 // reads the phase's inputs plus the reserved `units` results — so the caller
-// supplies them from def rather than this package re-deriving them.
+// supplies them from def rather than this package re-deriving them. Access comes
+// from the unit for the same reason it comes from the phase above: units and
+// joins carry their own declaration.
 func BuildUnitPrompt(unit def.Unit, declarations map[string]def.Variable, vars map[string]any, narrativePath string, feedback *engine.Feedback) (string, error) {
-	prompt, err := buildPrompt(unit.Prompt, declarations, vars, narrativePath, feedback)
+	prompt, err := buildPrompt(unit.Prompt, declarations, vars, narrativePath, unit.EffectiveAccess(), feedback)
 	if err != nil {
 		return "", fmt.Errorf("build workflow prompt for unit %q: %w", unit.ID, err)
 	}
 	return prompt, nil
 }
 
-func buildPrompt(body string, declarations map[string]def.Variable, vars map[string]any, narrativePath string, feedback *engine.Feedback) (string, error) {
+func buildPrompt(
+	body string, declarations map[string]def.Variable, vars map[string]any,
+	narrativePath string, access def.Access, feedback *engine.Feedback,
+) (string, error) {
 	interpolated, err := def.Interpolate(body, declarations, vars)
 	if err != nil {
 		return "", err
 	}
-	suffix, err := PromptSuffix(narrativePath, feedback)
+	suffix, err := PromptSuffix(narrativePath, access, feedback)
 	if err != nil {
 		return "", err
 	}
@@ -143,26 +150,46 @@ func buildPrompt(body string, declarations map[string]def.Variable, vars map[str
 
 // BuildTakeoverFinalizePrompt asks the existing phase session to summarize the
 // human-steered result into the normal workflow envelope without replaying the
-// phase's original task.
-func BuildTakeoverFinalizePrompt(narrativePath string) (string, error) {
-	suffix, err := PromptSuffix(narrativePath, nil)
+// phase's original task. Access is the taken-over element's own: a takeover
+// steers the phase's session, which keeps the runtime mode that declaration
+// mapped to, so a read-only phase's finalize turn still cannot write a file.
+func BuildTakeoverFinalizePrompt(narrativePath string, access def.Access) (string, error) {
+	suffix, err := PromptSuffix(narrativePath, access, nil)
 	if err != nil {
 		return "", err
 	}
-	return "Review the work completed during this human takeover. Do not redo the original phase. Validate the current workspace state, update the narrative, and return the phase's final workflow control envelope.\n\n" + suffix, nil
+	return "Review the work completed during this human takeover. Do not redo the original phase. Validate the current workspace state, produce the narrative, and return the phase's final workflow control envelope.\n\n" + suffix, nil
 }
 
 // PromptSuffix renders the system-owned instructions appended to every phase
 // prompt. Feedback is included only when the request carries it.
-func PromptSuffix(narrativePath string, feedback *engine.Feedback) (string, error) {
+//
+// `access` decides how the narrative is asked for, and it has to: a read-only
+// element runs in a session that denies every file write (D22), so instructing
+// it to write a file would be an instruction it cannot follow — and the run
+// would end with the wake pointing at a path nothing created. Such an element is
+// asked for the narrative as a message instead, which is what the runner
+// recovers into the file (`RecoverNarrative`). A writing element keeps the file
+// instruction: it can produce a richer account there than a message, and the
+// file is authored rather than reconstructed.
+//
+// The path is required in both cases — the caller has already resolved it, the
+// runner writes there either way, and validating it here keeps a bad path from
+// reaching only one of the two branches.
+func PromptSuffix(narrativePath string, access def.Access, feedback *engine.Feedback) (string, error) {
 	if !filepath.IsAbs(narrativePath) {
 		return "", fmt.Errorf("workflow prompt suffix: narrative path must be absolute")
 	}
 	var prompt strings.Builder
 	prompt.WriteString("<workflow-system-instructions>\n")
-	prompt.WriteString("Write a concise narrative of the work performed, decisions made, and validation results to this file:\n")
-	prompt.WriteString(narrativePath)
-	prompt.WriteString("\nThe narrative is for human inspection and is not part of the control envelope.\n")
+	if access == def.AccessWrite {
+		prompt.WriteString("Write a concise narrative of the work performed, decisions made, and validation results to this file:\n")
+		prompt.WriteString(narrativePath)
+		prompt.WriteString("\n")
+	} else {
+		prompt.WriteString("You run read-only and cannot write files, so send your narrative as a message instead: a concise account of the work performed, decisions made, and validation results, as the message immediately before your final envelope.\n")
+	}
+	prompt.WriteString("The narrative is for human inspection and is not part of the control envelope.\n")
 	// The engine hands a phase a workspace and a branch and expects to find the
 	// work there when the phase rests: a call tree shares one branch down the
 	// stack (§3a/§9), so a phase that switches or merges on its own initiative

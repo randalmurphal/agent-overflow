@@ -239,6 +239,21 @@ export function doneResult(outputs: Record<string, unknown>): string {
   });
 }
 
+// assistantText is one completed assistant message on the Claude wire. A
+// read-only phase's narrative arrives this way and no other — its session cannot
+// write files — so a scenario that emits one is what proves the runner recovers
+// the narrative file the wake then points at.
+export function assistantText(text: string): string {
+  return JSON.stringify({
+    type: 'assistant',
+    message: {
+      id: 'msg-narrative',
+      role: 'assistant',
+      content: [{ type: 'text', text }],
+    },
+  });
+}
+
 export function questionResult(question: string): string {
   return JSON.stringify({
     type: 'result',

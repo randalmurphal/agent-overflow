@@ -10,7 +10,6 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/workflow/engine"
-	workflowrunner "agent-overflow/internal/workflow/runner"
 	"agent-overflow/internal/workflow/wake"
 )
 
@@ -232,9 +231,9 @@ func (a *App) wakeReferences(
 		return append(references, failed...), nil
 	}
 	if phase, ok := currentWorkflowPhaseTimelineAttempt(timeline); ok {
-		if narrative, err := workflowrunner.NarrativePath(
+		if narrative, present := workflowNarrativeReference(
 			a.workflowDataRoot(), item.ID, phase.PhaseID, phase.Attempt,
-		); err == nil {
+		); present {
 			references = append(references, wake.Reference{Label: "narrative", Value: narrative})
 		}
 		if phase.ThreadID != "" {
@@ -281,11 +280,7 @@ func (a *App) workflowRestingNarrative(itemID string) (string, bool) {
 	if err != nil || phase.PhaseID == "" {
 		return "", false
 	}
-	narrative, err := workflowrunner.NarrativePath(a.workflowDataRoot(), itemID, phase.PhaseID, phase.Attempt)
-	if err != nil {
-		return "", false
-	}
-	return narrative, true
+	return workflowNarrativeReference(a.workflowDataRoot(), itemID, phase.PhaseID, phase.Attempt)
 }
 
 // workflowRestingPhase returns the attempt a run came to rest on plus its

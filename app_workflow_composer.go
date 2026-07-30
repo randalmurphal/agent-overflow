@@ -48,6 +48,7 @@ func (a *App) workflowComposerBlock(threadID string) (string, error) {
 		}
 		context.ProjectName = projectRow.Name
 		slug = projectRow.Slug
+		context.ProjectSlug = slug
 	}
 	context.SharedDir, context.ProjectDir = aocli.WorkflowSourceDirs(a.workflowDataRoot(), slug)
 

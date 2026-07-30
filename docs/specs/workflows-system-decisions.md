@@ -1696,3 +1696,71 @@ verdict it now is, with what the first attempt got wrong.
   **`run list` with no rows says so.** Printing nothing reads as a
   command that failed, which sends an agent looking for a broken
   session. `--json` is unchanged: `[]` was never ambiguous.
+
+## The narrative always exists, and the CLI can see the project (2026-07-29)
+
+- **D39. A phase's account of its work is not conditional on its access, an
+  offline command inside a session can infer its project, and a directory
+  discovery ignores says so.** Three defects a live two-provider read-only
+  smoke run surfaced, all of the same shape: the system asked for something,
+  did not get it, and said nothing.
+
+  **The narrative is recovered from the final message, never invented.** A
+  `read-only` phase maps to a provider runtime mode that denies every file
+  write (D22), so the system suffix's "write your narrative to this file" was
+  an instruction it could not follow. A completed read-only run left every
+  attempt directory empty, the wake pointed at a path nothing had created, and
+  the triage seed read "narrative unavailable" for work that had been done
+  perfectly well. Two halves fix it. The suffix now varies on access: a writing
+  element still gets the path, and a read-only one is asked for the narrative as
+  **the message immediately before its envelope** — which is what it was going
+  to produce anyway. The runner then writes that message to the file when the
+  envelope is accepted and no file exists, prefixed with a line marking it as
+  recovered.
+
+  **Marked, last-only, and never overwriting.** The header exists because a
+  human must be able to tell a reconstructed account from an authored one; the
+  content is the LAST assistant text rather than a concatenation, because the
+  account a phase gives before closing out is the one it means; and an existing
+  file always wins, because an agent that wrote a file wrote something richer
+  than a message. A session that said nothing gets no file — absence stays
+  absence, so "the phase produced no account" and "the phase produced an empty
+  one" stay distinguishable. The envelope is passed to the recovery so the text
+  that IS the envelope can be skipped: Codex emits its structured output as its
+  final message, and recovering that JSON would be worse than recovering
+  nothing. The test is identity with the envelope as a decoded document, never
+  "looks like JSON" — prose that happens to be JSON is still prose.
+
+  **A reference that does not resolve is worse than no reference.** The wake
+  built its narrative pointer from the path arithmetic alone. With the recovery
+  in place most runs have the file, but a phase that produced neither still
+  exists — so the wake (and the descendant's `called run narrative`) now
+  includes the pointer only when the file is there. An agent that opens a
+  reference and finds nothing has spent a tool call learning the message was
+  wrong.
+
+  **AO_PROJECT joins the session contract.** `agent-overflow workflow list` and
+  `workflow validate --id` resolve project-scoped definitions from a directory
+  named by project **slug**, and the offline half has no app to infer one from:
+  without `--project` they silently resolved shared scope only, and a cold agent
+  inside a session had no way to learn the slug at all. The slug now ships
+  alongside `AO_ENDPOINT` / `AO_TOKEN` / `AO_THREAD_ID` for every session that
+  has a project, which is every session carrying a credential. The read
+  commands default their scope from it and an explicit `--project` always wins.
+  `workflow new` deliberately does not inherit it: `--project` is that command's
+  write *destination*, and an env var that silently redirects where files land —
+  with no way left to target the shared scope — is a different and worse bug than
+  the one being fixed. The `/workflow` block names the slug on its project-scope
+  line for the same reason the variable exists: a reader who has only the block
+  must still be able to write the flag.
+
+  **A skipped directory is reported, not logged.** Discovery is flat by design —
+  a workflow is `<id>.yaml` beside its `<id>-*.md` prompts — so a hand-authored
+  `<id>/workflow.yaml` resolved to nothing with no error and no row, which is
+  exactly what the smoke run hit. `def.SkippedDirs` returns the directories that
+  hold YAML and were skipped; it does not warn, because the engine resolves on
+  every run start and a definition directory is not the engine's business to
+  narrate. `workflow list` renders one note per directory, and a failed
+  `validate --id` carries them inside the not-found error, where the caller is
+  already looking. The notes go to stderr in both modes so `--json`'s document
+  stays exactly the list.

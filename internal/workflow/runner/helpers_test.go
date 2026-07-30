@@ -25,7 +25,7 @@ func TestNarrativePath(t *testing.T) {
 }
 
 func TestBuildPromptSuffixShape(t *testing.T) {
-	phase := def.Phase{ID: "build", Prompt: "Goal: {{goal}}", Inputs: map[string]def.Variable{
+	phase := def.Phase{ID: "build", Prompt: "Goal: {{goal}}", Access: def.AccessWrite, Inputs: map[string]def.Variable{
 		"goal": {Schema: def.JSONSchema{Type: "string"}},
 	}}
 	narrative := filepath.Join(t.TempDir(), "narrative.md")
@@ -83,12 +83,95 @@ func TestOutcomeFromEnvelope(t *testing.T) {
 }
 
 func TestBuildTakeoverFinalizePrompt(t *testing.T) {
-	prompt, err := BuildTakeoverFinalizePrompt(filepath.Join(t.TempDir(), "narrative.md"))
+	narrative := filepath.Join(t.TempDir(), "narrative.md")
+	prompt, err := BuildTakeoverFinalizePrompt(narrative, def.AccessWrite)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(prompt, "Do not redo the original phase") || !strings.Contains(prompt, "final workflow control envelope") {
 		t.Fatalf("finalize prompt = %q", prompt)
+	}
+	if !strings.Contains(prompt, narrative) {
+		t.Fatalf("write-access finalize prompt dropped the narrative path: %q", prompt)
+	}
+	// A takeover steers the phase's own session, which keeps the runtime mode the
+	// declaration mapped to — so a read-only phase's finalize turn cannot write
+	// the file either, and must not be told to.
+	readOnly, err := BuildTakeoverFinalizePrompt(narrative, def.AccessReadOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(readOnly, narrative) {
+		t.Fatalf("read-only finalize prompt named a file it cannot write: %q", readOnly)
+	}
+}
+
+// A read-only element runs in a session that denies every file write, so the
+// suffix must ask for the narrative as a message. Instructing it to write the
+// file is an instruction it cannot follow — the defect that left every read-only
+// run's attempt directory empty.
+func TestPromptSuffixAsksReadOnlyElementsForAMessage(t *testing.T) {
+	narrative := filepath.Join(t.TempDir(), "narrative.md")
+	const readOnlyInstruction = "You run read-only and cannot write files, so send your narrative as a message instead: " +
+		"a concise account of the work performed, decisions made, and validation results, " +
+		"as the message immediately before your final envelope.\n" +
+		"The narrative is for human inspection and is not part of the control envelope.\n"
+
+	// Unset access is read-only (def.DefaultAccess), so both spellings take the
+	// message form — the default must not fall through to the file instruction.
+	for _, access := range []def.Access{def.AccessReadOnly, ""} {
+		suffix, err := PromptSuffix(narrative, access, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(suffix, readOnlyInstruction) {
+			t.Fatalf("PromptSuffix(access=%q) =\n%s\nwant it to contain:\n%s", access, suffix, readOnlyInstruction)
+		}
+		if strings.Contains(suffix, narrative) {
+			t.Fatalf("PromptSuffix(access=%q) named a file the session cannot write:\n%s", access, suffix)
+		}
+	}
+
+	writing, err := PromptSuffix(narrative, def.AccessWrite, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(writing, "results to this file:\n"+narrative+"\n") {
+		t.Fatalf("write-access suffix lost the file instruction:\n%s", writing)
+	}
+	if strings.Contains(writing, "cannot write files") {
+		t.Fatalf("write-access suffix took the read-only form:\n%s", writing)
+	}
+
+	// The path is validated on both branches: the runner writes there either way.
+	if _, err := PromptSuffix("relative/narrative.md", def.AccessReadOnly, nil); err == nil {
+		t.Fatal("PromptSuffix accepted a relative narrative path for a read-only element")
+	}
+}
+
+// A unit and a join carry their own access declaration, so the suffix each one
+// gets has to come from the unit — not from the phase, which for a fan-out is
+// forbidden to declare access at all.
+func TestBuildUnitPromptSuffixFollowsTheUnitAccess(t *testing.T) {
+	narrative := "/data/workflow-runs/item/port.1/units/port-0.1/narrative.md"
+	readOnly, err := BuildUnitPrompt(
+		def.Unit{ID: "port-0", Provider: "claude", Prompt: "look"}, nil, nil, narrative, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(readOnly, "cannot write files") || strings.Contains(readOnly, narrative) {
+		t.Fatalf("read-only unit prompt = %q", readOnly)
+	}
+	writing, err := BuildUnitPrompt(
+		def.Unit{ID: "port-0", Provider: "claude", Prompt: "port", Access: def.AccessWrite},
+		nil, nil, narrative, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(writing, narrative) || strings.Contains(writing, "cannot write files") {
+		t.Fatalf("writing unit prompt = %q", writing)
 	}
 }
 
@@ -153,7 +236,10 @@ func TestUnitAttemptPathsNestUnderThePhaseAttempt(t *testing.T) {
 // builder renders a work unit's element binding and a join's reserved results
 // without either being able to read the other's.
 func TestBuildUnitPromptRendersRoleDeclarations(t *testing.T) {
-	work := def.Unit{ID: "port-0", Provider: "claude", Model: "sonnet", Prompt: "port {{section.path}}"}
+	work := def.Unit{
+		ID: "port-0", Provider: "claude", Model: "sonnet",
+		Prompt: "port {{section.path}}", Access: def.AccessWrite,
+	}
 	prompt, err := BuildUnitPrompt(work,
 		map[string]def.Variable{"section": {Schema: def.JSONSchema{
 			Type:       "object",

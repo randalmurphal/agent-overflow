@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { test, expect, type HarnessMockEvent } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import {
+  assistantText,
   doneResult,
   seedWorkflow,
   seedWorkflowProject,
@@ -110,7 +111,21 @@ cleanup: manual
 
 test('a bound run wakes its origin thread when it rests', async ({ harness }) => {
   await setClaudeScenario(harness, 'wake-bound', [
-    { steps: [{ emit: { lines: [doneResult({ complete: true })] } }] },
+    {
+      steps: [
+        {
+          emit: {
+            lines: [
+              // The phase is read-only, so this message IS its narrative: the
+              // runner recovers it into the attempt's file, and the wake can
+              // then carry a reference that resolves.
+              assistantText('I checked both callers and neither needs the flag'),
+              doneResult({ complete: true }),
+            ],
+          },
+        },
+      ],
+    },
   ]);
   const project = await seedWorkflow(
     harness,
@@ -148,8 +163,13 @@ test('a bound run wakes its origin thread when it rests', async ({ harness }) =>
   expect(wake).toContain('Outputs:');
   expect(wake).toContain('"verdict": "true"');
   expect(wake).toContain('nothing is waiting on a reply');
+  // The narrative reference resolves because the runner recovered the phase's
+  // message into the file. A read-only phase never writes one itself, so before
+  // that recovery this reference pointed at a path nothing had created.
+  expect(wake).toContain('"narrative"');
   // A wake is a pointer, never a dump of the run record.
   expect(wake).not.toContain('gate_trace');
+  expect(wake).not.toContain('neither needs the flag');
 
   // Unbinding is the off switch: the next resting transition reports nowhere.
   const unbound = await harness.rpc<{ originThreadId?: string }>(

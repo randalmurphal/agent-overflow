@@ -221,6 +221,65 @@ func TestResolveRejectsDeclaredInvalidID(t *testing.T) {
 	}
 }
 
+// Discovery is flat, so a hand-authored `<id>/workflow.yaml` resolves to nothing
+// at all — no error, no row. SkippedDirs is what makes that silence reportable:
+// a directory holding YAML was an attempt at a workflow, and one holding nothing
+// of the sort is just a directory.
+func TestSkippedDirsReportsDirectoriesThatLookLikeWorkflows(t *testing.T) {
+	shared := filepath.Join(t.TempDir(), "workflows")
+	attempt := filepath.Join(shared, "port-campaign")
+	nested := filepath.Join(attempt, "prompts")
+	unrelated := filepath.Join(shared, "notes")
+	for _, dir := range []string{nested, unrelated} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	minimal := "id: flat\nname: Flat\nphases:\n  - id: one\n    driver: tool\n    gate:\n      routes:\n        - to: done\n"
+	for path, contents := range map[string]string{
+		filepath.Join(shared, "flat.yaml"):      minimal,
+		filepath.Join(attempt, "workflow.yaml"): minimal,
+		// A nested YAML does not make the OUTER directory an attempt on its own,
+		// and this one's parent already qualifies through its own file.
+		filepath.Join(nested, "extra.yml"):  minimal,
+		filepath.Join(unrelated, "todo.md"): "not yaml",
+	} {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Resolution itself is unchanged: the flat definition is the only one there.
+	resolved, err := Resolve([]Source{{Dir: shared, Scope: ScopeShared}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0].Workflow.ID != "flat" {
+		t.Fatalf("resolved = %+v, want only the flat definition", resolved)
+	}
+
+	skipped, err := SkippedDirs([]Source{{Dir: shared, Scope: ScopeShared}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("SkippedDirs = %+v, want only the YAML-bearing directory", skipped)
+	}
+	if !strings.HasSuffix(skipped[0].Path, filepath.Join("workflows", "port-campaign")) {
+		t.Fatalf("skipped path = %q, want the port-campaign directory", skipped[0].Path)
+	}
+	if skipped[0].Scope != ScopeShared {
+		t.Fatalf("skipped scope = %q, want the source's own", skipped[0].Scope)
+	}
+
+	if _, err := SkippedDirs([]Source{{Dir: shared, Scope: "invented"}}); err == nil {
+		t.Fatal("SkippedDirs accepted an invalid scope Resolve would refuse")
+	}
+	if _, err := SkippedDirs([]Source{{Dir: filepath.Join(shared, "absent"), Scope: ScopeShared}}); err == nil {
+		t.Fatal("SkippedDirs accepted an unreadable source")
+	}
+}
+
 func TestResolveDerivesHumanGateCount(t *testing.T) {
 	dir := t.TempDir()
 	definition := `id: gated

@@ -150,6 +150,23 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
   caller's workspace and never provisions one — the root is the only place a
   worktree can be cut.
 
+## Discovery is flat, and says what it skipped
+
+A workflow is `<id>.yaml` sitting directly in a source directory beside its
+`<id>-*.md` prompts. `Resolve` skips every subdirectory, so a hand-authored
+`<id>/workflow.yaml` produces no row, no error, and no clue — it is simply not
+there, and the id "was not found".
+
+`SkippedDirs(sources)` is the reportable half of that: the directories a source
+holds that contain at least one YAML file, which is the one signal separating
+"someone tried to author a workflow in here" from an unrelated directory. It is a
+separate read rather than a second `Resolve` return value because the engine
+resolves on every run start and has nothing to do with the answer, while the two
+CLI surfaces that render it (`workflow list`, and `workflow validate --id` when
+resolution fails) pay one extra directory listing only when a human is asking.
+It stays pure — no stderr, no log — so the caller decides how loud a skipped
+directory is.
+
 ## Phase grants
 
 - A phase may declare `grants:`, the first-party `ao` capabilities its agent is
@@ -220,7 +237,7 @@ phase-envelope schemas, post-validation, and whole-graph dry-run validation.
 |---|---|
 | `types.go` | YAML and validation result types. |
 | `parse.go` | Strict single-document YAML parsing. |
-| `resolve.go` | Ordered scoped-directory resolution. |
+| `resolve.go` | Ordered scoped-directory resolution, plus `SkippedDirs` (below). |
 | `schema.go` | JSON-Schema fragments and embedded authoring schema. |
 | `grants.go` | The closed `ao` grant set and the phase-level grant checks. |
 | `envelope.go` | Generated control schema and payload post-validation. |

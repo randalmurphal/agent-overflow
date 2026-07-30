@@ -43,6 +43,7 @@ explicit gates that need a human.
 An item moves through a small set of states:
 
 > **running → needs-human → (back to running) → done**, or **failed** / **cancelled**
+> — and **failed → running** on a rerun
 
 - **running** — actively being driven through its workflow. An item is running
   from the moment it starts; a phase may be *waiting on a resource* (§6) while
@@ -54,7 +55,10 @@ An item moves through a small set of states:
   (or the origin agent, §5) responds.
 - **done** — workflow completed to its terminal success.
 - **failed** — stopped without success and not resolvable by a human handoff
-  (vs needs-human, which is recoverable).
+  (vs needs-human, which is recoverable). Unlike `done` and `cancelled` it is
+  **not terminal**: a **rerun** re-enters the failed phase and takes the item
+  back to **running**. That is the only edge out of `failed` — a finished run is
+  re-entered by starting a new one, and a cancelled run was stopped on purpose.
 - **cancelled** — a **human chose to stop it** (the §12 kill button). Kept
   distinct from `failed` (work failed) so the two read differently on the
   surface (§10).
@@ -99,7 +103,10 @@ workspace with the profile's resolved secrets in its environment and
 `passed` (boolean) and `exit-code` (number) whether or not it writes that
 file; a command that needs to emit more writes a control envelope there and
 the system overlays those two outputs onto it, since a process cannot know its
-own exit status while it is still running. **A non-zero exit is `passed:
+own exit status while it is still running. **The overlay applies to a written
+`status: done` envelope only** — a `question` or `stuck` envelope carries no
+outputs at all (§4's branch rules), so there is nothing to stamp them onto and
+they pass through as written. **A non-zero exit is `passed:
 false`, not a phase failure** — the gate decides what a red check means (§4).
 Only infrastructure failure (unresolvable binding, missing binary, a kill) is a
 phase failure, and an unparseable written envelope parks directly: retrying a
@@ -245,7 +252,13 @@ true of both edges, and where they differ is stated per point.
 - The **narrative** (what it did, reasoning, decisions) is written to a
   **file** in a system-dictated location; its path is **system-attached** to
   the run record, never an agent-filled envelope field. The system never
-  parses it; humans and later phases read it on demand.
+  parses it; humans and later phases read it on demand. **Who writes the file
+  depends on the driver and the access**: a writing agent element writes it
+  itself, a tool element gets its masked output tail written there, and a
+  `read-only` agent element — which cannot write files at all (§9) — is asked for
+  the narrative as the message before its envelope, which the system then writes
+  to the file, marked as recovered (D39). A phase that produced neither leaves no
+  file, and every surface that points at one checks it exists first.
 
 **Workflow-level `outputs:` — the run's deliverables.** A workflow may declare
 named values and/or artifact files, sourced from phase outputs — distinct from
@@ -746,13 +759,29 @@ read-only against the project root. Report/research/triage workflows stop
 paying the worktree tax; their deliverables go to the §3 artifact store, never
 the repo.
 
-**`access` is enforced, not advisory.** A phase's / unit's access declaration
-maps to the provider session's runtime mode: `read-only` runs sandboxed
-(no file writes, no destructive commands — the provider's restricted mode);
-`write` runs with full access **in its own isolated workspace**. A read-only
-phase on the project root physically cannot dirty it. (Rev 1 derived worktree
-need from `access` but never enforced the mode at the session — closed in rev
-2; unattended parallel writers make this non-negotiable.)
+**`access` is enforced, not advisory — for agent work.** A phase's / unit's
+access declaration maps to the provider session's runtime mode: `read-only` runs
+sandboxed (no file writes, no destructive commands — the provider's restricted
+mode); `write` runs with full access **in its own isolated workspace**. A
+read-only agent phase on the project root physically cannot dirty it. (Rev 1
+derived worktree need from `access` but never enforced the mode at the session —
+closed in rev 2; unattended parallel writers make this non-negotiable.)
+
+**The tool driver is the carve-out, and it is deliberate.** A `driver: tool`
+phase or command unit has no provider session to configure a runtime mode on: it
+is a raw process, started in the phase's workspace with the project profile's
+resolved secrets and no sandbox of any kind. Its `access` declares what the
+system *provisions* for it — a sub-worktree for a writing unit — never what it is
+prevented from doing. What bounds it is the project profile: the argv comes from
+a profile binding the user wrote, never from the model, so a tool phase can do
+exactly what its owner already put in `checks:` / `commands:`. A read-only
+declaration on a command that writes is therefore a mis-declaration, not a
+refusal.
+
+One consequence worth stating: `access: read-only` on an AGENT element also means
+that element cannot write its own **narrative** file. It is asked for the
+narrative as the message before its envelope instead, and the system writes the
+file from it (D39).
 
 **Otherwise: one item = one primary worktree + branch**, cut from the project
 profile's base branch at start (base overridable at intake). **By default it

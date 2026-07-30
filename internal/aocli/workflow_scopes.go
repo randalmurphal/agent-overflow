@@ -27,6 +27,37 @@ func resolveConfigRoot(override string) (string, error) {
 	return appdirs.Root()
 }
 
+// workflowProjectScope resolves which project's workflow scope an offline
+// command reads. An explicit --project always wins; otherwise AO_PROJECT — the
+// slug of the project the calling session works in — supplies it, because the
+// offline half has no app to infer a project from and a cold agent inside a
+// session has no other way to learn the slug.
+//
+// An empty answer therefore means neither input was present, which is what lets
+// a command with nothing to show say why. A malformed value is named by where it
+// came from: the fix for a bad flag is retyping it, and the fix for a bad
+// AO_PROJECT is not something the caller typed at all.
+func workflowProjectScope(flagValue string, lookupEnv func(string) (string, bool)) (string, error) {
+	if slug := strings.TrimSpace(flagValue); slug != "" {
+		if err := validateProjectSlug(slug); err != nil {
+			return "", err
+		}
+		return slug, nil
+	}
+	if lookupEnv == nil {
+		return "", nil
+	}
+	value, _ := lookupEnv(EnvProject)
+	slug := strings.TrimSpace(value)
+	if slug == "" {
+		return "", nil
+	}
+	if err := validateProjectSlug(slug); err != nil {
+		return "", fmt.Errorf("%s: %w", EnvProject, err)
+	}
+	return slug, nil
+}
+
 func validateProjectSlug(slug string) error {
 	if slug == "" {
 		return nil
@@ -150,6 +181,29 @@ func ResolveWorkflow(configRoot, projectSlug, workflowID string, scope def.Scope
 		}
 	}
 	return def.ResolvedWorkflow{}, fmt.Errorf("workflow id %q was not found in %s scope", workflowID, scope)
+}
+
+// skippedWorkflowDirNotes renders one note per directory discovery ignored that
+// looks like an attempt at a workflow. The wording states the layout rather than
+// just the fact, because the only useful thing to say to someone who authored
+// `<id>/workflow.yaml` is what the flat form is.
+func skippedWorkflowDirNotes(configRoot, projectSlug string) ([]string, error) {
+	sources, err := configuredSources(configRoot, projectSlug)
+	if err != nil {
+		return nil, err
+	}
+	skipped, err := def.SkippedDirs(sources)
+	if err != nil {
+		return nil, err
+	}
+	notes := make([]string, 0, len(skipped))
+	for _, directory := range skipped {
+		notes = append(notes, fmt.Sprintf(
+			"note: %s is a directory and was skipped — a workflow is a flat <id>.yaml beside its <id>-*.md prompts",
+			directory.Path,
+		))
+	}
+	return notes, nil
 }
 
 func listConfigured(configRoot, projectSlug string, bindings def.Bindings) ([]listEntry, error) {

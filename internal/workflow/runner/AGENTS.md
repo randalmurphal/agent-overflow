@@ -16,12 +16,43 @@ Pure helper functions for app-owned workflow phase execution.
   before reporting a successful phase completion. Cleanup remains inert until
   disposition support lands; unlanded worktrees are never discarded.
 
+## Narrative recovery (D39)
+
+`RecoverNarrative` is the pure half of the guarantee that **an attempt that
+produced an account has a narrative file**, whatever its access allowed:
+
+- The app runner calls it when an agent turn's envelope is accepted (`done`,
+  `question`, or `stuck`) and the narrative file is absent — see
+  `app_workflow_narrative.go`. It applies to phases, fan-out units, and joins
+  alike, because all three own a narrative path.
+- The content is the session's **last** assistant text, prefixed with
+  `RecoveredNarrativeHeader` so a reader can tell a reconstructed account from an
+  authored one. Earlier texts are not concatenated: the account a phase gives
+  before closing out is the one it means.
+- The accepted envelope is passed in so the text that IS the envelope can be
+  skipped — Codex's structured output arrives as its final message, and
+  recovering that JSON as the narrative would be worse than recovering nothing.
+  The test is identity with the envelope as a decoded document, never "looks like
+  JSON": prose that happens to be JSON is still prose.
+- It reports `false` for a session that said nothing, and the app side never
+  overwrites an existing file. Absence stays absence, and an authored narrative
+  always wins over a reconstructed one.
+
 ## What `PromptSuffix` states, and why
 
 Everything in `<workflow-system-instructions>` is there because the phase would
 otherwise get it wrong and the engine could not tell it so afterwards:
 
-- **The narrative path.** For human inspection; not part of the envelope.
+- **The narrative** — for human inspection; not part of the envelope. **How it
+  is asked for follows `access`**, which is the one thing in the suffix that
+  varies. A `write` element is given the path and writes the file; a `read-only`
+  element runs in a session that denies every file write (D22), so it is asked
+  for the narrative as the message immediately before its envelope and the path
+  is not named at all. `BuildPrompt` / `BuildUnitPrompt` derive the access from
+  the phase and the unit respectively — a fan-out phase may not declare one, so
+  a unit's own declaration is the only correct source — and
+  `BuildTakeoverFinalizePrompt` takes it from the caller because a takeover
+  steers the element's existing session and inherits its runtime mode.
 - **Workspace discipline** (D38) — work in this workspace on its current
   branch; no branch switch, merge, or push unless the prompt says to. A call
   tree shares one branch down the stack (§3a/§9), so a phase that moves it on

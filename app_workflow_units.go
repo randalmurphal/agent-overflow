@@ -202,7 +202,7 @@ func (r *workflowAppRunner) startAgentUnit(
 
 	var prompt string
 	if request.FinalizeTakeover {
-		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(plan.narrativePath)
+		prompt, err = workflowrunner.BuildTakeoverFinalizePrompt(plan.narrativePath, unit.EffectiveAccess())
 	} else {
 		prompt, err = workflowrunner.BuildUnitPrompt(
 			unit, plan.declarations, request.Vars, plan.narrativePath, request.Feedback,
@@ -219,7 +219,8 @@ func (r *workflowAppRunner) startAgentUnit(
 	attempt := &workflowAttempt{
 		workflowCompletion: workflowCompletion{
 			key: request.Key, unitKind: plan.kind, workflow: request.Workflow,
-			workspace: plan.workspace.path, projectPath: plan.workspace.project.Path,
+			narrativePath: plan.narrativePath,
+			workspace:     plan.workspace.path, projectPath: plan.workspace.project.Path,
 		},
 		threadID: threadID,
 		schema:   append(json.RawMessage(nil), schema...), contract: plan.contract,
@@ -266,11 +267,11 @@ func (r *workflowAppRunner) startToolUnit(
 	return r.startToolRun(ctx, workflowToolRun{
 		workflowCompletion: workflowCompletion{
 			key: request.Key, unitKind: plan.kind, workflow: request.Workflow,
-			workspace: plan.workspace.path, projectPath: plan.workspace.project.Path,
+			narrativePath: plan.narrativePath,
+			workspace:     plan.workspace.path, projectPath: plan.workspace.project.Path,
 		},
 		label: plan.label, contract: plan.contract, unitAttempt: plan.unitAttempt,
-		binding: binding, argv: argv,
-		narrativePath: plan.narrativePath, envelopePath: plan.envelopePath,
+		binding: binding, argv: argv, envelopePath: plan.envelopePath,
 		secrets: secrets, watchdog: watchdog,
 	}, complete)
 }

@@ -30,6 +30,12 @@ type scaffoldFile struct {
 	data []byte
 }
 
+// runNew deliberately does NOT default --project from AO_PROJECT the way the
+// read commands do. --project is this command's write destination, not a filter:
+// inheriting it would silently redirect where files land and leave no way to
+// scaffold into the shared scope from inside a session. The read commands always
+// include shared scope, so a shared-by-default scaffold is still listed and
+// validated by the very next command an agent runs.
 func runNew(args []string, inheritedConfigRoot string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		if err := writeNewUsage(stderr); err != nil {
@@ -309,7 +315,7 @@ func writeNewUsage(output io.Writer) error {
 	for _, name := range append(starters.List(), "blank") {
 		fmt.Fprintf(&usage, "  %s\n", name)
 	}
-	usage.WriteString("\nOptions:\n  --config-root <path>  override the Agent Overflow config root\n  --id <new-id>         id for the scaffolded workflow (required)\n  --json                write created paths and validation as JSON\n  --project <slug>      write to the project workflow scope\n")
+	usage.WriteString("\nOptions:\n  --config-root <path>  override the Agent Overflow config root\n  --id <new-id>         id for the scaffolded workflow (required)\n  --json                write created paths and validation as JSON\n  --project <slug>      write to the project workflow scope\n                        (a write destination, so never taken from AO_PROJECT)\n")
 	return writeOutput(output, usage.String())
 }
 

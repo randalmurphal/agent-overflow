@@ -54,7 +54,7 @@ own, and a **freshly resolved definition**.
 |---|---|---|
 | `plan` | agent, **Claude**, read-only | Read the campaign's state and either schedule this wave's tasks or report `complete`. Emits `tasks[]`, the next wave's number, whether a checkpoint is due, and the handoff to the next planner. |
 | `implement` | fan-out over `plan.tasks`, **every unit is a call** | One `port-one-task` child run per task, each in its own sub-worktree on its own branch. Join is a **tool** that git-merges the branches. |
-| `resolve-conflicts` | agent, write | Only on a dirty merge. Unresolvable conflicts park. |
+| `resolve-conflicts` | agent, write | The merge's fallthrough: the gate routes here on **any** non-passed merge, conflicts or not — a merge that failed for another reason still needs a human-shaped repair before `verify` sees the tree. It reads `implement.conflicts`. Unresolvable conflicts park. |
 | `verify` | tool (`build-and-test`) | The integration gate: the whole wave, merged, on the campaign branch. |
 | `integration-fix` | agent, write | Only on a red verify — what breaks when the tasks meet. Loops back to `verify`, bounded at 2, then parks. |
 | `next-wave` | **call: itself** | The next wave. Skipped entirely when the planner reported `complete`. |
@@ -80,9 +80,12 @@ Two structural facts do most of the work:
   branch, before the merge — and the spine's `verify` is left doing the
   only job that needs the merged tree.
 - **The implement join is a command, not an agent.** Nothing the lane
-  *said* crosses into the campaign's next phase — only the merged tree
-  and the exit status. Split context is a property of the graph, not of
-  prompt wording. `implement.passed` is the tool driver's own output; the
+  *said* crosses into the campaign's next phase — the join emits the merged
+  tree, the exit status, and `conflicts[]`, the paths it could not reconcile.
+  Those paths are the one thing `resolve-conflicts` needs and the one thing a
+  merge tool can state as fact rather than as an account of its reasoning; the
+  lane's prose still crosses nothing. Split context is a property of the graph,
+  not of prompt wording. `implement.passed` is the tool driver's own output; the
   gate reads it and the phase never declares it.
 
 ## Patterns, and why

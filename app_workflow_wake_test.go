@@ -493,3 +493,55 @@ func TestWorkflowWakeCarriesNarrativeArtifactAndFailedUnitReferences(t *testing.
 		t.Fatalf("wake inlined narrative content:\n%s", sends[0])
 	}
 }
+
+// A reference is a pointer an agent opens, so one that does not resolve is worse
+// than none: the agent spends a tool call learning that. An attempt with no
+// narrative on disk therefore carries no narrative reference — while everything
+// else it does have still does.
+func TestWorkflowWakeOmitsAMissingNarrative(t *testing.T) {
+	h := newWakeHarness(t)
+	thread := h.chatThread(t, "origin-missing")
+	item := h.run(t, "wake-missing", engine.StateNeedsHuman, engine.ReasonStuck)
+	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.phase(t, item.ID, "survey", 1, "parked", "phase-thread",
+		json.RawMessage(`{"status":"stuck","reason":"nothing to read"}`))
+
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateNeedsHuman,
+	})
+	h.drain()
+
+	sends, _, _, _ := h.snapshot()
+	if len(sends) != 1 {
+		t.Fatalf("wakes = %d, want one", len(sends))
+	}
+	if strings.Contains(sends[0], `- "narrative":`) {
+		t.Fatalf("wake pointed at a narrative nothing wrote:\n%s", sends[0])
+	}
+	if !strings.Contains(sends[0], `- "phase thread": "phase-thread"`) {
+		t.Fatalf("wake dropped the references it does have:\n%s", sends[0])
+	}
+
+	// Written, the same run's wake carries it — the omission is about the file,
+	// not about this shape of run.
+	narrative, err := workflowrunner.NarrativePath(h.app.workflowDataRoot(), item.ID, "survey", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(narrative), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(narrative, []byte("what happened"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.app.afterWorkflowStateEvent(engine.StateEvent{
+		ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateNeedsHuman,
+	})
+	h.drain()
+	sends, _, _, _ = h.snapshot()
+	if len(sends) != 2 || !strings.Contains(sends[1], `- "narrative": "`+narrative+`"`) {
+		t.Fatalf("wake omitted a narrative that exists:\n%s", sends[len(sends)-1])
+	}
+}

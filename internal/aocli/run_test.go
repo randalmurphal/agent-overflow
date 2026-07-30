@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/project"
 )
 
 func TestValidateExitCodes(t *testing.T) {
@@ -180,15 +182,199 @@ func TestValidationJSONIncludesTypedFindings(t *testing.T) {
 	}
 }
 
-func TestListWithNoWorkflowDirectoriesIsQuiet(t *testing.T) {
+// A list with nothing in it says so. Printing nothing reads as a command that
+// did not work, and the second line names the one input whose absence explains a
+// blank answer for a project-scoped definition.
+func TestListWithNoWorkflowDirectoriesSaysSo(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if code := Run([]string{"workflow", "list", "--config-root", t.TempDir()}, &stdout, &stderr); code != exitOK {
+	code := RunWithEnv(
+		[]string{"workflow", "list", "--config-root", t.TempDir()},
+		noEnv, &stdout, &stderr,
+	)
+	if code != exitOK {
 		t.Fatalf("Run exit code = %d; stderr=%q", code, stderr.String())
 	}
-	if stdout.Len() != 0 || stderr.Len() != 0 {
-		t.Fatalf("zero-workflow output: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	for _, want := range []string{
+		"No workflows are configured here.",
+		"Project workflows need --project <slug>, or a session that sets " + EnvProject + ".",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("zero-workflow output %q is missing %q", stdout.String(), want)
+		}
 	}
+	if stderr.Len() != 0 {
+		t.Fatalf("zero-workflow stderr = %q, want empty", stderr.String())
+	}
+}
+
+// noEnv (exec_test.go) is the empty session environment. Offline commands read
+// AO_PROJECT, so a test that asserts on scope resolution must inject an
+// environment rather than inherit the developer's own.
+
+// With a project scope resolved, the blank answer is not explained by a missing
+// flag, so the second line must not appear — an instruction that cannot help is
+// worse than none.
+func TestListWithAProjectScopeOmitsTheProjectHint(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := RunWithEnv(
+		[]string{"workflow", "list", "--config-root", t.TempDir(), "--project", "repo-a"},
+		noEnv, &stdout, &stderr,
+	)
+	if code != exitOK {
+		t.Fatalf("Run exit code = %d; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "No workflows are configured here.") {
+		t.Fatalf("zero-workflow output = %q", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "need --project") {
+		t.Fatalf("a scoped list still asked for --project: %q", stdout.String())
+	}
+}
+
+// The offline half cannot infer a project, and a cold agent inside a session has
+// no way to learn the slug — so AO_PROJECT supplies the scope, and an explicit
+// --project always wins over it.
+func TestOfflineCommandsDefaultTheProjectScopeFromTheSession(t *testing.T) {
+	configRoot := t.TempDir()
+	sessionDir := filepath.Join(project.ConfigDir(configRoot, "repo-a"), "workflows")
+	otherDir := filepath.Join(project.ConfigDir(configRoot, "repo-b"), "workflows")
+	mustMkdirAll(t, sessionDir)
+	mustMkdirAll(t, otherDir)
+	mustWriteFile(t, filepath.Join(sessionDir, "session-only.yaml"), workflowYAML("session-only", "Session only"))
+	mustWriteFile(t, filepath.Join(otherDir, "other-only.yaml"), workflowYAML("other-only", "Other only"))
+	sessionEnv := func(name string) (string, bool) {
+		if name == EnvProject {
+			return "repo-a", true
+		}
+		return "", false
+	}
+
+	t.Run("list defaults from the session", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		if code := RunWithEnv(
+			[]string{"workflow", "list", "--config-root", configRoot}, sessionEnv, &stdout, &stderr,
+		); code != exitOK {
+			t.Fatalf("exit code = %d; stderr=%q", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "id=session-only") {
+			t.Fatalf("list did not resolve the session's project scope: %q", stdout.String())
+		}
+	})
+
+	t.Run("an explicit flag wins", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		if code := RunWithEnv(
+			[]string{"workflow", "list", "--config-root", configRoot, "--project", "repo-b"},
+			sessionEnv, &stdout, &stderr,
+		); code != exitOK {
+			t.Fatalf("exit code = %d; stderr=%q", code, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "id=other-only") || strings.Contains(stdout.String(), "id=session-only") {
+			t.Fatalf("--project did not override %s: %q", EnvProject, stdout.String())
+		}
+	})
+
+	t.Run("validate --id defaults from the session", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		if code := RunWithEnv(
+			[]string{"workflow", "validate", "--config-root", configRoot, "--id", "session-only"},
+			sessionEnv, &stdout, &stderr,
+		); code != exitOK {
+			t.Fatalf("exit code = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+		}
+	})
+
+	t.Run("without the session variable the project scope is invisible", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		if code := RunWithEnv(
+			[]string{"workflow", "validate", "--config-root", configRoot, "--id", "session-only"},
+			noEnv, &stdout, &stderr,
+		); code != exitError {
+			t.Fatalf("exit code = %d, want %d", code, exitError)
+		}
+		if !strings.Contains(stderr.String(), `workflow id "session-only" was not found`) {
+			t.Fatalf("stderr = %q", stderr.String())
+		}
+	})
+
+	// A malformed AO_PROJECT is named by where it came from: the fix is not
+	// something the caller typed.
+	t.Run("a malformed session slug names itself", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := RunWithEnv([]string{"workflow", "list", "--config-root", configRoot}, func(name string) (string, bool) {
+			if name == EnvProject {
+				return "../outside", true
+			}
+			return "", false
+		}, &stdout, &stderr)
+		if code != exitError || !strings.Contains(stderr.String(), EnvProject+": invalid project slug") {
+			t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+		}
+	})
+}
+
+// A directory under a workflow source is skipped in silence by design, which is
+// how a hand-authored `<id>/workflow.yaml` becomes invisible. Both surfaces that
+// a human reads must say so, and validate's failure must carry it: "not found"
+// for an id whose file is right there is otherwise unexplainable.
+func TestSkippedWorkflowDirectoriesAreReported(t *testing.T) {
+	configRoot := t.TempDir()
+	sharedDir := filepath.Join(configRoot, "workflows")
+	nested := filepath.Join(sharedDir, "nested-flow")
+	mustMkdirAll(t, nested)
+	mustWriteFile(t, filepath.Join(nested, "workflow.yaml"), workflowYAML("nested-flow", "Nested"))
+	wantNote := "note: " + nested + " is a directory and was skipped — a workflow is a flat <id>.yaml beside its <id>-*.md prompts"
+
+	t.Run("list", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		if code := RunWithEnv(
+			[]string{"workflow", "list", "--config-root", configRoot}, noEnv, &stdout, &stderr,
+		); code != exitOK {
+			t.Fatalf("exit code = %d; stderr=%q", code, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), wantNote) {
+			t.Fatalf("list stderr = %q, want %q", stderr.String(), wantNote)
+		}
+		if !strings.Contains(stdout.String(), "No workflows are configured here.") {
+			t.Fatalf("list stdout = %q, want the empty-list line", stdout.String())
+		}
+	})
+
+	// --json keeps its document: the note is a fact about the directory, not a
+	// row of the requested list, so a machine reader loses neither.
+	t.Run("list --json", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		if code := RunWithEnv(
+			[]string{"workflow", "list", "--config-root", configRoot, "--json"}, noEnv, &stdout, &stderr,
+		); code != exitOK {
+			t.Fatalf("exit code = %d; stderr=%q", code, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), wantNote) {
+			t.Fatalf("list --json stderr = %q, want %q", stderr.String(), wantNote)
+		}
+		if strings.TrimSpace(stdout.String()) != "[]" {
+			t.Fatalf("list --json stdout = %q, want the empty list document", stdout.String())
+		}
+	})
+
+	t.Run("validate --id", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := RunWithEnv(
+			[]string{"workflow", "validate", "--config-root", configRoot, "--id", "nested-flow"},
+			noEnv, &stdout, &stderr,
+		)
+		if code != exitError {
+			t.Fatalf("exit code = %d, want %d", code, exitError)
+		}
+		if !strings.Contains(stderr.String(), `workflow id "nested-flow" was not found`) {
+			t.Fatalf("validate stderr = %q", stderr.String())
+		}
+		if !strings.Contains(stderr.String(), wantNote) {
+			t.Fatalf("validate stderr = %q, want %q", stderr.String(), wantNote)
+		}
+	})
 }
 
 func TestProjectSlugCannotEscapeConfigRoot(t *testing.T) {

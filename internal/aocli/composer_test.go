@@ -9,7 +9,8 @@ import (
 
 func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
 	block := RenderComposerContext(ComposerContext{
-		ProjectName: "Agent Overflow", SessionReady: true, CommandOnPath: true,
+		ProjectName: "Agent Overflow", ProjectSlug: "agent-overflow",
+		SessionReady: true, CommandOnPath: true,
 		SharedDir: "/config/workflows", ProjectDir: "/config/projects/ao/workflows",
 		Workflows: []ComposerWorkflow{
 			{ID: "release", Name: "Release train", Scope: "project"},
@@ -23,7 +24,11 @@ func TestRenderComposerContextNamesTheSurfaceAndTheLiveState(t *testing.T) {
 	for _, want := range []string{
 		"agent-overflow run start", "agent-overflow run list", "agent-overflow workflow list|validate", "--json",
 		EnvEndpoint, EnvToken, EnvThreadID,
-		"/config/workflows", "/config/projects/ao/workflows", "Agent Overflow",
+		"/config/workflows", "Agent Overflow",
+		// The project scope line names the slug --project takes: the offline
+		// commands cannot infer it, so a reader who has only this block must
+		// still be able to write the flag.
+		"/config/projects/ao/workflows   (this project only — --project agent-overflow; shadows a shared id)",
 		"audit (shared) — Dependency audit", "release (project) — Release train",
 		"run-1 workflow=release state=running phase=build",
 		"run-2 workflow=audit state=needs-human reason=gate",
@@ -91,6 +96,9 @@ func TestRenderComposerContextHandlesAnEmptyProject(t *testing.T) {
 	for _, want := range []string{
 		"No workflows are configured here yet", "No runs are active in this project",
 		"no live session yet", "(unnamed)", "(not created yet)",
+		// With no slug resolved the flag is still named, as a placeholder: the
+		// alternative is a reader who does not know the flag exists.
+		"--project <slug>",
 	} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("block is missing %q:\n%s", want, block)

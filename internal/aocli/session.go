@@ -25,6 +25,14 @@ import (
 //   - AO_TOKEN    — a scoped credential valid for exactly this session's
 //     lifetime and no wider than this session's authority.
 //   - AO_THREAD_ID — the thread the session belongs to.
+//   - AO_PROJECT — the slug of the project this session works in. Set for every
+//     app-started session that has one, which is every session carrying a
+//     credential at all (a projectless thread is scoped to nothing and gets no
+//     AO_* — see deriveCallerScope). It exists because the OFFLINE half of the
+//     CLI has no app to ask: `agent-overflow workflow list` resolves
+//     project-scoped definitions from a directory named by slug, and a cold
+//     agent inside a session has no other way to learn it. Read-only commands
+//     default their project scope from it; an explicit --project always wins.
 //   - AO_RUN_ID / AO_PHASE_ID — set for workflow phase and unit sessions only;
 //     they say which run and phase the caller is part of. An interactive chat
 //     session has neither.
@@ -32,17 +40,19 @@ const (
 	EnvEndpoint = "AO_ENDPOINT"
 	EnvToken    = "AO_TOKEN"
 	EnvThreadID = "AO_THREAD_ID"
+	EnvProject  = "AO_PROJECT"
 	EnvRunID    = "AO_RUN_ID"
 	EnvPhaseID  = "AO_PHASE_ID"
 )
 
 // Session is the ambient credential an `agent-overflow` process inherits.
 type Session struct {
-	Endpoint string
-	Token    string
-	ThreadID string
-	RunID    string
-	PhaseID  string
+	Endpoint    string
+	Token       string
+	ThreadID    string
+	ProjectSlug string
+	RunID       string
+	PhaseID     string
 }
 
 // InsidePhase reports whether this session is a workflow phase or unit rather
@@ -69,11 +79,12 @@ func SessionFromEnv(lookup func(string) (string, bool)) (Session, error) {
 		return strings.TrimSpace(value)
 	}
 	session := Session{
-		Endpoint: read(EnvEndpoint),
-		Token:    read(EnvToken),
-		ThreadID: read(EnvThreadID),
-		RunID:    read(EnvRunID),
-		PhaseID:  read(EnvPhaseID),
+		Endpoint:    read(EnvEndpoint),
+		Token:       read(EnvToken),
+		ThreadID:    read(EnvThreadID),
+		ProjectSlug: read(EnvProject),
+		RunID:       read(EnvRunID),
+		PhaseID:     read(EnvPhaseID),
 	}
 	if session.Endpoint == "" && session.Token == "" {
 		return Session{}, errNoSession

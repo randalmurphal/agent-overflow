@@ -49,14 +49,13 @@ type workflowToolRun struct {
 	label string
 	// contract is what the command's envelope must satisfy: the phase's for a
 	// phase attempt and for a join, the unit's own for a work unit.
-	contract      def.EnvelopeContract
-	unitAttempt   int
-	binding       string
-	argv          []string
-	narrativePath string
-	envelopePath  string
-	secrets       profile.ResolvedSecrets
-	watchdog      time.Duration
+	contract     def.EnvelopeContract
+	unitAttempt  int
+	binding      string
+	argv         []string
+	envelopePath string
+	secrets      profile.ResolvedSecrets
+	watchdog     time.Duration
 }
 
 // workflowToolAttempt is one live `driver: tool` phase attempt or tool fan-out
@@ -119,12 +118,11 @@ func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.R
 	}
 	return r.startToolRun(ctx, workflowToolRun{
 		workflowCompletion: workflowCompletion{
-			key: request.Key, workflow: request.Workflow,
+			key: request.Key, workflow: request.Workflow, narrativePath: narrativePath,
 			workspace: prepared.path, projectPath: prepared.project.Path,
 		},
 		label: label, contract: def.PhaseEnvelope(request.Phase),
-		binding: binding, argv: argv,
-		narrativePath: narrativePath, envelopePath: envelopePath,
+		binding: binding, argv: argv, envelopePath: envelopePath,
 		secrets: secrets, watchdog: watchdog,
 	}, complete)
 }
