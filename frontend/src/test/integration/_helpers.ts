@@ -138,9 +138,9 @@ export function seedSidebarProject(threads: Thread[]): Project {
 
 // Bindings that start firing the moment a thread becomes active: ChatView
 // mounts GitActionsControl (header) and the in-card ComposerWorkspaceStrip
-// hosts BranchPicker, which call GetGitStatus / GitListBranches in
-// $effect. Tests that switch into a thread need these mocked even if
-// they don't assert on git UI.
+// hosts BranchPicker, which call GetGitStatus / GetGitStatusFast /
+// GitListBranches in $effect. Tests that switch into a thread need these
+// mocked even if they don't assert on git UI.
 export function installThreadViewDefaults(): void {
   setBindingMock('SwitchThread', async (threadId: unknown) => {
     const id = typeof threadId === 'string' ? threadId : 'thread-1';
@@ -181,6 +181,9 @@ export function installThreadViewDefaults(): void {
   // need to set the mock themselves.
   setBindingMock('ListRecentTurns', async () => []);
   setBindingMock('GetGitStatus', async () => makeGitStatus());
+  // BranchPicker's awaited dirty-bit fetch skips the forge round-trip.
+  setBindingMock('GetGitStatusFast', async () => makeGitStatus());
+  setBindingMock('GetGitStatusFastForProject', async () => makeGitStatus());
   // GitActionsControl now subscribes to backend gitwatch instead of
   // polling. Default to a successful subscribe returning the same
   // status as GetGitStatus so the header renders the split-button.

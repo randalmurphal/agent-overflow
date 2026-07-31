@@ -51,6 +51,49 @@ func RunGitAllowError(cwd string, args ...string) error {
 	return nil
 }
 
+// GonePruneRepo builds a repo with a local bare "origin" so upstream
+// tracking (and its "gone" state after remote deletion) behaves exactly
+// as against a real remote:
+//
+//	merged-gone    pushed, merged into main (merge commit), deleted on remote
+//	squashed-gone  pushed, remote deleted WITHOUT merging (tip not on main)
+//	local-only     never pushed — has no upstream to be "gone"
+//	main           default (origin/HEAD set); checked out
+func GonePruneRepo(t *testing.T) string {
+	t.Helper()
+	repo := InitGitRepo(t)
+	origin := t.TempDir()
+	RunGit(t, origin, "init", "--bare")
+	RunGit(t, repo, "remote", "add", "origin", origin)
+	RunGit(t, repo, "push", "-u", "origin", "main")
+	RunGit(t, repo, "remote", "set-head", "origin", "main")
+
+	addBranchCommit := func(branch, file, subject string) {
+		RunGit(t, repo, "checkout", "-b", branch, "main")
+		if err := os.WriteFile(filepath.Join(repo, file), []byte(file), 0o644); err != nil {
+			t.Fatalf("write %s: %v", file, err)
+		}
+		RunGit(t, repo, "add", file)
+		RunGit(t, repo, "commit", "-m", subject)
+	}
+
+	addBranchCommit("merged-gone", "merged.txt", "work on merged-gone")
+	RunGit(t, repo, "push", "-u", "origin", "merged-gone")
+	RunGit(t, repo, "checkout", "main")
+	RunGit(t, repo, "merge", "--no-ff", "merged-gone")
+	RunGit(t, repo, "push", "origin", "--delete", "merged-gone")
+
+	// Subject carries a '|' so delimiter handling in ref-listing parsers
+	// stays exercised.
+	addBranchCommit("squashed-gone", "squashed.txt", "squash | pipes kept")
+	RunGit(t, repo, "push", "-u", "origin", "squashed-gone")
+	RunGit(t, repo, "push", "origin", "--delete", "squashed-gone")
+
+	addBranchCommit("local-only", "local.txt", "work on local-only")
+	RunGit(t, repo, "checkout", "main")
+	return repo
+}
+
 // CanonicalPath resolves symlinks and cleans the path, suitable for comparing
 // filesystem paths that may go through /tmp symlinks on macOS.
 //

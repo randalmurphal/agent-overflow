@@ -41,7 +41,7 @@
     {#if !isDesignThread}
       <EnvPicker {pane} {workspaceLock} />
       <BranchPicker {pane} />
-      <WorktreeNameInput {pane} workspaceDirty={false} />
+      <WorktreeNameInput {pane} workspaceDirty={false} {workspaceLock} />
     {/if}
     <div class="ml-auto">
       <UsageChip {pane} />

@@ -1,6 +1,8 @@
 package git
 
 import (
+	"os"
+	"os/exec"
 	"testing"
 
 	"agent-overflow/internal/testutil"
@@ -171,6 +173,49 @@ func TestListBranchesIncludesNewBranch(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected feature/test in branch list")
+	}
+}
+
+// commitWithDate creates an empty commit with a pinned committer date so
+// branch-list ordering tests are deterministic (committerdate has
+// second resolution; back-to-back commits would tie).
+func commitWithDate(t *testing.T, cwd, date, message string) {
+	t.Helper()
+	cmd := exec.Command("git", "commit", "--allow-empty", "-m", message)
+	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(), "GIT_COMMITTER_DATE="+date, "GIT_AUTHOR_DATE="+date)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+}
+
+func TestListBranchesOrdersByCommitterDateDescending(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	// Names chosen so refname order (git's default sort) contradicts
+	// committerdate order — the test fails without the --sort flag.
+	testutil.RunGit(t, repo, "checkout", "-b", "aa-oldest", "main")
+	commitWithDate(t, repo, "2020-01-01T12:00:00", "older work")
+	testutil.RunGit(t, repo, "checkout", "-b", "zz-newest", "main")
+	commitWithDate(t, repo, "2024-01-01T12:00:00", "newer work")
+	testutil.RunGit(t, repo, "checkout", "main")
+
+	core := NewCore()
+	branches, err := core.ListBranches(repo)
+	if err != nil {
+		t.Fatalf("ListBranches returned error: %v", err)
+	}
+
+	indexOf := func(name string) int {
+		for i, b := range branches {
+			if b.Name == name {
+				return i
+			}
+		}
+		t.Fatalf("branch %s missing from list: %+v", name, branches)
+		return -1
+	}
+	if newerIdx, olderIdx := indexOf("zz-newest"), indexOf("aa-oldest"); newerIdx > olderIdx {
+		t.Fatalf("expected zz-newest (idx %d) before aa-oldest (idx %d)", newerIdx, olderIdx)
 	}
 }
 

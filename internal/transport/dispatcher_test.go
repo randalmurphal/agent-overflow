@@ -624,7 +624,8 @@ func (p *privilegedApp) GitPush() string                        { return "ok" }
 func (p *privilegedApp) GitStatusSubscribe() string             { return "ok" }
 func (p *privilegedApp) GitStatusUnsubscribe() string           { return "ok" }
 func (p *privilegedApp) GetGitStatus() string                   { return "ok" }
-func (p *privilegedApp) GetGitStatusForProject() string         { return "ok" }
+func (p *privilegedApp) GetGitStatusFast() string               { return "ok" }
+func (p *privilegedApp) GetGitStatusFastForProject() string     { return "ok" }
 func (p *privilegedApp) GitCheckout() string                    { return "ok" }
 func (p *privilegedApp) GitCheckoutForProject() string          { return "ok" }
 func (p *privilegedApp) GitCreateBranch() string                { return "ok" }
@@ -639,7 +640,8 @@ func (p *privilegedApp) GitListWorktrees() string               { return "ok" }
 func (p *privilegedApp) GitListWorktreesForProject() string     { return "ok" }
 func (p *privilegedApp) GitMaybeFetchRemotes() string           { return "ok" }
 func (p *privilegedApp) GitMaybeFetchRemotesForProject() string { return "ok" }
-func (p *privilegedApp) GitPruneRemotes() string                { return "ok" }
+func (p *privilegedApp) GitListBranchPruneCandidates() string   { return "ok" }
+func (p *privilegedApp) GitPruneBranches() string               { return "ok" }
 func (p *privilegedApp) GitSyncBranch() string                  { return "ok" }
 func (p *privilegedApp) GitSyncBranchForProject() string        { return "ok" }
 func (p *privilegedApp) RemoveOtherWorktree() string            { return "ok" }

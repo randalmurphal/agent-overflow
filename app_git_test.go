@@ -1088,3 +1088,166 @@ func containsBranch(branches []gitops.GitBranch, want string) bool {
 	}
 	return false
 }
+
+// pruneTestFixture wires a thread to testutil.GonePruneRepo: one gone
+// branch merged into main, one gone branch with commits main doesn't
+// have (the squash-merge shape), and one never-pushed branch.
+func pruneTestFixture(t *testing.T, app *App) store.Thread {
+	t.Helper()
+	repo := testutil.GonePruneRepo(t)
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-prune")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	return thread
+}
+
+func TestGitListBranchPruneCandidatesClassifiesAndWarns(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := pruneTestFixture(t, app)
+
+	res, err := app.GitListBranchPruneCandidates(thread.ID)
+	if err != nil {
+		t.Fatalf("GitListBranchPruneCandidates() error = %v", err)
+	}
+	byName := make(map[string]BranchPruneCandidate, len(res.Candidates))
+	for _, c := range res.Candidates {
+		byName[c.Branch] = c
+	}
+	if len(res.Candidates) != 2 {
+		t.Fatalf("expected merged-gone + squashed-gone only, got %+v", res.Candidates)
+	}
+	if c := byName["merged-gone"]; !c.Safe || c.Reason != "merged into the default branch" {
+		t.Fatalf("merged-gone should be safe, got %+v", c)
+	}
+	if c := byName["squashed-gone"]; c.Safe {
+		t.Fatalf("squashed-gone must not pre-check without a forge match, got %+v", c)
+	}
+	// A file-path origin classifies to no forge; the unmerged candidate
+	// forces the merged-PR lookup, whose failure must surface as a
+	// warning rather than failing the preview.
+	if res.ForgeWarning == "" {
+		t.Fatal("expected ForgeWarning when the forge lookup is unavailable")
+	}
+}
+
+// prunePreviewTip fetches the freshly classified preview and returns the
+// tip it shows for branch — the value user consent is pinned to.
+func prunePreviewTip(t *testing.T, app *App, threadID, branch string) string {
+	t.Helper()
+	preview, err := app.GitListBranchPruneCandidates(threadID)
+	if err != nil {
+		t.Fatalf("GitListBranchPruneCandidates() error = %v", err)
+	}
+	for _, c := range preview.Candidates {
+		if c.Branch == branch {
+			return c.Tip
+		}
+	}
+	t.Fatalf("branch %s missing from preview: %+v", branch, preview.Candidates)
+	return ""
+}
+
+func TestGitPruneBranchesDeletesEligibleAndRefusesRest(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := pruneTestFixture(t, app)
+	mergedTip := prunePreviewTip(t, app, thread.ID, "merged-gone")
+
+	res, err := app.GitPruneBranches(thread.ID, []BranchPruneSelection{
+		{Branch: "merged-gone", Tip: mergedTip},
+		{Branch: "local-only", Tip: "irrelevant"},
+		{Branch: "main", Tip: "irrelevant"},
+		{Branch: " "},
+	})
+	if err != nil {
+		t.Fatalf("GitPruneBranches() error = %v", err)
+	}
+	if len(res.Deleted) != 1 || res.Deleted[0] != "merged-gone" {
+		t.Fatalf("expected only merged-gone deleted, got %+v", res)
+	}
+	if res.Failed["local-only"] == "" {
+		t.Fatalf("never-pushed branch must be refused, got %+v", res.Failed)
+	}
+	if res.Failed["main"] == "" {
+		t.Fatalf("default branch must be refused, got %+v", res.Failed)
+	}
+
+	branches, err := app.GitListBranches(thread.ID)
+	if err != nil {
+		t.Fatalf("GitListBranches() error = %v", err)
+	}
+	for _, b := range branches {
+		if b.Name == "merged-gone" {
+			t.Fatal("merged-gone should be deleted")
+		}
+	}
+	if !containsBranch(branches, "local-only") {
+		t.Fatal("local-only must survive the prune")
+	}
+}
+
+func TestGitPruneBranchesRefusesMovedTip(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := pruneTestFixture(t, app)
+	staleTip := prunePreviewTip(t, app, thread.ID, "squashed-gone")
+
+	// A commit lands on the branch between preview and confirm — the
+	// branch is still gone-upstream and unattached, but the consented
+	// tip no longer matches.
+	repo := thread.WorkspacePath
+	testutil.RunGit(t, repo, "checkout", "squashed-gone")
+	if err := os.WriteFile(filepath.Join(repo, "late.txt"), []byte("late"), 0o644); err != nil {
+		t.Fatalf("write late.txt: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", "late.txt")
+	testutil.RunGit(t, repo, "commit", "-m", "late work")
+	testutil.RunGit(t, repo, "checkout", "main")
+
+	res, err := app.GitPruneBranches(thread.ID, []BranchPruneSelection{
+		{Branch: "squashed-gone", Tip: staleTip},
+	})
+	if err != nil {
+		t.Fatalf("GitPruneBranches() error = %v", err)
+	}
+	if len(res.Deleted) != 0 {
+		t.Fatalf("moved-tip branch must not delete, got %+v", res)
+	}
+	if res.Failed["squashed-gone"] == "" {
+		t.Fatalf("expected a moved-tip refusal, got %+v", res.Failed)
+	}
+
+	branches, err := app.GitListBranches(thread.ID)
+	if err != nil {
+		t.Fatalf("GitListBranches() error = %v", err)
+	}
+	if !containsBranch(branches, "squashed-gone") {
+		t.Fatal("squashed-gone must survive a stale-tip prune attempt")
+	}
+}
+
+func TestGitPruneBranchesReportsDuplicateSelectionOnce(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := pruneTestFixture(t, app)
+	mergedTip := prunePreviewTip(t, app, thread.ID, "merged-gone")
+
+	res, err := app.GitPruneBranches(thread.ID, []BranchPruneSelection{
+		{Branch: "merged-gone", Tip: mergedTip},
+		{Branch: "merged-gone", Tip: mergedTip},
+	})
+	if err != nil {
+		t.Fatalf("GitPruneBranches() error = %v", err)
+	}
+	if len(res.Deleted) != 1 || res.Deleted[0] != "merged-gone" {
+		t.Fatalf("duplicate selection must delete once, got %+v", res)
+	}
+	if len(res.Failed) != 0 {
+		t.Fatalf("a deleted branch must not also report as failed, got %+v", res.Failed)
+	}
+}

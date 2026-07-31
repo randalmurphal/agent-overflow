@@ -28,8 +28,8 @@
   import type { GitBranch, GitStatus } from '../../../types/git';
   import type { Thread } from '../../../types/models';
   import {
-    GetGitStatus,
-    GetGitStatusForProject,
+    GetGitStatusFast,
+    GetGitStatusFastForProject,
     GetThread,
     GitCheckout,
     GitCheckoutForProject,
@@ -37,14 +37,14 @@
     GitListBranchesForProject,
     GitMaybeFetchRemotes,
     GitMaybeFetchRemotesForProject,
-    GitPruneRemotes,
     GitSyncBranch,
     GitSyncBranchForProject,
     type GitWorkspaceState,
   } from '../../../stores/bindings';
   import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
-  import { errString } from '../../../utils/errors';
+  import { recentBranchSelections, recordBranchSelection } from '../../../stores/branchMru';
+  import { userFacingError } from '../../../utils/userFacingError';
   import { sameNormalizedPath } from '../../../utils/path';
   import {
     enterCreateBranchMode,
@@ -60,6 +60,7 @@
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuDivider from '../../primitives/MenuDivider.svelte';
   import ConfirmDialog from '../../shared/ConfirmDialog.svelte';
+  import BranchPruneDialog from './BranchPruneDialog.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
 
@@ -76,7 +77,9 @@
   let loading = $state(false);
   let applying = $state(false);
   let workspaceDirty = $state(false);
-  let pruning = $state(false);
+  // Non-empty while the prune preview dialog is up; captures the thread
+  // id at open so a pane switch mid-dialog can't retarget the deletion.
+  let pruneDialogThreadId = $state('');
   let syncingBranch: string | null = $state(null);
   let syncConfirmation: { branchName: string; targetWorkspace: string } | null = $state(null);
   let lastOpenBranchKey = $state('');
@@ -102,19 +105,37 @@
     return currentBranch || 'No branch';
   });
 
-  function orderBranchesForDisplay(sourceBranches: GitBranch[]): GitBranch[] {
+  // Display order: default branch pinned first, then the user's recent
+  // selections (most recent first), then the rest in the backend's
+  // committerdate order (latest commit first).
+  function orderBranchesForDisplay(sourceBranches: GitBranch[], mru: string[]): GitBranch[] {
+    const mruRank = new Map(mru.map((name, rank) => [name, rank]));
     return sourceBranches
       .map((branch, index) => ({ branch, index }))
       .sort((left, right) => {
         if (left.branch.isDefault !== right.branch.isDefault) {
           return left.branch.isDefault ? -1 : 1;
         }
+        const leftRank = mruRank.get(left.branch.name) ?? Infinity;
+        const rightRank = mruRank.get(right.branch.name) ?? Infinity;
+        if (leftRank !== rightRank) return leftRank - rightRank;
         return left.index - right.index;
       })
       .map(({ branch }) => branch);
   }
 
-  let orderedBranches = $derived(orderBranchesForDisplay(branches));
+  let mruBranches: string[] = $state([]);
+  let orderedBranches = $derived(orderBranchesForDisplay(branches, mruBranches));
+
+  function refreshMru(): void {
+    mruBranches = recentBranchSelections(pane.thread?.projectId ?? '');
+  }
+
+  function recordSelection(branch: string): void {
+    const projectId = pane.thread?.projectId;
+    if (!projectId) return;
+    recordBranchSelection(projectId, branch);
+  }
 
   let filteredBranches = $derived.by(() => {
     const needle = query.trim().toLowerCase();
@@ -159,20 +180,23 @@
     if (!pane.threadId && !projectId) return;
     const threadIdentity = pane.thread.id;
     lastOpenBranchKey = branchRefreshKey(threadIdentity, currentBranch);
+    refreshMru();
     loading = true;
     const fetchBranches = refreshBranches(threadIdentity);
     const fetchStatus = (async () => {
       try {
         let status: GitStatus;
+        // Fast variant: this surface only needs the local dirty bit, so
+        // don't hold the picker's spinner on a gh/glab open-PR lookup.
         if (pane.threadId) {
-          status = (await GetGitStatus(pane.threadId)) as GitStatus;
+          status = (await GetGitStatusFast(pane.threadId)) as GitStatus;
         } else {
           if (!projectId) return;
-          status = (await GetGitStatusForProject(projectId)) as GitStatus;
+          status = (await GetGitStatusFastForProject(projectId)) as GitStatus;
         }
         workspaceDirty = !!status?.hasChanges;
       } catch (err) {
-        console.error('GetGitStatus failed:', err);
+        console.error('GetGitStatusFast failed:', err);
         workspaceDirty = false;
       }
     })();
@@ -273,7 +297,7 @@
       }
       addToast('info', `Synced ${branchName}`);
     } catch (err) {
-      addToast('error', `Sync failed: ${errString(err)}`);
+      addToast('error', `Sync failed: ${userFacingError(err)}`);
     } finally {
       syncingBranch = null;
     }
@@ -301,21 +325,10 @@
     void performSync(pending.branchName, pending.targetWorkspace);
   }
 
-  async function handlePrune(): Promise<void> {
-    if (!pane.thread || !pane.threadId || pruning) return;
-    const threadId = pane.threadId;
-    pruning = true;
-    try {
-      const res = (await GitPruneRemotes(threadId)) as GitBranch[] | null;
-      if (pane.thread?.id === threadId && Array.isArray(res)) {
-        branches = res;
-      }
-      addToast('info', 'Pruned stale remote branches');
-    } catch (err) {
-      addToast('error', `Prune failed: ${errString(err)}`);
-    } finally {
-      pruning = false;
-    }
+  function handlePrune(): void {
+    if (!pane.thread || !pane.threadId) return;
+    pruneDialogThreadId = pane.threadId;
+    closeMenu();
   }
 
   function closeMenu(): void {
@@ -379,12 +392,13 @@
     return `Branch is checked out in ${branch.worktreePath}. Select that worktree from the environment picker.`;
   }
 
+  // Rows disable purely on selection availability; MenuItem's action is
+  // independent of row `disabled`, so a sync icon on a checked-out-elsewhere
+  // branch stays clickable. (The `&& !showsSyncAction` carve-out this
+  // replaces existed only because the old MenuItem killed the action along
+  // with the row.) selectBranch keeps its runtime re-check as backstop.
   function branchSelectionDisabled(branch: GitBranch): boolean {
     return !!branchUnavailableReason(branch);
-  }
-
-  function branchRowDisabled(branch: GitBranch): boolean {
-    return branchSelectionDisabled(branch) && !showsSyncAction(branch);
   }
 
   function branchRowTitle(branch: GitBranch): string | undefined {
@@ -455,6 +469,7 @@
     }
     if (intent.mode === 'new-worktree') {
       setAttachBranch(pane.thread, branch.name);
+      recordSelection(branch.name);
       closeMenu();
       return;
     }
@@ -490,10 +505,11 @@
           worktreePath: next.worktreePath ?? '',
           branch: next.branch || branch.name,
         });
+        recordSelection(branch.name);
         addToast('info', `Checked out ${next.branch || branch.name}`);
       } catch (err) {
         console.error('branch checkout failed:', err);
-        addToast('error', `Failed to checkout: ${errString(err)}`);
+        addToast('error', `Failed to checkout: ${userFacingError(err)}`);
       } finally {
         applying = false;
       }
@@ -507,10 +523,11 @@
       if (refreshed) {
         syncThread(refreshed);
       }
+      recordSelection(branch.name);
       addToast('info', `Checked out ${branch.name}`);
     } catch (err) {
       console.error('branch checkout failed:', err);
-      addToast('error', `Failed to checkout: ${errString(err)}`);
+      addToast('error', `Failed to checkout: ${userFacingError(err)}`);
     } finally {
       applying = false;
       closeMenu();
@@ -565,8 +582,8 @@
       </MenuItem>
     {/if}
     <MenuItem
-      label={pruning ? 'Pruning…' : 'Prune stale branches'}
-      disabled={pruning || !pane.threadId}
+      label="Prune branches…"
+      disabled={!pane.threadId}
       onSelect={handlePrune}
     >
       {#snippet icon()}
@@ -621,7 +638,7 @@
               label={truncateBranchLabel(branch.name)}
               suffix={branchBadge(branch)}
               checked={isBaseSelected(branch)}
-              disabled={branchRowDisabled(branch)}
+              disabled={branchSelectionDisabled(branch)}
               title={branchRowTitle(branch)}
               onSelect={() => selectBranch(branch)}
               action={showsSyncAction(branch) ? syncIcon : undefined}
@@ -649,3 +666,11 @@
   onConfirm={confirmCrossWorktreeSync}
   onCancel={() => { syncConfirmation = null; }}
 />
+
+{#if pruneDialogThreadId}
+  <BranchPruneDialog
+    threadId={pruneDialogThreadId}
+    open={true}
+    onClose={() => { pruneDialogThreadId = ''; }}
+  />
+{/if}

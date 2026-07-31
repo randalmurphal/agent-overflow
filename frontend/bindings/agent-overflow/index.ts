@@ -9,6 +9,10 @@ export {
 export {
     AttachmentThumbnail,
     BranchCommit,
+    BranchPruneCandidate,
+    BranchPruneCandidates,
+    BranchPruneResult,
+    BranchPruneSelection,
     ChannelParticipantState,
     ChannelStatePayload,
     ContextSettingsProfile,

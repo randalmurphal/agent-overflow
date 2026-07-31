@@ -73,7 +73,8 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetDraft", ID: 875977146},                              // main.App.GetDraft
 	{Name: "GetEditorSettings", ID: 1655853383},                    // main.App.GetEditorSettings
 	{Name: "GetGitStatus", ID: 4123560639},                         // main.App.GetGitStatus
-	{Name: "GetGitStatusForProject", ID: 1462513307},               // main.App.GetGitStatusForProject
+	{Name: "GetGitStatusFast", ID: 2937986089},                     // main.App.GetGitStatusFast
+	{Name: "GetGitStatusFastForProject", ID: 2193133889},           // main.App.GetGitStatusFastForProject
 	{Name: "GetKeybindings", ID: 3015840904},                       // main.App.GetKeybindings
 	{Name: "GetMcpServerStatus", ID: 4139359668},                   // main.App.GetMcpServerStatus
 	{Name: "GetMergeConflictFile", ID: 3176695009},                 // main.App.GetMergeConflictFile
@@ -113,13 +114,14 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GitCreateBranchFrom", ID: 429779991},                   // main.App.GitCreateBranchFrom
 	{Name: "GitCreatePR", ID: 4106667105},                          // main.App.GitCreatePR
 	{Name: "GitCreateWorktree", ID: 3327650914},                    // main.App.GitCreateWorktree
+	{Name: "GitListBranchPruneCandidates", ID: 3795082615},         // main.App.GitListBranchPruneCandidates
 	{Name: "GitListBranches", ID: 2693102179},                      // main.App.GitListBranches
 	{Name: "GitListBranchesForProject", ID: 2675387767},            // main.App.GitListBranchesForProject
 	{Name: "GitListWorktrees", ID: 3232495403},                     // main.App.GitListWorktrees
 	{Name: "GitListWorktreesForProject", ID: 409101231},            // main.App.GitListWorktreesForProject
 	{Name: "GitMaybeFetchRemotes", ID: 2000020570},                 // main.App.GitMaybeFetchRemotes
 	{Name: "GitMaybeFetchRemotesForProject", ID: 338919746},        // main.App.GitMaybeFetchRemotesForProject
-	{Name: "GitPruneRemotes", ID: 4131378132},                      // main.App.GitPruneRemotes
+	{Name: "GitPruneBranches", ID: 3331815821},                     // main.App.GitPruneBranches
 	{Name: "GitPull", ID: 3933172764},                              // main.App.GitPull
 	{Name: "GitPush", ID: 4036251239},                              // main.App.GitPush
 	{Name: "GitRemoveWorktree", ID: 4002429606},                    // main.App.GitRemoveWorktree

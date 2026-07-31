@@ -3,6 +3,15 @@
 // from the generated bindings tree directly.
 export type { BranchCommit } from '../../../bindings/agent-overflow/models';
 
+// Branch-prune wire shapes (GitListBranchPruneCandidates /
+// GitPruneBranches), re-exported for the same reason.
+export type {
+  BranchPruneCandidate,
+  BranchPruneCandidates,
+  BranchPruneResult,
+  BranchPruneSelection,
+} from '../../../bindings/agent-overflow/models';
+
 export interface GitStatus {
   isRepo: boolean;
   branch: string;

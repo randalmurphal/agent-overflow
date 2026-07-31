@@ -20,6 +20,11 @@ type Forge interface {
 
 	// ListOpenPRs returns open PRs/MRs for the given head/source branch.
 	ListOpenPRs(cwd, head string) ([]GitPR, error)
+	// ListMergedPRHeads returns the head branch name + head SHA of up to
+	// `limit` recently merged PRs/MRs. One bulk call backing the prune
+	// preview's squash-merge detection: a gone local branch whose tip
+	// matches a merged PR head was fully pushed before the merge.
+	ListMergedPRHeads(cwd string, limit int) ([]MergedPRHead, error)
 	// CreatePR opens a PR/MR for the current branch in cwd. Returns the URL.
 	CreatePR(cwd, title, body, base string, draft bool) (string, error)
 	// ViewPR fetches metadata for a PR/MR identified by project + number.
@@ -42,6 +47,17 @@ type Forge interface {
 	ListPRCIJobs(cwd, project string, number int) (CIPipeline, error)
 	// GetCIJobLog fetches the raw log/trace for one CI job.
 	GetCIJobLog(cwd, project, jobID string) (string, error)
+}
+
+// MergedPRHead is one merged PR/MR's head coordinates as returned by
+// ListMergedPRHeads.
+type MergedPRHead struct {
+	// HeadRefName is the PR's head / MR's source branch name.
+	HeadRefName string
+	// HeadOid is the full SHA of that branch when it was merged.
+	HeadOid string
+	// URL links the PR/MR for display.
+	URL string
 }
 
 // PRMetadata is the forge-agnostic view of a PR/MR fetched via ViewPR.
@@ -264,6 +280,10 @@ func (nullForge) ID() string         { return "" }
 func (nullForge) BinaryName() string { return "" }
 
 func (nullForge) ListOpenPRs(string, string) ([]GitPR, error) {
+	return nil, ErrUnsupportedForge
+}
+
+func (nullForge) ListMergedPRHeads(string, int) ([]MergedPRHead, error) {
 	return nil, ErrUnsupportedForge
 }
 

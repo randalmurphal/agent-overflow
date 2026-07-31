@@ -557,3 +557,80 @@ func TestExtractMRCreateURL(t *testing.T) {
 		}
 	}
 }
+
+func TestGitLabListMergedPRHeadsPagesPast100(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script mock glab is unix-only")
+	}
+
+	binDir := t.TempDir()
+	argLog := filepath.Join(binDir, "args.log")
+	glabPath := filepath.Join(binDir, "glab")
+	// Page 1 returns a full 100 rows, page 2 a short 50 — the pager must
+	// request page 2 and stop on the short page.
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$@" >> %q
+case "$*" in
+*"&page=1&"*)
+  printf '['
+  i=1
+  while [ "$i" -le 100 ]; do
+    [ "$i" -gt 1 ] && printf ','
+    printf '{"source_branch":"p1-%%d","sha":"a%%d","web_url":"https://gitlab.example/mr/p1-%%d"}' "$i" "$i" "$i"
+    i=$((i + 1))
+  done
+  printf ']\n'
+  ;;
+*"&page=2&"*)
+  printf '['
+  i=1
+  while [ "$i" -le 50 ]; do
+    [ "$i" -gt 1 ] && printf ','
+    printf '{"source_branch":"p2-%%d","sha":"b%%d","web_url":"https://gitlab.example/mr/p2-%%d"}' "$i" "$i" "$i"
+    i=$((i + 1))
+  done
+  printf ']\n'
+  ;;
+*)
+  echo '[]'
+  ;;
+esac
+`, argLog)
+	if err := os.WriteFile(glabPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock glab: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	core := NewCore()
+	heads, err := core.ForgeByID("gitlab").ListMergedPRHeads(t.TempDir(), 200)
+	if err != nil {
+		t.Fatalf("ListMergedPRHeads returned error: %v", err)
+	}
+	if len(heads) != 150 {
+		t.Fatalf("len(heads) = %d, want 150 (full page 1 + short page 2)", len(heads))
+	}
+	if heads[0].HeadRefName != "p1-1" || heads[100].HeadRefName != "p2-1" {
+		t.Fatalf("pages must concatenate in order, got first=%q, 101st=%q", heads[0].HeadRefName, heads[100].HeadRefName)
+	}
+	if heads[149].HeadOid != "b50" || heads[149].URL != "https://gitlab.example/mr/p2-50" {
+		t.Fatalf("last head = %+v, want page-2 row 50", heads[149])
+	}
+
+	args, err := os.ReadFile(argLog)
+	if err != nil {
+		t.Fatalf("read arg log: %v", err)
+	}
+	calls := strings.Split(strings.TrimSpace(string(args)), "\n")
+	if len(calls) != 2 {
+		t.Fatalf("expected exactly 2 glab calls (short page stops paging), got %d: %v", len(calls), calls)
+	}
+	if !strings.Contains(calls[0], "per_page=100") || !strings.Contains(calls[0], "&page=1&") {
+		t.Errorf("first call = %q, want per_page=100&page=1", calls[0])
+	}
+	if !strings.Contains(calls[1], "per_page=100") || !strings.Contains(calls[1], "&page=2&") {
+		t.Errorf("second call = %q, want per_page=100&page=2", calls[1])
+	}
+	if !strings.Contains(calls[0], "state=merged") {
+		t.Errorf("first call = %q, want state=merged filter", calls[0])
+	}
+}

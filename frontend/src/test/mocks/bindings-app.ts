@@ -289,7 +289,8 @@ export const RecheckClaudeAccount = dispatch('RecheckClaudeAccount');
 export const RecheckCodexAccount = dispatch('RecheckCodexAccount');
 
 export const GetGitStatus = dispatch('GetGitStatus');
-export const GetGitStatusForProject = dispatch('GetGitStatusForProject');
+export const GetGitStatusFast = dispatch('GetGitStatusFast');
+export const GetGitStatusFastForProject = dispatch('GetGitStatusFastForProject');
 export const GitStatusSubscribe = dispatch('GitStatusSubscribe');
 export const GitStatusUnsubscribe = dispatch('GitStatusUnsubscribe');
 // Class re-export mirroring the generated GitStatusSubscriptionResult.
@@ -318,7 +319,8 @@ export const GitCreatePR = dispatch('GitCreatePR');
 export const GitCreateWorktree = dispatch('GitCreateWorktree');
 export const GitMaybeFetchRemotes = dispatch('GitMaybeFetchRemotes');
 export const GitMaybeFetchRemotesForProject = dispatch('GitMaybeFetchRemotesForProject');
-export const GitPruneRemotes = dispatch('GitPruneRemotes');
+export const GitListBranchPruneCandidates = dispatch('GitListBranchPruneCandidates');
+export const GitPruneBranches = dispatch('GitPruneBranches');
 export const GitSyncBranch = dispatch('GitSyncBranch');
 export const GitSyncBranchForProject = dispatch('GitSyncBranchForProject');
 export const GitWorktreeStatus = dispatch('GitWorktreeStatus');

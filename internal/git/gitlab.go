@@ -108,6 +108,55 @@ func (f *gitlabForge) ListOpenPRs(cwd, head string) ([]GitPR, error) {
 	return pulls, nil
 }
 
+// ListMergedPRHeads fetches recently merged MRs' source-branch heads.
+// `sha` is the source branch's last commit before merge — exactly the
+// pre-squash tip prune needs. GitLab caps per_page at 100, so the limit
+// is honored by paging; a short page means the history is exhausted.
+func (f *gitlabForge) ListMergedPRHeads(cwd string, limit int) ([]MergedPRHead, error) {
+	if limit <= 0 {
+		return nil, errors.New("merged MR list limit must be positive")
+	}
+	var heads []MergedPRHead
+	for page := 1; len(heads) < limit; page++ {
+		perPage := min(limit-len(heads), 100)
+		endpoint := fmt.Sprintf(
+			"projects/:fullpath/merge_requests?state=merged&per_page=%d&page=%d&order_by=updated_at&sort=desc",
+			perPage, page,
+		)
+		result, err := f.core.runBinary("glab", cwd, "api", endpoint)
+		if err != nil {
+			return nil, normalizeGitLabCLIError(err)
+		}
+		if result.exitCode != 0 {
+			return nil, fmt.Errorf("glab api merged MR list failed: %s", commandOutputMessage(result.stdout, result.stderr))
+		}
+		stdout := strings.TrimSpace(result.stdout)
+		if stdout == "" || stdout == "[]" || stdout == "null" {
+			break
+		}
+
+		var raw []struct {
+			SourceBranch string `json:"source_branch"`
+			SHA          string `json:"sha"`
+			WebURL       string `json:"web_url"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &raw); err != nil {
+			return nil, fmt.Errorf("decode glab api merged MR list output: %w", err)
+		}
+		for _, r := range raw {
+			heads = append(heads, MergedPRHead{
+				HeadRefName: r.SourceBranch,
+				HeadOid:     r.SHA,
+				URL:         r.WebURL,
+			})
+		}
+		if len(raw) < perPage {
+			break
+		}
+	}
+	return heads, nil
+}
+
 func gitLabOpenMRsEndpoint(sourceBranch string) string {
 	return "projects/:fullpath/merge_requests?state=opened&source_branch=" +
 		url.QueryEscape(sourceBranch) +

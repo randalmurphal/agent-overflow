@@ -43,7 +43,7 @@ func (c *Core) BranchIsDefault(cwd, branch string) bool {
 
 // ListBranches returns local and remote branches from git branch output.
 func (c *Core) ListBranches(cwd string) ([]GitBranch, error) {
-	result, err := c.run(cwd, "branch", "-a",
+	result, err := c.run(cwd, "branch", "-a", "--sort=-committerdate",
 		"--format=%(refname:short)|%(HEAD)|%(worktreepath)|%(upstream:track,nobracket)")
 	if err != nil {
 		return nil, err

@@ -114,6 +114,58 @@ func (f *githubForge) ListOpenPRs(cwd, head string) ([]GitPR, error) {
 	return pulls, nil
 }
 
+// ListMergedPRHeads fetches recently merged PRs' head coordinates in
+// one `gh pr list` call. Recency-bounded by limit — old merges fall off
+// the window, which prune surfaces as "no merged PR found" rather than
+// an error.
+func (f *githubForge) ListMergedPRHeads(cwd string, limit int) ([]MergedPRHead, error) {
+	if limit <= 0 {
+		return nil, errors.New("merged PR list limit must be positive")
+	}
+
+	result, err := f.core.runBinary(
+		"gh",
+		cwd,
+		"pr",
+		"list",
+		"--state",
+		"merged",
+		"--limit",
+		strconv.Itoa(limit),
+		"--json",
+		"headRefName,headRefOid,url",
+	)
+	if err != nil {
+		return nil, normalizeGitHubCLIError(err)
+	}
+	if result.exitCode != 0 {
+		return nil, fmt.Errorf("gh pr list failed: %s", commandOutputMessage(result.stdout, result.stderr))
+	}
+
+	stdout := strings.TrimSpace(result.stdout)
+	if stdout == "" {
+		return nil, nil
+	}
+
+	var rows []struct {
+		HeadRefName string `json:"headRefName"`
+		HeadRefOid  string `json:"headRefOid"`
+		URL         string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &rows); err != nil {
+		return nil, fmt.Errorf("decode gh pr list output: %w", err)
+	}
+	heads := make([]MergedPRHead, 0, len(rows))
+	for _, row := range rows {
+		heads = append(heads, MergedPRHead{
+			HeadRefName: row.HeadRefName,
+			HeadOid:     row.HeadRefOid,
+			URL:         row.URL,
+		})
+	}
+	return heads, nil
+}
+
 // ViewPR fetches PR metadata via `gh pr view --json ...`. project is
 // "owner/repo"; cwd may be empty when there is no local clone.
 func (f *githubForge) ViewPR(cwd, project string, number int) (PRMetadata, error) {
@@ -917,6 +969,12 @@ func (c *Core) CreatePR(cwd, title, body, base string, draft bool) (string, erro
 // for cwd. See CreatePR for the dispatch model.
 func (c *Core) ListOpenPRs(cwd, head string) ([]GitPR, error) {
 	return c.forgeFor(cwd).ListOpenPRs(cwd, head)
+}
+
+// ListMergedPRHeads is a thin wrapper that dispatches to the forge
+// detected for cwd. See CreatePR for the dispatch model.
+func (c *Core) ListMergedPRHeads(cwd string, limit int) ([]MergedPRHead, error) {
+	return c.forgeFor(cwd).ListMergedPRHeads(cwd, limit)
 }
 
 func normalizeGitHubCLIError(err error) error {

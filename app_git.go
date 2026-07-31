@@ -70,16 +70,32 @@ func (a *App) GetGitStatus(threadID string) (gitops.GitStatus, error) {
 	return core.Status(workspace)
 }
 
-// GetGitStatusForProject returns git status for a project root without
-// requiring a thread row. Used by local draft placeholders.
-func (a *App) GetGitStatusForProject(projectID string) (gitops.GitStatus, error) {
+// GetGitStatusFast returns git status for the thread's workspace using only
+// cached open-PR info — no gh/glab network call. For callers that need the
+// local fields (dirty bit, branch, ahead/behind) without a forge round-trip;
+// surfaces that render live PR state use GetGitStatus.
+func (a *App) GetGitStatusFast(threadID string) (gitops.GitStatus, error) {
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return gitops.GitStatus{}, err
+	}
+
+	_, workspace, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return gitops.GitStatus{}, err
+	}
+
+	return a.gitCore().StatusFast(workspace)
+}
+
+// GetGitStatusFastForProject mirrors GetGitStatusFast for a project root
+// without requiring a thread row. Used by local draft placeholders.
+func (a *App) GetGitStatusFastForProject(projectID string) (gitops.GitStatus, error) {
 	project, err := a.gitProjectPath(projectID)
 	if err != nil {
 		return gitops.GitStatus{}, err
 	}
-	core := a.gitCore()
-	core.InvalidatePRCache(project)
-	return core.Status(project)
+	return a.gitCore().StatusFast(project)
 }
 
 // GetWorkingTreeDiff returns the current combined staged and unstaged diff.
@@ -151,29 +167,6 @@ func (a *App) GitMaybeFetchRemotesForProject(projectID string) (bool, error) {
 		return false, err
 	}
 	return a.gitCore().MaybeFetchRemotes(project)
-}
-
-// GitPruneRemotes runs `git fetch --all --prune` to drop stale
-// remote-tracking refs (branches deleted on the remote since the last
-// fetch). Returns the refreshed branch list so the picker can update
-// in one round trip.
-//
-// Same locking rationale as GitMaybeFetchRemotes — refs/remotes/* only,
-// no working-tree mutation, safe alongside an active turn.
-func (a *App) GitPruneRemotes(threadID string) ([]gitops.GitBranch, error) {
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return nil, err
-	}
-	project, _, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return nil, err
-	}
-	core := a.gitCore()
-	if err := core.PruneRemotes(project); err != nil {
-		return nil, err
-	}
-	return core.ListBranches(project)
 }
 
 // GitSyncBranch fast-forwards branch from its configured upstream.
