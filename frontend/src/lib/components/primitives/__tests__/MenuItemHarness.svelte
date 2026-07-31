@@ -16,6 +16,9 @@
     variant = 'default' as 'default' | 'danger',
     showIcon = false,
     showIndicator = false,
+    showAction = false,
+    actionDisabled = false,
+    onAction = undefined as (() => void) | undefined,
   }: {
     label?: string;
     kbd?: string;
@@ -27,10 +30,26 @@
     variant?: 'default' | 'danger';
     showIcon?: boolean;
     showIndicator?: boolean;
+    showAction?: boolean;
+    actionDisabled?: boolean;
+    onAction?: () => void;
   } = $props();
 </script>
 
-{#if showIndicator}
+{#if showAction}
+  <MenuItem
+    {label}
+    {disabled}
+    {onSelect}
+    actionLabel="Row action"
+    {actionDisabled}
+    {onAction}
+  >
+    {#snippet action()}
+      <span data-testid="menuitem-action-icon">x</span>
+    {/snippet}
+  </MenuItem>
+{:else if showIndicator}
   <MenuItem {label} {kbd} {suffix} {title} {checked} {disabled} {onSelect} {variant}>
     {#snippet indicator()}
       <span data-testid="menuitem-indicator">toggle</span>

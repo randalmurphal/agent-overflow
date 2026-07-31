@@ -124,6 +124,28 @@ describe('<GitActionsControl> consumer rendering', () => {
     expect(await findByRole('menuitem', { name: /Ship Changes/i })).toBeInTheDocument();
   });
 
+  it('disables Remove Worktree while this pane thread is busy', async () => {
+    setBindingMock('ListLiveBackgroundTasks', async () => []);
+    const pane = await buildPane(makeThread({
+      workspacePath: '/workspace-wt/feat',
+      worktreePath: '/workspace-wt/feat',
+    }));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    pane.gitStatus.set(status({ isRepo: true }));
+    const { container, findByRole, queryByText } = render(GitActionsControl, { props: { pane } });
+    await flush();
+
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="More git actions"]');
+    expect(trigger).not.toBeNull();
+    await fireEvent.click(trigger!);
+    const item = await findByRole('menuitem', { name: /Remove Worktree/ });
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+    expect(item).toHaveAttribute('title', expect.stringMatching(/agent is responding/));
+    await fireEvent.click(item);
+    // The confirm dialog must not open from a disabled item.
+    expect(queryByText(/This will remove the git worktree/)).toBeNull();
+  });
+
   it('reflects the primary action label for the observed status', async () => {
     const pane = await buildPane();
     pane.gitStatus.set(status({ hasChanges: true }));

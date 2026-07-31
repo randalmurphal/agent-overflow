@@ -27,6 +27,7 @@
   import Icon from '../primitives/Icon.svelte';
   import Button from '../primitives/Button.svelte';
   import { SPLIT_BTN_BASE } from '../primitives/splitButton';
+  import { createWorkspaceChangeLockState } from '../../stores/workspaceChangeLock.svelte';
   import {
     primaryActionFor,
     runCreatePRAction,
@@ -37,6 +38,12 @@
   } from './gitActions';
 
   let { pane }: { pane: ThreadPane } = $props();
+
+  // Removing this thread's own worktree reattaches it to the project root —
+  // the same self-move the EnvPicker blocks while the thread is busy. Gate
+  // the menu item on the same lock state so the affordance matches instead
+  // of letting the click through to a backend refusal.
+  const workspaceLock = createWorkspaceChangeLockState(() => pane);
 
   // Split-button chrome (both segments, 24px height, header-cluster font +
   // focus ring) lives in ../primitives/splitButton so the Open-in-editor
@@ -241,6 +248,8 @@
           <MenuItem
             label="Remove Worktree"
             variant="danger"
+            disabled={workspaceLock.locked}
+            title={workspaceLock.locked ? workspaceLock.reason : undefined}
             onSelect={() => {
               showDropdown = false;
               showRemoveWorktreeConfirm = true;

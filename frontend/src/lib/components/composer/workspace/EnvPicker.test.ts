@@ -10,8 +10,9 @@ import {
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { resetForTest as resetWorktreeIntent } from '../../../stores/worktreeIntent.svelte';
-import type { WorkspaceChangeLockState } from '../../../stores/workspaceChangeLock.svelte';
 import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '../../../../test/helpers/chat';
+import { makeWorkspaceLock } from '../../../../test/helpers/workspaceLock';
+import { emitWailsEvent } from '../../../../test/mocks/wailsio-runtime';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return makeBaseThread({
@@ -49,16 +50,6 @@ function buildPlaceholderPane() {
     branch: 'feat',
   });
   return pane;
-}
-
-function makeWorkspaceLock(overrides: Partial<WorkspaceChangeLockState> = {}): WorkspaceChangeLockState {
-  return {
-    locked: false,
-    reason: '',
-    runningBackgroundCount: 0,
-    refresh: async () => {},
-    ...overrides,
-  };
 }
 
 describe('<EnvPicker>', () => {
@@ -231,7 +222,7 @@ describe('<EnvPicker>', () => {
       },
     ]);
 
-    const { getByTestId, findByLabelText } = render(EnvPicker, {
+    const { getByTestId, findByLabelText, findByTestId } = render(EnvPicker, {
       props: { pane, workspaceLock: makeWorkspaceLock() },
     });
     await fireEvent.click(getByTestId('env-picker-trigger'));
@@ -239,10 +230,130 @@ describe('<EnvPicker>', () => {
     const trash = await findByLabelText(/Remove worktree wt-feature/);
     expect(trash).toBeDisabled();
     expect(trash).toHaveAttribute('title', expect.stringMatching(/attached thread is running/));
+    // The affordance flips from a trash icon to the running-dot so a
+    // blocked row can't be misread as deletable at a glance.
+    await findByTestId('env-picker-busy-wt-feature');
     await fireEvent.click(trash);
 
     expect(getBindingMock('GitWorktreeStatus')).toBeUndefined();
     expect(getBindingMock('RemoveOtherWorktree')).toBeUndefined();
+  });
+
+  it('re-fetches deleteBlocked when a turn starts while the popover is open', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    let blocked = false;
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/tmp/wt-feature', branch: 'feat', head: 'def', deleteBlocked: blocked },
+    ]);
+
+    const { getByTestId, findByLabelText, findByTestId } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+    const trash = await findByLabelText(/Remove worktree wt-feature/);
+    expect(trash).not.toBeDisabled();
+
+    // A sibling thread starts a turn in that worktree while the popover
+    // is still open — the list must refresh in place, not go stale.
+    blocked = true;
+    emitWailsEvent('provider:turn_started', {
+      threadId: 'thread-sibling',
+      turnId: 'turn-1',
+      turnIndex: 0,
+    });
+
+    await waitFor(
+      () => {
+        expect(getBindingMock('GitListWorktrees')!.mock.calls.length).toBeGreaterThan(1);
+      },
+      { timeout: 2000 },
+    );
+    await findByTestId('env-picker-busy-wt-feature');
+    expect(await findByLabelText(/Remove worktree wt-feature/)).toBeDisabled();
+  });
+
+  it('still allows removing an idle worktree while this pane is busy', async () => {
+    // The workspace lock only blocks moving THIS thread (switch / new
+    // worktree); removal is gated per-worktree via deleteBlocked. A pane
+    // mid-turn can clean up worktrees no running thread occupies.
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    const workspaceLock = makeWorkspaceLock({
+      locked: true,
+      reason: 'Workspace changes are unavailable while the agent is responding.',
+    });
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/tmp/wt-feature', branch: 'feat', head: 'def', deleteBlocked: false },
+    ]);
+    setBindingMock('GitWorktreeStatus', async () => ({
+      path: '/tmp/wt-feature',
+      branch: 'feat',
+      dirty: false,
+      uncommittedCount: 0,
+      unpushedCommits: 0,
+      hasUpstream: true,
+      attachedThreads: 0,
+    }));
+    setBindingMock('RemoveOtherWorktree', async () => undefined);
+
+    const { getByTestId, findByLabelText, findByTestId } = render(EnvPicker, {
+      props: { pane, workspaceLock },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+
+    const trash = await findByLabelText(/Remove worktree wt-feature/);
+    expect(trash).not.toBeDisabled();
+    await fireEvent.click(trash);
+
+    const removeButton = await findByTestId('env-picker-confirm-remove');
+    await waitFor(() => expect(removeButton).not.toBeDisabled());
+    await fireEvent.click(removeButton);
+
+    await waitFor(() => {
+      expect(getBindingMock('RemoveOtherWorktree')).toHaveBeenCalledWith(
+        pane.threadId,
+        '/tmp/wt-feature',
+        false,
+      );
+    });
+  });
+
+  it('keeps the confirm strip open with the trimmed error when the backend refuses', async () => {
+    // deleteBlocked is fetched at picker-open; an occupant's turn can start
+    // after that, so the authoritative backend refusal must surface in the
+    // strip (final `: `-segment only, per userFacingError) instead of
+    // silently closing it.
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/tmp/wt-feature', branch: 'feat', head: 'def', deleteBlocked: false },
+    ]);
+    setBindingMock('GitWorktreeStatus', async () => ({
+      path: '/tmp/wt-feature',
+      branch: 'feat',
+      dirty: false,
+      uncommittedCount: 0,
+      unpushedCommits: 0,
+      hasUpstream: true,
+      attachedThreads: 1,
+    }));
+    setBindingMock('RemoveOtherWorktree', async () => {
+      throw new Error(
+        'worktree /tmp/wt-feature in use by thread thread-2: cannot remove worktree while turn 0 is active',
+      );
+    });
+
+    const { getByTestId, findByLabelText, findByTestId, findByText } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+    await fireEvent.click(await findByLabelText(/Remove worktree wt-feature/));
+    const removeButton = await findByTestId('env-picker-confirm-remove');
+    await waitFor(() => expect(removeButton).not.toBeDisabled());
+    await fireEvent.click(removeButton);
+
+    await findByText(/Cannot remove worktree while turn 0 is active/);
+    // Strip stays open and re-armable after the refusal.
+    const retryButton = await findByTestId('env-picker-confirm-remove');
+    expect(retryButton).not.toBeDisabled();
   });
 
   it('removes worktrees for placeholders and updates placeholder workspace state', async () => {

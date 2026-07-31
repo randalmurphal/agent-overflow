@@ -73,10 +73,17 @@
     activate();
   }
 
+  // Deliberately independent of row `disabled`: the row select and the
+  // action are separate affordances (e.g. EnvPicker blocks switching
+  // workspaces while a turn runs but still allows removing idle
+  // worktrees). Consumers that want both off pass both props. The action
+  // buttons carry an explicit aria-disabled="false" when enabled for the
+  // same reason — the row's aria-disabled="true" would otherwise be
+  // inherited by descendants and announce the live action as disabled.
   function handleActionClick(e: MouseEvent): void {
     e.preventDefault();
     e.stopPropagation();
-    if (disabled || actionDisabled) return;
+    if (actionDisabled) return;
     onAction?.();
   }
 
@@ -117,7 +124,7 @@
     'focus-visible:outline-none',
     'hover:bg-surface-2/40 focus:bg-surface-2/40',
     VARIANT_TEXT[variant],
-    disabled ? 'opacity-50 cursor-not-allowed hover:bg-transparent focus:bg-transparent' : '',
+    disabled ? 'cursor-not-allowed hover:bg-transparent focus:bg-transparent' : '',
   ].join(' ')}
 >
   {#if action && onAction && actionPosition === 'start'}
@@ -125,7 +132,7 @@
       type="button"
       aria-label={actionLabel}
       aria-pressed={actionPressed}
-      aria-disabled={actionDisabled ? 'true' : undefined}
+      aria-disabled={actionDisabled ? 'true' : 'false'}
       disabled={actionDisabled}
       title={actionTitle}
       tabindex={-1}
@@ -142,41 +149,46 @@
       {@render action()}
     </button>
   {/if}
-  {#if icon}
-    <span class="flex h-4 w-4 items-center justify-center text-fg-subtle" aria-hidden="true">
-      {@render icon()}
+  <!-- Row-disabled dimming lives on this wrapper (not the container) so an
+       enabled action button keeps full contrast — CSS opacity on a parent
+       cannot be undone by a child. -->
+  <span class={['flex min-w-0 flex-1 items-center gap-2', disabled ? 'opacity-50' : ''].join(' ')}>
+    {#if icon}
+      <span class="flex h-4 w-4 items-center justify-center text-fg-subtle" aria-hidden="true">
+        {@render icon()}
+      </span>
+    {/if}
+    <span class="min-w-0 flex-1">
+      <span class="block truncate">{label}</span>
+      {#if description}
+        <span class="block truncate text-[0.6875rem] leading-4 text-fg-hint">{description}</span>
+      {/if}
     </span>
-  {/if}
-  <span class="min-w-0 flex-1">
-    <span class="block truncate">{label}</span>
-    {#if description}
-      <span class="block truncate text-[0.6875rem] leading-4 text-fg-hint">{description}</span>
+    {#if indicator}
+      {@render indicator()}
+    {:else if checked}
+      <span class="text-accent/80" aria-hidden="true">&#10003;</span>
+    {/if}
+    {#if kbd}
+      <span
+        class="ml-auto text-[0.625rem] tracking-wide text-fg-hint"
+        aria-hidden="true"
+      >
+        {kbd}
+      </span>
+    {/if}
+    {#if suffix}
+      <span class="ml-auto text-[0.625rem] text-fg-hint">
+        {suffix}
+      </span>
     {/if}
   </span>
-  {#if indicator}
-    {@render indicator()}
-  {:else if checked}
-    <span class="text-accent/80" aria-hidden="true">&#10003;</span>
-  {/if}
-  {#if kbd}
-    <span
-      class="ml-auto text-[0.625rem] tracking-wide text-fg-hint"
-      aria-hidden="true"
-    >
-      {kbd}
-    </span>
-  {/if}
-  {#if suffix}
-    <span class="ml-auto text-[0.625rem] text-fg-hint">
-      {suffix}
-    </span>
-  {/if}
   {#if action && onAction && actionPosition === 'end'}
     <button
       type="button"
       aria-label={actionLabel}
       aria-pressed={actionPressed}
-      aria-disabled={actionDisabled ? 'true' : undefined}
+      aria-disabled={actionDisabled ? 'true' : 'false'}
       disabled={actionDisabled}
       title={actionTitle}
       tabindex={-1}

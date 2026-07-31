@@ -311,6 +311,15 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 	}
 
 	core := a.gitCore()
+	// Membership is validated on BOTH force paths — force skips the
+	// loss-of-work gate below, not the "is this actually one of the
+	// project's worktrees" boundary. Without this, a forced removal's
+	// only guard against an arbitrary path is git's own refusal.
+	if _, ok, err := a.findWorktree(project, worktreePath); err != nil {
+		return fmt.Errorf("validate worktree: %w", err)
+	} else if !ok {
+		return fmt.Errorf("%s is not a worktree of project %s", worktreePath, project)
+	}
 	if !force {
 		// The gate refuses concrete loss-of-work signals: uncommitted
 		// changes in the tree, or commits the user made that haven't
@@ -329,31 +338,69 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 		}
 	}
 
-	// Identify every thread that points at the worktree (the caller plus
-	// any sibling threads). Each of them needs to be unlocked from
-	// workspace mutations before we touch git, and each gets reattached
-	// to the project root in a single transaction-like sweep.
-	attached, err := a.threadsReferencingWorktree(worktreePath)
+	// Identify every thread that points at the worktree. Each of them gets
+	// reattached to the project root by the best-effort sweep below, so
+	// each must be idle and locked against concurrent workspace mutations
+	// before we touch git.
+	attached, err := a.threadsReferencingWorkspace(worktreePath)
 	if err != nil {
 		return err
 	}
-	if callerThreadID != "" && !slices.Contains(attached, callerThreadID) {
-		attached = append(attached, callerThreadID)
-	}
+	// Sorted + deduped so the post-lock recompute below can compare sets.
 	slices.Sort(attached)
 	attached = slices.Compact(attached)
+	// The caller is locked too (serializing its other workspace ops against
+	// this removal) but is only activity-checked when it actually occupies
+	// the worktree: a running thread may clean up worktrees it isn't in.
+	// Clone before append/sort — sharing attached's backing array would let
+	// the in-place sort swap the caller into attached's view and silently
+	// drop an occupying thread from the check and the reattach sweep.
+	locked := slices.Clone(attached)
+	if callerThreadID != "" && !slices.Contains(locked, callerThreadID) {
+		locked = append(locked, callerThreadID)
+	}
+	slices.Sort(locked)
+	locked = slices.Compact(locked)
 
-	unlocks := make([]func(), 0, len(attached))
+	unlocks := make([]func(), 0, len(locked))
 	defer func() {
 		// Release in reverse order to match LIFO mutex hygiene.
 		for i := len(unlocks) - 1; i >= 0; i-- {
 			unlocks[i]()
 		}
 	}()
-	for _, id := range attached {
+	for _, id := range locked {
 		unlocks = append(unlocks, a.threadLocks().Lock(id))
-		if err := a.ensureWorkspaceChangeAllowed(id); err != nil {
-			return fmt.Errorf("worktree %s in use by thread %s: %w", worktreePath, id, err)
+	}
+
+	// The occupancy snapshot above ran unlocked; a thread can have
+	// switched into the worktree in that window (it only holds its own
+	// lock, which we don't). Same recompute-and-refuse guard as
+	// DeleteProjectAndThreads — a changed set means our lock set no
+	// longer covers the occupants, so refuse rather than strand the
+	// newcomer on a deleted path. Accepted residual window (same as
+	// project deletion): a switch that commits after this recheck but
+	// before RemoveWorktreeForce finishes still lands on the deleted
+	// path; closing it would need removal and every workspace-entry
+	// path to contend on a shared project-scoped lock.
+	recheck, err := a.threadsReferencingWorkspace(worktreePath)
+	if err != nil {
+		return err
+	}
+	slices.Sort(recheck)
+	if !slices.Equal(attached, slices.Compact(recheck)) {
+		return fmt.Errorf("worktree %s occupancy changed during removal; retry", worktreePath)
+	}
+
+	for _, id := range attached {
+		reason, err := a.threadActivityBlockReason(id)
+		if err != nil {
+			return fmt.Errorf("thread %s: %w", id, err)
+		}
+		if reason != "" {
+			// The final colon segment must stand alone: the frontend's
+			// userFacingError keeps only the last `: `-segment for toasts.
+			return fmt.Errorf("worktree %s in use by thread %s: cannot remove worktree while %s", worktreePath, id, reason)
 		}
 	}
 
@@ -570,17 +617,20 @@ func (a *App) resolveProjectWorkspaceStateAfterRemoval(project, currentWorkspace
 	}, nil
 }
 
-// threadsReferencingWorktree returns every thread id whose workspace or
-// worktree path matches the supplied worktree path.
-func (a *App) threadsReferencingWorktree(worktreePath string) ([]string, error) {
+// threadsReferencingWorkspace returns every thread id whose workspace or
+// worktree path matches the supplied path (a worktree or the project root).
+func (a *App) threadsReferencingWorkspace(path string) ([]string, error) {
 	refs, err := a.store.ListThreadWorkspaceRefs()
 	if err != nil {
 		return nil, err
 	}
+	// Canonicalize the target once — CanonicalPath walks symlinks, and
+	// SameFilesystemPath would redo that walk for every ref comparison.
+	canon := gitops.CanonicalPath(path)
 	var ids []string
 	for _, ref := range refs {
-		if gitops.SameFilesystemPath(ref.WorktreePath, worktreePath) ||
-			gitops.SameFilesystemPath(ref.WorkspacePath, worktreePath) {
+		if gitops.CanonicalPath(ref.WorktreePath) == canon ||
+			gitops.CanonicalPath(ref.WorkspacePath) == canon {
 			ids = append(ids, ref.ID)
 		}
 	}
@@ -650,7 +700,7 @@ func (a *App) computeWorktreeStatus(project, worktreePath string) (WorktreeStatu
 		status.HasUpstream = hasUpstream
 	}
 
-	attached, err := a.threadsReferencingWorktree(worktree.Path)
+	attached, err := a.threadsReferencingWorkspace(worktree.Path)
 	if err != nil {
 		return WorktreeStatus{}, err
 	}

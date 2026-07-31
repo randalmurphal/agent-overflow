@@ -1152,6 +1152,363 @@ func TestRemoveOtherWorktreeRefusesProjectRoot(t *testing.T) {
 	}
 }
 
+// The removal gate is per-worktree, not per-caller: a thread that is
+// mid-turn may still remove a worktree no running thread occupies. The
+// old behavior activity-checked the caller unconditionally, forcing the
+// user to wait out their own turn before cleaning up unrelated worktrees.
+func TestRemoveOtherWorktreeAllowsBusyCallerOnUnoccupiedWorktree(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	caller := testThread("thread-remove-busy-caller")
+	caller.ProjectID = project.ID
+	caller.WorkspacePath = repo
+	caller.Branch = "main"
+	if err := app.store.CreateThread(caller); err != nil {
+		t.Fatalf("CreateThread(caller): %v", err)
+	}
+
+	// Registered worktree with no attached threads.
+	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-idle-cleanup")
+	testutil.RunGit(t, repo, "worktree", "add", "-b", "feature/idle", worktreePath)
+	t.Cleanup(func() {
+		_ = app.gitCore().RemoveWorktreeForce(repo, worktreePath, true)
+	})
+
+	// Caller is mid-turn; the worktree it wants to remove is not its own.
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-remove-busy-caller",
+		ThreadID:  caller.ID,
+		TurnIndex: 0,
+		StartedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertTurn(): %v", err)
+	}
+
+	if err := app.RemoveOtherWorktree(caller.ID, worktreePath, false); err != nil {
+		t.Fatalf("RemoveOtherWorktree() during caller's own turn error = %v, want success for unoccupied worktree", err)
+	}
+	if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("worktree %q should be gone after removal, stat err = %v", worktreePath, err)
+	}
+	// The busy caller was never attached to the removed worktree, so its
+	// workspace must be untouched.
+	refreshed, err := app.store.GetThread(caller.ID)
+	if err != nil {
+		t.Fatalf("GetThread(caller): %v", err)
+	}
+	if !samePath(refreshed.WorkspacePath, repo) {
+		t.Errorf("caller WorkspacePath = %q, want unchanged %q", refreshed.WorkspacePath, repo)
+	}
+}
+
+// The removal gate refuses on running background tasks, not just active
+// turns — a backgrounded Codex terminal has its cwd inside the worktree.
+// Also pins the toast contract: the final `: `-segment of the error must
+// stand alone because the frontend keeps only that segment.
+func TestRemoveOtherWorktreeRejectsRunningBackgroundTaskOnSibling(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	owner := testThread("thread-remove-bg-owner")
+	owner.ProjectID = project.ID
+	owner.WorkspacePath = repo
+	if err := app.store.CreateThread(owner); err != nil {
+		t.Fatalf("CreateThread(owner): %v", err)
+	}
+	worktreePath, err := app.GitCreateWorktree(owner.ID, "feature/bg-busy")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+
+	sibling := testThread("thread-remove-bg-sibling")
+	sibling.ProjectID = project.ID
+	sibling.WorkspacePath = worktreePath
+	sibling.WorktreePath = worktreePath
+	sibling.Branch = "feature/bg-busy"
+	if err := app.store.CreateThread(sibling); err != nil {
+		t.Fatalf("CreateThread(sibling): %v", err)
+	}
+	insertRunningBackgroundToolCall(t, app.store, sibling.ID, "item-bg-live", 0, 0)
+
+	err = app.RemoveOtherWorktree(owner.ID, worktreePath, true)
+	if err == nil {
+		t.Fatal("expected RemoveOtherWorktree to refuse while sibling has a running background task")
+	}
+	if !strings.Contains(err.Error(), sibling.ID) {
+		t.Fatalf("error should name the busy sibling: got %v", err)
+	}
+	if !strings.Contains(err.Error(), "cannot remove worktree while 1 background task(s) are running") {
+		t.Fatalf("final error segment should be self-contained about background tasks: got %v", err)
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Fatalf("worktree should still exist after refused remove: %v", err)
+	}
+}
+
+// The placeholder-pane path (no caller thread row) must apply the same
+// occupancy gate — callerThreadID=="" skips the caller lock append, never
+// the attached-thread check.
+func TestRemoveOtherWorktreeForProjectRejectsBusyOccupant(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-project-busy")
+	testutil.RunGit(t, repo, "worktree", "add", "-b", "feature/project-busy", worktreePath)
+	t.Cleanup(func() {
+		_ = app.gitCore().RemoveWorktreeForce(repo, worktreePath, true)
+	})
+
+	occupant := testThread("thread-project-busy-occupant")
+	occupant.ProjectID = project.ID
+	occupant.WorkspacePath = worktreePath
+	occupant.WorktreePath = worktreePath
+	occupant.Branch = "feature/project-busy"
+	if err := app.store.CreateThread(occupant); err != nil {
+		t.Fatalf("CreateThread(occupant): %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-project-busy",
+		ThreadID:  occupant.ID,
+		TurnIndex: 0,
+		StartedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertTurn(): %v", err)
+	}
+
+	_, err = app.RemoveOtherWorktreeForProject(project.ID, "", worktreePath, true)
+	if err == nil {
+		t.Fatal("expected placeholder-path removal to refuse while an occupant is mid-turn")
+	}
+	if !strings.Contains(err.Error(), occupant.ID) {
+		t.Fatalf("error should name the busy occupant: got %v", err)
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Fatalf("worktree should still exist after refused remove: %v", err)
+	}
+}
+
+// Occupancy matches on WorkspacePath alone — a thread can sit inside a
+// worktree without a WorktreePath of its own (e.g. reattached state).
+// Busy: gate refuses. Idle: the sweep's workspace-only branch reattaches
+// it to the project root with the branch reset.
+func TestRemoveOtherWorktreeHandlesWorkspaceOnlyOccupant(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	caller := testThread("thread-wsonly-caller")
+	caller.ProjectID = project.ID
+	caller.WorkspacePath = repo
+	if err := app.store.CreateThread(caller); err != nil {
+		t.Fatalf("CreateThread(caller): %v", err)
+	}
+	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-ws-only")
+	testutil.RunGit(t, repo, "worktree", "add", "-b", "feature/ws-only", worktreePath)
+	t.Cleanup(func() {
+		_ = app.gitCore().RemoveWorktreeForce(repo, worktreePath, true)
+	})
+
+	occupant := testThread("thread-wsonly-occupant")
+	occupant.ProjectID = project.ID
+	occupant.WorkspacePath = worktreePath
+	occupant.WorktreePath = ""
+	occupant.Branch = "feature/ws-only"
+	if err := app.store.CreateThread(occupant); err != nil {
+		t.Fatalf("CreateThread(occupant): %v", err)
+	}
+	insertRunningBackgroundToolCall(t, app.store, occupant.ID, "item-wsonly-live", 0, 0)
+
+	err = app.RemoveOtherWorktree(caller.ID, worktreePath, true)
+	if err == nil || !strings.Contains(err.Error(), occupant.ID) {
+		t.Fatalf("expected refusal naming the workspace-only occupant, got %v", err)
+	}
+
+	// Drain the background task; the same removal must now succeed and
+	// sweep the workspace-only occupant back to the project root.
+	if _, err := app.store.MarkLiveBackgroundToolCallsInactive(occupant.ID, time.Now().UnixMilli()); err != nil {
+		t.Fatalf("MarkLiveBackgroundToolCallsInactive(): %v", err)
+	}
+	if err := app.RemoveOtherWorktree(caller.ID, worktreePath, true); err != nil {
+		t.Fatalf("RemoveOtherWorktree() after drain error = %v", err)
+	}
+	refreshed, err := app.store.GetThread(occupant.ID)
+	if err != nil {
+		t.Fatalf("GetThread(occupant): %v", err)
+	}
+	if !samePath(refreshed.WorkspacePath, repo) {
+		t.Errorf("occupant WorkspacePath = %q, want %q", refreshed.WorkspacePath, repo)
+	}
+	if refreshed.WorktreePath != "" {
+		t.Errorf("occupant WorktreePath = %q, want empty", refreshed.WorktreePath)
+	}
+	if refreshed.Branch != "main" {
+		t.Errorf("occupant Branch = %q, want main", refreshed.Branch)
+	}
+}
+
+// Membership is validated even with force=true — force skips the
+// loss-of-work gate, not the "registered worktree of this project"
+// boundary. Without it the only guard against force-removing an
+// arbitrary directory is git's own refusal.
+func TestRemoveOtherWorktreeForceRejectsNonWorktreePath(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-remove-nonworktree")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+
+	victim := filepath.Join(t.TempDir(), "not-a-worktree")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatalf("MkdirAll(): %v", err)
+	}
+
+	err = app.RemoveOtherWorktree(thread.ID, victim, true)
+	if err == nil {
+		t.Fatal("expected force removal of a non-worktree path to be refused")
+	}
+	if !strings.Contains(err.Error(), "not a worktree") {
+		t.Fatalf("error = %v, want membership refusal", err)
+	}
+	if _, statErr := os.Stat(victim); statErr != nil {
+		t.Fatalf("victim directory must be untouched: %v", statErr)
+	}
+}
+
+// Regression: the lock set is a clone of the attached set. When they shared
+// a backing array, appending a busy caller whose ID sorts before an attached
+// thread's ID let the in-place sort swap the caller into attached's view —
+// the gate then refused on the caller's own activity (the exact behavior
+// this feature removes) and the reattach sweep dropped a genuinely attached
+// thread. Needs several attached threads (len < cap after append growth)
+// plus a low-sorting busy caller to reproduce.
+func TestRemoveOtherWorktreeBusyCallerReattachesAllIdleOccupants(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	// "thread-aaa-caller" sorts before every "thread-idle-N" occupant.
+	caller := testThread("thread-aaa-caller")
+	caller.ProjectID = project.ID
+	caller.WorkspacePath = repo
+	caller.Branch = "main"
+	if err := app.store.CreateThread(caller); err != nil {
+		t.Fatalf("CreateThread(caller): %v", err)
+	}
+
+	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-multi-idle")
+	testutil.RunGit(t, repo, "worktree", "add", "-b", "feature/multi-idle", worktreePath)
+	t.Cleanup(func() {
+		_ = app.gitCore().RemoveWorktreeForce(repo, worktreePath, true)
+	})
+
+	occupants := []string{"thread-idle-1", "thread-idle-2", "thread-idle-3"}
+	for _, id := range occupants {
+		occ := testThread(id)
+		occ.ProjectID = project.ID
+		occ.WorkspacePath = worktreePath
+		occ.WorktreePath = worktreePath
+		occ.Branch = "feature/multi-idle"
+		if err := app.store.CreateThread(occ); err != nil {
+			t.Fatalf("CreateThread(%s): %v", id, err)
+		}
+	}
+
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-aaa-caller",
+		ThreadID:  caller.ID,
+		TurnIndex: 0,
+		StartedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertTurn(): %v", err)
+	}
+
+	if err := app.RemoveOtherWorktree(caller.ID, worktreePath, false); err != nil {
+		t.Fatalf("RemoveOtherWorktree() error = %v, want success — caller is busy but not attached, occupants are idle", err)
+	}
+	for _, id := range occupants {
+		occ, err := app.store.GetThread(id)
+		if err != nil {
+			t.Fatalf("GetThread(%s): %v", id, err)
+		}
+		if !samePath(occ.WorkspacePath, repo) {
+			t.Errorf("occupant %s WorkspacePath = %q, want reattached to %q", id, occ.WorkspacePath, repo)
+		}
+		if occ.WorktreePath != "" {
+			t.Errorf("occupant %s WorktreePath = %q, want cleared", id, occ.WorktreePath)
+		}
+	}
+}
+
+// The flip side: a busy caller still cannot remove the worktree it
+// occupies — it is one of the attached threads the per-worktree gate
+// checks, and removal would reattach it mid-turn.
+func TestGitRemoveWorktreeRejectsBusyCallerOnOwnWorktree(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-remove-own-busy")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	worktreePath, err := app.GitCreateWorktree(thread.ID, "feature/own-busy")
+	if err != nil {
+		t.Fatalf("GitCreateWorktree() error = %v", err)
+	}
+
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "turn-remove-own-busy",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: 1,
+	}); err != nil {
+		t.Fatalf("InsertTurn(): %v", err)
+	}
+
+	err = app.GitRemoveWorktree(thread.ID)
+	if err == nil {
+		t.Fatal("expected GitRemoveWorktree to refuse while the occupying caller is mid-turn")
+	}
+	if !strings.Contains(err.Error(), thread.ID) {
+		t.Fatalf("error should name the busy occupying thread: got %v", err)
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Fatalf("worktree should still exist after refused remove: %v", err)
+	}
+}
+
 func TestRemoveOtherWorktreeRejectsActiveTurnOnSibling(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)

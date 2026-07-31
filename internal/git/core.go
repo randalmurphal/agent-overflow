@@ -274,7 +274,9 @@ func (c *Core) RemoveWorktreeForce(cwd, path string, force bool) error {
 	if force {
 		args = append(args, "--force")
 	}
-	args = append(args, path)
+	// "--" so a flag-shaped path can never parse as a git option — this is
+	// the one worktree argv that can carry a wire-supplied path.
+	args = append(args, "--", path)
 	_, stderr, err := c.Execute(cwd, args...)
 	if err != nil {
 		message := strings.TrimSpace(stderr)

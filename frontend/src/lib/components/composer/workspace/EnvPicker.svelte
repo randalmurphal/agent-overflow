@@ -39,6 +39,8 @@
     worktreeIntentForThread,
   } from '../../../stores/worktreeIntent.svelte';
   import type { WorkspaceChangeLockState } from '../../../stores/workspaceChangeLock.svelte';
+  import { wailsEventOn } from '../../../stores/wailsEvents';
+  import { debounce } from '../../../utils/debounce';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
@@ -101,31 +103,62 @@
       confirm = null;
       return;
     }
+    // The placeholder only shows for the open's first fetch; the live
+    // refreshes below swap the list in place.
+    loading = true;
     await refreshWorktreeList();
   }
 
+  // Sequence token instead of an in-flight guard: an event-triggered
+  // refresh arriving during a fetch must still run (dropping it would
+  // leave just-started activity unreflected); stale responses lose to
+  // the latest call instead.
+  let fetchSeq = 0;
+
   async function refreshWorktreeList(): Promise<void> {
     if (!pane.thread) return;
-    if (loading) return;
     const projectId = pane.thread.projectId;
     if (!pane.threadId && !projectId) return;
-    loading = true;
+    const seq = ++fetchSeq;
     try {
       let res: WorktreeListItem[] | null;
       if (pane.threadId) {
         res = (await GitListWorktrees(pane.threadId)) as WorktreeListItem[] | null;
       } else {
-        if (!projectId) return;
-        res = (await GitListWorktreesForProject(projectId)) as WorktreeListItem[] | null;
+        res = (await GitListWorktreesForProject(projectId!)) as WorktreeListItem[] | null;
       }
+      if (seq !== fetchSeq) return;
       worktrees = Array.isArray(res) ? res : [];
     } catch (err) {
       console.error('GitListWorktrees failed:', err);
+      if (seq !== fetchSeq) return;
       worktrees = [];
     } finally {
-      loading = false;
+      if (seq === fetchSeq) loading = false;
     }
   }
+
+  // deleteBlocked is a point-in-time flag: a turn starting or ending
+  // anywhere in the project flips it, and this popover can sit open
+  // across that. Re-fetch on the live activity signals so the rows never
+  // go stale in either direction. Trailing debounce because turn events
+  // fire per wire round — several per second while a pane streams.
+  $effect(() => {
+    if (!open) return;
+    const scheduleRefresh = debounce(() => {
+      void refreshWorktreeList();
+    }, 250);
+    const cancels = [
+      wailsEventOn('provider:turn_started', scheduleRefresh),
+      wailsEventOn('provider:turn_completed', scheduleRefresh),
+      wailsEventOn('provider:background_tasks_changed', scheduleRefresh),
+      wailsEventOn('provider:background_task_state', scheduleRefresh),
+    ];
+    return () => {
+      scheduleRefresh.cancel();
+      for (const cancel of cancels) cancel();
+    };
+  });
 
   function closeMenu(): void {
     open = false;
@@ -408,11 +441,23 @@
               actionLabel={`Remove worktree ${pathBasename(wt.path) || wt.path}`}
               actionPosition="end"
               actionDisabled={(!pane.threadId && !pane.thread?.projectId) || wt.deleteBlocked}
-              actionTitle={wt.deleteBlocked ? 'This worktree cannot be removed while an attached thread is running.' : undefined}
+              actionTitle={wt.deleteBlocked
+                ? 'This worktree cannot be removed while an attached thread is running.'
+                : `Remove worktree ${pathBasename(wt.path) || wt.path}`}
               onAction={() => requestRemove(wt)}
             >
               {#snippet action()}
-                <Icon icon={Trash2} size={12} strokeWidth={2} />
+                {#if wt.deleteBlocked}
+                  <!-- Same pulsing running-dot as the sidebar: a faded
+                       trash icon reads as deletable at a glance; a live
+                       activity marker doesn't. -->
+                  <span
+                    class="h-1.5 w-1.5 rounded-full bg-success animate-pulse"
+                    data-testid={`env-picker-busy-${pathBasename(wt.path) || wt.path}`}
+                  ></span>
+                {:else}
+                  <Icon icon={Trash2} size={12} strokeWidth={2} />
+                {/if}
               {/snippet}
             </MenuItem>
           {/if}

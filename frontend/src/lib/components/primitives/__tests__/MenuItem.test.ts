@@ -58,6 +58,41 @@ describe('<MenuItem>', () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  it('row disabled leaves an enabled action clickable and undimmed', async () => {
+    // The row select and the action are independent affordances: EnvPicker
+    // blocks switching workspaces while a turn runs but still allows
+    // removing idle worktrees via the row action.
+    const onSelect = vi.fn();
+    const onAction = vi.fn();
+    const { getByRole, getByLabelText } = render(Harness, {
+      props: { label: 'Apple', disabled: true, onSelect, onAction, showAction: true },
+    });
+    await fireEvent.click(getByRole('menuitem'));
+    expect(onSelect).not.toHaveBeenCalled();
+
+    const action = getByLabelText('Row action');
+    expect(action).not.toBeDisabled();
+    // Announced enabled despite the row's inherited aria-disabled="true".
+    expect(action).toHaveAttribute('aria-disabled', 'false');
+    // Dimming lives on the content wrapper, not the row container — an
+    // ancestor's opacity would dim the enabled action with no way back.
+    expect(getByRole('menuitem').className).not.toContain('opacity-50');
+    expect(action.closest('.opacity-50')).toBeNull();
+    await fireEvent.click(action);
+    expect(onAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('actionDisabled blocks onAction independently of the row', async () => {
+    const onAction = vi.fn();
+    const { getByLabelText } = render(Harness, {
+      props: { label: 'Apple', onAction, showAction: true, actionDisabled: true },
+    });
+    const action = getByLabelText('Row action');
+    expect(action).toBeDisabled();
+    await fireEvent.click(action);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
   it('renders the check glyph when checked=true', () => {
     const { container } = render(Harness, { props: { label: 'Apple', checked: true } });
     // 10003 is U+2713 CHECK MARK.
