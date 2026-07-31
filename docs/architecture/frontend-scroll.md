@@ -338,7 +338,17 @@ reader gesture, the spring's next glide — cancels it, because a stale
 absolute target re-fired over new motion is a visible yank (the
 release-then-glide "snaps mid-animation" bug; regression:
 `timelineVirtualizer.browser.test.ts` takeover tests,
-`activityRunAutoCollapse.browser.test.ts` glide-yank test).
+`activityRunAutoCollapse.browser.test.ts` glide-yank test). The takeover
+guard cannot see growth the navigation itself keeps chasing, so align-end
+convergence also excludes the DESTINATION row's own growth: once a pass has
+written against a measured destination, size gained past that baseline is
+subtracted from later targets — an align-end target decomposes as
+offset + size − viewport, and only the offset half (a fold's RO landing
+above, an estimate correcting) is the navigation's to hold. The size half
+growing is live content; chasing it re-fired the navigation as instant
+writes when streaming resumed inside the settle window of an auto-collapse
+bottom restore (bug-report-20260731T211929Z; regression:
+`appendAfterQuiet.browser.test.ts`, the settle-window test).
 
 **Bounded by the scrollback that exists.** Opening upward spends `scrollTop`,
 and a run near the top of a thread may not have enough — the write clamps at 0

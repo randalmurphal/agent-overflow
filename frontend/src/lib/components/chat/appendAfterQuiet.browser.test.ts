@@ -368,8 +368,85 @@ describe('append after a quiet gap — the growth glides', () => {
   });
 });
 
-describe('auto-collapse release racing a same-flush append', () => {
-  it('the released fold and the arriving tool call merge into one net-negative flush — the row still glides', async () => {
+/**
+ * Shared fixture for the auto-collapse-vs-append incidents: a settled run
+ * holding itself open (`openedLive`), pushed fully above the viewport by
+ * later prose, with the reader quiet and pinned at the bottom and every
+ * spring clock lapsed. Returns the held run's id, ready for a staged gate
+ * transaction.
+ *
+ * The REAL auto-collapse gate runs in this project (IS_TEST keys on the
+ * happy-dom marker, absent here), and left alone it would release the hold
+ * itself the moment the run settles off-screen — quietly, before the staged
+ * race. The errored bash pins it down: an unaddressed failure makes
+ * `readerEngagedWith` refuse the run forever, while a staged transaction's
+ * DIRECT `releaseOpenedLive` still folds it — the engagement checks are
+ * gate-side eligibility, not resolution inputs.
+ */
+async function mountHeldRunFixture(
+  threadId: string,
+): Promise<{ pane: ThreadPane; scrollEl: HTMLElement; heldRunId: string }> {
+  const items = seedTimelineItems(threadId, PROSE);
+  items.push(
+    bash('race-run-a', 100, threadId, 'completed'),
+    bash('race-run-b', 101, threadId, 'errored'),
+    thinkingItem('race-think', 102, threadId, 'completed', THINKING_TEXT),
+    bash('race-run-c', 103, threadId),
+  );
+  const { pane, scrollEl } = await mountTimeline(threadId, items, QUIET_BOTTOM);
+
+  // Bulk-collapse (the header bar's thread-level toggle). The setting's
+  // default is 'expanded', so without this a released hold resolves right
+  // back to open and the release has no fold. The retire inside
+  // setAllCollapsed does not stick on the tail run: it is still live, so
+  // it re-records its hold on the next resolve pass.
+  pane.activityRuns.setAllCollapsed(true);
+  await tick();
+  await raf();
+  const held = pane.activityRuns.openedLiveRunIds();
+  expect(held, 'the live run must hold itself open').toHaveLength(1);
+  const heldRunId = held[0];
+
+  // One wire flush settles the run and grows prose past it, pushing the
+  // run fully above the viewport (still mounted — the window buffer
+  // reaches well past it). The hold survives settling: only the gate or a
+  // reader's click retires it.
+  const prose: Item[] = [];
+  for (let i = 0; i < 6; i += 1) {
+    const turnIndex = 104 + i;
+    prose.push(
+      makeItem({
+        id: `race-prose-${i}`,
+        threadId,
+        turnIndex,
+        itemIndex: 0,
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'completed',
+        summary: `${PROSE.replyLead(turnIndex)}\n\n${PROSE.replyList}`,
+        createdAt: turnIndex,
+        updatedAt: turnIndex,
+      }),
+    );
+  }
+  pane.applyProviderItemUpserts([bash('race-run-c', 103, threadId, 'completed'), ...prose]);
+  await tick();
+  await waitForQuietBottom(scrollEl, 'prose growth past the settled run', QUIET_BOTTOM);
+  expect(pane.activityRuns.openedLiveRunIds()).toContain(heldRunId);
+  const runEl = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
+  expect(runEl, 'the run row must stay mounted for its fold to be an RO shrink').not.toBeNull();
+  expect(
+    runEl.getBoundingClientRect().bottom,
+    'the settled run must sit fully above the viewport',
+  ).toBeLessThan(scrollEl.getBoundingClientRect().top);
+
+  await sleep(SILENT_GAP_MS);
+  expect(distanceToBottom(scrollEl)).toBeLessThanOrEqual(2);
+  return { pane, scrollEl, heldRunId };
+}
+
+describe('auto-collapse release vs streaming appends', () => {
+  it('same-flush race: the released fold and the arriving tool call merge into one net-negative flush — the row still glides', async () => {
     // bug-report-20260731T141600Z: pinned at the bottom, zero interaction,
     // the auto-collapse gate released a settled run's openedLive hold and
     // the agent's next tool call landed in the flushes between the release
@@ -386,69 +463,7 @@ describe('auto-collapse release racing a same-flush append', () => {
     setUiRenderTraceEnabled(true);
     clearUiRenderTrace();
     const THREAD_ID = 'thread-collapse-append-race';
-    const items = seedTimelineItems(THREAD_ID, PROSE);
-    // The REAL auto-collapse gate runs in this project (IS_TEST keys on the
-    // happy-dom marker, absent here), and left alone it would release the
-    // hold itself the moment the run settles off-screen — quietly, before
-    // the staged race below. The errored bash pins it down: an unaddressed
-    // failure makes `readerEngagedWith` refuse the run forever, while the
-    // staged transaction's DIRECT `releaseOpenedLive` still folds it — the
-    // engagement checks are gate-side eligibility, not resolution inputs.
-    items.push(
-      bash('race-run-a', 100, THREAD_ID, 'completed'),
-      bash('race-run-b', 101, THREAD_ID, 'errored'),
-      thinkingItem('race-think', 102, THREAD_ID, 'completed', THINKING_TEXT),
-      bash('race-run-c', 103, THREAD_ID),
-    );
-    const { pane, scrollEl } = await mountTimeline(THREAD_ID, items, QUIET_BOTTOM);
-
-    // Bulk-collapse (the header bar's thread-level toggle). The setting's
-    // default is 'expanded', so without this a released hold resolves right
-    // back to open and the race has no fold. The retire inside
-    // setAllCollapsed does not stick on the tail run: it is still live, so
-    // it re-records its hold on the next resolve pass.
-    pane.activityRuns.setAllCollapsed(true);
-    await tick();
-    await raf();
-    const held = pane.activityRuns.openedLiveRunIds();
-    expect(held, 'the live run must hold itself open').toHaveLength(1);
-    const heldRunId = held[0];
-
-    // One wire flush settles the run and grows prose past it, pushing the
-    // run fully above the viewport (still mounted — the window buffer
-    // reaches well past it). The hold survives settling: only the gate or a
-    // reader's click retires it.
-    const prose: Item[] = [];
-    for (let i = 0; i < 6; i += 1) {
-      const turnIndex = 104 + i;
-      prose.push(
-        makeItem({
-          id: `race-prose-${i}`,
-          threadId: THREAD_ID,
-          turnIndex,
-          itemIndex: 0,
-          kind: 'assistant_text',
-          role: 'assistant',
-          status: 'completed',
-          summary: `${PROSE.replyLead(turnIndex)}\n\n${PROSE.replyList}`,
-          createdAt: turnIndex,
-          updatedAt: turnIndex,
-        }),
-      );
-    }
-    pane.applyProviderItemUpserts([bash('race-run-c', 103, THREAD_ID, 'completed'), ...prose]);
-    await tick();
-    await waitForQuietBottom(scrollEl, 'prose growth past the settled run', QUIET_BOTTOM);
-    expect(pane.activityRuns.openedLiveRunIds()).toContain(heldRunId);
-    const runEl = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
-    expect(runEl, 'the run row must stay mounted for its fold to be an RO shrink').not.toBeNull();
-    expect(
-      runEl.getBoundingClientRect().bottom,
-      'the settled run must sit fully above the viewport',
-    ).toBeLessThan(scrollEl.getBoundingClientRect().top);
-
-    await sleep(SILENT_GAP_MS);
-    expect(distanceToBottom(scrollEl)).toBeLessThanOrEqual(2);
+    const { pane, scrollEl, heldRunId } = await mountHeldRunFixture(THREAD_ID);
 
     // The incident interleaving in one synchronous task: the gate's anchored
     // transaction releases the hold, and the next tool call lands before the
@@ -479,5 +494,117 @@ describe('auto-collapse release racing a same-flush append', () => {
       scrollEl.scrollHeight,
       'the released fold must outweigh the appended row (net-negative race)',
     ).toBeLessThan(heightBefore);
+  });
+
+  it('settle window: the restore navigation dies on arrival, so tail growth resuming right after the release glides', { timeout: 30000 }, async () => {
+    // bug-report-20260731T211929Z: the stream stalls mid-prose, the gate
+    // releases in the quiet, and the stream resumes ~75ms later — INSIDE
+    // the 150ms settle window of the restore's scrollToIndex navigation.
+    // The navigation's own last write is where scrollTop sits (the
+    // takeover guard passes) and the regrowing LAST row keeps moving its
+    // align-end target, so each growth flush re-fired the stale navigation
+    // as a tagged instant write: the resumed prose SNAPPED down for two
+    // flushes before the spring got the viewport back — the reported
+    // stutter-then-yank. The fix is growth exclusion in
+    // convergeIndexScroll (TimelineVirtualizer): once a pass has written
+    // against a MEASURED destination row, the destination's own growth
+    // past that baseline is excluded from later align-end targets, so a
+    // growth-only pass goes quiet while ΔOffset holds (a fold's RO
+    // landing above) still converge.
+    //
+    // The growth must be IN the tail row (the incident's streaming prose):
+    // an appended row below the navigation's index does not move an
+    // align-end target and never re-fires it. And the discriminator must
+    // be the trace, not the glide contract: the re-fire only eats part of
+    // each trip (the estimate-vs-measured remainder still glides), so
+    // expectGlide alone stays green over the yank. Nothing calls
+    // scrollToIndex after the resume, so any virtualizer.scrollTarget
+    // write past that point IS the stale navigation chasing the tail.
+    setUiRenderTraceEnabled(true);
+    clearUiRenderTrace();
+    const THREAD_ID = 'thread-collapse-settle-window';
+    const { pane, scrollEl, heldRunId } = await mountHeldRunFixture(THREAD_ID);
+
+    // The incident's tail: prose actively mid-stream (status streaming),
+    // stalled with every spring clock lapsed.
+    pane.applyProviderItemUpserts([
+      makeItem({
+        id: 'race-stream',
+        threadId: THREAD_ID,
+        turnIndex: 110,
+        itemIndex: 0,
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'streaming',
+        summary: '',
+        createdAt: 110,
+        updatedAt: 110,
+      }),
+    ]);
+    await tick();
+    pane.applyItemDelta({
+      threadId: THREAD_ID,
+      itemId: 'race-stream',
+      kind: 'assistant_text',
+      delta: PROSE.replyLead(110),
+      updatedAt: 111,
+    });
+    // No drain wait: the item deliberately STAYS streaming through the
+    // stall (the incident's mid-prose pause), and a streaming item's
+    // smoother stays armed for more input. Quiet-at-bottom is the actual
+    // precondition — the reveal has visually caught up.
+    await waitForQuietBottom(scrollEl, 'streamed tail settle', QUIET_BOTTOM);
+    await sleep(SILENT_GAP_MS);
+    expect(distanceToBottom(scrollEl)).toBeLessThanOrEqual(2);
+
+    // The gate's transaction alone this time: no append in flight, so the
+    // bottom restore runs (no yield) and plants its navigation.
+    const heightBefore = scrollEl.scrollHeight;
+    withViewportBottomHeld(
+      pane.scrollController,
+      () => pane.activityRuns.releaseOpenedLive(heldRunId),
+      { yieldToStructuralAppend: true },
+    );
+    await tick();
+    // Two frames: the restore's write has landed AND the fold's RO shrink
+    // has delivered (the incident had ~75ms between them), so the
+    // navigation has survived one post-arrival engine update when the
+    // stream resumes — still well inside the 150ms settle window.
+    await raf();
+    await raf();
+    expect(pane.activityRuns.openedLiveRunIds()).not.toContain(heldRunId);
+    expect(
+      scrollEl.scrollHeight,
+      'the release must fold the run before the stream resumes',
+    ).toBeLessThan(heightBefore);
+    expect(distanceToBottom(scrollEl)).toBeLessThanOrEqual(2);
+    const heightAfterFold = scrollEl.scrollHeight;
+
+    // The stream resumes: the TAIL ROW regrows through the real reveal
+    // machinery, inside the navigation's settle window.
+    const resumeSince = lastTraceSeq();
+    pane.applyItemDelta({
+      threadId: THREAD_ID,
+      itemId: 'race-stream',
+      kind: 'assistant_text',
+      delta: `\n\n${PROSE.replyLead(111)}\n\n${PROSE.replyList}`,
+      updatedAt: 112,
+    });
+    await waitForQuietBottom(scrollEl, 'resumed tail growth settle', QUIET_BOTTOM);
+
+    const navWrites = getUiRenderTraceRecords().filter(
+      (r) =>
+        r.seq > resumeSince &&
+        r.label === 'scroll.write' &&
+        (r.data as Record<string, unknown>)?.caller === 'virtualizer.scrollTarget',
+    );
+    expect(
+      navWrites.map((r) => JSON.stringify(r.data)),
+      'the restore navigation must not re-fire on resumed tail growth',
+    ).toEqual([]);
+    expect(
+      scrollEl.scrollHeight,
+      'the resumed stream must have regrown the tail row',
+    ).toBeGreaterThan(heightAfterFold + 40);
   });
 });

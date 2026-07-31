@@ -557,6 +557,11 @@
      * scroll of that layout), shifted by every compensation delivered
      * since. NaN until the first pass writes. */
     expectedPosition: number;
+    /** The destination row's size at the first pass that wrote against a
+     * MEASURED destination; NaN until such a pass. Align-end only: it is
+     * the baseline that lets convergence exclude the destination's own
+     * GROWTH from later targets — see convergeIndexScroll. */
+    destinationSizeBaseline: number;
     passesLeft: number;
     settleTimer: ReturnType<typeof setTimeout> | undefined;
   }
@@ -616,7 +621,29 @@
         return;
       }
     }
-    const target = engine.targetOffsetFor(pending.index, pending.align, pending.extraOffset);
+    let target = engine.targetOffsetFor(pending.index, pending.align, pending.extraOffset);
+    // An align-end target decomposes as offset(index) + size(index) −
+    // viewport, so it moves for two reasons with different owners. Rows
+    // ABOVE moving (ΔOffset — a fold's RO landing, an estimate
+    // correcting) is exactly what the passes exist to hold the anchor
+    // across. The destination's OWN size growing past what the first
+    // measured write saw (ΔSize > 0 — a streaming tail regrowing under a
+    // bottom restore) is live content, and chasing it re-fired the stale
+    // navigation as tagged instant writes: the stutter-then-snap when
+    // prose resumed inside the settle window of an auto-collapse restore
+    // (bug-report-20260731T211929Z). Excluding the growth makes a
+    // growth-only pass compute the target it already wrote — the early
+    // return below keeps the navigation quiet while the controller's
+    // spring glides the growth — without giving up the ΔOffset holds. A
+    // destination SHRINK is deliberately not excluded: it is either the
+    // measurement correction the passes exist for or the destination
+    // itself folding, and both must converge. Estimate-to-measured hops
+    // stay live too — the baseline only exists once a write was computed
+    // from a measured destination.
+    if (pending.align === 'end' && Number.isFinite(pending.destinationSizeBaseline)) {
+      const growth = engine.sizeAt(pending.index) - pending.destinationSizeBaseline;
+      if (growth > 0) target -= growth;
+    }
     if (target === pending.lastTarget) return;
     if (pending.passesLeft <= 0) {
       clearIndexScroll();
@@ -627,6 +654,13 @@
     if (pending.settleTimer !== undefined) clearTimeout(pending.settleTimer);
     pending.settleTimer = setTimeout(clearIndexScroll, INDEX_SCROLL_SETTLE_MS);
     applyScrollTarget(target);
+    if (
+      pending.align === 'end' &&
+      !Number.isFinite(pending.destinationSizeBaseline) &&
+      engine.isMeasuredAt(pending.index)
+    ) {
+      pending.destinationSizeBaseline = engine.sizeAt(pending.index);
+    }
     // The browser clamps a write past the end of the CURRENT layout; the
     // engine's max is that same bound (spacer height IS totalSize, and
     // viewport excludes the padding both sides share).
@@ -647,6 +681,7 @@
       extraOffset: opts.offset ?? 0,
       lastTarget: Number.NaN,
       expectedPosition: Number.NaN,
+      destinationSizeBaseline: Number.NaN,
       passesLeft: INDEX_SCROLL_MAX_PASSES,
       settleTimer: undefined,
     };
