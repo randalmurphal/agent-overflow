@@ -664,6 +664,7 @@ export function createUseStickToBottomController(
       warm,
       springActive: spring.isActive(),
       springStopRequested: spring.stopRequested(),
+      structuralAppendPending: spring.structuralAppendPending(),
       sentinelEntryTarget: spring.sentinelTarget(),
     };
   }
@@ -1037,8 +1038,18 @@ export function createUseStickToBottomController(
       if (willRepin) {
         // Re-pin on lease release: layout-changing surfaces (sidebar
         // resize, terminal toggle) shrink/grow the chat column during
-        // the lease; without this re-pin, sticky users drift.
-        writeScrollTop('pauseAutoScroll.release', targetScrollTop());
+        // the lease; without this re-pin, sticky users drift. When the
+        // structural-append window is open, the bottom includes a row
+        // that is owed a glide (an append landed during the lease —
+        // e.g. inside an auto-collapse transaction), so hand the re-pin
+        // to the live-content path: it springs the distance instead of
+        // landing the new row instantly, and degrades to the same
+        // instant pin when the spring gate is closed.
+        if (spring.structuralAppendPending()) {
+          notifyLiveContentMaybeGrew();
+        } else {
+          writeScrollTop('pauseAutoScroll.release', targetScrollTop());
+        }
       }
     };
   }

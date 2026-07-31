@@ -303,7 +303,12 @@ engine estimate compensation. One caveat follows from being unasked: the
 gate defers while `autoScrollInFlight()` reports a glide running or armed,
 because the transaction's bottom-pinned restore is a direct write and would
 snap an animation the reader is watching; explicit clicks keep their
-instant behavior — for them the snap IS the intent. The transaction shares the prune's shape —
+instant behavior — for them the snap IS the intent. The stand-down can only
+see motion that exists when the pass runs, so the gate's transaction also
+opts into `yieldToStructuralAppend`: a wire append landing between the
+release and its restore arms the structural one-shot, and the restore hands
+the trip to the armed spring instead of writing a bottom that already
+contains the new row. The transaction shares the prune's shape —
 capture intent, pause the spring, run the change, restore after the flush —
 and differs in which edge it holds:
 

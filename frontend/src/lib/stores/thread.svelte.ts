@@ -137,6 +137,7 @@ export type {
   DraftThreadPlaceholder,
   LoadOlderResult,
   PaneScrollController,
+  PreserveViewportBottomOptions,
   ScrollToItemOptions,
   TimelineWindowAnchorOperation,
 } from './threadPaneShared';

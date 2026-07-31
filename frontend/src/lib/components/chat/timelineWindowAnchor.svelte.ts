@@ -18,7 +18,11 @@
 // timeline.
 
 import { tick } from 'svelte';
-import type { ThreadPane, TimelineWindowAnchorOperation } from '../../stores/thread.svelte';
+import type {
+  PreserveViewportBottomOptions,
+  ThreadPane,
+  TimelineWindowAnchorOperation,
+} from '../../stores/thread.svelte';
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
@@ -41,6 +45,7 @@ interface ViewportBottomIntent {
   switchGeneration: number;
   holdingBottom: boolean;
   anchor: TimelineTailAnchor | null;
+  yieldToStructuralAppend: boolean;
 }
 
 export interface TimelineWindowAnchorOptions {
@@ -60,7 +65,7 @@ export interface TimelineWindowAnchor {
   readonly pruneShiftAtHead: boolean;
   clearTimelineWindowPruneShift(): void;
   preserveTimelineWindowAnchor(operation: TimelineWindowAnchorOperation): boolean;
-  preserveViewportBottom(change: () => void): void;
+  preserveViewportBottom(change: () => void, opts?: PreserveViewportBottomOptions): void;
 }
 
 export function createTimelineWindowAnchor(
@@ -221,6 +226,21 @@ export function createTimelineWindowAnchor(
       if (options.getPane().switchGeneration !== intent.switchGeneration) return;
 
       if (intent.holdingBottom) {
+        // An unasked transaction (the auto-collapse gate) can race a
+        // streamed append landing in the flushes between its change and
+        // this restore. Writing the bottom then would include the new
+        // row — the glide the append armed finds zero distance and the
+        // row teleports in (bug-report-20260731T141600Z). Stand down and
+        // hand the fresh geometry to the live-content path: the armed
+        // spring (or the one already chasing) owns the trip to the
+        // bottom. The pinned pre-append view needs no write of its own —
+        // the browser's clamp and the engine's yielded compensation keep
+        // it in place.
+        if (intent.yieldToStructuralAppend && options.stick.autoScrollInFlight()) {
+          options.stick.observe('live-content');
+          options.saveScrollSnapshot();
+          return;
+        }
         restoreBottomEdge();
         return;
       }
@@ -231,7 +251,10 @@ export function createTimelineWindowAnchor(
     }
   }
 
-  function preserveViewportBottom(change: () => void): void {
+  function preserveViewportBottom(
+    change: () => void,
+    opts?: PreserveViewportBottomOptions,
+  ): void {
     const listRef = options.getListRef();
     if (!listRef || !options.getScrollEl()) {
       change();
@@ -242,6 +265,7 @@ export function createTimelineWindowAnchor(
       switchGeneration: options.getPane().switchGeneration,
       holdingBottom: holdingBottom(),
       anchor: null,
+      yieldToStructuralAppend: opts?.yieldToStructuralAppend === true,
     };
     if (!intent.holdingBottom) {
       intent.anchor = captureTimelineTailAnchor(

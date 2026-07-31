@@ -28,6 +28,7 @@ function state(overrides: Partial<ResolverState> = {}): ResolverState {
     warm: true,
     springActive: false,
     springStopRequested: false,
+    structuralAppendPending: false,
     sentinelEntryTarget: -1,
     ...overrides,
   };
@@ -627,6 +628,35 @@ describe('resolveEngineCompensation — anchor redirect', () => {
       comp({ target: TARGET - AUTO_FOLLOW_BOTTOM_EPSILON_PX }),
     );
     expect(decision.write).toEqual({ caller: 'engine.compensation', value: TARGET - AUTO_FOLLOW_BOTTOM_EPSILON_PX });
+  });
+
+  // Regression (bug-report-20260731T141600Z): the auto-collapse gate
+  // released an off-screen run in the same frame a tool-call append
+  // landed. The collapse (-67) and the append (+27) merged into one
+  // net-negative delivery; the browser clamped the pinned reader onto
+  // the new row, the engine requested the position-preserving offset,
+  // and the redirect overrode it back to the bottom — so the append's
+  // armed spring found zero distance and the row teleported in. With the
+  // structural-append window open, "the bottom" contains a row that is
+  // owed a glide: preserve the pre-append view and let the arm's nudge
+  // carry the remainder.
+  it('yields the redirect to a pending structural append (pinned, moves away)', () => {
+    const decision = resolveEngineCompensation(
+      state({ structuralAppendPending: true }),
+      comp({ target: 974, scrollTop: TARGET, bottomTarget: TARGET }),
+    );
+    expect(decision.write).toEqual({ caller: 'engine.compensation', value: 974 });
+  });
+
+  it('a pending append does not change the sentinel-gap redirect once the window lapses', () => {
+    // Same delivery shape, arm expired: the pure above-viewport shrink
+    // redirects exactly as before — the yield is scoped to the 250ms
+    // append window, not to spring/sentinel activity.
+    const decision = resolveEngineCompensation(
+      state({ springActive: true, structuralAppendPending: false }),
+      comp({ target: 974, scrollTop: TARGET, bottomTarget: TARGET }),
+    );
+    expect(decision.write).toEqual({ caller: 'engine.anchorRedirect', value: TARGET });
   });
 });
 

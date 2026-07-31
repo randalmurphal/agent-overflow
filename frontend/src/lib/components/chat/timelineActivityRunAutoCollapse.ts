@@ -18,7 +18,13 @@
 // through scroll end — the pin writes scrollTop while content grows, and the
 // virtualizer synthesizes scrollend after the writes go quiet. A pass that
 // lands while the growth's glide is still running stands down
-// (`autoScrollInFlight`) and lets that scrollend re-run it.
+// (`autoScrollInFlight`) and lets that scrollend re-run it. That check can
+// only see motion that already exists, so the transaction itself also
+// yields: an append landing between the release and its bottom restore
+// (structural triggers make gate passes inherently append-adjacent) arms
+// the structural spring, and the restore hands the trip to it instead of
+// writing a bottom that already contains the new row — see
+// `yieldToStructuralAppend` at the call site.
 
 import { tick } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
@@ -136,9 +142,24 @@ export function createTimelineActivityRunAutoCollapse(
     // run gets their anchor row put back after the flush instead of trusting
     // the engine to compensate an estimate-driven height change above them.
     // Collected first so a pass with nothing to do never pauses the spring.
-    withViewportBottomHeld(pane.scrollController, () => {
-      for (const runId of eligible) pane.activityRuns.releaseOpenedLive(runId);
-    });
+    //
+    // yieldToStructuralAppend: the autoScrollInFlight stand-down above can
+    // only see motion that exists when the pass RUNS — a streamed append
+    // can land in the flushes between this change and its bottom restore
+    // (the gate re-runs on tail advances, so its passes are inherently
+    // correlated with arrivals). The transaction's restore then stands
+    // down and the append's armed spring glides the new row in, instead
+    // of the restore writing a bottom that already contains it
+    // (bug-report-20260731T141600Z: an off-screen release merged with a
+    // same-frame tool-call arrival into one net-negative delivery, and
+    // every bottom write landed the row as a teleport).
+    withViewportBottomHeld(
+      pane.scrollController,
+      () => {
+        for (const runId of eligible) pane.activityRuns.releaseOpenedLive(runId);
+      },
+      { yieldToStructuralAppend: true },
+    );
   }
 
   function schedule(): void {

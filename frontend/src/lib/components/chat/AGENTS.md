@@ -150,7 +150,13 @@ Operational rules for this directory:
   and NEVER while `autoScrollInFlight()` (spring active or a structural arm
   pending): the transaction's bottom-pinned restore is a direct write, so a
   release landing mid-glide snaps the animation; the gate stands down and the
-  glide's own scrollend re-runs it.
+  glide's own scrollend re-runs it. That check can only see motion that
+  exists when the pass runs, so the transaction also passes
+  `yieldToStructuralAppend`: a wire append landing between the release and
+  its restore arms the structural spring, and the restore hands the trip to
+  it instead of writing a bottom that already contains the new row
+  (regression: appendAfterQuiet.browser.test.ts, the collapse-vs-append
+  race).
 - **Engagement is deviation-based, never pixel-based.** The gate's "reader
   opened something in here" check is `pane.hasUserExpansionWithin` — diff
   overrides that say expanded, subagent / wait / read groups, payload bodies

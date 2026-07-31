@@ -46,6 +46,7 @@ import {
   setUiRenderTraceEnabled,
 } from '../../utils/uiRenderTrace';
 import type { ThreadPane } from '../../stores/thread.svelte';
+import { withViewportBottomHeld } from '../../stores/threadPaneShared';
 import type { Item } from '../../types/models';
 
 setupTimelineHarness();
@@ -364,5 +365,119 @@ describe('append after a quiet gap — the growth glides', () => {
 
     const opened = distanceToBottom(scrollEl);
     await expectGlide(scrollEl, Math.max(opened, 9), since);
+  });
+});
+
+describe('auto-collapse release racing a same-flush append', () => {
+  it('the released fold and the arriving tool call merge into one net-negative flush — the row still glides', async () => {
+    // bug-report-20260731T141600Z: pinned at the bottom, zero interaction,
+    // the auto-collapse gate released a settled run's openedLive hold and
+    // the agent's next tool call landed in the flushes between the release
+    // and the transaction's bottom restore (gate passes are inherently
+    // append-adjacent — structural triggers schedule them). The fold above
+    // the viewport and the append at the tail merged into ONE net-negative
+    // content delivery: the browser's clamp landed the pinned reader on the
+    // new row, every bottom-seeking write (engine anchor redirect, the
+    // transaction's bottom restore, the pause-release repin) confirmed the
+    // clamped position, and the armed structural spring found zero distance
+    // — the row teleported in. The fix is three yields to the
+    // structural-append one-shot; this drives the gate's exact call shape
+    // with the append in the SAME task and holds it to the glide contract.
+    setUiRenderTraceEnabled(true);
+    clearUiRenderTrace();
+    const THREAD_ID = 'thread-collapse-append-race';
+    const items = seedTimelineItems(THREAD_ID, PROSE);
+    // The REAL auto-collapse gate runs in this project (IS_TEST keys on the
+    // happy-dom marker, absent here), and left alone it would release the
+    // hold itself the moment the run settles off-screen — quietly, before
+    // the staged race below. The errored bash pins it down: an unaddressed
+    // failure makes `readerEngagedWith` refuse the run forever, while the
+    // staged transaction's DIRECT `releaseOpenedLive` still folds it — the
+    // engagement checks are gate-side eligibility, not resolution inputs.
+    items.push(
+      bash('race-run-a', 100, THREAD_ID, 'completed'),
+      bash('race-run-b', 101, THREAD_ID, 'errored'),
+      thinkingItem('race-think', 102, THREAD_ID, 'completed', THINKING_TEXT),
+      bash('race-run-c', 103, THREAD_ID),
+    );
+    const { pane, scrollEl } = await mountTimeline(THREAD_ID, items, QUIET_BOTTOM);
+
+    // Bulk-collapse (the header bar's thread-level toggle). The setting's
+    // default is 'expanded', so without this a released hold resolves right
+    // back to open and the race has no fold. The retire inside
+    // setAllCollapsed does not stick on the tail run: it is still live, so
+    // it re-records its hold on the next resolve pass.
+    pane.activityRuns.setAllCollapsed(true);
+    await tick();
+    await raf();
+    const held = pane.activityRuns.openedLiveRunIds();
+    expect(held, 'the live run must hold itself open').toHaveLength(1);
+    const heldRunId = held[0];
+
+    // One wire flush settles the run and grows prose past it, pushing the
+    // run fully above the viewport (still mounted — the window buffer
+    // reaches well past it). The hold survives settling: only the gate or a
+    // reader's click retires it.
+    const prose: Item[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const turnIndex = 104 + i;
+      prose.push(
+        makeItem({
+          id: `race-prose-${i}`,
+          threadId: THREAD_ID,
+          turnIndex,
+          itemIndex: 0,
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'completed',
+          summary: `${PROSE.replyLead(turnIndex)}\n\n${PROSE.replyList}`,
+          createdAt: turnIndex,
+          updatedAt: turnIndex,
+        }),
+      );
+    }
+    pane.applyProviderItemUpserts([bash('race-run-c', 103, THREAD_ID, 'completed'), ...prose]);
+    await tick();
+    await waitForQuietBottom(scrollEl, 'prose growth past the settled run', QUIET_BOTTOM);
+    expect(pane.activityRuns.openedLiveRunIds()).toContain(heldRunId);
+    const runEl = scrollEl.querySelector('[data-testid="activity-run"]') as HTMLElement;
+    expect(runEl, 'the run row must stay mounted for its fold to be an RO shrink').not.toBeNull();
+    expect(
+      runEl.getBoundingClientRect().bottom,
+      'the settled run must sit fully above the viewport',
+    ).toBeLessThan(scrollEl.getBoundingClientRect().top);
+
+    await sleep(SILENT_GAP_MS);
+    expect(distanceToBottom(scrollEl)).toBeLessThanOrEqual(2);
+
+    // The incident interleaving in one synchronous task: the gate's anchored
+    // transaction releases the hold, and the next tool call lands before the
+    // transaction's post-flush restore runs.
+    const since = lastTraceSeq();
+    const heightBefore = scrollEl.scrollHeight;
+    withViewportBottomHeld(
+      pane.scrollController,
+      () => pane.activityRuns.releaseOpenedLive(heldRunId),
+      { yieldToStructuralAppend: true },
+    );
+    pane.applyProviderItemUpserts([bash('race-tail', 110, THREAD_ID)]);
+    await tick();
+    await raf();
+
+    expect(pane.activityRuns.openedLiveRunIds()).not.toContain(heldRunId);
+    const opened = distanceToBottom(scrollEl);
+    expect(opened, 'the appended row must open a real gap').toBeGreaterThan(8);
+    await expectGlide(scrollEl, opened, since);
+
+    // Fixture guard, asserted on the settled end state (the appended row's
+    // estimate raises scrollHeight in the flush itself, while the fold's RO
+    // shrink lands a frame later): the released fold must outweigh the
+    // appended row, so the race's net content delta is negative — the
+    // incident's defining feature. If this ever reads positive, the fixture
+    // has stopped exercising the race.
+    expect(
+      scrollEl.scrollHeight,
+      'the released fold must outweigh the appended row (net-negative race)',
+    ).toBeLessThan(heightBefore);
   });
 });

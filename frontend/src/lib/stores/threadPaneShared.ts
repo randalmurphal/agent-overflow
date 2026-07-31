@@ -184,7 +184,21 @@ export interface PaneScrollController {
    * registers a raw controller with no virtualizer behind it. Go through
    * `withViewportBottomHeld` rather than reaching for it directly.
    */
-  preserveViewportBottom?(change: () => void): void;
+  preserveViewportBottom?(change: () => void, opts?: PreserveViewportBottomOptions): void;
+}
+
+export interface PreserveViewportBottomOptions {
+  /**
+   * The transaction is UNASKED (the auto-collapse gate, not a reader's
+   * click), so if a structural append arms while it is in flight — a
+   * streamed row landing in the 1-2 flushes between the change and its
+   * bottom restore — the restore must stand down and let the armed
+   * spring glide the new row in. Writing the bottom would land the
+   * append instantly (bug-report-20260731T141600Z). Reader-initiated
+   * toggles keep the default instant restore: their contract is that
+   * the clicked delta never animates.
+   */
+  yieldToStructuralAppend?: boolean;
 }
 
 export interface TimelineWindowAnchorOperation {
@@ -203,13 +217,14 @@ export interface TimelineWindowAnchorOperation {
 export function withViewportBottomHeld(
   controller: PaneScrollController | null,
   change: () => void,
+  opts?: PreserveViewportBottomOptions,
 ): void {
   const hold = controller?.preserveViewportBottom;
   if (!hold) {
     change();
     return;
   }
-  hold.call(controller, change);
+  hold.call(controller, change, opts);
 }
 
 export interface ScrollToItemOptions {

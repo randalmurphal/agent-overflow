@@ -93,6 +93,14 @@ export interface ResolverState {
   /** setEscapedFromLock(true) requested the spring to stop. */
   springStopRequested: boolean;
   /**
+   * The structural-append one-shot window is open (spring.
+   * structuralAppendPending(): a wire append / reveal release armed
+   * within the last 250ms). The append's growth is owed a glide, so
+   * bottom-seeking instant writes must yield — see the anchor-redirect
+   * tier in resolveEngineCompensation.
+   */
+  structuralAppendPending: boolean;
+  /**
    * Bottom target captured when the spring sentinel was first entered,
    * rebased by the sampler for any clientHeight change since entry (so
    * comparing it against the current target compares CONTENT heights —
@@ -524,7 +532,17 @@ export function resolveEngineCompensation(
     obs.bottomTarget - obs.scrollTop <= AUTO_FOLLOW_BOTTOM_EPSILON_PX;
   const movesAwayFromBottom =
     obs.bottomTarget - obs.target > AUTO_FOLLOW_BOTTOM_EPSILON_PX;
-  if (domAlreadyPinned && movesAwayFromBottom) {
+  // The redirect keeps a pinned reader at the bottom through pure
+  // above-viewport corrections (estimate fixes, settled-height patches,
+  // sentinel-gap shrinks — springActive alone does NOT yield). But when
+  // the structural-append window is open, "the bottom" already includes
+  // a row whose arrival is owed a glide: an off-screen shrink landing in
+  // the same delivery as a tail append (auto-collapse release racing a
+  // tool-call arrival, bug-report-20260731T141600Z) would teleport the
+  // reader onto the new row and leave the armed spring with zero
+  // distance. Preserve the pre-append view instead; the arm's follow-up
+  // nudge glides the remainder to the bottom.
+  if (domAlreadyPinned && movesAwayFromBottom && !state.structuralAppendPending) {
     return { write: { caller: 'engine.anchorRedirect', value: obs.bottomTarget } };
   }
   return { write: { caller: 'engine.compensation', value: obs.target } };

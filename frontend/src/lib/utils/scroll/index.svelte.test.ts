@@ -2199,6 +2199,89 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
   });
 
+  // Regression bug-report-20260731T141600Z: the activity-run auto-collapse
+  // gate released an off-screen run in the same frame a tool-call append
+  // landed. The collapse (-67) outweighed the appended row (+27), the
+  // browser clamp put the pinned reader onto the new row, and every
+  // bottom-seeking write (anchor redirect, pause-release re-pin) confirmed
+  // that position — so the append's armed spring found zero distance and
+  // the row teleported in. With the structural-append window open, those
+  // writes yield: preserve the pre-append view, let the spring glide.
+  describe('structural-append yield on bottom-seeking writes', () => {
+    it('engine compensation preserves position over the redirect while an append is armed, then the nudge glides in', async () => {
+      liveContent = false;
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+      expect(geom.scrollTop).toBe(400); // pinned at bottom
+
+      // The append arms; merged with the off-screen collapse the net
+      // content delta is -40, and the browser clamps the pinned DOM to
+      // the new bottom before the engine's delivery arrives.
+      controller.markStructuralContentPending();
+      geom.scrollHeight = 960;
+      geom.contentHeight = 760;
+      geom.scrollTop = 360; // native clamp onto the new (append-containing) bottom
+      expect(controller.applyEngineCompensation({ kind: 'remeasure-above', delta: -66, target: 294 })).toBe(true);
+      // Position-preserving compensation (the pre-append view), not a
+      // redirect back to 360.
+      expect(geom.scrollTop).toBe(294);
+
+      // The arm's follow-up nudge hands the remaining 66px to the spring:
+      // the appended row glides into view.
+      controller.observe('live-content');
+      expect(geom.scrollTop).toBe(294); // no instant write
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(294);
+      expect(geom.scrollTop).toBeLessThan(360);
+      await advanceUntil(() => Math.abs(geom.scrollTop - 360) <= 1);
+    });
+
+    it('pause release with a pending structural append glides to the bottom instead of the instant re-pin', async () => {
+      liveContent = false;
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(geom.scrollTop).toBe(400);
+
+      const release = controller.pauseAutoScroll();
+      // An append lands during the lease (the auto-collapse transaction's
+      // window): arms the one-shot and grows the content.
+      controller.markStructuralContentPending();
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000); // lease defers any write
+      expect(geom.scrollTop).toBe(400);
+
+      release();
+      // Not the legacy instant write to 600 — the re-pin routes through
+      // the live-content path and springs the distance.
+      expect(geom.scrollTop).toBe(400);
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(600);
+      await advanceUntil(() => Math.abs(geom.scrollTop - 600) <= 1);
+    });
+
+    it('pause release without a pending append keeps the instant re-pin', async () => {
+      liveContent = false;
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      const release = controller.pauseAutoScroll();
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      expect(geom.scrollTop).toBe(400);
+
+      release();
+      // Layout-lease semantics unchanged: sticky users re-pin instantly.
+      expect(geom.scrollTop).toBe(600);
+    });
+  });
+
   describe('warm-up gate', () => {
     it('sync-pins (no spring) during the warm-up window even when mode=spring', async () => {
       const ro = getRO();
