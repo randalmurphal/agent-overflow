@@ -43,12 +43,6 @@ var controlResponsePrefix = []byte(`{"type":"control_response"`)
 // prefix gate routes them to a separate cleanup-only handler.
 var controlCancelRequestPrefix = []byte(`{"type":"control_cancel_request"`)
 
-var (
-	leafAssistantPrefix = []byte(`{"type":"assistant"`)
-	leafUserPrefix      = []byte(`{"type":"user"`)
-	leafResultPrefix    = []byte(`{"type":"result"`)
-)
-
 type controlRequestEnvelope struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
@@ -296,6 +290,9 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// priced even if the init envelope lands late. The init handler still
 	// overrides this when Claude echoes a different model (auto-reroute).
 	s.parser.SetModel(cfg.Model)
+	// ParseLine feeds the leaf tracker from its own decoded map so
+	// assistant/user/result lines aren't unmarshaled twice per line.
+	s.parser.leafTracker = s.leafTracker
 
 	go s.readLoop()
 
@@ -1179,9 +1176,8 @@ func (s *Session) readLoop() {
 			return
 		}
 
-		if s.leafTracker != nil && shouldTrackClaudeLeafLine(line) {
-			s.leafTracker.ingestLine(line)
-		}
+		// Leaf tracking happens inside s.parser.ParseLine below, off the
+		// same decoded map the parser builds — no separate unmarshal here.
 
 		// Gate control_request pre-handling on a byte-prefix check so
 		// every streaming text_delta line doesn't pay an extra
@@ -1287,12 +1283,6 @@ func (s *Session) verifyReplayParent(evt provider.ProviderEvent) {
 		return
 	}
 	s.emitReplayParentError(fmt.Sprintf("Claude attached the user message to transcript parent %s, expected %s", parentUUID, expectedParent))
-}
-
-func shouldTrackClaudeLeafLine(line []byte) bool {
-	return bytes.HasPrefix(line, leafAssistantPrefix) ||
-		bytes.HasPrefix(line, leafUserPrefix) ||
-		bytes.HasPrefix(line, leafResultPrefix)
 }
 
 func replayProviderIDs(meta json.RawMessage) (providerItemID, parentUUID string) {

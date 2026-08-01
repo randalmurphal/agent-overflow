@@ -318,24 +318,44 @@ func (p *Process) closeStdout() {
 // indefinitely when the subprocess writes a partial line and then sleeps
 // without emitting a newline.
 func (p *Process) readBoundedLine() ([]byte, error) {
+	// ReadSlice moves whole buffered chunks per call instead of the former
+	// per-byte ReadByte loop — the ingest path is serialized per session,
+	// so a 32 MB aggregated-output line used to stall every subsequent
+	// event behind ~32M per-byte iterations. Chunks returned by ReadSlice
+	// alias bufio's internal buffer and MUST be copied into buf: callers
+	// retain the returned line past the next read.
 	buf := make([]byte, 0, 4096)
 	for {
-		b, err := p.stdout.ReadByte()
-		if err != nil {
-			if err == io.EOF && len(buf) > 0 {
+		chunk, err := p.stdout.ReadSlice('\n')
+		switch err {
+		case nil:
+			buf = append(buf, chunk[:len(chunk)-1]...)
+			if len(buf) > maxLineSize {
+				return nil, fmt.Errorf("%w (cap=%d bytes)", ErrLineTooLong, maxLineSize)
+			}
+			return buf, nil
+		case bufio.ErrBufferFull:
+			// Chunk without a newline yet: accumulate and keep reading.
+			buf = append(buf, chunk...)
+			if len(buf) > maxLineSize {
+				return nil, fmt.Errorf("%w (cap=%d bytes)", ErrLineTooLong, maxLineSize)
+			}
+		case io.EOF:
+			buf = append(buf, chunk...)
+			if len(buf) > 0 {
+				if len(buf) > maxLineSize {
+					return nil, fmt.Errorf("%w (cap=%d bytes)", ErrLineTooLong, maxLineSize)
+				}
 				// Final line without trailing newline: preserve it, next
 				// call returns io.EOF.
 				return buf, nil
 			}
 			return nil, err
+		default:
+			// Non-EOF read error mid-line: discard the partial line, same
+			// as the previous per-byte loop.
+			return nil, err
 		}
-		if b == '\n' {
-			return buf, nil
-		}
-		if len(buf) >= maxLineSize {
-			return nil, fmt.Errorf("%w (cap=%d bytes)", ErrLineTooLong, maxLineSize)
-		}
-		buf = append(buf, b)
 	}
 }
 

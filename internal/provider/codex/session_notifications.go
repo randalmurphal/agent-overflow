@@ -48,16 +48,21 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 		return
 	}
 
-	s.dispatchRoutableNotification(method, params)
+	s.dispatchRoutableNotification(method, params, providerThreadID)
 }
 
 // dispatchRoutableNotification handles a root notification or a child
 // notification whose spawn ownership is already known. The outer dispatcher
 // is deliberately the only entry from raw JSON-RPC so foreign child threads
-// can never fall through to parent turn state.
-func (s *Session) dispatchRoutableNotification(method string, params json.RawMessage) {
+// can never fall through to parent turn state. providerThreadID is the
+// caller's already-derived route id — recomputed here only when
+// observeRawResponseItem may have rewritten params (rawResponseItem/completed
+// is the sole method it rewrites, see raw_tool_calls.go).
+func (s *Session) dispatchRoutableNotification(method string, params json.RawMessage, providerThreadID string) {
 	params = s.observeRawResponseItem(method, params)
-	providerThreadID := providerThreadIDFromParams(params)
+	if method == "rawResponseItem/completed" {
+		providerThreadID = providerThreadIDFromParams(params)
+	}
 	mappedChildThreadIDs := s.observeSubAgentActivityOwnership(method, params)
 	parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
 	if s.emitSubagentNotificationsFromRawMailboxCarrier(method, params, providerThreadID, parentToolUseID) {

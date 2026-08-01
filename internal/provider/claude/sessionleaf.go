@@ -72,6 +72,39 @@ func (t *claudeLeafTracker) ingestLine(line []byte) {
 	t.ingestRow(row)
 }
 
+// ingestRaw is the live-wire twin of ingestLine: it consumes the
+// top-level map Parser.ParseLine already decoded so the hot read loop
+// pays one json.Unmarshal per line instead of two. A field whose value
+// fails its typed decode skips the whole row, mirroring ingestLine's
+// whole-struct unmarshal failure.
+func (t *claudeLeafTracker) ingestRaw(msgType string, raw map[string]json.RawMessage) {
+	if t == nil {
+		return
+	}
+	row := claudeSessionRow{Type: msgType}
+	if !decodeRawField(raw, "uuid", &row.UUID) ||
+		!decodeRawField(raw, "parentUuid", &row.ParentUUID) ||
+		!decodeRawField(raw, "parent_tool_use_id", &row.ParentToolUseID) ||
+		!decodeRawField(raw, "isSidechain", &row.IsSidechain) {
+		return
+	}
+	if message, ok := raw["message"]; ok {
+		row.Message = message
+	}
+	t.ingestRow(row)
+}
+
+// decodeRawField unmarshals raw[key] into dst when the key is present.
+// Absent keys succeed (dst keeps its zero value, like struct decoding);
+// present-but-mistyped values fail.
+func decodeRawField[T any](raw map[string]json.RawMessage, key string, dst *T) bool {
+	value, ok := raw[key]
+	if !ok {
+		return true
+	}
+	return json.Unmarshal(value, dst) == nil
+}
+
 func (t *claudeLeafTracker) ingestRow(row claudeSessionRow) {
 	if t == nil {
 		return

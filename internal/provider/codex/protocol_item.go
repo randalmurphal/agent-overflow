@@ -102,28 +102,34 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 	case "item/completed":
 		return classifyItemCompleted(threadID, params, now), true
 
+	// The streaming delta cases below decode params ONCE into a raw map
+	// and read fields from it — they fire per chunk on the read-loop
+	// goroutine, where the former per-field readTopLevelString calls each
+	// paid a full map decode plus a copy of the delta payload.
 	case "item/agentMessage/delta":
-		delta := readTopLevelString(params, "delta")
+		fields := decodeTopLevel(params)
+		delta := readRawString(fields, "delta")
 		if delta == "" {
 			return nil, true
 		}
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventTextDelta,
 			ThreadID:  threadID,
-			TurnID:    readTopLevelString(params, "turnId"),
-			ItemID:    readTopLevelString(params, "itemId"),
+			TurnID:    readRawString(fields, "turnId"),
+			ItemID:    readRawString(fields, "itemId"),
 			Content:   delta,
 			Role:      "assistant",
 			Timestamp: now,
 		}}, true
 
 	case "item/commandExecution/outputDelta":
+		fields := decodeTopLevel(params)
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventCommandOutput,
 			ThreadID:  threadID,
-			TurnID:    readTopLevelString(params, "turnId"),
-			ItemID:    readTopLevelString(params, "itemId"),
-			Content:   readTopLevelString(params, "delta"),
+			TurnID:    readRawString(fields, "turnId"),
+			ItemID:    readRawString(fields, "itemId"),
+			Content:   readRawString(fields, "delta"),
 			Meta:      params,
 			Timestamp: now,
 		}}, true
@@ -154,12 +160,13 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 	// concatenated into the single row (`summaryPartAdded` below
 	// injects a paragraph break so sections stay readable).
 	case "item/reasoning/textDelta", "item/reasoning/summaryTextDelta":
-		delta := readTopLevelString(params, "delta")
+		fields := decodeTopLevel(params)
+		delta := readRawString(fields, "delta")
 		if delta == "" {
-			delta = readTopLevelString(params, "text")
+			delta = readRawString(fields, "text")
 		}
 		if delta == "" {
-			delta = readNestedString(params, "content", "text")
+			delta = readRawString(readRawObject(fields, "content"), "text")
 		}
 		if delta == "" {
 			return nil, true
@@ -167,8 +174,8 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventThinking,
 			ThreadID:  threadID,
-			TurnID:    readTopLevelString(params, "turnId"),
-			ItemID:    readTopLevelString(params, "itemId"),
+			TurnID:    readRawString(fields, "turnId"),
+			ItemID:    readRawString(fields, "itemId"),
 			Content:   delta,
 			Timestamp: now,
 		}}, true
@@ -178,11 +185,12 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 	// separate thoughts rather than one run-on blob — triage appends
 	// this onto the same streaming item like any other thinking delta.
 	case "item/reasoning/summaryPartAdded":
+		fields := decodeTopLevel(params)
 		return []provider.ProviderEvent{{
 			Kind:      provider.EventThinking,
 			ThreadID:  threadID,
-			TurnID:    readTopLevelString(params, "turnId"),
-			ItemID:    readTopLevelString(params, "itemId"),
+			TurnID:    readRawString(fields, "turnId"),
+			ItemID:    readRawString(fields, "itemId"),
 			Content:   "\n\n",
 			Timestamp: now,
 		}}, true

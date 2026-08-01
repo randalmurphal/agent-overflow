@@ -6,6 +6,19 @@ import (
 	"strings"
 )
 
+// decodeTopLevel decodes a JSON object into its top-level raw fields.
+// Returns nil on malformed input, which every readRaw* helper treats as
+// key-absent — the same "" / nil fallbacks the per-field readTopLevel*
+// helpers produce. Use it on hot paths that read several fields from
+// the same params blob so the map decode happens once.
+func decodeTopLevel(data json.RawMessage) map[string]json.RawMessage {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(data, &m) != nil {
+		return nil
+	}
+	return m
+}
+
 // readTopLevelString reads a string from the top level of a JSON object.
 func readTopLevelString(data json.RawMessage, key string) string {
 	var m map[string]json.RawMessage

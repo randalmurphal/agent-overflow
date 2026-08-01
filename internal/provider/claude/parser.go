@@ -183,6 +183,14 @@ type Parser struct {
 	// attributed to settled turns. Single lifecycle owner:
 	// takeTurnUsage via advanceAccountedCost.
 	usageAccountedCostUSD float64
+	// leafTracker, when set (Session wires its own tracker in), is fed
+	// every assistant/user/result line's already-decoded top-level map
+	// from ParseLine. Feeding it here instead of from the read loop
+	// avoids a second full json.Unmarshal of every prefix-matched line —
+	// ParseLine decodes the same map anyway. Matching on the decoded
+	// type field is the exact predicate the read loop's former
+	// byte-prefix gate approximated.
+	leafTracker *claudeLeafTracker
 }
 
 // MarkInterruptAcked flags that the CLI just acked an interrupt
@@ -309,6 +317,16 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 	var msgType string
 	if err := json.Unmarshal(raw["type"], &msgType); err != nil {
 		return nil, fmt.Errorf("missing or invalid type field: %w", err)
+	}
+
+	// p can be nil: session_test fixtures run readLoop against bare
+	// &Session{} literals, and nil-receiver ParseLine worked for their
+	// lines before this hook existed — keep that property.
+	if p != nil && p.leafTracker != nil {
+		switch msgType {
+		case "assistant", "user", "result":
+			p.leafTracker.ingestRaw(msgType, raw)
+		}
 	}
 
 	now := time.Now()

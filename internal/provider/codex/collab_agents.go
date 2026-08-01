@@ -611,13 +611,21 @@ func (s *Session) deleteUnownedAgentMeta(providerThreadID string) {
 }
 
 func providerThreadIDFromParams(params json.RawMessage) string {
-	if id := readTopLevelString(params, "threadId"); id != "" {
+	// One top-level decode serves all three key probes — this runs per
+	// notification on the read-loop goroutine, so the former three
+	// readTopLevelString calls paid three full map decodes each time the
+	// earlier keys were absent.
+	var m map[string]json.RawMessage
+	if json.Unmarshal(params, &m) != nil {
+		return ""
+	}
+	if id := readRawString(m, "threadId"); id != "" {
 		return id
 	}
-	if id := readTopLevelString(params, "conversationId"); id != "" {
+	if id := readRawString(m, "conversationId"); id != "" {
 		return id
 	}
-	return readNestedString(params, "thread", "id")
+	return readRawString(readRawObject(m, "thread"), "id")
 }
 
 func subagentThreadStartedAgentPath(params json.RawMessage) string {

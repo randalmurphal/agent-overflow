@@ -228,7 +228,7 @@ func TestStructuredOutputFromFinalAgentMessage(t *testing.T) {
 				},
 			}
 			session.setPendingTurnSchema(tt.schemaed)
-			session.dispatchRoutableNotification("turn/started", json.RawMessage(`{"threadId":"provider-thread","turn":{"id":"turn-1"}}`))
+			session.dispatchRoutableNotification("turn/started", json.RawMessage(`{"threadId":"provider-thread","turn":{"id":"turn-1"}}`), "provider-thread")
 			for i, message := range tt.messages {
 				params, err := json.Marshal(map[string]any{
 					"threadId": "provider-thread",
@@ -242,9 +242,9 @@ func TestStructuredOutputFromFinalAgentMessage(t *testing.T) {
 				if err != nil {
 					t.Fatalf("marshal item/completed fixture: %v", err)
 				}
-				session.dispatchRoutableNotification("item/completed", params)
+				session.dispatchRoutableNotification("item/completed", params, "provider-thread")
 			}
-			session.dispatchRoutableNotification("turn/completed", json.RawMessage(`{"threadId":"provider-thread","turn":{"id":"turn-1","status":"completed"}}`))
+			session.dispatchRoutableNotification("turn/completed", json.RawMessage(`{"threadId":"provider-thread","turn":{"id":"turn-1","status":"completed"}}`), "provider-thread")
 
 			if complete.Kind != provider.EventTurnComplete {
 				t.Fatal("turn completion event was not emitted")

@@ -3,6 +3,7 @@
 package provider
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -782,5 +783,121 @@ func TestReadLineManyUnderCap(t *testing.T) {
 		if len(line) != 500 {
 			t.Fatalf("line %d len = %d, want 500", i, len(line))
 		}
+	}
+}
+
+// boundedLineReader builds a Process whose stdout reader wraps the given
+// input with the same 64 KiB buffer Spawn configures. It exercises
+// readBoundedLine directly — no subprocess — so the byte-level contract
+// edges (cap boundary, EOF-with-partial-line, multi-chunk lines) are cheap
+// to pin.
+func boundedLineReader(input string) *Process {
+	return &Process{stdout: bufio.NewReaderSize(strings.NewReader(input), 64*1024)}
+}
+
+// TestReadBoundedLineExactCapSucceeds pins the boundary predicate: a line
+// whose content is exactly maxLineSize bytes must succeed; the error fires
+// only when content EXCEEDS the cap.
+func TestReadBoundedLineExactCapSucceeds(t *testing.T) {
+	content := strings.Repeat("a", maxLineSize)
+	p := boundedLineReader(content + "\n")
+
+	line, err := p.readBoundedLine()
+	if err != nil {
+		t.Fatalf("exact-cap line: %v", err)
+	}
+	if len(line) != maxLineSize {
+		t.Fatalf("line len = %d, want %d", len(line), maxLineSize)
+	}
+}
+
+// TestReadBoundedLineOneOverCapFails proves content of maxLineSize+1 trips
+// ErrLineTooLong even when the line is newline-terminated.
+func TestReadBoundedLineOneOverCapFails(t *testing.T) {
+	content := strings.Repeat("a", maxLineSize+1)
+	p := boundedLineReader(content + "\n")
+
+	_, err := p.readBoundedLine()
+	if !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("expected ErrLineTooLong, got %v", err)
+	}
+}
+
+// TestReadBoundedLineEOFPartialLine pins the EOF-with-partial-line contract:
+// a final line without a trailing newline is returned intact, and the NEXT
+// call reports io.EOF.
+func TestReadBoundedLineEOFPartialLine(t *testing.T) {
+	p := boundedLineReader("complete\npartial")
+
+	line, err := p.readBoundedLine()
+	if err != nil {
+		t.Fatalf("first line: %v", err)
+	}
+	if string(line) != "complete" {
+		t.Fatalf("first line = %q, want %q", line, "complete")
+	}
+
+	line, err = p.readBoundedLine()
+	if err != nil {
+		t.Fatalf("partial final line: %v", err)
+	}
+	if string(line) != "partial" {
+		t.Fatalf("partial line = %q, want %q", line, "partial")
+	}
+
+	if _, err := p.readBoundedLine(); err != io.EOF {
+		t.Fatalf("after partial line: err = %v, want io.EOF", err)
+	}
+}
+
+// TestReadBoundedLineEOFOnly proves a reader with no pending bytes returns
+// io.EOF and no line.
+func TestReadBoundedLineEOFOnly(t *testing.T) {
+	p := boundedLineReader("")
+	if _, err := p.readBoundedLine(); err != io.EOF {
+		t.Fatalf("empty input: err = %v, want io.EOF", err)
+	}
+}
+
+// TestReadBoundedLineSpansManyChunks pins byte-identity for a line that
+// spans several ReadSlice chunks (ErrBufferFull iterations): the assembled
+// line must match the input exactly, and the following line must still
+// parse.
+func TestReadBoundedLineSpansManyChunks(t *testing.T) {
+	// ~300 KiB spans five 64 KiB bufio chunks. Vary the content so a chunk
+	// stitched in the wrong order or with an off-by-one would not compare
+	// equal.
+	var b strings.Builder
+	for i := 0; b.Len() < 300*1024; i++ {
+		fmt.Fprintf(&b, "%d:", i)
+	}
+	long := b.String()
+	p := boundedLineReader(long + "\nnext\n")
+
+	line, err := p.readBoundedLine()
+	if err != nil {
+		t.Fatalf("long line: %v", err)
+	}
+	if string(line) != long {
+		t.Fatalf("long line mismatch: len %d vs %d", len(line), len(long))
+	}
+
+	next, err := p.readBoundedLine()
+	if err != nil {
+		t.Fatalf("next line: %v", err)
+	}
+	if string(next) != "next" {
+		t.Fatalf("next line = %q, want %q", next, "next")
+	}
+}
+
+// TestReadBoundedLineEOFPartialOverCap covers the overflow check on the EOF
+// branch: an unterminated final line larger than the cap must error, not be
+// returned as content.
+func TestReadBoundedLineEOFPartialOverCap(t *testing.T) {
+	p := boundedLineReader(strings.Repeat("a", maxLineSize+1))
+	_, err := p.readBoundedLine()
+	if !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("expected ErrLineTooLong, got %v", err)
 	}
 }
