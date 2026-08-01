@@ -9,43 +9,11 @@ import { RETAIN_ANIMATION_DURATION_MS } from './spring';
 import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../liveContentActivity';
 import { clearUiRenderTrace, getUiRenderTraceRecords, setUiRenderTraceEnabled } from '../uiRenderTrace';
 import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
-
-// happy-dom doesn't measure layout, so tests stub scrollHeight /
-// clientHeight / scrollTop on the scroll element via Object.defineProperty.
-// Tests then mutate the underlying numbers to simulate content growth,
-// composer height changes, viewport resizes, etc.
-interface Geometry {
-  scrollHeight: number;
-  clientHeight: number;
-  scrollTop: number;
-  contentHeight: number;
-}
-
-interface StubGeometryOptions {
-  setScrollTop?: (value: number, geom: Geometry) => void;
-}
-
-function stubGeometry(
-  scrollEl: HTMLElement,
-  contentEl: HTMLElement,
-  geom: Geometry,
-  options: StubGeometryOptions = {},
-): void {
-  Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => geom.scrollHeight });
-  Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => geom.clientHeight });
-  Object.defineProperty(scrollEl, 'scrollTop', {
-    configurable: true,
-    get: () => geom.scrollTop,
-    set: (v: number) => {
-      if (options.setScrollTop) {
-        options.setScrollTop(v, geom);
-        return;
-      }
-      geom.scrollTop = Math.max(0, Math.min(v, geom.scrollHeight - geom.clientHeight));
-    },
-  });
-  Object.defineProperty(contentEl, 'scrollHeight', { configurable: true, get: () => geom.contentHeight });
-}
+import {
+  MockResizeObserver,
+  stubGeometry,
+  type Geometry,
+} from './testGeometry';
 
 // Stub the geometry that `handlePointerDown` reads to classify a
 // pointerdown as "in the scrollbar gutter": offsetWidth (200) wider
@@ -59,38 +27,6 @@ function stubScrollbarGutter(scrollEl: HTMLElement): void {
     x: 0, y: 0, top: 0, left: 0, right: 200, bottom: 600,
     width: 200, height: 600, toJSON: () => ({}),
   } as DOMRect);
-}
-
-class MockResizeObserver {
-  static instances: MockResizeObserver[] = [];
-  callback: ResizeObserverCallback;
-  observed: Element[] = [];
-  constructor(cb: ResizeObserverCallback) {
-    this.callback = cb;
-    MockResizeObserver.instances.push(this);
-  }
-  observe(el: Element): void {
-    this.observed.push(el);
-  }
-  unobserve(): void {}
-  disconnect(): void {
-    this.observed = [];
-  }
-  /** Fire the callback synchronously with a single entry for the given element, height, and optional width. */
-  fire(el: Element, height: number, width = 0): void {
-    this.callback(
-      [
-        {
-          target: el,
-          contentRect: { height, width, top: 0, left: 0, right: width, bottom: height, x: 0, y: 0, toJSON: () => ({}) } as DOMRectReadOnly,
-          borderBoxSize: [],
-          contentBoxSize: [],
-          devicePixelContentBoxSize: [],
-        } as ResizeObserverEntry,
-      ],
-      this as unknown as ResizeObserver,
-    );
-  }
 }
 
 // rAF frames advance performance.now in 16.67ms steps so the

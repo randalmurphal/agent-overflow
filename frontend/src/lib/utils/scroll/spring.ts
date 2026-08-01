@@ -39,7 +39,10 @@ const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
 // spring. The faster streaming-follow spring uses three steps to preserve
 // the same bounded-burst behavior; anything
 // longer is absorbed by subsequent frames and the arrival snap.
-const SPRING_MAX_CATCHUP_STEPS = 3;
+// Exported for the interleaving invariant suite
+// (scrollInterleavings.test.ts), which holds every non-snap frame to
+// the bounded step these two imply.
+export const SPRING_MAX_CATCHUP_STEPS = 3;
 // Keep chasing for this long after the last positive grow event. Without
 // this, the spring would consider itself "arrived" between streaming
 // chunks and stop, then have to spin up again on the next chunk —
@@ -110,7 +113,7 @@ const SPRING_CARRY_VELOCITY_CEILING = 4;
 // deliberately exceeds this cap: it is a bounded burst, and the
 // viewport trailing it at cap speed then closing the gap is intended
 // catch-up motion, not broken follow.
-const SPRING_MAX_VELOCITY_PX_PER_FRAME = 27;
+export const SPRING_MAX_VELOCITY_PX_PER_FRAME = 27;
 // Bound on how far a RESUMED chase may animate, in viewports. When a
 // tick finds the target more than one viewport away AND one of the
 // discontinuity signals below says rendering genuinely paused, the

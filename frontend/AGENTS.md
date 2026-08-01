@@ -207,7 +207,9 @@ Component behavior: add a component test when changing rendering or
 interaction. Scroll behavior has dedicated coverage in
 `src/lib/utils/scroll/index.svelte.test.ts` (controller
 choreography), `src/lib/utils/scroll/resolver.test.ts` (the pure
-decision core, exhaustive over its state × observation matrix), and
+decision core, exhaustive over its state × observation matrix),
+`src/lib/utils/scroll/scrollInterleavings.test.ts` (viewport ops ×
+starting states, frame-level physics invariants across the drain), and
 `src/lib/components/chat/scroll.test.ts`.
 
 `pnpm run check` and `pnpm run build` are blockers. `pnpm test` is the

@@ -1222,7 +1222,13 @@ Do not fix scroll regressions by adding `requestAnimationFrame`, a second
 observer, a length-watching `$effect`, or another `scrollTop` writer.
 Encode the failing ResizeObserver/geometry sequence in
 `scroll/index.svelte.test.ts` or `scroll.test.ts`, then fix the
-controller path.
+controller path. If the regression is two mechanisms interacting (a
+write landing inside another program's trip), add the missing op or
+starting state to `scroll/scrollInterleavings.test.ts` instead — its
+ops × states product holds the frame invariants (bounded motion, no
+counter-chase movement, escaped viewports never move, quiet
+convergence) across every combination, so the whole defect class stays
+covered, not just the reported instance.
 
 ## Accepted Tradeoffs
 

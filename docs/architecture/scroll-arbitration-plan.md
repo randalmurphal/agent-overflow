@@ -1,10 +1,8 @@
 # Scroll Arbitration Plan
 
-Status: **in progress** (2026-08-01). This is the working design for
-finishing the scroll system's centralization. When the migration ships,
-the durable rules fold into
-[`frontend-scroll.md`](frontend-scroll.md) and this file becomes the
-rationale record, like
+Status: **shipped** (2026-08-01, all five sequencing items). The
+durable rules live in [`frontend-scroll.md`](frontend-scroll.md); this
+file is the rationale record, like
 [`scroll-rearchitecture-plan.md`](scroll-rearchitecture-plan.md) before
 it.
 
@@ -221,10 +219,27 @@ failing test before it is a bug report.
    require `sentinelClampWitnessed` (latched per sentinel session);
    `invalidateSentinelBaseline` and its head-splice call site deleted.
 4. Interleaving suite lands alongside 2 and 3 as their safety net;
-   scenario browser tests keep covering real-layout behavior.
+   scenario browser tests keep covering real-layout behavior. **Shipped**
+   (2026-08-01): `scroll/scrollInterleavings.test.ts` — 10 viewport ops
+   × 5 starting states on the shared `testGeometry.ts` scaffolding.
+   Op-time check: a system op that begins mid-glide may not author a
+   write that lands at the bottom target (trace-attributed, so native
+   clamps don't false-positive). Per drained frame: escaped viewports
+   never move; motion is bounded by the spring's step envelope; sticky
+   motion never runs counter to the chase; recovery snaps are forbidden
+   outside the op that created their clamp evidence. Then quiet
+   convergence: arrive at the bottom, liveness dies, the sentinel exits,
+   and 20 frames of absolute stillness prove no residual writer. Both
+   incident classes were mutation-tested: reverting the release repin to
+   a direct write fails the three mid-glide lease cases, and removing
+   the clamp witness from the sentinel guard fails the head-splice and
+   composer cases from sentinel-idle.
 5. Fold the shipped rules into `frontend-scroll.md`; update
    `chat/AGENTS.md` operational rules (the auto-collapse section's
-   stand-down description moves to the scheduler).
+   stand-down description moves to the scheduler). **Shipped**
+   incrementally with 1–3: each phase folded its durable rules into
+   `frontend-scroll.md` (§Intent And Programmatic Writes, §Live Window
+   Bounds, §Run Height Changes) and `chat/AGENTS.md` as it landed.
 
 Each step leaves `make check` + both test suites green and is
 independently revertable.
