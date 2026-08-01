@@ -60,6 +60,15 @@ const FOCUSABLE_SELECTOR = [
 // dismissed).
 const trapStack: FocusTrapInstance[] = [];
 
+/**
+ * True while any focus trap is mounted. Modal-ish surfaces own the keyboard
+ * outright, so opt-in global typing affordances (type-to-focus) must stand
+ * down even when the trapped surface isn't reflected in command-context flags.
+ */
+export function hasActiveFocusTrap(): boolean {
+  return trapStack.length > 0;
+}
+
 interface FocusTrapInstance {
   node: HTMLElement;
   previousFocus: Element | null;

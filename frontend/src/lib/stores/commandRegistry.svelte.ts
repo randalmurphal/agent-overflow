@@ -55,6 +55,10 @@ export interface CommandFlags {
    * composer toolbar menu, etc.) is open. Gates the mod+/ in-picker
    * input toggle. */
   anyPickerOpen: boolean;
+  /** True while the workflows overlay is mounted over the pane strip. */
+  workflowsOverlayOpen: boolean;
+  /** True while the workflows overlay is showing a run detail level. */
+  workflowsRunDetail: boolean;
   /** Extra identifiers callers want to expose to `when` expressions. */
   [key: string]: boolean;
 }

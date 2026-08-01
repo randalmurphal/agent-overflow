@@ -40,7 +40,13 @@ export function focusPaneComposer(paneId: string): boolean {
   return true;
 }
 
-function findPaneComposer(paneId: string): HTMLTextAreaElement | null {
+/**
+ * Locate the named pane's composer textarea, or null when it is missing
+ * (discussion-mode pane, companion pane) or disabled (blocking prompt,
+ * !canCompose). Exported for type-to-focus, which needs the node itself
+ * to pair focus with caret-at-end.
+ */
+export function findPaneComposer(paneId: string): HTMLTextAreaElement | null {
   if (typeof document === 'undefined') return null;
   const escape = (window as unknown as { CSS?: { escape?: (s: string) => string } }).CSS?.escape;
   const selector = escape ? `[data-pane-id="${escape(paneId)}"]` : `[data-pane-id="${paneId}"]`;

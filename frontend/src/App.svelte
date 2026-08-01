@@ -30,6 +30,7 @@
   import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import PaneHost from './lib/components/panes/PaneHost.svelte';
+  import { redirectTypingToFocusedComposer } from './lib/components/panes/typeToFocusComposer';
   import LazyOverlay from './lib/components/primitives/LazyOverlay.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
   import TransportStatusBanner from './lib/components/shared/TransportStatusBanner.svelte';
@@ -204,7 +205,15 @@
     // Non-editable target: word-op fallback is a no-op (its own
     // editableTarget gate returns null), so go straight to dispatch.
     const handled = dispatchKey(ev, ctx);
-    if (handled) ev.preventDefault();
+    if (handled) {
+      ev.preventDefault();
+      return;
+    }
+    // Unclaimed bare printable key: type-to-focus the focused chat pane's
+    // composer. Strictly last so every keybinding — current and future
+    // user-configured bare-key chords — wins ahead of it; the helper itself
+    // fail-closes on overlays, prompts, traps, and claimed focus.
+    redirectTypingToFocusedComposer(ev, ctx.flags);
   }
 
   function requestRenameForThread(thread: Thread): void {
