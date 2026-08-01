@@ -65,6 +65,19 @@ func decodeBackgroundTaskNotificationMeta(raw json.RawMessage) backgroundTaskNot
 //
 // The notification row write itself is unconditional and matches the
 // previous flow (loading → loaded / error transitions on output_file).
+//
+// The stash drain runs BEFORE the notification row persists, and the
+// order is user-visible: the frontend hides this notification row (the
+// agent's full report text) only once a completed lifecycle row with
+// the same task_id exists (filterRedundantNotifications), and a
+// backgrounded launch is deliberately held at `running` until the
+// sibling lands. Notification-first meant one wire flush where the
+// report mounted as a full-width timeline row and then vanished when
+// the sibling arrived — a multi-thousand-pixel content flash and
+// scroll clamp at the tail (bug-report-20260801T024731Z). Sibling-first
+// turns case 1 into case 2 on the frontend: the notification arrives
+// already suppressed, and the enrichment calls attach the output-file
+// payload onto the just-written sibling.
 func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) error {
 	meta := decodeBackgroundTaskNotificationMeta(evt.Meta)
 	if meta.TaskID == "" {
@@ -103,8 +116,13 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		return r.drainTaskNotificationStash(evt, meta, launch)
 	}
 
+	// Sibling first — see the ordering note in the function comment.
+	if err := r.drainTaskNotificationStash(evt, meta, launch); err != nil {
+		return err
+	}
+
 	now := eventTimestampMillis(evt)
-	turnIndex, err := r.notificationTurnIndex(evt.ThreadID, launch, found)
+	turnIndex, err := r.backgroundCompletionTurnIndex(evt.ThreadID, launch.TurnIndex)
 	if err != nil {
 		log.Printf("triage: task notification turn index %s: %v", meta.TaskID, err)
 	}
@@ -117,15 +135,11 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		Role:      "system",
 		Status:    statusCompleted,
 		Summary:   stringsxFirst(evt.Content, "Background task notification"),
+		ParentID:  stringsxFirst(launch.ParentID, eventParentID(evt), meta.ParentToolUseID),
+		ToolName:  launch.ToolName,
 		CreatedAt: now,
 		UpdatedAt: now,
 		Meta:      backgroundNotificationItemMeta(meta, "ready", ""),
-	}
-	if found {
-		notification.ParentID = stringsxFirst(launch.ParentID, eventParentID(evt), meta.ParentToolUseID)
-		notification.ToolName = launch.ToolName
-	} else {
-		notification.ParentID = stringsxFirst(eventParentID(evt), meta.ParentToolUseID)
 	}
 	if persisted, ok, err := r.store.GetThreadItem(evt.ThreadID, notification.ID); err != nil {
 		return fmt.Errorf("task notification existing lookup %s: %w", notification.ID, err)
@@ -150,11 +164,11 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		if err := r.maybeDeferOrPersist(evt.ThreadID, notification, nil); err != nil {
 			return err
 		}
-		if err := r.enrichExistingBackgroundCompletionFromNotification(evt, launch, found, meta, nil, "loading", ""); err != nil {
+		if err := r.enrichExistingBackgroundCompletionFromNotification(evt, launch, meta, nil, "loading", ""); err != nil {
 			return err
 		}
 
-		payload, readErr := buildBackgroundOutputFilePayload(payloadIDForBackgroundOutput(launch, found, meta), launch, meta.OutputFile, nil, now)
+		payload, readErr := buildBackgroundOutputFilePayload("tool-call-result:"+launch.ID, launch, meta.OutputFile, nil, now)
 		if readErr != nil {
 			outputState = "error"
 			readErrorString = readErr.Error()
@@ -177,18 +191,16 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		}
 	}
 
-	if err := r.enrichExistingBackgroundCompletionFromNotification(evt, launch, found, meta, notificationPayload, outputState, readErrorString); err != nil {
-		return err
-	}
-
-	return r.drainTaskNotificationStash(evt, meta, launch)
+	return r.enrichExistingBackgroundCompletionFromNotification(evt, launch, meta, notificationPayload, outputState, readErrorString)
 }
 
 // drainTaskNotificationStash drains the pending-background-terminal
 // stash for the notification's task_id and, if one was waiting, writes
 // the `tool_completion` sibling at the current write head. Extracted
-// so both the backgrounded-tool path (post notification-row write) and
-// the foreground-tool skip path (no row write) share the load-bearing
+// so both the backgrounded-tool path (pre notification-row write — the
+// sibling must reach the frontend first, see
+// handleBackgroundTaskNotification's ordering note) and the
+// foreground-tool skip path (no row write) share the load-bearing
 // drain logic. A foreground stash is pathological today but the drain
 // is idempotent on absence — safe to invoke either way.
 func (r *Router) drainTaskNotificationStash(evt provider.ProviderEvent, meta backgroundTaskNotificationMeta, launch store.Item) error {
@@ -228,18 +240,17 @@ func terminalMetaFromNotification(meta backgroundTaskNotificationMeta) backgroun
 	}
 }
 
+// The caller guarantees launch is a resolved backgrounded tool_call
+// (handleBackgroundTaskNotification's gates); a missing sibling row is
+// the no-op path.
 func (r *Router) enrichExistingBackgroundCompletionFromNotification(
 	evt provider.ProviderEvent,
 	launch store.Item,
-	found bool,
 	meta backgroundTaskNotificationMeta,
 	payload *store.Payload,
 	outputState string,
 	readError string,
 ) error {
-	if !found || launch.Kind != itemKindToolCall {
-		return nil
-	}
 	completionID := nextToolCompletionID(launch.ID)
 	completion, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID)
 	if err != nil {
@@ -281,16 +292,6 @@ func (r *Router) resolveBackgroundTaskLaunch(threadID, eventItemIDValue, toolUse
 		return store.Item{}, false, fmt.Errorf("background task launch task_id lookup %s: %w", taskID, err)
 	}
 	return launch, found, nil
-}
-
-func (r *Router) notificationTurnIndex(threadID string, launch store.Item, found bool) (int, error) {
-	if found {
-		return r.backgroundCompletionTurnIndex(threadID, launch.TurnIndex)
-	}
-	if turnIndex, ok := r.openTurnIndex(threadID); ok {
-		return turnIndex, nil
-	}
-	return r.store.LastTurnIndex(threadID)
 }
 
 func (r *Router) findTaskNotificationItem(threadID, taskID string) (store.Item, bool, error) {
@@ -545,16 +546,6 @@ func pathWithinRoot(path, root string) bool {
 		return true
 	}
 	return strings.HasPrefix(path, root+string(os.PathSeparator))
-}
-
-func payloadIDForBackgroundOutput(launch store.Item, found bool, meta backgroundTaskNotificationMeta) string {
-	if found && launch.ID != "" {
-		return "tool-call-result:" + launch.ID
-	}
-	if meta.ToolUseID != "" {
-		return "tool-call-result:" + meta.ToolUseID
-	}
-	return "task-output-file:" + meta.TaskID
 }
 
 func nextTaskNotificationID(taskID string) string {

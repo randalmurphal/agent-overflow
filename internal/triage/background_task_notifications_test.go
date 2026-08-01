@@ -266,8 +266,9 @@ func TestBackgroundTaskNotification_StashedTerminalThenNotificationWritesSibling
 
 	// 2. Synthetic XML echo arrives (the parser fix promotes the
 	// isReplay envelope to this EventBackgroundTaskNotification).
-	// The handler must: write notification row, drain stash, write
-	// tool_completion sibling.
+	// The handler must: drain stash, write tool_completion sibling,
+	// then write the notification row (sibling-first — see
+	// TestBackgroundTaskNotification_SiblingEmitsBeforeNotificationRow).
 	notificationMeta, _ := json.Marshal(map[string]any{
 		"task_id":     "task-bg-subagent-1",
 		"tool_use_id": "bg-subagent",
@@ -339,6 +340,115 @@ func TestBackgroundTaskNotification_StashedTerminalThenNotificationWritesSibling
 	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
 	if len(notifications) != 1 {
 		t.Fatalf("expected 1 notification row alongside the sibling, got %d", len(notifications))
+	}
+}
+
+// TestBackgroundTaskNotification_SiblingEmitsBeforeNotificationRow pins
+// the wire ORDER of the two rows the stash-drain path writes. The
+// frontend hides the notification row (whose summary is the agent's
+// full report text) only once a completed lifecycle row with the same
+// task_id exists (filterRedundantNotifications), and a backgrounded
+// launch is deliberately held at `running` until the sibling lands — so
+// a notification-first emission renders the entire report as a
+// full-width timeline row for one flush and then rips it back out when
+// the sibling arrives, clamping the reader's scroll position
+// (bug-report-20260801T024731Z). The `tool_completion` sibling upsert
+// must reach the frontend before the notification row's first upsert.
+func TestBackgroundTaskNotification_SiblingEmitsBeforeNotificationRow(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Agent",
+		"is_background": true,
+		"input": map[string]any{
+			"description":       "Background audit",
+			"prompt":            "audit then report",
+			"run_in_background": true,
+		},
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "bg-subagent",
+		ItemType:  "Agent",
+		Meta:      startMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	taskStartedMeta, _ := json.Marshal(map[string]any{
+		"task_id": "task-bg-subagent-1",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventToolStart,
+		ThreadID:  "t1",
+		ItemID:    "bg-subagent",
+		Meta:      taskStartedMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_started meta-update: %v", err)
+	}
+	stashMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-bg-subagent-1",
+		"tool_use_id": "bg-subagent",
+		"status":      "completed",
+		"source":      "task_updated",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskTerminal,
+		ThreadID:  "t1",
+		Meta:      stashMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_updated stash: %v", err)
+	}
+
+	emissions.reset()
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id":     "task-bg-subagent-1",
+		"tool_use_id": "bg-subagent",
+		"status":      "completed",
+		"source":      "task_notification",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventBackgroundTaskNotification,
+		ThreadID:  "t1",
+		ItemID:    "bg-subagent",
+		Meta:      notificationMeta,
+		Content:   `Agent "Background audit" completed: <several thousand pixels of final report>`,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("task_notification: %v", err)
+	}
+
+	snapshot := emissions.snapshot()
+	firstUpsertIndex := func(itemID string) int {
+		for i, e := range snapshot {
+			if e.eventName != "provider:item_event" {
+				continue
+			}
+			ev, ok := e.data.(ItemStreamEvent)
+			if !ok || ev.Action != itemStreamActionUpsert {
+				continue
+			}
+			if ev.Item != nil && ev.Item.ID == itemID {
+				return i
+			}
+		}
+		return -1
+	}
+	siblingIdx := firstUpsertIndex(nextToolCompletionID("bg-subagent"))
+	notificationIdx := firstUpsertIndex(nextTaskNotificationID("task-bg-subagent-1"))
+	if siblingIdx < 0 {
+		t.Fatalf("no upsert emission for the tool_completion sibling (emissions: %+v)", snapshot)
+	}
+	if notificationIdx < 0 {
+		t.Fatalf("no upsert emission for the notification row (emissions: %+v)", snapshot)
+	}
+	if siblingIdx > notificationIdx {
+		t.Fatalf("sibling upsert emitted at index %d AFTER notification row at %d — the notification renders unsuppressed for a flush (the report-flash bug)", siblingIdx, notificationIdx)
 	}
 }
 

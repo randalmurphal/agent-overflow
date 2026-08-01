@@ -261,7 +261,14 @@ Implementation:
    is safe because `ListLiveBackgroundTasks` never surfaces a
    foreground launch in the first place. After a real backgrounded
    drain, the tray surfaces both rows joined together until they age
-   out via retention.
+   out via retention. When the `task_notification` event itself performs
+   the drain, the sibling is written — and reaches the wire — **before**
+   the notification row: the frontend hides the report-bearing
+   notification row only once a completed lifecycle row with the same
+   `task_id` exists (`notificationFilter.ts`), so notification-first
+   emission flashed the agent's full report into the timeline for one
+   flush and yanked it back out on the next
+   (bug-report-20260801T024731Z).
 3. **`task_updated` with `status="killed"`** is a deliberate carve-out:
    the `killed` status is only reached via the user's explicit
    `stop_task` (the StopClaudeTask binding behind the tray's Stop
