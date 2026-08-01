@@ -160,7 +160,7 @@ func (m *Manager) Subscribe(cwd string) (*Subscription, error) {
 	// a boundary change (.gitignore edit, new directory beside a pruned
 	// subtree) yields roots in exactly the shape the initial install used.
 	rootsFn := func() ([]gitops.WatchRoot, error) { return m.watchRoots(canon) }
-	w := newWorkspaceWatcher(canon, m.statusFn, initial, watchRoots, rootsFn)
+	w := newWorkspaceWatcher(canon, m.statusFn, m.fastStatusFn, initial, watchRoots, rootsFn)
 	w.start(m.installFn)
 	m.watchers[canon] = w
 	sub := w.addSubscriber(initial)
