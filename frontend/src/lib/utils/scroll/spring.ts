@@ -424,6 +424,21 @@ export interface SpringChase {
    * compares content heights; -1 = not in sentinel.
    */
   sentinelTarget(): number;
+  /**
+   * An authored controller write displaced scrollTop away from the
+   * sentinel-entry target while the content height stayed put (a
+   * head-splice engine compensation: a tail-following window's head
+   * advance holds the incoming row's viewport position, then the
+   * growth it hides is owed a GLIDE back to the bottom). The sentinel
+   * baseline no longer proves a browser clamp — without this, the
+   * oscillation guard read the displacement as a content
+   * dip-and-restore (diff > 0, target === entry) and snapped the new
+   * row in (bug-report-20260801T213259Z: think → bash inside a run
+   * clip). Clearing is safe: the baseline re-arms on the next sentinel
+   * arrival tick, so both snap-recovery sites stay armed for genuine
+   * clamps.
+   */
+  invalidateSentinelBaseline(): void;
 }
 
 export function createSpringChase(deps: SpringChaseDeps): SpringChase {
@@ -1070,6 +1085,9 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const el = deps.getScrollEl();
       if (!el) return sentinelEntryTarget;
       return rebasedSentinelEntryTarget(el.clientHeight);
+    },
+    invalidateSentinelBaseline: () => {
+      sentinelEntryTarget = -1;
     },
   };
 }

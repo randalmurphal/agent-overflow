@@ -557,8 +557,17 @@ The resolver's decision order (each tier's regression provenance is
 documented at the function):
 
 - **head-splice pass** — head mutations (load-older prepend, paged
-  head-drop prune) apply verbatim: the engine's offset math is exact and
-  the anchor must hold.
+  head-drop prune, a tail-following run clip's window advance) apply
+  verbatim: the engine's offset math is exact and the anchor must hold.
+  The applied write also drops the spring's sentinel-entry baseline: a
+  head splice displaces `scrollTop` with the content height — and so the
+  bottom target — unchanged, which is byte-for-byte the shape the
+  sentinel's oscillation guard reads as a browser clamp after a content
+  dip-and-restore. Without the invalidation the guard snapped the
+  splice's stated growth in instead of gliding it
+  (bug-report-20260801T213259Z — think → bash inside a run clip); the
+  baseline re-arms on the next sentinel arrival, so genuine clamp
+  recovery stays armed.
 - **reading pass** — not warm, not at bottom, escaped, or paused: the
   compensation lands unchanged (mount cascades, mid-thread reading).
   Above-viewport visual stability is the whole point; suppressing these

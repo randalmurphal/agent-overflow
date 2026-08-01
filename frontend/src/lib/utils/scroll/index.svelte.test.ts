@@ -6080,6 +6080,61 @@ describe('createUseStickToBottomController — spring chase', () => {
       });
     });
 
+    describe('head-splice compensation during sentinel — authored displacement glides', () => {
+      // A tail-following activity-run clip (or the paged timeline)
+      // advances its mount window when a row is appended: the incoming
+      // head row's viewport position is held by a head-splice engine
+      // compensation (scrollTop -= headDelta) with the TOTAL content
+      // height — and so the bottom target — unchanged, and the growth
+      // the splice hides is then owed a GLIDE back to the bottom
+      // (ActivityRun.svelte's hold + markStructuralContentPending pair).
+      // To the sentinel's oscillation guard that displacement is
+      // indistinguishable from a browser clamp after a dip-restore
+      // (diff > 0, target === sentinel entry), so it snapped the new
+      // row in instead of gliding — bug-report-20260801T213259Z
+      // (think → bash inside a run clip). The compensation now drops
+      // the sentinel baseline, and the baseline re-arms on the next
+      // arrival so genuine clamp recovery is preserved.
+      it('glides the splice remainder back to the bottom instead of snapping, then still snap-recovers a real oscillation', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        // Arrive at 500 and enter the sentinel.
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900);
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 520) await nextFrame(); // past retain → sentinel
+
+        // Head splice: a row dropped off the window head as another
+        // appended — total height unchanged (target still 500), the
+        // anchor-hold write displaces scrollTop 500 → 474.
+        expect(controller.applyEngineCompensation({ kind: 'head-splice', delta: -26, target: 474 })).toBe(true);
+        expect(geom.scrollTop).toBe(474);
+
+        // The stated growth glides in: intermediate frames interpolate
+        // 474 → 500 rather than one instant oscillationSnap write.
+        await nextFrame();
+        expect(geom.scrollTop).toBeGreaterThan(474);
+        expect(geom.scrollTop).toBeLessThan(500);
+        await advanceUntil(() => geom.scrollTop === 500);
+
+        // Transition coverage: re-arrival re-arms the sentinel baseline,
+        // so a GENUINE dip-and-restore afterwards still snap-recovers
+        // synchronously in the regrow's contentRO callback.
+        for (let i = 0; i < 5; i++) await nextFrame(); // sentinel re-entry
+        geom.scrollHeight = 995;
+        geom.contentHeight = 795;
+        geom.scrollTop = 395; // native clamp during the low point
+        ro.fire(contentEl, 795); // dip −105
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900); // restore +105, target back to 500
+        expect(geom.scrollTop).toBe(500); // snapped, no frame awaited
+      });
+    });
+
     it('spring stays sentinel-alive during streaming when arrived past the retain window — negative deltas defer to the chase', async () => {
       // The inter-chunk dead-zone bug: spring arrives, 350ms pass with
       // no new content (async shiki load, parseIncompleteMarkdown

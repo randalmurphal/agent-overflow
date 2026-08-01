@@ -706,6 +706,15 @@ export function createUseStickToBottomController(
       pauseDepth,
     }));
     writeScrollTop(decision.write.caller, decision.write.value);
+    // A head splice displaces scrollTop with the content height (and so
+    // the bottom target) unchanged — the exact shape the sentinel's
+    // oscillation guard reads as a browser clamp after a dip-restore.
+    // This displacement is authored and its remainder is owed a glide
+    // (the splice's stated growth), so drop the sentinel baseline; it
+    // re-arms on the next arrival. Remeasure-above compensations shift
+    // scrollTop and target together and keep their baseline — the
+    // dip-restore snap recovery depends on it.
+    if (compensation.kind === 'head-splice') spring.invalidateSentinelBaseline();
     return true;
   }
 
