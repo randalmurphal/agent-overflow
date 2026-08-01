@@ -113,7 +113,11 @@ const (
 
 // batchEventEntry is one event inside a batch frame. It carries the
 // subset of Event fields the client needs to dispatch: channel, seq,
-// data, and the gap flag.
+// data, and the gap flag. Since batch frames are spliced from
+// pre-encoded event envelopes (spliceBatchFrame), each entry on the
+// wire additionally carries an inert `"type":"event"` field that every
+// consumer ignores; this struct remains the consumer-side parse shape
+// (tests and the wsllauncher notification client decode through it).
 type batchEventEntry struct {
 	Channel string          `json:"channel"`
 	Seq     uint64          `json:"seq"`
@@ -124,8 +128,14 @@ type batchEventEntry struct {
 // batchFrame is the server-side envelope for coalesced event delivery.
 // Produced by the per-connection coalescing writer whenever a flush
 // window holds more than one event; single-event windows ship as plain
-// "event" frames. Wire shape: {"type":"batch","events":[...]}.
+// "event" frames. Wire shape: {"type":"batch","events":[...]},
+// assembled by spliceBatchFrame from per-event WireBytes rather than
+// marshalled through this struct.
 type batchFrame struct {
 	Type   string            `json:"type"`
 	Events []batchEventEntry `json:"events"`
 }
+
+// batchFramePrefix is the fixed opening of a spliced batch frame; the
+// splice appends comma-joined event envelopes and closes with "]}".
+const batchFramePrefix = `{"type":"` + frameTypeBatch + `","events":[`

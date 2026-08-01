@@ -2,6 +2,7 @@ package transport
 
 import (
 	"encoding/json"
+	"strconv"
 	"sync"
 	"sync/atomic"
 )
@@ -68,14 +69,53 @@ type ring struct {
 	seq      uint64
 	capacity int
 	backing  []Event
+	// envPrefix is the fixed leading portion of every live event
+	// envelope on this channel: `{"type":"event","channel":<escaped>,"seq":`.
+	// Cached so Emit can assemble WireBytes with plain appends under the
+	// bus mutex instead of a reflection marshal (see appendEventWire).
+	envPrefix []byte
 }
 
 // ringInitialCapacity is the first backing allocation for a non-empty
 // ring. Small on purpose: quiet channels stay small forever.
 const ringInitialCapacity = 16
 
-func newRing(capacity int) *ring {
-	return &ring{capacity: capacity}
+func newRing(channel string, capacity int) *ring {
+	// json.Marshal of a string cannot fail (invalid UTF-8 is replaced),
+	// and matches exactly how the reflection encoder renders the
+	// ServerFrame Channel field, HTML escaping included.
+	name, _ := json.Marshal(channel)
+	prefix := make([]byte, 0, len(eventFramePrefix)+len(name)+len(eventSeqKey))
+	prefix = append(prefix, eventFramePrefix...)
+	prefix = append(prefix, name...)
+	prefix = append(prefix, eventSeqKey...)
+	return &ring{capacity: capacity, envPrefix: prefix}
+}
+
+const (
+	eventFramePrefix = `{"type":"` + frameTypeEvent + `","channel":`
+	eventSeqKey      = `,"seq":`
+	eventDataKey     = `,"data":`
+	// maxUint64Digits is the worst-case decimal width of a seq.
+	maxUint64Digits = 20
+)
+
+// appendEventWire assembles the pre-encoded ServerFrame envelope for a
+// live event in one exact-size allocation: envPrefix + seq + `,"data":`
+// + data + `}`. Byte-identical to encodeEventFrame's reflection marshal
+// for Emit-shaped events (seq >= 1, non-empty Data — itself compact,
+// HTML-escaped json.Marshal output — and Gap always false, so every
+// omitempty branch is fixed); TestEventBus_PreEncodedWireBytesMatchEnvelope
+// and TestEventBus_EmitWireBytesByteIdentical pin the equivalence. Runs
+// under the bus mutex, so no reflection walk or encoder buffer growth
+// is paid inside the critical section.
+func (r *ring) appendEventWire(seq uint64, data []byte) []byte {
+	wire := make([]byte, 0, len(r.envPrefix)+maxUint64Digits+len(eventDataKey)+len(data)+1)
+	wire = append(wire, r.envPrefix...)
+	wire = strconv.AppendUint(wire, seq, 10)
+	wire = append(wire, eventDataKey...)
+	wire = append(wire, data...)
+	return append(wire, '}')
 }
 
 // append stores e at the tail, growing the backing up to capacity and
@@ -140,12 +180,14 @@ func (r *ring) replayAfter(lastSeq uint64) (events []Event, hadGap bool) {
 // bytes once and broadcast them to N subscribers without re-marshalling.
 //
 // WireBytes is the pre-encoded ServerFrame envelope (type="event",
-// channel, seq, data, gap?) marshalled once at Emit time. The conn
-// event-pump writes WireBytes verbatim — no per-subscriber marshal —
-// so a multi-subscriber LAN bind doesn't pay N×marshal cost. Replay
-// frames re-marshal because the bus stores Event values without
-// envelope shape coupled to ring storage; a one-shot replay is cheap
-// next to live fanout's sustained rate.
+// channel, seq, data, gap?) assembled once at Emit time. The conn
+// event-pump writes WireBytes verbatim — single events and spliced
+// batch frames alike — so a multi-subscriber LAN bind doesn't pay
+// N×marshal cost. On live-fanout events Data is a subslice of
+// WireBytes (the payload bytes inside the envelope), so a queued event
+// holds ONE payload copy, not two, across up-to-1024-deep subscriber
+// buffers; Data stays populated because non-wire subscribers (the
+// harness workflow waiter) decode payloads from it.
 type Event struct {
 	Channel   string
 	Seq       uint64
@@ -175,10 +217,13 @@ func NewEventBus(capacity int) *EventBus {
 // publishers shouldn't crash the app during shutdown.
 //
 // Wire pre-encoding: the ServerFrame envelope (type="event", channel,
-// seq, data) is marshalled once here and reused by every subscriber.
-// At one-subscriber bindings (the embedded webview) the cost is the
-// same as the prior path; at multi-subscriber LAN binds, the
-// per-subscriber marshal is gone.
+// seq, data) is assembled once here and reused by every subscriber.
+// The payload marshal (reflection, arbitrary size) happens before the
+// lock; only seq assignment, the cheap append-splice of the envelope
+// (appendEventWire), and the ring append run under the bus-wide mutex,
+// so concurrent emitters and Replay/Subscribe don't serialize behind a
+// reflection walk. Seq assignment and ring append stay atomic per
+// channel — ring order is exact; fanout runs after unlock, as before.
 func (b *EventBus) Emit(channel string, payload any) (Event, error) {
 	if b.closed.Load() {
 		return Event{}, nil
@@ -202,26 +247,25 @@ func (b *EventBus) Emit(channel string, payload any) (Event, error) {
 			// ones, so retain exactly it (see event_visibility.go).
 			capacity = 1
 		}
-		r = newRing(capacity)
+		r = newRing(channel, capacity)
 		b.rings[channel] = r
 	}
 	r.seq++
+	wire := r.appendEventWire(r.seq, data)
+	// Alias Data to the payload bytes inside WireBytes (full slice
+	// expression so an accidental append can't clobber the envelope's
+	// closing brace) — one payload copy per queued event instead of
+	// two, and the standalone marshal buffer is released immediately.
+	dataEnd := len(wire) - 1
 	evt := Event{
-		Channel: channel,
-		Seq:     r.seq,
-		Data:    data,
+		Channel:   channel,
+		Seq:       r.seq,
+		Data:      json.RawMessage(wire[dataEnd-len(data) : dataEnd : dataEnd]),
+		WireBytes: wire,
 	}
-	wire, err := encodeEventFrame(evt)
-	if err != nil {
-		b.mu.Unlock()
-		return Event{}, err
-	}
-	evt.WireBytes = wire
 	// The ring retains WireBytes only: replay writes it verbatim
-	// (writeEventFrame's fast path — replay never batches), so also
-	// retaining Data would hold every payload twice for the ring's
-	// lifetime. Live fanout below still carries Data for the batch
-	// writer.
+	// (writeEventFrame's fast path — replay never batches). Data is
+	// dropped to keep ring entries to the one WireBytes reference.
 	ringEvt := evt
 	ringEvt.Data = nil
 	r.append(ringEvt)
@@ -239,11 +283,11 @@ func (b *EventBus) Emit(channel string, payload any) (Event, error) {
 }
 
 // encodeEventFrame marshals the ServerFrame{type:"event", ...} envelope
-// for evt. Split out so Emit can pre-encode once at fanout time and
-// the conn pump can write the result verbatim. The shape mirrors the
-// per-subscriber marshal that conn.writeFrame would otherwise do
-// per-event so the wire is byte-for-byte identical with the legacy
-// path (see TestEventBus_PreEncodedWireBytesMatchEnvelope).
+// for evt. Replay's gap markers (which carry Gap:true and null Data —
+// shapes appendEventWire deliberately doesn't handle) pre-encode
+// through here, and it doubles as the reference encoding the
+// appendEventWire fast path is pinned against
+// (see TestEventBus_PreEncodedWireBytesMatchEnvelope).
 func encodeEventFrame(evt Event) ([]byte, error) {
 	frame := ServerFrame{
 		Type:    frameTypeEvent,
@@ -389,6 +433,14 @@ type Subscriber struct {
 	bus      *EventBus
 	closed   atomic.Bool
 	channels atomic.Pointer[subscriberChannelFilter]
+	// loopback, when set, applies the per-origin channel-visibility
+	// filter (event_visibility.go) at enqueue time so frames the
+	// connection could never emit don't consume buffer slots — a burst
+	// of invisible traffic (terminal:output toward a remote peer,
+	// highlight:seed toward loopback) could otherwise force drops of
+	// visible events and gap-driven re-fetches. nil means unfiltered
+	// (non-conn subscribers like the harness workflow waiter).
+	loopback atomic.Pointer[bool]
 }
 
 type subscriberChannelFilter map[string]struct{}
@@ -411,6 +463,15 @@ func (s *Subscriber) SetChannels(channels []string) {
 		filter[channel] = struct{}{}
 	}
 	s.channels.Store(&filter)
+}
+
+// SetOriginLoopback arms enqueue-time origin-visibility filtering for a
+// connection-owned subscriber. Call it before any event matters (the
+// conn handler sets it between Subscribe and starting the pump); the
+// pump keeps its own visibility check as the correctness gate, this one
+// only decides what may occupy buffer slots.
+func (s *Subscriber) SetOriginLoopback(isLoopback bool) {
+	s.loopback.Store(&isLoopback)
 }
 
 func (s *Subscriber) accepts(channel string) bool {
@@ -440,6 +501,9 @@ func (s *Subscriber) deliver(e Event) {
 		return
 	}
 	if !s.accepts(e.Channel) {
+		return
+	}
+	if lb := s.loopback.Load(); lb != nil && !eventVisibleToOrigin(e.Channel, *lb) {
 		return
 	}
 	select {

@@ -44,6 +44,10 @@ type Method struct {
 	fn          reflect.Value
 	inputTypes  []reflect.Type
 	outputTypes []reflect.Type
+	// hasError records whether the last return value implements error.
+	// Static per signature — precomputed at Register like NeedsContext /
+	// IsVariadic so processResults doesn't re-derive it per invocation.
+	hasError bool
 }
 
 // RegisterOptions controls Register's filtering behavior.
@@ -159,6 +163,7 @@ func (d *Dispatcher) Register(receiver any, opts RegisterOptions) ([]*Method, er
 			fn:           methodValue,
 			inputTypes:   inputTypes,
 			outputTypes:  outputTypes,
+			hasError:     len(outputTypes) > 0 && outputTypes[len(outputTypes)-1].Implements(errType),
 		}
 
 		if existing, ok := d.byID[m.ID]; ok {
@@ -436,9 +441,7 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 // users can grep server logs for the full prose without surfacing it on
 // the wire.
 func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeErrors bool) (json.RawMessage, *FrameError) {
-	hasError := len(m.outputTypes) > 0 && m.outputTypes[len(m.outputTypes)-1].Implements(errType)
-
-	if hasError {
+	if m.hasError {
 		errResult := results[len(results)-1]
 		if !errResult.IsNil() {
 			methodErr := errResult.Interface().(error)

@@ -1,7 +1,9 @@
 package transport
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -656,3 +658,172 @@ func TestEventBus_LatestOnlyChannel_RetainsOneAndNeverGaps(t *testing.T) {
 		t.Fatalf("expected seq 6, got %d", evt.Seq)
 	}
 }
+
+// TestEventBus_EmitWireBytesByteIdentical pins the append-splice
+// encoding (appendEventWire) byte-for-byte against the reflection
+// marshal it replaced. Channels with JSON-special and multibyte
+// characters exercise the cached escaped-channel prefix; payload
+// shapes exercise the data splice.
+func TestEventBus_EmitWireBytesByteIdentical(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+
+	channels := []string{
+		"provider:item_event",
+		`ch"quote\slash`,
+		"ch<&>html",
+		"chанал-ünïcode",
+	}
+	payloads := []any{
+		map[string]any{"title": "hello", "n": 7},
+		"plain <string> & escape",
+		nil,
+		[]int{1, 2, 3},
+	}
+	for _, ch := range channels {
+		for i, p := range payloads {
+			evt, err := bus.Emit(ch, p)
+			if err != nil {
+				t.Fatalf("emit %q #%d: %v", ch, i, err)
+			}
+			want, err := encodeEventFrame(evt)
+			if err != nil {
+				t.Fatalf("reference encode %q #%d: %v", ch, i, err)
+			}
+			if !bytes.Equal(evt.WireBytes, want) {
+				t.Fatalf("WireBytes diverged from reflection marshal for %q #%d:\n got %s\nwant %s",
+					ch, i, evt.WireBytes, want)
+			}
+		}
+	}
+}
+
+// TestEventBus_LiveEventDataAliasesWireBytes pins the single-copy
+// contract for live fanout: Data is a subslice of WireBytes (payload
+// bytes inside the envelope), so a queued event retains one payload
+// buffer, not two, while non-wire subscribers can still decode Data.
+func TestEventBus_LiveEventDataAliasesWireBytes(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	payload := map[string]string{"k": "v"}
+	emitted, err := bus.Emit("ch1", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, evt := range []Event{emitted, drainEvents(t, sub, 1, time.Second)[0]} {
+		if len(evt.Data) == 0 {
+			t.Fatal("live event must carry Data (harness consumers decode it)")
+		}
+		var got map[string]string
+		if err := json.Unmarshal(evt.Data, &got); err != nil {
+			t.Fatalf("Data does not decode: %v", err)
+		}
+		if got["k"] != "v" {
+			t.Fatalf("Data round-trip = %v", got)
+		}
+		dataStart := len(evt.WireBytes) - 1 - len(evt.Data)
+		if &evt.Data[0] != &evt.WireBytes[dataStart] {
+			t.Fatal("Data must alias the payload bytes inside WireBytes (one copy per queued event)")
+		}
+	}
+}
+
+// TestEventBus_ConcurrentEmit_SubscriberSeqOrderedPerChannel pins the
+// ordering contract under the narrowed critical section: with one
+// emitter goroutine per channel, a subscriber must observe each
+// channel's seqs strictly contiguous — restructuring Emit's locking
+// must not let ring/seq assignment and fanout race into reordering
+// within a channel.
+func TestEventBus_ConcurrentEmit_SubscriberSeqOrderedPerChannel(t *testing.T) {
+	bus := NewEventBus(0)
+	defer bus.Close()
+
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	const chans = 4
+	const each = 100 // chans*each < DefaultSubscriberBuffer: no drops
+	var wg sync.WaitGroup
+	for c := range chans {
+		wg.Go(func() {
+			channel := fmt.Sprintf("ch%d", c)
+			for range each {
+				if _, err := bus.Emit(channel, "x"); err != nil {
+					t.Errorf("emit %s: %v", channel, err)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+
+	got := drainEvents(t, sub, chans*each, 2*time.Second)
+	if len(got) != chans*each {
+		t.Fatalf("drained %d events, want %d", len(got), chans*each)
+	}
+	next := make(map[string]uint64, chans)
+	for i, e := range got {
+		if e.Seq != next[e.Channel]+1 {
+			t.Fatalf("event %d on %s: seq %d after %d (must be contiguous per channel)",
+				i, e.Channel, e.Seq, next[e.Channel])
+		}
+		next[e.Channel] = e.Seq
+	}
+}
+
+// TestEventBus_SubscriberOriginFilterAtEnqueue pins that an armed
+// origin filter keeps invisible channels from ever occupying buffer
+// slots, and that the delivered set exactly matches what pump-side
+// eventVisibleToOrigin filtering would have produced — with an unset
+// filter preserving the deliver-everything default for non-conn
+// subscribers.
+func TestEventBus_SubscriberOriginFilterAtEnqueue(t *testing.T) {
+	channels := []string{
+		"terminal:output", // loopback-only
+		"highlight:seed",  // remote-only
+		"thread:update",   // universal
+	}
+	cases := []struct {
+		name     string
+		loopback *bool
+	}{
+		{"remote", ptrBool(false)},
+		{"loopback", ptrBool(true)},
+		{"unfiltered", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := NewEventBus(10)
+			defer bus.Close()
+			sub := bus.Subscribe()
+			defer sub.Close()
+			if tc.loopback != nil {
+				sub.SetOriginLoopback(*tc.loopback)
+			}
+
+			want := make(map[string]bool, len(channels))
+			for _, ch := range channels {
+				if _, err := bus.Emit(ch, "x"); err != nil {
+					t.Fatalf("emit %s: %v", ch, err)
+				}
+				want[ch] = tc.loopback == nil || eventVisibleToOrigin(ch, *tc.loopback)
+			}
+
+			got := make(map[string]bool, len(channels))
+			for _, e := range drainEvents(t, sub, len(channels), 200*time.Millisecond) {
+				got[e.Channel] = true
+			}
+			for _, ch := range channels {
+				if got[ch] != want[ch] {
+					t.Errorf("channel %s delivered=%v, want %v", ch, got[ch], want[ch])
+				}
+			}
+		})
+	}
+}
+
+func ptrBool(v bool) *bool { return &v }

@@ -158,11 +158,17 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	}
 	ws.SetReadLimit(settings.readLimit)
 
+	sub := bus.Subscribe()
+	// Arm enqueue-time origin filtering before the pump starts:
+	// channels this origin can never see must not consume the
+	// subscriber's buffer slots during bursts (they'd force drops of
+	// visible events and gap-driven re-fetches).
+	sub.SetOriginLoopback(profile.isLoopback)
 	h := &connHandler{
 		ws:                ws,
 		dispatcher:        d,
 		bus:               bus,
-		sub:               bus.Subscribe(),
+		sub:               sub,
 		profile:           profile,
 		rpcSem:            make(chan struct{}, settings.maxConcurrentRPCs),
 		keepaliveInterval: settings.keepaliveInterval,
@@ -449,6 +455,10 @@ func (h *connHandler) pumpEvents(ctx context.Context) {
 		case <-buf.timerC():
 			buf.flushNow()
 		case e := <-h.sub.Events():
+			// Correctness gate. Enqueue-time filtering (Subscriber
+			// SetOriginLoopback) already keeps invisible frames out of
+			// the buffer; this backstop covers any event enqueued
+			// before the filter was armed.
 			if !eventVisibleToOrigin(e.Channel, h.profile.isLoopback) {
 				continue
 			}
@@ -460,7 +470,10 @@ func (h *connHandler) pumpEvents(ctx context.Context) {
 // writeBatchFrame writes a coalesced batch of events as a single wire
 // frame. When the batch contains exactly one event, it falls through
 // to writeEventFrame which uses the pre-encoded WireBytes fast path,
-// avoiding a redundant json.Marshal.
+// avoiding a redundant json.Marshal. Multi-event windows splice the
+// same pre-encoded envelopes instead of re-passing every payload
+// through the JSON encoder — exactly the windows that dominate during
+// streaming bursts.
 func (h *connHandler) writeBatchFrame(ctx context.Context, events []Event) {
 	if len(events) == 0 {
 		return
@@ -469,22 +482,8 @@ func (h *connHandler) writeBatchFrame(ctx context.Context, events []Event) {
 		h.writeEventFrame(ctx, events[0])
 		return
 	}
-	entries := make([]batchEventEntry, len(events))
-	for i, e := range events {
-		entries[i] = batchEventEntry{
-			Channel: e.Channel,
-			Seq:     e.Seq,
-			Data:    e.Data,
-			Gap:     e.Gap,
-		}
-	}
-	frame := batchFrame{
-		Type:   frameTypeBatch,
-		Events: entries,
-	}
-	buf, err := json.Marshal(frame)
-	if err != nil {
-		log.Printf("transport: marshal batch frame: %v", err)
+	buf := spliceBatchFrame(events)
+	if len(buf) == 0 {
 		return
 	}
 	if err := h.writeRaw(ctx, buf); err != nil {
@@ -492,6 +491,44 @@ func (h *connHandler) writeBatchFrame(ctx context.Context, events []Event) {
 			log.Printf("transport: ws write batch: %v", err)
 		}
 	}
+}
+
+// spliceBatchFrame assembles {"type":"batch","events":[...]} by joining
+// each event's pre-encoded WireBytes with commas. Every WireBytes is a
+// complete {"type":"event",channel,seq,data,gap?} object, and all batch
+// consumers (wsClient handleFrame, the wsllauncher notification client,
+// the e2e harness dispatcher) read only channel/seq/data/gap from each
+// entry, so the inert extra "type" field is tolerated — the one wire
+// difference vs the retired per-batch re-marshal. Events lacking
+// WireBytes can't occur on the live pump (Emit always pre-encodes) but
+// are envelope-encoded defensively so a splice never emits a hole.
+func spliceBatchFrame(events []Event) []byte {
+	size := len(batchFramePrefix) + len(events) + 1 // separators + "]}"
+	for i := range events {
+		size += len(events[i].WireBytes)
+	}
+	buf := make([]byte, 0, size)
+	buf = append(buf, batchFramePrefix...)
+	written := 0
+	for i := range events {
+		wire := events[i].WireBytes
+		if len(wire) == 0 {
+			var err error
+			if wire, err = encodeEventFrame(events[i]); err != nil {
+				log.Printf("transport: encode batch entry: %v", err)
+				continue
+			}
+		}
+		if written > 0 {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, wire...)
+		written++
+	}
+	if written == 0 {
+		return nil
+	}
+	return append(buf, ']', '}')
 }
 
 // writeEventFrame is the event-only fast path: when WireBytes is
