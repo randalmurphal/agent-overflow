@@ -103,6 +103,18 @@ type Core struct {
 	untrackedMu    sync.Mutex
 	untrackedLines map[string]*untrackedLineCache
 
+	// gitDirCache memoizes successful resolveGitDir results per cwd. The
+	// resolved git directory is immutable for a given cwd (a repo's .git
+	// location never moves under it), and pendingOperation resolves it on
+	// every gitwatch refresh edge — the memo drops one `git rev-parse
+	// --git-dir` subprocess per refresh. Failures ("" — not a repo, or a
+	// transient git error) are never cached so a later `git init` is seen.
+	// Bounded by the number of distinct repo cwds touched in a session,
+	// each entry two short path strings; RemoveWorktreeForce drops the
+	// removed path's entry so a re-created worktree re-resolves.
+	gitDirCacheMu sync.RWMutex
+	gitDirCache   map[string]string
+
 	// fetchCache records the last time MaybeFetchRemotes successfully
 	// ran `git fetch` against a given canonical repo root. Keyed by the
 	// repository top-level path so worktrees of the same repo share
@@ -134,6 +146,7 @@ func NewCore() *Core {
 		maxOutputBytes: defaultMaxOutputBytes,
 		prCache:        make(map[string]prCacheEntry),
 		forgeCache:     make(map[string]forgeCacheEntry),
+		gitDirCache:    make(map[string]string),
 		fetchCache:     make(map[string]time.Time),
 		untrackedLines: make(map[string]*untrackedLineCache),
 		nowFn:          time.Now,
@@ -285,6 +298,11 @@ func (c *Core) RemoveWorktreeForce(cwd, path string, force bool) error {
 		}
 		return fmt.Errorf("git worktree remove failed: %s", message)
 	}
+	// A worktree re-created at this path may get a different admin dir
+	// under .git/worktrees/, so the memoized git-dir must not outlive it.
+	c.gitDirCacheMu.Lock()
+	delete(c.gitDirCache, path)
+	c.gitDirCacheMu.Unlock()
 	return nil
 }
 

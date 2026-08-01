@@ -116,6 +116,40 @@ func TestPendingOperationBisect(t *testing.T) {
 	}
 }
 
+func TestResolveGitDirMemoizesSuccess(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+
+	first := core.resolveGitDir(repo)
+	if first == "" {
+		t.Fatal("expected a git dir for a real repo")
+	}
+
+	// Break the repo on disk: a fresh rev-parse would now fail, so getting
+	// the same answer back proves the memo was hit.
+	if err := os.Rename(filepath.Join(repo, ".git"), filepath.Join(repo, ".git-moved")); err != nil {
+		t.Fatalf("rename .git: %v", err)
+	}
+	if second := core.resolveGitDir(repo); second != first {
+		t.Fatalf("memoized resolveGitDir = %q, want %q", second, first)
+	}
+}
+
+func TestResolveGitDirDoesNotCacheFailure(t *testing.T) {
+	dir := t.TempDir()
+	core := NewCore()
+
+	if got := core.resolveGitDir(dir); got != "" {
+		t.Fatalf("resolveGitDir on non-repo = %q, want empty", got)
+	}
+
+	// The failure must not stick: after init, the same Core resolves.
+	testutil.RunGit(t, dir, "init", "-b", "main")
+	if got := core.resolveGitDir(dir); got == "" {
+		t.Fatal("expected resolveGitDir to succeed after git init on the same Core")
+	}
+}
+
 func TestPendingOperationNonRepoReturnsEmpty(t *testing.T) {
 	// A non-repo directory must yield an empty pendingOperation - never a
 	// false positive, since Status already reports IsRepo=false.

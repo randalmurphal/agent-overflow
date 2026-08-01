@@ -6,6 +6,7 @@
 package workspacefiles
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"os"
@@ -150,6 +151,17 @@ func (s *Searcher) getIndex(root string) (*workspaceIndex, error) {
 
 	s.mu.Lock()
 	s.indices[root] = built
+	// Sweep expired siblings so an idle or closed workspace's index (up to
+	// maxEntries entries, several MB for a large repo) doesn't stay resident
+	// for the process lifetime. Observationally free: an index past the TTL
+	// is never served — getIndex always rebuilds — so dropping it only
+	// releases memory.
+	now := time.Now()
+	for key, idx := range s.indices {
+		if key != root && now.Sub(idx.scannedAt) >= s.ttl {
+			delete(s.indices, key)
+		}
+	}
 	s.mu.Unlock()
 	return built, nil
 }
@@ -364,26 +376,62 @@ type rankedEntry struct {
 	score int
 }
 
+// rankBetter is the total order rankEntries returns results in: score
+// ascending (lower = better), ties broken by path. Paths are unique within an
+// index (git ls-files output plus derived parent dirs cannot collide), so
+// this is a strict total order and stability adds nothing.
+func rankBetter(a, b rankedEntry) bool {
+	if a.score != b.score {
+		return a.score < b.score
+	}
+	return a.entry.Path < b.entry.Path
+}
+
+// topKHeap is a max-heap under rankBetter: the root is the worst entry kept,
+// so a better candidate replaces it in O(log limit).
+type topKHeap []rankedEntry
+
+func (h topKHeap) Len() int           { return len(h) }
+func (h topKHeap) Less(i, j int) bool { return rankBetter(h[j], h[i]) }
+func (h topKHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *topKHeap) Push(x any)        { *h = append(*h, x.(rankedEntry)) }
+func (h *topKHeap) Pop() any {
+	old := *h
+	last := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return last
+}
+
 // rankEntries scores every entry and returns the top `limit` ordered by best
-// match first.
+// match first. Bounded top-k selection instead of a full sort: search runs on
+// every @-picker keystroke, and a short query matches most of the index (up
+// to maxEntries), so sorting everything to keep `limit` entries would pay
+// O(n log n) per keystroke. Because rankBetter is a total order, the output
+// is byte-identical to sorting all matches and truncating.
 func rankEntries(entries []searchableEntry, query string, limit int) []rankedEntry {
-	var ranked []rankedEntry
-	for _, entry := range entries {
-		score := scoreEntry(entry, query)
+	if limit <= 0 {
+		return nil
+	}
+	// Cap the pre-allocation by the entry count: limit arrives over the wire
+	// and must not size an allocation on its own.
+	worst := make(topKHeap, 0, min(limit, len(entries)))
+	for i := range entries {
+		score := scoreEntry(entries[i], query)
 		if score < 0 {
 			continue
 		}
-		ranked = append(ranked, rankedEntry{entry: entry, score: score})
-	}
-	sort.SliceStable(ranked, func(i, j int) bool {
-		if ranked[i].score != ranked[j].score {
-			return ranked[i].score < ranked[j].score
+		candidate := rankedEntry{entry: entries[i], score: score}
+		if len(worst) < limit {
+			heap.Push(&worst, candidate)
+			continue
 		}
-		return ranked[i].entry.Path < ranked[j].entry.Path
-	})
-	if len(ranked) > limit {
-		ranked = ranked[:limit]
+		if rankBetter(candidate, worst[0]) {
+			worst[0] = candidate
+			heap.Fix(&worst, 0)
+		}
 	}
+	ranked := []rankedEntry(worst)
+	sort.Slice(ranked, func(i, j int) bool { return rankBetter(ranked[i], ranked[j]) })
 	return ranked
 }
 

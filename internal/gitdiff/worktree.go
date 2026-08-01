@@ -14,8 +14,12 @@ import (
 // written into a temp object dir with the repo's objects as alternates
 // so nothing lands in the user's .git.
 type syntheticWorktreeTree struct {
-	oid     string
-	env     []string
+	oid string
+	env []string
+	// hasHead records whether HEAD resolved when the snapshot was taken, so
+	// callers picking the old diff side reuse the probe the snapshot already
+	// ran instead of forking a second identical `git rev-parse`.
+	hasHead bool
 	cleanup func()
 }
 
@@ -55,11 +59,8 @@ func DiffWorkspaceVsHead(ctx context.Context, workspace string) ([]byte, error) 
 	defer worktreeTree.cleanup()
 
 	oldSide := "HEAD"
-	hasHead, err := hasHeadCommit(ctx, workspace)
-	if err != nil {
-		return nil, fmt.Errorf("gitdiff: probe HEAD: %w", err)
-	}
-	if !hasHead {
+	if !worktreeTree.hasHead {
+		var err error
 		oldSide, err = emptyTreeOID(ctx, workspace, worktreeTree.env)
 		if err != nil {
 			return nil, err
@@ -150,7 +151,15 @@ func captureSyntheticWorktreeTree(ctx context.Context, workspace string) (synthe
 		"GIT_OBJECT_DIRECTORY=" + objectPath,
 		"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + repoObjectPath,
 	}
-	treeOID, err := writeWorktreeTree(ctx, workspace, env)
+	// Probe HEAD once for the whole snapshot: writeWorktreeTree needs it to
+	// decide index seeding, and DiffWorkspaceVsHead reuses it for the old
+	// diff side rather than re-forking the identical rev-parse.
+	hasHead, err := hasHeadCommit(ctx, workspace)
+	if err != nil {
+		cleanup()
+		return syntheticWorktreeTree{}, fmt.Errorf("gitdiff: probe HEAD: %w", err)
+	}
+	treeOID, err := writeWorktreeTree(ctx, workspace, env, hasHead)
 	if err != nil {
 		cleanup()
 		return syntheticWorktreeTree{}, err
@@ -158,20 +167,17 @@ func captureSyntheticWorktreeTree(ctx context.Context, workspace string) (synthe
 	return syntheticWorktreeTree{
 		oid:     treeOID,
 		env:     env,
+		hasHead: hasHead,
 		cleanup: cleanup,
 	}, nil
 }
 
-func writeWorktreeTree(ctx context.Context, workspace string, env []string) (string, error) {
+func writeWorktreeTree(ctx context.Context, workspace string, env []string, hasHead bool) (string, error) {
 	if !hasGitIndexFileEnv(env) {
 		return "", errors.New("gitdiff: refusing to snapshot without temporary GIT_INDEX_FILE")
 	}
 	// Seed the temp index from HEAD so the snapshot includes tracked files that
 	// exist only on HEAD. Skip on a fresh-init repo where HEAD doesn't resolve.
-	hasHead, err := hasHeadCommit(ctx, workspace)
-	if err != nil {
-		return "", fmt.Errorf("gitdiff: probe HEAD: %w", err)
-	}
 	if hasHead {
 		if _, _, _, err := runGit(ctx, workspace, env, false, "read-tree", "HEAD"); err != nil {
 			return "", fmt.Errorf("gitdiff: read-tree HEAD: %w", err)

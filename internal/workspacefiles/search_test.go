@@ -1,8 +1,11 @@
 package workspacefiles
 
 import (
+	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +194,112 @@ func TestSearchInvalidateForcesRescan(t *testing.T) {
 	for _, r := range results {
 		if strings.HasSuffix(r.Path, "App.tsx") {
 			t.Fatalf("stale cache: %s should be gone", r.Path)
+		}
+	}
+}
+
+func TestSearchEvictsExpiredSiblingIndices(t *testing.T) {
+	rootA := setupWorkspace(t)
+	rootB := setupWorkspace(t)
+	searcher := NewSearcher(Config{TTL: 10 * time.Millisecond})
+
+	if _, _, err := searcher.Search(rootA, "App", 10); err != nil {
+		t.Fatalf("Search rootA: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	// A store for another root sweeps expired siblings.
+	if _, _, err := searcher.Search(rootB, "App", 10); err != nil {
+		t.Fatalf("Search rootB: %v", err)
+	}
+
+	searcher.mu.Lock()
+	_, aResident := searcher.indices[rootA]
+	_, bResident := searcher.indices[rootB]
+	searcher.mu.Unlock()
+	if aResident {
+		t.Fatal("expected rootA's expired index to be evicted")
+	}
+	if !bResident {
+		t.Fatal("expected rootB's fresh index to stay resident")
+	}
+
+	// Re-searching the evicted root rebuilds transparently.
+	results, _, err := searcher.Search(rootA, "App", 10)
+	if err != nil {
+		t.Fatalf("Search rootA after eviction: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results after transparent rebuild")
+	}
+}
+
+// rankEntriesReference is the pre-top-k implementation (full stable sort +
+// truncate). The bounded selection must return byte-identical output.
+func rankEntriesReference(entries []searchableEntry, query string, limit int) []rankedEntry {
+	var ranked []rankedEntry
+	for _, entry := range entries {
+		score := scoreEntry(entry, query)
+		if score < 0 {
+			continue
+		}
+		ranked = append(ranked, rankedEntry{entry: entry, score: score})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score < ranked[j].score
+		}
+		return ranked[i].entry.Path < ranked[j].entry.Path
+	})
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+	return ranked
+}
+
+func TestRankEntriesMatchesFullSortRandomized(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	segments := []string{"src", "lib", "app", "cmp", "util", "btn", "idx", "main", "test"}
+	queries := []string{"", "a", "src", "btn", "main.ts", "sb", "zzz", "srcmain"}
+
+	for trial := 0; trial < 200; trial++ {
+		// Unique paths (an index never holds duplicates), heavy score ties:
+		// short segment alphabet means many entries share prefixes, and the
+		// empty query scores every entry 0 or 1.
+		n := rng.Intn(400)
+		entries := make([]searchableEntry, 0, n)
+		seen := make(map[string]struct{}, n)
+		for len(entries) < n {
+			depth := 1 + rng.Intn(3)
+			parts := make([]string, depth)
+			for i := range parts {
+				parts[i] = segments[rng.Intn(len(segments))]
+			}
+			path := strings.Join(parts, "/") + fmt.Sprintf("%d.ts", rng.Intn(50))
+			if _, dup := seen[path]; dup {
+				continue
+			}
+			seen[path] = struct{}{}
+			kind := "file"
+			if rng.Intn(4) == 0 {
+				kind = "directory"
+			}
+			entries = append(entries, makeEntry(path, kind))
+		}
+
+		query := normalizeQuery(queries[rng.Intn(len(queries))])
+		limit := 1 + rng.Intn(60)
+
+		got := rankEntries(entries, query, limit)
+		want := rankEntriesReference(entries, query, limit)
+		if len(got) != len(want) {
+			t.Fatalf("trial %d (query=%q limit=%d): len %d, want %d", trial, query, limit, len(got), len(want))
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Fatalf("trial %d (query=%q limit=%d): position %d = %+v, want %+v",
+					trial, query, limit, i, got[i], want[i])
+			}
 		}
 	}
 }

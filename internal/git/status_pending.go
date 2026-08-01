@@ -41,7 +41,18 @@ func (c *Core) pendingOperation(cwd string) string {
 // directory for the repository containing cwd. Returns "" if the directory
 // isn't a git repo or rev-parse fails; callers treat "" as "no pending op"
 // which is the correct fallback in both cases.
+//
+// Successful resolutions are memoized per cwd on the Core (the git-dir path
+// is immutable for a given cwd); failures are re-probed every call so a
+// later `git init` — or a transient git error — never sticks.
 func (c *Core) resolveGitDir(cwd string) string {
+	c.gitDirCacheMu.RLock()
+	cached, ok := c.gitDirCache[cwd]
+	c.gitDirCacheMu.RUnlock()
+	if ok {
+		return cached
+	}
+
 	result, err := c.run(cwd, "rev-parse", "--git-dir")
 	if err != nil || result.exitCode != 0 {
 		return ""
@@ -53,6 +64,9 @@ func (c *Core) resolveGitDir(cwd string) string {
 	if !filepath.IsAbs(gitDir) {
 		gitDir = filepath.Join(cwd, gitDir)
 	}
+	c.gitDirCacheMu.Lock()
+	c.gitDirCache[cwd] = gitDir
+	c.gitDirCacheMu.Unlock()
 	return gitDir
 }
 
