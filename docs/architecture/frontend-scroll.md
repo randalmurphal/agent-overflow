@@ -289,17 +289,16 @@ timeline is mounted (the paging prunes use `shift` instead — see **Load
 Paging**). The pane owns the window decision, but the timeline owns the
 DOM/virtualizer anchor transaction: bottom intent pins to the new bottom,
 and reading state preserves the first visible item when that item survives
-the prune. The bottom-intent restore stands down when
-`autoScrollInFlight()` reports a glide running or armed: the prune is
-unasked and typically lands mid-stream, its head-splice compensation has
-already relocated a mid-glide spring's remaining distance intact, and
-writing the bottom directly would collapse that remainder into an instant
-one-line hop in front of the reader (bug-report-20260801T214455Z). The
-pause release's repin yields the same way — it hands the re-pin to the
-live-content path when a structural append is armed OR a spring chase is
-still in flight across the sub-frame lease; reader-asked transactions are
-unaffected because their restore writes the bottom before releasing, so
-the repin sees zero distance. If a normal recent-window prune would drop the visible anchor,
+the prune. The bottom-intent restore is a `requestBottom` with takeover
+`'yield'` (see **Intent And Programmatic Writes**): the prune is unasked
+and typically lands mid-stream, its head-splice compensation has already
+relocated a mid-glide spring's remaining distance intact, and claiming the
+bottom would collapse that remainder into an instant one-line hop in front
+of the reader (bug-report-20260801T214455Z). The pause release's repin is
+the same yield — a structural append armed during the lease OR a spring
+chase still in flight across it keeps the trip; reader-asked transactions
+are unaffected because their restore claims the bottom before releasing,
+so the repin sees zero distance. If a normal recent-window prune would drop the visible anchor,
 the pane defers it and retries when bottom intent returns instead of
 re-asking on every append. The hard ceiling is the only exception; it
 forces the prune even when anchor preservation vetoes the operation, and
@@ -338,10 +337,11 @@ armed — the transaction's bottom-pinned restore is a direct write and would
 snap an animation the reader is watching; explicit clicks keep their
 instant behavior — for them the snap IS the intent. The stand-down can only
 see motion that exists when the pass runs, so the gate's transaction also
-opts into `yieldToStructuralAppend`: a wire append landing between the
-release and its restore arms the structural one-shot, and the restore hands
-the trip to the armed spring instead of writing a bottom that already
-contains the new row. The transaction shares the prune's shape —
+restores with takeover `'yield'` (reader-asked toggles keep the default
+`'claim'`): a wire append landing between the release and its restore arms
+the structural one-shot, and the yielded `requestBottom` hands the trip to
+the armed spring instead of writing a bottom that already contains the new
+row. The transaction shares the prune's shape —
 capture intent, pause the spring, run the change, restore after the flush —
 and differs in which edge it holds:
 
@@ -497,6 +497,22 @@ Programmatic scrolls go through the controller:
   followed by `forceStick({ reason: 'restore' })` for thread/channel
   restore.
 - `markAtBottom()` for empty-timeline restore without writing scrollTop.
+- `requestBottom({ takeover })` for every out-of-band "put the reader at
+  the bottom" placement: transaction restores
+  (`timelineWindowAnchor.svelte.ts`), the pause-release re-pin, and the
+  host-layout re-pin. The takeover is the arbitration rule that replaced
+  those callers' pairwise stand-down guards: `'claim'` (the reader asked
+  — a disclosure click) cancels any bottom-follow program and places
+  instantly, because user intent always may retarget the viewport;
+  `'yield'` (the system asked) hands the trip to an engaged program — a
+  glide running or a structural-append arm holding one ready, exactly
+  `autoScrollInFlight()` — and writes nothing, because a one-shot
+  absolute write landing mid-glide collapses an animation the reader is
+  watching into a snap. Virtualized surfaces pass a `write` callback
+  (`scrollToIndex(last, {align:'end'})` + `markAtBottom()`) so
+  placement converges through the engine; `requestBottom` presumes
+  bottom intent, so callers gate on their own "was the reader holding
+  the bottom" predicate first.
 - `observe(kind)` for out-of-content geometry changes ('content',
   'live-content', 'composer-geometry', 'host-layout').
 - `pauseAutoScroll()` for drag/resize leases.

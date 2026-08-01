@@ -207,8 +207,14 @@ failing test before it is a bug report.
 ## Sequencing
 
 1. Quiet scheduler + prune migration (kills the settle-time stutter, the
-   user-visible driver for this work).
+   user-visible driver for this work). **Shipped** (62c101cb,
+   2026-08-01): `timelineQuietWork.ts`, `settleRecentWindowPrune`, both
+   gates migrated.
 2. `requestBottom` + writer migration (deletes the pairwise guards).
+   **Shipped** (2026-08-01): controller entry + trace record; migrated
+   the pause-release repin, both anchor-transaction restores
+   (`PreserveViewportBottomOptions.takeover` replaces
+   `yieldToStructuralAppend`), and MessageTimeline's host-layout re-pin.
 3. Provenance ledger (deletes the baseline heuristics).
 4. Interleaving suite lands alongside 2 and 3 as their safety net;
    scenario browser tests keep covering real-layout behavior.

@@ -367,9 +367,10 @@ spring's first frame — would turn the animation into a snap to the bottom.
 Deferring loses nothing, because the settle that ends the glide synthesizes
 the scrollend that re-runs the gate in quiet. The stand-down can only see
 motion that exists when the pass runs — an append can still land in the
-flushes between the release and its restore — so the transaction also opts
-into `yieldToStructuralAppend`: the restore stands down when the append has
-armed the structural spring, which then glides the new row in
+flushes between the release and its restore — so the transaction also
+restores with takeover `'yield'` (`PreserveViewportBottomOptions`): the
+restore's `requestBottom` stands down when the append has armed the
+structural spring, which then glides the new row in
 (regression: appendAfterQuiet.browser.test.ts). Runs that never opened live — history loads, revived
 archive entries, thread switches — carry no hold and follow the defaults
 outright, which is why a loaded thread does not arrive as a wall of clips.

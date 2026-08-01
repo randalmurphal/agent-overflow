@@ -29,7 +29,45 @@ export type ScrollWriteCaller =
   | 'notifyLiveContentMaybeGrew.arrive'
   | 'forceStick'
   | 'preserveScrollAnchor'
-  | 'pauseAutoScroll.release';
+  | 'pauseAutoScroll.release'
+  | 'requestBottom';
+
+/**
+ * How a `requestBottom` call resolves against the bottom-follow program
+ * (a spring glide running, or a structural-append arm holding one ready
+ * to start — exactly `autoScrollInFlight()`):
+ *
+ * - `'claim'`: the READER asked for this placement (a disclosure click,
+ *   an explicit toggle). User intent always may retarget the viewport,
+ *   so any running program is cancelled and the bottom is placed
+ *   instantly.
+ * - `'yield'`: the SYSTEM asked (an unasked transaction's restore, a
+ *   lease release, a host-layout re-pin). While the program is engaged
+ *   it owns the trip to the bottom — the request hands the fresh
+ *   geometry to the live-content path and writes nothing, because a
+ *   one-shot absolute write landing mid-glide collapses an animation
+ *   the reader is watching into a snap. With no program engaged the
+ *   request places the bottom directly.
+ */
+export type RequestBottomTakeover = 'claim' | 'yield';
+
+export interface RequestBottomOptions {
+  takeover: RequestBottomTakeover;
+  /**
+   * Trace attribution for the default placement write. Ignored when
+   * `write` is supplied (the callback's own writes carry their tags).
+   */
+  caller?: ScrollWriteCaller;
+  /**
+   * Custom placement for surfaces whose bottom is not a raw scrollTop
+   * write — chat's virtualized timeline places via
+   * `scrollToIndex(last, {align:'end'})` + `markAtBottom()` so the
+   * engine converges its measurement passes. Runs INSTEAD of the
+   * default write once the takeover has resolved to "place now"; the
+   * spring-cancel half of a `'claim'` still happens first.
+   */
+  write?: () => void;
+}
 
 /**
  * Source hint for `observe(kind)` — what kind of geometry/content event
@@ -136,6 +174,25 @@ export interface UseStickToBottomController {
    * users keep the clicked anchor at the same viewport position.
    */
   preserveScrollAnchor(anchor: HTMLElement, action: () => void | Promise<void>): Promise<void>;
+
+  /**
+   * Place the viewport at the bottom edge, arbitrated against the
+   * bottom-follow program (see `RequestBottomTakeover` for the two
+   * priorities and `RequestBottomOptions.write` for surfaces that
+   * place via their virtualizer). This is the ONE entry point for
+   * "put the reader at the bottom" outside the growth pipeline:
+   * transaction restores, lease-release re-pins, and host-layout
+   * re-pins all route through it instead of carrying their own
+   * program-priority guard.
+   *
+   * PRESUMES bottom intent — callers gate on their own "was the reader
+   * holding the bottom" predicate before calling; this method does not
+   * re-check escape or pause state for the placement itself. (A
+   * `'yield'` that hands off to the live-content path still runs that
+   * path's full gates, so a paused yield no-ops — the release that
+   * ends the pause performs the real re-pin.)
+   */
+  requestBottom(opts: RequestBottomOptions): void;
 
   attach(scrollEl: HTMLElement, contentEl: HTMLElement): void;
   detach(): void;

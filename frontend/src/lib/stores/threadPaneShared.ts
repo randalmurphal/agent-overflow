@@ -1,5 +1,8 @@
 import type { ItemKind, Thread } from '../types/models';
-import type { ScrollObservationKind } from '../utils/scroll/index.svelte';
+import type {
+  RequestBottomTakeover,
+  ScrollObservationKind,
+} from '../utils/scroll/index.svelte';
 import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
 import type { ActiveTurn } from './threadStatuses.svelte';
 
@@ -189,16 +192,19 @@ export interface PaneScrollController {
 
 export interface PreserveViewportBottomOptions {
   /**
-   * The transaction is UNASKED (the auto-collapse gate, not a reader's
-   * click), so if a structural append arms while it is in flight — a
-   * streamed row landing in the 1-2 flushes between the change and its
-   * bottom restore — the restore must stand down and let the armed
-   * spring glide the new row in. Writing the bottom would land the
-   * append instantly (bug-report-20260731T141600Z). Reader-initiated
-   * toggles keep the default instant restore: their contract is that
-   * the clicked delta never animates.
+   * How the transaction's bottom restore resolves against the
+   * bottom-follow program (`UseStickToBottomController.requestBottom`).
+   * Default `'claim'`: the reader ASKED for this height change (a
+   * collapse/expand click), so the restore places the bottom instantly
+   * — their contract is that the clicked delta never animates, and
+   * user intent always may retarget the viewport. Pass `'yield'` when
+   * the transaction is UNASKED (the auto-collapse gate): a structural
+   * append can land in the 1-2 flushes between the change and its
+   * restore, and the restore must stand down so the armed spring
+   * glides the new row in instead of a bottom write landing it
+   * instantly (bug-report-20260731T141600Z).
    */
-  yieldToStructuralAppend?: boolean;
+  takeover?: RequestBottomTakeover;
 }
 
 export interface TimelineWindowAnchorOperation {

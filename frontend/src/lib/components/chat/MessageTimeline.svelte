@@ -248,9 +248,12 @@
   // Pane-move reconciliation ('host-layout' observations from PaneHost):
   // insertBefore can leave the scroller with transiently bad geometry, so
   // the virtualizer re-reads viewport + offset (revalidate) and sticky
-  // panes re-pin to the bottom. The scrollToIndex write goes through the
-  // controller chokepoint (applyScrollTarget), so it is tagged
-  // programmatic and preserves intent.
+  // panes re-pin to the bottom. The re-pin is system-initiated, so it
+  // goes through `requestBottom` as a 'yield' — a glide mid-flight
+  // across the pane move keeps owning the trip instead of being snapped
+  // over. The scrollToIndex write goes through the controller chokepoint
+  // (applyScrollTarget), so it is tagged programmatic and preserves
+  // intent.
   function notifyHostLayoutSettled(): void {
     const lastIndex = revealedNodes.length - 1;
     const shouldStickToBottom = !stick.escapedFromLock;
@@ -262,11 +265,17 @@
       }
       return;
     }
-    if (!listRef) return;
-    listRef.revalidate();
+    const list = listRef;
+    if (!list) return;
+    list.revalidate();
     if (shouldStickToBottom) {
-      listRef.scrollToIndex(lastIndex, { align: 'end' });
-      stick.markAtBottom();
+      stick.requestBottom({
+        takeover: 'yield',
+        write: () => {
+          list.scrollToIndex(lastIndex, { align: 'end' });
+          stick.markAtBottom();
+        },
+      });
     }
   }
 

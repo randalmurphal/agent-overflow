@@ -473,7 +473,7 @@ describe('auto-collapse release vs streaming appends', () => {
     withViewportBottomHeld(
       pane.scrollController,
       () => pane.activityRuns.releaseOpenedLive(heldRunId),
-      { yieldToStructuralAppend: true },
+      { takeover: 'yield' },
     );
     pane.applyProviderItemUpserts([bash('race-tail', 110, THREAD_ID)]);
     await tick();
@@ -563,7 +563,7 @@ describe('auto-collapse release vs streaming appends', () => {
     withViewportBottomHeld(
       pane.scrollController,
       () => pane.activityRuns.releaseOpenedLive(heldRunId),
-      { yieldToStructuralAppend: true },
+      { takeover: 'yield' },
     );
     await tick();
     // Two frames: the restore's write has landed AND the fold's RO shrink

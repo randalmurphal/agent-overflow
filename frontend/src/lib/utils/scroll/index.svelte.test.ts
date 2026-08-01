@@ -2282,6 +2282,112 @@ describe('createUseStickToBottomController — spring chase', () => {
     });
   });
 
+  describe('requestBottom — bottom-edge arbitration', () => {
+    // Warm the controller and start a real chase toward 600 (content
+    // grows 800 → 1000 while pinned at the bottom of a 600px viewport).
+    async function warmThenStartChase(): Promise<void> {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(geom.scrollTop).toBe(400);
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      // Glide, not instant: the chase owns the trip to 600.
+      expect(geom.scrollTop).toBe(400);
+    }
+
+    it("'claim' mid-chase cancels the glide, places instantly, and leaves the spring re-engageable", async () => {
+      await warmThenStartChase();
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(600);
+
+      controller.requestBottom({ takeover: 'claim' });
+      expect(geom.scrollTop).toBe(600);
+      // The program is dead — no lingering tick moves the viewport.
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(600);
+
+      // clearStopRequest ordering (same as forceStick): the next chunk
+      // re-engages the spring rather than finding a stale stop flag.
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      getRO().fire(contentEl, 1200);
+      expect(geom.scrollTop).toBe(600);
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(600);
+      await advanceUntil(() => Math.abs(geom.scrollTop - 800) <= 1);
+    });
+
+    it("'yield' mid-chase writes nothing — the chase keeps the trip and arrives on its own", async () => {
+      await warmThenStartChase();
+      await nextFrame();
+      const midGlide = geom.scrollTop;
+      expect(midGlide).toBeGreaterThan(400);
+      expect(midGlide).toBeLessThan(600);
+
+      controller.requestBottom({ takeover: 'yield' });
+      // No one-shot absolute write landed over the running program.
+      expect(geom.scrollTop).toBe(midGlide);
+      await advanceUntil(() => Math.abs(geom.scrollTop - 600) <= 1);
+    });
+
+    it("'yield' with a structural append armed (chase not yet started) hands the trip to the armed spring", async () => {
+      liveContent = false;
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(geom.scrollTop).toBe(400);
+
+      // The armed gap before the spring's first frame: the arm exists,
+      // no tick has run — still the reader's animation.
+      controller.markStructuralContentPending();
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      controller.requestBottom({ takeover: 'yield' });
+      expect(geom.scrollTop).toBe(400);
+      await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      await advanceUntil(() => Math.abs(geom.scrollTop - 600) <= 1);
+    });
+
+    it("'yield' with no program engaged places the bottom instantly", async () => {
+      liveContent = false;
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      expect(geom.scrollTop).toBe(400);
+
+      // The bottom moved without any delivery arming a program (a
+      // layout change during a lease, reported after release).
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      controller.requestBottom({ takeover: 'yield' });
+      expect(geom.scrollTop).toBe(600);
+    });
+
+    it('a custom write owns the placement — invoked when placing, skipped on a yield hand-off', async () => {
+      await warmThenStartChase();
+      await nextFrame();
+      const midGlide = geom.scrollTop;
+
+      const write = vi.fn();
+      controller.requestBottom({ takeover: 'yield', write });
+      // Program engaged: the yield hands off, the callback never runs.
+      expect(write).not.toHaveBeenCalled();
+      expect(geom.scrollTop).toBe(midGlide);
+
+      controller.requestBottom({ takeover: 'claim', write });
+      // Claim resolves to "place now": the spring is cancelled and the
+      // callback owns the placement — the controller writes nothing.
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(geom.scrollTop).toBe(midGlide);
+      for (let i = 0; i < 5; i++) await nextFrame();
+      expect(geom.scrollTop).toBe(midGlide);
+    });
+  });
+
   describe('warm-up gate', () => {
     it('sync-pins (no spring) during the warm-up window even when mode=spring', async () => {
       const ro = getRO();

@@ -74,6 +74,7 @@ import { createSpringChase, type ArrivalReadback } from './spring';
 import { nowMs } from './time';
 import { trace } from './trace';
 import type {
+  RequestBottomOptions,
   ScrollObservationKind,
   ScrollWriteCaller,
   UseStickToBottomController,
@@ -84,6 +85,8 @@ import type {
 // Public types re-exported so consumers import the controller and its
 // contract from one place; the definitions live in ./types.
 export type {
+  RequestBottomOptions,
+  RequestBottomTakeover,
   ScrollObservationKind,
   UseStickToBottomController,
   UseStickToBottomOptions,
@@ -824,6 +827,52 @@ export function createUseStickToBottomController(
     writeScrollTop('forceStick', targetScrollTop());
   }
 
+  // Bottom-edge arbitration (see the interface doc in ./types.ts). The
+  // one rule every out-of-band bottom placement now shares: while the
+  // bottom-follow program is engaged, a system-initiated request hands
+  // the trip to it; user intent always may retarget. The program
+  // predicate is exactly `autoScrollInFlight()` — a glide running, or a
+  // structural-append arm holding one ready to start (the armed gap
+  // before the spring's first frame is still the reader's animation).
+  function requestBottom(opts: RequestBottomOptions): void {
+    const programEngaged = spring.isActive() || spring.structuralAppendPending();
+    if (isUiRenderTraceEnabled()) trace('scroll.requestBottom', () => ({
+      takeover: opts.takeover,
+      caller: opts.caller ?? null,
+      customWrite: opts.write !== undefined,
+      programEngaged,
+      springActive: spring.isActive(),
+      structuralAppendPending: spring.structuralAppendPending(),
+      isAtBottomState,
+      escapedFromLockState,
+      pauseDepth,
+      scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      target: scrollEl ? Math.round(targetScrollTop()) : null,
+    }));
+    if (opts.takeover === 'yield' && programEngaged) {
+      // The program owns the trip. The live-content path re-reads the
+      // moved bottom and lets the chase (or the armed spring) close the
+      // remaining distance — and its own gates keep a paused or escaped
+      // surface untouched.
+      notifyLiveContentMaybeGrew();
+      return;
+    }
+    if (opts.takeover === 'claim') {
+      // Reader-asked placement preempts any program. Clear the stop
+      // flag after cancel so the next streaming chunk can re-engage the
+      // spring (same ordering as forceStick).
+      spring.cancel();
+      spring.clearStopRequest();
+    }
+    if (opts.write) {
+      opts.write();
+      return;
+    }
+    if (!scrollEl) return;
+    isAtBottomState = true;
+    writeScrollTop(opts.caller ?? 'requestBottom', targetScrollTop());
+  }
+
   function markAtBottom(): void {
     // Flag-only counterpart to forceStick: caller already established
     // bottom geometry, or there is no geometry yet because the
@@ -1047,25 +1096,17 @@ export function createUseStickToBottomController(
       if (willRepin) {
         // Re-pin on lease release: layout-changing surfaces (sidebar
         // resize, terminal toggle) shrink/grow the chat column during
-        // the lease; without this re-pin, sticky users drift. When the
-        // structural-append window is open, the bottom includes a row
-        // that is owed a glide (an append landed during the lease —
-        // e.g. inside an auto-collapse transaction), so hand the re-pin
-        // to the live-content path: it springs the distance instead of
-        // landing the new row instantly, and degrades to the same
-        // instant pin when the spring gate is closed. A spring still in
-        // flight across the lease gets the same courtesy: its remaining
-        // distance to the bottom is a glide already in progress, and a
-        // direct write here collapses it into an instant hop
+        // the lease; without this re-pin, sticky users drift. The
+        // release acts unasked, so it yields: a structural append that
+        // landed during the lease (e.g. inside an auto-collapse
+        // transaction) or a spring still in flight across it owns the
+        // remaining trip to the bottom, and a direct write here would
+        // collapse that glide into an instant hop
         // (bug-report-20260801T214455Z — the recent-window prune's
         // sub-frame lease landing mid-chase). Reader-asked transactions
-        // are unaffected either way: their restore writes the bottom
+        // are unaffected either way: their restore claims the bottom
         // before releasing, so this repin sees zero distance.
-        if (spring.structuralAppendPending() || spring.isActive()) {
-          notifyLiveContentMaybeGrew();
-        } else {
-          writeScrollTop('pauseAutoScroll.release', targetScrollTop());
-        }
+        requestBottom({ takeover: 'yield', caller: 'pauseAutoScroll.release' });
       }
     };
   }
@@ -1194,6 +1235,7 @@ export function createUseStickToBottomController(
     attach,
     detach,
     forceStick,
+    requestBottom,
     markAtBottom,
     setEscapedFromLock: intent.setEscapedFromLock,
     armWarmup: observers.beginWarmup,

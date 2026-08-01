@@ -21,7 +21,7 @@
 // and its bottom restore (structural triggers make gate passes
 // inherently append-adjacent) arms the structural spring, and the
 // restore hands the trip to it instead of writing a bottom that already
-// contains the new row — see `yieldToStructuralAppend` at the call site.
+// contains the new row — see the `takeover: 'yield'` at the call site.
 
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { withViewportBottomHeld } from '../../stores/threadPaneShared';
@@ -126,13 +126,13 @@ export function createTimelineActivityRunAutoCollapse(
     // the engine to compensate an estimate-driven height change above them.
     // Collected first so a pass with nothing to do never pauses the spring.
     //
-    // yieldToStructuralAppend: the scheduler's quiet gate can only see
-    // motion that exists when the pass RUNS — a streamed append can
-    // land in the flushes between this change and its bottom restore
-    // (the gate re-runs on tail advances, so its passes are inherently
-    // correlated with arrivals). The transaction's restore then stands
-    // down and the append's armed spring glides the new row in, instead
-    // of the restore writing a bottom that already contains it
+    // takeover 'yield': the scheduler's quiet gate can only see motion
+    // that exists when the pass RUNS — a streamed append can land in
+    // the flushes between this change and its bottom restore (the gate
+    // re-runs on tail advances, so its passes are inherently correlated
+    // with arrivals). The transaction's restore then yields and the
+    // append's armed spring glides the new row in, instead of the
+    // restore claiming a bottom that already contains it
     // (bug-report-20260731T141600Z: an off-screen release merged with a
     // same-frame tool-call arrival into one net-negative delivery, and
     // every bottom write landed the row as a teleport).
@@ -141,7 +141,7 @@ export function createTimelineActivityRunAutoCollapse(
       () => {
         for (const runId of eligible) pane.activityRuns.releaseOpenedLive(runId);
       },
-      { yieldToStructuralAppend: true },
+      { takeover: 'yield' },
     );
     return true;
   }

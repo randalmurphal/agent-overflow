@@ -23,7 +23,10 @@ import type {
   ThreadPane,
   TimelineWindowAnchorOperation,
 } from '../../stores/thread.svelte';
-import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
+import type {
+  RequestBottomTakeover,
+  UseStickToBottomController,
+} from '../../utils/scroll/index.svelte';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import { timelineNodeKey } from '../../utils/subagentGrouping';
@@ -45,7 +48,7 @@ interface ViewportBottomIntent {
   switchGeneration: number;
   holdingBottom: boolean;
   anchor: TimelineTailAnchor | null;
-  yieldToStructuralAppend: boolean;
+  takeover: RequestBottomTakeover;
 }
 
 export interface TimelineWindowAnchorOptions {
@@ -133,13 +136,26 @@ export function createTimelineWindowAnchor(
   // external-scroll wrap is needed. They are also self-converging — the
   // virtualizer re-targets across several passes as measurements land — which
   // is what lets a single `tick()` be enough to schedule them.
-  function restoreBottomEdge(): void {
-    const revealedNodes = options.getRevealedNodes();
-    const lastIndex = revealedNodes.length - 1;
-    if (lastIndex >= 0) {
-      options.getListRef()?.scrollToIndex(lastIndex, { align: 'end' });
-    }
-    options.stick.markAtBottom();
+  //
+  // The bottom restore goes through the controller's `requestBottom`
+  // arbitration: a 'yield' while the bottom-follow program is engaged hands
+  // the trip to it instead of writing a bottom the reader is still gliding
+  // toward (the paused hand-off then no-ops on the controller's pause gate,
+  // and the lease release that follows performs the real yield — current
+  // restores run before their `release()`). The virtualized placement rides
+  // the `write` callback so the engine converges its measurement passes.
+  function restoreBottomEdge(takeover: RequestBottomTakeover): void {
+    options.stick.requestBottom({
+      takeover,
+      write: () => {
+        const revealedNodes = options.getRevealedNodes();
+        const lastIndex = revealedNodes.length - 1;
+        if (lastIndex >= 0) {
+          options.getListRef()?.scrollToIndex(lastIndex, { align: 'end' });
+        }
+        options.stick.markAtBottom();
+      },
+    });
     options.saveScrollSnapshot();
   }
 
@@ -168,18 +184,12 @@ export function createTimelineWindowAnchor(
         // held the reader's view — including a mid-glide spring's
         // remaining distance to the bottom (the chase reads its target
         // fresh every tick, so the relocated gap is still its to
-        // close). Writing the bottom here collapses that remainder into
-        // an instant hop in front of the reader
+        // close). A claimed bottom here would collapse that remainder
+        // into an instant hop in front of the reader
         // (bug-report-20260801T214455Z: a one-line snap mid-prose when
-        // the recent-window prune landed mid-chase). Stand down and let
-        // the in-flight auto-scroll finish the trip; the pause
-        // release's repin yields to it the same way.
-        if (options.stick.autoScrollInFlight()) {
-          options.stick.observe('live-content');
-          options.saveScrollSnapshot();
-          return;
-        }
-        restoreBottomEdge();
+        // the recent-window prune landed mid-chase), so the restore
+        // yields and the in-flight auto-scroll finishes the trip.
+        restoreBottomEdge('yield');
         return;
       }
 
@@ -243,20 +253,16 @@ export function createTimelineWindowAnchor(
       if (intent.holdingBottom) {
         // An unasked transaction (the auto-collapse gate) can race a
         // streamed append landing in the flushes between its change and
-        // this restore. Writing the bottom then would include the new
+        // this restore. Claiming the bottom then would include the new
         // row — the glide the append armed finds zero distance and the
-        // row teleports in (bug-report-20260731T141600Z). Stand down and
-        // hand the fresh geometry to the live-content path: the armed
-        // spring (or the one already chasing) owns the trip to the
-        // bottom. The pinned pre-append view needs no write of its own —
-        // the browser's clamp and the engine's yielded compensation keep
-        // it in place.
-        if (intent.yieldToStructuralAppend && options.stick.autoScrollInFlight()) {
-          options.stick.observe('live-content');
-          options.saveScrollSnapshot();
-          return;
-        }
-        restoreBottomEdge();
+        // row teleports in (bug-report-20260731T141600Z) — so unasked
+        // transactions restore with `'yield'` and the armed spring (or
+        // the one already chasing) owns the trip; the pinned pre-append
+        // view needs no write of its own, the browser's clamp and the
+        // engine's yielded compensation keep it in place. Reader-asked
+        // transactions claim: their contract is that the clicked delta
+        // never animates.
+        restoreBottomEdge(intent.takeover);
         return;
       }
       if (!options.getListRef() || !intent.anchor) return;
@@ -280,7 +286,7 @@ export function createTimelineWindowAnchor(
       switchGeneration: options.getPane().switchGeneration,
       holdingBottom: holdingBottom(),
       anchor: null,
-      yieldToStructuralAppend: opts?.yieldToStructuralAppend === true,
+      takeover: opts?.takeover ?? 'claim',
     };
     if (!intent.holdingBottom) {
       intent.anchor = captureTimelineTailAnchor(
