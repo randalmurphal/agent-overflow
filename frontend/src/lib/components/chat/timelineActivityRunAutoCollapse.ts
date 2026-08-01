@@ -12,23 +12,20 @@
 // pure (utils/activityRunAutoCollapse.ts); this module owns the reader half,
 // because it reads the pane's registries.
 //
-// Same cadence and shape as timelineRowUiPrune: structural changes + scroll
-// end, debounced one tick, never per scroll frame. Growth that bumps nothing
-// structural (prose streaming below a settled run) still reaches the gate
-// through scroll end — the pin writes scrollTop while content grows, and the
-// virtualizer synthesizes scrollend after the writes go quiet. A pass that
-// lands while the growth's glide is still running stands down
-// (`autoScrollInFlight`) and lets that scrollend re-run it. That check can
-// only see motion that already exists, so the transaction itself also
-// yields: an append landing between the release and its bottom restore
-// (structural triggers make gate passes inherently append-adjacent) arms
-// the structural spring, and the restore hands the trip to it instead of
-// writing a bottom that already contains the new row — see
-// `yieldToStructuralAppend` at the call site.
+// Scheduling — structural changes + scroll end, debounced, never during
+// reader-visible motion — lives in the shared quiet scheduler
+// (timelineQuietWork.ts); this module is its 'quiet' pass, so a release
+// can only run while no glide is running or armed. That stand-down can
+// only see motion that already exists when the pass runs, so the
+// transaction itself also yields: an append landing between the release
+// and its bottom restore (structural triggers make gate passes
+// inherently append-adjacent) arms the structural spring, and the
+// restore hands the trip to it instead of writing a bottom that already
+// contains the new row — see `yieldToStructuralAppend` at the call site.
 
-import { tick } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { withViewportBottomHeld } from '../../stores/threadPaneShared';
+import type { QuietPass } from './timelineQuietWork';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import {
   renderedItemIdsWithin,
@@ -42,16 +39,6 @@ export interface TimelineActivityRunAutoCollapseOptions {
   getPane(): ThreadPane;
   getListRef(): TimelineVirtualizerHandle | undefined;
   getRevealedNodes(): TimelineNode[];
-  isTest: boolean;
-}
-
-export interface TimelineActivityRunAutoCollapse {
-  /** Schedules a debounced (one-tick) gate pass. Called from the same
-   * trigger sites as the row-UI prune. */
-  schedule(): void;
-  /** Bumps the schedule token so an in-flight pass from a torn-down
-   * instance no-ops. Called from `onDestroy`. */
-  invalidate(): void;
 }
 
 /**
@@ -77,31 +64,27 @@ function readerEngagedWith(pane: ThreadPane, run: ActivityRunNode): boolean {
 
 export function createTimelineActivityRunAutoCollapse(
   options: TimelineActivityRunAutoCollapseOptions,
-): TimelineActivityRunAutoCollapse {
-  let token = 0;
-
-  function releaseEligibleRuns(): void {
+): QuietPass {
+  function releaseEligibleRuns(): boolean {
     const pane = options.getPane();
     // The common case must cost nothing: no held-open runs, no geometry.
+    // The reader-visible-motion stand-down is the scheduler's: this is
+    // a 'quiet' pass, so it never runs while a glide is running or
+    // armed. A release routes through `preserveViewportBottom`, whose
+    // bottom-pinned restore is a direct write — landing it mid-glide
+    // (or in the armed gap before the spring's first frame) turns the
+    // animation the reader is watching into a snap to the bottom.
     const held = pane.activityRuns.openedLiveRunIds();
-    if (held.length === 0) return;
+    if (held.length === 0) return false;
 
     const listRef = options.getListRef();
-    if (!listRef) return;
-    // Never during reader-visible motion. A release routes through
-    // `preserveViewportBottom`, whose bottom-pinned restore is a direct
-    // write — landing it mid-glide (or in the armed gap before the
-    // spring's first frame) turns the animation the reader is watching
-    // into a snap to the bottom. Deferring loses nothing: the settle that
-    // ends the glide synthesizes the scrollend that re-triggers this gate
-    // in quiet.
-    if (pane.scrollController?.autoScrollInFlight()) return;
+    if (!listRef) return false;
     // Engine-cached geometry only, same rule as the prune: a clientHeight
     // read here would force layout behind streaming DOM writes. A zero
     // viewport is an unmeasured scroller, and against one every run is
     // "out of sight".
     const viewport = listRef.getViewportSize();
-    if (viewport <= 0) return;
+    if (viewport <= 0) return false;
     const scrollTop = Math.max(0, listRef.getScrollOffset());
     const totalSize = listRef.getTotalSize();
 
@@ -132,7 +115,7 @@ export function createTimelineActivityRunAutoCollapse(
     // held list was captured, sweeping a run already in `heldSet`. Leaving it
     // alone is right: the registry dropped it, and `releaseOpenedLive`
     // no-ops on unknown ids. Nothing here may create entries.
-    if (eligible.length === 0) return;
+    if (eligible.length === 0) return false;
 
     // One anchored transaction around the whole batch — the rule every
     // mutator of run collapse state follows (chat/AGENTS.md). The runs are
@@ -143,9 +126,9 @@ export function createTimelineActivityRunAutoCollapse(
     // the engine to compensate an estimate-driven height change above them.
     // Collected first so a pass with nothing to do never pauses the spring.
     //
-    // yieldToStructuralAppend: the autoScrollInFlight stand-down above can
-    // only see motion that exists when the pass RUNS — a streamed append
-    // can land in the flushes between this change and its bottom restore
+    // yieldToStructuralAppend: the scheduler's quiet gate can only see
+    // motion that exists when the pass RUNS — a streamed append can
+    // land in the flushes between this change and its bottom restore
     // (the gate re-runs on tail advances, so its passes are inherently
     // correlated with arrivals). The transaction's restore then stands
     // down and the append's armed spring glides the new row in, instead
@@ -160,23 +143,12 @@ export function createTimelineActivityRunAutoCollapse(
       },
       { yieldToStructuralAppend: true },
     );
-  }
-
-  function schedule(): void {
-    if (options.isTest) return;
-    const current = ++token;
-    void tick().then(() => {
-      if (current !== token) return;
-      releaseEligibleRuns();
-    });
-  }
-
-  function invalidate(): void {
-    token += 1;
+    return true;
   }
 
   return {
-    schedule,
-    invalidate,
+    key: 'activity-run-auto-collapse',
+    when: 'quiet',
+    run: releaseEligibleRuns,
   };
 }

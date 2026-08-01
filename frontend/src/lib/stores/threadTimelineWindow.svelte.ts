@@ -112,6 +112,12 @@ export interface ThreadTimelineWindow {
     positionMode?: 'shift' | 'preserve';
   }): void;
   retryDeferredRecentWindowPrune(): void;
+  /**
+   * `settleTurn`'s prune entry: records the prune as pending for the
+   * quiet scheduler when a mounted timeline would have to repaint the
+   * head-drop, applies it immediately otherwise. See the factory doc.
+   */
+  settleRecentWindowPrune(): void;
   loadOlder(): Promise<LoadOlderResult>;
   loadUntilItem(itemID: string): Promise<boolean>;
   loadNewer(): Promise<LoadOlderResult>;
@@ -425,13 +431,17 @@ export function createThreadTimelineWindow(
     // A head-drop on a visible, bottom-pinned timeline repaints the whole
     // viewport: the content height collapses by the dropped rows, the
     // browser clamps scrollTop, and the virtualizer re-measures — seen as a blank
-    // flash mid-stream (incident 2026-06-10). Defer the prune to turn
-    // settle (settleTurn calls back in here), holding the hard ceiling
-    // as the memory backstop against a runaway turn.
+    // flash mid-stream (incident 2026-06-10). Defer the prune while a
+    // turn is active, holding the hard ceiling as the memory backstop
+    // against a runaway turn. The debt is recorded as pending so the
+    // quiet scheduler's retry keeps standing off a turn that started
+    // while the prune waited, and later append-path calls short-circuit
+    // on the pending flag instead of re-slicing the window.
     if (
       !exceedsHardCeiling
       && activeTurn
     ) {
+      recentWindowPrunePending = true;
       return;
     }
     if (recentWindowPrunePending && !exceedsHardCeiling) return;
@@ -642,6 +652,35 @@ export function createThreadTimelineWindow(
 
   function retryDeferredRecentWindowPrune(): void {
     if (!recentWindowPrunePending) return;
+    recentWindowPrunePending = false;
+    pruneToRecentWindowIfNeeded();
+  }
+
+  /**
+   * Turn-settle entry point for the recent-window prune. Wire settle is
+   * NOT visual quiet: the reveal smoother keeps draining the tail for
+   * seconds after the turn completes (deliberately — no end-of-turn
+   * fast-drain), and the head-drop's flush is the most expensive in the
+   * app, so landing it here put the stall inside the glide the reader
+   * was watching (bug-report-20260801T214455Z traces; measured 78–186ms).
+   * When a mounted timeline is behind the pane (the controller offers
+   * the anchor transaction), the prune is recorded as pending and the
+   * quiet scheduler (timelineQuietWork) retries it once nothing is
+   * animating. Without one — discussion surface, headless pane — the
+   * head-drop repaints nothing, so it applies immediately.
+   * The hard ceiling stays with the append path and is unaffected.
+   * See docs/architecture/scroll-arbitration-plan.md.
+   */
+  function settleRecentWindowPrune(): void {
+    if (hasMoreNewer) return;
+    if (options.getItems().length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) {
+      recentWindowPrunePending = false;
+      return;
+    }
+    if (options.getScrollController()?.preserveTimelineWindowAnchor) {
+      recentWindowPrunePending = true;
+      return;
+    }
     recentWindowPrunePending = false;
     pruneToRecentWindowIfNeeded();
   }
@@ -1047,6 +1086,7 @@ export function createThreadTimelineWindow(
     refreshCursorsAfterTailAppend,
     pruneToRecentWindowIfNeeded,
     retryDeferredRecentWindowPrune,
+    settleRecentWindowPrune,
     loadOlder,
     loadUntilItem,
     loadNewer,

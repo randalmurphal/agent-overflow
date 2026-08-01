@@ -32,6 +32,7 @@
   import { createTimelineWindowAnchor } from './timelineWindowAnchor.svelte';
   import { createTimelineRowProjection } from './timelineRowProjection.svelte';
   import { createTimelineDiagnostics } from './timelineDiagnostics';
+  import { createTimelineQuietWork } from './timelineQuietWork';
   import { createTimelineRowUiPrune } from './timelineRowUiPrune';
   import { createTimelineActivityRunAutoCollapse } from './timelineActivityRunAutoCollapse';
   import { coldLoadPriors, coldLoadWarmEdge } from '../../utils/coldLoadTrace';
@@ -343,21 +344,41 @@
     getRestoredThreadId: () => restore.restoredThreadId,
   });
 
-  const prune = createTimelineRowUiPrune({
-    getPane: () => pane,
-    getListRef: () => listRef,
-    getRevealedNodes: () => revealedNodes,
+  // Deferred structural work — the recent-window prune retry, the
+  // activity-run auto-collapse releases, and the row-UI prune — runs on
+  // ONE cadence owned by the quiet scheduler: structural triggers +
+  // scroll end, debounced, with geometry-mutating passes gated on
+  // "no glide running or armed" and spread one per callback. See
+  // timelineQuietWork.ts and docs/architecture/scroll-arbitration-plan.md.
+  const quietWork = createTimelineQuietWork({
     isTest: IS_TEST,
-  });
-
-  // Rides the prune's cadence exactly (same triggers, same tick debounce):
-  // both ask "now that the dust settled, is anything retained/held that
-  // should not be", and both must stay off the per-frame scroll path.
-  const runAutoCollapse = createTimelineActivityRunAutoCollapse({
-    getPane: () => pane,
-    getListRef: () => listRef,
-    getRevealedNodes: () => revealedNodes,
-    isTest: IS_TEST,
+    autoScrollInFlight: () => stick.autoScrollInFlight(),
+    passes: [
+      // The settle-deferred recent-window prune. The store records the
+      // debt (`hasDeferredRecentWindowPrune`); running it here — never
+      // at wire settle — is what keeps the head-drop's flush (the most
+      // expensive in the app) out of the reveal drain's glide.
+      {
+        key: 'recent-window-prune',
+        when: 'quiet',
+        run: () => {
+          if (!pane.hasDeferredRecentWindowPrune) return false;
+          const revision = pane.timelineRevision;
+          pane.retryDeferredRecentWindowPrune();
+          return pane.timelineRevision !== revision;
+        },
+      },
+      createTimelineActivityRunAutoCollapse({
+        getPane: () => pane,
+        getListRef: () => listRef,
+        getRevealedNodes: () => revealedNodes,
+      }),
+      createTimelineRowUiPrune({
+        getPane: () => pane,
+        getListRef: () => listRef,
+        getRevealedNodes: () => revealedNodes,
+      }),
+    ],
   });
 
   // Depends on windowAnchor (module 4), so declared here rather than
@@ -386,12 +407,6 @@
     preserveTimelineWindowAnchor: windowAnchor.preserveTimelineWindowAnchor,
     preserveViewportBottom: windowAnchor.preserveViewportBottom,
   };
-
-  $effect(() => {
-    if (!pane.hasDeferredRecentWindowPrune) return;
-    if (!stick.isSticky) return;
-    pane.retryDeferredRecentWindowPrune();
-  });
 
   // Hide contentEl while the virtualizer and async row content settle.
   // Priors-miss mounts start from kind-table/flat estimates; the per-row
@@ -528,12 +543,12 @@
     return resolveVisibleTimelineNodeIndex(revealedNodes, pane.items, itemId);
   }
 
-  // Prune cadence: structural timeline changes (revision / reveal /
-  // thread switch) plus scroll END — never per scroll frame. Retention
-  // is recomputed fresh on every run, so active-row transitions that
-  // ride no structural bump (a lone settle flip) are picked up by the
-  // next trigger; until then the stale entry is only over-retained,
-  // never prematurely pruned.
+  // Quiet-work cadence: structural timeline changes (revision / reveal /
+  // thread switch) plus scroll END — never per scroll frame. Each pass
+  // recomputes its work fresh on every run, so transitions that ride no
+  // structural bump (a lone settle flip) are picked up by the next
+  // trigger; until then held state is only over-retained, never
+  // prematurely dropped.
   $effect(() => {
     pane.threadId;
     pane.timelineRevision;
@@ -544,20 +559,23 @@
     // Without this the pass the signature is ready to accept is never
     // scheduled, so the window the reader left stays retained until an
     // unrelated outer scroll. Each bump is one deliberate action (a toggle, a
-    // chunk, a jump), never a streaming delta.
+    // chunk, a jump), never a streaming delta. (New items also push settled
+    // runs further from the tail, and an auto-collapse release bumps this
+    // same revision — the follow-up pass then finds no held runs and costs
+    // one Map scan.)
     pane.activityRuns.revision;
-    prune.schedule();
-    // New items push settled runs further from the tail, and a release bumps
-    // the same revision this effect watches — the follow-up pass then finds
-    // no held runs and costs one Map scan.
-    runAutoCollapse.schedule();
+    // A turn settling with no drain behind it (tool-only turns) flips the
+    // deferred-prune flag with no structural change or scroll write in
+    // tow — the flag itself must be a trigger or the prune waits for the
+    // next turn's churn.
+    pane.hasDeferredRecentWindowPrune;
+    quietWork.schedule();
   });
 
   $effect(() => {
     listRef;
     scrollEl;
-    prune.schedule();
-    runAutoCollapse.schedule();
+    quietWork.schedule();
   });
 
 
@@ -583,11 +601,11 @@
 
   function handleTimelineScrollEnd(): void {
     restore.saveScrollSnapshot();
-    prune.schedule();
-    // Scroll end is also how tail growth with no structural bump reaches the
-    // gate: the bottom pin's scrollTop writes end in a synthesized scrollend
-    // once streaming goes quiet.
-    runAutoCollapse.schedule();
+    // Scroll end is also how tail growth with no structural bump reaches
+    // the quiet passes: the bottom pin's scrollTop writes end in a
+    // synthesized scrollend once streaming goes quiet. (The scheduler's
+    // own recheck timer covers the sentinel outliving that scrollend.)
+    quietWork.schedule();
   }
 
   $effect.pre(() => {
@@ -623,8 +641,7 @@
   });
 
   onDestroy(() => {
-    prune.invalidate();
-    runAutoCollapse.invalidate();
+    quietWork.invalidate();
     restore.invalidateRestore();
     restore.saveSnapshotOnDestroy();
     targetFlash.clear();

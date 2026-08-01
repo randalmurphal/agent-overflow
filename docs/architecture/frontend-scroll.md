@@ -115,9 +115,18 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
   - `timelineDiagnostics.ts` — render/state tracing and the dev-only
     memory-stats, pane-geometry, row-resize, margin-divergence, and
     reasoning-tail-jump probes.
+  - `timelineQuietWork.ts` — the quiet scheduler: one cadence
+    (structural changes + scroll end, debounced, with a recheck timer
+    bridging the sentinel outliving the last scrollend) for the
+    timeline's deferred structural work. Its passes: the recent-window
+    prune retry, the activity-run auto-collapse releases, and the
+    row-UI prune. Geometry-mutating passes run only while no glide is
+    running or armed, at most one per callback. Design rationale:
+    [`scroll-arbitration-plan.md`](scroll-arbitration-plan.md).
   - `timelineRowUiPrune.ts` — bounds per-row expansion-handle retention
-    to a buffer around the visible range plus the tail, on a prune
-    cadence (structural changes + scroll end).
+    to a buffer around the visible range plus the tail (a quiet-work
+    pass on the 'always' rung — it mutates no visible geometry and must
+    keep bounding memory mid-stream).
 - `components/chat/ActivityRun.svelte` owns the one nested scroller that runs
   the same physics as the pane: a height-capped clip over a stretch of
   activity rows, with a second controller instance on the live run only.
@@ -255,12 +264,25 @@ splicing the size store against the wrong row set.
 
 The streaming append path caps the loaded window
 (`ACTIVE_TIMELINE_WINDOW_MAX_ITEMS`, pruning back to
-`ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS`), but the prune **defers to turn
-settle** while a turn is active. A mid-stream head-drop collapses content
-height under a bottom-pinned viewport, the browser clamps `scrollTop`,
-and the window re-measures — a visible blank flash (incident 2026-06-10).
-`ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS` is the memory backstop: a
-single turn streaming past it gets pruned mid-turn anyway.
+`ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS`), but the prune **defers past the
+whole visible stream to visual quiet**. A mid-stream head-drop collapses
+content height under a bottom-pinned viewport, the browser clamps
+`scrollTop`, and the window re-measures — a visible blank flash
+(incident 2026-06-10). And wire settle is not the end of the visible
+stream: the reveal smoother keeps draining the tail for seconds after
+the turn completes, so a settle-time prune landed its flush — the most
+expensive in the app (78–186ms in the bug-report-20260801T214455Z
+traces) — inside the glide the reader was watching. `settleTurn`
+therefore only *records* the prune as pending
+(`settleRecentWindowPrune`) when a mounted timeline is behind the pane;
+the quiet scheduler (`timelineQuietWork.ts`) runs
+`retryDeferredRecentWindowPrune` once no glide is running or armed. A
+pane with no timeline (discussion surface, headless) prunes at settle
+directly — there is nothing to repaint.
+`ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS` is the memory backstop and
+the only force: back-to-back turns that never reach quiet keep deferring
+until the ceiling prunes mid-stream anyway, exactly as a runaway single
+turn does.
 
 The streaming / settle window prune goes through `MessageTimeline` when a
 timeline is mounted (the paging prunes use `shift` instead — see **Load
@@ -310,8 +332,9 @@ provably elsewhere — but they ride the same transaction: the runs they
 change are out of sight by construction, and the anchor restore is what
 makes that a guarantee for a mid-list reader rather than a property of
 engine estimate compensation. One caveat follows from being unasked: the
-gate defers while `autoScrollInFlight()` reports a glide running or armed,
-because the transaction's bottom-pinned restore is a direct write and would
+gate runs as a 'quiet' pass of the quiet scheduler (`timelineQuietWork.ts`),
+so it never fires while `autoScrollInFlight()` reports a glide running or
+armed — the transaction's bottom-pinned restore is a direct write and would
 snap an animation the reader is watching; explicit clicks keep their
 instant behavior — for them the snap IS the intent. The stand-down can only
 see motion that exists when the pass runs, so the gate's transaction also

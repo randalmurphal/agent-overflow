@@ -4245,7 +4245,7 @@ describe('createThreadPane', () => {
       expect(pane.hasMoreHistory).toBe(true);
     });
 
-    it('runs the settle-time recent-window prune inside the scroll-controller rebase transaction', async () => {
+    it('records the settle prune as pending and runs it inside the transaction on retry', async () => {
       const pane = createThreadPane();
       const initial = Array.from({ length: 800 }, (_, index) =>
         makeItem({
@@ -4300,11 +4300,103 @@ describe('createThreadPane', () => {
         errorMessage: '',
       });
 
+      // Wire settle is not visual quiet: a pane with a mounted timeline
+      // (the controller offers the anchor transaction) records the prune
+      // as pending for the quiet scheduler instead of repainting the
+      // head-drop into the reveal drain's glide.
+      expect(preserveTimelineWindowAnchor).not.toHaveBeenCalled();
+      expect(pane.items).toHaveLength(801);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
+
+      pane.retryDeferredRecentWindowPrune();
+
       expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
       expect(itemCountDuringTransaction).toBe(801);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items[0].id).toBe('t301');
       expect(pane.pendingTimelineShiftAtHead).toBe(false);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(false);
+    });
+
+    it('a retry landing while the next turn already streams keeps the prune pending', async () => {
+      const pane = createThreadPane();
+      const initial = Array.from({ length: 800 }, (_, index) =>
+        makeItem({
+          id: `t${index}`,
+          threadId: 'prune-next-turn',
+          turnIndex: index,
+          itemIndex: 0,
+        }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 0,
+        newestTurnIndex: 799,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      await pane.switchThread(makeThread({ id: 'prune-next-turn' }));
+      pane.setActiveTurn({ turnId: 'turn-800', turnIndex: 800, startedAt: 1 });
+      pane.upsertItem(
+        makeItem({
+          id: 't800',
+          threadId: 'prune-next-turn',
+          turnIndex: 800,
+          itemIndex: 0,
+        }),
+      );
+
+      const preserveTimelineWindowAnchor = vi.fn((
+        operation: TimelineWindowAnchorOperation,
+      ) => {
+        operation.run();
+        return true;
+      });
+      pane.attachScrollController(
+        stubScrollController({ preserveTimelineWindowAnchor }),
+      );
+
+      pane.settleTurn({
+        turnId: 'turn-800',
+        turnIndex: 800,
+        startedAt: 1,
+        completedAt: 2,
+        stopReason: 'end_turn',
+        assistantMessageId: null,
+        tokenUsage: null,
+        aborted: false,
+        errorMessage: '',
+      });
+      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
+
+      // The user fires the next turn before quiet ever arrives: the
+      // retry must stand down (mid-stream head-drops are banned —
+      // incident 2026-06-10) but keep the debt recorded for the next
+      // quiet window.
+      pane.setActiveTurn({ turnId: 'turn-801', turnIndex: 801, startedAt: 3 });
+      pane.retryDeferredRecentWindowPrune();
+
+      expect(preserveTimelineWindowAnchor).not.toHaveBeenCalled();
+      expect(pane.items).toHaveLength(801);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
+
+      pane.settleTurn({
+        turnId: 'turn-801',
+        turnIndex: 801,
+        startedAt: 3,
+        completedAt: 4,
+        stopReason: 'end_turn',
+        assistantMessageId: null,
+        tokenUsage: null,
+        aborted: false,
+        errorMessage: '',
+      });
+      pane.retryDeferredRecentWindowPrune();
+
+      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+      expect(pane.hasDeferredRecentWindowPrune).toBe(false);
     });
 
     it('defers a recent-window prune when the scroll-controller cannot preserve the visible anchor', async () => {
@@ -4352,6 +4444,12 @@ describe('createThreadPane', () => {
         aborted: false,
         errorMessage: '',
       });
+      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
+
+      // The quiet retry runs into the anchor veto: the reader is parked
+      // on a row the prune would drop, so the window stays and the debt
+      // stays recorded.
+      pane.retryDeferredRecentWindowPrune();
 
       expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
       expect(pane.items).toHaveLength(801);
@@ -4423,6 +4521,9 @@ describe('createThreadPane', () => {
         aborted: false,
         errorMessage: '',
       });
+      expect(pane.hasDeferredRecentWindowPrune).toBe(true);
+
+      pane.retryDeferredRecentWindowPrune();
 
       expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
       expect(pane.items).toHaveLength(801);
@@ -4575,7 +4676,7 @@ describe('createThreadPane', () => {
         aborted: false,
         errorMessage: '',
       });
-      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(preserveTimelineWindowAnchor).not.toHaveBeenCalled();
       expect(pane.items).toHaveLength(801);
       expect(pane.hasDeferredRecentWindowPrune).toBe(true);
 
@@ -4587,7 +4688,7 @@ describe('createThreadPane', () => {
           itemIndex: 0,
         }),
       );
-      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
+      expect(preserveTimelineWindowAnchor).not.toHaveBeenCalled();
       expect(pane.items).toHaveLength(802);
       expect(pane.hasDeferredRecentWindowPrune).toBe(true);
 
@@ -4602,7 +4703,7 @@ describe('createThreadPane', () => {
         ),
       );
 
-      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(2);
+      expect(preserveTimelineWindowAnchor).toHaveBeenCalledTimes(1);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items[0].id).toBe('t1101');
       expect(pane.items.at(-1)?.id).toBe('t1600');

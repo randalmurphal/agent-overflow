@@ -39,7 +39,7 @@ defensive escape); the restore `$effect` calls
 `pane.switchGeneration`, not only `pane.threadId`.
 
 The scroll-session machinery extracted from `MessageTimeline.svelte`
-lives in seven sibling modules: `timelineRestore.svelte.ts` (thread-switch
+lives in eight sibling modules: `timelineRestore.svelte.ts` (thread-switch
 restore sessions and scroll snapshots), `timelineSizePriors.svelte.ts`
 (per-thread row size priors, incl. `ROW_KIND_ESTIMATE_PX`),
 `timelinePaging.ts` (load-older/newer gates and handlers),
@@ -48,7 +48,11 @@ restore sessions and scroll snapshots), `timelineSizePriors.svelte.ts`
 the reveal gate, rail classification, response-pill duration),
 `timelineDiagnostics.ts` (render/state tracing and the dev-only memory /
 pane-geometry / row-resize / margin-divergence / reasoning-tail-jump
-probes), and `timelineRowUiPrune.ts` (offscreen row-UI-state pruning).
+probes), `timelineQuietWork.ts` (the quiet scheduler: one cadence for
+the deferred structural passes — recent-window prune retry,
+auto-collapse releases, row-UI prune — with geometry-mutating work
+gated on "no glide running or armed"), and `timelineRowUiPrune.ts`
+(offscreen row-UI-state pruning, a quiet-work pass).
 `MessageTimeline` keeps only the thin `$effect` bodies that call into
 them.
 
@@ -149,8 +153,10 @@ Operational rules for this directory:
   Releases batch through `withViewportBottomHeld` like every other collapse —
   and NEVER while `autoScrollInFlight()` (spring active or a structural arm
   pending): the transaction's bottom-pinned restore is a direct write, so a
-  release landing mid-glide snaps the animation; the gate stands down and the
-  glide's own scrollend re-runs it. That check can only see motion that
+  release landing mid-glide snaps the animation. That stand-down is the quiet
+  scheduler's (`timelineQuietWork.ts` — the gate is one of its 'quiet'
+  passes; the scheduler's recheck timer re-runs a blocked pass once the
+  glide dies). The gate can only see motion that
   exists when the pass runs, so the transaction also passes
   `yieldToStructuralAppend`: a wire append landing between the release and
   its restore arms the structural spring, and the restore hands the trip to

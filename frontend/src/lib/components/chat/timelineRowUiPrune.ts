@@ -1,13 +1,16 @@
 // Offscreen row-UI-state pruning for MessageTimeline. Row expansion
 // handles keep loaded payload bytes and Svelte effect roots so rows can
 // survive normal windowing remounts; this module bounds that retention
-// to a buffer around the visible range plus the tail, on a prune cadence
-// (structural changes + scroll end) rather than per scroll frame.
+// to a buffer around the visible range plus the tail. Scheduling
+// (structural changes + scroll end, debounced, never per scroll frame)
+// lives in the shared quiet scheduler (timelineQuietWork.ts); this pass
+// runs on the 'always' rung because it mutates no reader-visible
+// geometry and must keep bounding memory mid-stream.
 
-import { tick } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
+import type { QuietPass } from './timelineQuietWork';
 import {
   collectTimelineRowUiRetention,
   timelineRowUiPruneSignature,
@@ -24,24 +27,12 @@ export interface TimelineRowUiPruneOptions {
   getPane(): ThreadPane;
   getListRef(): TimelineVirtualizerHandle | undefined;
   getRevealedNodes(): TimelineNode[];
-  isTest: boolean;
-}
-
-export interface TimelineRowUiPrune {
-  /** Schedules a debounced (one-tick) prune pass. Called from the
-   * component's structural/scroll-attach trigger effects and from
-   * `handleTimelineScrollEnd`. */
-  schedule(): void;
-  /** Bumps the schedule token so any in-flight scheduled prune from a
-   * torn-down instance no-ops. Called from `onDestroy`. */
-  invalidate(): void;
 }
 
 export function createTimelineRowUiPrune(
   options: TimelineRowUiPruneOptions,
-): TimelineRowUiPrune {
+): QuietPass {
   let lastRowUiPruneSignature = '';
-  let rowUiPruneToken = 0;
 
   function clampTimelineIndex(index: number): number {
     const revealedNodes = options.getRevealedNodes();
@@ -108,21 +99,14 @@ export function createTimelineRowUiPrune(
     pane.pruneRowUiState(retention);
   }
 
-  function schedule(): void {
-    if (options.isTest) return;
-    const token = ++rowUiPruneToken;
-    void tick().then(() => {
-      if (token !== rowUiPruneToken) return;
-      pruneOffscreenRowUiState();
-    });
-  }
-
-  function invalidate(): void {
-    rowUiPruneToken += 1;
-  }
-
   return {
-    schedule,
-    invalidate,
+    key: 'row-ui-prune',
+    when: 'always',
+    run: () => {
+      pruneOffscreenRowUiState();
+      // Retention drops dispose offscreen state only — nothing the
+      // reader can see moves, so the mutation slot stays available.
+      return false;
+    },
   };
 }

@@ -7,10 +7,13 @@ import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping
 import { makeItem } from '../../../test/helpers/chat';
 import { createThreadActivityRuns } from '../../stores/threadActivityRuns.svelte';
 import { createTimelineActivityRunAutoCollapse } from './timelineActivityRunAutoCollapse';
+import { createTimelineQuietWork } from './timelineQuietWork';
 
 // The gate over a REAL registry — release semantics are the point — with the
-// pane and engine reduced to exactly what the gate reads. Geometry: 600px
-// viewport, rows laid out by the offsets each test states.
+// pane and engine reduced to exactly what the gate reads, and the pass
+// driven through a real quiet scheduler so the "never during
+// reader-visible motion" gate is exercised where it now lives.
+// Geometry: 600px viewport, rows laid out by the offsets each test states.
 
 interface Harness {
   pane: ThreadPane;
@@ -24,10 +27,10 @@ interface Harness {
   autoScrollInFlight: boolean;
   items: Map<string, Item>;
   expandedItemIds: Set<string>;
-  gate: ReturnType<typeof createTimelineActivityRunAutoCollapse>;
+  quietWork: ReturnType<typeof createTimelineQuietWork>;
   /** One projection pass: resolves ids/collapse for every run node. */
   project(liveRunIndex?: number): void;
-  /** Schedules the gate and drains its tick. */
+  /** Schedules the quiet scheduler and drains its tick. */
   sweep(): Promise<void>;
 }
 
@@ -49,7 +52,7 @@ function harness(): Harness {
     items,
     expandedItemIds,
     pane: undefined as unknown as ThreadPane,
-    gate: undefined as unknown as ReturnType<typeof createTimelineActivityRunAutoCollapse>,
+    quietWork: undefined as unknown as ReturnType<typeof createTimelineQuietWork>,
     project(liveRunIndex = -1) {
       runs.beginPass();
       self.nodes.forEach((node, index) => {
@@ -68,7 +71,7 @@ function harness(): Harness {
       runs.endPass();
     },
     async sweep() {
-      self.gate.schedule();
+      self.quietWork.schedule();
       await tick();
       await tick();
     },
@@ -98,11 +101,16 @@ function harness(): Harness {
     getItemOffset: (index: number) => self.offsets[index] ?? 0,
   } as unknown as TimelineVirtualizerHandle;
 
-  self.gate = createTimelineActivityRunAutoCollapse({
-    getPane: () => self.pane,
-    getListRef: () => listRef,
-    getRevealedNodes: () => self.nodes,
+  self.quietWork = createTimelineQuietWork({
     isTest: false,
+    autoScrollInFlight: () => self.autoScrollInFlight,
+    passes: [
+      createTimelineActivityRunAutoCollapse({
+        getPane: () => self.pane,
+        getListRef: () => listRef,
+        getRevealedNodes: () => self.nodes,
+      }),
+    ],
   });
 
   return self;
@@ -182,9 +190,9 @@ describe('timelineActivityRunAutoCollapse', () => {
   it('defers to an in-flight glide and releases once it settles', async () => {
     // The release's bottom-pinned restore is a direct write; landing it
     // while the spring is animating (or armed) would snap the glide the
-    // reader is watching. The gate stands down instead — the glide's
-    // settle synthesizes the scrollend that re-runs it, modeled here as
-    // the second sweep.
+    // reader is watching. The scheduler's quiet gate holds the pass back —
+    // the glide's settle re-triggers it (scrollend, or the scheduler's own
+    // recheck timer), modeled here as the second sweep.
     const h = harness();
     const run = pinnedPastSettledRun(h);
     h.autoScrollInFlight = true;
@@ -326,8 +334,8 @@ describe('timelineActivityRunAutoCollapse', () => {
     const h = harness();
     const run = pinnedPastSettledRun(h);
 
-    h.gate.schedule();
-    h.gate.invalidate();
+    h.quietWork.schedule();
+    h.quietWork.invalidate();
     await tick();
     await tick();
     h.project();

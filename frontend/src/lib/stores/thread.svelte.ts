@@ -2356,12 +2356,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // reveal sequencer still fast-drains/snaps when a successor row
       // is waiting, so nothing structural is ever blocked behind the
       // tail row's backlog.
-      // Run the deferred window prune now that the turn is quiet — the
-      // streaming-append path skips it while a turn is active so the
-      // head-drop repaint never lands mid-stream.
-      if (!timelineWindow.hasMoreNewer) {
-        timelineWindow.pruneToRecentWindowIfNeeded();
-      }
+      // The deferred window prune does NOT run here: wire settle is not
+      // visual quiet — the reveal above keeps draining for seconds. A
+      // mounted timeline records the prune as pending and the quiet
+      // scheduler (timelineQuietWork) runs it once nothing is animating;
+      // a pane with no timeline behind it prunes immediately.
+      timelineWindow.settleRecentWindowPrune();
     },
 
     /**
