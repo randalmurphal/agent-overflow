@@ -352,6 +352,19 @@ describe('eventEscapesTerminalToCommand (terminal key-escape predicate)', () => 
     expect(escapes(ev('Tab', {}))).toBe(false);
   });
 
+  it('newPane escapes a focused mac terminal through the WKWebView Cmd+Shift shape', () => {
+    registerTerminalManagement();
+    // Cmd+Shift stripping delivers key '`' — the escape check must still
+    // recognize the mod+shift+~ chord so the pane opens from inside an xterm.
+    expect(
+      eventEscapesTerminalToCommand(
+        ev('`', { metaKey: true, shiftKey: true, code: 'Backquote' }),
+        TERMINAL_ESCAPE_COMMAND_IDS,
+        { isMac: true },
+      ),
+    ).toBe(true);
+  });
+
   it('would NOT escape the tab chords through the pane-nav-only set — escape-set entry is load-bearing', () => {
     registerTerminalManagement();
     expect(
@@ -363,10 +376,12 @@ describe('eventEscapesTerminalToCommand (terminal key-escape predicate)', () => 
     ).toBe(false);
   });
 
-  // Pressing mod+shift+` produces event.key '~' (the shifted glyph), which is
-  // why the default binding is spelled `mod+shift+~` — a `mod+shift+\`` chord
-  // would never fire. Pin the full dispatch on both platforms so neither the
-  // glyph spelling nor the mod resolution regresses.
+  // On Chromium platforms mod+shift+` produces event.key '~' (the shifted
+  // glyph), which is why the default binding is spelled `mod+shift+~`. On
+  // macOS WebKit the layout's Cmd table strips Shift, so Cmd+Shift+` arrives
+  // as event.key '`' and matches via the code-based fallback. Pin the full
+  // dispatch for all three shapes so neither the glyph spelling, the mod
+  // resolution, nor the fallback regresses.
   it('dispatches mod+shift+~ to terminal.newPane on both platforms', () => {
     const run = vi.fn();
     registerCommand({ id: 'terminal.newPane', label: 'New Pane', editableReachable: true, run });
@@ -374,14 +389,16 @@ describe('eventEscapesTerminalToCommand (terminal key-escape predicate)', () => 
 
     // Windows/Linux: Ctrl+Shift+` → key '~'.
     expect(dispatchKey(ev('~', { ctrlKey: true, shiftKey: true, code: 'Backquote' }), baseCtx(), { isMac: false })).toBe(true);
-    // macOS: Cmd+Shift+` → key '~'.
+    // macOS Chromium shape: Cmd+Shift+` → key '~'.
     expect(dispatchKey(ev('~', { metaKey: true, shiftKey: true, code: 'Backquote' }), baseCtx(), { isMac: true })).toBe(true);
-    expect(run).toHaveBeenCalledTimes(2);
+    // macOS WKWebView shape: Cmd+Shift stripping → key '`', code Backquote.
+    expect(dispatchKey(ev('`', { metaKey: true, shiftKey: true, code: 'Backquote' }), baseCtx(), { isMac: true })).toBe(true);
+    expect(run).toHaveBeenCalledTimes(3);
 
     // The bare backtick (shift not producing '~', or the unshifted key) must
     // not fire it.
     expect(dispatchKey(ev('`', { ctrlKey: true, code: 'Backquote' }), baseCtx(), { isMac: false })).toBe(false);
-    expect(run).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -475,5 +492,19 @@ describe('keybindings store — chord capture', () => {
   it('does not normalize Option-letter produced glyphs off macOS', () => {
     expect(encodeChordFromEvent(ev('Ò', { code: 'KeyL', altKey: true, shiftKey: true }), false))
       .not.toBe('alt+shift+l');
+  });
+
+  it('captures macOS Cmd+Shift punctuation as the shifted glyph despite Cmd stripping', () => {
+    // WKWebView delivers key '`' for Cmd+Shift+` (the Cmd table strips
+    // Shift); the captured chord must be the portable shifted-glyph
+    // spelling, matching what Chromium platforms report natively.
+    expect(encodeChordFromEvent(ev('`', { code: 'Backquote', metaKey: true, shiftKey: true }), true))
+      .toBe('mod+shift+~');
+    // Letters are untouched — no table entry, key is already correct.
+    expect(encodeChordFromEvent(ev('n', { code: 'KeyN', metaKey: true, shiftKey: true }), true))
+      .toBe('mod+shift+n');
+    // Off macOS the glyph arrives correctly and needs no normalization.
+    expect(encodeChordFromEvent(ev('~', { code: 'Backquote', ctrlKey: true, shiftKey: true }), false))
+      .toBe('mod+shift+~');
   });
 });

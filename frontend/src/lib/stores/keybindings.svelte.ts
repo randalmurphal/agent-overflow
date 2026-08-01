@@ -19,6 +19,7 @@ import {
   chordMatches,
   encodeChord,
   macOptionLetterFromCode,
+  macShiftedGlyphFromCode,
   tryParseChord,
   tryParseWhen,
 } from './keybindingParser';
@@ -325,6 +326,14 @@ function eventKeyForChordCapture(event: KeyboardEvent, isMac: boolean): string {
   if (isMac && event.altKey) {
     const optionLetter = macOptionLetterFromCode(event.code);
     if (optionLetter) return optionLetter;
+  }
+  // Mirror of the matcher's Cmd+Shift stripping fallback: recording
+  // Cmd+Shift+` in a WKWebView delivers key "`", which would capture a
+  // non-portable "cmd+shift+`" chord. Store the shifted glyph instead so
+  // the captured binding matches what Chromium platforms report natively.
+  if (isMac && event.metaKey && event.shiftKey) {
+    const shifted = macShiftedGlyphFromCode(event.code);
+    if (shifted && event.key.toLowerCase() !== shifted) return shifted;
   }
   return event.key.toLowerCase();
 }

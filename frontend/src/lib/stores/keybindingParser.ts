@@ -163,13 +163,58 @@ export function chordMatches(
 
 function eventKeyMatchesChord(
   chord: Chord,
-  event: Pick<ChordKeyboardEvent, 'key' | 'code' | 'altKey'>,
+  event: ChordKeyboardEvent,
   isMac: boolean,
 ): boolean {
   const wantedKey = chord.key.toLowerCase();
   if (event.key.toLowerCase() === wantedKey) return true;
-  if (!isMac || !event.altKey) return false;
-  return macOptionLetterFromCode(event.code) === wantedKey;
+  if (!isMac) return false;
+  if (event.altKey && macOptionLetterFromCode(event.code) === wantedKey) return true;
+  // macOS Cmd+Shift stripping: with Cmd held, the keyboard layout's
+  // command-modifier table ignores Shift for punctuation/digit keys, so
+  // WKWebView reports the UNSHIFTED character (Cmd+Shift+` → key "`", not
+  // "~"). Chromium works around this internally; WebKit does not. When the
+  // literal key failed to match under exactly that condition, reconstruct
+  // the shifted glyph from the physical key code. Gated to mac+meta so
+  // Chromium platforms (which already report the shifted glyph) and
+  // non-Cmd chords are never affected.
+  if (event.metaKey && event.shiftKey && chord.shiftKey) {
+    return macShiftedGlyphFromCode(event.code) === wantedKey;
+  }
+  return false;
+}
+
+// US-layout shifted glyphs by physical key code, used only to undo macOS
+// Cmd+Shift stripping (see eventKeyMatchesChord). US-centric by the same
+// rationale as macOptionLetterFromCode: the event.key the OS delivered has
+// already discarded the shift layer, so the physical code is the only
+// signal left.
+const MAC_SHIFTED_GLYPH_BY_CODE: Record<string, string> = {
+  Backquote: '~',
+  Digit1: '!',
+  Digit2: '@',
+  Digit3: '#',
+  Digit4: '$',
+  Digit5: '%',
+  Digit6: '^',
+  Digit7: '&',
+  Digit8: '*',
+  Digit9: '(',
+  Digit0: ')',
+  Minus: '_',
+  Equal: '+',
+  BracketLeft: '{',
+  BracketRight: '}',
+  Backslash: '|',
+  Semicolon: ':',
+  Quote: '"',
+  Comma: '<',
+  Period: '>',
+  Slash: '?',
+};
+
+export function macShiftedGlyphFromCode(code: string | undefined): string | null {
+  return (code && MAC_SHIFTED_GLYPH_BY_CODE[code]) || null;
 }
 
 export function macOptionLetterFromCode(code: string | undefined): string | null {

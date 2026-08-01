@@ -100,9 +100,13 @@ var Defaults = []Keybinding{
 	// can still rebind these commands in Settings if they prefer arrow chords.
 	{Key: "mod+n", Command: "thread.new", When: "!terminalFocus", DefaultID: "thread.new.primary"},
 	{Key: "mod+shift+n", Command: "thread.newPane", When: "!terminalFocus", DefaultID: "thread.newPane"},
-	// Uses the SHIFTED glyph `~`, not the bare backtick: Ctrl/Cmd+Shift+` yields
-	// event.key="~", and the matcher compares event.key.toLowerCase() without
-	// folding punctuation, so a `mod+shift+\`` binding would never fire. UN-gated
+	// Uses the SHIFTED glyph `~`, not the bare backtick: on Chromium platforms
+	// Ctrl/Cmd+Shift+` yields event.key="~", which the matcher compares
+	// literally, so a `mod+shift+\`` binding would never fire there. On macOS
+	// WebKit the layout's Cmd table strips Shift (Cmd+Shift+` arrives as
+	// key="`"); the frontend matcher reconstructs the shifted glyph from
+	// event.code for exactly that case (keybindingParser.ts,
+	// macShiftedGlyphFromCode), so the `~` spelling works on both. UN-gated
 	// (no !terminalFocus) so it opens a terminal pane from the composer AND from
 	// inside a focused terminal: TerminalBody's xterm key handler lets it bubble
 	// out via TERMINAL_ESCAPE_COMMAND_IDS, exactly like the alt+h/l vim pane-nav

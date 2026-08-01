@@ -113,11 +113,12 @@ describe('keybindingParser — chordMatches', () => {
   });
 
   // The default terminal.newPane chord is `mod+shift+~` — the SHIFTED glyph,
-  // not the bare backtick. Pressing Ctrl/Cmd+Shift+` produces event.key="~"
-  // (the shift layer), and chordMatches compares event.key.toLowerCase()
-  // against the chord key WITHOUT folding punctuation, so the binding MUST be
-  // `~`. A `mod+shift+\`` default would parse fine but never fire. This pins
-  // both halves so the footgun the plan warns about can't regress.
+  // not the bare backtick. On Chromium platforms Ctrl/Cmd+Shift+` produces
+  // event.key="~" (the shift layer) and matches literally. On macOS WebKit
+  // the layout's command-modifier table strips Shift, so Cmd+Shift+` arrives
+  // as event.key="`" — the chord matches via the code-based Cmd+Shift
+  // fallback instead. This pins all three shapes so neither the glyph
+  // spelling nor the fallback can regress.
   describe('terminal.newPane glyph (mod+shift+~)', () => {
     it('parses to the tilde glyph with mod+shift and no other modifiers', () => {
       expect(tryParseChord('mod+shift+~')).toMatchObject({
@@ -135,16 +136,35 @@ describe('keybindingParser — chordMatches', () => {
       expect(chordMatches(chord, ev('~', { ctrlKey: true, shiftKey: true }), false)).toBe(true);
     });
 
-    it('matches Cmd+Shift+Backtick (event.key="~") on mac', () => {
+    it('matches Cmd+Shift+Backtick (event.key="~") on mac — Chromium shape', () => {
       const chord = parseChord('mod+shift+~');
       expect(chordMatches(chord, ev('~', { metaKey: true, shiftKey: true }), true)).toBe(true);
     });
 
-    it('does NOT match the bare backtick glyph', () => {
-      // If the platform reported "`" (no shift layer) the tilde chord must not
-      // fire — this is exactly why the binding is `~`, not a backtick.
+    it('matches Cmd+Shift+Backtick (event.key="`") on mac — WKWebView shape', () => {
+      // The real WKWebView event: Cmd+Shift stripping means key is the
+      // UNSHIFTED backtick; only code carries the physical key. Verified
+      // against the live layout via UCKeyTranslate (cmd|shift + keycode 50
+      // → "`").
       const chord = parseChord('mod+shift+~');
-      expect(chordMatches(chord, ev('`', { ctrlKey: true, shiftKey: true }), false)).toBe(false);
+      expect(chordMatches(chord, ev('`', { metaKey: true, shiftKey: true, code: 'Backquote' }), true)).toBe(true);
+    });
+
+    it('does NOT match the bare backtick glyph off mac', () => {
+      // On Chromium platforms "`" with shift means the layout genuinely
+      // produced a backtick — the tilde chord must not fire, and the mac
+      // Cmd+Shift fallback must stay unreachable there.
+      const chord = parseChord('mod+shift+~');
+      expect(chordMatches(chord, ev('`', { ctrlKey: true, shiftKey: true, code: 'Backquote' }), false)).toBe(false);
+    });
+
+    it('does NOT use the Cmd+Shift fallback without meta or without shift', () => {
+      const chord = parseChord('mod+shift+~');
+      // mac, ctrl+shift (no meta): no stripping occurs in reality, and the
+      // fallback must not fire for a key the layout says is a backtick.
+      expect(chordMatches(chord, ev('`', { ctrlKey: true, shiftKey: true, code: 'Backquote' }), true)).toBe(false);
+      // mac, meta without shift: modifier mismatch, and no fallback either.
+      expect(chordMatches(chord, ev('`', { metaKey: true, code: 'Backquote' }), true)).toBe(false);
     });
   });
 
