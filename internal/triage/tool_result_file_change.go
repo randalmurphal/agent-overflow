@@ -70,7 +70,7 @@ func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent) error {
 		return nil
 	}
 
-	thread, err := r.store.GetThread(evt.ThreadID)
+	_, workspacePath, err := r.store.GetThreadProviderWorkspace(evt.ThreadID)
 	if err != nil {
 		return fmt.Errorf("lookup thread for tool result: %w", err)
 	}
@@ -81,9 +81,9 @@ func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent) error {
 		ok       bool
 	)
 	if isClaudeFilePathTool(toolName) {
-		meta, diffData, ok = extractClaudeFileChangeToolResult(evt.Meta, toolName, claudeFallbackFilePath, thread.WorkspacePath)
+		meta, diffData, ok = extractClaudeFileChangeToolResult(evt.Meta, toolName, claudeFallbackFilePath, workspacePath)
 	} else {
-		meta, diffData, ok = extractFileChangeToolResult(evt.Meta, thread.WorkspacePath)
+		meta, diffData, ok = extractFileChangeToolResult(evt.Meta, workspacePath)
 	}
 	if !ok {
 		return nil

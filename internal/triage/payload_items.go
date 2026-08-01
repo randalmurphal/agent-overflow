@@ -446,9 +446,6 @@ func (r *Router) attachPayloadToItemWithEmit(
 		metaEvt := evt
 		metaEvt.Content = string(data)
 		metaJSON := buildPayloadMeta(payloadKind, metaEvt)
-		if err := r.store.AppendPayloadData(payloadID, data, metaJSON, now); err != nil {
-			return fmt.Errorf("append %s payload %s: %w", payloadKind, payloadID, err)
-		}
 		item.PayloadID = payloadID
 		if summary != "" {
 			item.Summary = summary
@@ -457,10 +454,14 @@ func (r *Router) attachPayloadToItemWithEmit(
 		if item.CreatedAt == 0 {
 			item.CreatedAt = now
 		}
-		if emit {
-			return r.persistItem(item, nil)
+		// Chunk append + item upsert run as ONE store transaction — this
+		// fires per 100ms command-output flush window (and per diff
+		// append), where the former AppendPayloadData → persistItem pair
+		// cost two writer-lock acquisitions for one logical operation.
+		if err := r.persistItemWithPayloadAppend(item, payloadID, data, metaJSON, emit); err != nil {
+			return fmt.Errorf("append %s payload %s: %w", payloadKind, payloadID, err)
 		}
-		return r.persistItemQuiet(item, nil)
+		return nil
 	}
 
 	if !linked {

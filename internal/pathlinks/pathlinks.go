@@ -197,22 +197,8 @@ func extractAndValidate(workspacePath, text string, stat statFunc) []PathRef {
 	if text == "" {
 		return nil
 	}
-	// Reject anything that isn't a usable workspace root. Without an
-	// absolute canonical root we can't compute the boundary check
-	// (`filepath.Rel`) and can't safely join relatives, so the result
-	// would either over-accept or be silently misleading.
-	if workspacePath == "" || !filepath.IsAbs(workspacePath) || filepath.Clean(workspacePath) != workspacePath {
-		return nil
-	}
-	// Resolve the workspace's own symlinks once. The boundary check
-	// must compare symlink-resolved paths on both sides, or a workspace
-	// whose own path contains a symlink prefix (macOS /tmp →
-	// /private/tmp is the classic case) will produce false negatives
-	// against candidates that EvalSymlinks resolves through the same
-	// prefix. A missing/unreadable workspace drops everything because
-	// no further check can be trusted.
-	realWorkspace, err := filepath.EvalSymlinks(workspacePath)
-	if err != nil {
+	realWorkspace, ok := canonicalWorkspace(workspacePath)
+	if !ok {
 		return nil
 	}
 	matches := pathPattern.FindAllStringSubmatchIndex(text, -1)
@@ -223,61 +209,111 @@ func extractAndValidate(workspacePath, text string, stat statFunc) []PathRef {
 		matches = matches[:maxCandidates]
 	}
 
-	// Pass 1: filter candidates by boundary + heuristic. Build the
-	// unique-path set in source order (slice + presence map) so the
-	// stat phase hits the filesystem in document order — kernel
-	// dirent prefetch is more effective when sibling paths are
-	// stat'd together than when map iteration randomizes the order.
-	type candidate struct {
-		path string
-		line int
-		col  int
-	}
-	candidates := make([]candidate, 0, len(matches))
-	uniqueOrder := make([]string, 0, len(matches))
-	seen := make(map[string]struct{}, len(matches))
+	// Pass 1: filter candidates by boundary + heuristic, in match order.
+	candidates := make([]pathCandidate, 0, len(matches))
 	for _, m := range matches {
-		// Group indices: 0/1 = full, 2/3 = optional @, 4/5 = path body,
-		// 6/7 = line, 8/9 = col. The optional `@` is presentation only;
-		// the frontend re-detects it from surrounding text at wrap time.
-		pathStart, pathEnd := m[4], m[5]
-		if pathStart < 0 {
-			continue
-		}
-		// Boundary rule: the char before the *full match* must be a
-		// safe boundary OR input-start. If the match begins with `@`,
-		// the boundary check applies to the char before the `@`.
-		boundaryAt := m[0]
-		if boundaryAt > 0 && !safeBoundary(text[boundaryAt-1]) {
-			continue
-		}
-		// strings.Clone severs the substring from the message body's
-		// backing array. Without it, a single captured token would
-		// keep the entire `text` alive in memory for as long as any
-		// PathRef referencing it lived — multi-MB messages would pin
-		// their full body in the item.Meta JSON-encoding pipeline.
-		token := strings.Clone(text[pathStart:pathEnd])
-		if !looksLikeFilePath(token) {
-			continue
-		}
-		line := 0
-		col := 0
-		if m[6] >= 0 {
-			line = atoi(text[m[6]:m[7]])
-		}
-		if m[8] >= 0 {
-			col = atoi(text[m[8]:m[9]])
-		}
-		candidates = append(candidates, candidate{path: token, line: line, col: col})
-		if _, dup := seen[token]; !dup {
-			seen[token] = struct{}{}
-			uniqueOrder = append(uniqueOrder, token)
+		if c, ok := candidateFromMatch(text, m, 0); ok {
+			candidates = append(candidates, c)
 		}
 	}
 
-	// Pass 2: validate each unique path. Boundary check first
-	// (cheap, in-process) so a workspace-escape never reaches stat.
-	// One stat per unique path, in source order.
+	return validateCandidates(workspacePath, realWorkspace, candidates, stat)
+}
+
+// canonicalWorkspace runs the workspace preamble shared by the one-shot
+// and streaming extractors. It rejects anything that isn't a usable
+// workspace root — without an absolute canonical root we can't compute
+// the boundary check (`filepath.Rel`) and can't safely join relatives,
+// so the result would either over-accept or be silently misleading —
+// and resolves the workspace's own symlinks once. The boundary check
+// must compare symlink-resolved paths on both sides, or a workspace
+// whose own path contains a symlink prefix (macOS /tmp → /private/tmp
+// is the classic case) will produce false negatives against candidates
+// that EvalSymlinks resolves through the same prefix. A missing or
+// unreadable workspace drops everything because no further check can
+// be trusted.
+func canonicalWorkspace(workspacePath string) (string, bool) {
+	if workspacePath == "" || !filepath.IsAbs(workspacePath) || filepath.Clean(workspacePath) != workspacePath {
+		return "", false
+	}
+	realWorkspace, err := filepath.EvalSymlinks(workspacePath)
+	if err != nil {
+		return "", false
+	}
+	return realWorkspace, true
+}
+
+// pathCandidate is one boundary-and-heuristic-approved regex hit.
+// start is the full-match start offset in the source text — the
+// streaming scanner uses it to discard candidates from a rescanned
+// tail region.
+type pathCandidate struct {
+	start int
+	path  string
+	line  int
+	col   int
+}
+
+// candidateFromMatch applies the boundary + heuristic filter to one
+// regex match. `m` holds submatch indices relative to text[base:]; the
+// boundary byte is read from the full text so a region scan judges
+// offset-zero matches by their true predecessor.
+//
+// Group indices: 0/1 = full, 2/3 = optional @, 4/5 = path body,
+// 6/7 = line, 8/9 = col. The optional `@` is presentation only; the
+// frontend re-detects it from surrounding text at wrap time.
+func candidateFromMatch(text string, m []int, base int) (pathCandidate, bool) {
+	pathStart, pathEnd := m[4], m[5]
+	if pathStart < 0 {
+		return pathCandidate{}, false
+	}
+	// Boundary rule: the char before the *full match* must be a
+	// safe boundary OR input-start. If the match begins with `@`,
+	// the boundary check applies to the char before the `@`.
+	boundaryAt := base + m[0]
+	if boundaryAt > 0 && !safeBoundary(text[boundaryAt-1]) {
+		return pathCandidate{}, false
+	}
+	// strings.Clone severs the substring from the message body's
+	// backing array. Without it, a single captured token would
+	// keep the entire `text` alive in memory for as long as any
+	// PathRef referencing it lived — multi-MB messages would pin
+	// their full body in the item.Meta JSON-encoding pipeline.
+	token := strings.Clone(text[base+pathStart : base+pathEnd])
+	if !looksLikeFilePath(token) {
+		return pathCandidate{}, false
+	}
+	line := 0
+	col := 0
+	if m[6] >= 0 {
+		line = atoi(text[base+m[6] : base+m[7]])
+	}
+	if m[8] >= 0 {
+		col = atoi(text[base+m[8] : base+m[9]])
+	}
+	return pathCandidate{start: boundaryAt, path: token, line: line, col: col}, true
+}
+
+// validateCandidates is passes 2+3 of the pipeline: one boundary check
+// + stat per unique path (in source order — kernel dirent prefetch is
+// more effective when sibling paths are stat'd together than when map
+// iteration randomizes the order), then per-occurrence PathRef output
+// in source-text order.
+func validateCandidates(workspacePath, realWorkspace string, candidates []pathCandidate, stat statFunc) []PathRef {
+	if len(candidates) == 0 {
+		return nil
+	}
+	uniqueOrder := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, c := range candidates {
+		if _, dup := seen[c.path]; !dup {
+			seen[c.path] = struct{}{}
+			uniqueOrder = append(uniqueOrder, c.path)
+		}
+	}
+
+	// Boundary check first (cheap, in-process) so a workspace-escape
+	// never reaches stat.
 	validated := make(map[string]struct{}, len(uniqueOrder))
 	for _, token := range uniqueOrder {
 		resolved, ok := resolveInsideWorkspace(workspacePath, realWorkspace, token)
@@ -289,9 +325,6 @@ func extractAndValidate(workspacePath, text string, stat statFunc) []PathRef {
 		}
 	}
 
-	// Pass 3: produce per-occurrence PathRef entries for validated
-	// paths. Order follows source-text positions because Pass 1
-	// walked matches in order.
 	out := make([]PathRef, 0, len(candidates))
 	for _, c := range candidates {
 		if _, ok := validated[c.path]; !ok {
@@ -353,6 +386,136 @@ func resolveInsideWorkspace(workspacePath, realWorkspace, token string) (string,
 		return "", false
 	}
 	return resolved, true
+}
+
+// StreamScanner extracts path refs from an APPEND-ONLY text stream
+// without rescanning the whole text on every tick. Regex extraction is
+// incremental — each Update scans only the appended tail plus the
+// trailing token run it may have extended — while validation is NOT:
+// every Update re-stats the full known candidate list, so the returned
+// refs are exactly what ExtractAndValidate would produce over the
+// current text. That preserves the live-link behavior the streaming
+// enrichment exists for: a path mentioned early and created later
+// becomes clickable mid-stream, and a deleted file's link disappears.
+//
+// The incremental scan is exact, not approximate:
+//
+//   - A regex match never contains a byte outside the match charset
+//     (see isPathMatchByte), so no match crosses a non-matchable byte.
+//     Everything before the maximal matchable run containing the
+//     previous scan boundary is final; the run itself is rescanned
+//     because appended bytes may have extended its matches.
+//   - maxCandidates keeps its global first-N-in-document-order
+//     semantics: raw match starts (including boundary/heuristic
+//     rejects, which the one-shot scan also counts against the cap)
+//     are tracked so the stored prefix is always the first N raw
+//     matches of the full text.
+//
+// Not safe for concurrent use; callers serialize Updates per stream.
+type StreamScanner struct {
+	workspacePath string
+	stat          statFunc
+
+	// scannedLen is the text length as of the last Update. Bytes before
+	// the trailing matchable run at this offset are settled.
+	scannedLen int
+	// rawMatchStarts holds the full-match start offsets of every regex
+	// hit counted toward maxCandidates, ascending. len == maxCandidates
+	// means the cap is exhausted, exactly like the one-shot truncation.
+	rawMatchStarts []int
+	// candidates is the filtered occurrence list in document order.
+	candidates []pathCandidate
+}
+
+// NewStreamScanner returns a scanner validating against workspacePath.
+// The workspace preamble runs per Update (like ExtractAndValidate runs
+// it per call), so a workspace that becomes unreadable mid-stream
+// drops refs on the next tick.
+func NewStreamScanner(workspacePath string) *StreamScanner {
+	return newStreamScanner(workspacePath, defaultStat)
+}
+
+func newStreamScanner(workspacePath string, stat statFunc) *StreamScanner {
+	return &StreamScanner{workspacePath: workspacePath, stat: stat}
+}
+
+// Update ingests the stream's CURRENT FULL text (not a delta) and
+// returns the validated refs for it. The result matches
+// ExtractAndValidate(workspacePath, text) exactly.
+func (s *StreamScanner) Update(text string) []PathRef {
+	if s == nil || text == "" {
+		return nil
+	}
+	realWorkspace, ok := canonicalWorkspace(s.workspacePath)
+	if !ok {
+		return nil
+	}
+	s.extendScan(text)
+	return validateCandidates(s.workspacePath, realWorkspace, s.candidates, s.stat)
+}
+
+func (s *StreamScanner) extendScan(text string) {
+	if len(text) < s.scannedLen {
+		// The stream shrank — not an append. Defensive full restart so a
+		// caller contract violation degrades to the one-shot behavior
+		// instead of emitting refs for text that no longer exists.
+		s.scannedLen = 0
+		s.rawMatchStarts = nil
+		s.candidates = nil
+	}
+	if len(text) == s.scannedLen {
+		return
+	}
+	// Walk back over the trailing run of match-charset bytes: matches in
+	// it may extend as the stream appends, so it is re-derived each tick.
+	scanStart := s.scannedLen
+	for scanStart > 0 && isPathMatchByte(text[scanStart-1]) {
+		scanStart--
+	}
+	for len(s.rawMatchStarts) > 0 && s.rawMatchStarts[len(s.rawMatchStarts)-1] >= scanStart {
+		s.rawMatchStarts = s.rawMatchStarts[:len(s.rawMatchStarts)-1]
+	}
+	for len(s.candidates) > 0 && s.candidates[len(s.candidates)-1].start >= scanStart {
+		s.candidates = s.candidates[:len(s.candidates)-1]
+	}
+	s.scannedLen = len(text)
+
+	remaining := maxCandidates - len(s.rawMatchStarts)
+	if remaining <= 0 {
+		// Cap exhausted by matches before scanStart: the stored prefix is
+		// the one-shot scan's truncated match list; later text is ignored
+		// there too.
+		return
+	}
+	// The limited FindAll mirrors the one-shot `matches[:maxCandidates]`
+	// truncation: stored matches all start before scanStart, so stored +
+	// region hits remain the first-N raw matches in document order. When
+	// a previous tick hit the cap inside the trailing run, the trimming
+	// above freed those slots and scanStart precedes the region the
+	// limit left unscanned, so the rescan covers it.
+	matches := pathPattern.FindAllStringSubmatchIndex(text[scanStart:], remaining)
+	for _, m := range matches {
+		s.rawMatchStarts = append(s.rawMatchStarts, scanStart+m[0])
+		if c, ok := candidateFromMatch(text, m, scanStart); ok {
+			s.candidates = append(s.candidates, c)
+		}
+	}
+}
+
+// isPathMatchByte reports whether b can appear INSIDE a pathPattern
+// match: the pattern is built from literals `@ . / : - ~` and the
+// ASCII-only \w / \d classes, so any byte outside this set is a hard
+// match boundary. Keep in sync with pathPattern.
+func isPathMatchByte(b byte) bool {
+	switch {
+	case b >= '0' && b <= '9', b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z':
+		return true
+	}
+	switch b {
+	case '_', '@', '.', '/', ':', '-', '~':
+		return true
+	}
+	return false
 }
 
 func atoi(s string) int {

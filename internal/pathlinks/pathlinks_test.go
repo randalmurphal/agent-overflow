@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -430,6 +431,129 @@ func TestExtractAndValidate(t *testing.T) {
 		got := ExtractAndValidate(aliasWs, "edit src/foo.ts now")
 		if len(got) != 1 || got[0].Path != "src/foo.ts" {
 			t.Fatalf("expected ref for src/foo.ts via aliased workspace, got %#v", got)
+		}
+	})
+}
+
+// assertScannerMatchesOneShot feeds each tick's full text through a
+// fresh-per-tick one-shot extractAndValidate AND through one shared
+// StreamScanner, asserting the incremental result is identical at every
+// step. This is the StreamScanner contract: Update(text) ==
+// ExtractAndValidate(workspacePath, text) for any append-only sequence.
+func assertScannerMatchesOneShot(t *testing.T, ws string, stat statFunc, ticks []string) {
+	t.Helper()
+	sc := newStreamScanner(ws, stat)
+	for i, text := range ticks {
+		got := sc.Update(text)
+		want := extractAndValidate(ws, text, stat)
+		if !slices.Equal(got, want) {
+			t.Fatalf("tick %d (%q): scanner = %#v, one-shot = %#v", i, text, got, want)
+		}
+	}
+}
+
+func TestStreamScanner(t *testing.T) {
+	t.Run("every byte-level prefix matches the one-shot scan", func(t *testing.T) {
+		// Exhaustive equivalence: cut the stream at EVERY byte offset so
+		// append boundaries land mid-token, mid-`:line:col` suffix, inside
+		// `../`, and just after `@`. Any divergence in the trailing-run
+		// rescan logic fails here.
+		ws := seedWorkspace(t, "src/foo.ts", "src/bar.md", "a/b.go")
+		text := "see src/foo.ts and ../escape.ts plus src/foo.ts:42:7 then @src/bar.md, a/b.go end"
+		ticks := make([]string, 0, len(text))
+		for i := 1; i <= len(text); i++ {
+			ticks = append(ticks, text[:i])
+		}
+		assertScannerMatchesOneShot(t, ws, defaultStat, ticks)
+	})
+
+	t.Run("chunked appends match one-shot including candidate cap", func(t *testing.T) {
+		// Stream past maxCandidates raw matches in uneven chunks: the
+		// scanner must keep the one-shot first-N-in-document-order cap,
+		// including matches the boundary/heuristic filter rejects (the
+		// one-shot scan counts those against the cap too).
+		ws := seedWorkspace(t, "src/real.ts")
+		var b strings.Builder
+		for i := 0; i < maxCandidates+50; i++ {
+			fmt.Fprintf(&b, "x%d=src/fake%d.ts and ", i, i) // `=` boundary keeps these valid raw matches
+		}
+		b.WriteString("finally src/real.ts")
+		text := b.String()
+		var ticks []string
+		for i := 137; ; i += 137 {
+			if i >= len(text) {
+				ticks = append(ticks, text)
+				break
+			}
+			ticks = append(ticks, text[:i])
+		}
+		assertScannerMatchesOneShot(t, ws, defaultStat, ticks)
+	})
+
+	t.Run("re-validates the full candidate list every tick", func(t *testing.T) {
+		// The scanner carries candidates across ticks but NEVER validation
+		// results: a path that starts existing mid-stream must appear in
+		// the next Update, and one that stops existing must drop — even
+		// when no new text arrived. Uses real files because validation
+		// resolves candidates through EvalSymlinks, which fails on paths
+		// missing from disk.
+		ws := seedWorkspace(t)
+		if err := os.MkdirAll(filepath.Join(ws, "src"), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		gen := filepath.Join(ws, "src", "gen.ts")
+		sc := newStreamScanner(ws, defaultStat)
+
+		text := "building src/gen.ts now"
+		if got := sc.Update(text); got != nil {
+			t.Fatalf("expected nil before file exists, got %#v", got)
+		}
+
+		if err := os.WriteFile(gen, nil, 0o644); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		got := sc.Update(text)
+		if len(got) != 1 || got[0].Path != "src/gen.ts" {
+			t.Fatalf("expected ref after file appears, got %#v", got)
+		}
+
+		if err := os.Remove(gen); err != nil {
+			t.Fatalf("remove: %v", err)
+		}
+		if got := sc.Update(text); got != nil {
+			t.Fatalf("expected nil after file disappears, got %#v", got)
+		}
+	})
+
+	t.Run("shrinking text resets instead of emitting stale refs", func(t *testing.T) {
+		// Defensive contract: a non-append Update degrades to one-shot
+		// behavior for the new (shorter) text, and subsequent appends stay
+		// equivalent.
+		ws := seedWorkspace(t, "src/foo.ts")
+		sc := newStreamScanner(ws, defaultStat)
+
+		if got := sc.Update("see src/foo.ts here"); len(got) != 1 {
+			t.Fatalf("expected one ref on first tick, got %#v", got)
+		}
+		if got := sc.Update("see"); got != nil {
+			t.Fatalf("expected nil after shrink, got %#v", got)
+		}
+		got := sc.Update("see src/foo.ts again")
+		want := ExtractAndValidate(ws, "see src/foo.ts again")
+		if !slices.Equal(got, want) {
+			t.Fatalf("post-shrink append: scanner = %#v, one-shot = %#v", got, want)
+		}
+	})
+
+	t.Run("nil scanner and empty text are safe", func(t *testing.T) {
+		var nilSc *StreamScanner
+		if got := nilSc.Update("src/foo.ts"); got != nil {
+			t.Fatalf("nil scanner: expected nil, got %#v", got)
+		}
+		ws := seedWorkspace(t, "src/foo.ts")
+		sc := newStreamScanner(ws, defaultStat)
+		if got := sc.Update(""); got != nil {
+			t.Fatalf("empty text: expected nil, got %#v", got)
 		}
 	})
 }

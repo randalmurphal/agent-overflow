@@ -36,18 +36,35 @@ type ItemDeltaEvent struct {
 }
 
 type streamPersistBuffer struct {
-	threadID     string
-	itemID       string
-	kind         string
-	payloadID    string
-	summaryDelta string
-	payloadDelta string
+	threadID  string
+	itemID    string
+	kind      string
+	payloadID string
+	// content accumulates the window's delta text once. For text and
+	// thinking the staged summaryDelta and payloadDelta are always the
+	// same string, so a single builder replaces what used to be two
+	// `string +=` copies of identical content per chunk (each of which
+	// reallocated the whole accumulated window); command_output stages
+	// payloadDelta only. take-time materializes the pendingStreamFlush
+	// fields from this one buffer.
+	content strings.Builder
 	// meta carries the most recent chunk's provider meta. Only
 	// command_output flushes consume it (buildPayloadMeta reads
 	// command/exit fields from it); text/thinking leave it nil.
 	meta      json.RawMessage
 	updatedAt int64
 	timer     *time.Timer
+}
+
+// contentWeight is the value compared against persistByteThresholdForKind.
+// The historical threshold check was len(summaryDelta)+len(payloadDelta),
+// which double-counts text/thinking content (both fields carried the same
+// string) — preserved exactly so flush timing does not change.
+func (b *streamPersistBuffer) contentWeight() int {
+	if b.kind == payloadKindCommandOutput {
+		return b.content.Len()
+	}
+	return 2 * b.content.Len()
 }
 
 type pendingStreamFlush struct {
@@ -183,8 +200,14 @@ func (r *Router) stageStreamPersistence(delta pendingStreamFlush, flushOnThresho
 		}
 		r.streamPersistBuffers[key] = buffer
 	}
-	buffer.summaryDelta += delta.summaryDelta
-	buffer.payloadDelta += delta.payloadDelta
+	// Text/thinking stagers pass the identical string as summaryDelta and
+	// payloadDelta; command_output stages payloadDelta only. Either way
+	// the window's content accumulates exactly once.
+	if delta.kind == payloadKindCommandOutput {
+		buffer.content.WriteString(delta.payloadDelta)
+	} else {
+		buffer.content.WriteString(delta.summaryDelta)
+	}
 	buffer.updatedAt = delta.updatedAt
 	if buffer.payloadID == "" {
 		buffer.payloadID = delta.payloadID
@@ -193,7 +216,7 @@ func (r *Router) stageStreamPersistence(delta pendingStreamFlush, flushOnThresho
 		buffer.meta = delta.meta
 	}
 
-	if len(buffer.summaryDelta)+len(buffer.payloadDelta) >= persistByteThresholdForKind(buffer.kind) {
+	if buffer.contentWeight() >= persistByteThresholdForKind(buffer.kind) {
 		flushNow = true
 		if !flushOnThreshold {
 			r.scheduleStreamPersistenceLocked(key, buffer)
@@ -238,19 +261,26 @@ func (r *Router) takeStreamPersistenceLocked(key string) *pendingStreamFlush {
 		buffer.timer = nil
 	}
 	delete(r.streamPersistBuffers, key)
-	if buffer.summaryDelta == "" && buffer.payloadDelta == "" {
+	if buffer.content.Len() == 0 {
 		return nil
 	}
-	return &pendingStreamFlush{
+	// Materialize once; for text/thinking both fields reference the SAME
+	// string, matching what the stagers fed in without holding the
+	// window's content twice.
+	content := buffer.content.String()
+	pending := &pendingStreamFlush{
 		threadID:     buffer.threadID,
 		itemID:       buffer.itemID,
 		kind:         buffer.kind,
 		payloadID:    buffer.payloadID,
-		summaryDelta: buffer.summaryDelta,
-		payloadDelta: buffer.payloadDelta,
+		payloadDelta: content,
 		meta:         buffer.meta,
 		updatedAt:    buffer.updatedAt,
 	}
+	if buffer.kind != payloadKindCommandOutput {
+		pending.summaryDelta = content
+	}
+	return pending
 }
 
 // flushStreamPersistenceKey is the timer callback. It holds streamFlushMu
@@ -345,12 +375,23 @@ func (r *Router) flushAllStreamPersistence() error {
 }
 
 func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
+	// The summary append and the payload chunk append for one window run
+	// as ONE store transaction (the payload half is skipped when the item
+	// has no linked payload yet or the window carried no payload bytes) —
+	// this is the hottest recurring write path, and the former separate
+	// AppendPayloadData call doubled writer-lock acquisitions per window.
+	payloadID := flush.payloadID
+	if flush.payloadDelta == "" {
+		payloadID = ""
+	}
 	switch flush.kind {
 	case itemKindAssistantText:
-		updated, err := r.store.AppendItemSummary(
+		updated, err := r.store.AppendItemSummaryAndPayloadData(
 			flush.threadID,
 			flush.itemID,
 			flush.summaryDelta,
+			payloadID,
+			[]byte(flush.payloadDelta),
 			flush.updatedAt,
 		)
 		if isLateStreamPersistence(err) {
@@ -363,8 +404,8 @@ func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 		// against the row's running summary so path tokens in this
 		// flush become clickable mid-stream. Best-effort, dedupes
 		// against the previous merged meta. The fresh Item returned by
-		// AppendItemSummary is the same row enrich needs — pass it
-		// through to skip a redundant SQLite read on the hot path. See
+		// the append is the same row enrich needs — pass it through to
+		// skip a redundant SQLite read on the hot path. See
 		// enrichStreamingPathRefsAndEmit.
 		r.enrichStreamingPathRefsAndEmit(updated, flush.updatedAt)
 		// Same full-running-summary cadence feeds the highlight seed
@@ -372,34 +413,21 @@ func (r *Router) flushStreamPersistence(flush pendingStreamFlush) error {
 		if r.assistantTextStream != nil {
 			r.assistantTextStream(updated.ThreadID, updated.ID, updated.Summary, false)
 		}
-		if flush.payloadID == "" || flush.payloadDelta == "" {
-			return nil
-		}
-		if err := r.store.AppendPayloadData(flush.payloadID, []byte(flush.payloadDelta), updated.PayloadMeta, flush.updatedAt); err != nil {
-			return fmt.Errorf("assistant text stream append payload %s: %w", flush.payloadID, err)
-		}
 		return nil
 	case itemKindThinking:
-		updated, err := r.store.AppendItemSummaryTail(
+		_, err := r.store.AppendItemSummaryTailAndPayloadData(
 			flush.threadID,
 			flush.itemID,
 			flush.summaryDelta,
 			thinkingPreviewRunes,
+			payloadID,
+			[]byte(flush.payloadDelta),
 			flush.updatedAt,
 		)
 		if isLateStreamPersistence(err) {
 			return nil
 		}
-		if err != nil {
-			return err
-		}
-		if flush.payloadID == "" || flush.payloadDelta == "" {
-			return nil
-		}
-		if err := r.store.AppendPayloadData(flush.payloadID, []byte(flush.payloadDelta), updated.PayloadMeta, flush.updatedAt); err != nil {
-			return fmt.Errorf("thinking stream append payload %s: %w", flush.payloadID, err)
-		}
-		return nil
+		return err
 	case payloadKindCommandOutput:
 		return r.flushCommandOutputPersistence(flush)
 	default:

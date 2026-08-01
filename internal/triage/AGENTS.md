@@ -102,9 +102,8 @@ none fits.
   `compaction` payload (raw text in data, like thinking) — summary-only,
   because the summarizer's reasoning streamed separately as its own row.
 - `turn_events.go` — frontend-facing payload shapes for
-  `provider:turn_started` / `provider:turn_completed` /
-  `provider:subagent_notification`, plus the canonical stop-reason
-  normaliser.
+  `provider:turn_started` / `provider:turn_completed`, plus the
+  canonical stop-reason normaliser.
 - `usage_ledger.go` — projects the per-model per-turn usage deltas on
   turn-complete meta into append-only `usage_ledger` rows
   (`appendUsageLedger`, called from BOTH settle paths — settleTurnRow

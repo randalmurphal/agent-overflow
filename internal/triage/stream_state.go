@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -706,6 +707,25 @@ func (r *Router) clearStreamingPathRefs(threadID, itemID string) {
 	r.mu.Unlock()
 }
 
+// streamingPathRefsState is the per-streaming-row live pathRefs state.
+// scanner does the incremental regex extraction (stat re-validation
+// still runs over the full candidate set every tick — that is what
+// keeps mid-stream link appearance/disappearance identical to a full
+// rescan). lastMerged / lastRefs / lastMetaBase snapshot the last
+// SUCCESSFULLY PERSISTED enrichment so an unchanged tick can skip the
+// meta JSON round-trip entirely: mergePathRefsIntoMeta is
+// deterministic, so identical refs over an identical meta base
+// reproduce lastMerged byte for byte.
+//
+// Mutated only under streamFlushMu (all flush paths serialize there);
+// the map itself is guarded by r.mu.
+type streamingPathRefsState struct {
+	scanner      *pathlinks.StreamScanner
+	lastMerged   string
+	lastRefs     []pathlinks.PathRef
+	lastMetaBase string
+}
+
 // enrichStreamingPathRefsAndEmit re-validates path-shaped tokens
 // against the live Summary of an in-flight assistant_text row,
 // persists the resulting allowlist via UpdateItemMeta (which does NOT
@@ -719,10 +739,11 @@ func (r *Router) clearStreamingPathRefs(threadID, itemID string) {
 // per-row last-merged cache so unchanged validator output
 // short-circuits before the SQLite UPDATE and the event emit.
 //
-// `item` is the row AppendItemSummary just returned to the caller —
-// caller-side invariants (only fires from flushStreamPersistence's
-// itemKindAssistantText case after a successful summary append) make
-// the kind/status fields trustworthy without a re-fetch.
+// `item` is the row the flush's summary append just returned to the
+// caller — caller-side invariants (only fires from
+// flushStreamPersistence's itemKindAssistantText case after a
+// successful summary append) make the kind/status fields trustworthy
+// without a re-fetch.
 //
 // An empty refs slice is a no-op: triage's settle path leaves meta
 // untouched when nothing validates, so the streaming path mirrors
@@ -732,14 +753,29 @@ func (r *Router) clearStreamingPathRefs(threadID, itemID string) {
 //
 // Best-effort: a thread without a workspace or a merge failure
 // returns silently. The settle path will re-run enrichPathRefs
-// against the final summary either way.
+// against the final summary either way (it stays the authoritative
+// full-text scan).
 func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64) {
 	workspacePath := r.workspacePathFor(item.ThreadID)
 	if workspacePath == "" {
 		return
 	}
-	refs := extractPathRefsFromTexts(workspacePath, []string{item.Summary})
+	key := streamPersistKey(item.ThreadID, item.ID)
+	r.mu.Lock()
+	state := r.streamingPathRefsLast[key]
+	if state == nil {
+		state = &streamingPathRefsState{scanner: pathlinks.NewStreamScanner(workspacePath)}
+		r.streamingPathRefsLast[key] = state
+	}
+	r.mu.Unlock()
+	refs := state.scanner.Update(item.Summary)
 	if len(refs) == 0 {
+		return
+	}
+	// Same validated set over the same meta base reproduces the merged
+	// JSON byte for byte — skip the marshal round-trip, the UPDATE, and
+	// the emit without computing any of them.
+	if state.lastMerged != "" && item.Meta == state.lastMetaBase && slices.Equal(refs, state.lastRefs) {
 		return
 	}
 	merged, err := mergePathRefsIntoMeta(item.Meta, refs)
@@ -747,20 +783,16 @@ func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64
 		log.Printf("triage: streaming pathlinks merge meta for %s: %v", item.ID, err)
 		return
 	}
-	key := streamPersistKey(item.ThreadID, item.ID)
-	r.mu.Lock()
-	previous := r.streamingPathRefsLast[key]
-	r.mu.Unlock()
-	if previous == merged {
+	if state.lastMerged == merged {
 		return
 	}
 	if err := r.store.UpdateItemMeta(item.ThreadID, item.ID, merged); err != nil {
 		log.Printf("triage: streaming pathlinks UpdateItemMeta %s: %v", item.ID, err)
 		return
 	}
-	r.mu.Lock()
-	r.streamingPathRefsLast[key] = merged
-	r.mu.Unlock()
+	state.lastMerged = merged
+	state.lastRefs = refs
+	state.lastMetaBase = item.Meta
 	r.emit("provider:item_event", newItemStreamMeta(item.ThreadID, item.ID, item.Kind, merged, updatedAt))
 }
 
@@ -778,15 +810,15 @@ func (r *Router) workspacePathFor(threadID string) string {
 	if ok {
 		return cached
 	}
-	thread, err := r.store.GetThread(threadID)
+	_, workspacePath, err := r.store.GetThreadProviderWorkspace(threadID)
 	if err != nil {
 		log.Printf("triage: pathlinks lookup thread %s: %v", threadID, err)
 		return ""
 	}
 	r.mu.Lock()
-	r.workspacePathByThread[threadID] = thread.WorkspacePath
+	r.workspacePathByThread[threadID] = workspacePath
 	r.mu.Unlock()
-	return thread.WorkspacePath
+	return workspacePath
 }
 
 // mergePathRefsIntoMeta returns the item.Meta JSON string with a

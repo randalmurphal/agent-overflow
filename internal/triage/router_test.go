@@ -4074,13 +4074,13 @@ func TestPersistedErrorSummaryIsClamped(t *testing.T) {
 	}
 }
 
-// TestHandleEventSubagentNotification_EmitsPassthrough confirms the
-// Wave 2 emission-only contract for the Codex `<subagent_notification>`
-// tag: the handler fans out a provider:subagent_notification event
-// carrying the raw Meta payload but does NOT persist an item (the
-// tray / subagent UI will decide what to surface later). The handler
-// must also not error — it's a pure pass-through.
-func TestHandleEventSubagentNotification_EmitsPassthrough(t *testing.T) {
+// TestHandleEventSubagentNotification_NoEmitNoPersist confirms the
+// routing contract for the Codex `<subagent_notification>` tag: the
+// handler feeds the background projector only — it
+// does NOT persist an item and does NOT emit a frontend event — the
+// Codex background projector's sibling-row synthesis is the only
+// UI-visible consequence. The handler must also not error.
+func TestHandleEventSubagentNotification_NoEmitNoPersist(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -4103,19 +4103,8 @@ func TestHandleEventSubagentNotification_EmitsPassthrough(t *testing.T) {
 		t.Errorf("subagent notification must not persist items; got %+v", items)
 	}
 
-	notif := filterEmissions(emissions.snapshot(), "provider:subagent_notification")
-	if len(notif) != 1 {
-		t.Fatalf("expected 1 provider:subagent_notification emission, got %d", len(notif))
-	}
-	payload, ok := notif[0].data.(SubagentNotificationEvent)
-	if !ok {
-		t.Fatalf("emission payload type = %T, want SubagentNotificationEvent", notif[0].data)
-	}
-	if payload.ThreadID != "t1" {
-		t.Errorf("ThreadID = %q, want t1", payload.ThreadID)
-	}
-	if string(payload.Meta) != string(meta) {
-		t.Errorf("payload.Meta = %q, want %q (raw passthrough)", string(payload.Meta), string(meta))
+	if notif := filterEmissions(emissions.snapshot(), "provider:subagent_notification"); len(notif) != 0 {
+		t.Fatalf("expected no provider:subagent_notification emissions, got %d", len(notif))
 	}
 }
 

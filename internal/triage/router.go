@@ -385,18 +385,19 @@ type Router struct {
 	// stable string — fine on its own, but adds up across the
 	// 10-30 text blocks per heavy turn. Keyed by threadID.
 	workspacePathByThread map[string]string
-	// streamingPathRefsLast dedupes the live-stream pathRefs meta
-	// emissions per streaming assistant_text row. Each flushed
-	// summary delta re-runs the validator against the row's running
-	// Summary and emits action:"meta" only when the resulting JSON
-	// changes; the most-common case (typing forward through text
-	// that has no new path-shaped tokens) short-circuits cheaply.
+	// streamingPathRefsLast carries the live-stream pathRefs state per
+	// streaming assistant_text row: the incremental pathlinks scanner
+	// (regex only over each flush's appended tail; stat re-validation
+	// of all known candidates per tick — the full rescan used to make
+	// total scan work quadratic in message length) plus the dedupe
+	// snapshot that lets unchanged windows skip the meta JSON
+	// round-trip, the SQLite UPDATE, and the action:"meta" emission.
 	// Keyed by streamPersistKey(threadID,itemID); cleared at
 	// doSettleStreamingText, clearActiveStreamBlocksForTurnLocked,
 	// and CleanupThread so a torn-down
-	// streaming row can't leak its last-seen hash into the next
+	// streaming row can't leak its last-seen state into the next
 	// turn or session.
-	streamingPathRefsLast map[string]string
+	streamingPathRefsLast map[string]*streamingPathRefsState
 	// revertedTurns marks threads whose next provider:turn_completed
 	// emission should carry RevertedUserMessage=true. Set by the App
 	// layer's revert-on-interrupt path BEFORE it tears down the
@@ -550,7 +551,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		pendingWakeupByThread:      make(map[string]int64),
 		claimedFlushItems:          make(map[string]int),
 		workspacePathByThread:      make(map[string]string),
-		streamingPathRefsLast:      make(map[string]string),
+		streamingPathRefsLast:      make(map[string]*streamingPathRefsState),
 		revertedTurns:              make(map[string]struct{}),
 		usageEmitThrottles:         make(map[string]*usageEmitThrottle),
 	}
@@ -1337,26 +1338,17 @@ func (r *Router) emitInline(evt provider.ProviderEvent) error {
 }
 
 // handleSubagentNotification routes Codex `<subagent_notification>` tags.
-// The raw notification itself is forwarded on `provider:subagent_notification`
-// for live observers, then the Codex background projector uses the same
-// signal to stamp terminal child state and, when every child for a
-// spawn_agent launch is terminal, synthesize the transcript
-// `tool_completion` sibling.
+// The Codex background projector uses the signal to stamp terminal child
+// state and, when every child for a spawn_agent launch is terminal,
+// synthesize the transcript `tool_completion` sibling (via
+// maybeDeferOrPersist, same stream-safety as the unifiedExec path). The
+// raw notification is not forwarded to the frontend — the sibling row
+// upsert is the only UI-visible consequence.
 //
 // See docs/architecture/turn-lifecycle.md and
 // docs/archive/turn-lifecycle-refactor-plan.md WT-codex-parser for the
 // emission-side plan.
 func (r *Router) handleSubagentNotification(evt provider.ProviderEvent) error {
-	// Forward to the frontend channel first so UI observers don't
-	// depend on the projector's synthesis having run yet. The
-	// projector checks whether any backgrounded spawn_agent rows are
-	// waiting on the just-closed child; if so, the sibling completion
-	// row is synthesized at the current tail (via maybeDeferOrPersist,
-	// same stream-safety as the unifiedExec path).
-	r.emit("provider:subagent_notification", SubagentNotificationEvent{
-		ThreadID: evt.ThreadID,
-		Meta:     evt.Meta,
-	})
 	return r.observeCodexSubagentNotification(evt)
 }
 
@@ -1510,6 +1502,38 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 			metric.WithAttributes(attribute.String("kind", inputPayload.Kind)))
 	}
 	return persisted, nil
+}
+
+// persistItemWithPayloadAppend is persistItemWithEmit's sibling for the
+// streaming linked-append path: the payload chunk append and the item
+// upsert land in one store transaction (store.UpsertItemWithPayloadAppend)
+// instead of two. Same parent_id guard, activity bump, emission, and
+// metrics as persistItemWithEmit; no PayloadsPersisted increment because
+// the append branch has never counted one (the payload row already
+// existed).
+func (r *Router) persistItemWithPayloadAppend(item store.Item, payloadID string, delta []byte, payloadMeta string, emit bool) error {
+	countsAsActivity := userTextCountsAsThreadActivity(item)
+
+	if item.ParentID != "" {
+		if dropped, reason := r.shouldDropParentID(item.ThreadID, item.ID, item.ParentID); dropped {
+			log.Printf("triage: dropping parent_id %q on item %s: %s", item.ParentID, item.ID, reason)
+			item.ParentID = ""
+		}
+	}
+
+	persisted, err := r.store.UpsertItemWithPayloadAppend(item, payloadID, delta, payloadMeta, item.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	if countsAsActivity {
+		r.bumpThreadActivity(persisted.ThreadID, persisted.UpdatedAt, "user_text persist")
+	}
+	if emit {
+		r.emitItemUpsertWithActivity(persisted, countsAsActivity)
+	}
+	r.metrics.ItemsPersisted.Add(context.Background(), 1,
+		metric.WithAttributes(attribute.String("kind", persisted.Kind)))
+	return nil
 }
 
 // emitItemPatch sends a lightweight patch event carrying only the fields

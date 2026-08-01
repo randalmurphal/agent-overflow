@@ -25,12 +25,12 @@ func (r *Router) capturePendingCommandInlineDiff(evt provider.ProviderEvent) err
 		return nil
 	}
 
-	thread, err := r.store.GetThread(evt.ThreadID)
+	_, workspacePath, err := r.store.GetThreadProviderWorkspace(evt.ThreadID)
 	if err != nil {
 		return fmt.Errorf("lookup thread for command inline diff: %w", err)
 	}
 
-	meta, diffData, ok := captureCommandExecutionToolResult(evt.Meta, thread.WorkspacePath)
+	meta, diffData, ok := captureCommandExecutionToolResult(evt.Meta, workspacePath)
 	if !ok {
 		r.clearPendingCommandInlineDiff(evt.ThreadID, evt.ItemID)
 		return nil

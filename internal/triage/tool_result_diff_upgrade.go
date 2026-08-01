@@ -15,7 +15,7 @@ func (r *Router) upgradeSummaryOnlyToolResults(threadID string, turnIndex int, t
 		return false, nil
 	}
 
-	thread, err := r.store.GetThread(threadID)
+	_, workspacePath, err := r.store.GetThreadProviderWorkspace(threadID)
 	if err != nil {
 		return false, fmt.Errorf("lookup thread for diff upgrade: %w", err)
 	}
@@ -31,7 +31,7 @@ func (r *Router) upgradeSummaryOnlyToolResults(threadID string, turnIndex int, t
 		if !ok {
 			continue
 		}
-		signature := inlineDiffPathSignature(candidate.meta.InlineDiff.Files, thread.WorkspacePath)
+		signature := inlineDiffPathSignature(candidate.meta.InlineDiff.Files, workspacePath)
 		if signature == "" {
 			continue
 		}
@@ -46,7 +46,7 @@ func (r *Router) upgradeSummaryOnlyToolResults(threadID string, turnIndex int, t
 			continue
 		}
 
-		filtered := filterUnifiedDiffByPaths(turnDiff, candidate.meta.InlineDiff.Files, thread.WorkspacePath)
+		filtered := filterUnifiedDiffByPaths(turnDiff, candidate.meta.InlineDiff.Files, workspacePath)
 		if strings.TrimSpace(filtered) == "" {
 			continue
 		}

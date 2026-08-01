@@ -81,16 +81,6 @@ type SessionDiedEvent struct {
 	OccurredAt int64  `json:"occurredAt"`
 }
 
-// SubagentNotificationEvent is the frontend-facing payload for
-// provider:subagent_notification. Carries the raw Meta from the
-// provider adapter's `<subagent_notification>` parse — the frontend
-// decides whether to surface a toast, tray entry, or nothing.
-// Persistence is deliberately NOT a triage concern for this kind.
-type SubagentNotificationEvent struct {
-	ThreadID string          `json:"threadId"`
-	Meta     json.RawMessage `json:"meta,omitempty"`
-}
-
 // TodoUpdateEvent is the frontend-facing payload for provider:todo_update.
 // Carries the latest live-todo snapshot from either Claude TodoWrite or
 // Codex update_plan. Both providers normalise to a shared step shape
