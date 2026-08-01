@@ -158,13 +158,19 @@ func TestOpenLogCreatesLogUnderAppData(t *testing.T) {
 	}
 }
 
-// TestBrowserArgs covers two invariants for the WebView2 flag set:
+// TestBrowserArgs covers three invariants for the WebView2 flag set:
 //
 //  1. Dev is a strict superset of prod: dev mode only layers on top of
 //     the always-applied flags. If a flag should drop from dev, it must
 //     drop from prod first — otherwise dev users lose a safety net.
 //  2. Prod must never include --remote-debugging-*. That port is
 //     unauthenticated CDP and only belongs in developer builds.
+//  3. No raw --disable-features/--enable-features switch, in any mode.
+//     Wails emits its own --disable-features (seeded with
+//     msSmartScreenProtection) and Chromium keeps only the last
+//     occurrence of a duplicated switch — a raw flag here clobbers
+//     Wails' list. Feature toggles go through browserDisabledFeatures /
+//     browserEnabledFeatures, which Wails merges into its single switch.
 func TestBrowserArgs(t *testing.T) {
 	prod := browserArgs(false)
 	dev := browserArgs(true)
@@ -183,6 +189,70 @@ func TestBrowserArgs(t *testing.T) {
 		if strings.HasPrefix(a, "--remote-debugging-") {
 			t.Errorf("prod must not include %q — CDP port is unauthenticated", a)
 		}
+	}
+
+	for _, a := range dev {
+		if strings.HasPrefix(a, "--disable-features") || strings.HasPrefix(a, "--enable-features") {
+			t.Errorf("raw feature switch %q would clobber Wails' merged --disable-features — use browserDisabledFeatures/browserEnabledFeatures", a)
+		}
+	}
+}
+
+// TestBrowserFeatures pins the feature toggles that back specific fixes:
+//
+//   - OverscrollHistoryNavigation disabled — the two-finger-trackpad
+//     back/forward gesture that WebView2's IsSwipeNavigationEnabled=false
+//     no longer suppresses (WebView2Feedback #4502). Without it a
+//     horizontal trackpad swipe navigates the window back to the
+//     boot-time picker page.
+//   - PreferNonCompositedScrolling enabled — the mandatory companion to
+//     --disable-lcd-text; see browserEnabledFeatures.
+//   - The two lists must not intersect: Chromium resolves a feature
+//     named in both to "disabled wins", which would mask the conflict.
+func TestBrowserFeatures(t *testing.T) {
+	disabled := browserDisabledFeatures()
+	enabled := browserEnabledFeatures()
+
+	// The full disabled set is pinned by name so a list edit that drops
+	// one (each backs a specific fix or hygiene decision — see the
+	// comments in browserDisabledFeatures) fails loudly instead of
+	// silently re-enabling a browser subsystem.
+	wantDisabled := []string{
+		"Translate",
+		"AutofillServerCommunication",
+		"MediaRouter",
+		"DialMediaRouteProvider",
+		"OptimizationHints",
+		"IsolateOrigins",
+		"site-per-process",
+		"BackForwardCache",
+		"Prerender2",
+		"OverscrollHistoryNavigation",
+	}
+	disabledSet := make(map[string]struct{}, len(disabled))
+	for _, f := range disabled {
+		disabledSet[f] = struct{}{}
+	}
+	for _, f := range wantDisabled {
+		if _, ok := disabledSet[f]; !ok {
+			t.Errorf("feature %q missing from disabled features", f)
+		}
+	}
+	if len(disabled) != len(wantDisabled) {
+		t.Errorf("disabled features = %v, want exactly %v — update both together", disabled, wantDisabled)
+	}
+
+	foundPreferNonComposited := false
+	for _, f := range enabled {
+		if f == "PreferNonCompositedScrolling" {
+			foundPreferNonComposited = true
+		}
+		if _, ok := disabledSet[f]; ok {
+			t.Errorf("feature %q is both enabled and disabled", f)
+		}
+	}
+	if !foundPreferNonComposited {
+		t.Error("PreferNonCompositedScrolling missing from enabled features — eager compositing regression (see browserEnabledFeatures)")
 	}
 }
 

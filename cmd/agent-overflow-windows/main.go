@@ -865,6 +865,8 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		},
 		Windows: application.WindowsOptions{
 			AdditionalBrowserArgs: browserArgs(enableDevBrowserArgs),
+			DisabledFeatures:      browserDisabledFeatures(),
+			EnabledFeatures:       browserEnabledFeatures(),
 			// Stable per-mode WebView2 profile. Without this the profile
 			// path defaults to %APPDATA%\<exe name>, and dev builds carry a
 			// unique timestamped exe name — every `make dev-wsl` minted a
@@ -1084,12 +1086,22 @@ func wslSingleInstanceMode() string {
 // browserArgs returns the Chromium command-line flags forwarded to
 // the embedded WebView2 via Wails' AdditionalBrowserArgs.
 //
-// The unconditional set turns off browser-grade subsystems that don't
-// apply to a desktop shell pointing at a single trusted localhost
-// origin: telemetry, sync, translation, autofill, casting, phishing
-// detection, ping beacons, BFCache (we never navigate), and
-// prerendering. Each is pure overhead; none affect rendering perf or
-// correctness.
+// Together with browserDisabledFeatures, the unconditional set turns
+// off browser-grade subsystems that don't apply to a desktop shell
+// pointing at a single trusted localhost origin: telemetry, sync,
+// translation, autofill, casting, phishing detection, ping beacons,
+// BFCache, and prerendering. Each is pure overhead; none affect
+// rendering perf or correctness.
+//
+// base::Feature toggles do NOT belong here. Wails builds its own
+// --disable-features switch (seeded with msSmartScreenProtection) and
+// appends AdditionalBrowserArgs after it; Chromium keeps only the last
+// occurrence of a duplicated switch, so a raw --disable-features here
+// silently clobbered Wails' list (msSmartScreenProtection was being
+// re-enabled) — and anything Wails seeds would clobber ours if the
+// order ever flipped. Feature toggles go through
+// browserDisabledFeatures / browserEnabledFeatures, which Wails merges
+// into its single switch.
 //
 // 3D APIs are deliberately left ENABLED. The terminal's xterm renderer
 // loads the WebGL addon to draw box-drawing and block/quadrant glyphs
@@ -1123,7 +1135,6 @@ func wslSingleInstanceMode() string {
 // becomes a real constraint.
 func browserArgs(enableDevArgs bool) []string {
 	args := []string{
-		"--disable-features=Translate,AutofillServerCommunication,MediaRouter,DialMediaRouteProvider,OptimizationHints,IsolateOrigins,site-per-process,BackForwardCache,Prerender2",
 		"--disable-background-networking",
 		"--disable-component-update",
 		"--disable-default-apps",
@@ -1149,26 +1160,10 @@ func browserArgs(enableDevArgs bool) []string {
 		// text is pixel-identical to the permanently-promoted rendering
 		// this replaced, and root-layer text (sidebar/topbar) matches
 		// instead of being the app's odd subpixel surface. Glyph-edge
-		// blending only — text color is untouched.
+		// blending only — text color is untouched. MANDATORY COMPANION:
+		// PreferNonCompositedScrolling in browserEnabledFeatures, or
+		// every scroller gets eagerly composited (see that comment).
 		"--disable-lcd-text",
-		// MANDATORY COMPANION to --disable-lcd-text. Blink composites a
-		// scroller eagerly whenever doing so cannot hurt LCD text; with
-		// LCD text globally off, that guard always passes, so EVERY
-		// scroller (each pane timeline, the pane strip) got promoted to
-		// composited scrolling with content-sized raster layers —
-		// measured 2026-07-21: renderer cc/tile_memory 165.5MB vs the
-		// 89.9MB the lease work started from. This feature (verified
-		// present in WebView2 150.0.4078.83) restores the
-		// prefer-non-composited default so scrollers stay unlayerized;
-		// scrolling still runs on the compositor via raster-inducing
-		// scroll, and the lease's explicit will-change promotion — which
-		// bypasses the preference — keeps actively-scrolling panes
-		// composited exactly as designed. If a future WebView2 drops the
-		// feature the symptom to watch for is this same eager-compositing
-		// regression, visible as full-scroll-height layers in the CDP
-		// LayerTree dump for panes whose contentEl carries no
-		// will-change.
-		"--enable-features=PreferNonCompositedScrolling",
 	}
 	if enableDevArgs {
 		args = append(args,
@@ -1201,6 +1196,64 @@ func browserArgs(enableDevArgs bool) []string {
 		args = append(args, "--disable-gpu")
 	}
 	return args
+}
+
+// browserDisabledFeatures returns the Chromium base::Feature names
+// switched off in the WebView2, shipped via Wails'
+// WindowsOptions.DisabledFeatures so they merge with Wails' own
+// defaults into one --disable-features switch (see browserArgs for why
+// a raw flag is unsafe).
+func browserDisabledFeatures() []string {
+	return []string{
+		"Translate",
+		"AutofillServerCommunication",
+		"MediaRouter",
+		"DialMediaRouteProvider",
+		"OptimizationHints",
+		"IsolateOrigins",
+		"site-per-process",
+		"BackForwardCache",
+		"Prerender2",
+		// Chromium's two-finger-trackpad back/forward gesture. Wails
+		// already calls PutIsSwipeNavigationEnabled(false), but WebView2
+		// ≥ 1.0.2151.40 stopped routing that setting to this
+		// Chromium-side touchpad path (WebView2Feedback #4502, open
+		// regression) — a horizontal trackpad swipe chaining to the root
+		// scroller navigated the window back to the boot-time picker
+		// page. browserHistoryGuard.ts can't catch it either: the
+		// gesture is handled in the compositor and never surfaces as a
+		// cancelable DOM event. Disabling the feature kills it at the
+		// source; frontend/src/app.css carries an overscroll-behavior-x
+		// backstop in case a future runtime renames the feature.
+		"OverscrollHistoryNavigation",
+	}
+}
+
+// browserEnabledFeatures returns the Chromium base::Feature names
+// switched on in the WebView2, shipped via Wails'
+// WindowsOptions.EnabledFeatures (same single-switch rule as
+// browserDisabledFeatures).
+func browserEnabledFeatures() []string {
+	return []string{
+		// MANDATORY COMPANION to --disable-lcd-text (browserArgs). Blink
+		// composites a scroller eagerly whenever doing so cannot hurt
+		// LCD text; with LCD text globally off, that guard always
+		// passes, so EVERY scroller (each pane timeline, the pane strip)
+		// got promoted to composited scrolling with content-sized raster
+		// layers — measured 2026-07-21: renderer cc/tile_memory 165.5MB
+		// vs the 89.9MB the lease work started from. This feature
+		// (verified present in WebView2 150.0.4078.83) restores the
+		// prefer-non-composited default so scrollers stay unlayerized;
+		// scrolling still runs on the compositor via raster-inducing
+		// scroll, and the lease's explicit will-change promotion — which
+		// bypasses the preference — keeps actively-scrolling panes
+		// composited exactly as designed. If a future WebView2 drops the
+		// feature the symptom to watch for is this same eager-compositing
+		// regression, visible as full-scroll-height layers in the CDP
+		// LayerTree dump for panes whose contentEl carries no
+		// will-change.
+		"PreferNonCompositedScrolling",
+	}
 }
 
 // rotateChromeDebugLog renames the previous browser session's

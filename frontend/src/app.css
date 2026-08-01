@@ -256,6 +256,19 @@ body,
   background: var(--surface-0);
 }
 
+/* Chromium turns horizontal overscroll that chains to the root into a
+   back/forward navigation gesture (two-finger trackpad swipe). The
+   Windows launcher disables the feature outright
+   (cmd/agent-overflow-windows browserDisabledFeatures,
+   WebView2Feedback #4502 — IsSwipeNavigationEnabled=false stopped
+   covering trackpads); this is the in-page backstop should a future
+   runtime rename the flag. Layout no-op: the root never scrolls
+   horizontally. */
+html,
+body {
+  overscroll-behavior-x: none;
+}
+
 body {
   margin: 0;
   color: var(--text-primary);
