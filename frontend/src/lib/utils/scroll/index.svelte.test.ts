@@ -6080,6 +6080,43 @@ describe('createUseStickToBottomController — spring chase', () => {
       });
     });
 
+    describe('pause lease released mid-glide — repin yields to the active chase', () => {
+      // The recent-window prune runs inside a sub-frame pause lease
+      // (acquire → mutate → restore → release within one flush), so a
+      // spring gliding streamed growth never ticks while paused and is
+      // still in flight at release. The release's repin used to write
+      // the target directly, collapsing the glide's remaining distance
+      // into an instant hop in front of the reader
+      // (bug-report-20260801T214455Z). It must hand the trip to the
+      // live-content path instead — the chase already owns it.
+      it('does not write the remaining distance instantly; the chase lands it', async () => {
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        // Start a chase toward a distant target.
+        geom.scrollHeight = 1400;
+        geom.contentHeight = 1200;
+        ro.fire(contentEl, 1200); // target = 800
+        await nextFrame();
+        const midChase = geom.scrollTop;
+        expect(midChase).toBeGreaterThan(400);
+        expect(midChase).toBeLessThan(800);
+
+        // Sub-frame lease: no frame elapses while paused, so the spring
+        // survives to the release still mid-glide.
+        const release = controller.pauseAutoScroll();
+        release();
+        expect(geom.scrollTop).toBe(midChase);
+
+        // The chase continues from where it was and lands normally.
+        await nextFrame();
+        expect(geom.scrollTop).toBeGreaterThan(midChase);
+        expect(geom.scrollTop).toBeLessThan(800);
+        await advanceUntil(() => geom.scrollTop === 800);
+      });
+    });
+
     describe('head-splice compensation during sentinel — authored displacement glides', () => {
       // A tail-following activity-run clip (or the paged timeline)
       // advances its mount window when a row is appended: the incoming

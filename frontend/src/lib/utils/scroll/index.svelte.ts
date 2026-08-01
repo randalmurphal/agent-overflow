@@ -1053,8 +1053,15 @@ export function createUseStickToBottomController(
         // e.g. inside an auto-collapse transaction), so hand the re-pin
         // to the live-content path: it springs the distance instead of
         // landing the new row instantly, and degrades to the same
-        // instant pin when the spring gate is closed.
-        if (spring.structuralAppendPending()) {
+        // instant pin when the spring gate is closed. A spring still in
+        // flight across the lease gets the same courtesy: its remaining
+        // distance to the bottom is a glide already in progress, and a
+        // direct write here collapses it into an instant hop
+        // (bug-report-20260801T214455Z — the recent-window prune's
+        // sub-frame lease landing mid-chase). Reader-asked transactions
+        // are unaffected either way: their restore writes the bottom
+        // before releasing, so this repin sees zero distance.
+        if (spring.structuralAppendPending() || spring.isActive()) {
           notifyLiveContentMaybeGrew();
         } else {
           writeScrollTop('pauseAutoScroll.release', targetScrollTop());

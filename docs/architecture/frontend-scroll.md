@@ -267,7 +267,17 @@ timeline is mounted (the paging prunes use `shift` instead — see **Load
 Paging**). The pane owns the window decision, but the timeline owns the
 DOM/virtualizer anchor transaction: bottom intent pins to the new bottom,
 and reading state preserves the first visible item when that item survives
-the prune. If a normal recent-window prune would drop the visible anchor,
+the prune. The bottom-intent restore stands down when
+`autoScrollInFlight()` reports a glide running or armed: the prune is
+unasked and typically lands mid-stream, its head-splice compensation has
+already relocated a mid-glide spring's remaining distance intact, and
+writing the bottom directly would collapse that remainder into an instant
+one-line hop in front of the reader (bug-report-20260801T214455Z). The
+pause release's repin yields the same way — it hands the re-pin to the
+live-content path when a structural append is armed OR a spring chase is
+still in flight across the sub-frame lease; reader-asked transactions are
+unaffected because their restore writes the bottom before releasing, so
+the repin sees zero distance. If a normal recent-window prune would drop the visible anchor,
 the pane defers it and retries when bottom intent returns instead of
 re-asking on every append. The hard ceiling is the only exception; it
 forces the prune even when anchor preservation vetoes the operation, and

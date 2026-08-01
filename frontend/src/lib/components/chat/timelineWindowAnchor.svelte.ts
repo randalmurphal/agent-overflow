@@ -164,6 +164,21 @@ export function createTimelineWindowAnchor(
       if (options.getPane().switchGeneration !== intent.switchGeneration) return;
 
       if (intent.shouldStickToBottom) {
+        // The prune is unasked, and its head-splice compensation already
+        // held the reader's view — including a mid-glide spring's
+        // remaining distance to the bottom (the chase reads its target
+        // fresh every tick, so the relocated gap is still its to
+        // close). Writing the bottom here collapses that remainder into
+        // an instant hop in front of the reader
+        // (bug-report-20260801T214455Z: a one-line snap mid-prose when
+        // the recent-window prune landed mid-chase). Stand down and let
+        // the in-flight auto-scroll finish the trip; the pause
+        // release's repin yields to it the same way.
+        if (options.stick.autoScrollInFlight()) {
+          options.stick.observe('live-content');
+          options.saveScrollSnapshot();
+          return;
+        }
         restoreBottomEdge();
         return;
       }
