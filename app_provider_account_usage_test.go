@@ -122,11 +122,10 @@ func TestSelectedUsageRefreshCannotOverwriteExternalCredentialChange(t *testing.
 	<-started
 
 	external := []byte(`{"claudeAiOauth":{"accessToken":"external"}}`)
-	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Claude))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(activePath, external, 0o600); err != nil {
+	if err := app.providerCredentials.WriteNativeCredentialForTest(
+		string(provider.Claude),
+		external,
+	); err != nil {
 		t.Fatal(err)
 	}
 	close(release)

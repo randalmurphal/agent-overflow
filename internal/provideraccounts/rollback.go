@@ -119,7 +119,7 @@ func (c *Credentials) removeAccountCredentialOnly(providerName, accountID string
 		return err
 	}
 	if runtime.GOOS == "darwin" && providerName == "claude" {
-		return deleteClaudeKeychainCredential(accountDir, false)
+		return c.keychain.remove(accountDir, false)
 	}
 	paths, err := c.Paths(providerName)
 	if err != nil {

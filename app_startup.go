@@ -201,7 +201,11 @@ func (a *App) initStores() (string, *store.Store, error) {
 			errorsx.WrapLifecycle("close store after provider credential initialization failure", closeErr),
 		)
 	}
-	a.providerCredentials, err = provideraccounts.NewCredentials(userHome)
+	newCredentials := provideraccounts.NewCredentials
+	if a.fileKeychainOverride {
+		newCredentials = provideraccounts.NewCredentialsWithFileKeychain
+	}
+	a.providerCredentials, err = newCredentials(userHome)
 	if err != nil {
 		closeErr := st.Close()
 		return "", nil, errors.Join(

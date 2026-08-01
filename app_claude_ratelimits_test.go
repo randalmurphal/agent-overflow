@@ -200,14 +200,9 @@ func TestProbeClaudeRateLimits_StopsWhenExternalAccountIdentityFails(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Claude))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		activePath,
+	if err := app.providerCredentials.WriteNativeCredentialForTest(
+		string(provider.Claude),
 		[]byte(`{"claudeAiOauth":{"accessToken":"unknown"}}`),
-		0o600,
 	); err != nil {
 		t.Fatal(err)
 	}

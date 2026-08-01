@@ -510,6 +510,14 @@ type App struct {
 	// no longer repoint a spawn at a real claude/codex binary. Set once
 	// before Start; never mutated afterwards.
 	providerBinaryOverride string
+	// fileKeychainOverride makes initStores build Credentials with the
+	// file-backed Keychain stand-in instead of security(1). Harness mode
+	// sets it because a redirected $HOME isolates every file store but
+	// NOT the macOS Keychain — the active Claude slot's service name
+	// ignores the home, so a security(1)-backed harness run would touch
+	// the developer's real Claude Code login. Set once before Start;
+	// never mutated afterwards.
+	fileKeychainOverride bool
 	// idleReaperNowFn is a test-only clock injection for the reaper.
 	// Production leaves it nil and reaperNow reads time.Now directly.
 	idleReaperNowFn func() time.Time

@@ -181,7 +181,7 @@ func (h *EphemeralHome) Cleanup() error {
 	}
 	var cleanupErrs []error
 	if runtime.GOOS == "darwin" && h.providerName == "claude" {
-		if err := deleteClaudeKeychainCredential(h.Path, false); err != nil {
+		if err := h.credentials.keychain.remove(h.Path, false); err != nil {
 			cleanupErrs = append(cleanupErrs, err)
 		}
 	}

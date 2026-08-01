@@ -87,10 +87,32 @@ CLI reports, not a byte comparison.
   failed login or adoption without deleting a slot it did not create.
 - `ephemeral_home.go` — short-lived homes for native login and inactive-account
   probes.
-- `claude_keychain.go` — config-home-scoped macOS Keychain credential copying
-  matching Claude Code's native service naming.
+- `claude_keychain.go` — the `claudeKeychain` seam: every `security(1)`
+  invocation in the codebase lives here (pinned by
+  `TestNoSecurityCallsOutsideTheKeychainSeam`). Holds the production
+  backend matching Claude Code's native service naming and the
+  file-backed stand-in used by test binaries and the agent harness.
+- `credentials_testhelpers.go` — `WriteNativeCredentialForTest`, the one
+  blessed way for fixtures to seed the canonical native credential;
+  inert outside test binaries.
 
 ## Testing
 
 Tests must inject a temporary home directory. Never inspect or mutate the
 developer's real provider homes.
+
+A temporary home does NOT isolate the macOS Keychain: the active slot's
+service name is fixed regardless of which userHome a `Credentials` was
+built with. That is why the Keychain sits behind the `claudeKeychain`
+seam (`claude_keychain.go`, which carries the full incident write-up):
+`NewCredentials` installs a file-backed stand-in in test binaries
+(`testing.Testing()`), the harness opts into the same stand-in via
+`NewCredentialsWithFileKeychain`, and only ordinary runs get the
+`security(1)` backend. Never add a `security(1)` call outside the seam
+— `TestNoSecurityCallsOutsideTheKeychainSeam` enforces this.
+
+The stand-in stores each credential at `<configHome>/.credentials.json`
+— the exact non-darwin layout — so darwin tests need no special-casing:
+mock provider binaries (subprocesses) that write the credential file are
+visible through the seam, and fixtures seed the canonical store via
+`WriteNativeCredentialForTest` to stay ignorant of the layout entirely.

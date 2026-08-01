@@ -34,14 +34,9 @@ func installIdentityTestAccount(
 	if err := credentials.WriteAccountCredential(providerName, accountID, credential); err != nil {
 		t.Fatal(err)
 	}
-	activePath, err := credentials.ActiveCredentialPath(providerName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(activePath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(activePath, credential, 0o600); err != nil {
+	// Through the native-store hook, not a direct file write, so the
+	// fixture doesn't encode the platform's canonical-store layout.
+	if err := credentials.WriteNativeCredentialForTest(providerName, credential); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := accounts.UpsertAndActivate(provideraccounts.Account{
@@ -189,14 +184,9 @@ func TestExternalClaudeLoginReconcilesMetadataAndLiveSessions(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatal(err)
 	}
-	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Claude))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		activePath,
+	if err := app.providerCredentials.WriteNativeCredentialForTest(
+		string(provider.Claude),
 		[]byte(`{"claudeAiOauth":{"accessToken":"second"}}`),
-		0o600,
 	); err != nil {
 		t.Fatal(err)
 	}

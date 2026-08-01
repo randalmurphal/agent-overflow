@@ -34,6 +34,7 @@ type ProviderPaths struct {
 // Unrecognized contents in registered directories are ignored.
 type Credentials struct {
 	userHome string
+	keychain claudeKeychain
 }
 
 // CredentialSnapshot is one stable read from a provider-native credential
@@ -46,7 +47,28 @@ func NewCredentials(userHome string) (*Credentials, error) {
 	if strings.TrimSpace(userHome) == "" {
 		return nil, errors.New("provideraccounts: empty user home")
 	}
-	return &Credentials{userHome: filepath.Clean(userHome)}, nil
+	return &Credentials{
+		userHome: filepath.Clean(userHome),
+		keychain: defaultClaudeKeychain(),
+	}, nil
+}
+
+// NewCredentialsWithFileKeychain builds Credentials whose darwin Claude
+// backend is the file-backed Keychain stand-in instead of security(1).
+// The agent harness needs this: it boots the real app binary
+// (testing.Testing() is false) against a redirected $HOME, which
+// isolates every file store but NOT the Keychain — the active slot's
+// service name ignores the home entirely, so a security(1)-backed
+// harness run would read and write the developer's real Claude Code
+// login. Harness runs use mock providers only, so no real credential
+// is ever needed.
+func NewCredentialsWithFileKeychain(userHome string) (*Credentials, error) {
+	credentials, err := NewCredentials(userHome)
+	if err != nil {
+		return nil, err
+	}
+	credentials.keychain = fileClaudeKeychain{}
+	return credentials, nil
 }
 
 func (c *Credentials) Paths(providerName string) (ProviderPaths, error) {
@@ -54,7 +76,7 @@ func (c *Credentials) Paths(providerName string) (ProviderPaths, error) {
 	case "claude":
 		return ProviderPaths{
 			SharedHome:     filepath.Join(c.userHome, ".claude"),
-			CredentialFile: ".credentials.json",
+			CredentialFile: claudeCredentialFileName,
 			GlobalConfig:   filepath.Join(c.userHome, ".claude.json"),
 		}, nil
 	case "codex":
@@ -177,9 +199,7 @@ func (c *Credentials) CredentialPresent(providerName, accountID string, active b
 		return false, err
 	}
 	if runtime.GOOS == "darwin" && providerName == "claude" {
-		// The Keychain has no cheap existence check; the read is the probe.
-		_, readErr := readClaudeKeychainCredential(home, active)
-		return readErr == nil, nil
+		return c.keychain.present(home, active)
 	}
 	info, statErr := os.Lstat(filepath.Join(home, paths.CredentialFile))
 	if statErr != nil {
@@ -217,7 +237,7 @@ func (c *Credentials) readCredentialAt(
 		return CredentialSnapshot{}, err
 	}
 	if runtime.GOOS == "darwin" && providerName == "claude" {
-		data, err := readClaudeKeychainCredential(home, active)
+		data, err := c.keychain.read(home, active)
 		return CredentialSnapshot{Data: data}, err
 	}
 	return readCredentialSnapshot(filepath.Join(home, paths.CredentialFile))
@@ -259,7 +279,7 @@ func (c *Credentials) writeCredentialAt(
 		return err
 	}
 	if runtime.GOOS == "darwin" && providerName == "claude" {
-		return writeClaudeKeychainCredential(home, active, data)
+		return c.keychain.write(home, active, data)
 	}
 	return atomicfile.Write(filepath.Join(home, paths.CredentialFile), data)
 }
@@ -393,7 +413,7 @@ func (c *Credentials) RemoveActive(providerName string) error {
 		if err != nil {
 			return err
 		}
-		return deleteClaudeKeychainCredential(paths.SharedHome, true)
+		return c.keychain.remove(paths.SharedHome, true)
 	}
 	activePath, err := c.ActiveCredentialPath(providerName)
 	if err != nil {
@@ -427,7 +447,7 @@ func (c *Credentials) RemoveAccount(providerName, accountID string) error {
 		return err
 	}
 	if runtime.GOOS == "darwin" && providerName == "claude" {
-		if err := deleteClaudeKeychainCredential(accountDir, false); err != nil {
+		if err := c.keychain.remove(accountDir, false); err != nil {
 			return err
 		}
 	}

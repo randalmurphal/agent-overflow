@@ -70,6 +70,10 @@ func runHarness(flags cliFlags) {
 	// the seeded settings — UpdateSettings stays callable in harness
 	// mode, but it can never repoint a spawn at a real provider binary.
 	appService.providerBinaryOverride = paths.MockProvider
+	// The redirected harness $HOME isolates every file store but not the
+	// macOS Keychain (the active Claude slot's service name ignores the
+	// home), so credential storage is pinned to the file-backed stand-in.
+	appService.fileKeychainOverride = true
 	h := newHarness(appService, paths)
 	// The control server must listen before App.Start: it publishes its
 	// address/token through App.providerExtraEnv (write-once before

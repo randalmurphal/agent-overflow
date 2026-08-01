@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -211,17 +211,17 @@ func TestSelectedClaudeUsageRefreshPublishesLimitsWhenTheCommitFails(t *testing.
 	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
 	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
 
-	activePath, err := app.providerCredentials.ActiveCredentialPath(string(provider.Claude))
-	if err != nil {
-		t.Fatal(err)
-	}
 	// Stand in for another Claude process rotating the shared credential while
 	// the usage endpoint is answering.
 	app.rateLimitProbeClientOverride = usageClientWritingCredential(
 		t,
 		"original",
-		activePath,
-		[]byte(`{"claudeAiOauth":{"accessToken":"external"}}`),
+		func() error {
+			return app.providerCredentials.WriteNativeCredentialForTest(
+				string(provider.Claude),
+				[]byte(`{"claudeAiOauth":{"accessToken":"external"}}`),
+			)
+		},
 	)
 
 	var usage provider.UsageEvent
@@ -231,7 +231,7 @@ func TestSelectedClaudeUsageRefreshPublishesLimitsWhenTheCommitFails(t *testing.
 		}
 	}
 
-	err = app.refreshProviderAccountUsage(
+	err := app.refreshProviderAccountUsage(
 		context.Background(),
 		string(provider.Claude),
 		"selected",
@@ -297,14 +297,15 @@ func TestUsageRefreshWithholdsLimitsWhenTheSelectionMoves(t *testing.T) {
 	}
 }
 
-// usageClientWritingCredential answers the usage endpoint for wantBearer and, on
-// the way, replaces the credential file at path — the shape of another provider
-// process rotating the shared store mid-probe.
+// usageClientWritingCredential answers the usage endpoint for wantBearer and,
+// on the way, runs writeReplacement — the shape of another provider process
+// rotating the shared store mid-probe. The rotation is a callback (not a file
+// path) so it can go through WriteNativeCredentialForTest and stay ignorant of
+// the platform's canonical-store layout.
 func usageClientWritingCredential(
 	t *testing.T,
 	wantBearer string,
-	path string,
-	replacement []byte,
+	writeReplacement func() error,
 ) *http.Client {
 	t.Helper()
 	var once sync.Once
@@ -314,7 +315,7 @@ func usageClientWritingCredential(
 			return
 		}
 		once.Do(func() {
-			if err := os.WriteFile(path, replacement, 0o600); err != nil {
+			if err := writeReplacement(); err != nil {
 				t.Error(err)
 			}
 		})
