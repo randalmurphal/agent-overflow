@@ -32,6 +32,7 @@
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { formatElapsedSeconds } from '../../utils/format';
+  import { createSharedNowClock } from './useRunningElapsed.svelte';
   import {
     deriveClaudeSubagentDescription,
     deriveClaudeSubagentLabel,
@@ -153,20 +154,17 @@
   // the two unused strings, so it goes away with them.
   let isRunning = $derived(parent.status === 'running' || parent.status === 'streaming');
 
-  let now = $state(Date.now());
-  $effect(() => {
-    if (!isRunning) return;
-    now = Date.now();
-    const id = setInterval(() => {
-      now = Date.now();
-    }, 1_000);
-    return () => clearInterval(id);
-  });
+  // Shared 1Hz clock (useRunningElapsed.svelte.ts) instead of a private
+  // per-row interval: N running subagent cards tick one interval and one
+  // state write per second, not N cascades. The completed branch keeps
+  // its local parent.updatedAt math, which the shared label helper does
+  // not model.
+  const clock = createSharedNowClock(() => isRunning);
 
   let elapsedLabel = $derived.by<string>(() => {
     const start = parent.createdAt;
     if (!Number.isFinite(start) || start <= 0) return '';
-    const end = isRunning ? now : parent.updatedAt;
+    const end = isRunning ? clock.now : parent.updatedAt;
     if (!Number.isFinite(end) || end <= start) return '';
     return formatElapsedSeconds(Math.floor((end - start) / 1_000));
   });

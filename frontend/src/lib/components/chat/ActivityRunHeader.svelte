@@ -15,6 +15,7 @@
   // hides one. The error dot and the named running indicator ride along in
   // both states for the same reason.
 
+  import { untrack } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { ActivityRunNode } from '../../utils/subagentGrouping';
   import { activityRunSummary } from './activityRunSummary';
@@ -43,12 +44,37 @@
 
   // Resolved here, not on the node: counts, failure, and the running label
   // all move on ordinary streaming deltas, and only this header reads them.
-  let items = $derived(
-    run.memberItemIds
-      .map((id) => pane.getItemById(id))
-      .filter((item) => item !== undefined),
-  );
-  let summary = $derived(activityRunSummary(items, pane.thread?.provider));
+  //
+  // Resolved through a signature cutoff, though: while a member row
+  // streams, the per-item smoother replaces its item object on every
+  // reveal tick (~50Hz), which invalidates any derived that reads the
+  // member items — but the summary's output depends only on the fields
+  // below, none of which change on a reveal tick. The signature derived
+  // stays tracked (it is what re-runs on every tick and on every real
+  // transition); string equality then cuts propagation, so the heavy
+  // summary work (Set of ids, presentation map, count buckets, sort)
+  // re-runs only when a member's identity/status/kind/tool actually
+  // changes. `completionOf` is in the key because the orphan-completion
+  // dedup reads it. The summary body runs untracked so its item reads
+  // don't re-subscribe it to per-tick item replacement.
+  let summaryKey = $derived.by(() => {
+    let key = pane.thread?.provider ?? '';
+    for (const id of run.memberItemIds) {
+      const item = pane.getItemById(id);
+      if (!item) continue;
+      key += `\u0000${item.id}\u0001${item.kind}\u0001${item.status}\u0001${item.toolName ?? ''}\u0001${item.completionOf ?? ''}`;
+    }
+    return key;
+  });
+  let summary = $derived.by(() => {
+    void summaryKey;
+    return untrack(() => {
+      const items = run.memberItemIds
+        .map((id) => pane.getItemById(id))
+        .filter((item) => item !== undefined);
+      return activityRunSummary(items, pane.thread?.provider);
+    });
+  });
   // Each term wears its tool's own hue — the same `--ico-*` token the run's
   // own icons use, so the summary is recognisable as the block it describes
   // rather than a grey tally. The count stays muted: the colour identifies

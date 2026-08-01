@@ -33,6 +33,7 @@
   import { getActiveTurn, isThreadWorking } from '../../stores/threadStatuses.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
+  import { createSharedNowClock } from '../chat/useRunningElapsed.svelte';
   import { activityRailChipClasses, activityRailRowClasses } from './activityRailClasses';
   import { createBackgroundController } from './activityRailBackground.svelte';
   import ActivityRailTodosBody from './ActivityRailTodosBody.svelte';
@@ -61,14 +62,12 @@
 
   const PREVIEW_MAX_CHARS = 60;
 
-  let now = $state(Date.now());
-
   let activeTurn = $derived(getActiveTurn(pane.threadId));
   let isWorking = $derived(isThreadWorking(pane.threadId));
 
   let elapsedLabel = $derived.by(() => {
     if (!activeTurn) return '0s';
-    const elapsedSeconds = Math.max(0, Math.floor((now - activeTurn.startedAt) / 1_000));
+    const elapsedSeconds = Math.max(0, Math.floor((clock.now - activeTurn.startedAt) / 1_000));
     return formatElapsedSeconds(elapsedSeconds);
   });
 
@@ -99,7 +98,7 @@
     return null;
   });
 
-  const bg = createBackgroundController(() => pane, () => now);
+  const bg = createBackgroundController(() => pane, () => clock.now);
   let bgDispose: (() => void) | null = null;
   onMount(() => { bgDispose = bg.mount(); });
   onDestroy(() => { bgDispose?.(); });
@@ -123,16 +122,17 @@
   );
 
   // 1Hz clock for the working elapsed label and the background body's
-  // elapsed labels + retention prune. Idle when nothing wants it.
-  $effect(() => {
+  // elapsed labels + retention prune. The shared row-header ticker
+  // (useRunningElapsed.svelte.ts) rather than a private interval: while
+  // a turn streams, tool rows already hold the shared clock, so the rail
+  // rides the same tick instead of running a second interval + a second
+  // invalidation cascade per second. Ownership is gated on the same
+  // predicates the private interval had; nothing rendered reads the
+  // clock while neither predicate holds.
+  const clock = createSharedNowClock(() => {
     const wantsClockForWorking = activeTurn !== null && inputRequest === null;
     const wantsClockForBackground = backgroundOpen || bg.hasPendingCompletion;
-    if (!wantsClockForWorking && !wantsClockForBackground) return;
-    now = Date.now();
-    const id = setInterval(() => {
-      now = Date.now();
-    }, 1_000);
-    return () => clearInterval(id);
+    return wantsClockForWorking || wantsClockForBackground;
   });
 
 </script>

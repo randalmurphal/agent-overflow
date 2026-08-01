@@ -93,6 +93,33 @@ export function createRunningElapsed(
   };
 }
 
+/**
+ * Direct read access to the shared 1Hz clock, for rows whose label math
+ * doesn't fit the threshold-gated running-elapsed contract (a completed
+ * branch anchored on `updatedAt`, retention pruning). `isTicking` gates
+ * interval ownership exactly like `createRunningElapsed`; while it is
+ * false the shared interval can wind down (if no other subscriber holds
+ * it) and `now` goes stale exactly like a private frozen clock — reads
+ * that matter must therefore be gated on the same predicate.
+ *
+ * Must be called from component/effect-root context (uses runes).
+ */
+export function createSharedNowClock(isTicking: () => boolean): { readonly now: number } {
+  // Refresh the clock at creation so the first render doesn't compute
+  // against a sharedNow left over from whenever the last subscriber
+  // released (acquire refreshes too, but effects run after render).
+  sharedNow = Date.now();
+  $effect(() => {
+    if (!isTicking()) return;
+    return acquireRunningElapsedTicker();
+  });
+  return {
+    get now() {
+      return sharedNow;
+    },
+  };
+}
+
 export function __runningElapsedTickerSubscribersForTest(): number {
   return reactiveTickerSubscriberCount;
 }

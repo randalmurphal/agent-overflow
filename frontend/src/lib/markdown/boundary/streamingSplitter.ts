@@ -16,6 +16,20 @@
 // still re-scanned each tick, but per-line work inside a fence is minimal
 // because the detector skips its checker chain there; see split.bench.)
 //
+// The line MATERIALIZATION is incremental too: re-running
+// `text.split('\n')` over the full accumulated text allocated a fresh
+// array of every line's substring per tick — O(total message) string
+// work at reveal cadence, O(n²) cumulative, in the exact path the
+// detector work above was made O(n) for. Instead the previous call's
+// line array is cached and only the appended delta is split, merging
+// the partial trailing line across the join. Append-only growth is
+// verified with a `startsWith` scan over the previous source — a
+// no-allocation memcmp that costs microseconds where the full split
+// cost milliseconds plus thousands of line-substring allocations — so
+// a non-append rewrite can never smuggle stale cached lines into
+// detection: it falls back to a full re-split (identical to the
+// pre-cache behaviour in every scenario, in and out of contract).
+//
 // PRECONDITION — append-only source. Correctness depends on committed
 // lines never changing: the cached block context for a committed line
 // must stay valid as the source grows. This holds for the only streaming
@@ -23,15 +37,16 @@
 // per-item smoother writes UNTRIMMED, i.e. append-only). A sliding-window
 // source (e.g. the trimmed thinking tail) would violate it — those do
 // NOT route through ChatMarkdown's streaming path (ThinkingBlock renders
-// a plain <span>). The only non-append case handled is a wholesale SHRINK
-// (source shorter than the committed prefix), which resets the splitter.
-// A same-length, different-content replacement is out of contract; we
-// deliberately do NOT pay an O(prefix) `startsWith` guard to detect it —
-// that would reintroduce the O(n²) cost this class removes.
+// a plain <span>). A wholesale SHRINK (source shorter than the committed
+// prefix) resets the splitter. A same-length-or-longer replacement takes
+// the full re-split fallback, which refreshes the LINES but — exactly as
+// before the line cache existed — resumes detection with the detector's
+// cached contexts for the old content; that remains out of contract (the
+// invariant that survives is `prefix + tail === text`, never data loss).
 
 import { BoundaryDetector } from './BoundaryDetector';
 import { createInitialContext } from './detector';
-import { offsetAfterLine, type BoundarySplit } from './split';
+import type { BoundarySplit } from './split';
 
 export class StreamingBoundarySplitter {
   private detector = new BoundaryDetector();
@@ -41,6 +56,17 @@ export class StreamingBoundarySplitter {
   // Char offset of the committed prefix's end (== prefix.length). Tracked
   // directly so the shrink check and the slice stay O(1).
   private committedOffset = 0;
+  // Char offset where line `committedLine` STARTS. A line's start
+  // depends only on the closed lines before it, so it is stable under
+  // append-only growth even when `committedOffset` was capped at a
+  // then-missing trailing newline — this is the safe base the O(delta)
+  // boundary-offset walk resumes from.
+  private committedLineStart = 0;
+  // The previous call's source and its line array. `cachedLines` is
+  // exactly `cachedText.split('\n')`, maintained by splitting only the
+  // appended delta per call.
+  private cachedText = '';
+  private cachedLines: string[] = [];
 
   /**
    * Split `text` at the last stable block boundary, resuming detection
@@ -64,7 +90,38 @@ export class StreamingBoundarySplitter {
       return { prefix: '', tail: text };
     }
 
-    const lines = text.split('\n');
+    let lines: string[];
+    const prev = this.cachedText;
+    if (text.length >= prev.length && text.startsWith(prev)) {
+      // Append-only growth (the streaming contract): split only the
+      // delta and merge the partial trailing line across the join.
+      // `prev.split('\n')` concat-merged this way is byte-equivalent to
+      // `text.split('\n')` for any junction position.
+      lines = this.cachedLines;
+      if (lines.length === 0) {
+        lines = text.split('\n');
+        this.cachedLines = lines;
+      } else if (text.length > prev.length) {
+        const deltaLines = text.slice(prev.length).split('\n');
+        lines[lines.length - 1] += deltaLines[0];
+        for (let i = 1; i < deltaLines.length; i++) {
+          lines.push(deltaLines[i]);
+        }
+      }
+    } else {
+      // Non-append rewrite above the committed offset — out of the
+      // streaming contract. Fall back to a full re-split so detection
+      // sees the real current lines (the pre-cache behaviour); the
+      // committed offsets and detector cache are kept, exactly as
+      // before.
+      lines = text.split('\n');
+      this.cachedLines = lines;
+      this.committedLineStart = this.committedLine >= 0
+        ? startOfLine(lines, this.committedLine)
+        : 0;
+    }
+    this.cachedText = text;
+
     // Resume from the line after the last committed boundary. The detector
     // reads its own contextCache[committedLine] for the resume context
     // (written on the scan that committed that line; clearContextCache
@@ -79,8 +136,19 @@ export class StreamingBoundarySplitter {
       createInitialContext(),
     );
     if (result.line > this.committedLine) {
+      // Walk only the newly committed region: start from the stable
+      // start-of-line base rather than re-walking from line 0 like
+      // `offsetAfterLine` (O(n) per commit adds up to O(n²) over a
+      // message that commits often). The trailing +1 assumes a
+      // terminating newline; capping at text.length reproduces
+      // offsetAfterLine's last-line (no trailing newline) case.
+      let start = this.committedLineStart;
+      for (let i = Math.max(this.committedLine, 0); i < result.line; i++) {
+        start += lines[i].length + 1;
+      }
       this.committedLine = result.line;
-      this.committedOffset = offsetAfterLine(text, lines, result.line);
+      this.committedLineStart = start;
+      this.committedOffset = Math.min(start + lines[result.line].length + 1, text.length);
       // Drop cached contexts for lines now permanently inside the prefix;
       // keep committedLine itself for the next resume's context read.
       this.detector.clearContextCache(this.committedLine);
@@ -99,5 +167,19 @@ export class StreamingBoundarySplitter {
     this.detector = new BoundaryDetector();
     this.committedLine = -1;
     this.committedOffset = 0;
+    this.committedLineStart = 0;
+    this.cachedText = '';
+    this.cachedLines = [];
   }
+}
+
+// Offset where line `lineIndex` starts. Only used on the rare
+// non-append fallback, where the cached committedLineStart may no
+// longer describe the rewritten lines.
+function startOfLine(lines: string[], lineIndex: number): number {
+  let offset = 0;
+  for (let i = 0; i < lineIndex; i++) {
+    offset += lines[i].length + 1;
+  }
+  return offset;
 }

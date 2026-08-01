@@ -148,3 +148,100 @@ describe('StreamingBoundarySplitter — equivalence to splitAtBoundary', () => {
     expect(next).toEqual(splitAtBoundary('A new paragraph.\n\nSecond.', 0));
   });
 });
+
+describe('StreamingBoundarySplitter — incremental line cache', () => {
+  // The reveal-tick split now caches the previous call's line array and
+  // splits only the appended delta. These cases pin the merge mechanics
+  // the char-by-char corpus above exercises only at chunk size 1, plus
+  // the non-append fallbacks that must reproduce the pre-cache
+  // behaviour exactly.
+
+  function assertEquivalentChunked(doc: string, chunkSizes: number[]) {
+    const splitter = new StreamingBoundarySplitter();
+    const reference = makeReference();
+    let at = 0;
+    let i = 0;
+    while (at < doc.length) {
+      at = Math.min(doc.length, at + chunkSizes[i % chunkSizes.length]);
+      i++;
+      const text = doc.slice(0, at);
+      const got = splitter.split(text);
+      const want = reference(text);
+      expect(got.prefix + got.tail).toBe(text);
+      expect(got).toEqual(want);
+    }
+  }
+
+  const mixedDoc = [
+    '## Section',
+    '',
+    'Prose that goes on for a while, long enough to straddle chunks.',
+    '',
+    '```js',
+    'const value = 42;',
+    '```',
+    '',
+    '- bullet a',
+    '- bullet b',
+    '',
+    'Final paragraph still streaming',
+  ].join('\n');
+
+  it('matches under multi-character chunked growth (partial last line grows across ticks)', () => {
+    // Irregular chunk sizes so appends land mid-line, exactly on a
+    // newline, just after a newline, and spanning several lines.
+    assertEquivalentChunked(mixedDoc, [3, 1, 17, 2, 40, 5]);
+    assertEquivalentChunked(mixedDoc, [64]);
+    assertEquivalentChunked(mixedDoc, [1, 200]);
+  });
+
+  it('matches char-by-char on a CRLF document', () => {
+    assertEquivalentCharByChar(
+      'First line.\r\n\r\nSecond paragraph here.\r\n\r\n- a\r\n- b\r\n\r\nTrailing prose',
+    );
+  });
+
+  it('falls back to a full re-split on a tail shrink above the committed offset', () => {
+    // A shrink that stays ABOVE committedOffset does not trip the reset
+    // guard; before the line cache it simply re-split the whole source.
+    // The cache must detect the non-append and do the same.
+    const splitter = new StreamingBoundarySplitter();
+    const grown = 'Para one.\n\nPara two.\n\nPara three grows quite long here';
+    const committed = splitter.split(grown);
+    expect(committed.prefix.length).toBeGreaterThan(0);
+    // Trim within the tail (still longer than the committed prefix).
+    const trimmed = 'Para one.\n\nPara two.\n\nPara';
+    expect(trimmed.length).toBeGreaterThan(committed.prefix.length);
+    const got = splitter.split(trimmed);
+    expect(got.prefix + got.tail).toBe(trimmed);
+    // The committed region is untouched by the trim, so the fallback's
+    // resumed detection must agree with a from-scratch monotonic split.
+    expect(got).toEqual(splitAtBoundary(trimmed, committed.prefix.length));
+    // Regrowth after the fallback keeps matching the reference exactly.
+    const regrown = trimmed + ' four continues.\n\nPara five.\n\nTail';
+    const after = splitter.split(regrown);
+    expect(after).toEqual(splitAtBoundary(regrown, got.prefix.length));
+  });
+
+  it('falls back to a full re-split on a same-length rewrite of the tail', () => {
+    const splitter = new StreamingBoundarySplitter();
+    const first = 'Para one.\n\nPara two.\n\nAAAA BBBB';
+    const committed = splitter.split(first);
+    expect(committed.prefix.length).toBeGreaterThan(0);
+    expect(first.startsWith(committed.prefix)).toBe(true);
+    // Same length, different content past the committed region —
+    // startsWith fails, so the cached lines must be discarded and
+    // detection must see the real current lines (not 'AAAA BBBB').
+    const swapped = 'Para one.\n\nPara two.\n\nCCCC\n\nDDD';
+    expect(swapped.length).toBe(first.length);
+    const got = splitter.split(swapped);
+    expect(got.prefix + got.tail).toBe(swapped);
+    expect(got).toEqual(splitAtBoundary(swapped, committed.prefix.length));
+    // The rewritten tail's own boundary commits on a later call exactly
+    // as the monotonic from-scratch split would find it.
+    const grown = swapped + ' more prose.\n\nNext block';
+    expect(splitter.split(grown)).toEqual(
+      splitAtBoundary(grown, got.prefix.length),
+    );
+  });
+});
