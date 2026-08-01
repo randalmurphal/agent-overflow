@@ -1,6 +1,6 @@
-import { SvelteSet } from 'svelte/reactivity';
 import type { ApprovalKind } from '../types/events';
 import type { Item, Thread } from '../types/models';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   clearForThread as clearSendQueueForThread,
   hasQueueItems,
@@ -76,27 +76,28 @@ export type ThreadLiveStatus =
   | 'error'
   | 'interrupted';
 
-let statuses: Map<string, ThreadLiveStatus> = $state(new Map());
-let liveStateHydratingThreads: Set<string> = $state(new Set());
+// Every per-thread live signal that the sidebar / working indicator
+// reads on mostly-ABSENT keys lives in a per-thread box registry
+// (keyedSignalRegistry.svelte.ts — see its header for the fan-out
+// class and the writer-side-creation / creation-version pitfalls).
+// One thread's status flip, hydration toggle, or pending-send change
+// must only re-run THAT thread's readers, not every sidebar row plus
+// every collapsed-project tree rollup.
+//
+// `statuses` maps threadId → live status; 'idle' is the empty value,
+// so writing 'idle' is equivalent to clearing the entry.
+const statuses = createKeyedSignalRegistry<ThreadLiveStatus>('idle');
+const liveStateHydratingThreads = createKeyedSignalRegistry<boolean>(false);
+const pendingSendThreads = createKeyedSignalRegistry<boolean>(false);
 const approvalIDsByThread = new Map<string, Set<string>>();
 const awaitingInputIDsByThread = new Map<string, Set<string>>();
 const approvalThreadByID = new Map<string, string>();
-// activeTurnBoxByThread is the global per-thread ActiveTurn registry.
+// activeTurns is the global per-thread ActiveTurn registry.
 // `isThreadWorking` combines it with pending-send and send-queue bridge
-// state to answer "is this thread working?".
-//
-// Each thread gets its own reactive box (one `$state.raw` signal)
-// rather than one SvelteMap: reading a MISSING key from a SvelteMap
-// subscribes the reader to the whole-map version, and idle threads ARE
-// the missing-key case here (entries clear on round completion). With
-// a shared map, every turn start/complete on ANY thread invalidated
-// every idle pane's working indicator and every sidebar row — at the
-// per-wire-round cadence that is multiple cross-pane invalidations per
-// second while any pane streams. With per-thread boxes, a reader only
-// re-evaluates when ITS thread's turn changes (plus one re-run per
-// box CREATION, via activeTurnBoxCreationVersion below). Boxes are
-// created on first write and live for the session (bounded by distinct
-// thread ids observed; `clearThreadStatus` drops the archived ones).
+// state to answer "is this thread working?". Idle threads are the
+// boxless case (entries clear on round completion) — the exact
+// missing-key fan-out the registry exists for; this was the first
+// structure to adopt the per-thread box pattern.
 //
 // Under the per-wire-round emission cadence (see
 // internal/triage/AGENTS.md "Wire-round vs logical-turn"), each entry
@@ -106,60 +107,8 @@ const approvalThreadByID = new Map<string, string>();
 // turn. This is what flips the working indicator off between rounds
 // in Claude's multi-result-per-turn cascade so the UI reflects "model
 // is engaged right now" rather than "user-typed prompt is in flight."
-interface ActiveTurnBox {
-  get current(): ActiveTurn | null;
-  set current(turn: ActiveTurn | null);
-}
-
-function newActiveTurnBox(): ActiveTurnBox {
-  // `$state.raw`: the ActiveTurn record is replaced wholesale, never
-  // mutated field-by-field, so deep proxying would be pure overhead.
-  let current: ActiveTurn | null = $state.raw(null);
-  return {
-    get current() {
-      return current;
-    },
-    set current(turn) {
-      current = turn;
-    },
-  };
-}
-
-const activeTurnBoxByThread = new Map<string, ActiveTurnBox>();
-
-// Bumped when a box is CREATED — not when a turn starts or ends.
-// Readers of a thread with no box yet track this instead of the box
-// (see readActiveTurn); after the thread's first-ever turn creates the
-// box, those readers re-run once and track the box directly.
-let activeTurnBoxCreationVersion = $state(0);
-
-// Writer-side accessor. Only writers create boxes: Svelte does not
-// register state created inside the currently-running reaction as a
-// dependency of that reaction, so a reader that lazily created its own
-// box could never track it. Writers (projectTurnStarted etc.) run from
-// event handlers, outside any reaction, where creation is safe.
-function activeTurnBoxForWrite(threadId: string): ActiveTurnBox {
-  let box = activeTurnBoxByThread.get(threadId);
-  if (!box) {
-    box = newActiveTurnBox();
-    activeTurnBoxByThread.set(threadId, box);
-    activeTurnBoxCreationVersion += 1;
-  }
-  return box;
-}
-
-function readActiveTurn(threadId: string): ActiveTurn | null {
-  const box = activeTurnBoxByThread.get(threadId);
-  if (!box) {
-    // Track creations so this thread's first-ever turn re-runs the
-    // reader; on that re-run the box exists and is tracked directly.
-    void activeTurnBoxCreationVersion;
-    return null;
-  }
-  return box.current;
-}
+const activeTurns = createKeyedSignalRegistry<ActiveTurn | null>(null);
 const completedTurnIDsByThread = new Map<string, Set<string>>();
-const pendingSendThreads = new SvelteSet<string>();
 const planReadyThreads = new Set<string>();
 const errorThreads = new Set<string>();
 const interruptedThreads = new Set<string>();
@@ -227,7 +176,7 @@ function recalculateThreadStatus(threadId: string): void {
  * to render no dot, so callers don't need to special-case undefined.
  */
 export function getThreadStatus(threadId: string): ThreadLiveStatus {
-  const stored = statuses.get(threadId) ?? 'idle';
+  const stored = statuses.get(threadId);
   if ((approvalIDsByThread.get(threadId)?.size ?? 0) > 0 || stored === 'pending-approval') {
     return 'pending-approval';
   }
@@ -264,9 +213,7 @@ export function beginThreadLiveStateHydration(threadId: string): number {
   if (!threadId) return 0;
   const token = (liveStateHydrationTokenByThread.get(threadId) ?? 0) + 1;
   liveStateHydrationTokenByThread.set(threadId, token);
-  if (!liveStateHydratingThreads.has(threadId)) {
-    liveStateHydratingThreads = new Set(liveStateHydratingThreads).add(threadId);
-  }
+  liveStateHydratingThreads.set(threadId, true);
   return token;
 }
 
@@ -274,15 +221,12 @@ export function finishThreadLiveStateHydration(threadId: string, token: number):
   if (!threadId || token === 0) return;
   if (liveStateHydrationTokenByThread.get(threadId) !== token) return;
   liveStateHydrationTokenByThread.delete(threadId);
-  if (!liveStateHydratingThreads.has(threadId)) return;
-  const next = new Set(liveStateHydratingThreads);
-  next.delete(threadId);
-  liveStateHydratingThreads = next;
+  liveStateHydratingThreads.set(threadId, false);
 }
 
 export function isThreadLiveStateHydrating(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
-  return liveStateHydratingThreads.has(threadId);
+  return liveStateHydratingThreads.get(threadId);
 }
 
 export function isThreadLiveStateHydrationCurrent(threadId: string, token: number): boolean {
@@ -291,23 +235,14 @@ export function isThreadLiveStateHydrationCurrent(threadId: string, token: numbe
 }
 
 /**
- * Set or replace a thread's live status. Writing 'idle' is equivalent
- * to clearing — we drop the entry so the map doesn't grow with stale
- * idle-only rows across long sessions. Runtime Working is derived by
- * `isThreadWorking`, so production projections should not persist
- * `running` in this map.
+ * Set or replace a thread's live status. 'idle' is the registry's
+ * empty value, so writing it is equivalent to clearing; equal writes
+ * (including idle-on-absent) don't invalidate any reader. Runtime
+ * Working is derived by `isThreadWorking`, so production projections
+ * should not persist `running` in this registry.
  */
 export function setThreadStatus(threadId: string, status: ThreadLiveStatus): void {
-  if (status === 'idle') {
-    if (!statuses.has(threadId)) return;
-    const next = new Map(statuses);
-    next.delete(threadId);
-    statuses = next;
-    return;
-  }
-  const current = statuses.get(threadId);
-  if (current === status) return;
-  statuses = new Map(statuses).set(threadId, status);
+  statuses.set(threadId, status);
 }
 
 /**
@@ -317,18 +252,9 @@ export function setThreadStatus(threadId: string, status: ThreadLiveStatus): voi
  * only and must not outlive their thread.
  */
 export function clearThreadStatus(threadId: string): void {
-  const turnBox = activeTurnBoxByThread.get(threadId);
-  if (turnBox) {
-    // Null the signal BEFORE dropping the box: a still-mounted reader
-    // re-runs off the null write, re-reads through `readActiveTurn`
-    // (which tracks `activeTurnBoxCreationVersion` while box-less and
-    // re-attaches when its thread's next turn creates a fresh box); the
-    // orphan is GC'd with the reader.
-    turnBox.current = null;
-    activeTurnBoxByThread.delete(threadId);
-  }
+  activeTurns.drop(threadId);
   completedTurnIDsByThread.delete(threadId);
-  pendingSendThreads.delete(threadId);
+  pendingSendThreads.drop(threadId);
   planReadyThreads.delete(threadId);
   for (const requestIdSet of [
     approvalIDsByThread.get(threadId),
@@ -344,16 +270,9 @@ export function clearThreadStatus(threadId: string): void {
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
   liveStateHydrationTokenByThread.delete(threadId);
-  if (liveStateHydratingThreads.has(threadId)) {
-    const next = new Set(liveStateHydratingThreads);
-    next.delete(threadId);
-    liveStateHydratingThreads = next;
-  }
+  liveStateHydratingThreads.drop(threadId);
   clearSendQueueForThread(threadId);
-  if (!statuses.has(threadId)) return;
-  const next = new Map(statuses);
-  next.delete(threadId);
-  statuses = next;
+  statuses.drop(threadId);
 }
 
 /**
@@ -370,7 +289,7 @@ export function projectSendStarted(threadId: string): void {
   // "Failed" — the user has moved past that failure.
   errorThreads.delete(threadId);
   interruptedThreads.delete(threadId);
-  pendingSendThreads.add(threadId);
+  pendingSendThreads.set(threadId, true);
   recalculateThreadStatus(threadId);
 }
 
@@ -382,7 +301,7 @@ export function projectSendStarted(threadId: string): void {
  */
 export function projectSendResolved(threadId: string, opts: { error?: boolean } = {}): void {
   if (!threadId) return;
-  pendingSendThreads.delete(threadId);
+  pendingSendThreads.set(threadId, false);
   interruptedThreads.delete(threadId);
   if (opts.error) {
     errorThreads.add(threadId);
@@ -401,13 +320,13 @@ export function projectSendResolved(threadId: string, opts: { error?: boolean } 
  */
 export function hasPendingSend(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
-  return pendingSendThreads.has(threadId);
+  return pendingSendThreads.get(threadId);
 }
 
 export function isThreadWorking(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
-  return readActiveTurn(threadId) !== null
-    || pendingSendThreads.has(threadId)
+  return activeTurns.get(threadId) !== null
+    || pendingSendThreads.get(threadId)
     || hasQueueItems(threadId);
 }
 
@@ -427,7 +346,8 @@ export function isSendInFlight(threadId: string | null | undefined, paneSendInFl
  */
 export function clearPendingSend(threadId: string): void {
   if (!threadId) return;
-  if (!pendingSendThreads.delete(threadId)) return;
+  if (!pendingSendThreads.get(threadId)) return;
+  pendingSendThreads.set(threadId, false);
   recalculateThreadStatus(threadId);
 }
 
@@ -506,7 +426,7 @@ export function projectTurnStarted(
   // — the decision happened. Rejecting a plan also fires a new turn
   // (agent adjusts and re-proposes), so clearing here is correct in
   // both acceptance and rejection cases.
-  pendingSendThreads.delete(threadId);
+  pendingSendThreads.set(threadId, false);
   planReadyThreads.delete(threadId);
   if (hasCompletedTurnID(threadId, turnId)) {
     recalculateThreadStatus(threadId);
@@ -522,10 +442,9 @@ export function projectTurnStarted(
   // original startedAt for an exact-match round keeps the working-
   // indicator's elapsed-seconds counter monotonically increasing
   // instead of rewinding on each duplicate.
-  const turnBox = activeTurnBoxForWrite(threadId);
-  const existing = turnBox.current;
+  const existing = activeTurns.get(threadId);
   if (existing && existing.turnId === turnId) return;
-  turnBox.current = { turnId, turnIndex, startedAt };
+  activeTurns.set(threadId, { turnId, turnIndex, startedAt });
   recalculateThreadStatus(threadId);
 }
 
@@ -544,9 +463,8 @@ export function projectTurnCompleted(
 ): void {
   if (!threadId || !turnId) return;
   markCompletedTurnID(threadId, turnId);
-  const turnBox = activeTurnBoxByThread.get(threadId);
-  if (turnBox && turnBox.current?.turnId === turnId) {
-    turnBox.current = null;
+  if (activeTurns.get(threadId)?.turnId === turnId) {
+    activeTurns.set(threadId, null);
   }
   if (opts.errorMessage && opts.errorMessage.length > 0) {
     errorThreads.add(threadId);
@@ -595,11 +513,10 @@ export function projectTurnCompleted(
  */
 export function projectThreadReverted(threadId: string): void {
   if (!threadId) return;
-  const turnBox = activeTurnBoxByThread.get(threadId);
-  const active = turnBox?.current ?? null;
+  const active = activeTurns.get(threadId);
   if (active) markCompletedTurnID(threadId, active.turnId);
-  if (turnBox) turnBox.current = null;
-  pendingSendThreads.delete(threadId);
+  activeTurns.set(threadId, null);
+  pendingSendThreads.set(threadId, false);
   interruptedThreads.delete(threadId);
   errorThreads.delete(threadId);
   planReadyThreads.delete(threadId);
@@ -624,11 +541,7 @@ export function projectThreadReverted(threadId: string): void {
       (liveStateHydrationTokenByThread.get(threadId) ?? 0) + 1,
     );
   }
-  if (liveStateHydratingThreads.has(threadId)) {
-    const next = new Set(liveStateHydratingThreads);
-    next.delete(threadId);
-    liveStateHydratingThreads = next;
-  }
+  liveStateHydratingThreads.set(threadId, false);
   clearSendQueueForThread(threadId);
   recalculateThreadStatus(threadId);
 }
@@ -660,7 +573,7 @@ function hasCompletedTurnID(threadId: string, turnId: string): boolean {
  */
 export function getActiveTurn(threadId: string | null | undefined): ActiveTurn | null {
   if (!threadId) return null;
-  return readActiveTurn(threadId);
+  return activeTurns.get(threadId);
 }
 
 /**
@@ -673,7 +586,7 @@ export function projectThreadItem(item: Item): void {
   if (!item?.threadId || !item.id) return;
 
   if (item.kind === 'error') {
-    pendingSendThreads.delete(item.threadId);
+    pendingSendThreads.set(item.threadId, false);
     errorThreads.add(item.threadId);
   } else if (item.kind === 'user_text') {
     errorThreads.delete(item.threadId);
@@ -818,11 +731,9 @@ export function projectPlanResolved(threadId: string): void {
  * send queue because `isThreadWorking` reads that bridge state.
  */
 export function resetForTest(): void {
-  for (const box of activeTurnBoxByThread.values()) box.current = null;
-  activeTurnBoxByThread.clear();
-  activeTurnBoxCreationVersion = 0;
+  activeTurns.reset();
   completedTurnIDsByThread.clear();
-  pendingSendThreads.clear();
+  pendingSendThreads.reset();
   planReadyThreads.clear();
   approvalIDsByThread.clear();
   awaitingInputIDsByThread.clear();
@@ -831,7 +742,6 @@ export function resetForTest(): void {
   interruptedThreads.clear();
   liveStateHydrationTokenByThread.clear();
   resetSendQueueForTest();
-  liveStateHydratingThreads = new Set();
-  if (statuses.size === 0) return;
-  statuses = new Map();
+  liveStateHydratingThreads.reset();
+  statuses.reset();
 }

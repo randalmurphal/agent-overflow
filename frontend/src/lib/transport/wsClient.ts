@@ -133,6 +133,15 @@ interface Pending {
 
 type EventHandler = (data: unknown) => void;
 
+// Reusable subscriber-fanout copy. dispatchToSubscribers snapshots a
+// channel's handler set before iterating; doing that into one shared
+// scratch array (truncated after each fanout) removes a per-event
+// allocation from the streaming drain. Module-level is safe because
+// fanouts never nest — dispatch is driven solely by WS onmessage — and
+// `fanoutScratchInUse` falls back to a fresh copy if that ever changes.
+const fanoutScratch: EventHandler[] = [];
+let fanoutScratchInUse = false;
+
 // TransportStatus describes the current connectivity to the wsClient.
 // 'connected' means the socket is OPEN and serving traffic.
 // 'reconnecting' means a backoff timer is queued or a connect attempt is
@@ -302,6 +311,11 @@ export class WSClient {
   // entry once we hit MAX_REPLAY_CHANNELS — the cap mirrors the server's
   // own clamp and stops a hostile remote from blowing the wire frame.
   private readonly lastSeqByChannel: Map<string, number> = new Map();
+  // The channel currently at lastSeqByChannel's insertion-order tail —
+  // lets recordChannelSeq skip the LRU delete/re-insert for the common
+  // consecutive-events-on-one-channel case. Only recordChannelSeq
+  // mutates the map, so the hint cannot go stale.
+  private lastSeqTailChannel: string | null = null;
   private notificationReplayPending = false;
   private notificationReplayBuffer: ServerEventFrame[] = [];
   private notificationCheckpointScope: string | null = null;
@@ -968,13 +982,24 @@ export class WSClient {
       return;
     }
     if (frame.type === 'event') {
-      if (this.bufferNotificationReplayEvent(frame)) return;
+      if (this.notificationReplayPending && frame.channel === NOTIFICATION_ACTIVATED_CHANNEL) {
+        this.notificationReplayBuffer.push(frame);
+        return;
+      }
       this.handleEventEntry(frame);
       return;
     }
     if (frame.type === 'batch') {
       for (const evt of frame.events) {
-        if (this.bufferNotificationReplayEvent({ type: 'event', ...evt })) continue;
+        // Guard BEFORE building the ServerEventFrame shape: replay
+        // buffering is live only during the brief post-reconnect window
+        // and only for one rare channel, so the steady streaming state
+        // (coalesced batches of up to 50 item deltas) must not pay a
+        // throwaway spread copy per event just to probe it.
+        if (this.notificationReplayPending && evt.channel === NOTIFICATION_ACTIVATED_CHANNEL) {
+          this.notificationReplayBuffer.push({ type: 'event', ...evt });
+          continue;
+        }
         this.handleEventEntry(evt);
       }
       return;
@@ -986,14 +1011,6 @@ export class WSClient {
       this.notificationReplayPending = false;
       for (const event of buffered) this.handleEventEntry(event);
     }
-  }
-
-  private bufferNotificationReplayEvent(event: ServerEventFrame): boolean {
-    if (!this.notificationReplayPending || event.channel !== NOTIFICATION_ACTIVATED_CHANNEL) {
-      return false;
-    }
-    this.notificationReplayBuffer.push(event);
-    return true;
   }
 
   // handleEventEntry processes a single event entry — used by both
@@ -1026,9 +1043,16 @@ export class WSClient {
   private recordChannelSeq(channel: string, seq: number): void {
     if (this.lastSeqByChannel.has(channel)) {
       // Re-insert so the entry moves to the tail and stays "fresh"
-      // rather than aging out on the next overflow.
-      this.lastSeqByChannel.delete(channel);
+      // rather than aging out on the next overflow — but skip the
+      // delete/re-insert when the entry already sits at the tail,
+      // which is the dominant streaming pattern (back-to-back events
+      // on one channel). A plain .set() on an existing key keeps its
+      // position, so the LRU order is preserved exactly.
+      if (channel !== this.lastSeqTailChannel) {
+        this.lastSeqByChannel.delete(channel);
+      }
       this.lastSeqByChannel.set(channel, seq);
+      this.lastSeqTailChannel = channel;
       if (channel === NOTIFICATION_ACTIVATED_CHANNEL && this.notificationCheckpointScope !== null) {
         storeNotificationActivationSeq(this.notificationCheckpointScope, seq);
       }
@@ -1041,6 +1065,7 @@ export class WSClient {
       }
     }
     this.lastSeqByChannel.set(channel, seq);
+    this.lastSeqTailChannel = channel;
     if (channel === NOTIFICATION_ACTIVATED_CHANNEL && this.notificationCheckpointScope !== null) {
       storeNotificationActivationSeq(this.notificationCheckpointScope, seq);
     }
@@ -1050,17 +1075,39 @@ export class WSClient {
     const set = this.subscribers.get(channel);
     if (!set || set.size === 0) return;
     // Copy so a handler that unsubscribes mid-iteration doesn't perturb
-    // the loop.
-    for (const handler of [...set]) {
-      // Re-check membership: a prior handler in this fanout may have
-      // unsubscribed `handler`, in which case skipping it preserves the
-      // documented unsubscribe contract — once unsubscribed, no further
-      // events on this channel.
-      if (!set.has(handler)) continue;
-      try {
-        handler(data);
-      } catch (err) {
-        console.warn(`wsClient: subscriber on ${clampString(channel)} threw`, err);
+    // the loop — into a reused module-level scratch rather than a fresh
+    // `[...set]` per event, since a streaming drain dispatches here for
+    // every event. The scratch is safe because dispatch is only ever
+    // driven by WS onmessage (handleFrame/handleEventEntry), so no
+    // handler can synchronously re-enter the fanout; the nested-use
+    // fallback below keeps a future nested dispatch correct instead of
+    // silently corrupting the shared array.
+    const usingScratch = !fanoutScratchInUse;
+    const handlers = usingScratch ? fanoutScratch : [...set];
+    if (usingScratch) {
+      fanoutScratchInUse = true;
+      for (const handler of set) handlers.push(handler);
+    }
+    try {
+      for (const handler of handlers) {
+        // Re-check membership: a prior handler in this fanout may have
+        // unsubscribed `handler`, in which case skipping it preserves the
+        // documented unsubscribe contract — once unsubscribed, no further
+        // events on this channel. (Handlers added mid-fanout are absent
+        // from the copy and correctly wait for the next event.)
+        if (!set.has(handler)) continue;
+        try {
+          handler(data);
+        } catch (err) {
+          console.warn(`wsClient: subscriber on ${clampString(channel)} threw`, err);
+        }
+      }
+    } finally {
+      if (usingScratch) {
+        // Truncate so the scratch doesn't pin unsubscribed handlers
+        // (and their closed-pane closures) until the next dispatch.
+        fanoutScratch.length = 0;
+        fanoutScratchInUse = false;
       }
     }
   }

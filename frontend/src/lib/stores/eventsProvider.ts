@@ -10,7 +10,6 @@ import type {
   TodoUpdateEvent,
   ProviderStatusEvent,
   SessionDiedEvent,
-  SubagentNotificationEvent,
   TurnCompletedEvent,
   TurnStartedEvent,
   UsageEvent,
@@ -37,6 +36,11 @@ import {
 // Import parseTokenUsage from its leaf home, not via the thread.svelte barrel,
 // so this module no longer depends on the 2800-line thread store at all.
 import { parseTokenUsage } from './threadTurnProjection';
+import {
+  clearLiveUsageSnapshot,
+  recordLiveUsageSnapshot,
+  takeLiveUsageSnapshot,
+} from './threadContextWindow';
 import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { patchThreadDurableStatus, syncLatestTurnCompleted, syncThreadActivity, updateThreadUsageCache } from './eventsThreadRows';
 
@@ -169,19 +173,31 @@ export function applyUsageEvent(evt: UsageEvent): void {
     }
   }
 
-  updateThreadUsageCache(
-    evt.threadId,
-    payload
-      ? JSON.stringify({
-          usedTokens: payload.usedTokens,
-          maxTokens: payload.maxTokens,
-          contextPercent: payload.usedPercentage,
-          autoCompactPercent: payload.autoCompactPercent,
-          autoCompactTokenLimit: payload.autoCompactTokenLimit,
-          ...(payload.exceeded ? { exceeded: true } : {}),
-        })
-      : '',
-  );
+  if (payload) {
+    // The visible pane's meter is already updated above at full cadence.
+    // The snapshot for thread-switch seeding goes to the side cache
+    // (threadContextWindow.ts) instead of rewriting Thread.lastTokenUsage
+    // per event — that patchThreadEverywhere path rebuilt the whole
+    // sidebar array and replaced pane.thread ~2Hz per streaming thread.
+    // The row converges once per turn in applyTurnCompleted.
+    recordLiveUsageSnapshot(
+      evt.threadId,
+      JSON.stringify({
+        usedTokens: payload.usedTokens,
+        maxTokens: payload.maxTokens,
+        contextPercent: payload.usedPercentage,
+        autoCompactPercent: payload.autoCompactPercent,
+        autoCompactTokenLimit: payload.autoCompactTokenLimit,
+        ...(payload.exceeded ? { exceeded: true } : {}),
+      }),
+    );
+  } else {
+    // 'reset' clears the persisted copy immediately (turn-boundary-rare,
+    // so the row churn is not the hot path); the side cache entry must
+    // go too or it would shadow the cleared row on the next seed.
+    clearLiveUsageSnapshot(evt.threadId);
+    updateThreadUsageCache(evt.threadId, '');
+  }
 }
 
 // kindToLegacyStatus maps the chat-rewrite closed kind enum onto the legacy
@@ -360,6 +376,16 @@ export function applyTurnCompleted(evt: TurnCompletedEvent): void {
     revertedUserMessage: Boolean(evt.revertedUserMessage),
   });
   patchThreadDurableStatus(evt.threadId, { hasIncompleteTurn: false });
+  // Converge the durable row with the turn's usage ONCE, at the turn
+  // boundary: mid-turn snapshots live in the side cache (consulted by
+  // seedContextWindow, so mid-turn thread switches still seed fresh),
+  // and this single row write replaces the per-usage-event
+  // patchThreadEverywhere churn. take() drops the entry, so the row is
+  // the authority again until the next turn's first usage event.
+  const usageSnapshot = takeLiveUsageSnapshot(evt.threadId);
+  if (usageSnapshot !== undefined) {
+    updateThreadUsageCache(evt.threadId, usageSnapshot);
+  }
   for (const pane of iterPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.settleTurn(settled);
@@ -411,19 +437,6 @@ function sessionDiedBannerMessage(evt: SessionDiedEvent): string {
   // without wire output (bad CLI flag, missing module) — surface it so
   // the banner is self-diagnosing instead of just "exited with code 1".
   return stderrTail ? `${base}: ${stderrTail}` : base;
-}
-
-/**
- * Route `provider:subagent_notification` to the matching pane. No UI
- * consumes this today; the pane records it in a bounded log so a future
- * tray / toast surface can subscribe without re-wiring the channel.
- */
-export function applySubagentNotification(evt: SubagentNotificationEvent): void {
-  if (!evt?.threadId) return;
-  for (const pane of iterPanes()) {
-    if (pane.threadId !== evt.threadId) continue;
-    pane.appendSubagentNotification(evt);
-  }
 }
 
 /**

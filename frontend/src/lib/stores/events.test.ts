@@ -10,6 +10,7 @@ import {
   resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
 import { resetForTest as resetSendQueue } from './sendQueue.svelte';
+import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
 import { getThreads, refreshThreads } from './threads.svelte';
 import { getToasts } from './toast.svelte';
 import { addProjectLocal, getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
@@ -73,6 +74,7 @@ describe('setupEventListeners', () => {
     resetBindingMocks();
     resetThreadStatuses();
     resetSendQueue();
+    resetLiveUsageSnapshotsForTest();
     resetProjectsForTest();
     resetRateLimitsInfo();
     resetProviderStatuses();
@@ -102,7 +104,6 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:item_event')).toBe(1);
     expect(wailsListenerCount('provider:turn_started')).toBe(1);
     expect(wailsListenerCount('provider:turn_completed')).toBe(1);
-    expect(wailsListenerCount('provider:subagent_notification')).toBe(1);
     expect(wailsListenerCount('thread:updated')).toBe(1);
     expect(wailsListenerCount('workflow:error')).toBe(1);
 
@@ -117,7 +118,6 @@ describe('setupEventListeners', () => {
     expect(wailsListenerCount('provider:item_event')).toBe(0);
     expect(wailsListenerCount('provider:turn_started')).toBe(0);
     expect(wailsListenerCount('provider:turn_completed')).toBe(0);
-    expect(wailsListenerCount('provider:subagent_notification')).toBe(0);
     expect(wailsListenerCount('thread:updated')).toBe(0);
     expect(wailsListenerCount('workflow:error')).toBe(0);
 
@@ -2325,6 +2325,148 @@ describe('setupEventListeners', () => {
     expect(pane.contextWindow).toBeNull();
   });
 
+  it('mid-turn usage events update the meter without rewriting the thread row', async () => {
+    const thread = makeThread({ id: 'thread-1', contextWindow: 200000 });
+    setBindingMock('ListThreads', async () => [thread]);
+    await refreshThreads();
+    const pane = await buildPane(thread);
+
+    emitWailsEvent('provider:usage', {
+      action: 'usage',
+      threadId: 'thread-1',
+      usedTokens: 60000,
+      maxTokens: 200000,
+      contextPercent: 30,
+    });
+
+    // Live meter at full cadence…
+    expect(pane.contextWindow?.usedTokens).toBe(60000);
+    // …but no per-event sidebar-row / pane.thread churn: the snapshot
+    // sits in the side cache until the turn-completion flush.
+    expect(getThreads().find((t) => t.id === 'thread-1')?.lastTokenUsage).toBeUndefined();
+    expect(pane.thread?.lastTokenUsage).toBeUndefined();
+
+    // A pane seeding the same thread mid-turn (thread switch) must get
+    // the cached snapshot, not the stale row value.
+    const pane2 = await buildPane(thread, [], 'secondary');
+    expect(pane2.contextWindow?.usedTokens).toBe(60000);
+    expect(pane2.contextWindow?.usedPercentage).toBe(30);
+  });
+
+  it('flushes the cached usage snapshot into the thread row at turn completion', async () => {
+    const thread = makeThread({ id: 'thread-1', contextWindow: 200000 });
+    setBindingMock('ListThreads', async () => [thread]);
+    await refreshThreads();
+    const pane = await buildPane(thread);
+
+    emitWailsEvent('provider:usage', {
+      action: 'usage',
+      threadId: 'thread-1',
+      usedTokens: 60000,
+      maxTokens: 200000,
+      contextPercent: 30,
+    });
+    emitWailsEvent('provider:turn_completed', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 2,
+      stopReason: 'end_turn',
+    });
+
+    const persisted = JSON.parse(pane.thread?.lastTokenUsage ?? '{}') as { usedTokens?: number };
+    expect(persisted.usedTokens).toBe(60000);
+    const row = getThreads().find((t) => t.id === 'thread-1');
+    expect(JSON.parse(row?.lastTokenUsage ?? '{}')).toMatchObject({ usedTokens: 60000 });
+    // The row-driven re-seed keeps the meter on the same values.
+    expect(pane.contextWindow?.usedTokens).toBe(60000);
+  });
+
+  it('a stale mid-turn usage snapshot cannot shadow provider:usage gap recovery', async () => {
+    const stale = makeThread({
+      id: 'thread-gap-shadow',
+      provider: 'codex',
+      contextWindow: 200000,
+      lastTokenUsage: JSON.stringify({
+        usedTokens: 50000,
+        maxTokens: 200000,
+        contextPercent: 25,
+      }),
+    });
+    const pane = await buildPane(stale);
+
+    // A live usage event lands before the gap — the side cache now holds
+    // a pre-gap snapshot.
+    emitWailsEvent('provider:usage', {
+      action: 'usage',
+      threadId: 'thread-gap-shadow',
+      usedTokens: 60000,
+      maxTokens: 200000,
+      contextPercent: 30,
+    });
+    expect(pane.contextWindow?.usedTokens).toBe(60000);
+
+    // Gap recovery re-reads the persisted row; the DB value must win
+    // over the cached pre-gap snapshot.
+    setBindingMock('GetThread', async (threadId: unknown) => {
+      if (threadId !== 'thread-gap-shadow') return null;
+      return {
+        ...stale,
+        lastTokenUsage: JSON.stringify({
+          usedTokens: 175000,
+          maxTokens: 200000,
+          contextPercent: 87.5,
+        }),
+      };
+    });
+    emitWailsEvent(transportGapChannel, {
+      channel: 'provider:usage',
+      seq: 9,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(pane.contextWindow?.usedTokens).toBe(175000);
+    expect(pane.contextWindow?.usedPercentage).toBe(87.5);
+  });
+
+  it('a pane.thread replacement mid-turn re-seeds the meter from the side cache, not the stale row', async () => {
+    const thread = makeThread({
+      id: 'thread-1',
+      contextWindow: 200000,
+      lastTokenUsage: JSON.stringify({
+        usedTokens: 10000,
+        maxTokens: 200000,
+        contextPercent: 5,
+      }),
+    });
+    setBindingMock('ListThreads', async () => [thread]);
+    await refreshThreads();
+    const pane = await buildPane(thread);
+    expect(pane.contextWindow?.usedTokens).toBe(10000);
+
+    emitWailsEvent('provider:usage', {
+      action: 'usage',
+      threadId: 'thread-1',
+      usedTokens: 60000,
+      maxTokens: 200000,
+      contextPercent: 30,
+    });
+    expect(pane.contextWindow?.usedTokens).toBe(60000);
+
+    // A mode-change patch replaces pane.thread mid-turn (row still holds
+    // the boot-time usage). The re-seed must keep the fresher cached
+    // snapshot instead of rewinding the meter to 10000.
+    emitWailsEvent('thread:mode_changed', {
+      threadId: 'thread-1',
+      mode: 'plan',
+      needsReconnect: false,
+    });
+    expect(pane.thread?.mode).toBe('plan');
+    expect(pane.contextWindow?.usedTokens).toBe(60000);
+  });
+
   // Chat-rewrite routing: EventRateLimits folds onto provider:usage
   // via `action: 'rate_limits'`. The listener must NOT treat this as a
   // reset — the last-seen context-window ring stays in place — and it
@@ -2779,19 +2921,6 @@ describe('setupEventListeners', () => {
     expect(pane.latestSettledTurn?.aborted).toBe(true);
     expect(pane.latestSettledTurn?.errorMessage).toBe('user interrupted');
     expect(pane.latestSettledTurn?.stopReason).toBe('interrupted');
-  });
-
-  it('routes provider:subagent_notification to the matching pane', async () => {
-    const pane = await buildPane(makeThread({ id: 'thread-1' }));
-
-    emitWailsEvent('provider:subagent_notification', {
-      threadId: 'thread-1',
-      meta: JSON.stringify({ agentId: 'child-a', status: 'completed' }),
-    });
-
-    expect(pane.subagentNotifications).toHaveLength(1);
-    expect(pane.subagentNotifications[0].threadId).toBe('thread-1');
-    expect(pane.subagentNotifications[0].meta).toContain('child-a');
   });
 
   it('drops provider:turn_started for non-matching threadIds', async () => {

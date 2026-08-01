@@ -396,18 +396,6 @@ export interface TurnCompletedEvent {
 }
 
 /**
- * SubagentNotificationEvent is the payload for
- * `provider:subagent_notification`. Carries the raw `meta` JSON bag from
- * Codex's `<subagent_notification>` parse. No UI today renders this; the
- * listener records the payloads against the pane so a future tray / toast
- * can surface them without re-wiring the channel.
- */
-export interface SubagentNotificationEvent {
-  threadId: string;
-  meta?: string;
-}
-
-/**
  * SessionDiedEvent is the payload for `provider:session_died`. Emitted
  * when a provider subprocess exits abnormally mid-turn (non-zero exit
  * code, killed by signal, read-loop EOF). Drives the session-error

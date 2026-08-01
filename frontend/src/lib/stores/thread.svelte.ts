@@ -10,7 +10,6 @@ import type {
   TodoStep,
   ProviderSessionAccountEvent,
   ProviderStatusEvent,
-  SubagentNotificationEvent,
   UserInputRequest,
 } from '../types/events';
 import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
@@ -367,15 +366,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       updateEffectiveModel(model);
     },
   });
-  // Subagent notification log. The backend emits
-  // `provider:subagent_notification` as a pass-through; no UI consumes it
-  // today, but keeping a bounded in-pane log lets future surfaces (tray,
-  // toast) subscribe without re-wiring the channel. We cap at a small
-  // number of most-recent entries so the array can't grow unbounded in a
-  // session that generates many notifications.
-  let subagentNotifications: SubagentNotificationEvent[] = $state([]);
-  const subagentNotificationLimit = 32;
-
   /**
    * Generation counter for switchThread. Incremented on every switchThread
    * entry so a slow paged fetch from thread A cannot clobber thread B's
@@ -825,7 +815,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // a rehydration failure leaves the pane in a consistent state.
     latestSettledTurn = null;
     updateEffectiveModel('');
-    subagentNotifications = [];
 
     liveTodoState.resetForThread(newThread.id);
     gitStatus.reset();
@@ -1347,14 +1336,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return latestSettledTurn;
     },
     /**
-     * Bounded recent subagent notifications. No UI consumer today; stored
-     * so a future tray / toast surface can subscribe without the pane
-     * needing a new channel.
-     */
-    get subagentNotifications() {
-      return subagentNotifications;
-    },
-    /**
      * Inclusive floor of the loaded history window. Consumers use this
      * to render "Load older messages" and, in scroll-to-item flows, to
      * decide whether a target coordinate is already in view.
@@ -1668,7 +1649,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // belongs to a different pane. The pane's getter just stops
       // returning a value once thread is null below.
       latestSettledTurn = null;
-      subagentNotifications = [];
       liveTodoState.resetForEmptyPane();
       // Same shape: a switchThread that ran clear() mid-flight could
       // otherwise leave the spinner-threshold timer pending. When it
@@ -2504,23 +2484,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     toggleActivityRailInputCollapsed(): void {
       liveTodoState.toggleActivityRailInputCollapsed(thread?.id ?? null);
-    },
-
-    /**
-     * Append a subagent notification. No UI consumer today; bounded by
-     * subagentNotificationLimit so a misbehaving provider can't grow the
-     * array without bound. Oldest entries fall off the front once the
-     * cap is exceeded.
-     */
-    appendSubagentNotification(evt: SubagentNotificationEvent): void {
-      const next = subagentNotifications.concat(evt);
-      if (next.length > subagentNotificationLimit) {
-        subagentNotifications = next.slice(
-          next.length - subagentNotificationLimit,
-        );
-      } else {
-        subagentNotifications = next;
-      }
     },
 
     replaceThread(nextThread: Thread): void {

@@ -6,6 +6,7 @@ import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
 import { ListThreads } from './bindings';
 import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './thread.svelte';
 import { threadItemCache } from './threadItemCache';
+import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { clearThreadStatus } from './threadStatuses.svelte';
 import { addToast } from './toast.svelte';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
@@ -71,6 +72,7 @@ export function removeThread(id: string): void {
   clearThreadSizePriors(id);
   evictDiffSpansForThread(id);
   clearPayloadCacheForThread(id);
+  clearLiveUsageSnapshot(id);
   releaseThreadTerminalState(id);
 }
 

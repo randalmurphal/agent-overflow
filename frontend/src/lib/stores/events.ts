@@ -30,7 +30,6 @@ import type {
   TodoUpdateEvent,
   ProviderStatusEvent,
   SessionDiedEvent,
-  SubagentNotificationEvent,
   TurnCompletedEvent,
   TurnStartedEvent,
   UsageEvent,
@@ -76,7 +75,6 @@ import {
   applyTurnStarted,
   applyTurnCompleted,
   applySessionDied,
-  applySubagentNotification,
   applyTodoUpdate,
   applyDefaultSwapped,
   applyModelFallback,
@@ -261,13 +259,6 @@ export function setupEventListeners(): () => void {
   // turn-completed event that clears the working indicator). The
   // historical trace lives in the timeline as a `notification` row.
   const cancelSessionDied = wailsEventOn<SessionDiedEvent>('provider:session_died', applySessionDied);
-  // provider:subagent_notification — Codex passes subagent metadata
-  // through; no UI renders this yet, but the pane records it so future
-  // surfaces can subscribe without re-wiring.
-  const cancelSubagentNotification = wailsEventOn<SubagentNotificationEvent>(
-    'provider:subagent_notification',
-    applySubagentNotification,
-  );
   // provider:todo_update — Claude TodoWrite + Codex update_plan funnel
   // through here after parser normalisation. Drives the activity
   // rail's Todos segment. Has zero timeline footprint by design (see
@@ -441,7 +432,6 @@ export function setupEventListeners(): () => void {
     cancelTurnStarted();
     cancelTurnCompleted();
     cancelSessionDied();
-    cancelSubagentNotification();
     cancelTodoUpdate();
     cancelTerminalOutput();
     cancelTerminalExit();

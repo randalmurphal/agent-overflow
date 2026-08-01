@@ -6536,23 +6536,6 @@ describe('createThreadPane', () => {
     });
   });
 
-  it('appendSubagentNotification records pass-through payloads, bounded', () => {
-    const pane = createThreadPane();
-    for (let i = 0; i < 40; i++) {
-      pane.appendSubagentNotification({
-        threadId: 'thread-1',
-        meta: JSON.stringify({ agentId: `agent-${i}`, status: 'completed' }),
-      });
-    }
-    // Bound should cap at 32 (subagentNotificationLimit). The newest
-    // entry is at the tail; oldest entries have fallen off.
-    expect(pane.subagentNotifications.length).toBe(32);
-    expect(
-      pane.subagentNotifications[pane.subagentNotifications.length - 1].meta,
-    ).toContain('agent-39');
-    expect(pane.subagentNotifications[0].meta).toContain('agent-8');
-  });
-
   describe('visibility-resume snap (snapSmoothersToReceived)', () => {
     // requestAnimationFrame is suspended while a tab is hidden, but the
     // WebSocket keeps delivering deltas into each smoother's `received`

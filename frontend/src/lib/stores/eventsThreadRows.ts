@@ -44,11 +44,15 @@ export interface RuntimeModeChangedPayload {
  * persist landed must not drag them backward. Explicit unread (0) still
  * wins — see mergeReadMarkersPreservingUnread.
  */
-function mergeThreadRowWithLocal(updated: Thread): Thread {
+function mergeThreadRowWithLocal(
+  updated: Thread,
+  // Batch callers (resyncThreadRows) pass a prebuilt id → Thread index
+  // so an n-row resync is O(n) instead of n linear getThreadById scans.
+  cachedThread: Thread | undefined = getThreadById(updated.id),
+): Thread {
   const readMarkers = [updated.lastReadAt];
   const latestCompletions = [updated.latestTurnCompletedAt];
   const activityMarkers = [updated.updatedAt];
-  const cachedThread = getThreadById(updated.id);
   if (cachedThread?.lastReadAt !== undefined) {
     readMarkers.push(cachedThread.lastReadAt);
   }
@@ -152,7 +156,8 @@ async function resyncThreadRows(): Promise<void> {
     addToast('error', 'Failed to load threads');
     return;
   }
-  const merged = rows.map((row) => mergeThreadRowWithLocal(row));
+  const cachedById = new Map(getThreads().map((thread) => [thread.id, thread]));
+  const merged = rows.map((row) => mergeThreadRowWithLocal(row, cachedById.get(row.id)));
   replaceAllThreads(merged);
   const mergedById = new Map(merged.map((thread) => [thread.id, thread]));
   for (const pane of iterPanes()) {

@@ -12,8 +12,63 @@ interface PersistedTokenUsage {
   exceeded?: boolean;
 }
 
+// ---- Live per-thread usage snapshot side cache -----------------------
+//
+// Mid-turn `provider:usage` events arrive backend-throttled at ~2Hz per
+// streaming thread. They used to rewrite Thread.lastTokenUsage through
+// patchThreadEverywhere on every event — a whole-array sidebar identity
+// change plus a pane.thread replacement (and a JSON re-parse of the
+// string just stringified) per tick, for a field whose ONLY reader is
+// seedContextWindow at pane-thread (re)seed time. The live meter on a
+// visible pane never came from the row: it is written directly via
+// pane.setContextWindow.
+//
+// So the per-event write lands here instead, and seedContextWindow
+// consults this cache BEFORE Thread.lastTokenUsage. An entry, while it
+// exists, is always at least as fresh as the row copy:
+//
+//  - recorded on every usage event (applyUsageEvent);
+//  - flushed into the row and DROPPED at the turn-completion boundary
+//    (applyTurnCompleted), where persisted/sidebar state converges;
+//  - dropped by the provider:usage transport-gap handler BEFORE it
+//    re-seeds from the re-fetched DB row (eventsTransportGap.ts) — gap
+//    recovery re-pulls GetThread precisely so the meter rebuilds from
+//    the persisted snapshot, and a pre-gap cache entry must never
+//    shadow that;
+//  - dropped on thread removal (threads.svelte.ts removeThread).
+//
+// Plain Map, deliberately non-reactive: every consult happens inside
+// imperative (re)seed paths, and per-event meter cadence on visible
+// panes still flows through pane.setContextWindow.
+const liveUsageSnapshotByThread = new Map<string, string>();
+
+/** Record the latest wire usage snapshot (JSON, the exact string that
+ * previously went to Thread.lastTokenUsage) for a thread. */
+export function recordLiveUsageSnapshot(threadId: string, raw: string): void {
+  if (!threadId) return;
+  liveUsageSnapshotByThread.set(threadId, raw);
+}
+
+/** Drop a thread's live snapshot so Thread.lastTokenUsage (the
+ * authoritative row value) wins the next seed. */
+export function clearLiveUsageSnapshot(threadId: string): void {
+  liveUsageSnapshotByThread.delete(threadId);
+}
+
+/** Read-and-drop, for the turn-completion flush into the thread row. */
+export function takeLiveUsageSnapshot(threadId: string): string | undefined {
+  const raw = liveUsageSnapshotByThread.get(threadId);
+  if (raw !== undefined) liveUsageSnapshotByThread.delete(threadId);
+  return raw;
+}
+
+export function resetLiveUsageSnapshotsForTest(): void {
+  liveUsageSnapshotByThread.clear();
+}
+
 export function seedContextWindow(nextThread: Thread | null): ContextWindow | null {
-  const raw = nextThread?.lastTokenUsage?.trim();
+  const live = nextThread ? liveUsageSnapshotByThread.get(nextThread.id) : undefined;
+  const raw = live !== undefined ? live.trim() : nextThread?.lastTokenUsage?.trim();
   if (!raw) {
     if (!nextThread?.contextWindow) return null;
     return normalizeContextWindowForThread({

@@ -1,7 +1,7 @@
-import { SvelteMap } from 'svelte/reactivity';
 import type { SourceDiffReview, SourceProposedPlan } from '../types/models';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
 import * as bindings from './bindings';
+import { createKeyedSignalRegistry, type KeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 /**
  * Pending send queue.
@@ -44,13 +44,20 @@ export interface FlushedItem {
   flushedAt: number;
 }
 
-const queueByThread = new SvelteMap<string, readonly QueueItem[]>();
-const flushedByThread = new SvelteMap<string, readonly FlushedItem[]>();
-const confirmedFlushedUserIdsByThread = new Map<string, Set<string>>();
-const queueRevisionByThread = new Map<string, number>();
-
 const EMPTY_QUEUE: readonly QueueItem[] = Object.freeze([]);
 const EMPTY_FLUSHED: readonly FlushedItem[] = Object.freeze([]);
+
+// Per-thread reactive boxes rather than one SvelteMap: `hasQueueItems`
+// feeds `isThreadWorking`, which every sidebar row evaluates — and for
+// most rows the key is MISSING, which on a SvelteMap subscribes the
+// reader to the whole-map version, so any thread's queue change
+// invalidated every row. See keyedSignalRegistry.svelte.ts for the
+// pattern. The empty sentinels double as the registries' empty values,
+// so `{#each}` callers keep a stable identity when a zone drains.
+const queueByThread = createKeyedSignalRegistry<readonly QueueItem[]>(EMPTY_QUEUE);
+const flushedByThread = createKeyedSignalRegistry<readonly FlushedItem[]>(EMPTY_FLUSHED);
+const confirmedFlushedUserIdsByThread = new Map<string, Set<string>>();
+const queueRevisionByThread = new Map<string, number>();
 
 // ---- Zone 1 (queued) reads ------------------------------------------
 
@@ -59,13 +66,13 @@ const EMPTY_FLUSHED: readonly FlushedItem[] = Object.freeze([]);
  * undefined guard. */
 export function getQueueForThread(threadId: string | null | undefined): readonly QueueItem[] {
   if (!threadId) return EMPTY_QUEUE;
-  return queueByThread.get(threadId) ?? EMPTY_QUEUE;
+  return queueByThread.get(threadId);
 }
 
 /** Read the current Zone 2 list for a thread. */
 export function getFlushedForThread(threadId: string | null | undefined): readonly FlushedItem[] {
   if (!threadId) return EMPTY_FLUSHED;
-  return flushedByThread.get(threadId) ?? EMPTY_FLUSHED;
+  return flushedByThread.get(threadId);
 }
 
 /** True when EITHER zone has at least one entry. Used by the working
@@ -73,10 +80,8 @@ export function getFlushedForThread(threadId: string | null | undefined): readon
  * any in-flight queue activity exists. */
 export function hasQueueItems(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
-  const q = queueByThread.get(threadId);
-  if (q && q.length > 0) return true;
-  const f = flushedByThread.get(threadId);
-  return !!f && f.length > 0;
+  return queueByThread.get(threadId).length > 0
+    || flushedByThread.get(threadId).length > 0;
 }
 
 /** Monotonic revision for combined queued/flushed state stale-hydration guards. */
@@ -111,19 +116,16 @@ function forgetFlushedConfirmation(threadId: string, userItemId: string): void {
   }
 }
 
-type QueueZone<T> = SvelteMap<string, readonly T[]>;
+type QueueZone<T> = KeyedSignalRegistry<readonly T[]>;
 
 function replaceZoneItems<T>(
   zone: QueueZone<T>,
   threadId: string,
   items: readonly T[],
+  empty: readonly T[],
 ): boolean {
-  if (items.length === 0 && !zone.has(threadId)) return false;
-  if (items.length === 0) {
-    zone.delete(threadId);
-    return true;
-  }
-  zone.set(threadId, items);
+  if (items.length === 0 && zone.get(threadId).length === 0) return false;
+  zone.set(threadId, items.length === 0 ? empty : items);
   return true;
 }
 
@@ -131,34 +133,29 @@ function appendZoneItems<T>(
   zone: QueueZone<T>,
   threadId: string,
   additions: readonly T[],
-  empty: readonly T[],
 ): boolean {
   if (additions.length === 0) return false;
-  const current = zone.get(threadId) ?? empty;
-  zone.set(threadId, [...current, ...additions]);
+  zone.set(threadId, [...zone.get(threadId), ...additions]);
   return true;
 }
 
 function filterZoneItems<T>(
   zone: QueueZone<T>,
   threadId: string,
+  empty: readonly T[],
   keep: (item: T) => boolean,
 ): boolean {
   const current = zone.get(threadId);
-  if (!current || current.length === 0) return false;
+  if (current.length === 0) return false;
   const next = current.filter(keep);
   if (next.length === current.length) return false;
-  if (next.length === 0) {
-    zone.delete(threadId);
-  } else {
-    zone.set(threadId, next);
-  }
+  zone.set(threadId, next.length === 0 ? empty : next);
   return true;
 }
 
 function removeQueuedItemsById(threadId: string, queueItemIds: Set<string>): boolean {
   if (queueItemIds.size === 0) return false;
-  return filterZoneItems(queueByThread, threadId, (item) => !queueItemIds.has(item.id));
+  return filterZoneItems(queueByThread, threadId, EMPTY_QUEUE, (item) => !queueItemIds.has(item.id));
 }
 
 // ---- Backend RPC mutations ------------------------------------------
@@ -214,7 +211,7 @@ export function replaceQueueForThread(
   items: readonly QueueItem[],
 ): void {
   if (!threadId) return;
-  if (!replaceZoneItems(queueByThread, threadId, items)) return;
+  if (!replaceZoneItems(queueByThread, threadId, items, EMPTY_QUEUE)) return;
   bumpQueueRevision(threadId);
 }
 
@@ -228,7 +225,7 @@ export function replaceFlushedForThread(
     forgetFlushedConfirmation(threadId, item.userItemId);
     return false;
   });
-  if (!replaceZoneItems(flushedByThread, threadId, visibleItems)) return;
+  if (!replaceZoneItems(flushedByThread, threadId, visibleItems, EMPTY_FLUSHED)) return;
   bumpQueueRevision(threadId);
 }
 
@@ -257,7 +254,7 @@ export function markItemsFlushed(
       flushedAt: now,
     });
   }
-  const appendedFlushedItems = appendZoneItems(flushedByThread, threadId, additions, EMPTY_FLUSHED);
+  const appendedFlushedItems = appendZoneItems(flushedByThread, threadId, additions);
   if (removedQueuedItems || appendedFlushedItems) {
     bumpQueueRevision(threadId);
   }
@@ -275,6 +272,7 @@ export function confirmFlushedByUserItemId(
   const changed = filterZoneItems(
     flushedByThread,
     threadId,
+    EMPTY_FLUSHED,
     (entry) => entry.userItemId !== userItemId,
   );
   if (changed) {
@@ -299,7 +297,7 @@ export function removeRestoredQueueItems(
     changed = removeQueuedItemsById(threadId, queueItemIds) || changed;
   }
   if (userItemIds.size > 0 || queueItemIds.size > 0) {
-    changed = filterZoneItems(flushedByThread, threadId, (entry) => {
+    changed = filterZoneItems(flushedByThread, threadId, EMPTY_FLUSHED, (entry) => {
       if (userItemIds.has(entry.userItemId)) return false;
       if (queueItemIds.has(entry.queueItemId)) return false;
       return true;
@@ -316,12 +314,12 @@ export function removeRestoredQueueItems(
  * bleed into the next. */
 export function clearForThread(threadId: string): void {
   if (!threadId) return;
-  const hadVisibleItems = queueByThread.has(threadId) || flushedByThread.has(threadId);
+  const hadVisibleItems = queueByThread.get(threadId).length > 0
+    || flushedByThread.get(threadId).length > 0;
   confirmedFlushedUserIdsByThread.delete(threadId);
-  if (!hadVisibleItems) return;
-  bumpQueueRevision(threadId);
-  queueByThread.delete(threadId);
-  flushedByThread.delete(threadId);
+  if (hadVisibleItems) bumpQueueRevision(threadId);
+  queueByThread.drop(threadId);
+  flushedByThread.drop(threadId);
 }
 
 // ---- Wire conversion -------------------------------------------------
@@ -353,8 +351,8 @@ export function queueItemFromWire(item: WireQueuedItem): QueueItem {
  * Named to match the `resetForTest` convention in every other store
  * in this directory (threadStatuses.svelte.ts, threads.svelte.ts). */
 export function resetForTest(): void {
-  queueByThread.clear();
-  flushedByThread.clear();
+  queueByThread.reset();
+  flushedByThread.reset();
   confirmedFlushedUserIdsByThread.clear();
   queueRevisionByThread.clear();
 }

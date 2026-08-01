@@ -29,6 +29,7 @@ import {
   sameActiveTurn,
 } from './threadStatuses.svelte';
 import {
+  confirmFlushedByUserItemId,
   getFlushedForThread,
   getQueueForThread,
   markItemsFlushed,
@@ -723,6 +724,108 @@ describe('threadStatuses store', () => {
       }
     });
   });
+
+  describe('reactive granularity (statuses / hydration / pending-send / queue registries)', () => {
+    // The sibling structures adopted the same per-thread box registry
+    // as the active-turn map: one thread's status flip, hydration
+    // toggle, send start, or queue change must only re-run THAT
+    // thread's readers. A reader whose thread has no box yet tracks the
+    // registry's creation version (one re-run per box creation anywhere
+    // — the documented cost), so each scenario warms every box its
+    // reader touches before counting.
+    function warmThreadBoxes(threadId: string): void {
+      // statuses box (needs a non-idle write; idle-on-absent is a no-op).
+      projectApprovalRequest(threadId, 'req-warm');
+      projectApprovalResolution(threadId, 'req-warm');
+      // active-turn + pending-send boxes.
+      projectTurnStarted(threadId, 'turn-warm', 0, 500);
+      projectTurnCompleted(threadId, 'turn-warm');
+      projectSendStarted(threadId);
+      projectSendResolved(threadId);
+      // Both queue-zone boxes; drain them without dropping the boxes.
+      seedQueueItem(threadId, { id: 'queue:warm', message: 'warm' });
+      markItemsFlushed(threadId, [
+        { queueItemId: 'queue:warm', userItemId: 'user:warm', message: 'warm' },
+      ]);
+      confirmFlushedByUserItemId(threadId, 'user:warm');
+      flushSync();
+    }
+
+    it("status changes on one thread do not re-evaluate another thread's status reader", () => {
+      warmThreadBoxes('thread-probe');
+      const status = probeReactivity(() => getThreadStatus('thread-probe'));
+      try {
+        expect(status.evaluations).toBe(1);
+        expect(status.latest).toBe('idle');
+
+        projectApprovalRequest('thread-other', 'req-1');
+        flushSync();
+        projectApprovalResolution('thread-other', 'req-1');
+        flushSync();
+        projectSendStarted('thread-other');
+        flushSync();
+        projectSendResolved('thread-other', { error: true });
+        flushSync();
+        expect(status.evaluations).toBe(1);
+
+        // Its own thread still updates.
+        projectApprovalRequest('thread-probe', 'req-2');
+        flushSync();
+        expect(status.latest).toBe('pending-approval');
+      } finally {
+        status.dispose();
+      }
+    });
+
+    it("hydration toggles on one thread do not re-evaluate another thread's hydration reader", () => {
+      const token = beginThreadLiveStateHydration('thread-probe');
+      finishThreadLiveStateHydration('thread-probe', token);
+      const hydrating = probeReactivity(() => isThreadLiveStateHydrating('thread-probe'));
+      try {
+        expect(hydrating.evaluations).toBe(1);
+
+        const otherToken = beginThreadLiveStateHydration('thread-other');
+        flushSync();
+        finishThreadLiveStateHydration('thread-other', otherToken);
+        flushSync();
+        expect(hydrating.evaluations).toBe(1);
+
+        beginThreadLiveStateHydration('thread-probe');
+        flushSync();
+        expect(hydrating.latest).toBe(true);
+      } finally {
+        hydrating.dispose();
+      }
+    });
+
+    it("queue and pending-send churn on one thread does not re-evaluate another thread's working reader", () => {
+      warmThreadBoxes('thread-probe');
+      const working = probeReactivity(() => isThreadWorking('thread-probe'));
+      const baseline = working.evaluations;
+      try {
+        expect(working.latest).toBe(false);
+
+        projectSendStarted('thread-other');
+        flushSync();
+        seedQueueItem('thread-other', { id: 'queue:1', message: 'queued' });
+        flushSync();
+        markItemsFlushed('thread-other', [
+          { queueItemId: 'queue:1', userItemId: 'user:1', message: 'queued' },
+        ]);
+        flushSync();
+        projectSendResolved('thread-other');
+        flushSync();
+        expect(working.evaluations).toBe(baseline);
+
+        seedQueueItem('thread-probe', { id: 'queue:2', message: 'mine' });
+        flushSync();
+        expect(working.latest).toBe(true);
+      } finally {
+        working.dispose();
+      }
+    });
+  });
+
   describe('projectThreadReverted', () => {
     it('settles active turn, pending send, and both queue zones', () => {
       projectSendStarted('thread-1');

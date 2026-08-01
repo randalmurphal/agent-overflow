@@ -7,6 +7,7 @@ import type { Thread } from '../types/models';
 import { iterPanes } from './panes.svelte';
 import { GetThread } from './bindings';
 import { refreshSidebarProjections, syncThreadRow } from './eventsThreadRows';
+import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
 import { hydrateProviderAccounts } from './eventsProvider';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
@@ -66,6 +67,13 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
         void GetThread(threadId).then((thread) => {
           const t = thread as Thread | null;
           if (!t) return;
+          // The re-fetched DB row is the authority after a gap. Drop
+          // the live usage side cache BEFORE the pane replaceThread
+          // inside syncThreadRow re-seeds, or a pre-gap snapshot would
+          // shadow the persisted value this refresh exists to restore.
+          // Usage events arriving after this line re-populate the
+          // cache with post-gap (fresher) snapshots as usual.
+          clearLiveUsageSnapshot(threadId);
           syncThreadRow(t);
         }).catch((err: unknown) => {
           console.warn(`events: refresh thread ${threadId} after provider:usage gap: ${err}`);
