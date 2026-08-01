@@ -815,15 +815,19 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'terminal.newPane',
     label: 'Terminal: New in New Pane',
     icon: '▶',
-    // No `when` — unlike terminal.toggle this must work with no active thread
-    // (the global +terminal opens a home terminal). The `mod+shift+~` chord is
-    // un-gated (no `!terminalFocus`) and terminal.newPane is a member of the
-    // frontend TERMINAL_ESCAPE_COMMAND_IDS set, so it fires everywhere — from the
-    // composer AND from inside a focused xterm (the natural place to press it),
-    // mirroring the alt+h/l pane-nav chords. `editableReachable` is the other
-    // half of that: App.svelte only dispatches editable-target chords for
-    // editableReachable commands, so without it the chord would no-op from the
-    // xterm <textarea>.
+    // `terminalFocus || hasActiveThread`, not bare `hasActiveThread`: the
+    // xterm escape predicate (TERMINAL_ESCAPE_COMMAND_IDS) evaluates this
+    // `when` against a synthetic context that sets only `terminalFocus`, so
+    // the command must stay enabled there for mod+shift+~ to bubble out of a
+    // focused terminal (the natural place to press it). The
+    // `hasActiveThread` arm requires a thread everywhere else — the terminal
+    // roots at that thread's project/workspace; a no-thread invocation would
+    // mint a project-less terminal with no sidebar surface (the standalone
+    // Terminals group was removed). `editableReachable` is the other half of
+    // the escape: App.svelte only dispatches editable-target chords for
+    // editableReachable commands, so without it the chord would no-op from
+    // the xterm <textarea>.
+    when: 'terminalFocus || hasActiveThread',
     editableReachable: true,
     run: (ctx) => {
       const thread = ctx.pane?.thread;

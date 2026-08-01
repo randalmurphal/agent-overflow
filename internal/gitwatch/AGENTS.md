@@ -56,11 +56,11 @@ share a watcher per canonical cwd via refcount.
    start rebuild-flagged to close the compute-vs-install subscribe
    race. run()'s deferred unregister (before `done` closes) guarantees
    `stop()` never races a rebuild's reinstall into leaked watches.
-   Accepted boundary: dead-watchpoint recovery needs the recreate event
-   to arrive via a watched parent — a root whose parent is unwatched
+   Event-driven dead-watchpoint recovery needs the recreate event to
+   arrive via a watched parent — a root whose parent is unwatched
    (the global-ignore dir, a linked worktree's private gitdir, cwd
-   itself) stays dead after delete+recreate until any other rebuild
-   trigger fires.
+   itself) stays event-dead after delete+recreate; the silent-death
+   layer (item 8) is what bounds that and every other deaf-watch mode.
 5. `lastStatus` is compared with `GitStatus.Equal` — unchanged status
    does not emit, keeping the wire quiet during heavy fs activity that
    doesn't affect the working tree (build outputs, ignored files).
@@ -71,6 +71,25 @@ share a watcher per canonical cwd via refcount.
 7. Subscribers receive a single buffered channel; on overflow the
    newest status supersedes the older one (the run loop drains the
    pending value before sending).
+8. **Silent-death recovery.** An fs-watch install can "succeed" and
+   then never deliver — observed 2026-08-01 on macOS: FSEvents streams
+   installed during a dark-wake died when the machine re-slept,
+   freezing the header diff badge for a whole session — and every
+   rebuild trigger above rides on fs events, so a fully deaf watcher
+   cannot heal itself. Two layers close the loop, both keyed on "the
+   event stream has been quiet" so they cost nothing while events flow:
+   - A `requestRefresh` (subscriber attach, post-action refresh) whose
+     refresh observes a **non-PR** status change with no fs event
+     inside `livenessQuietAfterEvent` proves the watches missed it:
+     the watcher force-reinstalls. PR-field-only deltas are excluded —
+     the attach hook exists to warm the PR cache, and a remote PR
+     appearing says nothing about local watchpoints.
+   - A `watchLivenessInterval` (60s) ticker probes with the fast
+     (network-free) status fn, comparing ignoring PR fields. Ticks are
+     skipped when any fs event arrived within the interval or while
+     fallback polling owns refreshes, so the probe only ever runs
+     against an idle-looking workspace. On drift it force-reinstalls
+     and broadcasts the fresh status.
 
 ## Responsibility boundary
 

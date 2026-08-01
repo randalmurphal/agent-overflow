@@ -118,7 +118,7 @@ func newRebuildHarness(t *testing.T, initialRoots []gitops.WatchRoot) *rebuildHa
 		}
 		return inner(cwd)
 	}
-	h.w = newWorkspaceWatcher(h.ws, statusFn, gitops.GitStatus{Branch: "main"}, initialRoots, rootsFn)
+	h.w = newWorkspaceWatcher(h.ws, statusFn, nil, gitops.GitStatus{Branch: "main"}, initialRoots, rootsFn)
 	h.w.stopFn = func(ch chan<- notify.EventInfo) {
 		notify.Stop(ch)
 		h.mu.Lock()

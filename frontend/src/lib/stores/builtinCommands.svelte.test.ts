@@ -558,14 +558,14 @@ describe('terminal.newPane command', () => {
     vi.mocked(openTerminalThread).mockClear();
   });
 
-  it('stays enabled even while a terminal is focused (the gate lives on the keybinding, not the command)', () => {
+  it('stays enabled while a terminal is focused (the terminalFocus arm of its when)', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);
     expect(getCommand('terminal.newPane')).toBeDefined();
-    // No `when` on the command: unlike terminal.toggle it must run with no
-    // active thread (global +terminal) and from the palette while an xterm
-    // holds focus. The `!terminalFocus` chord gate is what keeps `~` reaching
-    // the shell — proven here by the command remaining enabled under focus.
+    // `when: 'terminalFocus || hasActiveThread'` — the terminalFocus arm is
+    // what lets the mod+shift+~ chord escape a focused xterm (the escape
+    // predicate evaluates the `when` against a synthetic terminalFocus-only
+    // context), proven here by the command remaining enabled under focus.
     const ctx = makeCommandContext(pane, { terminalFocus: true }) as CommandContext;
     expect(isCommandEnabled('terminal.newPane', ctx)).toBe(true);
   });
@@ -583,18 +583,17 @@ describe('terminal.newPane command', () => {
     });
   });
 
-  it('opens a standalone home terminal when no thread context is present', () => {
-    // ctx.pane is null (no focused pane) → projectId/cwd resolve to undefined,
-    // and the backend roots the terminal at home.
+  it('is disabled with no thread context (a project-less terminal would have no sidebar surface)', () => {
+    // ctx.pane is null (no focused pane, no focused terminal). Running here
+    // used to mint a home terminal for the standalone Terminals group; that
+    // group is gone, so the command gates on hasActiveThread instead and must
+    // not create a thread nothing in the sidebar can ever show.
     registerFixtureCommands(readyPane());
     const ctx = makeCommandContext(null, {}) as CommandContext;
 
+    expect(isCommandEnabled('terminal.newPane', ctx)).toBe(false);
     runCommand('terminal.newPane', ctx);
-
-    expect(vi.mocked(openTerminalThread)).toHaveBeenCalledWith({
-      projectId: undefined,
-      cwd: undefined,
-    });
+    expect(vi.mocked(openTerminalThread)).not.toHaveBeenCalled();
   });
 });
 

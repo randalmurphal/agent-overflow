@@ -7,7 +7,7 @@ import {
   openEmptyPane,
   replaceThreadInPane,
 } from './panes.svelte';
-import { expandProject, expandTerminalsGroup } from './sidebar.svelte';
+import { expandProject } from './sidebar.svelte';
 import { prependThread } from './threads.svelte';
 import { addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
@@ -168,7 +168,8 @@ export async function openDraftThreadForProject(
 }
 
 export interface OpenTerminalThreadOptions {
-  /** Project to root the terminal in. Omitted → a standalone home terminal. */
+  /** Project to root the terminal in. Every live entry point passes one — a
+   *  project-less terminal would have no sidebar surface. */
   projectId?: string;
   /** Explicit working directory. Omitted → backend resolves (project root or home). */
   cwd?: string;
@@ -176,8 +177,8 @@ export interface OpenTerminalThreadOptions {
 
 /**
  * Create a persistent `mode:'terminal'` thread and open it in a fresh pane.
- * Every terminal entry point routes here — the per-project / global `+terminal`
- * buttons, the `mod+shift+~` chord, and the ChatHeader ctrl/cmd-click — so a
+ * Every terminal entry point routes here — the per-project `+terminal`
+ * button, the `mod+shift+~` chord, and the ChatHeader ctrl/cmd-click — so a
  * terminal always lands in its own new pane (locked decision: always fresh).
  *
  * `StartTerminal` writes the SQLite row (sentinel provider; `workspacePath` =
@@ -215,11 +216,9 @@ export async function openTerminalThread(
     addToast('error', `Could not start terminal: ${errString(err)}`);
     return null;
   }
-  // Reveal wherever the new row will land so the create isn't invisible: a
-  // per-project terminal under its project, a home terminal under the
-  // (possibly collapsed) Terminals group.
+  // Reveal where the new row will land (the possibly-collapsed project) so
+  // the create isn't invisible.
   if (projectId) expandProject(projectId);
-  else expandTerminalsGroup();
   // Surface the new terminal in the sidebar immediately (mirrors how draft
   // materialization prepends), instead of waiting for a thread-list refresh.
   prependThread(thread);

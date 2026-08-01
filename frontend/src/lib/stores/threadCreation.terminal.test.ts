@@ -1,6 +1,6 @@
 // Orchestration tests for openTerminalThread — the create helper every
-// terminal entry point (the +terminal buttons, the mod+shift+~ chord, the
-// ChatHeader ctrl/cmd-click) routes through.
+// terminal entry point (the per-project +terminal button, the mod+shift+~
+// chord, the ChatHeader ctrl/cmd-click) routes through.
 //
 // We mock the four collaborators (StartTerminal, expandProject, openEmptyPane,
 // replaceThreadInPane) so the test pins the WIRING and the load-bearing ORDER
@@ -51,7 +51,6 @@ const h = vi.hoisted(() => {
       return fakePane;
     }),
     expandProject: vi.fn(),
-    expandTerminalsGroup: vi.fn(),
     addToast: vi.fn(),
   };
 });
@@ -72,7 +71,6 @@ vi.mock('./panes.svelte', () => ({
 }));
 vi.mock('./sidebar.svelte', () => ({
   expandProject: h.expandProject,
-  expandTerminalsGroup: h.expandTerminalsGroup,
 }));
 vi.mock('./toast.svelte', () => ({ addToast: h.addToast }));
 
@@ -92,7 +90,6 @@ beforeEach(() => {
   h.openEmptyPane.mockClear();
   h.replaceThreadInPane.mockClear();
   h.expandProject.mockClear();
-  h.expandTerminalsGroup.mockClear();
   h.addToast.mockClear();
   // openTerminalThread console.error's the failure before toasting; keep the
   // error-path test quiet. Restore only THIS spy in afterEach so the hoisted
@@ -110,8 +107,6 @@ describe('openTerminalThread', () => {
 
     expect(h.startTerminal).toHaveBeenCalledWith({ projectId: 'proj-1', cwd: '/work' });
     expect(h.expandProject).toHaveBeenCalledWith('proj-1');
-    // A per-project terminal reveals its project, not the standalone group.
-    expect(h.expandTerminalsGroup).not.toHaveBeenCalled();
     expect(h.openEmptyPane).toHaveBeenCalledTimes(1);
     expect(h.replaceThreadInPane).toHaveBeenCalledTimes(1);
 
@@ -143,14 +138,14 @@ describe('openTerminalThread', () => {
     ]);
   });
 
-  it('opens a standalone home terminal (no projectId → expands the Terminals group)', async () => {
+  it('skips the project reveal when no projectId is given', async () => {
+    // No live entry point omits projectId anymore (the standalone Terminals
+    // group is gone), but the option stays wire-optional — a project-less
+    // create must not expand anything.
     await openTerminalThread();
 
     expect(h.startTerminal).toHaveBeenCalledWith({ projectId: undefined, cwd: undefined });
     expect(h.expandProject).not.toHaveBeenCalled();
-    // A home terminal lands under the Terminals group, so reveal it (the group
-    // may be collapsed) — otherwise the create is invisible (issue #1 again).
-    expect(h.expandTerminalsGroup).toHaveBeenCalledTimes(1);
     expect(h.openEmptyPane).toHaveBeenCalledTimes(1);
   });
 
@@ -168,9 +163,8 @@ describe('openTerminalThread', () => {
     expect(message).toContain('boom');
 
     // The pane machinery must NOT run on a failed create — no orphan empty pane,
-    // no stale focus latch, no sidebar expansion of either flavor.
+    // no stale focus latch, no sidebar expansion.
     expect(h.expandProject).not.toHaveBeenCalled();
-    expect(h.expandTerminalsGroup).not.toHaveBeenCalled();
     expect(h.openEmptyPane).not.toHaveBeenCalled();
     expect(h.requestTerminalFocus).not.toHaveBeenCalled();
     expect(h.replaceThreadInPane).not.toHaveBeenCalled();
