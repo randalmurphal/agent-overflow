@@ -11,7 +11,7 @@ import (
 // fallback lookup for late completion events; the hot delta path keeps the
 // in-memory item id and never pays this JSON predicate.
 func (s *Store) FindStreamItemByProviderItemID(threadID string, turnIndex int, kind, parentID, providerItemID string) (Item, bool, error) {
-	row := s.db.QueryRow(`
+	row := s.reader().QueryRow(`
 		SELECT `+itemColumns+`
 		  FROM items
 		  LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -35,7 +35,7 @@ func (s *Store) FindStreamItemByProviderItemID(threadID string, turnIndex int, k
 }
 
 func (s *Store) ListItems(threadID string) ([]Item, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -60,7 +60,7 @@ func (s *Store) ListItems(threadID string) ([]Item, error) {
 }
 
 func (s *Store) ListItemsForTurn(threadID string, turnIndex int) ([]Item, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -86,7 +86,7 @@ func (s *Store) ListItemsForTurn(threadID string, turnIndex int) ([]Item, error)
 
 func (s *Store) LastTurnIndex(threadID string) (int, error) {
 	var maxIndex sql.NullInt64
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT MAX(turn_index)
 		   FROM (
 		         SELECT turn_index FROM items WHERE thread_id = ?
@@ -105,7 +105,7 @@ func (s *Store) LastTurnIndex(threadID string) (int, error) {
 }
 
 func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -146,7 +146,7 @@ func (s *Store) FindToolCallItemByTaskID(threadID, taskID string) (Item, bool, e
 	if taskID == "" {
 		return Item{}, false, nil
 	}
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -174,7 +174,7 @@ func (s *Store) FindToolCallItemByTaskID(threadID, taskID string) (Item, bool, e
 // OR-clause forces SQLite onto the broad thread_id index instead, which
 // would scan every row in the thread on every lazy-load click.
 func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM (
 		         SELECT items.* FROM items
@@ -199,7 +199,7 @@ func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool
 }
 
 func (s *Store) GetThreadItem(threadID, id string) (Item, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -228,7 +228,7 @@ func (s *Store) FindNotificationItemByTaskID(threadID, taskID string) (Item, boo
 	// INDEXED BY: without stats the planner walks the thread's ordering
 	// index newest-first probing meta per row instead of using the narrow
 	// partial expression index (13ms vs 0.04ms on a 38k-item thread).
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items INDEXED BY idx_items_meta_task_id
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -250,7 +250,7 @@ func (s *Store) FindNotificationItemByTaskID(threadID, taskID string) (Item, boo
 }
 
 func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -282,7 +282,7 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 // (e.g. tool_result_diff_upgrade.loadSummaryOnlyToolResultCandidate)
 // keep ListTurnItems, which hydrates them.
 func (s *Store) ListTurnItemsSansPayload(threadID string, turnIndex int) ([]Item, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+itemColumnsSansPayload+`
 		   FROM items
 		  WHERE items.thread_id = ? AND items.turn_index = ?
@@ -307,7 +307,7 @@ func (s *Store) ListTurnItemsSansPayload(threadID string, turnIndex int) ([]Item
 
 func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, parentID, summary string) (bool, error) {
 	var exists int
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT EXISTS(
 			SELECT 1
 			  FROM items
@@ -366,7 +366,7 @@ func (s *Store) LatestToolCallByName(threadID string, turnIndex int, toolNames [
 		  ORDER BY items.item_index DESC
 		  LIMIT 1`
 
-	row := s.db.QueryRow(query, args...)
+	row := s.reader().QueryRow(query, args...)
 	it, err := scanItemRow(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -384,7 +384,7 @@ func (s *Store) LatestToolCallByName(threadID string, turnIndex int, toolNames [
 // it precedes the queued message in the provider transcript.
 func (s *Store) MaxItemIndexForTurn(threadID string, turnIndex int) (int, bool, error) {
 	var maxIndex sql.NullInt64
-	if err := s.db.QueryRow(
+	if err := s.reader().QueryRow(
 		`SELECT MAX(item_index) FROM items WHERE thread_id = ? AND turn_index = ?`,
 		threadID, turnIndex,
 	).Scan(&maxIndex); err != nil {

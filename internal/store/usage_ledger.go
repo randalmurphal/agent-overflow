@@ -107,7 +107,7 @@ func (s *Store) QueryWorkItemUsage(workItemID string) (WorkItemUsage, error) {
 		return WorkItemUsage{}, fmt.Errorf("store: query work item usage: empty work item id")
 	}
 	var usage WorkItemUsage
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT
 		 COALESCE(SUM(input_tokens), 0),
 		 COALESCE(SUM(output_tokens), 0),
@@ -154,7 +154,7 @@ func (s *Store) QueryWorkItemTreeUsage(rootItemID string) (WorkItemUsage, error)
 		return WorkItemUsage{}, fmt.Errorf("store: query work item tree usage: empty work item id")
 	}
 	var usage WorkItemUsage
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		workItemTreeCTE+`SELECT
 		 COALESCE(SUM(input_tokens), 0),
 		 COALESCE(SUM(output_tokens), 0),
@@ -182,7 +182,7 @@ func (s *Store) QueryWorkItemTreeUsageDetail(rootItemID string) ([]UsageDetailRo
 	if rootItemID == "" {
 		return nil, fmt.Errorf("store: query work item tree usage detail: empty work item id")
 	}
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		workItemTreeCTE+`SELECT model, cost_source,
 		 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
 		 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
@@ -225,7 +225,7 @@ func (s *Store) QueryWorkItemCosts(projectID string) (map[string]float64, error)
 	if projectID == "" {
 		return nil, fmt.Errorf("store: query work item costs: empty project id")
 	}
-	rows, err := s.db.Query(queryWorkItemCostsSQL, projectID)
+	rows, err := s.reader().Query(queryWorkItemCostsSQL, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("store: query work item costs for project %s: %w", projectID, err)
 	}
@@ -254,7 +254,7 @@ func (s *Store) QueryWorkItemUsageDetail(workItemID string) ([]UsageDetailRow, e
 	if workItemID == "" {
 		return nil, fmt.Errorf("store: query work item usage detail: empty work item id")
 	}
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT model, cost_source,
 		 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens),
 		 SUM(cache_creation_input_tokens), SUM(reasoning_output_tokens),
@@ -465,7 +465,7 @@ func (s *Store) QueryUsage(q UsageQuery) ([]UsageBucket, error) {
 	}
 	query += " GROUP BY bucket ORDER BY bucket ASC"
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: usage query: %w", err)
 	}
@@ -515,7 +515,7 @@ func (s *Store) QueryUsageDetail(q UsageQuery) ([]UsageDetailRow, error) {
 	}
 	query += " GROUP BY bucket, model, cost_source ORDER BY bucket ASC, model ASC"
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: usage detail query: %w", err)
 	}

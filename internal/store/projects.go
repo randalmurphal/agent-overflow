@@ -91,7 +91,7 @@ func (s *Store) CreateProject(p Project) error {
 // GetProject returns a single project by id. Returns sql.ErrNoRows when
 // the id doesn't exist.
 func (s *Store) GetProject(id string) (Project, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+projectColumns+` FROM projects WHERE id = ?`, id,
 	)
 	p, err := scanProject(row)
@@ -105,7 +105,7 @@ func (s *Store) GetProject(id string) (Project, error) {
 // CreateProject to dedupe when the user adds a path that already belongs
 // to a project.
 func (s *Store) GetProjectByPath(path string) (Project, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+projectColumns+` FROM projects WHERE path = ?`, path,
 	)
 	p, err := scanProject(row)
@@ -118,7 +118,7 @@ func (s *Store) GetProjectByPath(path string) (Project, error) {
 // GetProjectBySlug resolves the stable user-facing identifier accepted by
 // workflow tooling.
 func (s *Store) GetProjectBySlug(slug string) (Project, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+projectColumns+` FROM projects WHERE slug = ?`, slug,
 	)
 	p, err := scanProject(row)
@@ -132,7 +132,7 @@ func (s *Store) GetProjectBySlug(slug string) (Project, error) {
 // The frontend re-sorts client-side when the user picks a different
 // ordering.
 func (s *Store) ListProjects() ([]Project, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT ` + projectColumns + ` FROM projects WHERE archived = 0 ORDER BY name ASC`,
 	)
 	if err != nil {
@@ -160,7 +160,7 @@ func (s *Store) ListProjects() ([]Project, error) {
 // gated by MarkThreadActivity) counts.
 func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT p.id, p.path, p.name, p.slug, p.color, p.sort_position,
 		        p.created_at, p.updated_at, p.archived,
 		        COALESCE(COUNT(t.id), 0) AS thread_count,
@@ -299,7 +299,7 @@ func (s *Store) DeleteProject(id string) error {
 	}
 	if deleted == 0 {
 		var exists int
-		if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?)`, id).Scan(&exists); err != nil {
+		if err := s.reader().QueryRow(`SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?)`, id).Scan(&exists); err != nil {
 			return fmt.Errorf("store: check project %s after guarded delete: %w", id, err)
 		}
 		if exists != 0 {
@@ -313,7 +313,7 @@ func (s *Store) DeleteProject(id string) error {
 // layer uses the list to tear each thread down and to tell the frontend which
 // pane state to prune after project deletion.
 func (s *Store) ListThreadIDsForProject(projectID string) ([]string, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT id FROM threads WHERE project_id = ?`, projectID,
 	)
 	if err != nil {

@@ -134,7 +134,7 @@ func (s *Store) ReopenWorkItemPhase(itemID, phaseID string, attempt int) error {
 }
 
 func (s *Store) ListWorkItemPhases(itemID string) ([]WorkItemPhase, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+workItemPhaseColumns+` FROM work_item_phases
 		 WHERE item_id = ? ORDER BY started_at ASC, phase_id ASC, attempt ASC`, itemID,
 	)
@@ -157,7 +157,7 @@ func (s *Store) ListWorkItemPhases(itemID string) ([]WorkItemPhase, error) {
 }
 
 func (s *Store) ListWorkItemPhaseTimeline(itemID string) ([]WorkItemPhaseTimeline, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT item_id, phase_id, attempt, thread_id, output_envelope,
 		 status, started_at, ended_at
 		 FROM work_item_phases
@@ -187,7 +187,7 @@ func (s *Store) ListWorkItemPhaseTimeline(itemID string) ([]WorkItemPhaseTimelin
 }
 
 func (s *Store) ListWorkItemPhaseContexts(itemID string) ([]WorkItemPhaseContext, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT phase_id, attempt, status, output_envelope, gate_trace, intervention
 		 FROM work_item_phases
 		 WHERE item_id = ? ORDER BY started_at ASC, phase_id ASC, attempt ASC`, itemID,
@@ -221,7 +221,7 @@ func (s *Store) ListWorkItemPhaseContexts(itemID string) ([]WorkItemPhaseContext
 // summaries. It avoids materializing a run's full envelope history on the
 // workflow engine's synchronous event path.
 func (s *Store) GetLatestWorkItemPhase(itemID string) (WorkItemPhase, bool, error) {
-	phase, err := scanWorkItemPhase(s.db.QueryRow(
+	phase, err := scanWorkItemPhase(s.reader().QueryRow(
 		`SELECT `+workItemPhaseColumns+` FROM work_item_phases
 		 WHERE item_id = ? ORDER BY started_at DESC, phase_id DESC, attempt DESC LIMIT 1`, itemID,
 	))
@@ -242,7 +242,7 @@ func (s *Store) GetWorkItemPhaseByThread(threadID string) (WorkItemPhase, bool, 
 	if threadID == "" {
 		return WorkItemPhase{}, false, nil
 	}
-	phase, err := scanWorkItemPhase(s.db.QueryRow(
+	phase, err := scanWorkItemPhase(s.reader().QueryRow(
 		`SELECT `+workItemPhaseColumns+` FROM work_item_phases
 		 WHERE thread_id = ? ORDER BY started_at DESC, attempt DESC LIMIT 1`,
 		threadID,
@@ -258,7 +258,7 @@ func (s *Store) GetWorkItemPhaseByThread(threadID string) (WorkItemPhase, bool, 
 
 // GetCurrentWorkItemPhase returns the highest attempt number for a phase.
 func (s *Store) GetCurrentWorkItemPhase(itemID, phaseID string) (WorkItemPhase, error) {
-	phase, err := scanWorkItemPhase(s.db.QueryRow(
+	phase, err := scanWorkItemPhase(s.reader().QueryRow(
 		`SELECT `+workItemPhaseColumns+` FROM work_item_phases
 		 WHERE item_id = ? AND phase_id = ? ORDER BY attempt DESC LIMIT 1`,
 		itemID, phaseID,

@@ -12,7 +12,7 @@ func (s *Store) IsEmptyDraftThread(threadID string) (bool, error) {
 		return false, fmt.Errorf("store: check empty draft thread: thread id is required")
 	}
 	var exists int
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT 1
 		   FROM threads
 		  WHERE id = ?

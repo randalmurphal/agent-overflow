@@ -236,7 +236,7 @@ func (s *Store) FailRunningWorkItemUnits(itemID, phaseID string, attempt int, fe
 
 // ListWorkItemUnits returns every persisted unit of a run in attempt order.
 func (s *Store) ListWorkItemUnits(itemID string) ([]WorkItemUnit, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+workItemUnitColumns+` FROM work_item_units
 		 WHERE item_id = ?
 		 ORDER BY phase_id ASC, attempt ASC, unit_index ASC, unit_id ASC`, itemID,
@@ -249,7 +249,7 @@ func (s *Store) ListWorkItemUnits(itemID string) ([]WorkItemUnit, error) {
 
 // ListWorkItemPhaseUnits returns one phase attempt's units in launch order.
 func (s *Store) ListWorkItemPhaseUnits(itemID, phaseID string, attempt int) ([]WorkItemUnit, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+workItemUnitColumns+` FROM work_item_units
 		 WHERE item_id = ? AND phase_id = ? AND attempt = ?
 		 ORDER BY unit_index ASC, unit_id ASC`, itemID, phaseID, attempt,
@@ -269,7 +269,7 @@ func (s *Store) GetWorkItemUnitByThread(threadID string) (WorkItemUnit, bool, er
 	if threadID == "" {
 		return WorkItemUnit{}, false, nil
 	}
-	unit, err := scanWorkItemUnit(s.db.QueryRow(
+	unit, err := scanWorkItemUnit(s.reader().QueryRow(
 		`SELECT `+workItemUnitColumns+` FROM work_item_units
 		 WHERE thread_id = ?
 		 ORDER BY started_at DESC, attempt DESC
@@ -287,7 +287,7 @@ func (s *Store) GetWorkItemUnitByThread(threadID string) (WorkItemUnit, bool, er
 
 // GetWorkItemUnit returns one unit row.
 func (s *Store) GetWorkItemUnit(itemID, phaseID string, attempt int, unitID string) (WorkItemUnit, bool, error) {
-	unit, err := scanWorkItemUnit(s.db.QueryRow(
+	unit, err := scanWorkItemUnit(s.reader().QueryRow(
 		`SELECT `+workItemUnitColumns+` FROM work_item_units
 		 WHERE item_id = ? AND phase_id = ? AND attempt = ? AND unit_id = ?`,
 		itemID, phaseID, attempt, unitID,

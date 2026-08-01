@@ -43,7 +43,7 @@ func (s *Store) RecordWorkItemEffect(effect WorkItemEffect) error {
 func (s *Store) GetWorkItemEffect(itemID, phaseID, tool, payloadHash string) (WorkItemEffect, bool, error) {
 	var effect WorkItemEffect
 	var payload string
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT item_id, phase_id, tool, payload_hash, payload, created_at
 		 FROM work_item_effects
 		 WHERE item_id = ? AND phase_id = ? AND tool = ? AND payload_hash = ?`,

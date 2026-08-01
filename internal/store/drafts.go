@@ -28,7 +28,7 @@ type ThreadDraft struct {
 // GetThreadDraft returns the draft for a thread, or (empty, false, nil) if no
 // draft row exists yet.
 func (s *Store) GetThreadDraft(threadID string) (ThreadDraft, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT thread_id, content, attachments, terminal_chips, pending_plan_implementation, updated_at
 		 FROM thread_drafts WHERE thread_id = ?`,
 		threadID,

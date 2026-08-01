@@ -9,12 +9,20 @@ import (
 	"agent-overflow/internal/itemmeta"
 )
 
-func (s *Store) appendStreamingItemSummary(
+// appendStreamingItemSummaryAndPayload runs the summary append and — when
+// payloadID is non-empty — the flush window's payload chunk append in the
+// SAME transaction. The read-back happens before the payload write so the
+// chunk carries the row's current joined payload meta, exactly the value
+// the former two-transaction sequence passed to AppendPayloadData.
+func (s *Store) appendStreamingItemSummaryAndPayload(
 	threadID string,
 	id string,
 	operation string,
 	rereadOperation string,
 	runUpdate func(tx *sql.Tx) (sql.Result, error),
+	payloadID string,
+	payloadDelta []byte,
+	payloadCreatedAt int64,
 ) (Item, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -39,6 +47,11 @@ func (s *Store) appendStreamingItemSummary(
 	updated, err := readBackItemTx(tx, threadID, id)
 	if err != nil {
 		return Item{}, fmt.Errorf("store: %s %s/%s: %w", rereadOperation, threadID, id, err)
+	}
+	if payloadID != "" {
+		if err := appendPayloadDataTx(tx, payloadID, payloadDelta, updated.PayloadMeta, payloadCreatedAt); err != nil {
+			return Item{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return Item{}, fmt.Errorf("store: commit %s tx: %w", operation, err)
@@ -158,7 +171,17 @@ func (s *Store) AppendItem(item Item) (int, error) {
 // interaction points (user_text persist, turn settle, approval/user-input
 // requests) via Store.MarkThreadActivity.
 func (s *Store) AppendItemSummary(threadID, id, delta string, updatedAt int64) (Item, error) {
-	return s.appendStreamingItemSummary(
+	return s.AppendItemSummaryAndPayloadData(threadID, id, delta, "", nil, updatedAt)
+}
+
+// AppendItemSummaryAndPayloadData is AppendItemSummary plus the payload
+// chunk append the streaming flush window issues right after it, run in one
+// transaction instead of two. An empty payloadID skips the payload half
+// entirely (identical to AppendItemSummary). Persisted state is
+// byte-identical to the former AppendItemSummary → AppendPayloadData pair;
+// the only delta is crash atomicity — summary and chunk land together.
+func (s *Store) AppendItemSummaryAndPayloadData(threadID, id, delta, payloadID string, payloadDelta []byte, updatedAt int64) (Item, error) {
+	return s.appendStreamingItemSummaryAndPayload(
 		threadID,
 		id,
 		"append item summary",
@@ -169,6 +192,9 @@ func (s *Store) AppendItemSummary(threadID, id, delta string, updatedAt int64) (
 				delta, updatedAt, threadID, id,
 			)
 		},
+		payloadID,
+		payloadDelta,
+		updatedAt,
 	)
 }
 
@@ -180,11 +206,18 @@ func (s *Store) AppendItemSummary(threadID, id, delta string, updatedAt int64) (
 // the tail directly means triage's settle path doesn't need to re-read
 // payloads.data to derive the right preview.
 func (s *Store) AppendItemSummaryTail(threadID, id, delta string, maxRunes int, updatedAt int64) (Item, error) {
+	return s.AppendItemSummaryTailAndPayloadData(threadID, id, delta, maxRunes, "", nil, updatedAt)
+}
+
+// AppendItemSummaryTailAndPayloadData is the tail-bounded sibling of
+// AppendItemSummaryAndPayloadData: one transaction for the thinking flush
+// window's summary-tail append plus payload chunk append.
+func (s *Store) AppendItemSummaryTailAndPayloadData(threadID, id, delta string, maxRunes int, payloadID string, payloadDelta []byte, updatedAt int64) (Item, error) {
 	if maxRunes < 0 {
 		maxRunes = 0
 	}
 
-	return s.appendStreamingItemSummary(
+	return s.appendStreamingItemSummaryAndPayload(
 		threadID,
 		id,
 		"append item summary tail",
@@ -202,6 +235,9 @@ func (s *Store) AppendItemSummaryTail(threadID, id, delta string, maxRunes int, 
 				updatedAt, threadID, id,
 			)
 		},
+		payloadID,
+		payloadDelta,
+		updatedAt,
 	)
 }
 
@@ -262,6 +298,37 @@ func (s *Store) UpsertItemWithInputPayload(item Item, resultPayload, inputPayloa
 	}
 	if err := tx.Commit(); err != nil {
 		return Item{}, fmt.Errorf("store: commit upsert item tx: %w", err)
+	}
+	return persisted, nil
+}
+
+// UpsertItemWithPayloadAppend upserts item exactly like UpsertItem while
+// appending delta as a chunk to the already-linked payloadID in the SAME
+// transaction. This is the streaming linked-append path (command output at
+// 10Hz, diff appends): the former AppendPayloadData → UpsertItem pair cost
+// two write transactions per flush window for one logical "append output +
+// bump the row" operation. Persisted state and the returned row are
+// byte-identical to running the pair back to back.
+func (s *Store) UpsertItemWithPayloadAppend(item Item, payloadID string, delta []byte, payloadMeta string, createdAt int64) (Item, error) {
+	applyItemDefaults(&item)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Item{}, fmt.Errorf("store: begin upsert item with payload append tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := appendPayloadDataTx(tx, payloadID, delta, payloadMeta, createdAt); err != nil {
+		return Item{}, err
+	}
+	if err := writeItem(tx, &item); err != nil {
+		return Item{}, err
+	}
+	persisted, err := readBackUpsertedItem(tx, item.ThreadID, item.ID)
+	if err != nil {
+		return Item{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, fmt.Errorf("store: commit upsert item with payload append tx: %w", err)
 	}
 	return persisted, nil
 }

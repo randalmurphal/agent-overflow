@@ -207,7 +207,7 @@ func getProposedPlanStateTx(tx *sql.Tx, threadID, itemID string) (ProposedPlanSt
 }
 
 func (s *Store) GetProposedPlanState(threadID, itemID string) (ProposedPlanState, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT item_id, thread_id, revision_parent_item_id, version,
 		        implemented_at, implemented_by_thread_id, implemented_by_item_id,
 		        created_at, updated_at
@@ -429,14 +429,14 @@ func (s *Store) proposedPlanCommentsAlreadySent(threadID, planItemID string, ids
 		args = append(args, id)
 	}
 	var count int
-	if err := s.db.QueryRow(query, args...).Scan(&count); err != nil {
+	if err := s.reader().QueryRow(query, args...).Scan(&count); err != nil {
 		return false, fmt.Errorf("store: check proposed plan comments sent for %s: %w", threadID, err)
 	}
 	return count == len(ids), nil
 }
 
 func (s *Store) GetProposedPlanComment(threadID, commentID string) (ProposedPlanComment, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT id, thread_id, plan_item_id, status, start_line, end_line,
 		        selected_text, body, sent_at, sent_turn_id, created_at, updated_at
 		   FROM proposed_plan_comments
@@ -454,7 +454,7 @@ func (s *Store) GetProposedPlanComment(threadID, commentID string) (ProposedPlan
 }
 
 func (s *Store) ListProposedPlanComments(threadID, planItemID string) ([]ProposedPlanComment, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT id, thread_id, plan_item_id, status, start_line, end_line,
 		        selected_text, body, sent_at, sent_turn_id, created_at, updated_at
 		   FROM proposed_plan_comments
@@ -502,7 +502,7 @@ func (s *Store) ListDraftProposedPlanCommentsByID(threadID, planItemID string, i
 	for _, id := range wanted {
 		args = append(args, id)
 	}
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list selected draft proposed plan comments %s/%s: %w", threadID, planItemID, err)
 	}
@@ -598,7 +598,7 @@ func (s *Store) proposedPlanStatesByItemID(threadID string, itemIDs []string) (m
 	for _, id := range itemIDs {
 		args = append(args, id)
 	}
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list proposed plan states: %w", err)
 	}
@@ -628,7 +628,7 @@ func (s *Store) proposedPlanCommentCountsByItemID(threadID string, itemIDs []str
 	for _, id := range itemIDs {
 		args = append(args, id)
 	}
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list proposed plan comment counts: %w", err)
 	}

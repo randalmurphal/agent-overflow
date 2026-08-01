@@ -87,7 +87,7 @@ func (s *Store) SearchThreadItems(threadID, query string, limit int) ([]ThreadMe
 	}
 	pattern := likePattern(trimmed)
 
-	rows, err := s.db.Query(`
+	rows, err := s.reader().Query(`
 		SELECT t.id, t.title, t.provider,
 			i.id, i.turn_index, i.kind, i.role, i.summary
 		FROM items i
@@ -110,7 +110,7 @@ func (s *Store) SearchThreadItems(threadID, query string, limit int) ([]ThreadMe
 func (s *Store) searchTitleHits(pattern string, limit int) ([]ThreadMessageHit, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
 	args := append([]any{pattern}, hiddenArgs...)
-	rows, err := s.db.Query(`
+	rows, err := s.reader().Query(`
 		SELECT id, title, provider
 		FROM threads
 		WHERE LOWER(title) LIKE ? ESCAPE '\' AND `+hiddenClause+`
@@ -165,7 +165,7 @@ func mergeTitleFirst(titleHits, itemHits []ThreadMessageHit, limit int) []Thread
 func (s *Store) searchGlobalItemHits(pattern string, limit int) ([]ThreadMessageHit, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("t.mode")
 	args := append([]any{pattern}, hiddenArgs...)
-	rows, err := s.db.Query(`
+	rows, err := s.reader().Query(`
 		SELECT t.id, t.title, t.provider,
 			i.id, i.turn_index, i.kind, i.role, i.summary
 		FROM items i

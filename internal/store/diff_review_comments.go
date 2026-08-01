@@ -344,7 +344,7 @@ func (s *Store) diffReviewCommentsAlreadySent(threadID, scope, sourceKey string,
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return false, fmt.Errorf("store: check sent diff review comments for %s/%s: %w", threadID, scope, err)
 	}
@@ -364,7 +364,7 @@ func (s *Store) diffReviewCommentsAlreadySent(threadID, scope, sourceKey string,
 }
 
 func (s *Store) GetDiffReviewComment(threadID, commentID string) (DiffReviewComment, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT id, thread_id, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
 		        selected_text, body, sent_at, sent_turn_id, created_at, updated_at
 		   FROM diff_review_comments
@@ -390,7 +390,7 @@ func (s *Store) ListDiffReviewComments(threadID, scope, sourceKey string) ([]Dif
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT id, thread_id, scope, source_key, commit_sha, file_path, status, old_line, new_line, side,
 		        selected_text, body, sent_at, sent_turn_id, created_at, updated_at
 		   FROM diff_review_comments
@@ -447,7 +447,7 @@ func (s *Store) ListDraftDiffReviewCommentsByID(threadID, scope, sourceKey strin
 	for _, id := range wanted {
 		args = append(args, id)
 	}
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list selected draft diff review comments %s/%s: %w", threadID, scope, err)
 	}

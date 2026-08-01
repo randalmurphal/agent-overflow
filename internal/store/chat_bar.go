@@ -34,7 +34,7 @@ func normalizeChatBarFavorite(fav ChatBarFavorite) (ChatBarFavorite, error) {
 
 // ListChatBarFavorites returns starred composer-menu entries newest first.
 func (s *Store) ListChatBarFavorites() ([]ChatBarFavorite, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT kind, provider, value, label, created_at
 		   FROM chat_bar_favorites
 		  ORDER BY created_at DESC`,
@@ -189,7 +189,7 @@ func (s *Store) UpsertChatModelProfile(profile ChatModelProfile) error {
 
 // GetChatModelProfile returns a remembered provider/model profile.
 func (s *Store) GetChatModelProfile(providerName, model string) (ChatModelProfile, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT provider, model, reasoning_effort, fast_mode, context_window,
 		        auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode, updated_at
 		   FROM chat_model_profiles
@@ -201,7 +201,7 @@ func (s *Store) GetChatModelProfile(providerName, model string) (ChatModelProfil
 
 // LatestChatModelProfile returns the most recently observed chat profile.
 func (s *Store) LatestChatModelProfile() (ChatModelProfile, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT provider, model, reasoning_effort, fast_mode, context_window,
 		        auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode, updated_at
 		   FROM chat_model_profiles
@@ -213,7 +213,7 @@ func (s *Store) LatestChatModelProfile() (ChatModelProfile, error) {
 
 // LatestChatModelProfileForProvider returns the newest profile for one provider.
 func (s *Store) LatestChatModelProfileForProvider(providerName string) (ChatModelProfile, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT provider, model, reasoning_effort, fast_mode, context_window,
 		        auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode, updated_at
 		   FROM chat_model_profiles

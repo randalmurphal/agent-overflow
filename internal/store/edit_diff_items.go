@@ -22,7 +22,7 @@ type EditDiffItem struct {
 // timeline order, including subagent children — a subagent's edit is
 // as real as the parent's.
 func (s *Store) ListEditDiffItems(threadID string) ([]EditDiffItem, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.reader().Query(`
 		SELECT items.id, items.payload_id, items.turn_index, items.item_index,
 		       items.created_at, payloads.kind, payloads.meta
 		  FROM items
@@ -67,7 +67,7 @@ type TurnEditDiffPatch struct {
 // the turn changed. Callers concatenate; nothing here is merged or
 // deduplicated (the same file edited twice yields two patch sections).
 func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnEditDiffPatch, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.reader().Query(`
 		SELECT payloads.id, payloads.data
 		  FROM items
 		  JOIN payloads ON payloads.id = items.payload_id
@@ -110,7 +110,7 @@ func (s *Store) ListTurnUserSummaries(threadID string) ([]TurnUserSummary, error
 	// SQLite resolves the bare summary column against the row that
 	// carries MIN(item_index) — the first prompt of the turn (a steer
 	// or queued flush lands later in the same turn).
-	rows, err := s.db.Query(`
+	rows, err := s.reader().Query(`
 		SELECT turn_index, summary, MIN(item_index)
 		  FROM items
 		 WHERE thread_id = ? AND kind = 'user_text'

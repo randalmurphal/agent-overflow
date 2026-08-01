@@ -344,7 +344,7 @@ func flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func(string) st
 // (Turn{}, false, nil) when no row exists — the miss is not an error,
 // so callers can use the bool to branch cleanly.
 func (s *Store) GetTurn(turnID string) (Turn, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+turnColumns+` FROM turns WHERE turn_id = ?`,
 		turnID,
 	)
@@ -363,7 +363,7 @@ func (s *Store) GetTurn(turnID string) (Turn, bool, error) {
 // index but not the provider-assigned turn id. Returns (Turn{}, false, nil)
 // when no row exists.
 func (s *Store) GetTurnByThreadIndex(threadID string, turnIndex int) (Turn, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+turnColumns+` FROM turns WHERE thread_id = ? AND turn_index = ?`,
 		threadID, turnIndex,
 	)
@@ -385,7 +385,7 @@ func (s *Store) ListRecentTurns(threadID string, limit int) ([]Turn, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+turnColumns+` FROM turns
 		  WHERE thread_id = ?
 		  ORDER BY turn_index DESC
@@ -473,7 +473,7 @@ func (s *Store) PickInitialFloorTurn(
 		scanLimit = absoluteScanCap
 	}
 
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT turn_index, COUNT(*) AS item_count
 		   FROM items
 		  WHERE thread_id = ?
@@ -638,7 +638,7 @@ func (s *Store) activeTurnFloor(threadID string) (int, bool, error) {
 // Returns (Turn{}, false, nil) when no turn exists or the latest row is
 // already settled.
 func (s *Store) GetActiveTurn(threadID string) (Turn, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+turnColumns+` FROM turns
 		  WHERE thread_id = ?
 		  ORDER BY turn_index DESC

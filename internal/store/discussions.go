@@ -38,7 +38,7 @@ func (s *Store) CreateDiscussionDef(def DiscussionDefinition) error {
 }
 
 func (s *Store) GetDiscussionDef(name, scope, projectID string) (DiscussionDefinition, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		fmt.Sprintf(`SELECT id, name, description, scope, %s, definition, created_at, updated_at
 			FROM discussion_definitions
 			WHERE name = ? AND scope = ? AND %s = ?`, discussionProjectIDExpr, discussionProjectIDExpr),
@@ -48,7 +48,7 @@ func (s *Store) GetDiscussionDef(name, scope, projectID string) (DiscussionDefin
 }
 
 func (s *Store) GetDiscussionDefByID(id string) (DiscussionDefinition, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		fmt.Sprintf(`SELECT id, name, description, scope, %s, definition, created_at, updated_at
 			FROM discussion_definitions
 			WHERE id = ?`, discussionProjectIDExpr),
@@ -74,7 +74,7 @@ func (s *Store) ListDiscussionDefs(scope, projectID string) ([]DiscussionDefinit
 	}
 	query += " ORDER BY updated_at DESC, created_at DESC, name ASC"
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list discussion definitions: %w", err)
 	}

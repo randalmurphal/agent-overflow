@@ -218,7 +218,7 @@ func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, item
 //  2. floor   (turn_index >= floor)
 //  3. upper   (turn_index < upper)
 func (s *Store) queryPagedItems(threadID string, floor, upper int64) ([]Item, error) {
-	rows, err := s.db.Query(`
+	rows, err := s.reader().Query(`
 		SELECT `+itemColumns+`
 		  FROM items
 		  LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -255,7 +255,7 @@ func (s *Store) queryPagedItems(threadID string, floor, upper int64) ([]Item, er
 func (s *Store) querySelectedPagedItems(threadID, selectedSQL string, selectedArgs ...any) ([]Item, error) {
 	args := append([]any{}, selectedArgs...)
 	args = append(args, threadID)
-	rows, err := s.db.Query(`
+	rows, err := s.reader().Query(`
 		WITH selected(id) AS (
 			`+selectedSQL+`
 		)
@@ -374,7 +374,7 @@ func (s *Store) finalizePagedItems(threadID string, items []Item) (PagedItems, e
 // frontend's self-heal cleared the button.
 func (s *Store) hasOlderTurns(threadID string, floorTurnIndex int) (bool, error) {
 	var exists int
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT EXISTS(SELECT 1 FROM items
 		   WHERE thread_id = ? AND turn_index < ?
 		     AND `+visibleItemsFilter+`
@@ -389,7 +389,7 @@ func (s *Store) hasOlderTurns(threadID string, floorTurnIndex int) (bool, error)
 
 func (s *Store) hasOlderItems(threadID string, cursor TimelineCursor) (bool, error) {
 	var exists int
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT EXISTS(SELECT 1 FROM items
 		   WHERE thread_id = ?
 		     AND `+visibleItemsFilter+`
@@ -405,7 +405,7 @@ func (s *Store) hasOlderItems(threadID string, cursor TimelineCursor) (bool, err
 
 func (s *Store) hasNewerItems(threadID string, cursor TimelineCursor) (bool, error) {
 	var exists int
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT EXISTS(SELECT 1 FROM items
 		   WHERE thread_id = ?
 		     AND `+visibleItemsFilter+`
@@ -435,7 +435,7 @@ func (s *Store) floorTurnByItemBudget(threadID string, beforeTurnIndex int64, it
 		itemBudget = 1
 	}
 	limit := boundedSliceTurnLimit(itemBudget)
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT turn_index, COUNT(*) AS item_count
 		   FROM items
 		  WHERE thread_id = ? AND turn_index < ?
@@ -480,7 +480,7 @@ func (s *Store) ceilingTurnByItemBudget(threadID string, afterTurnIndex int64, i
 		itemBudget = 1
 	}
 	limit := boundedSliceTurnLimit(itemBudget)
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT turn_index, COUNT(*) AS item_count
 		   FROM items
 		  WHERE thread_id = ? AND turn_index > ?

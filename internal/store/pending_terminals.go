@@ -70,7 +70,7 @@ func (s *Store) UpsertPendingBackgroundTerminal(t PendingBackgroundTaskTerminal)
 // Used by the tray query path where the row stays until the agent
 // observation drain.
 func (s *Store) GetPendingBackgroundTerminal(threadID, taskID string) (PendingBackgroundTaskTerminal, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+pendingTerminalColumns+`
 		   FROM pending_background_task_terminals
 		  WHERE thread_id = ? AND task_id = ?`,

@@ -55,7 +55,7 @@ func (s *Store) GetNewThreadDisabledMCPServers(providerName, workspacePath strin
 		return nil, false, err
 	}
 	var raw string
-	err = s.db.QueryRow(
+	err = s.reader().QueryRow(
 		`SELECT disabled_servers
 		   FROM new_thread_mcp_defaults
 		  WHERE provider = ?

@@ -17,7 +17,7 @@ import "fmt"
 //
 // Uses idx_threads_updated for the range scan + ORDER BY.
 func (s *Store) ThreadIDsOlderThan(cutoffMs int64) ([]string, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT id FROM threads WHERE updated_at < ? ORDER BY updated_at ASC`,
 		cutoffMs,
 	)

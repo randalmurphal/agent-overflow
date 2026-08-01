@@ -79,7 +79,7 @@ func (s *Store) CreateAutomation(automation Automation) error {
 }
 
 func (s *Store) GetAutomation(id string) (Automation, error) {
-	automation, err := scanAutomation(s.db.QueryRow(
+	automation, err := scanAutomation(s.reader().QueryRow(
 		`SELECT `+automationColumns+` FROM automations WHERE id = ?`, id,
 	))
 	if err != nil {
@@ -89,7 +89,7 @@ func (s *Store) GetAutomation(id string) (Automation, error) {
 }
 
 func (s *Store) ListAutomations(projectID string) ([]Automation, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+automationColumns+` FROM automations
 		 WHERE project_id = ? ORDER BY created_at ASC, id ASC`, projectID,
 	)
@@ -116,7 +116,7 @@ func (s *Store) ListAutomations(projectID string) ([]Automation, error) {
 // excluded here rather than filtered by the caller: a disabled automation has no
 // schedule, and leaving it in the list would make "next fire" a lie.
 func (s *Store) ListEnabledAutomations() ([]Automation, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT ` + automationColumns + ` FROM automations
 		 WHERE enabled = 1 ORDER BY created_at ASC, id ASC`,
 	)
@@ -206,7 +206,7 @@ func (s *Store) SetAutomationEnabled(id string, enabled bool, updatedAt int64) e
 
 func (s *Store) GetAutomationNotes(id string) (string, error) {
 	var notes string
-	if err := s.db.QueryRow(`SELECT notes FROM automations WHERE id = ?`, id).Scan(&notes); err != nil {
+	if err := s.reader().QueryRow(`SELECT notes FROM automations WHERE id = ?`, id).Scan(&notes); err != nil {
 		return "", fmt.Errorf("store: get automation notes %s: %w", id, err)
 	}
 	return notes, nil
@@ -242,7 +242,7 @@ type AutomationRun struct {
 // bound parameter alone cannot prove the index's non-empty-source_ref clause.
 func (s *Store) ActiveAutomationRun(automationID string) (AutomationRun, bool, error) {
 	var run AutomationRun
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT id, state, reason FROM work_items
 		 WHERE source = 'automation' AND source_ref = ? AND source_ref <> ''
 		   AND state IN ('running','needs-human')
@@ -268,7 +268,7 @@ type AutomationCursor struct {
 
 func (s *Store) GetAutomationCursor(automationID, sourceKey string) (AutomationCursor, error) {
 	var cursor AutomationCursor
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT automation_id, source_key, cursor, updated_at
 		 FROM automation_cursors WHERE automation_id = ? AND source_key = ?`,
 		automationID, sourceKey,

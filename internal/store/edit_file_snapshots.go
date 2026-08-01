@@ -48,7 +48,7 @@ func (s *Store) PutEditFileSnapshot(payloadID, path, content string, createdAt i
 // write) — the caller falls back to workspace verification.
 func (s *Store) GetEditFileSnapshot(threadID, payloadID, path string) (string, bool, error) {
 	var blob []byte
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT s.content
 		   FROM edit_file_snapshots s
 		   JOIN items i ON i.payload_id = s.payload_id
@@ -74,7 +74,7 @@ func (s *Store) GetEditFileSnapshot(threadID, payloadID, path string) (string, b
 // matches the final merged section the whole-turn Edits view renders.
 func (s *Store) GetLatestTurnEditFileSnapshot(threadID string, turnIndex int, path string) (string, bool, error) {
 	var blob []byte
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT s.content
 		   FROM edit_file_snapshots s
 		   JOIN items i ON i.payload_id = s.payload_id

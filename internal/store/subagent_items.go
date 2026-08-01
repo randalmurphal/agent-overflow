@@ -139,7 +139,7 @@ func (s *Store) subagentAggregatesByRoot(threadID string, rootIDs []string) (map
 	}
 	args = append(args, threadID, threadID)
 
-	rows, err := s.db.Query(descendantsCTEFromRoots(len(rootIDs))+`
+	rows, err := s.reader().Query(descendantsCTEFromRoots(len(rootIDs))+`
 		SELECT root, total, summary FROM (
 			SELECT rel.root,
 			       COUNT(*) OVER (PARTITION BY rel.root) AS total,
@@ -225,7 +225,7 @@ func (s *Store) ListSubagentDescendants(threadID, rootItemID string) ([]Item, er
 	// recursive hop (threadID), selected ranking join (threadID, cap),
 	// outer hydrate join (threadID). CROSS JOINs are PK probes per rel /
 	// selected row — see descendantsCTEFromRoots plan notes.
-	rows, err := s.db.Query(descendantsCTEFromRoots(1)+`,
+	rows, err := s.reader().Query(descendantsCTEFromRoots(1)+`,
 		selected(id) AS (
 			SELECT id FROM (
 				SELECT items.id AS id

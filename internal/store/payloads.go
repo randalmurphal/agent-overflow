@@ -112,7 +112,7 @@ func (s *Store) UpsertPayload(p Payload) error {
 }
 
 func (s *Store) GetPayloadMeta(id string) (PayloadMeta, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT id, kind, meta, created_at FROM payloads WHERE id = ?`, id,
 	)
 	var pm PayloadMeta
@@ -125,11 +125,11 @@ func (s *Store) GetPayloadMeta(id string) (PayloadMeta, error) {
 
 func (s *Store) GetPayloadData(id string) ([]byte, error) {
 	var data []byte
-	err := s.db.QueryRow(`SELECT data FROM payloads WHERE id = ?`, id).Scan(&data)
+	err := s.reader().QueryRow(`SELECT data FROM payloads WHERE id = ?`, id).Scan(&data)
 	if err != nil {
 		return nil, fmt.Errorf("store: get payload data %s: %w", id, err)
 	}
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT data
 		   FROM payload_chunks
 		  WHERE payload_id = ?
@@ -197,7 +197,7 @@ func (s *Store) GetPayloadChunk(id string, offset, maxBytes int) ([]byte, int, b
 			baseLimit = baseLen
 		}
 		var base []byte
-		err := s.db.QueryRow(
+		err := s.reader().QueryRow(
 			`SELECT substr(data, ?, ?) FROM payloads WHERE id = ?`,
 			offset+1, baseLimit-offset, id,
 		).Scan(&base)
@@ -208,7 +208,7 @@ func (s *Store) GetPayloadChunk(id string, offset, maxBytes int) ([]byte, int, b
 		offset = baseLimit
 	}
 	if offset < limit {
-		rows, err := s.db.Query(
+		rows, err := s.reader().Query(
 			`SELECT substr(
 			            data,
 			            CASE WHEN ? > start_offset THEN ? - start_offset + 1 ELSE 1 END,
@@ -250,7 +250,7 @@ func (s *Store) GetPayloadChunk(id string, offset, maxBytes int) ([]byte, int, b
 func (s *Store) payloadLengths(id string) (int, int, error) {
 	var baseLen int
 	var appendedEnd sql.NullInt64
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT length(data),
 		        (SELECT MAX(start_offset + length(data))
 		           FROM payload_chunks
@@ -284,6 +284,19 @@ func (s *Store) AppendPayloadData(id string, delta []byte, meta string, createdA
 	}
 	defer tx.Rollback()
 
+	if err := appendPayloadDataTx(tx, id, delta, meta, createdAt); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit append payload data %s: %w", id, err)
+	}
+	return nil
+}
+
+// appendPayloadDataTx is AppendPayloadData's body inside a caller-owned
+// transaction, shared with the combined streaming-flush writers so one
+// flush window costs one transaction instead of two.
+func appendPayloadDataTx(tx *sql.Tx, id string, delta []byte, meta string, createdAt int64) error {
 	result, err := tx.Exec(
 		`UPDATE payloads SET meta = ?, created_at = ? WHERE id = ?`,
 		meta, createdAt, id,
@@ -317,9 +330,6 @@ func (s *Store) AppendPayloadData(id string, delta []byte, meta string, createdA
 		); err != nil {
 			return fmt.Errorf("store: insert payload chunk %s: %w", id, err)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit append payload data %s: %w", id, err)
 	}
 	return nil
 }
@@ -404,7 +414,7 @@ func (s *Store) UpdatePayloadSpans(id, previewSpans, spans string) error {
 // the highlight RPC path.
 func (s *Store) GetPayloadSpans(id string) (string, error) {
 	var spans string
-	if err := s.db.QueryRow(`SELECT spans FROM payloads WHERE id = ?`, id).Scan(&spans); err != nil {
+	if err := s.reader().QueryRow(`SELECT spans FROM payloads WHERE id = ?`, id).Scan(&spans); err != nil {
 		return "", fmt.Errorf("store: get payload spans %s: %w", id, err)
 	}
 	return spans, nil

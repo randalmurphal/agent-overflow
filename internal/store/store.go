@@ -4,14 +4,34 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver
 )
 
 // Store wraps SQLite and provides all persistence operations.
+//
+// Two pools back it. db is the single-connection writer: every write,
+// migration, snapshot restore, checkpoint, and vacuum runs there, which
+// is what lets connection-scoped PRAGMAs (foreign_keys, busy_timeout,
+// synchronous — and RestoreFrom's temporary foreign_keys toggle) behave
+// as if they were global. read is a small read-only pool so UI reads run
+// against WAL snapshots instead of queuing behind streaming flush
+// transactions; its connections carry query_only(1), so a mis-routed
+// write fails loudly instead of contending. read is nil when the read
+// pool is unavailable (:memory: databases, where a second open would be
+// a different database, and non-WAL fallback mounts, where concurrent
+// readers could hit SQLITE_BUSY that the single pool never produces) —
+// reader() then falls back to the writer, restoring today's serialized
+// behavior exactly.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	read *sql.DB
+	// readsQuiesced routes reads back to the writer pool while VACUUM
+	// needs the exclusive lock — see quiesceReads.
+	readsQuiesced atomic.Bool
 }
 
 // New opens (or creates) the SQLite database at the given path and runs migrations.
@@ -28,12 +48,101 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("store: run migrations: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	s := &Store{db: db}
+	if read, err := openReadPool(db, dbPath); err != nil {
+		db.Close()
+		return nil, err
+	} else {
+		s.read = read
+	}
+	return s, nil
 }
 
-// Close closes the database connection.
+// openReadPool opens the read-only pool for a file-backed WAL database,
+// or returns nil (no pool, reads fall back to the writer) when the
+// database is in-memory or WAL didn't take. Never returns a non-nil
+// pool that hasn't served a probe query: a read pool that cannot read
+// is a config error worth failing startup over.
+func openReadPool(db *sql.DB, dbPath string) (*sql.DB, error) {
+	if dbPath == ":memory:" || strings.Contains(dbPath, "mode=memory") {
+		return nil, nil
+	}
+	var journalMode string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		return nil, fmt.Errorf("store: probe journal_mode: %w", err)
+	}
+	if journalMode != "wal" {
+		// Rollback journaling (NFS / read-only mount fallback): a
+		// writer's EXCLUSIVE lock would surface as reader busy errors
+		// the single pool structurally never produces. Keep serializing.
+		return nil, nil
+	}
+	// _pragma values apply per connection (verified against
+	// modernc.org/sqlite v1.48.2). journal_mode is a property of the
+	// database file, so read connections inherit WAL. The path is
+	// %-escaped for SQLite URI parsing: '%', '?', and '#' are the only
+	// characters that can cut the path short or corrupt the query
+	// string; spaces pass through unescaped.
+	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(dbPath)
+	read, err := sql.Open("sqlite", "file:"+escaped+"?_pragma=query_only(1)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("store: open read pool: %w", err)
+	}
+	read.SetMaxOpenConns(4)
+	read.SetMaxIdleConns(4)
+	var probe int
+	if err := read.QueryRow("SELECT 1").Scan(&probe); err != nil {
+		read.Close()
+		return nil, fmt.Errorf("store: read pool probe: %w", err)
+	}
+	return read, nil
+}
+
+// reader returns the pool read-only accessors run their queries on:
+// the read pool when it exists and reads aren't quiesced, the writer
+// otherwise. Callers must not hold connections across calls — each
+// query independently picks its pool, which is what lets quiesceReads
+// drain the read pool without coordinating with in-flight accessors.
+func (s *Store) reader() *sql.DB {
+	if s.read == nil || s.readsQuiesced.Load() {
+		return s.db
+	}
+	return s.read
+}
+
+// quiesceReads routes new reads to the writer pool, waits for in-flight
+// read-pool queries to drain, runs fn, then restores read-pool routing.
+// It exists for VACUUM: the exclusive lock it needs can never be starved
+// by the single writer pool, and quiescing preserves that property with
+// the read pool in play — during fn, every read queues behind the writer
+// exactly as it did when the store held one connection.
+func (s *Store) quiesceReads(fn func() error) error {
+	if s.read == nil {
+		return fn()
+	}
+	s.readsQuiesced.Store(true)
+	defer s.readsQuiesced.Store(false)
+	// In-flight read-pool queries are short (single statements, no
+	// transactions); poll until they drain. The deadline is a backstop —
+	// if something wedges, fn still runs and the writer's busy_timeout
+	// takes over, matching the pre-read-pool worst case.
+	deadline := time.Now().Add(5 * time.Second)
+	for s.read.Stats().InUse > 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	return fn()
+}
+
+// Close closes the database connections.
 func (s *Store) Close() error {
-	return s.db.Close()
+	var readErr error
+	if s.read != nil {
+		readErr = s.read.Close()
+	}
+	if err := s.db.Close(); err != nil {
+		return err
+	}
+	return readErr
 }
 
 // PassiveCheckpoint triggers a non-blocking WAL checkpoint. PASSIVE
@@ -97,7 +206,10 @@ func (s *Store) vacuumIfFragmented(minFreeBytes int64, minFreeFraction float64) 
 		float64(freelistCount)/float64(pageCount) < minFreeFraction {
 		return false, nil
 	}
-	if _, err := s.db.Exec("VACUUM"); err != nil {
+	if err := s.quiesceReads(func() error {
+		_, err := s.db.Exec("VACUUM")
+		return err
+	}); err != nil {
 		return false, fmt.Errorf("store: vacuum: %w", err)
 	}
 	return true, nil

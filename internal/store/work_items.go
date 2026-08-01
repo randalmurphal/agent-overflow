@@ -164,7 +164,7 @@ func (s *Store) CreateWorkItem(item WorkItem) error {
 }
 
 func (s *Store) GetWorkItem(id string) (WorkItem, error) {
-	item, err := scanWorkItem(s.db.QueryRow(
+	item, err := scanWorkItem(s.reader().QueryRow(
 		`SELECT `+workItemColumns+` FROM work_items WHERE id = ?`, id,
 	), false)
 	if err != nil {
@@ -197,7 +197,7 @@ func (s *Store) GetWorkItemAttentionContext(id string) (WorkItemAttentionContext
 	WHERE w.id = ?`
 	var context WorkItemAttentionContext
 	var digest, output string
-	if err := s.db.QueryRow(query, id).Scan(
+	if err := s.reader().QueryRow(query, id).Scan(
 		&context.Item.ID, &context.Item.ProjectID, &context.Item.Goal,
 		&context.Item.State, &context.Item.Reason, &context.Item.WorktreePath,
 		&digest, &context.Item.ParentItemID, &context.PhaseID, &output, &context.Check,
@@ -213,7 +213,7 @@ func (s *Store) GetWorkItemAttentionContext(id string) (WorkItemAttentionContext
 // thread. A phase thread may be reused by later attempts, so the newest phase
 // row is only the lookup anchor; ownership remains item-scoped.
 func (s *Store) GetWorkItemByPhaseThread(threadID string) (WorkItem, error) {
-	item, err := scanWorkItem(s.db.QueryRow(
+	item, err := scanWorkItem(s.reader().QueryRow(
 		`SELECT `+workItemColumns+` FROM work_items
 		 WHERE id = (
 		     SELECT item_id FROM work_item_phases
@@ -236,7 +236,7 @@ func (s *Store) GetWorkItemByPhaseThread(threadID string) (WorkItem, error) {
 // surfaces the original rather than starting a second one. Absence is the
 // ordinary first-run answer and is reported as found=false, not as an error.
 func (s *Store) GetWorkItemBySourceRef(source, sourceRef string) (WorkItem, bool, error) {
-	item, err := scanWorkItem(s.db.QueryRow(
+	item, err := scanWorkItem(s.reader().QueryRow(
 		`SELECT `+workItemColumns+` FROM work_items
 		 WHERE source = ? AND source_ref = ? AND source_ref <> ''
 		 ORDER BY created_at ASC, id ASC LIMIT 1`,
@@ -313,7 +313,7 @@ func (s *Store) ListWorkItemUnitCallChildren(parentItemID, parentPhaseID string,
 }
 
 func (s *Store) queryWorkItems(query, label string, args ...any) ([]WorkItem, error) {
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: %s: %w", label, err)
 	}
@@ -349,7 +349,7 @@ func (s *Store) ListWorkItemSummaries(filter WorkItemListFilter) ([]WorkItem, er
 // seeds, and budget payloads. `ao run status` polls this, so it must stay a
 // one-row read that never drags a run's snapshot along.
 func (s *Store) GetWorkItemSummary(id string) (WorkItem, error) {
-	item, err := scanWorkItem(s.db.QueryRow(
+	item, err := scanWorkItem(s.reader().QueryRow(
 		`SELECT `+workItemSummaryListColumns+workItemSummaryProgressColumns+
 			` FROM work_items AS w`+workItemSummaryProgressJoin+` WHERE w.id = ?`, id,
 	), true)
@@ -395,7 +395,7 @@ func (s *Store) listWorkItems(filter WorkItemListFilter, columns string, include
 	}
 	query += ` ORDER BY ` + prefix + `created_at ASC, ` + prefix + `id ASC`
 
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list work items: %w", err)
 	}
@@ -494,7 +494,7 @@ func (s *Store) CountWorkItemsInStates(states ...string) (int, error) {
 		args[index] = state
 	}
 	var count int
-	if err := s.db.QueryRow(query, args...).Scan(&count); err != nil {
+	if err := s.reader().QueryRow(query, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("store: count work items in states: %w", err)
 	}
 	return count, nil
@@ -514,7 +514,7 @@ func (s *Store) CountProjectWorkItemsInStates(projectID string, states ...string
 		args = append(args, state)
 	}
 	var count int
-	if err := s.db.QueryRow(query, args...).Scan(&count); err != nil {
+	if err := s.reader().QueryRow(query, args...).Scan(&count); err != nil {
 		return 0, fmt.Errorf("store: count project %s work items in states: %w", projectID, err)
 	}
 	return count, nil

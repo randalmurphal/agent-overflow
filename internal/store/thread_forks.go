@@ -221,7 +221,7 @@ func (s *Store) CloneThreadTurns(sourceThreadID, targetThreadID string, throughT
 func (s *Store) CloneThreadHistoryBeforeItem(sourceThreadID, targetThreadID, anchorItemID string) (map[string]string, error) {
 	var turnIndex, itemIndex int
 	var meta string
-	if err := s.db.QueryRow(
+	if err := s.reader().QueryRow(
 		`SELECT turn_index, item_index, meta FROM items WHERE thread_id = ? AND id = ?`,
 		sourceThreadID, anchorItemID,
 	).Scan(&turnIndex, &itemIndex, &meta); err != nil {
@@ -275,7 +275,7 @@ func (s *Store) CloneThreadHistoryBeforeItem(sourceThreadID, targetThreadID, anc
 	excludedContent := false
 	switch {
 	case !promotion.Promoted:
-		if err := s.db.QueryRow(
+		if err := s.reader().QueryRow(
 			`SELECT EXISTS(SELECT 1 FROM items
 			  WHERE thread_id = ? AND turn_index = ? AND (role != 'user' OR parent_id != '') AND item_index > ?)`,
 			sourceThreadID, turnIndex, itemIndex,
@@ -283,7 +283,7 @@ func (s *Store) CloneThreadHistoryBeforeItem(sourceThreadID, targetThreadID, anc
 			return nil, fmt.Errorf("store: probe excluded turn content for fork %s: %w", targetThreadID, err)
 		}
 	case promotion.HasEchoBoundary:
-		if err := s.db.QueryRow(
+		if err := s.reader().QueryRow(
 			`SELECT EXISTS(SELECT 1 FROM items
 			  WHERE thread_id = ? AND turn_index = ? AND (role != 'user' OR parent_id != '') AND item_index > ?)`,
 			sourceThreadID, turnIndex, promotion.EchoBoundary,
@@ -293,7 +293,7 @@ func (s *Store) CloneThreadHistoryBeforeItem(sourceThreadID, targetThreadID, anc
 	}
 	if excludedContent {
 		var lastKept sql.NullInt64
-		if err := s.db.QueryRow(
+		if err := s.reader().QueryRow(
 			`SELECT MAX(created_at) FROM items WHERE thread_id = ? AND turn_index = ?`,
 			targetThreadID, turnIndex,
 		).Scan(&lastKept); err != nil {

@@ -15,7 +15,7 @@ func (s *Store) CreateChannel(ch Channel) error {
 }
 
 func (s *Store) GetChannel(id string) (Channel, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT id, thread_id, type, status, max_turns, created_at, updated_at
 		 FROM channels WHERE id = ?`,
 		id,
@@ -107,7 +107,7 @@ func (s *Store) InsertChannelMessageAtomic(msg ChannelMessage) (int, error) {
 // used throughout the codebase (e.g. GetChannelMessages(id, -1, ...)).
 func (s *Store) LastChannelMessageSeqFrom(channelID, fromID string) (int, error) {
 	var seq int
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT COALESCE(MAX(sequence), -1) FROM channel_messages WHERE channel_id = ? AND from_id = ?`,
 		channelID, fromID,
 	).Scan(&seq)
@@ -125,7 +125,7 @@ func (s *Store) LastChannelMessageSeqFrom(channelID, fromID string) (int, error)
 // invoked exactly once per participant turn.
 func (s *Store) CountChannelMessagesByType(channelID, fromType string) (int, error) {
 	var count int
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT COUNT(*) FROM channel_messages WHERE channel_id = ? AND from_type = ?`,
 		channelID, fromType,
 	).Scan(&count)
@@ -144,7 +144,7 @@ func (s *Store) ListChannelMessages(channelID string, afterSeq, limit int) ([]Ch
 		args = append(args, limit)
 	}
 
-	rows, err := s.db.Query(baseQuery, args...)
+	rows, err := s.reader().Query(baseQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list channel messages for %s: %w", channelID, err)
 	}

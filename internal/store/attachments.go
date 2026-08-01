@@ -45,7 +45,7 @@ func (s *Store) InsertAttachment(a Attachment) error {
 // GetAttachment returns metadata for a single attachment. Second return value
 // is false when no row matches; callers should treat that as not-found.
 func (s *Store) GetAttachment(id string) (Attachment, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+attachmentColumns+` FROM attachments WHERE id = ?`, id,
 	)
 	a, err := scanAttachment(row)
@@ -60,7 +60,7 @@ func (s *Store) GetAttachment(id string) (Attachment, bool, error) {
 
 // ListAttachments returns every attachment for a thread in creation order.
 func (s *Store) ListAttachments(threadID string) ([]Attachment, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+attachmentColumns+` FROM attachments WHERE thread_id = ? ORDER BY created_at ASC, id ASC`,
 		threadID,
 	)
@@ -97,7 +97,7 @@ type AttachmentWithThumbnail struct {
 // indexed point lookup. Used by the thumbnail generator's hot path so the
 // cache hit is one SELECT, not two.
 func (s *Store) GetAttachmentWithThumbnail(id string) (AttachmentWithThumbnail, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+attachmentColumns+`, thumbnail_data, thumbnail_mime FROM attachments WHERE id = ?`, id,
 	)
 	var out AttachmentWithThumbnail

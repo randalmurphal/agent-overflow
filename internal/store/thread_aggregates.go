@@ -25,7 +25,7 @@ import (
 // forks / imports) out of plan UI — only plans the agent actually
 // proposed should appear.
 func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM proposed_plans
 		   JOIN items
@@ -63,7 +63,7 @@ func (s *Store) ListThreadProposedPlans(threadID string) ([]Item, error) {
 }
 
 func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   JOIN payloads ON payloads.id = items.payload_id
@@ -108,7 +108,7 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // Thread-scoped. Live launches surface regardless of turn_index.
 // Ordering is (turn_index, item_index) so launches precede completions.
 func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis int64) ([]Item, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id

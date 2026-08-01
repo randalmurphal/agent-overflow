@@ -6,7 +6,17 @@ root `CLAUDE.md` principle 3.
 ## Layout
 
 - `store.go` — `Store` construct, `Thread` / `Project` / `Item` /
-  `Payload` shared shapes.
+  `Payload` shared shapes, and the two connection pools: a
+  single-connection writer (all writes, migrations, snapshot restore,
+  checkpoint, VACUUM — what makes `Exec`-scoped PRAGMAs behave as
+  global) plus a small `query_only` read pool so reads run against WAL
+  snapshots instead of queuing behind flush transactions. Read
+  accessors route through `reader()`; the pool is absent (writer
+  fallback) for `:memory:` and non-WAL databases, and VACUUM quiesces
+  it (`quiesceReads`) to keep its exclusive lock unstarvable. A read
+  that must see connection-local state (attached snapshot DBs, PRAGMA
+  probes) stays on `s.db`; so does the one write-through-QueryRow
+  (`InsertChannelMessageAtomic`'s INSERT..RETURNING).
 - `migrate.go` — forward-only migration chain with the per-version
   upgrade SQL.
 - `items.go` / `items_read.go` / `items_write.go` /

@@ -9,7 +9,7 @@ import (
 
 func (s *Store) HasItems(threadID string) (bool, error) {
 	var exists int
-	if err := s.db.QueryRow(
+	if err := s.reader().QueryRow(
 		`SELECT EXISTS(SELECT 1 FROM items WHERE thread_id = ? LIMIT 1)`,
 		threadID,
 	).Scan(&exists); err != nil {
@@ -20,7 +20,7 @@ func (s *Store) HasItems(threadID string) (bool, error) {
 
 func (s *Store) HasRunningTopLevelForegroundToolCall(threadID string) (bool, error) {
 	var exists int
-	if err := s.db.QueryRow(
+	if err := s.reader().QueryRow(
 		`SELECT EXISTS(
 		    SELECT 1 FROM items
 		     WHERE thread_id = ?
@@ -39,7 +39,7 @@ func (s *Store) HasRunningTopLevelForegroundToolCall(threadID string) (bool, err
 
 func (s *Store) HasLiveBackgroundToolCall(threadID string) (bool, error) {
 	var exists int
-	if err := s.db.QueryRow(
+	if err := s.reader().QueryRow(
 		`SELECT EXISTS(
 		    SELECT 1 FROM items
 		     WHERE thread_id = ?
@@ -79,7 +79,7 @@ func (s *Store) HasLiveBackgroundToolCall(threadID string) (bool, error) {
 // session WOULD kill a running watch.
 func (s *Store) HasQueueBlockingBackgroundToolCall(threadID string) (bool, error) {
 	var exists int
-	if err := s.db.QueryRow(
+	if err := s.reader().QueryRow(
 		`SELECT EXISTS(
 		    SELECT 1 FROM items
 		     WHERE thread_id = ?
@@ -111,7 +111,7 @@ func (s *Store) HasQueueBlockingBackgroundToolCall(threadID string) (bool, error
 
 func (s *Store) CountLiveRunningBackgroundToolCalls(threadID string) (int, error) {
 	var count int
-	if err := s.db.QueryRow(
+	if err := s.reader().QueryRow(
 		`SELECT COUNT(*)
 		   FROM items INDEXED BY idx_items_live_background
 		  WHERE thread_id = ?
@@ -135,7 +135,7 @@ func (s *Store) CountLiveRunningBackgroundToolCalls(threadID string) (int, error
 
 func (s *Store) HasLiveCodexSubagentLaunch(threadID string) (bool, error) {
 	var exists int
-	if err := s.db.QueryRow(
+	if err := s.reader().QueryRow(
 		`SELECT EXISTS(
 		    SELECT 1 FROM items
 		    JOIN threads ON threads.id = items.thread_id
@@ -164,7 +164,7 @@ func (s *Store) HasLiveCodexSubagentLaunch(threadID string) (bool, error) {
 
 func (s *Store) CountLiveCodexSubagentLaunches(threadID string) (int, error) {
 	var count int
-	if err := s.db.QueryRow(
+	if err := s.reader().QueryRow(
 		`SELECT COUNT(*)
 		   FROM items INDEXED BY idx_items_live_codex_subagent
 		   JOIN threads ON threads.id = items.thread_id
@@ -374,7 +374,7 @@ func (s *Store) ForceCloseRunningToolCallsInTurn(
 // the query is narrow enough that a dedicated method is cheaper than a
 // full table hydration.
 func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -408,7 +408,7 @@ func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) 
 }
 
 func (s *Store) ListIncompleteCodexSubagentLaunches(threadID string) ([]Item, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -446,7 +446,7 @@ func (s *Store) ListIncompleteCodexSubagentLaunches(threadID string) ([]Item, er
 // upstream wire; callers that render a "live work" surface should project the
 // returned copy as running instead of changing the stored timeline row.
 func (s *Store) ListLiveCodexSubagentLaunches(threadID string) ([]Item, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   JOIN threads ON threads.id = items.thread_id
@@ -488,7 +488,7 @@ func (s *Store) ListLiveCodexSubagentLaunches(threadID string) ([]Item, error) {
 }
 
 func (s *Store) GetIncompleteCodexSubagentLaunch(threadID, itemID string) (Item, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
 		   LEFT JOIN payloads ON payloads.id = items.payload_id
@@ -549,7 +549,7 @@ func (s *Store) ListRecoverableClaudeBackgroundLaunches() ([]Item, error) {
 	// terms textually in sync with it), and the `c.completion_of <> ''`
 	// term exists solely so the NOT EXISTS probe qualifies for the partial
 	// idx_items_completion_of instead of scanning each candidate's thread.
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT ` + itemColumns + `
 		   FROM items
 		   JOIN threads ON threads.id = items.thread_id

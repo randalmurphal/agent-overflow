@@ -2167,3 +2167,220 @@ func TestFlipGhostBackgroundRowsOnStartScopedPerThread(t *testing.T) {
 		t.Errorf("t-ghost-b row picked up decision: %q", bRow.Decision)
 	}
 }
+
+// seedStreamingItemWithPayload creates thread "t" plus a streaming item
+// "stream" of itemKind linked to payload "pay" of payloadKind (initial data
+// "base"). Shared fixture for the combined summary+payload flush accessors.
+func seedStreamingItemWithPayload(t *testing.T, s *Store, itemKind, payloadKind string) {
+	t.Helper()
+	if err := s.CreateThread(Thread{
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: 1000, UpdatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.InsertPayload(Payload{
+		ID: "pay", Kind: payloadKind, Meta: `{"rev":1}`, Data: []byte("base"), CreatedAt: 2000,
+	}); err != nil {
+		t.Fatalf("insert payload: %v", err)
+	}
+	if err := s.InsertItem(Item{
+		ID: "stream", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
+		Kind: itemKind, Role: "assistant", Status: "streaming",
+		Summary: "head ", PayloadID: "pay",
+		CreatedAt: 2000, UpdatedAt: 2000,
+	}); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+}
+
+// TestAppendItemSummaryAndPayloadDataMatchesSequentialPair pins the
+// combined single-transaction flush writer to the exact persisted state and
+// return value of the former AppendItemSummary → AppendPayloadData pair.
+func TestAppendItemSummaryAndPayloadDataMatchesSequentialPair(t *testing.T) {
+	combined := newTestStore(t)
+	sequential := newTestStore(t)
+	seedStreamingItemWithPayload(t, combined, "thinking", "thinking")
+	seedStreamingItemWithPayload(t, sequential, "thinking", "thinking")
+
+	gotCombined, err := combined.AppendItemSummaryAndPayloadData("t", "stream", "world", "pay", []byte(" delta"), 3000)
+	if err != nil {
+		t.Fatalf("combined append: %v", err)
+	}
+
+	gotSequential, err := sequential.AppendItemSummary("t", "stream", "world", 3000)
+	if err != nil {
+		t.Fatalf("sequential summary append: %v", err)
+	}
+	if err := sequential.AppendPayloadData("pay", []byte(" delta"), gotSequential.PayloadMeta, 3000); err != nil {
+		t.Fatalf("sequential payload append: %v", err)
+	}
+
+	if gotCombined != gotSequential {
+		t.Errorf("returned item diverged:\ncombined  = %#v\nsequential = %#v", gotCombined, gotSequential)
+	}
+	for name, s := range map[string]*Store{"combined": combined, "sequential": sequential} {
+		data, err := s.GetPayloadData("pay")
+		if err != nil {
+			t.Fatalf("%s payload data: %v", name, err)
+		}
+		if string(data) != "base delta" {
+			t.Errorf("%s payload data = %q, want %q", name, data, "base delta")
+		}
+		meta, err := s.GetPayloadMeta("pay")
+		if err != nil {
+			t.Fatalf("%s payload meta: %v", name, err)
+		}
+		if meta.Meta != `{"rev":1}` || meta.CreatedAt != 3000 {
+			t.Errorf("%s payload meta = %#v, want meta {\"rev\":1} createdAt 3000", name, meta)
+		}
+	}
+}
+
+// TestAppendItemSummaryAndPayloadDataRollsBackOnPayloadFailure pins the
+// combined transaction's atomicity: when the payload half fails (payload row
+// missing), the summary half must roll back too — the row keeps its prior
+// summary and updated_at.
+func TestAppendItemSummaryAndPayloadDataRollsBackOnPayloadFailure(t *testing.T) {
+	s := newTestStore(t)
+	seedStreamingItemWithPayload(t, s, "assistant_text", "assistant_text")
+
+	_, err := s.AppendItemSummaryAndPayloadData("t", "stream", "world", "missing-pay", []byte("x"), 3000)
+	if err == nil {
+		t.Fatal("expected error for missing payload row")
+	}
+
+	got, ok, err := s.GetThreadItem("t", "stream")
+	if err != nil {
+		t.Fatalf("get item: %v", err)
+	}
+	if !ok {
+		t.Fatal("item missing")
+	}
+	if got.Summary != "head " {
+		t.Errorf("summary = %q after failed combined append, want %q (rolled back)", got.Summary, "head ")
+	}
+	if got.UpdatedAt != 2000 {
+		t.Errorf("updatedAt = %d after failed combined append, want 2000 (rolled back)", got.UpdatedAt)
+	}
+}
+
+// TestAppendItemSummaryTailAndPayloadDataMatchesSequentialPair is the
+// tail-bounded sibling: summary keeps only the last maxRunes characters
+// while the payload chunk lands in the same transaction.
+func TestAppendItemSummaryTailAndPayloadDataMatchesSequentialPair(t *testing.T) {
+	combined := newTestStore(t)
+	sequential := newTestStore(t)
+	seedStreamingItemWithPayload(t, combined, "thinking", "thinking")
+	seedStreamingItemWithPayload(t, sequential, "thinking", "thinking")
+
+	const maxRunes = 8
+	gotCombined, err := combined.AppendItemSummaryTailAndPayloadData("t", "stream", "world", maxRunes, "pay", []byte(" delta"), 3000)
+	if err != nil {
+		t.Fatalf("combined tail append: %v", err)
+	}
+
+	gotSequential, err := sequential.AppendItemSummaryTail("t", "stream", "world", maxRunes, 3000)
+	if err != nil {
+		t.Fatalf("sequential tail append: %v", err)
+	}
+	if err := sequential.AppendPayloadData("pay", []byte(" delta"), gotSequential.PayloadMeta, 3000); err != nil {
+		t.Fatalf("sequential payload append: %v", err)
+	}
+
+	if gotCombined != gotSequential {
+		t.Errorf("returned item diverged:\ncombined  = %#v\nsequential = %#v", gotCombined, gotSequential)
+	}
+	// "head " + "world" = "head world" (10 runes) tail-bounded to 8.
+	if gotCombined.Summary != "ad world" {
+		t.Errorf("tail summary = %q, want %q", gotCombined.Summary, "ad world")
+	}
+	data, err := combined.GetPayloadData("pay")
+	if err != nil {
+		t.Fatalf("payload data: %v", err)
+	}
+	if string(data) != "base delta" {
+		t.Errorf("payload data = %q, want %q", data, "base delta")
+	}
+}
+
+// TestUpsertItemWithPayloadAppendMatchesSequentialPair pins the streaming
+// command-output flush writer: one transaction must produce the same
+// persisted state and return value as the former AppendPayloadData →
+// UpsertItem pair.
+func TestUpsertItemWithPayloadAppendMatchesSequentialPair(t *testing.T) {
+	combined := newTestStore(t)
+	sequential := newTestStore(t)
+	seedStreamingItemWithPayload(t, combined, "tool_call", "command_output")
+	seedStreamingItemWithPayload(t, sequential, "tool_call", "command_output")
+
+	update := Item{
+		ID: "stream", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Status: "streaming",
+		Summary: "head ", PayloadID: "pay",
+		CreatedAt: 2000, UpdatedAt: 3000,
+	}
+
+	gotCombined, err := combined.UpsertItemWithPayloadAppend(update, "pay", []byte(" delta"), `{"rev":2}`, 3000)
+	if err != nil {
+		t.Fatalf("combined upsert: %v", err)
+	}
+
+	if err := sequential.AppendPayloadData("pay", []byte(" delta"), `{"rev":2}`, 3000); err != nil {
+		t.Fatalf("sequential payload append: %v", err)
+	}
+	gotSequential, err := sequential.UpsertItem(update, nil)
+	if err != nil {
+		t.Fatalf("sequential upsert: %v", err)
+	}
+
+	if gotCombined != gotSequential {
+		t.Errorf("returned item diverged:\ncombined  = %#v\nsequential = %#v", gotCombined, gotSequential)
+	}
+	for name, s := range map[string]*Store{"combined": combined, "sequential": sequential} {
+		data, err := s.GetPayloadData("pay")
+		if err != nil {
+			t.Fatalf("%s payload data: %v", name, err)
+		}
+		if string(data) != "base delta" {
+			t.Errorf("%s payload data = %q, want %q", name, data, "base delta")
+		}
+		meta, err := s.GetPayloadMeta("pay")
+		if err != nil {
+			t.Fatalf("%s payload meta: %v", name, err)
+		}
+		if meta.Meta != `{"rev":2}` || meta.CreatedAt != 3000 {
+			t.Errorf("%s payload meta = %#v, want meta {\"rev\":2} createdAt 3000", name, meta)
+		}
+	}
+}
+
+// TestUpsertItemWithPayloadAppendRollsBackOnMissingPayload proves the item
+// half of the combined write never lands when the payload append fails.
+func TestUpsertItemWithPayloadAppendRollsBackOnMissingPayload(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(Thread{
+		ID: "t", ProjectID: defaultTestProjectID, Title: "T", Provider: "claude", WorkspacePath: "/tmp",
+		CreatedAt: 1000, UpdatedAt: 1000,
+	}); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+
+	item := Item{
+		ID: "cmd", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Status: "streaming",
+		Summary: "$ ls", CreatedAt: 2000, UpdatedAt: 2000,
+	}
+	_, err := s.UpsertItemWithPayloadAppend(item, "missing-pay", []byte("x"), `{}`, 2000)
+	if err == nil {
+		t.Fatal("expected error for missing payload row")
+	}
+
+	_, ok, err := s.GetThreadItem("t", "cmd")
+	if err != nil {
+		t.Fatalf("get item: %v", err)
+	}
+	if ok {
+		t.Fatal("item row landed despite payload append failure (no rollback)")
+	}
+}

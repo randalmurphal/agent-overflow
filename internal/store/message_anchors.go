@@ -70,7 +70,7 @@ func (s *Store) UpsertMessageAnchor(a MessageAnchor) error {
 }
 
 func (s *Store) GetMessageAnchor(threadID, userItemID string) (MessageAnchor, bool, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+messageAnchorColumns+` FROM message_anchors
 		 WHERE thread_id = ? AND user_item_id = ?`,
 		threadID, userItemID,
@@ -92,7 +92,7 @@ func (s *Store) GetMessageAnchor(threadID, userItemID string) (MessageAnchor, bo
 // non-monotonic against the timeline, and consumers (the fork remap)
 // read the order as message order.
 func (s *Store) ListMessageAnchors(threadID string) ([]MessageAnchor, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+messageAnchorColumnsQualified+` FROM message_anchors a
 		 JOIN items i ON i.thread_id = a.thread_id AND i.id = a.user_item_id
 		 WHERE a.thread_id = ?

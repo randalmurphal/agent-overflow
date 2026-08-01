@@ -248,7 +248,7 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 }
 
 func (s *Store) GetThread(id string) (Thread, error) {
-	row := s.db.QueryRow(
+	row := s.reader().QueryRow(
 		`SELECT `+threadColumns+` FROM threads WHERE id = ?`, id,
 	)
 	t, err := scanThread(row)
@@ -256,6 +256,22 @@ func (s *Store) GetThread(id string) (Thread, error) {
 		return Thread{}, fmt.Errorf("store: get thread %s: %w", id, err)
 	}
 	return t, nil
+}
+
+// GetThreadProviderWorkspace reads only the provider and workspace_path
+// columns. It is the narrow read for per-provider-event triage paths
+// (tool completions, file-change results, inline diffs) that need one of
+// these two effectively session-immutable scalars — GetThread's
+// threadColumns projection computes four derived sidebar-state subqueries
+// per call, which those hot paths would compute and throw away.
+func (s *Store) GetThreadProviderWorkspace(id string) (provider, workspacePath string, err error) {
+	err = s.reader().QueryRow(
+		`SELECT provider, workspace_path FROM threads WHERE id = ?`, id,
+	).Scan(&provider, &workspacePath)
+	if err != nil {
+		return "", "", fmt.Errorf("store: get thread provider/workspace %s: %w", id, err)
+	}
+	return provider, workspacePath, nil
 }
 
 // ThreadExists reports whether a thread row is still present. It is the narrow
@@ -267,7 +283,7 @@ func (s *Store) ThreadExists(id string) (bool, error) {
 		return false, nil
 	}
 	var one int
-	err := s.db.QueryRow(`SELECT 1 FROM threads WHERE id = ?`, id).Scan(&one)
+	err := s.reader().QueryRow(`SELECT 1 FROM threads WHERE id = ?`, id).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -278,7 +294,7 @@ func (s *Store) ThreadExists(id string) (bool, error) {
 }
 
 func (s *Store) ListThreads() ([]Thread, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT ` + threadColumns + ` FROM threads WHERE archived = 0 ORDER BY updated_at DESC`,
 	)
 	if err != nil {
@@ -306,7 +322,7 @@ func (s *Store) ListThreads() ([]Thread, error) {
 // drafts, so the item/draft gates would otherwise hide them.
 func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+threadColumns+` FROM threads
 		 WHERE archived = 0 AND `+hiddenClause+`
 		   AND (
@@ -341,7 +357,7 @@ func (s *Store) ListThreadsWithItems() ([]Thread, error) {
 // the sidebar so the user can unarchive or permanently delete them.
 func (s *Store) ListArchivedThreads() ([]Thread, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+threadColumns+` FROM threads
 		 WHERE archived = 1 AND `+hiddenClause+` ORDER BY updated_at DESC`, hiddenArgs...,
 	)
@@ -367,7 +383,7 @@ func (s *Store) ListArchivedThreads() ([]Thread, error) {
 func (s *Store) ListThreadsByProject(projectID string) ([]Thread, error) {
 	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
 	args := append([]any{projectID}, hiddenArgs...)
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+threadColumns+` FROM threads
 		 WHERE project_id = ? AND archived = 0 AND `+hiddenClause+`
 		 ORDER BY updated_at DESC`,
@@ -408,7 +424,7 @@ func hiddenThreadModesClause(column string) (string, []any) {
 // (these are rowid tables), which matches definition order and keeps
 // the deliberation roster's round-robin sequence stable across reads.
 func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT `+threadColumns+` FROM threads WHERE parent_thread_id = ? ORDER BY created_at ASC, rowid ASC`,
 		parentID,
 	)
@@ -430,7 +446,7 @@ func (s *Store) ListChildThreads(parentID string) ([]Thread, error) {
 
 func (s *Store) HasChildThreads(parentID string) (bool, error) {
 	var exists int
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT EXISTS(SELECT 1 FROM threads WHERE parent_thread_id = ? LIMIT 1)`,
 		parentID,
 	).Scan(&exists)
@@ -444,7 +460,7 @@ func (s *Store) HasChildThreads(parentID string) (bool, error) {
 // rows, including archived ones. Worktree removal uses this to avoid deleting a
 // checkout that an archived thread would reference if restored.
 func (s *Store) ListThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT id, workspace_path, COALESCE(worktree_path, '') FROM threads`,
 	)
 	if err != nil {
@@ -467,7 +483,7 @@ func (s *Store) ListThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
 // app-layer transient activity overlays. It intentionally reads only thread
 // identity and paths, never item history.
 func (s *Store) ListThreadWorkspaceRefsForProject(projectID string) ([]ThreadWorkspaceRef, error) {
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT id, workspace_path, COALESCE(worktree_path, '')
 		   FROM threads
 		  WHERE project_id = ?`,
@@ -540,7 +556,7 @@ const blockedThreadWorkspaceRefsForProjectSQL = `SELECT t.id, t.workspace_path, 
 // threads whose persisted activity currently blocks worktree removal. It is
 // scoped to one project so opening a picker never scans unrelated history.
 func (s *Store) ListBlockedThreadWorkspaceRefsForProject(projectID string) ([]ThreadWorkspaceRef, error) {
-	rows, err := s.db.Query(blockedThreadWorkspaceRefsForProjectSQL, projectID)
+	rows, err := s.reader().Query(blockedThreadWorkspaceRefsForProjectSQL, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list blocked thread workspace refs for project %s: %w", projectID, err)
 	}
@@ -720,7 +736,7 @@ func (s *Store) UpdateThreadIfProviderSwitchAllowed(t Thread, previousProvider s
 func (s *Store) explainProviderSwitchNoRows(threadID, previousProvider string) error {
 	var currentProvider string
 	var hasItems int
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT provider,
 		        EXISTS(SELECT 1 FROM items WHERE thread_id = threads.id LIMIT 1)
 		   FROM threads
@@ -1103,7 +1119,7 @@ func (s *Store) UpdateReasoningEffort(threadID, effort string) error {
 		return fmt.Errorf("%w: %q", ErrInvalidEffort, effort)
 	}
 	var providerName string
-	if err := s.db.QueryRow(`SELECT provider FROM threads WHERE id = ?`, threadID).Scan(&providerName); err != nil {
+	if err := s.reader().QueryRow(`SELECT provider FROM threads WHERE id = ?`, threadID).Scan(&providerName); err != nil {
 		return fmt.Errorf("store: load provider for effort update %s: %w", threadID, err)
 	}
 	if !legalEffortForProvider(providerName, normalized) {
@@ -1142,7 +1158,7 @@ func (s *Store) UpdateContextWindow(threadID string, tokens int) error {
 
 func (s *Store) GetThreadContextSettings(threadID string) (ThreadContextSettings, error) {
 	var settings ThreadContextSettings
-	err := s.db.QueryRow(
+	err := s.reader().QueryRow(
 		`SELECT provider, model, project_id, context_window,
 		        auto_compact_standard_percent, auto_compact_extended_percent
 		   FROM threads
@@ -1270,7 +1286,7 @@ func marshalDisabledMcpServers(names *[]string) any {
 // snapshotted=false when the column is NULL (pre-feature thread).
 func (s *Store) GetDisabledMcpServers(threadID string) (names []string, snapshotted bool, err error) {
 	var raw sql.NullString
-	err = s.db.QueryRow(
+	err = s.reader().QueryRow(
 		`SELECT disabled_mcp_servers FROM threads WHERE id = ?`, threadID,
 	).Scan(&raw)
 	if err != nil {

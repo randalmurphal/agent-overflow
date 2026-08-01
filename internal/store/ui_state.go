@@ -34,7 +34,7 @@ func (s *Store) GetUIState(scope string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(
+	rows, err := s.reader().Query(
 		`SELECT key, value FROM ui_state WHERE scope = ?`, scope,
 	)
 	if err != nil {
