@@ -109,6 +109,18 @@ export interface ScrollIntentDeps {
    * allocation-free (it runs at chase rate during streaming).
    */
   noteScrollActivity(): void;
+  /**
+   * A scroll event classified as USER-driven landed at `top`: untagged
+   * (no programmatic token matched) and not resize-correlated. Updates
+   * the controller's provenance ledger — the ledger's invariant is
+   * that every EXPLAINED mover records its position, leaving the
+   * browser's max-scroll clamp as the only mover the ledger cannot
+   * account for. Resize-correlated events are deliberately excluded:
+   * a clamp's scroll event is exactly one of those, and recording it
+   * would launder the very evidence the sentinel's snap recovery
+   * requires.
+   */
+  noteUserScroll(top: number): void;
 }
 
 export interface ScrollIntent {
@@ -503,6 +515,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       isNearBottomState: deps.isNearBottom(),
     }));
     const resizeCorrelatedScroll = deps.sampleResizeCorrelation();
+    if (!resizeCorrelatedScroll) deps.noteUserScroll(scrollTopAtEvent);
     const previousObserved = lastObservedScrollTopForRestick;
     const downIntentVersionAtEvent = recentDownIntentVersion;
     const scrollbarDragSessionAtEvent = scrollbarDragSessionActive;

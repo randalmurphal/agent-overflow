@@ -215,7 +215,11 @@ failing test before it is a bug report.
    the pause-release repin, both anchor-transaction restores
    (`PreserveViewportBottomOptions.takeover` replaces
    `yieldToStructuralAppend`), and MessageTimeline's host-layout re-pin.
-3. Provenance ledger (deletes the baseline heuristics).
+3. Provenance ledger (deletes the baseline heuristics). **Shipped**
+   (2026-08-01): `lastExplainedScrollTop` at the chokepoint + intent's
+   `noteUserScroll` (resize-correlated events excluded); both snap sites
+   require `sentinelClampWitnessed` (latched per sentinel session);
+   `invalidateSentinelBaseline` and its head-splice call site deleted.
 4. Interleaving suite lands alongside 2 and 3 as their safety net;
    scenario browser tests keep covering real-layout behavior.
 5. Fold the shipped rules into `frontend-scroll.md`; update

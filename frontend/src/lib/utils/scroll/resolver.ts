@@ -109,6 +109,18 @@ export interface ResolverState {
    * stranded-oscillation recovery.
    */
   sentinelEntryTarget: number;
+  /**
+   * Clamp evidence from the provenance ledger
+   * (spring.sentinelClampWitnessed()): unexplained scrollTop movement —
+   * beyond the last authored write's readback / last classified user
+   * scroll — was witnessed since the sentinel entered. The
+   * stranded-oscillation recovery requires it: a baseline match alone
+   * is a numeric shape an authored head-splice displacement also
+   * produces, and snapping for one stomps the glide its hidden growth
+   * is owed (bug-report-20260801T213259Z). Always false when no
+   * sentinel is armed.
+   */
+  sentinelClampWitnessed: boolean;
 }
 
 // Per-delivery inputs the controller samples alongside the state. The
@@ -231,6 +243,14 @@ export function springGateIsOpen(s: SpringGateInputs): boolean {
 // stranded check ignores sub-pixel rounding between the browser-rounded
 // scrollTop readback and the computed target.
 //
+// The clamp is EVIDENCED, not inferred: `sentinelClampWitnessed` comes
+// from the provenance ledger (the chokepoint's authored-write readback
+// plus classified user scrolls), which witnessed scrollTop at a value no
+// write explains. Requiring it keeps authored displacements with the
+// same numeric shape — a head-splice compensation holding its anchor
+// while the hidden growth is owed a glide — out of the snap
+// (bug-report-20260801T213259Z).
+//
 // Call-site map: ONLY the delivery resolver uses this predicate
 // (synchronous, same-frame recovery — rAF callbacks fire BEFORE
 // ResizeObserver callbacks within a frame, so RO-side recovery is the
@@ -250,6 +270,7 @@ export function springGateIsOpen(s: SpringGateInputs): boolean {
 export function isSentinelOscillationStranded(s: {
   springActive: boolean;
   sentinelEntryTarget: number;
+  sentinelClampWitnessed: boolean;
   isAtBottom: boolean;
   escaped: boolean;
   paused: boolean;
@@ -258,6 +279,7 @@ export function isSentinelOscillationStranded(s: {
 }): boolean {
   return s.springActive
     && s.sentinelEntryTarget >= 0
+    && s.sentinelClampWitnessed
     && s.isAtBottom
     && !s.escaped
     && !s.paused
@@ -352,6 +374,7 @@ export function resolveContentDelivery(
   if (isSentinelOscillationStranded({
     springActive: state.springActive,
     sentinelEntryTarget: state.sentinelEntryTarget,
+    sentinelClampWitnessed: state.sentinelClampWitnessed,
     isAtBottom: state.isAtBottom,
     escaped: state.escaped,
     paused: state.paused,

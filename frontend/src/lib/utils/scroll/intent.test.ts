@@ -45,6 +45,7 @@ interface Harness {
   };
   refreshIsNearBottom: ReturnType<typeof vi.fn>;
   noteScrollActivity: ReturnType<typeof vi.fn>;
+  noteUserScroll: ReturnType<typeof vi.fn>;
 }
 
 function harness(
@@ -81,6 +82,7 @@ function harness(
   };
   const refreshIsNearBottom = vi.fn(() => state.distanceFromBottom);
   const noteScrollActivity = vi.fn();
+  const noteUserScroll = vi.fn();
 
   const deps: ScrollIntentDeps = {
     getScrollEl: () => scrollEl,
@@ -100,12 +102,23 @@ function harness(
     sampleResizeCorrelation: () => state.resizeCorrelated,
     resizeDifferenceNow: () => 0,
     noteScrollActivity,
+    noteUserScroll,
   };
 
   const intent = createScrollIntent(deps);
   intent.attach(scrollEl);
 
-  return { intent, scrollEl, child, deps, state, spring, refreshIsNearBottom, noteScrollActivity };
+  return {
+    intent,
+    scrollEl,
+    child,
+    deps,
+    state,
+    spring,
+    refreshIsNearBottom,
+    noteScrollActivity,
+    noteUserScroll,
+  };
 }
 
 function wheel(target: Element, init: WheelEventInit): void {
@@ -523,6 +536,43 @@ describe('programmatic write tagging', () => {
     h.scrollEl.dispatchEvent(new Event('scroll'));
 
     expect(h.refreshIsNearBottom).toHaveBeenCalled();
+  });
+});
+
+describe('provenance ledger classification (noteUserScroll)', () => {
+  // The ledger's invariant: every EXPLAINED mover records its position,
+  // leaving the browser's max-scroll clamp as the only mover the ledger
+  // cannot account for. So user-classified scrolls record, and both
+  // "already explained" (tagged) and "this IS the clamp shape"
+  // (resize-correlated) events must not.
+
+  it('records a user-classified scroll position', () => {
+    const h = build();
+    h.scrollEl.scrollTop = 600;
+
+    h.scrollEl.dispatchEvent(new Event('scroll'));
+
+    expect(h.noteUserScroll).toHaveBeenCalledWith(600);
+  });
+
+  it('does not record a tagged programmatic scroll (the write already explained it)', () => {
+    const h = build();
+    h.intent.noteProgrammaticWrite(600);
+    h.scrollEl.scrollTop = 600;
+
+    h.scrollEl.dispatchEvent(new Event('scroll'));
+
+    expect(h.noteUserScroll).not.toHaveBeenCalled();
+  });
+
+  it('does not record a resize-correlated scroll — recording it would launder clamp evidence', () => {
+    const h = build();
+    h.state.resizeCorrelated = true;
+    h.scrollEl.scrollTop = 463;
+
+    h.scrollEl.dispatchEvent(new Event('scroll'));
+
+    expect(h.noteUserScroll).not.toHaveBeenCalled();
   });
 });
 

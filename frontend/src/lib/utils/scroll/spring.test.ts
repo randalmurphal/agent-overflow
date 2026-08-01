@@ -63,9 +63,15 @@ function makeHarness(
   let target = 0;
   let liveContentActive = true;
   let residueSettles = 0;
+  // Faithful mini provenance ledger: writes explain their readback, so
+  // `scrollTopUnexplained` only reports true if a test mutates scrollTop
+  // outside the write path (a simulated browser clamp) — mirroring the
+  // controller's ledger contract.
+  let lastExplainedScrollTop: number | null = null;
   const writes: { caller: string; value: number }[] = [];
   const store = (value: number): void => {
     scrollTop = opts.quantize ? Math.round(value) : value;
+    lastExplainedScrollTop = scrollTop;
   };
 
   const el = {
@@ -113,6 +119,9 @@ function makeHarness(
     // dpr 1 and the harness's default 16.67ms cadence the floor is the
     // 60Hz phase lock: 1.0 px per frame.
     devicePixelRatio: () => opts.dpr ?? 1,
+    scrollTopUnexplained: () =>
+      lastExplainedScrollTop !== null
+      && Math.abs(scrollTop - lastExplainedScrollTop) > ARRIVAL_DISTANCE_PX,
   };
 
   return {

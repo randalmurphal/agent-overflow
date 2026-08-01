@@ -6231,13 +6231,14 @@ describe('createUseStickToBottomController — spring chase', () => {
       // height — and so the bottom target — unchanged, and the growth
       // the splice hides is then owed a GLIDE back to the bottom
       // (ActivityRun.svelte's hold + markStructuralContentPending pair).
-      // To the sentinel's oscillation guard that displacement is
+      // To the sentinel's baseline heuristic that displacement was
       // indistinguishable from a browser clamp after a dip-restore
       // (diff > 0, target === sentinel entry), so it snapped the new
       // row in instead of gliding — bug-report-20260801T213259Z
-      // (think → bash inside a run clip). The compensation now drops
-      // the sentinel baseline, and the baseline re-arms on the next
-      // arrival so genuine clamp recovery is preserved.
+      // (think → bash inside a run clip). The provenance ledger is
+      // what tells them apart now: the splice is an AUTHORED write, so
+      // the guard finds no witnessed unexplained movement and glides;
+      // a native clamp is unexplained by construction and still snaps.
       it('glides the splice remainder back to the bottom instead of snapping, then still snap-recovers a real oscillation', async () => {
         const ro = getRO();
         ro.fire(contentEl, 800);
@@ -6275,6 +6276,47 @@ describe('createUseStickToBottomController — spring chase', () => {
         geom.contentHeight = 900;
         ro.fire(contentEl, 900); // restore +105, target back to 500
         expect(geom.scrollTop).toBe(500); // snapped, no frame awaited
+      });
+
+      it('a compensation ratifying the clamped position does not launder the witnessed clamp', async () => {
+        // The evidence is LATCHED per sentinel session, not read
+        // point-in-time: an authored write landing between the clamp
+        // and the restore (an engine compensation delivered during the
+        // dip — its anchor redirect confirms the clamped position, so
+        // the ledger then explains it) must not erase a strand the
+        // recovery still owes a rescue.
+        const ro = getRO();
+        ro.fire(contentEl, 800);
+        await waitMs(150);
+
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900); // target = 500
+        await advanceUntil(() => geom.scrollTop === 500);
+        while (mockNow < 520) await nextFrame(); // past retain → sentinel
+
+        // Dip + native clamp; a sentinel tick witnesses the unexplained
+        // movement before anything authored touches scrollTop.
+        geom.scrollHeight = 995;
+        geom.contentHeight = 795;
+        geom.scrollTop = 395;
+        ro.fire(contentEl, 795); // dip −105
+        await nextFrame();
+
+        // An above-viewport remeasure delivers mid-dip; its anchor
+        // redirect writes the clamped position back — an authored,
+        // ledger-updating write at the exact strand value.
+        expect(
+          controller.applyEngineCompensation({ kind: 'remeasure-above', delta: -20, target: 375 }),
+        ).toBe(true);
+        expect(geom.scrollTop).toBe(395);
+
+        // Restore: the latched witness still licenses the synchronous
+        // stranded-oscillation snap.
+        geom.scrollHeight = 1100;
+        geom.contentHeight = 900;
+        ro.fire(contentEl, 900); // restore +105, target back to 500
+        expect(geom.scrollTop).toBe(500);
       });
     });
 

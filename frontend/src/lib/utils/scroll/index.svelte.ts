@@ -154,6 +154,30 @@ export function createUseStickToBottomController(
   let contentEl: HTMLElement | undefined;
   let stickStateDevHook: (() => Record<string, unknown>) | undefined;
 
+  // ===== Provenance ledger =====
+  // The last EXPLAINED scrollTop: the browser-rounded readback of the
+  // most recent authored write (every programmatic write flows through
+  // the writeScrollTop chokepoint below), or the position of the most
+  // recent user-classified scroll event (the intent machine's
+  // noteUserScroll dep). While the spring sentinel idles, nothing else
+  // may move scrollTop — so a live scrollTop that differs from this
+  // ledger is WITNESSED evidence of the one unexplained mover left, the
+  // browser's max-scroll clamp. The spring's oscillation guards and the
+  // resolver's stranded predicate require that evidence before
+  // snapping; authored displacements (a head-splice compensation's
+  // anchor hold) update the ledger at the chokepoint and therefore can
+  // never read as a clamp (bug-report-20260801T213259Z). Null until the
+  // first write/classified scroll after attach.
+  let lastExplainedScrollTop: number | null = null;
+
+  function scrollTopUnexplained(): boolean {
+    if (!scrollEl || lastExplainedScrollTop === null) return false;
+    // Band tolerance, not equality: fractional-DPR sub-pixel wobble at
+    // max scroll is not clamp evidence, and the snap sites' own
+    // arrival-band conditions ignore ≤1px strands anyway.
+    return !withinArrivalBand(scrollEl.scrollTop, lastExplainedScrollTop);
+  }
+
   // ===== Arrival-readback acceptance state =====
   // Some engines reject the exact max scrollTop by one CSS pixel. When a
   // write lands within the arrival band but not exactly on target, the
@@ -479,6 +503,7 @@ export function createUseStickToBottomController(
     // Tag using the BROWSER-rounded read so the scroll handler's token
     // match sees the same value the scroll event will report.
     const taggedTop = scrollEl.scrollTop;
+    lastExplainedScrollTop = taggedTop;
     intent.noteProgrammaticWrite(taggedTop);
     refreshIsNearBottom();
     if (shouldTrace) {
@@ -595,6 +620,7 @@ export function createUseStickToBottomController(
       typeof window !== 'undefined' && window.devicePixelRatio > 0
         ? window.devicePixelRatio
         : 1,
+    scrollTopUnexplained,
   });
 
   // ===== Content observation pipeline =====
@@ -655,6 +681,9 @@ export function createUseStickToBottomController(
     sampleResizeCorrelation: observers.sampleResizeCorrelation,
     resizeDifferenceNow: observers.resizeDifferenceNow,
     noteScrollActivity: renewContentLease,
+    noteUserScroll: (top) => {
+      lastExplainedScrollTop = top;
+    },
   });
 
   // Snapshot of the flags the pure delivery resolver decides over.
@@ -669,6 +698,7 @@ export function createUseStickToBottomController(
       springStopRequested: spring.stopRequested(),
       structuralAppendPending: spring.structuralAppendPending(),
       sentinelEntryTarget: spring.sentinelTarget(),
+      sentinelClampWitnessed: spring.sentinelClampWitnessed(),
     };
   }
 
@@ -710,14 +740,12 @@ export function createUseStickToBottomController(
     }));
     writeScrollTop(decision.write.caller, decision.write.value);
     // A head splice displaces scrollTop with the content height (and so
-    // the bottom target) unchanged — the exact shape the sentinel's
-    // oscillation guard reads as a browser clamp after a dip-restore.
-    // This displacement is authored and its remainder is owed a glide
-    // (the splice's stated growth), so drop the sentinel baseline; it
-    // re-arms on the next arrival. Remeasure-above compensations shift
-    // scrollTop and target together and keep their baseline — the
-    // dip-restore snap recovery depends on it.
-    if (compensation.kind === 'head-splice') spring.invalidateSentinelBaseline();
+    // the bottom target) unchanged — the exact numeric shape of a
+    // browser clamp after a dip-restore. No special-casing is needed:
+    // the write above updated the provenance ledger, so the sentinel's
+    // oscillation guards see an EXPLAINED position, find no clamp
+    // evidence, and glide the splice's hidden growth in instead of
+    // snapping it (bug-report-20260801T213259Z).
     return true;
   }
 
@@ -1207,6 +1235,7 @@ export function createUseStickToBottomController(
     // element leaves the controller unpromoted (a stale will-change on
     // a detached-but-reused element would silently re-tax the pane).
     clearContentLease();
+    lastExplainedScrollTop = null;
     scrollEl = undefined;
     contentEl = undefined;
   }

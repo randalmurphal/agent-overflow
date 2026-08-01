@@ -30,6 +30,7 @@ function state(overrides: Partial<ResolverState> = {}): ResolverState {
     springStopRequested: false,
     structuralAppendPending: false,
     sentinelEntryTarget: -1,
+    sentinelClampWitnessed: false,
     ...overrides,
   };
 }
@@ -237,7 +238,11 @@ describe('resolveContentDelivery — idle re-pin deadband', () => {
 });
 
 describe('resolveContentDelivery — stranded-oscillation recovery', () => {
-  const strandedState = state({ springActive: true, sentinelEntryTarget: TARGET });
+  const strandedState = state({
+    springActive: true,
+    sentinelEntryTarget: TARGET,
+    sentinelClampWitnessed: true,
+  });
 
   it('snaps instantly when the target returned to the sentinel entry and scrollTop is stranded', () => {
     const d = resolveContentDelivery(
@@ -277,9 +282,27 @@ describe('resolveContentDelivery — stranded-oscillation recovery', () => {
     expect(d.startSpring).toBe(true);
   });
 
+  it('no recovery without witnessed clamp evidence — an authored displacement glides instead', () => {
+    // Same numeric shape as the strand (target back at the entry,
+    // scrollTop off it) but the provenance ledger explains the position
+    // — a head-splice compensation's anchor hold, not a browser clamp.
+    // The growth the displacement hides is owed a glide
+    // (bug-report-20260801T213259Z).
+    const d = resolveContentDelivery(
+      state({ springActive: true, sentinelEntryTarget: TARGET }),
+      delta({ delta: 37, scrollTop: TARGET - 37 }),
+    );
+    expect(d.oscillationRecovery).toBe(false);
+    expect(d.startSpring).toBe(true);
+  });
+
   it('genuine new growth beyond the sentinel entry spring-chases instead', () => {
     const d = resolveContentDelivery(
-      state({ springActive: true, sentinelEntryTarget: TARGET - 40 }),
+      state({
+        springActive: true,
+        sentinelEntryTarget: TARGET - 40,
+        sentinelClampWitnessed: true,
+      }),
       delta({ delta: 40, scrollTop: TARGET - 40 }),
     );
     expect(d.oscillationRecovery).toBe(false);
@@ -291,7 +314,11 @@ describe('resolveContentDelivery — stranded-oscillation recovery', () => {
     // computed target means the restored target can land 1px off the
     // sentinel entry — that is still the same oscillation.
     const d = resolveContentDelivery(
-      state({ springActive: true, sentinelEntryTarget: TARGET - ARRIVAL_DISTANCE_PX }),
+      state({
+        springActive: true,
+        sentinelEntryTarget: TARGET - ARRIVAL_DISTANCE_PX,
+        sentinelClampWitnessed: true,
+      }),
       delta({ delta: 37, scrollTop: TARGET - 37 }),
     );
     expect(d.oscillationRecovery).toBe(true);
@@ -323,7 +350,12 @@ describe('resolveContentDelivery — stranded-oscillation recovery', () => {
     ['not at bottom', { isAtBottom: false, isNearBottom: false }],
   ] as const)('no recovery while %s', (_label, override) => {
     const d = resolveContentDelivery(
-      state({ springActive: true, sentinelEntryTarget: TARGET, ...override }),
+      state({
+        springActive: true,
+        sentinelEntryTarget: TARGET,
+        sentinelClampWitnessed: true,
+        ...override,
+      }),
       delta({ delta: 37, scrollTop: TARGET - 37 }),
     );
     expect(d.oscillationRecovery).toBe(false);
@@ -467,10 +499,11 @@ describe('resolveContentDelivery — negative delta', () => {
 });
 
 describe('isSentinelOscillationStranded', () => {
-  it('requires an active spring, an armed sentinel, and a genuinely stranded position', () => {
+  it('requires an active spring, an armed sentinel, witnessed clamp evidence, and a genuinely stranded position', () => {
     const base = {
       springActive: true,
       sentinelEntryTarget: TARGET,
+      sentinelClampWitnessed: true,
       isAtBottom: true,
       escaped: false,
       paused: false,
@@ -480,6 +513,9 @@ describe('isSentinelOscillationStranded', () => {
     expect(isSentinelOscillationStranded(base)).toBe(true);
     expect(isSentinelOscillationStranded({ ...base, springActive: false })).toBe(false);
     expect(isSentinelOscillationStranded({ ...base, sentinelEntryTarget: -1 })).toBe(false);
+    // The provenance gate: same numeric shape, but nothing unexplained
+    // moved scrollTop — an authored displacement, never snapped.
+    expect(isSentinelOscillationStranded({ ...base, sentinelClampWitnessed: false })).toBe(false);
     expect(isSentinelOscillationStranded({ ...base, scrollTop: TARGET })).toBe(false);
     expect(isSentinelOscillationStranded({ ...base, target: TARGET + 40 })).toBe(false);
   });
@@ -495,7 +531,14 @@ describe('resolveContentDelivery — structural invariants', () => {
         for (const paused of bools) {
           for (const warm of bools) {
             for (const springActive of bools) {
-              for (const sentinelEntryTarget of [-1, TARGET]) {
+              // Witness without an armed sentinel is unconstructible
+              // (spring.sentinelClampWitnessed() returns false when no
+              // sentinel is armed), so [-1, true] is excluded.
+              for (const [sentinelEntryTarget, sentinelClampWitnessed] of [
+                [-1, false],
+                [TARGET, false],
+                [TARGET, true],
+              ] as const) {
                 for (const d of [70, -70]) {
                   for (const scrollTop of scrollTops) {
                     {
@@ -508,6 +551,7 @@ describe('resolveContentDelivery — structural invariants', () => {
                           warm,
                           springActive,
                           sentinelEntryTarget,
+                          sentinelClampWitnessed,
                         }),
                         delta({ delta: d, scrollTop }),
                       );
@@ -548,7 +592,7 @@ describe('resolveContentDelivery — structural invariants', () => {
         }
       }
     }
-    expect(checked).toBe(2 * 2 * 2 * 2 * 2 * 2 * 2 * 5);
+    expect(checked).toBe(2 * 2 * 2 * 2 * 2 * 3 * 2 * 5);
   });
 });
 

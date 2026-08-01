@@ -386,6 +386,19 @@ export interface SpringChaseDeps {
    * supplies the other, its measured rAF cadence.
    */
   devicePixelRatio(): number;
+  /**
+   * The live scrollTop is NOT explained by the controller's provenance
+   * ledger — it differs (beyond the arrival band) from the last
+   * authored write's browser-rounded readback / last classified user
+   * scroll. Every authored write goes through the chokepoint and every
+   * user gesture is classified by the intent machine, so during a
+   * sentinel idle the only unexplained mover left is the browser's
+   * max-scroll clamp. This is the clamp EVIDENCE the oscillation
+   * guards require: a baseline match alone is just a numeric shape,
+   * and an authored displacement (a head-splice compensation) produces
+   * the same one (bug-report-20260801T213259Z).
+   */
+  scrollTopUnexplained(): boolean;
 }
 
 export interface SpringChase {
@@ -425,20 +438,19 @@ export interface SpringChase {
    */
   sentinelTarget(): number;
   /**
-   * An authored controller write displaced scrollTop away from the
-   * sentinel-entry target while the content height stayed put (a
-   * head-splice engine compensation: a tail-following window's head
-   * advance holds the incoming row's viewport position, then the
-   * growth it hides is owed a GLIDE back to the bottom). The sentinel
-   * baseline no longer proves a browser clamp — without this, the
-   * oscillation guard read the displacement as a content
-   * dip-and-restore (diff > 0, target === entry) and snapped the new
-   * row in (bug-report-20260801T213259Z: think → bash inside a run
-   * clip). Clearing is safe: the baseline re-arms on the next sentinel
-   * arrival tick, so both snap-recovery sites stay armed for genuine
-   * clamps.
+   * Clamp evidence for the resolver snapshot: unexplained scrollTop
+   * movement has been WITNESSED since the current sentinel entry (see
+   * deps.scrollTopUnexplained). Latched per sentinel session — every
+   * sentinel tick checks, and this accessor also checks lazily so a
+   * delivery arriving before the next tick still sees a clamp that
+   * just happened. False whenever no sentinel is armed. Both
+   * snap-recovery sites require it: a baseline match without witnessed
+   * movement is an authored displacement (a head-splice compensation's
+   * anchor hold, whose hidden growth is owed a glide), not a browser
+   * clamp (bug-report-20260801T213259Z: think → bash inside a run
+   * clip snapped the new row in).
    */
-  invalidateSentinelBaseline(): void;
+  sentinelClampWitnessed(): boolean;
 }
 
 export function createSpringChase(deps: SpringChaseDeps): SpringChase {
@@ -495,6 +507,26 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   // current target == entryTarget + (entryClientHeight − clientHeight).
   let sentinelEntryTarget = -1;
   let sentinelEntryClientHeight = 0;
+  // Clamp evidence, latched per sentinel session (cleared on entry,
+  // cancel, exit, and snap consumption): unexplained scrollTop movement
+  // — beyond what the controller's provenance ledger can account for —
+  // was witnessed while this sentinel idled. The only unexplained mover
+  // during a sentinel is the browser's max-scroll clamp, so this is
+  // what turns the baseline heuristic ("target returned to the entry
+  // value") into evidence ("...AND something no write explains moved
+  // scrollTop"). Latched rather than point-in-time so an authored
+  // write landing between the clamp and the restore (a remeasure-above
+  // compensation ratifying the clamped position) cannot launder a
+  // strand the guard still needs to rescue.
+  let sentinelClampWitnessed = false;
+
+  function witnessClampIfUnexplained(): boolean {
+    if (sentinelEntryTarget < 0) return false;
+    if (!sentinelClampWitnessed && deps.scrollTopUnexplained()) {
+      sentinelClampWitnessed = true;
+    }
+    return sentinelClampWitnessed;
+  }
 
   function rebasedSentinelEntryTarget(clientHeightNow: number): number {
     if (sentinelEntryTarget < 0) return -1;
@@ -622,6 +654,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     // of the gate (matches the historical 80LoC-spring cleanup semantics).
     lastTargetChangedAt = 0;
     sentinelEntryTarget = -1;
+    sentinelClampWitnessed = false;
     lastChaseTarget = -1;
     deps.settleGlideResidue();
     endChaseTelemetry();
@@ -656,6 +689,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     velocity = 0;
     accumulated = 0;
     sentinelEntryTarget = -1;
+    sentinelClampWitnessed = false;
   }
 
   // Impure sampling wrapper over the shared pure predicate
@@ -738,6 +772,14 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const target = deps.targetScrollTop();
       let current = el.scrollTop;
       deps.arrival.invalidateStale(target);
+      // Eager clamp-evidence check while the sentinel baseline is armed
+      // — every sentinel tick, both branches, so a clamp during a dip
+      // (where scrollTop lands exactly on the dipped target and the
+      // caught-up branch runs) is witnessed before the restore brings
+      // the target back and the guard below asks for the evidence. The
+      // targetScrollTop() read above flushed layout, so a clamp applied
+      // by this frame's layout is visible to the ledger comparison.
+      witnessClampIfUnexplained();
 
       // Reduced motion (OS preference or the app's low-power setting)
       // flipped on mid-chase: land exactly and stop. The gate is
@@ -774,14 +816,23 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
 
       if (current !== target && !deps.arrival.matches(target)) {
         // Content oscillation guard: if the sentinel was idle
-        // (sentinelEntryTarget set) and the target returned to the
-        // sentinel entry value, the content layer oscillated in
+        // (sentinelEntryTarget set), the target returned to the
+        // sentinel entry value, AND unexplained scrollTop movement was
+        // witnessed since entry, the content layer oscillated in
         // height (-N then +N from async Streamdown typesetting /
         // a windowing row remount). The browser auto-clamped scrollTop
         // during the low point (a native engine operation — not a
         // scrollTop write the controller could arbitrate), stranding
         // scrollTop below the restored target. Snap back instantly — a spring
         // chase for zero net content change is a visible artifact.
+        // The witness requirement is what keeps an AUTHORED
+        // displacement with the same numeric shape — a head-splice
+        // compensation's anchor hold, whose hidden growth is owed a
+        // glide — out of the snap: authored writes update the
+        // provenance ledger, so they can never read as a clamp
+        // (bug-report-20260801T213259Z). Without the witness the
+        // else branch below runs instead: the sentinel exits and the
+        // remainder glides in, which is the displacement's contract.
         //
         // This check is DELIBERATELY different from the resolver's
         // isSentinelOscillationStranded (scroll/resolver.ts): it
@@ -791,11 +842,13 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         if (
           sentinelEntryTarget >= 0
           && withinArrivalBand(target, rebasedSentinelEntryTarget(el.clientHeight))
+          && witnessClampIfUnexplained()
         ) {
           snapOscillationToBottom('spring.oscillationSnap', target);
         } else {
           deps.arrival.clear();
           sentinelEntryTarget = -1;
+          sentinelClampWitnessed = false;
           // Chase-distance clamp (see SPRING_MAX_CHASE_DISTANCE_VIEWPORTS
           // for the full gating rationale): only on a >viewport backlog
           // paired with an OBSERVED discontinuity — this tick's real rAF
@@ -1033,6 +1086,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           if (sentinelEntryTarget < 0) {
             sentinelEntryTarget = target;
             sentinelEntryClientHeight = el.clientHeight;
+            // A fresh sentinel session starts with a clean evidence
+            // slate — the arrival that entered it just explained the
+            // current position.
+            sentinelClampWitnessed = false;
             if (chaseTelemetry) chaseTelemetry.sentinelEntries += 1;
           }
           springFrameHandle = requestFrame(tick);
@@ -1086,8 +1143,8 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       if (!el) return sentinelEntryTarget;
       return rebasedSentinelEntryTarget(el.clientHeight);
     },
-    invalidateSentinelBaseline: () => {
-      sentinelEntryTarget = -1;
-    },
+    // Lazy latch on read: a delivery sampling the snapshot between the
+    // clamp and the next sentinel tick still sees the evidence.
+    sentinelClampWitnessed: () => witnessClampIfUnexplained(),
   };
 }

@@ -525,6 +525,23 @@ and attributed like every other controller write — no wrapper call at the
 call site. Engine compensation observations arrive through
 `applyEngineCompensation` (see **Engine Compensation Routing**).
 
+Because every programmatic write flows through the chokepoint and every
+user gesture is classified by the intent machine, the controller keeps a
+one-field **provenance ledger**: the last explained `scrollTop` (the
+chokepoint's browser-rounded readback, or the position of the last
+user-classified scroll event — resize-correlated events deliberately
+excluded, since a clamp's own scroll event is one). During a spring
+sentinel the only mover the ledger cannot account for is the browser's
+max-scroll clamp, so "live scrollTop differs from the ledger" is
+witnessed clamp EVIDENCE. Both stranded-oscillation recoveries (the
+resolver's `isSentinelOscillationStranded` and the spring tick's guard)
+require that evidence in addition to the sentinel-entry baseline match —
+latched per sentinel session, so an authored write ratifying the clamped
+position cannot launder a strand. An authored displacement with the same
+numeric shape (a head-splice compensation's anchor hold) updates the
+ledger and therefore glides its hidden growth in instead of snapping
+(bug-report-20260801T213259Z).
+
 Never write `scrollTop` directly from feature code. The virtualizer's
 `scrollToIndex` is instant-only by design — native smooth scrolling emits
 asynchronous scroll events that race the controller's tagging; do not add
@@ -608,15 +625,15 @@ documented at the function):
 - **head-splice pass** — head mutations (load-older prepend, paged
   head-drop prune, a tail-following run clip's window advance) apply
   verbatim: the engine's offset math is exact and the anchor must hold.
-  The applied write also drops the spring's sentinel-entry baseline: a
-  head splice displaces `scrollTop` with the content height — and so the
-  bottom target — unchanged, which is byte-for-byte the shape the
-  sentinel's oscillation guard reads as a browser clamp after a content
-  dip-and-restore. Without the invalidation the guard snapped the
+  A head splice displaces `scrollTop` with the content height — and so
+  the bottom target — unchanged, which is byte-for-byte the shape of a
+  browser clamp after a content dip-and-restore; the provenance ledger
+  is what keeps the sentinel's oscillation guards from snapping the
   splice's stated growth in instead of gliding it
-  (bug-report-20260801T213259Z — think → bash inside a run clip); the
-  baseline re-arms on the next sentinel arrival, so genuine clamp
-  recovery stays armed.
+  (bug-report-20260801T213259Z — think → bash inside a run clip). The
+  splice's write goes through the chokepoint, so the ledger explains
+  the displaced position and the guards find no clamp evidence — no
+  special-casing at this tier.
 - **reading pass** — not warm, not at bottom, escaped, or paused: the
   compensation lands unchanged (mount cascades, mid-thread reading).
   Above-viewport visual stability is the whole point; suppressing these
