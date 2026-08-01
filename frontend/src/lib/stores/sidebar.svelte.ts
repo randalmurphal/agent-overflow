@@ -3,7 +3,7 @@
 //
 // Two persistence layers, split by what kind of state each is:
 //   - View state (collapsed projects, expanded discussions, thread-list
-//     limits, terminals group) persists per client through appStorage
+//     limits) persists per client through appStorage
 //     (ui_state table) — two machines looking at the same backend keep
 //     independent view state. appStorage serves module init from its
 //     same-session cache; syncSidebarFromAppStorage() re-reads after
@@ -40,7 +40,6 @@ export type { ProjectSortMode };
 const COLLAPSED_KEY = 'sidebar:collapsedProjects';
 const EXPANDED_DISCUSSIONS_KEY = 'sidebar:expandedDiscussions';
 const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
-const TERMINALS_GROUP_COLLAPSED_KEY = 'sidebar:terminalsGroupCollapsed';
 
 // Pre-appStorage localStorage keys, adopted once at module init.
 const LEGACY_COLLAPSED_STORAGE_KEY = 'agent-overflow:sidebar:collapsedProjects';
@@ -48,7 +47,6 @@ const LEGACY_EXPANDED_STORAGE_KEY = 'agent-overflow:sidebar:expandedProjects';
 const LEGACY_EXPANDED_DISCUSSIONS_KEY = 'agent-overflow:sidebar:expandedDiscussions';
 const LEGACY_EXPANDED_THREAD_LISTS_KEY = 'agent-overflow:sidebar:expandedThreadLists';
 const LEGACY_THREAD_LIST_LIMITS_KEY = 'agent-overflow:sidebar:threadListVisibleLimits';
-const LEGACY_TERMINALS_COLLAPSED_KEY = 'agent-overflow:sidebar:terminalsGroupCollapsed';
 
 // projectSortMode cache key (Go settings remain the durable copy).
 const SORT_MODE_KEY = 'agent-overflow:sidebar:projectSortMode';
@@ -143,20 +141,6 @@ function writeThreadListVisibleLimits(limits: Record<string, number>): void {
   appStorageSet(THREAD_LIST_VISIBLE_LIMITS_KEY, JSON.stringify(limits));
 }
 
-function readTerminalsGroupCollapsed(): boolean {
-  const raw =
-    appStorageGet(TERMINALS_GROUP_COLLAPSED_KEY) ??
-    appStorageAdoptLegacyKey(TERMINALS_GROUP_COLLAPSED_KEY, LEGACY_TERMINALS_COLLAPSED_KEY, (legacy) =>
-      legacy === '1' ? legacy : null,
-    );
-  return raw === '1';
-}
-
-function writeTerminalsGroupCollapsed(value: boolean): void {
-  if (value) appStorageSet(TERMINALS_GROUP_COLLAPSED_KEY, '1');
-  else appStorageDelete(TERMINALS_GROUP_COLLAPSED_KEY);
-}
-
 function writeProjectSortMode(mode: ProjectSortMode): void {
   if (typeof localStorage === 'undefined') return;
   try {
@@ -181,10 +165,6 @@ let expandedDiscussions: Set<string> = $state(
 );
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
-// Standalone "Terminals" sidebar group collapse. Stored as a *collapsed*
-// flag so the unset default is expanded, matching the project-row
-// convention.
-let terminalsGroupCollapsed: boolean = $state(readTerminalsGroupCollapsed());
 
 export function isProjectExpanded(id: string): boolean {
   return !collapsedProjects.has(id);
@@ -211,33 +191,6 @@ export function collapseProject(id: string): void {
   const next = new Set(collapsedProjects).add(id);
   collapsedProjects = next;
   writeStringSet(COLLAPSED_KEY, next);
-}
-
-/**
- * Standalone "Terminals" group expansion. A single boolean rather than the
- * per-id sets above — there is exactly one Terminals group. The header is
- * always rendered (so the global +terminal is always reachable); this only
- * controls whether the terminal rows below it are shown.
- */
-export function isTerminalsGroupExpanded(): boolean {
-  return !terminalsGroupCollapsed;
-}
-
-export function expandTerminalsGroup(): void {
-  if (!terminalsGroupCollapsed) return;
-  terminalsGroupCollapsed = false;
-  writeTerminalsGroupCollapsed(false);
-}
-
-export function collapseTerminalsGroup(): void {
-  if (terminalsGroupCollapsed) return;
-  terminalsGroupCollapsed = true;
-  writeTerminalsGroupCollapsed(true);
-}
-
-export function toggleTerminalsGroup(): void {
-  if (terminalsGroupCollapsed) expandTerminalsGroup();
-  else collapseTerminalsGroup();
 }
 
 export function getProjectSortMode(): ProjectSortMode {
@@ -294,7 +247,6 @@ export function syncSidebarFromAppStorage(): void {
   }
   const rawLimits = appStorageGet(THREAD_LIST_VISIBLE_LIMITS_KEY);
   threadListVisibleLimits = rawLimits === null ? {} : (parseThreadListVisibleLimits(rawLimits) ?? {});
-  terminalsGroupCollapsed = appStorageGet(TERMINALS_GROUP_COLLAPSED_KEY) === '1';
 }
 
 function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -395,12 +347,10 @@ export function resetSidebarForTest(): void {
   expandedDiscussions = new Set();
   threadListVisibleLimits = {};
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;
-  terminalsGroupCollapsed = false;
   removeLocalStorageKey(SORT_MODE_KEY);
   removeLocalStorageKey(LEGACY_COLLAPSED_STORAGE_KEY);
   removeLocalStorageKey(LEGACY_EXPANDED_STORAGE_KEY);
   removeLocalStorageKey(LEGACY_EXPANDED_DISCUSSIONS_KEY);
   removeLocalStorageKey(LEGACY_EXPANDED_THREAD_LISTS_KEY);
   removeLocalStorageKey(LEGACY_THREAD_LIST_LIMITS_KEY);
-  removeLocalStorageKey(LEGACY_TERMINALS_COLLAPSED_KEY);
 }

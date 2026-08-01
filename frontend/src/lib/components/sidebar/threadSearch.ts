@@ -6,9 +6,8 @@ import { isHiddenThreadMode } from '../../utils/threadModes';
  *
  * `query` must be pre-normalised (trimmed + lowercased); `''` means "no
  * filter" and always matches. A thread matches when the query is a substring
- * of its title or workspace path. Shared by the project-grouped list
- * (`threadsByProject`) and the standalone Terminals group so both filter
- * identically — a single source of truth for what "matches the search" means.
+ * of its title or workspace path — the single source of truth for what
+ * "matches the search" means in the project-grouped list (`threadsByProject`).
  */
 export function threadMatchesQuery(thread: Thread, query: string): boolean {
   if (isHiddenThreadMode(thread.mode)) return false;

@@ -17,9 +17,6 @@
     collapseProject,
     isProjectExpanded,
     getProjectSortMode,
-    isTerminalsGroupExpanded,
-    expandTerminalsGroup,
-    collapseTerminalsGroup,
   } from '../../stores/sidebar.svelte';
   import { getThreadFilterQuery } from '../../stores/threadFilter.svelte';
   import { getThreads } from '../../stores/threads.svelte';
@@ -35,8 +32,6 @@
   import Icon from '../primitives/Icon.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
   import ProjectList from './ProjectList.svelte';
-  import TerminalsGroup from './TerminalsGroup.svelte';
-  import { selectStandaloneTerminals } from './standaloneTerminals';
   import { threadMatchesQuery } from './threadSearch';
   import type {
     ProjectNewThreadHandler,
@@ -59,8 +54,8 @@
   let query = $derived(getThreadFilterQuery().trim().toLowerCase());
 
   // Threads grouped by project id (filtered by search when active).
-  // Project-less threads (no projectId — e.g. standalone terminals) are
-  // skipped here; standaloneTerminals below collects the terminal ones.
+  // Project-less threads (no projectId) have no sidebar surface and are
+  // skipped here.
   let threadsByProject = $derived.by(() => {
     const out = new Map<string, Thread[]>();
     for (const t of getThreads()) {
@@ -74,20 +69,6 @@
     }
     return out;
   });
-
-  // Project-less "home" terminals for the standalone Terminals group.
-  // threadsByProject above drops these (the `if (!key) continue` skip), so we
-  // collect them separately. Per-project terminals (projectId set) stay mixed
-  // into their project's list and are intentionally NOT included here. The
-  // selection logic is a pure, unit-tested helper.
-  let standaloneTerminals = $derived(selectStandaloneTerminals(getThreads(), query));
-
-  // The Terminals group header is always shown at rest (so the global
-  // +terminal is always reachable, per the chosen UX). During an active
-  // search, though, hide the whole group when nothing matches — otherwise a
-  // dangling "Terminals" header pollutes the filtered results, fighting how
-  // non-matching projects vanish.
-  let showTerminalsGroup = $derived(!query || standaloneTerminals.length > 0);
 
   // Visible projects: respect search (name match OR thread match) and
   // the current sort mode. Three modes mirror forge / t3-code:
@@ -176,29 +157,6 @@
     searchAutoExpanded = next;
   });
 
-  // The same auto-expand for the standalone Terminals group: a collapsed group
-  // shouldn't swallow search hits any more than a collapsed project does. One
-  // boolean instead of a per-id set (a single group), but the same ownership +
-  // non-reactive-tracker rules as searchAutoExpanded above — see that comment.
-  let terminalsAutoExpanded = false;
-  $effect(() => {
-    const matched = standaloneTerminals.length > 0;
-    if (!query || !matched) {
-      if (terminalsAutoExpanded) {
-        collapseTerminalsGroup();
-        terminalsAutoExpanded = false;
-      }
-      return;
-    }
-    // Matches present. If we already own the expansion, honor a manual collapse
-    // made mid-search rather than re-expanding against the user.
-    if (terminalsAutoExpanded) return;
-    if (!isTerminalsGroupExpanded()) {
-      expandTerminalsGroup();
-      terminalsAutoExpanded = true;
-    }
-  });
-
   const handleNewThread: ProjectNewThreadHandler = async (projectId, options = {}) => {
     // Sidebar "+" always opens a chat draft. Design drafts are created
     // from the in-pane ThreadModePicker (or the "Thread: New Design"
@@ -218,10 +176,8 @@
     }
   };
 
-  // Per-project +terminal (projectId set → rooted at the project) and the
-  // global +terminal in the Terminals group header (projectId undefined →
-  // rooted at home). openTerminalThread owns its own error toast, so there's
-  // nothing to catch here.
+  // Per-project +terminal (rooted at the project). openTerminalThread owns
+  // its own error toast, so there's nothing to catch here.
   const handleNewTerminal: ProjectNewTerminalHandler = (projectId) => {
     void openTerminalThread({ projectId });
   };
@@ -296,11 +252,8 @@
   </header>
 
   <!--
-    Projects + Terminals share one scroll region. The Terminals group flows
-    directly under the project list rather than pinning to the sidebar's bottom
-    edge, so it reads as "another thing under the projects" and scrolls with
-    them. ProjectList itself no longer scrolls (it dropped its own overflow);
-    this wrapper owns the scroll.
+    ProjectList itself doesn't scroll (it dropped its own overflow); this
+    wrapper owns the scroll.
   -->
   <div
     class="flex-1 min-h-0 overflow-y-auto"
@@ -314,14 +267,6 @@
       onNewTerminal={handleNewTerminal}
       onReorder={handleReorder}
     />
-
-    {#if showTerminalsGroup}
-      <TerminalsGroup
-        terminals={standaloneTerminals}
-        {pane}
-        onNewTerminal={handleNewTerminal}
-      />
-    {/if}
   </div>
 </section>
 

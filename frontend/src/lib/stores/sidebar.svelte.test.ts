@@ -3,13 +3,10 @@ import {
   collapseProject,
   expandProject,
   collapseThreadList,
-  collapseTerminalsGroup,
-  expandTerminalsGroup,
   getProjectSortMode,
   getThreadListVisibleLimit,
   isDiscussionExpanded,
   isProjectExpanded,
-  isTerminalsGroupExpanded,
   isThreadListExpanded,
   resetSidebarForTest,
   revealMoreThreadList,
@@ -18,7 +15,6 @@ import {
   syncSidebarFromAppStorage,
   syncSidebarFromSettings,
   toggleProject,
-  toggleTerminalsGroup,
 } from './sidebar.svelte';
 import { appStorageGet, hydrateAppStorage, resetAppStorageForTest } from './appStorage';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
@@ -27,7 +23,6 @@ import { makeSettings } from '../../test/helpers/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
 
 const COLLAPSED_KEY = 'sidebar:collapsedProjects';
-const TERMINALS_KEY = 'sidebar:terminalsGroupCollapsed';
 
 describe('sidebar store', () => {
   beforeEach(() => {
@@ -72,46 +67,6 @@ describe('sidebar store', () => {
       // a write/read round-trip serializes over the garbage cleanly.
       toggleProject('p1');
       expect(isProjectExpanded('p1')).toBe(false);
-    });
-  });
-
-  describe('terminals group', () => {
-    it('defaults to expanded and toggleTerminalsGroup persists a collapsed flag', () => {
-      expect(isTerminalsGroupExpanded()).toBe(true);
-
-      toggleTerminalsGroup();
-      expect(isTerminalsGroupExpanded()).toBe(false);
-      expect(appStorageGet(TERMINALS_KEY)).toBe('1');
-
-      toggleTerminalsGroup();
-      expect(isTerminalsGroupExpanded()).toBe(true);
-      // Stored as a *collapsed* flag → returning to expanded clears the key.
-      expect(appStorageGet(TERMINALS_KEY)).toBeNull();
-    });
-
-    it('expandTerminalsGroup / collapseTerminalsGroup are idempotent', () => {
-      // The search auto-expand effect drives these as setters (not toggles),
-      // so a repeated call must be a no-op rather than flipping state.
-      collapseTerminalsGroup();
-      collapseTerminalsGroup();
-      expect(isTerminalsGroupExpanded()).toBe(false);
-      expect(appStorageGet(TERMINALS_KEY)).toBe('1');
-
-      expandTerminalsGroup();
-      expandTerminalsGroup();
-      expect(isTerminalsGroupExpanded()).toBe(true);
-      expect(appStorageGet(TERMINALS_KEY)).toBeNull();
-    });
-
-    it('resetSidebarForTest + resetAppStorageForTest restore the default expanded state', () => {
-      toggleTerminalsGroup();
-      expect(isTerminalsGroupExpanded()).toBe(false);
-
-      resetSidebarForTest();
-      resetAppStorageForTest();
-
-      expect(isTerminalsGroupExpanded()).toBe(true);
-      expect(appStorageGet(TERMINALS_KEY)).toBeNull();
     });
   });
 
@@ -240,7 +195,6 @@ describe('sidebar store', () => {
         'sidebar:collapsedProjects': JSON.stringify(['proj-1', 'proj-2']),
         'sidebar:expandedDiscussions': JSON.stringify(['disc-1']),
         'sidebar:threadListVisibleLimits': JSON.stringify({ 'proj-1': 40 }),
-        'sidebar:terminalsGroupCollapsed': '1',
       }));
       await hydrateAppStorage();
 
@@ -253,7 +207,6 @@ describe('sidebar store', () => {
       expect(isDiscussionExpanded('disc-2')).toBe(false);
       expect(getThreadListVisibleLimit('proj-1')).toBe(40);
       expect(getThreadListVisibleLimit('proj-2')).toBe(THREAD_PREVIEW_LIMIT);
-      expect(isTerminalsGroupExpanded()).toBe(false);
     });
 
     it('local pre-hydration writes survive an empty server bucket (pending wins)', async () => {
@@ -271,7 +224,6 @@ describe('sidebar store', () => {
       // Simulate a fresh client: memory holds stale state from a prior
       // identity, the new bucket is empty and holds no pending writes.
       toggleProject('proj-stale');
-      toggleTerminalsGroup();
       resetAppStorageForTest();
       setBindingMock('GetUIState', async () => ({}));
       await hydrateAppStorage();
@@ -279,7 +231,6 @@ describe('sidebar store', () => {
       syncSidebarFromAppStorage();
 
       expect(isProjectExpanded('proj-stale')).toBe(true);
-      expect(isTerminalsGroupExpanded()).toBe(true);
       expect(getThreadListVisibleLimit('any')).toBe(THREAD_PREVIEW_LIMIT);
     });
   });
