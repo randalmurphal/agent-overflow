@@ -20,6 +20,7 @@
   import MenuItem from '../../primitives/MenuItem.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
+  import { formatChord, keybindingForCommand } from '../../../stores/keybindings.svelte';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   type IconComponent = any;
@@ -76,6 +77,9 @@
 
   let current = $derived<RuntimeMode>(runtimeModeForThread(pane.thread));
   let currentMeta = $derived(TIERS.find((t) => t.mode === current) ?? DEFAULT_TIER);
+  let pickerChord = $derived(
+    formatChord(keybindingForCommand('composer.picker.access') ?? 'mod+shift+a'),
+  );
 
   function runtimeModeForThread(thread: Thread | null | undefined): RuntimeMode {
     return (thread?.runtimeMode as RuntimeMode | undefined) ?? DEFAULT_MODE;
@@ -142,7 +146,7 @@
   aria-label={`Runtime Access Mode: ${currentMeta.label}`}
   data-testid="composer-access-toggle"
   data-mode={current}
-  title={currentMeta.description}
+  title={`${currentMeta.description} (${pickerChord})`}
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
     'px-1.5 py-1 text-[0.6875rem] text-fg-muted',

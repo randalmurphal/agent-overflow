@@ -3,6 +3,7 @@
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
   import ProviderIcon from '../../shared/ProviderIcon.svelte';
+  import { formatChord, keybindingForCommand } from '../../../stores/keybindings.svelte';
 
   interface Props {
     buttonEl: HTMLButtonElement | undefined;
@@ -21,6 +22,10 @@
     modelLabel,
     onClick,
   }: Props = $props();
+
+  let pickerChord = $derived(
+    formatChord(keybindingForCommand('composer.picker.model') ?? 'mod+shift+m'),
+  );
 </script>
 
 <button
@@ -30,6 +35,7 @@
   {disabled}
   aria-haspopup="menu"
   aria-expanded={open}
+  title={`Model: ${modelLabel} (${pickerChord})`}
   data-provider={provider}
   data-testid="composer-model-menu-trigger"
   class={composerTriggerClasses}

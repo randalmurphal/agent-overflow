@@ -63,6 +63,7 @@
   import BranchPruneDialog from './BranchPruneDialog.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
+  import { formatChord, keybindingForCommand } from '../../../stores/keybindings.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -104,6 +105,9 @@
     }
     return currentBranch || 'No branch';
   });
+  let pickerChord = $derived(
+    formatChord(keybindingForCommand('composer.picker.branch') ?? 'mod+shift+b'),
+  );
 
   // Display order: default branch pinned first, then the user's recent
   // selections (most recent first), then the rest in the backend's
@@ -546,6 +550,7 @@
   disabled={!pane.thread || applying}
   aria-haspopup="menu"
   aria-expanded={open}
+  title={`Branch: ${triggerLabel} (${pickerChord})`}
   data-testid="branch-picker-trigger"
   class={composerTriggerClasses}
 >

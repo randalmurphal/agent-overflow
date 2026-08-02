@@ -30,6 +30,7 @@
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
   import { updatePlaceholderDefaults } from '../../../stores/newThreadDefaults';
+  import { formatChord, keybindingForCommand } from '../../../stores/keybindings.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -124,6 +125,9 @@
     }
     return labelParts.join(' · ');
   });
+  let pickerChord = $derived(
+    formatChord(keybindingForCommand('composer.picker.effort') ?? 'mod+shift+e'),
+  );
 
   // Eagerly load the model catalog as soon as the active thread's
   // provider/model is known, so the trigger label shows the context window
@@ -245,7 +249,7 @@
   aria-haspopup="menu"
   aria-expanded={open}
   aria-label={`Effort: ${triggerLabel}`}
-  title={triggerLabel}
+  title={`Effort: ${triggerLabel} (${pickerChord})`}
   data-testid="composer-effort-trigger"
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
