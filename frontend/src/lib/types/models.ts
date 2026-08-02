@@ -4,6 +4,7 @@ export type RuntimeMode =
   | "read-only"
   | "approval-required"
   | "auto-accept-edits"
+  | "auto"
   | "full-access";
 
 export interface Thread {

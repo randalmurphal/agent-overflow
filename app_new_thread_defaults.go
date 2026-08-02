@@ -102,7 +102,7 @@ func (a *App) newThreadDefaultsProfile(update NewThreadDefaultsUpdate) (store.Ch
 	}
 	options := chatmodel.ContextWindowOptions(profile.Provider, profile.Model)
 	if len(options) > 0 && !chatmodel.ContextWindowSupported(options, profile.ContextWindow) {
-		profile.ContextWindow = provider.DefaultContextWindowForModel(profile.Provider, profile.Model, options[0].Tokens)
+		profile.ContextWindow = provider.DefaultContextWindowForModel(profile.Provider, profile.Model, 0)
 	}
 
 	if update.AutoCompactStandardPercent != nil {

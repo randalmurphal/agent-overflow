@@ -27,6 +27,14 @@ func buildThreadParams(cfg Config) map[string]any {
 		params["sandbox"] = sandbox
 	}
 
+	// Unconditional, unlike every other key here. `approvalsReviewer` is
+	// thread state Codex keeps across a resume, so omitting it on a resumed
+	// thread would silently inherit the reviewer the thread was last started
+	// with — a thread moved out of the auto runtime mode would keep answering
+	// its own approvals (t3-improvements.md §3.2). Sending the resolved value
+	// every time makes the wire state a function of the thread row alone.
+	params["approvalsReviewer"] = threadApprovalsReviewer(cfg)
+
 	if cfg.SystemPrompt != "" {
 		params["baseInstructions"] = cfg.SystemPrompt
 	}
@@ -54,6 +62,60 @@ func buildThreadParams(cfg Config) map[string]any {
 	}
 
 	return params
+}
+
+// threadApprovalsReviewer resolves the reviewer that actually reaches the
+// wire. An empty Config field means "unspecified", which on the wire is
+// Codex's protocol default (`ApprovalsReviewer::User`, `#[default]` in
+// codex-rs/protocol/src/config_types.rs) — so resolving it here rather than
+// omitting the key keeps the always-explicit rule true for every Config,
+// including ones built outside ConfigFromOptions.
+func threadApprovalsReviewer(cfg Config) string {
+	if cfg.ApprovalsReviewer == "" {
+		return approvalsReviewerUser
+	}
+	return cfg.ApprovalsReviewer
+}
+
+// verifyApprovalsReviewerEcho fails the handshake when Codex is not running
+// the reviewer AO asked for.
+//
+// This check is not paranoia about a well-behaved server; it is the ONLY
+// available detection for a specific silent failure. `ThreadStartParams` has
+// no `deny_unknown_fields`, so a codex older than 0.115 accepts a
+// `approvalsReviewer` it does not understand, drops it, and starts an ordinary
+// user-reviewer thread — the user would sit in the auto runtime mode watching
+// approval prompts that mode promises never to raise. `initialize` carries no
+// version or capability list to gate on, and `thread/started` does not carry
+// the reviewer, so the start/resume RESPONSE is the sole source of truth at
+// handshake time. (Later drift is reconciled from `thread/settings/updated`
+// in thread_settings.go.) AO's provider floor is codex 0.143, well above the
+// 0.124 where the field became reliable, so on every supported binary the echo
+// is present and this reduces to a byte comparison.
+//
+// An absent echo is read as the protocol default rather than as "unknown":
+// the field is non-Option upstream on both ThreadStartResponse and
+// ThreadResumeResponse, and every codex predating it had only the user
+// reviewer. That makes the rule a single comparison with no special cases —
+// asking for `user` and getting silence is a match; asking for `auto_review`
+// and getting silence is the drop this exists to catch.
+//
+// The failure is an error, never a downgrade. Starting anyway would run the
+// session under a permission posture the thread row does not describe.
+func verifyApprovalsReviewerEcho(method, requested string, resp json.RawMessage) error {
+	echoed := readTopLevelString(resp, "approvalsReviewer")
+	if echoed == "" {
+		echoed = approvalsReviewerUser
+	}
+	if echoed == requested {
+		return nil
+	}
+	return fmt.Errorf(
+		"codex: %s: requested approvals reviewer %q but the app-server is running %q — "+
+			"this codex build does not support the requested reviewer; upgrade codex or "+
+			"switch the thread out of the auto runtime mode",
+		method, requested, echoed,
+	)
 }
 
 func normalizeThreadSandbox(sandbox string) string {

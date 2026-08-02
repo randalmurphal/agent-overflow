@@ -170,8 +170,11 @@ func TestGenerateCommitMessage_ClaudePathHappy(t *testing.T) {
 	if modelArg := nextArgAfter(gotSpec.Args, "--model"); modelArg != textgen.DefaultClaudeModel {
 		t.Errorf("claude model arg = %q, want %q", modelArg, textgen.DefaultClaudeModel)
 	}
-	if effortArg := nextArgAfter(gotSpec.Args, "--effort"); effortArg != "low" {
-		t.Errorf("claude effort arg = %q, want low", effortArg)
+	// DefaultClaudeModel is Haiku, which the CLI's own model list says has no
+	// reasoning tiers — so the flag is omitted rather than coerced up to the
+	// provider default. See provider.ModelDeclaresNoReasoningEffort.
+	if argsContain(gotSpec.Args, "--effort") {
+		t.Errorf("claude args must omit --effort for a model without reasoning tiers; got %v", gotSpec.Args)
 	}
 }
 

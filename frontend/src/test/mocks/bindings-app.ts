@@ -157,6 +157,8 @@ export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage
 
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
+export const SetProviderCustomEnvVar = dispatch('SetProviderCustomEnvVar');
+export const DeleteProviderCustomEnvVar = dispatch('DeleteProviderCustomEnvVar');
 export const Version = dispatch('Version');
 
 // Workflow surface.

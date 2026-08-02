@@ -13,7 +13,7 @@ import { makeItem } from '../../../test/helpers/chat';
 import { makeSettings } from '../../../test/helpers/settings';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
-import { updateSetting } from '../../stores/settings.svelte';
+import { updateSettingsPatch } from '../../stores/settings.svelte';
 import {
   distanceToBottom,
   mountTimeline,
@@ -100,7 +100,14 @@ describe('activity run — auto-collapse off-screen', () => {
     // header-only run and a vacuous suite.
     setBindingMock('UpdateSettings', async (patch: unknown) =>
       makeSettings(patch as Parameters<typeof makeSettings>[0]));
-    await updateSetting('activityRunDefault', 'collapsed');
+    // ONE patch, not two: the mock answers with defaults + patch, so a
+    // second call would hand back a settings object with the first key
+    // reset. The engagement blockers below are diff-card overrides, and an
+    // override only exists as the negation of the current default — pinning
+    // collapseDiffPreviews on makes `true` the reader deviation the gate
+    // must respect and `false` the write that retires it. No diff card
+    // renders in this fixture, so that setting costs no geometry.
+    await updateSettingsPatch({ activityRunDefault: 'collapsed', collapseDiffPreviews: true });
     const mountedTimeline = await mountTimeline(THREAD_ID, items(), QUIET_BOTTOM);
     const { pane, scrollEl } = mountedTimeline;
     // Collapsed default, live run: open clip, exactly one (the reference run
@@ -173,7 +180,9 @@ describe('activity run — auto-collapse off-screen', () => {
     const { pane, scrollEl, runId } = mounted;
     // An engagement blocker, so the release fires when THIS test says so —
     // not mid-glide during the growth below, where the spring's own motion
-    // would drown the measurement.
+    // would drown the measurement. `true` is the deviation only because the
+    // harness pins collapseDiffPreviews on; writing the default back is what
+    // clears the entry (see liveDiffOverride).
     pane.setDiffCardExpanded('a5', 'src/blocker.ts', true);
 
     // Enough scrollback to be eligible (~1000px, past the viewport and the
@@ -197,7 +206,7 @@ describe('activity run — auto-collapse off-screen', () => {
     // bumped item stamp is NOT a trigger — `updatedAt` sits outside
     // `itemTimelineStructureKey`, so it bumps nothing the gate's effects
     // watch.)
-    pane.setDiffCardExpanded('a5', 'src/blocker.ts', undefined);
+    pane.setDiffCardExpanded('a5', 'src/blocker.ts', false);
     const anchor = () =>
       scrollEl.querySelector(`[data-item-id="${lastProse.id}"]`) as HTMLElement;
     const tops = await sampleTopsUntil(
@@ -239,7 +248,7 @@ describe('activity run — auto-collapse off-screen', () => {
 
     // Same scroll-end trigger as the mounted test: no geometry may change,
     // so the release below is attributable to the gate alone.
-    pane.setDiffCardExpanded('a5', 'src/blocker.ts', undefined);
+    pane.setDiffCardExpanded('a5', 'src/blocker.ts', false);
     const anchor = () =>
       scrollEl.querySelector(`[data-item-id="${lastProse.id}"]`) as HTMLElement;
     const tops = await sampleTopsUntil(
@@ -318,7 +327,7 @@ describe('activity run — auto-collapse off-screen', () => {
     const { pane, scrollEl, runId } = mounted;
     pane.setDiffCardExpanded('a5', 'src/blocker.ts', true);
     await growTail(mounted, 6, true);
-    pane.setDiffCardExpanded('a5', 'src/blocker.ts', undefined);
+    pane.setDiffCardExpanded('a5', 'src/blocker.ts', false);
     scrollEl.dispatchEvent(new Event('scroll'));
     await waitFor(
       () => runEl(scrollEl, runId)?.dataset.collapsed === 'true',

@@ -9,10 +9,13 @@
   import { refreshProjects } from '../../stores/projects.svelte';
   import { subscribeJumpHints } from '../../stores/keyboardModifiers.svelte';
   import {
+    SIDEBAR_RAIL_WIDTH,
     getSidebarWidth,
+    isSidebarCollapsed,
     persistSidebarWidth,
     setSidebarWidthLive,
   } from '../../stores/sidebarLayout.svelte';
+  import SidebarToggleButton from './SidebarToggleButton.svelte';
   import SidebarSearch from './SidebarSearch.svelte';
   import ProjectsSection from './ProjectsSection.svelte';
   import UsageFooter from './UsageFooter.svelte';
@@ -62,26 +65,63 @@
   // (HMR, tests) don't duplicate listeners.
   const releaseJumpHints = subscribeJumpHints();
   onDestroy(releaseJumpHints);
+
+  let collapsed = $derived(isSidebarCollapsed());
 </script>
 
-<aside
-  class="relative shrink-0 border-r border-border-subtle bg-transparent flex flex-col h-full"
-  style="width: {getSidebarWidth()}px"
-  data-testid="sidebar"
->
-  <SidebarSearch {registerFocusSearch} />
-  <ProjectsSection {pane} />
-  <UsageFooter />
-  <SystemStatsFooter />
-  <WorkflowsFooter />
-  <SettingsFooter {onOpenSettings} />
-  <SidebarResizer
-    width={getSidebarWidth()}
-    onResizeLive={setSidebarWidthLive}
-    onResizeEnd={persistSidebarWidth}
-    pane={pane ?? undefined}
-  />
-</aside>
+<!--
+  Collapsed renders a rail, not nothing. It is the one piece of chrome
+  guaranteed to exist in every app state — no thread open, settings
+  surface up, workflows overlay covering the pane strip — so the way
+  back is never conditional on what happens to be mounted next to it.
+  A "show sidebar" button in the chat header would have been the closer
+  parallel to how companion panes reopen, but ChatHeader renders only
+  `{#if pane.thread}` and once per pane: it would vanish exactly when
+  the user has no thread and needs the sidebar most, and triple itself
+  in a three-pane layout.
+
+  The branch lives in the template, not around the component, so the
+  script's project fetch, jump-hint subscription, and the PR-dialog
+  registration the palette owns all survive a collapse.
+-->
+{#if collapsed}
+  <aside
+    class="relative shrink-0 border-r border-border-subtle bg-transparent flex flex-col h-full items-center pt-3"
+    style="width: {SIDEBAR_RAIL_WIDTH}px"
+    data-testid="sidebar-rail"
+  >
+    <SidebarToggleButton />
+  </aside>
+{:else}
+  <aside
+    class="relative shrink-0 border-r border-border-subtle bg-transparent flex flex-col h-full"
+    style="width: {getSidebarWidth()}px"
+    data-testid="sidebar"
+  >
+    <div class="flex items-center gap-1 px-3 pt-3 pb-2">
+      <SidebarSearch {registerFocusSearch} />
+      <SidebarToggleButton />
+    </div>
+    <ProjectsSection {pane} />
+    <UsageFooter />
+    <SystemStatsFooter />
+    <WorkflowsFooter />
+    <SettingsFooter {onOpenSettings} />
+    <!--
+      The divider is mounted only while expanded. A grabbable edge on a
+      36px rail would be a second, ambiguous way to expand — it would
+      have to either fight the collapsed flag or leave the store saying
+      "collapsed" at 250px. mod+b and the rail button are the only two
+      ways out, and both restore the stored width exactly.
+    -->
+    <SidebarResizer
+      width={getSidebarWidth()}
+      onResizeLive={setSidebarWidthLive}
+      onResizeEnd={persistSidebarWidth}
+      pane={pane ?? undefined}
+    />
+  </aside>
+{/if}
 
 <ThreadFromPRDialog
   open={showFromPR}

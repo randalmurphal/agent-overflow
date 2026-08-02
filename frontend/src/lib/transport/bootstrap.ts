@@ -22,6 +22,29 @@ import { clampString } from './frames';
 //                  itself without an enum widening.
 export type RunMode = 'local' | 'client' | 'headless';
 
+// BootstrapRejectedError marks the one bootstrap failure that retrying
+// cannot fix: the server answered, and refused our credential. Tokens
+// are minted per backend launch (internal/transport/server.go
+// handleBootstrap answers a bad `?t=` with 404, deliberately
+// indistinguishable from "no such path"), so a remote/LAN client whose
+// backend restarted holds a token that will never be honoured again —
+// only reopening the share link mints a new one. Distinct from a
+// transient failure (network error, the 503 readiness gate, the 500
+// startup-failure page) so the transport can surface an actionable
+// state instead of a silent forever-loop.
+export class BootstrapRejectedError extends Error {
+  status: number;
+  constructor(status: number) {
+    super(`bootstrap credential refused: HTTP ${status}`);
+    this.name = 'BootstrapRejectedError';
+    this.status = status;
+  }
+}
+
+// HTTP statuses that mean "your credential is not valid here" rather
+// than "try again later".
+const CREDENTIAL_REFUSED_STATUSES = new Set([401, 403, 404]);
+
 // Bootstrap is the JSON the SPA fetches at /bootstrap.json on first load.
 // Mirror the Go-side shape (internal/transport/server.go Bootstrap).
 // `mode` is optional on the wire — only the clientmode injection
@@ -82,6 +105,15 @@ function clearStoredToken(): void {
 // reload, after the URL was scrubbed — from sessionStorage. This runs
 // the first time anyone calls `ensureConnected`; subsequent calls reuse
 // the cached promise.
+//
+// Known gap on the injected path: `--connect` clients never issue this
+// fetch, so a refused credential has no observable signal there. The
+// browser WebSocket API reports a rejected upgrade as a bare 1006, and
+// probing the remote `/bootstrap.json` cross-origin fails on CORS +
+// the loopback Host guard (server.go) — i.e. it is indistinguishable
+// from "server down" too. Those clients stay in the honest-but-vague
+// 'reconnecting' state; closing the gap needs a CORS-safe backend
+// affordance, which is a wire-surface change, not a client fix.
 export async function defaultBootstrap(): Promise<Bootstrap> {
   const injected = (globalThis as { __AO_BOOTSTRAP__?: Bootstrap }).__AO_BOOTSTRAP__;
   if (injected && typeof injected.wsUrl === 'string' && typeof injected.token === 'string') {
@@ -97,13 +129,19 @@ export async function defaultBootstrap(): Promise<Bootstrap> {
   const url = `/bootstrap.json?t=${encodeURIComponent(token)}`;
   const resp = await fetch(url, { credentials: 'same-origin' });
   if (!resp.ok) {
+    if (!CREDENTIAL_REFUSED_STATUSES.has(resp.status)) {
+      // Transient: the server is up but not serving the manifest yet
+      // (503 readiness gate, 500 startup failure) or something in
+      // between failed. The stashed token is still the right one.
+      throw new Error(`bootstrap fetch failed: HTTP ${resp.status}`);
+    }
     if (urlToken === '' && token !== '') {
       // The stashed token was refused — stale after a backend restart
       // (tokens are minted per boot). Drop it so retries surface the
       // real "no valid token" state instead of re-presenting it.
       clearStoredToken();
     }
-    throw new Error(`bootstrap fetch failed: HTTP ${resp.status}`);
+    throw new BootstrapRejectedError(resp.status);
   }
   const contentType = resp.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().startsWith('application/json')) {

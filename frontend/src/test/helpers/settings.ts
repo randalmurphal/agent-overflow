@@ -35,6 +35,7 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     observabilityEventLogEnabled: false,
     network: { bindAll: false },
     retention: { days: 30 },
+    backgroundGitFetch: true,
     gitlabSelfHostedHosts: [],
     projectSortMode: 'lastActivity',
     usagePeriod: 'month',

@@ -191,7 +191,7 @@ func TestCommitDiffRegularCommit(t *testing.T) {
 	commitFile(t, repo, "a.txt", "one\n", "add a")
 	commitFile(t, repo, "a.txt", "one\ntwo\n", "extend a")
 
-	patch, err := CommitDiff(context.Background(), repo, headSHA(t, repo))
+	patch, err := CommitDiff(context.Background(), repo, headSHA(t, repo), Options{})
 	if err != nil {
 		t.Fatalf("CommitDiff: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestCommitDiffRootCommit(t *testing.T) {
 		t.Fatalf("find root commit: %v", err)
 	}
 
-	patch, err := CommitDiff(context.Background(), repo, strings.TrimSpace(root))
+	patch, err := CommitDiff(context.Background(), repo, strings.TrimSpace(root), Options{})
 	if err != nil {
 		t.Fatalf("CommitDiff root: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestCommitDiffMergeCommitUsesFirstParent(t *testing.T) {
 	commitFile(t, repo, "main.txt", "from main\n", "main work")
 	testutil.RunGit(t, repo, "merge", "--no-ff", "-m", "merge feature", "feature")
 
-	patch, err := CommitDiff(context.Background(), repo, headSHA(t, repo))
+	patch, err := CommitDiff(context.Background(), repo, headSHA(t, repo), Options{})
 	if err != nil {
 		t.Fatalf("CommitDiff merge: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestCommitDiffMergeCommitUsesFirstParent(t *testing.T) {
 func TestCommitDiffRejectsNonSHA(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	for _, sha := range []string{"", "HEAD", "main", "--all", "zzzzzzzz"} {
-		if _, err := CommitDiff(context.Background(), repo, sha); err == nil {
+		if _, err := CommitDiff(context.Background(), repo, sha, Options{}); err == nil {
 			t.Errorf("expected error for sha %q", sha)
 		}
 	}

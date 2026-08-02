@@ -67,6 +67,24 @@ describe('<TransportStatusBanner>', () => {
     expect(banner.textContent).toContain('Disconnected from the agent backend.');
   });
 
+  // A refused credential (backend restarted, tokens are per-launch) is
+  // the one state the retry loop can never resolve, so the banner must
+  // name the action that does instead of counting down forever.
+  it('names the recovery action when the backend refuses the credential', async () => {
+    h.snapshot = { status: 'unauthorized', nextAttemptAt: Date.now() + 5_000 };
+    const { getByTestId } = render(TransportStatusBanner);
+    await settleBootGrace();
+
+    const banner = getByTestId('transport-status-banner');
+    expect(banner.dataset.status).toBe('unauthorized');
+    expect(banner.textContent).toContain('The backend restarted. Reopen the share link to reconnect.');
+    // No countdown: the scheduled attempt is real, but presenting it as
+    // "Reconnecting in Ns" would promise a recovery that isn't coming.
+    expect(banner.textContent).not.toContain('Reconnecting');
+    // Retry stays available — it performs a genuine attempt.
+    expect(getByTestId('transport-status-retry')).not.toBeNull();
+  });
+
   it('forces a reconnect when Retry is clicked', async () => {
     h.snapshot = { status: 'disconnected', nextAttemptAt: null };
     const { getByTestId } = render(TransportStatusBanner);

@@ -2,7 +2,15 @@
 // honest about the live pane / terminal-focus state.
 
 import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { tick } from 'svelte';
 import { createThreadPane } from './thread.svelte';
+import {
+  isSidebarCollapsed,
+  resetSidebarLayoutForTest,
+  setSidebarCollapsed,
+} from './sidebarLayout.svelte';
+import { resetSidebarCursorStore, setSidebarCursorForTest } from './sidebarCursor.svelte';
+import { resetAppStorageForTest } from './appStorage';
 import {
   getActiveTurn,
   projectSendStarted,
@@ -1624,5 +1632,114 @@ describe('pane navigation into a terminal pane', () => {
 
     getCommand('terminal.refresh')!.run(makeCommandContext(pane, {}));
     expect(called).toBe(false);
+  });
+});
+
+// --- sidebar.toggle + the sidebar-relative command guard (t3 7.2) ---
+//
+// Collapsing unmounts the sidebar's rendered tree, which is what
+// `getVisibleSidebarThreadIds` walks and what the search input lives
+// in. Commands that target either must bring the sidebar back rather
+// than act on rows nobody can see.
+
+describe('sidebar.toggle command', () => {
+  function register(hooks: Partial<Parameters<typeof registerBuiltinCommands>[0]> = {}): void {
+    registerBuiltinCommands({
+      openSettings: () => {},
+      openThreadForm: () => {},
+      openDesignThreadForm: () => {},
+      openDesignThreadFormInNewPane: () => {},
+      openThreadFromPR: () => {},
+      openShipChanges: () => {},
+      requestRename: () => {},
+      requestDiscussion: () => {},
+      focusThreadSearch: () => {},
+      requestThreadJump: () => {},
+      ...hooks,
+    } as Parameters<typeof registerBuiltinCommands>[0]);
+  }
+
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetAppStorageForTest();
+    resetSidebarLayoutForTest();
+    resetSidebarCursorStore();
+    setBindingMock('SetUIState', async () => null);
+    setBindingMock('DeleteUIState', async () => null);
+  });
+
+  it('is registered and toggles the collapsed state both ways', () => {
+    register();
+    expect(getCommand('sidebar.toggle')).toBeDefined();
+    const ctx = makeCommandContext(null, {}) as CommandContext;
+
+    expect(isSidebarCollapsed()).toBe(false);
+    runCommand('sidebar.toggle', ctx);
+    expect(isSidebarCollapsed()).toBe(true);
+    runCommand('sidebar.toggle', ctx);
+    expect(isSidebarCollapsed()).toBe(false);
+  });
+
+  it('is enabled with no thread open — the sidebar is app chrome', () => {
+    register();
+    expect(isCommandEnabled('sidebar.toggle', makeCommandContext(null, {}) as CommandContext))
+      .toBe(true);
+  });
+
+  it('sidebar.focus-search expands before focusing so the input exists', async () => {
+    let focusCount = 0;
+    let collapsedAtFocus: boolean | null = null;
+    register({
+      focusThreadSearch: () => {
+        focusCount += 1;
+        collapsedAtFocus = isSidebarCollapsed();
+      },
+    });
+    setSidebarCollapsed(true);
+
+    runCommand('sidebar.focus-search', makeCommandContext(null, {}) as CommandContext);
+    expect(focusCount).toBe(0); // deferred until the expand has flushed
+    await tick();
+    expect(focusCount).toBe(1);
+    expect(collapsedAtFocus).toBe(false);
+    expect(isSidebarCollapsed()).toBe(false);
+  });
+
+  it('sidebar.focus-search stays synchronous when already expanded', () => {
+    let focusCount = 0;
+    register({ focusThreadSearch: () => { focusCount += 1; } });
+    runCommand('sidebar.focus-search', makeCommandContext(null, {}) as CommandContext);
+    expect(focusCount).toBe(1);
+  });
+
+  it('thread.jump.N expands before resolving the Nth rendered row', async () => {
+    const jumps: number[] = [];
+    register({ requestThreadJump: (index) => jumps.push(index) });
+    setSidebarCollapsed(true);
+
+    runCommand('thread.jump.3', makeCommandContext(null, {}) as CommandContext);
+    expect(jumps).toEqual([]);
+    await tick();
+    expect(jumps).toEqual([3]);
+    expect(isSidebarCollapsed()).toBe(false);
+  });
+
+  it('sidebar cursor activate chords go inert while the sidebar is hidden', () => {
+    register();
+    setSidebarCursorForTest('thread-9');
+    expect(
+      (makeCommandContext(null, {}) as CommandContext).flags.sidebarCursorActive,
+    ).toBe(true);
+
+    setSidebarCollapsed(true);
+    expect(
+      (makeCommandContext(null, {}) as CommandContext).flags.sidebarCursorActive,
+    ).toBe(false);
+
+    // Expanding hands the cursor back rather than discarding it.
+    setSidebarCollapsed(false);
+    expect(
+      (makeCommandContext(null, {}) as CommandContext).flags.sidebarCursorActive,
+    ).toBe(true);
   });
 });

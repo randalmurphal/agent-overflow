@@ -29,10 +29,21 @@ root `CLAUDE.md` principle 3.
   co-located — split by responsibility, not visibility.
 - `threads.go` / `thread_view.go` / `thread_forks.go` — threads table
   plus the `ThreadView` translation layer that hydrates `SessionOptions`
-  for the provider packages.
+  for the provider packages. Two writers here are compare-and-swap
+  because their callers hold no lock and can land after someone else
+  rewrote the row: `UpdateTitleIfCurrent` (auto-title vs. a manual
+  rename) and `UpdateBranchIfWorkspace` (an async observed-branch
+  persist vs. a worktree switch, which rewrites `workspace_path` and
+  `branch` together under `threadLocks`). Both return "applied" rather
+  than erroring — a lost race is a normal outcome, and the caller
+  re-reads the row.
 - `projects.go` — projects table (threads carry a `project_id` FK).
 - `channels.go` / `discussions.go` / `discussion_types.go` —
-  multi-agent discussion persistence.
+  multi-agent discussion persistence. `ListDiscussionDefs` drops a row
+  whose `definition` blob no longer decodes (logged, named by id) instead
+  of failing the whole list — one corrupt blob must not take the feature
+  away. The single-row getters still return the decode error: that caller
+  asked for exactly the unreadable row.
 - `attachments.go` — attachment metadata (bytes on disk are the
   `internal/attachment` package's problem).
 - `message_anchors.go` — per-real-user-message provider correlation

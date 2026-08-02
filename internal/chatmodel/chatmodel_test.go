@@ -376,3 +376,72 @@ func TestDefaultContextWindow(t *testing.T) {
 		t.Fatalf("unknown model should return fallback (12345), got %d", got)
 	}
 }
+
+// TestStoredContextWindowSurvivesLargeModelDefaultFlip is the persisted-thread
+// guard for the 1M-by-default change: the new default applies at thread
+// creation / new-session seeding only. An existing thread that stored 200k on
+// a model whose default is now 1M must come back out of every sanitizer with
+// 200k intact.
+func TestStoredContextWindowSurvivesLargeModelDefaultFlip(t *testing.T) {
+	const model = "claude-opus-5"
+	if got := provider.DefaultContextWindowForModel(string(provider.Claude), model, 0); got != provider.ClaudeExtendedContextWindow {
+		t.Fatalf("precondition: %s default = %d, want the extended tier", model, got)
+	}
+
+	t.Run("SanitizeContextWindow", func(t *testing.T) {
+		if got := SanitizeContextWindow(string(provider.Claude), model, provider.ClaudeStandardContextWindow); got != provider.ClaudeStandardContextWindow {
+			t.Fatalf("stored 200k rewritten to %d", got)
+		}
+	})
+
+	t.Run("SanitizeProfile", func(t *testing.T) {
+		got := SanitizeProfile(store.ChatModelProfile{
+			Provider:      string(provider.Claude),
+			Model:         model,
+			ContextWindow: provider.ClaudeStandardContextWindow,
+		})
+		if got.ContextWindow != provider.ClaudeStandardContextWindow {
+			t.Fatalf("stored 200k rewritten to %d", got.ContextWindow)
+		}
+	})
+
+	t.Run("SanitizeThread", func(t *testing.T) {
+		got := SanitizeThread(store.Thread{
+			Provider:        string(provider.Claude),
+			Model:           model,
+			ContextWindow:   provider.ClaudeStandardContextWindow,
+			ReasoningEffort: "xhigh",
+		})
+		if got.ContextWindow != provider.ClaudeStandardContextWindow {
+			t.Fatalf("stored 200k rewritten to %d", got.ContextWindow)
+		}
+	})
+
+	t.Run("ProfileFromThread", func(t *testing.T) {
+		got := ProfileFromThread(store.Thread{
+			Provider:        string(provider.Claude),
+			Model:           model,
+			ContextWindow:   provider.ClaudeStandardContextWindow,
+			ReasoningEffort: "xhigh",
+		})
+		if got.ContextWindow != provider.ClaudeStandardContextWindow {
+			t.Fatalf("stored 200k rewritten to %d", got.ContextWindow)
+		}
+	})
+
+	// The flip does reach a brand-new profile, which has no stored choice.
+	t.Run("FallbackProfileTakesTheNewDefault", func(t *testing.T) {
+		got := FallbackProfile(string(provider.Claude), model)
+		if got.ContextWindow != provider.ClaudeExtendedContextWindow {
+			t.Fatalf("new profile ContextWindow = %d, want the extended tier", got.ContextWindow)
+		}
+	})
+
+	// Sonnet keeps 1M opt-in, so a new Sonnet profile still starts at 200k.
+	t.Run("SonnetNewProfileStaysStandard", func(t *testing.T) {
+		got := FallbackProfile(string(provider.Claude), "claude-sonnet-5")
+		if got.ContextWindow != provider.ClaudeStandardContextWindow {
+			t.Fatalf("new sonnet profile ContextWindow = %d, want the standard tier", got.ContextWindow)
+		}
+	})
+}

@@ -780,11 +780,25 @@ The former `BackgroundClassifier` at
   `TestCodexSubagentCompletion_SynthesizesSiblingAtTail` — wait and
   notification terminal paths synthesize sibling completions.
 
-**Upstream gap.** The app-server protocol exposes only thread-wide
-cleanup (`thread/backgroundTerminals/clean`). Per-process termination
-requires model-facing tools (`write_stdin`) that aren't client-callable.
-Per-row stop for Codex background terminals is deferred pending upstream
-(see [`codex.md §Known upstream constraints`](../references/codex.md#known-upstream-constraints)).
+**Per-row stop (no longer an upstream gap).** This section used to record
+per-process termination as blocked on upstream. It shipped in codex
+0.140.0 and is verified on 0.146.0: `thread/backgroundTerminals/terminate
+{threadId, processId}` → `{terminated}`, alongside
+`thread/backgroundTerminals/list` for enumeration and the thread-wide
+`clean`. `processId` is on the wire and Agent Overflow already persists
+it on the item (`enrichItemMeta`), so the row → RPC join needs no new
+plumbing. The RPCs live in
+`internal/provider/codex/session_background.go`; see
+[`codex.md §Background terminals`](../references/codex.md#background-terminals).
+
+This changes nothing about the rule above. Stopping a background terminal
+is a user action on an already-authorized row — it is not, and must not
+become, a source of `is_background` authorization. Whether a row is
+backgrounded is still decided only by the two wire-typed signals; the
+stop RPC merely acts on rows that already are.
+
+What remains genuinely blocked: killing a spawned collab-agent child
+thread. `close_agent` is a model tool with no client-callable equivalent.
 
 **See also.** [`codex-wire.md §The two critical differences from Claude`](../references/codex-wire.md#the-two-critical-differences-from-claude).
 

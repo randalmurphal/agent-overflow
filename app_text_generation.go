@@ -48,6 +48,12 @@ func (a *App) resolveTextGenerationConfig() textgen.Config {
 		Exec:     a.resolveTextGenerationExecutor(),
 	}
 
+	// Custom environment follows the provider actually chosen, not the
+	// preferred one: after a substitution the run talks to the other backend,
+	// and carrying the first provider's endpoint across would point it at a
+	// gateway that has never heard of it.
+	cfg.Env = a.providerCustomEnv(chosen)
+
 	switch chosen {
 	case string(provider.Codex):
 		cfg.Binary = codexBin
@@ -92,6 +98,7 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 	cfg := textgen.Config{
 		Provider: providerName,
 		Effort:   effort,
+		Env:      a.providerCustomEnv(providerName),
 		Exec:     a.resolveTextGenerationExecutor(),
 	}
 	switch providerName {
@@ -114,7 +121,17 @@ func (a *App) resolveTextGenerationConfigFor(providerName string) (textgen.Confi
 	return cfg, true
 }
 
+// coerceTextGenerationEffort resolves the effort a one-shot generation run
+// passes to the CLI. Unlike a thread's effort this value is never persisted, so
+// it can express "this model takes no effort at all" — which the CLI runners
+// render as an omitted flag rather than an invented tier. Coercing a model
+// without tiers up to the provider default would raise cost silently, on the
+// one surface the user never sees a control for.
 func coerceTextGenerationEffort(cfg *textgen.Config) {
+	if provider.ModelDeclaresNoReasoningEffort(cfg.Provider, cfg.Model) {
+		cfg.Effort = ""
+		return
+	}
 	cfg.Effort = string(provider.CoerceReasoningEffortForModel(
 		cfg.Provider,
 		cfg.Model,

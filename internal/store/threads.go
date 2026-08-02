@@ -1204,16 +1204,44 @@ func (s *Store) UpdateContextSettings(threadID string, tokens, standardPercent, 
 	return requireRowsAffected(result, fmt.Sprintf("store: update context settings for %s", threadID))
 }
 
-// UpdateBranch persists a new branch string without touching the git
-// working tree. Callers that want to actually switch branches should
-// wrap this with the git checkout side effect.
-func (s *Store) UpdateBranch(threadID, branch string) error {
-	result, err := s.db.Exec(`UPDATE threads SET branch = ? WHERE id = ?`,
-		nilIfEmpty(branch), threadID)
+// UpdateBranchIfWorkspace persists a new branch string without touching the
+// git working tree, but only while the thread is still in the workspace the
+// caller observed the branch in. Returns whether the write applied.
+//
+// The compare-and-swap is not optional bookkeeping. The only caller is the
+// frontend's asynchronous branch-persist queue, which reads a branch off a
+// gitwatch status for one workspace and writes it back a moment later,
+// holding no lock — while a worktree switch (which takes threadLocks and
+// rewrites workspace_path AND branch together) can land in between. An
+// unconditional UPDATE lets the older observation win, leaving the thread
+// row claiming the previous workspace's branch: durable, silent, and
+// invisible until the next branch change happens to correct it.
+//
+// Guarding on workspace_path rather than on the previous branch value is
+// deliberate. The corruption is cross-workspace by nature: within one
+// workspace, a stale observation is only ever an older reading of the same
+// checkout, and the next status event corrects it. After a switch nothing
+// re-observes the old workspace, so nothing corrects it. A branch-valued
+// guard would also miss the case where both workspaces sit on the same
+// branch name, and would drop legitimate writes whenever the queue
+// collapsed a burst of observations.
+//
+// No rows updated is a normal outcome, not an error: it means another
+// writer owns the row now (or the thread is gone). The caller decides what
+// to show.
+func (s *Store) UpdateBranchIfWorkspace(threadID, workspacePath, branch string) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE threads SET branch = ? WHERE id = ? AND workspace_path = ?`,
+		nilIfEmpty(branch), threadID, workspacePath,
+	)
 	if err != nil {
-		return fmt.Errorf("store: update branch for %s: %w", threadID, err)
+		return false, fmt.Errorf("store: compare-and-swap branch for %s: %w", threadID, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update branch for %s", threadID))
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: compare-and-swap branch rows affected for %s: %w", threadID, err)
+	}
+	return rows > 0, nil
 }
 
 // UpdateWorkspacePath overwrites workspace_path. Used by the env/worktree
@@ -1227,8 +1255,8 @@ func (s *Store) UpdateWorkspacePath(threadID, path string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update workspace path for %s", threadID))
 }
 
-// UpdateRuntimeMode overwrites the thread's runtime mode (approval-required,
-// auto-accept-edits, or full-access). Unknown values are coerced to the
+// UpdateRuntimeMode overwrites the thread's runtime mode (read-only,
+// approval-required, auto-accept-edits, auto, or full-access). Unknown values are coerced to the
 // default via normalizeRuntimeMode — the CHECK constraint on the column
 // would otherwise reject the write, so we prefer falling back silently over
 // breaking a session restart for an old client that sent a stale string.
@@ -1267,7 +1295,7 @@ func normalizeEffort(effort string) string {
 // TestRuntimeModeCheckMatchesProvider so the copy cannot drift.
 func normalizeRuntimeMode(mode string) string {
 	switch mode {
-	case "read-only", "approval-required", "auto-accept-edits", "full-access":
+	case "read-only", "approval-required", "auto-accept-edits", "auto", "full-access":
 		return mode
 	default:
 		return "full-access"

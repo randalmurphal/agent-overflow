@@ -126,6 +126,12 @@ func (a *App) Start(ctx context.Context) error {
 	// `system:stats` event every ~2s. See app_sysstat.go.
 	a.startSystemStatsSampler()
 
+	// Start the background `git fetch` cadence so ahead/behind counts
+	// track the remote instead of the user's last manual fetch. Reads
+	// Settings.BackgroundGitFetch live each tick; skipped entirely in
+	// harness mode. See app_git_background_fetch.go.
+	a.startBackgroundGitFetch()
+
 	return nil
 }
 

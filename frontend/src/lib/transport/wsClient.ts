@@ -31,7 +31,12 @@
 // `wsClient` singleton — there is no second path.
 
 import { documentHidden } from '../utils/pageVisibility';
-import { type Bootstrap, defaultBootstrap, appendToken } from './bootstrap';
+import {
+  type Bootstrap,
+  BootstrapRejectedError,
+  defaultBootstrap,
+  appendToken,
+} from './bootstrap';
 import {
   type ClientFrame,
   type ClientRPCFrame,
@@ -74,6 +79,15 @@ export const STALE_CHECK_INTERVAL_MS = 10_000;
 // Consecutive close-before-open failures that invalidate the cached
 // bootstrap (see preOpenFailures).
 export const BOOTSTRAP_INVALIDATE_AFTER_FAILURES = 2;
+// How long a connection must survive before it counts as STABLE and
+// earns a backoff reset. Resetting on `open` alone let an
+// accept-then-immediately-close server (a backend that upgrades then
+// dies on the first frame, a relay that tears the tunnel down right
+// after the handshake) pin the delay at the 50ms jitter floor — a 10Hz
+// connect storm that looks like a working reconnect ladder. A
+// connection that lasted this long proves the far side was actually
+// serving, which is what the ladder is supposed to measure.
+export const BACKOFF_RESET_AFTER_MS = 30_000;
 const TRANSPORT_GAP_CHANNEL = 'transport:gap';
 // Cap matches server-side MaxReplayChannels (frame.go) so the replay
 // frame can't exceed the wire limit.
@@ -148,13 +162,21 @@ let fanoutScratchInUse = false;
 // in-flight after a previous close. nextAttemptAt is the wall-clock
 // millis when the next attempt is scheduled — null if the attempt is
 // already in flight.
+// 'unauthorized' means the backend refused our bootstrap credential
+// (BootstrapRejectedError): the server is reachable and answering, but
+// the token this session holds is dead — a `--connect` / LAN client
+// whose backend restarted. The retry loop keeps running (it is one
+// fetch per backoff period and it recovers for free if the refusal was
+// somehow transient), but the state is surfaced separately because
+// only reopening the share link actually fixes it, and "Reconnecting…"
+// forever tells the user nothing.
 // 'disconnected' is the zero-value before any connect has been
 // attempted; we never re-enter it once a connect cycle starts (we stay
 // in 'reconnecting' across attempts, even after permanent failure)
 // because exposing a permanent terminal state would require a manual
 // retry control we haven't wired and would lie to the user when the
 // loop is still running.
-export type TransportStatus = 'connected' | 'reconnecting' | 'disconnected';
+export type TransportStatus = 'connected' | 'reconnecting' | 'unauthorized' | 'disconnected';
 
 export interface TransportStatusSnapshot {
   status: TransportStatus;
@@ -289,6 +311,16 @@ export class WSClient {
   // the bootstrap cache mid-outage doesn't flip a remote client onto
   // the aggressive local retry cadence.
   private remoteBackend = false;
+  // True while the last bootstrap attempt was REFUSED (as opposed to
+  // failing transiently). Reported as the 'unauthorized' status by
+  // every reconnecting transition; cleared the moment a bootstrap
+  // fetch succeeds again, so a refusal can never outlive the condition
+  // that set it.
+  private credentialRejected = false;
+  // Date.now() of the current socket's open, 0 when no socket is open.
+  // The backoff ladder resets from this at close (see
+  // BACKOFF_RESET_AFTER_MS) rather than on open.
+  private connectedAt = 0;
 
   // The sink (wired by frontendErrorCapture at install) persists one
   // summary line per outage into the always-on ui-trace error log.
@@ -648,8 +680,24 @@ export class WSClient {
     let bootstrap: Bootstrap;
     try {
       bootstrap = await this.getBootstrap();
+      // A manifest in hand means the credential was accepted; any
+      // earlier refusal is history. Republish immediately rather than
+      // waiting for the socket to open, so the banner stops naming a
+      // cause that no longer holds.
+      if (this.credentialRejected) {
+        this.credentialRejected = false;
+        if (this.statusSnapshot.status === 'unauthorized') this.setReconnecting(null);
+      }
     } catch (err) {
       this.connectPromise = null;
+      // A refused credential is not a transient failure — record it so
+      // the reconnect transitions below report the actionable state
+      // instead of an indefinite "Reconnecting…". A later transient
+      // failure must not clear the verdict (the token is still dead),
+      // only a successful fetch does.
+      if (err instanceof BootstrapRejectedError) {
+        this.credentialRejected = true;
+      }
       console.warn('wsClient: bootstrap failed', err);
       // Bootstrap-stage failures count toward the outage's attempt
       // tally too (when one is open), so the reconnect summary reflects
@@ -708,7 +756,11 @@ export class WSClient {
       return;
     }
     attempt.settled = true;
-    this.reconnectAttempt = 0;
+    // NOT a backoff reset: reaching OPEN only proves the handshake
+    // succeeded, and an accept-then-close server would pin the ladder
+    // at its floor. handleSocketClose resets it once the connection
+    // proved stable (BACKOFF_RESET_AFTER_MS).
+    this.connectedAt = Date.now();
     // First-frame after open: replay any missed events. The server
     // only acts on this if the map is non-empty; it's still cheap
     // to send unconditionally since channel-by-channel reconciliation
@@ -797,6 +849,16 @@ export class WSClient {
     }
     this.stopStaleWatchdog();
     this.serverSendsHeartbeats = false;
+    // Backoff reset on STABILITY, not on open: a connection that
+    // served for BACKOFF_RESET_AFTER_MS proves the far side is
+    // healthy, so its eventual drop deserves a fresh ladder. A socket
+    // that opened and died immediately keeps climbing — that is the
+    // accept-then-close storm the ladder exists for.
+    const connectedFor = this.connectedAt === 0 ? 0 : Date.now() - this.connectedAt;
+    this.connectedAt = 0;
+    if (connectedFor >= BACKOFF_RESET_AFTER_MS) {
+      this.reconnectAttempt = 0;
+    }
     // Outage bookkeeping: the first close opens the outage record
     // (its code names the original cause — 1006 network death vs
     // 1000/1001 graceful); later closes during the same outage are
@@ -837,8 +899,18 @@ export class WSClient {
       attempt.reject(new DisconnectedError('socket closed before open'));
     }
     if (this.closed) return;
-    this.setStatus({ status: 'reconnecting', nextAttemptAt: null });
+    this.setReconnecting(null);
     this.scheduleReconnect();
+  }
+
+  // setReconnecting publishes a between-connections status. The loop is
+  // the same either way; `unauthorized` names the one cause the loop
+  // cannot resolve on its own so the banner can say what will.
+  private setReconnecting(nextAttemptAt: number | null): void {
+    this.setStatus({
+      status: this.credentialRejected ? 'unauthorized' : 'reconnecting',
+      nextAttemptAt,
+    });
   }
 
   // scheduleReconnect waits an exponentially-backoff'd delay and then
@@ -869,7 +941,7 @@ export class WSClient {
     // a degenerate RNG could spin a tight reconnect loop.
     const delay = Math.max(50, Math.floor(Math.random() * base));
     const nextAttemptAt = Date.now() + delay;
-    this.setStatus({ status: 'reconnecting', nextAttemptAt });
+    this.setReconnecting(nextAttemptAt);
     const promise = new Promise<void>((resolve, reject) => {
       // The attempt body is shared between the backoff timer and
       // queuedAttempt.fire so early demand (an RPC, a page resume, the
@@ -887,7 +959,7 @@ export class WSClient {
         }
         // Switch to "in-flight attempt" — clear nextAttemptAt so the UI
         // stops counting down while the connect promise resolves.
-        this.setStatus({ status: 'reconnecting', nextAttemptAt: null });
+        this.setReconnecting(null);
         this.connect().then(resolve, reject);
       };
       this.queuedAttempt = { timer: setTimeout(fire, delay), fire };
@@ -1021,10 +1093,16 @@ export class WSClient {
     data: unknown;
     gap?: boolean;
   }): void {
-    const lastSeq = this.lastSeqByChannel.get(evt.channel);
-    if (lastSeq !== undefined && evt.seq <= lastSeq) return;
-    this.recordChannelSeq(evt.channel, evt.seq);
     if (evt.gap === true) {
+      // A gap marker is a resync instruction, not a data event, so it
+      // is honoured BEFORE the dedup check and its seq is adopted in
+      // both directions. The server emits one with a seq BELOW our
+      // cursor when our cursor sits above its head — a sequence space
+      // that isn't ours, i.e. the backend restarted underneath us (see
+      // internal/transport/AGENTS.md § Wire frames). Dropping it as a
+      // duplicate would strand the cursor above the new head and
+      // silently discard every live event on that channel forever.
+      this.recordChannelSeq(evt.channel, evt.seq);
       console.warn(
         `wsClient: event gap on ${clampString(evt.channel)} (seq ${evt.seq})`,
       );
@@ -1032,7 +1110,12 @@ export class WSClient {
         channel: evt.channel,
         seq: evt.seq,
       });
+      this.dispatchToSubscribers(evt.channel, evt.data);
+      return;
     }
+    const lastSeq = this.lastSeqByChannel.get(evt.channel);
+    if (lastSeq !== undefined && evt.seq <= lastSeq) return;
+    this.recordChannelSeq(evt.channel, evt.seq);
     this.dispatchToSubscribers(evt.channel, evt.data);
   }
 

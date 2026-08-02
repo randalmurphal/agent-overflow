@@ -1,8 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
+	"log"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -146,6 +150,87 @@ func TestListDiscussionDefsFiltersByScopeAndProject(t *testing.T) {
 	}
 	if globalDefs[0].Name != "Global Review" {
 		t.Fatalf("globalDefs[0].Name = %q, want %q", globalDefs[0].Name, "Global Review")
+	}
+}
+
+// TestListDiscussionDefsSkipsUndecodableRow — a single row whose
+// `definition` blob no longer parses must not take the whole discussion
+// list down with it. The good rows come back, the bad one is named in the
+// log, and a caller that asks for that exact row still gets the error.
+func TestListDiscussionDefsSkipsUndecodableRow(t *testing.T) {
+	s := newTestStore(t)
+
+	now := time.Now().UnixMilli()
+	for _, def := range []DiscussionDefinition{
+		{
+			ID:    "good-1",
+			Name:  "First Good",
+			Scope: "global",
+			Participants: []DiscussionParticipant{
+				{Role: "a", System: "a"},
+				{Role: "b", System: "b"},
+			},
+			Settings:  DiscussionSettings{MaxTurns: 10},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:    "good-2",
+			Name:  "Second Good",
+			Scope: "global",
+			Participants: []DiscussionParticipant{
+				{Role: "a", System: "a"},
+				{Role: "b", System: "b"},
+			},
+			Settings:  DiscussionSettings{MaxTurns: 10},
+			CreatedAt: now + 1,
+			UpdatedAt: now + 1,
+		},
+	} {
+		if err := s.CreateDiscussionDef(def); err != nil {
+			t.Fatalf("CreateDiscussionDef(%s): %v", def.Name, err)
+		}
+	}
+
+	// External corruption: the column is plain TEXT, so a truncated write
+	// or a hand-edited DB can leave a blob that is not JSON at all.
+	if _, err := s.db.Exec(
+		`INSERT INTO discussion_definitions (id, name, description, scope, project_id, definition, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"poison-1", "Corrupt", "", "global", "", `{"participants": [`, now+2, now+2,
+	); err != nil {
+		t.Fatalf("insert corrupt row: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	defs, err := s.ListDiscussionDefs("global", "")
+	if err != nil {
+		t.Fatalf("ListDiscussionDefs: %v", err)
+	}
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, def.Name)
+	}
+	if !slices.Equal(names, []string{"Second Good", "First Good"}) {
+		t.Fatalf("listed = %q, want the two good rows newest-first", names)
+	}
+
+	output := logBuf.String()
+	if !strings.Contains(output, "poison-1") {
+		t.Fatalf("corruption must be surfaced with the row id, log was: %q", output)
+	}
+
+	// The targeted reads still fail: the caller asked for this row, so
+	// there is nothing to degrade to.
+	if _, err := s.GetDiscussionDefByID("poison-1"); err == nil {
+		t.Fatal("GetDiscussionDefByID(corrupt) = nil error, want a decode error")
+	}
+	if _, err := s.GetDiscussionDef("Corrupt", "global", ""); err == nil {
+		t.Fatal("GetDiscussionDef(corrupt) = nil error, want a decode error")
 	}
 }
 

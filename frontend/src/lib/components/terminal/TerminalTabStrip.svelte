@@ -1,6 +1,9 @@
 <script lang="ts">
   import type { ThreadTerminalStateHandle } from './terminalStore.svelte';
   import EditorLink from '../common/EditorLink.svelte';
+  import ContextMenu from '../primitives/ContextMenu.svelte';
+  import MenuItem from '../primitives/MenuItem.svelte';
+  import MenuDivider from '../primitives/MenuDivider.svelte';
 
   interface Props {
     handle: ThreadTerminalStateHandle;
@@ -28,6 +31,76 @@
     const parts = shell.split('/');
     return parts[parts.length - 1] || shell;
   }
+
+  // Right-click target. Held as the terminal id rather than an index so a
+  // close landing between open and pick cannot re-point the menu at a
+  // different tab; the derived rows below resolve the index each read and
+  // the menu closes itself once the id is gone.
+  let menu: { x: number; y: number; terminalID: string } | null = $state(null);
+
+  let menuIndex = $derived.by(() => {
+    const anchor = menu;
+    if (!anchor) return -1;
+    return handle.tabs.findIndex((t) => t.terminalID === anchor.terminalID);
+  });
+  let menuLabel = $derived(
+    menuIndex >= 0 ? labelFor(handle.tabs[menuIndex].summary.shell) : '',
+  );
+  let othersCount = $derived(menuIndex >= 0 ? handle.tabs.length - 1 : 0);
+  let rightCount = $derived(menuIndex >= 0 ? handle.tabs.length - menuIndex - 1 : 0);
+
+  function openMenu(event: MouseEvent, terminalID: string): void {
+    event.preventDefault();
+    event.stopPropagation();
+    menu = { x: event.clientX, y: event.clientY, terminalID };
+  }
+
+  function dismissMenu(): void {
+    menu = null;
+  }
+
+  // Every bulk action snapshots its targets before the first close: the
+  // caller removes tabs from the same `handle.tabs` we are iterating.
+  function closeAll(targets: readonly string[]): void {
+    dismissMenu();
+    for (const terminalID of targets) onClose(terminalID);
+  }
+
+  function closeTarget(): void {
+    if (menuIndex < 0) return;
+    closeAll([handle.tabs[menuIndex].terminalID]);
+  }
+
+  function closeOthers(): void {
+    if (menuIndex < 0) return;
+    const keep = handle.tabs[menuIndex].terminalID;
+    closeAll(handle.tabs.filter((t) => t.terminalID !== keep).map((t) => t.terminalID));
+  }
+
+  function closeToTheRight(): void {
+    if (menuIndex < 0) return;
+    closeAll(handle.tabs.slice(menuIndex + 1).map((t) => t.terminalID));
+  }
+
+  function closeEvery(): void {
+    closeAll(handle.tabs.map((t) => t.terminalID));
+  }
+
+  // A tab can disappear from under an open menu (a keyboard command, or the
+  // close this menu just issued). Drop the anchor rather than render rows
+  // pointing at nothing.
+  $effect(() => {
+    if (menu && menuIndex < 0) menu = null;
+  });
+
+  function handleAuxClick(event: MouseEvent, terminalID: string): void {
+    // Middle click closes, matching editors and browsers. preventDefault
+    // suppresses the platform autoscroll cursor the strip cannot use.
+    if (event.button !== 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onClose(terminalID);
+  }
 </script>
 
 <div class="flex items-center h-8 bg-surface-1 border-b border-border text-xs select-none shrink-0">
@@ -44,6 +117,8 @@
         class:text-text-secondary={!isActive}
         data-testid={`terminal-tab-${tab.terminalID}`}
         onclick={() => onSelect(tab.terminalID)}
+        onauxclick={(e) => handleAuxClick(e, tab.terminalID)}
+        oncontextmenu={(e) => openMenu(e, tab.terminalID)}
         onkeydown={(e) => {
           // WAI-ARIA tab pattern activates on Enter AND Space. Previous
           // version handled only Enter, so keyboard users couldn't
@@ -124,3 +199,19 @@
     >▾</button>
   {/if}
 </div>
+
+{#if menu && menuIndex >= 0}
+  <ContextMenu
+    x={menu.x}
+    y={menu.y}
+    ariaLabel={`Terminal Tab Actions: ${menuLabel}`}
+    onDismiss={dismissMenu}
+    minWidthClass="min-w-[168px]"
+  >
+    <MenuItem label="Close" onSelect={closeTarget} />
+    <MenuItem label="Close Others" disabled={othersCount === 0} onSelect={closeOthers} />
+    <MenuItem label="Close to the Right" disabled={rightCount === 0} onSelect={closeToTheRight} />
+    <MenuDivider />
+    <MenuItem label="Close All" onSelect={closeEvery} />
+  </ContextMenu>
+{/if}

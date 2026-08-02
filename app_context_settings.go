@@ -52,7 +52,7 @@ func (a *App) GetContextSettings(providerName, model string) (ContextSettingsPro
 		profile = chatmodel.FallbackProfile(providerName, model)
 	}
 	if !chatmodel.ContextWindowSupported(options, profile.ContextWindow) {
-		profile.ContextWindow = chatmodel.DefaultContextWindow(providerName, model, options[0].Tokens)
+		profile.ContextWindow = chatmodel.DefaultContextWindow(providerName, model, 0)
 	}
 
 	return ContextSettingsProfile{

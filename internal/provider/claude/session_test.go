@@ -3238,3 +3238,95 @@ func TestWithClaudeCodeEntrypoint(t *testing.T) {
 		}
 	})
 }
+
+// TestAutoModeSurfacesFallbackApprovalRequest is the safety net under the auto
+// runtime mode. Claude's auto classifier does NOT answer every request: it
+// falls back to a real interactive ask on safety_check, ask_rule,
+// plan_mode_floor, org_ask_ceiling and requires_user_interaction, and the
+// fallback arrives as an ordinary `can_use_tool` control_request. If AO ever
+// swallowed or auto-answered those, an auto-mode turn would hang on a prompt
+// the user never sees (or, worse, silently allow what the classifier declined
+// to bless).
+//
+// The one path that could swallow it is handleFullAccessToolRequest, whose
+// auto-approval short-circuit is keyed on the literal permission mode
+// "bypassPermissions". Auto is a different mode with a different promise — the
+// reviewer can DENY — so this asserts the full round trip on an auto session:
+// the request surfaces as EventApprovalRequest and RespondToApproval resolves
+// it exactly as it would in any other tier.
+func TestAutoModeSurfacesFallbackApprovalRequest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	if err != nil {
+		t.Fatalf("spawn cat: %v", err)
+	}
+	eventCh := make(chan provider.ProviderEvent, 200)
+	s := &Session{
+		proc:                  proc,
+		threadID:              testThread,
+		onEvent:               func(evt provider.ProviderEvent) { eventCh <- evt },
+		cancel:                cancel,
+		readDone:              make(chan struct{}),
+		basePermissionMode:    claudeBasePermissionMode(provider.RuntimeAuto),
+		currentPermissionMode: claudeBasePermissionMode(provider.RuntimeAuto),
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		cancel()
+		proc.Close()
+	})
+
+	// Guard the premise: the mode under test really is auto, not a typo that
+	// happens to miss the bypassPermissions branch for the wrong reason.
+	if got := s.getCurrentPermissionMode(); got != "auto" {
+		t.Fatalf("currentPermissionMode = %q, want auto", got)
+	}
+
+	line := []byte(`{"type":"control_request","request_id":"req-auto-fallback","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"rm -rf /tmp/x"}}}`)
+	if err := s.proc.WriteLine(line); err != nil {
+		t.Fatalf("write approval: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt.Kind != provider.EventApprovalRequest {
+				continue
+			}
+			var approval provider.ApprovalRequest
+			if err := json.Unmarshal(evt.Meta, &approval); err != nil {
+				t.Fatalf("unmarshal approval: %v", err)
+			}
+			if approval.RequestID != "req-auto-fallback" || approval.ToolName != "Bash" {
+				t.Fatalf("approval = %+v, want the Bash request that was sent", approval)
+			}
+			if err := s.RespondToApproval(context.Background(), provider.ApprovalResponse{
+				RequestID: "req-auto-fallback",
+				Decision:  "allow",
+			}); err != nil {
+				t.Fatalf("RespondToApproval: %v", err)
+			}
+			return
+		case <-deadline:
+			t.Fatal("auto-mode session never surfaced the fallback approval request")
+		}
+	}
+}
+
+// TestAutoModeDoesNotAutoApproveToolRequests is the unit-level twin of the
+// round trip above: the full-access short-circuit must decline to claim an
+// auto-mode request. Stated separately because the two failures are different
+// bugs — this one would auto-ALLOW a tool the classifier had already refused
+// to bless, which no event assertion downstream could detect.
+func TestAutoModeDoesNotAutoApproveToolRequests(t *testing.T) {
+	s := &Session{currentPermissionMode: claudeBasePermissionMode(provider.RuntimeAuto)}
+	handled, err := s.maybeHandleFullAccessToolRequest(
+		[]byte(`{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}`))
+	if err != nil {
+		t.Fatalf("maybeHandleFullAccessToolRequest: %v", err)
+	}
+	if handled {
+		t.Fatal("auto-mode session auto-approved a tool request; only bypassPermissions may do that")
+	}
+}

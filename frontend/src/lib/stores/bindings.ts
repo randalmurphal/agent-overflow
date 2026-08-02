@@ -61,6 +61,13 @@ export {
   UpdateSettings,
   GetContextSettings,
 
+  // Custom provider environment. Dedicated mutators rather than
+  // UpdateSettings keys: GetSettings redacts sensitive values, so a
+  // read-mutate-write patch would persist the redaction. See
+  // app_provider_env.go.
+  SetProviderCustomEnvVar,
+  DeleteProviderCustomEnvVar,
+
   // Usage accounting (append-only ledger aggregates; costs are
   // wire-true for Claude, table-priced at read time for Codex /
   // claude-tui — see internal/usagecost).

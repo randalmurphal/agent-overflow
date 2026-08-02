@@ -185,6 +185,63 @@ describe('markdown-aware copy delegate', () => {
     );
   });
 
+  // The selection path writes through the DataTransfer the copy event
+  // already owns, not `navigator.clipboard.write` — inside a copy event
+  // `setData` is the synchronous, permission-free, every-engine API, and
+  // an async write there would race the event's own clipboard fill. The
+  // flavors themselves come from the same helper the Copy buttons use.
+  describe('text/html flavor', () => {
+    function selectAndCopy(html: string): ClipboardEvent {
+      ensureMarkdownCopyDelegate();
+      const host = document.createElement('div');
+      host.className = 'markdown-body';
+      host.innerHTML = html;
+      document.body.appendChild(host);
+
+      const range = document.createRange();
+      range.selectNodeContents(host);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      return dispatchCopy(host);
+    }
+
+    it('carries an html flavor alongside the markdown one', () => {
+      const event = selectAndCopy('<h2>Title</h2><p>see <strong>bold</strong></p>');
+
+      expect(event.clipboardData?.getData('text/plain')).toBe(
+        '## Title\n\nsee **bold**',
+      );
+      expect(event.clipboardData?.getData('text/html')).toBe(
+        '<h2>Title</h2><p>see <strong>bold</strong></p>',
+      );
+    });
+
+    it('keeps table structure in the html flavor', () => {
+      const event = selectAndCopy(
+        '<table><thead><tr><th>A</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table>',
+      );
+
+      expect(event.clipboardData?.getData('text/plain')).toBe('| A |\n| --- |\n| 1 |');
+      expect(event.clipboardData?.getData('text/html')).toBe(
+        '<table><thead><tr><th>A</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table>',
+      );
+    });
+
+    it('leaves the html flavor unset when the selection has no renderable markdown', () => {
+      // A lone image renders as its alt text in the html flavor, and an
+      // empty alt leaves nothing to write — the plain flavor still
+      // carries the markdown.
+      const event = selectAndCopy('<p><img src="https://example.test/i.png" alt=""></p>');
+
+      expect(event.clipboardData?.getData('text/plain')).toBe(
+        '![](https://example.test/i.png)',
+      );
+      expect(event.clipboardData?.getData('text/html')).toBe('');
+    });
+  });
+
   it('still serializes as markdown when the selection overshoots into adjacent chrome', () => {
     // Real-world repro: the user drag-selects an assistant message
     // body and lets the cursor settle one char past the end, into
@@ -220,5 +277,159 @@ describe('markdown-aware copy delegate', () => {
     // the trailing chrome text comes through as plain text from
     // cloneContents.
     expect(event.clipboardData?.getData('text/plain')).toContain('1. foo');
+  });
+
+  // Multi-range selections (Gecko ctrl+click / ctrl+drag) used to lose
+  // everything after the first range. happy-dom follows Blink and keeps a
+  // single range through `addRange`, so the selection itself has to be
+  // stubbed — there is no way to build a two-range Selection in this
+  // environment, and the delegate reads nothing from it but `rangeCount`
+  // and `getRangeAt`.
+  describe('multi-range selections', () => {
+    let selectionSpy: ReturnType<typeof vi.spyOn> | null = null;
+
+    afterEach(() => {
+      selectionSpy?.mockRestore();
+      selectionSpy = null;
+    });
+
+    function stubSelection(ranges: Range[]): void {
+      const fake = {
+        rangeCount: ranges.length,
+        getRangeAt: (index: number) => ranges[index],
+      } as unknown as Selection;
+      selectionSpy = vi.spyOn(window, 'getSelection').mockReturnValue(fake);
+    }
+
+    function rangeOver(el: Element): Range {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      return range;
+    }
+
+    /** Selects the element itself, so a block's own tag reaches the walker
+     *  (selecting a list's CONTENTS clones bare <li>s with no owning list). */
+    function rangeOverNode(el: Element): Range {
+      const range = document.createRange();
+      range.selectNode(el);
+      return range;
+    }
+
+    function markdownHost(html: string): HTMLElement {
+      const host = document.createElement('div');
+      host.className = 'markdown-body';
+      host.innerHTML = html;
+      document.body.appendChild(host);
+      return host;
+    }
+
+    it('serializes every range, in document order, whatever order they were added', () => {
+      ensureMarkdownCopyDelegate();
+      const host = markdownHost(
+        '<p id="first">alpha <strong>one</strong></p>'
+        + '<p id="second">beta</p>'
+        + '<p id="third">gamma</p>',
+      );
+      // Added last-to-first: `addRange` appends, so this is the order a
+      // user who ctrl+clicked bottom-up produces.
+      stubSelection([
+        rangeOver(host.querySelector('#third')!),
+        rangeOver(host.querySelector('#first')!),
+        rangeOver(host.querySelector('#second')!),
+      ]);
+
+      const event = dispatchCopy(host);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(event.clipboardData?.getData('text/plain')).toBe(
+        'alpha **one**\n\nbeta\n\ngamma',
+      );
+    });
+
+    it('ignores a collapsed range instead of injecting a separator', () => {
+      ensureMarkdownCopyDelegate();
+      const host = markdownHost('<p id="first">alpha</p><p id="second">beta</p>');
+      const caret = document.createRange();
+      caret.setStart(host.querySelector('#second')!.firstChild!, 2);
+      caret.collapse(true);
+      expect(caret.collapsed).toBe(true);
+      stubSelection([
+        rangeOver(host.querySelector('#first')!),
+        caret,
+        rangeOver(host.querySelector('#second')!),
+      ]);
+
+      const event = dispatchCopy(host);
+
+      expect(event.clipboardData?.getData('text/plain')).toBe('alpha\n\nbeta');
+    });
+
+    it('leaves the clipboard alone when every range is collapsed', () => {
+      ensureMarkdownCopyDelegate();
+      const host = markdownHost('<p id="first">alpha</p>');
+      const caret = document.createRange();
+      caret.setStart(host.querySelector('#first')!.firstChild!, 1);
+      caret.collapse(true);
+      stubSelection([caret]);
+
+      const event = dispatchCopy(host);
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(event.clipboardData?.getData('text/plain')).toBe('');
+    });
+
+    it('does not let a bare caret inside markdown claim a selection made elsewhere', () => {
+      // The caret's own range rides along in some ctrl+drag sequences. It is
+      // not something the user selected, so it must not pull a plain-text
+      // selection through the markdown serializer.
+      ensureMarkdownCopyDelegate();
+      const host = markdownHost('<p id="first">alpha</p>');
+      const outside = document.createElement('div');
+      outside.innerHTML = '<p id="chrome">plain prose</p>';
+      document.body.appendChild(outside);
+      const caret = document.createRange();
+      caret.setStart(host.querySelector('#first')!.firstChild!, 1);
+      caret.collapse(true);
+      stubSelection([caret, rangeOver(outside.querySelector('#chrome')!)]);
+
+      const event = dispatchCopy(outside);
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(event.clipboardData?.getData('text/plain')).toBe('');
+    });
+
+    it('claims the copy when any one range is inside markdown, and keeps the others', () => {
+      ensureMarkdownCopyDelegate();
+      const outside = document.createElement('div');
+      outside.innerHTML = '<p id="chrome">12:34 PM</p>';
+      document.body.appendChild(outside);
+      const host = markdownHost('<ol><li>foo</li></ol>');
+      // Chrome first in document order, markdown second.
+      stubSelection([
+        rangeOver(outside.querySelector('#chrome')!),
+        rangeOverNode(host.querySelector('ol')!),
+      ]);
+
+      const event = dispatchCopy(host);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(event.clipboardData?.getData('text/plain')).toBe('12:34 PM\n\n1. foo');
+    });
+
+    it('stays out of a multi-range selection with no markdown in it', () => {
+      ensureMarkdownCopyDelegate();
+      const outside = document.createElement('div');
+      outside.innerHTML = '<p id="a">plain one</p><p id="b">plain two</p>';
+      document.body.appendChild(outside);
+      stubSelection([
+        rangeOver(outside.querySelector('#a')!),
+        rangeOver(outside.querySelector('#b')!),
+      ]);
+
+      const event = dispatchCopy(outside);
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(event.clipboardData?.getData('text/plain')).toBe('');
+    });
   });
 });

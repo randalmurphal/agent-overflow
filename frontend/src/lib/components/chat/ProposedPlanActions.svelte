@@ -5,6 +5,7 @@
   import IconButton from '../primitives/IconButton.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { copyMarkdownToClipboard } from '../../utils/markdownClipboard';
 
   interface Props {
     getCopyText: () => Promise<string>;
@@ -22,6 +23,7 @@
 <div class="flex items-center gap-1.5 text-xs text-text-secondary">
   <CopyButton
     text={getCopyText}
+    write={copyMarkdownToClipboard}
     label="Copy full plan"
     onError={() => addToast('error', 'Failed to copy plan')}
   />

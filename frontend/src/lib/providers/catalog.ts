@@ -90,6 +90,7 @@ export interface ProviderDefinition {
     extendedCompactKey:
       | 'claudeAutoCompactExtendedPercent'
       | 'codexAutoCompactExtendedPercent';
+    customEnvKey: 'claudeCustomEnv' | 'codexCustomEnv';
   };
   backgroundStop: ProviderBackgroundStop;
   capabilities: ProviderCapabilities;
@@ -120,6 +121,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       pathKey: 'claudeBinaryPath',
       standardCompactKey: 'claudeAutoCompactStandardPercent',
       extendedCompactKey: 'claudeAutoCompactExtendedPercent',
+      customEnvKey: 'claudeCustomEnv',
     },
     backgroundStop: 'claude-task',
     capabilities: FULL_CAPABILITIES,
@@ -151,6 +153,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       pathKey: 'codexBinaryPath',
       standardCompactKey: 'codexAutoCompactStandardPercent',
       extendedCompactKey: 'codexAutoCompactExtendedPercent',
+      customEnvKey: 'codexCustomEnv',
     },
     backgroundStop: 'codex-background-terminals',
     capabilities: FULL_CAPABILITIES,
@@ -186,6 +189,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
       pathKey: 'claudeBinaryPath',
       standardCompactKey: 'claudeAutoCompactStandardPercent',
       extendedCompactKey: 'claudeAutoCompactExtendedPercent',
+      customEnvKey: 'claudeCustomEnv',
     },
     backgroundStop: 'none',
     capabilities: TUI_CAPABILITIES,

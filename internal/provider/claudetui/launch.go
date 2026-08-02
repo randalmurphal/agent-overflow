@@ -134,6 +134,13 @@ func hookCommand(cfg Config) (string, error) {
 	return shellQuote(exe) + " " + HookSubcommand, nil
 }
 
+// BaseURLEnv is the variable that points Claude Code at an API endpoint. This
+// provider OWNS the child's copy — it must resolve to the per-session loopback
+// gateway — so a caller with a user-configured endpoint passes it as
+// Config.Upstream instead, and the gateway forwards there. Exported so the app
+// layer names the same variable this package strips.
+const BaseURLEnv = "ANTHROPIC_BASE_URL"
+
 // buildEnv layers the per-session gateway + relay env onto the base
 // environment, stripping any inherited values for the keys we own so a dirty
 // parent env can't redirect Claude away from our gateway.
@@ -144,9 +151,9 @@ func buildEnv(base []string, gatewayURL, hookURL, hookToken string) []string {
 		base = os.Environ()
 	}
 	owned := map[string]struct{}{
-		"ANTHROPIC_BASE_URL": {},
-		envHookURL:           {},
-		envHookToken:         {},
+		BaseURLEnv:   {},
+		envHookURL:   {},
+		envHookToken: {},
 	}
 	out := make([]string, 0, len(base)+3)
 	for _, kv := range base {
@@ -158,7 +165,7 @@ func buildEnv(base []string, gatewayURL, hookURL, hookToken string) []string {
 		out = append(out, kv)
 	}
 	return append(out,
-		"ANTHROPIC_BASE_URL="+gatewayURL,
+		BaseURLEnv+"="+gatewayURL,
 		envHookURL+"="+hookURL,
 		envHookToken+"="+hookToken,
 	)

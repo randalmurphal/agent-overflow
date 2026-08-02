@@ -11,12 +11,18 @@ func TestCapabilitiesForProvider(t *testing.T) {
 		{
 			name:     "claude",
 			provider: string(Claude),
-			want:     Capabilities{EnforcesRuntimeMode: true},
+			want: Capabilities{
+				ModelCatalog:        ClaudeProbeEnrichedCatalog,
+				EnforcesRuntimeMode: true,
+			},
 		},
 		{
 			name:     "claude-tui",
 			provider: string(ClaudeTUI),
-			want:     Capabilities{ImageIngestion: PathImageIngestion},
+			want: Capabilities{
+				ModelCatalog:   ClaudeProbeEnrichedCatalog,
+				ImageIngestion: PathImageIngestion,
+			},
 		},
 		{
 			name:     "codex",

@@ -10,7 +10,12 @@ the test that needs them.
   JSON-RPC (Codex) frames from a shell script so tests can exercise
   the full provider + triage + store pipeline without a real CLI.
 - `git.go` — `InitGitRepo` / `RunGit` / `CanonicalPath`. Spins up a
-  temp repo with an initial commit on `main`.
+  temp repo with an initial commit on `main`. `InitGitRepoWithOrigin`
+  adds a local bare "origin" with `main` pushed and tracking, and
+  `AdvanceOriginMain` pushes a commit to it through a throwaway sibling
+  clone — together they stage "the remote moved and we don't know yet",
+  the fixture behind fetch / ahead-behind tests. Local paths only: no
+  test here reaches a network.
 - `store.go` — `EnsureProject` helper (threads require a
   `project_id` FK; this idempotently inserts a project row per path).
 

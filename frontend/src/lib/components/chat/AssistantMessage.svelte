@@ -7,6 +7,7 @@
   import { getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { formatTimeOfDay } from '../../utils/format';
   import { getSettings } from '../../stores/settings.svelte';
+  import { copyMarkdownToClipboard } from '../../utils/markdownClipboard';
   import { ingestPersistedCodeSpans } from '../../utils/persistedSpans';
   import { splitAtBoundary } from '../../markdown/boundary/split';
 
@@ -120,6 +121,7 @@
           <span class="opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
             <CopyButton
               text={item.summary}
+              write={copyMarkdownToClipboard}
               label="Copy message"
               onError={() => addToast('error', 'Failed to copy')}
             />

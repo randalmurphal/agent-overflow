@@ -123,7 +123,7 @@ func parseCommitLog(stdout string) ([]Commit, error) {
 // empty tree for a root commit. The SHA must be hex — it always comes
 // from a commit list this package produced or a forge API response,
 // never free-form user input.
-func CommitDiff(ctx context.Context, workspace, sha string) ([]byte, error) {
+func CommitDiff(ctx context.Context, workspace, sha string, opts Options) ([]byte, error) {
 	sha = strings.TrimSpace(sha)
 	if !commitSHAPattern.MatchString(sha) {
 		return nil, fmt.Errorf("gitdiff: invalid commit sha %q", sha)
@@ -142,12 +142,10 @@ func CommitDiff(ctx context.Context, workspace, sha string) ([]byte, error) {
 		// First-parent diff: for merge commits this matches how GitHub
 		// and GitLab render a commit's changes.
 		stdout, _, _, err = runGitWithStdoutLimit(ctx, workspace, nil, false, maxDiffOutputBytes,
-			"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
-			hashes[1], hashes[0], "--")
+			opts.gitArgs("diff", hashes[1], hashes[0], "--")...)
 	} else {
 		stdout, _, _, err = runGitWithStdoutLimit(ctx, workspace, nil, false, maxDiffOutputBytes,
-			"diff-tree", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
-			"--root", "--find-renames", sha, "--")
+			opts.gitArgs("diff-tree", "--root", "--find-renames", sha, "--")...)
 	}
 	if errors.Is(err, errGitOutputTooLarge) {
 		return nil, fmt.Errorf("gitdiff: commit diff exceeds %d byte limit", maxDiffOutputBytes)

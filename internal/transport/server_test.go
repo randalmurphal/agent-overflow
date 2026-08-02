@@ -48,6 +48,9 @@ func newServerFixtureWith(t *testing.T, mutate func(*Config)) *serverFixture {
 	}
 	if mutate != nil {
 		mutate(&cfg)
+		// A mutate may swap the bus (ring capacity is a per-bus knob);
+		// the fixture must hand back the one the server actually runs.
+		bus = cfg.EventBus
 	}
 	srv, err := New(cfg)
 	if err != nil {
@@ -457,6 +460,70 @@ func TestServer_EventSubscriptionFiltersLiveDelivery(t *testing.T) {
 	}
 }
 
+// replayResult is what drainReplay observed on the wire between the
+// replay request and its completion marker.
+type replayResult struct {
+	// events are the replayed entries in wire order, flattened across
+	// batch frames.
+	events []batchEventEntry
+	// batchFrames / eventFrames count the wire frames the entries
+	// arrived in, so a test can pin the batching contract itself.
+	batchFrames int
+	eventFrames int
+}
+
+// requestReplay writes a replay frame and drains the response up to and
+// including the completion marker. Both frame shapes are accepted —
+// handleReplay chunks into batch frames but a chunk of exactly one
+// event falls through to a plain event frame.
+func requestReplay(t *testing.T, conn *websocket.Conn, lastSeqByChannel map[string]uint64) replayResult {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	buf, err := json.Marshal(ClientFrame{
+		Type:             frameTypeReplay,
+		LastSeqByChannel: lastSeqByChannel,
+	})
+	if err != nil {
+		t.Fatalf("marshal replay frame: %v", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageText, buf); err != nil {
+		t.Fatalf("ws write: %v", err)
+	}
+
+	var out replayResult
+	for {
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("ws read: %v", err)
+		}
+		var probe ServerFrame
+		if err := json.Unmarshal(raw, &probe); err != nil {
+			t.Fatalf("decode frame: %v", err)
+		}
+		switch probe.Type {
+		case frameTypeReplay:
+			return out
+		case frameTypeEvent:
+			out.eventFrames++
+			out.events = append(out.events, batchEventEntry{
+				Channel: probe.Channel,
+				Seq:     probe.Seq,
+				Data:    probe.Data,
+				Gap:     probe.Gap,
+			})
+		case frameTypeBatch:
+			var batch batchFrame
+			if err := json.Unmarshal(raw, &batch); err != nil {
+				t.Fatalf("decode batch frame: %v", err)
+			}
+			out.batchFrames++
+			out.events = append(out.events, batch.Events...)
+		}
+	}
+}
+
 func TestServer_ReplayMissedEvents(t *testing.T) {
 	f := newServerFixture(t)
 
@@ -468,61 +535,173 @@ func TestServer_ReplayMissedEvents(t *testing.T) {
 
 	conn := f.dial(t)
 
-	// Send a replay frame asking for everything since seq 0. The
-	// server should respond with three event frames, in order.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	frame := ClientFrame{
-		Type: frameTypeReplay,
-		LastSeqByChannel: map[string]uint64{
-			"ch1": 0,
-		},
+	// Ask for everything since seq 0: three events, in order, followed
+	// by the completion marker.
+	got := requestReplay(t, conn, map[string]uint64{"ch1": 0})
+	if len(got.events) != 3 {
+		t.Fatalf("replayed %d events, want 3", len(got.events))
 	}
-	buf, err := json.Marshal(frame)
+	for i, evt := range got.events {
+		if evt.Channel != "ch1" {
+			t.Fatalf("event %d wrong channel: %s", i, evt.Channel)
+		}
+		if evt.Seq != uint64(i+1) {
+			t.Fatalf("event %d wrong seq: %d", i, evt.Seq)
+		}
+		if evt.Gap {
+			t.Fatalf("event %d unexpectedly gap-flagged", i)
+		}
+	}
+}
+
+// A reconnect during heavy streaming is the worst case for per-event
+// frames: the ring can hold DefaultRingCapacity entries. Replay ships
+// them through the same batch envelope the live pump uses, chunked at
+// DefaultCoalesceMaxEvents, preserving order.
+func TestServer_ReplayChunksIntoBatchFrames(t *testing.T) {
+	f := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.EventBus = NewEventBus(4 * DefaultCoalesceMaxEvents)
+	})
+
+	const total = 2*DefaultCoalesceMaxEvents + 7
+	for i := 0; i < total; i++ {
+		if _, err := f.bus.Emit("ch1", i); err != nil {
+			t.Fatalf("emit %d: %v", i, err)
+		}
+	}
+
+	conn := f.dial(t)
+	got := requestReplay(t, conn, map[string]uint64{"ch1": 0})
+
+	if len(got.events) != total {
+		t.Fatalf("replayed %d events, want %d", len(got.events), total)
+	}
+	// Two full chunks plus the trailing partial — and nothing shipped
+	// as a standalone event frame, which is what the pre-batching loop
+	// would have produced `total` of.
+	if got.batchFrames != 3 || got.eventFrames != 0 {
+		t.Fatalf("frames = %d batch / %d event, want 3 batch / 0 event",
+			got.batchFrames, got.eventFrames)
+	}
+	for i, evt := range got.events {
+		if evt.Channel != "ch1" {
+			t.Fatalf("event %d wrong channel: %s", i, evt.Channel)
+		}
+		if evt.Seq != uint64(i+1) {
+			t.Fatalf("event %d seq = %d, want %d (order must survive batching)",
+				i, evt.Seq, i+1)
+		}
+		var payload int
+		if err := json.Unmarshal(evt.Data, &payload); err != nil {
+			t.Fatalf("event %d payload decode: %v", i, err)
+		}
+		if payload != i {
+			t.Fatalf("event %d payload = %d, want %d", i, payload, i)
+		}
+	}
+}
+
+// A replay whose cursor sits ABOVE the server's head means the client's
+// sequence space is not ours — a restarted backend re-seeds every
+// channel from 1. Silently replaying nothing would leave the client
+// dropping every live event below its stale cursor forever, so the
+// server answers with the gap marker that resyncs it.
+func TestServer_ReplayCursorAboveHeadGetsGapMarker(t *testing.T) {
+	f := newServerFixture(t)
+	for i := 0; i < 3; i++ {
+		f.bus.Emit("ch1", i)
+	}
+	conn := f.dial(t)
+
+	got := requestReplay(t, conn, map[string]uint64{"ch1": 9999})
+	if len(got.events) != 1 {
+		t.Fatalf("replayed %d frames, want exactly one gap marker: %+v", len(got.events), got.events)
+	}
+	if !got.events[0].Gap {
+		t.Fatalf("cursor above head must produce a gap marker, got %+v", got.events[0])
+	}
+	if got.events[0].Seq != 3 {
+		t.Fatalf("gap marker seq = %d, want the server's head seq 3", got.events[0].Seq)
+	}
+}
+
+// Same invalid cursor on a latest-only channel: the eviction-side gap
+// is deliberately answered with the newest frame instead of a marker,
+// but that frame's seq sits BELOW the stale cursor and the client would
+// discard it as a duplicate. The marker has to win here.
+func TestServer_ReplayCursorAboveHeadGapsLatestOnlyChannel(t *testing.T) {
+	f := newServerFixture(t)
+	const channel = "system:stats"
+	if !latestOnlyEventChannels[channel] {
+		t.Fatalf("%s is no longer a latest-only channel; pick another fixture", channel)
+	}
+	for i := 0; i < 3; i++ {
+		f.bus.Emit(channel, i)
+	}
+	conn := f.dial(t)
+
+	got := requestReplay(t, conn, map[string]uint64{channel: 9999})
+	if len(got.events) != 1 || !got.events[0].Gap {
+		t.Fatalf("cursor above head on a latest-only channel must gap, got %+v", got.events)
+	}
+
+	// The eviction-side gap on the same channel keeps its newest-frame
+	// answer — the two causes must not collapse into one behavior.
+	evicted := requestReplay(t, conn, map[string]uint64{channel: 1})
+	if len(evicted.events) != 1 {
+		t.Fatalf("in-window replay = %+v, want the newest frame", evicted.events)
+	}
+	if evicted.events[0].Gap {
+		t.Fatalf("eviction-side replay on a latest-only channel must not gap: %+v", evicted.events[0])
+	}
+	if evicted.events[0].Seq != 3 {
+		t.Fatalf("newest frame seq = %d, want 3", evicted.events[0].Seq)
+	}
+}
+
+// A client that vanishes mid-replay must tear the connection down, not
+// wedge the handler: every write goes through writeRaw's bound and the
+// read loop owns teardown. The connection's subscriber going away is
+// the observable proof — it is released by runConnHandler's defer.
+func TestServer_ClientDropsDuringReplay(t *testing.T) {
+	f := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.EventBus = NewEventBus(DefaultRingCapacity)
+	})
+	// Payloads big enough that the replay can't complete inside one
+	// write, so the close lands mid-stream.
+	payload := strings.Repeat("x", 8*1024)
+	for i := 0; i < DefaultRingCapacity; i++ {
+		if _, err := f.bus.Emit("ch1", payload); err != nil {
+			t.Fatalf("emit %d: %v", i, err)
+		}
+	}
+
+	url := "ws://" + f.srv.Addr() + "/ws?token=test-token"
+	conn, _, err := websocket.Dial(context.Background(), url, nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("dial: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	buf, err := json.Marshal(ClientFrame{
+		Type:             frameTypeReplay,
+		LastSeqByChannel: map[string]uint64{"ch1": 0},
+	})
+	if err != nil {
+		t.Fatalf("marshal replay: %v", err)
 	}
 	if err := conn.Write(ctx, websocket.MessageText, buf); err != nil {
 		t.Fatalf("ws write: %v", err)
 	}
+	// Rip the socket away without reading the replay out.
+	_ = conn.CloseNow()
 
-	got := make([]ServerFrame, 0, 3)
-	for len(got) < 3 {
-		_, raw, err := conn.Read(ctx)
-		if err != nil {
-			t.Fatalf("ws read: %v", err)
+	deadline := time.Now().Add(5 * time.Second)
+	for f.bus.SubscriberCount() > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("connection handler still attached after the client dropped mid-replay")
 		}
-		var f ServerFrame
-		if err := json.Unmarshal(raw, &f); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		if f.Type != frameTypeEvent {
-			continue
-		}
-		got = append(got, f)
-	}
-	for i, frm := range got {
-		if frm.Channel != "ch1" {
-			t.Fatalf("event %d wrong channel: %s", i, frm.Channel)
-		}
-		if frm.Seq != uint64(i+1) {
-			t.Fatalf("event %d wrong seq: %d", i, frm.Seq)
-		}
-		if frm.Gap {
-			t.Fatalf("event %d unexpectedly gap-flagged", i)
-		}
-	}
-	_, raw, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("read replay completion marker: %v", err)
-	}
-	var complete ServerFrame
-	if err := json.Unmarshal(raw, &complete); err != nil {
-		t.Fatalf("decode replay completion marker: %v", err)
-	}
-	if complete.Type != frameTypeReplay {
-		t.Fatalf("replay completion frame = %#v, want type %q", complete, frameTypeReplay)
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -1743,8 +1922,8 @@ type headerRecorder struct {
 	h http.Header
 }
 
-func newHeaderRecorder() *headerRecorder             { return &headerRecorder{h: make(http.Header)} }
-func (r *headerRecorder) Header() http.Header        { return r.h }
+func newHeaderRecorder() *headerRecorder              { return &headerRecorder{h: make(http.Header)} }
+func (r *headerRecorder) Header() http.Header         { return r.h }
 func (r *headerRecorder) Write(b []byte) (int, error) { return len(b), nil }
 func (r *headerRecorder) WriteHeader(int)             {}
 

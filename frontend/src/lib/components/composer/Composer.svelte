@@ -61,6 +61,7 @@
   import { getFocusedPaneId } from '../../stores/panes.svelte';
   import { getTerminalFocused } from '../terminal/terminalStore.svelte';
   import { errString } from '../../utils/errors';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import { implementProposedPlan, implementProposedPlanInNewThread } from '../../utils/proposedPlanImplementation';
   import { sourceFromProposedPlanItem } from '../../utils/proposedPlan';
@@ -672,6 +673,11 @@
     if (handleSlashPopoverKeydown(e, slash)) return;
 
     if (imagePlaceholders.handleAtomicPlaceholderKeydown(e)) return;
+
+    // Enter mid-IME-composition confirms the candidate; the composed text is
+    // still in the IME's buffer, not the textarea's value. Yield WITHOUT
+    // preventDefault — the browser has to deliver it to the composition.
+    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
 
     if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();

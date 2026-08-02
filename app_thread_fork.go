@@ -443,7 +443,7 @@ func (a *App) forkCodexThreadAt(source store.Thread, lastTurnID string) (string,
 		// Boot-mode overrides only, deliberately no `ao` credential: this is a
 		// throwaway app-server used to issue one fork request, not a session an
 		// agent takes a turn in.
-		Env:         a.sessionProcessEnv(nil, aoSessionCredential{}),
+		Env:         a.sessionProcessEnv(source.Provider, nil, aoSessionCredential{}),
 		EventLogger: a.logger,
 	}, func(provider.ProviderEvent) {})
 	if err != nil {

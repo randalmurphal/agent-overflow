@@ -2186,6 +2186,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     subagentLiveAggregate(anchorId: string): SubagentFoldAggregate | undefined {
       return subagentMemory.aggregate(anchorId);
     },
+    /** Clamped user-message text the reader opened. Ephemeral per session —
+     *  nothing about it goes to the backend. */
+    isUserMessageExpanded: rowUiState.isUserMessageExpanded,
+    setUserMessageExpanded: rowUiState.setUserMessageExpanded,
     diffCardExpandedOverride: rowUiState.diffCardExpandedOverride,
     setDiffCardExpanded: rowUiState.setDiffCardExpanded,
     /** Validity stamp for replaying a measured-size priors snapshot across a

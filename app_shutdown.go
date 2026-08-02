@@ -209,6 +209,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.stopRetentionCleanup()
 	record("stop retention cleanup", nil)
 
+	// Step 3d: stop the background `git fetch` cadence. Each pass reads
+	// the project list from SQLite, so it must be joined before Step 9's
+	// store close; it spawns git subprocesses, so leaving it running
+	// during teardown would also outlive the window in which their
+	// output means anything. Idempotent and blocks until the goroutine
+	// returns.
+	a.stopBackgroundGitFetch()
+	record("stop background git fetch", nil)
+
 	// Step 4: stop provider sessions. Each session's Close tears down
 	// its own design-thread state as part of the same parallel closer,
 	// so a slow design teardown can't serialize behind an unrelated

@@ -195,7 +195,7 @@ func SanitizeContextWindow(providerName, model string, tokens int) int {
 	if ContextWindowSupported(options, tokens) {
 		return tokens
 	}
-	return provider.DefaultContextWindowForModel(providerName, model, options[0].Tokens)
+	return provider.DefaultContextWindowForModel(providerName, model, 0)
 }
 
 // ContextWindowOptions returns the registry-advertised window choices

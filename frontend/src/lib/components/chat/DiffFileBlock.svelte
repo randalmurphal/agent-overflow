@@ -10,9 +10,10 @@
    * The header is a real disclosure: default expansion follows
    * settings.collapseDiffPreviews (off → expanded), and a per-card
    * toggle overrides it, persisted on the pane keyed by
-   * (itemId, file.path) so it survives windowing remounts. Toggling a
-   * card back to the current default clears its override, so it keeps
-   * following future setting flips. Files over the inline preview cap
+   * (itemId, file.path) so it survives windowing remounts. The registry
+   * stores only a deviation from the current default, so a card whose
+   * override the setting later agrees with goes back to following it.
+   * Files over the inline preview cap
    * render only the capped rows with a fade-out gradient + an "Open in
    * review pane" CTA.
    * Empty `file.lines` (loading or pre-upgrade summary-only) keeps
@@ -98,12 +99,12 @@
   // Default expansion follows the global setting; a per-card user
   // toggle overrides it. Overrides live on the pane so they survive
   // windowing remounts; the local fallback covers pane-less renders.
-  let collapsePref = $derived(getSettings().collapseDiffPreviews);
+  let defaultExpanded = $derived(!getSettings().collapseDiffPreviews);
   let localOverride = $state<boolean | undefined>(undefined);
   let userOverride = $derived(
     pane && itemId ? pane.diffCardExpandedOverride(itemId, file.path) : localOverride,
   );
-  let effectiveExpanded = $derived(userOverride ?? !collapsePref);
+  let effectiveExpanded = $derived(userOverride ?? defaultExpanded);
   let canToggle = $derived(hasBody || shouldShowFullCTA);
   // Components are encoded separately so the literal `:` joiner stays
   // unambiguous even when item ids or paths contain `:` themselves.
@@ -175,14 +176,13 @@
     // bail so the click bubbles to the header wrapper's handler.
     if (isPromoteModifier(event)) return;
     const next = !effectiveExpanded;
-    // Returning the card to the current default clears the override
-    // so the card keeps following future setting flips.
-    const override = next === !collapsePref ? undefined : next;
     void preservePaneScrollAnchor(pane, event, () => {
       if (pane && itemId) {
-        pane.setDiffCardExpanded(itemId, file.path, override);
+        // The registry drops an override that matches the current default,
+        // so the card keeps following future setting flips.
+        pane.setDiffCardExpanded(itemId, file.path, next);
       } else {
-        localOverride = override;
+        localOverride = next === defaultExpanded ? undefined : next;
       }
     });
   }

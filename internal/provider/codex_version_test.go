@@ -183,3 +183,23 @@ func TestIsNumericString(t *testing.T) {
 		}
 	}
 }
+
+// TestMinimumCodexCLIVersionCoversBackgroundTerminalTerminate pins the
+// dependency internal/provider/codex/session_background.go relies on:
+// `thread/backgroundTerminals/terminate` shipped in codex 0.140.0, and
+// TerminateBackgroundTerminal calls it with no runtime capability probe
+// because the provider-wide floor already excludes anything older.
+// Lowering minimumCodexCLIVersion below 0.140.0 would silently reintroduce
+// a "method not found" failure on the per-row stop path, so it fails here
+// instead.
+func TestMinimumCodexCLIVersionCoversBackgroundTerminalTerminate(t *testing.T) {
+	const backgroundTerminalTerminateFloor = "0.140.0"
+	if compareCodexCLIVersions(minimumCodexCLIVersion, backgroundTerminalTerminateFloor) < 0 {
+		t.Fatalf(
+			"minimumCodexCLIVersion = %q is below the %q floor required by "+
+				"thread/backgroundTerminals/terminate; either raise the minimum or "+
+				"add a runtime capability check in internal/provider/codex/session_background.go",
+			minimumCodexCLIVersion, backgroundTerminalTerminateFloor,
+		)
+	}
+}

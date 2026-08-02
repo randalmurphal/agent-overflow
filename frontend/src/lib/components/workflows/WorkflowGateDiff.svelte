@@ -50,7 +50,9 @@
     loading = true;
     error = '';
     try {
-      const raw = String((await GetBranchBaseDiff(threadId, baseBranch)) ?? '');
+      // Never ignore whitespace here: a gate decision is made against the
+      // exact change, and this surface has no toggle to say otherwise.
+      const raw = String((await GetBranchBaseDiff(threadId, baseBranch, false)) ?? '');
       patch = raw;
       files = parsePatchFileSummaries(raw);
       loaded = true;

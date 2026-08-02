@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { CommentAnchor } from '../../stores/reviewPane.svelte';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
 
   // Stateless by design: the editor is a virtualized row, so scrolling
   // it out of the render window unmounts it. Text lives in the review
@@ -46,6 +47,9 @@
       onCancel(anchor);
       return;
     }
+    // Mid-composition the draft text is still in the IME buffer, so the
+    // submit chord would save a truncated comment.
+    if (event.key === 'Enter' && isImeComposingEvent(event)) return;
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       void submit();

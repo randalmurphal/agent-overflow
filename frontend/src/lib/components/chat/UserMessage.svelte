@@ -10,6 +10,7 @@
     type ExpandedImagePreview,
   } from '../../utils/attachmentPreview.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
+  import UserMessageBody from './UserMessageBody.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -167,17 +168,13 @@
         </div>
       {/if}
       {#if visibleSummary}
-        <!-- wrap-anywhere, not break-words: `overflow-wrap: break-word` doesn't
-             lower a line's min-content width, and the bubble is a shrink-to-fit
-             flex child whose fit-content sizing floors at min-content — pasted
-             plaintext tables (NBSP-padded cells, unbroken border runs) blew the
-             bubble past the pane edge instead of wrapping. `anywhere` counts the
-             break opportunities in min-content, so the 82% cap holds.
-             Guard: userMessageOverflow.browser.test.ts -->
-        <p class="whitespace-pre-wrap wrap-anywhere"
-        >{#if summarySegments.length > 0}{#each summarySegments as segment, index (index)}{#if segment.command}<span
-                class="text-accent"
-                data-testid="user-message-command">{segment.text}</span>{:else}{segment.text}{/if}{/each}{:else}{visibleSummary}{/if}</p>
+        <!-- Text only: attachments above stay outside the clamped region. -->
+        <UserMessageBody
+          text={visibleSummary}
+          segments={summarySegments}
+          itemId={item.id}
+          {pane}
+        />
       {/if}
     </div>
     <div class="mt-1 flex items-center justify-end gap-1.5 pr-1 text-[0.625rem] text-fg-hint">

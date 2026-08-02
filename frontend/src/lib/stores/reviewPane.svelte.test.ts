@@ -13,6 +13,7 @@ import {
   openReviewCompanion,
   reviewStateForPane,
   reviewLineCommentForDraft,
+  supportsIgnoreWhitespace,
 } from './reviewPane.svelte';
 import { resetCompanionPanesForTest } from './companionPanes.svelte';
 import { registerComposerDraft, resetComposerDraftRegistryForTest } from './composerDraftRegistry.svelte';
@@ -134,10 +135,10 @@ describe('reviewPane store', () => {
 
     const state = reviewStateForPane('pane-1', 'thread-1');
     await waitLoaded(state);
-    expect(workspace).toHaveBeenCalledWith('thread-1');
+    expect(workspace).toHaveBeenCalledWith('thread-1', false);
 
     await state.setScope('branch');
-    expect(branch).toHaveBeenCalledWith('thread-1', 'develop');
+    expect(branch).toHaveBeenCalledWith('thread-1', 'develop', false);
     expect(state.baseBranch).toBe('develop');
     expect(state.patchText).toBe('branch patch');
     expect(state.commits.map((commit) => commit.shortSha)).toEqual(['aaaaaaa', 'bbbbbbb']);
@@ -161,7 +162,7 @@ describe('reviewPane store', () => {
 
     expect(restored.scope).toBe('branch');
     expect(restored.baseBranch).toBe('release');
-    expect(branch).toHaveBeenCalledWith('thread-1', 'release');
+    expect(branch).toHaveBeenCalledWith('thread-1', 'release', false);
   });
 
   it('defaults first open to workspace scope', async () => {
@@ -192,7 +193,7 @@ describe('reviewPane store', () => {
     expect(state.selectedCommitSHA).toBe(sha);
     expect(state.patchText).toBe('commit patch');
     expect(state.sourceKey).toBe(`commit:${sha}`);
-    expect(commitDiff).toHaveBeenLastCalledWith('thread-1', sha);
+    expect(commitDiff).toHaveBeenLastCalledWith('thread-1', sha, false);
 
     // Back to the full range.
     await state.selectCommit(null);
@@ -369,7 +370,7 @@ describe('reviewPane store', () => {
     await waitLoaded(state);
 
     expect(state.scope).toBe('branch');
-    expect(branch).toHaveBeenCalledWith('thread-1', 'develop');
+    expect(branch).toHaveBeenCalledWith('thread-1', 'develop', false);
   });
 
   it('falls back to workspace scope for a persisted scope that no longer exists', async () => {
@@ -382,7 +383,7 @@ describe('reviewPane store', () => {
     await waitLoaded(state);
 
     expect(state.scope).toBe('workspace');
-    expect(workspace).toHaveBeenCalledWith('thread-1');
+    expect(workspace).toHaveBeenCalledWith('thread-1', false);
   });
 
   it('refreshes comments and records the active diff source after loading a patch', async () => {
@@ -593,7 +594,7 @@ describe('reviewPane store — PR scope', () => {
     await state.selectCommit(sha);
     expect(state.selectedCommitSHA).toBe(sha);
     expect(state.sourceKey).toBe(`commit:${sha}`);
-    expect(commitDiff).toHaveBeenLastCalledWith('thread-1', expect.objectContaining({ Number: 5 }), sha);
+    expect(commitDiff).toHaveBeenLastCalledWith('thread-1', expect.objectContaining({ Number: 5 }), sha, false);
 
     // Back to the whole PR.
     await state.selectCommit(null);
@@ -1839,5 +1840,222 @@ describe('reviewPane store — edits scope', () => {
     expect(state.sourceKey).toBe('');
     expect(state.files.length).toBe(0);
     expect(state.error).toBeNull();
+  });
+});
+
+// A file whose only change is a re-indent, and one with a real edit.
+// Under `-w` git drops the first file entirely and renders the second
+// with the same line numbers it uses canonically.
+const CANONICAL_PATCH = [
+  'diff --git a/src/indent.ts b/src/indent.ts',
+  '--- a/src/indent.ts',
+  '+++ b/src/indent.ts',
+  '@@ -1,3 +1,3 @@',
+  ' function run() {',
+  '-  work();',
+  '+    work();',
+  ' }',
+  'diff --git a/src/real.ts b/src/real.ts',
+  '--- a/src/real.ts',
+  '+++ b/src/real.ts',
+  '@@ -1,2 +1,2 @@',
+  ' const a = 1;',
+  '-const b = 2;',
+  '+const b = 3;',
+].join('\n');
+
+const IGNORED_PATCH = [
+  'diff --git a/src/real.ts b/src/real.ts',
+  '--- a/src/real.ts',
+  '+++ b/src/real.ts',
+  '@@ -1,2 +1,2 @@',
+  ' const a = 1;',
+  '-const b = 2;',
+  '+const b = 3;',
+].join('\n');
+
+describe('reviewPane hide-whitespace toggle', () => {
+  it('is off by default and re-requests the diff on each flip', async () => {
+    const workspace = setBindingMock(
+      'GetWorkspaceCurrentDiff',
+      async (_threadId: string, ignoreWhitespace: boolean) =>
+        (ignoreWhitespace ? IGNORED_PATCH : CANONICAL_PATCH),
+    );
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    expect(state.ignoreWhitespace).toBe(false);
+    expect(workspace).toHaveBeenLastCalledWith('thread-1', false);
+    expect(state.files.map((file) => file.path)).toEqual(['src/indent.ts', 'src/real.ts']);
+
+    await state.setIgnoreWhitespace(true);
+    await waitLoaded(state);
+    expect(state.ignoreWhitespace).toBe(true);
+    // The flip is a full re-request, not a client-side filter.
+    expect(workspace).toHaveBeenLastCalledWith('thread-1', true);
+    expect(state.patchText).toBe(IGNORED_PATCH);
+    expect(state.files.map((file) => file.path)).toEqual(['src/real.ts']);
+
+    await state.setIgnoreWhitespace(false);
+    await waitLoaded(state);
+    expect(state.ignoreWhitespace).toBe(false);
+    expect(workspace).toHaveBeenLastCalledWith('thread-1', false);
+    expect(state.files.map((file) => file.path)).toEqual(['src/indent.ts', 'src/real.ts']);
+  });
+
+  it('ignores a flip to the value already set', async () => {
+    const workspace = setBindingMock('GetWorkspaceCurrentDiff', async () => CANONICAL_PATCH);
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    expect(workspace).toHaveBeenCalledTimes(1);
+
+    await state.setIgnoreWhitespace(false);
+    expect(workspace).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports which diff sources can honor -w', () => {
+    // Gitdiff-backed.
+    expect(supportsIgnoreWhitespace('workspace', null)).toBe(true);
+    expect(supportsIgnoreWhitespace('branch', null)).toBe(true);
+    expect(supportsIgnoreWhitespace('branch', 'a'.repeat(40))).toBe(true);
+    expect(supportsIgnoreWhitespace('pr', 'a'.repeat(40))).toBe(true);
+    // The PR whole-diff can come from the forge API, which has no -w.
+    expect(supportsIgnoreWhitespace('pr', null)).toBe(false);
+    // Edits replay persisted tool-call patches, never a git recomputation.
+    expect(supportsIgnoreWhitespace('edits', null)).toBe(false);
+    expect(supportsIgnoreWhitespace('edits', 'a'.repeat(40))).toBe(false);
+  });
+
+  it('disables the toggle in edits scope and never sends -w there', async () => {
+    setBindingMock('ListThreadEditDiffs', async () => ({
+      entries: [{
+        itemId: 'item-1',
+        payloadId: 'payload-1',
+        turnIndex: 0,
+        title: 'Edit',
+        paths: ['src/real.ts'],
+        insertions: 1,
+        deletions: 1,
+        createdAt: 1,
+      }],
+      turnLabels: [{ turnIndex: 0, label: 'turn' }],
+    }));
+    const payload = setBindingMock('GetPayloadData', async () => ({ data: CANONICAL_PATCH }));
+    setBindingMock('VerifyEditDiffs', async () => ({ verified: [] }));
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    expect(state.canIgnoreWhitespace).toBe(true);
+
+    await state.setIgnoreWhitespace(true);
+    await waitLoaded(state);
+    await state.setScope('edits');
+    await waitLoaded(state);
+
+    // The flag stays set (flip back to a supported scope and it applies
+    // again) but the edits load can't honor it and isn't asked to.
+    expect(state.ignoreWhitespace).toBe(true);
+    expect(state.canIgnoreWhitespace).toBe(false);
+    for (const call of payload.mock.calls) {
+      expect(call).not.toContain(true);
+    }
+  });
+
+  // ---- comment-anchor interplay -------------------------------------
+  //
+  // The decision: comment creation stays ENABLED under `-w`. git's `-w`
+  // patch carries true file line numbers (proved Go-side by
+  // TestIgnoreWhitespaceKeepsCanonicalLineNumbers), so an anchor taken
+  // from it names the same physical line as the canonical patch and the
+  // `path:line` handed to the provider cannot drift.
+  //
+  // The one residual hazard is a draft that outlives the patch it was
+  // written against, which can only happen where the sourceKey is stable
+  // across a patch change. These two tests pin both halves.
+
+  it('re-keys drafts by patch content, so a flip cannot re-anchor them', async () => {
+    setBindingMock(
+      'GetWorkspaceCurrentDiff',
+      async (_threadId: string, ignoreWhitespace: boolean) =>
+        (ignoreWhitespace ? IGNORED_PATCH : CANONICAL_PATCH),
+    );
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+
+    const canonicalKey = diffSourceKey(CANONICAL_PATCH);
+    // Persisted against the canonical patch only — the store re-fetches by
+    // sourceKey on every reload, which is exactly the guard under test.
+    setBindingMock('ListDiffReviewComments', async (_threadId: string, _scope: string, sourceKey: string) =>
+      (sourceKey === canonicalKey
+        ? [draft({ id: 'd-1', sourceKey: canonicalKey, filePath: 'src/indent.ts', newLine: 2 })]
+        : []));
+    await state.reload();
+    await waitLoaded(state);
+    expect(state.sourceKey).toBe(canonicalKey);
+    expect(state.drafts.map((entry) => entry.id)).toEqual(['d-1']);
+
+    await state.setIgnoreWhitespace(true);
+    await waitLoaded(state);
+
+    // The patch changed, so the content-hashed key changed with it: the
+    // draft is not re-anchored against a diff it was never written
+    // against. It is hidden, never deleted, and comes back on flip-back.
+    expect(state.sourceKey).toBe(diffSourceKey(IGNORED_PATCH));
+    expect(state.sourceKey).not.toBe(canonicalKey);
+    expect(state.drafts).toEqual([]);
+
+    await state.setIgnoreWhitespace(false);
+    await waitLoaded(state);
+    expect(state.sourceKey).toBe(canonicalKey);
+    expect(state.drafts.map((entry) => entry.id)).toEqual(['d-1']);
+  });
+
+  it('marks a carried-over draft orphaned when -w drops its line', async () => {
+    // A selected commit keys by SHA, so drafts DO survive the flip. One
+    // anchored to a whitespace-only line has nowhere to land in the -w
+    // patch — it must be reported orphaned rather than silently vanish
+    // from the diff body while still counting toward the tally.
+    const sha = 'a'.repeat(40);
+    setBindingMock('GetBranchBaseDiff', async () => CANONICAL_PATCH);
+    setBindingMock('ListBranchCommits', async () => [
+      { sha, shortSha: 'aaaaaaa', subject: 'first', author: 'r', authoredAt: 1 },
+    ]);
+    setBindingMock(
+      'GetCommitDiff',
+      async (_threadId: string, _sha: string, ignoreWhitespace: boolean) =>
+        (ignoreWhitespace ? IGNORED_PATCH : CANONICAL_PATCH),
+    );
+
+    const state = reviewStateForPane('pane-1', 'thread-1');
+    await waitLoaded(state);
+    await state.setScope('branch');
+    await state.selectCommit(sha);
+    await waitLoaded(state);
+    expect(state.sourceKey).toBe(`commit:${sha}`);
+
+    // The commit key is stable, so these come back on every reload —
+    // including the one the whitespace flip triggers.
+    setBindingMock('ListDiffReviewComments', async () => [
+      // On the re-indented line, which -w renders away entirely.
+      draft({ id: 'ws-only', scope: 'branch', sourceKey: `commit:${sha}`, filePath: 'src/indent.ts', newLine: 2 }),
+      // On the real edit, which -w keeps at the same line number.
+      draft({ id: 'real', scope: 'branch', sourceKey: `commit:${sha}`, filePath: 'src/real.ts', newLine: 2 }),
+    ]);
+    await state.reload();
+    await waitLoaded(state);
+    // Both anchors resolve against the canonical patch.
+    expect(state.drafts.map((entry) => entry.id).sort()).toEqual(['real', 'ws-only']);
+    expect([...state.orphanedDraftIds()]).toEqual([]);
+
+    await state.setIgnoreWhitespace(true);
+    await waitLoaded(state);
+
+    expect(state.drafts.map((entry) => entry.id).sort()).toEqual(['real', 'ws-only']);
+    expect([...state.orphanedDraftIds()]).toEqual(['ws-only']);
+
+    // Flipping back clears the orphan flag — nothing was mutated.
+    await state.setIgnoreWhitespace(false);
+    await waitLoaded(state);
+    expect([...state.orphanedDraftIds()]).toEqual([]);
   });
 });

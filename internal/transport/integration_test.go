@@ -291,41 +291,20 @@ func TestIntegration_ReplayRoundTrip(t *testing.T) {
 	}
 
 	conn := f.dial(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
 
-	// Ask the server for everything missed since seq 0 in both channels.
-	frame := ClientFrame{
-		Type: frameTypeReplay,
-		LastSeqByChannel: map[string]uint64{
-			"ch:a": 0,
-			"ch:b": 0,
-		},
+	// Ask the server for everything missed since seq 0 in both channels,
+	// then group the replayed entries by channel to verify per-channel
+	// seq order survives the batch envelope.
+	drained := requestReplay(t, conn, map[string]uint64{
+		"ch:a": 0,
+		"ch:b": 0,
+	})
+	if len(drained.events) != 4 {
+		t.Fatalf("replayed %d events, want 4", len(drained.events))
 	}
-	buf, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("marshal replay: %v", err)
-	}
-	if err := conn.Write(ctx, websocket.MessageText, buf); err != nil {
-		t.Fatalf("ws write: %v", err)
-	}
-
-	// Drain four events, group by channel, verify per-channel seq order.
-	got := map[string][]ServerFrame{}
-	for total := 0; total < 4; {
-		_, raw, err := conn.Read(ctx)
-		if err != nil {
-			t.Fatalf("ws read: %v", err)
-		}
-		var fr ServerFrame
-		if err := json.Unmarshal(raw, &fr); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		if fr.Type != frameTypeEvent {
-			continue
-		}
-		got[fr.Channel] = append(got[fr.Channel], fr)
-		total++
+	got := map[string][]batchEventEntry{}
+	for _, evt := range drained.events {
+		got[evt.Channel] = append(got[evt.Channel], evt)
 	}
 
 	chA := got["ch:a"]

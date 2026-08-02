@@ -406,3 +406,98 @@ func TestCapRunesWithEllipsis(t *testing.T) {
 		t.Fatalf("rune-aware cap = %q, want café...", got)
 	}
 }
+
+// The effort flag belongs to the runners, not the callers: Config.Effort is
+// filled for every text-generation flow, so a caller that forgot to append it
+// (thread titles and workflow digests both did) silently ran at the CLI's
+// default tier while commit messages ran at the configured one.
+func TestRunClaude_RendersEffortFromConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		effort string
+		want   []string
+	}{
+		{name: "tiered model sends the flag", effort: "low", want: []string{"--effort", "low"}},
+		{name: "model without tiers omits it", effort: "", want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got CLISpec
+			cfg := Config{
+				Binary: "claude",
+				Model:  "claude-sonnet-4-6",
+				Effort: tc.effort,
+				Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
+					got = spec
+					return CLIResult{Stdout: `{"structured_output":{}}`}, nil
+				},
+			}
+			if _, err := RunClaude(
+				context.Background(), cfg, "/workspace", `{"type":"object"}`, nil, "prompt", time.Minute,
+			); err != nil {
+				t.Fatalf("RunClaude: %v", err)
+			}
+			assertFlagValue(t, got.Args, "--effort", tc.want)
+		})
+	}
+}
+
+// The Codex counterpart. An empty effort must drop the whole `--config
+// model_reasoning_effort=...` pair rather than send an empty override, which
+// codex would read as a malformed value rather than "use your default".
+func TestRunCodex_RendersEffortFromConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		effort string
+		want   []string
+	}{
+		{name: "tiered model sends the override", effort: "high", want: []string{"--config", `model_reasoning_effort="high"`}},
+		{name: "model without tiers omits it", effort: "", want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got CLISpec
+			cfg := Config{
+				Binary: "codex",
+				Model:  "gpt-5.6-sol",
+				Effort: tc.effort,
+				Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
+					got = spec
+					for i, arg := range spec.Args {
+						if arg == "--output-last-message" && i+1 < len(spec.Args) {
+							if err := os.WriteFile(spec.Args[i+1], []byte(`{}`), 0o600); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+					return CLIResult{}, nil
+				},
+			}
+			if _, err := RunCodex(
+				context.Background(), cfg, "/workspace", `{"type":"object"}`, nil, "prompt", time.Minute,
+			); err != nil {
+				t.Fatalf("RunCodex: %v", err)
+			}
+			assertFlagValue(t, got.Args, "--config", tc.want)
+		})
+	}
+}
+
+// assertFlagValue checks that flag is absent from args when want is nil, and
+// otherwise that args carries want as a contiguous pair.
+func assertFlagValue(t *testing.T, args []string, flag string, want []string) {
+	t.Helper()
+	for i, arg := range args {
+		if arg != flag {
+			continue
+		}
+		if want == nil {
+			t.Fatalf("args must omit %s; got %v", flag, args)
+		}
+		if i+1 >= len(args) || args[i+1] != want[1] {
+			t.Fatalf("%s value = %v, want %q; got %v", flag, args[i+1:], want[1], args)
+		}
+		return
+	}
+	if want != nil {
+		t.Fatalf("args missing %v; got %v", want, args)
+	}
+}

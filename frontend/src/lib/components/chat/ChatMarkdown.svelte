@@ -28,6 +28,9 @@
   // **Markdown-aware copy** still runs through the document-level copy
   // delegate, reading `.markdown-body` and serializing the selected
   // range back to markdown. Outer wrapper still carries that class.
+  // The clipboard also gets a `text/html` flavor built from that same
+  // markdown (`utils/markdownClipboard.ts`), so a paste into a rich
+  // target keeps the structure this component renders.
 
   import { getContext } from 'svelte';
   import { Streamdown } from 'svelte-streamdown';

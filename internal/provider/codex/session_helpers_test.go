@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -609,10 +610,81 @@ func TestBuildThreadParamsUnknownSandbox(t *testing.T) {
 	}
 }
 
+// TestBuildThreadParamsMinimal pins the one key a zero Config still sends.
+// Every other param is omit-when-empty ("inherit whatever Codex defaults to"),
+// but a reviewer left unstated is not inherited from Codex — it is inherited
+// from whatever this THREAD was last started with, which on a resume is the
+// previous runtime mode's choice. Sending it unconditionally is what makes the
+// wire state a function of the thread row alone.
 func TestBuildThreadParamsMinimal(t *testing.T) {
 	params := buildThreadParams(Config{})
-	if len(params) != 0 {
-		t.Errorf("expected empty params for zero config, got %v", params)
+	if len(params) != 1 {
+		t.Errorf("expected only the always-explicit reviewer for zero config, got %v", params)
+	}
+	if params["approvalsReviewer"] != approvalsReviewerUser {
+		t.Errorf("approvalsReviewer = %v, want %q (Codex's protocol default)", params["approvalsReviewer"], approvalsReviewerUser)
+	}
+}
+
+// TestBuildThreadParamsAlwaysSendsReviewer is the transition half of the rule
+// above: not "does a fresh start name a reviewer" but "does a thread moving
+// OUT of auto say so". Omission on the way out is the failure mode
+// t3-improvements.md §3.2 names — the thread keeps auto-reviewing approvals
+// under a runtime mode that promises a human will see them.
+func TestBuildThreadParamsAlwaysSendsReviewer(t *testing.T) {
+	for _, mode := range provider.AllRuntimeModes {
+		t.Run(string(mode), func(t *testing.T) {
+			cfg := ConfigFromOptions(provider.SessionOptions{Provider: "codex", RuntimeMode: mode})
+			// A resume carries the same Config a fresh start does; the only
+			// difference upstream is the threadId key NewSession adds.
+			cfg.ResumeThreadID = "thread-abc"
+			params := buildThreadParams(cfg)
+			want := codexApprovalsReviewer(mode)
+			if params["approvalsReviewer"] != want {
+				t.Errorf("approvalsReviewer = %v, want %q", params["approvalsReviewer"], want)
+			}
+		})
+	}
+}
+
+// TestVerifyApprovalsReviewerEcho covers the silent-drop detection. The
+// dangerous case is the third one: a codex that does not understand
+// `approvalsReviewer` accepts the param, drops it, and answers with a
+// user-reviewer thread — which reads on the wire exactly like a response with
+// no reviewer field at all. Treating an absent echo as the protocol default is
+// what turns that into a mismatch rather than a shrug.
+func TestVerifyApprovalsReviewerEcho(t *testing.T) {
+	cases := []struct {
+		name      string
+		requested string
+		resp      string
+		wantErr   bool
+	}{
+		{"auto echoed back", approvalsReviewerAuto, `{"approvalsReviewer":"auto_review"}`, false},
+		{"user echoed back", approvalsReviewerUser, `{"approvalsReviewer":"user"}`, false},
+		{"auto silently dropped", approvalsReviewerAuto, `{"thread":{"id":"t"}}`, true},
+		{"auto downgraded to user", approvalsReviewerAuto, `{"approvalsReviewer":"user"}`, true},
+		{"user absent is the protocol default", approvalsReviewerUser, `{"thread":{"id":"t"}}`, false},
+		{"user got a sticky auto reviewer", approvalsReviewerUser, `{"approvalsReviewer":"auto_review"}`, true},
+		{"unparseable response", approvalsReviewerAuto, `not json`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifyApprovalsReviewerEcho("thread/start", tc.requested, json.RawMessage(tc.resp))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("verifyApprovalsReviewerEcho error = %v, wantErr = %v", err, tc.wantErr)
+			}
+			if err == nil {
+				return
+			}
+			// The message has to name both halves — "it didn't work" is not a
+			// user-facing error, "you asked for X and got Y" is.
+			for _, want := range []string{tc.requested, "thread/start"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
 	}
 }
 

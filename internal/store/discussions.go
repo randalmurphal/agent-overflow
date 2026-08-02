@@ -2,10 +2,18 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 )
 
 const discussionProjectIDExpr = "COALESCE(project_id, '')"
+
+// errDiscussionDefinitionDecode marks a row whose `definition` blob does
+// not decode. It is a per-row content failure — the read itself worked —
+// which is why the list read can skip past it while the single-row
+// getters, whose caller asked for that exact row, still fail.
+var errDiscussionDefinitionDecode = errors.New("store: decode discussion definition")
 
 // discussionDefinitionPayload contains only the fields that belong in the
 // serialized JSON blob. The remaining fields (id, name, description, scope,
@@ -57,6 +65,14 @@ func (s *Store) GetDiscussionDefByID(id string) (DiscussionDefinition, error) {
 	return scanDiscussionDefinition(row)
 }
 
+// ListDiscussionDefs returns the definitions matching the scope/project
+// filter. A row whose `definition` blob is undecodable is dropped from the
+// result with a log line naming it, rather than failing the read: one
+// corrupt blob taking the whole discussion picker away is a worse outcome
+// than the picker missing the entry that is already unusable. Errors are
+// reserved for failures of the read itself (query, scan, iteration), which
+// no amount of skipping recovers from. Callers wanting that one row —
+// GetDiscussionDef / GetDiscussionDefByID — still get the decode error.
 func (s *Store) ListDiscussionDefs(scope, projectID string) ([]DiscussionDefinition, error) {
 	query := fmt.Sprintf(`SELECT id, name, description, scope, %s, definition, created_at, updated_at
 		FROM discussion_definitions`, discussionProjectIDExpr)
@@ -84,6 +100,10 @@ func (s *Store) ListDiscussionDefs(scope, projectID string) ([]DiscussionDefinit
 	for rows.Next() {
 		def, err := scanDiscussionDefinition(rows)
 		if err != nil {
+			if errors.Is(err, errDiscussionDefinitionDecode) {
+				log.Printf("store: skipping unreadable discussion definition: %v", err)
+				continue
+			}
 			return nil, err
 		}
 		defs = append(defs, def)
@@ -160,7 +180,7 @@ func scanDiscussionDefinition(scanner discussionDefinitionScanner) (DiscussionDe
 	var def DiscussionDefinition
 	if definitionJSON != "" {
 		if err := json.Unmarshal([]byte(definitionJSON), &def); err != nil {
-			return DiscussionDefinition{}, fmt.Errorf("store: decode discussion definition %s: %w", name, err)
+			return DiscussionDefinition{}, fmt.Errorf("%w %s (id %s): %w", errDiscussionDefinitionDecode, name, defID, err)
 		}
 	}
 

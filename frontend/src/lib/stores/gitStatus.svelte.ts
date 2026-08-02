@@ -81,7 +81,14 @@ export function createGitStatusSlot(): GitStatusSlot {
   // thread row so the workspace strip + sidebar reflect the real checkout.
   // Queued (not awaited inline) so a burst of branch flips collapses to the
   // latest value and never blocks status application.
-  let queuedBranchPersist: { threadId: string; branch: string } | null = null;
+  //
+  // `workspacePath` is the workspace the branch was observed in and rides
+  // along as the backend's compare-and-swap guard: this queue holds no lock,
+  // so a write can land after a worktree switch has already re-pointed the
+  // thread, and without the guard the old workspace's branch would overwrite
+  // the new one durably. It survives queue collapse unchanged because it
+  // describes the observation's origin, not the value being written.
+  let queuedBranchPersist: { threadId: string; workspacePath: string; branch: string } | null = null;
   let branchPersistRunning = false;
 
   async function drainBranchPersistQueue(): Promise<void> {
@@ -89,7 +96,12 @@ export function createGitStatusSlot(): GitStatusSlot {
       const next = queuedBranchPersist;
       queuedBranchPersist = null;
       try {
-        await UpdateThreadBranch(next.threadId, next.branch);
+        // The backend returns the row AS IT STANDS, so a refused write hands
+        // back the truth. Syncing it repairs the optimistic local value and
+        // stops the next observation from comparing against a branch the
+        // thread never had.
+        const persisted = await UpdateThreadBranch(next.threadId, next.workspacePath, next.branch);
+        if (persisted) syncThread(persisted as Thread);
       } catch (err) {
         console.error('Failed to persist observed git branch:', err);
         if (ctx?.getLiveThreadId() === next.threadId) {
@@ -100,8 +112,8 @@ export function createGitStatusSlot(): GitStatusSlot {
     branchPersistRunning = false;
   }
 
-  function persistObservedBranch(threadId: string, branch: string): void {
-    queuedBranchPersist = { threadId, branch };
+  function persistObservedBranch(threadId: string, workspacePath: string, branch: string): void {
+    queuedBranchPersist = { threadId, workspacePath, branch };
     if (branchPersistRunning) return;
     branchPersistRunning = true;
     void drainBranchPersistQueue();
@@ -120,7 +132,7 @@ export function createGitStatusSlot(): GitStatusSlot {
     if ((thread.branch ?? '') === branch) return;
 
     syncThread({ ...thread, branch });
-    persistObservedBranch(thread.id, branch);
+    persistObservedBranch(thread.id, thread.workspacePath, branch);
   }
 
   return {

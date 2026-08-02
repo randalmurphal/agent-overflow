@@ -114,6 +114,21 @@ type Settings struct {
 	ClaudeHiddenModels []string `json:"claudeHiddenModels,omitempty"`
 	CodexHiddenModels  []string `json:"codexHiddenModels,omitempty"`
 
+	// ClaudeCustomEnv / CodexCustomEnv are user-defined environment
+	// variables applied to the provider processes Agent Overflow spawns
+	// for that provider — chat sessions, account / identity / rate-limit
+	// probes, and the text-generation CLI. Applied at spawn, so a change
+	// reaches new sessions and probes only. The Claude list also covers
+	// claude-tui (one binary, one backend).
+	//
+	// Names Agent Overflow pins itself are rejected on save rather than
+	// dropped at spawn — see providerenv.go for the shape rules, the
+	// reserved names, and why this is a list rather than a map. Sensitive
+	// values are redacted out of the GetSettings wire shape; they are NOT
+	// encrypted on disk (see the SECURITY NOTE below).
+	ClaudeCustomEnv []ProviderEnvVar `json:"claudeCustomEnv,omitempty"`
+	CodexCustomEnv  []ProviderEnvVar `json:"codexCustomEnv,omitempty"`
+
 	// DefaultThreadEnvMode seeds the workspace mode for new draft threads.
 	// Accepts "local" or "worktree"; unknown values fall back to "local"
 	// when settings are loaded.
@@ -210,6 +225,18 @@ type Settings struct {
 	// Retention.Days = 30 cleans threads, dated provider-event logs,
 	// and bug-report bookmark files older than the window. 0 disables.
 	Retention RetentionSettings `json:"retention"`
+
+	// BackgroundGitFetch enables the periodic `git fetch` the app runs
+	// for the repositories behind the sidebar's projects, so ahead/behind
+	// counts reflect the remote instead of freezing at the user's last
+	// manual fetch. Default true; one fetch per repository per
+	// git.FetchStaleWindow, origin only, never --prune.
+	//
+	// Turn it off for a metered or VPN-gated connection, or for a
+	// monorepo whose fetch is expensive. Off means the counts are only
+	// as fresh as the last explicit fetch/pull/prune — nothing else
+	// changes. See app_git_background_fetch.go for the cadence.
+	BackgroundGitFetch bool `json:"backgroundGitFetch"`
 
 	// GitLabSelfHostedHosts is the user's allowlist of self-hosted
 	// GitLab hostnames (bare hosts, e.g. "gitlab.mycompany.com").
@@ -317,10 +344,14 @@ var DefaultSettings = Settings{
 	ObservabilityEventLogEnabled: false,
 	// 30 days is the default retention window. The cleanup loop reads
 	// this on every tick, so toggling it doesn't require a restart.
-	Retention:       RetentionSettings{Days: 30},
-	ProjectSortMode: "lastActivity",
-	UsagePeriod:     "month",
-	WorkflowPaused:  false,
+	Retention: RetentionSettings{Days: 30},
+	// On by default: a decorative behind-count is worse than no
+	// behind-count, and the cost is one `git fetch` per repository per
+	// five minutes. Users who can't afford that turn it off.
+	BackgroundGitFetch: true,
+	ProjectSortMode:    "lastActivity",
+	UsagePeriod:        "month",
+	WorkflowPaused:     false,
 }
 
 // HiddenModelsForProvider returns the hidden-model slug list for the
@@ -427,6 +458,14 @@ func (s *Service) Get() Settings {
 func (s *Service) Update(patch map[string]any) (Settings, error) {
 	if _, ok := patch["remoteEndpoints"]; ok {
 		return Settings{}, fmt.Errorf("settings: use AddRemoteEndpoint / UpdateRemoteEndpoint / DeleteRemoteEndpoint to mutate remote endpoints")
+	}
+	for _, key := range []string{"claudeCustomEnv", "codexCustomEnv"} {
+		if _, ok := patch[key]; ok {
+			// Same trap as remoteEndpoints: GetSettings redacts sensitive
+			// values, so a read-mutate-write round trip through this path
+			// would persist the redaction and destroy them.
+			return Settings{}, fmt.Errorf("settings: use SetProviderEnvVar / DeleteProviderEnvVar to mutate %s", key)
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

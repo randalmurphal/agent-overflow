@@ -10,8 +10,15 @@
 //   - disconnect rejects pending RPCs with DisconnectedError
 //   - reconnect re-sends the replay frame with lastSeqByChannel
 //   - gap event fires both console.warn and the synthetic
-//     transport:gap channel
+//     transport:gap channel; a gap marker is a resync instruction, so
+//     its seq is adopted in BOTH directions and never dedup-dropped
+//     (the restarted-backend case answers an above-head cursor with a
+//     LOWER seq)
 //   - exponential backoff: second reconnect waits >first delay
+//   - backoff resets on stability (BACKOFF_RESET_AFTER_MS), not on
+//     open — an accept-then-close server keeps climbing the ladder
+//   - refused bootstrap credential surfaces as 'unauthorized' and
+//     clears the moment the manifest is served again
 //   - backoff collapse: an RPC / page resume / triggerReconnect fires a
 //     queued backoff attempt immediately; the RPC path is rate-floored
 //     (one attempt per RECONNECT_INITIAL_MS); resume-while-hidden no-ops
@@ -34,7 +41,10 @@
 //   - send-throw fails the matching pending RPC
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BootstrapRejectedError } from './bootstrap';
 import {
+  BACKOFF_RESET_AFTER_MS,
+  BOOTSTRAP_INVALIDATE_AFTER_FAILURES,
   createWSClient,
   DisconnectedError,
   MAX_PENDING_RPCS,
@@ -443,6 +453,80 @@ describe('WSClient', () => {
     // signal that the client's history is incomplete, not an instruction
     // to drop the event itself.
     expect(channel).toEqual([{ kind: 'tool_call' }]);
+
+    client.close();
+  });
+
+  // The server emits a gap marker whose seq sits BELOW our cursor when
+  // our cursor sits above its head — the backend restarted and re-seeded
+  // every channel from 1. Dedup must not eat it, or the cursor stays
+  // stranded above the new head and every live event on that channel is
+  // discarded forever.
+  it('honours a gap marker whose seq is below the tracked cursor', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const gaps: unknown[] = [];
+    const channel: unknown[] = [];
+    client.subscribe(transportGapChannel, (data) => gaps.push(data));
+    client.subscribe('thread:updated', (data) => channel.push(data));
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    // Climb to seq 900 against the old backend.
+    ws.pushFrame({ type: 'event', channel: 'thread:updated', seq: 900, data: 'old' });
+    expect(channel).toEqual(['old']);
+
+    // New backend: the replay answers our above-head cursor with a gap
+    // marker at ITS head (seq 2), then live events resume from there.
+    ws.pushFrame({ type: 'event', channel: 'thread:updated', seq: 2, data: null, gap: true });
+    expect(gaps).toEqual([{ channel: 'thread:updated', seq: 2 }]);
+    expect(warn).toHaveBeenCalled();
+
+    ws.pushFrame({ type: 'event', channel: 'thread:updated', seq: 3, data: 'fresh' });
+    expect(channel).toEqual(['old', null, 'fresh']);
+
+    // The cursor was adopted downward, so the reconnect handshake asks
+    // the new backend for events after ITS seq, not the stale 900.
+    ws.triggerClose();
+    await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await flushMicrotasks();
+    expect(second.sent[0]).toMatchObject({
+      type: 'replay',
+      lastSeqByChannel: { 'thread:updated': 3 },
+    });
+
+    client.close();
+  });
+
+  // A gap-flagged event that is genuinely stale still resyncs: gap is an
+  // instruction, and the marker's seq is authoritative in both
+  // directions. This is the same code path as above driven from the
+  // opposite side, so a future "only reset downward" shortcut fails here.
+  it('adopts the gap marker seq even when it moves the cursor forward', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({ type: 'event', channel: 'thread:updated', seq: 5, data: 'a' });
+    ws.pushFrame({ type: 'event', channel: 'thread:updated', seq: 40, data: null, gap: true });
+    ws.triggerClose();
+    await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await flushMicrotasks();
+    expect(second.sent[0]).toMatchObject({
+      type: 'replay',
+      lastSeqByChannel: { 'thread:updated': 40 },
+    });
 
     client.close();
   });
@@ -1534,6 +1618,157 @@ describe('WSClient', () => {
     MockWebSocket.instances.at(-1)!.triggerClose();
     await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
     expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+    client.close();
+  });
+
+  // A backend that accepts the handshake and then dies is the storm the
+  // ladder exists for: resetting on `open` pinned every retry at the
+  // jitter floor (~50ms), i.e. ~10 connects/second for as long as the
+  // condition lasted.
+  it('does not reset the backoff for a socket that dies right after opening', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+
+    for (let i = 0; i < 5; i++) {
+      const ws = MockWebSocket.instances.at(-1)!;
+      ws.acceptOpen();
+      await vi.advanceTimersByTimeAsync(0);
+      ws.triggerClose();
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+    }
+
+    const stormed = MockWebSocket.instances.at(-1)!;
+    stormed.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    // Just short of the stability window: still not a healthy backend.
+    await vi.advanceTimersByTimeAsync(BACKOFF_RESET_AFTER_MS - 1_000);
+    stormed.triggerClose();
+
+    const snap = client.getStatus();
+    expect(snap.status).toBe('reconnecting');
+    expect(snap.nextAttemptAt).not.toBeNull();
+    expect(snap.nextAttemptAt! - Date.now()).toBeGreaterThan(RECONNECT_MAX_LOCAL_MS / 2);
+
+    client.close();
+  });
+
+  it('resets the backoff after a connection that stayed up past the stability window', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Climb the ladder on sockets that never open.
+    MockWebSocket.instances[0]!.triggerClose();
+    for (let i = 0; i < 4; i++) {
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+      MockWebSocket.instances.at(-1)!.triggerClose();
+    }
+    expect(client.getStatus().nextAttemptAt! - Date.now())
+      .toBeGreaterThan(RECONNECT_MAX_LOCAL_MS / 2);
+
+    // One connection that actually served, then dropped.
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+    const stable = MockWebSocket.instances.at(-1)!;
+    stable.acceptOpen();
+    await vi.advanceTimersByTimeAsync(BACKOFF_RESET_AFTER_MS);
+    stable.triggerClose();
+
+    const snap = client.getStatus();
+    expect(snap.nextAttemptAt).not.toBeNull();
+    expect(snap.nextAttemptAt! - Date.now()).toBeLessThanOrEqual(RECONNECT_INITIAL_MS);
+
+    client.close();
+  });
+
+  // A restarted backend answers the stale token with a refusal, not a
+  // dead socket: the loop would otherwise show "Reconnecting…" forever
+  // while every attempt is structurally doomed.
+  it('reports unauthorized on a refused credential and clears it when the manifest returns', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const fetchSpy = vi
+      .fn<() => Promise<{ wsUrl: string; token: string }>>()
+      // Transient first (server up, manifest gated), then the refusal,
+      // then another transient failure — which must NOT clear the
+      // verdict, the token is still dead — then a served manifest.
+      .mockRejectedValueOnce(new Error('bootstrap fetch failed: HTTP 503'))
+      .mockRejectedValueOnce(new BootstrapRejectedError(404))
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValue({ wsUrl: 'ws://example/ws', token: 't' });
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap: fetchSpy });
+    client.subscribe('x', () => {});
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(client.getStatus().status).toBe('reconnecting');
+
+    // attempt=0 backoff is 250 * 0.5 = 125ms; each rung doubles.
+    await vi.advanceTimersByTimeAsync(150);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(client.getStatus().status).toBe('unauthorized');
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(client.getStatus().status).toBe('unauthorized');
+
+    await vi.advanceTimersByTimeAsync(600);
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    // Manifest served: the refusal is over before the socket even opens.
+    expect(client.getStatus().status).toBe('reconnecting');
+
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('connected');
+
+    client.close();
+  });
+
+  // Transition the other way: a healthy session whose backend restarts
+  // must ENTER unauthorized, not stay in 'reconnecting'.
+  it('enters unauthorized when a live session\'s backend restarts', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const fetchSpy = vi
+      .fn<() => Promise<{ wsUrl: string; token: string }>>()
+      .mockResolvedValueOnce({ wsUrl: 'ws://example/ws', token: 't' })
+      .mockRejectedValue(new BootstrapRejectedError(404));
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap: fetchSpy });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('connected');
+
+    // Backend restarts: the socket dies, and every attempt from here
+    // dies before open until the cached bootstrap is invalidated and
+    // the refetch surfaces the refusal.
+    MockWebSocket.instances[0]!.triggerClose();
+    expect(client.getStatus().status).toBe('reconnecting');
+    for (let i = 0; i < BOOTSTRAP_INVALIDATE_AFTER_FAILURES; i++) {
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+      MockWebSocket.instances.at(-1)!.triggerClose();
+    }
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+    // The refetch happened (bootstrap-cache invalidation) and the
+    // refusal it surfaced is what the user now sees. Later attempts
+    // cascade inside this window — the count is a floor, not a total.
+    expect(fetchSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(client.getStatus().status).toBe('unauthorized');
 
     client.close();
   });

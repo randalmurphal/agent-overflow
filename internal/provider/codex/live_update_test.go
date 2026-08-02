@@ -228,3 +228,70 @@ done
 		t.Fatalf("currentModel = %q, want gpt-5.6-codex", got)
 	}
 }
+
+// TestCodexPlanLiveUpdateRuntimeModeTransitions covers transitions rather than
+// resting states, across EVERY ordered pair of tiers. Codex has no spawn-only
+// runtime-mode axis — approvalPolicy, sandboxPolicy and approvalsReviewer are
+// all turn/start overrides upstream documents as applying "for this turn and
+// subsequent turns" — so every pair must plan live, including the pairs that
+// force a restart on Claude (anything touching read-only, whose
+// `--disallowedTools` is spawn-only there).
+//
+// The reviewer assertion is the transition-specific half: it is not enough
+// that a switch INTO auto sets auto_review, the switch back OUT has to set
+// user. An update that simply omitted the reviewer would pass a states-only
+// test and leave the thread auto-reviewing forever.
+func TestCodexPlanLiveUpdateRuntimeModeTransitions(t *testing.T) {
+	for _, from := range provider.AllRuntimeModes {
+		for _, to := range provider.AllRuntimeModes {
+			t.Run(string(from)+" to "+string(to), func(t *testing.T) {
+				prev := codexLiveUpdateBaseOptions()
+				prev.RuntimeMode = from
+				next := prev
+				next.RuntimeMode = to
+
+				update, ok := PlanLiveUpdate(prev, next)
+				if !ok {
+					t.Fatalf("PlanLiveUpdate(%q → %q) needs a restart; every Codex runtime axis is a turn/start override", from, to)
+				}
+				want := wantCodexRuntime[to]
+				got := codexRuntime{
+					ApprovalPolicy:    update.ApprovalPolicy,
+					Sandbox:           update.Sandbox,
+					ApprovalsReviewer: update.ApprovalsReviewer,
+				}
+				if got != want {
+					t.Errorf("update runtime triple = %+v, want %+v", got, want)
+				}
+			})
+		}
+	}
+}
+
+// TestApplyLiveUpdateSwapsReviewerOnTurnConfig proves the plan actually lands
+// on the session state Send reads. PlanLiveUpdate can be perfect and the
+// switch still be inert if ApplyLiveUpdate forgets a field — and the reviewer
+// is exactly the kind of field a struct-literal copy silently omits.
+func TestApplyLiveUpdateSwapsReviewerOnTurnConfig(t *testing.T) {
+	s := &Session{approvalsReviewer: approvalsReviewerUser}
+
+	toAuto := codexLiveUpdateBaseOptions()
+	toAuto.RuntimeMode = provider.RuntimeAuto
+	update, ok := PlanLiveUpdate(codexLiveUpdateBaseOptions(), toAuto)
+	if !ok {
+		t.Fatal("PlanLiveUpdate into auto needs a restart")
+	}
+	s.ApplyLiveUpdate(update)
+	if got := s.turnConfig().ApprovalsReviewer; got != approvalsReviewerAuto {
+		t.Fatalf("turnConfig reviewer after switching into auto = %q, want %q", got, approvalsReviewerAuto)
+	}
+
+	back, ok := PlanLiveUpdate(toAuto, codexLiveUpdateBaseOptions())
+	if !ok {
+		t.Fatal("PlanLiveUpdate out of auto needs a restart")
+	}
+	s.ApplyLiveUpdate(back)
+	if got := s.turnConfig().ApprovalsReviewer; got != approvalsReviewerUser {
+		t.Fatalf("turnConfig reviewer after switching out of auto = %q, want %q", got, approvalsReviewerUser)
+	}
+}

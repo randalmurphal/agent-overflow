@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { DiffReviewComment } from '../../types/models';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
 
   interface Props {
     comment: DiffReviewComment;
@@ -63,6 +64,9 @@
       cancelEdit();
       return;
     }
+    // Mid-composition the edited text is still in the IME buffer, so the
+    // submit chord would save a truncated comment.
+    if (event.key === 'Enter' && isImeComposingEvent(event)) return;
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       void saveEdit();

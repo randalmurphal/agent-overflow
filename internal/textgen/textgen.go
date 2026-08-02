@@ -85,8 +85,20 @@ type Config struct {
 	Provider string
 	Binary   string
 	Model    string
-	Effort   string
-	Exec     CLIExecutor
+	// Effort is the reasoning tier, or empty for a model that advertises none
+	// (see provider.ModelDeclaresNoReasoningEffort). RunCodex/RunClaude own the
+	// flag and omit it when this is empty — callers must not append their own,
+	// or the two runners would disagree about whether it was already there.
+	Effort string
+	// Env holds the user's custom environment for this provider (see
+	// settings.ProviderEnvVars). Text generation drives the SAME CLI against
+	// the SAME backend as a chat session, so a base URL or proxy that the
+	// session needs is a base URL or proxy this run needs — without it, commit
+	// message and thread-title generation would be the one surface that
+	// silently kept talking to the vendor default. Applied over the process
+	// environment by ExecCLI.
+	Env  map[string]string
+	Exec CLIExecutor
 }
 
 // CLIExecutor is the seam tests use to stub out Codex/Claude CLI
@@ -101,6 +113,12 @@ type CLISpec struct {
 	Args   []string
 	Cwd    string
 	Stdin  string
+	// Env are environment overrides applied over the current process
+	// environment (nil inherits it unchanged), through the same
+	// provider.BuildEnvironment rule every provider subprocess gets — one env
+	// rule across every CLI Agent Overflow spawns, so an injected variable
+	// cannot go missing on one of them.
+	Env map[string]string
 }
 
 // CLIResult is the observable outcome of a provider-CLI invocation.
@@ -119,6 +137,9 @@ func ExecCLI(ctx context.Context, spec CLISpec) (CLIResult, error) {
 	cmd := exec.CommandContext(ctx, spec.Binary, spec.Args...)
 	cmd.Dir = spec.Cwd
 	cmd.Stdin = strings.NewReader(spec.Stdin)
+	if len(spec.Env) > 0 {
+		cmd.Env = provider.BuildEnvironment(spec.Env)
+	}
 
 	stdout := newCappedOutput(ProcessOutputLimit)
 	stderr := newCappedOutput(ProcessOutputLimit)
@@ -287,9 +308,11 @@ func RunCodex(
 		"--skip-git-repo-check",
 		"-s", "read-only",
 		"--model", cfg.Model,
-		"--config", fmt.Sprintf("model_reasoning_effort=%q", cfg.Effort),
 		"--output-schema", schemaPath,
 		"--output-last-message", outputPath,
+	}
+	if cfg.Effort != "" {
+		args = append(args, "--config", fmt.Sprintf("model_reasoning_effort=%q", cfg.Effort))
 	}
 	args = append(args, extraArgs...)
 	args = append(args, "-")
@@ -299,6 +322,7 @@ func RunCodex(
 		Args:   args,
 		Cwd:    workspace,
 		Stdin:  stdin,
+		Env:    cfg.Env,
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("codex", timeout, err)
@@ -340,6 +364,9 @@ func RunClaude(
 	if cfg.Model != "" {
 		args = append(args, "--model", cfg.Model)
 	}
+	if cfg.Effort != "" {
+		args = append(args, "--effort", cfg.Effort)
+	}
 	args = append(args, extraArgs...)
 
 	result, err := cfg.Exec(ctx, CLISpec{
@@ -347,6 +374,7 @@ func RunClaude(
 		Args:   args,
 		Cwd:    workspace,
 		Stdin:  stdin,
+		Env:    cfg.Env,
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("claude", timeout, err)

@@ -51,6 +51,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteMcpServer", ID: 4263017529},                      // main.App.DeleteMcpServer
 	{Name: "DeleteProject", ID: 3379369923},                        // main.App.DeleteProject
 	{Name: "DeleteProposedPlanComment", ID: 554913120},             // main.App.DeleteProposedPlanComment
+	{Name: "DeleteProviderCustomEnvVar", ID: 784096448},            // main.App.DeleteProviderCustomEnvVar
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297},                 // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974},                         // main.App.DeleteThread
 	{Name: "DeleteUIState", ID: 1186757769},                        // main.App.DeleteUIState
@@ -238,6 +239,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SetNetworkSettings", ID: 3915514446},                   // main.App.SetNetworkSettings
 	{Name: "SetNewThreadMcpServerEnabled", ID: 545823411},          // main.App.SetNewThreadMcpServerEnabled
 	{Name: "SetPRUpdatesActive", ID: 1078249699},                   // main.App.SetPRUpdatesActive
+	{Name: "SetProviderCustomEnvVar", ID: 2118904465},              // main.App.SetProviderCustomEnvVar
 	{Name: "SetUIState", ID: 1514250938},                           // main.App.SetUIState
 	{Name: "SetWSLDistroPreference", ID: 3978807241},               // main.App.SetWSLDistroPreference
 	{Name: "StartDiscussion", ID: 3188309099},                      // main.App.StartDiscussion

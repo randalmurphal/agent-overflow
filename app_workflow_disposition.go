@@ -225,7 +225,7 @@ func (a *App) landWorkflowDisposition(
 		if err != nil {
 			return fmt.Errorf("workflow disposition %s read PR head: %w", item.ID, err)
 		}
-		if err := core.Push(item.WorktreePath); err != nil {
+		if err := core.PushUnattended(item.WorktreePath); err != nil {
 			return fmt.Errorf("workflow disposition %s push: %w", item.ID, err)
 		}
 		prRef, err := core.CreatePR(

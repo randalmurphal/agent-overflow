@@ -175,10 +175,9 @@ func (a *App) generateClaudeCommitMessage(
 		return GeneratedCommitMessage{}, err
 	}
 
+	// Effort is not passed here: RunClaude renders cfg.Effort itself, so
+	// thread-title and workflow-digest generation get the same flag.
 	extra := []string{"--dangerously-skip-permissions"}
-	if cfg.Effort != "" {
-		extra = append(extra, "--effort", cfg.Effort)
-	}
 
 	stdout, err := textgen.RunClaude(ctx, cfg, workspace, commitmsg.ClaudeSchemaJSON, extra, prompt, remainingBudget(ctx, commitmsg.Timeout))
 	if err != nil {

@@ -6,6 +6,7 @@
   import Columns2 from 'lucide-svelte/icons/columns-2';
   import ListTree from 'lucide-svelte/icons/list-tree';
   import MessagesSquare from 'lucide-svelte/icons/messages-square';
+  import Pilcrow from 'lucide-svelte/icons/pilcrow';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import WrapText from 'lucide-svelte/icons/wrap-text';
   import ReviewCILogView from './ReviewCILogView.svelte';
@@ -415,6 +416,21 @@
 
     <button
       type="button"
+      class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle disabled:opacity-50 {review?.ignoreWhitespace ? 'bg-surface-2 text-fg' : 'text-fg-muted hover:text-fg'}"
+      aria-label="Toggle hide whitespace changes"
+      aria-pressed={review?.ignoreWhitespace}
+      title={review && !review.canIgnoreWhitespace
+        ? 'Hide whitespace changes — not available for this diff'
+        : 'Hide whitespace changes'}
+      data-testid="review-ignore-whitespace-toggle"
+      disabled={!review || !review.canIgnoreWhitespace || review.loading}
+      onclick={() => { void review?.setIgnoreWhitespace(!review.ignoreWhitespace); }}
+    >
+      <Icon icon={Pilcrow} size={14} />
+    </button>
+
+    <button
+      type="button"
       class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-field)] border border-border-subtle text-fg-muted hover:text-fg disabled:opacity-50"
       aria-label={review?.allCollapsed ? 'Expand all files' : 'Collapse all files'}
       title={review?.allCollapsed ? 'Expand all files' : 'Collapse all files'}
@@ -635,7 +651,7 @@
             {#if comment}
               <ReviewCommentThread
                 {comment}
-                orphaned={review?.scope === 'pr' && review.orphanedDraftIds().has(comment.id)}
+                orphaned={review?.orphanedDraftIds().has(comment.id) ?? false}
                 onUpdate={(commentId, body) => review?.updateComment(commentId, body)}
                 onDelete={(commentId) => review?.deleteComment(commentId)}
               />

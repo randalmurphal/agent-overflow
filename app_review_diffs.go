@@ -12,7 +12,10 @@ import (
 // currently uncommitted in the thread's workspace (tracked changes
 // against HEAD plus untracked-not-ignored files). Empty for non-git
 // workspaces.
-func (a *App) GetWorkspaceCurrentDiff(threadID string) (string, error) {
+//
+// ignoreWhitespace is the review pane's "hide whitespace changes"
+// toggle (`-w`); see gitdiff.Options.
+func (a *App) GetWorkspaceCurrentDiff(threadID string, ignoreWhitespace bool) (string, error) {
 	const action = "get workspace current diff"
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -25,7 +28,8 @@ func (a *App) GetWorkspaceCurrentDiff(threadID string) (string, error) {
 	if !gitdiff.IsGitRepository(context.Background(), workspace) {
 		return "", nil
 	}
-	patch, err := gitdiff.DiffWorkspaceVsHead(context.Background(), workspace)
+	patch, err := gitdiff.DiffWorkspaceVsHead(context.Background(), workspace,
+		gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", action, err)
 	}
@@ -36,7 +40,7 @@ func (a *App) GetWorkspaceCurrentDiff(threadID string) (string, error) {
 // (committed work since merge-base plus uncommitted changes) against the
 // merge base of baseBranch and the workspace HEAD — i.e. what a PR onto
 // baseBranch would contain.
-func (a *App) GetBranchBaseDiff(threadID string, baseBranch string) (string, error) {
+func (a *App) GetBranchBaseDiff(threadID string, baseBranch string, ignoreWhitespace bool) (string, error) {
 	const action = "get branch base diff"
 	if strings.TrimSpace(baseBranch) == "" {
 		return "", fmt.Errorf("%s: base branch is required", action)
@@ -52,7 +56,8 @@ func (a *App) GetBranchBaseDiff(threadID string, baseBranch string) (string, err
 	if !gitdiff.IsGitRepository(context.Background(), workspace) {
 		return "", nil
 	}
-	patch, err := gitdiff.DiffBranchBaseToWorktree(context.Background(), workspace, baseBranch)
+	patch, err := gitdiff.DiffBranchBaseToWorktree(context.Background(), workspace, baseBranch,
+		gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", action, err)
 	}
@@ -91,7 +96,7 @@ func (a *App) ListBranchCommits(threadID string, baseBranch string) ([]BranchCom
 
 // GetCommitDiff returns the unified patch a single local commit
 // introduced (first-parent diff; empty-tree diff for a root commit).
-func (a *App) GetCommitDiff(threadID string, sha string) (string, error) {
+func (a *App) GetCommitDiff(threadID string, sha string, ignoreWhitespace bool) (string, error) {
 	const action = "get commit diff"
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -104,7 +109,8 @@ func (a *App) GetCommitDiff(threadID string, sha string) (string, error) {
 	if !gitdiff.IsGitRepository(context.Background(), workspace) {
 		return "", fmt.Errorf("%s: workspace is not a git repository", action)
 	}
-	patch, err := gitdiff.CommitDiff(context.Background(), workspace, sha)
+	patch, err := gitdiff.CommitDiff(context.Background(), workspace, sha,
+		gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", action, err)
 	}

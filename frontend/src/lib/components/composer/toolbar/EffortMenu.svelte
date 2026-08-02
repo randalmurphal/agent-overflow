@@ -48,7 +48,9 @@
     return registerComposerPicker(pane.paneId, 'effort', {
       isOpen: () => open,
       open: () => {
-        if (!pane.thread) return;
+        // Same gate as the trigger's disabled state: the chord must not open a
+        // menu with no rows in it either.
+        if (!pane.thread || !hasMenuOptions) return;
         open = true;
         void ensureModelMetadata();
       },
@@ -84,7 +86,14 @@
   let reasoningOptions = $derived<ReasoningEffortOption[]>(activeModelInfo?.reasoningEfforts ?? []);
   let fastModeSupported = $derived(activeModelInfo?.capabilities?.includes('fast_mode') ?? false);
 
-  let availableEfforts = $derived(reasoningOptions.length > 0 ? reasoningOptions : FALLBACK_EFFORTS);
+  // "We have no catalog entry for this model" and "the catalog says this model
+  // has no effort tiers" are different answers and must not share a branch.
+  // The first is ignorance — the generic list is the best guess until the
+  // catalog loads. The second is knowledge: Claude's own model list reports
+  // Haiku with no effort support, and offering tiers the model does not have
+  // is the lie this distinction removes.
+  let availableEfforts = $derived(activeModelInfo ? reasoningOptions : FALLBACK_EFFORTS);
+  let showEffortSelection = $derived(availableEfforts.length > 0);
   let currentEffortOption = $derived(
     availableEfforts.find((option) => option.slug === currentEffort),
   );
@@ -113,10 +122,18 @@
   let currentContextOption = $derived(
     contextOptions.find((option) => option.tokens === currentContextWindow),
   );
+  // A model with nothing to choose (one context tier, no fast mode, no effort
+  // tiers) gets a disabled trigger rather than a menu with no rows in it.
+  let hasMenuOptions = $derived(showContextSelection || fastModeSupported || showEffortSelection);
   let triggerLabel = $derived.by(() => {
-    const labelParts = [effortLabel(currentEffort, currentEffortOption?.label)];
+    const labelParts = [];
+    if (showEffortSelection) {
+      labelParts.push(effortLabel(currentEffort, currentEffortOption?.label));
+    }
     if (currentFast) labelParts.push('Fast');
-    if (showContextSelection && currentContextWindow > 0) {
+    // The context window is the label's fallback subject: with no effort tiers
+    // to name, it is the only thing left that describes the thread.
+    if (currentContextWindow > 0 && (showContextSelection || labelParts.length === 0)) {
       labelParts.push(
         currentContextOption
           ? contextOptionLabel(currentContextOption)
@@ -125,6 +142,7 @@
     }
     return labelParts.join(' · ');
   });
+  let triggerTitle = $derived(triggerLabel || 'Model options');
   let pickerChord = $derived(
     formatChord(keybindingForCommand('composer.picker.effort') ?? 'mod+shift+e'),
   );
@@ -245,11 +263,11 @@
   bind:this={triggerEl}
   type="button"
   onclick={handleTrigger}
-  disabled={!pane.thread}
+  disabled={!pane.thread || !hasMenuOptions}
   aria-haspopup="menu"
   aria-expanded={open}
-  aria-label={`Effort: ${triggerLabel}`}
-  title={`Effort: ${triggerLabel} (${pickerChord})`}
+  aria-label={`Effort: ${triggerTitle}`}
+  title={`Effort: ${triggerTitle} (${pickerChord})`}
   data-testid="composer-effort-trigger"
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
@@ -308,14 +326,16 @@
         <MenuDivider />
       {/if}
 
-      <MenuSectionHeader label="Effort" />
-      {#each availableEfforts as tier (tier.slug)}
-        <MenuItem
-          label={effortLabel(tier.slug, tier.label)}
-          checked={tier.slug === currentEffort}
-          onSelect={() => handleEffort(tier.slug)}
-        />
-      {/each}
+      {#if showEffortSelection}
+        <MenuSectionHeader label="Effort" />
+        {#each availableEfforts as tier (tier.slug)}
+          <MenuItem
+            label={effortLabel(tier.slug, tier.label)}
+            checked={tier.slug === currentEffort}
+            onSelect={() => handleEffort(tier.slug)}
+          />
+        {/each}
+      {/if}
     </Menu>
   </div>
 </Popover>

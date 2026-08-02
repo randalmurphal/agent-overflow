@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import {
   dispatchKey,
   keybindingForCommand,
@@ -12,6 +12,9 @@ import {
   encodeChordFromEvent,
   eventMatchesKeybindingCommand,
   eventEscapesTerminalToCommand,
+  findDuplicateChordRow,
+  isKeybindingCaptureTarget,
+  KEYBINDING_CAPTURE_ATTR,
 } from './keybindings.svelte';
 import {
   clearCommandRegistry,
@@ -55,6 +58,28 @@ function ev(key: string, mods: TestKeyMods = {}): KeyboardEvent {
   Object.defineProperty(e, 'shiftKey', { value: mods.shiftKey ?? false });
   Object.defineProperty(e, 'altKey', { value: mods.altKey ?? false });
   return e;
+}
+
+// Dispatch the chord from a real node so `event.target` is the node the
+// browser would report — the guard's whole input.
+function dispatchFromNode(
+  node: Element,
+  key: string,
+  mods: TestKeyMods = {},
+  ctx: CommandContext = baseCtx(),
+): boolean {
+  const event = ev(key, mods);
+  let handled = false;
+  const listener = (e: Event) => {
+    handled = dispatchKey(e as KeyboardEvent, ctx, { isMac: false });
+  };
+  window.addEventListener('keydown', listener);
+  try {
+    node.dispatchEvent(event);
+  } finally {
+    window.removeEventListener('keydown', listener);
+  }
+  return handled;
 }
 
 describe('keybindings store — dispatch', () => {
@@ -506,5 +531,137 @@ describe('keybindings store — chord capture', () => {
     // Off macOS the glyph arrives correctly and needs no normalization.
     expect(encodeChordFromEvent(ev('~', { code: 'Backquote', ctrlKey: true, shiftKey: true }), false))
       .toBe('mod+shift+~');
+  });
+});
+
+describe('keybindings store — duplicate chord detection', () => {
+  // A command can ship two default rows (thread.new is bound to both mod+n
+  // and mod+shift+o). Rebinding one onto the other's chord would leave two
+  // rows of the same command showing the same chord — indistinguishable in
+  // settings, and only the first reachable at dispatch.
+  const primary = {
+    key: 'mod+n',
+    command: 'thread.new',
+    when: '!terminalFocus',
+    defaultId: 'thread.new.primary',
+    defaultKey: 'mod+n',
+  };
+  const alternate = {
+    key: 'mod+shift+o',
+    command: 'thread.new',
+    when: '!terminalFocus',
+    defaultId: 'thread.new.alternate',
+    defaultKey: 'mod+shift+o',
+  };
+  const rows = [primary, alternate];
+
+  it('reports the sibling row a rebind would collide with', () => {
+    expect(findDuplicateChordRow(rows, primary, 'mod+shift+o')).toBe(alternate);
+    expect(findDuplicateChordRow(rows, alternate, 'mod+n')).toBe(primary);
+  });
+
+  it('compares chords canonically, not textually', () => {
+    expect(findDuplicateChordRow(rows, primary, 'Shift+Mod+O')).toBe(alternate);
+  });
+
+  it('allows a free chord', () => {
+    expect(findDuplicateChordRow(rows, primary, 'mod+x')).toBeNull();
+  });
+
+  it('is not a self-collision when a row re-captures its own chord', () => {
+    expect(findDuplicateChordRow(rows, primary, 'mod+n')).toBeNull();
+  });
+
+  it('ignores rows of another command or another when-context', () => {
+    const otherCommand = { ...alternate, command: 'thread.newPane', defaultId: 'thread.newPane' };
+    expect(findDuplicateChordRow([primary, otherCommand], primary, 'mod+shift+o')).toBeNull();
+    const otherContext = { ...alternate, when: 'terminalFocus' };
+    expect(findDuplicateChordRow([primary, otherContext], primary, 'mod+shift+o')).toBeNull();
+  });
+
+  it('matches legacy rows that carry no defaultId', () => {
+    const legacyPrimary = { key: 'mod+n', command: 'thread.new', when: '!terminalFocus' };
+    const legacyAlternate = { key: 'mod+shift+o', command: 'thread.new', when: '!terminalFocus' };
+    expect(findDuplicateChordRow([legacyPrimary, legacyAlternate], legacyPrimary, 'mod+shift+o'))
+      .toBe(legacyAlternate);
+  });
+});
+
+// The chord-recorder guard. While the settings capture control has the
+// keystroke, the keystroke is the DATA being recorded — recording mod+b
+// must record mod+b, not collapse the sidebar (t3 bug dfbda8436).
+describe('keybindings store — chord-recorder guard', () => {
+  let host: HTMLDivElement;
+
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetKeybindingsStore();
+    host = document.createElement('div');
+    document.body.appendChild(host);
+  });
+
+  afterEach(() => {
+    host.remove();
+  });
+
+  function capturingButton(): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.setAttribute(KEYBINDING_CAPTURE_ATTR, '');
+    host.appendChild(button);
+    return button;
+  }
+
+  it('recognises the capture control and its descendants', () => {
+    const button = capturingButton();
+    const inner = document.createElement('span');
+    button.appendChild(inner);
+    expect(isKeybindingCaptureTarget(button)).toBe(true);
+    expect(isKeybindingCaptureTarget(inner)).toBe(true);
+  });
+
+  it('does not treat an ordinary node as a capture target', () => {
+    const plain = document.createElement('button');
+    host.appendChild(plain);
+    expect(isKeybindingCaptureTarget(plain)).toBe(false);
+    expect(isKeybindingCaptureTarget(null)).toBe(false);
+  });
+
+  it('refuses to run a bound command while a chord is being recorded', () => {
+    const run = vi.fn();
+    registerCommand({ id: 'sidebar.toggle', label: 'Toggle Sidebar', run });
+    setKeybindingsForTest([{ key: 'mod+b', command: 'sidebar.toggle' }]);
+
+    expect(dispatchFromNode(capturingButton(), 'b', { ctrlKey: true })).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('still runs the same chord from anywhere else', () => {
+    const run = vi.fn();
+    registerCommand({ id: 'sidebar.toggle', label: 'Toggle Sidebar', run });
+    setKeybindingsForTest([{ key: 'mod+b', command: 'sidebar.toggle' }]);
+
+    const plain = document.createElement('button');
+    host.appendChild(plain);
+    expect(dispatchFromNode(plain, 'b', { ctrlKey: true })).toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops claiming the chord for the editable-reachable path too', () => {
+    registerCommand({
+      id: 'sidebar.toggle',
+      label: 'Toggle Sidebar',
+      editableReachable: true,
+      run: vi.fn(),
+    });
+    setKeybindingsForTest([{ key: 'mod+b', command: 'sidebar.toggle' }]);
+    const ids = new Set(['sidebar.toggle']);
+
+    const captured = ev('b', { ctrlKey: true });
+    Object.defineProperty(captured, 'target', { value: capturingButton() });
+    expect(eventMatchesKeybindingCommand(captured, baseCtx(), ids, { isMac: false })).toBe(false);
+
+    const plainEvent = ev('b', { ctrlKey: true });
+    Object.defineProperty(plainEvent, 'target', { value: document.createElement('button') });
+    expect(eventMatchesKeybindingCommand(plainEvent, baseCtx(), ids, { isMac: false })).toBe(true);
   });
 });

@@ -194,6 +194,29 @@ func TestWorkflowPhaseRuntimeModeMapping(t *testing.T) {
 	}
 }
 
+// TestWorkflowPhasesNeverRunUnderTheAutoRuntimeMode records a deliberate
+// decision rather than an accident of the current mapping.
+//
+// `auto` is an interactive tier. Two of its properties are wrong for
+// unattended work: a Claude auto session that accumulates classifier denials
+// falls back to PROMPTING (there is nobody to prompt — the whole reason D22
+// gave workflow phases `read-only`, the one tier that denies instead of
+// asking), and every reviewed tool call bills a classifier turn against a run
+// the user is not watching. `read-only` and `full-access` stay the only two
+// modes a phase can reach, which is already structural — `def.Access` is a
+// closed two-value set and `normalizeAccess` collapses anything else onto
+// read-only — so this test is the guard that keeps it structural.
+//
+// Changing this is a scope conversation, not a bug fix: it would need a new
+// `access:` value in the workflow schema, which is a definition-format change.
+func TestWorkflowPhasesNeverRunUnderTheAutoRuntimeMode(t *testing.T) {
+	for _, access := range []def.Access{def.AccessWrite, def.AccessReadOnly, "", "auto", "nonsense"} {
+		if got := workflowPhaseRuntimeMode(access); got == provider.RuntimeAuto {
+			t.Errorf("workflowPhaseRuntimeMode(%q) = auto; unattended phases must never route approvals to a billed reviewer", access)
+		}
+	}
+}
+
 // TestCreateWorkflowThreadRejectsProviderThatCannotEnforceAccess proves the
 // phase refuses to start rather than running with an inert access
 // declaration. claude-tui hands permissions to the real TUI, so its threads'

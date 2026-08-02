@@ -1,6 +1,19 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { render, waitFor } from '@testing-library/svelte';
+import { tick } from 'svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import Sidebar from '../Sidebar.svelte';
+import { resetAppStorageForTest } from '../../../stores/appStorage';
+import {
+  isSidebarCollapsed,
+  resetSidebarLayoutForTest,
+  setSidebarCollapsed,
+  setSidebarWidth,
+} from '../../../stores/sidebarLayout.svelte';
+import {
+  formatChord,
+  resetKeybindingsStore,
+  setKeybindingsForTest,
+} from '../../../stores/keybindings.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import {
   collapseProject,
@@ -105,5 +118,89 @@ describe('<Sidebar>', () => {
     expect(getByTestId('project-item-active-pin')).toBeInTheDocument();
     expect(getByText('Active work')).toBeInTheDocument();
     expect(queryByTestId('project-thread-list')).toBeNull();
+  });
+});
+
+// --- collapse / expand affordance (t3 7.2) ---
+//
+// Collapsed renders a RAIL, not nothing: the expand control has to
+// exist in every app state, including the ones where no chat header is
+// mounted. The branch lives in Sidebar's template so the component's
+// project fetch and palette registrations survive the transition.
+
+describe('<Sidebar> collapse toggle', () => {
+  beforeEach(() => {
+    resetSidebarForTest();
+    resetProjectsForTest();
+    resetBindingMocks();
+    resetAppStorageForTest();
+    resetSidebarLayoutForTest();
+    resetKeybindingsStore();
+    setBindingMock('SetUIState', async () => null);
+    setBindingMock('DeleteUIState', async () => null);
+    setBindingMock('ListThreads', async () => []);
+    setBindingMock('ListProjects', async () => []);
+  });
+
+  it('renders a collapse button in the expanded sidebar chrome', () => {
+    const { getByTestId } = render(Sidebar, { props: { pane: null } });
+    expect(getByTestId('sidebar')).toBeInTheDocument();
+    const toggle = getByTestId('sidebar-collapse-toggle');
+    expect(toggle.getAttribute('aria-label')).toContain('Collapse Sidebar');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('clicking it collapses to a rail that still offers the expand control', async () => {
+    const { getByTestId, queryByTestId } = render(Sidebar, { props: { pane: null } });
+
+    await fireEvent.click(getByTestId('sidebar-collapse-toggle'));
+
+    expect(isSidebarCollapsed()).toBe(true);
+    expect(queryByTestId('sidebar')).toBeNull();
+    expect(queryByTestId('sidebar-thread-search')).toBeNull();
+    expect(queryByTestId('sidebar-resizer')).toBeNull();
+    const rail = getByTestId('sidebar-rail');
+    expect(rail).toBeInTheDocument();
+    const toggle = getByTestId('sidebar-collapse-toggle');
+    expect(toggle.getAttribute('aria-label')).toContain('Expand Sidebar');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('expanding from the rail restores the stored width and the resizer', async () => {
+    setSidebarWidth(330);
+    const { getByTestId } = render(Sidebar, { props: { pane: null } });
+
+    await fireEvent.click(getByTestId('sidebar-collapse-toggle'));
+    await fireEvent.click(getByTestId('sidebar-collapse-toggle'));
+
+    expect(isSidebarCollapsed()).toBe(false);
+    expect(getByTestId('sidebar').getAttribute('style')).toContain('width: 330px');
+    expect(getByTestId('sidebar-resizer')).toBeInTheDocument();
+  });
+
+  it('shows the live chord for sidebar.toggle in the control label', () => {
+    setKeybindingsForTest([{ key: 'mod+alt+s', command: 'sidebar.toggle' }]);
+    const { getByTestId } = render(Sidebar, { props: { pane: null } });
+    expect(getByTestId('sidebar-collapse-toggle').getAttribute('aria-label'))
+      .toBe(`Collapse Sidebar (${formatChord('mod+alt+s')})`);
+  });
+
+  it('re-registers a live search focuser after an expand', async () => {
+    const focusers: Array<() => void> = [];
+    const { getByTestId } = render(Sidebar, {
+      props: { pane: null, registerFocusSearch: (focus: () => void) => { focusers.push(focus); } },
+    });
+    await tick();
+
+    setSidebarCollapsed(true);
+    await tick();
+    setSidebarCollapsed(false);
+    await tick();
+
+    // This is the ordering `withSidebarVisible` relies on: by the time a
+    // tick has passed, the focuser points at the input that is on screen.
+    expect(focusers.length).toBeGreaterThan(1); // the remount re-registered
+    focusers.at(-1)?.();
+    expect(document.activeElement).toBe(getByTestId('sidebar-thread-search'));
   });
 });

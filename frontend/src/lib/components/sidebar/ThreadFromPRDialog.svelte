@@ -15,6 +15,7 @@
   } from '../../providers/catalog';
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
 
   let { open, pane, onClose }: {
     open: boolean;
@@ -69,6 +70,9 @@
   // Enter-to-submit keybinding when focus is inside the body fields.
   // Escape is handled by Modal's backdrop keydown listener.
   function handleBodyKeydown(e: KeyboardEvent) {
+    // Enter confirms the IME candidate while composing in one of the body
+    // fields; submitting here would use the pre-composition value.
+    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
     if (e.key === 'Enter' && !e.shiftKey && canSubmit) {
       e.preventDefault();
       void handleSubmit();

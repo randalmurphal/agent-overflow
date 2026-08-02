@@ -286,19 +286,44 @@ func TestMCPStatusFromList(t *testing.T) {
 
 func TestMCPStatusFromNotif(t *testing.T) {
 	cases := []struct {
-		state string
-		want  mcpstatus.Status
+		name   string
+		update MCPStartupUpdate
+		want   mcpstatus.Status
 	}{
-		{"starting", mcpstatus.StatusStarting},
-		{"ready", mcpstatus.StatusConnected},
-		{"failed", mcpstatus.StatusFailed},
-		{"cancelled", mcpstatus.StatusFailed},
-		{"", mcpstatus.StatusUnknown},
-		{"new-state", mcpstatus.StatusUnknown},
+		{name: "starting", update: MCPStartupUpdate{State: "starting"}, want: mcpstatus.StatusStarting},
+		{name: "ready", update: MCPStartupUpdate{State: "ready"}, want: mcpstatus.StatusConnected},
+		{name: "failed", update: MCPStartupUpdate{State: "failed"}, want: mcpstatus.StatusFailed},
+		{name: "cancelled", update: MCPStartupUpdate{State: "cancelled"}, want: mcpstatus.StatusFailed},
+		{name: "empty", update: MCPStartupUpdate{}, want: mcpstatus.StatusUnknown},
+		{name: "unknown state", update: MCPStartupUpdate{State: "new-state"}, want: mcpstatus.StatusUnknown},
+		{
+			// The point of item 3.7: an expired OAuth grant used to render
+			// as a dead "failed" row. needs-auth is what puts the existing
+			// Sign in action on it.
+			name: "failed with reauth required",
+			update: MCPStartupUpdate{
+				State:         "failed",
+				Error:         "token expired",
+				FailureReason: MCPFailureReasonReauthRequired,
+			},
+			want: mcpstatus.StatusNeedsAuth,
+		},
+		{
+			// A future McpStartupFailureReason variant must not be guessed
+			// into a sign-in prompt; it falls back to the state mapping.
+			name: "failed with unknown reason",
+			update: MCPStartupUpdate{
+				State:         "failed",
+				FailureReason: "someFutureReason",
+			},
+			want: mcpstatus.StatusFailed,
+		},
 	}
 	for _, tc := range cases {
-		if got := MCPStatusFromNotif(tc.state); got != tc.want {
-			t.Errorf("MCPStatusFromNotif(%q) = %q, want %q", tc.state, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MCPStatusFromNotif(tc.update); got != tc.want {
+				t.Errorf("MCPStatusFromNotif(%+v) = %q, want %q", tc.update, got, tc.want)
+			}
+		})
 	}
 }

@@ -74,6 +74,62 @@ export class NetworkSettings {
 }
 
 /**
+ * ProviderEnvVar is one user-defined environment variable applied to the
+ * provider subprocesses Agent Overflow spawns for that provider — the chat
+ * session, the account/identity/rate-limit probes, and the text-generation
+ * CLI. Use cases are backend redirection (`ANTHROPIC_BASE_URL`) and corporate
+ * proxy configuration (`HTTPS_PROXY`, `NO_PROXY`, custom CA bundles).
+ * 
+ * SECURITY: Value is persisted verbatim in settings.json, in plaintext, like
+ * every other field on Settings — see the SECURITY NOTE on the Settings
+ * struct. Sensitive=true is a DISCLOSURE control, not an encryption one: it
+ * keeps the value off the `GetSettings` wire shape (see RedactProviderEnvVars)
+ * so a LAN-attached token-holder can't harvest it, and the UI renders it
+ * masked. It does not make settings.json a safe place for a long-lived
+ * credential.
+ * 
+ * List, not map[string]string, deliberately:
+ * 
+ *   - A map cannot carry the per-variable Sensitive flag without becoming a
+ *     map of structs, at which point it has a list's shape and a map's
+ *     drawbacks.
+ *   - A map silently collapses duplicate names at JSON decode (last wins), so
+ *     `PROXY` typed twice would be applied without the user ever learning one
+ *     of their two entries was dropped. A list carries both to the validator,
+ *     which rejects the pair with a message naming the collision.
+ *   - Order is the user's; a map has none, so the settings UI would reshuffle
+ *     rows on every save.
+ * 
+ * Application order is irrelevant to behaviour because duplicates (including
+ * case-insensitive ones) are rejected before anything is spawned.
+ */
+export class ProviderEnvVar {
+    "name": string;
+    "value": string;
+    "sensitive"?: boolean;
+
+    /** Creates a new ProviderEnvVar instance. */
+    constructor($$source: Partial<ProviderEnvVar> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("value" in $$source)) {
+            this["value"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProviderEnvVar instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ProviderEnvVar {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProviderEnvVar($$parsedSource as Partial<ProviderEnvVar>);
+    }
+}
+
+/**
  * RemoteEndpoint is one stored `--connect` target. The desktop binary
  * takes a URL+token from this list (or from --connect on the command
  * line) and points the Wails webview at the remote backend instead of
@@ -275,6 +331,23 @@ export class Settings {
     "codexHiddenModels"?: string[];
 
     /**
+     * ClaudeCustomEnv / CodexCustomEnv are user-defined environment
+     * variables applied to the provider processes Agent Overflow spawns
+     * for that provider — chat sessions, account / identity / rate-limit
+     * probes, and the text-generation CLI. Applied at spawn, so a change
+     * reaches new sessions and probes only. The Claude list also covers
+     * claude-tui (one binary, one backend).
+     * 
+     * Names Agent Overflow pins itself are rejected on save rather than
+     * dropped at spawn — see providerenv.go for the shape rules, the
+     * reserved names, and why this is a list rather than a map. Sensitive
+     * values are redacted out of the GetSettings wire shape; they are NOT
+     * encrypted on disk (see the SECURITY NOTE below).
+     */
+    "claudeCustomEnv"?: ProviderEnvVar[];
+    "codexCustomEnv"?: ProviderEnvVar[];
+
+    /**
      * DefaultThreadEnvMode seeds the workspace mode for new draft threads.
      * Accepts "local" or "worktree"; unknown values fall back to "local"
      * when settings are loaded.
@@ -396,6 +469,20 @@ export class Settings {
      * and bug-report bookmark files older than the window. 0 disables.
      */
     "retention": RetentionSettings;
+
+    /**
+     * BackgroundGitFetch enables the periodic `git fetch` the app runs
+     * for the repositories behind the sidebar's projects, so ahead/behind
+     * counts reflect the remote instead of freezing at the user's last
+     * manual fetch. Default true; one fetch per repository per
+     * git.FetchStaleWindow, origin only, never --prune.
+     * 
+     * Turn it off for a metered or VPN-gated connection, or for a
+     * monorepo whose fetch is expensive. Off means the counts are only
+     * as fresh as the last explicit fetch/pull/prune — nothing else
+     * changes. See app_git_background_fetch.go for the cadence.
+     */
+    "backgroundGitFetch": boolean;
 
     /**
      * GitLabSelfHostedHosts is the user's allowlist of self-hosted
@@ -564,6 +651,9 @@ export class Settings {
         if (!("retention" in $$source)) {
             this["retention"] = (new RetentionSettings());
         }
+        if (!("backgroundGitFetch" in $$source)) {
+            this["backgroundGitFetch"] = false;
+        }
         if (!("projectSortMode" in $$source)) {
             this["projectSortMode"] = "";
         }
@@ -587,12 +677,14 @@ export class Settings {
         const $$createField6_0 = $$createType0;
         const $$createField17_0 = $$createType0;
         const $$createField18_0 = $$createType0;
-        const $$createField34_0 = $$createType1;
-        const $$createField35_0 = $$createType2;
+        const $$createField19_0 = $$createType2;
+        const $$createField20_0 = $$createType2;
         const $$createField36_0 = $$createType3;
-        const $$createField37_0 = $$createType0;
+        const $$createField37_0 = $$createType4;
         const $$createField38_0 = $$createType5;
-        const $$createField42_0 = $$createType6;
+        const $$createField40_0 = $$createType0;
+        const $$createField41_0 = $$createType7;
+        const $$createField45_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
@@ -603,23 +695,29 @@ export class Settings {
         if ("codexHiddenModels" in $$parsedSource) {
             $$parsedSource["codexHiddenModels"] = $$createField18_0($$parsedSource["codexHiddenModels"]);
         }
+        if ("claudeCustomEnv" in $$parsedSource) {
+            $$parsedSource["claudeCustomEnv"] = $$createField19_0($$parsedSource["claudeCustomEnv"]);
+        }
+        if ("codexCustomEnv" in $$parsedSource) {
+            $$parsedSource["codexCustomEnv"] = $$createField20_0($$parsedSource["codexCustomEnv"]);
+        }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField34_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField36_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField35_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField37_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField36_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField38_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField37_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField40_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField38_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField41_0($$parsedSource["remoteEndpoints"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField42_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField45_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
@@ -627,9 +725,11 @@ export class Settings {
 
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = NetworkSettings.createFrom;
-const $$createType2 = EditorSettings.createFrom;
-const $$createType3 = RetentionSettings.createFrom;
-const $$createType4 = RemoteEndpoint.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = windowgeom$0.Geometry.createFrom;
+const $$createType1 = ProviderEnvVar.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = NetworkSettings.createFrom;
+const $$createType4 = EditorSettings.createFrom;
+const $$createType5 = RetentionSettings.createFrom;
+const $$createType6 = RemoteEndpoint.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = windowgeom$0.Geometry.createFrom;

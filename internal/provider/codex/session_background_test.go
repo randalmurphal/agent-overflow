@@ -117,13 +117,13 @@ func TestSession_CleanBackgroundTerminals_ErrorResponse(t *testing.T) {
 	})
 
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "codex-thread-bg-err",
-		pending:       make(map[int64]chan json.RawMessage),
-		onEvent:       func(provider.ProviderEvent) {},
-		cancel:        cancelProc,
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent:  func(provider.ProviderEvent) {},
+		cancel:   cancelProc,
 	}
+	s.setRootThreadID("codex-thread-bg-err")
 	go s.readLoop()
 
 	cleanDone := make(chan error, 1)
@@ -170,13 +170,13 @@ func TestSession_CleanBackgroundTerminals_ContextCanceled(t *testing.T) {
 	})
 
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "codex-thread-bg-cancel",
-		pending:       make(map[int64]chan json.RawMessage),
-		onEvent:       func(provider.ProviderEvent) {},
-		cancel:        cancelProc,
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent:  func(provider.ProviderEvent) {},
+		cancel:   cancelProc,
 	}
+	s.setRootThreadID("codex-thread-bg-cancel")
 	go s.readLoop()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -223,13 +223,13 @@ func TestSession_CleanBackgroundTerminals_MidWaitCancel(t *testing.T) {
 	})
 
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "codex-thread-bg-midcancel",
-		pending:       make(map[int64]chan json.RawMessage),
-		onEvent:       func(provider.ProviderEvent) {},
-		cancel:        cancelProc,
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent:  func(provider.ProviderEvent) {},
+		cancel:   cancelProc,
 	}
+	s.setRootThreadID("codex-thread-bg-midcancel")
 	go s.readLoop()
 
 	ctx, cancel := context.WithCancel(context.Background())

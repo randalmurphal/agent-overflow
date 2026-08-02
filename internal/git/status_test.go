@@ -70,14 +70,7 @@ func TestStatusReturnsNotRepoForNonGitDirectory(t *testing.T) {
 // barePath).
 func repoWithOrigin(t *testing.T) (string, string) {
 	t.Helper()
-	bare := t.TempDir()
-	if err := testutil.RunGitAllowError(bare, "init", "--bare", "-b", "main"); err != nil {
-		testutil.RunGit(t, bare, "init", "--bare")
-	}
-	repo := testutil.InitGitRepo(t)
-	testutil.RunGit(t, repo, "remote", "add", "origin", bare)
-	testutil.RunGit(t, repo, "push", "-u", "origin", "main")
-	return repo, bare
+	return testutil.InitGitRepoWithOrigin(t)
 }
 
 func TestMaybeFetchRemotesRespectsStaleWindow(t *testing.T) {
@@ -188,15 +181,7 @@ func TestInvalidateFetchCacheForcesRefetch(t *testing.T) {
 // Returns once the bare has the new tip.
 func advanceOriginMain(t *testing.T, bare string) {
 	t.Helper()
-	sibling := t.TempDir()
-	testutil.RunGit(t, sibling, "clone", bare, ".")
-	if err := os.WriteFile(filepath.Join(sibling, "outside.txt"), []byte("upstream"), 0o644); err != nil {
-		t.Fatalf("write outside.txt: %v", err)
-	}
-	testutil.RunGit(t, sibling, "add", "outside.txt")
-	testutil.RunGit(t, sibling, "-c", "user.email=outside@example.com", "-c", "user.name=Outside",
-		"commit", "-m", "upstream commit")
-	testutil.RunGit(t, sibling, "push", "origin", "main")
+	testutil.AdvanceOriginMain(t, bare)
 }
 
 func TestSyncBranchPullsCurrentBranch(t *testing.T) {

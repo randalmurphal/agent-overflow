@@ -68,6 +68,14 @@ var Defaults = []Keybinding{
 	{Key: "mod+k", Command: "sidebar.cursor.up", DefaultID: "sidebar.cursor.up"},
 	{Key: "mod+enter", Command: "sidebar.cursor.open", When: "sidebarCursorActive && !anyModalOpen", DefaultID: "sidebar.cursor.open"},
 	{Key: "mod+shift+enter", Command: "sidebar.cursor.openInNewPane", When: "sidebarCursorActive && !anyModalOpen", DefaultID: "sidebar.cursor.openInNewPane"},
+	// mod+b collapses the sidebar to its rail and back — the editor
+	// convention (VS Code, Zed) for exactly this. `!terminalFocus` for
+	// the same reason mod+w carries it: off macOS `mod` is Ctrl, and
+	// ctrl+b is tmux's default prefix, so a terminal-focused ctrl+b
+	// must reach the PTY rather than move the app's furniture. The
+	// command is editableReachable, so it still fires from the composer
+	// and every other text field.
+	{Key: "mod+b", Command: "sidebar.toggle", When: "!terminalFocus", DefaultID: "sidebar.toggle"},
 	{Key: "mod+/", Command: "picker.toggleInput", When: "anyPickerOpen", DefaultID: "picker.toggleInput"},
 	{Key: "mod+n", Command: "terminal.new", When: "terminalFocus", DefaultID: "terminal.new"},
 	// terminal.refresh repaints a glitched terminal from inside it (PTY winsize

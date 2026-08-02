@@ -30,7 +30,11 @@ func (c *Core) StashPushIncludeUntracked(cwd, message string) (bool, error) {
 	if message == "" {
 		return false, fmt.Errorf("git stash message is required")
 	}
-	stdout, _, err := c.Execute(cwd, "stash", "push", "-u", "-m", message)
+	// executeLocaleC: "nothing to stash" is only distinguishable from a
+	// real stash by git's own message, which NLS would translate — and a
+	// phantom created=true sends the caller looking for a stash ref that
+	// was never written.
+	stdout, _, err := c.executeLocaleC(cwd, "stash", "push", "-u", "-m", message)
 	if err != nil {
 		return false, err
 	}

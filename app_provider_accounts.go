@@ -461,15 +461,15 @@ func (a *App) verifiedActiveCredentialLocked(
 func (a *App) probeProviderAccountAtHome(providerName, binary, home string) (provider.AccountInfo, error) {
 	switch providerName {
 	case string(provider.Claude):
-		return claude.ProbeAccount(a.lifeCtx(), claude.ProbeConfig{
-			Binary: binary,
-			Env:    map[string]string{"CLAUDE_CONFIG_DIR": home},
-		})
+		return claude.ProbeAccount(a.lifeCtx(), a.claudeProbeConfig(
+			binary,
+			map[string]string{"CLAUDE_CONFIG_DIR": home},
+		))
 	case string(provider.Codex):
-		return codex.ProbeAccount(a.lifeCtx(), codex.ProbeConfig{
-			Binary: binary,
-			Env:    map[string]string{"CODEX_HOME": home},
-		})
+		return codex.ProbeAccount(a.lifeCtx(), a.codexProbeConfig(
+			binary,
+			map[string]string{"CODEX_HOME": home},
+		))
 	default:
 		return provider.AccountInfo{}, fmt.Errorf("unsupported provider %q", providerName)
 	}
@@ -549,7 +549,7 @@ func (a *App) adoptCanonicalProviderAccountLocked(providerName, binary string) e
 	}
 	info, credential, err := a.runStableAccountProbe(
 		providerName,
-		canonicalProviderAccountProbe(providerName, binary),
+		a.canonicalProviderAccountProbe(providerName, binary),
 	)
 	if err != nil {
 		return err

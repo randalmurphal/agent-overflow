@@ -9,6 +9,13 @@
   // can be extracted as a standalone package without modifications.
   // Success feedback is the icon swap only — no toast — to keep the UI
   // quiet on the common path.
+  //
+  // `write` is the same leaf-purity story: a markdown surface wants the
+  // clipboard to carry a `text/html` flavor too, but the markdown
+  // serializer pulls in the whole marked pipeline. Injecting the writer
+  // keeps that dependency at the call site (`copyMarkdownToClipboard`)
+  // instead of in the primitives layer, and keeps the flavor policy in
+  // one module rather than one branch per button.
   import { onDestroy } from 'svelte';
   import Copy from 'lucide-svelte/icons/copy';
   import Check from 'lucide-svelte/icons/check';
@@ -18,6 +25,8 @@
 
   interface Props {
     text: string | (() => string | Promise<string>);
+    /** Clipboard writer. Defaults to a plain-text write. */
+    write?: (value: string) => Promise<boolean>;
     label?: string;
     copiedLabel?: string;
     size?: 'sm' | 'md';
@@ -29,6 +38,7 @@
 
   let {
     text,
+    write = copyToClipboard,
     label = 'Copy',
     copiedLabel = 'Copied',
     size = 'sm',
@@ -49,7 +59,7 @@
     try {
       const value = typeof text === 'function' ? await text() : text;
       if (!value) return;
-      const ok = await copyToClipboard(value);
+      const ok = await write(value);
       if (!ok) {
         onError?.();
         return;

@@ -38,15 +38,29 @@ func TestClaudeModelForContextWindow(t *testing.T) {
 	if got := claudeModelForContextWindow("claude-opus-4-7", provider.ClaudeStandardContextWindow); got != "claude-opus-4-7" {
 		t.Fatalf("standard model = %q, want unchanged", got)
 	}
+	// The marker is a context TIER, and the thread's ContextWindow is the only
+	// thing that decides it. An id that arrives already carrying one (the CLI's
+	// own model list bakes them in) must not double up, and must not smuggle
+	// the extended tier past a standard-window thread.
+	if got := claudeModelForContextWindow("claude-opus-4-7[1m]", provider.ClaudeExtendedContextWindow); got != "claude-opus-4-7[1m]" {
+		t.Fatalf("pre-marked extended model = %q, want a single [1m] suffix", got)
+	}
+	if got := claudeModelForContextWindow("claude-opus-4-7[1m]", provider.ClaudeStandardContextWindow); got != "claude-opus-4-7" {
+		t.Fatalf("pre-marked standard model = %q, want the marker dropped", got)
+	}
 }
 
 func TestConfigFromOptionsFastModePreservesModelAndSetsFlag(t *testing.T) {
 	for _, model := range []string{"claude-opus-4-7", "claude-opus-4-6"} {
 		t.Run(model, func(t *testing.T) {
+			// Standard tier is stated, not left to the catalog default:
+			// the assertion below is "fast mode leaves the model string
+			// alone", and only the extended tier appends `[1m]`.
 			cfg := ConfigFromOptions(provider.SessionOptions{
-				Provider: "claude",
-				Model:    model,
-				FastMode: true,
+				Provider:      "claude",
+				Model:         model,
+				ContextWindow: provider.ClaudeStandardContextWindow,
+				FastMode:      true,
 			})
 			if cfg.Model != model {
 				t.Fatalf("Model = %q, want %s", cfg.Model, model)
@@ -115,6 +129,40 @@ func TestConfigFromOptionsOneMillionContextUsesModelSuffix(t *testing.T) {
 	}
 }
 
+// TestConfigFromOptionsUnsetContextWindowUsesModelDefault pins the one place
+// the registry's Default context-window flag reaches the wire: an unset
+// SessionOptions.ContextWindow resolves through
+// provider.ResolveContextWindowForModel, so the large models spawn on the 1M
+// tier (`[1m]` model suffix) while Sonnet keeps 1M opt-in.
+func TestConfigFromOptionsUnsetContextWindowUsesModelDefault(t *testing.T) {
+	cases := []struct {
+		model     string
+		wantModel string
+		wantTier  int
+	}{
+		{"claude-fable-5", "claude-fable-5[1m]", provider.ClaudeExtendedContextWindow},
+		{"claude-opus-5", "claude-opus-5[1m]", provider.ClaudeExtendedContextWindow},
+		{"claude-opus-4-7", "claude-opus-4-7[1m]", provider.ClaudeExtendedContextWindow},
+		{"claude-sonnet-5", "claude-sonnet-5", provider.ClaudeStandardContextWindow},
+		{"claude-sonnet-4-6", "claude-sonnet-4-6", provider.ClaudeStandardContextWindow},
+		{"claude-haiku-4-5", "claude-haiku-4-5", provider.ClaudeStandardContextWindow},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			cfg := ConfigFromOptions(provider.SessionOptions{
+				Provider: "claude",
+				Model:    tc.model,
+			})
+			if cfg.Model != tc.wantModel {
+				t.Errorf("Model = %q, want %q", cfg.Model, tc.wantModel)
+			}
+			if cfg.ContextWindow != tc.wantTier {
+				t.Errorf("ContextWindow = %d, want %d", cfg.ContextWindow, tc.wantTier)
+			}
+		})
+	}
+}
+
 func TestConfigFromOptionsAutoCompactPercentExtendedTier(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:                   "claude",
@@ -131,6 +179,7 @@ func TestConfigFromOptionsAutoCompactPercentStandardTier(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:                   "claude",
 		Model:                      "claude-opus-4-7",
+		ContextWindow:              provider.ClaudeStandardContextWindow,
 		AutoCompactStandardPercent: 50,
 	})
 	if cfg.AutoCompactPercent != 50 {
@@ -142,6 +191,7 @@ func TestBuildArgsAutoCompactRendersThroughSettingsFlag(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:                   "claude",
 		Model:                      "claude-opus-4-7",
+		ContextWindow:              provider.ClaudeStandardContextWindow,
 		AutoCompactStandardPercent: 50,
 	})
 	args := buildArgs(cfg)
@@ -191,6 +241,7 @@ func TestBuildArgsCombinesFastModeAndAutoCompactInOneSettingsFlag(t *testing.T) 
 	cfg := ConfigFromOptions(provider.SessionOptions{
 		Provider:                   "claude",
 		Model:                      "claude-opus-4-7",
+		ContextWindow:              provider.ClaudeStandardContextWindow,
 		FastMode:                   true,
 		AutoCompactStandardPercent: 50,
 	})
@@ -249,6 +300,60 @@ func TestConfigFromOptionsRuntimeModeAutoAcceptEdits(t *testing.T) {
 	want := []string{"--permission-mode", "acceptEdits"}
 	if !slices.Equal(cfg.PermissionFlags, want) {
 		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, want)
+	}
+}
+
+// TestConfigFromOptionsRuntimeModeAuto pins the auto tier's launch config.
+// The flag is the whole mapping: `--permission-mode auto` and nothing else.
+//
+//   - No `--allow-dangerously-skip-permissions`. Auto is not a bypass; the
+//     classifier can DENY, and pairing the two would hand the session an
+//     escape hatch the tier does not promise.
+//   - No `--disallowedTools`. Auto's reviewer needs to SEE a write to rule on
+//     it; removing the write tools would replace review with a blanket refusal
+//     and (per PlanLiveUpdate) force a restart on every transition.
+//
+// Verified against claude 2.1.219: the CLI echoes `permissionMode:"auto"` on
+// `system/init` for exactly this argv. See claudeAutoPermissionMode.
+func TestConfigFromOptionsRuntimeModeAuto(t *testing.T) {
+	cfg := ConfigFromOptions(provider.SessionOptions{
+		Provider:    "claude",
+		RuntimeMode: provider.RuntimeAuto,
+	})
+	want := []string{"--permission-mode", "auto"}
+	if !slices.Equal(cfg.PermissionFlags, want) {
+		t.Errorf("PermissionFlags = %v, want %v", cfg.PermissionFlags, want)
+	}
+	if cfg.BasePermissionMode != "auto" {
+		t.Errorf("BasePermissionMode = %q, want auto", cfg.BasePermissionMode)
+	}
+	if len(cfg.DisallowedTools) != 0 {
+		t.Errorf("DisallowedTools = %v, want none for auto", cfg.DisallowedTools)
+	}
+	if slices.Contains(cfg.PermissionFlags, "--allow-dangerously-skip-permissions") {
+		t.Error("auto must not carry --allow-dangerously-skip-permissions")
+	}
+}
+
+// TestBuildArgsRendersAutoPermissionMode proves the auto mapping reaches argv.
+// The flag is the entire enforcement mechanism for this tier, so a Config
+// field the spawn path drops would silently start a supervised session that
+// prompts for everything the mode promised to handle.
+func TestBuildArgsRendersAutoPermissionMode(t *testing.T) {
+	args := buildArgs(ConfigFromOptions(provider.SessionOptions{
+		Provider:    "claude",
+		RuntimeMode: provider.RuntimeAuto,
+	}))
+	idx := slices.Index(args, "auto")
+	if idx <= 0 || args[idx-1] != "--permission-mode" {
+		t.Errorf("args missing --permission-mode auto: %v", args)
+	}
+	// The CanUseTool responder stays installed: auto falls back to a real ask
+	// on safety_check / ask_rule / plan_mode_floor, and an unanswered fallback
+	// is a hung turn.
+	promptIdx := slices.Index(args, "--permission-prompt-tool")
+	if promptIdx < 0 || args[promptIdx+1] != "stdio" {
+		t.Errorf("auto sessions must keep --permission-prompt-tool stdio: %v", args)
 	}
 }
 
@@ -478,6 +583,7 @@ func TestClaudeBasePermissionModeCoversEveryRuntimeMode(t *testing.T) {
 		provider.RuntimeReadOnly:         "dontAsk",
 		provider.RuntimeApprovalRequired: "default",
 		provider.RuntimeAutoAcceptEdits:  "acceptEdits",
+		provider.RuntimeAuto:             "auto",
 		provider.RuntimeFullAccess:       "bypassPermissions",
 	}
 	for _, mode := range provider.AllRuntimeModes {

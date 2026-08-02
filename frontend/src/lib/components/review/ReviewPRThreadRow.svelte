@@ -2,6 +2,7 @@
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import type { ReviewThread } from '../../types/models';
   import type { CommentAnchor } from '../../stores/reviewPane.svelte';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
 
   interface Props {
     thread: ReviewThread;
@@ -49,6 +50,9 @@
       replying = false;
       return;
     }
+    // Mid-composition the reply text is still in the IME buffer, so the
+    // submit chord would post a truncated comment.
+    if (event.key === 'Enter' && isImeComposingEvent(event)) return;
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       void onSendReply();

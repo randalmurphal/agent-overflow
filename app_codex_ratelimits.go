@@ -42,15 +42,14 @@ func (a *App) probeCodexRateLimits(ctx context.Context) error {
 		return err
 	}
 	var observedSnapshot *provider.RateLimitsSnapshot
-	info, err := codex.ProbeAccount(ctx, codex.ProbeConfig{
-		Binary: binary,
-		OnSnapshot: func(snapshot provider.RateLimitsSnapshot) {
-			// Attribution waits until account/read has been merged into the
-			// probe result below. Emitting here would blindly stamp the
-			// selected metadata account onto externally replaced credentials.
-			observedSnapshot = &snapshot
-		},
-	})
+	probeCfg := a.codexProbeConfig(binary, nil)
+	probeCfg.OnSnapshot = func(snapshot provider.RateLimitsSnapshot) {
+		// Attribution waits until account/read has been merged into the
+		// probe result below. Emitting here would blindly stamp the
+		// selected metadata account onto externally replaced credentials.
+		observedSnapshot = &snapshot
+	}
+	info, err := codex.ProbeAccount(ctx, probeCfg)
 	if err != nil {
 		log.Printf("codex: rate-limit probe: %v", err)
 		return err

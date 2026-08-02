@@ -13,6 +13,10 @@ import (
 	"agent-overflow/internal/provideraccounts"
 )
 
+// probeTestWorkDir stands in for the pinned probe directory. Absolute via
+// os.TempDir because filepath.IsAbs is OS-specific.
+var probeTestWorkDir = os.TempDir()
+
 func TestRunAccountProbeRetriesOneCredentialRotationAndAdoptsMatchingIdentity(t *testing.T) {
 	app, activePath := newStableProbeTestApp(t, []byte("credential-one"))
 	cache := provider.NewProbeCache(time.Minute)
@@ -21,7 +25,7 @@ func TestRunAccountProbeRetriesOneCredentialRotationAndAdoptsMatchingIdentity(t 
 	info, err := app.runAccountProbe(providerProbeRunner{
 		providerName: string(provider.Codex),
 		cache:        cache,
-		binary:       "codex-test-key",
+		key:          provider.ProbeCacheKey{Binary: "codex-test", WorkDir: probeTestWorkDir},
 		probe: func(context.Context) (provider.AccountInfo, error) {
 			call := calls.Add(1)
 			if call == 1 {
@@ -70,7 +74,7 @@ func TestRunAccountProbeRejectsRepeatedCredentialChangesWithoutCachingOrAdopting
 	_, err := app.runAccountProbe(providerProbeRunner{
 		providerName: string(provider.Codex),
 		cache:        cache,
-		binary:       "codex-test-key",
+		key:          provider.ProbeCacheKey{Binary: "codex-test", WorkDir: probeTestWorkDir},
 		probe: func(context.Context) (provider.AccountInfo, error) {
 			next := "credential-two"
 			if calls.Add(1) == 2 {
@@ -85,7 +89,7 @@ func TestRunAccountProbeRejectsRepeatedCredentialChangesWithoutCachingOrAdopting
 	if err == nil || !strings.Contains(err.Error(), "changed") {
 		t.Fatalf("probe error = %v, want repeated-change rejection", err)
 	}
-	if _, hit := cache.Get("codex-test-key"); hit {
+	if _, hit := cache.Get(provider.ProbeCacheKey{Binary: "codex-test", WorkDir: probeTestWorkDir}); hit {
 		t.Fatal("failed identity probe populated the cache")
 	}
 	if accounts := app.providerAccounts.List(string(provider.Codex), time.Now()); len(accounts) != 0 {

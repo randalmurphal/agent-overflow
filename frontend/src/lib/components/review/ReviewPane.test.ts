@@ -186,6 +186,81 @@ describe('<ReviewPane>', () => {
     expect(headerPaths()).toHaveLength(2);
   });
 
+  it('toggles hide-whitespace from the toolbar and re-requests the diff', async () => {
+    const calls: boolean[] = [];
+    setBindingMock('GetWorkspaceCurrentDiff', async (...args: never[]) => {
+      const [, ignoreWhitespace] = args as unknown as [string, boolean];
+      calls.push(ignoreWhitespace);
+      // The -w patch drops the whitespace-only file.
+      return ignoreWhitespace ? patch().split('diff --git a/pnpm-lock.yaml')[0]!.trimEnd() : patch();
+    });
+
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    // Distinct paths: the sticky overlay can duplicate the top file's header.
+    const headerPaths = () =>
+      [...new Set(view.getAllByTestId('review-file-header').map((node) => node.getAttribute('data-path')))];
+    await waitFor(() => {
+      expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
+    });
+
+    const toggle = view.getByTestId('review-ignore-whitespace-toggle');
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(calls).toEqual([false]);
+    // Disabled mid-load so a second flip can't race the reload it starts.
+    await waitFor(() => {
+      expect(toggle).toBeEnabled();
+    });
+
+    await fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(headerPaths()).toEqual(['src/app.ts']);
+    });
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(calls).toEqual([false, true]);
+
+    await waitFor(() => {
+      expect(toggle).toBeEnabled();
+    });
+    await fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
+    });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(calls).toEqual([false, true, false]);
+  });
+
+  it('disables hide-whitespace for a diff source that cannot honor it', async () => {
+    setBindingMock('ListThreadEditDiffs', async () => ({
+      entries: [{
+        itemId: 'item-1',
+        payloadId: 'payload-1',
+        turnIndex: 0,
+        title: 'Edit',
+        paths: ['src/app.ts'],
+        insertions: 1,
+        deletions: 1,
+        createdAt: 1,
+      }],
+      turnLabels: [{ turnIndex: 0, label: 'turn' }],
+    }));
+    setBindingMock('GetPayloadData', async () => ({ data: patch() }));
+    setBindingMock('VerifyEditDiffs', async () => ({ verified: [] }));
+
+    const view = render(ReviewPane, { ctx: makeCtx() });
+    await waitFor(() => {
+      expect(view.getByTestId('review-ignore-whitespace-toggle')).toBeEnabled();
+    });
+
+    await fireEvent.change(view.getByTestId('review-scope-select'), { target: { value: 'edits' } });
+    await waitFor(() => {
+      expect(view.getByTestId('review-ignore-whitespace-toggle')).toBeDisabled();
+    });
+    expect(view.getByTestId('review-ignore-whitespace-toggle')).toHaveAttribute(
+      'title',
+      'Hide whitespace changes — not available for this diff',
+    );
+  });
+
   it('switches to split view and back', async () => {
     const view = render(ReviewPane, { ctx: makeCtx() });
     await waitFor(() => {

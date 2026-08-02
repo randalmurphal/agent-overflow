@@ -607,3 +607,36 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 		t.Fatalf("mode %s = %o, want %o", path, got, want)
 	}
 }
+
+// TestSidebarToggleBindsModBAndYieldsToTerminalFocus pins the sidebar
+// collapse chord. mod+b is the editor convention for this (VS Code,
+// Zed), and the !terminalFocus gate is not cosmetic: off macOS `mod`
+// resolves to Ctrl, and ctrl+b is tmux's default prefix, so a
+// terminal-focused press has to reach the PTY instead of moving the
+// app's furniture.
+func TestSidebarToggleBindsModBAndYieldsToTerminalFocus(t *testing.T) {
+	var found int
+	for _, b := range Defaults {
+		if b.Command != "sidebar.toggle" {
+			continue
+		}
+		found++
+		if b.Key != "mod+b" {
+			t.Errorf("sidebar.toggle key = %q, want %q", b.Key, "mod+b")
+		}
+		if b.When != "!terminalFocus" {
+			t.Errorf("sidebar.toggle when = %q, want %q", b.When, "!terminalFocus")
+		}
+	}
+	if found != 1 {
+		t.Fatalf("Defaults bind sidebar.toggle %d times, want exactly 1", found)
+	}
+	// mod+b must not be shared with another command in an ungated or
+	// non-terminal context — the collapse would shadow it everywhere
+	// outside a focused terminal.
+	for _, b := range Defaults {
+		if b.Key == "mod+b" && b.Command != "sidebar.toggle" {
+			t.Errorf("mod+b is also bound to %q (when %q)", b.Command, b.When)
+		}
+	}
+}

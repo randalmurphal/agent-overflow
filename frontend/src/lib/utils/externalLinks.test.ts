@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { waitFor } from '@testing-library/svelte';
 import {
   canUseHostOpenExternalURL,
+  externalURLForEventTarget,
   handleExternalURL,
   installExternalLinkDelegate,
   safeExternalURL,
@@ -99,6 +100,37 @@ describe('canUseHostOpenExternalURL', () => {
 
     resetRunMode();
     expect(canUseHostOpenExternalURL('192.168.1.25')).toBe(false);
+  });
+});
+
+// The one resolver both entry points share: the click delegate here and the
+// right-click menu in components/shared/ExternalLinkContextHost.svelte. They
+// must agree, or the menu offers to open something the click path refuses.
+describe('externalURLForEventTarget', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  function target(html: string): Element {
+    document.body.innerHTML = html;
+    return document.body.querySelector('[data-hit]')!;
+  }
+
+  it('resolves the enclosing anchor, not just a direct hit', () => {
+    const hit = target('<a href="https://example.com/x"><span data-hit>label</span></a>');
+    expect(externalURLForEventTarget(hit)).toBe('https://example.com/x');
+  });
+
+  it('returns null for path links, relative hrefs, and non-links', () => {
+    expect(
+      externalURLForEventTarget(
+        target(`<a data-hit href="${buildPathLinkHref('src/foo.ts', undefined, undefined, '')}">f</a>`),
+      ),
+    ).toBeNull();
+    expect(externalURLForEventTarget(target('<a data-hit href="/docs">d</a>'))).toBeNull();
+    expect(externalURLForEventTarget(target('<a data-hit href="javascript:alert(1)">x</a>'))).toBeNull();
+    expect(externalURLForEventTarget(target('<span data-hit>plain</span>'))).toBeNull();
+    expect(externalURLForEventTarget(null)).toBeNull();
   });
 });
 

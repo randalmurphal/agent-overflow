@@ -37,10 +37,22 @@ var _ provider.Session = (*Session)(nil)
 
 // Session manages a Codex app-server subprocess.
 type Session struct {
-	proc          *provider.Process
-	ctx           context.Context
-	threadID      string // our internal thread ID
-	codexThreadID string // the Codex app-server's thread ID from thread/start
+	proc     *provider.Process
+	ctx      context.Context
+	threadID string // our internal thread ID
+	// codexThreadID is the Codex app-server's thread ID for this session's
+	// root thread, learned from the thread/start (or thread/resume) response.
+	// Read it with rootThreadID(); write it with setRootThreadID().
+	//
+	// It is atomic rather than mu-guarded because the read loop is already
+	// running when the constructor learns the id — NewSession has to start
+	// readLoop to receive the handshake response at all, so every
+	// notification arriving in that window reads the field concurrently with
+	// the write. Two of those readers (registerChildOwnershipWithSource,
+	// collabProfileForThread) hold mu already, so folding this field into mu
+	// would introduce a self-deadlock; a second mutex would introduce a lock
+	// order. An atomic has neither.
+	codexThreadID atomic.Pointer[string]
 	activeTurnID  string // current active turn ID from turn/started; cleared on turn/completed
 	// pendingTurnSchemaKnown/pendingTurnSchemaed bridge Send's per-turn
 	// options to the turn ID supplied by the response or turn/started. The
@@ -52,23 +64,44 @@ type Session struct {
 	structuredOutputByTurn map[string]json.RawMessage
 	// The turn config block below is re-applied to every turn/start call, so
 	// a mid-session change (ApplyLiveUpdate) takes effect on the next turn
-	// without a process restart. All five are guarded by mu: Send copies
+	// without a process restart. All six are guarded by mu: Send copies
 	// them per turn, ApplyLiveUpdate rewrites them, and the read loop reads
 	// model for usage attribution.
-	model              string // active model; also used for usage attribution
-	reasoningEffort    string // per-turn reasoning effort override; empty means inherit thread default
-	serviceTier        string // per-turn service tier override; "priority" enables Codex fast mode
-	approvalPolicy     string // per-turn approval override; empty means inherit thread default
-	sandbox            string // per-turn sandbox override; empty means inherit thread default
-	nextID             atomic.Int64
-	mu                 sync.Mutex
-	pending            map[int64]chan json.RawMessage
-	onEvent            func(provider.ProviderEvent)
-	eventMu            sync.Mutex
-	dynamicToolHandler DynamicToolHandler
-	cancel             context.CancelFunc
-	closing            atomic.Bool
-	readDone           chan struct{}
+	model           string // requested model; the usage-attribution fallback when Codex has reported nothing
+	reasoningEffort string // per-turn reasoning effort override; empty means inherit thread default
+	serviceTier     string // per-turn service tier override; "priority" enables Codex fast mode
+	approvalPolicy  string // per-turn approval override; empty means inherit thread default
+	sandbox         string // per-turn sandbox override; empty means inherit thread default
+	// approvalsReviewer is always non-empty (threadApprovalsReviewer resolves
+	// the Config's empty value to the protocol default at construction) and is
+	// therefore sent on every turn/start. Omitting it would leave the previous
+	// reviewer sticky across a runtime-mode switch — the exact opt-out-must-
+	// clear-state failure t3-improvements.md §3.2 calls out.
+	approvalsReviewer string
+	// observedSettings is Codex's own view of this thread's live config,
+	// reconciled from `thread/settings/updated` (thread_settings.go). It is
+	// deliberately separate from the requested config above: Codex can
+	// change model / effort / tier without AO asking (reroute, guardian
+	// downgrade, config reload), and folding its echo back into the
+	// requested block would let a stale echo clobber a pending user
+	// selection. Guarded by mu; observedSettingsKnown distinguishes
+	// "Codex reports the empty string" from "Codex has not reported".
+	observedSettings      ThreadSettings
+	observedSettingsKnown bool
+	// unclaimedNotifications dedupes the protocol-drift warning to once
+	// per method per session (notification_catalog.go). Bounded because
+	// the key comes off the wire. Guarded by mu.
+	unclaimedNotifications           map[string]struct{}
+	unclaimedNotificationsOverflowed bool
+	nextID                           atomic.Int64
+	mu                               sync.Mutex
+	pending                          map[int64]chan json.RawMessage
+	onEvent                          func(provider.ProviderEvent)
+	eventMu                          sync.Mutex
+	dynamicToolHandler               DynamicToolHandler
+	cancel                           context.CancelFunc
+	closing                          atomic.Bool
+	readDone                         chan struct{}
 	// approvalsMu guards pendingApprovals, resolvedApprovals, and
 	// approvalsClosed.
 	approvalsMu sync.Mutex
@@ -198,6 +231,25 @@ type Session struct {
 	mcpStartupUpdateHandler MCPStartupUpdateHandler
 }
 
+// rootThreadID returns the Codex app-server thread ID this session's root
+// thread is bound to, or "" before the thread/start handshake has answered
+// (fresh sessions) — the zero value every caller already treats as "not
+// known yet". Safe to call while holding mu.
+func (s *Session) rootThreadID() string {
+	if id := s.codexThreadID.Load(); id != nil {
+		return *id
+	}
+	return ""
+}
+
+// setRootThreadID binds this session to a Codex app-server thread. There is
+// exactly one write path — NewSession seeds it from cfg.ResumeThreadID and
+// then stores the id the handshake response returned — so no caller has to
+// re-derive the ordering between the two. Safe to call while holding mu.
+func (s *Session) setRootThreadID(id string) {
+	s.codexThreadID.Store(&id)
+}
+
 // MCPOAuthCompletedHandler observes the wire-level completion of an
 // MCP server OAuth flow on a live Codex session. ServerName matches
 // the AO library row's `name`; success/error reflect Codex's payload
@@ -208,10 +260,19 @@ type MCPOAuthCompletedHandler func(serverName string, success bool, errorMessage
 // MCPStartupUpdate is the normalized payload carried by Codex's
 // `mcpServer/startupStatus/updated` notification. State values
 // per wire: "starting" | "ready" | "failed" | "cancelled".
+//
+// FailureReason is the machine-readable half of a failure, distinct from
+// the human Error string: upstream's McpStartupFailureReason enum
+// currently has exactly one variant, MCPFailureReasonReauthRequired.
+// Without it a token that needs refreshing is indistinguishable from a
+// server that crashed, and the UI can only show a dead error string where
+// it should offer a sign-in. Empty when the wire sent null (every
+// non-failure update, and failures with no classified cause).
 type MCPStartupUpdate struct {
-	Name  string
-	State string
-	Error string
+	Name          string
+	State         string
+	Error         string
+	FailureReason string
 }
 
 // MCPStartupUpdateHandler observes `mcpServer/startupStatus/updated`
@@ -222,11 +283,18 @@ type MCPStartupUpdateHandler func(update MCPStartupUpdate)
 
 // Config for creating a Codex session.
 type Config struct {
-	Binary                string // default: "codex"
-	Model                 string
-	WorkDir               string
-	ApprovalPolicy        string // "never", "on-failure", "on-request", "untrusted"
-	Sandbox               string // "read-only", "workspace-write", "danger-full-access"
+	Binary         string // default: "codex"
+	Model          string
+	WorkDir        string
+	ApprovalPolicy string // "never", "on-failure", "on-request", "untrusted"
+	Sandbox        string // "read-only", "workspace-write", "danger-full-access"
+	// ApprovalsReviewer routes this thread's approval requests: "user" (the
+	// human, Codex's protocol default) or "auto_review" (Codex's reviewer
+	// subagent, provider.RuntimeAuto). Empty reads as the protocol default —
+	// see threadApprovalsReviewer, which is what actually reaches the wire so
+	// the field is sent explicitly on every start, resume, and turn regardless
+	// of how the Config was built.
+	ApprovalsReviewer     string
 	ResumeThreadID        string // thread ID to resume, empty for new
 	SystemPrompt          string
 	MCPServers            map[string]any
@@ -301,6 +369,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		serviceTier:               cfg.ServiceTier,
 		approvalPolicy:            cfg.ApprovalPolicy,
 		sandbox:                   cfg.Sandbox,
+		approvalsReviewer:         threadApprovalsReviewer(cfg),
 		pending:                   make(map[int64]chan json.RawMessage),
 		onEvent:                   onEvent,
 		cancel:                    cancel,
@@ -327,23 +396,18 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 	// response are quarantined instead of being mistaken for root events. A
 	// fresh thread cannot have children before NewSession returns.
 	if cfg.ResumeThreadID != "" {
-		s.codexThreadID = cfg.ResumeThreadID
+		s.setRootThreadID(cfg.ResumeThreadID)
 	}
 
 	// Start stdout reader goroutine before sending any requests.
 	go s.readLoop()
 
-	// Initialize handshake.
-	_, err = s.sendRequest(ctx, "initialize", map[string]any{
-		"clientInfo": map[string]any{
-			"name":    "agent_overflow",
-			"title":   "Agent Overflow",
-			"version": "0.1.0",
-		},
-		"capabilities": map[string]any{
-			"experimentalApi": true,
-		},
-	})
+	// Initialize handshake. The opt-out list is the complement of what
+	// this package consumes, so Codex stops emitting the ~30 notification
+	// methods we would otherwise parse, route and drop per app-server
+	// (one per thread).
+	_, err = s.sendRequest(ctx, "initialize",
+		codexInitializeParams("agent_overflow", sessionOptOutNotificationMethods()))
 	if err != nil {
 		s.Close()
 		return nil, fmt.Errorf("codex: initialize handshake failed: %w", err)
@@ -372,26 +436,31 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		return nil, fmt.Errorf("codex: %s failed: %w", method, err)
 	}
 
-	// Extract the Codex thread ID from response.
-	s.threadID = threadID // our internal ID
+	// Extract the Codex thread ID from response. s.threadID is already set
+	// from the struct literal above; re-assigning it here would be a write
+	// racing every read-loop read of it for no change in value.
 	responseThreadID := readNestedString(resp, "thread", "id")
 	if responseThreadID == "" {
 		log.Printf("codex: %s response missing thread.id; response: %s", method, string(resp))
 		s.Close()
 		return nil, fmt.Errorf("codex: %s: response did not contain a thread ID", method)
 	}
-	if s.codexThreadID != "" && s.codexThreadID != responseThreadID {
+	if seeded := s.rootThreadID(); seeded != "" && seeded != responseThreadID {
 		s.Close()
-		return nil, fmt.Errorf("codex: %s: response thread ID %q does not match requested thread %q", method, responseThreadID, s.codexThreadID)
+		return nil, fmt.Errorf("codex: %s: response thread ID %q does not match requested thread %q", method, responseThreadID, seeded)
 	}
-	s.codexThreadID = responseThreadID
+	if err := verifyApprovalsReviewerEcho(method, threadApprovalsReviewer(cfg), resp); err != nil {
+		s.Close()
+		return nil, err
+	}
+	s.setRootThreadID(responseThreadID)
 	if method == "thread/resume" {
 		s.rehydrateCollabOwnershipFromThreadResponse(resp)
 		s.startRolloutSubagentNotificationObserver(readNestedString(resp, "thread", "path"))
 	}
 
 	meta, _ := json.Marshal(provider.SessionInfo{
-		SessionID: s.codexThreadID,
+		SessionID: s.rootThreadID(),
 		Model:     cfg.Model,
 		CWD:       cfg.WorkDir,
 	})
@@ -421,7 +490,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 
 	cfg := s.turnConfig()
 	params := map[string]any{
-		"threadId":          s.codexThreadID,
+		"threadId":          s.rootThreadID(),
 		"input":             input,
 		"collaborationMode": codexCollaborationMode(opts.InteractionMode, cfg.Model, cfg.ReasoningEffort),
 	}
@@ -447,6 +516,15 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	}
 	if cfg.ApprovalPolicy != "" {
 		params["approvalPolicy"] = cfg.ApprovalPolicy
+	}
+	// Always sent, for the same reason buildThreadParams always sends it: the
+	// reviewer is thread state that persists until something overwrites it, so
+	// a turn that omits it inherits whatever the last runtime mode selected.
+	// `TurnStartParams.approvals_reviewer` is documented upstream as applying
+	// "for this turn and subsequent turns", which is what makes an auto ↔
+	// other-tier switch a live update rather than a restart.
+	if cfg.ApprovalsReviewer != "" {
+		params["approvalsReviewer"] = cfg.ApprovalsReviewer
 	}
 	if cfg.Sandbox != "" {
 		sandboxPolicy, err := turnSandboxPolicy(cfg.Sandbox)
@@ -550,7 +628,7 @@ func (s *Session) Steer(ctx context.Context, content string, opts provider.SendO
 	}
 
 	params := map[string]any{
-		"threadId":       s.codexThreadID,
+		"threadId":       s.rootThreadID(),
 		"input":          input,
 		"expectedTurnId": expectedTurnID,
 	}
@@ -586,7 +664,7 @@ func (s *Session) Interrupt(ctx context.Context) error {
 	s.mu.Unlock()
 
 	_, err := s.sendRequest(ctx, "turn/interrupt", map[string]any{
-		"threadId": s.codexThreadID,
+		"threadId": s.rootThreadID(),
 		"turnId":   turnID,
 	})
 

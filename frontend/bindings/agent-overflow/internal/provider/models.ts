@@ -17,8 +17,12 @@ import * as json$0 from "../../../encoding/json/models.js";
  * the live wire). For Codex the data lands on the `RateLimitSnapshot`
  * returned by `account/rateLimits/read` (planType + apiProvider hint).
  * 
- * Empty SubscriptionType + empty TokenSource are the unauthenticated
- * signal; consumers branch on that.
+ * Do NOT re-derive "is this account logged in" from these fields.
+ * Which of them a provider populates is provider- and backend-specific
+ * (Claude fills only APIProvider on non-firstParty backends, and only
+ * Email on a firstParty profile login; Codex hardcodes APIProvider and
+ * may legitimately report nothing else). The one Claude answer is
+ * `providerstatus.ClaudeUnauthenticated`; Codex deliberately has none.
  */
 export class AccountInfo {
     "email"?: string;
@@ -195,11 +199,18 @@ export class ApprovalResponse {
 
 /**
  * ContextWindowOption describes one selectable context tier for a model.
+ * 
+ * Default marks the tier a new thread starts on. The flag — never slice
+ * position — is the contract: `DefaultContextWindowForOptions` reads it, and
+ * `TestEveryModelFlagsExactlyOneDefaultContextWindow` enforces that every
+ * catalog entry carries exactly one. That keeps the picker free to reorder
+ * (or a tier free to be inserted) without silently moving the default.
  */
 export class ContextWindowOption {
     "tokens": number;
     "label": string;
     "tier": string;
+    "default"?: boolean;
 
     /** Creates a new ContextWindowOption instance. */
     constructor($$source: Partial<ContextWindowOption> = {}) {

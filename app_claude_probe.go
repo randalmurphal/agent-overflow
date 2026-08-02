@@ -39,10 +39,15 @@ func claudeAccountProbeCache() *claude.ProbeCache {
 // resetClaudeProbeCacheForTest swaps the package-level cache for a
 // fresh instance. Call from test setup to guarantee a clean cache
 // without racing against concurrent probes via claudeAccountProbeCache.
+//
+// It resets the probe-enriched model catalog with it, because one probe fills
+// both: a test that cleared only the identity cache would re-probe and then
+// compare against another test's model list. One reset, no drift.
 func resetClaudeProbeCacheForTest() {
 	claudeProbeCacheMu.Lock()
-	defer claudeProbeCacheMu.Unlock()
 	claudeProbeCache = claude.NewProbeCache(claude.DefaultProbeTTL)
+	claudeProbeCacheMu.Unlock()
+	resetClaudeModelCatalogForTest()
 }
 
 // ProbeClaudeAccount spawns a short-lived Claude CLI subprocess (via
@@ -63,18 +68,40 @@ func resetClaudeProbeCacheForTest() {
 func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	binary := a.providerBinaryPath(string(provider.Claude))
 	selection := a.captureProviderAccountSelection(string(provider.Claude))
-	return a.runAccountProbe(providerProbeRunner{
+	key := a.providerProbeCacheKeyForAccount(string(provider.Claude), binary, selection.AccountID)
+
+	// The model list rides on this probe's initialize response — see
+	// app_claude_models.go. Only this probe path collects it: the rate-limit
+	// and adoption probes run under an ephemeral credential home for a
+	// possibly non-active account, so their answer describes an identity this
+	// key does not name.
+	//
+	// Held here and stored AFTER the orchestrator returns, rather than from
+	// inside the callback, because the callback can fire more than once per
+	// call (runStableAccountProbe re-probes when credentials rotate mid-flight)
+	// and can fire on an attempt whose result is then discarded. Storing on the
+	// way out keeps the rule simple: the list we keep is the one that came with
+	// the identity we returned.
+	var wire claudeProbeModels
+	info, err := a.runAccountProbe(providerProbeRunner{
 		providerName: string(provider.Claude),
 		cache:        claudeAccountProbeCache(),
-		binary:       providerProbeCacheKeyForAccount(binary, selection.AccountID),
+		key:          key,
 		probe: func(ctx context.Context) (provider.AccountInfo, error) {
-			return claude.ProbeAccount(ctx, claude.ProbeConfig{
-				Binary: binary,
-			})
+			cfg := a.claudeProbeConfig(binary, nil)
+			cfg.OnModels = wire.capture
+			return claude.ProbeAccount(ctx, cfg)
 		},
 		unauthenticated: providerstatus.ClaudeUnauthenticated,
 		emitUnauth:      a.emitClaudeUnauthenticatedStatus,
 	})
+	if err != nil {
+		return provider.AccountInfo{}, err
+	}
+	if wire.reported {
+		a.storeClaudeWireModels(key, wire.models, wire.err)
+	}
+	return info, nil
 }
 
 // RecheckClaudeAccount evicts the cached result for the configured

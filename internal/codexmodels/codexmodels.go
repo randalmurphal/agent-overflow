@@ -95,7 +95,7 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 	for {
 		c.mu.Lock()
 		if e, ok := c.entries[binary]; ok && c.now().Before(e.expiresAt) {
-			models := cloneModels(e.models)
+			models := provider.CloneModels(e.models)
 			c.mu.Unlock()
 			return models, e.err
 		}
@@ -106,7 +106,7 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-done:
-				return cloneModels(existing.models), existing.err
+				return provider.CloneModels(existing.models), existing.err
 			}
 		}
 
@@ -115,7 +115,7 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 		c.mu.Unlock()
 
 		models, err := c.list(ctx, binary)
-		cloned := cloneModels(models)
+		cloned := provider.CloneModels(models)
 
 		c.mu.Lock()
 		l.models = cloned
@@ -126,14 +126,14 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 			entryTTL = DefaultErrorTTL
 		}
 		c.entries[binary] = entry{
-			models:    cloneModels(models),
+			models:    provider.CloneModels(models),
 			err:       err,
 			expiresAt: c.now().Add(entryTTL),
 		}
 		close(l.done)
 		c.mu.Unlock()
 
-		return cloneModels(models), err
+		return provider.CloneModels(models), err
 	}
 }
 
@@ -149,18 +149,4 @@ func (c *Cache) Reset() {
 
 func defaultLister(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
 	return codexprovider.ListModels(ctx, codexprovider.ModelListConfig{Binary: binary})
-}
-
-func cloneModels(models []provider.ModelInfo) []provider.ModelInfo {
-	if models == nil {
-		return nil
-	}
-	cloned := make([]provider.ModelInfo, len(models))
-	for i, m := range models {
-		cloned[i] = m
-		cloned[i].Capabilities = append([]string(nil), m.Capabilities...)
-		cloned[i].ContextWindows = append([]provider.ContextWindowOption(nil), m.ContextWindows...)
-		cloned[i].ReasoningEfforts = append([]provider.ReasoningEffortOption(nil), m.ReasoningEfforts...)
-	}
-	return cloned
 }

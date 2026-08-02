@@ -8,6 +8,7 @@
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
   import { computeHighlightSegments } from '../../utils/highlight';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
   import { pathBasename } from '../../utils/pathDisplay';
   import { getProviderDefinition } from '../../providers/catalog';
   import { resolveThreadStatusPill } from '../../utils/threadStatusPill';
@@ -115,6 +116,9 @@
       e.preventDefault();
       activeIndex = (activeIndex - 1 + hits.length) % hits.length;
     } else if (e.key === 'Enter') {
+      // Mid-IME-composition Enter confirms the candidate in the search input;
+      // opening the highlighted thread would jump on a half-typed query.
+      if (isImeComposingEvent(e)) return;
       e.preventDefault();
       const hit = hits[activeIndex];
       if (hit) void openHit(hit.thread);

@@ -76,15 +76,14 @@ func (a *App) ProbeCodexAccount() (provider.AccountInfo, error) {
 	return a.runAccountProbe(providerProbeRunner{
 		providerName: string(provider.Codex),
 		cache:        codexAccountProbeCache(),
-		binary:       providerProbeCacheKeyForAccount(binary, selection.AccountID),
+		key:          a.providerProbeCacheKeyForAccount(string(provider.Codex), binary, selection.AccountID),
 		probe: func(ctx context.Context) (provider.AccountInfo, error) {
-			return codex.ProbeAccount(ctx, codex.ProbeConfig{
-				Binary: binary,
-				OnSnapshot: func(snapshot provider.RateLimitsSnapshot) {
-					copy := cloneRateLimitsSnapshot(snapshot)
-					observedSnapshot = &copy
-				},
-			})
+			cfg := a.codexProbeConfig(binary, nil)
+			cfg.OnSnapshot = func(snapshot provider.RateLimitsSnapshot) {
+				copy := cloneRateLimitsSnapshot(snapshot)
+				observedSnapshot = &copy
+			}
+			return codex.ProbeAccount(ctx, cfg)
 		},
 		afterAdopt: func(account provideraccounts.Account) {
 			if observedSnapshot == nil {

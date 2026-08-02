@@ -33,34 +33,65 @@ func (c *Core) Commit(cwd, subject, body string) (string, error) {
 	return strings.TrimSpace(stdout), nil
 }
 
-// Push publishes the current branch. If no upstream exists, it sets one first.
+// Push publishes the current branch on behalf of a person who pressed a
+// button and is waiting for the result. If no upstream exists, it sets one
+// first. A remote that needs credentials is allowed to prompt — that is the
+// working flow for a GUI credential helper.
 func (c *Core) Push(cwd string) error {
+	return c.push(cwd, true)
+}
+
+// PushUnattended is Push for automation running with nobody watching (the
+// workflows engine's disposition step). A credential prompt there is not a
+// question anyone can answer: the dialog would sit behind the app window
+// until our 45s subprocess timeout fires, or forever if a GUI helper owns
+// it. Failing fast turns that into a run error the disposition surfaces.
+func (c *Core) PushUnattended(cwd string) error {
+	return c.push(cwd, false)
+}
+
+// push is the single implementation behind Push and PushUnattended. The two
+// differ ONLY in whether a credential prompt may appear: argv is resolved
+// once here so the attended and unattended paths cannot drift apart.
+func (c *Core) push(cwd string, allowCredentialPrompt bool) error {
+	args, err := c.pushArgs(cwd)
+	if err != nil {
+		return err
+	}
+	_, _, err = c.executeSpec(commandSpec{
+		binary:                "git",
+		cwd:                   cwd,
+		allowCredentialPrompt: allowCredentialPrompt,
+		args:                  args,
+	})
+	return err
+}
+
+// pushArgs resolves the push argv: a bare `push` when the branch already
+// has an upstream, otherwise one that sets it. The current-branch read runs
+// first in both cases so a detached HEAD is refused before we shell out.
+func (c *Core) pushArgs(cwd string) ([]string, error) {
 	branch, err := c.currentBranch(cwd)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
 	hasUpstream, err := c.branchHasUpstream(cwd)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if hasUpstream {
-		_, _, err = c.Execute(cwd, "push")
-		return err
+		return []string{"push"}, nil
 	}
-
 	remote, err := c.pushRemoteName(cwd)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	_, _, err = c.Execute(cwd, "push", "--set-upstream", remote, branch)
-	return err
+	return []string{"push", "--set-upstream", remote, branch}, nil
 }
 
 // Pull fast-forwards the current branch from its upstream.
 func (c *Core) Pull(cwd string) error {
-	_, _, err := c.Execute(cwd, "pull", "--ff-only")
+	_, _, err := c.executeInteractive(cwd, "pull", "--ff-only")
 	return err
 }
 
@@ -100,7 +131,7 @@ func (c *Core) SyncBranch(cwd, branch string) error {
 	}
 
 	refspec := fmt.Sprintf("%s:%s", remoteBranch, branch)
-	_, _, err := c.Execute(cwd, "fetch", remote, refspec)
+	_, _, err := c.executeInteractive(cwd, "fetch", remote, refspec)
 	return err
 }
 
@@ -123,34 +154,42 @@ func splitUpstreamRef(ref string, remoteNames []string) (string, string, bool) {
 }
 
 // MaybeFetchRemotes runs `git fetch --all` against cwd's repository iff
-// the last successful fetch (cached per canonical repo root) is older
-// than FetchStaleWindow. Returns (true, nil) when a fetch actually ran,
-// (false, nil) when the cache was fresh and skipped. A fetch failure
-// is returned but does not update the staleness clock, so the next
-// call will retry.
+// the last successful fetch is older than FetchStaleWindow. Returns
+// (true, nil) when a fetch actually ran, (false, nil) when the cache was
+// fresh and skipped. A fetch failure is returned but does not update the
+// staleness clock, so the next call will retry.
 //
-// The cache is keyed by canonical repo root so worktrees of the same
-// repository share freshness — `git fetch` mutates `refs/remotes/*`
-// which lives in the shared `.git` directory.
+// The freshness clock is shared with FetchRemotesBackground and
+// PruneRemotes and keyed by the canonical git common dir, so every
+// worktree of a repository — and the background cadence — collapse onto
+// one fetch per window (`git fetch` mutates `refs/remotes/*`, which
+// lives in the shared common dir).
+//
+// Not single-flighted, unlike the background cadence: this is one
+// user-initiated warm-up per picker open, and joining it to an in-flight
+// origin-only background fetch would silently narrow it from --all.
+// Two concurrent fetches of one repo are safe (git locks per ref); the
+// shared window makes the overlap window at most one fetch long.
+//
+// This is a network command nobody explicitly asked for (the branch
+// picker warms it on open), so it deliberately keeps the non-interactive
+// default: against a credential-requiring remote it fails fast with a
+// readable error instead of raising a GUI credential dialog the user
+// cannot connect to any action of theirs.
 func (c *Core) MaybeFetchRemotes(cwd string) (bool, error) {
-	root, err := c.RepositoryRoot(cwd)
+	key, err := c.CommonDir(cwd)
 	if err != nil {
 		return false, err
 	}
-	root = CanonicalPath(root)
-
-	c.fetchCacheMu.RLock()
-	if last, ok := c.fetchCache[root]; ok && c.nowFn().Sub(last) < FetchStaleWindow {
-		c.fetchCacheMu.RUnlock()
+	if c.fetchIsFresh(key) {
 		return false, nil
 	}
-	c.fetchCacheMu.RUnlock()
 
 	if _, _, err := c.Execute(cwd, "fetch", "--all"); err != nil {
 		return false, err
 	}
 
-	c.stampFetchCache(root)
+	c.stampFetchCache(key)
 	return true, nil
 }
 
@@ -158,29 +197,28 @@ func (c *Core) MaybeFetchRemotes(cwd string) (bool, error) {
 // staleness clock so the subsequent picker open doesn't double-fetch.
 // Surfaces fetch errors to the caller for toast display.
 func (c *Core) PruneRemotes(cwd string) error {
-	root, err := c.RepositoryRoot(cwd)
+	key, err := c.CommonDir(cwd)
 	if err != nil {
 		return err
 	}
-	root = CanonicalPath(root)
 
-	if _, _, err := c.Execute(cwd, "fetch", "--all", "--prune"); err != nil {
+	if _, _, err := c.executeInteractive(cwd, "fetch", "--all", "--prune"); err != nil {
 		return err
 	}
 
-	c.stampFetchCache(root)
+	c.stampFetchCache(key)
 	return nil
 }
 
 // stampFetchCache records the current time as the last successful fetch
-// for root, sweeping any entries older than 2× FetchStaleWindow so the
-// map stays bounded by recently-active repos rather than the lifetime
-// total. The 2× floor keeps a freshly-stamped sibling repo from being
-// dropped mid-window.
-func (c *Core) stampFetchCache(root string) {
+// for a repository (key: canonical git common dir), sweeping any entries
+// older than 2× FetchStaleWindow so the map stays bounded by
+// recently-active repos rather than the lifetime total. The 2× floor
+// keeps a freshly-stamped sibling repo from being dropped mid-window.
+func (c *Core) stampFetchCache(key string) {
 	now := c.nowFn()
 	c.fetchCacheMu.Lock()
-	c.fetchCache[root] = now
+	c.fetchCache[key] = now
 	floor := now.Add(-2 * FetchStaleWindow)
 	for k, last := range c.fetchCache {
 		if last.Before(floor) {
@@ -191,17 +229,17 @@ func (c *Core) stampFetchCache(root string) {
 }
 
 // InvalidateFetchCache drops the staleness clock for cwd's repo so the
-// next MaybeFetchRemotes call refetches. Callers that mutate
-// remote-tracking refs out of band should use this to keep the picker
-// honest. Mirrors InvalidatePRCache / InvalidateForgeCache.
+// next MaybeFetchRemotes / FetchRemotesBackground call refetches.
+// Callers that mutate remote-tracking refs out of band should use this
+// to keep the picker honest. Mirrors InvalidatePRCache /
+// InvalidateForgeCache.
 func (c *Core) InvalidateFetchCache(cwd string) {
-	root, err := c.RepositoryRoot(cwd)
+	key, err := c.CommonDir(cwd)
 	if err != nil {
 		return
 	}
-	root = CanonicalPath(root)
 	c.fetchCacheMu.Lock()
-	delete(c.fetchCache, root)
+	delete(c.fetchCache, key)
 	c.fetchCacheMu.Unlock()
 }
 

@@ -420,6 +420,21 @@ type App struct {
 	// store and snapshot the session map.
 	retentionCleanupStop chan struct{}
 	retentionCleanupWG   sync.WaitGroup
+	// backgroundFetchStop signals the background `git fetch` cadence to
+	// exit. Set by startBackgroundGitFetch during ServiceStartup; closed
+	// exactly once by Shutdown before the store closes, because each
+	// pass reads the project list out of SQLite.
+	backgroundFetchStop chan struct{}
+	// backgroundFetchCancel cancels the context the cadence's git
+	// subprocesses run under, so stopping the loop kills a `git fetch`
+	// hanging on a dead network instead of waiting out its timeout.
+	// Set and cleared alongside backgroundFetchStop, under a.mu.
+	backgroundFetchCancel context.CancelFunc
+	backgroundFetchWG     sync.WaitGroup
+	// backgroundFetchErrors remembers the last background-fetch failure
+	// per repository so an unreachable remote logs once rather than
+	// every tick. See app_git_background_fetch.go.
+	backgroundFetchErrors backgroundFetchErrorMemo
 	// Per-provider usage-probe gates (app_usage_probe_gate.go): every
 	// automatic rate-limit refresh trigger funnels through one so bursts
 	// coalesce, a cooldown bounds request rate, and a server 429 holds
@@ -518,6 +533,13 @@ type App struct {
 	// the developer's real Claude Code login. Set once before Start;
 	// never mutated afterwards.
 	fileKeychainOverride bool
+	// backgroundFetchDisabled suppresses the background `git fetch`
+	// cadence entirely. Harness mode sets it: e2e runs must be
+	// deterministic and offline, and the harness's fixture repositories
+	// exist to be asserted against, not fetched over. Unit tests never
+	// reach it — they build *App directly and never call Start. Set once
+	// before Start; never mutated afterwards.
+	backgroundFetchDisabled bool
 	// idleReaperNowFn is a test-only clock injection for the reaper.
 	// Production leaves it nil and reaperNow reads time.Now directly.
 	idleReaperNowFn func() time.Time

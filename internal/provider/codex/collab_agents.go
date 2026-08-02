@@ -84,11 +84,13 @@ func isChildSuppressedThreadNotification(method string) bool {
 		"thread/compacted",
 		"thread/name/updated",
 		"thread/started",
+		"thread/settings/updated",
 		"thread/status/changed",
 		"thread/archived",
 		"thread/unarchived",
 		"thread/closed",
 		"model/rerouted",
+		"model/safetyBuffering/updated",
 		"model/verification",
 		"account/rateLimits/updated",
 		"turn/plan/updated":
@@ -351,7 +353,7 @@ func (s *Session) registerChildOwnershipWithSource(sourceThreadID, childThreadID
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if childThreadID == strings.TrimSpace(s.codexThreadID) || (sourceThreadID != "" && childThreadID == sourceThreadID) {
+	if childThreadID == strings.TrimSpace(s.rootThreadID()) || (sourceThreadID != "" && childThreadID == sourceThreadID) {
 		log.Printf("codex: reject self-referential child ownership source=%q child=%q item=%q", sourceThreadID, childThreadID, parentToolUseID)
 		return false
 	}
@@ -432,7 +434,7 @@ func (s *Session) collabProfileForThread(providerThreadID string) (string, strin
 	providerThreadID = strings.TrimSpace(providerThreadID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if providerThreadID != "" && providerThreadID != s.codexThreadID {
+	if providerThreadID != "" && providerThreadID != s.rootThreadID() {
 		if meta := s.agentMetaByThread[providerThreadID]; meta.Model != "" || meta.ReasoningEffort != "" {
 			return meta.Model, meta.ReasoningEffort
 		}

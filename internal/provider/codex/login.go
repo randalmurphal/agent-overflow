@@ -58,14 +58,13 @@ func Login(ctx context.Context, cfg LoginConfig) error {
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "initialize",
-		"params": map[string]any{
-			"clientInfo": map[string]any{
-				"name":    "agent_overflow_login",
-				"title":   "Agent Overflow",
-				"version": "0.1.0",
-			},
-			"capabilities": map[string]any{"experimentalApi": true},
-		},
+		// account/login/completed is the one notification this handshake
+		// waits on (waitForLoginCompletion); everything else in the
+		// catalogue is noise for a login-only client.
+		"params": codexInitializeParams(
+			"agent_overflow_login",
+			oneShotOptOutNotificationMethods("account/login/completed"),
+		),
 	}); err != nil {
 		return fmt.Errorf("codex: login initialize: %w", err)
 	}

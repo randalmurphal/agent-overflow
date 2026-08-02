@@ -8,6 +8,7 @@
   import { getProviderDefinition } from '../../providers/catalog';
   import { asProviderID, type ProviderID } from '../../types/providers';
   import { computeHighlightSegments } from '../../utils/highlight';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
   import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/events';
 
   interface Props {
@@ -175,6 +176,9 @@
       return;
     }
     if (e.key === 'Enter') {
+      // Mid-IME-composition Enter confirms the candidate in the search input;
+      // opening the highlighted hit would navigate on a half-typed query.
+      if (isImeComposingEvent(e)) return;
       e.preventDefault();
       if (activeIndex >= 0 && activeIndex < hits.length) {
         void openHit(hits[activeIndex]);

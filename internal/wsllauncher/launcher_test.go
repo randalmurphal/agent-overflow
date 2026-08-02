@@ -1,8 +1,10 @@
 package wsllauncher
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"os"
 	"runtime"
 	"slices"
@@ -79,21 +81,232 @@ func TestInstallPayload_ErrorsOnNonWindows(t *testing.T) {
 	}
 }
 
+// lineSink collects the lines a drain forwards. The scanner goroutine
+// outlives readBootstrapLine (it keeps draining stdout for the child's
+// lifetime), so tests that inspect forwarded lines must synchronize with
+// it rather than sharing a plain slice.
+type lineSink struct{ lines chan string }
+
+func newLineSink() *lineSink { return &lineSink{lines: make(chan string, 64)} }
+
+func (s *lineSink) drop(line string) { s.lines <- line }
+
+func (s *lineSink) next(t *testing.T) string {
+	t.Helper()
+	select {
+	case line := <-s.lines:
+		return line
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for a forwarded line")
+		return ""
+	}
+}
+
 func TestReadBootstrapLine_HappyPath(t *testing.T) {
 	stdin := strings.NewReader("starting...\n__AO_BOOTSTRAP__: {\"port\":54321,\"token\":\"abc123\"}\n")
 
-	var dropped []string
-	bs, err := readBootstrapLine(context.Background(), stdin, DefaultBootstrapPrefix, func(s string) {
-		dropped = append(dropped, s)
-	})
+	sink := newLineSink()
+	bs, err := readBootstrapLine(context.Background(), stdin, DefaultBootstrapPrefix, sink.drop)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if bs.Port != 54321 || bs.Token != "abc123" {
 		t.Fatalf("unexpected bootstrap: %+v", bs)
 	}
-	if len(dropped) != 1 || dropped[0] != "starting..." {
-		t.Fatalf("expected one dropped line, got %v", dropped)
+	if got := sink.next(t); got != "starting..." {
+		t.Fatalf("dropped line = %q, want %q", got, "starting...")
+	}
+}
+
+// TestReadBootstrapLine_KeepsDrainingAfterBootstrap — the sentinel ends
+// the bootstrap wait, not the reading. Post-bootstrap stdout keeps
+// flowing through the same dropFn, and the bytes the scanner had already
+// buffered past the sentinel are not lost on the way.
+func TestReadBootstrapLine_KeepsDrainingAfterBootstrap(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer pr.Close()
+
+	// One write: the bootstrap line AND the line after it land in the
+	// scanner's buffer together, so a drain that restarted from the raw
+	// reader instead of the scanner would drop "buffered-with-sentinel".
+	if _, err := pw.WriteString("__AO_BOOTSTRAP__: {\"port\":54321,\"token\":\"abc123\"}\nbuffered-with-sentinel\n"); err != nil {
+		t.Fatalf("write bootstrap: %v", err)
+	}
+
+	sink := newLineSink()
+	bs, err := readBootstrapLine(context.Background(), pr, DefaultBootstrapPrefix, sink.drop)
+	if err != nil {
+		t.Fatalf("readBootstrapLine: %v", err)
+	}
+	if bs.Port != 54321 {
+		t.Fatalf("unexpected bootstrap: %+v", bs)
+	}
+	if got := sink.next(t); got != "buffered-with-sentinel" {
+		t.Fatalf("first drained line = %q, want %q", got, "buffered-with-sentinel")
+	}
+
+	if _, err := pw.WriteString("after-handoff\n"); err != nil {
+		t.Fatalf("write post-bootstrap: %v", err)
+	}
+	if got := sink.next(t); got != "after-handoff" {
+		t.Fatalf("second drained line = %q, want %q", got, "after-handoff")
+	}
+
+	// EOF ends the drain; the goroutine must not outlive the stream.
+	if err := pw.Close(); err != nil {
+		t.Fatalf("close write half: %v", err)
+	}
+}
+
+// TestReadBootstrapLine_PostBootstrapStdoutNeverBlocksChild — the bug this
+// drain exists for: an unread stdout fills the OS pipe buffer (64 KiB on
+// Linux) and the child blocks inside write(2) forever. Writing several
+// times that much must complete.
+func TestReadBootstrapLine_PostBootstrapStdoutNeverBlocksChild(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer pr.Close()
+	defer pw.Close()
+
+	if _, err := pw.WriteString("__AO_BOOTSTRAP__: {\"port\":1,\"token\":\"t\"}\n"); err != nil {
+		t.Fatalf("write bootstrap: %v", err)
+	}
+	if _, err := readBootstrapLine(context.Background(), pr, DefaultBootstrapPrefix, func(string) {}); err != nil {
+		t.Fatalf("readBootstrapLine: %v", err)
+	}
+
+	written := make(chan error, 1)
+	go func() {
+		chatter := strings.Repeat("gtk-message: a library wrote to stdout\n", 16*1024) // ~600 KiB
+		_, err := pw.WriteString(chatter)
+		written <- err
+	}()
+
+	select {
+	case err := <-written:
+		if err != nil {
+			t.Fatalf("post-bootstrap stdout write: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("post-bootstrap stdout write blocked: the backend would be wedged in write(2)")
+	}
+}
+
+// TestDrainStream_FallsBackToDiscardOnOversizedLine — a line longer than
+// the scanner's cap stops the line scan. Stopping there would re-create
+// the wedged-pipe bug, so the drain downgrades to discarding bytes and
+// says so in the log.
+func TestDrainStream_FallsBackToDiscardOnOversizedLine(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer pr.Close()
+	defer pw.Close()
+
+	var logBuf bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		drainStream(newStreamScanner(pr), pr, "stdout", func(string) {})
+	}()
+
+	written := make(chan error, 1)
+	go func() {
+		// One 256 KiB line with no newline (blows the 64 KiB cap),
+		// followed by more bytes that must still be consumed.
+		_, err := pw.WriteString(strings.Repeat("x", 256*1024) + strings.Repeat("y\n", 64*1024))
+		written <- err
+	}()
+
+	select {
+	case err := <-written:
+		if err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("write blocked: the drain gave up on the stream after the oversized line")
+	}
+
+	if err := pw.Close(); err != nil {
+		t.Fatalf("close write half: %v", err)
+	}
+	select {
+	case <-drained:
+	case <-time.After(5 * time.Second):
+		t.Fatal("drain did not end after the stream closed")
+	}
+
+	if out := logBuf.String(); !strings.Contains(out, "discarding the rest of the stream") {
+		t.Fatalf("downgrade to discarding must be logged, got: %q", out)
+	}
+}
+
+// TestDrainStream_ClosedStreamStopsQuietly — Wait/Stop closing the pipe is
+// the clean end of a drain, not a failure worth a log line: nothing can
+// block on a pipe that no longer exists.
+func TestDrainStream_ClosedStreamStopsQuietly(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer pw.Close()
+
+	var logBuf bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		drainStream(newStreamScanner(pr), pr, "stdout", func(string) {})
+	}()
+
+	time.Sleep(20 * time.Millisecond) // let the drain park inside Read
+	if err := pr.Close(); err != nil {
+		t.Fatalf("close read half: %v", err)
+	}
+
+	select {
+	case <-drained:
+	case <-time.After(5 * time.Second):
+		t.Fatal("drain did not end after the reader was closed")
+	}
+	if out := logBuf.String(); out != "" {
+		t.Fatalf("closed stream must end the drain quietly, logged: %q", out)
+	}
+}
+
+// TestDrainStderr_ForwardsUntilEOF — the stderr drain keeps the same
+// line-forwarding contract now that it shares the stdout implementation.
+func TestDrainStderr_ForwardsUntilEOF(t *testing.T) {
+	sink := newLineSink()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		drainStderr(strings.NewReader("first\nsecond\n"), sink.drop)
+	}()
+
+	if got := sink.next(t); got != "first" {
+		t.Fatalf("stderr line 1 = %q", got)
+	}
+	if got := sink.next(t); got != "second" {
+		t.Fatalf("stderr line 2 = %q", got)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drainStderr did not return at EOF")
 	}
 }
 

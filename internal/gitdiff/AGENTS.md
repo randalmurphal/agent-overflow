@@ -26,6 +26,28 @@ constructors.
   (`GIT_EXTERNAL_DIFF` / `GIT_DIFF_OPTS` cleared), a hard
   `maxDiffOutputBytes` stdout cap, and `WaitDelay` so a wedged pipe
   can't hang a review-pane load.
+- `options.go` — `Options`, the last parameter of every patch producer
+  (`DiffWorkspaceVsHead`, `DiffBranchBaseToWorktree`, `CommitDiff`).
+  Its `gitArgs` builds the argv, so the canonical flag set
+  (`--patch --minimal --no-color --no-ext-diff --no-textconv`) is
+  declared once instead of per call site. Zero value = the exact
+  patch.
+
+## Ignore-whitespace (`Options.IgnoreWhitespace`)
+
+The review pane's "hide whitespace changes" toggle. Passes `-w`
+(`--ignore-all-space`) and nothing else — deliberately NOT
+`--ignore-blank-lines`, which would change which lines *exist* rather
+than how they compare.
+
+**Line numbering stays canonical.** `-w` narrows and drops hunks, but
+the `@@` ranges it emits are still true file line numbers on both
+sides, so a `(path, line)` anchor read off a `-w` patch names the same
+physical line it would on the full patch. That is what lets the
+diff-review comment flow keep creating comments while the toggle is
+on; `TestIgnoreWhitespaceKeepsCanonicalLineNumbers` is the guard, and
+the frontend's `-w`-aware orphan detection covers the one remaining
+case (a draft whose line left the displayed patch).
 
 ## Safety invariants
 

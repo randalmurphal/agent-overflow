@@ -39,6 +39,7 @@
     type ThreadStatusPill,
   } from '../../utils/threadStatusPill';
   import { pathBasename } from '../../utils/pathDisplay';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
   import { encodeThreadDragPayload, THREAD_ROW_DRAG_MIME } from '../../utils/threadDragPayload';
 
   let {
@@ -192,6 +193,9 @@
   }
 
   function handleRenameKeydown(e: KeyboardEvent) {
+    // Enter confirms the IME candidate while composing a CJK title; committing
+    // the rename here would save the pre-composition text and exit edit mode.
+    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       saveRename();

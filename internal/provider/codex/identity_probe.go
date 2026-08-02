@@ -15,6 +15,9 @@ import (
 // detection. It starts a fresh app-server so auth.json is loaded from disk,
 // but never calls the rate-limit service or starts a model turn.
 func ProbeIdentity(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, error) {
+	if err := provider.ValidateProbeWorkDir("codex", cfg.WorkDir); err != nil {
+		return provider.AccountInfo{}, err
+	}
 	binary := cfg.Binary
 	if binary == "" {
 		binary = "codex"
@@ -42,14 +45,9 @@ func ProbeIdentity(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, 
 		"jsonrpc": "2.0",
 		"id":      probeInitializeID,
 		"method":  "initialize",
-		"params": map[string]any{
-			"clientInfo": map[string]any{
-				"name":    "agent_overflow_probe",
-				"title":   "Agent Overflow",
-				"version": "0.1.0",
-			},
-			"capabilities": map[string]any{"experimentalApi": true},
-		},
+		// Response-only client: it reads account/read and never waits on
+		// a notification, so the whole catalogue is noise.
+		"params": codexInitializeParams("agent_overflow_probe", oneShotOptOutNotificationMethods()),
 	}); err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("codex: identity probe initialize: %w", err)
 	}

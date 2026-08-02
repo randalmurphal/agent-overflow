@@ -1076,3 +1076,66 @@ func TestHiddenModelsForProvider(t *testing.T) {
 		t.Errorf("HiddenModelsForProvider(unknown) = %v, want nil", got)
 	}
 }
+
+// TestBackgroundGitFetchRoundTripAndSparseDefault covers the inverted
+// half of the sparse-write contract: the toggle defaults to ON, so it is
+// the user's `false` that must survive a reload, and `true` that must
+// disappear from the file again. A default-true bool written the naive
+// way (omitempty, or a sparse diff against the zero value) silently
+// re-enables itself on the next load.
+func TestBackgroundGitFetchRoundTripAndSparseDefault(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	if !svc.Get().BackgroundGitFetch {
+		t.Fatal("BackgroundGitFetch = false on a fresh install, want true")
+	}
+
+	updated, err := svc.Update(map[string]any{"backgroundGitFetch": false})
+	if err != nil {
+		t.Fatalf("Update(backgroundGitFetch=false) error = %v", err)
+	}
+	if updated.BackgroundGitFetch {
+		t.Fatal("BackgroundGitFetch = true, want false")
+	}
+
+	reloaded := NewService(dir).Get()
+	if reloaded.BackgroundGitFetch {
+		t.Fatal("reloaded BackgroundGitFetch = true, want the persisted false")
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var fileMap map[string]any
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal settings file: %v", err)
+	}
+	if got, ok := fileMap["backgroundGitFetch"]; !ok || got != false {
+		t.Fatalf("settings file = %s, want backgroundGitFetch:false persisted", string(data))
+	}
+
+	updated, err = svc.Update(map[string]any{"backgroundGitFetch": true})
+	if err != nil {
+		t.Fatalf("Update(backgroundGitFetch=true) error = %v", err)
+	}
+	if !updated.BackgroundGitFetch {
+		t.Fatal("BackgroundGitFetch = false, want true")
+	}
+	if !NewService(dir).Get().BackgroundGitFetch {
+		t.Fatal("reloaded BackgroundGitFetch = false after re-enabling")
+	}
+
+	data, err = os.ReadFile(filepath.Join(dir, "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	fileMap = nil
+	if err := json.Unmarshal(data, &fileMap); err != nil {
+		t.Fatalf("unmarshal settings file: %v", err)
+	}
+	if _, ok := fileMap["backgroundGitFetch"]; ok {
+		t.Fatalf("settings file = %s, want backgroundGitFetch omitted when back at the default", string(data))
+	}
+}

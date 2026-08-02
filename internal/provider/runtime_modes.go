@@ -1,12 +1,12 @@
 package provider
 
 // RuntimeMode is the approval/permission axis (three tiers mirror t3-code,
-// plus AO's own read-only tier). It controls whether the agent prompts for
-// tool use, auto-approves file edits, bypasses approvals entirely, or is
-// denied every mutating action outright. Provider packages own the
-// wire-level mapping. Orthogonal to InteractionMode ("plan" / "design" /
-// "discussion"), which shapes *what* the agent does, not how much friction
-// is in the way.
+// plus AO's own read-only and auto tiers). It controls whether the agent
+// prompts for tool use, auto-approves file edits, routes approvals to a
+// model-based reviewer, bypasses approvals entirely, or is denied every
+// mutating action outright. Provider packages own the wire-level mapping.
+// Orthogonal to InteractionMode ("plan" / "design" / "discussion"), which
+// shapes *what* the agent does, not how much friction is in the way.
 //
 // The modes are ordered from most to least restrictive on the *mutation*
 // dimension, but note that RuntimeReadOnly is not simply "stricter than
@@ -37,6 +37,21 @@ const (
 	// but still prompts for shell commands and other escalation.
 	RuntimeAutoAcceptEdits RuntimeMode = "auto-accept-edits"
 
+	// RuntimeAuto keeps the human out of the loop without giving up the
+	// veto: a model-based reviewer answers each sensitive tool use with an
+	// approve or a DENY. It is the only tier besides RuntimeReadOnly that
+	// can refuse an action, and unlike read-only the refusal is a judgement
+	// rather than a blanket rule.
+	//
+	// Two honest costs ride along and the picker copy states both: every
+	// reviewed tool call is a billed model call (Claude bills a Haiku
+	// classifier turn; Codex runs an auto_review subagent), and the reviewer
+	// can and does say no. Neither provider guarantees prompt-free operation
+	// — both fall back to a real interactive request for the cases their
+	// reviewer refuses to adjudicate (Claude: safety_check / ask_rule /
+	// plan_mode_floor), so the ordinary approval plumbing stays live.
+	RuntimeAuto RuntimeMode = "auto"
+
 	// RuntimeFullAccess bypasses approvals entirely. This is the
 	// agent-overflow default — chosen deliberately over safer defaults
 	// because our target user is an agent operator who explicitly wants
@@ -45,13 +60,19 @@ const (
 	RuntimeFullAccess RuntimeMode = "full-access"
 )
 
-// AllRuntimeModes is the canonical list. CHECK constraints, frontend
-// pickers, and migration fallbacks all reference it — keep in sync with the
-// const block above.
+// AllRuntimeModes is the canonical list, ordered most- to least-restrictive
+// on the mutation dimension. CHECK constraints, frontend pickers, and
+// migration fallbacks all reference it — keep in sync with the const block
+// above.
+//
+// RuntimeAuto sits after RuntimeAutoAcceptEdits because it lets strictly more
+// mutations through unprompted: auto-accept-edits still stops at every shell
+// command, auto reviews it and usually allows it.
 var AllRuntimeModes = []RuntimeMode{
 	RuntimeReadOnly,
 	RuntimeApprovalRequired,
 	RuntimeAutoAcceptEdits,
+	RuntimeAuto,
 	RuntimeFullAccess,
 }
 

@@ -141,6 +141,9 @@ describe('<AccessToggle>', () => {
     expect(getByText('Deny edits and mutating commands instead of asking.')).toBeTruthy();
     expect(getByText('Ask before commands and file changes.')).toBeTruthy();
     expect(getByText('Auto-approve edits, ask before other actions.')).toBeTruthy();
+    expect(
+      getByText('A model reviews each action instead of you. Costs extra tokens, and it can refuse.'),
+    ).toBeTruthy();
     expect(getByText('Allow commands and edits without prompts.')).toBeTruthy();
   });
 
@@ -171,5 +174,62 @@ describe('<AccessToggle>', () => {
     await waitFor(() => {
       expect(getByTestId('composer-access-toggle').getAttribute('data-mode')).toBe('read-only');
     });
+  });
+
+  // The order is the product decision, not incidental array order: the menu
+  // reads most- to least-restrictive on mutation, and `auto` belongs after
+  // auto-accept-edits because it lets strictly more through unprompted (
+  // auto-accept-edits still stops at every shell command). Go's
+  // TestAllRuntimeModesOrdering pins the same sequence on provider
+  // .AllRuntimeModes; a divergence between the two is a UI that misrepresents
+  // how permissive a tier is relative to its neighbours.
+  it('orders the tiers most- to least-restrictive with auto between auto-accept-edits and full access', async () => {
+    const pane = await buildPane('full-access');
+    const { getAllByRole, getByTestId } = render(AccessToggle, { props: { pane } });
+
+    await fireEvent.click(getByTestId('composer-access-toggle'));
+
+    const labels = getAllByRole('menuitem').map((el) =>
+      (el.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    );
+    expect(labels.map((l) => l.split('.')[0].trim())).toEqual([
+      'Read-only Deny edits and mutating commands instead of asking',
+      'Supervised Ask before commands and file changes',
+      'Auto-accept edits Auto-approve edits, ask before other actions',
+      'Auto A model reviews each action instead of you',
+      'Full access Allow commands and edits without prompts',
+    ]);
+  });
+
+  it('persists the auto tier on a materialized thread', async () => {
+    const pane = await buildPane('approval-required');
+    const update = setBindingMock('UpdateThreadRuntimeMode', async () => makeThread('auto'));
+    const { getByRole, getByTestId } = render(AccessToggle, { props: { pane } });
+
+    await fireEvent.click(getByTestId('composer-access-toggle'));
+    // Exact name, not /Auto/ — that substring also matches "Auto-accept
+    // edits", and a picker that silently selected the neighbouring tier is
+    // precisely the bug this ordering change could introduce.
+    await fireEvent.click(getByRole('menuitem', { name: /^Auto A model reviews/ }));
+
+    expect(update).toHaveBeenCalledWith('thread-1', 'auto');
+    await waitFor(() => {
+      expect(getByTestId('composer-access-toggle').getAttribute('data-mode')).toBe('auto');
+    });
+    expect(pane.thread?.runtimeMode).toBe('auto');
+  });
+
+  // The trigger's tooltip is where a user who never opens the menu meets the
+  // two caveats. Auto is the only tier whose label undersells what it does, so
+  // the description reaching the tooltip is the surface that carries them.
+  it('surfaces both auto caveats on the collapsed trigger', async () => {
+    const pane = await buildPane('auto');
+    const { getByTestId } = render(AccessToggle, { props: { pane } });
+
+    const trigger = getByTestId('composer-access-toggle');
+    expect(trigger.textContent ?? '').toMatch(/Auto/);
+    const title = trigger.getAttribute('title') ?? '';
+    expect(title).toMatch(/Costs extra tokens/);
+    expect(title).toMatch(/it can refuse/);
   });
 });

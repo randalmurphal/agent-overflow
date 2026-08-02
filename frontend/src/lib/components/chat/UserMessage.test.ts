@@ -11,6 +11,7 @@ import {
 import type { ThreadPane } from '../../stores/thread.svelte';
 import UserMessage from './UserMessage.svelte';
 import type { UserMessageActions } from './userMessageActions';
+import { USER_MESSAGE_CLAMP_LINES } from './userMessageClamp';
 
 describe('<UserMessage>', () => {
   beforeEach(() => {
@@ -546,6 +547,67 @@ describe('<UserMessage>', () => {
     it('does not colour a longer word that merely starts with the command', () => {
       const { queryByTestId } = renderSummary('/workflows are nice', JSON.stringify({ command: 'workflow' }));
       expect(queryByTestId('user-message-command')).toBeNull();
+    });
+  });
+
+  // Clamp behavior that needs real geometry (the clip's overflow, the toggle
+  // it produces, the expand/collapse round trip) lives in
+  // userMessageClamp.browser.test.ts — happy-dom reports zero height, so
+  // nothing here can observe an overflow. What this suite pins is the half
+  // that is geometry-free: a short message must come out of the feature
+  // byte-for-byte unchanged, and the clamp must never reach the attachments.
+  describe('clamped long text', () => {
+    function renderSummary(summary: string, meta?: string) {
+      return render(UserMessage, {
+        props: { item: makeItem({ kind: 'user_text', role: 'user', summary, meta }) },
+      });
+    }
+
+    const longText = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n');
+
+    it('leaves a short message with no clip, no fade and no control', () => {
+      const { getByTestId, queryByTestId } = renderSummary('ship it');
+
+      const paragraph = getByTestId('user-message-summary');
+      expect(paragraph.getAttribute('style')).toBeNull();
+      expect(paragraph.className).not.toContain('overflow-hidden');
+      expect(paragraph.className).not.toContain('user-message-clamp-fade');
+      expect(paragraph.getAttribute('data-clamped')).toBeNull();
+      expect(queryByTestId('user-message-clamp-toggle')).toBeNull();
+    });
+
+    it('clips a long message to the line threshold', () => {
+      const paragraph = renderSummary(longText).getByTestId('user-message-summary');
+
+      expect(paragraph.getAttribute('style')).toContain(`max-height: ${USER_MESSAGE_CLAMP_LINES}lh`);
+      expect(paragraph.className).toContain('overflow-hidden');
+    });
+
+    it('keeps command colouring inside the clipped text', () => {
+      const { getByTestId } = renderSummary(
+        `/plan the migration\n${longText}`,
+        JSON.stringify({ command: 'plan' }),
+      );
+      expect(getByTestId('user-message-command').textContent).toBe('/plan');
+    });
+
+    it('leaves attachments outside the clipped region', () => {
+      const { getByTestId } = renderSummary(longText, JSON.stringify({
+        attachments: [{
+          id: 'att-1',
+          threadId: 'thread-1',
+          filename: 'hero.png',
+          mimeType: 'image/png',
+          size: 128,
+          relativePath: 'thread-1/att-1.png',
+          createdAt: 1,
+        }],
+      }));
+
+      const attachments = getByTestId('user-message-attachments');
+      const paragraph = getByTestId('user-message-summary');
+      expect(paragraph.contains(attachments)).toBe(false);
+      expect(getByTestId('user-message-bubble').contains(attachments)).toBe(true);
     });
   });
 });

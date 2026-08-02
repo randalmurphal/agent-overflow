@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -45,6 +46,15 @@ func classifyThreadNotification(threadID, method string, params json.RawMessage,
 			Meta:      meta,
 			Timestamp: now,
 		}}, true
+
+	case "thread/settings/updated":
+		// Config reconciliation only — Session.reconcileThreadSettings
+		// folds this into the observed-settings snapshot before the
+		// classifier runs. Recognized here (rather than falling through)
+		// so the method counts as consumed: the opt-out list in
+		// notification_catalog.go is the complement of what we consume,
+		// and an unrecognized method would be unsubscribed at initialize.
+		return nil, true
 
 	case "thread/started",
 		"thread/status/changed",
@@ -130,8 +140,43 @@ func classifyAccountNotification(threadID, method string, params json.RawMessage
 	case "model/verification":
 		return []provider.ProviderEvent{codexNotificationEvent(threadID, "model_verification", "Model verification warning", params, now)}, true
 
+	case "model/safetyBuffering/updated":
+		return classifySafetyBuffering(threadID, params, now), true
+
 	case "account/updated", "account/login/completed":
 		return nil, true
 	}
 	return nil, false
+}
+
+// classifySafetyBuffering turns `model/safetyBuffering/updated` into the
+// one user-facing fact it carries: the model's response is being held
+// while OpenAI reviews it. Without this the UI is indistinguishable from
+// a hung app during the hold (Core Principle 5 — errors and stalls are
+// user-facing state, not log entries).
+//
+// Only the showBufferingUi=true edge produces a row. The false edge is the
+// hold ending, which needs no announcement, and emitting on both would
+// double every occurrence in the transcript. It still counts as handled so
+// the method stays subscribed (see notification_catalog.go).
+//
+// Wire (`v2::ModelSafetyBufferingUpdatedNotification`): `{threadId, turnId,
+// model, useCases[], reasons[], showBufferingUi, fasterModel?}`. `reasons`
+// is server-authored free text rather than a closed enum
+// (codex-rs/core/src/session/turn.rs passes the response's list straight
+// through), so it is appended verbatim rather than mapped to our own copy.
+// The summary has to be self-contained: triage persists `kind` and `title`
+// for notification rows and drops the rest of the meta.
+func classifySafetyBuffering(threadID string, params json.RawMessage, now time.Time) []provider.ProviderEvent {
+	fields := decodeTopLevel(params)
+	if !readRawBool(fields, "showBufferingUi") {
+		return nil
+	}
+	summary := "OpenAI is reviewing this turn — the response is buffered"
+	if reasons := readRawStringArray(fields, "reasons"); len(reasons) > 0 {
+		summary += " (" + strings.Join(reasons, ", ") + ")"
+	}
+	event := codexNotificationEvent(threadID, "safety_buffering", summary, params, now)
+	event.TurnID = readRawString(fields, "turnId")
+	return []provider.ProviderEvent{event}
 }

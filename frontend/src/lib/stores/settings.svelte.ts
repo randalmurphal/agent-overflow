@@ -48,9 +48,16 @@ const DEFAULT_SETTINGS: Settings = {
   // fresh frontend boot before GetSettings returns shows the right
   // default in the GeneralSettings input.
   retention: { days: 30 },
+  // On by default, mirroring internal/settings.DefaultSettings: the
+  // behind badge is only meaningful if something refreshes it.
+  backgroundGitFetch: true,
   // Empty allowlist — only gitlab.com / github.com are recognised by
   // default. Users add self-hosted entries through the Settings UI.
   gitlabSelfHostedHosts: [],
+  // No custom provider environment out of the box; the backend omits the
+  // keys entirely until the user adds one.
+  claudeCustomEnv: [],
+  codexCustomEnv: [],
   projectSortMode: "lastActivity",
   usagePeriod: "month",
   workflowPaused: false,
@@ -65,6 +72,8 @@ function defaultSettings(): Settings {
     gitlabSelfHostedHosts: [...DEFAULT_SETTINGS.gitlabSelfHostedHosts],
     claudeHiddenModels: [...(DEFAULT_SETTINGS.claudeHiddenModels ?? [])],
     codexHiddenModels: [...(DEFAULT_SETTINGS.codexHiddenModels ?? [])],
+    claudeCustomEnv: [...(DEFAULT_SETTINGS.claudeCustomEnv ?? [])],
+    codexCustomEnv: [...(DEFAULT_SETTINGS.codexCustomEnv ?? [])],
   };
 }
 
@@ -93,6 +102,12 @@ function mergeSettingsWithDefaults(result: Partial<Settings>): Settings {
     codexHiddenModels: result.codexHiddenModels
       ? [...result.codexHiddenModels]
       : defaults.codexHiddenModels,
+    claudeCustomEnv: result.claudeCustomEnv
+      ? [...result.claudeCustomEnv]
+      : defaults.claudeCustomEnv,
+    codexCustomEnv: result.codexCustomEnv
+      ? [...result.codexCustomEnv]
+      : defaults.codexCustomEnv,
   };
 }
 
@@ -138,6 +153,18 @@ export async function updateSettingsPatch(
     settings = previous;
     addToast("error", "Failed to save setting");
   }
+}
+
+/**
+ * Re-seeds the store from a full Settings snapshot returned by a dedicated
+ * mutator (the custom-environment CRUD). Those bindings return the same
+ * redacted shape GetSettings does, so the store stays consistent without a
+ * second round trip — and unlike updateSettingsPatch there is no optimistic
+ * pre-write, because the backend is the only side that knows what the
+ * validated, deduped list looks like.
+ */
+export function applySettingsSnapshot(result: Partial<Settings>): void {
+  settings = mergeSettingsWithDefaults(result);
 }
 
 export function resetSettingsForTest(): void {

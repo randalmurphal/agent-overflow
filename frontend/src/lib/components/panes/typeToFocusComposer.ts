@@ -19,6 +19,7 @@ import { getTerminalFocused } from '../terminal/terminalStore.svelte';
 import { focusTextareaAtEnd } from '../composer/composerKeyboard';
 import { findPaneComposer } from './paneComposerFocus';
 import { hasActiveFocusTrap } from '../../utils/focusTrap';
+import { isImeComposingEvent } from '../../utils/imeComposition';
 
 export interface TypeToFocusSurfaceFlags {
   workflowsOverlayOpen: boolean;
@@ -38,7 +39,7 @@ export interface TypeToFocusSurfaceFlags {
  */
 export function isTypeToFocusKey(ev: KeyboardEvent): boolean {
   if (ev.metaKey || ev.ctrlKey || ev.altKey) return false;
-  if (ev.isComposing || ev.keyCode === 229) return false;
+  if (isImeComposingEvent(ev)) return false;
   if (ev.key.length !== 1) return false; // 'Enter', 'F2', 'Dead', arrows…
   return ev.key !== ' ';
 }

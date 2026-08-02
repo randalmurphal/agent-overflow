@@ -2376,14 +2376,14 @@ func TestRuntimeModeCheckMatchesProvider(t *testing.T) {
 		).Scan(&schema); err != nil {
 			t.Fatalf("read %s schema: %v", table, err)
 		}
-		if !strings.Contains(schema, runtimeModeCheckV34) {
+		if !strings.Contains(schema, runtimeModeCheckV45) {
 			t.Fatalf("%s does not carry the current runtime_mode CHECK\nwant substring: %s\ngot: %s",
-				table, runtimeModeCheckV34, schema)
+				table, runtimeModeCheckV45, schema)
 		}
 	}
 
 	for _, mode := range provider.AllRuntimeModes {
-		if !strings.Contains(runtimeModeCheckV34, "'"+string(mode)+"'") {
+		if !strings.Contains(runtimeModeCheckV45, "'"+string(mode)+"'") {
 			t.Errorf("runtime mode %q is canonical in internal/provider but absent from the SQL CHECK — add a migration", mode)
 		}
 		if got := normalizeRuntimeMode(string(mode)); got != string(mode) {
@@ -2932,5 +2932,137 @@ func TestMigrationV43AddsUnitCallLinkage(t *testing.T) {
 	defer rows.Close()
 	if rows.Next() {
 		t.Fatal("foreign_key_check reported a violation after v43 rebuild")
+	}
+}
+
+// TestMigrationV45WidensRuntimeModeCheckWithAuto is the per-version test for
+// the AI-reviewed `auto` tier. Same three properties every CHECK widening
+// needs — the new value is accepted, garbage is still refused, and existing
+// rows survive the rebuild — plus one specific to this value: `read-only`,
+// added by v34, must still be accepted. v45 derives its SQL from v34's text,
+// so a derivation that replaced the wrong occurrence (or only one of the two
+// tables) would show up here as a tier silently disappearing.
+func TestMigrationV45WidensRuntimeModeCheckWithAuto(t *testing.T) {
+	db := migrateThrough(t, 44)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v45', '/tmp/v45', 'V45', 'green', 4, 10, 11, 0)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (
+			id, project_id, title, provider, model, workspace_path, worktree_path,
+			branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+			fast_mode, context_window, auto_compact_standard_percent,
+			auto_compact_extended_percent, runtime_mode, last_token_usage, last_read_at,
+			pinned_at, created_at, updated_at, archived, disabled_mcp_servers
+		) VALUES (
+			'thread-v45', 'project-v45', 'Preserve me', 'codex', 'gpt-5.5-codex', '/tmp/v45', '/tmp/v45-wt',
+			'feature/v45', 'github:45', 'session-v45', 'fork-v45', 'plan', 'xhigh',
+			1, 400000, 45, 65, 'read-only', '{"input_tokens":45}', 31,
+			32, 33, 34, 1, '["server-v45"]'
+		)
+	`)
+	mustExec(t, db, `
+		INSERT INTO items (
+			id, thread_id, turn_index, item_index, kind, role, status, summary,
+			parent_id, is_background, completion_of, tool_name, decision, meta,
+			created_at, updated_at
+		) VALUES (
+			'item-v45', 'thread-v45', 1, 2, 'assistant_text', 'assistant', 'completed', 'kept',
+			'', 0, '', '', '', '{}', 35, 36
+		)
+	`)
+	mustExec(t, db, `
+		INSERT INTO chat_model_profiles (
+			provider, model, reasoning_effort, fast_mode, context_window,
+			auto_compact_standard_percent, auto_compact_extended_percent,
+			runtime_mode, updated_at
+		) VALUES ('codex', 'gpt-5.5-codex', 'xhigh', 1, 400000, 50, 70, 'read-only', 37)
+	`)
+
+	// Before the migration the tier is unrepresentable on both tables.
+	if _, err := db.Exec(`UPDATE threads SET runtime_mode = 'auto' WHERE id = 'thread-v45'`); err == nil {
+		t.Fatal("threads accepted 'auto' before v45 — the CHECK was already wrong")
+	}
+	if _, err := db.Exec(`UPDATE chat_model_profiles SET runtime_mode = 'auto'`); err == nil {
+		t.Fatal("chat_model_profiles accepted 'auto' before v45 — the CHECK was already wrong")
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 45)); err != nil {
+		t.Fatalf("apply migration v45: %v", err)
+	}
+
+	var title, model, prRef, mode, tokenUsage, disabledServers, runtimeMode string
+	var fastMode, contextWindow, archived int
+	if err := db.QueryRow(`
+		SELECT title, model, pr_ref, mode, last_token_usage, disabled_mcp_servers,
+		       runtime_mode, fast_mode, context_window, archived
+		FROM threads WHERE id = 'thread-v45'
+	`).Scan(&title, &model, &prRef, &mode, &tokenUsage, &disabledServers,
+		&runtimeMode, &fastMode, &contextWindow, &archived); err != nil {
+		t.Fatalf("read migrated thread: %v", err)
+	}
+	if title != "Preserve me" || model != "gpt-5.5-codex" || prRef != "github:45" ||
+		mode != "plan" || tokenUsage != `{"input_tokens":45}` ||
+		disabledServers != `["server-v45"]` || runtimeMode != "read-only" ||
+		fastMode != 1 || contextWindow != 400000 || archived != 1 {
+		t.Fatalf("migrated thread lost data: title=%q model=%q pr_ref=%q mode=%q usage=%q disabled=%q runtime=%q fast=%d context=%d archived=%d",
+			title, model, prRef, mode, tokenUsage, disabledServers, runtimeMode, fastMode, contextWindow, archived)
+	}
+
+	var itemSummary string
+	if err := db.QueryRow(`SELECT summary FROM items WHERE id = 'item-v45'`).Scan(&itemSummary); err != nil {
+		t.Fatalf("read child item after thread rebuild: %v", err)
+	}
+	if itemSummary != "kept" {
+		t.Fatalf("item summary = %q, want kept", itemSummary)
+	}
+
+	var profileRuntime string
+	var profileUpdatedAt int
+	if err := db.QueryRow(`
+		SELECT runtime_mode, updated_at FROM chat_model_profiles
+		WHERE provider = 'codex' AND model = 'gpt-5.5-codex'
+	`).Scan(&profileRuntime, &profileUpdatedAt); err != nil {
+		t.Fatalf("read migrated model profile: %v", err)
+	}
+	if profileRuntime != "read-only" || profileUpdatedAt != 37 {
+		t.Fatalf("migrated profile lost data: runtime=%q updated=%d", profileRuntime, profileUpdatedAt)
+	}
+
+	// Every canonical tier is representable on both tables afterwards — not
+	// just the new one. The v34 tier is the one a bad derivation would drop.
+	for _, mode := range provider.AllRuntimeModes {
+		mustExec(t, db, `UPDATE threads SET runtime_mode = ? WHERE id = 'thread-v45'`, string(mode))
+		mustExec(t, db, `UPDATE chat_model_profiles SET runtime_mode = ? WHERE provider = 'codex'`, string(mode))
+	}
+
+	// Widening is not loosening.
+	for _, bad := range []string{"yolo", "auto_review", "AUTO"} {
+		if _, err := db.Exec(`UPDATE threads SET runtime_mode = ? WHERE id = 'thread-v45'`, bad); err == nil {
+			t.Errorf("threads accepted runtime_mode %q after v45", bad)
+		}
+		if _, err := db.Exec(`UPDATE chat_model_profiles SET runtime_mode = ? WHERE provider = 'codex'`, bad); err == nil {
+			t.Errorf("chat_model_profiles accepted runtime_mode %q after v45", bad)
+		}
+	}
+
+	for _, index := range []string{
+		"idx_threads_project", "idx_threads_updated", "idx_threads_parent",
+		"idx_threads_forked_from", "idx_threads_pinned_at", "idx_chat_model_profiles_updated",
+	} {
+		var found string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after v45: %v", index, err)
+		}
+	}
+
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("foreign_key_check reported a violation after v45 rebuild")
 	}
 }

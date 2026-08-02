@@ -240,3 +240,58 @@ func TestParseResult_FlatUsageFallbackForSynthesizedResults(t *testing.T) {
 		t.Fatalf("fallback attribution: %+v", perModel)
 	}
 }
+
+// TestParseResult_AutoModeClassifierRowIsAccountedNotDropped uses the real
+// `result` envelope captured from a `--permission-mode auto` turn on claude
+// 2.1.219 (the 2026-08-02 Claude spike). Auto adds a row to `modelUsage` for
+// the Haiku classifier that adjudicated the Bash call — on a thread whose
+// selected model is Fable.
+//
+// Two properties matter and they pull in opposite directions:
+//
+//   - Cost must stay exact. The classifier's costUSD is real spend, so the
+//     turn aggregate has to include it. Dropping the unfamiliar row (or
+//     attributing the whole turn to the thread's model) would understate the
+//     turn or misprice it.
+//   - Attribution must stay honest. The classifier row is a DIFFERENT model
+//     from the one the user picked, and the ledger records it as such rather
+//     than folding it into the thread's model.
+//
+// The accounting is model-name-agnostic by construction — a cumulative map
+// keyed by whatever the wire reports — so this needs no code, and that is
+// exactly what the test pins. The consequence the UI has not yet caught up
+// with is that a Fable thread now shows a Haiku row; labelling classifier
+// rows as such is a tracked follow-up, not a behaviour this test asserts.
+func TestParseResult_AutoModeClassifierRowIsAccountedNotDropped(t *testing.T) {
+	parser := NewParser()
+	parser.SetModel("claude-fable-5")
+	line := []byte(`{"type":"result","subtype":"success","stop_reason":"end_turn","total_cost_usd":0.23152199999999998,` +
+		`"usage":{"input_tokens":4,"output_tokens":112,"cache_read_input_tokens":39632,"cache_creation_input_tokens":9283},` +
+		`"modelUsage":{` +
+		`"claude-haiku-4-5-20251001":{"inputTokens":530,"outputTokens":12,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.00059},` +
+		`"claude-fable-5":{"inputTokens":4,"outputTokens":112,"cacheReadInputTokens":39632,"cacheCreationInputTokens":9283,"costUSD":0.23093199999999997}}}`)
+
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse auto-mode result: %v", err)
+	}
+	usage, perModel := requireUsage(t, events)
+
+	if len(perModel) != 2 {
+		t.Fatalf("perModel count = %d, want the thread model plus the classifier row (%+v)", len(perModel), perModel)
+	}
+	// Sorted by model name: fable before haiku.
+	if perModel[0].Model != "claude-fable-5" || perModel[0].OutputTokens != 112 {
+		t.Errorf("thread-model row = %+v, want the fable turn", perModel[0])
+	}
+	if perModel[1].Model != "claude-haiku-4-5-20251001" || perModel[1].InputTokens != 530 || perModel[1].OutputTokens != 12 {
+		t.Errorf("classifier row = %+v, want the haiku classifier usage", perModel[1])
+	}
+	if usage.InputTokens != 4+530 || usage.OutputTokens != 112+12 {
+		t.Errorf("aggregate tokens = in %d / out %d, want in %d / out %d",
+			usage.InputTokens, usage.OutputTokens, 4+530, 112+12)
+	}
+	if wantCost := 0.00059 + 0.23093199999999997; math.Abs(usage.TotalCostUSD-wantCost) > 1e-9 {
+		t.Errorf("aggregate cost = %v, want %v (the classifier call is billed spend)", usage.TotalCostUSD, wantCost)
+	}
+}

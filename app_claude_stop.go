@@ -30,9 +30,11 @@ const stopClaudeTaskTimeout = 10 * time.Second
 //   - session-missing: no Claude session for this thread. The caller
 //     started a stop before Start / after Close.
 //   - provider-mismatch: the thread exists but it's a Codex session,
-//     not a Claude one. Codex has no per-row stop primitive
-//     (see docs/references/codex.md#known-upstream-constraints); the
-//     frontend must branch on provider before reaching for this.
+//     not a Claude one. Codex's per-row stop is a different RPC with a
+//     different id namespace (process id, not task id) — see
+//     codex.Session.TerminateBackgroundTerminal and
+//     docs/references/codex.md#background-terminals; the frontend must
+//     branch on provider before reaching for this.
 //   - timeout / provider error: surfaced verbatim so the UI can render
 //     the CLI-supplied message.
 func (a *App) StopClaudeTask(threadID, taskID string) error {

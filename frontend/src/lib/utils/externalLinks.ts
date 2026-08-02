@@ -60,18 +60,27 @@ export function installExternalLinkDelegate(): () => void {
   };
 }
 
+/**
+ * Resolve the external URL an event landed on, or null when the target is
+ * not an outbound link. Shared by the click delegate and the right-click
+ * menu host so both agree on what counts as external: path links
+ * (`agent-overflow:open?path=…`) are an editor affordance, not a URL, and
+ * anything that is not http(s) with a host is left to the browser.
+ */
+export function externalURLForEventTarget(target: EventTarget | null): string | null {
+  if (!(target instanceof Element)) return null;
+  const link = target.closest<HTMLAnchorElement>('a[href]');
+  if (!link) return null;
+  const rawHref = link.getAttribute('href');
+  if (rawHref && rawHref.startsWith(PATH_LINK_HREF_PREFIX)) return null;
+  return safeExternalURL(rawHref);
+}
+
 function handleExternalLinkClick(event: MouseEvent): void {
   if (event.defaultPrevented) return;
   if (event.button !== 0 && event.button !== 1) return;
 
-  const target = event.target;
-  if (!(target instanceof Element)) return;
-
-  const link = target.closest<HTMLAnchorElement>('a[href]');
-  if (!link) return;
-  const rawHref = link.getAttribute('href');
-  if (rawHref && rawHref.startsWith(PATH_LINK_HREF_PREFIX)) return;
-  const safeURL = safeExternalURL(rawHref);
+  const safeURL = externalURLForEventTarget(event.target);
   if (!safeURL) return;
 
   event.preventDefault();

@@ -83,9 +83,19 @@ Use these pane registries instead of local row state:
   `pane.toggleSubagentGroupExpanded(groupKey)` for subagent cards.
 - `pane.diffCardExpandedOverride(itemId, filePath)` /
   `pane.setDiffCardExpanded(itemId, filePath, expanded)` for inline
-  diff-card expand/collapse overrides. Tri-state: an absent entry
-  follows the `collapseDiffPreviews` setting default; pass `undefined`
-  to clear the override.
+  diff-card expand/collapse overrides. An absent entry follows the
+  `collapseDiffPreviews` setting default; the setter takes the state
+  the reader put the card in and stores it only when it DEVIATES from
+  that default, so there is no clear call and no stale-override sweep —
+  flipping the setting retires the overrides it catches up with on the
+  next read (`liveDiffOverride`) and flipping back restores them.
+- `pane.isUserMessageExpanded(itemId)` /
+  `pane.setUserMessageExpanded(itemId, expanded)` for a long user message
+  whose text the reader unclamped. Every message defaults to clamped and no
+  setting moves that default, so membership in the registry IS the deviation
+  — collapsing forgets the id rather than storing `false`, and there is no
+  override-vs-default reconciliation to do (contrast the diff cards, whose
+  default `collapseDiffPreviews` can move under them).
 - `pane.activityRuns` for a run's collapse override, inner scroll position,
   mount window, and pending jump focus (see "Activity Runs" below).
 
@@ -300,6 +310,21 @@ Path linkification runs inside marked parsing from the server-validated
 `PathRef[]` allowlist on item metadata. The generated href includes a
 per-page-load nonce and is the only `agent-overflow:open` form admitted
 by Streamdown's `transformUrl`.
+
+Copying markdown content puts TWO flavors on the clipboard, and
+`utils/markdownClipboard.ts` is the only place that decides what goes
+where: `text/plain` is the markdown, `text/html` is the allowlisted
+rendering from `utils/markdownHtmlSerialize.ts` (lexed with the same
+patched marked the renderer uses, so the flavors cannot drift from the
+screen). The selection delegate (`utils/markdownCopyDelegate.ts`) writes
+them through the copy event's own `DataTransfer`; a Copy button writes
+them through `copyMarkdownToClipboard`, which feature-detects
+`ClipboardItem` and degrades to a markdown-only `writeText` rather than
+failing. Buttons opt in with `write={copyMarkdownToClipboard}` — the
+markdown pipeline stays out of the primitives layer. Surfaces that
+render PLAIN text (user messages, reasoning tails, `CopyFooter`
+payloads) and code-block copy deliberately stay text-only: an html
+flavor there would claim markup the surface never had.
 
 Code-block spans come from the backend (`HighlightCode` via
 `markdown/codeSpanCache.ts`); remote clients additionally ingest

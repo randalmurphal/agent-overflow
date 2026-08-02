@@ -14,6 +14,11 @@ forward-compatible).
   used by both the App-level remote-endpoint mutators and the
   `--connect` URL parser. Single `Validate` entry point for the
   Settings struct as a whole.
+- `providerenv.go` — the `ProviderEnvVar` shape (user-defined
+  environment for a provider's subprocesses), its name/value rules,
+  the reserved-name deny-list, the load-time sanitizer, the
+  `RedactProviderEnvVars` wire projection, and the
+  `SetProviderEnvVar` / `DeleteProviderEnvVar` Service mutators.
 - `remote.go` — the `RemoteEndpoint` shape and its CRUD helpers
   (`Add` / `Update` / `Delete` / `Touch`). Backs the `--connect`
   target list the desktop binary's settings panel exposes.
@@ -37,12 +42,31 @@ forward-compatible).
   `validate.go` and the migration note; old values are normalized on
   load, never at write time.
 
+## Secrets on the wire
+
+Two fields hold material that must not cross the transport boundary in
+bulk: `RemoteEndpoints[*].Token` and the values of custom environment
+variables flagged `sensitive`. `GetSettings` is reachable from a
+LAN-attached client, so `redactedSettings` (app_settings.go) clears both
+on every read path.
+
+That makes the generic patch path unsafe for those fields — a
+`GetSettings -> mutate -> Update` round trip would write the redaction
+back. `Service.Update` therefore REJECTS `remoteEndpoints`,
+`claudeCustomEnv`, and `codexCustomEnv`; each has dedicated mutators
+that read the persisted value before writing. Any future field that
+gets redacted on read must follow the same pattern in the same commit.
+
 ## Anti-patterns
 
-- Do NOT import `internal/provider`. The allowed-reasoning-efforts
-  map here is duplicated from `provider.AllReasoningEfforts`
-  intentionally to avoid a dependency cycle — update both sides
-  together.
+- Do NOT import `internal/provider`. Two tables here are duplicated
+  from that package on purpose, to avoid a dependency cycle:
+  the allowed-reasoning-efforts map (from
+  `provider.AllReasoningEfforts`) and the custom-environment
+  deny-list (from `provider.ReservedEnvNames`). Update both sides
+  together; the deny-list has a root-package test
+  (`TestReservedEnvNamesMatchTheProviderPins`) that fails on drift in
+  either direction.
 - Do NOT sneak business logic into `Validate`. It enforces shape, not
   behavior.
 - Do NOT write partial settings silently. If validation fails, the

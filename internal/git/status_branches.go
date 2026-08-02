@@ -204,8 +204,7 @@ func (c *Core) defaultBranchName(cwd string) (string, error) {
 }
 
 func (c *Core) originRemoteExists(cwd string) bool {
-	_, ok := c.originURL(cwd)
-	return ok
+	return c.originRemote(cwd).known
 }
 
 func (c *Core) listRemoteNames(cwd string) []string {

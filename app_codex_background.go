@@ -16,11 +16,12 @@ const cleanCodexBackgroundTerminalsTimeout = 10 * time.Second
 
 // CleanCodexBackgroundTerminals asks the Codex app-server to terminate
 // every running unified-exec background PTY for `threadID`. This is the
-// thread-wide "Stop all" primitive for Codex — the protocol exposes no
-// per-process kill RPC for model-initiated backgrounded commands
-// (see docs/references/codex.md#known-upstream-constraints). The
-// frontend Stop-all button lands in Phase 5; this binding is the
-// plumbing it will call.
+// thread-wide "Stop all" primitive for Codex; the per-row stop is
+// codex.Session.TerminateBackgroundTerminal, which takes the
+// `meta.process_id` the item row already carries (see
+// docs/references/codex.md#background-terminals). No binding wraps the
+// per-row RPC yet — it needs a thread-id + process-id method here plus a
+// LocalOnlyMethods classification.
 //
 // After the RPC succeeds, Codex emits one `item/completed` notification
 // per terminated PTY. Those update triage's transient tray state; the

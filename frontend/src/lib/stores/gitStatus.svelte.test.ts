@@ -347,14 +347,38 @@ describe('createGitStatusSlot — observed branch persistence', () => {
     const pane = await buildPane(makeThread({ branch: 'main' }));
     const updateBranch = setBindingMock(
       'UpdateThreadBranch',
-      async (_threadId, branch) => makeThread({ branch: branch as string }),
+      async (_threadId, _workspacePath, branch) => makeThread({ branch: branch as string }),
     );
     installSubscribeMock(status({ branch: 'feature/live', isDefaultBranch: false }));
     attachSlot(pane);
 
     await vi.waitFor(() => {
       expect(pane.thread?.branch).toBe('feature/live');
-      expect(updateBranch).toHaveBeenCalledWith('thread-1', 'feature/live');
+      expect(updateBranch).toHaveBeenCalledWith('thread-1', '/workspace', 'feature/live');
+    });
+  });
+
+  it('re-syncs the thread when the backend refuses a stale-workspace write', async () => {
+    // The persist queue holds no lock, so a worktree switch can land between
+    // observing a branch and writing it back. The backend then refuses the
+    // write and hands back the row as it stands; the optimistic local value
+    // must be replaced by that truth rather than left claiming a branch the
+    // thread never had (which would also suppress the next observation, since
+    // applyObservedStatus compares against the local copy).
+    const pane = await buildPane(makeThread({ branch: 'main' }));
+    const movedThread = makeThread({
+      branch: 'feature/moved',
+      workspacePath: '/worktree',
+      worktreePath: '/worktree',
+    });
+    const updateBranch = setBindingMock('UpdateThreadBranch', async () => movedThread);
+    installSubscribeMock(status({ branch: 'feature/stale', isDefaultBranch: false }));
+    attachSlot(pane);
+
+    await vi.waitFor(() => {
+      expect(updateBranch).toHaveBeenCalledWith('thread-1', '/workspace', 'feature/stale');
+      expect(pane.thread?.branch).toBe('feature/moved');
+      expect(pane.thread?.workspacePath).toBe('/worktree');
     });
   });
 
@@ -362,7 +386,7 @@ describe('createGitStatusSlot — observed branch persistence', () => {
     const pane = await buildPane(makeThread({ branch: 'main' }));
     const updateBranch = setBindingMock(
       'UpdateThreadBranch',
-      async (_threadId, branch) => makeThread({ branch: branch as string }),
+      async (_threadId, _workspacePath, branch) => makeThread({ branch: branch as string }),
     );
     const { id } = installSubscribeMock(status({ branch: 'main' }));
     attachSlot(pane);
@@ -375,7 +399,7 @@ describe('createGitStatusSlot — observed branch persistence', () => {
 
     await vi.waitFor(() => {
       expect(pane.thread?.branch).toBe('feature/external');
-      expect(updateBranch).toHaveBeenCalledWith('thread-1', 'feature/external');
+      expect(updateBranch).toHaveBeenCalledWith('thread-1', '/workspace', 'feature/external');
     });
   });
 
@@ -383,7 +407,7 @@ describe('createGitStatusSlot — observed branch persistence', () => {
     const pane = await buildPane(makeThread({ branch: 'main' }));
     const updateBranch = setBindingMock(
       'UpdateThreadBranch',
-      async (_threadId, branch) => makeThread({ branch: branch as string }),
+      async (_threadId, _workspacePath, branch) => makeThread({ branch: branch as string }),
     );
     const { id } = installSubscribeMock(status({ branch: 'main' }));
     attachSlot(pane);
@@ -510,7 +534,7 @@ describe('createGitStatusSlot — refreshNow', () => {
     const pane = await buildPane(makeThread({ branch: 'main' }));
     const updateBranch = setBindingMock(
       'UpdateThreadBranch',
-      async (_id, branch) => makeThread({ branch: branch as string }),
+      async (_id, _workspacePath, branch) => makeThread({ branch: branch as string }),
     );
     installSubscribeMock(status({ branch: 'main' }));
     attachSlot(pane);
@@ -524,7 +548,7 @@ describe('createGitStatusSlot — refreshNow', () => {
     await vi.waitFor(() => {
       expect(pane.gitStatus.status?.insertions).toBe(9);
       expect(pane.thread?.branch).toBe('feature/refreshed');
-      expect(updateBranch).toHaveBeenCalledWith('thread-1', 'feature/refreshed');
+      expect(updateBranch).toHaveBeenCalledWith('thread-1', '/workspace', 'feature/refreshed');
     });
     expect(pane.gitStatus.statusError).toBe(false);
   });
@@ -546,7 +570,7 @@ describe('createGitStatusSlot — refreshNow', () => {
     const pane = await buildPane(makeThread({ id: 'thread-1', branch: 'main' }));
     const updateBranch = setBindingMock(
       'UpdateThreadBranch',
-      async (_id, branch) => makeThread({ branch: branch as string }),
+      async (_id, _workspacePath, branch) => makeThread({ branch: branch as string }),
     );
     installSubscribeMock(status({ branch: 'main' }));
     const cleanup = attachSlot(pane);

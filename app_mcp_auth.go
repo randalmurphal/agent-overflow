@@ -309,13 +309,18 @@ func (a *App) handleCodexMCPOAuthCompleted(threadID, serverName string, success 
 // so the popup reflects live provider state without an ephemeral
 // refetch. Cache emits over `mcp:status`, so subscribers update
 // reactively.
+//
+// The whole update goes to the projector, not just the state: a failure
+// carrying `reauthenticationRequired` resolves to needs-auth, which is
+// what turns the popup row's dead error string into the existing Sign in
+// action.
 func (a *App) handleCodexMCPStartupUpdate(u codex.MCPStartupUpdate) {
 	if strings.TrimSpace(u.Name) == "" {
 		return
 	}
 	a.mcpStatus().Put(mcpstatus.ServerStatus{
 		Key:       mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: u.Name},
-		Status:    codex.MCPStatusFromNotif(u.State),
+		Status:    codex.MCPStatusFromNotif(u),
 		Raw:       u.State,
 		Error:     sanitizeMCPError(u.Error),
 		Source:    mcpstatus.SourceNotification,

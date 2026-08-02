@@ -72,7 +72,9 @@ var remoteOnlyEventChannels = map[string]bool{
 // ring retention would hold up to DefaultRingCapacity superseded
 // frames per channel. Emit still assigns sequence numbers; Replay
 // finds an empty ring and returns nothing (no gap marker, so clients
-// never try to "recover" frames that were never history).
+// never try to "recover" frames that were never history). The one
+// exception is a cursor ABOVE the channel's head, which is not a
+// retention question at all — see ring.replayAfter.
 var ephemeralEventChannels = map[string]bool{
 	"highlight:seed":      true,
 	"highlight:diff_seed": true,
@@ -87,7 +89,9 @@ var ephemeralEventChannels = map[string]bool{
 // overwritten by the last one. Replay for these channels delivers the
 // single newest frame and never a gap marker — "missed" frames are not
 // lost history, they're superseded state, so there is no gap to
-// recover from.
+// recover from. A cursor ABOVE the head still gaps: that client is not
+// behind, it is holding another server's sequence space, and the
+// newest frame's lower seq would read as a duplicate to it.
 //
 // Membership rule: the channel must be UNKEYED — one global state, not
 // per-thread / per-workspace / per-server payloads multiplexed on one

@@ -153,10 +153,23 @@ func (r *ring) grow() {
 }
 
 // replayAfter walks the ring and returns every event with seq > lastSeq.
-// Returns hadGap=true when lastSeq fell outside the ring (eviction lost
-// the events the client wanted) so the caller can emit a single gap
-// marker instead of partial history.
+// Returns hadGap=true when lastSeq fell outside the ring — either the
+// eviction end (the events the client wanted are gone) or the head end
+// (the client's cursor is ahead of ours) — so the caller can emit a
+// single gap marker instead of partial history.
 func (r *ring) replayAfter(lastSeq uint64) (events []Event, hadGap bool) {
+	if lastSeq > r.seq {
+		// The client's cursor is above our head, so its sequence space
+		// is not ours: a restarted backend re-seeds every channel from
+		// 1. Reporting "nothing missed" would leave the client dropping
+		// every live event below its stale cursor forever (wsClient
+		// handleEventEntry dedups on seq), so the invalid state must
+		// surface as a gap the client resyncs from. Deliberately ahead
+		// of the empty-ring check: a zero-capacity (ephemeral) or
+		// not-yet-filled ring says nothing about whose sequence space
+		// the cursor belongs to.
+		return nil, true
+	}
 	if r.count == 0 {
 		return nil, false
 	}
@@ -263,9 +276,10 @@ func (b *EventBus) Emit(channel string, payload any) (Event, error) {
 		Data:      json.RawMessage(wire[dataEnd-len(data) : dataEnd : dataEnd]),
 		WireBytes: wire,
 	}
-	// The ring retains WireBytes only: replay writes it verbatim
-	// (writeEventFrame's fast path — replay never batches). Data is
-	// dropped to keep ring entries to the one WireBytes reference.
+	// The ring retains WireBytes only: replay splices it verbatim into
+	// its batch frames (or writes it through writeEventFrame's fast
+	// path when a chunk holds one event). Data is dropped to keep ring
+	// entries to the one WireBytes reference.
 	ringEvt := evt
 	ringEvt.Data = nil
 	r.append(ringEvt)
@@ -376,11 +390,15 @@ func (b *EventBus) Replay(lastSeqByChannel map[string]uint64) []Event {
 			continue
 		}
 		evts, hadGap := r.replayAfter(lastSeq)
-		if hadGap && latestOnlyEventChannels[channel] {
+		if hadGap && lastSeq <= r.seq && latestOnlyEventChannels[channel] {
 			// Whole-state channel: frames the ring evicted are
 			// superseded state, not lost history — deliver the newest
 			// frame instead of a gap marker (a gap would make clients
 			// log/recover for data the next frame replaces anyway).
+			// Only for an eviction-side gap (lastSeq <= r.seq): a
+			// cursor ABOVE our head keeps its gap marker, because the
+			// newest frame carries a seq the stale cursor would
+			// discard as a duplicate — the marker is what resets it.
 			evts, hadGap = r.replayAfter(r.seq - 1)
 		}
 		if hadGap {

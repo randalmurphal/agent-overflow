@@ -89,6 +89,27 @@ describe('<CommandPalette>', () => {
     expect(firstRun).not.toHaveBeenCalled();
   });
 
+  it('does not run the selected command while an IME composition is active', async () => {
+    // Enter mid-composition confirms the IME candidate for the filter input;
+    // running the highlighted command would act on a half-typed query.
+    const run = vi.fn();
+    registerCommand({ id: 'a', label: 'Alpha', run });
+    openPalette();
+
+    const { getByTestId } = render(CommandPalette, { props: { context: baseCtx() } });
+    const input = getByTestId('command-palette-input') as HTMLInputElement;
+    await fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(run).not.toHaveBeenCalled();
+
+    // Control: the same keystroke outside a composition runs it.
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it('runs commands against the context captured when the palette opened', async () => {
     const seenPaneIds: Array<string | null> = [];
     registerCommand({

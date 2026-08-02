@@ -39,6 +39,7 @@ import (
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -92,9 +93,12 @@ func TestProviderSmokeClaude(t *testing.T) {
 		installHint:  "install Claude Code (https://docs.claude.com/en/docs/claude-code/setup) and put `claude` on PATH",
 		loginHint:    "run `claude login`",
 		probeAccount: (*App).ProbeClaudeAccount,
-		// Empty subscription + empty token source is production's own logged-out
-		// signal (internal/providerstatus.ClaudeUnauthenticated).
-		unauthenticated: providerSmokeClaudeUnauthenticated,
+		// Production's own logged-out predicate, called directly rather than
+		// mirrored: a private copy here would silently drift from the shipped
+		// rule and fail the gate on hosts the product considers authenticated
+		// (Bedrock/Vertex accounts surface only apiProvider, firstParty
+		// profile logins only email).
+		unauthenticated: providerstatus.ClaudeUnauthenticated,
 	})
 }
 
@@ -229,7 +233,7 @@ func preflightProviderAuth(t *testing.T, app *App, smoke providerSmokeCase, bina
 		}
 		if smoke.unauthenticated != nil && smoke.unauthenticated(result.info) {
 			t.Fatalf(
-				"provider smoke (%s): %s is installed but not logged in (no subscription or token source reported)\nfix: %s",
+				"provider smoke (%s): %s is installed but not logged in (its account probe reported no account identity at all)\nfix: %s",
 				smoke.providerName, binaryPath, smoke.loginHint,
 			)
 		}
@@ -241,13 +245,6 @@ func preflightProviderAuth(t *testing.T, app *App, smoke providerSmokeCase, bina
 			smoke.providerName, binaryPath, providerSmokeProbeTimeout, smoke.loginHint,
 		)
 	}
-}
-
-// providerSmokeClaudeUnauthenticated mirrors production's logged-out heuristic.
-// It is a named function rather than an inline closure so the case table reads
-// as a table.
-func providerSmokeClaudeUnauthenticated(info provider.AccountInfo) bool {
-	return info.SubscriptionType == "" && info.TokenSource == ""
 }
 
 // assertProviderSmokeSchemaAccepted is dimension 1 and runs first: a schema

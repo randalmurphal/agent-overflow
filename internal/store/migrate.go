@@ -33,6 +33,18 @@ func mustReplaceOnce(source, old, replacement string) string {
 	}
 }
 
+// mustReplaceEvery replaces every occurrence of old, panicking unless there
+// were exactly want of them. The count is the point: it lets a rebuild derive
+// from a multi-table text where the same constraint appears once per table,
+// without the derivation silently becoming a no-op (or a partial one) if a
+// table is added to or removed from that text later.
+func mustReplaceEvery(source, old, replacement string, want int) string {
+	if n := strings.Count(source, old); n != want {
+		panic(fmt.Sprintf("store: migration derivation expected exactly %d occurrences of %q, found %d", want, old, n))
+	}
+	return strings.ReplaceAll(source, old, replacement)
+}
+
 // mustCutFrom returns source from the first occurrence of marker onward,
 // panicking if the marker is absent. Used to slice one table's statement group
 // out of a multi-table rebuild so a later migration can re-derive that table
@@ -881,13 +893,15 @@ CREATE UNIQUE INDEX idx_work_items_agent_source_ref
 `
 
 // runtimeModeCheckPreV34 is the runtime_mode CHECK shipped on both threads and
-// chat_model_profiles up to v33; runtimeModeCheckV34 is the same constraint
-// widened with the read-only tier. Written out in full (rather than assembled
-// from provider.AllRuntimeModes) because internal/store stays provider-free —
-// TestRuntimeModeCheckMatchesProvider asserts the two agree.
+// chat_model_profiles up to v33; runtimeModeCheckV34 widened it with the
+// read-only tier, and runtimeModeCheckV45 widens it again with the auto tier.
+// Written out in full (rather than assembled from provider.AllRuntimeModes)
+// because internal/store stays provider-free — TestRuntimeModeCheckMatchesProvider
+// asserts the current constant and provider.AllRuntimeModes agree.
 const (
 	runtimeModeCheckPreV34 = "CHECK(runtime_mode IN ('approval-required','auto-accept-edits','full-access'))"
 	runtimeModeCheckV34    = "CHECK(runtime_mode IN ('read-only','approval-required','auto-accept-edits','full-access'))"
+	runtimeModeCheckV45    = "CHECK(runtime_mode IN ('read-only','approval-required','auto-accept-edits','auto','full-access'))"
 )
 
 // chatModelProfilesRebuildV19SQL is the chat_model_profiles half of the v19
@@ -919,6 +933,20 @@ var rebuildRuntimeModeReadOnlyV34SQL = mustReplaceOnce(
 	rebuildThreadsWorkflowModesV28SQL, runtimeModeCheckPreV34, runtimeModeCheckV34,
 ) + mustReplaceOnce(
 	chatModelProfilesRebuildV19SQL, runtimeModeCheckPreV34, runtimeModeCheckV34,
+)
+
+// rebuildRuntimeModeAutoV45SQL widens the same CHECK on the same two tables
+// with the `auto` tier — the AI-reviewed approval mode (Claude
+// `--permission-mode auto`, Codex `approvalsReviewer: "auto_review"`).
+//
+// Derived from v34's text rather than from v28/v19 directly: v34 is now the
+// migration that last established these tables' shapes, so re-deriving from
+// its output is what keeps this rebuild carrying every column, index, and FK
+// those tables actually have. The constraint appears once per table, hence the
+// count of 2 — a third table gaining a runtime_mode CHECK would fail this
+// derivation loudly instead of quietly leaving that table on the old set.
+var rebuildRuntimeModeAutoV45SQL = mustReplaceEvery(
+	rebuildRuntimeModeReadOnlyV34SQL, runtimeModeCheckV34, runtimeModeCheckV45, 2,
 )
 
 // migrations is the ordered list of all schema migrations. Squashed
@@ -1514,6 +1542,12 @@ CREATE INDEX idx_work_items_automation_source_ref
 		Version: 44,
 		Name:    "work_item_soft_stop",
 		SQL:     rebuildWorkItemsSoftStopV44SQL,
+		Rebuild: true,
+	},
+	{
+		Version: 45,
+		Name:    "runtime_mode_auto",
+		SQL:     rebuildRuntimeModeAutoV45SQL,
 		Rebuild: true,
 	},
 }

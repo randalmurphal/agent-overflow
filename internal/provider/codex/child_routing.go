@@ -40,7 +40,7 @@ func (e deferredChildWireEvent) sizeBytes() int {
 // subAgentActivity emitted on its child parent maps it to the nested spawn row.
 func (s *Session) isUnmappedForeignProviderThread(providerThreadID string) bool {
 	providerThreadID = strings.TrimSpace(providerThreadID)
-	rootThreadID := strings.TrimSpace(s.codexThreadID)
+	rootThreadID := strings.TrimSpace(s.rootThreadID())
 	if providerThreadID == "" || rootThreadID == "" || providerThreadID == rootThreadID {
 		return false
 	}

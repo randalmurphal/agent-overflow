@@ -94,7 +94,10 @@ func (c *Core) StatusFast(cwd string) (GitStatus, error) {
 // so it stays with them; centralising the rest keeps the two entry points from
 // drifting apart.
 func (c *Core) baseStatus(cwd string) (GitStatus, error) {
-	result, err := c.run(cwd, "status", "--porcelain=v2", "--branch")
+	// runLocaleC: the non-repo classification below matches git's own
+	// English message, which a git built with NLS would otherwise translate
+	// — misreporting a plain non-repo path as a hard error.
+	result, err := c.runLocaleC(cwd, "status", "--porcelain=v2", "--branch")
 	if err != nil {
 		return GitStatus{}, err
 	}
@@ -118,15 +121,12 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 	}
 
 	defaultBranch, _ := c.defaultBranchName(cwd)
-	originURL, hasOriginRemote := c.originURL(cwd)
-	forge := ""
-	if hasOriginRemote {
-		forge = classifyOriginURL(originURL, c.gitLabHostsSnapshot())
-	}
 	// Populate the forge cache so any concurrent DetectForge call (e.g. through
 	// forgeFor → ListOpenPRs) reuses the same classification rather than
-	// re-shelling `git remote get-url`.
-	c.storeForgeCache(cwd, forge, c.nowFn())
+	// re-shelling `git remote get-url` — and so the open-PR lookup can compare
+	// the current origin identity without a second read.
+	origin := c.originRemote(cwd)
+	forge := c.recordOrigin(cwd, origin, c.nowFn())
 
 	status := parseStatusOutput(result.stdout, headNumstat.stdout)
 	// Untracked, non-ignored files count as all-insertions — the same files the
@@ -139,7 +139,7 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 	status.Insertions += untrackedIns
 	status.FileCount += untrackedFiles
 	status.IsRepo = true
-	status.HasOriginRemote = hasOriginRemote
+	status.HasOriginRemote = origin.known
 	status.Forge = forge
 	status.IsDefaultBranch = isDefaultBranchName(status.Branch, defaultBranch)
 	status.PendingOperation = c.pendingOperation(cwd)

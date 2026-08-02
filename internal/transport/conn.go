@@ -400,6 +400,17 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 // seq from the live pump is naturally suppressed by the client's own
 // dedup (the wsClient lib tracks lastSeq per channel).
 //
+// Replay ships through the same batch frames the live pump uses, in
+// chunks of DefaultCoalesceMaxEvents. A reconnect during heavy
+// streaming is exactly the moment the client can least afford
+// per-event macrotasks: the ring holds up to DefaultRingCapacity
+// (1000) events, so the un-batched loop handed the worst case the
+// least protection. No timer is involved — the whole backlog is
+// already in hand, so chunking is a pure fan-in with no added latency.
+// Ordering survives: writeBatchFrame writes each chunk in order under
+// writeMu, spliceBatchFrame preserves slice order inside a chunk, and
+// every batch consumer iterates entries in order.
+//
 // The map size is capped so a malicious replay request can't force
 // the bus to allocate proportionally large response slices.
 func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
@@ -411,6 +422,9 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 		return
 	}
 	missed := h.bus.Replay(frame.LastSeqByChannel)
+	// One reusable chunk: writeBatchFrame serialises into fresh bytes
+	// before returning, so nothing retains the Event slice afterwards.
+	chunk := make([]Event, 0, min(len(missed), DefaultCoalesceMaxEvents))
 	for _, e := range missed {
 		if !eventVisibleToOrigin(e.Channel, h.profile.isLoopback) {
 			continue
@@ -418,8 +432,15 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 		if !h.sub.accepts(e.Channel) {
 			continue
 		}
-		h.writeEventFrame(ctx, e)
+		chunk = append(chunk, e)
+		if len(chunk) == DefaultCoalesceMaxEvents {
+			h.writeBatchFrame(ctx, chunk)
+			chunk = chunk[:0]
+		}
 	}
+	// Trailing partial chunk; writeBatchFrame no-ops on an empty slice
+	// and falls through to a plain event frame for a single event.
+	h.writeBatchFrame(ctx, chunk)
 	// Replay and the live pump share writeMu, so live frames may interleave
 	// with replay frames. This completion marker lets clients buffer the one
 	// channel whose strict click ordering matters, then apply by sequence.
@@ -500,8 +521,9 @@ func (h *connHandler) writeBatchFrame(ctx context.Context, events []Event) {
 // the e2e harness dispatcher) read only channel/seq/data/gap from each
 // entry, so the inert extra "type" field is tolerated — the one wire
 // difference vs the retired per-batch re-marshal. Events lacking
-// WireBytes can't occur on the live pump (Emit always pre-encodes) but
-// are envelope-encoded defensively so a splice never emits a hole.
+// WireBytes are practically absent (Emit always pre-encodes, and
+// Replay pre-encodes its gap markers) but are envelope-encoded
+// defensively so a splice never emits a hole.
 func spliceBatchFrame(events []Event) []byte {
 	size := len(batchFramePrefix) + len(events) + 1 // separators + "]}"
 	for i := range events {

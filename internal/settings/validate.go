@@ -226,6 +226,15 @@ func validateSettings(current Settings) (Settings, error) {
 	current.ClaudeHiddenModels = dedupeTrimmed(current.ClaudeHiddenModels, MaxHiddenModels)
 	current.CodexHiddenModels = dedupeTrimmed(current.CodexHiddenModels, MaxHiddenModels)
 
+	current.ClaudeCustomEnv, err = validateProviderEnvVars("claude", current.ClaudeCustomEnv)
+	if err != nil {
+		return Settings{}, err
+	}
+	current.CodexCustomEnv, err = validateProviderEnvVars("codex", current.CodexCustomEnv)
+	if err != nil {
+		return Settings{}, err
+	}
+
 	return current, nil
 }
 
@@ -345,6 +354,8 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.UsagePeriod,
 		allowedUsagePeriods,
 	)
+	current.ClaudeCustomEnv = sanitizeProviderEnvVars("claude", current.ClaudeCustomEnv)
+	current.CodexCustomEnv = sanitizeProviderEnvVars("codex", current.CodexCustomEnv)
 	return current
 }
 

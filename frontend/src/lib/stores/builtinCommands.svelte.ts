@@ -6,6 +6,7 @@
 // invocation, so these run callbacks must receive the *current* active thread
 // via ctx rather than closing over a cached value.
 
+import { tick } from 'svelte';
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import type { TerminalHandle } from '../types/terminal';
@@ -72,6 +73,11 @@ import {
   stepSidebarCursor,
 } from './sidebarCursor.svelte';
 import {
+  isSidebarCollapsed,
+  setSidebarCollapsed,
+  toggleSidebarCollapsed,
+} from './sidebarLayout.svelte';
+import {
   toggleComposerPicker,
   type ComposerPickerId,
 } from './composerPickerRegistry.svelte';
@@ -131,6 +137,28 @@ function withMaterializedThread(
     return;
   }
   void run(threadId, pane);
+}
+
+/**
+ * Run a command whose target only exists while the sidebar is rendered
+ * — the search input it focuses, or the row order it steps through
+ * (`getVisibleSidebarThreadIds` reads the rendered tree).
+ *
+ * Collapsing the sidebar unmounts all of that. Rather than let eleven
+ * chords become silent no-ops (or worse, act on rows the user cannot
+ * see), a sidebar-relative command brings the sidebar back and then
+ * runs: the action lands on a row that is on screen. `tick()` is what
+ * makes that ordering real — the sidebar's search input re-registers
+ * its focus callback from an effect, and the row order is a DOM query,
+ * so both need the expand to have flushed.
+ */
+function withSidebarVisible(run: () => void): void {
+  if (!isSidebarCollapsed()) {
+    run();
+    return;
+  }
+  setSidebarCollapsed(false);
+  void tick().then(run);
 }
 
 function commandThreadActionCtx(thread: Thread, pane: ThreadPane): ThreadActionCtx {
@@ -539,7 +567,11 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
       label: `Thread: Jump to ${i}`,
       icon: String(i),
       editableReachable: true,
-      run: () => requestThreadJump(index),
+      // The Nth row is the Nth row of the RENDERED sidebar, and the
+      // numbers themselves are hints painted on those rows — both gone
+      // while collapsed. Bring the sidebar back so the jump means what
+      // the hint said.
+      run: () => withSidebarVisible(() => requestThreadJump(index)),
     });
   }
 
@@ -553,7 +585,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     description: 'Move the sidebar selection cursor down one row.',
     icon: '↓',
     editableReachable: true,
-    run: (ctx) => stepSidebarCursor(1, ctx.pane?.threadId ?? null),
+    run: (ctx) => withSidebarVisible(() => stepSidebarCursor(1, ctx.pane?.threadId ?? null)),
   });
 
   registerCommand({
@@ -562,7 +594,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     description: 'Move the sidebar selection cursor up one row.',
     icon: '↑',
     editableReachable: true,
-    run: (ctx) => stepSidebarCursor(-1, ctx.pane?.threadId ?? null),
+    run: (ctx) => withSidebarVisible(() => stepSidebarCursor(-1, ctx.pane?.threadId ?? null)),
   });
 
   registerCommand({
@@ -643,7 +675,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'search.threads',
     label: 'Threads: Focus Search',
     icon: '⌕',
-    run: () => focusThreadSearch(),
+    run: () => withSidebarVisible(focusThreadSearch),
   });
 
   // Alias command reachable from the ⌘K global chord. Same behaviour as
@@ -656,7 +688,19 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     description: 'Move focus to the sidebar search input.',
     icon: '⌕',
     editableReachable: true,
-    run: () => focusThreadSearch(),
+    run: () => withSidebarVisible(focusThreadSearch),
+  });
+
+  registerCommand({
+    id: 'sidebar.toggle',
+    label: 'Sidebar: Toggle',
+    description: 'Collapse the sidebar to a rail, or expand it back to its previous width.',
+    icon: '◧',
+    // Reachable from the composer: reclaiming horizontal space is
+    // something you do mid-sentence, and the composer is a plain
+    // textarea with no chord of its own on mod+b.
+    editableReachable: true,
+    run: () => toggleSidebarCollapsed(),
   });
 
   registerCommand({
@@ -1053,7 +1097,13 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     canForkActiveThread: !!thread?.sessionRef && providerSupports(thread?.provider, 'fork'),
     canStartDiscussion:
       !!thread && thread.mode !== 'discussion' && !thread.discussionId && !thread.parentThreadId,
-    sidebarCursorActive: getSidebarCursorThreadId() !== null,
+    // A collapsed sidebar renders no rows, so a cursor left over from
+    // before the collapse decorates nothing. Gating the flag (rather
+    // than clearing the cursor on collapse) keeps the highlight where
+    // the user left it for when the sidebar comes back, while making
+    // the activate chords inert — they would otherwise open a thread
+    // chosen by a selection nobody can see.
+    sidebarCursorActive: getSidebarCursorThreadId() !== null && !isSidebarCollapsed(),
     anyPickerOpen: false,
     // Overlay scoping for the §8 chords. Derived here rather than passed in by
     // App.svelte so every context builder — palette, per-keypress dispatch,

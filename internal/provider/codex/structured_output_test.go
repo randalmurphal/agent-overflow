@@ -111,15 +111,15 @@ func TestSendBindsOutputSchemaAcrossTurnStartOrdering(t *testing.T) {
 
 			eventCh := make(chan provider.ProviderEvent, 16)
 			session := &Session{
-				proc:          proc,
-				threadID:      testThread,
-				codexThreadID: "provider-thread",
-				pending:       make(map[int64]chan json.RawMessage),
+				proc:     proc,
+				threadID: testThread,
+				pending:  make(map[int64]chan json.RawMessage),
 				onEvent: func(event provider.ProviderEvent) {
 					eventCh <- event
 				},
 				cancel: cancel,
 			}
+			session.setRootThreadID("provider-thread")
 			go session.readLoop()
 
 			sendDone := make(chan error, 1)

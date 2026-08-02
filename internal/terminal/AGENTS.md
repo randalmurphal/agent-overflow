@@ -17,6 +17,13 @@ session for replay on reconnect.
   + output pump goroutine. Pure spawn/read/signal; no policy. `Refresh`
   forces a TUI repaint via a one-row winsize nudge (shrink, pause,
   restore) — see its doc comment for why a bare SIGWINCH is insufficient.
+- `env.go` — `normalizeTerminalEnv`: the child environment a PTY spawn
+  gets. Replaces the inherited `TERM`/`COLORTERM` with what xterm.js
+  actually renders, and — only when the AppImage markers are present —
+  drops `APPIMAGE`/`APPDIR`/`ARGV0`/`OWD` and strips the `APPDIR`-mount
+  segments out of `PATH`/`LD_LIBRARY_PATH` so the user's commands resolve
+  against their real system. Every other launch shape (dev, `.deb`,
+  macOS) is passed through unchanged.
 - `ring.go` — byte-oriented circular buffer capped at 256 KiB per
   session.
 - `shell.go` — `resolveShell`: explicit > `$SHELL` > `/bin/sh`.

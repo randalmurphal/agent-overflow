@@ -189,7 +189,7 @@ func TestGetWorkspaceCurrentDiffUsesLinkedWorktree(t *testing.T) {
 		t.Fatalf("write linked worktree change: %v", err)
 	}
 
-	diff, err := app.GetWorkspaceCurrentDiff(thread.ID)
+	diff, err := app.GetWorkspaceCurrentDiff(thread.ID, false)
 	if err != nil {
 		t.Fatalf("GetWorkspaceCurrentDiff() error = %v", err)
 	}
@@ -203,7 +203,7 @@ func TestGetWorkspaceCurrentDiffUsesLinkedWorktree(t *testing.T) {
 	testutil.RunGit(t, worktreePath, "add", "README.txt")
 	testutil.RunGit(t, worktreePath, "commit", "-m", "commit linked worktree change")
 
-	diff, err = app.GetWorkspaceCurrentDiff(thread.ID)
+	diff, err = app.GetWorkspaceCurrentDiff(thread.ID, false)
 	if err != nil {
 		t.Fatalf("GetWorkspaceCurrentDiff(clean worktree) error = %v", err)
 	}
@@ -230,7 +230,7 @@ func TestGetBranchBaseDiffIncludesCommittedAndUncommittedChanges(t *testing.T) {
 		t.Fatalf("write untracked file: %v", err)
 	}
 
-	diff, err := app.GetBranchBaseDiff(thread.ID, "main")
+	diff, err := app.GetBranchBaseDiff(thread.ID, "main", false)
 	if err != nil {
 		t.Fatalf("GetBranchBaseDiff() error = %v", err)
 	}
@@ -261,7 +261,7 @@ func TestGetBranchBaseDiffBaseEqualsCurrentShowsOnlyUncommitted(t *testing.T) {
 		t.Fatalf("write workspace file: %v", err)
 	}
 
-	diff, err := app.GetBranchBaseDiff(thread.ID, "main")
+	diff, err := app.GetBranchBaseDiff(thread.ID, "main", false)
 	if err != nil {
 		t.Fatalf("GetBranchBaseDiff() error = %v", err)
 	}
@@ -278,7 +278,7 @@ func TestGetBranchBaseDiffMissingBranchErrors(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	thread := createGitDiffTestThread(t, app, repo, "thread-branch-base-missing")
 
-	_, err := app.GetBranchBaseDiff(thread.ID, "missing-branch")
+	_, err := app.GetBranchBaseDiff(thread.ID, "missing-branch", false)
 	if err == nil {
 		t.Fatal("GetBranchBaseDiff() error = nil, want missing branch error")
 	}

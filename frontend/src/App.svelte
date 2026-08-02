@@ -21,7 +21,7 @@
   import { syncSidebarFromAppStorage, syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
   import { syncWorkflowsOverlayFromAppStorage, isWorkflowsOverlayOpen } from './lib/stores/workflowsOverlay.svelte';
   import { hydrateWorkflowAttention } from './lib/stores/workflowRuns.svelte';
-  import { syncSidebarWidthFromAppStorage } from './lib/stores/sidebarLayout.svelte';
+  import { syncSidebarLayoutFromAppStorage } from './lib/stores/sidebarLayout.svelte';
   import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
   import { preloadProviderModelsForSettings } from './lib/stores/providerModels.svelte';
   import { applyTheme } from './lib/utils/theme';
@@ -60,6 +60,7 @@
   import { getVisibleSidebarThreadIds } from './lib/stores/sidebarThreadOrder';
   import { setAppShellWidth } from './lib/stores/layoutMetrics.svelte';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
+  import ExternalLinkContextHost from './lib/components/shared/ExternalLinkContextHost.svelte';
   import {
     openDraftThreadForProject,
     resolveDraftTargetProject,
@@ -307,7 +308,7 @@
         const threads = await loadThreads();
         threadRegistryHydrated = true;
         await appStorageReady;
-        syncSidebarWidthFromAppStorage();
+        syncSidebarLayoutFromAppStorage();
         syncSidebarFromAppStorage();
         // The workflows overlay stack/filter/sweep cursor are durable per
         // client (UI-SPEC §2.1), so they adopt the hydrated copy the same way
@@ -481,3 +482,4 @@
 <UnifiedThreadPicker open={isThreadPickerOpen()} pane={threadPickerPane} onClose={closeThreadPicker} />
 <Toast />
 <DiagramInteractionHost />
+<ExternalLinkContextHost />

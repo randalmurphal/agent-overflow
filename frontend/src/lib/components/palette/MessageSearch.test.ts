@@ -228,6 +228,31 @@ describe('<MessageSearch> — keyboard navigation', () => {
     expect(pane.threadId).toBe('t1');
   });
 
+  it('does not open a hit while an IME composition is active', async () => {
+    // Thread id is unique to this test: an already-open pane would be
+    // revealed instead of ours, and panes opened by earlier tests in this
+    // file outlive them.
+    setBindingMock('SearchThreadMessages', async () => [
+      hit({ threadId: 'ime1', itemId: '', matchType: 'title', threadTitle: 'First' }),
+    ]);
+    const onClose = vi.fn();
+    const pane = makePane();
+    const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
+    await fireEvent.input(getByTestId('message-search-input'), { target: { value: 'x' } });
+    await findByTestId('message-search-hit-ime1-title');
+    const body = getByTestId('message-search');
+
+    await fireEvent.keyDown(body, { key: 'Enter', isComposing: true });
+    await Promise.resolve();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(pane.threadId).toBeNull();
+
+    // Control: the same keystroke outside a composition opens the hit.
+    await fireEvent.keyDown(body, { key: 'Enter' });
+    await waitFor(() => expect(pane.threadId).toBe('ime1'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('Enter after ArrowDown opens the next hit', async () => {
     setBindingMock('SearchThreadMessages', async () => [
       hit({ threadId: 't1', itemId: '', matchType: 'title', threadTitle: 'First' }),

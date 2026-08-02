@@ -3,8 +3,17 @@ package provider
 type ModelCatalogSource string
 
 const (
-	StaticModelCatalog    ModelCatalogSource = "static"
+	// StaticModelCatalog — the shipped list is the whole answer.
+	StaticModelCatalog ModelCatalogSource = "static"
+	// CodexLiveModelCatalog — app-server `model/list` REPLACES the shipped
+	// list; a model missing from it is authoritatively unavailable.
 	CodexLiveModelCatalog ModelCatalogSource = "codex_live"
+	// ClaudeProbeEnrichedCatalog — the shipped list is merged with the models
+	// the zero-token account probe's `initialize` response reports. The wire
+	// list is a picker shortlist that omits older-but-usable models, so it
+	// ENRICHES (capability flags) and EXTENDS (models we don't ship yet) but
+	// never subtracts. See internal/claudemodels.
+	ClaudeProbeEnrichedCatalog ModelCatalogSource = "claude_probe"
 )
 
 type BackgroundTerminalCleaner string
@@ -59,17 +68,24 @@ func CapabilitiesForProvider(providerName string) Capabilities {
 			EnforcesRuntimeMode:       true,
 		}
 	case string(ClaudeTUI):
-		// Same static model catalog as headless claude and no background-terminal
-		// cleaner, but ingests images by pasting their on-disk path into the real
-		// TUI composer. claudetui.ConfigFromOptions keeps only model / workdir /
+		// Same model catalog as headless claude (one binary, one login, so the
+		// same probe answer enriches both) and no background-terminal cleaner,
+		// but ingests images by pasting their on-disk path into the real TUI
+		// composer. claudetui.ConfigFromOptions keeps only model / workdir /
 		// resume / effort from the shared options — permission flags never reach
 		// the TUI, which owns approvals itself — so RuntimeMode is inert here.
-		return Capabilities{ImageIngestion: PathImageIngestion}
+		return Capabilities{
+			ModelCatalog:   ClaudeProbeEnrichedCatalog,
+			ImageIngestion: PathImageIngestion,
+		}
 	case string(Claude):
 		// Headless: base64-inlines image bytes (the zero-value ingestion); named
 		// explicitly so it reads as a known provider rather than a default
 		// fall-through.
-		return Capabilities{EnforcesRuntimeMode: true}
+		return Capabilities{
+			ModelCatalog:        ClaudeProbeEnrichedCatalog,
+			EnforcesRuntimeMode: true,
+		}
 	default:
 		return Capabilities{}
 	}

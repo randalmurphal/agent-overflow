@@ -130,13 +130,16 @@ on the wire at all. Rules for any future receiver:
   — replaying superseded frames after a reconnect is useless, and each
   frame can carry large span/hash arrays that would otherwise sit in
   the ring up to `DefaultRingCapacity` deep. Replay for these channels
-  returns nothing and no gap marker.
+  returns nothing and no gap marker — except for an above-head cursor,
+  which is a client-state fault rather than a retention question (see
+  the gap discussion under Wire frames).
 - `latestOnlyEventChannels` — unkeyed whole-state channels
   (`system:stats`) get a capacity-1 ring: the newest frame fully
   supersedes all prior ones, so a default-depth ring would retain
   hundreds of stale samples forever and replay them all on reconnect.
-  Replay delivers the single newest frame and never a gap marker —
-  evicted frames are superseded state, not lost history. Keyed
+  Replay delivers the single newest frame and never a gap marker for
+  an evicted cursor — those frames are superseded state, not lost
+  history (an above-head cursor still gaps). Keyed
   channels (git:status, provider:usage, discussion:state, mcp:status)
   must NOT join this set: capacity 1 would evict other keys' latest
   frames.
@@ -164,6 +167,23 @@ re-fetch via list endpoints" signal. The server cannot reconstruct
 arbitrary history from SQLite — that's intentional per CLAUDE.md
 principle 3.
 
+A replay cursor can fall outside the ring at EITHER end, and both gap:
+
+- **Below the oldest retained seq** — eviction lost what the client
+  wanted. The ordinary case.
+- **Above the current head** — the client is holding a sequence space
+  that isn't ours (a restarted backend re-seeds every channel from 1).
+  Answering "nothing missed" would leave it dropping every live event
+  below its stale cursor forever, because the client dedups on seq.
+
+That second case makes a gap marker a RESYNC INSTRUCTION, not just a
+late event: its seq can be lower than the client's cursor, so clients
+must honour `gap:true` before their own dedup check and reset the
+channel cursor to the marker's seq in both directions
+(`wsClient.handleEventEntry`). It is also why the latest-only
+newest-frame substitution applies to the eviction-side gap only — the
+newest frame's seq would read as a duplicate to an ahead cursor.
+
 ## Code generation
 
 `methodgen/` parses the Go AST of every `*.go` in the repo root for
@@ -190,8 +210,16 @@ exported `App` method without regenerating fails the test.
   (~1.5 MB per connection). Loopback skips compression — bytes are
   free on a local pipe, CPU isn't.
 
-The profile is immutable for the connection's lifetime. Replay events
-(`handleReplay`) always use immediate dispatch regardless of profile.
+The profile is immutable for the connection's lifetime. Replay
+(`handleReplay`) ships through the same `type:"batch"` envelope, in
+chunks of the same 50-event threshold, but without the timer — the
+whole backlog is already in hand, so chunking adds no latency. A
+reconnect during heavy streaming can drain up to
+`DefaultRingCapacity` (1000) events; per-event frames gave the worst
+case the least protection. Ordering is preserved end to end
+(`writeBatchFrame` per chunk under `writeMu`, `spliceBatchFrame` keeps
+slice order, every consumer iterates entries in order), and the
+`type:"replay"` completion marker still lands last.
 
 ## Keepalive and connection-death detection
 
@@ -232,7 +260,12 @@ knobs, not production tuning):
 Every connection close logs ONE line — graceful closes included — with
 peer address, duration, and close reason (`closeReason`): close status
 1005 with no close frame is the intermediary-teardown signature, 1006
-a network drop, 1000/1001 a client navigation. Per-write errors on an
+a network drop, 1000/1001 a client navigation. The duration in that
+line is the same quantity the client's reconnect ladder judges itself
+on — `wsClient` resets its backoff only after a connection survived
+`BACKOFF_RESET_AFTER_MS`, so a relay that tears down long-lived
+sessions keeps reconnecting fast while an accept-then-close backend
+backs off instead of storming. Per-write errors on an
 already-closed conn stay suppressed (`isClosedError`).
 
 ## Conventions specific to this package

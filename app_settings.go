@@ -35,25 +35,30 @@ func (a *App) currentSettings() settings.Settings {
 	return a.settings.Get()
 }
 
-// GetSettings returns the current persisted settings merged over defaults.
-//
-// SECURITY: RemoteEndpoints[*].Token is redacted to the empty string
-// before returning. A LAN-attached token-holder calling GetSettings
-// must not be able to harvest credentials for other backends — without
-// this redaction, a single GetSettings call enumerates every saved
-// token, defeating the on-demand token fetch model that
-// ListRemoteEndpoints + GetRemoteEndpointToken were designed to
-// enforce. Callers that need an actual token (the "Copy launch
-// command" affordance) fetch it through GetRemoteEndpointToken, which
-// is a logged single-record lookup.
+// GetSettings returns the current persisted settings merged over defaults,
+// with every secret redacted (see redactedSettings).
 func (a *App) GetSettings() (settings.Settings, error) {
-	current := a.currentSettings()
+	return redactedSettings(a.currentSettings()), nil
+}
+
+// redactedSettings is the projection every bound method returning a full
+// Settings value goes through.
+//
+// SECURITY: RemoteEndpoints[*].Token and the values of custom environment
+// variables flagged sensitive are cleared. A LAN-attached token-holder calling
+// GetSettings must not be able to harvest credentials — without this, a single
+// call enumerates every saved token, defeating the on-demand fetch model that
+// ListRemoteEndpoints + GetRemoteEndpointToken were designed to enforce.
+// Callers that need an actual token (the "Copy launch command" affordance)
+// fetch it through GetRemoteEndpointToken, which is a logged single-record
+// lookup; a sensitive environment value has no read path at all — the UI
+// overwrites it by re-entry.
+//
+// Both fields are copied before clearing: settings.Service.Get returns a value
+// copy of Settings, but its slices share backing memory with the service's
+// cache, so clearing in place would corrupt every later reader.
+func redactedSettings(current settings.Settings) settings.Settings {
 	if len(current.RemoteEndpoints) > 0 {
-		// Defensive copy of the slice + each record so we don't mutate
-		// the cached settings struct. The settings.Service.Get returns
-		// a value copy of Settings, but the RemoteEndpoints slice
-		// shares backing memory with the cache; clearing tokens in
-		// place would corrupt the cache for subsequent callers.
 		redacted := make([]settings.RemoteEndpoint, len(current.RemoteEndpoints))
 		for i, ep := range current.RemoteEndpoints {
 			redacted[i] = ep
@@ -61,7 +66,9 @@ func (a *App) GetSettings() (settings.Settings, error) {
 		}
 		current.RemoteEndpoints = redacted
 	}
-	return current, nil
+	current.ClaudeCustomEnv = settings.RedactProviderEnvVars(current.ClaudeCustomEnv)
+	current.CodexCustomEnv = settings.RedactProviderEnvVars(current.CodexCustomEnv)
+	return current
 }
 
 // UpdateSettings applies a partial settings patch and persists it. Observability
@@ -76,6 +83,12 @@ func (a *App) GetSettings() (settings.Settings, error) {
 // panel writes through UpdateSettings for any field — a stale cache
 // after a generic update would leave the picker showing the wrong
 // availability flags until the next app launch.
+//
+// The returned snapshot is redacted like GetSettings': the frontend store
+// re-seeds from it, and the two read paths must not disagree about whether the
+// store holds a plaintext secret. (Nothing consumes the secrets from here —
+// tokens are fetched through GetRemoteEndpointToken and sensitive environment
+// values have no read path at all.)
 func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 	if a.settings == nil {
 		return settings.Settings{}, fmt.Errorf("settings service unavailable")
@@ -117,7 +130,7 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 			a.git.InvalidateAllForgeCache()
 		}
 	}
-	return next, nil
+	return redactedSettings(next), nil
 }
 
 func settingsRollbackPatch(previous settings.Settings, patch map[string]any) (map[string]any, error) {
@@ -141,11 +154,21 @@ func settingsRollbackPatch(previous settings.Settings, patch map[string]any) (ma
 }
 
 // GetModelsForProvider returns the known model registry for the given provider.
+//
+// Each provider's catalog source is declared by its Capabilities, not by a
+// name check here: Codex's list comes live off `model/list` (one CLI spawn,
+// TTL-cached), Claude's is the shipped catalog enriched by whatever the last
+// zero-token account probe reported (never a spawn of its own), and anything
+// else is the shipped list verbatim.
 func (a *App) GetModelsForProvider(providerName string) ([]provider.ModelInfo, error) {
-	if provider.CapabilitiesForProvider(providerName).ModelCatalog == provider.CodexLiveModelCatalog {
+	switch provider.CapabilitiesForProvider(providerName).ModelCatalog {
+	case provider.CodexLiveModelCatalog:
 		return a.codexModelsForBinary(context.Background(), a.providerBinaryPath(providerName))
+	case provider.ClaudeProbeEnrichedCatalog:
+		return a.claudeModelsForProvider(providerName), nil
+	default:
+		return provider.ModelsForProvider(providerName), nil
 	}
-	return provider.ModelsForProvider(providerName), nil
 }
 
 func (a *App) refreshCodexModelCatalog() {

@@ -31,6 +31,7 @@ export type RuntimeMode =
   | "read-only"
   | "approval-required"
   | "auto-accept-edits"
+  | "auto"
   | "full-access";
 
 export type ThreadEnvMode = "local" | "worktree";
@@ -53,6 +54,21 @@ export interface PaneLayoutPersistedSettings {
   version: 3;
   panes: PaneLayoutPersistedPane[];
   focusedPaneId?: string | null;
+}
+
+/**
+ * One user-defined environment variable for a provider. Mirrors
+ * settings.ProviderEnvVar.
+ *
+ * `value` is empty for `sensitive` entries on every read path — the
+ * backend redacts them before they cross the wire, and the UI masks the
+ * row rather than revealing one. Changing a sensitive value means
+ * entering a new one.
+ */
+export interface ProviderEnvVar {
+  name: string;
+  value: string;
+  sensitive?: boolean;
 }
 
 export interface Settings {
@@ -101,6 +117,20 @@ export interface Settings {
    */
   claudeHiddenModels?: string[];
   codexHiddenModels?: string[];
+  /**
+   * User-defined environment variables applied to the provider processes
+   * the backend spawns (sessions, account probes, text generation).
+   * Applied at spawn, so edits reach new sessions only. The Claude list
+   * covers claude-tui too. Go persists with `omitempty`, so treat
+   * undefined as [].
+   *
+   * Mutated through SetProviderCustomEnvVar / DeleteProviderCustomEnvVar,
+   * never through UpdateSettings — the backend rejects these keys on the
+   * patch path because `value` comes back redacted for sensitive entries
+   * and a read-mutate-write round trip would persist the redaction.
+   */
+  claudeCustomEnv?: ProviderEnvVar[];
+  codexCustomEnv?: ProviderEnvVar[];
   /** Seeds whether new draft threads start on the current checkout or a new worktree. */
   defaultThreadEnvMode: ThreadEnvMode;
   /** Prefix used for auto-generated worktree branch names. */
@@ -152,6 +182,14 @@ export interface Settings {
    * pruned on the same cutoff. 0 disables the sweep entirely.
    */
   retention: RetentionPersistedSettings;
+
+  /**
+   * Periodic background `git fetch` for the repositories behind the
+   * sidebar's projects, so ahead/behind counts track the remote instead
+   * of freezing at the last manual fetch. Default true; one fetch per
+   * repository per ~5 minutes, origin only, never --prune.
+   */
+  backgroundGitFetch: boolean;
 
   /**
    * Self-hosted GitLab hostnames (bare hosts, e.g.
@@ -239,6 +277,10 @@ export interface ContextWindowOption {
   tokens: number;
   label: string;
   tier: "standard" | "extended" | string;
+  // Marks the tier a new thread starts on, mirroring provider.ContextWindowOption
+  // (and the generated binding, which has carried it since the 1M-default
+  // change). Optional because the wire omits it on non-default tiers.
+  default?: boolean;
 }
 
 export interface ReasoningEffortOption {

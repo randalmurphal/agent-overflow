@@ -24,7 +24,11 @@ Two callers:
   `InstallPayload` so the package compiles for unit tests on those hosts.
   Also owns `buildLaunchArgs` (the wsl.exe argv builder) so the argument
   order — including the `--cd "~"` working-directory pin — is unit-tested
-  off-Windows.
+  off-Windows, plus the shared stream drain (`newStreamScanner` /
+  `drainStream`). Both child streams are drained for the child's whole
+  lifetime: stdout continues on the same scanner once the bootstrap
+  sentinel is consumed, because an unread pipe wedges the backend inside
+  `write(2)` as soon as the OS buffer fills.
 - `launcher_windows.go` — real implementation: `wsl.exe -l -v` exec,
   spawn with `CREATE_SUSPENDED` + Job Object adoption, payload install
   via `cp /mnt/c/<host-temp> ~/.local/bin/agent-overflow`.

@@ -15,6 +15,7 @@
   import ChannelMessageCard from './ChannelMessageCard.svelte';
   import ScrollToBottomButton from '../chat/ScrollToBottomButton.svelte';
   import { getPathRefsFromMeta } from '../../utils/pathLinkify';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
 
   let {
     pane,
@@ -228,6 +229,9 @@
   }
 
   function handleKeydown(e: KeyboardEvent): void {
+    // Enter mid-IME-composition confirms the candidate — the composed text
+    // is not in the textarea's value yet, so posting would truncate it.
+    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handlePost();

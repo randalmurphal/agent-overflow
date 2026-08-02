@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -215,6 +216,14 @@ func buildLaunchArgs(distro, binaryPath string, extraArgs []string) []string {
 // child keeps running after handing off the bootstrap, so we must not
 // block on stdout EOF.
 //
+// After the bootstrap line is consumed the scanner goroutine does NOT
+// stop: it hands the rest of the stream to the same lifetime drain
+// stderr gets. A stdout nobody reads fills the OS pipe buffer, and the
+// next library that writes there (cgo/GTK chatter, chromedp, a stray
+// Println) blocks the whole backend in write(2) with no error anywhere.
+// Draining continues on the same scanner rather than a fresh reader so
+// the bytes it already buffered past the sentinel are not lost.
+//
 // Goroutine ownership contract: when ctx fires while scanner.Scan() is
 // blocked, this function returns immediately but the scanner goroutine
 // is still parked inside the underlying Read. The CALLER is responsible
@@ -222,7 +231,8 @@ func buildLaunchArgs(distro, binaryPath string, extraArgs []string) []string {
 // timeout path so the parked Read returns and the goroutine exits.
 // Without that close, the goroutine leaks for the lifetime of the
 // process — which on a stuck-child boot can be the entire launcher
-// session.
+// session. On the success path the goroutine lives on purpose: it ends
+// when the child's stdout reaches EOF or the pipe is closed.
 func readBootstrapLine(ctx context.Context, r io.Reader, prefix string, dropFn func(string)) (Bootstrap, error) {
 	type result struct {
 		bs  Bootstrap
@@ -231,11 +241,7 @@ func readBootstrapLine(ctx context.Context, r io.Reader, prefix string, dropFn f
 	resCh := make(chan result, 1)
 
 	go func() {
-		scanner := bufio.NewScanner(r)
-		// Default 64 KiB line buffer is enough for the bootstrap line
-		// (port + token < 200 bytes) but cap it explicitly so a child
-		// that floods stdout without a newline doesn't OOM the launcher.
-		scanner.Buffer(make([]byte, 4096), 64*1024)
+		scanner := newStreamScanner(r)
 		for {
 			// Cheap pre-check before each Scan iteration so a steady
 			// stream of non-bootstrap lines (think log spew) yields to
@@ -269,6 +275,7 @@ func readBootstrapLine(ctx context.Context, r io.Reader, prefix string, dropFn f
 				return
 			}
 			resCh <- result{bs: bs}
+			drainStream(scanner, r, "stdout", dropFn)
 			return
 		}
 		if err := scanner.Err(); err != nil {
@@ -297,17 +304,49 @@ func ReadBootstrapForTest(ctx context.Context, r io.Reader, prefix string) (Boot
 	return readBootstrapLine(ctx, r, prefix, nil)
 }
 
-// drainStderr forwards every stderr line through dropFn until EOF.
-// Runs in its own goroutine for the lifetime of the child.
-func drainStderr(r io.Reader, dropFn func(string)) {
-	if r == nil {
-		return
-	}
+// newStreamScanner returns the line scanner both child streams are read
+// through. The default 64 KiB line buffer is far more than the bootstrap
+// line needs (port + token < 200 bytes); capping it explicitly means a
+// child that floods a stream without a newline can't OOM the launcher.
+func newStreamScanner(r io.Reader) *bufio.Scanner {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 4096), 64*1024)
+	return scanner
+}
+
+// drainStream consumes the rest of a child stream for the lifetime of the
+// child, forwarding whole lines to dropFn. label names the stream in the
+// fallback log line.
+//
+// It never gives up on the stream while the stream is still open. An
+// undrained pipe is not a lost log line: once the OS buffer fills, the
+// child blocks inside write(2) forever, with no error raised on either
+// side. So when the line scanner stops early — a line longer than its cap
+// (bufio.ErrTooLong) or a transient read error — the remaining bytes are
+// discarded instead, and the downgrade from "logged" to "discarded" is
+// itself logged. A closed stream is the one clean stop: nothing can block
+// on a pipe that no longer exists.
+func drainStream(scanner *bufio.Scanner, r io.Reader, label string, dropFn func(string)) {
 	for scanner.Scan() {
 		if dropFn != nil {
 			dropFn(scanner.Text())
 		}
 	}
+	err := scanner.Err()
+	if err == nil || errors.Is(err, os.ErrClosed) {
+		return
+	}
+	log.Printf("wsllauncher: %s line scan stopped (%v); discarding the rest of the stream", label, err)
+	if _, err := io.Copy(io.Discard, r); err != nil && !errors.Is(err, os.ErrClosed) {
+		log.Printf("wsllauncher: %s discard drain ended: %v", label, err)
+	}
+}
+
+// drainStderr forwards every stderr line through dropFn until the stream
+// ends. Runs in its own goroutine for the lifetime of the child.
+func drainStderr(r io.Reader, dropFn func(string)) {
+	if r == nil {
+		return
+	}
+	drainStream(newStreamScanner(r), r, "stderr", dropFn)
 }

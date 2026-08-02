@@ -165,13 +165,16 @@ See [docs/references/codex.md](docs/references/codex.md) for how to use
 these when touching Codex code, and
 [docs/references/claude.md](docs/references/claude.md) for Claude.
 
-**Known upstream constraint (Codex):** `exec_command` can yield back to
-the model while the PTY keeps running; `source: "unifiedExecStartup"` is
-the wire-typed signal for these background terminals. The app-server
-protocol exposes only thread-wide `thread/backgroundTerminals/clean` —
-per-process termination requires an upstream change. See
-[docs/references/codex.md §Known upstream constraints](docs/references/codex.md#known-upstream-constraints)
+**Codex background terminals:** `exec_command` can yield back to the
+model while the PTY keeps running; `source: "unifiedExecStartup"` is the
+wire-typed signal for these background terminals. Per-process
+termination is available since codex 0.140.0
+(`thread/backgroundTerminals/terminate {threadId, processId}`), alongside
+`list` and the thread-wide `clean`. See
+[docs/references/codex.md §Background terminals](docs/references/codex.md#background-terminals)
 and [invariant 25](docs/architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics).
+What remains client-unreachable is killing a spawned collab-agent child
+thread — `close_agent` is a model tool only.
 
 ## Permanent invariants
 

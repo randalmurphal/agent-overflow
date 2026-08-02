@@ -128,8 +128,8 @@ func TestSetGitLabHostsClassificationRoundTrip(t *testing.T) {
 func TestInvalidateAllForgeCacheClearsEveryEntry(t *testing.T) {
 	core := NewCore()
 	now := core.nowFn()
-	core.storeForgeCache("/repo/a", "github", now)
-	core.storeForgeCache("/repo/b", "gitlab", now)
+	core.recordOrigin("/repo/a", originIdentity{url: "https://github.com/owner/a.git", known: true}, now)
+	core.recordOrigin("/repo/b", originIdentity{url: "https://gitlab.com/owner/b.git", known: true}, now)
 
 	core.InvalidateAllForgeCache()
 
@@ -241,17 +241,17 @@ func TestDetectForgeCachesResults(t *testing.T) {
 	}
 }
 
-func TestStoreForgeCacheReplacesExisting(t *testing.T) {
+func TestRecordOriginReplacesExisting(t *testing.T) {
 	core := NewCore()
 	cwd := t.TempDir()
 	now := core.nowFn()
 
-	core.storeForgeCache(cwd, "github", now)
+	core.recordOrigin(cwd, originIdentity{url: "https://github.com/owner/repo.git", known: true}, now)
 	if got := core.DetectForge(cwd); got != "github" {
 		t.Fatalf("DetectForge after seed = %q, want github", got)
 	}
 
-	core.storeForgeCache(cwd, "gitlab", now)
+	core.recordOrigin(cwd, originIdentity{url: "https://gitlab.com/owner/repo.git", known: true}, now)
 	if got := core.DetectForge(cwd); got != "gitlab" {
 		t.Fatalf("DetectForge after re-seed = %q, want gitlab", got)
 	}
@@ -286,8 +286,8 @@ func TestInvalidateForgeCache(t *testing.T) {
 func TestInvalidateForgeCacheIsScopedToCwd(t *testing.T) {
 	core := NewCore()
 	now := core.nowFn()
-	core.storeForgeCache("/repo/a", "github", now)
-	core.storeForgeCache("/repo/b", "gitlab", now)
+	core.recordOrigin("/repo/a", originIdentity{url: "https://github.com/owner/a.git", known: true}, now)
+	core.recordOrigin("/repo/b", originIdentity{url: "https://gitlab.com/owner/b.git", known: true}, now)
 
 	core.InvalidateForgeCache("/repo/a")
 

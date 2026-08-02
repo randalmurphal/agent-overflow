@@ -4,6 +4,7 @@
 export {
     EditorSettings,
     NetworkSettings,
+    ProviderEnvVar,
     RemoteEndpoint,
     RemoteEndpointSummary,
     RetentionSettings,

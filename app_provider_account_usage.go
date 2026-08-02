@@ -143,13 +143,14 @@ func (a *App) refreshProviderAccountUsage(
 			return err
 		}
 	case string(provider.Codex):
-		info, probeErr := codex.ProbeAccount(ctx, codex.ProbeConfig{
-			Binary: a.providerBinaryPath(providerName),
-			Env:    map[string]string{"CODEX_HOME": ephemeral.Path},
-			OnSnapshot: func(value provider.RateLimitsSnapshot) {
-				snapshot = value
-			},
-		})
+		probeCfg := a.codexProbeConfig(
+			a.providerBinaryPath(providerName),
+			map[string]string{"CODEX_HOME": ephemeral.Path},
+		)
+		probeCfg.OnSnapshot = func(value provider.RateLimitsSnapshot) {
+			snapshot = value
+		}
+		info, probeErr := codex.ProbeAccount(ctx, probeCfg)
 		if probeErr != nil {
 			return probeErr
 		}

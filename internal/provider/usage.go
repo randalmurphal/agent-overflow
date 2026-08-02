@@ -48,8 +48,12 @@ type MCPServer struct {
 // the live wire). For Codex the data lands on the `RateLimitSnapshot`
 // returned by `account/rateLimits/read` (planType + apiProvider hint).
 //
-// Empty SubscriptionType + empty TokenSource are the unauthenticated
-// signal; consumers branch on that.
+// Do NOT re-derive "is this account logged in" from these fields.
+// Which of them a provider populates is provider- and backend-specific
+// (Claude fills only APIProvider on non-firstParty backends, and only
+// Email on a firstParty profile login; Codex hardcodes APIProvider and
+// may legitimately report nothing else). The one Claude answer is
+// `providerstatus.ClaudeUnauthenticated`; Codex deliberately has none.
 type AccountInfo struct {
 	Email            string `json:"email,omitempty"`
 	DisplayName      string `json:"displayName,omitempty"`

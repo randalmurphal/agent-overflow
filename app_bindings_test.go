@@ -568,40 +568,43 @@ func TestUpdateThreadModelRemembersClaudeModelAndContextDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
 	}
-	if thread.ContextWindow != 200000 {
-		t.Fatalf("initial sonnet context = %d, want 200000", thread.ContextWindow)
+	if thread.ContextWindow != provider.ClaudeStandardContextWindow {
+		t.Fatalf("initial sonnet context = %d, want %d", thread.ContextWindow, provider.ClaudeStandardContextWindow)
 	}
 
+	// Switching models adopts the *new* model's registry default, and the
+	// large models default to the 1M tier while Sonnet keeps 1M opt-in — so
+	// this round-trip also proves the two defaults stay independent.
 	opus, err := app.UpdateThreadModel(thread.ID, "claude-opus-4-7")
 	if err != nil {
 		t.Fatalf("UpdateThreadModel(opus): %v", err)
 	}
-	if opus.ContextWindow != 200000 {
-		t.Fatalf("opus context = %d, want 200000", opus.ContextWindow)
+	if opus.ContextWindow != provider.ClaudeExtendedContextWindow {
+		t.Fatalf("opus context = %d, want %d", opus.ContextWindow, provider.ClaudeExtendedContextWindow)
 	}
 
 	sonnet, err := app.UpdateThreadModel(thread.ID, "claude-sonnet-4-6")
 	if err != nil {
 		t.Fatalf("UpdateThreadModel(sonnet): %v", err)
 	}
-	if sonnet.ContextWindow != 200000 {
-		t.Fatalf("remembered sonnet context = %d, want 200000", sonnet.ContextWindow)
+	if sonnet.ContextWindow != provider.ClaudeStandardContextWindow {
+		t.Fatalf("remembered sonnet context = %d, want %d", sonnet.ContextWindow, provider.ClaudeStandardContextWindow)
 	}
 
 	opusProfile, err := app.store.GetChatModelProfile("claude", "claude-opus-4-7")
 	if err != nil {
 		t.Fatalf("GetChatModelProfile(opus): %v", err)
 	}
-	if opusProfile.ContextWindow != 200000 {
-		t.Fatalf("stored opus context = %d, want 200000", opusProfile.ContextWindow)
+	if opusProfile.ContextWindow != provider.ClaudeExtendedContextWindow {
+		t.Fatalf("stored opus context = %d, want %d", opusProfile.ContextWindow, provider.ClaudeExtendedContextWindow)
 	}
 
 	sonnetProfile, err := app.store.GetChatModelProfile("claude", "claude-sonnet-4-6")
 	if err != nil {
 		t.Fatalf("GetChatModelProfile(sonnet): %v", err)
 	}
-	if sonnetProfile.ContextWindow != 200000 {
-		t.Fatalf("stored sonnet context = %d, want 200000", sonnetProfile.ContextWindow)
+	if sonnetProfile.ContextWindow != provider.ClaudeStandardContextWindow {
+		t.Fatalf("stored sonnet context = %d, want %d", sonnetProfile.ContextWindow, provider.ClaudeStandardContextWindow)
 	}
 }
 
@@ -842,8 +845,10 @@ func TestCreateThreadUsesRememberedClaudeModelAndContext(t *testing.T) {
 	if next.Model != "claude-opus-4-7" {
 		t.Fatalf("next model = %q, want remembered opus", next.Model)
 	}
-	if next.ContextWindow != 200000 {
-		t.Fatalf("next context = %d, want remembered 200000", next.ContextWindow)
+	// The remembered opus profile carries opus's own registry default (1M),
+	// not the sonnet window the source thread started on.
+	if next.ContextWindow != provider.ClaudeExtendedContextWindow {
+		t.Fatalf("next context = %d, want remembered %d", next.ContextWindow, provider.ClaudeExtendedContextWindow)
 	}
 	if next.Mode != "chat" {
 		t.Fatalf("next mode = %q, want chat", next.Mode)

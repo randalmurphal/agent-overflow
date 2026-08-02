@@ -83,6 +83,16 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   (one exported set shared with the fork transform — no copy to
   drift). See invariant 28 and claude-wire.md
   §"active-branch semantics".
+- `models_wire.go` — the `models` array the `initialize` response
+  carries (`WireModel`), its canonicalization (`CanonicalSlug` —
+  resolvedModel over alias, then `provider.NormalizeModelSlug`, which
+  owns both the `[1m]` context-marker trim and the alias folding), and
+  the decoder `probe.go` feeds `ProbeConfig.OnModels`. Parsing only;
+  the merge policy lives in `internal/claudemodels`. See
+  claude-wire.md §`initialize` control_response — `models[]`.
+  `DeclaresExtendedContext` is the one place the marker is read as
+  evidence rather than trimmed: PRESENCE proves a model can run the 1M
+  tier, absence proves nothing.
 - `json_helpers.go` — tiny JSON-inspection utilities.
 - `options.go` / `probe.go` — non-parser subsystems (session options,
   binary probe).
@@ -327,6 +337,13 @@ start and complete. These are load-bearing rules enforced by
   — one turn launching a Task agent. Proves flat `result.usage` is
   PARENT-ONLY while `modelUsage` includes sidechain tokens + per-model
   `costUSD` (`TestParseResult_ModelUsagePreferredOverFlatUsage`).
+- `docs/references/fixtures/claude/initialize_models_20260802.json` —
+  the `initialize` control_response of a real 2.1.219 probe, trimmed to
+  `models` + `account` + the fast-mode keys (identity anonymised).
+  Authoritative for `models_wire.go` and for
+  `internal/claudemodels`'s merge policy: the alias/`[1m]`
+  inconsistency, the two rows that resolve to one model, and Haiku's
+  missing effort support all come from here.
 - `docs/references/fixtures/claude/monitor_wakeup_20260728.summary.json`
   — sanitized shape summary for the Monitor watch-task launch ack
   (§E7: `{taskId, timeoutMs, persistent}` — background `local_bash`

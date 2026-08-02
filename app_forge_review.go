@@ -159,7 +159,7 @@ func (a *App) ListPRCommits(threadID string, pr gitops.PRReference, baseRef, hea
 // introduced (first-parent diff), read from the thread's local clone.
 // Requires a clone — the selector that feeds it only renders when
 // ListPRCommits found one.
-func (a *App) GetPRCommitDiff(threadID string, pr gitops.PRReference, sha string) (string, error) {
+func (a *App) GetPRCommitDiff(threadID string, pr gitops.PRReference, sha string, ignoreWhitespace bool) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
 	}
@@ -183,7 +183,8 @@ func (a *App) GetPRCommitDiff(threadID string, pr gitops.PRReference, sha string
 			return "", fmt.Errorf("fetch PR head: %w", err)
 		}
 	}
-	patch, err := gitdiff.CommitDiff(context.Background(), workspace, sha)
+	patch, err := gitdiff.CommitDiff(context.Background(), workspace, sha,
+		gitdiff.Options{IgnoreWhitespace: ignoreWhitespace})
 	if err != nil {
 		return "", err
 	}

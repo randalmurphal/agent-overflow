@@ -77,15 +77,93 @@ func TestClaudeUnauthenticated(t *testing.T) {
 		info provider.AccountInfo
 		want bool
 	}{
+		// The only logged-out signal: the CLI reported no account identity
+		// whatsoever.
 		{"empty account", provider.AccountInfo{}, true},
-		{"has subscription", provider.AccountInfo{SubscriptionType: "pro"}, false},
-		{"has token source", provider.AccountInfo{TokenSource: "oauth"}, false},
-		{"has both", provider.AccountInfo{SubscriptionType: "max", TokenSource: "oauth"}, false},
+
+		// firstParty is what the CLI reports for the direct Anthropic
+		// backend regardless of login state, so on its own it is not
+		// evidence of an account.
+		{"bare firstParty", provider.AccountInfo{APIProvider: "firstParty"}, true},
+
+		// Every non-firstParty backend short-circuits the CLI's account
+		// builder: apiProvider is the ONLY field a fully working account
+		// surfaces (verified against claude 2.1.219). Each of these was
+		// false-flagged as logged out by the subscription-or-token rule.
+		{"bedrock", provider.AccountInfo{APIProvider: "bedrock"}, false},
+		{"vertex", provider.AccountInfo{APIProvider: "vertex"}, false},
+		{"gateway", provider.AccountInfo{APIProvider: "gateway"}, false},
+		{"foundry", provider.AccountInfo{APIProvider: "foundry"}, false},
+		{"anthropicAws", provider.AccountInfo{APIProvider: "anthropicAws"}, false},
+		{"anthropicGoogleCloud", provider.AccountInfo{APIProvider: "anthropicGoogleCloud"}, false},
+		{"mantle", provider.AccountInfo{APIProvider: "mantle"}, false},
+
+		// firstParty with a profile-sourced token: neither subscription nor
+		// tokenSource is populated, email is. Also false-flagged before.
+		{"firstParty profile", provider.AccountInfo{Email: "user@example.com", APIProvider: "firstParty"}, false},
+
+		// firstParty, fully populated — the case the old rule got right.
+		{"firstParty populated", provider.AccountInfo{
+			Email:            "user@example.com",
+			SubscriptionType: "Claude Max",
+			TokenSource:      "claude.ai",
+			APIProvider:      "firstParty",
+		}, false},
+
+		// Individual evidence fields, each sufficient on its own.
+		{"subscription only", provider.AccountInfo{SubscriptionType: "pro"}, false},
+		{"token source only", provider.AccountInfo{TokenSource: "oauth"}, false},
+		{"email only", provider.AccountInfo{Email: "user@example.com"}, false},
+		{"display name only", provider.AccountInfo{DisplayName: "Ada"}, false},
+
+		// Whitespace is not identity. A padded field must not read as
+		// evidence, and must not rescue an otherwise-empty account.
+		{"whitespace fields", provider.AccountInfo{
+			Email:            "  ",
+			SubscriptionType: "\t",
+			TokenSource:      " \n",
+			DisplayName:      " ",
+		}, true},
+		{"whitespace apiProvider", provider.AccountInfo{APIProvider: "   "}, true},
+		{"padded bedrock", provider.AccountInfo{APIProvider: " bedrock "}, false},
+		{"padded firstParty", provider.AccountInfo{APIProvider: " firstParty "}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ClaudeUnauthenticated(tc.info); got != tc.want {
 				t.Fatalf("ClaudeUnauthenticated(%+v) = %v, want %v", tc.info, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClaudeUnauthenticatedCoversEveryAPIProvider pins the predicate to the
+// full apiProvider enum the CLI can report, so a member added upstream that
+// nobody thought to add to the table above still gets an answer asserted
+// here. Only firstParty may be treated as "no evidence" — every other member
+// is reachable ONLY when a real external-credential backend is configured.
+func TestClaudeUnauthenticatedCoversEveryAPIProvider(t *testing.T) {
+	// The enum as of claude 2.1.219.
+	all := []string{
+		"gateway", "bedrock", "foundry", "anthropicAws",
+		"anthropicGoogleCloud", "mantle", "vertex", "firstParty",
+	}
+	for _, apiProvider := range all {
+		t.Run(apiProvider, func(t *testing.T) {
+			bare := ClaudeUnauthenticated(provider.AccountInfo{APIProvider: apiProvider})
+			wantBare := apiProvider == "firstParty"
+			if bare != wantBare {
+				t.Fatalf("bare apiProvider=%q: unauthenticated = %v, want %v", apiProvider, bare, wantBare)
+			}
+			// Whatever the backend, a populated account is authenticated.
+			populated := provider.AccountInfo{
+				Email:            "user@example.com",
+				SubscriptionType: "Claude Max",
+				TokenSource:      "claude.ai",
+				APIProvider:      apiProvider,
+			}
+			if ClaudeUnauthenticated(populated) {
+				t.Fatalf("populated apiProvider=%q reported unauthenticated", apiProvider)
 			}
 		})
 	}

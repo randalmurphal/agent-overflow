@@ -19,6 +19,8 @@
 // and Cmd-modifier chords (which carry OS-specific line semantics we
 // deliberately leave alone).
 
+import { isImeComposingEvent } from './imeComposition';
+
 const WORD_CHAR = /[\p{L}\p{N}_]/u;
 const WHITESPACE = /\s/;
 
@@ -130,7 +132,7 @@ function moveCaret(
  * `false` to let the browser / app handle it natively.
  */
 export function dispatchTextEditing(event: KeyboardEvent): boolean {
-  if (event.isComposing) return false;
+  if (isImeComposingEvent(event)) return false;
   if (event.metaKey) return false; // leave Cmd+ chords (macOS line ops) native
   const altOnly = event.altKey && !event.ctrlKey;
   const ctrlOnly = event.ctrlKey && !event.altKey;

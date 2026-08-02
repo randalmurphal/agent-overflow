@@ -12,6 +12,12 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+// probeWorkDir is the absolute, project-free directory the probes run in.
+// WorkDir is required and validated, so every ProbeConfig in this file
+// carries one — see provider.ValidateProbeWorkDir. os.TempDir rather than
+// a literal because filepath.IsAbs is OS-specific.
+var probeWorkDir = os.TempDir()
+
 // writeMockCodexAppServerScript writes a shell script to tmpDir that
 // mimics `codex app-server` during a probe. The probe sends four
 // NDJSON lines (initialize request, initialized notification,
@@ -67,7 +73,9 @@ func TestProbeAccountWaitsBrieflyForOutOfOrderAccountIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: path})
+	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  path})
 	if err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
@@ -86,7 +94,9 @@ func TestProbeIdentityReadsAccountWithoutRateLimitRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	info, err := ProbeIdentity(context.Background(), ProbeConfig{Binary: path})
+	info, err := ProbeIdentity(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  path})
 	if err != nil {
 		t.Fatalf("ProbeIdentity: %v", err)
 	}
@@ -109,7 +119,9 @@ func TestProbeAccountExtractsPlanType(t *testing.T) {
 		`{"rateLimits":{"limitId":"codex","planType":"pro","primary":{},"secondary":{}}}`,
 		"")
 
-	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
+	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  binary})
 	if err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
@@ -128,7 +140,9 @@ func TestProbeAccountSkipsNonMatchingFrames(t *testing.T) {
 	binary := writeMockCodexAppServerScript(t, t.TempDir(),
 		`{"rateLimits":{"planType":"plus"}}`, "")
 
-	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
+	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  binary})
 	if err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
@@ -146,7 +160,9 @@ func TestProbeAccountMissingPlanTypeReturnsZero(t *testing.T) {
 	binary := writeMockCodexAppServerScript(t, t.TempDir(),
 		`{"rateLimits":{"limitId":"codex"}}`, "")
 
-	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
+	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  binary})
 	if err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
@@ -163,7 +179,9 @@ func TestProbeAccountEmptyResultReturnsZero(t *testing.T) {
 	// container at all). Same outcome: zero SubscriptionType, no error.
 	binary := writeMockCodexAppServerScript(t, t.TempDir(), "", "")
 
-	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
+	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  binary})
 	if err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
@@ -180,7 +198,9 @@ func TestProbeAccountSurfacesError(t *testing.T) {
 	// than silently mapping to a zero-value account.
 	binary := writeMockCodexAppServerScript(t, t.TempDir(), "", "auth required")
 
-	_, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
+	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  binary})
 	if err == nil {
 		t.Fatal("expected error for JSON-RPC error reply")
 	}
@@ -215,6 +235,8 @@ func TestProbeAccountInvokesOnSnapshotCallback(t *testing.T) {
 
 	var got []provider.RateLimitsSnapshot
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+
 		Binary: binary,
 		OnSnapshot: func(snap provider.RateLimitsSnapshot) {
 			got = append(got, snap)
@@ -257,6 +279,8 @@ func TestProbeAccountInvokesOnSnapshotCallbackWithMultiBucket(t *testing.T) {
 
 	var got []provider.RateLimitsSnapshot
 	if _, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+
 		Binary: binary,
 		OnSnapshot: func(snap provider.RateLimitsSnapshot) {
 			got = append(got, snap)
@@ -297,6 +321,8 @@ func TestProbeAccountSkipsOnSnapshotCallbackForEmptyResponse(t *testing.T) {
 
 	var fired bool
 	if _, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+
 		Binary: binary,
 		OnSnapshot: func(provider.RateLimitsSnapshot) {
 			fired = true
@@ -318,6 +344,8 @@ func TestProbeAccountRetainsStandaloneDynamicBucket(t *testing.T) {
 
 	var got provider.RateLimitsSnapshot
 	if _, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+
 		Binary: binary,
 		OnSnapshot: func(snapshot provider.RateLimitsSnapshot) {
 			got = snapshot
@@ -336,7 +364,9 @@ func TestProbeAccountRetainsStandaloneDynamicBucket(t *testing.T) {
 }
 
 func TestProbeAccountReturnsErrorOnSpawnFailure(t *testing.T) {
-	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: "/nonexistent/path/to/codex-12345"})
+	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  "/nonexistent/path/to/codex-12345"})
 	if err == nil {
 		t.Fatalf("expected spawn error, got info=%+v", info)
 	}
@@ -359,6 +389,8 @@ func TestProbeAccountReturnsErrorWhenResponseMissing(t *testing.T) {
 	const probeTimeout = 3 * time.Second
 	start := time.Now()
 	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+
 		Binary:  path,
 		Timeout: probeTimeout,
 	})
@@ -389,6 +421,8 @@ func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
 
 	start := time.Now()
 	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+
 		Binary:  path,
 		Timeout: 150 * time.Millisecond,
 	})
@@ -411,9 +445,9 @@ func TestProbeCacheReturnsStored(t *testing.T) {
 	cache := NewProbeCache(5 * time.Minute)
 	info := provider.AccountInfo{SubscriptionType: "pro", APIProvider: "openai"}
 
-	cache.Set("/usr/bin/codex", info)
+	cache.Set(provider.ProbeCacheKey{Binary: "/usr/bin/codex", WorkDir: probeWorkDir}, info)
 
-	got, ok := cache.Get("/usr/bin/codex")
+	got, ok := cache.Get(provider.ProbeCacheKey{Binary: "/usr/bin/codex", WorkDir: probeWorkDir})
 	if !ok {
 		t.Fatal("expected cache hit")
 	}
@@ -424,26 +458,26 @@ func TestProbeCacheReturnsStored(t *testing.T) {
 
 func TestProbeCacheExpires(t *testing.T) {
 	cache := NewProbeCache(10 * time.Millisecond)
-	cache.Set("/usr/bin/codex", provider.AccountInfo{SubscriptionType: "team"})
+	cache.Set(provider.ProbeCacheKey{Binary: "/usr/bin/codex", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "team"})
 
-	if _, ok := cache.Get("/usr/bin/codex"); !ok {
+	if _, ok := cache.Get(provider.ProbeCacheKey{Binary: "/usr/bin/codex", WorkDir: probeWorkDir}); !ok {
 		t.Fatal("expected immediate cache hit")
 	}
 
 	time.Sleep(50 * time.Millisecond)
 
-	if _, ok := cache.Get("/usr/bin/codex"); ok {
+	if _, ok := cache.Get(provider.ProbeCacheKey{Binary: "/usr/bin/codex", WorkDir: probeWorkDir}); ok {
 		t.Fatal("expected cache miss after TTL expired")
 	}
 }
 
 func TestProbeCacheScopedPerBinary(t *testing.T) {
 	cache := NewProbeCache(5 * time.Minute)
-	cache.Set("/bin/a", provider.AccountInfo{SubscriptionType: "alpha"})
-	cache.Set("/bin/b", provider.AccountInfo{SubscriptionType: "beta"})
+	cache.Set(provider.ProbeCacheKey{Binary: "/bin/a", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "alpha"})
+	cache.Set(provider.ProbeCacheKey{Binary: "/bin/b", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "beta"})
 
-	a, _ := cache.Get("/bin/a")
-	b, _ := cache.Get("/bin/b")
+	a, _ := cache.Get(provider.ProbeCacheKey{Binary: "/bin/a", WorkDir: probeWorkDir})
+	b, _ := cache.Get(provider.ProbeCacheKey{Binary: "/bin/b", WorkDir: probeWorkDir})
 	if a.SubscriptionType != "alpha" {
 		t.Errorf("/bin/a: got %q, want alpha", a.SubscriptionType)
 	}
@@ -496,5 +530,36 @@ func TestExtractAccountInfoFromRateLimitsTreatsEmptyAsZero(t *testing.T) {
 	}
 	if got.APIProvider != "openai" {
 		t.Errorf("non-JSON APIProvider: got %q, want openai", got.APIProvider)
+	}
+}
+
+// TestProbeRequiresWorkDir mirrors the Claude contract across both codex
+// probe entry points: a working binary is still refused without an explicit
+// absolute directory, so no caller can fall back to the inherited cwd.
+func TestProbeRequiresWorkDir(t *testing.T) {
+	binary := writeMockCodexAppServerScript(t, t.TempDir(),
+		`{"rateLimits":{"limitId":"codex","planType":"pro","primary":{},"secondary":{}}}`, "")
+
+	probes := map[string]func(ProbeConfig) (provider.AccountInfo, error){
+		"ProbeAccount": func(cfg ProbeConfig) (provider.AccountInfo, error) {
+			return ProbeAccount(context.Background(), cfg)
+		},
+		"ProbeIdentity": func(cfg ProbeConfig) (provider.AccountInfo, error) {
+			return ProbeIdentity(context.Background(), cfg)
+		},
+	}
+	for name, probe := range probes {
+		for _, workDir := range []string{"", "relative/dir"} {
+			info, err := probe(ProbeConfig{Binary: binary, WorkDir: workDir})
+			if err == nil {
+				t.Fatalf("%s WorkDir %q: expected refusal, got %+v", name, workDir, info)
+			}
+			if !strings.Contains(err.Error(), "WorkDir") {
+				t.Errorf("%s WorkDir %q: error %q should name the missing field", name, workDir, err)
+			}
+			if info != (provider.AccountInfo{}) {
+				t.Errorf("%s WorkDir %q: refused probe returned %+v, want zero", name, workDir, info)
+			}
+		}
 	}
 }

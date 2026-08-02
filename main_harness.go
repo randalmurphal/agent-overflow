@@ -74,6 +74,10 @@ func runHarness(flags cliFlags) {
 	// macOS Keychain (the active Claude slot's service name ignores the
 	// home), so credential storage is pinned to the file-backed stand-in.
 	appService.fileKeychainOverride = true
+	// No timer may run `git fetch` against the fixture repositories: e2e
+	// assertions read ahead/behind counts as fixed state, and a harness
+	// run must never reach a network.
+	appService.backgroundFetchDisabled = true
 	h := newHarness(appService, paths)
 	// The control server must listen before App.Start: it publishes its
 	// address/token through App.providerExtraEnv (write-once before

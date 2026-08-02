@@ -6,6 +6,7 @@
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { INPUT_CLASS, PRIMARY_BUTTON_CLASS, GHOST_BUTTON_CLASS } from './styles';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
 
   let settings = $derived(getSettings());
   let hosts = $derived(settings.gitlabSelfHostedHosts ?? []);
@@ -45,6 +46,9 @@
   }
 
   function handleKeydown(e: KeyboardEvent): void {
+    // Enter confirms the IME candidate while composing; adding here would
+    // persist the pre-composition host string.
+    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
     if (e.key === 'Enter' && canAdd) {
       e.preventDefault();
       void addHost();

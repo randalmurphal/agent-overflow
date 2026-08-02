@@ -26,6 +26,13 @@ import (
 //     reports non-cached input + cache-read separately so it sums with
 //     Claude rows. `reasoningOutputTokens` is already inside
 //     `outputTokens` and is carried as informational detail only.
+//   - `cacheWriteInputTokens` is its own billed class, accumulated on its
+//     own axis by TokenUsage::add_assign and NOT subtracted by
+//     non_cached_input, so it deltas like every other component and maps
+//     onto the same TokenUsage.CacheCreationInputTokens the Claude
+//     adapter fills. Added upstream after 0.142.5; older app-servers omit
+//     the key and it decodes to zero, which is the correct reading for a
+//     build that never reported it.
 //
 // Per-turn usage is therefore the delta of `total` between turn
 // boundaries. Live-verified 2026-07-03 on codex-cli 0.142.5 (see
@@ -54,6 +61,7 @@ type codexWireTokenBreakdown struct {
 	TotalTokens           int `json:"totalTokens"`
 	InputTokens           int `json:"inputTokens"`
 	CachedInputTokens     int `json:"cachedInputTokens"`
+	CacheWriteInputTokens int `json:"cacheWriteInputTokens"`
 	OutputTokens          int `json:"outputTokens"`
 	ReasoningOutputTokens int `json:"reasoningOutputTokens"`
 }
@@ -64,10 +72,11 @@ func (b codexWireTokenBreakdown) toTokenUsage() provider.TokenUsage {
 		nonCached = 0
 	}
 	return provider.TokenUsage{
-		InputTokens:           nonCached,
-		CacheReadInputTokens:  b.CachedInputTokens,
-		OutputTokens:          b.OutputTokens,
-		ReasoningOutputTokens: b.ReasoningOutputTokens,
+		InputTokens:              nonCached,
+		CacheReadInputTokens:     b.CachedInputTokens,
+		CacheCreationInputTokens: b.CacheWriteInputTokens,
+		OutputTokens:             b.OutputTokens,
+		ReasoningOutputTokens:    b.ReasoningOutputTokens,
 	}
 }
 
@@ -171,6 +180,7 @@ func (a *usageAccounting) settleTurn() provider.TokenUsage {
 		TotalTokens:           a.latest.TotalTokens - a.accounted.TotalTokens,
 		InputTokens:           max(a.latest.InputTokens-a.accounted.InputTokens, 0),
 		CachedInputTokens:     max(a.latest.CachedInputTokens-a.accounted.CachedInputTokens, 0),
+		CacheWriteInputTokens: max(a.latest.CacheWriteInputTokens-a.accounted.CacheWriteInputTokens, 0),
 		OutputTokens:          max(a.latest.OutputTokens-a.accounted.OutputTokens, 0),
 		ReasoningOutputTokens: max(a.latest.ReasoningOutputTokens-a.accounted.ReasoningOutputTokens, 0),
 	}

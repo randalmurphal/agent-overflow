@@ -12,6 +12,12 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+// probeWorkDir is the absolute, project-free directory the probes run in.
+// WorkDir is required and validated, so every ProbeConfig in this file
+// carries one — see provider.ValidateProbeWorkDir. os.TempDir rather than
+// a literal because filepath.IsAbs is OS-specific.
+var probeWorkDir = os.TempDir()
+
 // writeMockClaudeInitScript writes a shell script to tmpDir that mimics
 // the Claude CLI during a probe: it reads ONE line from stdin (the
 // probe's control_request{subtype:"initialize"}), then prints a
@@ -69,7 +75,9 @@ func TestProbeAccountExtractsSubscriptionType(t *testing.T) {
 		`{"subscriptionType":"Claude Max","tokenSource":"oauth","apiProvider":"firstParty"}`,
 		"success", "")
 
-	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
+	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  binary})
 	if err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
@@ -84,6 +92,53 @@ func TestProbeAccountExtractsSubscriptionType(t *testing.T) {
 	}
 }
 
+// TestProbeAccountExtractsSparseAccountShapes covers the two account
+// objects a working CLI can return that carry almost nothing. Both are
+// consequences of the CLI's account-metadata builder (verified against
+// claude 2.1.219): it returns early unless the resolved apiProvider is
+// "firstParty", and a firstParty profile login populates neither
+// subscription nor tokenSource.
+//
+// These are the only signals `providerstatus.ClaudeUnauthenticated` has
+// to work with on those setups, so the probe must not drop them.
+func TestProbeAccountExtractsSparseAccountShapes(t *testing.T) {
+	cases := []struct {
+		name        string
+		accountJSON string
+		want        provider.AccountInfo
+	}{
+		{
+			// Bedrock (and every other non-firstParty backend): the
+			// builder bails before setting anything else.
+			name:        "external credential backend",
+			accountJSON: `{"apiProvider":"bedrock"}`,
+			want:        provider.AccountInfo{APIProvider: "bedrock"},
+		},
+		{
+			// firstParty + profile token source: email is the only
+			// field that comes back.
+			name:        "firstParty profile login",
+			accountJSON: `{"email":"user@example.com","apiProvider":"firstParty"}`,
+			want:        provider.AccountInfo{Email: "user@example.com", APIProvider: "firstParty"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			binary := writeMockClaudeInitScript(t, t.TempDir(), tc.accountJSON, "success", "")
+
+			info, err := ProbeAccount(context.Background(), ProbeConfig{
+				WorkDir: probeWorkDir,
+				Binary:  binary})
+			if err != nil {
+				t.Fatalf("ProbeAccount: %v", err)
+			}
+			if info != tc.want {
+				t.Fatalf("AccountInfo = %+v, want %+v", info, tc.want)
+			}
+		})
+	}
+}
+
 func TestProbeAccountSkipsHookNoiseBeforeResponse(t *testing.T) {
 	// The probe reads the control_response specifically; intervening
 	// system events (SessionStart hooks observed in the live spike)
@@ -92,7 +147,9 @@ func TestProbeAccountSkipsHookNoiseBeforeResponse(t *testing.T) {
 		`{"subscriptionType":"Claude Pro"}`,
 		"success", "")
 
-	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
+	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  binary})
 	if err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
@@ -108,7 +165,9 @@ func TestProbeAccountMissingAccountReturnsZero(t *testing.T) {
 	// keys off the empty-fields signal.
 	binary := writeMockClaudeInitScript(t, t.TempDir(), "", "success", "")
 
-	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
+	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  binary})
 	if err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
@@ -126,7 +185,9 @@ func TestProbeAccountSurfacesErrorSubtype(t *testing.T) {
 	// defense for "claude is broken at startup", not silent zero.
 	binary := writeMockClaudeInitScript(t, t.TempDir(), "", "error", "auth expired")
 
-	_, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary})
+	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  binary})
 	if err == nil {
 		t.Fatal("expected error for non-success subtype")
 	}
@@ -170,7 +231,9 @@ func TestProbeAccountBuildsMaxTurnsZeroArgs(t *testing.T) {
 }
 
 func TestProbeAccountReturnsErrorOnSpawnFailure(t *testing.T) {
-	info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: "/nonexistent/path/to/claude-12345"})
+	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+		Binary:  "/nonexistent/path/to/claude-12345"})
 	if err == nil {
 		t.Fatalf("expected spawn error, got info=%+v", info)
 	}
@@ -193,6 +256,8 @@ func TestProbeAccountReturnsErrorWhenResponseMissing(t *testing.T) {
 	const probeTimeout = 3 * time.Second
 	start := time.Now()
 	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+
 		Binary:  path,
 		Timeout: probeTimeout,
 	})
@@ -224,6 +289,8 @@ func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
 
 	start := time.Now()
 	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		WorkDir: probeWorkDir,
+
 		Binary:  path,
 		Timeout: 150 * time.Millisecond,
 	})
@@ -246,9 +313,9 @@ func TestAccountInfoCacheReturnsStored(t *testing.T) {
 	cache := NewProbeCache(5 * time.Minute)
 	info := provider.AccountInfo{SubscriptionType: "max_5x"}
 
-	cache.Set("/usr/bin/claude", info)
+	cache.Set(provider.ProbeCacheKey{Binary: "/usr/bin/claude", WorkDir: probeWorkDir}, info)
 
-	got, ok := cache.Get("/usr/bin/claude")
+	got, ok := cache.Get(provider.ProbeCacheKey{Binary: "/usr/bin/claude", WorkDir: probeWorkDir})
 	if !ok {
 		t.Fatal("expected cache hit")
 	}
@@ -259,26 +326,26 @@ func TestAccountInfoCacheReturnsStored(t *testing.T) {
 
 func TestAccountInfoCacheExpires(t *testing.T) {
 	cache := NewProbeCache(10 * time.Millisecond)
-	cache.Set("/usr/bin/claude", provider.AccountInfo{SubscriptionType: "team"})
+	cache.Set(provider.ProbeCacheKey{Binary: "/usr/bin/claude", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "team"})
 
-	if _, ok := cache.Get("/usr/bin/claude"); !ok {
+	if _, ok := cache.Get(provider.ProbeCacheKey{Binary: "/usr/bin/claude", WorkDir: probeWorkDir}); !ok {
 		t.Fatal("expected immediate cache hit")
 	}
 
 	time.Sleep(50 * time.Millisecond)
 
-	if _, ok := cache.Get("/usr/bin/claude"); ok {
+	if _, ok := cache.Get(provider.ProbeCacheKey{Binary: "/usr/bin/claude", WorkDir: probeWorkDir}); ok {
 		t.Fatal("expected cache miss after TTL expired")
 	}
 }
 
 func TestAccountInfoCacheScopedPerBinary(t *testing.T) {
 	cache := NewProbeCache(5 * time.Minute)
-	cache.Set("/bin/a", provider.AccountInfo{SubscriptionType: "alpha"})
-	cache.Set("/bin/b", provider.AccountInfo{SubscriptionType: "beta"})
+	cache.Set(provider.ProbeCacheKey{Binary: "/bin/a", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "alpha"})
+	cache.Set(provider.ProbeCacheKey{Binary: "/bin/b", WorkDir: probeWorkDir}, provider.AccountInfo{SubscriptionType: "beta"})
 
-	a, _ := cache.Get("/bin/a")
-	b, _ := cache.Get("/bin/b")
+	a, _ := cache.Get(provider.ProbeCacheKey{Binary: "/bin/a", WorkDir: probeWorkDir})
+	b, _ := cache.Get(provider.ProbeCacheKey{Binary: "/bin/b", WorkDir: probeWorkDir})
 	if a.SubscriptionType != "alpha" {
 		t.Errorf("/bin/a: got %q, want alpha", a.SubscriptionType)
 	}
@@ -302,7 +369,10 @@ func TestExtractAccountInfoFromInitResponsePopulatesAllFields(t *testing.T) {
 		"pid": 12345,
 	})
 
-	info := extractAccountInfoFromInitResponse(payload)
+	info, err := extractAccountInfoFromInitResponse(payload)
+	if err != nil {
+		t.Fatalf("extractAccountInfoFromInitResponse: %v", err)
+	}
 	if info.SubscriptionType != "Claude Max" {
 		t.Errorf("SubscriptionType: got %q, want Claude Max", info.SubscriptionType)
 	}
@@ -315,13 +385,49 @@ func TestExtractAccountInfoFromInitResponsePopulatesAllFields(t *testing.T) {
 }
 
 func TestExtractAccountInfoFromInitResponseTreatsEmptyAsZero(t *testing.T) {
-	if got := extractAccountInfoFromInitResponse(nil); got != (provider.AccountInfo{}) {
-		t.Errorf("nil payload: got %+v, want zero", got)
+	got, err := extractAccountInfoFromInitResponse(nil)
+	if err != nil || got != (provider.AccountInfo{}) {
+		t.Errorf("nil payload: got %+v, %v, want zero, nil", got, err)
 	}
-	if got := extractAccountInfoFromInitResponse([]byte(`{"commands":[]}`)); got != (provider.AccountInfo{}) {
-		t.Errorf("payload without account: got %+v, want zero", got)
+	got, err = extractAccountInfoFromInitResponse([]byte(`{"commands":[]}`))
+	if err != nil || got != (provider.AccountInfo{}) {
+		t.Errorf("payload without account: got %+v, %v, want zero, nil", got, err)
 	}
-	if got := extractAccountInfoFromInitResponse([]byte(`not-json`)); got != (provider.AccountInfo{}) {
-		t.Errorf("non-JSON payload: got %+v, want zero", got)
+}
+
+// TestExtractAccountInfoFromInitResponseFailsLoudOnUnreadablePayload pins the
+// one wrong answer this decoder can give. A zero AccountInfo means "nobody is
+// logged in" to every consumer — the login banner, the rate-limit refresh, the
+// OAuth rotation path — so a payload we could not read must be an error rather
+// than a confident denial.
+func TestExtractAccountInfoFromInitResponseFailsLoudOnUnreadablePayload(t *testing.T) {
+	if _, err := extractAccountInfoFromInitResponse([]byte(`not-json`)); err == nil {
+		t.Fatal("non-JSON payload: got nil error, want a decode failure")
+	}
+	if _, err := extractAccountInfoFromInitResponse([]byte(`{"account":"nope"}`)); err == nil {
+		t.Fatal("account of the wrong type: got nil error, want a decode failure")
+	}
+}
+
+// TestProbeAccountRequiresWorkDir proves the requirement is enforced by the
+// probe itself, not by caller discipline: a perfectly good binary that would
+// answer the handshake is still refused when the caller did not say which
+// directory it is asking about. Before this, every production caller passed
+// ProbeConfig{Binary: binary} and silently inherited the app's launch cwd.
+func TestProbeAccountRequiresWorkDir(t *testing.T) {
+	binary := writeMockClaudeInitScript(t, t.TempDir(),
+		`{"subscriptionType":"Claude Max"}`, "success", "")
+
+	for _, workDir := range []string{"", "relative/dir"} {
+		info, err := ProbeAccount(context.Background(), ProbeConfig{Binary: binary, WorkDir: workDir})
+		if err == nil {
+			t.Fatalf("WorkDir %q: expected refusal, got %+v", workDir, info)
+		}
+		if !strings.Contains(err.Error(), "WorkDir") {
+			t.Errorf("WorkDir %q: error %q should name the missing field", workDir, err)
+		}
+		if info != (provider.AccountInfo{}) {
+			t.Errorf("WorkDir %q: refused probe returned %+v, want zero value", workDir, info)
+		}
 	}
 }

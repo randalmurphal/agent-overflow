@@ -151,4 +151,32 @@ describe('<CopyButton>', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(button.getAttribute('aria-label')).toBe('Copy');
   });
+
+  // `write` is how a markdown surface opts into the dual-flavor
+  // clipboard (`copyMarkdownToClipboard`) without the primitives layer
+  // importing the markdown pipeline.
+  describe('write injection', () => {
+    it('routes the resolved text through an injected writer', async () => {
+      const write = vi.fn(async (_value: string) => true);
+      const { getByRole } = render(CopyButton, {
+        props: { text: async () => 'md **body**', write },
+      });
+      const button = getByRole('button');
+      await fireEvent.click(button);
+      await waitFor(() => expect(write).toHaveBeenCalledWith('md **body**'));
+      expect(writeText).not.toHaveBeenCalled();
+      await waitFor(() => expect(button.getAttribute('aria-label')).toBe('Copied'));
+    });
+
+    it('treats a false result from the injected writer as a failure', async () => {
+      const onError = vi.fn();
+      const { getByRole } = render(CopyButton, {
+        props: { text: 'x', write: async () => false, onError },
+      });
+      const button = getByRole('button');
+      await fireEvent.click(button);
+      await waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+      expect(button.getAttribute('aria-label')).toBe('Copy');
+    });
+  });
 });

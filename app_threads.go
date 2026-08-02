@@ -134,7 +134,7 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		return store.Thread{}, fmt.Errorf("create thread: unsupported context window %d for %s/%s", contextWindow, providerName, model)
 	}
 	if len(options) > 0 && !chatmodel.ContextWindowSupported(options, contextWindow) {
-		contextWindow = provider.DefaultContextWindowForModel(providerName, model, options[0].Tokens)
+		contextWindow = provider.DefaultContextWindowForModel(providerName, model, 0)
 	}
 	if !provider.IsValidAutoCompactPercent(autoCompactStandardPercent) {
 		return store.Thread{}, fmt.Errorf("create thread: auto-compact standard percent must be between 0 and 90")
@@ -372,7 +372,7 @@ func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error
 	contextWindow := seed.ContextWindow
 	options := chatmodel.ContextWindowOptions(providerName, model)
 	if len(options) > 0 && !chatmodel.ContextWindowSupported(options, contextWindow) {
-		contextWindow = provider.DefaultContextWindowForModel(providerName, model, options[0].Tokens)
+		contextWindow = provider.DefaultContextWindowForModel(providerName, model, 0)
 	}
 	branch := a.gitCore().CurrentBranch(project.Path)
 	return ThreadDefaults{
@@ -709,16 +709,37 @@ func (a *App) UpdateThreadRuntimeMode(id, mode string) (store.Thread, error) {
 	return thread, nil
 }
 
-// UpdateThreadBranch persists the branch column. Does NOT perform the
-// git checkout — that flow lives in GitCheckout. Kept as a narrow metadata
-// binding for callers that need to repair/import thread state without touching
-// the repository checkout.
-func (a *App) UpdateThreadBranch(id, branch string) (store.Thread, error) {
+// UpdateThreadBranch persists the branch column for a thread that is still
+// in expectedWorkspacePath. Does NOT perform the git checkout — that flow
+// lives in GitCheckout. Kept as a narrow metadata binding for callers that
+// need to repair/import thread state without touching the repository
+// checkout.
+//
+// expectedWorkspacePath is the workspace the branch was observed in, and it
+// is required: the caller is the frontend's asynchronous branch-persist
+// queue, which holds no thread lock and can land after a worktree switch
+// has already moved the thread somewhere else. See
+// store.UpdateBranchIfWorkspace for why the guard is on the workspace.
+//
+// A refused write is NOT an error — it means another writer owns the row.
+// Either way this returns the thread AS IT STANDS, so the caller can sync
+// its local copy and its next observation compares against the truth.
+func (a *App) UpdateThreadBranch(id, expectedWorkspacePath, branch string) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update branch: store unavailable")
 	}
-	if err := a.store.UpdateBranch(id, branch); err != nil {
+	if strings.TrimSpace(expectedWorkspacePath) == "" {
+		return store.Thread{}, fmt.Errorf("update branch: expected workspace path is required")
+	}
+	applied, err := a.store.UpdateBranchIfWorkspace(id, expectedWorkspacePath, branch)
+	if err != nil {
 		return store.Thread{}, err
+	}
+	if !applied {
+		log.Printf(
+			"thread %s: branch %q observed in %s not persisted; the thread has moved on",
+			id, branch, expectedWorkspacePath,
+		)
 	}
 	return a.store.GetThread(id)
 }

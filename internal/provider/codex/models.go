@@ -75,16 +75,11 @@ func ListModels(ctx context.Context, cfg ModelListConfig) ([]provider.ModelInfo,
 	}
 	defer client.close()
 
-	if _, err := client.request(ctx, "initialize", map[string]any{
-		"clientInfo": map[string]any{
-			"name":    "agent_overflow",
-			"title":   "Agent Overflow",
-			"version": "0.1.0",
-		},
-		"capabilities": map[string]any{
-			"experimentalApi": true,
-		},
-	}); err != nil {
+	// Response-only client: one model/list round-trip, no notification
+	// is ever awaited.
+	if _, err := client.request(ctx, "initialize",
+		codexInitializeParams("agent_overflow", oneShotOptOutNotificationMethods()),
+	); err != nil {
 		return nil, fmt.Errorf("codex: initialize for model/list: %w", err)
 	}
 

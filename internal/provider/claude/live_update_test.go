@@ -269,10 +269,14 @@ func TestApplyLiveUpdateBypassAllowedWhenSpawnedWithAllowFlag(t *testing.T) {
 // read-only) is worse — the session would report read-only while the write
 // tools were still loaded and only the softer dontAsk denial applied.
 func TestPlanLiveUpdateReadOnlyTransitionsRequireRestart(t *testing.T) {
-	others := []provider.RuntimeMode{
-		provider.RuntimeApprovalRequired,
-		provider.RuntimeAutoAcceptEdits,
-		provider.RuntimeFullAccess,
+	// Derived from the canonical list rather than written out, so a tier added
+	// to provider.AllRuntimeModes is held to the restart rule without anyone
+	// remembering to extend this test.
+	var others []provider.RuntimeMode
+	for _, mode := range provider.AllRuntimeModes {
+		if mode != provider.RuntimeReadOnly {
+			others = append(others, mode)
+		}
 	}
 
 	for _, other := range others {
@@ -302,6 +306,64 @@ func TestPlanLiveUpdateReadOnlyTransitionsRequireRestart(t *testing.T) {
 		update, ok := PlanLiveUpdate(prev, prev)
 		if !ok {
 			t.Fatal("PlanLiveUpdate rejected an unchanged read-only session")
+		}
+		if update != (LiveUpdate{}) {
+			t.Errorf("update = %+v, want zero for an unchanged session", update)
+		}
+	})
+}
+
+// TestPlanLiveUpdateAutoTransitions covers the auto tier's transitions rather
+// than its resting state. Auto differs from its neighbours only in
+// BasePermissionMode — it strips no tools — so every move between auto and a
+// non-read-only tier must be expressible as one set_permission_mode, and every
+// move between auto and read-only must not be (read-only's `--disallowedTools`
+// is spawn-only and no control_request can restore a removed tool).
+//
+// The bypassPermissions asymmetry is deliberate and lives one layer down:
+// PlanLiveUpdate happily PLANS auto → full-access, and ApplyLiveUpdate is what
+// refuses it on a process spawned without --allow-dangerously-skip-permissions
+// (TestApplyLiveUpdateBypassEscalationRequiresRestart). Planning and applying
+// answer different questions — "is this expressible on the wire" versus "can
+// THIS process accept it" — and collapsing them here would make the plan
+// depend on session state it does not have.
+func TestPlanLiveUpdateAutoTransitions(t *testing.T) {
+	cases := []struct {
+		from, to   provider.RuntimeMode
+		wantLive   bool
+		wantUpdate LiveUpdate
+	}{
+		{provider.RuntimeApprovalRequired, provider.RuntimeAuto, true, LiveUpdate{BasePermissionMode: "auto"}},
+		{provider.RuntimeAuto, provider.RuntimeApprovalRequired, true, LiveUpdate{BasePermissionMode: "default"}},
+		{provider.RuntimeAutoAcceptEdits, provider.RuntimeAuto, true, LiveUpdate{BasePermissionMode: "auto"}},
+		{provider.RuntimeAuto, provider.RuntimeAutoAcceptEdits, true, LiveUpdate{BasePermissionMode: "acceptEdits"}},
+		{provider.RuntimeFullAccess, provider.RuntimeAuto, true, LiveUpdate{BasePermissionMode: "auto"}},
+		{provider.RuntimeAuto, provider.RuntimeFullAccess, true, LiveUpdate{BasePermissionMode: "bypassPermissions"}},
+		{provider.RuntimeAuto, provider.RuntimeReadOnly, false, LiveUpdate{}},
+		{provider.RuntimeReadOnly, provider.RuntimeAuto, false, LiveUpdate{}},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.from)+" to "+string(tc.to), func(t *testing.T) {
+			prev := liveUpdateBaseOptions()
+			prev.RuntimeMode = tc.from
+			next := prev
+			next.RuntimeMode = tc.to
+			update, ok := PlanLiveUpdate(prev, next)
+			if ok != tc.wantLive {
+				t.Fatalf("PlanLiveUpdate live = %v, want %v", ok, tc.wantLive)
+			}
+			if update != tc.wantUpdate {
+				t.Errorf("update = %+v, want %+v", update, tc.wantUpdate)
+			}
+		})
+	}
+
+	t.Run("auto to auto needs nothing", func(t *testing.T) {
+		prev := liveUpdateBaseOptions()
+		prev.RuntimeMode = provider.RuntimeAuto
+		update, ok := PlanLiveUpdate(prev, prev)
+		if !ok {
+			t.Fatal("PlanLiveUpdate rejected an unchanged auto session")
 		}
 		if update != (LiveUpdate{}) {
 			t.Errorf("update = %+v, want zero for an unchanged session", update)

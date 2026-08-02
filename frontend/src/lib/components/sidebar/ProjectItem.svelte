@@ -39,6 +39,7 @@
   import ProjectThreadList from './ProjectThreadList.svelte';
   import ThreadRow from './ThreadRow.svelte';
   import { buildSidebarThreadTree, rollupDisplayStatus } from '../../utils/sidebarTree';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
   import {
     shouldOpenProjectThreadInNewPane,
     type ProjectNewThreadHandler,
@@ -210,6 +211,9 @@
   }
 
   function handleRenameKeydown(e: KeyboardEvent): void {
+    // Enter confirms the IME candidate while composing a CJK name; committing
+    // the rename here would save the pre-composition text and exit edit mode.
+    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       void commitRename();

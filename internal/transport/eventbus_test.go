@@ -145,6 +145,84 @@ func TestEventBus_Replay_FreshClientGetsAll(t *testing.T) {
 	}
 }
 
+// A cursor above the channel's head is not "nothing missed" — it is a
+// client holding a sequence space that isn't ours (a restarted backend
+// re-seeds every channel from 1). Answering with an empty, gapless
+// replay would leave that client dropping every live event below its
+// stale cursor, so the invalid state has to surface as a gap.
+func TestEventBus_Replay_CursorAboveHeadGaps(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+
+	for i := 1; i <= 3; i++ {
+		bus.Emit("ch1", i)
+	}
+	out := bus.Replay(map[string]uint64{"ch1": 900})
+	if len(out) != 1 {
+		t.Fatalf("expected exactly one gap marker, got %d events: %+v", len(out), out)
+	}
+	if !out[0].Gap {
+		t.Fatalf("expected gap marker, got %+v", out[0])
+	}
+	if out[0].Seq != 3 {
+		t.Fatalf("gap marker seq = %d, want the current head 3", out[0].Seq)
+	}
+	if len(out[0].WireBytes) == 0 {
+		t.Fatal("gap marker must be pre-encoded like every other replay frame")
+	}
+}
+
+// The two gap causes stay distinguishable on a latest-only channel: an
+// evicted (behind) cursor is answered with the newest frame, an ahead
+// cursor with the marker that resets it.
+func TestEventBus_Replay_CursorAboveHeadGapsLatestOnlyChannel(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+
+	const channel = "system:stats"
+	if !latestOnlyEventChannels[channel] {
+		t.Fatalf("%s is no longer latest-only; pick another fixture", channel)
+	}
+	for i := 1; i <= 3; i++ {
+		bus.Emit(channel, i)
+	}
+
+	behind := bus.Replay(map[string]uint64{channel: 1})
+	if len(behind) != 1 || behind[0].Gap || behind[0].Seq != 3 {
+		t.Fatalf("behind cursor = %+v, want the newest frame (seq 3, no gap)", behind)
+	}
+
+	ahead := bus.Replay(map[string]uint64{channel: 900})
+	if len(ahead) != 1 || !ahead[0].Gap {
+		t.Fatalf("ahead cursor = %+v, want a gap marker", ahead)
+	}
+}
+
+// Ephemeral channels retain nothing, so a behind cursor legitimately
+// replays nothing at all — but an ahead cursor is still an invalid
+// cursor and must gap, otherwise the client's seq tracking for that
+// channel never recovers.
+func TestEventBus_Replay_EphemeralChannelCursors(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+
+	const channel = "highlight:seed"
+	if !ephemeralEventChannels[channel] {
+		t.Fatalf("%s is no longer ephemeral; pick another fixture", channel)
+	}
+	for i := 1; i <= 3; i++ {
+		bus.Emit(channel, i)
+	}
+
+	if behind := bus.Replay(map[string]uint64{channel: 1}); len(behind) != 0 {
+		t.Fatalf("ephemeral channel replay = %+v, want nothing (no retention, no gap)", behind)
+	}
+	ahead := bus.Replay(map[string]uint64{channel: 900})
+	if len(ahead) != 1 || !ahead[0].Gap {
+		t.Fatalf("ahead cursor on an ephemeral channel = %+v, want a gap marker", ahead)
+	}
+}
+
 func TestEventBus_Replay_UnknownChannelSkipped(t *testing.T) {
 	bus := NewEventBus(10)
 	defer bus.Close()

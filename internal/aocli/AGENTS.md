@@ -46,6 +46,11 @@ environment.
 | `AO_RUN_ID` | workflow phase / unit sessions | the run this session is a phase of |
 | `AO_PHASE_ID` | workflow phase / unit sessions | the phase (a unit carries its phase's id) |
 
+This is the *session* contract, not every AO_* name the app sets: a project's
+worktree setup hooks get `AO_PROJECT_ROOT` / `AO_WORKTREE_PATH`
+(`internal/workflow/profile/AGENTS.md`) and no credential at all, because they
+are argv the user authored, not a session that may call back into the app.
+
 Rules the package enforces:
 
 - Both `AO_ENDPOINT` and `AO_TOKEN` absent means "not inside a session" — a

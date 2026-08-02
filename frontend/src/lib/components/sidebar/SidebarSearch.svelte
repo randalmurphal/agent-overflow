@@ -44,7 +44,10 @@
   }
 </script>
 
-<div class="px-3 pt-3 pb-2">
+<!-- Outer padding belongs to the sidebar's header row (Sidebar.svelte),
+     which also holds the collapse toggle — this component owns the
+     field, not the row it sits in. -->
+<div class="min-w-0 flex-1">
   <div class="relative">
     <span
       class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 flex items-center text-fg-hint"

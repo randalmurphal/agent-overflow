@@ -112,9 +112,10 @@ func (a *App) probeSelectedClaudeRateLimits(
 	// home", and on macOS a non-default home hashes into a different
 	// Keychain service. Setting it to the default path would send the
 	// rotated credential somewhere Agent Overflow never reads.
-	info, refreshErr := claude.ProbeAccount(ctx, claude.ProbeConfig{
-		Binary: a.providerBinaryPath(string(provider.Claude)),
-	})
+	info, refreshErr := claude.ProbeAccount(ctx, a.claudeProbeConfig(
+		a.providerBinaryPath(string(provider.Claude)),
+		nil,
+	))
 	if refreshErr != nil {
 		return provider.RateLimitsSnapshot{}, nil, fmt.Errorf("refresh Claude credentials: %w", refreshErr)
 	}
@@ -194,10 +195,10 @@ func (a *App) probeClaudeRateLimitsForSelection(
 	// normal turn. The zero-turn account probe initializes the CLI without
 	// inference and writes refreshed credentials back to the temporary home.
 	// Retry the usage endpoint only after that native path completes.
-	info, refreshErr := claude.ProbeAccount(ctx, claude.ProbeConfig{
-		Binary: a.providerBinaryPath(string(provider.Claude)),
-		Env:    selection.Env,
-	})
+	info, refreshErr := claude.ProbeAccount(ctx, a.claudeProbeConfig(
+		a.providerBinaryPath(string(provider.Claude)),
+		selection.Env,
+	))
 	if refreshErr != nil {
 		return provider.RateLimitsSnapshot{}, nil, fmt.Errorf("refresh Claude credentials: %w", refreshErr)
 	}

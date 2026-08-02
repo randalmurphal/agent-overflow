@@ -32,7 +32,10 @@ import (
 
 // ProbeConfig customizes a short-lived account probe invocation.
 type ProbeConfig struct {
-	Binary  string // default: "codex"
+	Binary string // default: "codex"
+	// WorkDir is the probe subprocess's working directory. REQUIRED, and
+	// must be absolute — see provider.ValidateProbeWorkDir for why an
+	// inherited cwd is not an acceptable default here.
 	WorkDir string
 	Env     map[string]string
 	Timeout time.Duration // default: 20s, mirroring the Claude probe.
@@ -50,10 +53,14 @@ type ProbeConfig struct {
 }
 
 const (
-	// defaultProbeTimeout mirrors the Claude probe's deadline and its
-	// rationale: a cold app-server start can take double-digit seconds on
-	// a slow host, and a timed-out probe fails the operation that needed
-	// it, so tight is worse than slow.
+	// defaultProbeTimeout shares the Claude probe's rationale — a cold
+	// app-server start can take double-digit seconds on a slow host, and a
+	// timed-out probe fails the operation that needed it, so tight is worse
+	// than slow. The value is deliberately not slaved to Claude's: Claude's
+	// larger deadline covers external-credential backends whose SDK runs a
+	// credential-refresh hook before it can answer initialize, and no
+	// equivalent pre-handshake exchange has been observed on the Codex
+	// app-server. Raise this when one is.
 	defaultProbeTimeout = 20 * time.Second
 
 	// DefaultProbeTTL — process-global cache lifetime for a successful
@@ -71,16 +78,18 @@ const (
 // and returns the authenticated account's planType in the
 // SubscriptionType field. APIProvider is hardcoded to "openai" so
 // downstream code that branches on apiProvider can distinguish Codex
-// from Claude (whose probe sets it to "firstParty"). TokenSource is
-// left empty: Codex doesn't surface that field, and the caller's
-// unauthenticated heuristic only requires SubscriptionType to be
-// non-empty for a populated account.
+// from Claude (whose probe sets it to "firstParty" for the direct
+// Anthropic backend). TokenSource is left empty: Codex doesn't surface
+// that field at all.
 //
 // A zero-value AccountInfo with nil error is the "succeeded but no
 // plan info" outcome — observed when the user is signed in but the
 // rate-limits backend hasn't seen activity yet, or when the planType
 // field is absent on the wire.
 func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, error) {
+	if err := provider.ValidateProbeWorkDir("codex", cfg.WorkDir); err != nil {
+		return provider.AccountInfo{}, err
+	}
 	binary := cfg.Binary
 	if binary == "" {
 		binary = "codex"
@@ -111,16 +120,9 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		"jsonrpc": "2.0",
 		"id":      probeInitializeID,
 		"method":  "initialize",
-		"params": map[string]any{
-			"clientInfo": map[string]any{
-				"name":    "agent_overflow_probe",
-				"title":   "Agent Overflow",
-				"version": "0.1.0",
-			},
-			"capabilities": map[string]any{
-				"experimentalApi": true,
-			},
-		},
+		// Response-only client: account/read plus
+		// account/rateLimits/read, no notification is ever awaited.
+		"params": codexInitializeParams("agent_overflow_probe", oneShotOptOutNotificationMethods()),
 	}); err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("codex: probe write initialize: %w", err)
 	}

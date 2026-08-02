@@ -59,11 +59,12 @@ func (s *Session) Probe(ctx context.Context) (ProbeResult, error) {
 	if s.probeFn != nil {
 		return s.probeFn(ctx)
 	}
-	if s.codexThreadID == "" {
+	rootThreadID := s.rootThreadID()
+	if rootThreadID == "" {
 		return ProbeResult{}, fmt.Errorf("codex: probe: session has no thread id")
 	}
 	resp, err := s.sendRequest(ctx, "thread/read", map[string]any{
-		"threadId":     s.codexThreadID,
+		"threadId":     rootThreadID,
 		"includeTurns": false,
 	})
 	if err != nil {
@@ -79,7 +80,8 @@ func (s *Session) Probe(ctx context.Context) (ProbeResult, error) {
 // it before any further turn/start will work.
 //
 // This is NOT the resume path used by NewSession. NewSession calls
-// thread/resume as part of its initial handshake to seed s.codexThreadID.
+// thread/resume as part of its initial handshake to seed the session's
+// root thread id.
 // Resume here runs AFTER that handshake, on a session whose app-server
 // has since forgotten the thread (e.g., provider crashed and auto-
 // restarted, or idle eviction). We reuse the same wire method with the
@@ -96,12 +98,13 @@ func (s *Session) Resume(ctx context.Context) error {
 	if s.resumeFn != nil {
 		return s.resumeFn(ctx)
 	}
-	if s.codexThreadID == "" {
+	rootThreadID := s.rootThreadID()
+	if rootThreadID == "" {
 		return fmt.Errorf("codex: resume: session has no thread id")
 	}
 	s.beginCollabHistoryGeneration()
 	resp, err := s.sendRequest(ctx, "thread/resume", map[string]any{
-		"threadId": s.codexThreadID,
+		"threadId": rootThreadID,
 	})
 	if err != nil {
 		return fmt.Errorf("codex: thread/resume: %w", err)

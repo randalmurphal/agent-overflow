@@ -151,8 +151,11 @@ func TestClaudeFastModeAndContextCapabilities(t *testing.T) {
 			if len(model.ContextWindows) != tc.windows {
 				t.Fatalf("ContextWindows len = %d, want %d", len(model.ContextWindows), tc.windows)
 			}
+			// Slice order is picker order and is deliberately smallest-first;
+			// which tier is the *default* is the Default flag, asserted in
+			// TestClaudeDefaultContextWindowPerModel.
 			if model.ContextWindows[0].Tokens != ClaudeStandardContextWindow {
-				t.Fatalf("default ContextWindow = %d, want %d", model.ContextWindows[0].Tokens, ClaudeStandardContextWindow)
+				t.Fatalf("first ContextWindow option = %d, want %d", model.ContextWindows[0].Tokens, ClaudeStandardContextWindow)
 			}
 		})
 	}
@@ -435,5 +438,203 @@ func TestModelInfoJSONOmitsEmptyCapabilities(t *testing.T) {
 
 	if _, present := raw["capabilities"]; present {
 		t.Error("expected capabilities to be omitted when nil, but it was present")
+	}
+}
+
+// TestEveryModelFlagsExactlyOneDefaultContextWindow is the enforcement half of
+// the ContextWindowOption.Default contract: the flag, not slice position,
+// picks a new thread's tier, so a catalog entry that carries zero flags (or
+// two) is a bug even though DefaultContextWindowForOptions would still return
+// something usable.
+func TestEveryModelFlagsExactlyOneDefaultContextWindow(t *testing.T) {
+	catalogs := map[string][]ModelInfo{
+		"claude":     ClaudeModels,
+		"claude-tui": ClaudeTUIModels,
+		"codex":      CodexModels,
+	}
+	for catalog, models := range catalogs {
+		for _, model := range models {
+			if len(model.ContextWindows) == 0 {
+				t.Errorf("%s/%s advertises no context windows", catalog, model.Slug)
+				continue
+			}
+			flagged := 0
+			for _, option := range model.ContextWindows {
+				if option.Default {
+					flagged++
+				}
+			}
+			if flagged != 1 {
+				t.Errorf("%s/%s flags %d default context windows, want exactly 1: %#v",
+					catalog, model.Slug, flagged, model.ContextWindows)
+			}
+		}
+	}
+}
+
+func TestDefaultContextWindowForOptions(t *testing.T) {
+	t.Run("flag wins over position", func(t *testing.T) {
+		options := []ContextWindowOption{
+			{Tokens: 200000, Tier: ContextTierStandard},
+			{Tokens: 1000000, Tier: ContextTierExtended, Default: true},
+		}
+		tokens, ok := DefaultContextWindowForOptions(options)
+		if !ok || tokens != 1000000 {
+			t.Fatalf("DefaultContextWindowForOptions = (%d, %v), want (1000000, true)", tokens, ok)
+		}
+	})
+
+	t.Run("first flag wins when several are set", func(t *testing.T) {
+		options := []ContextWindowOption{
+			{Tokens: 200000, Default: true},
+			{Tokens: 1000000, Default: true},
+		}
+		if tokens, _ := DefaultContextWindowForOptions(options); tokens != 200000 {
+			t.Fatalf("DefaultContextWindowForOptions = %d, want 200000", tokens)
+		}
+	})
+
+	t.Run("unflagged list falls back to the first element", func(t *testing.T) {
+		// Documented fallback: an unflagged list is a catalog bug (caught by
+		// TestEveryModelFlagsExactlyOneDefaultContextWindow), and resolving to
+		// a real selectable tier beats handing callers a zero-token window.
+		options := []ContextWindowOption{
+			{Tokens: 272000, Tier: ContextTierStandard},
+			{Tokens: 1000000, Tier: ContextTierExtended},
+		}
+		tokens, ok := DefaultContextWindowForOptions(options)
+		if !ok || tokens != 272000 {
+			t.Fatalf("DefaultContextWindowForOptions = (%d, %v), want (272000, true)", tokens, ok)
+		}
+	})
+
+	t.Run("empty list reports no opinion", func(t *testing.T) {
+		if tokens, ok := DefaultContextWindowForOptions(nil); ok || tokens != 0 {
+			t.Fatalf("DefaultContextWindowForOptions(nil) = (%d, %v), want (0, false)", tokens, ok)
+		}
+	})
+}
+
+// TestClaudeDefaultContextWindowPerModel pins the product decision: the large
+// models start new threads on 1M, Sonnet keeps 1M as an opt-in, and Haiku has
+// only the one tier.
+func TestClaudeDefaultContextWindowPerModel(t *testing.T) {
+	cases := []struct {
+		model string
+		want  int
+	}{
+		{"claude-fable-5", ClaudeExtendedContextWindow},
+		{"claude-opus-5", ClaudeExtendedContextWindow},
+		{"claude-opus-4-8", ClaudeExtendedContextWindow},
+		{"claude-opus-4-7", ClaudeExtendedContextWindow},
+		{"claude-opus-4-6", ClaudeExtendedContextWindow},
+		{"claude-opus-4-5", ClaudeExtendedContextWindow},
+		{"claude-sonnet-5", ClaudeStandardContextWindow},
+		{"claude-sonnet-4-6", ClaudeStandardContextWindow},
+		{"claude-haiku-4-5", ClaudeStandardContextWindow},
+	}
+
+	for _, tc := range cases {
+		for _, providerName := range []string{string(Claude), string(ClaudeTUI)} {
+			t.Run(providerName+"/"+tc.model, func(t *testing.T) {
+				if got := DefaultContextWindowForModel(providerName, tc.model, 0); got != tc.want {
+					t.Fatalf("DefaultContextWindowForModel = %d, want %d", got, tc.want)
+				}
+				// The default must also be a tier the model actually offers.
+				if !ContextWindowSupportedForModel(providerName, tc.model, tc.want) {
+					t.Fatalf("default %d is not an advertised option for %s/%s", tc.want, providerName, tc.model)
+				}
+			})
+		}
+	}
+
+	// Aliases resolve through the same catalog entries.
+	if got := DefaultContextWindowForModel(string(Claude), "opus", 0); got != ClaudeExtendedContextWindow {
+		t.Errorf(`DefaultContextWindowForModel("opus") = %d, want %d`, got, ClaudeExtendedContextWindow)
+	}
+	if got := DefaultContextWindowForModel(string(Claude), "sonnet", 0); got != ClaudeStandardContextWindow {
+		t.Errorf(`DefaultContextWindowForModel("sonnet") = %d, want %d`, got, ClaudeStandardContextWindow)
+	}
+}
+
+// TestCodexDefaultContextWindowUnchanged guards the blast radius: flipping the
+// Claude large-model default must not move Codex's, whose 1M tier stays opt-in.
+func TestCodexDefaultContextWindowUnchanged(t *testing.T) {
+	cases := []struct {
+		model string
+		want  int
+	}{
+		{"gpt-5.6-sol", Codex56ContextWindow},
+		{"gpt-5.4", CodexStandardContextWindow},
+		{"gpt-5.5", CodexStandardContextWindow},
+		{"gpt-5.3-codex-spark", CodexSparkContextWindow},
+	}
+	for _, tc := range cases {
+		if got := DefaultContextWindowForModel(string(Codex), tc.model, 0); got != tc.want {
+			t.Errorf("DefaultContextWindowForModel(codex, %q) = %d, want %d", tc.model, got, tc.want)
+		}
+	}
+}
+
+// TestResolveContextWindowKeepsStoredChoice is the persisted-thread guard: a
+// thread that stored 200k on a now-1M-default model must keep 200k. The
+// default only fills in when the stored value is absent or no longer offered.
+func TestResolveContextWindowKeepsStoredChoice(t *testing.T) {
+	const model = "claude-opus-5"
+
+	if got := ResolveContextWindowForModel(string(Claude), model, ClaudeStandardContextWindow); got != ClaudeStandardContextWindow {
+		t.Fatalf("stored 200k on %s resolved to %d, want %d", model, got, ClaudeStandardContextWindow)
+	}
+	if got := ResolveContextWindowForModel(string(Claude), model, ClaudeExtendedContextWindow); got != ClaudeExtendedContextWindow {
+		t.Fatalf("stored 1M on %s resolved to %d, want %d", model, got, ClaudeExtendedContextWindow)
+	}
+	// Unset (new thread) and retired values fall through to the new default.
+	if got := ResolveContextWindowForModel(string(Claude), model, 0); got != ClaudeExtendedContextWindow {
+		t.Fatalf("unset window on %s resolved to %d, want %d", model, got, ClaudeExtendedContextWindow)
+	}
+	if got := ResolveContextWindowForModel(string(Claude), model, 123456); got != ClaudeExtendedContextWindow {
+		t.Fatalf("retired window on %s resolved to %d, want %d", model, got, ClaudeExtendedContextWindow)
+	}
+}
+
+// The KNOWN-WITHOUT-EFFORTS versus UNKNOWN distinction is the whole point of
+// ModelDeclaresNoReasoningEffort: only a model we list AND that advertises no
+// tiers may have its --effort flag dropped. A model the catalog has never heard
+// of keeps its effort, because silence is not a denial.
+func TestModelDeclaresNoReasoningEffort(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider string
+		model    string
+		want     bool
+	}{
+		{name: "haiku declares none", provider: string(Claude), model: "claude-haiku-4-5", want: true},
+		{name: "haiku on claude-tui declares none", provider: string(ClaudeTUI), model: "claude-haiku-4-5", want: true},
+		{name: "extended-context haiku alias declares none", provider: string(Claude), model: "claude-haiku-4-5[1m]", want: true},
+		{name: "sonnet declares tiers", provider: string(Claude), model: "claude-sonnet-4-6", want: false},
+		{name: "unknown claude model is not a denial", provider: string(Claude), model: "claude-nextgen-9", want: false},
+		{name: "codex models declare tiers", provider: string(Codex), model: "gpt-5.6-sol", want: false},
+		{name: "unknown provider is not a denial", provider: "nope", model: "whatever", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ModelDeclaresNoReasoningEffort(tc.provider, tc.model); got != tc.want {
+				t.Fatalf("ModelDeclaresNoReasoningEffort(%q, %q) = %v, want %v", tc.provider, tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// Coercion answers a different question than ModelDeclaresNoReasoningEffort and
+// must keep answering it: threads.reasoning_effort and
+// chat_model_profiles.reasoning_effort are NOT NULL with a CHECK over the
+// per-provider enum, so a persisted effort can never be empty even for a model
+// that ignores it.
+func TestCoerceReasoningEffortKeepsALegalEnumForEffortlessModels(t *testing.T) {
+	got := CoerceReasoningEffortForModel(string(Claude), "claude-haiku-4-5", EffortLow)
+	if !slices.Contains(AllReasoningEfforts, got) {
+		t.Fatalf("coerced effort %q is not a legal enum value; the store CHECK would reject it", got)
+	}
+	if info, found := FindModel(string(Claude), "claude-haiku-4-5"); !found || len(info.ReasoningEfforts) != 0 {
+		t.Fatalf("fixture drift: this test only means something while haiku declares no tiers (found=%v)", found)
 	}
 }

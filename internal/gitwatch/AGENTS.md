@@ -130,3 +130,9 @@ share a watcher per canonical cwd via refcount.
 - Watcher tests must drain the `Updates()` channel with a timeout
   (debounce makes everything async); never `time.Sleep` for
   synchronization.
+- `fetch_refresh_test.go` is a load-bearing integration test, not a
+  nicety: the app's background `git fetch` cadence
+  (`app_git_background_fetch.go`) broadcasts nothing of its own and
+  relies entirely on this package noticing the fetched refs under the
+  common dir. If it starts failing, that cadence needs an explicit
+  refresh trigger.

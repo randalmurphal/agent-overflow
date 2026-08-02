@@ -859,7 +859,7 @@ func TestUpdateProviderInvalid(t *testing.T) {
 	}
 }
 
-func TestUpdateBranchPersists(t *testing.T) {
+func TestUpdateBranchIfWorkspacePersists(t *testing.T) {
 	s := newTestStore(t)
 	proj := newTestProject(t, s, "proj-branch", "/tmp/branch")
 
@@ -869,8 +869,12 @@ func TestUpdateBranchPersists(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 
-	if err := s.UpdateBranch(thr.ID, "feat/abc"); err != nil {
-		t.Fatalf("UpdateBranch(): %v", err)
+	applied, err := s.UpdateBranchIfWorkspace(thr.ID, thr.WorkspacePath, "feat/abc")
+	if err != nil {
+		t.Fatalf("UpdateBranchIfWorkspace(): %v", err)
+	}
+	if !applied {
+		t.Fatal("UpdateBranchIfWorkspace() applied = false, want true")
 	}
 	got, _ := s.GetThread(thr.ID)
 	if got.Branch != "feat/abc" {
@@ -878,12 +882,85 @@ func TestUpdateBranchPersists(t *testing.T) {
 	}
 
 	// Empty string clears the column.
-	if err := s.UpdateBranch(thr.ID, ""); err != nil {
-		t.Fatalf("UpdateBranch(empty): %v", err)
+	applied, err = s.UpdateBranchIfWorkspace(thr.ID, thr.WorkspacePath, "")
+	if err != nil {
+		t.Fatalf("UpdateBranchIfWorkspace(empty): %v", err)
+	}
+	if !applied {
+		t.Fatal("UpdateBranchIfWorkspace(empty) applied = false, want true")
 	}
 	got, _ = s.GetThread(thr.ID)
 	if got.Branch != "" {
 		t.Fatalf("Branch = %q, want empty", got.Branch)
+	}
+}
+
+// TestUpdateBranchIfWorkspaceRefusesAfterWorkspaceMoves reproduces the race
+// the guard exists for: a branch observed against the old workspace is
+// written back after a worktree switch has already re-pointed the thread.
+// Without the CAS the stale value lands and stays.
+func TestUpdateBranchIfWorkspaceRefusesAfterWorkspaceMoves(t *testing.T) {
+	s := newTestStore(t)
+	proj := newTestProject(t, s, "proj-branch-cas", "/tmp/branch-cas")
+
+	thr := makeThread("thread-branch-cas", "claude")
+	thr.ProjectID = proj.ID
+	thr.WorkspacePath = "/tmp/branch-cas"
+	thr.Branch = "main"
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread(): %v", err)
+	}
+	observedWorkspace := thr.WorkspacePath
+
+	// The worktree switch lands first, rewriting workspace + branch.
+	moved := thr
+	moved.WorkspacePath = "/tmp/branch-cas-worktree"
+	moved.WorktreePath = "/tmp/branch-cas-worktree"
+	moved.Branch = "feature/new"
+	if err := s.UpdateThread(moved); err != nil {
+		t.Fatalf("UpdateThread(): %v", err)
+	}
+
+	// The queued observation from the OLD workspace arrives afterwards.
+	applied, err := s.UpdateBranchIfWorkspace(thr.ID, observedWorkspace, "stale/branch")
+	if err != nil {
+		t.Fatalf("UpdateBranchIfWorkspace(): %v", err)
+	}
+	if applied {
+		t.Fatal("stale observation applied; the workspace guard did not hold")
+	}
+	got, _ := s.GetThread(thr.ID)
+	if got.Branch != "feature/new" {
+		t.Fatalf("Branch = %q, want feature/new (the switch's value)", got.Branch)
+	}
+
+	// The same-workspace write still applies, so the guard is not simply
+	// rejecting everything and the thread converges once it re-observes.
+	applied, err = s.UpdateBranchIfWorkspace(thr.ID, moved.WorkspacePath, "feature/renamed")
+	if err != nil {
+		t.Fatalf("UpdateBranchIfWorkspace(current workspace): %v", err)
+	}
+	if !applied {
+		t.Fatal("write against the current workspace should apply")
+	}
+	got, _ = s.GetThread(thr.ID)
+	if got.Branch != "feature/renamed" {
+		t.Fatalf("Branch = %q, want feature/renamed", got.Branch)
+	}
+}
+
+// TestUpdateBranchIfWorkspaceMissingThreadIsNotAnError covers the other
+// no-rows case: a deleted thread must report "not applied" rather than a
+// SQL error the caller has to string-match.
+func TestUpdateBranchIfWorkspaceMissingThreadIsNotAnError(t *testing.T) {
+	s := newTestStore(t)
+
+	applied, err := s.UpdateBranchIfWorkspace("no-such-thread", "/tmp/x", "main")
+	if err != nil {
+		t.Fatalf("UpdateBranchIfWorkspace(missing): %v", err)
+	}
+	if applied {
+		t.Fatal("applied = true for a thread that does not exist")
 	}
 }
 

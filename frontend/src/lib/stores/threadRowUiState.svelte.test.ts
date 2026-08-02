@@ -8,11 +8,23 @@ import {
 } from '../utils/payloadDataCache';
 import { THINKING_PAYLOAD_EXPANSION_STATE_KEY } from '../utils/payloadVersion';
 import { createThreadRowUiState } from './threadRowUiState.svelte';
+import { loadSettings, resetSettingsForTest } from './settings.svelte';
+import { makeSettings } from '../../test/helpers/settings';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+
+// Diff-card overrides are read against the live collapseDiffPreviews default
+// (see `liveDiffOverride`), so a case about a specific default has to state
+// it. Everything else runs on the shipped default: collapseDiffPreviews off,
+// i.e. diff cards expanded.
+async function seedCollapseDiffPreviews(collapseDiffPreviews: boolean): Promise<void> {
+  setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews }));
+  await loadSettings();
+}
 
 describe('createThreadRowUiState', () => {
   beforeEach(() => {
     resetBindingMocks();
+    resetSettingsForTest();
     __resetPayloadCacheForTest();
   });
 
@@ -377,27 +389,56 @@ describe('createThreadRowUiState', () => {
   it('tracks diff card expanded overrides by item id and file path', () => {
     const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
 
-    // Absent = follow the collapseDiffPreviews setting default.
+    // Absent = follow the collapseDiffPreviews setting default, which is
+    // expanded here (collapseDiffPreviews defaults off), so a reader's only
+    // available deviation is a collapse.
     expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBeUndefined();
 
     rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', false);
     expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(false);
-    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', true);
-    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(true);
 
     // Files under the same item stay independent, as do other items.
     rowUiState.setDiffCardExpanded('item-a', 'src/bar.ts', false);
     expect(rowUiState.diffCardExpandedOverride('item-a', 'src/bar.ts')).toBe(false);
-    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(true);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(false);
     expect(rowUiState.diffCardExpandedOverride('item-b', 'src/foo.ts')).toBeUndefined();
 
-    // Clearing (undefined) removes the override so the card re-follows
-    // the setting default; clearing the last path drops the item entry.
-    rowUiState.setDiffCardExpanded('item-a', 'src/bar.ts', undefined);
+    // Putting a card BACK to the default stores nothing: an override is a
+    // deviation, so there is no redundant entry to leave behind and no
+    // clear call for the caller to forget. Emptying an item drops its entry.
+    rowUiState.setDiffCardExpanded('item-a', 'src/bar.ts', true);
     expect(rowUiState.diffCardExpandedOverride('item-a', 'src/bar.ts')).toBeUndefined();
-    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(true);
-    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', undefined);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(false);
+    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', true);
     expect(rowUiState.debugStats().diffCardOverrideItems).toBe(0);
+  });
+
+  // The derive-the-answer-from-the-default rule (`liveDiffOverride`): the
+  // setting flipping retires the overrides it catches up with, with no
+  // $effect, no sweep and no generation counter — and flipping back restores
+  // the reader's pin, because nothing was destroyed.
+  it('retires diff overrides the collapseDiffPreviews default catches up with', async () => {
+    await seedCollapseDiffPreviews(true);
+    const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+
+    // Default collapsed: expanding is the deviation, and it is engagement.
+    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', true);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(true);
+    expect(rowUiState.expansionSignature()).toContain('d:item-a/src/foo.ts=1');
+    expect(rowUiState.hasUserExpansionWithin(['item-a'])).toBe(true);
+
+    // Default flips to expanded: the card renders the same, but it is no
+    // longer a deviation, so it stops pinning the priors snapshot and stops
+    // reading as engagement to the activity-run auto-collapse gate.
+    await seedCollapseDiffPreviews(false);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBeUndefined();
+    expect(rowUiState.expansionSignature()).toBe('');
+    expect(rowUiState.hasUserExpansionWithin(['item-a'])).toBe(false);
+
+    // Flip back and the reader's pin is theirs again.
+    await seedCollapseDiffPreviews(true);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(true);
+    expect(rowUiState.hasUserExpansionWithin(['item-a'])).toBe(true);
   });
 
   it('keeps attachment cache entries isolated by item and clears them with blob revocation', () => {
@@ -489,7 +530,7 @@ describe('createThreadRowUiState', () => {
       url: 'blob:before-dispose',
     });
 
-    rowUiState.setDiffCardExpanded(item.id, 'src/foo.ts', true);
+    rowUiState.setDiffCardExpanded(item.id, 'src/foo.ts', false);
     rowUiState.setDiffCardExpanded('item-other', 'src/keep.ts', false);
 
     expect(rowUiState.debugStats().itemExpansionStates).toBe(1);
@@ -701,8 +742,10 @@ describe('createThreadRowUiState', () => {
     );
     rowUiState.toggleSubagentGroupExpanded('group-old');
     rowUiState.toggleSubagentGroupExpanded('group-retained');
-    rowUiState.setDiffCardExpanded(oldItem.id, 'src/old.ts', true);
+    rowUiState.setDiffCardExpanded(oldItem.id, 'src/old.ts', false);
     rowUiState.setDiffCardExpanded(retainedItem.id, 'src/retained.ts', false);
+    rowUiState.setUserMessageExpanded(oldItem.id, true);
+    rowUiState.setUserMessageExpanded(retainedItem.id, true);
     const oldAttachmentCache = rowUiState.attachmentCacheFor(oldItem.id);
     const retainedAttachmentCache = rowUiState.attachmentCacheFor(retainedItem.id);
     oldAttachmentCache.set('old-attachment', {
@@ -724,6 +767,7 @@ describe('createThreadRowUiState', () => {
       itemExpansionStates: 2,
       payloadExpansionStates: 2,
       subagentGroups: 2,
+      expandedUserMessages: 2,
       diffCardOverrideItems: 2,
       attachmentItems: 2,
     });
@@ -739,12 +783,15 @@ describe('createThreadRowUiState', () => {
       itemExpansionStates: 1,
       payloadExpansionStates: 1,
       subagentGroups: 1,
+      expandedUserMessages: 1,
       diffCardOverrideItems: 1,
       attachmentItems: 1,
     });
     expect(revoke).toHaveBeenCalledWith('blob:old-attachment');
     expect(rowUiState.isSubagentGroupExpanded('group-old')).toBe(false);
     expect(rowUiState.isSubagentGroupExpanded('group-retained')).toBe(true);
+    expect(rowUiState.isUserMessageExpanded(oldItem.id)).toBe(false);
+    expect(rowUiState.isUserMessageExpanded(retainedItem.id)).toBe(true);
     expect(rowUiState.diffCardExpandedOverride(oldItem.id, 'src/old.ts')).toBeUndefined();
     expect(rowUiState.diffCardExpandedOverride(retainedItem.id, 'src/retained.ts')).toBe(false);
     expect(retainedAttachmentCache.get('retained-attachment')).toBeTruthy();
@@ -791,12 +838,76 @@ describe('createThreadRowUiState', () => {
     const beforeClear = rowUiState.expansionStateFor(item);
     rowUiState.toggleSubagentGroupExpanded('group-a');
     rowUiState.setDiffCardExpanded(item.id, 'src/foo.ts', false);
+    rowUiState.setUserMessageExpanded(item.id, true);
     rowUiState.clear();
 
     const afterClear = rowUiState.expansionStateFor(item);
     expect(Object.is(afterClear, beforeClear)).toBe(false);
     expect(rowUiState.isSubagentGroupExpanded('group-a')).toBe(false);
+    expect(rowUiState.isUserMessageExpanded(item.id)).toBe(false);
     expect(rowUiState.diffCardExpandedOverride(item.id, 'src/foo.ts')).toBeUndefined();
+  });
+
+  // The registry half of the clamped-user-message feature: the row itself
+  // unmounts whenever it leaves the virtualizer's window, so "Show more" has
+  // to be remembered here or the message re-clamps under the reader.
+  describe('user message clamp expansion', () => {
+    it('remembers an expanded message and forgets it on collapse', () => {
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+
+      expect(rowUiState.isUserMessageExpanded('user:1')).toBe(false);
+      rowUiState.setUserMessageExpanded('user:1', true);
+      expect(rowUiState.isUserMessageExpanded('user:1')).toBe(true);
+      // Every message defaults to clamped, so collapsing stores nothing —
+      // membership IS the deviation.
+      expect(rowUiState.debugStats().expandedUserMessages).toBe(1);
+      rowUiState.setUserMessageExpanded('user:1', false);
+      expect(rowUiState.isUserMessageExpanded('user:1')).toBe(false);
+      expect(rowUiState.debugStats().expandedUserMessages).toBe(0);
+    });
+
+    it('keeps messages independent and is idempotent in both directions', () => {
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+
+      rowUiState.setUserMessageExpanded('user:1', true);
+      rowUiState.setUserMessageExpanded('user:1', true);
+      rowUiState.setUserMessageExpanded('user:2', false);
+      rowUiState.setUserMessageExpanded('user:2', false);
+
+      expect(rowUiState.isUserMessageExpanded('user:1')).toBe(true);
+      expect(rowUiState.isUserMessageExpanded('user:2')).toBe(false);
+      expect(rowUiState.debugStats().expandedUserMessages).toBe(1);
+    });
+
+    it('drops the expansion when its item is disposed', () => {
+      const item = makeItem({ id: 'user:1', kind: 'user_text', threadId: 'thread-a' });
+      const rowUiState = createThreadRowUiState({ getItemById: () => item });
+
+      rowUiState.setUserMessageExpanded(item.id, true);
+      rowUiState.disposeItems([item]);
+      expect(rowUiState.isUserMessageExpanded(item.id)).toBe(false);
+    });
+
+    it('stamps the priors signature, since an unclamped message is a taller row', () => {
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+
+      expect(rowUiState.expansionSignature()).toBe('');
+      rowUiState.setUserMessageExpanded('user:2', true);
+      rowUiState.setUserMessageExpanded('user:1', true);
+      expect(rowUiState.expansionSignature()).toContain('u:user:1,user:2');
+      rowUiState.setUserMessageExpanded('user:1', false);
+      rowUiState.setUserMessageExpanded('user:2', false);
+      expect(rowUiState.expansionSignature()).toBe('');
+    });
+
+    it('counts as a user expansion on the item it belongs to', () => {
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
+
+      expect(rowUiState.hasUserExpansionWithin(['user:1'])).toBe(false);
+      rowUiState.setUserMessageExpanded('user:1', true);
+      expect(rowUiState.hasUserExpansionWithin(['user:1'])).toBe(true);
+      expect(rowUiState.hasUserExpansionWithin(['user:2'])).toBe(false);
+    });
   });
 
   // expansionSignature stamps a measured-size priors snapshot so it only
@@ -817,26 +928,32 @@ describe('createThreadRowUiState', () => {
       expect(rowUiState.expansionSignature()).toContain('g:group-a');
     });
 
-    it('reflects a diff-card override (any value — the user pinned away from default)', () => {
+    it('reflects a diff-card override in either direction', async () => {
+      await seedCollapseDiffPreviews(true);
       const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
       rowUiState.setDiffCardExpanded('item-1', 'src/foo.ts', true);
       expect(rowUiState.expansionSignature()).toContain('d:item-1/src/foo.ts=1');
     });
 
-    it('stamps a force-collapsed diff override distinctly from expanded', () => {
+    it('stamps a force-collapsed diff override distinctly from expanded', async () => {
       // A `false` override is a real non-default state (the card is pinned away
       // from the collapseDiffPreviews default), so the `=0` arm must stamp AND
       // differ from `=1` — otherwise two different row heights share a
       // signature and the cache replays the wrong one. (The prior coverage only
       // asserted `=1`; "returns to empty after clear" toggled a group too, so
       // its non-empty check never proved the `=0` branch.)
+      // The two arms need opposite defaults to exist at all: an override only
+      // stores as the negation of the default in force when it was written.
       const collapsed = createThreadRowUiState({ getItemById: () => undefined });
       collapsed.setDiffCardExpanded('item-1', 'src/foo.ts', false);
-      expect(collapsed.expansionSignature()).toContain('d:item-1/src/foo.ts=0');
+      const collapsedSig = collapsed.expansionSignature();
+      expect(collapsedSig).toContain('d:item-1/src/foo.ts=0');
 
+      await seedCollapseDiffPreviews(true);
       const expanded = createThreadRowUiState({ getItemById: () => undefined });
       expanded.setDiffCardExpanded('item-1', 'src/foo.ts', true);
-      expect(collapsed.expansionSignature()).not.toBe(expanded.expansionSignature());
+      expect(expanded.expansionSignature()).toContain('d:item-1/src/foo.ts=1');
+      expect(collapsedSig).not.toBe(expanded.expansionSignature());
     });
 
     it('reflects an expanded payload handle', async () => {
@@ -855,12 +972,12 @@ describe('createThreadRowUiState', () => {
       const a = createThreadRowUiState({ getItemById: () => undefined });
       a.toggleSubagentGroupExpanded('group-b');
       a.toggleSubagentGroupExpanded('group-a');
-      a.setDiffCardExpanded('item-2', 'src/z.ts', true);
+      a.setDiffCardExpanded('item-2', 'src/z.ts', false);
       a.setDiffCardExpanded('item-1', 'src/a.ts', false);
       const b = createThreadRowUiState({ getItemById: () => undefined });
       b.setDiffCardExpanded('item-1', 'src/a.ts', false);
       b.toggleSubagentGroupExpanded('group-a');
-      b.setDiffCardExpanded('item-2', 'src/z.ts', true);
+      b.setDiffCardExpanded('item-2', 'src/z.ts', false);
       b.toggleSubagentGroupExpanded('group-b');
       expect(a.expansionSignature()).toBe(b.expansionSignature());
     });
@@ -887,18 +1004,22 @@ describe('createThreadRowUiState', () => {
       expect(rowUiState.hasUserExpansionWithin(['item-a', 'item-b'])).toBe(false);
     });
 
-    it('counts a diff card overridden to expanded, not one overridden to collapsed', () => {
+    it('counts a diff card overridden to expanded, not one overridden to collapsed', async () => {
       // An override back to collapsed is an ANSWER about the card, not
-      // engagement with the run — and with collapseDiffPreviews defaulting
-      // diffs open, collapse overrides are the common override to find.
-      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
-      rowUiState.setDiffCardExpanded('item-a', 'src/a.ts', false);
-      expect(rowUiState.hasUserExpansionWithin(['item-a'])).toBe(false);
+      // engagement with the run. Which of the two a reader can even produce
+      // follows collapseDiffPreviews, so both arms are exercised under the
+      // default that admits them.
+      const openByDefault = createThreadRowUiState({ getItemById: () => undefined });
+      openByDefault.setDiffCardExpanded('item-a', 'src/a.ts', false);
+      expect(openByDefault.hasUserExpansionWithin(['item-a'])).toBe(false);
 
+      await seedCollapseDiffPreviews(true);
+      const rowUiState = createThreadRowUiState({ getItemById: () => undefined });
       rowUiState.setDiffCardExpanded('item-a', 'src/b.ts', true);
       expect(rowUiState.hasUserExpansionWithin(['item-a'])).toBe(true);
 
-      rowUiState.setDiffCardExpanded('item-a', 'src/b.ts', undefined);
+      // Back to the default: the entry goes, and with it the engagement.
+      rowUiState.setDiffCardExpanded('item-a', 'src/b.ts', false);
       expect(rowUiState.hasUserExpansionWithin(['item-a'])).toBe(false);
     });
 

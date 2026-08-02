@@ -83,8 +83,8 @@ On the wire, Codex items close via `item/completed` using the same
 Agent Overflow follows that shape for Codex command executions when they are
 persisted: no `tool_completion` sibling is synthesized for unified exec command completion.
 See
-[`codex.md §Known upstream constraints`](codex.md#known-upstream-constraints)
-for the per-row stop gap.
+[`codex.md §Background terminals`](codex.md#background-terminals)
+for the per-row stop RPCs.
 
 ### 2. Items carry their own status on the wire
 
@@ -137,6 +137,20 @@ Authoritative method list from
 | `configWarning` | Session-level notice surfaced to the user. |
 | `deprecationNotice` | Session-level deprecation notice. |
 | `serverRequest/resolved` | Fires when a previously-sent server request (approval / elicitation) has been resolved by the client. |
+| `thread/settings/updated` | Codex's authoritative config echo. Reconciled into the session's observed snapshot; emits nothing. |
+| `model/safetyBuffering/updated` | Response held while OpenAI reviews the turn. Emits a notification row on the show edge only. |
+| `mcpServer/startupStatus/updated` | Per-server MCP startup delta. Side channel to the App's status cache, not a transcript event. |
+
+**Opting out.** `initialize` accepts
+`capabilities.optOutNotificationMethods: string[]`; Codex drops those
+methods for that connection before serializing them
+(`codex-rs/app-server/src/transport.rs`
+`should_skip_notification_for_connection`). Matching is exact-string, so
+an unrecognized entry is inert. Agent Overflow sends the complement of
+what it consumes — see `internal/provider/codex/notification_catalog.go`
+and the catalogue there, which is the pinned 0.142.5 method list plus the
+three 0.146.0 additions (`rawResponse/completed`,
+`thread/environment/connected`, `thread/environment/disconnected`).
 
 ⚠ **Wire-name gotchas.**
 
@@ -206,6 +220,19 @@ window and zeroes the components — deltas across that event are
 garbage. Also note wire `inputTokens` INCLUDES `cachedInputTokens`
 (`TokenUsage::non_cached_input` subtracts). All of this is owned by
 `internal/provider/codex/usage_accounting.go`.
+
+`TokenUsageBreakdown` grew a sixth component after 0.142.5:
+`cacheWriteInputTokens`, verified 2026-08-02 in the installed
+`codex-cli 0.146.0` (its embedded `TokenUsageBreakdown.ts` binding lists
+`totalTokens`, `inputTokens`, `cachedInputTokens`,
+`cacheWriteInputTokens`, `outputTokens`, `reasoningOutputTokens`) and in
+`codex-rs/protocol/src/protocol.rs` at tag `rust-v0.146.0`, where
+`TokenUsage::add_assign` accumulates it like every other component and
+`non_cached_input` does NOT subtract it. It is a billed class of its own
+and maps onto the shared `TokenUsage.CacheCreationInputTokens`. The
+local `/home/rmurphy/repos/codex` checkout is pinned at 0.142.5 and
+predates the field — check the installed binary before concluding a
+field does not exist.
 
 Live-verified 2026-07-03 against `codex-cli 0.142.5` (three turns across
 a fresh thread + a `thread/resume`, spike per spike-policy; raw capture
@@ -707,6 +734,177 @@ metadata.
 `Session.Probe` but not surfaced as turn-state signals (correct —
 see [`turn-lifecycle.md`](../architecture/turn-lifecycle.md) on why
 we don't infer turn activity from session status).
+
+### `approvalsReviewer` (who answers an approval request)
+
+Thread-level state deciding whether an escalation — sandbox escape,
+blocked network, MCP approval, ARC escalation — is routed to the client
+as an approval request or adjudicated by a Codex-side subagent.
+
+```
+ApprovalsReviewer = "user" | "auto_review"
+```
+
+`"guardian_subagent"` is a serde alias for `auto_review`, kept for
+compatibility (`codex-rs/protocol/src/config_types.rs`); Codex only ever
+*serializes* `auto_review`, so a client that accepts one spelling on the
+way out is enough. The Rust enum is `#[default] User`.
+
+It appears in three places, with different optionality on each:
+
+| Shape | Field | Type |
+|---|---|---|
+| `ThreadStartParams` / `ThreadResumeParams` / `ThreadForkParams` | `approvalsReviewer` | `Option` — omitted means "config default" |
+| `ThreadStartResponse` / `ThreadResumeResponse` / `ThreadForkResponse` | `approvalsReviewer` | **non-`Option`** — always present |
+| `TurnStartParams` | `approvalsReviewer` | `Option` — a per-turn override, same slot as `approvalPolicy` / `sandboxPolicy` |
+
+**The silent-drop hazard.** `ThreadStartParams` has no
+`#[serde(deny_unknown_fields)]`, so a codex predating the field accepts
+the request, discards it, and starts a `user`-reviewer thread with a
+success response. There is no capability handshake to gate on:
+`initialize` carries no version or capability list for this, and
+`thread/started` does not carry the reviewer. The versions:
+
+- pre-0.115 — field unknown, **silently dropped**.
+- 0.115–0.123 — field known, value rejected: `-32600`, unknown variant.
+- 0.143+ (AO's floor, `internal/provider/codex_version.go`) — accepted.
+
+So the start/resume **response** is the only probe. AO reads
+`approvalsReviewer` back off it (`verifyApprovalsReviewerEcho`,
+`session_helpers.go`) and fails the session when the echo differs from
+what was asked. An *absent* echo is read as `"user"`: the field is
+non-`Option` upstream, so silence can only come from a build that does
+not have it, which is exactly the dropped case.
+
+A mismatch is not only a version problem. `allowed_approvals_reviewers`
+in the config requirements (`config_requirements.rs`) can forbid
+`auto_review` by policy, which is the same observable: a successful
+start running a reviewer the client did not ask for.
+
+**Resume is asymmetric, and it matters.** Resuming an already-loaded
+thread **ignores every override in the request** —
+`collect_resume_override_mismatches` collects the divergences and
+`tracing::warn!`s them server-side, then rejoins the live config
+unchanged (`thread_processor.rs`). A cold resume applies them normally.
+So a bare `thread/resume {threadId}` against a loaded thread cannot
+disturb the reviewer, while the same call against an evicted thread
+would reset every unspecified axis to the config default. AO's mid-life
+reconcile resumes (`session_probe.go` `Resume`,
+`collab_rehydrate.go` `attachActiveChildWithRetry`) target loaded
+threads and deliberately send no overrides — sending one that diverged
+is what arms the shutdown-and-cold-resume branch. The handshake resume
+in `NewSession` names the reviewer because it is the one that can be
+cold, and every `turn/start` re-asserts it regardless.
+
+`turn/start` applying it per turn is what makes runtime-mode transitions
+live on Codex: `build_thread_settings_overrides` (`turn_processor.rs`)
+treats `approvalsReviewer` like the other axes, so no tier change needs
+a process restart.
+
+### `thread/settings/updated`
+
+`#[experimental]` — requires `capabilities.experimentalApi`. Fires
+whenever the thread's live configuration changes, including as a result
+of the per-turn overrides on `turn/start`. Captured verbatim from
+codex-cli 0.146.0:
+
+```json
+{"method": "thread/settings/updated",
+ "params": {
+   "threadId": "019fc2ff-9050-7971-ac4e-b902cc3b9f00",
+   "threadSettings": {
+     "cwd": "/tmp/work",
+     "approvalPolicy": "on-request",
+     "approvalsReviewer": "auto_review",
+     "sandboxPolicy": {"type": "workspaceWrite", "writableRoots": [],
+                       "networkAccess": false, "excludeTmpdirEnvVar": false,
+                       "excludeSlashTmp": false},
+     "activePermissionProfile": null,
+     "model": "gpt-5.6-sol", "modelProvider": "openai",
+     "serviceTier": "priority", "effort": "high", "summary": null,
+     "collaborationMode": {"mode": "default", "settings": {...}},
+     "multiAgentMode": "explicitRequestOnly", "personality": "pragmatic"
+   }}}
+```
+
+`effort`, `serviceTier`, `summary`, `personality` and
+`activePermissionProfile` are nullable — null means "no override in
+force", never a literal value. `sandboxPolicy.type` is camelCase
+(`readOnly | workspaceWrite | dangerFullAccess`), the inverse of AO's
+hyphenated vocabulary.
+
+This is Codex's view of what the thread IS running, which is not the same
+thing as what the client asked for: Codex can change model, effort or
+tier on its own (reroute, guardian downgrade, config reload, another
+client on the same thread). Agent Overflow keeps the two apart —
+`thread_settings.go` records the echo for usage attribution, and the
+requested turn config stays owned by `ApplyLiveUpdate` so a stale echo
+cannot undo a pending user selection.
+
+### `model/safetyBuffering/updated`
+
+```json
+{"method": "model/safetyBuffering/updated",
+ "params": {"threadId": "...", "turnId": "...", "model": "gpt-5.6-sol",
+            "useCases": ["..."], "reasons": ["..."],
+            "showBufferingUi": true, "fasterModel": "gpt-5.6-luna"}}
+```
+
+The model's response is being held while OpenAI reviews it. `reasons`
+and `useCases` are server-authored free-form strings, not a closed enum
+(`codex-rs/core/src/session/turn.rs` passes the response's lists
+straight through), so render them verbatim rather than mapping them.
+`showBufferingUi: false` is the hold ending. The Codex TUI ignores this
+notification entirely; without surfacing it a client is
+indistinguishable from a hung app during the hold.
+
+### `mcpServer/startupStatus/updated`
+
+```json
+{"method": "mcpServer/startupStatus/updated",
+ "params": {"threadId": "...", "name": "codex_apps", "status": "starting",
+            "error": null, "failureReason": null}}
+```
+
+`status` ∈ `starting | ready | failed | cancelled`. `failureReason` is
+the machine-readable half of a failure; upstream's
+`McpStartupFailureReason` enum has exactly one variant today,
+`"reauthenticationRequired"` (spelled `reauthentication_required` in the
+internal protocol). It means the stored OAuth grant is no longer usable —
+the remedy is a sign-in, not a retry, so it must not be flattened into a
+generic failure.
+
+---
+
+## Background terminals
+
+`#[experimental]` — all three require `capabilities.experimentalApi`.
+Available since codex 0.140.0; verified on 0.146.0.
+
+```json
+{"method": "thread/backgroundTerminals/list",
+ "params": {"threadId": "...", "cursor": null, "limit": null}}
+→ {"data": [{"itemId": "...", "processId": "42", "command": "pnpm dev",
+             "cwd": "/repo", "osPid": 98765, "cpuPercent": 12.5,
+             "rssKb": 204800}],
+   "nextCursor": null}
+
+{"method": "thread/backgroundTerminals/terminate",
+ "params": {"threadId": "...", "processId": "42"}}
+→ {"terminated": true}
+
+{"method": "thread/backgroundTerminals/clean", "params": {"threadId": "..."}}
+→ {}
+```
+
+- `processId` is the app-server handle, not the OS pid; it is the same
+  value the `commandExecution` item carries and AO stores as
+  `meta.process_id`. Omitting it from `terminate` returns
+  `-32600 "Invalid request: missing field processId"`.
+- `osPid`, `cpuPercent`, `rssKb` are nullable — absent is not zero.
+- `terminated: false` means no running process matched (already exited,
+  or belongs to another thread). It is a state answer, not an error.
+- `list` paginates: pass a non-null `nextCursor` back as `cursor`.
 
 ---
 

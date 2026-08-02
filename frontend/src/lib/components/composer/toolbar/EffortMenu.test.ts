@@ -63,7 +63,10 @@ describe("<EffortMenu>", () => {
           { tokens: 272000, label: "272k", tier: "standard" },
           { tokens: 1000000, label: "1m", tier: "extended" },
         ],
-        reasoningEfforts: [],
+        reasoningEfforts: [
+          { slug: "medium", label: "Medium" },
+          { slug: "high", label: "High", default: true },
+        ],
       },
     ]);
     await ensureProviderModels("codex");
@@ -89,7 +92,10 @@ describe("<EffortMenu>", () => {
           { tokens: 200000, label: "200k", tier: "standard" },
           { tokens: 1000000, label: "1M", tier: "extended" },
         ],
-        reasoningEfforts: [],
+        reasoningEfforts: [
+          { slug: "high", label: "High" },
+          { slug: "xhigh", label: "xHigh", default: true },
+        ],
       },
     ]);
     const pane = await buildPane(
@@ -145,7 +151,7 @@ describe("<EffortMenu>", () => {
         provider: "codex",
         capabilities: [],
         contextWindows: [{ tokens: 128000, label: "128k", tier: "standard" }],
-        reasoningEfforts: [],
+        reasoningEfforts: [{ slug: "high", label: "High", default: true }],
       },
     ]);
     await ensureProviderModels("codex");
@@ -158,6 +164,70 @@ describe("<EffortMenu>", () => {
     );
     const { getByTestId } = render(EffortMenu, { props: { pane } });
     expect(triggerText(getByTestId)).toBe("High");
+  });
+
+  // A model whose catalog entry declares NO effort tiers is a statement, not a
+  // gap: Claude's own model list reports Haiku that way. The generic fallback
+  // list is for the other case — no catalog entry at all — and conflating the
+  // two offered tiers the model does not have.
+  it("hides the effort section for a model that reports no effort tiers", async () => {
+    setBindingMock("GetModelsForProvider", async () => [
+      {
+        slug: "claude-haiku-4-5",
+        name: "Claude Haiku 4.5",
+        provider: "claude",
+        capabilities: [],
+        contextWindows: [
+          { tokens: 200000, label: "200k", tier: "standard", default: true },
+          { tokens: 1000000, label: "1M", tier: "extended" },
+        ],
+        reasoningEfforts: [],
+      },
+    ]);
+    await ensureProviderModels("claude");
+    const pane = await buildPane(
+      makeThread({
+        provider: "claude",
+        model: "claude-haiku-4-5",
+        contextWindow: 200000,
+      }),
+    );
+    const { getByTestId, queryByRole } = render(EffortMenu, { props: { pane } });
+
+    // The label drops to the one thing left that describes the thread.
+    expect(triggerText(getByTestId)).toBe("200k");
+
+    await fireEvent.click(getByTestId("composer-effort-trigger"));
+    expect(queryByRole("menuitem", { name: /^High$/ })).toBeNull();
+    expect(queryByRole("menuitem", { name: /^Medium$/ })).toBeNull();
+    // The context rows are still there — only the effort section went away.
+    expect(queryByRole("menuitem", { name: /200k/ })).not.toBeNull();
+  });
+
+  it("disables the trigger when the model has nothing to configure", async () => {
+    setBindingMock("GetModelsForProvider", async () => [
+      {
+        slug: "claude-haiku-4-5",
+        name: "Claude Haiku 4.5",
+        provider: "claude",
+        capabilities: [],
+        contextWindows: [{ tokens: 200000, label: "200k", tier: "standard", default: true }],
+        reasoningEfforts: [],
+      },
+    ]);
+    await ensureProviderModels("claude");
+    const pane = await buildPane(
+      makeThread({
+        provider: "claude",
+        model: "claude-haiku-4-5",
+        contextWindow: 200000,
+      }),
+    );
+    const { getByTestId } = render(EffortMenu, { props: { pane } });
+
+    const trigger = getByTestId("composer-effort-trigger") as HTMLButtonElement;
+    expect(trigger.disabled).toBe(true);
+    expect(triggerText(getByTestId)).toBe("200k");
   });
 
   it("renders Fast in the trigger when fast mode is enabled", async () => {

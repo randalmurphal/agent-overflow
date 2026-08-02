@@ -20,7 +20,7 @@ const (
 )
 
 func (s *Session) startRolloutSubagentNotificationObserver(path string) {
-	path, offset, err := prepareRolloutSubagentNotificationObserver(path, s.codexThreadID)
+	path, offset, err := prepareRolloutSubagentNotificationObserver(path, s.rootThreadID())
 	if err != nil {
 		log.Printf("codex: rollout notification observer disabled: %v", err)
 		return

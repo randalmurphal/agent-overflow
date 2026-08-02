@@ -51,7 +51,7 @@ func hasHeadCommit(ctx context.Context, workspace string) (bool, error) {
 // semantics — the caller wants to see manual edits alongside agent
 // work. On a fresh-init repo with no HEAD the diff runs against the
 // empty tree, so untracked files still show.
-func DiffWorkspaceVsHead(ctx context.Context, workspace string) ([]byte, error) {
+func DiffWorkspaceVsHead(ctx context.Context, workspace string, opts Options) ([]byte, error) {
 	worktreeTree, err := captureSyntheticWorktreeTree(ctx, workspace)
 	if err != nil {
 		return nil, err
@@ -67,8 +67,7 @@ func DiffWorkspaceVsHead(ctx context.Context, workspace string) ([]byte, error) 
 		}
 	}
 	stdout, _, _, err := runGitWithStdoutLimit(ctx, workspace, worktreeTree.env, false, maxDiffOutputBytes,
-		"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
-		oldSide, worktreeTree.oid, "--")
+		opts.gitArgs("diff", oldSide, worktreeTree.oid, "--")...)
 	if errors.Is(err, errGitOutputTooLarge) {
 		return nil, fmt.Errorf("gitdiff: workspace diff exceeds %d byte limit", maxDiffOutputBytes)
 	}
@@ -97,7 +96,7 @@ func emptyTreeOID(ctx context.Context, workspace string, env []string) (string, 
 // baseBranch and HEAD against a synthetic tree of the current worktree so
 // committed changes, unstaged/staged changes, and untracked-not-ignored files
 // all share one patch stream.
-func DiffBranchBaseToWorktree(ctx context.Context, workspace, baseBranch string) ([]byte, error) {
+func DiffBranchBaseToWorktree(ctx context.Context, workspace, baseBranch string, opts Options) ([]byte, error) {
 	baseBranch, err := resolveBaseRef(ctx, workspace, baseBranch)
 	if err != nil {
 		return nil, err
@@ -117,8 +116,7 @@ func DiffBranchBaseToWorktree(ctx context.Context, workspace, baseBranch string)
 	}
 	defer worktreeTree.cleanup()
 	stdout, _, _, err := runGitWithStdoutLimit(ctx, workspace, worktreeTree.env, false, maxDiffOutputBytes,
-		"diff", "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
-		mergeBase, worktreeTree.oid, "--")
+		opts.gitArgs("diff", mergeBase, worktreeTree.oid, "--")...)
 	if errors.Is(err, errGitOutputTooLarge) {
 		return nil, fmt.Errorf("gitdiff: branch-base diff exceeds %d byte limit", maxDiffOutputBytes)
 	}

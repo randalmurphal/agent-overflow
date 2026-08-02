@@ -59,19 +59,7 @@ func readTopLevelIDString(data json.RawMessage, key string) string {
 // readTopLevelBool reads a boolean from the top level of a JSON object.
 // Returns false if the key is missing or the value is not a boolean.
 func readTopLevelBool(data json.RawMessage, key string) bool {
-	var m map[string]json.RawMessage
-	if json.Unmarshal(data, &m) != nil {
-		return false
-	}
-	raw, ok := m[key]
-	if !ok {
-		return false
-	}
-	var b bool
-	if json.Unmarshal(raw, &b) != nil {
-		return false
-	}
-	return b
+	return readRawBool(decodeTopLevel(data), key)
 }
 
 // readNestedString reads a string by walking through nested object keys.
@@ -377,6 +365,21 @@ func readNestedObject(data json.RawMessage, keys ...string) map[string]json.RawM
 		}
 	}
 	return nil
+}
+
+// readRawBool reads a boolean out of an already-decoded top-level map.
+// Returns false when the key is missing or is not a boolean, so callers
+// that only branch on true never have to distinguish the two.
+func readRawBool(m map[string]json.RawMessage, key string) bool {
+	raw, ok := m[key]
+	if !ok {
+		return false
+	}
+	var b bool
+	if json.Unmarshal(raw, &b) != nil {
+		return false
+	}
+	return b
 }
 
 func readRawStringArray(m map[string]json.RawMessage, key string) []string {

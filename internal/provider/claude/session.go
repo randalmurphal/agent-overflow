@@ -417,7 +417,7 @@ func buildArgs(cfg Config) []string {
 // than a refusal.
 func normalizeClaudePermissionMode(mode string) string {
 	switch mode {
-	case "acceptEdits", "bypassPermissions", "plan", "dontAsk":
+	case "acceptEdits", "auto", "bypassPermissions", "plan", "dontAsk":
 		return mode
 	default:
 		return "default"

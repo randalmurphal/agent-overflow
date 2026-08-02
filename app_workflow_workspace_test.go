@@ -415,6 +415,84 @@ func TestWorkflowWorkspacePureHelpers(t *testing.T) {
 	}
 }
 
+// TestWorkflowWorktreeSetupInjectsCheckoutPaths pins the env contract setup
+// recipes are written against: both checkouts named, absolute, distinct, with
+// the inherited environment intact underneath — and an inherited value of
+// either name losing to the injected one, since the app can itself be launched
+// from inside an agent session that exports AO_* names.
+func TestWorkflowWorktreeSetupInjectsCheckoutPaths(t *testing.T) {
+	project := t.TempDir()
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("TOKEN=main-checkout\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(workflowSetupProjectRootEnv, filepath.Join(t.TempDir(), "stale-project"))
+	t.Setenv(workflowSetupWorktreePathEnv, filepath.Join(t.TempDir(), "stale-worktree"))
+	if err := runWorkflowWorktreeSetup(context.Background(), project, worktree, profile.WorktreeSetup{
+		Run: [][]string{
+			// Relative redirect: also proves the variables agree with the cwd.
+			{"/bin/sh", "-c", `printf '%s\n%s\n%s\n' "$AO_PROJECT_ROOT" "$AO_WORKTREE_PATH" "$PATH" > reported.txt`},
+			// The recipe the contract exists for.
+			{"/bin/sh", "-c", `ln -s "$AO_PROJECT_ROOT/.env" "$AO_WORKTREE_PATH/.env"`},
+		},
+		Timeout: "30s",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reported, err := os.ReadFile(filepath.Join(worktree, "reported.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(reported), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("setup command reported %d lines: %q", len(lines), reported)
+	}
+	if !filepath.IsAbs(lines[0]) || lines[0] != project {
+		t.Fatalf("%s = %q, want absolute %q", workflowSetupProjectRootEnv, lines[0], project)
+	}
+	if !filepath.IsAbs(lines[1]) || lines[1] != worktree {
+		t.Fatalf("%s = %q, want absolute %q", workflowSetupWorktreePathEnv, lines[1], worktree)
+	}
+	if lines[2] != os.Getenv("PATH") {
+		t.Fatalf("inherited PATH = %q, want %q", lines[2], os.Getenv("PATH"))
+	}
+	target, err := os.Readlink(filepath.Join(worktree, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != filepath.Join(project, ".env") {
+		t.Fatalf("symlink target = %q, want %q", target, filepath.Join(project, ".env"))
+	}
+	linked, err := os.ReadFile(filepath.Join(worktree, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(linked) != "TOKEN=main-checkout\n" {
+		t.Fatalf("linked .env = %q", linked)
+	}
+}
+
+// TestWorkflowSetupEnvRelativeRootsResolveToTheCommandsTree covers the one
+// input shape the absolutising exists for: a relative root has to land on the
+// same tree exec resolves a relative command.Dir against.
+func TestWorkflowSetupEnvRelativeRootsResolveToTheCommandsTree(t *testing.T) {
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := workflowSetupEnv("some/project", "some/worktree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		workflowSetupProjectRootEnv + "=" + filepath.Join(workingDir, "some/project"),
+		workflowSetupWorktreePathEnv + "=" + filepath.Join(workingDir, "some/worktree"),
+	}
+	if got := env[len(env)-2:]; got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("trailing setup env = %q, want %q", got, want)
+	}
+}
+
 func writeWorkspaceWorkflow(t *testing.T, configRoot, outcome string) {
 	t.Helper()
 	dir := filepath.Join(configRoot, "workflows")

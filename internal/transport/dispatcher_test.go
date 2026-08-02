@@ -801,6 +801,8 @@ func (p *privilegedApp) SetEditorSettings() string            { return "ok" }
 func (p *privilegedApp) UpdateKeybindings() string            { return "ok" }
 func (p *privilegedApp) ResetKeybindings() string             { return "ok" }
 func (p *privilegedApp) SetChatBarFavorite() string           { return "ok" }
+func (p *privilegedApp) SetProviderCustomEnvVar() string      { return "ok" }
+func (p *privilegedApp) DeleteProviderCustomEnvVar() string   { return "ok" }
 func (p *privilegedApp) SetWSLDistroPreference() string       { return "ok" }
 func (p *privilegedApp) ReconfigureObservability() string     { return "ok" }
 

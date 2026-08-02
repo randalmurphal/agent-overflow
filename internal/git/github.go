@@ -31,6 +31,26 @@ const githubViewerLoginTTL = 15 * time.Minute
 
 // githubForge implements Forge using the gh CLI. All operations route
 // through the owning Core's runBinary for timeout + size-cap discipline.
+//
+// # Rule for every `--json` field list below
+//
+// The field set is a contract with whatever `gh` the user happens to have
+// installed, and `gh` has shipped fields that older releases silently omit
+// — `headRepository.nameWithOwner`, added for fork matching, is absent
+// before gh 2.47. A decoder that treats such a field as required turns
+// "old gh" into "this PR does not exist": t3-code lost PR rows exactly this
+// way, with no error anywhere because the omission is well-formed JSON.
+//
+// So, when adding a field here:
+//
+//  1. Decode it as optional. A zero value must degrade the feature that
+//     wanted it, never drop the row.
+//  2. Never widen a field list to satisfy a nested-object decode without
+//     checking when `gh` started emitting that object's members.
+//
+// Today's lists are narrow (`url,number,title,state` and friends) and so
+// immune by accident, not by design — this rule is what makes the next
+// addition safe.
 type githubForge struct {
 	core *Core
 
@@ -56,7 +76,9 @@ func (f *githubForge) CreatePR(cwd, title, body, base string, draft bool) (strin
 	if draft {
 		args = append(args, "--draft")
 	}
-	result, err := f.core.runBinary("gh", cwd, args...)
+	// Interactive: `gh pr create` pushes the branch itself when it has no
+	// upstream yet, and that nested `git push` inherits our environment.
+	result, err := f.core.runBinaryInteractive("gh", cwd, args...)
 	if err != nil {
 		return "", normalizeGitHubCLIError(err)
 	}
@@ -280,6 +302,8 @@ func (f *githubForge) githubViewerLogin(cwd string) (string, error) {
 	return login, nil
 }
 
+// githubPRDetailFields is the widest `--json` list this package asks for.
+// Before adding to it, read the version-drift rule on githubForge.
 var githubPRDetailFields = []string{
 	"title", "body", "author", "state", "baseRefName", "headRefName",
 	"headRefOid", "reviews", "statusCheckRollup", "isDraft", "mergeable",

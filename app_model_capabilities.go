@@ -57,8 +57,10 @@ func (a *App) sanitizeChatModelProfile(profile store.ChatModelProfile) store.Cha
 		provider.NormalizeReasoningEffort(profile.ReasoningEffort),
 	))
 	profile.FastMode = profile.FastMode && chatmodel.HasCapability(candidate, provider.ModelCapabilityFastMode)
-	if len(candidate.ContextWindows) > 0 && !chatmodel.ContextWindowSupported(candidate.ContextWindows, profile.ContextWindow) {
-		profile.ContextWindow = candidate.ContextWindows[0].Tokens
+	if !chatmodel.ContextWindowSupported(candidate.ContextWindows, profile.ContextWindow) {
+		if tokens, ok := provider.DefaultContextWindowForOptions(candidate.ContextWindows); ok {
+			profile.ContextWindow = tokens
+		}
 	}
 	return profile
 }
@@ -88,14 +90,22 @@ func (a *App) sanitizeThreadModelSettings(thread store.Thread) store.Thread {
 	return thread
 }
 
-// modelInfoForProvider prefers Codex's live catalog. The final return value
-// distinguishes a successful catalog miss from a catalog error: a miss is an
-// authoritative rejection, while an error permits the bundled registry to
-// keep the app usable when Codex cannot be reached.
+// modelInfoForProvider resolves one model against the best catalog the
+// provider has. The final return value distinguishes a successful catalog miss
+// from a catalog error: a miss is an authoritative rejection, while an error
+// permits the bundled registry to keep the app usable when the provider cannot
+// be reached.
+//
+// Only Codex's catalog is ever authoritative. Claude's probe-enriched catalog
+// is a SUPERSET of the shipped one (the CLI's list is a picker shortlist that
+// omits older-but-usable models), so a miss there says nothing beyond what the
+// shipped list already said — and reporting it as authoritative would strip
+// capabilities off every model the CLI happens not to list.
 func (a *App) modelInfoForProvider(providerName, model string) (info provider.ModelInfo, found, catalogAuthoritative bool) {
 	providerName = strings.TrimSpace(providerName)
 	model = provider.NormalizeModelSlug(providerName, strings.TrimSpace(model))
-	if providerName == string(provider.Codex) {
+	switch provider.CapabilitiesForProvider(providerName).ModelCatalog {
+	case provider.CodexLiveModelCatalog:
 		models, err := a.GetModelsForProvider(providerName)
 		if err == nil {
 			for _, candidate := range models {
@@ -105,6 +115,13 @@ func (a *App) modelInfoForProvider(providerName, model string) (info provider.Mo
 			}
 			return provider.ModelInfo{}, false, true
 		}
+	case provider.ClaudeProbeEnrichedCatalog:
+		for _, candidate := range a.claudeModelsForProvider(providerName) {
+			if candidate.Slug == model {
+				return candidate, true, false
+			}
+		}
+		return provider.ModelInfo{}, false, false
 	}
 
 	info, found = provider.FindModel(providerName, model)

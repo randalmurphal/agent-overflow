@@ -69,6 +69,54 @@ export function registerRuntimeKeybindingDefaults(owner: string, defaults: reado
   };
 }
 
+/**
+ * The identity of the shipped default row a rule occupies — the same identity
+ * the Go merge resolves on (`internal/keybindings.Merge`: DefaultID first,
+ * then the legacy command/context/original-key tuple). One user override may
+ * exist per identity, so this is what a rebind replaces and what tells two
+ * default rows of the SAME command apart (e.g. `thread.new.primary` vs
+ * `thread.new.alternate`).
+ */
+export function keybindingIdentity(rule: KeybindingRule): string {
+  const identityKey = rule.defaultId ?? rule.defaultKey ?? rule.key;
+  return [rule.command, rule.when ?? '', identityKey].join('\0');
+}
+
+/** Canonical form of a chord string, so `Mod+Shift+X` and `shift+mod+x` compare equal. */
+function canonicalChord(key: string): string {
+  const chord = tryParseChord(key);
+  return chord ? encodeChord(chord) : key.trim().toLowerCase();
+}
+
+/**
+ * Find a row that would end up displaying `chord` for the same command AND
+ * the same `when` context as `rule`, but on a different default row.
+ *
+ * Two such rows are indistinguishable in the settings table and only the
+ * first is ever reachable (dispatch stops at the first match), so producing
+ * one is never what the user asked for. `rule`'s own row is excluded by
+ * identity, which keeps re-capturing a row's existing chord a no-op rather
+ * than a self-collision. Overlap ACROSS commands is deliberately not
+ * reported: that is a real (if sharp) user choice, and `when` contexts make
+ * it legitimate.
+ */
+export function findDuplicateChordRow(
+  rows: readonly KeybindingRule[],
+  rule: KeybindingRule,
+  chord: string,
+): KeybindingRule | null {
+  const identity = keybindingIdentity(rule);
+  const when = (rule.when ?? '').trim();
+  const wanted = canonicalChord(chord);
+  for (const row of rows) {
+    if (row.command !== rule.command) continue;
+    if ((row.when ?? '').trim() !== when) continue;
+    if (keybindingIdentity(row) === identity) continue;
+    if (canonicalChord(row.key) === wanted) return row;
+  }
+  return null;
+}
+
 export function getKeybindingRules(): KeybindingRule[] {
   const overriddenDefaults = new Set(rules.flatMap((rule) => rule.defaultId ? [rule.defaultId] : []));
   return [
@@ -188,6 +236,29 @@ export function resetKeybindingsStore(): void {
 }
 
 /**
+ * Marker attribute a chord-recording control stamps on itself
+ * (KeybindingsSettings' capture button). While the keydown originates
+ * inside one, the keystroke is DATA — the chord being recorded — and
+ * must not also run whatever command it is currently bound to.
+ *
+ * The recorder additionally calls `stopPropagation`, which happens to
+ * keep the event away from App.svelte's window listener today. That is
+ * caller discipline: it lives in the recorder, not in dispatch, so the
+ * next recorder that forgets it silently rebinds-and-fires. The guard
+ * below is the structural half — recording `mod+b` records `mod+b`
+ * instead of collapsing the sidebar no matter how the event travels.
+ */
+export const KEYBINDING_CAPTURE_ATTR = 'data-keybinding-capture';
+
+const CAPTURE_SELECTOR = `[${KEYBINDING_CAPTURE_ATTR}]`;
+
+export function isKeybindingCaptureTarget(target: EventTarget | null): boolean {
+  const element = target as Element | null;
+  if (!element || typeof element.closest !== 'function') return false;
+  return element.closest(CAPTURE_SELECTOR) !== null;
+}
+
+/**
  * Try to dispatch a keyboard event to a bound command. Returns true if the
  * event was handled (caller should preventDefault/stopPropagation), false
  * otherwise.
@@ -197,6 +268,7 @@ export function dispatchKey(
   ctx: CommandContext,
   options: { isMac?: boolean } = {},
 ): boolean {
+  if (isKeybindingCaptureTarget(event.target)) return false;
   const isMac = options.isMac ?? isMacPlatform();
 
   // Walk in reverse so user overrides — appended last by the Go merge — beat
@@ -221,6 +293,11 @@ export function eventMatchesKeybindingCommand(
   commandIds: ReadonlySet<string>,
   options: { isMac?: boolean } = {},
 ): boolean {
+  // Same answer as dispatchKey by construction: this predicate exists to
+  // tell a caller "a command owns this keystroke", and inside a recorder
+  // none does. Diverging would let the editable-target path in
+  // App.svelte claim (and preventDefault) a chord dispatch then refuses.
+  if (isKeybindingCaptureTarget(event.target)) return false;
   const isMac = options.isMac ?? isMacPlatform();
 
   for (let i = resolved.length - 1; i >= 0; i -= 1) {

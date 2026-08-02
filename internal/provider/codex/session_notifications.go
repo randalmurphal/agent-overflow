@@ -17,17 +17,22 @@ type subagentNotificationDedupKey struct {
 	MetaHash     [sha256.Size]byte
 }
 
+// sessionSideChannelNotifications routes the notifications that are
+// signals to the App layer rather than transcript content. They are
+// handled upstream of the general classifier so they never get normalised
+// into a ProviderEvent the rest of the pipeline has to ignore.
+//
+// A map rather than a chain of `if method ==` so the opt-out derivation in
+// notification_catalog.go can read the same keys the dispatcher branches
+// on: adding a side channel cannot leave it opted out at initialize.
+var sessionSideChannelNotifications = map[string]func(*Session, json.RawMessage){
+	"mcpServer/oauthLogin/completed":  (*Session).dispatchMCPOAuthCompletion,
+	"mcpServer/startupStatus/updated": (*Session).dispatchMCPStartupUpdate,
+}
+
 func (s *Session) dispatchNotification(method string, params json.RawMessage) {
-	// mcpServer/oauthLogin/completed is a side-channel signal directed
-	// at the App's probe-cache, not a transcript event. Handle it
-	// upstream of the general classifier so it never gets normalised
-	// into a ProviderEvent the rest of the pipeline has to ignore.
-	if method == "mcpServer/oauthLogin/completed" {
-		s.dispatchMCPOAuthCompletion(params)
-		return
-	}
-	if method == "mcpServer/startupStatus/updated" {
-		s.dispatchMCPStartupUpdate(params)
+	if handler, ok := sessionSideChannelNotifications[method]; ok {
+		handler(s, params)
 		return
 	}
 	providerThreadID := providerThreadIDFromParams(params)
@@ -92,6 +97,14 @@ func (s *Session) dispatchRoutableNotification(method string, params json.RawMes
 	if method == "item/plan/delta" {
 		s.appendPlanDelta(params)
 	}
+	if method == "thread/settings/updated" {
+		// Parent-thread only (child-thread notifications returned above,
+		// and reconcileThreadSettings re-checks the threadId). Codex is
+		// the authority for what the thread is actually configured to do;
+		// the requested turn config stays untouched so a pending
+		// ApplyLiveUpdate cannot be undone by an echo of the last turn.
+		s.reconcileThreadSettings(params)
+	}
 	if method == "thread/tokenUsage/updated" {
 		// Parent-thread only (child-thread notifications returned above).
 		// Folds the cumulative total into the per-turn usage accounting;
@@ -99,7 +112,10 @@ func (s *Session) dispatchRoutableNotification(method string, params json.RawMes
 		// untouched.
 		s.usageAcct.observe(params)
 	}
-	events := s.classifyNotificationWithBufferedPlan(method, params)
+	events, handled := s.classifyNotificationWithBufferedPlan(method, params)
+	if !handled {
+		s.warnUnclaimedNotification(method)
+	}
 	suppressSubagentNotificationCarrier := s.emitSubagentNotificationsFromUserCarrier(method, params, events)
 
 	for i := range events {
@@ -171,7 +187,8 @@ func (s *Session) emitSubagentNotificationsFromRawMailboxCarrier(
 	if strings.TrimSpace(parentToolUseID) != "" {
 		return false
 	}
-	if s.codexThreadID != "" && strings.TrimSpace(providerThreadID) != s.codexThreadID {
+	rootThreadID := s.rootThreadID()
+	if rootThreadID != "" && strings.TrimSpace(providerThreadID) != rootThreadID {
 		return false
 	}
 
@@ -393,9 +410,10 @@ func (s *Session) dispatchMCPStartupUpdate(params json.RawMessage) {
 		return
 	}
 	var parsed struct {
-		Name   string `json:"name"`
-		Status string `json:"status"`
-		Error  string `json:"error,omitempty"`
+		Name          string `json:"name"`
+		Status        string `json:"status"`
+		Error         string `json:"error,omitempty"`
+		FailureReason string `json:"failureReason,omitempty"`
 	}
 	if err := json.Unmarshal(params, &parsed); err != nil {
 		log.Printf("codex: decode mcpServer/startupStatus/updated: %v", err)
@@ -405,7 +423,12 @@ func (s *Session) dispatchMCPStartupUpdate(params json.RawMessage) {
 		log.Printf("codex: mcpServer/startupStatus/updated: missing name")
 		return
 	}
-	handler(MCPStartupUpdate{Name: parsed.Name, State: parsed.Status, Error: parsed.Error})
+	handler(MCPStartupUpdate{
+		Name:          parsed.Name,
+		State:         parsed.Status,
+		Error:         parsed.Error,
+		FailureReason: strings.TrimSpace(parsed.FailureReason),
+	})
 }
 
 func (s *Session) dispatchMCPOAuthCompletion(params json.RawMessage) {

@@ -1,6 +1,9 @@
 package provider
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 const (
 	// ModelCapabilityFastMode indicates a model supports fast-mode execution.
@@ -22,10 +25,17 @@ const (
 )
 
 // ContextWindowOption describes one selectable context tier for a model.
+//
+// Default marks the tier a new thread starts on. The flag — never slice
+// position — is the contract: `DefaultContextWindowForOptions` reads it, and
+// `TestEveryModelFlagsExactlyOneDefaultContextWindow` enforces that every
+// catalog entry carries exactly one. That keeps the picker free to reorder
+// (or a tier free to be inserted) without silently moving the default.
 type ContextWindowOption struct {
-	Tokens int    `json:"tokens"`
-	Label  string `json:"label"`
-	Tier   string `json:"tier"`
+	Tokens  int    `json:"tokens"`
+	Label   string `json:"label"`
+	Tier    string `json:"tier"`
+	Default bool   `json:"default,omitempty"`
 }
 
 // ReasoningEffortOption describes one selectable reasoning tier for a model.
@@ -57,7 +67,7 @@ var ClaudeModels = []ModelInfo{
 		Slug:             "claude-fable-5",
 		Name:             "Claude Fable 5",
 		Provider:         "claude",
-		ContextWindows:   claudeExtendedContextOptions(),
+		ContextWindows:   claudeContextOptionsDefaultingToExtended(),
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
@@ -70,7 +80,7 @@ var ClaudeModels = []ModelInfo{
 		Name:             "Claude Opus 5",
 		Provider:         "claude",
 		Capabilities:     []string{ModelCapabilityFastMode},
-		ContextWindows:   claudeExtendedContextOptions(),
+		ContextWindows:   claudeContextOptionsDefaultingToExtended(),
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
@@ -78,7 +88,7 @@ var ClaudeModels = []ModelInfo{
 		Name:             "Claude Opus 4.8",
 		Provider:         "claude",
 		Capabilities:     []string{ModelCapabilityFastMode},
-		ContextWindows:   claudeExtendedContextOptions(),
+		ContextWindows:   claudeContextOptionsDefaultingToExtended(),
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
@@ -86,7 +96,7 @@ var ClaudeModels = []ModelInfo{
 		Name:             "Claude Opus 4.7",
 		Provider:         "claude",
 		Capabilities:     []string{ModelCapabilityFastMode},
-		ContextWindows:   claudeExtendedContextOptions(),
+		ContextWindows:   claudeContextOptionsDefaultingToExtended(),
 		ReasoningEfforts: claudeEffortOptions("xhigh", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
@@ -94,40 +104,53 @@ var ClaudeModels = []ModelInfo{
 		Name:             "Claude Opus 4.6",
 		Provider:         "claude",
 		Capabilities:     []string{ModelCapabilityFastMode},
-		ContextWindows:   claudeExtendedContextOptions(),
+		ContextWindows:   claudeContextOptionsDefaultingToExtended(),
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortMax),
 	},
 	{
 		Slug:             "claude-opus-4-5",
 		Name:             "Claude Opus 4.5",
 		Provider:         "claude",
-		ContextWindows:   claudeExtendedContextOptions(),
+		ContextWindows:   claudeContextOptionsDefaultingToExtended(),
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortMax),
 	},
 	{
+		// Sonnet advertises the 1M tier but keeps 200k as the default:
+		// the claude binary treats 1M as an explicit opt-in for Sonnet,
+		// and we track that rather than doubling every Sonnet thread's
+		// context cost by default.
 		Slug:             "claude-sonnet-5",
 		Name:             "Claude Sonnet 5",
 		Provider:         "claude",
-		ContextWindows:   claudeExtendedContextOptions(),
+		ContextWindows:   claudeContextOptionsDefaultingToStandard(),
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax),
 	},
 	{
 		// The claude binary's picker offers xhigh for Sonnet 4.6, but the
 		// API capability table lacks xhigh_effort for it — selecting xhigh
 		// silently downgrades to high. Expose only efforts the API honors:
-		// low→high plus max.
+		// low→high plus max. Context default is 200k, as on Sonnet 5.
 		Slug:             "claude-sonnet-4-6",
 		Name:             "Claude Sonnet 4.6",
 		Provider:         "claude",
-		ContextWindows:   claudeExtendedContextOptions(),
+		ContextWindows:   claudeContextOptionsDefaultingToStandard(),
 		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh, EffortMax),
 	},
 	{
-		Slug:             "claude-haiku-4-5",
-		Name:             "Claude Haiku 4.5",
-		Provider:         "claude",
-		ContextWindows:   claudeStandardContextOptions(),
-		ReasoningEfforts: claudeEffortOptions("high", EffortLow, EffortMedium, EffortHigh),
+		// No reasoning efforts: the CLI's own model list on 2.1.219 reports
+		// Haiku with neither `supportsEffort` nor `supportedEffortLevels`,
+		// under both subscription and API-key auth (captured in
+		// docs/references/fixtures/claude/initialize_models_20260802.json).
+		// The catalog used to declare low/medium/high here — the one real
+		// catalog-vs-wire discrepancy the 2.7 spike turned up. An empty list
+		// is the honest encoding: internal/claudemodels would otherwise report
+		// this as drift on every probe, ConfigFromOptions now omits `--effort`
+		// for it, and the composer hides the effort section rather than
+		// offering tiers the model does not have.
+		Slug:           "claude-haiku-4-5",
+		Name:           "Claude Haiku 4.5",
+		Provider:       "claude",
+		ContextWindows: claudeStandardContextOptions(),
 	},
 }
 
@@ -142,7 +165,7 @@ var ClaudeTUIModels = withProvider(ClaudeModels, string(ClaudeTUI))
 // withProvider clones a model list and stamps every entry with providerName,
 // leaving the source slice untouched.
 func withProvider(src []ModelInfo, providerName string) []ModelInfo {
-	out := cloneModels(src)
+	out := CloneModels(src)
 	for i := range out {
 		out[i].Provider = providerName
 	}
@@ -233,7 +256,7 @@ func ModelsForProvider(providerName string) []ModelInfo {
 	if models == nil {
 		return nil
 	}
-	return cloneModels(models)
+	return CloneModels(models)
 }
 
 func staticModelsForProvider(providerName string) []ModelInfo {
@@ -249,9 +272,35 @@ func staticModelsForProvider(providerName string) []ModelInfo {
 	}
 }
 
+// HasContextMarker reports whether a model id carries a trailing `[…]`
+// context-tier marker (`claude-sonnet-5[1m]`).
+func HasContextMarker(model string) bool {
+	model = strings.TrimSpace(model)
+	return strings.HasSuffix(model, "]") && strings.LastIndexByte(model, '[') > 0
+}
+
+// TrimContextMarker removes a trailing `[…]` context-tier marker from a model
+// id. The marker is a CONTEXT TIER, not part of the model identity — AO carries
+// the tier on the thread's ContextWindow column and re-appends the marker at
+// spawn (claude.claudeModelForContextWindow is the inverse). Marker-carrying
+// ids reach us from both directions: the CLI's own model list bakes them into
+// id strings, and anything reading a launched model id back sees what we sent.
+func TrimContextMarker(model string) string {
+	model = strings.TrimSpace(model)
+	if !HasContextMarker(model) {
+		return model
+	}
+	return strings.TrimSpace(model[:strings.LastIndexByte(model, '[')])
+}
+
 // NormalizeModelSlug resolves the same short aliases t3-code accepts on model
 // inputs. It does not validate availability; app-server model/list remains the
 // Codex source of truth for live picker contents.
+//
+// For Claude it also drops a context-tier marker, so a lookup keyed on the slug
+// (FindModel and everything built on it — effort tiers, fast-mode support,
+// context-window options) cannot silently degrade to "unknown model" just
+// because the id arrived on its 1M spelling.
 func NormalizeModelSlug(providerName, model string) string {
 	switch providerName {
 	case string(Codex):
@@ -266,6 +315,7 @@ func NormalizeModelSlug(providerName, model string) string {
 			return model
 		}
 	case string(Claude), string(ClaudeTUI):
+		model = TrimContextMarker(model)
 		switch model {
 		case "fable", "fable-5":
 			return "claude-fable-5"
@@ -316,6 +366,25 @@ func ReasoningEffortOptionsForModel(providerName, model string) []ReasoningEffor
 		return append([]ReasoningEffortOption(nil), candidate.ReasoningEfforts...)
 	}
 	return nil
+}
+
+// ModelDeclaresNoReasoningEffort reports whether providerName/model is a
+// catalog-KNOWN model that advertises zero reasoning tiers — the signal that an
+// effort must not be sent to the CLI at all (Claude's Haiku, per the CLI's own
+// model list).
+//
+// The distinction that matters is KNOWN-WITHOUT-EFFORTS versus UNKNOWN: a model
+// the catalog has never heard of — a new one the CLI ships before we list it —
+// keeps its effort, because silence is not a denial.
+//
+// This is deliberately separate from the Coerce* family. Those resolve the
+// value that gets PERSISTED, and the threads / chat_model_profiles CHECK
+// constraints require a legal enum there, so they can never answer "none".
+// Whether the flag is sent is an argv-boundary question, and this is the
+// predicate every argv builder asks.
+func ModelDeclaresNoReasoningEffort(providerName, model string) bool {
+	info, found := FindModel(providerName, model)
+	return found && len(info.ReasoningEfforts) == 0
 }
 
 func ReasoningEffortSupportedForModel(providerName, model, effort string) bool {
@@ -446,18 +515,44 @@ func ContextTierForModelWindow(providerName, model string, tokens int) string {
 	return ContextTierStandard
 }
 
-func DefaultContextWindowForModel(providerName, model string, fallback int) int {
-	options := ContextWindowOptionsForModel(providerName, model)
-	if len(options) == 0 {
-		if fallback > 0 {
-			return fallback
+// DefaultContextWindowForOptions returns the tokens of the option flagged
+// Default. The flag is the contract — see ContextWindowOption.
+//
+// Falling back to the first element when nothing is flagged is deliberate: an
+// unflagged list is a catalog bug (caught by
+// TestEveryModelFlagsExactlyOneDefaultContextWindow), and resolving it to a
+// real, selectable tier keeps a would-be bug from becoming a zero-token
+// context window at runtime. Do not read this as "position picks the default";
+// flag the option you mean.
+//
+// ok is false only for an empty list, so callers can distinguish "this model
+// has no registry opinion" from "the default happens to be 0".
+func DefaultContextWindowForOptions(options []ContextWindowOption) (tokens int, ok bool) {
+	for _, option := range options {
+		if option.Default {
+			return option.Tokens, true
 		}
-		if providerName == "codex" {
-			return CodexStandardContextWindow
-		}
-		return ClaudeStandardContextWindow
 	}
-	return options[0].Tokens
+	if len(options) > 0 {
+		return options[0].Tokens, true
+	}
+	return 0, false
+}
+
+// DefaultContextWindowForModel resolves the window a new thread starts on for
+// a (provider, model) pair. fallback is consulted only when the registry has
+// no options at all for the pair.
+func DefaultContextWindowForModel(providerName, model string, fallback int) int {
+	if tokens, ok := DefaultContextWindowForOptions(ContextWindowOptionsForModel(providerName, model)); ok {
+		return tokens
+	}
+	if fallback > 0 {
+		return fallback
+	}
+	if providerName == string(Codex) {
+		return CodexStandardContextWindow
+	}
+	return ClaudeStandardContextWindow
 }
 
 func ResolveContextWindowForModel(providerName, model string, requested int) int {
@@ -467,7 +562,14 @@ func ResolveContextWindowForModel(providerName, model string, requested int) int
 	return DefaultContextWindowForModel(providerName, model, requested)
 }
 
-func cloneModels(models []ModelInfo) []ModelInfo {
+// CloneModels returns a deep copy of a model list: the slice, plus every slice
+// field on every entry. The one copy helper for a type whose consumers
+// (the live Codex catalog, the probe-enriched Claude catalog, every
+// ModelsForProvider caller) all mutate what they receive.
+func CloneModels(models []ModelInfo) []ModelInfo {
+	if models == nil {
+		return nil
+	}
 	cloned := make([]ModelInfo, len(models))
 	for i, model := range models {
 		cloned[i] = model
@@ -545,46 +647,71 @@ func effortLabel(slug string) string {
 
 func claudeStandardContextOptions() []ContextWindowOption {
 	return []ContextWindowOption{{
-		Tokens: ClaudeStandardContextWindow,
-		Label:  "200k",
-		Tier:   ContextTierStandard,
+		Tokens:  ClaudeStandardContextWindow,
+		Label:   "200k",
+		Tier:    ContextTierStandard,
+		Default: true,
 	}}
 }
 
-func claudeExtendedContextOptions() []ContextWindowOption {
+// claudeExtendedContextOptions builds the 200k/1m pair every Claude model that
+// speaks the `[1m]` wire tier offers. defaultExtended chooses which tier a new
+// thread starts on; call it through one of the two named wrappers below rather
+// than passing a bare bool at the catalog entry.
+func claudeExtendedContextOptions(defaultExtended bool) []ContextWindowOption {
 	return []ContextWindowOption{
-		{Tokens: ClaudeStandardContextWindow, Label: "200k", Tier: ContextTierStandard},
-		{Tokens: ClaudeExtendedContextWindow, Label: "1m", Tier: ContextTierExtended},
+		{Tokens: ClaudeStandardContextWindow, Label: "200k", Tier: ContextTierStandard, Default: !defaultExtended},
+		{Tokens: ClaudeExtendedContextWindow, Label: "1m", Tier: ContextTierExtended, Default: defaultExtended},
 	}
+}
+
+// claudeContextOptionsDefaultingToExtended: new threads start on the 1M tier.
+// Used by the large models (Fable 5, the Opus family), where the extra context
+// is the point of the model and the cost tradeoff is one the user opted into
+// by picking it.
+func claudeContextOptionsDefaultingToExtended() []ContextWindowOption {
+	return claudeExtendedContextOptions(true)
+}
+
+// claudeContextOptionsDefaultingToStandard: new threads start on 200k and 1M
+// stays opt-in. Used by the Sonnet tier, matching how the claude binary itself
+// treats 1M for Sonnet.
+func claudeContextOptionsDefaultingToStandard() []ContextWindowOption {
+	return claudeExtendedContextOptions(false)
 }
 
 func codexStandardContextOptions() []ContextWindowOption {
 	return []ContextWindowOption{{
-		Tokens: CodexStandardContextWindow,
-		Label:  "272k",
-		Tier:   ContextTierStandard,
+		Tokens:  CodexStandardContextWindow,
+		Label:   "272k",
+		Tier:    ContextTierStandard,
+		Default: true,
 	}}
 }
 
 func codex56ContextOptions() []ContextWindowOption {
 	return []ContextWindowOption{{
-		Tokens: Codex56ContextWindow,
-		Label:  "372k",
-		Tier:   ContextTierStandard,
+		Tokens:  Codex56ContextWindow,
+		Label:   "372k",
+		Tier:    ContextTierStandard,
+		Default: true,
 	}}
 }
 
+// codexExtendedContextOptions keeps 272k as the default: the 1M tier is a
+// Codex-side opt-in, unchanged by the Claude large-model default flip.
 func codexExtendedContextOptions() []ContextWindowOption {
 	return []ContextWindowOption{
-		{Tokens: CodexStandardContextWindow, Label: "272k", Tier: ContextTierStandard},
+		{Tokens: CodexStandardContextWindow, Label: "272k", Tier: ContextTierStandard, Default: true},
 		{Tokens: CodexExtendedContextWindow, Label: "1m", Tier: ContextTierExtended},
 	}
 }
 
 func codexSparkContextOptions() []ContextWindowOption {
 	return []ContextWindowOption{{
-		Tokens: CodexSparkContextWindow,
-		Label:  "128k",
-		Tier:   ContextTierStandard,
+		Tokens:  CodexSparkContextWindow,
+		Label:   "128k",
+		Tier:    ContextTierStandard,
+		Default: true,
 	}}
 }

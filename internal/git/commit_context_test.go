@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -91,6 +92,88 @@ func TestStagedSummaryEmptyOnCleanRepo(t *testing.T) {
 	}
 	if strings.TrimSpace(summary) != "" {
 		t.Errorf("expected empty summary on clean repo; got %q", summary)
+	}
+}
+
+// argvLogGit is a mock `git` that records the argv of every invocation.
+const argvLogGit = `#!/bin/sh
+printf '%s\n' "$*" >> "$AO_GIT_LOG"
+exit 0
+`
+
+// TestStagedContextNeutralizesUserDiffConfig pins the flags that keep the
+// user's git config out of the commit-message context. Every staged read
+// must carry all three: without --no-ext-diff a `diff.external` differ's
+// output (or a GUI that launches and never returns) reaches the prompt,
+// without --no-textconv a filter's rendering replaces the file's content,
+// and without --no-color `color.ui = always` splices ANSI escapes through
+// the patch.
+func TestStagedContextNeutralizesUserDiffConfig(t *testing.T) {
+	logPath := installMockGit(t, argvLogGit)
+
+	core := NewCore()
+	cwd := t.TempDir()
+	if _, err := core.StagedSummary(cwd); err != nil {
+		t.Fatalf("StagedSummary: %v", err)
+	}
+	if _, err := core.StagedPatch(cwd); err != nil {
+		t.Fatalf("StagedPatch: %v", err)
+	}
+
+	argvs := strings.Split(strings.TrimSpace(readFile(t, logPath)), "\n")
+	if len(argvs) != 2 {
+		t.Fatalf("mock git saw %d invocations, want 2:\n%s", len(argvs), strings.Join(argvs, "\n"))
+	}
+	for _, argv := range argvs {
+		for _, flag := range []string{"--no-color", "--no-ext-diff", "--no-textconv"} {
+			if !strings.Contains(argv, flag) {
+				t.Errorf("`git %s` is missing %s", argv, flag)
+			}
+		}
+	}
+}
+
+// TestStagedPatchIgnoresExternalDifferAndColor is the same guarantee against
+// a real git: a repo configured with an external differ and forced colour
+// must still yield git's own uncoloured patch, because that patch is what
+// the commit-message model reads.
+func TestStagedPatchIgnoresExternalDifferAndColor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script external differ is unix-only")
+	}
+	dir := seedRepo(t)
+
+	differ := filepath.Join(t.TempDir(), "differ.sh")
+	if err := os.WriteFile(differ, []byte("#!/bin/sh\necho EXTERNAL-DIFF-RAN\n"), 0o755); err != nil {
+		t.Fatalf("write external differ: %v", err)
+	}
+	core := NewCore()
+	if _, _, err := core.Execute(dir, "config", "diff.external", differ); err != nil {
+		t.Fatalf("set diff.external: %v", err)
+	}
+	if _, _, err := core.Execute(dir, "config", "color.ui", "always"); err != nil {
+		t.Fatalf("set color.ui: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := core.StageAll(dir); err != nil {
+		t.Fatalf("StageAll: %v", err)
+	}
+
+	patch, err := core.StagedPatch(dir)
+	if err != nil {
+		t.Fatalf("StagedPatch: %v", err)
+	}
+	if strings.Contains(patch, "EXTERNAL-DIFF-RAN") {
+		t.Errorf("external differ output reached the commit-message context: %q", patch)
+	}
+	if strings.Contains(patch, "\x1b[") {
+		t.Errorf("ANSI colour escapes reached the commit-message context: %q", patch)
+	}
+	if !strings.Contains(patch, "+world") {
+		t.Errorf("expected git's own patch with '+world'; got %q", patch)
 	}
 }
 

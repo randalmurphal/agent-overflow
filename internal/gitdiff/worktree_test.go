@@ -25,7 +25,7 @@ func TestDiffWorkspaceVsHeadCombinesTrackedAndUntracked(t *testing.T) {
 	writeFile(t, repo, "README.txt", "hello\nedited\n")
 	writeFile(t, repo, "new.txt", "brand new\n")
 
-	patch, err := DiffWorkspaceVsHead(context.Background(), repo)
+	patch, err := DiffWorkspaceVsHead(context.Background(), repo, Options{})
 	if err != nil {
 		t.Fatalf("DiffWorkspaceVsHead: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestDiffWorkspaceVsHeadCombinesTrackedAndUntracked(t *testing.T) {
 
 func TestDiffWorkspaceVsHeadCleanTreeIsEmpty(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
-	patch, err := DiffWorkspaceVsHead(context.Background(), repo)
+	patch, err := DiffWorkspaceVsHead(context.Background(), repo, Options{})
 	if err != nil {
 		t.Fatalf("DiffWorkspaceVsHead: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestDiffWorkspaceVsHeadFreshInitRepo(t *testing.T) {
 	testutil.RunGit(t, repo, "init", "-b", "main")
 	writeFile(t, repo, "new.txt", "no commits yet\n")
 
-	patch, err := DiffWorkspaceVsHead(context.Background(), repo)
+	patch, err := DiffWorkspaceVsHead(context.Background(), repo, Options{})
 	if err != nil {
 		t.Fatalf("DiffWorkspaceVsHead: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestDiffWorkspaceVsHeadShowsDeletions(t *testing.T) {
 		t.Fatalf("remove: %v", err)
 	}
 
-	patch, err := DiffWorkspaceVsHead(context.Background(), repo)
+	patch, err := DiffWorkspaceVsHead(context.Background(), repo, Options{})
 	if err != nil {
 		t.Fatalf("DiffWorkspaceVsHead: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestDiffWorkspaceVsHeadStagesSymlinks(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	patch, err := DiffWorkspaceVsHead(context.Background(), repo)
+	patch, err := DiffWorkspaceVsHead(context.Background(), repo, Options{})
 	if err != nil {
 		t.Fatalf("DiffWorkspaceVsHead: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestDiffWorkspaceVsHeadRespectsGitignore(t *testing.T) {
 	commitFile(t, repo, ".gitignore", "ignored.txt\n", "add gitignore")
 	writeFile(t, repo, "ignored.txt", "should not appear\n")
 
-	patch, err := DiffWorkspaceVsHead(context.Background(), repo)
+	patch, err := DiffWorkspaceVsHead(context.Background(), repo, Options{})
 	if err != nil {
 		t.Fatalf("DiffWorkspaceVsHead: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestDiffBranchBaseToWorktreeSpansCommittedStagedAndUntracked(t *testing.T) 
 	testutil.RunGit(t, repo, "add", "staged.txt")
 	writeFile(t, repo, "untracked.txt", "untracked change\n")
 
-	patch, err := DiffBranchBaseToWorktree(context.Background(), repo, "main")
+	patch, err := DiffBranchBaseToWorktree(context.Background(), repo, "main", Options{})
 	if err != nil {
 		t.Fatalf("DiffBranchBaseToWorktree: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestDiffBranchBaseToWorktreeLeavesUserIndexUntouched(t *testing.T) {
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	writeFile(t, repo, "untracked.txt", "untracked change\n")
 
-	if _, err := DiffBranchBaseToWorktree(context.Background(), repo, "main"); err != nil {
+	if _, err := DiffBranchBaseToWorktree(context.Background(), repo, "main", Options{}); err != nil {
 		t.Fatalf("DiffBranchBaseToWorktree: %v", err)
 	}
 
@@ -160,7 +160,7 @@ func TestDiffBranchBaseToWorktreeSkipsCleanFilters(t *testing.T) {
 	testutil.RunGit(t, repo, "checkout", "-b", "feature")
 	writeFile(t, repo, "payload.dat", "raw bytes\n")
 
-	patch, err := DiffBranchBaseToWorktree(context.Background(), repo, "main")
+	patch, err := DiffBranchBaseToWorktree(context.Background(), repo, "main", Options{})
 	if err != nil {
 		t.Fatalf("DiffBranchBaseToWorktree: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestDiffBranchBaseToWorktreeSkipsCleanFilters(t *testing.T) {
 
 func TestDiffBranchBaseToWorktreeRequiresBase(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
-	if _, err := DiffBranchBaseToWorktree(context.Background(), repo, "  "); err == nil {
+	if _, err := DiffBranchBaseToWorktree(context.Background(), repo, "  ", Options{}); err == nil {
 		t.Fatal("expected error for an empty base branch")
 	}
 }
@@ -180,7 +180,7 @@ func TestDiffBranchBaseToWorktreeResolvesRemoteOnlyBaseBranch(t *testing.T) {
 	clone := cloneWithRemoteOnlyBranch(t)
 	writeFile(t, clone, "untracked.txt", "uncommitted too\n")
 
-	patch, err := DiffBranchBaseToWorktree(context.Background(), clone, "release")
+	patch, err := DiffBranchBaseToWorktree(context.Background(), clone, "release", Options{})
 	if err != nil {
 		t.Fatalf("DiffBranchBaseToWorktree with remote-only base: %v", err)
 	}

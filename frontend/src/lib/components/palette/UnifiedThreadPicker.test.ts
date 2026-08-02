@@ -300,6 +300,31 @@ describe('<UnifiedThreadPicker> — keyboard', () => {
     expect(pane.threadId).toBe('b');
   });
 
+  it('does not open a thread while an IME composition is active', async () => {
+    // Thread ids are unique to this test: `openThreadFromNavigation` reveals
+    // an already-open pane instead of loading into ours, and panes opened by
+    // earlier tests in this file outlive them.
+    await seedThreads([
+      makeThread({ id: 'ime-a', title: 'Alpha' }),
+      makeThread({ id: 'ime-b', title: 'Bravo' }),
+    ]);
+    const onClose = vi.fn();
+    const pane = makePane();
+    const { getByTestId } = render(UnifiedThreadPicker, { open: true, pane, onClose });
+    const body = getByTestId('thread-picker');
+    await fireEvent.keyDown(body, { key: 'ArrowDown' });
+
+    await fireEvent.keyDown(body, { key: 'Enter', isComposing: true });
+    await Promise.resolve();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(pane.threadId).toBeNull();
+
+    // Control: the same keystroke outside a composition switches threads.
+    await fireEvent.keyDown(body, { key: 'Enter' });
+    await waitFor(() => expect(pane.threadId).toBe('ime-b'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('Escape calls onClose', async () => {
     await seedThreads([makeThread({ id: 'a', title: 'Alpha' })]);
     const onClose = vi.fn();

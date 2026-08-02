@@ -7,6 +7,7 @@
   import Lock from 'lucide-svelte/icons/lock';
   import LockOpen from 'lucide-svelte/icons/lock-open';
   import PenLine from 'lucide-svelte/icons/pen-line';
+  import ShieldCheck from 'lucide-svelte/icons/shield-check';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { RuntimeMode, Thread } from '../../../types/models';
   import { UpdateThreadRuntimeMode } from '../../../stores/bindings';
@@ -43,6 +44,11 @@
 
   const DEFAULT_MODE: RuntimeMode = 'full-access';
 
+  // Ordered most- to least-restrictive on mutation, mirroring
+  // provider.AllRuntimeModes (Go's TestAllRuntimeModesOrdering pins the same
+  // sequence). Auto sits after auto-accept-edits because it lets strictly more
+  // through unprompted: auto-accept-edits still stops at every shell command,
+  // auto reviews it and usually allows it.
   const TIERS: readonly TierMeta[] = [
     {
       mode: 'read-only',
@@ -61,6 +67,18 @@
       label: 'Auto-accept edits',
       description: 'Auto-approve edits, ask before other actions.',
       icon: PenLine,
+    },
+    {
+      mode: 'auto',
+      label: 'Auto',
+      // Both caveats are load-bearing, not hedging. Auto is the only tier
+      // besides read-only that can REFUSE an action, and it is the only tier
+      // that spends money to decide — each reviewed tool call is a billed
+      // model call (Claude a Haiku classifier turn, Codex an auto_review
+      // subagent). Neither is discoverable from the label, and a user who
+      // reads "Auto" as "no friction" will be surprised twice.
+      description: 'A model reviews each action instead of you. Costs extra tokens, and it can refuse.',
+      icon: ShieldCheck,
     },
     {
       mode: DEFAULT_MODE,

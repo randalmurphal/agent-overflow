@@ -1,10 +1,15 @@
-// Sidebar width — persisted per client through appStorage (ui_state
-// table) so the preferred reading width survives restarts, not just
-// reloads: raw localStorage resets every launch because the transport's
-// ephemeral port changes the webview origin. Kept separate from
-// `sidebar.svelte.ts` (which owns project expansion + sort) because
-// the two slice state has no meaningful overlap and lives on different
-// update cadences.
+// Sidebar width + collapsed state — persisted per client through
+// appStorage (ui_state table) so the preferred reading width survives
+// restarts, not just reloads: raw localStorage resets every launch
+// because the transport's ephemeral port changes the webview origin.
+// Kept separate from `sidebar.svelte.ts` (which owns project expansion
+// + sort) because the two slice state has no meaningful overlap and
+// lives on different update cadences.
+//
+// Width and collapsed are separate facts on purpose: `width` is always
+// the EXPANDED width, whether or not the sidebar is currently showing
+// it. Collapsing never overwrites it, so expanding restores the width
+// the user chose rather than the minimum.
 //
 // The clamp is also enforced here so every caller (resize handle,
 // palette command, hydration sync) converges on the same bounds.
@@ -17,9 +22,14 @@ import {
 import { getAppShellWidth } from './layoutMetrics.svelte';
 
 const WIDTH_KEY = 'sidebar:width';
+const COLLAPSED_KEY = 'sidebar:collapsed';
 const LEGACY_STORAGE_KEY = 'agent-overflow:sidebar:width';
 const DEFAULT_WIDTH = 280;
 export const SIDEBAR_MIN_WIDTH = 200;
+/** Width of the collapsed rail — an IconButton (h-7/w-7) plus its
+ *  symmetric gutter. The rail is the sidebar's only chrome while
+ *  collapsed, so it is not resizable and has no independent bounds. */
+export const SIDEBAR_RAIL_WIDTH = 36;
 /** Main pane reserve — keeps the composer + chat legible no matter how
  *  the user drags. Mirrors forge's 640px reserve scaled down a bit. */
 const MAIN_RESERVE = 560;
@@ -48,10 +58,58 @@ export function readPersistedWidth(): number {
   return clamp(parsed);
 }
 
+/**
+ * Exported alongside `readPersistedWidth` for the same reason: the
+ * module-init read cannot be re-driven from a test. Anything that is
+ * not exactly the stored `'1'` reads as expanded, so a corrupt value
+ * degrades to the visible state rather than a hidden sidebar the user
+ * has no on-screen way to explain.
+ */
+export function readPersistedCollapsed(): boolean {
+  return appStorageGet(COLLAPSED_KEY) === '1';
+}
+
 let width: number = $state(readPersistedWidth());
+let collapsed: boolean = $state(readPersistedCollapsed());
 
 export function getSidebarWidth(): number {
   return width;
+}
+
+export function isSidebarCollapsed(): boolean {
+  return collapsed;
+}
+
+/**
+ * Collapse to the rail or expand back to `width`.
+ *
+ * Both directions do work beyond flipping the flag, and both must run
+ * even when the flag already holds the target value — a caller that
+ * collapses twice is still asking for "the width on screen is safe"
+ * both times:
+ *
+ *   - Collapsing FLUSHES the current width first. Collapsing while a
+ *     resize drag is live tears the resizer down, and
+ *     `createResizeGesture.destroy()` deliberately does not call
+ *     `onResizeEnd` — without this flush the width the user just
+ *     dragged to would be the one thing the collapse threw away.
+ *   - Expanding RE-CLAMPS. Nothing re-clamps a width nobody is
+ *     rendering, so a window shrunk while collapsed would otherwise
+ *     bring the sidebar back over the main pane's reserve.
+ */
+export function setSidebarCollapsed(next: boolean): void {
+  if (next) {
+    persistSidebarWidth();
+  } else {
+    width = clamp(width);
+    persistSidebarWidth();
+  }
+  collapsed = next;
+  appStorageSet(COLLAPSED_KEY, next ? '1' : '0');
+}
+
+export function toggleSidebarCollapsed(): void {
+  setSidebarCollapsed(!collapsed);
 }
 
 /**
@@ -82,19 +140,25 @@ export function setSidebarWidth(next: number): void {
 }
 
 /**
- * Re-read the width after appStorage hydration lands the server-side
+ * Re-read both slices after appStorage hydration lands the server-side
  * bucket. In-memory state seeded from the pre-hydration cache adopts
- * the durable value unless they already agree.
+ * the durable value unless they already agree. Neither key is written
+ * back here — hydration is an adoption, not a user action, so it must
+ * not fire the flush/re-clamp `setSidebarCollapsed` owes a real toggle.
  */
-export function syncSidebarWidthFromAppStorage(): void {
+export function syncSidebarLayoutFromAppStorage(): void {
   const raw = appStorageGet(WIDTH_KEY);
-  if (raw === null) return;
-  const parsed = Number.parseFloat(raw);
-  if (!Number.isFinite(parsed)) return;
-  const clamped = clamp(parsed);
-  if (clamped !== width) {
-    width = clamped;
+  if (raw !== null) {
+    const parsed = Number.parseFloat(raw);
+    if (Number.isFinite(parsed)) {
+      const clamped = clamp(parsed);
+      if (clamped !== width) width = clamped;
+    }
   }
+  const rawCollapsed = appStorageGet(COLLAPSED_KEY);
+  if (rawCollapsed === null) return;
+  const nextCollapsed = rawCollapsed === '1';
+  if (nextCollapsed !== collapsed) collapsed = nextCollapsed;
 }
 
 /** Viewport-derived maximum — callers use this to render a resize-cap
@@ -107,4 +171,5 @@ export function getSidebarMaxWidth(): number {
  *  appStorage separately (resetAppStorageForTest). */
 export function resetSidebarLayoutForTest(): void {
   width = DEFAULT_WIDTH;
+  collapsed = false;
 }

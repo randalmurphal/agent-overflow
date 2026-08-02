@@ -21,23 +21,28 @@ type planBuffer struct {
 	truncated bool
 }
 
-func (s *Session) classifyNotificationWithBufferedPlan(method string, params json.RawMessage) []provider.ProviderEvent {
-	events := ClassifyNotification(s.threadID, method, params)
+// classifyNotificationWithBufferedPlan classifies a notification and folds
+// in any buffered plan text. The second return is the classifier's
+// "did anyone claim this method?" answer, propagated so the caller can
+// surface protocol drift; it is unaffected by the plan buffering, which
+// only ever enriches an already-claimed item/completed.
+func (s *Session) classifyNotificationWithBufferedPlan(method string, params json.RawMessage) ([]provider.ProviderEvent, bool) {
+	events, handled := classifyNotification(s.threadID, method, params)
 	if method != "item/completed" || classifyCodexItemType(params) != "plan" {
-		return events
+		return events, handled
 	}
 	itemID := readNestedString(params, "item", "id")
 	turnID := readTopLevelString(params, "turnId")
 	buffered := s.takePlanBuffer(itemID, turnID)
 	if buffered == "" {
-		return events
+		return events, handled
 	}
 	for i := range events {
 		if events[i].Kind == provider.EventProposedPlan {
 			if events[i].Content == "" {
 				events[i].Content = buffered
 			}
-			return events
+			return events, handled
 		}
 	}
 	return []provider.ProviderEvent{{
@@ -49,7 +54,7 @@ func (s *Session) classifyNotificationWithBufferedPlan(method string, params jso
 		Content:   buffered,
 		Meta:      params,
 		Timestamp: time.Now(),
-	}}
+	}}, handled
 }
 
 func (s *Session) appendPlanDelta(params json.RawMessage) {

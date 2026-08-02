@@ -359,27 +359,45 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 
 // sessionProcessEnv is the ONE place a provider subprocess's environment is
 // assembled, so anything the app injects reaches Claude and Codex identically:
+// the user's custom environment for that provider (settings, applied at spawn),
 // the boot-mode overrides (providerExtraEnv — the harness's mock-control
 // credentials), the session's CLI credential (AO_ENDPOINT / AO_TOKEN /
 // AO_THREAD_ID, plus AO_RUN_ID / AO_PHASE_ID for a workflow phase), and the
 // PATH entry that makes `agent-overflow` resolve to this executable (D30).
 //
-// Precedence is provider config < boot-mode overrides < AO credential. The AO
-// names are the app's own contract with the CLI, so nothing may shadow them.
-// The contract itself — which variable is set for which kind of session, and
-// what the CLI does when one is missing — lives in internal/aocli/AGENTS.md,
-// next to the code that reads it.
+// Precedence is provider config < user custom env < boot-mode overrides < AO
+// credential. The user's environment outranks the provider config because it
+// is a deliberate override of AO's defaults; it sits below the last two because
+// those are contracts, not preferences — the AO names are how the CLI finds its
+// own app, and the harness's mock control channel must not be reconfigurable
+// from user settings. In practice the layers cannot collide: every name AO
+// injects is reserved at the settings boundary (settings.providerenv.go), so a
+// user value that would have been shadowed here is refused on save instead of
+// vanishing at spawn. The contract itself — which variable is set for which
+// kind of session, and what the CLI does when one is missing — lives in
+// internal/aocli/AGENTS.md, next to the code that reads it.
 //
 // PATH is the one entry that merges rather than wins: whatever a provider
 // config or boot-mode override put there is kept, with the CLI's directory in
 // front. A session that can reach the command but lost its own PATH would be a
 // worse trade than the other way round.
-func (a *App) sessionProcessEnv(env map[string]string, credential aoSessionCredential) map[string]string {
-	if len(a.providerExtraEnv) == 0 && len(credential.env) == 0 && a.cliBinDir == "" {
+func (a *App) sessionProcessEnv(
+	providerName string,
+	env map[string]string,
+	credential aoSessionCredential,
+) map[string]string {
+	custom := a.providerCustomEnv(providerName)
+	if len(custom) == 0 && len(a.providerExtraEnv) == 0 && len(credential.env) == 0 && a.cliBinDir == "" {
 		return env
 	}
-	merged := make(map[string]string, len(env)+len(a.providerExtraEnv)+len(credential.env)+1)
+	merged := make(
+		map[string]string,
+		len(env)+len(custom)+len(a.providerExtraEnv)+len(credential.env)+1,
+	)
 	for k, v := range env {
+		merged[k] = v
+	}
+	for k, v := range custom {
 		merged[k] = v
 	}
 	for k, v := range a.providerExtraEnv {
@@ -425,7 +443,7 @@ func (a *App) spawnProviderSession(
 			cfg.OutputSchema = string(workflowSchema)
 		}
 		cfg.Binary = a.providerBinaryPath(t.Provider)
-		cfg.Env = a.sessionProcessEnv(cfg.Env, credential)
+		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
 		cfg.MergeMCPServers = designCfg.MergeMCPServers
@@ -450,7 +468,7 @@ func (a *App) spawnProviderSession(
 	case string(provider.Codex):
 		cfg := codex.ConfigFromOptions(opts)
 		cfg.Binary = a.providerBinaryPath(t.Provider)
-		cfg.Env = a.sessionProcessEnv(cfg.Env, credential)
+		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
@@ -539,7 +557,19 @@ func (a *App) spawnProviderSession(
 		// override map, so the shared rule is applied here instead of inside
 		// the provider package. Skipping this branch would leave one provider
 		// silently without the boot-mode overrides and the ao credential.
-		cfg.Env = provider.BuildEnvironment(a.sessionProcessEnv(nil, credential))
+		//
+		// The TUI shares Claude's custom environment (one binary, one backend),
+		// with one variable it cannot take through the process env:
+		// ANTHROPIC_BASE_URL names the per-session loopback gateway for the
+		// child, and claudetui's buildEnv strips any inherited value. Handing it
+		// to the gateway's upstream instead is what keeps the interactive
+		// provider on the same backend as the headless one — dropping it here
+		// would silently run take-control sessions against api.anthropic.com
+		// while every other Claude surface used the user's endpoint.
+		cfg.Env = provider.BuildEnvironment(
+			a.sessionProcessEnv(string(provider.ClaudeTUI), nil, credential),
+		)
+		cfg.Upstream = a.claudetuiUpstream()
 		cfg.EventLogger = a.logger
 		sess, err := claudetui.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {

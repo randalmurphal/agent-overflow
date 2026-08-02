@@ -28,30 +28,42 @@ var codexRetryCountsRE = regexp.MustCompile(`(?:^|[^0-9])(\d{1,5})/(\d{1,5})(?:[
 // falls through to the next group. Adding a new method means editing the
 // dispatcher for its family, not the top-level switch.
 func ClassifyNotification(threadID, method string, params json.RawMessage) []provider.ProviderEvent {
+	events, _ := classifyNotification(threadID, method, params)
+	return events
+}
+
+// classifyNotification is ClassifyNotification plus the answer to "did any
+// dispatcher claim this method?". The bool is what makes protocol drift
+// visible (the caller logs an unclaimed method once per session) and what
+// makes the initialize-time opt-out list self-maintaining (an unclaimed
+// method is one we can ask Codex to stop sending) — see
+// notification_catalog.go. Returning no events is NOT the same answer:
+// plenty of claimed methods deliberately produce none.
+func classifyNotification(threadID, method string, params json.RawMessage) ([]provider.ProviderEvent, bool) {
 	now := time.Now()
 
 	if events, ok := classifyTurnNotification(threadID, method, params, now); ok {
-		return events
+		return events, true
 	}
 	if events, ok := classifyItemNotification(threadID, method, params, now); ok {
-		return events
+		return events, true
 	}
 	if events, ok := classifyRawResponseNotification(threadID, method, params, now); ok {
-		return events
+		return events, true
 	}
 	if events, ok := classifyThreadNotification(threadID, method, params, now); ok {
-		return events
+		return events, true
 	}
 	if events, ok := classifyAccountNotification(threadID, method, params, now); ok {
-		return events
+		return events, true
 	}
 	if events, ok := classifyHookNotification(threadID, method, params, now); ok {
-		return events
+		return events, true
 	}
 	if events, ok := classifyMiscNotification(threadID, method, params, now); ok {
-		return events
+		return events, true
 	}
-	return nil
+	return nil, false
 }
 
 func classifyHookNotification(threadID, method string, params json.RawMessage, now time.Time) ([]provider.ProviderEvent, bool) {

@@ -23,6 +23,20 @@ import (
 
 const workflowSetupOutputTailBytes = 16 * 1024
 
+// The two variables every `worktree_setup.run` command is given. A setup recipe
+// has to be able to name both checkouts — "symlink .env back to the main
+// checkout" is the canonical one — and it can name neither on its own: the
+// worktree path is generated per item, and the project root is not the
+// command's working directory. Without them the only expressible recipe is a
+// `copy:` glob, which snapshots and then silently diverges.
+//
+// The contract is documented for authors in internal/workflow/profile/AGENTS.md,
+// next to the `worktree_setup` authoring format.
+const (
+	workflowSetupProjectRootEnv  = "AO_PROJECT_ROOT"
+	workflowSetupWorktreePathEnv = "AO_WORKTREE_PATH"
+)
+
 func runWorkflowWorktreeSetup(ctx context.Context, projectRoot, worktreeRoot string, setup profile.WorktreeSetup) error {
 	if err := copyWorkflowSetupEntries(ctx, projectRoot, worktreeRoot, setup.Copy); err != nil {
 		return err
@@ -37,6 +51,10 @@ func runWorkflowWorktreeSetup(ctx context.Context, projectRoot, worktreeRoot str
 	if err != nil || timeout <= 0 {
 		return fmt.Errorf("invalid worktree setup timeout %q", setup.Timeout)
 	}
+	commandEnv, err := workflowSetupEnv(projectRoot, worktreeRoot)
+	if err != nil {
+		return err
+	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for _, argv := range setup.Run {
@@ -46,6 +64,7 @@ func runWorkflowWorktreeSetup(ctx context.Context, projectRoot, worktreeRoot str
 		tail := newWorkflowTailBuffer(workflowSetupOutputTailBytes)
 		command := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 		command.Dir = worktreeRoot
+		command.Env = commandEnv
 		command.Stdout = tail
 		command.Stderr = tail
 		configureWorkflowCommand(command)
@@ -58,6 +77,34 @@ func runWorkflowWorktreeSetup(ctx context.Context, projectRoot, worktreeRoot str
 		}
 	}
 	return nil
+}
+
+// workflowSetupEnv renders the environment for every setup command: the app's
+// own environment so PATH and the user's toolchain survive, plus the two
+// checkout paths.
+//
+// Both are absolutised here rather than trusted from the caller, so the
+// contract "these are absolute" holds for whatever a project row or worktree
+// record happens to contain. filepath.Abs resolves against the same working
+// directory exec resolves a relative command.Dir against, so the variables can
+// never name a different tree than the command actually runs in.
+//
+// They are appended last on purpose: os/exec keeps the final occurrence of a
+// duplicated key, so an AO_PROJECT_ROOT the app itself inherited (launching the
+// app from inside an agent session is normal) cannot shadow the real one.
+func workflowSetupEnv(projectRoot, worktreeRoot string) ([]string, error) {
+	absoluteProjectRoot, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project root %q for worktree setup: %w", projectRoot, err)
+	}
+	absoluteWorktreeRoot, err := filepath.Abs(worktreeRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve worktree path %q for worktree setup: %w", worktreeRoot, err)
+	}
+	return append(os.Environ(),
+		workflowSetupProjectRootEnv+"="+absoluteProjectRoot,
+		workflowSetupWorktreePathEnv+"="+absoluteWorktreeRoot,
+	), nil
 }
 
 func copyWorkflowSetupEntries(ctx context.Context, projectRoot, worktreeRoot string, patterns []string) error {

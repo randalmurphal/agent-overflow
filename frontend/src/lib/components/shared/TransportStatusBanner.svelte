@@ -17,6 +17,13 @@
   // the backoff loop has settled into a long delay and the user wants
   // to force an attempt sooner. It calls wsClient.triggerReconnect via
   // the store, which resets the backoff counter.
+  //
+  // 'unauthorized' is the one state retrying cannot resolve: the
+  // backend answered and refused this session's token, which is what a
+  // remote/LAN client sees after the backend restarts (tokens are
+  // minted per launch). The loop keeps running underneath — Retry is
+  // still honest — but the message has to name the action that
+  // actually works, otherwise the user watches "Reconnecting…" forever.
 
   import { fade } from 'svelte/transition';
   import { getTransportStatus, retryTransport } from '../../stores/transportStatus.svelte';
@@ -107,6 +114,9 @@
       }
       return 'Reconnecting…';
     }
+    if (snapshot.status === 'unauthorized') {
+      return 'The backend restarted. Reopen the share link to reconnect.';
+    }
     return 'Disconnected from the agent backend.';
   });
 
@@ -140,7 +150,7 @@
     class="absolute inset-x-0 top-0 z-50 border-b {bannerClasses} px-4 py-1.5 flex items-center gap-2 text-xs"
   >
     <p class="flex-1 line-clamp-1" title={message}>{message}</p>
-    {#if snapshot.status === 'disconnected' || snapshot.status === 'reconnecting'}
+    {#if snapshot.status !== 'connected'}
       <button
         type="button"
         onclick={handleRetry}

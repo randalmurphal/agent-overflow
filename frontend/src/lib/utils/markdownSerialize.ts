@@ -141,6 +141,12 @@ function serializeNode(node: Node, ctx: SerializeContext): string {
       // partial-selection clone may include a bare <li> at the
       // fragment root.
       return serializeListItem(el, ctx);
+    case 'input':
+      // The only <input> the markdown pipeline renders is a GFM task-list
+      // checkbox, and the owning <li> emits its `[x]`/`[ ]` marker (see
+      // taskMarkerFor). Emitting nothing here keeps a checkbox caught by a
+      // partial selection from duplicating that marker.
+      return '';
     case 'pre':
       return serializePre(el);
     case 'table':
@@ -277,12 +283,33 @@ function parseListStart(startAttr: string | null): number {
   return Number.isFinite(parsed) ? parsed : 1;
 }
 
+/**
+ * `[x] ` / `[ ] ` for a GFM task-list item, `''` for a plain one.
+ *
+ * svelte-streamdown renders `- [x] done` as
+ * `<li><input type="checkbox" checked disabled>done</li>`, so the checked
+ * state lives only on the input — the visible text carries none of it and
+ * the browser default copy drops it entirely. Checkedness is read from the
+ * IDL property first (Svelte sets the property, never the attribute) with
+ * the attribute as the fallback for markup-built DOM.
+ */
+function taskMarkerFor(el: HTMLElement): string {
+  const box = el.querySelector<HTMLInputElement>(':scope > input[type="checkbox"]');
+  if (!box) return '';
+  return box.checked || box.hasAttribute('checked') ? '[x] ' : '[ ] ';
+}
+
 function serializeListItem(el: HTMLElement, ctx: SerializeContext): string {
   const stack = ctx.listStack;
-  if (stack.length === 0) return serializeChildren(el, ctx);
+  const task = taskMarkerFor(el);
+  const rendered = serializeChildren(el, ctx);
+  // The rendered text follows the checkbox with no separator of its own, so
+  // any leading run is layout whitespace, not content.
+  const body = task ? task + rendered.replace(/^[ \t]+/, '') : rendered;
+  if (stack.length === 0) return body;
   const current = stack[stack.length - 1];
   const marker = current.kind === 'ol' ? `${current.index}. ` : '- ';
-  const inner = serializeChildren(el, ctx).replace(/\n+$/, '');
+  const inner = body.replace(/\n+$/, '');
   const lines = inner.length === 0 ? [''] : inner.split('\n');
   const padding = ' '.repeat(marker.length);
   const formatted = lines

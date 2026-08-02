@@ -13,6 +13,8 @@
 
 import type { ComposerMentionsHandle } from './composerMentions.svelte';
 import type { ComposerSlashHandle } from './composerSlash.svelte';
+import { isImeComposingEvent } from '../../utils/imeComposition';
+
 export type PopoverAction =
   | { kind: 'move'; nextIndex: number }
   | { kind: 'insert' }
@@ -53,6 +55,25 @@ export function popoverNav({ key, activeIndex, itemCount }: PopoverNavArgs): Pop
 }
 
 /**
+ * Keystrokes an open popover must never claim, whichever menu is open.
+ * `popoverNav` reduces over key names alone, so both facts — the modifier
+ * and the IME state — have to be settled before it is consulted.
+ */
+function popoverYieldsKey(e: KeyboardEvent): boolean {
+  // Shift+Tab is reserved for the global `mode.cycle` chord even when
+  // a popover is open. `popoverNav` collapses Tab and Enter into a
+  // single `insert` action without inspecting the shift modifier, so
+  // without this guard Shift+Tab while typing `@foo` would insert the
+  // active item instead of cycling chat ↔ plan.
+  if (e.key === 'Tab' && e.shiftKey) return true;
+  // Mid-IME-composition, both insert keys belong to the IME: Enter confirms
+  // the candidate and Tab walks the candidate list. Inserting the highlighted
+  // completion here would replace the still-composing text.
+  if ((e.key === 'Enter' || e.key === 'Tab') && isImeComposingEvent(e)) return true;
+  return false;
+}
+
+/**
  * Handle a keydown against an open mention popover. Returns `true` when
  * the keystroke was consumed (caller must not fall through), `false`
  * when the caller should continue its own logic (e.g. Enter to send).
@@ -61,12 +82,7 @@ export function handleMentionPopoverKeydown(
   e: KeyboardEvent,
   mentions: ComposerMentionsHandle,
 ): boolean {
-  // Shift+Tab is reserved for the global `mode.cycle` chord even when
-  // a popover is open. `popoverNav` collapses Tab and Enter into a
-  // single `insert` action without inspecting the shift modifier, so
-  // without this guard Shift+Tab while typing `@foo` would insert the
-  // active item instead of cycling chat ↔ plan.
-  if (e.key === 'Tab' && e.shiftKey) return false;
+  if (popoverYieldsKey(e)) return false;
   if (mentions.mentionTrigger) {
     const action = popoverNav({
       key: e.key,
@@ -108,8 +124,7 @@ export function handleSlashPopoverKeydown(
   e: KeyboardEvent,
   slash: ComposerSlashHandle,
 ): boolean {
-  // Shift+Tab stays the global `mode.cycle` chord, exactly as for mentions.
-  if (e.key === 'Tab' && e.shiftKey) return false;
+  if (popoverYieldsKey(e)) return false;
   if (!slash.slashTrigger) return false;
 
   const action = popoverNav({

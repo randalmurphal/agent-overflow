@@ -89,9 +89,18 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	// initialize is required before any other request — Codex enforces
 	// the JSON-RPC v2 handshake. The client info is for forensics; the
 	// response payload is ignored.
+	//
+	// Deliberately not codexInitializeParams: this fetcher makes exactly
+	// one non-experimental call (`mcpServerStatus/list`), so opting a
+	// throwaway process into the experimental API would buy nothing and
+	// change what the server is willing to emit. It still opts out of
+	// every notification — it awaits none, and `call` would otherwise
+	// decode each one just to discard it.
 	initParams := map[string]any{
 		"protocolVersion": "2025-06-18",
-		"capabilities":    map[string]any{},
+		"capabilities": map[string]any{
+			"optOutNotificationMethods": oneShotOptOutNotificationMethods(),
+		},
 		"clientInfo": map[string]any{
 			"name":    "agent-overflow-mcpstatus",
 			"version": "0.1.0",
@@ -144,16 +153,37 @@ func MCPStatusFromList(authStatus string, toolCount int) mcpstatus.Status {
 	}
 }
 
+// MCPFailureReasonReauthRequired is the sole variant of upstream's
+// McpStartupFailureReason enum (camelCase on the v2 wire; the internal
+// protocol spells it `reauthentication_required`). Verified present in
+// the codex-cli 0.146.0 binary's schema table and observed as
+// `"failureReason": null` on every healthy update in the 2026-08-02
+// spike capture. It means the server's stored OAuth grant is no longer
+// usable — the fix is a sign-in, not a retry.
+const MCPFailureReasonReauthRequired = "reauthenticationRequired"
+
 // MCPStatusFromNotif projects a `mcpServer/startupStatus/updated`
 // payload onto the unified mcpstatus.Status. Wire values per Codex
 // protocol:
 //
-//	"starting"  → StatusStarting
-//	"ready"     → StatusConnected
-//	"failed"    → StatusFailed
-//	"cancelled" → StatusFailed
-func MCPStatusFromNotif(startupState string) mcpstatus.Status {
-	switch strings.TrimSpace(startupState) {
+//	"starting"                             → StatusStarting
+//	"ready"                                → StatusConnected
+//	"failed" + reauthenticationRequired    → StatusNeedsAuth
+//	"failed"                               → StatusFailed
+//	"cancelled"                            → StatusFailed
+//
+// It takes the whole update rather than the state string on purpose: a
+// caller holding only the state cannot tell an expired grant from a
+// broken server, and a projection that silently loses that distinction
+// is the bug this signature prevents. Only the exact known reason is
+// honoured — a future variant falls through to the state mapping instead
+// of being guessed into a sign-in prompt.
+func MCPStatusFromNotif(update MCPStartupUpdate) mcpstatus.Status {
+	state := strings.TrimSpace(update.State)
+	if strings.TrimSpace(update.FailureReason) == MCPFailureReasonReauthRequired {
+		return mcpstatus.StatusNeedsAuth
+	}
+	switch state {
 	case "starting":
 		return mcpstatus.StatusStarting
 	case "ready":

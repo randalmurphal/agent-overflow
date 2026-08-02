@@ -83,6 +83,26 @@ import type { CommentListItem } from '../utils/reviewComments';
 
 export type ReviewScope = DiffReviewScope;
 
+/** Whether the diff for this selection comes from `internal/gitdiff`, the
+ * only source that can apply `-w`:
+ *
+ * - workspace / branch — `GetWorkspaceCurrentDiff` / `GetBranchBaseDiff`.
+ * - any selected commit, including in pr scope — `GetCommitDiff` /
+ *   `GetPRCommitDiff`.
+ * - pr whole-diff — NO. It is a local `git diff --merge-base` when the
+ *   thread has a clone and the forge's own diff API when it doesn't, and
+ *   the API cannot ignore whitespace at all. A toggle that quietly worked
+ *   only for cloned threads is worse than no toggle.
+ * - edits — NO. Those are persisted tool-call patches replayed verbatim,
+ *   never a git recomputation.
+ *
+ * Shared by the toolbar's enablement and by loadPatch, so the control can
+ * never offer a mode the load path won't deliver. */
+export function supportsIgnoreWhitespace(scope: ReviewScope, selectedCommitSHA: string | null): boolean {
+  if (selectedCommitSHA) return scope === 'branch' || scope === 'pr';
+  return scope === 'workspace' || scope === 'branch';
+}
+
 /** One edit tool call in the Edits selector — metadata only, the diff
  * loads on selection. Mirrors the ListThreadEditDiffs wire entry. */
 export interface EditDiffEntryView {
@@ -180,6 +200,11 @@ export interface ReviewPaneState {
   readonly expandedPRThreadIds: SvelteSet<string>;
   readonly viewMode: 'stacked' | 'split';
   readonly wordWrap: boolean;
+  /** "Hide whitespace changes" (`-w`). Per pane, default off, not persisted. */
+  readonly ignoreWhitespace: boolean;
+  /** Whether the current diff source can honor `ignoreWhitespace` — only
+   * the gitdiff-backed patches can. See supportsIgnoreWhitespace. */
+  readonly canIgnoreWhitespace: boolean;
   setScope(scope: ReviewScope, opts?: { baseBranch?: string }): Promise<void>;
   /** Switch the loaded diff to a single commit (null → full range). */
   selectCommit(sha: string | null): Promise<void>;
@@ -234,6 +259,9 @@ export interface ReviewPaneState {
   toggleCollapseAll(): Promise<void>;
   setViewMode(mode: 'stacked' | 'split'): void;
   setWordWrap(wrap: boolean): void;
+  /** Flips `-w` and re-requests the diff (the patch itself changes, so
+   * this is a full reload, not a view toggle). */
+  setIgnoreWhitespace(ignore: boolean): Promise<void>;
   dispose(): void;
 }
 
@@ -450,6 +478,11 @@ function createReviewPaneState(
   const collapseOverrides = new Map<string, boolean>();
   let viewMode: 'stacked' | 'split' = $state('stacked');
   let wordWrap = $state(getSettings().diffWordWrap);
+  // "Hide whitespace changes" (`-w`). Unlike viewMode/wordWrap this is
+  // NOT a render option: it changes the patch git produces, so flipping
+  // it re-requests the diff. Per pane and deliberately not persisted —
+  // a hidden `-w` restored at startup would silently understate a diff.
+  let ignoreWhitespace = $state(false);
   // Edits-scope files whose expansion attempt was refused (workspace
   // drifted from the historical diff): their gap rows retire for this
   // load. Cleared with the expansions on every reload.
@@ -550,6 +583,12 @@ function createReviewPaneState(
     }
     return files.length > 0 && files.every((file) => collapsedPaths.has(file.path));
   });
+  // The conflict viewer and the CI log view replace the diff body outright,
+  // so flipping `-w` from either would reload a surface the user isn't
+  // looking at.
+  const canIgnoreWhitespace = $derived(
+    !conflictView && ciLogView === null && supportsIgnoreWhitespace(scope, selectedCommitSHA),
+  );
   const comments = $derived(getDiffReviewComments(threadId, scope, sourceKey));
   const drafts = $derived(comments.filter((comment) => comment.status === 'draft'));
   const isTurnActive = $derived(getActiveTurn(threadId) !== null);
@@ -693,6 +732,25 @@ function createReviewPaneState(
     await reload({ selectionOnly: true });
   }
 
+  async function setIgnoreWhitespace(ignore: boolean): Promise<void> {
+    if (ignore === ignoreWhitespace) return;
+    ignoreWhitespace = ignore;
+    // THIS IS A FULL DIFF RE-REQUEST, NOT A RENDER TOGGLE, and that cost
+    // is accepted deliberately. `-w` changes the patch git emits — hunks
+    // narrow, whitespace-only files vanish — so there is no projection of
+    // the `-w` view out of the patch already in hand. Everything derived
+    // from the patch text has to be rebuilt: parsed files, the px-pinned
+    // row geometry, and the highlight-span cache (keyed by line content).
+    // `selectionOnly` keeps it to the diff call — the commit/edit lists
+    // and the PR subscription describe the same subject either way.
+    openEditors = [];
+    draftBodies.clear();
+    // Collapse overrides deliberately SURVIVE, unlike selectCommit/selectEdit:
+    // those switch which change is under review, whereas this shows the same
+    // change with less noise. A file the user opened stays open.
+    await reload({ selectionOnly: true });
+  }
+
   async function selectEdit(key: string | null): Promise<void> {
     const next = editSelectionFromKey(key, edits);
     if (editSelectionKey(next) === editSelectionKey(selectedEdit)) return;
@@ -748,6 +806,10 @@ function createReviewPaneState(
         selectedCommitSHA,
         prRef,
         { pinnedItemId: pinnedEditItemID, current: selectedEdit },
+        // Gate on support, not just the flag: a scope switch can leave the
+        // toggle on while the new source can't honor it, and passing it
+        // anyway would make the button's state a lie.
+        ignoreWhitespace && canIgnoreWhitespace,
         selectionOnly ? { commits, prDetail, edits, editTurnLabels } : undefined,
       );
       if (seq !== loadSeq || disposed) {
@@ -1387,11 +1449,31 @@ function createReviewPaneState(
     await load;
   }
 
+  // Orphan detection is only needed where a sourceKey outlives the patch
+  // it was written against, so a draft can survive into a diff that no
+  // longer shows its line:
+  //
+  //   - pr scope keys by PR number, so drafts survive head pushes.
+  //   - a selected commit keys by SHA (`commit:<sha>`). The commit's
+  //     content is immutable, but the RENDERED patch is not: `-w` drops
+  //     the whitespace-only rows, so a draft anchored on one of them
+  //     carries over with nowhere to land. Without this it would be
+  //     invisible in the diff body yet still counted and still sent.
+  //
+  // Everything else content-hashes the patch, so a changed patch means a
+  // changed key and no draft can carry over in the first place.
+  // The `-w` half re-uses supportsIgnoreWhitespace rather than testing
+  // selectedCommitSHA alone, so a SHA left over from another scope can
+  // never turn this on somewhere the toggle was never applied.
+  const sourceKeyOutlivesPatch = $derived(
+    scope === 'pr'
+    || (ignoreWhitespace && selectedCommitSHA !== null && supportsIgnoreWhitespace(scope, selectedCommitSHA)),
+  );
   // Derived, not computed per call: the template asks per rendered comment
   // row, and anchor existence walks every file's display rows.
   const orphanedIds = $derived.by(() => {
     const out = new SvelteSet<string>();
-    if (scope !== 'pr') return out;
+    if (!sourceKeyOutlivesPatch) return out;
     for (const comment of drafts) {
       if (!draftAnchorExists(files, comment)) out.add(comment.id);
     }
@@ -1461,6 +1543,8 @@ function createReviewPaneState(
     get expandedPRThreadIds() { return expandedPRThreadIds; },
     get viewMode() { return viewMode; },
     get wordWrap() { return wordWrap; },
+    get ignoreWhitespace() { return ignoreWhitespace; },
+    get canIgnoreWhitespace() { return canIgnoreWhitespace; },
 
     setScope,
     selectCommit,
@@ -1553,6 +1637,7 @@ function createReviewPaneState(
     setWordWrap(wrap: boolean): void {
       wordWrap = wrap;
     },
+    setIgnoreWhitespace,
     dispose,
   };
 }
@@ -1654,16 +1739,20 @@ async function loadPatch(
   selectedCommitSHA: string | null,
   prRef: PRRef | null,
   editDesire: EditDesire,
+  // `-w`, applied only by the branches whose binding accepts it — see
+  // supportsIgnoreWhitespace. The unsupported calls take no such argument,
+  // so the flag structurally cannot reach a source that would ignore it.
+  ignoreWhitespace: boolean,
   existing?: ExistingLoad,
 ): Promise<LoadedPatch> {
   switch (scope) {
     case 'pr': {
       if (!prRef) throw new Error('No PR or MR is available for this thread.');
-      if (existing) return loadPRPatchCommitOnly(threadId, prRef, selectedCommitSHA, existing);
-      return loadPRPatch(threadId, prRef, selectedCommitSHA);
+      if (existing) return loadPRPatchCommitOnly(threadId, prRef, selectedCommitSHA, ignoreWhitespace, existing);
+      return loadPRPatch(threadId, prRef, selectedCommitSHA, ignoreWhitespace);
     }
     case 'workspace':
-      return { patchText: ((await GetWorkspaceCurrentDiff(threadId)) ?? '') as string };
+      return { patchText: ((await GetWorkspaceCurrentDiff(threadId, ignoreWhitespace)) ?? '') as string };
     case 'edits': {
       let entries = existing?.edits;
       let turnLabels = existing?.editTurnLabels;
@@ -1702,8 +1791,8 @@ async function loadPatch(
       if (existing) {
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
         const patchText = commitSHA
-          ? ((await GetCommitDiff(threadId, commitSHA)) ?? '') as string
-          : ((await GetBranchBaseDiff(threadId, branch)) ?? '') as string;
+          ? ((await GetCommitDiff(threadId, commitSHA, ignoreWhitespace)) ?? '') as string
+          : ((await GetBranchBaseDiff(threadId, branch, ignoreWhitespace)) ?? '') as string;
         return { patchText, commits: existing.commits, selectedCommitSHA: commitSHA };
       }
       if (selectedCommitSHA) {
@@ -1712,13 +1801,13 @@ async function loadPatch(
         const commits = ((await ListBranchCommits(threadId, branch)) ?? []) as BranchCommit[];
         const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
         const patchText = commitSHA
-          ? ((await GetCommitDiff(threadId, commitSHA)) ?? '') as string
-          : ((await GetBranchBaseDiff(threadId, branch)) ?? '') as string;
+          ? ((await GetCommitDiff(threadId, commitSHA, ignoreWhitespace)) ?? '') as string
+          : ((await GetBranchBaseDiff(threadId, branch, ignoreWhitespace)) ?? '') as string;
         return { patchText, commits, selectedCommitSHA: commitSHA };
       }
       const [commits, patchText] = await Promise.all([
         ListBranchCommits(threadId, branch).then((rows) => (rows ?? []) as BranchCommit[]),
-        GetBranchBaseDiff(threadId, branch).then((patch) => (patch ?? '') as string),
+        GetBranchBaseDiff(threadId, branch, ignoreWhitespace).then((patch) => (patch ?? '') as string),
       ]);
       return { patchText, commits, selectedCommitSHA: null };
     }
@@ -1729,6 +1818,7 @@ async function loadPRPatch(
   threadId: string,
   ref: PRRef,
   selectedCommitSHA: string | null,
+  ignoreWhitespace: boolean,
 ): Promise<LoadedPatch> {
   const pr = prReference(ref);
   // The subscription resolves the PR detail, whose baseRefName the diff
@@ -1747,8 +1837,10 @@ async function loadPRPatch(
       ? (((await ListPRCommits(threadId, pr, baseRef, headSHA)) ?? []) as BranchCommit[])
       : [];
     const commitSHA = resolveSelectedCommit(selectedCommitSHA, commits);
+    // GetPRDiff takes no ignoreWhitespace: the PR whole-diff can come from
+    // the forge API, which cannot ignore whitespace at all.
     const patchText = commitSHA
-      ? String((await GetPRCommitDiff(threadId, pr, commitSHA)) ?? '')
+      ? String((await GetPRCommitDiff(threadId, pr, commitSHA, ignoreWhitespace)) ?? '')
       : String((await GetPRDiff(threadId, pr, baseRef)) ?? '');
     return {
       patchText,
@@ -1772,13 +1864,14 @@ async function loadPRPatchCommitOnly(
   threadId: string,
   ref: PRRef,
   selectedCommitSHA: string | null,
+  ignoreWhitespace: boolean,
   existing: ExistingLoad,
 ): Promise<LoadedPatch> {
   const pr = prReference(ref);
   const baseRef = existing.prDetail?.baseRefName ?? '';
   const commitSHA = resolveSelectedCommit(selectedCommitSHA, existing.commits);
   const patchText = commitSHA
-    ? String((await GetPRCommitDiff(threadId, pr, commitSHA)) ?? '')
+    ? String((await GetPRCommitDiff(threadId, pr, commitSHA, ignoreWhitespace)) ?? '')
     : String((await GetPRDiff(threadId, pr, baseRef)) ?? '');
   return { patchText, commits: existing.commits, selectedCommitSHA: commitSHA };
 }

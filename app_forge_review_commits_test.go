@@ -107,7 +107,7 @@ func TestListPRCommitsWithKnownHeadSkipsFetch(t *testing.T) {
 
 	// GetPRCommitDiff takes the same no-fetch fast path when the commit
 	// is already local.
-	patch, err := app.GetPRCommitDiff(threadID, prRef(), prSHAs[0])
+	patch, err := app.GetPRCommitDiff(threadID, prRef(), prSHAs[0], false)
 	if err != nil {
 		t.Fatalf("GetPRCommitDiff() with local commit error = %v", err)
 	}
@@ -129,7 +129,7 @@ func TestGetPRCommitDiffFromLocalClone(t *testing.T) {
 	app := newTestAppWithStore(t)
 	threadID, prSHAs := prCloneFixture(t, app)
 
-	patch, err := app.GetPRCommitDiff(threadID, prRef(), prSHAs[0])
+	patch, err := app.GetPRCommitDiff(threadID, prRef(), prSHAs[0], false)
 	if err != nil {
 		t.Fatalf("GetPRCommitDiff() error = %v", err)
 	}
@@ -149,7 +149,7 @@ func TestGetPRCommitDiffWithoutCloneErrors(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	if _, err := app.GetPRCommitDiff(thread.ID, prRef(), strings.Repeat("a", 40)); err == nil {
+	if _, err := app.GetPRCommitDiff(thread.ID, prRef(), strings.Repeat("a", 40), false); err == nil {
 		t.Fatal("expected error without a local clone")
 	}
 }

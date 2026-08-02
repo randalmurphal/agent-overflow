@@ -43,7 +43,10 @@ func (f *gitlabForge) CreatePR(cwd, title, body, base string, draft bool) (strin
 	if draft {
 		args = append(args, "--draft")
 	}
-	result, err := f.core.runBinary("glab", cwd, args...)
+	// Interactive for the same reason as `gh pr create`: glab pushes the
+	// source branch itself when the remote does not have it yet, and that
+	// nested `git push` inherits our environment.
+	result, err := f.core.runBinaryInteractive("glab", cwd, args...)
 	if err != nil {
 		return "", normalizeGitLabCLIError(err)
 	}

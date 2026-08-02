@@ -75,30 +75,53 @@ with bounded read-only `thread/read` calls and resumes only currently-active
 children for notification subscription. See
 [`codex-wire.md §Collab agent lifecycle`](codex-wire.md#collab-agent-lifecycle-multiagentv1-and-multiagentv2).
 
+## Background terminals
+
+**Per-row stop is available since codex 0.140.0.** Resolved 2026-06-10
+upstream, verified on codex-cli 0.146.0
+(2026-08-02).** This section previously recorded per-process termination
+as an upstream gap. It is not one any more, and the two claims that
+justified it were both falsified: `process_id` IS on the wire, and a
+per-process kill RPC exists.
+
+The client-callable surface, all `#[experimental]` (needs
+`capabilities.experimentalApi`, which every AO handshake sets):
+
+| Method | Params | Response |
+|---|---|---|
+| `thread/backgroundTerminals/list` | `{threadId, cursor?, limit?}` | `{data: ThreadBackgroundTerminal[], nextCursor: string\|null}` |
+| `thread/backgroundTerminals/terminate` | `{threadId, processId}` | `{terminated: bool}` |
+| `thread/backgroundTerminals/clean` | `{threadId}` | `{}` (thread-wide) |
+
+`ThreadBackgroundTerminal` = `{itemId, processId, command, cwd, osPid?,
+cpuPercent?, rssKb?}`. `itemId` is the join key back to the transcript
+row; the three host-OS metrics are nullable and must not be rendered as
+zero when absent. `terminated: false` means the RPC matched no running
+process (already exited, or not this thread's) — a state answer, not a
+failure.
+
+Types: `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
+(`ThreadBackgroundTerminals*`); dispatch table
+`codex-rs/app-server-protocol/src/protocol/common.rs`. Agent Overflow
+wraps all three in `internal/provider/codex/session_background.go`.
+Version floor: `terminate`/`list` shipped in 0.140.0, below AO's
+provider-wide minimum of 0.143.0, so no runtime capability probe is
+needed (guarded by
+`provider.TestMinimumCodexCLIVersionCoversBackgroundTerminalTerminate`).
+
+Still true, and still not a workaround worth taking:
+
+- `command/exec/terminate { process_id }` applies only to
+  client-initiated `command/exec` PTYs, not model-initiated
+  `exec_command` items. Use the background-terminal RPCs instead.
+- `close_agent` and `write_stdin` remain **model tools**, not
+  client-callable. Killing a spawned collab-agent child thread from the
+  client still has no path. (Claude's `KillShell` is similarly a model
+  tool but ALSO reachable via the client-sent `stop_task`
+  control_request — see
+  [`claude-wire.md §stop_task`](claude-wire.md#stop_task).)
+
 ## Known upstream constraints
-
-**Per-row termination of model-initiated background terminals is
-unavailable via the app-server protocol.** What exists:
-
-- `thread/backgroundTerminals/clean { thread_id }` — thread-wide only.
-- `command/exec/terminate { process_id }` — works only for
-  client-initiated `command/exec` PTYs (client supplies the process_id).
-  Not applicable to model-initiated `exec_command` items.
-- `close_agent`, `write_stdin` — **model tools**, not client-callable.
-  (Claude's `KillShell` is similarly a model tool but ALSO reachable via
-  the client-sent `stop_task` control_request on the stdio NDJSON
-  channel — see [`claude-wire.md §stop_task`](claude-wire.md#stop_task).
-  Codex has no equivalent client RPC.)
-- `process_group_id` (the real OS PID) is stored internally on
-  `SpawnedPty` (`codex-rs/utils/pty/src/pty.rs`) but never serialized
-  onto the wire; clients can't kill by OS PID.
-
-**Consequence for agent-overflow**: background-tray per-row stop
-buttons for Codex terminals are blocked on an upstream protocol
-change. The tray ships with thread-wide "Stop all" only until Codex
-exposes a `thread/backgroundTerminals/killOne { thread_id, process_id }`
-RPC or equivalent. Issue request drafted; contributions are invitation-only per
-[Codex's contributing guide](https://github.com/openai/codex/blob/main/docs/contributing.md).
 
 **History truncation via `thread/fork` is turn-granular only.**
 Source-verified at rust-v0.144.5 and rust-v0.145.0-alpha.23

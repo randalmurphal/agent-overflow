@@ -7,11 +7,44 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
 ## Layout
 
 - `core.go` — `Core` struct with `Execute` / `runBinary`, the shared
-  command runner with timeouts and stdout/stderr size caps; PR cache
-  and forge cache plumbing. Every subprocess runs with
-  `GIT_OPTIONAL_LOCKS=0` so the background status cadence never
-  opportunistically rewrites `.git/index` (which would fire fs events
-  back into gitwatch); mandatory locks (add/commit) are unaffected.
+  command runner (`runSpec` + the `commandSpec` it takes) with timeouts
+  and stdout/stderr size caps; PR cache, forge cache, and fetch cache
+  plumbing; `revParsePath` (the shared directory-valued `rev-parse`
+  helper behind watch-root discovery and `CommonDir`). Every
+  subprocess runs with `GIT_OPTIONAL_LOCKS=0` so the background status
+  cadence never opportunistically rewrites `.git/index` (which would
+  fire fs events back into gitwatch); mandatory locks (add/commit) are
+  unaffected. `runLocaleC` / `executeLocaleC` add `LC_ALL=C LANG=C` for
+  the specific invocations whose output this package pattern-matches in
+  English (`status`, `rev-parse` in watch_roots, `stash push`,
+  `merge-tree`) — a git built with NLS translates those messages. It is
+  per-command on purpose: `LC_ALL` also pins date/number/collation
+  formatting other commands' output may want in the user's locale.
+  Every subprocess ALSO runs with `nonInteractiveEnv`
+  (`GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=`, `SSH_ASKPASS=`,
+  `SSH_ASKPASS_REQUIRE=never`, `GCM_INTERACTIVE=never`) unless it opts
+  out via `commandSpec.allowCredentialPrompt` — the default is the safe
+  one so a background caller cannot raise a credential dialog nobody
+  asked for. Only user-initiated network commands opt out:
+  `Push` (but not `PushUnattended`), `Pull`, `SyncBranch`,
+  `PruneRemotes`, `FetchRefOID`, `FetchBranch`, and the forge CLIs'
+  `CreatePR` paths (which shell out to `git push` themselves).
+  Neither `MaybeFetchRemotes` nor `FetchRemotesBackground` opts out —
+  nobody asked for either of them.
+  `GIT_TERMINAL_PROMPT=0` alone is not enough: git tries an askpass
+  helper first, so `GIT_ASKPASS=` (empty, not unset) is what closes the
+  chain. Coverage: `noninteractive_test.go`.
+- `fetch_background.go` — `CommonDir` (canonical `git rev-parse
+  --git-common-dir`, memoized per cwd) and `FetchRemotesBackground`, the
+  throttled fetch behind the app's 5-minute cadence
+  (`app_git_background_fetch.go`, settings `BackgroundGitFetch`). The
+  fetch cache in `core.go` is keyed on the common dir, NOT the repo
+  root, so N worktrees of one repository share one window — and that
+  window is shared with `MaybeFetchRemotes` / `PruneRemotes` so the
+  branch picker and the cadence can never double-fetch. Background
+  fetches are additionally single-flighted per repository. Origin only,
+  `--quiet`, never `--prune` and never extra tags: a timer must not
+  move or delete refs the user can see.
 - `actions.go` — staging, commits, push/pull, branch create/checkout/
   rename. Worktree CRUD (`CreateWorktree*`, `RemoveWorktree*`,
   `ListWorktrees`) lives in `core.go` next to the `Worktree` struct
@@ -29,7 +62,15 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
 - `status_branches.go` — `GitBranch` shape, branch-list parsing,
   default-branch helpers, and remote-name helpers.
 - `status_pr_cache.go` — open-PR lookup cache used by `Status` /
-  `StatusFast`; `InvalidatePRCache` lives here too.
+  `StatusFast`; `InvalidatePRCache` lives here too. A failed forge
+  lookup keeps serving the branch's last successfully-read PR next to
+  the error (the badge must not blink out through a `gh` rate-limit or
+  auth blip) — dropped only by a successful lookup that finds none, by
+  explicit invalidation, or when the origin remote reads cleanly as a
+  *different* URL than the one that PR was found under. A failed read
+  of the origin is unknown, never "no remote", and never invalidates.
+  Entries survive `prStickyRetention` past their refresh TTL so an
+  unrelated branch's sweep can't delete the fallback.
 - `status_untracked.go` — untracked-file insertion/file counting for
   the status badge, including the bounded line scanner and the
   per-workspace (size, mtime)-keyed line-count memo that keeps the
@@ -75,12 +116,21 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
 - `pr_url.go` — parses the PR/MR URLs returned by forge `CreatePR` calls
   back into validated `PRReference` coordinates for later review reads.
 - `forge_detect.go` — origin URL classification (github / gitlab / "")
-  with TTL'd cache shared across `Status` and `forgeFor`. Public
-  `Core.InvalidateForgeCache(cwd)` drops the cached entry so callers
-  that know the origin URL just changed can skip the TTL window.
+  with TTL'd cache shared across `Status` and `forgeFor`. `recordOrigin`
+  is the only writer, so a classification is never cached apart from the
+  `originIdentity` it was derived from — `status_pr_cache.go` reads that
+  identity back via `cachedOrigin` instead of re-shelling `git remote
+  get-url`. Public `Core.InvalidateForgeCache(cwd)` drops the cached
+  entry so callers that know the origin URL just changed can skip the
+  TTL window.
 - `github.go` — `githubForge` implementation backed by the `gh` CLI;
   thin `Core.CreatePR` / `Core.ListOpenPRs` wrappers that dispatch
-  through `forgeFor`.
+  through `forgeFor`. Every `--json` field list in this file is governed
+  by the version-drift rule on the `githubForge` type: `gh` omits fields
+  older releases never had (`headRepository.nameWithOwner` before 2.47),
+  so a new field must decode as optional or an old `gh` silently drops
+  the row. Today's lists are narrow enough to be immune by accident —
+  read the rule before widening one.
 - `gitlab.go` — `gitlabForge` implementation backed by the `glab` CLI.
 - `ci.go` — forge-agnostic CI shapes (`CIPipeline`/`CIStage`/`CIJob`/
   `CIStep`), the normalized status vocabulary + `NormalizeCIStatus` /

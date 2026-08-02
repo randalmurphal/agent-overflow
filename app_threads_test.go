@@ -508,7 +508,7 @@ func TestUpdateThreadBranchAndWorkspace(t *testing.T) {
 		t.Fatalf("createTestThread: %v", err)
 	}
 
-	updated, err := app.UpdateThreadBranch(thread.ID, "feat/abc")
+	updated, err := app.UpdateThreadBranch(thread.ID, thread.WorkspacePath, "feat/abc")
 	if err != nil {
 		t.Fatalf("UpdateThreadBranch: %v", err)
 	}
@@ -519,6 +519,47 @@ func TestUpdateThreadBranchAndWorkspace(t *testing.T) {
 	if _, err := app.UpdateThreadWorkspace(thread.ID, ""); err == nil ||
 		!strings.Contains(err.Error(), "path is required") {
 		t.Fatalf("UpdateThreadWorkspace(empty) error = %v, want 'path is required'", err)
+	}
+}
+
+// TestUpdateThreadBranchRefusesStaleWorkspaceObservation is the binding-level
+// half of the CAS guard: the caller is an unlocked async queue, so a branch
+// observed in a workspace the thread has since left must be dropped, and the
+// binding must hand back the row as it stands so the caller re-syncs instead
+// of retrying against its stale copy forever.
+func TestUpdateThreadBranchRefusesStaleWorkspaceObservation(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/tbw-stale", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	observedWorkspace := thread.WorkspacePath
+
+	moved, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	moved.WorkspacePath = "/tmp/tbw-stale-worktree"
+	moved.WorktreePath = "/tmp/tbw-stale-worktree"
+	moved.Branch = "feature/moved"
+	if err := app.store.UpdateThread(moved); err != nil {
+		t.Fatalf("UpdateThread: %v", err)
+	}
+
+	current, err := app.UpdateThreadBranch(thread.ID, observedWorkspace, "stale/branch")
+	if err != nil {
+		t.Fatalf("UpdateThreadBranch(stale) error = %v, want nil (a refusal is not an error)", err)
+	}
+	if current.Branch != "feature/moved" {
+		t.Fatalf("Branch = %q, want feature/moved", current.Branch)
+	}
+	if current.WorkspacePath != moved.WorkspacePath {
+		t.Fatalf("WorkspacePath = %q, want %q", current.WorkspacePath, moved.WorkspacePath)
+	}
+
+	if _, err := app.UpdateThreadBranch(thread.ID, "  ", "x"); err == nil ||
+		!strings.Contains(err.Error(), "expected workspace path is required") {
+		t.Fatalf("UpdateThreadBranch(blank workspace) error = %v, want required-field error", err)
 	}
 }
 

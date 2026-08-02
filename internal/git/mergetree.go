@@ -71,7 +71,11 @@ func (c *Core) MergeTreeConflicts(cwd, base, head string) (MergeTreeResult, erro
 		return MergeTreeResult{}, fmt.Errorf("git merge-tree head is required")
 	}
 
-	result, err := c.run(cwd, "merge-tree", "--write-tree", "--name-only", base, head)
+	// runLocaleC: the conflict block's messages are parsed (isRedundantMerge-
+	// Message drops the lines the viewer already renders) and then shown to
+	// the user, so they have to arrive in the language the matcher — and the
+	// rest of the UI — speaks.
+	result, err := c.runLocaleC(cwd, "merge-tree", "--write-tree", "--name-only", base, head)
 	if err != nil {
 		return MergeTreeResult{}, err
 	}
@@ -109,7 +113,7 @@ func (c *Core) FetchRefOID(cwd, remote, ref string) (string, error) {
 	if err := validateFetchArg("git fetch ref", ref); err != nil {
 		return "", err
 	}
-	if _, _, err := c.Execute(cwd, "fetch", remote, ref); err != nil {
+	if _, _, err := c.executeInteractive(cwd, "fetch", remote, ref); err != nil {
 		return "", err
 	}
 	// FETCH_HEAD is overwritten by the next fetch, so capture the OID
@@ -133,7 +137,7 @@ func (c *Core) FetchBranch(cwd, remote, branch string) error {
 	if err := validateBranchName(branch); err != nil {
 		return err
 	}
-	_, _, err := c.Execute(cwd, "fetch", remote, branch)
+	_, _, err := c.executeInteractive(cwd, "fetch", remote, branch)
 	return err
 }
 

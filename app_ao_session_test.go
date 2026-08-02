@@ -247,7 +247,7 @@ func TestSessionProcessEnvPrecedence(t *testing.T) {
 	credential := aoSessionCredential{env: map[string]string{
 		aocli.EnvToken: "tok", "SHARED": "ao",
 	}}
-	env := app.sessionProcessEnv(map[string]string{"SHARED": "provider", "PROVIDER_ONLY": "yes"}, credential)
+	env := app.sessionProcessEnv(string(provider.Claude), map[string]string{"SHARED": "provider", "PROVIDER_ONLY": "yes"}, credential)
 	// The AO credential wins: nothing a provider config or an extra-env setting
 	// says may replace the token a session was minted with.
 	if env["SHARED"] != "ao" {
@@ -259,7 +259,7 @@ func TestSessionProcessEnvPrecedence(t *testing.T) {
 
 	// An empty credential contributes nothing at all — no blank AO_* variables
 	// that would make the CLI believe it is inside a session it cannot reach.
-	env = app.sessionProcessEnv(nil, aoSessionCredential{})
+	env = app.sessionProcessEnv(string(provider.Claude), nil, aoSessionCredential{})
 	if _, present := env[aocli.EnvToken]; present {
 		t.Fatalf("a credential-less session got %s: %#v", aocli.EnvToken, env)
 	}
@@ -312,7 +312,7 @@ func TestSessionProcessEnvPublishesTheCLIOnPath(t *testing.T) {
 			// would leak one session's PATH into the next config built from it,
 			// stacking the bin dir on every restart.
 			configPathBefore, hadConfigPath := test.configEnv["PATH"]
-			env := app.sessionProcessEnv(test.configEnv, credential)
+			env := app.sessionProcessEnv(string(provider.Claude), test.configEnv, credential)
 			if env["PATH"] != test.wantPath {
 				t.Fatalf("PATH = %q, want %q (env %#v)", env["PATH"], test.wantPath, env)
 			}
@@ -332,7 +332,7 @@ func TestSessionProcessEnvPublishesTheCLIOnPath(t *testing.T) {
 // `agent-overflow workflow …` works offline.
 func TestSessionProcessEnvPublishesTheCLIWithoutACredential(t *testing.T) {
 	app := &App{cliBinDir: "/cfg/bin"}
-	env := app.sessionProcessEnv(nil, aoSessionCredential{})
+	env := app.sessionProcessEnv(string(provider.Claude), nil, aoSessionCredential{})
 	if env["PATH"] != "/cfg/bin" {
 		t.Fatalf("PATH = %q, want the published bin dir", env["PATH"])
 	}
@@ -371,7 +371,7 @@ func TestMintAOCredentialCarriesTheProjectSlug(t *testing.T) {
 	}
 	// It reaches the subprocess through the same merge as the rest of the
 	// credential, so the writer and the reader cannot disagree.
-	env := app.sessionProcessEnv(nil, credential)
+	env := app.sessionProcessEnv(string(provider.Claude), nil, credential)
 	if env[aocli.EnvProject] != stored.Slug {
 		t.Fatalf("session env %s = %q, want %q", aocli.EnvProject, env[aocli.EnvProject], stored.Slug)
 	}

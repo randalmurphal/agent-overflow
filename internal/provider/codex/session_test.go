@@ -1303,13 +1303,13 @@ func TestDispatchLineEmitsParentContextCompactionItem(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID:            "parent-thread",
-		codexThreadID:       "provider-parent",
 		pending:             make(map[int64]chan json.RawMessage),
 		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
 		},
 	}
+	s.setRootThreadID("provider-parent")
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"provider-parent","turnId":"parent-turn-1","item":{"type":"contextCompaction","id":"compact-parent-1"},"completedAtMs":1781709692716}}`))
 
@@ -1561,7 +1561,6 @@ func TestDispatchLineRawSpawnOutputMapsAgentIDForRawUserSubagentNotification(t *
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID:               "parent-thread",
-		codexThreadID:          "parent-provider-thread",
 		pending:                make(map[int64]chan json.RawMessage),
 		childParentByThread:    make(map[string]string),
 		childParentByAgentPath: make(map[string]string),
@@ -1572,6 +1571,7 @@ func TestDispatchLineRawSpawnOutputMapsAgentIDForRawUserSubagentNotification(t *
 			events = append(events, evt)
 		},
 	}
+	s.setRootThreadID("parent-provider-thread")
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-provider-thread","turnId":"turn-1","item":{"type":"function_call","name":"spawn_agent","call_id":"spawn-1","arguments":"{\"agent_type\":\"default\",\"message\":\"Run a command, then finish\"}"}}}`))
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-provider-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"spawn-1","output":"{\"agent_id\":\"019ecef1-4a59-7932-8c94-76099197299b\",\"nickname\":\"Bernoulli\"}"}}}`))
@@ -2323,15 +2323,15 @@ func newTestCodexSession(t *testing.T) (*Session, <-chan provider.ProviderEvent)
 	}
 	eventCh := make(chan provider.ProviderEvent, 100)
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "codex-thread-1",
-		pending:       make(map[int64]chan json.RawMessage),
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			eventCh <- evt
 		},
 		cancel: cancel,
 	}
+	s.setRootThreadID("codex-thread-1")
 	go s.readLoop()
 	t.Cleanup(func() {
 		cancel()
@@ -2362,15 +2362,15 @@ func TestTurnStartEmittedExactlyOncePerTurn(t *testing.T) {
 
 	eventCh := make(chan provider.ProviderEvent, 100)
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "ctx-thread",
-		pending:       make(map[int64]chan json.RawMessage),
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			eventCh <- evt
 		},
 		cancel: cancel,
 	}
+	s.setRootThreadID("ctx-thread")
 	go s.readLoop()
 
 	sendDone := make(chan error, 1)
@@ -2956,13 +2956,13 @@ func TestCodexDrainWritesTurnTransitionError(t *testing.T) {
 		t.Fatalf("spawn capture sh: %v", err)
 	}
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "codex-thread-1",
-		pending:       make(map[int64]chan json.RawMessage),
-		onEvent:       func(provider.ProviderEvent) {},
-		cancel:        cancel,
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent:  func(provider.ProviderEvent) {},
+		cancel:   cancel,
 	}
+	s.setRootThreadID("codex-thread-1")
 	go s.readLoop()
 	t.Cleanup(func() {
 		cancel()
@@ -3332,7 +3332,7 @@ func TestCodexHandleServerRequestUserInputV2TopLevelRouteFields(t *testing.T) {
 		"id":      31,
 		"method":  "item/tool/requestUserInput",
 		"params": map[string]any{
-			"threadId": s.codexThreadID,
+			"threadId": s.rootThreadID(),
 			"turnId":   "turn-31",
 			"itemId":   "item-31",
 			"questions": []map[string]any{{
@@ -3527,13 +3527,13 @@ func TestCodexSendRequestReturnsErrorWhenSessionStops(t *testing.T) {
 	}
 
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "codex-thread-1",
-		pending:       make(map[int64]chan json.RawMessage),
-		onEvent:       func(provider.ProviderEvent) {},
-		cancel:        cancelProc,
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent:  func(provider.ProviderEvent) {},
+		cancel:   cancelProc,
 	}
+	s.setRootThreadID("codex-thread-1")
 	go s.readLoop()
 
 	t.Cleanup(func() {
@@ -3610,12 +3610,12 @@ func TestCodexSendRequestTimeoutDrainsLateResponse(t *testing.T) {
 	s := &Session{
 		proc:                   proc,
 		threadID:               testThread,
-		codexThreadID:          "codex-thread-1",
 		pending:                make(map[int64]chan json.RawMessage),
 		onEvent:                func(provider.ProviderEvent) {},
 		cancel:                 cancelProc,
 		requestTimeoutOverride: 50 * time.Millisecond,
 	}
+	s.setRootThreadID("codex-thread-1")
 	go s.readLoop()
 	t.Cleanup(func() {
 		cancelProc()
@@ -3678,12 +3678,12 @@ func TestCodexSendRequestManyTimeoutsDoNotLeak(t *testing.T) {
 	s := &Session{
 		proc:                   proc,
 		threadID:               testThread,
-		codexThreadID:          "codex-thread-1",
 		pending:                make(map[int64]chan json.RawMessage),
 		onEvent:                func(provider.ProviderEvent) {},
 		cancel:                 cancelProc,
 		requestTimeoutOverride: 20 * time.Millisecond,
 	}
+	s.setRootThreadID("codex-thread-1")
 	go s.readLoop()
 	t.Cleanup(func() {
 		cancelProc()
@@ -3747,15 +3747,15 @@ func TestCodexInterruptStartupSendsEmptyTurnID(t *testing.T) {
 		t.Fatalf("spawn recorder: %v", err)
 	}
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "codex-thread-1",
+		proc:     proc,
+		threadID: testThread,
 		// activeTurnID intentionally left empty — this is the
 		// dispatch window case.
 		pending: make(map[int64]chan json.RawMessage),
 		onEvent: func(provider.ProviderEvent) {},
 		cancel:  cancel,
 	}
+	s.setRootThreadID("codex-thread-1")
 	go s.readLoop()
 	t.Cleanup(func() {
 		cancel()
@@ -3827,14 +3827,14 @@ func TestCodexInterruptSendsThreadAndTurnID(t *testing.T) {
 	}
 
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "codex-thread-1",
-		activeTurnID:  "turn-1",
-		pending:       make(map[int64]chan json.RawMessage),
-		onEvent:       func(provider.ProviderEvent) {},
-		cancel:        cancel,
+		proc:         proc,
+		threadID:     testThread,
+		activeTurnID: "turn-1",
+		pending:      make(map[int64]chan json.RawMessage),
+		onEvent:      func(provider.ProviderEvent) {},
+		cancel:       cancel,
 	}
+	s.setRootThreadID("codex-thread-1")
 	go s.readLoop()
 
 	t.Cleanup(func() {
@@ -3884,16 +3884,16 @@ func TestCodexReadLoopEmitsDisconnectedOnExit(t *testing.T) {
 	}
 	eventCh := make(chan provider.ProviderEvent, 100)
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "test",
-		pending:       make(map[int64]chan json.RawMessage),
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			eventCh <- evt
 		},
 		cancel:   cancel,
 		readDone: make(chan struct{}),
 	}
+	s.setRootThreadID("test")
 	go s.readLoop()
 
 	s.Close()
@@ -3923,10 +3923,9 @@ func TestCodexCloseWaitsForDisconnectedHandler(t *testing.T) {
 	release := make(chan struct{})
 	closeReturned := make(chan struct{})
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "test",
-		pending:       make(map[int64]chan json.RawMessage),
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			if evt.Kind == provider.EventSessionStatus && evt.Content == "disconnected" {
 				close(disconnected)
@@ -3936,6 +3935,7 @@ func TestCodexCloseWaitsForDisconnectedHandler(t *testing.T) {
 		cancel:   cancel,
 		readDone: make(chan struct{}),
 	}
+	s.setRootThreadID("test")
 	go s.readLoop()
 
 	go func() {
@@ -3986,16 +3986,16 @@ func TestCodexReadLoopEmitsErrorStatusOnCleanUnexpectedExit(t *testing.T) {
 
 	eventCh := make(chan provider.ProviderEvent, 100)
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "test",
-		pending:       make(map[int64]chan json.RawMessage),
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			eventCh <- evt
 		},
 		cancel:   cancel,
 		readDone: make(chan struct{}),
 	}
+	s.setRootThreadID("test")
 	go s.readLoop()
 
 	var gotError, gotDisconnected bool
@@ -4032,16 +4032,16 @@ func TestCodexReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
 
 	eventCh := make(chan provider.ProviderEvent, 100)
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "test",
-		pending:       make(map[int64]chan json.RawMessage),
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			eventCh <- evt
 		},
 		cancel:   cancel,
 		readDone: make(chan struct{}),
 	}
+	s.setRootThreadID("test")
 	go s.readLoop()
 
 	var gotError, gotDisconnected bool
@@ -4079,15 +4079,15 @@ func TestCodexReadLoopCleansPendingOnExit(t *testing.T) {
 	}
 	eventCh := make(chan provider.ProviderEvent, 100)
 	s := &Session{
-		proc:          proc,
-		threadID:      testThread,
-		codexThreadID: "test",
-		pending:       make(map[int64]chan json.RawMessage),
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			eventCh <- evt
 		},
 		cancel: cancel,
 	}
+	s.setRootThreadID("test")
 
 	// Add a pending request before readLoop starts.
 	pendingCh := make(chan json.RawMessage, 1)
@@ -4528,8 +4528,8 @@ done
 	if s.threadID != testThread {
 		t.Errorf("threadID: got %q, want %q", s.threadID, testThread)
 	}
-	if s.codexThreadID != "mock-thread-123" {
-		t.Errorf("codexThreadID: got %q, want %q", s.codexThreadID, "mock-thread-123")
+	if s.rootThreadID() != "mock-thread-123" {
+		t.Errorf("rootThreadID: got %q, want %q", s.rootThreadID(), "mock-thread-123")
 	}
 
 	// EventInit should have been emitted.
@@ -5152,9 +5152,8 @@ func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
 func TestDispatchLineRawInterAgentSubagentNotificationEmitsEvent(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:      "parent-thread",
-		codexThreadID: "parent-provider-thread",
-		pending:       make(map[int64]chan json.RawMessage),
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		childParentByAgentPath: map[string]string{
 			"/root/researcher": "call-collab-1",
 		},
@@ -5162,6 +5161,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationEmitsEvent(t *testing.T) {
 			events = append(events, evt)
 		},
 	}
+	s.setRootThreadID("parent-provider-thread")
 
 	line := rawInterAgentSubagentNotificationLineForThread(t, "parent-provider-thread", map[string]any{
 		"agent_path": "/root/researcher",
@@ -5206,9 +5206,8 @@ func TestDispatchLineRawInterAgentSubagentNotificationEmitsEvent(t *testing.T) {
 func TestDispatchLineRawInterAgentSubagentNotificationWithoutPhaseIgnored(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:      "parent-thread",
-		codexThreadID: "parent-provider-thread",
-		pending:       make(map[int64]chan json.RawMessage),
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		childParentByAgentPath: map[string]string{
 			"/root/researcher": "call-collab-1",
 		},
@@ -5216,6 +5215,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationWithoutPhaseIgnored(t *tes
 			events = append(events, evt)
 		},
 	}
+	s.setRootThreadID("parent-provider-thread")
 
 	line := rawInterAgentSubagentNotificationLineForThreadAndPhase(t, "parent-provider-thread", "", map[string]any{
 		"agent_path": "/root/researcher",
@@ -5285,9 +5285,8 @@ func TestDispatchLineRawInterAgentSubagentNotificationAuthorMismatchIgnored(t *t
 func TestDispatchLineRawInterAgentSubagentNotificationFromChildThreadIgnored(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:      "parent-thread",
-		codexThreadID: "parent-provider-thread",
-		pending:       make(map[int64]chan json.RawMessage),
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		childParentByThread: map[string]string{
 			"child-provider-thread": "call-collab-1",
 		},
@@ -5298,6 +5297,7 @@ func TestDispatchLineRawInterAgentSubagentNotificationFromChildThreadIgnored(t *
 			events = append(events, evt)
 		},
 	}
+	s.setRootThreadID("parent-provider-thread")
 
 	line := rawInterAgentSubagentNotificationLineForThread(t, "child-provider-thread", map[string]any{
 		"agent_path": "/root/researcher",
@@ -5489,9 +5489,8 @@ func TestRolloutSubagentNotificationLineEmitsWithoutProviderMapping(t *testing.T
 func TestRolloutAndRawSubagentNotificationDedupes(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:      "parent-thread",
-		codexThreadID: "parent-provider-thread",
-		pending:       make(map[int64]chan json.RawMessage),
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		childParentByThread: map[string]string{
 			"child-done": "call-collab-1",
 		},
@@ -5499,6 +5498,7 @@ func TestRolloutAndRawSubagentNotificationDedupes(t *testing.T) {
 			events = append(events, evt)
 		},
 	}
+	s.setRootThreadID("parent-provider-thread")
 
 	rawLine := rawUserSubagentNotificationLineForThread(t, "parent-provider-thread", map[string]any{
 		"agent_path": "child-done",
@@ -5530,13 +5530,13 @@ func TestWatchRolloutSubagentNotificationsEmitsSplitLine(t *testing.T) {
 
 	events := make(chan provider.ProviderEvent, 1)
 	s := &Session{
-		threadID:      "parent-thread",
-		codexThreadID: "parent-provider-thread",
-		readDone:      make(chan struct{}),
+		threadID: "parent-thread",
+		readDone: make(chan struct{}),
 		onEvent: func(evt provider.ProviderEvent) {
 			events <- evt
 		},
 	}
+	s.setRootThreadID("parent-provider-thread")
 	path, offset, err := prepareRolloutSubagentNotificationObserver(path, "parent-provider-thread")
 	if err != nil {
 		t.Fatalf("prepare rollout observer: %v", err)
@@ -5995,5 +5995,177 @@ func TestBuildSubagentNotificationMetaIncludesExtra(t *testing.T) {
 	}
 	if meta["duration_ms"] != float64(1234) {
 		t.Errorf("duration_ms: got %v, want 1234", meta["duration_ms"])
+	}
+}
+
+// codexReviewerEchoScript is a fake app-server that answers thread/start and
+// thread/resume with a caller-chosen `approvalsReviewer` (or none at all, for
+// the pre-0.115 silent-drop simulation) and logs every inbound line.
+func codexReviewerEchoScript(t *testing.T, capturePath, threadResult string) string {
+	t.Helper()
+	script := fmt.Sprintf(`#!/bin/bash
+while IFS= read -r line; do
+    printf '%%s\n' "$line" >> %q
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"turn/start"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"turn\":{\"id\":\"turn-reviewer\"}}}"
+    elif echo "$line" | grep -qE '"method":"thread/(start|resume)"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":%s}"
+    else
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+    fi
+done
+`, capturePath, threadResult)
+	scriptPath := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock script: %v", err)
+	}
+	return scriptPath
+}
+
+func codexCapturedRequest(t *testing.T, capturePath, method string) map[string]any {
+	t.Helper()
+	captured, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	needle := `"method":"` + method + `"`
+	for _, line := range strings.Split(string(captured), "\n") {
+		if !strings.Contains(line, needle) {
+			continue
+		}
+		var req map[string]any
+		if err := json.Unmarshal([]byte(line), &req); err != nil {
+			t.Fatalf("unmarshal %s: %v", method, err)
+		}
+		params, ok := req["params"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s carried no params object: %s", method, line)
+		}
+		return params
+	}
+	t.Fatalf("captured no %s request: %s", method, string(captured))
+	return nil
+}
+
+// TestSessionStartVerifiesApprovalsReviewerEcho is the wire-level guard for
+// the auto runtime mode on Codex. `ThreadStartParams` has no
+// deny_unknown_fields, so a codex that predates `approvalsReviewer` accepts
+// the request, drops the field, and hands back an ordinary user-reviewer
+// thread. Nothing else on the wire reports this: `initialize` carries no
+// version or capability list and `thread/started` does not carry the reviewer,
+// so the handshake RESPONSE is the only place the drop is visible.
+//
+// The failure has to be an error rather than a downgrade. Continuing would run
+// the session with a human on the other end of approvals while the thread row,
+// the picker, and the user all say a reviewer is answering them.
+func TestSessionStartVerifiesApprovalsReviewerEcho(t *testing.T) {
+	cases := []struct {
+		name         string
+		mode         provider.RuntimeMode
+		threadResult string
+		wantErr      string
+	}{
+		{
+			name:         "auto accepted and echoed",
+			mode:         provider.RuntimeAuto,
+			threadResult: `{\"thread\":{\"id\":\"mock-thread-123\"},\"approvalsReviewer\":\"auto_review\"}`,
+		},
+		{
+			name:         "auto silently dropped by an old app-server",
+			mode:         provider.RuntimeAuto,
+			threadResult: `{\"thread\":{\"id\":\"mock-thread-123\"}}`,
+			wantErr:      "auto_review",
+		},
+		{
+			name:         "auto downgraded to the user reviewer",
+			mode:         provider.RuntimeAuto,
+			threadResult: `{\"thread\":{\"id\":\"mock-thread-123\"},\"approvalsReviewer\":\"user\"}`,
+			wantErr:      "auto_review",
+		},
+		{
+			name:         "non-auto tier tolerates an absent echo",
+			mode:         provider.RuntimeApprovalRequired,
+			threadResult: `{\"thread\":{\"id\":\"mock-thread-123\"}}`,
+		},
+		{
+			name:         "non-auto tier rejects a sticky auto reviewer",
+			mode:         provider.RuntimeApprovalRequired,
+			threadResult: `{\"thread\":{\"id\":\"mock-thread-123\"},\"approvalsReviewer\":\"auto_review\"}`,
+			wantErr:      "user",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
+			cfg := ConfigFromOptions(provider.SessionOptions{
+				Provider:    "codex",
+				RuntimeMode: tc.mode,
+				WorkDir:     "/tmp",
+			})
+			cfg.Binary = codexReviewerEchoScript(t, capturePath, tc.threadResult)
+
+			s, err := NewSession(context.Background(), testThread, cfg, func(provider.ProviderEvent) {})
+			if s != nil {
+				t.Cleanup(func() { _ = s.Close() })
+			}
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("NewSession: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("NewSession accepted a reviewer mismatch")
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error %q does not name the requested reviewer %q", err, tc.wantErr)
+				}
+			}
+
+			params := codexCapturedRequest(t, capturePath, "thread/start")
+			want := codexApprovalsReviewer(tc.mode)
+			if params["approvalsReviewer"] != want {
+				t.Errorf("thread/start approvalsReviewer = %v, want %q", params["approvalsReviewer"], want)
+			}
+		})
+	}
+}
+
+// TestSessionSendIncludesApprovalsReviewerForEveryMode proves the reviewer
+// rides every turn/start, not just the handshake. Codex keeps the reviewer as
+// thread state until something overwrites it, so a turn that omits it inherits
+// the previous runtime mode's choice — which is how a thread switched OUT of
+// auto keeps auto-approving its own escalations.
+func TestSessionSendIncludesApprovalsReviewerForEveryMode(t *testing.T) {
+	for _, mode := range provider.AllRuntimeModes {
+		t.Run(string(mode), func(t *testing.T) {
+			capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
+			want := codexApprovalsReviewer(mode)
+			threadResult := fmt.Sprintf(`{\"thread\":{\"id\":\"mock-thread-123\"},\"approvalsReviewer\":\"%s\"}`, want)
+			cfg := ConfigFromOptions(provider.SessionOptions{
+				Provider:    "codex",
+				RuntimeMode: mode,
+				WorkDir:     "/tmp",
+			})
+			cfg.Binary = codexReviewerEchoScript(t, capturePath, threadResult)
+
+			s, err := NewSession(context.Background(), testThread, cfg, func(provider.ProviderEvent) {})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			_ = s.Close()
+
+			params := codexCapturedRequest(t, capturePath, "turn/start")
+			if params["approvalsReviewer"] != want {
+				t.Errorf("turn/start approvalsReviewer = %v, want %q", params["approvalsReviewer"], want)
+			}
+		})
 	}
 }

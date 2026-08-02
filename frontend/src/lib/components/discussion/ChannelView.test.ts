@@ -246,6 +246,30 @@ describe('<ChannelView>', () => {
     expect(await findByText('You')).toBeInTheDocument();
   });
 
+  it('does not post while an IME composition is active', async () => {
+    // Enter mid-composition confirms the IME candidate; the composed text is
+    // still in the IME buffer, so posting would send a truncated message.
+    const postMock = setBindingMock('PostChannelMessage', async () =>
+      makeMsg({ id: 'posted-1', sequence: 0, fromType: 'human', fromId: 'human', fromRole: undefined, content: 'にほん' }));
+    const pane = await buildPane();
+    const { container } = render(ChannelView, { props: { pane, channelId: 'channel-1' } });
+    await settleInitialLoad();
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Channel Message Input"]')!;
+    await fireEvent.input(textarea, { target: { value: 'にほん' } });
+    const composing = await fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(postMock).not.toHaveBeenCalled();
+    expect(textarea.value).toBe('にほん');
+    // The IME needs the default action to commit its candidate.
+    expect(composing).toBe(true);
+
+    // Control: the same keystroke outside a composition posts.
+    await fireEvent.keyDown(textarea, { key: 'Enter' });
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(postMock.mock.calls[0]).toEqual(['channel-1', 'にほん']);
+  });
+
   it('rolls back the textarea when PostChannelMessage rejects', async () => {
     setBindingMock('PostChannelMessage', async () => { throw new Error('rpc-down'); });
     const pane = await buildPane();

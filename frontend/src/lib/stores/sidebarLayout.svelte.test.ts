@@ -3,16 +3,23 @@ import {
   SIDEBAR_MIN_WIDTH,
   getSidebarMaxWidth,
   getSidebarWidth,
+  isSidebarCollapsed,
   persistSidebarWidth,
+  readPersistedCollapsed,
   readPersistedWidth,
   resetSidebarLayoutForTest,
+  setSidebarCollapsed,
   setSidebarWidth,
   setSidebarWidthLive,
+  syncSidebarLayoutFromAppStorage,
+  toggleSidebarCollapsed,
 } from './sidebarLayout.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
+import { setAppShellWidth, resetLayoutMetricsForTest } from './layoutMetrics.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 
 const WIDTH_KEY = 'sidebar:width';
+const COLLAPSED_KEY = 'sidebar:collapsed';
 const LEGACY_STORAGE_KEY = 'agent-overflow:sidebar:width';
 
 describe('sidebar layout store', () => {
@@ -22,6 +29,7 @@ describe('sidebar layout store', () => {
     setBindingMock('DeleteUIState', async () => null);
     localStorage.removeItem(LEGACY_STORAGE_KEY);
     resetAppStorageForTest();
+    resetLayoutMetricsForTest();
     resetSidebarLayoutForTest();
   });
 
@@ -104,6 +112,129 @@ describe('sidebar layout store', () => {
       localStorage.setItem(LEGACY_STORAGE_KEY, 'garbage');
       expect(readPersistedWidth()).toBe(280);
       expect(appStorageGet(WIDTH_KEY)).toBeNull();
+    });
+  });
+
+  describe('collapse / expand', () => {
+    it('starts expanded', () => {
+      expect(isSidebarCollapsed()).toBe(false);
+    });
+
+    it('collapsing hides the sidebar without touching the stored width', () => {
+      setSidebarWidth(340);
+      setSidebarCollapsed(true);
+      expect(isSidebarCollapsed()).toBe(true);
+      expect(getSidebarWidth()).toBe(340);
+    });
+
+    it('expanding restores the previous width, not the minimum', () => {
+      setSidebarWidth(340);
+      setSidebarCollapsed(true);
+      setSidebarCollapsed(false);
+      expect(isSidebarCollapsed()).toBe(false);
+      expect(getSidebarWidth()).toBe(340);
+    });
+
+    it('survives a collapse → expand → collapse round trip', () => {
+      setSidebarWidth(320);
+      toggleSidebarCollapsed();
+      expect(isSidebarCollapsed()).toBe(true);
+      toggleSidebarCollapsed();
+      expect(isSidebarCollapsed()).toBe(false);
+      toggleSidebarCollapsed();
+      expect(isSidebarCollapsed()).toBe(true);
+      expect(getSidebarWidth()).toBe(320);
+    });
+
+    it('persists both directions', () => {
+      setSidebarCollapsed(true);
+      expect(appStorageGet(COLLAPSED_KEY)).toBe('1');
+      setSidebarCollapsed(false);
+      expect(appStorageGet(COLLAPSED_KEY)).toBe('0');
+    });
+
+    it('collapsing flushes an unpersisted drag width so expanding restores it', () => {
+      // The live setter is what a drag calls; collapsing mid-drag tears
+      // the resizer down before its pointerup flush ever runs.
+      setSidebarWidthLive(410);
+      expect(appStorageGet(WIDTH_KEY)).toBeNull();
+      setSidebarCollapsed(true);
+      expect(appStorageGet(WIDTH_KEY)).toBe('410');
+      setSidebarCollapsed(false);
+      expect(getSidebarWidth()).toBe(410);
+    });
+
+    it('re-collapsing an already-collapsed sidebar still flushes the width', () => {
+      setSidebarCollapsed(true);
+      setSidebarWidthLive(360);
+      setSidebarCollapsed(true);
+      expect(appStorageGet(WIDTH_KEY)).toBe('360');
+    });
+
+    it('expanding re-clamps a width the viewport no longer allows', () => {
+      setAppShellWidth(1600);
+      setSidebarWidth(600);
+      expect(getSidebarWidth()).toBe(600);
+      setSidebarCollapsed(true);
+      // Window shrinks while nothing is rendering the sidebar's width,
+      // so nothing has re-clamped it.
+      setAppShellWidth(900);
+      setSidebarCollapsed(false);
+      expect(getSidebarWidth()).toBe(getSidebarMaxWidth());
+      expect(appStorageGet(WIDTH_KEY)).toBe(String(getSidebarMaxWidth()));
+    });
+
+    it('expanding leaves a still-valid width alone', () => {
+      setAppShellWidth(1600);
+      setSidebarWidth(400);
+      setSidebarCollapsed(true);
+      setSidebarCollapsed(false);
+      expect(getSidebarWidth()).toBe(400);
+    });
+  });
+
+  describe('readPersistedCollapsed', () => {
+    it('defaults to expanded when nothing is stored', () => {
+      expect(readPersistedCollapsed()).toBe(false);
+    });
+
+    it('reads the collapsed marker', () => {
+      appStorageSet(COLLAPSED_KEY, '1');
+      expect(readPersistedCollapsed()).toBe(true);
+    });
+
+    it('treats any other stored value as expanded', () => {
+      appStorageSet(COLLAPSED_KEY, 'garbage');
+      expect(readPersistedCollapsed()).toBe(false);
+    });
+  });
+
+  describe('syncSidebarLayoutFromAppStorage', () => {
+    it('adopts the durable collapsed flag', () => {
+      appStorageSet(COLLAPSED_KEY, '1');
+      syncSidebarLayoutFromAppStorage();
+      expect(isSidebarCollapsed()).toBe(true);
+    });
+
+    it('adopts a durable expanded flag over a collapsed in-memory state', () => {
+      setSidebarCollapsed(true);
+      appStorageSet(COLLAPSED_KEY, '0');
+      syncSidebarLayoutFromAppStorage();
+      expect(isSidebarCollapsed()).toBe(false);
+    });
+
+    it('still adopts the durable width', () => {
+      appStorageSet(WIDTH_KEY, '312');
+      syncSidebarLayoutFromAppStorage();
+      expect(getSidebarWidth()).toBe(312);
+    });
+
+    it('leaves state alone when the bucket holds neither key', () => {
+      setSidebarWidth(330);
+      resetAppStorageForTest();
+      syncSidebarLayoutFromAppStorage();
+      expect(getSidebarWidth()).toBe(330);
+      expect(isSidebarCollapsed()).toBe(false);
     });
   });
 });

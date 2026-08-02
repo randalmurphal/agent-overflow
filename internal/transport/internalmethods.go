@@ -412,6 +412,14 @@ var LocalOnlyMethods = map[string]bool{
 	"UpdateKeybindings":            true,
 	"ResetKeybindings":             true,
 	"SetChatBarFavorite":           true,
+	// Custom provider environment. Settings mutation (category 3) AND
+	// credential-shaped input (category 6): the value a caller supplies is
+	// injected verbatim into every provider subprocess for that provider —
+	// a LAN peer able to set ANTHROPIC_BASE_URL would silently reroute the
+	// user's turns, and the values themselves are the kind of material the
+	// sensitive flag exists to keep off the wire.
+	"SetProviderCustomEnvVar":    true,
+	"DeleteProviderCustomEnvVar": true,
 	// SetWSLDistroPreference rewrites the Windows launcher's
 	// wsl.json — the next launch will boot whatever distro a LAN
 	// peer talked the user's backend into saving. Same threat shape

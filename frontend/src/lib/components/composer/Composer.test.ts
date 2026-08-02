@@ -884,6 +884,39 @@ describe('<Composer>', () => {
     expect(draft.content).toBe('');
   });
 
+  it('does not send while an IME composition is active', async () => {
+    // Enter mid-composition confirms the IME candidate. The composed text is
+    // still in the IME buffer, so sending here would dispatch a partial
+    // message and eat the keystroke the IME needed.
+    const pane = await buildPane();
+    const draft = await buildDraft();
+    const send = setBindingMock('SendMessageWithOptions', async () =>
+      makeTestThread({ runtimeMode: 'full-access' }));
+
+    const { getByLabelText } = render(Composer, { props: { pane, draft } });
+    const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+
+    await fireEvent.input(textarea, { target: { value: 'にほん' } });
+    const composing = await fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
+    await tick();
+    expect(send).not.toHaveBeenCalled();
+    expect(draft.content).toBe('にほん');
+    // The IME needs the default action to commit its candidate.
+    expect(composing).toBe(true);
+
+    // WebKit's post-compositionend keydown: isComposing already false, key
+    // code still the IME sentinel.
+    await fireEvent.keyDown(textarea, { key: 'Enter', keyCode: 229 });
+    await tick();
+    expect(send).not.toHaveBeenCalled();
+
+    // Control: the same keystroke outside a composition sends.
+    await fireEvent.keyDown(textarea, { key: 'Enter' });
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith('thread-1', 'にほん', { attachmentIds: [] });
+    });
+  });
+
   it('sends draft plan comments with a typed refinement by default', async () => {
     const pane = await buildPane(makeTestThread(), [
       makeItem({

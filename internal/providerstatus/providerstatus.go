@@ -8,7 +8,11 @@
 // these describe the binary itself.
 package providerstatus
 
-import "agent-overflow/internal/provider"
+import (
+	"strings"
+
+	"agent-overflow/internal/provider"
+)
 
 // Event is the payload for the `provider:status` wire event. The JSON
 // tags pin the wire shape; relocating the Go type doesn't change what
@@ -88,10 +92,47 @@ func EventFromDetect(ps provider.ProviderStatus) Event {
 	}
 }
 
-// ClaudeUnauthenticated reports whether a ProbeAccount result
-// indicates the user isn't logged in. Empty subscription + empty
-// token source is the logged-out signal that routes users to
-// `claude login`.
+// claudeFirstPartyAPIProvider is the one `apiProvider` value for which
+// the Claude CLI populates the rest of the account object. Every other
+// member of the enum (gateway, bedrock, foundry, anthropicAws,
+// anthropicGoogleCloud, mantle, vertex) short-circuits the builder.
+const claudeFirstPartyAPIProvider = "firstParty"
+
+// ClaudeUnauthenticated reports whether a Claude `ProbeAccount` result
+// carries no evidence of a usable account — the logged-out signal that
+// routes users to `claude login`.
+//
+// The rule is "any identity evidence at all means authenticated",
+// because the CLI's account-metadata builder is far stingier than the
+// wire shape suggests. Verified against claude 2.1.219: the builder
+// returns early unless the resolved API provider is "firstParty", so
+// for the other seven enum members (gateway, bedrock, foundry,
+// anthropicAws, anthropicGoogleCloud, mantle, vertex) a fully working
+// account surfaces `apiProvider` and nothing else. Within firstParty, a
+// profile-sourced token populates neither `subscriptionType` nor
+// `tokenSource` — `email` is the only field that comes back. Requiring
+// subscription-or-token would therefore report every external-credential
+// backend, and every profile login, as logged out.
+//
+// A bare `apiProvider:"firstParty"` is NOT evidence: that is the one
+// value the builder emits before deciding it has nothing to add, so it
+// is exactly what a signed-out first-party CLI reports.
+//
+// Claude-only by contract. Codex hardcodes `apiProvider:"openai"` even
+// when it knows nothing about the account, so a Codex AccountInfo would
+// always read as authenticated here — `app_codex_probe.go` deliberately
+// leaves its unauthenticated hook nil rather than reusing this.
 func ClaudeUnauthenticated(info provider.AccountInfo) bool {
-	return info.SubscriptionType == "" && info.TokenSource == ""
+	// Trim so a whitespace-only field (a CLI that pads, a caller that
+	// hand-builds an AccountInfo) can't masquerade as identity evidence.
+	// The persisted-account path in app_provider_accounts.go already
+	// trims; probe results do not.
+	if strings.TrimSpace(info.SubscriptionType) != "" ||
+		strings.TrimSpace(info.TokenSource) != "" ||
+		strings.TrimSpace(info.Email) != "" ||
+		strings.TrimSpace(info.DisplayName) != "" {
+		return false
+	}
+	apiProvider := strings.TrimSpace(info.APIProvider)
+	return apiProvider == "" || apiProvider == claudeFirstPartyAPIProvider
 }

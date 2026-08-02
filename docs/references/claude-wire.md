@@ -1773,6 +1773,70 @@ API call billed). Response shape per the example above.
 
 ---
 
+## `initialize` control_response — `models[]`
+
+The `initialize` control_response AO already sends on every account probe
+carries a `models` array alongside `account`. The separate `list_models`
+control_request returns the **same array** — verified byte-identical on 2.1.219
+— so AO reads it off `initialize` and never spends a second subprocess on it.
+
+Captured fixture:
+[`docs/references/fixtures/claude/initialize_models_20260802.json`](fixtures/claude/initialize_models_20260802.json)
+(2.1.219, trimmed to `models` + `account` + the fast-mode keys, identity
+anonymised).
+
+```json
+{"type":"control_response","response":{"subtype":"success","request_id":"ao-probe-init",
+ "response":{"models":[
+   {"value":"default","resolvedModel":"claude-opus-5[1m]",
+    "displayName":"Default (recommended)",
+    "description":"Opus 5 with 1M context · Best for everyday, complex tasks",
+    "supportsEffort":true,"supportedEffortLevels":["low","medium","high","xhigh","max"],
+    "supportsAdaptiveThinking":true,"supportsFastMode":true,"supportsAutoMode":true},
+   {"value":"opus[1m]","resolvedModel":"claude-opus-5[1m]","displayName":"Opus (1M context)", …},
+   {"value":"claude-fable-5[1m]","resolvedModel":"claude-fable-5","displayName":"Fable", …},
+   {"value":"sonnet","resolvedModel":"claude-sonnet-5","displayName":"Sonnet", …},
+   {"value":"haiku","resolvedModel":"claude-haiku-4-5-20251001","displayName":"Haiku",
+    "description":"Haiku 4.5 · Fastest for quick answers"}
+ ], "account":{…}}}}
+```
+
+Fields (the descriptions are the CLI's own zod `.describe()` strings):
+
+| Field | Meaning |
+|---|---|
+| `value` | Identifier to use in API calls — an alias, the `default` pointer, or a canonical id. |
+| `resolvedModel` | Canonical wire id `value` resolves to. Optional. |
+| `displayName` | Human-readable name **of the row**. |
+| `description` | Picker prose. Content varies by auth mode — the API-key capture carries `$2/$10 per Mtok` pricing the subscription capture omits. |
+| `supportsEffort` / `supportedEffortLevels` | Effort support; levels are `low`/`medium`/`high`/`xhigh`/`max`. |
+| `supportsAdaptiveThinking` | Claude decides when and how much to think. |
+| `supportsFastMode` | Fast-mode capable. |
+| `supportsAutoMode` | Can run under `--permission-mode auto`. |
+| `disabled` | Visible but not selectable (an org's Zero Data Retention setting excluding it); the reason is folded into `description`. **Never observed in a capture.** |
+| `promoListPrice` | Struck-through pre-promo price (`"$3/$15"`) for a model on a launch promo. |
+
+### ⚠ It is a picker shortlist, not a catalog
+
+Four properties that decide how it can be used:
+
+1. **Five rows, aliases included.** `default`, `opus[1m]`, `claude-fable-5[1m]`,
+   `sonnet`, `haiku` — an alias space and an id space share one `value` field.
+2. **No context windows.** The array says nothing about 200k vs 1M.
+3. **Older models are absent.** opus-4.x and sonnet-4-6 do not appear on
+   2.1.219 and still run. Absence is not a denial.
+4. **`[1m]` is baked into id strings, inconsistently.** `opus[1m]` resolves to
+   `claude-opus-5[1m]` (marker kept) while `claude-fable-5[1m]` resolves to
+   `claude-fable-5` (marker dropped). Consumers must strip it from both sides.
+
+AO's consumer is `internal/claudemodels`, which merges the array into the
+hand-maintained catalog under those constraints (`internal/claudemodels/AGENTS.md`
+carries the policy). One real discrepancy the array settled: **Haiku reports no
+effort support at all**, under both subscription and API-key auth, while AO's
+catalog declared low/medium/high — the catalog was corrected.
+
+---
+
 ## `rate_limit_event`
 
 ```json
@@ -1909,6 +1973,89 @@ restart, not a `set_permission_mode` — enforced by
 (`internal/provider/claude/session.go`); values it does not recognise collapse
 to `"default"`, which would silently restore a *prompting* base mode after a
 plan turn — a hang rather than a refusal for an unattended run.
+
+---
+
+## `auto` permission mode (AI-reviewed approvals)
+
+Spike-verified on **claude 2.1.219** (2026-08-02), captures under the Claude
+spike named in `t3-improvements.md` §Decision log. Consumed by
+`internal/provider/claude/options.go` (`claudeAutoPermissionMode`) as the
+`auto` RuntimeMode tier.
+
+### It functions on a normal install, and the flag bypasses the feature gates
+
+`claude --input-format stream-json --output-format stream-json --verbose
+--permission-mode auto` starts and `system/init` echoes
+`permissionMode:"auto"`. The CLI does carry statsig gates for auto
+(`tengu_harbor_willow`, `tengu_moss_anchor`) plus a settings-source rule
+("only policy/user/flag settings may grant auto mode — projectSettings and
+localSettings are repo-controllable") and a cached circuit breaker, but all
+three sit on the branch that picks a mode when the client asked for none. An
+explicit request never reaches them.
+
+`set_permission_mode` accepts it too. The mode set on this release is
+`acceptEdits | auto | bypassPermissions | default | dontAsk | plan`; sending
+`{"subtype":"set_permission_mode","mode":"auto"}` returned
+`control_response{subtype:"success", response:{"mode":"auto"}}` and an
+unrecognised value returned the enumerated error. Only `bypassPermissions` is
+additionally gated on how the process was spawned, so `auto` ↔ any other
+non-`read-only` tier is a live transition.
+
+> There is a SECOND `set_permission_mode` handler in the binary — an
+> `[engine] set_permission_mode:auto rejected — gate not enabled` path guarded
+> by a feature check. It belongs to the internal engine message loop, not to
+> the stream-json control protocol (it logs instead of writing a
+> `control_response`). The stream-json handler above is the one AO talks to,
+> and it was observed succeeding.
+
+### Decision path
+
+acceptEdits-would-allow → allow (fast path, no classifier call); safe-tool
+allowlist → allow; otherwise a two-stage **Haiku** classifier that allows or
+**denies**. Fails closed when the classifier is unavailable.
+
+### It falls back to a real ask — the CanUseTool responder stays load-bearing
+
+`tengu_auto_mode_fallback_to_ask` fires with reason `safety_check`,
+`ask_rule`, `plan_mode_floor`, `org_ask_ceiling`,
+`requires_user_interaction`, `workflow_usage_consent`, or
+`mode_changed_while_queued`. The fallback is an ordinary
+`control_request{subtype:"can_use_tool"}` on the same channel
+`--permission-prompt-tool stdio` installs. A client without a responder hangs.
+
+### ⚠ Headless posture turns the fallback into a deny, and a streak into an abort
+
+Every one of those fallbacks is preceded by
+`if (toolPermissionContext.shouldAvoidPermissionPrompts) return deny(...)`, and
+the denial-limit check throws `Agent aborted: too many classifier denials in
+headless mode` on the same flag rather than reverting to prompting.
+
+That flag has exactly two producers in 2.1.219, both nested-loop constructors:
+the `avoid_prompts` permission layer pushed when a tool-use context is forked
+for a subagent that does not share the parent's app state, and the subagent
+context builder keyed on `agentType` / `requestDialog`. **A top-level
+stream-json session is neither.** AO spawns exactly that and supplies a
+CanUseTool responder, so it takes the "Classifier denial limit exceeded,
+falling back to prompting" path.
+
+### `result.modelUsage` gains a classifier row
+
+An auto turn that ran one Bash call reported two models: the thread's model and
+`claude-haiku-4-5-20251001` (530 in / 12 out / `costUSD` 0.00059). AO's
+accounting is keyed by wire model name and cumulative-delta based, so the row
+is billed correctly and attributed as its own model — a Fable thread will show
+a Haiku row. Regression:
+`TestParseResult_AutoModeClassifierRowIsAccountedNotDropped`.
+
+### Per-model support flag exists but is not consumed
+
+`initialize`'s `models[]` carries `supportsAutoMode` (true on opus/fable/sonnet,
+absent on haiku). AO decodes it (`claude.WireModel`) but does not gate the tier
+on it: the flag only exists for the five models the array lists, so consuming
+it would read as "auto unsupported" for every model the shortlist omits. See
+[§`initialize` control_response — `models[]`](#initialize-control_response--models)
+and `internal/claudemodels/AGENTS.md`. Follow-up, not a shipped behaviour.
 
 ---
 

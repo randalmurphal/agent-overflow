@@ -703,7 +703,10 @@ command bindings** (§5, §11), the **MCP / tool configs**, the **reliability
 defaults** (the §12 inactivity timeout, envelope-retry count, optional
 per-item budget), **secret references**, a **worktree setup** step (files
 copied from the main workspace and commands run at worktree creation — `.env`,
-dependency install; **setup failure parks `needs-human(setup-failed)`** before
+dependency install; each command runs in the new worktree with
+**`AO_PROJECT_ROOT`** and **`AO_WORKTREE_PATH`** exported as absolute paths, so
+a recipe can link back to the main checkout instead of only snapshotting it;
+**setup failure parks `needs-human(setup-failed)`** before
 any phase starts on a broken tree), and the **disposition policy** (`manual` |
 `auto-pr` | `auto-merge`, default `manual` — §9).
 

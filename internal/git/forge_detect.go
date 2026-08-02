@@ -15,18 +15,36 @@ const forgeDetectionTTL = 5 * time.Minute
 
 type forgeCacheEntry struct {
 	forge     string
+	origin    originIdentity
 	expiresAt time.Time
 }
 
-// originURL runs `git remote get-url origin` and returns the URL plus
-// a flag for whether the lookup succeeded. Returns ("", false) when
-// the cwd has no "origin" remote configured.
-func (c *Core) originURL(cwd string) (string, bool) {
+// originIdentity is what a workspace's `origin` remote was observed to be.
+// `known` distinguishes "we read the remote config" from "we could not"
+// — a failed read is an absence of information, never evidence that the
+// remote is gone, and callers that act on a change of identity must treat
+// the two differently.
+type originIdentity struct {
+	url   string
+	known bool
+}
+
+// retargets reports whether o is a successfully-read identity that differs
+// from other, i.e. the remote demonstrably moved. Unknown on either side
+// yields false: nothing is known to have changed.
+func (o originIdentity) retargets(other originIdentity) bool {
+	return o.known && other.known && o.url != other.url
+}
+
+// originRemote runs `git remote get-url origin` and reports the URL. The
+// returned identity is unknown when the cwd has no "origin" remote, is not
+// a repository, or git failed for any other reason.
+func (c *Core) originRemote(cwd string) originIdentity {
 	result, err := c.run(cwd, "remote", "get-url", "origin")
 	if err != nil || result.exitCode != 0 {
-		return "", false
+		return originIdentity{}
 	}
-	return strings.TrimSpace(result.stdout), true
+	return originIdentity{url: strings.TrimSpace(result.stdout), known: true}
 }
 
 // DetectForge returns the canonical forge id ("github" | "gitlab") for
@@ -47,24 +65,25 @@ func (c *Core) DetectForge(cwd string) string {
 	}
 	c.forgeCacheMu.RUnlock()
 
-	url, ok := c.originURL(cwd)
-	forge := ""
-	if ok {
-		forge = classifyOriginURL(url, c.gitLabHostsSnapshot())
-	}
-	c.storeForgeCache(cwd, forge, now)
-	return forge
+	return c.recordOrigin(cwd, c.originRemote(cwd), now)
 }
 
-// storeForgeCache memoizes a forge id for cwd. Called by both
-// DetectForge (on cache miss) and Status (each refresh) so the two
-// paths share the same TTL window. Sweeps expired sibling entries on
-// write so the map's footprint stays bounded by the number of active
-// (non-expired) workspaces rather than the lifetime cumulative total.
-func (c *Core) storeForgeCache(cwd, forge string, now time.Time) {
+// recordOrigin classifies origin, memoizes the classification together
+// with the identity it was derived from, and returns the forge id. Called
+// by both DetectForge (on cache miss) and Status (each refresh) so the two
+// paths share the same TTL window — and so classification can never be
+// cached apart from the origin it describes. Sweeps expired sibling
+// entries on write so the map's footprint stays bounded by the number of
+// active (non-expired) workspaces rather than the lifetime total.
+func (c *Core) recordOrigin(cwd string, origin originIdentity, now time.Time) string {
+	forge := ""
+	if origin.known {
+		forge = classifyOriginURL(origin.url, c.gitLabHostsSnapshot())
+	}
 	c.forgeCacheMu.Lock()
 	c.forgeCache[cwd] = forgeCacheEntry{
 		forge:     forge,
+		origin:    origin,
 		expiresAt: now.Add(forgeDetectionTTL),
 	}
 	for k, entry := range c.forgeCache {
@@ -73,6 +92,20 @@ func (c *Core) storeForgeCache(cwd, forge string, now time.Time) {
 		}
 	}
 	c.forgeCacheMu.Unlock()
+	return forge
+}
+
+// cachedOrigin returns the origin identity recorded alongside a live forge
+// classification for cwd, without shelling out. A miss or an expired entry
+// returns an unknown identity — callers must read that as "no information
+// about the remote", never as "no remote".
+func (c *Core) cachedOrigin(cwd string) originIdentity {
+	c.forgeCacheMu.RLock()
+	defer c.forgeCacheMu.RUnlock()
+	if entry, ok := c.forgeCache[cwd]; ok && entry.expiresAt.After(c.nowFn()) {
+		return entry.origin
+	}
+	return originIdentity{}
 }
 
 // InvalidateForgeCache drops the cached forge classification for cwd.

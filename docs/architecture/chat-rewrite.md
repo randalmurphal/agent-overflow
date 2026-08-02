@@ -691,10 +691,11 @@ exposes a client-sent `stop_task` control_request with unified
 `task_id` namespace covering both `run_in_background` Bash and Task
 subagents — see
 [`claude-wire.md §stop_task`](../references/claude-wire.md#stop_task).
-Codex exposes only thread-wide `thread/backgroundTerminals/clean`;
-per-process termination is an upstream gap tracked in
-[`codex.md §Known upstream constraints`](../references/codex.md#known-upstream-constraints).
-Codex `spawn_agent` child threads have no client kill path today —
+Codex exposes both: per-process
+`thread/backgroundTerminals/terminate {threadId, processId}` (since
+codex 0.140.0) and the thread-wide `clean` — see
+[`codex.md §Background terminals`](../references/codex.md#background-terminals).
+Codex `spawn_agent` child threads still have no client kill path —
 `close_agent` is a model tool only.
 
 **On app reopen** with a `running && is_background` launch and no

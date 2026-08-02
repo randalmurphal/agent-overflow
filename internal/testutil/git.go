@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // InitGitRepo creates a temporary git repository with an initial commit and
@@ -29,6 +30,48 @@ func InitGitRepo(t *testing.T) string {
 	RunGit(t, repo, "commit", "-m", "initial commit")
 
 	return repo
+}
+
+// InitGitRepoWithOrigin creates a bare repository plus a working clone
+// that has it as `origin` with `main` pushed and tracking. Returns
+// (workingRepo, barePath).
+//
+// The bare repo is a local path, so nothing here touches a network: it
+// behaves like a real remote for fetch/push/ahead-behind purposes while
+// staying inside t.TempDir().
+func InitGitRepoWithOrigin(t *testing.T) (string, string) {
+	t.Helper()
+
+	bare := t.TempDir()
+	if err := RunGitAllowError(bare, "init", "--bare", "-b", "main"); err != nil {
+		RunGit(t, bare, "init", "--bare")
+	}
+	repo := InitGitRepo(t)
+	RunGit(t, repo, "remote", "add", "origin", bare)
+	RunGit(t, repo, "push", "-u", "origin", "main")
+	return repo, bare
+}
+
+// AdvanceOriginMain pushes one commit to bare's main branch through a
+// throwaway sibling clone, simulating a collaborator pushing while the
+// app's clone isn't looking. Returns once the bare repo has the new tip;
+// clones of it are one commit behind until they fetch.
+func AdvanceOriginMain(t *testing.T, bare string) {
+	t.Helper()
+
+	sibling := t.TempDir()
+	RunGit(t, sibling, "clone", bare, ".")
+	// Fixed filename (tests assert on it), fresh content every call so a
+	// second advance against the same bare still has something to commit.
+	const name = "outside.txt"
+	body := fmt.Sprintf("upstream %d\n", time.Now().UnixNano())
+	if err := os.WriteFile(filepath.Join(sibling, name), []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	RunGit(t, sibling, "add", name)
+	RunGit(t, sibling, "-c", "user.email=outside@example.com", "-c", "user.name=Outside",
+		"commit", "-m", "upstream commit")
+	RunGit(t, sibling, "push", "origin", "main")
 }
 
 // RunGit executes a git command and fails the test if it returns an error.

@@ -47,7 +47,7 @@ func (s *Session) Fork(ctx context.Context) (string, error) {
 // to drop (or vice versa), and building local truncation on top of
 // that is worse than failing the whole operation.
 func (s *Session) ForkAt(ctx context.Context, lastTurnID string) (string, error) {
-	params := map[string]any{"threadId": s.codexThreadID}
+	params := map[string]any{"threadId": s.rootThreadID()}
 	if lastTurnID != "" {
 		params["lastTurnId"] = lastTurnID
 	}

@@ -8,6 +8,18 @@ import (
 	"agent-overflow/internal/provider"
 )
 
+// claudeEffortForModel resolves the `--effort` flag value for a session,
+// dropping it entirely for a model the catalog says has no reasoning tiers
+// (Haiku, per the CLI's own model list). Mirrors claudeFastMode, which gates
+// the same way on the same catalog. See
+// provider.ModelDeclaresNoReasoningEffort for why absence beats coercion here.
+func claudeEffortForModel(model string, effort provider.ReasoningEffort) string {
+	if provider.ModelDeclaresNoReasoningEffort(string(provider.Claude), model) {
+		return ""
+	}
+	return claudeEffortFromOption(effort)
+}
+
 func claudeEffortFromOption(effort provider.ReasoningEffort) string {
 	switch effort {
 	case provider.EffortLow:
@@ -28,7 +40,13 @@ func claudeEffortFromOption(effort provider.ReasoningEffort) string {
 	}
 }
 
+// claudeModelForContextWindow appends the `[1m]` context-tier marker the CLI
+// reads the extended window from. It is the inverse of
+// provider.TrimContextMarker, and trims first so a model id that already
+// carries a marker (the CLI's own list bakes them into id strings) yields one
+// marker rather than `model[1m][1m]`.
 func claudeModelForContextWindow(model string, contextWindow int) string {
+	model = provider.TrimContextMarker(model)
 	if model != "" && contextWindow == provider.ClaudeExtendedContextWindow {
 		return model + "[1m]"
 	}
@@ -64,7 +82,7 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		ResumeAt:           opts.ResumeAt,
 		ForkSession:        opts.ForkSession,
 		SystemPrompt:       opts.SystemPrompt,
-		ReasoningEffort:    claudeEffortFromOption(opts.ReasoningEffort),
+		ReasoningEffort:    claudeEffortForModel(model, opts.ReasoningEffort),
 		FastMode:           claudeFastMode(model, opts.FastMode),
 		PermissionFlags:    claudePermissionFlags(opts.RuntimeMode),
 		DisallowedTools:    claudeDisallowedTools(opts.RuntimeMode),
@@ -126,6 +144,14 @@ func claudeDisallowedTools(mode provider.RuntimeMode) []string {
 // value. Unlike claudePermissionFlags, it returns "default" for supervised
 // mode so sessions can restore the base mode via set_permission_mode after a
 // plan turn.
+//
+// Every tier is enumerated; the trailing return is the unknown-value path,
+// not a tier's mapping. Callers reach this through
+// provider.NormalizeRuntimeMode, which never yields a non-canonical value, so
+// the fallback is unreachable in practice — and it deliberately lands on
+// supervised prompting rather than on any tier that would widen or seize up a
+// session. TestClaudeBasePermissionModeCoversEveryRuntimeMode is what forces a
+// new tier to be enumerated here rather than absorbed by that fallback.
 func claudeBasePermissionMode(mode provider.RuntimeMode) string {
 	switch mode {
 	case provider.RuntimeReadOnly:
@@ -135,16 +161,56 @@ func claudeBasePermissionMode(mode provider.RuntimeMode) string {
 		// tool_result the model reads and continues from, so an unattended
 		// turn completes instead of stalling. Verified on claude 2.1.219.
 		return "dontAsk"
+	case provider.RuntimeApprovalRequired:
+		return "default"
 	case provider.RuntimeAutoAcceptEdits:
 		return "acceptEdits"
+	case provider.RuntimeAuto:
+		return claudeAutoPermissionMode
 	case provider.RuntimeFullAccess:
 		return "bypassPermissions"
-	case provider.RuntimeApprovalRequired:
-		fallthrough
-	default:
-		return "default"
 	}
+	return "default"
 }
+
+// claudeAutoPermissionMode is the CLI permission mode behind
+// provider.RuntimeAuto. Spike-verified against claude 2.1.219 (captures under
+// the 2026-08-02 Claude spike in t3-improvements.md §Decision log):
+//
+//   - `--permission-mode auto` is accepted verbatim and echoed back on
+//     `system/init` as `permissionMode:"auto"`. The statsig gates the CLI
+//     carries for auto (`tengu_harbor_willow` / `tengu_moss_anchor`) guard
+//     only the *implicit* default-to-auto path taken when no mode was
+//     requested; an explicit flag never reaches them.
+//   - `set_permission_mode` accepts "auto" on the stream-json control channel
+//     — the accepted set is
+//     {acceptEdits, auto, bypassPermissions, default, dontAsk, plan} and the
+//     CLI replied `{"mode":"auto"}`. Only "bypassPermissions" is additionally
+//     gated on how the process was spawned, so auto ↔ every other non-read-only
+//     tier is a live transition (see PlanLiveUpdate).
+//   - The decision path is: "acceptEdits would allow it" → allow; safe-tool
+//     allowlist → allow; otherwise a two-stage Haiku classifier that allows or
+//     DENIES. It falls closed when the classifier is unavailable, and it falls
+//     back to a REAL interactive ask on safety_check / ask_rule /
+//     plan_mode_floor / org_ask_ceiling / requires_user_interaction.
+//
+// That last bullet is why auto does not change any of AO's approval plumbing:
+// the fallback ask arrives as an ordinary `can_use_tool` control_request on the
+// same channel `--permission-prompt-tool stdio` already installs, and
+// parse_control.go answers it like any other tier's approval.
+//
+// The one failure mode worth naming is the CLI's headless posture. When
+// `toolPermissionContext.shouldAvoidPermissionPrompts` is set, auto's
+// fallback-to-ask becomes a hard deny and a denial streak throws
+// "Agent aborted: too many classifier denials in headless mode" instead of
+// prompting. AO is never in that posture: disassembly of 2.1.219 shows the flag
+// has exactly two producers, both nested-loop constructors — the `avoid_prompts`
+// permission layer pushed when a tool-use context is forked for a subagent that
+// does not share the parent's app state, and the subagent context builder keyed
+// on `agentType` / `requestDialog`. The top-level stream-json session AO spawns
+// gets neither, and it supplies a CanUseTool responder, so the denial-limit
+// branch takes the "falling back to prompting" path.
+const claudeAutoPermissionMode = "auto"
 
 // cliInlineSettings is the JSON shape projected into the `--settings`
 // CLI flag, which Claude Code applies as the `flagSettings` source. The

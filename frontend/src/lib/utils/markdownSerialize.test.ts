@@ -239,6 +239,68 @@ describe('serializeRangeToMarkdown — lists', () => {
   });
 });
 
+// GFM task lists render the checked state as a disabled <input>, so it lives
+// nowhere in the visible text: the previous walker copied `- [x] done` as a
+// plain `- done`, silently flipping every checked box off for the reader
+// pasting a checklist somewhere else.
+describe('serializeRangeToMarkdown — task lists', () => {
+  it('emits [x] / [ ] for checked and unchecked items', () => {
+    const host = asMarkdownBody(
+      '<ul>'
+      + '<li><input type="checkbox" disabled checked>done</li>'
+      + '<li><input type="checkbox" disabled>todo</li>'
+      + '</ul>',
+    );
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe('- [x] done\n- [ ] todo');
+  });
+
+  // The property path — svelte-streamdown binds `checked` as a DOM property
+  // and never writes the attribute — is proved in
+  // markdownSerialize.browser.test.ts: preserving checkedness across
+  // Range.cloneContents is the HTML cloning steps' job, and happy-dom does
+  // not implement them.
+
+  it('keeps the task marker inside an ordered list item', () => {
+    const host = asMarkdownBody(
+      '<ol><li><input type="checkbox" disabled checked>ship it</li></ol>',
+    );
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe('1. [x] ship it');
+  });
+
+  it('indents continuation lines under the list marker, not the checkbox', () => {
+    const host = asMarkdownBody(
+      '<ul><li><input type="checkbox" disabled><p>todo</p><p>why</p></li></ul>',
+    );
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe('- [ ] todo\n\n  why');
+  });
+
+  it('carries the marker into a nested task list', () => {
+    const host = asMarkdownBody(
+      '<ul><li><input type="checkbox" disabled checked>parent'
+      + '<ul><li><input type="checkbox" disabled>child</li></ul></li></ul>',
+    );
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe(
+      '- [x] parent\n  - [ ] child',
+    );
+  });
+
+  it('leaves a plain list item unmarked', () => {
+    const host = asMarkdownBody('<ul><li>plain</li></ul>');
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe('- plain');
+  });
+
+  it('does not emit a stray marker for a checkbox selected on its own', () => {
+    // A drag-select that clips the item's text still clones the input; the
+    // <li> is out of the fragment, so nothing owns the marker.
+    const host = asMarkdownBody(
+      '<ul><li><input type="checkbox" disabled checked>done</li></ul>',
+    );
+    const range = document.createRange();
+    range.selectNode(host.querySelector('input')!);
+    expect(serializeRangeToMarkdown(range)).toBeNull();
+  });
+});
+
 describe('serializeRangeToMarkdown — code blocks', () => {
   it('emits language-tagged fences', () => {
     const host = asMarkdownBody(

@@ -69,7 +69,7 @@ func (a *App) reconcileExternalProviderAccountWithMutexHeld(
 	binary := a.providerBinaryPath(providerName)
 	info, credential, err := a.runStableAccountProbe(
 		providerName,
-		canonicalProviderAccountProbe(providerName, binary),
+		a.canonicalProviderAccountProbe(providerName, binary),
 	)
 	if err != nil {
 		return fmt.Errorf("identify externally selected %s account: %w", providerName, err)
@@ -135,16 +135,16 @@ func (a *App) providerCredentialReconcileMutex(providerName string) *sync.Mutex 
 // keys "is this the default home" off the variable being absent rather than off
 // its value, and on macOS a non-default home hashes into a different Keychain
 // service.
-func canonicalProviderAccountProbe(
+func (a *App) canonicalProviderAccountProbe(
 	providerName string,
 	binary string,
 ) func(context.Context) (provider.AccountInfo, error) {
 	return func(ctx context.Context) (provider.AccountInfo, error) {
 		switch providerName {
 		case string(provider.Claude):
-			return claude.ProbeAccount(ctx, claude.ProbeConfig{Binary: binary})
+			return claude.ProbeAccount(ctx, a.claudeProbeConfig(binary, nil))
 		case string(provider.Codex):
-			return codex.ProbeIdentity(ctx, codex.ProbeConfig{Binary: binary})
+			return codex.ProbeIdentity(ctx, a.codexProbeConfig(binary, nil))
 		default:
 			return provider.AccountInfo{}, fmt.Errorf("unsupported provider %q", providerName)
 		}

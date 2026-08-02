@@ -1,15 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
+    findDuplicateChordRow,
     getKeybindingIssues,
     getKeybindingRules,
     getResolvedKeybindings,
     isKeybindingsLoaded,
+    keybindingIdentity,
     loadKeybindings,
     resetKeybindingsToDefaults,
     saveKeybindings,
     encodeChordFromEvent,
     formatChord,
+    KEYBINDING_CAPTURE_ATTR,
     type KeybindingRule,
   } from '../../stores/keybindings.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -25,6 +28,10 @@
 
   let capturingFor = $state<number | null>(null);
   let saving = $state(false);
+
+  // Stamped on the capture control so dispatch can recognise it. Built
+  // once so the spread has a stable identity across renders.
+  const captureMarker = { [KEYBINDING_CAPTURE_ATTR]: '' };
 
   onMount(() => {
     if (!loaded) void loadKeybindings();
@@ -43,17 +50,28 @@
     rebind(capturingFor, chord);
   }
 
-  function keybindingIdentity(rule: KeybindingRule): string {
-    const identityKey = rule.defaultId ?? rule.defaultKey ?? rule.key;
-    return [rule.command, rule.when ?? '', identityKey].join('\0');
-  }
-
   async function rebind(index: number, newKey: string): Promise<void> {
     if (saving) return;
     saving = true;
     try {
       const rule = rules[index];
       if (!rule) return;
+      // A command can ship more than one default row (thread.new is bound to
+      // both mod+n and mod+shift+o). The override model keeps one slot per
+      // default identity, so it cannot express "row A took row B's chord" —
+      // saving it would leave two rows of the same command showing the same
+      // chord, only the first of which dispatch can ever reach. Refuse, and
+      // say which row is in the way. (Clearing the other row instead would
+      // need an "unbound" override value; internal/keybindings.Update rejects
+      // an empty key, so there is no such value to write today.)
+      const duplicate = findDuplicateChordRow(userRules, rule.rule, newKey);
+      if (duplicate) {
+        addToast(
+          'error',
+          `${formatChord(newKey)} is already bound to ${duplicate.command} in this context — change that shortcut first`,
+        );
+        return;
+      }
       const selectedIdentity = keybindingIdentity(rule.rule);
       // Preserve the full effective list while replacing only the selected
       // default identity. The backend re-merges by defaultId on read.
@@ -77,7 +95,9 @@
         });
       }
       await saveKeybindings(next);
-      addToast('success', `Rebound ${rule.rule.command} to ${newKey}`);
+      // Display spelling, matching the table and the collision message above —
+      // the raw `mod+…` encoding is not what the row shows.
+      addToast('success', `Rebound ${rule.rule.command} to ${formatChord(newKey)}`);
     } catch (err) {
       addToast('error', `Failed to save keybinding: ${errString(err)}`);
     } finally {
@@ -143,9 +163,17 @@
             <td class="px-3 py-2">
               {#if capturingFor === i}
                 <!-- svelte-ignore a11y_autofocus -->
+                <!--
+                  The capture marker is what stops the chord being
+                  recorded from ALSO running its command (dispatchKey's
+                  isKeybindingCaptureTarget guard). stopPropagation in
+                  the handler below is defence in depth for the other
+                  window-level listeners, not the guard.
+                -->
                 <button
                   type="button"
                   autofocus
+                  {...captureMarker}
                   onkeydown={handleCaptureKeydown}
                   onblur={() => {
                     if (capturingFor === i) capturingFor = null;

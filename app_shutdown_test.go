@@ -274,6 +274,11 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// a.sessions via stopSession; running it concurrently with
 		// Step 4's snapshotAndClear would race the session map.
 		"stop retention cleanup",
+		// "stop background git fetch" MUST appear before "close store" —
+		// every pass reads the project list out of SQLite. It sits here,
+		// with the other timer-driven loops, so teardown has exactly one
+		// place where background cadences are joined.
+		"stop background git fetch",
 		"close provider sessions",
 		// "stop orphan reaper" follows session close: each session
 		// releases its watched group on a clean close, so the sidecar has

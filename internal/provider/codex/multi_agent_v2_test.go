@@ -13,7 +13,6 @@ func newMultiAgentV2RoutingSession(t *testing.T, onEvent func(provider.ProviderE
 	t.Helper()
 	s := &Session{
 		threadID:                  "ao-thread",
-		codexThreadID:             "root-provider-thread",
 		onEvent:                   onEvent,
 		childParentByThread:       make(map[string]string),
 		childParentByAgentPath:    make(map[string]string),
@@ -31,6 +30,7 @@ func newMultiAgentV2RoutingSession(t *testing.T, onEvent func(provider.ProviderE
 		planBuffersByItemID:       make(map[string]*planBuffer),
 		planBuffersByTurnID:       make(map[string]*planBuffer),
 	}
+	s.setRootThreadID("root-provider-thread")
 	t.Cleanup(func() {
 		s.mu.Lock()
 		for _, timer := range s.deferredChildDeadlines {

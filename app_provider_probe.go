@@ -13,8 +13,8 @@ import (
 // providerProbeRunner bundles the per-provider hooks runAccountProbe
 // composes around the shared cache-hit / cache-miss / emit dance.
 //
-// providerName seeds the `provider:account` event payload; cache and
-// binary key the cache; probe is the wire call that runs on a miss;
+// providerName seeds the `provider:account` event payload; cache + key
+// address the memo; probe is the wire call that runs on a miss;
 // unauthenticated + emitUnauth are an optional pair — Claude wires both
 // to surface a "run claude login" banner, Codex leaves them nil because
 // its empty planType is an ambiguous signal that would produce false
@@ -22,7 +22,7 @@ import (
 type providerProbeRunner struct {
 	providerName    string
 	cache           *provider.ProbeCache
-	binary          string
+	key             provider.ProbeCacheKey
 	probe           func(ctx context.Context) (provider.AccountInfo, error)
 	unauthenticated func(provider.AccountInfo) bool
 	emitUnauth      func()
@@ -37,7 +37,7 @@ type providerProbeRunner struct {
 // for providers (Claude) where an empty AccountInfo is an unambiguous
 // "not logged in" signal.
 func (a *App) runAccountProbe(r providerProbeRunner) (provider.AccountInfo, error) {
-	if cached, hit := r.cache.Get(r.binary); hit {
+	if cached, hit := r.cache.Get(r.key); hit {
 		if r.unauthenticated != nil && r.emitUnauth != nil && r.unauthenticated(cached) {
 			r.emitUnauth()
 		}
@@ -61,7 +61,7 @@ func (a *App) runAccountProbe(r providerProbeRunner) (provider.AccountInfo, erro
 		return provider.AccountInfo{}, err
 	}
 	reconcileMu.Unlock()
-	r.cache.Set(r.binary, info)
+	r.cache.Set(r.key, info)
 	a.emitProviderAccountIfCurrent(r.providerName, account, info)
 	if r.afterAdopt != nil {
 		r.afterAdopt(account)

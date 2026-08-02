@@ -356,3 +356,35 @@ describe('<GeneralSettings> — Font selectors', () => {
     expect(mock!.mock.calls[0][0]).toEqual({ monoFont: 'system' });
   });
 });
+
+describe('<GeneralSettings> — Repository sync section', () => {
+  it('renders the background fetch toggle on by default', async () => {
+    await seed();
+    const { getByTestId, getByLabelText } = render(GeneralSettings);
+    expect(getByTestId('settings-git-sync')).toBeTruthy();
+    const toggle = getByLabelText('Toggle Background Git Fetch') as HTMLElement;
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('dispatches backgroundGitFetch:false when switched off', async () => {
+    await seed();
+    const { getByLabelText } = render(GeneralSettings);
+    await fireEvent.click(getByLabelText('Toggle Background Git Fetch'));
+
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ backgroundGitFetch: false });
+  });
+
+  it('dispatches backgroundGitFetch:true when switched back on', async () => {
+    await seed({ backgroundGitFetch: false });
+    const { getByLabelText } = render(GeneralSettings);
+    const toggle = getByLabelText('Toggle Background Git Fetch') as HTMLElement;
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+
+    await fireEvent.click(toggle);
+    const mock = getBindingMock('UpdateSettings');
+    expect(mock).toBeDefined();
+    expect(mock!.mock.calls[0][0]).toEqual({ backgroundGitFetch: true });
+  });
+});

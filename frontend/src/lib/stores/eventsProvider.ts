@@ -19,7 +19,7 @@ import { clearProviderAccount, setProviderAccount } from './accountInfo.svelte';
 import { asProviderID, type ProviderID } from '../types/providers';
 import { ListProviderAccounts } from './bindings';
 import type { ManagedProviderAccount } from './bindings';
-import { invalidateProviderModels } from './providerModels.svelte';
+import { invalidateProviderModels, refreshProviderModels } from './providerModels.svelte';
 import { iterPanes } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo.svelte';
@@ -292,6 +292,16 @@ export function applyProviderAccount(evt: ProviderAccountEvent): void {
   if (!evt) return;
   const provider = asProviderID(evt.provider);
   if (!provider) return;
+  // The model catalog is account-scoped on both providers — Claude's is
+  // enriched from the very probe that emits this event, and Codex's list is
+  // whatever the signed-in account may run. So an account transition is
+  // exactly when the cached catalog stops being the right answer. Refresh
+  // (load, then swap) rather than invalidate: the composer's context/effort
+  // labels read the store synchronously, and an emptied cache would blank them
+  // until something happened to re-fetch.
+  void refreshProviderModels(provider).catch((error) => {
+    console.warn(`events: refresh ${provider} model catalog after account change`, error);
+  });
   if (evt.cleared) {
     clearProviderAccount(provider, evt.generation);
     return;

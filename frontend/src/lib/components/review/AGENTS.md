@@ -9,7 +9,7 @@ its source thread pane; open it via `openReviewCompanion` /
 
 | File | Role |
 |---|---|
-| `ReviewPane.svelte` | Shell: scope/branch/commit/edit selectors, tree/split/wrap toggles, error + send strip, snippet wiring. |
+| `ReviewPane.svelte` | Shell: scope/branch/commit/edit selectors, tree/split/wrap/hide-whitespace toggles, error + send strip, snippet wiring. |
 | `ReviewDiffBody.svelte` | The continuous virtualized surface: one `TimelineVirtualizer` over the flat row model, sticky overlay file header, keyboard (j/k files, n/p comments, c file-level comment), jump-to-file. |
 | `ReviewRail.svelte` | The left rail shell: Files \| Comments tabs, resizable width persisted via appStorage `reviewTreeWidth`. Tab state is owned by `ReviewPane` (the toolbar comment tally switches to the Comments tab). |
 | `ReviewFileTree.svelte` | Files tab: GitHub-style tree (`utils/reviewTree.ts`), click-to-jump, top-file highlight, per-file comment-count badges, a search box plus an extension-filter dropdown (funnel button right of the search box, multi-select `Menu` of file-type options with counts). The extension set filters the rail; the dropdown's "Apply filter to diff" checkbox extends it to the diff body (state owned by `ReviewPane`, which derives the `diffFiles` subset and maps top-file highlight indexes back to the full list). The text search stays rail-only. |
@@ -122,6 +122,26 @@ state registry); the row model in `utils/reviewRows.ts`.
   Draft-editor text lives in the store (`draftBodyFor`/`setDraftBody`),
   focus is a one-shot store request (`consumeDraftEditorFocus`). Never
   hold user input in row-local `$state`.
+- **Hide whitespace (`-w`)** is a diff SOURCE option, not a render
+  option: flipping it re-requests the patch
+  (`setIgnoreWhitespace` → `reload({ selectionOnly: true })`), because
+  git emits a different patch and every derivation from it — parsed
+  files, px-pinned row geometry, highlight spans — has to be rebuilt.
+  Per pane, default off, deliberately not persisted. Available only
+  where `internal/gitdiff` produces the patch
+  (`supportsIgnoreWhitespace`): workspace, branch, and any selected
+  commit including in pr scope. NOT the PR whole-diff (it can come
+  from the forge API, which has no `-w`), not edits, not the conflict
+  or CI-log views. The toolbar and `loadPatch` read the same
+  predicate, so the button can't offer a mode the load path won't
+  deliver.
+  Comment anchors survive the toggle: `-w` narrows hunks but emits
+  true file line numbers, so a `(path, line)` anchor means the same
+  physical line in both patches (guarded Go-side by
+  `TestIgnoreWhitespaceKeepsCanonicalLineNumbers`). Comment creation
+  therefore stays enabled. The one case that needed handling is a
+  draft carried across the flip by a STABLE sourceKey onto a line
+  `-w` removed — see the orphan note below.
 - **Comment sourceKey** is a content hash of the patch
   (`utils/diffSourceKey.ts`); drafts persist in SQLite via the
   `diff_review_comments` bindings and batch-send through
@@ -130,6 +150,16 @@ state registry); the row model in `utils/reviewRows.ts`.
   each draft's `commitSha` records what it was anchored to, and orphan
   detection (drafts whose line left the diff) excludes them from PR
   submission without deleting them.
+  Orphan detection runs wherever the sourceKey OUTLIVES the patch it
+  was written against (`sourceKeyOutlivesPatch`): pr scope always, and
+  a selected commit while `-w` is on — the SHA key is stable but the
+  rendered patch is not, so a draft on a whitespace-only line carries
+  over with nowhere to land and would otherwise be invisible in the
+  diff body yet still counted and still sent. Everywhere else the
+  content-hashed key changes with the patch, so no draft can carry
+  over: flipping `-w` in workspace/branch scope re-keys drafts, which
+  HIDES them (reversibly, never deleted, never re-anchored) rather
+  than landing them on a diff they were not written against.
 - **PR diff source**: `GetPRDiff(threadId, pr, baseRef)` prefers a
   locally-computed three-dot diff (`git diff --merge-base origin/<base>
   <fetched-head-oid>`) when the thread has a clone — gh/glab's PR-diff

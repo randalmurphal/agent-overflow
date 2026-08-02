@@ -17,6 +17,7 @@
   import { RenameThread, GetThread } from '../../stores/bindings';
   import { getFocusedPaneId, syncThread } from '../../stores/panes.svelte';
   import { errString } from '../../utils/errors';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
 
   interface Props {
     pane: ThreadPane;
@@ -108,6 +109,9 @@
   }
 
   function handleKeydown(e: KeyboardEvent): void {
+    // Enter confirms the IME candidate while composing a CJK title; committing
+    // the rename here would save the pre-composition text and exit edit mode.
+    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       void commitRename();

@@ -17,6 +17,7 @@
 
   import { onDestroy, untrack } from 'svelte';
   import { createDirectoryBrowser } from './directoryBrowserState.svelte';
+  import { isImeComposingEvent } from '../../utils/imeComposition';
 
   interface Props {
     initialPath?: string;
@@ -61,6 +62,9 @@
   }
 
   function handlePathKeydown(e: KeyboardEvent): void {
+    // Enter confirms the IME candidate while composing a CJK path segment;
+    // navigating here would use the pre-composition path.
+    if (e.key === 'Enter' && isImeComposingEvent(e)) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       browser.handlePathEnter();

@@ -424,29 +424,3 @@ func isExistingDirectory(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
 }
-
-func (c *Core) revParsePath(cwd string, arg string) (string, bool, error) {
-	result, err := c.run(cwd, "rev-parse", arg)
-	if err != nil {
-		return "", false, fmt.Errorf("git watch roots: rev-parse %s: %w", arg, err)
-	}
-	if result.exitCode != 0 {
-		stderr := strings.TrimSpace(result.stderr)
-		if strings.Contains(strings.ToLower(stderr), "not a git repository") {
-			return "", false, nil
-		}
-		if stderr == "" {
-			stderr = strings.TrimSpace(result.stdout)
-		}
-		return "", false, fmt.Errorf("git watch roots: rev-parse %s failed: %s", arg, stderr)
-	}
-
-	path := strings.TrimSpace(result.stdout)
-	if path == "" {
-		return "", false, nil
-	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(cwd, path)
-	}
-	return filepath.Clean(path), true, nil
-}

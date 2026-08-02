@@ -1,6 +1,7 @@
 package claudetui
 
 import (
+	"reflect"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -34,5 +35,36 @@ func TestConfigFromOptionsCarriesEffort(t *testing.T) {
 				t.Fatalf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, tc.want)
 			}
 		})
+	}
+}
+
+// TestConfigFromOptionsIgnoresEveryRuntimeMode is the behavioural proof behind
+// Capabilities.EnforcesRuntimeMode == false for claude-tui: approvals live
+// inside the real TUI, so no runtime mode may reach the launch Config. Every
+// tier must produce byte-identical output — including auto, whose Claude
+// mapping is a `--permission-mode` flag the headless Config carries and this
+// one deliberately drops.
+//
+// Iterating provider.AllRuntimeModes rather than naming tiers is the point: a
+// fifth tier must be inert here by construction, not by someone remembering to
+// extend a list. The failure this catches is the reverse of the obvious one —
+// not "the mode was dropped" but "a new mode quietly started being honoured on
+// a provider whose approvals AO does not drive".
+func TestConfigFromOptionsIgnoresEveryRuntimeMode(t *testing.T) {
+	base := provider.SessionOptions{
+		Provider:        string(provider.ClaudeTUI),
+		Model:           "claude-sonnet-5",
+		WorkDir:         "/tmp/work",
+		ReasoningEffort: provider.EffortHigh,
+	}
+	base.RuntimeMode = provider.AllRuntimeModes[0]
+	want := ConfigFromOptions(base)
+
+	for _, mode := range provider.AllRuntimeModes[1:] {
+		opts := base
+		opts.RuntimeMode = mode
+		if got := ConfigFromOptions(opts); !reflect.DeepEqual(got, want) {
+			t.Errorf("ConfigFromOptions with runtime mode %q = %+v, want %+v (runtime mode must be inert on claude-tui)", mode, got, want)
+		}
 	}
 }

@@ -32,6 +32,37 @@ resolution for the workflow system.
   reason — one implementation of "unset means the default", not two that could
   drift.
 
+## The `worktree_setup.run` environment
+
+Each `run` argv executes with its working directory set to the new worktree and
+the app's own environment (PATH and the user's toolchain intact) plus two
+variables. They are appended last, so an inherited variable of either name
+cannot shadow the real one. `workflowSetupEnv` (`app_workflow_setup.go`) is the
+sole writer; the reader is the authored recipe, so this table is the contract.
+
+| Variable | Value |
+|---|---|
+| `AO_PROJECT_ROOT` | absolute path of the project's main checkout — the tree `copy:` globs read from |
+| `AO_WORKTREE_PATH` | absolute path of the worktree being set up — also the command's working directory |
+
+They exist because a recipe can name neither checkout on its own: the worktree
+path is generated per item, and the project root is not the working directory.
+Without them the only expressible way to bring `.env` across is a `copy:` glob,
+which snapshots the file and then silently diverges from the main checkout. A
+`run` entry is an argv, not a shell line, so a recipe that wants expansion asks
+for a shell explicitly:
+
+```yaml
+worktree_setup:
+  run:
+    - [sh, -c, 'ln -s "$AO_PROJECT_ROOT/.env" "$AO_WORKTREE_PATH/.env"']
+```
+
+`AO_PROJECT_ROOT` is deliberately not the same kind of value as the session
+contract's `AO_PROJECT` (`internal/aocli/AGENTS.md`), which is a project
+**slug**. A setup command runs no CLI and holds no session credential; these
+two paths are the whole of its AO_* surface.
+
 ## Files
 
 | File | Responsibility |
