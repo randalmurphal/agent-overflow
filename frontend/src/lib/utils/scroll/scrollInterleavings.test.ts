@@ -32,6 +32,7 @@ import {
   createUseStickToBottomController,
   type UseStickToBottomController,
 } from './index.svelte';
+import { SCROLL_WRITE_CALLER_PHYSICS, type ScrollWriteCaller } from './types';
 import { resetScrollIntentModuleStateForTest } from './intent';
 import {
   SPRING_MAX_CATCHUP_STEPS,
@@ -47,14 +48,17 @@ import { MockResizeObserver, stubGeometry, type Geometry } from './testGeometry'
 
 // Callers whose writes are continuous-program motion, bounded by the
 // spring's step envelope. Everything else appearing in a drained frame
-// is a declared snap and exempts that frame from the motion checks
-// (invariant 4 still catches a snap that lands after quiet).
-const BOUNDED_CALLERS = new Set<string>([
-  'spring.tick',
-  'spring.overshoot',
-  'spring.arrive',
-  'notifyLiveContentMaybeGrew.arrive',
-]);
+// is a declared placement and exempts that frame from the motion checks
+// (invariant 4 still catches a placement that lands after quiet).
+// Derived from the exhaustive physics record so a NEW write caller
+// cannot reach this suite unclassified — the union member without a
+// record entry is a compile error in types.ts, and the classification
+// decision happens in the change that adds the writer.
+const BOUNDED_CALLERS = new Set<string>(
+  (Object.keys(SCROLL_WRITE_CALLER_PHYSICS) as ScrollWriteCaller[]).filter(
+    (caller) => SCROLL_WRITE_CALLER_PHYSICS[caller] === 'program',
+  ),
+);
 const MAX_FRAME_STEP =
   SPRING_MAX_VELOCITY_PX_PER_FRAME * SPRING_MAX_CATCHUP_STEPS + 2;
 

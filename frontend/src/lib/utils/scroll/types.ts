@@ -33,6 +33,54 @@ export type ScrollWriteCaller =
   | 'requestBottom';
 
 /**
+ * Physics class of every write caller:
+ *
+ * - `'program'`: one step of continuous motion — bounded per frame by
+ *   the spring's step envelope (velocity cap × catch-up steps), or a
+ *   sub-band arrival correction. These may fire on any frame while a
+ *   program runs.
+ * - `'placement'`: a one-shot absolute placement. Legitimate at the
+ *   moment an operation or delivery authors it; a placement landing on
+ *   an arbitrary later frame is the "deferred one-shot write inside a
+ *   continuous program" defect class the arbitration work eliminated.
+ *
+ * Exhaustive over `ScrollWriteCaller` BY TYPE — adding a caller to the
+ * union without classifying it here is a compile error. That is the
+ * point: the interleaving invariant suite
+ * (`scrollInterleavings.test.ts`) derives its bounded-motion set from
+ * this record, and without the exhaustiveness a new write path would
+ * silently default to the exempt class and escape the frame checks.
+ * Only tests import this today; production code keys behavior off the
+ * caller value itself, never off this classification.
+ */
+export const SCROLL_WRITE_CALLER_PHYSICS: Record<
+  ScrollWriteCaller,
+  'program' | 'placement'
+> = {
+  'contentRO.firstFire': 'placement',
+  'contentRO.overshoot': 'placement',
+  'contentRO.positiveDelta': 'placement',
+  'contentRO.negativeDelta': 'placement',
+  'contentRO.negativeDeltaReflow': 'placement',
+  'contentRO.oscillationSnap': 'placement',
+  'engine.compensation': 'placement',
+  'engine.anchorRedirect': 'placement',
+  'virtualizer.scrollTarget': 'placement',
+  'spring.tick': 'program',
+  'spring.overshoot': 'program',
+  'spring.arrive': 'program',
+  'spring.oscillationSnap': 'placement',
+  'spring.catchupJump': 'placement',
+  notifyContentMaybeGrew: 'placement',
+  notifyLiveContentMaybeGrew: 'placement',
+  'notifyLiveContentMaybeGrew.arrive': 'program',
+  forceStick: 'placement',
+  preserveScrollAnchor: 'placement',
+  'pauseAutoScroll.release': 'placement',
+  requestBottom: 'placement',
+};
+
+/**
  * How a `requestBottom` call resolves against the bottom-follow program
  * (a spring glide running, or a structural-append arm holding one ready
  * to start — exactly `autoScrollInFlight()`):
