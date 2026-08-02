@@ -7,7 +7,12 @@
 // (bug-report-20260801T214455Z — a claimed bottom landing mid-chase
 // collapsed the spring's remaining distance into an instant one-line
 // hop), viewport-bottom transactions carry their caller's priority —
-// and that the virtualized placement rides the `write` callback.
+// and that the virtualized placement rides the `write` callback. They
+// also lock the release timing: a viewport-bottom transaction's pause
+// outlives the measurement flush (two rAFs past the restore), so the
+// release repin can never hand the toggle's still-measuring height
+// delta to an engaged spring (bug-report-20260802T011749Z — the
+// 1px-at-a-time crawl whose glide residue resampled all pane text).
 
 import { describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
@@ -84,6 +89,17 @@ async function settleRestore(): Promise<void> {
   await Promise.resolve();
 }
 
+// The viewport-bottom release is deferred past the measurement flush
+// (two rAFs). This helper's own two rAFs are scheduled strictly after
+// the module's, so by the time they fire the deferred release has run;
+// the trailing microtask drains the resolve continuation.
+async function settleMeasurementFlush(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+  await Promise.resolve();
+}
+
 describe('preserveTimelineWindowAnchor — sticking-to-bottom restore', () => {
   it('requests the bottom as a yield: an in-flight auto-scroll keeps the trip', async () => {
     const h = makeHarness({ autoScrollInFlight: true });
@@ -139,6 +155,7 @@ describe('preserveViewportBottom — takeover priority', () => {
     expect(h.scrollToIndex).not.toHaveBeenCalled();
     expect(h.observe).toHaveBeenCalledWith('live-content');
     expect(h.saveScrollSnapshot).toHaveBeenCalled();
+    await settleMeasurementFlush();
     expect(h.release).toHaveBeenCalled();
   });
 
@@ -156,6 +173,39 @@ describe('preserveViewportBottom — takeover priority', () => {
     expect(h.scrollToIndex).toHaveBeenCalledWith(2, { align: 'end' });
     expect(h.markAtBottom).toHaveBeenCalled();
     expect(h.saveScrollSnapshot).toHaveBeenCalled();
+    await settleMeasurementFlush();
+    expect(h.release).toHaveBeenCalled();
+  });
+});
+
+describe('preserveViewportBottom — release timing', () => {
+  it('holds the pause past the measurement flush so the release repin cannot hand the toggle delta to an engaged spring', async () => {
+    const h = makeHarness({ autoScrollInFlight: true });
+    h.anchor.preserveViewportBottom(() => {});
+    await settleRestore();
+
+    // The restore has run — the claim placed the bottom edge — but the
+    // toggled run's height has not measured yet: it lands one rendering
+    // update later via the virtualizer's ResizeObserver, and the
+    // convergence pass places the delta in that same update. Releasing
+    // here would let the release repin's yield hand that delta to the
+    // engaged spring, whose first tick kills the pending index scroll
+    // (bug-report-20260802T011749Z: 500-2000ms crawls starting ≤6ms
+    // after each toggle while a turn streamed).
+    expect(h.scrollToIndex).toHaveBeenCalled();
+    expect(h.release).not.toHaveBeenCalled();
+
+    await settleMeasurementFlush();
+    expect(h.release).toHaveBeenCalled();
+  });
+
+  it('a change() throw releases the pause synchronously', () => {
+    const h = makeHarness({ autoScrollInFlight: false });
+    expect(() =>
+      h.anchor.preserveViewportBottom(() => {
+        throw new Error('boom');
+      }),
+    ).toThrow('boom');
     expect(h.release).toHaveBeenCalled();
   });
 });

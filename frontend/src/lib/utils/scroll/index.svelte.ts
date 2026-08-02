@@ -811,7 +811,11 @@ export function createUseStickToBottomController(
         // (bug-report-20260801T214455Z — the recent-window prune's
         // sub-frame lease landing mid-chase). Reader-asked transactions
         // are unaffected either way: their restore claims the bottom
-        // before releasing, so this repin sees zero distance.
+        // AND holds its pause across the measurement flush, so by the
+        // time this repin runs the clicked delta is already placed and
+        // only growth streamed during the hold is left to glide
+        // (bug-report-20260802T011749Z — releasing at tick() let an
+        // engaged spring own the toggle's height delta instead).
         requestBottom({ takeover: 'yield', caller: 'pauseAutoScroll.release' });
       }
     };

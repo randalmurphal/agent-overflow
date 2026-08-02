@@ -228,6 +228,31 @@ export function createTimelineWindowAnchor(
     return true;
   }
 
+  // The viewport-bottom pause must outlive the flush in which the toggled
+  // run's new height MEASURES, not just the flush that mounts it. `tick()`
+  // resolves after the DOM flush, but the row's height lands one rendering
+  // update later (the virtualizer's ResizeObserver), and the restore's
+  // `scrollToIndex` places that measured delta through its convergence pass
+  // in the same update. Releasing at `tick()` handed the delta to the
+  // streaming spring instead: the release repin yields, an engaged program
+  // (a live turn's chase or armed structural spring) answers with the
+  // live-content path, and its first tick reads as a takeover that kills the
+  // pending index scroll — so the reader's clicked delta glided for up to
+  // two seconds at tail speed, resampling every glyph on screen through the
+  // glide residue's fractional transform (bug-report-20260802T011749Z:
+  // spring chases starting ≤6ms after each toggle while a turn streamed).
+  // Two rAFs, not one: the first fires at the START of the rendering update
+  // that measures; the second is the first moment strictly after the
+  // convergence write. Streamed growth that lands inside the held window is
+  // not lost — the release repin's yield hands it to the spring exactly as
+  // before, at most two frames later than it used to.
+  function waitForMeasurementFlush(): Promise<void> {
+    if (typeof requestAnimationFrame !== 'function') return Promise.resolve();
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+  }
+
   function restoreTailAnchor(anchor: TimelineTailAnchor): void {
     const idx = options.findTimelineNodeIndex(anchor.itemId);
     if (idx < 0) return;
@@ -268,6 +293,7 @@ export function createTimelineWindowAnchor(
       if (!options.getListRef() || !intent.anchor) return;
       restoreTailAnchor(intent.anchor);
     } finally {
+      await waitForMeasurementFlush();
       release();
     }
   }
