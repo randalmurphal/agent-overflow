@@ -104,11 +104,26 @@ describe('scroll interleavings — ops × states frame invariants', () => {
   // quiet phase flips it false to walk the sentinel out.
   let liveContent = true;
 
+  // Frame pacing is a test dimension: the timing clocks this system
+  // composes (350ms retain, 250ms structural window, 500ms liveness
+  // hold) interact with real display cadences, and steady 16.67ms
+  // frames would leave refresh-rate races untested. STEADY models
+  // 60Hz; JITTERED alternates 120Hz and 30Hz gaps with a 250ms stall
+  // every 16th frame — long enough to trigger the spring's bounded
+  // catch-up burst, deliberately short of the ≥1s catchupJump
+  // discontinuity (which stays a forbidden caller here).
+  type FrameProfile = (frameIndex: number) => number;
+  const STEADY: FrameProfile = () => 16.67;
+  const JITTERED: FrameProfile = (i) =>
+    i % 16 === 15 ? 250 : i % 2 === 0 ? 8.33 : 33.34;
+
   let mockNow = 0;
+  let frameProfile: FrameProfile = STEADY;
+  let frameIndex = 0;
   function nextFrame(): Promise<void> {
     return new Promise<void>((resolve) =>
       requestAnimationFrame(() => {
-        mockNow += 16.67;
+        mockNow += frameProfile(frameIndex++);
         resolve();
       }),
     );
@@ -146,6 +161,8 @@ describe('scroll interleavings — ops × states frame invariants', () => {
     (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver =
       MockResizeObserver;
     mockNow = 0;
+    frameProfile = STEADY;
+    frameIndex = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => mockNow);
 
     scrollEl = document.createElement('div');
@@ -419,18 +436,16 @@ describe('scroll interleavings — ops × states frame invariants', () => {
   // legitimately retarget the viewport instantly, mid-program included.
   const CLAIMING_OPS = new Set<Op>(['collapse-claim', 'restore-snap', 'user-escape']);
 
-  const CASES = STATES.flatMap((state) => OPS.map((op) => ({ state, op })));
-
-  it.each(CASES)('$op from $state', async ({ state, op }) => {
-    const releaseOuter = await enterState(state);
-
-    // The arbitration invariant, checked at op time: while the
-    // bottom-follow program is mid-trip, no system-initiated write may
-    // land the viewport at the bottom target — the program owns that
-    // arrival (a one-shot doing it is the glide-collapsing hop of
-    // bug-report-20260801T214455Z). Native clamps move geometry without
-    // an authored write, so trace records — not scrollTop deltas — are
-    // the evidence.
+  /**
+   * Apply an op with the arbitration invariant checked at op time:
+   * while the bottom-follow program is mid-trip, no system-initiated
+   * write may land the viewport at the bottom target — the program
+   * owns that arrival (a one-shot doing it is the glide-collapsing hop
+   * of bug-report-20260801T214455Z). Native clamps move geometry
+   * without an authored write, so trace records — not scrollTop
+   * deltas — are the evidence.
+   */
+  async function applyOpChecked(op: Op, label: string): Promise<void> {
     const wasMidChase =
       controller.autoScrollInFlight() &&
       bottomTarget() - geom.scrollTop > MAX_FRAME_STEP;
@@ -446,14 +461,88 @@ describe('scroll interleavings — ops × states frame invariants', () => {
         .map((r) => (r.data as { caller: string }).caller);
       expect(
         arrivalWrites,
-        `system op '${op}' instantly arrived at the bottom over a mid-flight glide`,
+        `${label}: system op '${op}' instantly arrived at the bottom over a mid-flight glide`,
       ).toEqual([]);
     }
+  }
 
+  async function runSingleOpCase(state: StartState, op: Op): Promise<void> {
+    const releaseOuter = await enterState(state);
+    await applyOpChecked(op, `${op} from ${state}`);
     await drainAndAssert({
       releaseOuter,
       endsEscaped:
         op === 'user-escape' || (state === 'escaped' && op !== 'restore-snap'),
     });
+  }
+
+  const CASES = STATES.flatMap((state) => OPS.map((op) => ({ state, op })));
+
+  it.each(CASES)('$op from $state', async ({ state, op }) => {
+    await runSingleOpCase(state, op);
+  });
+
+  // The program-active states re-run under jittered frame pacing: the
+  // retain/liveness/structural clocks race real display cadences, and a
+  // guard that only holds at steady 60Hz is a latent 165Hz bug. The
+  // still states gain nothing from jitter (their drains don't move).
+  const PROGRAM_STATES = ['mid-glide', 'sentinel-idle'] as const satisfies readonly StartState[];
+  const JITTER_CASES = PROGRAM_STATES.flatMap((state) => OPS.map((op) => ({ state, op })));
+
+  it.each(JITTER_CASES)('$op from $state (jittered frames)', async ({ state, op }) => {
+    frameProfile = JITTERED;
+    await runSingleOpCase(state, op);
+  });
+
+  // Seeded op-SEQUENCE fuzz: the enumerated cases cover one op from
+  // each state, but the incident cluster was op-adjacent-to-op
+  // (collapse release racing an append). Deterministic seeds — a
+  // failure names the seed and replays exactly. Escape intent is
+  // simulated alongside (user-escape sets it, a consent-armed
+  // restore-snap clears it; claims stay production-gated so an escaped
+  // sequence keeps its escape) and verified against the controller at
+  // drain start.
+  function mulberry32(seed: number): () => number {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  const FUZZ_SEEDS = Array.from({ length: 25 }, (_, i) => ({ seed: i + 1 }));
+
+  it.each(FUZZ_SEEDS)('random op sequence, seed $seed', async ({ seed }) => {
+    const rng = mulberry32(seed);
+    const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(rng() * arr.length)];
+    frameProfile = rng() < 0.5 ? STEADY : JITTERED;
+    const state = pick(STATES);
+    const releaseOuter = await enterState(state);
+    let expectEscaped = state === 'escaped';
+    const opCount = 2 + Math.floor(rng() * 3);
+    const opsRun: Op[] = [];
+    for (let i = 0; i < opCount; i++) {
+      const op = pick(OPS);
+      opsRun.push(op);
+      const label = `seed ${seed} [${opsRun.join(' → ')}] op ${i}`;
+      await applyOpChecked(op, label);
+      if (op === 'user-escape') expectEscaped = true;
+      if (op === 'restore-snap') expectEscaped = false;
+      // Partial drain between ops — these frames are drained frames
+      // and hold the same invariants (an op's fallout lands
+      // synchronously; what runs here is program motion only).
+      const gap = Math.floor(rng() * 7);
+      let prev = geom.scrollTop;
+      for (let j = 0; j < gap; j++) {
+        const mark = lastTraceSeq();
+        await nextFrame();
+        checkFrame(prev, writeCallersSince(mark), `${label} interframe ${j}`);
+        prev = geom.scrollTop;
+      }
+    }
+    await drainAndAssert({ releaseOuter, endsEscaped: expectEscaped });
   });
 });
