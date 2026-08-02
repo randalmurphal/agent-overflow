@@ -2303,6 +2303,79 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(geom.scrollTop).toBe(600);
     });
 
+    it("'yield' while escaped writes nothing, program or not — the gate is the API's, not the caller's", async () => {
+      liveContent = false;
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      // The reader wheels up and away; no program is running, so a
+      // pre-hardening yield would have placed the bottom over them.
+      fireWheel(scrollEl, -100);
+      geom.scrollTop = 200;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      const write = vi.fn();
+      controller.requestBottom({ takeover: 'yield' });
+      controller.requestBottom({ takeover: 'yield', write });
+      expect(geom.scrollTop).toBe(200);
+      expect(write).not.toHaveBeenCalled();
+      expect(controller.escapedFromLock).toBe(true);
+      // The intent pair stays consistent: no bottom intent was claimed
+      // under the standing escape.
+      expect(controller.isAtBottom).toBe(false);
+    });
+
+    it("'claim' while escaped ends the escape, places at bottom, and follow re-engages", async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+
+      fireWheel(scrollEl, -100);
+      geom.scrollTop = 200;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      controller.requestBottom({ takeover: 'claim' });
+      expect(controller.escapedFromLock).toBe(false);
+      expect(geom.scrollTop).toBe(400);
+      expect(controller.isSticky).toBe(true);
+
+      // Transition, not just state: follow actually works again — the
+      // next growth glides to the new bottom instead of being ignored.
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      ro.fire(contentEl, 1000);
+      await advanceUntil(() => Math.abs(geom.scrollTop - 600) <= 1);
+    });
+
+    it("a re-escape after a 'claim' is honored — the next 'yield' is a no-op again", async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      await waitMs(150);
+      fireWheel(scrollEl, -100);
+      geom.scrollTop = 200;
+      fireScroll(scrollEl);
+      await nextTimer();
+
+      controller.requestBottom({ takeover: 'claim' });
+      expect(controller.escapedFromLock).toBe(false);
+      expect(geom.scrollTop).toBe(400);
+
+      fireWheel(scrollEl, -100);
+      geom.scrollTop = 150;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+
+      controller.requestBottom({ takeover: 'yield' });
+      expect(geom.scrollTop).toBe(150);
+      expect(controller.escapedFromLock).toBe(true);
+    });
+
     it('a custom write owns the placement — invoked when placing, skipped on a yield hand-off', async () => {
       await warmThenStartChase();
       await nextFrame();

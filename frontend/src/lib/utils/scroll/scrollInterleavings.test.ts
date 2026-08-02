@@ -259,12 +259,15 @@ describe('scroll interleavings — ops × states frame invariants', () => {
         // The recent-window prune's shape: lease around the head
         // splice, an anchor-holding compensation whose displacement has
         // the exact numeric shape of a browser clamp (heights
-        // unchanged, scrollTop moved), then a bottom restore only when
-        // the reader was holding bottom.
+        // unchanged, scrollTop moved), then the bottom restore. The
+        // yield is DELIBERATELY ungated — requestBottom's own escape
+        // gate must make a forgetful caller harmless, and invariant 1
+        // (escaped viewports never move) proves it across every
+        // escaped case.
         const release = controller.pauseAutoScroll();
         const target = Math.max(0, geom.scrollTop - 40);
         controller.applyEngineCompensation({ kind: 'head-splice', delta: -40, target });
-        if (holdingBottom()) controller.requestBottom({ takeover: 'yield' });
+        controller.requestBottom({ takeover: 'yield' });
         release();
         return;
       }
@@ -272,13 +275,15 @@ describe('scroll interleavings — ops × states frame invariants', () => {
       case 'collapse-yield': {
         // Auto-collapse transaction: lease around a DOM collapse (the
         // browser may clamp), then the bottom restore — reader-asked
-        // ('claim') or system-asked ('yield').
+        // ('claim', gated like production: an escaped reader's toggle
+        // anchors instead of claiming) or system-asked ('yield',
+        // ungated on purpose — the API's escape gate is the safety).
         const release = controller.pauseAutoScroll();
         shrink(120);
-        if (holdingBottom()) {
-          controller.requestBottom({
-            takeover: op === 'collapse-claim' ? 'claim' : 'yield',
-          });
+        if (op === 'collapse-yield') {
+          controller.requestBottom({ takeover: 'yield' });
+        } else if (holdingBottom()) {
+          controller.requestBottom({ takeover: 'claim' });
         }
         release();
         return;

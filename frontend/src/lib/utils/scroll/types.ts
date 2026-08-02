@@ -39,15 +39,16 @@ export type ScrollWriteCaller =
  *
  * - `'claim'`: the READER asked for this placement (a disclosure click,
  *   an explicit toggle). User intent always may retarget the viewport,
- *   so any running program is cancelled and the bottom is placed
- *   instantly.
+ *   so any running program is cancelled, a standing escape ends, and
+ *   the bottom is placed instantly.
  * - `'yield'`: the SYSTEM asked (an unasked transaction's restore, a
- *   lease release, a host-layout re-pin). While the program is engaged
+ *   lease release, a host-layout re-pin). While the reader is escaped
+ *   the request writes nothing at all. While the program is engaged
  *   it owns the trip to the bottom — the request hands the fresh
  *   geometry to the live-content path and writes nothing, because a
  *   one-shot absolute write landing mid-glide collapses an animation
- *   the reader is watching into a snap. With no program engaged the
- *   request places the bottom directly.
+ *   the reader is watching into a snap. Otherwise the request places
+ *   the bottom directly.
  */
 export type RequestBottomTakeover = 'claim' | 'yield';
 
@@ -185,12 +186,21 @@ export interface UseStickToBottomController {
    * re-pins all route through it instead of carrying their own
    * program-priority guard.
    *
-   * PRESUMES bottom intent — callers gate on their own "was the reader
-   * holding the bottom" predicate before calling; this method does not
-   * re-check escape or pause state for the placement itself. (A
-   * `'yield'` that hands off to the live-content path still runs that
-   * path's full gates, so a paused yield no-ops — the release that
-   * ends the pause performs the real re-pin.)
+   * The escape rule is structural, not caller discipline: a `'yield'`
+   * while `escapedFromLock` writes nothing (no system placement may
+   * ever move an escaped reader), and a `'claim'` ends the escape —
+   * user intent retargeting the viewport re-establishes bottom follow,
+   * with the same intent-state sweep as `forceStick` / `markAtBottom`
+   * (which `forceStick` itself now routes through).
+   *
+   * Beyond escape, this PRESUMES bottom intent — callers still gate on
+   * their own "was the reader holding the bottom" predicate
+   * (`isAtBottomState` is an intent flag this method sets, so it cannot
+   * also be the gate). Pause is not a gate for the placement itself:
+   * transaction restores deliberately place while their own lease is
+   * held. (A `'yield'` that hands off to the live-content path still
+   * runs that path's full gates, so a paused yield mid-program no-ops —
+   * the release that ends the pause performs the real re-pin.)
    */
   requestBottom(opts: RequestBottomOptions): void;
 

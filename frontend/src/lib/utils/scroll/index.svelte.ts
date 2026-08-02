@@ -823,9 +823,6 @@ export function createUseStickToBottomController(
       }));
       return;
     }
-    intent.clearRestoreConsent();
-    intent.clearRecentDownIntent();
-    intent.clearScrollbarDragSession();
     if (isUiRenderTraceEnabled()) trace('scroll.forceStick.entry', () => ({
       reason,
       isAtBottomState,
@@ -836,23 +833,18 @@ export function createUseStickToBottomController(
       clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
       target: scrollEl ? Math.round(targetScrollTop()) : null,
     }));
-    intent.setEscapedFromLock(false);
-    spring.cancel();
-    // Reset the stop flag AFTER cancel — the spring tick observes the
-    // stop request via the rAF guard, but the value at the current
-    // synchronous frame doesn't affect cancellation (the token
-    // mismatch on the next tick handles it). We clear it now so the
-    // next streaming chunk can re-engage the spring.
-    spring.clearStopRequest();
     // Only restore/thread-switch snaps should re-hide content for the
     // measurement warmup. A user click on the scroll-to-bottom chip is
     // an explicit visible action in an already-mounted thread; blanking
     // the transcript until the failsafe fires is worse than the small
     // chance of a post-snap measurement correction.
     if (reason === 'restore') observers.beginWarmup();
-    if (!scrollEl) return;
-    isAtBottomState = true;
-    writeScrollTop('forceStick', targetScrollTop());
+    // The cancel-and-place choreography (intent sweep, escape clear,
+    // spring cancel + stop-flag reset, bottom write) exists once, on
+    // the claim path. Pre-attach (no scrollEl) this still claims bottom
+    // intent via markAtBottom's flag-only path, so a forceStick before
+    // the surface mounts follows on attach instead of landing unstuck.
+    requestBottom({ takeover: 'claim', caller: 'forceStick' });
   }
 
   // Bottom-edge arbitration (see the interface doc in ./types.ts). The
@@ -877,18 +869,29 @@ export function createUseStickToBottomController(
       scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
       target: scrollEl ? Math.round(targetScrollTop()) : null,
     }));
-    if (opts.takeover === 'yield' && programEngaged) {
-      // The program owns the trip. The live-content path re-reads the
-      // moved bottom and lets the chase (or the armed spring) close the
-      // remaining distance — and its own gates keep a paused or escaped
-      // surface untouched.
-      notifyLiveContentMaybeGrew();
-      return;
+    if (opts.takeover === 'yield') {
+      // No system-initiated placement may move an escaped viewport —
+      // the gate lives HERE, not in caller discipline, so a future
+      // caller that forgets to check cannot yank an escaped reader (or
+      // corrupt the intent pair by setting isAtBottomState under a
+      // standing escape).
+      if (escapedFromLockState) return;
+      if (programEngaged) {
+        // The program owns the trip. The live-content path re-reads the
+        // moved bottom and lets the chase (or the armed spring) close
+        // the remaining distance — and its own gates keep a paused
+        // surface untouched.
+        notifyLiveContentMaybeGrew();
+        return;
+      }
     }
     if (opts.takeover === 'claim') {
-      // Reader-asked placement preempts any program. Clear the stop
-      // flag after cancel so the next streaming chunk can re-engage the
-      // spring (same ordering as forceStick).
+      // Reader-asked placement preempts any program and re-establishes
+      // bottom-follow intent: an escape ends here, with the same
+      // intent-state sweep forceStick and markAtBottom perform (consent
+      // consumed, gesture windows cleared). Clear the stop flag after
+      // cancel so the next streaming chunk can re-engage the spring.
+      markAtBottom();
       spring.cancel();
       spring.clearStopRequest();
     }

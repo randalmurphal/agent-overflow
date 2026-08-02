@@ -508,11 +508,16 @@ Programmatic scrolls go through the controller:
   glide running or a structural-append arm holding one ready, exactly
   `autoScrollInFlight()` — and writes nothing, because a one-shot
   absolute write landing mid-glide collapses an animation the reader is
-  watching into a snap. Virtualized surfaces pass a `write` callback
+  watching into a snap. The escape rule lives inside the API, not in
+  caller discipline: a `'yield'` while `escapedFromLock` writes nothing
+  at all, and a `'claim'` ends the escape (user intent re-establishing
+  bottom follow, with `markAtBottom`'s intent-state sweep —
+  `forceStick` routes its own cancel-and-place through this same claim
+  path). Virtualized surfaces pass a `write` callback
   (`scrollToIndex(last, {align:'end'})` + `markAtBottom()`) so
-  placement converges through the engine; `requestBottom` presumes
-  bottom intent, so callers gate on their own "was the reader holding
-  the bottom" predicate first.
+  placement converges through the engine; beyond escape,
+  `requestBottom` presumes bottom intent, so callers gate on their own
+  "was the reader holding the bottom" predicate first.
 - `observe(kind)` for out-of-content geometry changes ('content',
   'live-content', 'composer-geometry', 'host-layout').
 - `pauseAutoScroll()` for drag/resize leases.
