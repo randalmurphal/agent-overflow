@@ -70,8 +70,8 @@ import {
   type EngineCompensationObservation,
   type ResolverState,
 } from './resolver';
-import { createSpringChase, type ArrivalReadback } from './spring';
-import { nowMs } from './time';
+import { createWriteChokepoint } from './chokepoint';
+import { createSpringChase } from './spring';
 import { trace } from './trace';
 import type {
   RequestBottomOptions,
@@ -114,16 +114,10 @@ const STICK_TO_BOTTOM_OFFSET_PX = 70;
 // lives in scroll/observers.ts.
 
 // Spring kinematics, tuning constants, and the sentinel/structural-append
-// windows live in scroll/spring.ts. Only the trace sampling stays here,
-// because it belongs to the writeScrollTop chokepoint:
-// Spring tick writes fire at 60Hz during a chase. Sample so the
-// dev-only trace file isn't dominated by predictable +1px increments.
-// 12 ≈ 5Hz, which is enough to see the spring is running without
-// crowding the rare gesture/escape events that diagnose scroll
-// regressions. First and last ticks of every chase are always
-// recorded via the springTickSinceLastTrace reset at chase boundaries.
-const SPRING_TICK_TRACE_SAMPLE = 12;
-
+// windows live in scroll/spring.ts. The write chokepoint and its
+// satellites (provenance ledger, arrival readback, spring-tick trace
+// sampling, glide residue, content layer-promotion lease) live in
+// scroll/chokepoint.ts.
 
 export function createUseStickToBottomController(
   options: UseStickToBottomOptions = {},
@@ -153,40 +147,6 @@ export function createUseStickToBottomController(
   let scrollEl: HTMLElement | undefined;
   let contentEl: HTMLElement | undefined;
   let stickStateDevHook: (() => Record<string, unknown>) | undefined;
-
-  // ===== Provenance ledger =====
-  // The last EXPLAINED scrollTop: the browser-rounded readback of the
-  // most recent authored write (every programmatic write flows through
-  // the writeScrollTop chokepoint below), or the position of the most
-  // recent user-classified scroll event (the intent machine's
-  // noteUserScroll dep). While the spring sentinel idles, nothing else
-  // may move scrollTop — so a live scrollTop that differs from this
-  // ledger is WITNESSED evidence of the one unexplained mover left, the
-  // browser's max-scroll clamp. The spring's oscillation guards and the
-  // resolver's stranded predicate require that evidence before
-  // snapping; authored displacements (a head-splice compensation's
-  // anchor hold) update the ledger at the chokepoint and therefore can
-  // never read as a clamp (bug-report-20260801T213259Z). Null until the
-  // first write/classified scroll after attach.
-  let lastExplainedScrollTop: number | null = null;
-
-  function scrollTopUnexplained(): boolean {
-    if (!scrollEl || lastExplainedScrollTop === null) return false;
-    // Band tolerance, not equality: fractional-DPR sub-pixel wobble at
-    // max scroll is not clamp evidence, and the snap sites' own
-    // arrival-band conditions ignore ≤1px strands anyway.
-    return !withinArrivalBand(scrollEl.scrollTop, lastExplainedScrollTop);
-  }
-
-  // ===== Arrival-readback acceptance state =====
-  // Some engines reject the exact max scrollTop by one CSS pixel. When a
-  // write lands within the arrival band but not exactly on target, the
-  // accepted readback is recorded so arrival checks stop re-writing a
-  // target the browser will keep rejecting. Owned here — not by the
-  // spring — because notifyLiveContentMaybeGrew shares it; the spring
-  // chase (scroll/spring.ts) reaches it through deps.arrival. The
-  // helper group (`arrivalReadback`) lives in the Geometry section below.
-  let arrivalReadbackAcceptedTarget: number | null = null;
 
   // ===== Warm-up (quiescence) state =====
   // `warm` flips true once the observer pipeline (scroll/observers.ts,
@@ -226,49 +186,6 @@ export function createUseStickToBottomController(
     return !scrollEl || withinArrivalBand(scrollEl.scrollTop, target);
   }
 
-  // Arrival-readback acceptance helpers over the state above, grouped as
-  // one unit (ArrivalReadback in scroll/spring.ts): the spring chase
-  // reaches them via deps.arrival; notifyLiveContentMaybeGrew calls them
-  // directly.
-  const arrivalReadback: ArrivalReadback = {
-    matches(target: number): boolean {
-      return arrivalReadbackAcceptedTarget !== null
-        && withinArrivalBand(arrivalReadbackAcceptedTarget, target)
-        && scrollTopIsAtTarget(target);
-    },
-    record(target: number): void {
-      if (scrollEl && scrollEl.scrollTop !== target && scrollTopIsAtTarget(target)) {
-        arrivalReadbackAcceptedTarget = target;
-        return;
-      }
-      arrivalReadbackAcceptedTarget = null;
-    },
-    shouldWriteExact(target: number): boolean {
-      if (!scrollEl) return false;
-      if (scrollEl.scrollTop === target) return false;
-      if (!scrollTopIsAtTarget(target)) return true;
-      return !arrivalReadback.matches(target);
-    },
-    writeExact(caller: ScrollWriteCaller, target: number): void {
-      writeScrollTop(caller, target);
-      arrivalReadback.record(target);
-    },
-    clear(): void {
-      arrivalReadbackAcceptedTarget = null;
-    },
-    // Drop an accepted readback whose target has since moved out of the
-    // arrival band — the acceptance only excuses re-writes for the target
-    // it was recorded against.
-    invalidateStale(target: number): void {
-      if (
-        arrivalReadbackAcceptedTarget !== null
-        && !withinArrivalBand(arrivalReadbackAcceptedTarget, target)
-      ) {
-        arrivalReadbackAcceptedTarget = null;
-      }
-    },
-  };
-
   function distanceFromBottom(): number {
     if (!scrollEl) return 0;
     return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
@@ -280,278 +197,38 @@ export function createUseStickToBottomController(
     return dist;
   }
 
-  // ===== Programmatic scroll write =====
-  // Spring-tick writes fire at 60Hz during a chase — predictable
-  // increment-by-1px from the spring solver, and each record is
-  // ~300 bytes. Without sampling, they were 5% of the 10 MB rotation
-  // file and crowded out the rare gesture/escape events that actually
-  // matter for diagnosing scroll regressions. We trace one in every
-  // SPRING_TICK_TRACE_SAMPLE writes (~5Hz) plus the very first tick
-  // of each chase via `forceNextSpringTickTrace` (called from
-  // spring.start()). Starts at `SAMPLE - 1` so the first write is
-  // recorded (the gating predicate is `<`, so equal-or-greater values
-  // record and reset).
-  let springTickSinceLastTrace = SPRING_TICK_TRACE_SAMPLE - 1;
-  // Chase boundaries force the next tick write to record (spring deps) so
-  // the trace shows every chase start, not just every ~12th sampled write.
-  function forceNextSpringTickTrace(): void {
-    springTickSinceLastTrace = SPRING_TICK_TRACE_SAMPLE - 1;
-  }
-  // ===== Fractional glide residue =====
-  // scrollTop is quantized to whole CSS pixels by the engine, so a slow
-  // spring tail (< ~1px per display frame) rendered through scrollTop
-  // alone becomes 1px steps at a low effective rate — measured as
-  // 14–55Hz stepping on a 165Hz panel (2026-07-04 capture), perceived
-  // as "low fps" judder. The compositor has no such quantum: the
-  // sub-pixel remainder of each spring write rides as a translateY on
-  // contentEl, so the rendered position IS the spring's fractional
-  // output and sub-pixel motion is genuinely continuous (bilinear
-  // resample during motion only). The residue is always < 1px, applies
-  // only to 'spring.tick' writes, clears on every other write, is
-  // eased out when the spring stops without a write (catch-up /
-  // selection pause / sentinel entry / cancel, via the
-  // settleGlideResidue dep), and clears instantly on detach — text
-  // always comes to rest crisp at translate 0. This is a render
-  // detail of the write chokepoint, not a second scroll writer: it
-  // never changes scrollTop, fires no scroll events, and does not
-  // affect layout offsets or any measurement this package or the
-  // virtualizer performs (row sizes come from ResizeObserver content
-  // boxes; only an absolute getBoundingClientRect against the viewport
-  // would see the <1px offset, and nothing in the scroll path does).
-  //
-  // Releasing the residue has two shapes, and the split is load-bearing:
-  //   - A clear that ACCOMPANIES a real scrollTop write (any non-glide
-  //     caller below) is instant — the rendered jump IS the write's
-  //     motion, so rendered position must equal the new scrollTop in
-  //     the same frame.
-  //   - A release with NO accompanying write (spring caught up between
-  //     quanta, selection pause, sentinel entry, cancel) EASES the
-  //     residue to zero over a few frames instead. The asymptotic tail
-  //     parks every landing with up to ~0.5px of live residue; snapping
-  //     that with no write is a sub-pixel pop, and during bursty tool
-  //     output — one landing per quantum at a few Hz — the repeated
-  //     pops read as a faint vibration (2026-07-04 report on the first
-  //     residue build). The ease-out is the same "cradle" shape as the
-  //     glide itself, ~100ms to crisp.
-  let glideResidue = 0;
-  let residueSettleHandle: number | null = null;
-  // Per-frame decay factor for the no-write release: 0.5px falls below
-  // the 0.02 snap threshold in ~6 frames (~100ms at 60Hz).
-  const RESIDUE_SETTLE_DECAY = 0.55;
-  function stopResidueSettle(): void {
-    if (residueSettleHandle !== null) {
-      cancelAnimationFrame(residueSettleHandle);
-      residueSettleHandle = null;
-    }
-  }
-  function setGlideResidue(residue: number): void {
-    // Sub-1/50px residues are visually void; snap them to zero so the
-    // transform clears (and the style write is skipped) at rest.
-    const next = Math.abs(residue) < 0.02 ? 0 : residue;
-    if (next === glideResidue) return;
-    glideResidue = next;
-    if (!contentEl) return;
-    // The epsilon rotation defeats compositor pixel alignment: WebKit
-    // snaps axis-aligned composited layers to the device-pixel grid
-    // (text-sharpness heuristic), which rounds a pure sub-pixel
-    // translateY to 0 or ±1 device px — the applied offset then FLIPS
-    // each time the residue crosses the half-pixel mark, oscillating
-    // around the smooth trajectory instead of following it (captured
-    // 2026-07-04T2016 on a 1.1-DPR grid: rendered math monotone,
-    // on-screen motion vibrating, hairline rows worst). A
-    // non-axis-aligned matrix cannot be pixel-snapped, so the
-    // compositor must resample at the true fractional offset. 1e-4deg
-    // shears < 0.01px across a 5000px layer — imperceptible itself.
-    contentEl.style.transform =
-      next === 0 ? '' : `translateY(${-next}px) rotate(0.0001deg)`;
-  }
-  /** Instant set/clear — for glide writes and clears that accompany a real scrollTop write. */
-  function applyGlideResidue(residue: number): void {
-    stopResidueSettle();
-    setGlideResidue(residue);
-  }
-  /** No-write release — ease the residue to zero instead of popping. Idempotent per release. */
-  function settleGlideResidue(): void {
-    if (glideResidue === 0 || residueSettleHandle !== null) return;
-    const step = (): void => {
-      residueSettleHandle = null;
-      setGlideResidue(glideResidue * RESIDUE_SETTLE_DECAY);
-      if (glideResidue !== 0) {
-        residueSettleHandle = requestAnimationFrame(step);
-      }
-    };
-    residueSettleHandle = requestAnimationFrame(step);
-  }
-
-  // ===== Content layer-promotion lease =====
-  // The glide residue above needs contentEl composited (its translateY
-  // must ride on the compositor, not trigger main-thread repaints), but
-  // a PERMANENT `will-change: transform` is a steady-state memory tax:
-  // the promoted layer spans the full virtual content height, and its
-  // presence forces the scroller into composited scrolling — two extra
-  // always-rastered viewport-sized layers per pane plus overlap
-  // promotion of the sticky headers and the composer. Measured on the
-  // Windows/WebView2 build (2026-07-21, four parked panes): renderer
-  // cc/tile_memory 89.9MB with permanent promotion vs 62.4MB with the
-  // hint stripped mid-session, and each fully-demoted pane's marginal
-  // tile cost drops to ~0 (its content rasters into the root layer's
-  // existing viewport tiles).
-  //
-  // So promotion is a LEASE tied to scroll activity: any scroll event
-  // (user or programmatic — intent's handleScroll calls
-  // noteScrollActivity before its tagged-write bail) and every
-  // spring-tick write renew it; a deadline timer demotes after
-  // CONTENT_LEASE_RELEASE_MS of stillness. While scrolling, panes
-  // composite exactly as they always have (no per-frame raster on
-  // wheel, residue rides a real layer); parked panes pay nothing.
-  // Renewal is allocation-free on the hot path (a timestamp write; the
-  // timer is rearmed at most once per release window, not per event).
-  //
-  // Demotion is deferred while the spring is active or a residue is
-  // still easing out (`transform` non-empty) so the layer never
-  // collapses mid-motion. The deferral is bounded: after arrival the
-  // spring only stays active as its streaming sentinel, which dies as
-  // soon as the consumer's liveContentActive() goes false (the
-  // content-activity hold window) — so a finished turn demotes at
-  // roughly max(lease idle, activity hold) + one recheck. Promoting/demoting repaints the pane once
-  // (tile re-raster) — at promote time that's masked by the scroll
-  // motion that triggered it, at demote time the pane is at rest and
-  // the repaint produces identical pixels (modulo text-AA mode — see
-  // the launcher's --disable-lcd-text rationale in
-  // cmd/agent-overflow-windows/main.go).
-  const CONTENT_LEASE_RELEASE_MS = 5000;
-  // Deferred-demotion recheck cadence when the deadline has passed but
-  // the residue is still easing out (the ease runs ~100ms; the spring
-  // case renews the deadline itself via tick writes).
-  const CONTENT_LEASE_BUSY_RECHECK_MS = 250;
-  const contentLeaseReleaseMs =
-    options.contentLeaseReleaseMs ?? CONTENT_LEASE_RELEASE_MS;
-  let contentPromoted = false;
-  let contentLeaseDeadline = 0;
-  let contentLeaseTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function renewContentLease(): void {
-    if (!contentEl) return;
-    contentLeaseDeadline = nowMs() + contentLeaseReleaseMs;
-    if (!contentPromoted) {
-      contentPromoted = true;
-      contentEl.style.willChange = 'transform';
-    }
-    if (contentLeaseTimer === null) {
-      contentLeaseTimer = setTimeout(checkContentLeaseRelease, contentLeaseReleaseMs);
-    }
-  }
-
-  function checkContentLeaseRelease(): void {
-    contentLeaseTimer = null;
-    if (!contentPromoted || !contentEl) return;
-    const remaining = contentLeaseDeadline - nowMs();
-    if (remaining > 0 || spring.isActive() || glideResidue !== 0) {
-      contentLeaseTimer = setTimeout(
-        checkContentLeaseRelease,
-        Math.max(remaining, CONTENT_LEASE_BUSY_RECHECK_MS),
-      );
-      return;
-    }
-    contentPromoted = false;
-    contentEl.style.willChange = '';
-  }
-
-  /** Detach-path teardown: cancel the timer and leave the element unpromoted. */
-  function clearContentLease(): void {
-    if (contentLeaseTimer !== null) {
-      clearTimeout(contentLeaseTimer);
-      contentLeaseTimer = null;
-    }
-    contentPromoted = false;
-    if (contentEl) contentEl.style.willChange = '';
-  }
-
-  function writeScrollTop(caller: ScrollWriteCaller, value: number): void {
-    if (!scrollEl) return;
-    // Hot path: spring follow can call this every frame. The app contract is
-    // that controller-owned scrollers do not get CSS-authored smooth scroll;
-    // only inline values need temporary suppression around the write.
-    const originalScrollBehavior = scrollEl.style.scrollBehavior;
-    const suppressScrollBehavior =
-      originalScrollBehavior !== '' && originalScrollBehavior !== 'auto';
-    if (suppressScrollBehavior) scrollEl.style.scrollBehavior = 'auto';
-    // Determine whether this write will be traced BEFORE reading any
-    // pre-write geometry. The sampling decision and the
-    // isUiRenderTraceEnabled gate are both pure reads with no side
-    // effects, so hoisting them above the write is safe. This lets us
-    // skip the three layout reads (scrollTop, scrollHeight, clientHeight)
-    // on the hot path — spring ticks fire at 60Hz and the trace is
-    // sampled to ~5Hz, so ~92% of ticks skip the reads entirely.
-    let recordTrace = true;
-    if (caller === 'spring.tick') {
-      if (springTickSinceLastTrace < SPRING_TICK_TRACE_SAMPLE - 1) {
-        springTickSinceLastTrace += 1;
-        recordTrace = false;
-      } else {
-        springTickSinceLastTrace = 0;
-      }
-    }
-    const shouldTrace = recordTrace && isUiRenderTraceEnabled();
-    let beforeTop = 0, beforeHeight = 0, beforeClient = 0;
-    if (shouldTrace) {
-      beforeTop = scrollEl.scrollTop;
-      beforeHeight = scrollEl.scrollHeight;
-      beforeClient = scrollEl.clientHeight;
-    }
-    scrollEl.scrollTop = value;
-    // Tag using the BROWSER-rounded read so the scroll handler's token
-    // match sees the same value the scroll event will report.
-    const taggedTop = scrollEl.scrollTop;
-    lastExplainedScrollTop = taggedTop;
-    intent.noteProgrammaticWrite(taggedTop);
-    refreshIsNearBottom();
-    if (shouldTrace) {
-      trace('scroll.write', () => ({
-        caller,
-        requested: Math.round(value),
-        beforeTop: Math.round(beforeTop),
-        afterTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-        scrollHeight: Math.round(beforeHeight),
-        clientHeight: Math.round(beforeClient),
-        maxTarget: Math.round(Math.max(0, beforeHeight - beforeClient)),
-        taggedTop,
-        // Sub-pixel remainder THIS write rides on the content transform
-        // (glide writes only; every other caller clears it below).
-        residue:
-          caller === 'spring.tick'
-            ? Math.round((value - taggedTop) * 100) / 100
-            : 0,
-        isAtBottomState,
-        escapedFromLockState,
-        pauseDepth,
-        isNearBottomState,
-      }));
-    }
-    // Style writes LAST (residue transform, then scrollBehavior
-    // restore): a style write dirties style state, so keeping both
-    // after every layout read above avoids forcing an extra recalc
-    // mid-sequence — this runs at up to display refresh rate during a
-    // chase. Same-frame visually: the transform composites with this
-    // frame's paint regardless of its position in the sequence.
-    if (caller === 'spring.tick') {
-      // Glide writes need the composited layer live before the residue
-      // transform below lands (and each tick renews the lease so a
-      // long chase never demotes mid-flight).
-      renewContentLease();
-      // Render the engine-rounded remainder via the content transform.
-      // |residue| ≥ 1 means the engine clamped the write (max-scrollTop
-      // race), not rounding — never smear a clamp onto the transform.
-      const residue = value - taggedTop;
-      applyGlideResidue(residue > -1 && residue < 1 ? residue : 0);
-    } else if (glideResidue !== 0) {
-      // Every non-glide write is an exact/instant placement; rendered
-      // position must equal scrollTop exactly.
-      applyGlideResidue(0);
-    }
-    if (suppressScrollBehavior) scrollEl.style.scrollBehavior = originalScrollBehavior;
-  }
-
+  // ===== Write chokepoint =====
+  // The single programmatic-write site and its satellites — the
+  // provenance ledger, arrival-readback acceptance, spring-tick trace
+  // sampling, the fractional glide residue, and the content
+  // layer-promotion lease — live in scroll/chokepoint.ts as one unit.
+  // The two late-bound deps close over `intent` / `spring` (created
+  // below) and are only invoked at write/check time.
+  const chokepoint = createWriteChokepoint({
+    getScrollEl: () => scrollEl,
+    getContentEl: () => contentEl,
+    scrollTopIsAtTarget,
+    refreshIsNearBottom,
+    noteProgrammaticWrite: (top) => intent.noteProgrammaticWrite(top),
+    springActive: () => spring.isActive(),
+    traceState: () => ({
+      isAtBottomState,
+      escapedFromLockState,
+      pauseDepth,
+      isNearBottomState,
+    }),
+    contentLeaseReleaseMs: options.contentLeaseReleaseMs,
+  });
+  const {
+    writeScrollTop,
+    scrollTopUnexplained,
+    arrivalReadback,
+    forceNextSpringTickTrace,
+    applyGlideResidue,
+    settleGlideResidue,
+    renewContentLease,
+    clearContentLease,
+  } = chokepoint;
   // Cached MediaQueryList — `matchMedia('(prefers-reduced-motion: reduce)')`
   // is called inside both the contentRO positive-delta branch and the
   // spring tick (which runs at 60Hz). Parsing the query and constructing
@@ -681,9 +358,7 @@ export function createUseStickToBottomController(
     sampleResizeCorrelation: observers.sampleResizeCorrelation,
     resizeDifferenceNow: observers.resizeDifferenceNow,
     noteScrollActivity: renewContentLease,
-    noteUserScroll: (top) => {
-      lastExplainedScrollTop = top;
-    },
+    noteUserScroll: chokepoint.noteUserScroll,
   });
 
   // Snapshot of the flags the pure delivery resolver decides over.
@@ -1238,7 +913,7 @@ export function createUseStickToBottomController(
     // element leaves the controller unpromoted (a stale will-change on
     // a detached-but-reused element would silently re-tax the pane).
     clearContentLease();
-    lastExplainedScrollTop = null;
+    chokepoint.resetLedger();
     scrollEl = undefined;
     contentEl = undefined;
   }

@@ -48,16 +48,20 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     what, if anything, gets written**. Adding a scroll behavior means
     adding a decision branch here, not a write site somewhere else.
   - `index.svelte.ts` — the controller: the reactive flags templates
-    subscribe to, geometry reads, the single `writeScrollTop` chokepoint
-    every programmatic write routes through, wiring for the three
-    machines below, and the public API. `types.ts` holds the consumer
-    contract; consumers import from `utils/scroll/index.svelte`.
+    subscribe to, geometry reads, wiring for the machines below, and
+    the public API. `types.ts` holds the consumer contract; consumers
+    import from `utils/scroll/index.svelte`.
+  - `chokepoint.ts` — the single `writeScrollTop` chokepoint every
+    programmatic write routes through, plus its satellites: the
+    provenance ledger, arrival-readback acceptance, spring-tick trace
+    sampling, and the content layer-promotion lease (promotion is
+    leased against scroll activity and demotes after stillness — a
+    permanent `will-change: transform` was a measured tile-memory tax).
     The chokepoint also owns the **fractional glide residue**: spring
     writes are fractional, the engine rounds `scrollTop` to whole CSS
     pixels, and the sub-pixel remainder is composited as a `translateY`
-    on `contentEl` (which carries a permanent `will-change-transform`
-    for it) so slow spring tails render continuously instead of as
-    1px steps. Two display-physics guards ride along: an epsilon
+    on `contentEl` so slow spring tails render continuously instead of
+    as 1px steps. Two display-physics guards ride along: an epsilon
     `rotate(0.0001deg)` defeats WebKit's compositor pixel alignment
     (which would round the sub-pixel translate to whole device pixels
     and oscillate around the trajectory), and the spring holds a
