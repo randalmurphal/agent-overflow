@@ -279,6 +279,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// with the other timer-driven loops, so teardown has exactly one
 		// place where background cadences are joined.
 		"stop background git fetch",
+		// "stop worktree setups" MUST appear before "close store" — settling
+		// a run writes the thread's durable worktree_setup_state. It joins
+		// alongside the other background cadences for the same reason.
+		"stop worktree setups",
 		"close provider sessions",
 		// "stop orphan reaper" follows session close: each session
 		// releases its watched group on a clean close, so the sidecar has

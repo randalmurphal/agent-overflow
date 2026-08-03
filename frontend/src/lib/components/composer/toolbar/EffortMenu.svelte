@@ -85,6 +85,18 @@
   let contextOptions = $derived<ContextWindowOption[]>(activeModelInfo?.contextWindows ?? []);
   let reasoningOptions = $derived<ReasoningEffortOption[]>(activeModelInfo?.reasoningEfforts ?? []);
   let fastModeSupported = $derived(activeModelInfo?.capabilities?.includes('fast_mode') ?? false);
+  // The tier the provider declared for this model names the toggle. It is
+  // absent for Claude (no tier concept) and for a catalog cached before the
+  // field existed, so every read falls back to today's literals rather than
+  // rendering a blank. Support is still `capabilities`, never this.
+  let fastModeTier = $derived(activeModelInfo?.fastModeTier);
+  let fastModeLabel = $derived(fastModeTier?.name?.trim() || 'Fast');
+  // "Fast Mode" is the section's own wording, not the tier's; only a tier that
+  // calls itself something else displaces it.
+  let fastModeSectionLabel = $derived(
+    fastModeLabel === 'Fast' ? 'Fast Mode' : `${fastModeLabel} Mode`,
+  );
+  let fastModeDescription = $derived(fastModeTier?.description?.trim() || undefined);
 
   // "We have no catalog entry for this model" and "the catalog says this model
   // has no effort tiers" are different answers and must not share a branch.
@@ -130,7 +142,7 @@
     if (showEffortSelection) {
       labelParts.push(effortLabel(currentEffort, currentEffortOption?.label));
     }
-    if (currentFast) labelParts.push('Fast');
+    if (currentFast) labelParts.push(fastModeLabel);
     // The context window is the label's fallback subject: with no effort tiers
     // to name, it is the only thing left that describes the thread.
     if (currentContextWindow > 0 && (showContextSelection || labelParts.length === 0)) {
@@ -312,7 +324,7 @@
       {/if}
 
       {#if fastModeSupported}
-        <MenuSectionHeader label="Fast Mode" />
+        <MenuSectionHeader label={fastModeSectionLabel} />
         <MenuItem
           label="Off"
           checked={!currentFast}
@@ -321,6 +333,7 @@
         <MenuItem
           label="On"
           checked={currentFast}
+          title={fastModeDescription}
           onSelect={() => handleFastMode(true)}
         />
         <MenuDivider />

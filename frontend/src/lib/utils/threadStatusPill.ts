@@ -61,15 +61,25 @@ export function hasUnread(thread: Pick<Thread, 'lastReadAt' | 'latestTurnComplet
 
 /**
  * Live events win first. When no live event is present, durable Thread-row
- * projections restore boot-time status for prior interrupted turns and
- * actionable plans.
+ * projections restore boot-time status for a failed worktree setup, prior
+ * interrupted turns, and actionable plans.
+ *
+ * The early return on a non-idle live status is what makes "setup-failed must
+ * never mask error / pending-approval / awaiting-input" structural rather than
+ * a matter of ordering below: a thread whose provider is blocked on the user
+ * reports that, whatever its worktree's provisioning state is.
+ *
+ * Among the durable fallbacks, setup-failed goes first. It is the only one
+ * naming a concrete failure with a repair the user has to run — Interrupted is
+ * cleared by sending the next message, and Plan Ready is informational.
  */
 export function resolveEffectiveThreadStatus(
-  thread: Pick<Thread, 'hasIncompleteTurn' | 'hasActionableProposedPlan'>,
+  thread: Pick<Thread, 'hasIncompleteTurn' | 'hasActionableProposedPlan' | 'worktreeSetupState'>,
   liveStatus: ThreadLiveStatus,
   options: EffectiveThreadStatusOptions = {},
 ): ThreadLiveStatus {
   if (liveStatus !== 'idle') return liveStatus;
+  if (thread.worktreeSetupState === 'failed') return 'setup-failed';
   if (thread.hasIncompleteTurn && !options.suppressDurableInterrupted) return 'interrupted';
   if (thread.hasActionableProposedPlan) return 'plan-ready';
   return 'idle';
@@ -83,10 +93,11 @@ export function resolveEffectiveThreadStatus(
  *   2. pending-approval → "Pending approval" (blocking tool permission)
  *   3. awaiting-input   → "Awaiting input" (agent asking a question)
  *   4. running          → mode-aware (Planning / Designing / Discussing / Working)
- *   5. plan-ready       → "Plan ready" (settled plan awaiting accept/edit/reject)
- *   6. interrupted      → "Interrupted" (prior app closed mid-turn)
- *   7. idle + unread    → "Completed"
- *   8. idle + read      → null (no pill)
+ *   5. setup-failed     → "Setup Failed" (worktree setup recipe did not finish)
+ *   6. plan-ready       → "Plan ready" (settled plan awaiting accept/edit/reject)
+ *   7. interrupted      → "Interrupted" (prior app closed mid-turn)
+ *   8. idle + unread    → "Completed"
+ *   9. idle + read      → null (no pill)
  *
  * Priority and colors match forge's `Sidebar.logic.ts`: running / completed
  * states use success green, discussion uses the running-blue outline,
@@ -138,6 +149,17 @@ export function resolveThreadStatusPill(
       default:
         return { label: 'Working', ...RUNNING_SUCCESS };
     }
+  }
+  if (liveStatus === 'setup-failed') {
+    // Warning, not error: the thread and its worktree are usable — the agent
+    // can even repair the setup itself. Red is reserved for a turn that
+    // actually failed. No glow: nothing is blocked waiting on the user.
+    return {
+      label: 'Setup Failed',
+      dotClass: 'bg-warning',
+      labelClass: 'text-warning',
+      pulse: false,
+    };
   }
   if (liveStatus === 'plan-ready') {
     return {

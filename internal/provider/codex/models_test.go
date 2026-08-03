@@ -34,6 +34,18 @@ func TestListModelsUsesCodexMetadataAndStaticContextWindows(t *testing.T) {
 	if !contains(model.Capabilities, provider.ModelCapabilityFastMode) {
 		t.Errorf("Capabilities = %#v, want fast mode", model.Capabilities)
 	}
+	// The whole wire tier rides along, not just the id: the name is what the
+	// composer labels the toggle and the description is its tooltip.
+	if model.FastModeTier == nil {
+		t.Fatalf("FastModeTier = nil, want the wire priority tier")
+	}
+	if *model.FastModeTier != (provider.FastModeTier{
+		ID:          "priority",
+		Name:        "Fast",
+		Description: "1.5x speed, increased usage",
+	}) {
+		t.Errorf("FastModeTier = %#v, want the full wire tier", *model.FastModeTier)
+	}
 	if len(model.ContextWindows) != 1 ||
 		model.ContextWindows[0].Tokens != provider.CodexStandardContextWindow {
 		t.Fatalf("ContextWindows = %#v, want codex standard only", model.ContextWindows)
@@ -60,6 +72,125 @@ func TestListModelsUsesCodexMetadataAndStaticContextWindows(t *testing.T) {
 	if len(custom.ReasoningEfforts) != len(model.ReasoningEfforts) {
 		t.Errorf("custom reasoning efforts len = %d, want %d", len(custom.ReasoningEfforts), len(model.ReasoningEfforts))
 	}
+	// A custom slug inherits the template's tier — otherwise it would claim
+	// fast-mode support and then have no id to send — but must not SHARE the
+	// pointer, or mutating one entry's tier would rewrite the other's.
+	if custom.FastModeTier == nil || *custom.FastModeTier != *model.FastModeTier {
+		t.Fatalf("custom FastModeTier = %#v, want a copy of %#v", custom.FastModeTier, model.FastModeTier)
+	}
+	if custom.FastModeTier == model.FastModeTier {
+		t.Error("custom FastModeTier aliases the template's pointer, want an independent copy")
+	}
+}
+
+// TestCodexFastModeTierIsWireDriven pins the whole selection rule. `serviceTiers`
+// is the model's full tier menu — upstream ships flex/batch on it — so the fast
+// entry is identified by an anchor, never assumed from position or presence.
+func TestCodexFastModeTierIsWireDriven(t *testing.T) {
+	tests := []struct {
+		name  string
+		model codexModel
+		want  *provider.FastModeTier
+	}{
+		{
+			name:  "no tiers at all",
+			model: codexModel{},
+			want:  nil,
+		},
+		{
+			name: "canonical priority tier carries its wire label",
+			model: codexModel{ServiceTiers: []codexModelServiceTier{
+				{ID: "priority", Name: "Fast", Description: "1.5x speed, increased usage"},
+			}},
+			want: &provider.FastModeTier{ID: "priority", Name: "Fast", Description: "1.5x speed, increased usage"},
+		},
+		{
+			name: "priority wins over an earlier non-fast tier",
+			model: codexModel{ServiceTiers: []codexModelServiceTier{
+				{ID: "flex", Name: "Flex"},
+				{ID: "priority", Name: "Fast"},
+			}},
+			want: &provider.FastModeTier{ID: "priority", Name: "Fast"},
+		},
+		{
+			// The id-rename case: upstream moves the fast tier off `priority`
+			// but keeps calling it "fast". AO follows the id it was given.
+			name: "renamed id still matches on the wire name",
+			model: codexModel{ServiceTiers: []codexModelServiceTier{
+				{ID: "turbo", Name: "fast", Description: "2x speed"},
+			}},
+			want: &provider.FastModeTier{ID: "turbo", Name: "fast", Description: "2x speed"},
+		},
+		{
+			// The display-rename case: the label moves, the id anchor holds,
+			// and the new label is what the composer shows.
+			name: "renamed display name still matches on the id",
+			model: codexModel{ServiceTiers: []codexModelServiceTier{
+				{ID: "priority", Name: "Turbo", Description: "2x speed"},
+			}},
+			want: &provider.FastModeTier{ID: "priority", Name: "Turbo", Description: "2x speed"},
+		},
+		{
+			// The regression this rule exists for: flex is SLOWER. Reporting it
+			// as fast-capable would put a "Flex Mode / On" toggle in the
+			// composer that makes turns worse.
+			name: "a flex-only model is not fast capable",
+			model: codexModel{ServiceTiers: []codexModelServiceTier{
+				{ID: "flex", Name: "Flex", Description: "slower, discounted"},
+			}},
+			want: nil,
+		},
+		{
+			name: "an unknown tier is not assumed to be fast",
+			model: codexModel{ServiceTiers: []codexModelServiceTier{
+				{ID: "batch", Name: "slow", Description: "lower priority"},
+			}},
+			want: nil,
+		},
+		{
+			name: "a tier with no id cannot be requested",
+			model: codexModel{ServiceTiers: []codexModelServiceTier{
+				{ID: "  ", Name: "Fast"},
+			}},
+			want: nil,
+		},
+		{
+			// The deprecated key has no tier metadata, so the legacy pair is
+			// synthesized — the sent id stays explicit rather than implied.
+			name:  "deprecated speed tiers resolve to the legacy pair",
+			model: codexModel{AdditionalSpeedTiers: []string{"fast"}},
+			want:  &provider.FastModeTier{ID: "priority", Name: "Fast"},
+		},
+		{
+			name: "canonical serviceTiers take precedence over the deprecated key",
+			model: codexModel{
+				ServiceTiers:         []codexModelServiceTier{{ID: "flex", Name: "Flex"}},
+				AdditionalSpeedTiers: []string{"fast"},
+			},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := codexFastModeTier(tt.model)
+			switch {
+			case tt.want == nil && got != nil:
+				t.Fatalf("codexFastModeTier = %#v, want nil", *got)
+			case tt.want != nil && got == nil:
+				t.Fatalf("codexFastModeTier = nil, want %#v", *tt.want)
+			case tt.want != nil && *got != *tt.want:
+				t.Fatalf("codexFastModeTier = %#v, want %#v", *got, *tt.want)
+			}
+
+			// Support and tier are one answer: mapCodexModel must never
+			// advertise the capability without an id to send with it.
+			mapped := mapCodexModel(codexModel{Model: "gpt-test", ServiceTiers: tt.model.ServiceTiers, AdditionalSpeedTiers: tt.model.AdditionalSpeedTiers})
+			if contains(mapped.Capabilities, provider.ModelCapabilityFastMode) != (tt.want != nil) {
+				t.Errorf("Capabilities = %#v, want fast-mode marker = %v", mapped.Capabilities, tt.want != nil)
+			}
+		})
+	}
 }
 
 func TestNormalizeCodexDisplayNameUsesFriendlyGPTAliases(t *testing.T) {
@@ -75,18 +206,6 @@ func TestNormalizeCodexDisplayNameUsesFriendlyGPTAliases(t *testing.T) {
 		if got := normalizeCodexDisplayName(input); got != want {
 			t.Errorf("normalizeCodexDisplayName(%q) = %q, want %q", input, got, want)
 		}
-	}
-}
-
-func TestCodexModelSupportsFastModeFallsBackToDeprecatedSpeedTiers(t *testing.T) {
-	if !codexModelSupportsFastMode(codexModel{AdditionalSpeedTiers: []string{"fast"}}) {
-		t.Fatal("legacy additionalSpeedTiers fast entry should remain supported")
-	}
-	if codexModelSupportsFastMode(codexModel{
-		ServiceTiers:         []codexModelServiceTier{{ID: "flex"}},
-		AdditionalSpeedTiers: []string{"fast"},
-	}) {
-		t.Fatal("canonical serviceTiers should take precedence over deprecated additionalSpeedTiers")
 	}
 }
 

@@ -103,6 +103,12 @@ var LocalOnlyMethods = map[string]bool{
 	"ResizeTerminal":                 true,
 	"RefreshTerminal":                true,
 	"MoveThreadTerminals":            true,
+	// RetryThreadWorktreeSetup executes the project's argv setup commands in
+	// the thread's worktree; GetThreadWorktreeSetup returns their captured
+	// output. RCE and the transcript of it, same pairing as
+	// RestartTerminal / GetTerminalReplay.
+	"RetryThreadWorktreeSetup":       true,
+	"GetThreadWorktreeSetup":         true,
 	"OpenInEditor":                   true,
 	"OpenExternalURL":                true,
 	"BrowseDirectory":                true,
@@ -420,6 +426,13 @@ var LocalOnlyMethods = map[string]bool{
 	// sensitive flag exists to keep off the wire.
 	"SetProviderCustomEnvVar":    true,
 	"DeleteProviderCustomEnvVar": true,
+	// Per-project worktree setup. RCE-equivalent (category 1) as much as
+	// settings mutation: the argv commands a caller stores here are executed
+	// unattended, with the user's environment, every time that project cuts a
+	// worktree. The reader is classified with the writer because the recipe
+	// names local paths and can carry credential-shaped material (.env globs).
+	"GetProjectWorktreeSetup": true,
+	"SetProjectWorktreeSetup": true,
 	// SetWSLDistroPreference rewrites the Windows launcher's
 	// wsl.json — the next launch will boot whatever distro a LAN
 	// peer talked the user's backend into saving. Same threat shape

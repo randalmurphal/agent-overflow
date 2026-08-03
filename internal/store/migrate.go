@@ -1550,6 +1550,45 @@ CREATE INDEX idx_work_items_automation_source_ref
 		SQL:     rebuildRuntimeModeAutoV45SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 46,
+		Name:    "project_worktree_setup",
+		// The per-project worktree setup recipe (files copied from the main
+		// checkout, argv commands run at worktree creation). It used to live in
+		// the hand-authored profile.yaml, where only the workflow engine could
+		// reach it; it moves here so chat-thread worktree creation can run the
+		// same recipe and so it has a settings UI.
+		//
+		// One TEXT column holding the whole recipe as JSON, rather than three
+		// tables: it is one editor's worth of state, written whole and read
+		// whole, and nothing queries inside it. Empty means unconfigured —
+		// deliberately NOT nullable, so there is one representation of "no
+		// recipe" instead of two indistinguishable ones.
+		//
+		// A plain ADD COLUMN: nothing here changes a CHECK or a column list, so
+		// the FK-parent projects table is not rebuilt.
+		SQL: `ALTER TABLE projects ADD COLUMN worktree_setup TEXT NOT NULL DEFAULT '';`,
+	},
+	{
+		Version: 47,
+		Name:    "thread_worktree_setup_state",
+		// The DURABLE half of the chat-thread worktree setup run: whether the
+		// recipe is running for this thread's worktree, or failed there. The
+		// streaming panel is in-memory and dies with the process; this column
+		// is what survives a restart, so the sidebar can still say "Setup
+		// failed" and the retry affordance stays reachable.
+		//
+		// Three states, CHECK-enforced: '' (nothing to say — never ran,
+		// succeeded, cancelled, or the thread left the worktree), 'running',
+		// 'failed'. A separate boolean pair would admit "running AND failed",
+		// which is not a state this can be in.
+		//
+		// A plain ADD COLUMN: SQLite permits a CHECK on an added column, and
+		// nothing here changes a column list, so the FK-parent threads table is
+		// not rebuilt.
+		SQL: `ALTER TABLE threads ADD COLUMN worktree_setup_state TEXT NOT NULL DEFAULT ''
+		    CHECK(worktree_setup_state IN ('', 'running', 'failed'));`,
+	},
 }
 
 // rebuildWorkItemsSoftStopV44SQL adds `soft_stop` — a standing request to stop

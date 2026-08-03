@@ -435,6 +435,21 @@ type App struct {
 	// per repository so an unreachable remote logs once rather than
 	// every tick. See app_git_background_fetch.go.
 	backgroundFetchErrors backgroundFetchErrorMemo
+	// Chat-thread worktree setup runs, keyed by thread id: at most one
+	// per thread, and only while it is running or after it FAILED — a
+	// success drops its record. Guarded by its own mutex rather than
+	// a.mu because a run settles from its own goroutine and must not
+	// contend with session bookkeeping. See app_worktree_setup.go.
+	worktreeSetupMu   sync.Mutex
+	worktreeSetupRuns map[string]*worktreeSetupRun
+	// worktreeSetupStopped is set by stopThreadWorktreeSetups in the same
+	// critical section it snapshots the runs from, so no kickoff can join the
+	// WaitGroup after the wait below has begun.
+	worktreeSetupStopped bool
+	// worktreeSetupWG joins every run goroutine in Shutdown before the
+	// store closes, because settling a run writes the thread's durable
+	// setup state.
+	worktreeSetupWG sync.WaitGroup
 	// Per-provider usage-probe gates (app_usage_probe_gate.go): every
 	// automatic rate-limit refresh trigger funnels through one so bursts
 	// coalesce, a cooldown bounds request rate, and a server 429 holds
@@ -665,6 +680,7 @@ func NewApp() *App {
 		gitWatchPumps:                  make(map[string]*gitWatchPump),
 		prUpdatePumps:                  make(map[string]*prUpdatePump),
 		providerCredentialFingerprints: make(map[string][32]byte),
+		worktreeSetupRuns:              make(map[string]*worktreeSetupRun),
 	}
 	app.installDiscussionTurnObserver()
 	return app

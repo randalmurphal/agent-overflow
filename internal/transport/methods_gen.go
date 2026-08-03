@@ -90,6 +90,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetPayloadChunk", ID: 73280836},                        // main.App.GetPayloadChunk
 	{Name: "GetPayloadData", ID: 3448919335},                       // main.App.GetPayloadData
 	{Name: "GetPayloadPreview", ID: 4070214921},                    // main.App.GetPayloadPreview
+	{Name: "GetProjectWorktreeSetup", ID: 471350242},               // main.App.GetProjectWorktreeSetup
 	{Name: "GetProviderStatuses", ID: 3829328996},                  // main.App.GetProviderStatuses
 	{Name: "GetQueueState", ID: 3079581691},                        // main.App.GetQueueState
 	{Name: "GetRateLimitsSnapshots", ID: 3325141610},               // main.App.GetRateLimitsSnapshots
@@ -101,6 +102,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetThreadItem", ID: 1969869112},                        // main.App.GetThreadItem
 	{Name: "GetThreadLiveState", ID: 70226550},                     // main.App.GetThreadLiveState
 	{Name: "GetThreadRuntimeMode", ID: 2573491630},                 // main.App.GetThreadRuntimeMode
+	{Name: "GetThreadWorktreeSetup", ID: 49371251},                 // main.App.GetThreadWorktreeSetup
 	{Name: "GetTurnEditsDiff", ID: 2905371438},                     // main.App.GetTurnEditsDiff
 	{Name: "GetUIRenderTracePath", ID: 1009213933},                 // main.App.GetUIRenderTracePath
 	{Name: "GetUIState", ID: 3380106838},                           // main.App.GetUIState
@@ -222,6 +224,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RespondToUserInput", ID: 1071592868},                   // main.App.RespondToUserInput
 	{Name: "RestartTerminal", ID: 4152403588},                      // main.App.RestartTerminal
 	{Name: "RestartToUpdate", ID: 3141913084},                      // main.App.RestartToUpdate
+	{Name: "RetryThreadWorktreeSetup", ID: 1657104469},             // main.App.RetryThreadWorktreeSetup
 	{Name: "RevertConversationToMessage", ID: 250090428},           // main.App.RevertConversationToMessage
 	{Name: "SaveDraft", ID: 3025273299},                            // main.App.SaveDraft
 	{Name: "SavePRCIJobLog", ID: 1537914193},                       // main.App.SavePRCIJobLog
@@ -239,6 +242,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SetNetworkSettings", ID: 3915514446},                   // main.App.SetNetworkSettings
 	{Name: "SetNewThreadMcpServerEnabled", ID: 545823411},          // main.App.SetNewThreadMcpServerEnabled
 	{Name: "SetPRUpdatesActive", ID: 1078249699},                   // main.App.SetPRUpdatesActive
+	{Name: "SetProjectWorktreeSetup", ID: 322092470},               // main.App.SetProjectWorktreeSetup
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465},              // main.App.SetProviderCustomEnvVar
 	{Name: "SetUIState", ID: 1514250938},                           // main.App.SetUIState
 	{Name: "SetWSLDistroPreference", ID: 3978807241},               // main.App.SetWSLDistroPreference

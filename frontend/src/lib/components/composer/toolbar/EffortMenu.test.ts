@@ -236,6 +236,104 @@ describe("<EffortMenu>", () => {
     expect(triggerText(getByTestId)).toBe("High · Fast");
   });
 
+  // The catalog names the tier; the UI stops hardcoding it. A model whose
+  // provider renamed the fast tier upstream must relabel — trigger, section
+  // header, and the On row's tooltip — without a code change, and must still
+  // toggle the same boolean.
+  it("labels fast mode from the model's declared service tier", async () => {
+    setBindingMock("GetModelsForProvider", async () => [
+      {
+        slug: "gpt-5.5",
+        name: "GPT-5.5",
+        provider: "codex",
+        capabilities: ["fast_mode"],
+        fastModeTier: { id: "turbo", name: "Turbo", description: "2x speed, increased usage" },
+        contextWindows: [{ tokens: 272000, label: "272k", tier: "standard" }],
+        reasoningEfforts: [{ slug: "high", label: "High", default: true }],
+      },
+    ]);
+    await ensureProviderModels("codex");
+    const pane = await buildPane(
+      makeThread({
+        provider: "codex",
+        model: "gpt-5.5",
+        contextWindow: 272000,
+        fastMode: true,
+      }),
+    );
+    const { getByTestId, findByRole, findByText } = render(EffortMenu, { props: { pane } });
+
+    expect(triggerText(getByTestId)).toBe("High · Turbo");
+
+    await fireEvent.click(getByTestId("composer-effort-trigger"));
+    expect(await findByText("Turbo Mode")).toBeInTheDocument();
+    const on = await findByRole("menuitem", { name: /^On$/ });
+    expect(on).toHaveAttribute("title", "2x speed, increased usage");
+  });
+
+  // Everything above has to degrade to today's wording when the field is
+  // absent: Claude declares no tier at all, and a catalog cached before the
+  // field existed deserializes without it.
+  it("falls back to the Fast literals when the model declares no tier", async () => {
+    setBindingMock("GetModelsForProvider", async () => [
+      {
+        slug: "claude-opus-4-6",
+        name: "Claude Opus 4.6",
+        provider: "claude",
+        capabilities: ["fast_mode"],
+        contextWindows: [{ tokens: 200000, label: "200k", tier: "standard" }],
+        reasoningEfforts: [{ slug: "high", label: "High", default: true }],
+      },
+    ]);
+    await ensureProviderModels("claude");
+    const pane = await buildPane(
+      makeThread({
+        provider: "claude",
+        model: "claude-opus-4-6",
+        contextWindow: 200000,
+        fastMode: true,
+      }),
+    );
+    const { getByTestId, findByRole, findByText } = render(EffortMenu, { props: { pane } });
+
+    expect(triggerText(getByTestId)).toBe("High · Fast");
+
+    await fireEvent.click(getByTestId("composer-effort-trigger"));
+    expect(await findByText("Fast Mode")).toBeInTheDocument();
+    const on = await findByRole("menuitem", { name: /^On$/ });
+    expect(on).not.toHaveAttribute("title");
+  });
+
+  // A tier that still calls itself "Fast" — the shape of every catalog today —
+  // must not render "Fast Mode Mode".
+  it("keeps the section header as Fast Mode when the tier is named Fast", async () => {
+    setBindingMock("GetModelsForProvider", async () => [
+      {
+        slug: "gpt-5.5",
+        name: "GPT-5.5",
+        provider: "codex",
+        capabilities: ["fast_mode"],
+        fastModeTier: { id: "priority", name: "Fast", description: "1.5x speed, increased usage" },
+        contextWindows: [{ tokens: 272000, label: "272k", tier: "standard" }],
+        reasoningEfforts: [{ slug: "high", label: "High", default: true }],
+      },
+    ]);
+    await ensureProviderModels("codex");
+    const pane = await buildPane(
+      makeThread({
+        provider: "codex",
+        model: "gpt-5.5",
+        contextWindow: 272000,
+        fastMode: true,
+      }),
+    );
+    const { getByTestId, findByText } = render(EffortMenu, { props: { pane } });
+
+    expect(triggerText(getByTestId)).toBe("High · Fast");
+    await fireEvent.click(getByTestId("composer-effort-trigger"));
+    expect(await findByText("Fast Mode")).toBeInTheDocument();
+  });
+
   it("renders xhigh as xHigh in the trigger", async () => {
     const pane = await buildPane(makeThread({ reasoningEffort: "xhigh" }));
     const { getByTestId } = render(EffortMenu, { props: { pane } });

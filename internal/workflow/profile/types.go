@@ -43,7 +43,9 @@ type Profile struct {
 	Disposition    Disposition         `yaml:"disposition,omitempty" json:"disposition"`
 	Secrets        map[string]Secret   `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	MCPServers     []string            `yaml:"mcp_servers,omitempty" json:"mcpServers,omitempty"`
-	WorktreeSetup  WorktreeSetup       `yaml:"worktree_setup,omitempty" json:"worktreeSetup,omitempty"`
+	// WorktreeSetup is retired — see the type. Kept decodable, reported by
+	// Validate, read by nothing.
+	WorktreeSetup WorktreeSetup `yaml:"worktree_setup,omitempty" json:"worktreeSetup,omitempty"`
 }
 
 // ReliabilityDefaults supplies project-level watchdog and runaway ceilings.
@@ -67,12 +69,24 @@ type Secret struct {
 	Path   string `yaml:"path,omitempty" json:"path,omitempty"`
 }
 
-// WorktreeSetup describes files to copy and argv commands to run before phases.
-// This package validates the declaration but never executes it.
+// WorktreeSetup is the RETIRED authoring shape of the worktree setup recipe.
+// The recipe now lives in per-project app settings (`internal/worktreesetup`,
+// persisted on the project row) so chat threads and workflows run the same one.
+//
+// The field survives here solely so a profile.yaml that still carries the block
+// keeps DECODING: strict decoding (KnownFields) would otherwise turn "you have
+// not migrated yet" into an unexplained unknown-field error. Validate reports
+// its presence as a finding that names where the recipe moved to; the contents
+// are no longer inspected, because nothing reads them.
 type WorktreeSetup struct {
 	Copy    []string   `yaml:"copy,omitempty" json:"copy,omitempty"`
 	Run     [][]string `yaml:"run,omitempty" json:"run,omitempty"`
 	Timeout Duration   `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+// Declared reports whether the retired block is present at all.
+func (w WorktreeSetup) Declared() bool {
+	return len(w.Copy) > 0 || len(w.Run) > 0 || strings.TrimSpace(string(w.Timeout)) != ""
 }
 
 // Default returns the documented profile used when profile.yaml is absent. It
@@ -83,17 +97,15 @@ type WorktreeSetup struct {
 // simply omits the key.
 func Default() Profile {
 	return Profile{
-		Disposition:   DispositionManual,
-		Reliability:   ReliabilityDefaults{Backoff: DefaultBackoff()},
-		WorktreeSetup: WorktreeSetup{Timeout: DefaultWorktreeSetupTimeout},
+		Disposition: DispositionManual,
+		Reliability: ReliabilityDefaults{Backoff: DefaultBackoff()},
 	}
 }
 
 const (
-	DefaultWorktreeSetupTimeout = "10m"
-	DefaultBackoffFirst         = "30s"
-	DefaultBackoffSecond        = "2m"
-	DefaultBackoffThird         = "5m"
+	DefaultBackoffFirst  = "30s"
+	DefaultBackoffSecond = "2m"
+	DefaultBackoffThird  = "5m"
 )
 
 // DefaultBackoff returns an isolated copy of the documented transient retry

@@ -29,9 +29,6 @@ func TestParseValidFixture(t *testing.T) {
 	if got.BaseBranch != "main" || got.Disposition != DispositionAutoPR {
 		t.Fatalf("profile defaults/scalars = %+v", got)
 	}
-	if got.WorktreeSetup.Timeout != "15m" {
-		t.Fatalf("worktree setup timeout = %q", got.WorktreeSetup.Timeout)
-	}
 	capacity, bound := got.Capacity("live-stack")
 	if !got.HasCheck("test") || !bound || capacity != 1 || !got.HasCommand("report-issue") {
 		t.Fatalf("profile does not expose expected bindings: %+v", got)
@@ -200,19 +197,65 @@ func TestValidationFindingsGolden(t *testing.T) {
 	}
 }
 
-func TestWorktreeSetupTimeoutDefaultsAndValidates(t *testing.T) {
-	parsed, err := ParseBytes([]byte("worktree_setup:\n  run: [[make, install]]\n"))
+// The retired block must stay DECODABLE — strict decoding would otherwise turn
+// an unmigrated profile into an unexplained unknown-field error — while its
+// presence is a finding that names where the recipe moved to. Covered across
+// the transition (block → no block → block), not just in one state, because
+// "still declared" is the whole predicate.
+func TestWorktreeSetupBlockDecodesAndIsAMovedFinding(t *testing.T) {
+	withBlock := "worktree_setup:\n  run: [[make, install]]\n  copy: [.env]\n  timeout: 5m\n"
+	parsed, err := ParseBytes([]byte(withBlock))
+	if err != nil {
+		t.Fatalf("retired block stopped decoding: %v", err)
+	}
+	if !parsed.WorktreeSetup.Declared() {
+		t.Fatalf("declared block = %+v", parsed.WorktreeSetup)
+	}
+	result := Validate(Profile{Disposition: DispositionManual, WorktreeSetup: parsed.WorktreeSetup})
+	if len(result.Findings) != 1 || result.Findings[0].Code != "worktree-setup.moved" {
+		t.Fatalf("findings = %+v", result.Findings)
+	}
+	if !strings.Contains(result.Findings[0].Message, "Settings") {
+		t.Fatalf("finding does not name the new home: %q", result.Findings[0].Message)
+	}
+
+	without, err := ParseBytes([]byte("base_branch: main\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.WorktreeSetup.Timeout != DefaultWorktreeSetupTimeout {
-		t.Fatalf("default timeout = %q", parsed.WorktreeSetup.Timeout)
+	if without.WorktreeSetup.Declared() {
+		t.Fatalf("absent block declared = %+v", without.WorktreeSetup)
 	}
-	for _, timeout := range []Duration{"0s", "-1s", "later"} {
-		result := Validate(Profile{Disposition: DispositionManual, WorktreeSetup: WorktreeSetup{Timeout: timeout}})
-		if result.Valid() {
-			t.Fatalf("timeout %q validated", timeout)
-		}
+	if result := Validate(Profile{Disposition: DispositionManual}); !result.Valid() {
+		t.Fatalf("profile without the block = %+v", result.Findings)
+	}
+
+	// Re-declaring it — a partial block, one key — is the same finding: the
+	// contents are never inspected, only the presence.
+	reparsed, err := ParseBytes([]byte("worktree_setup:\n  timeout: 5m\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result = Validate(Profile{Disposition: DispositionManual, WorktreeSetup: reparsed.WorktreeSetup})
+	if len(result.Findings) != 1 || result.Findings[0].Code != "worktree-setup.moved" {
+		t.Fatalf("re-declared findings = %+v", result.Findings)
+	}
+}
+
+// Load is fatal on findings, so an unmigrated profile.yaml refuses to load with
+// the moved message rather than silently running no setup.
+func TestLoadRefusesAProfileStillCarryingTheBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile.yaml")
+	if err := os.WriteFile(path, []byte("worktree_setup:\n  copy: [.env]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := Load(path)
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("Load error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "Settings") {
+		t.Fatalf("Load error does not name the new home: %v", err)
 	}
 }
 

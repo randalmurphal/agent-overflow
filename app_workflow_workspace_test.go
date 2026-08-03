@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/workflow/engine"
-	"agent-overflow/internal/workflow/profile"
+	"agent-overflow/internal/worktreesetup"
 )
 
 func TestWorkflowWritingItemProvisionsHooksAndCapturesArtifact(t *testing.T) {
@@ -30,12 +31,12 @@ base_branch: main
 reliability:
   watchdog: 1h
   backoff: [5ms]
-worktree_setup:
-  copy: [.env]
-  run:
-    - [/bin/sh, -c, "printf hook-ran > setup.txt"]
-  timeout: 2s
 `)
+	seedWorktreeSetup(t, app, projectRow.ID, worktreesetup.Config{
+		Copy:    []string{".env"},
+		Run:     [][]string{{"/bin/sh", "-c", "printf hook-ran > setup.txt"}},
+		Timeout: "2s",
+	})
 	cwdCapture := filepath.Join(t.TempDir(), "cwd")
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeWorkspaceClaude(t, cwdCapture, true, "done")}); err != nil {
 		t.Fatal(err)
@@ -91,11 +92,11 @@ worktree_setup:
 func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 	for _, test := range []struct {
 		name    string
-		command string
+		command []string
 		timeout string
 	}{
-		{name: "exit", command: "[/bin/sh, -c, \"printf failed-output; exit 7\"]", timeout: "2s"},
-		{name: "timeout", command: "[/bin/sleep, 1]", timeout: "20ms"},
+		{name: "exit", command: []string{"/bin/sh", "-c", "printf failed-output; exit 7"}, timeout: "2s"},
+		{name: "timeout", command: []string{"/bin/sleep", "1"}, timeout: "20ms"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			app, bus := setupE2EApp(t)
@@ -105,7 +106,10 @@ func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 			projectRow := testutil.EnsureProject(t, app.store, repo)
 			projectRow = mustReloadProject(t, app.store, projectRow.ID)
 			writeWorkspaceWorkflow(t, configRoot, "done")
-			writeWorkspaceProfile(t, configRoot, projectRow.Slug, "\nbase_branch: main\nreliability:\n  watchdog: 1h\n  backoff: [5ms]\nworktree_setup:\n  run:\n    - "+test.command+"\n  timeout: "+test.timeout+"\n")
+			writeWorkspaceProfile(t, configRoot, projectRow.Slug, workspaceProfileYAML)
+			seedWorktreeSetup(t, app, projectRow.ID, worktreesetup.Config{
+				Run: [][]string{test.command}, Timeout: test.timeout,
+			})
 			if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeWorkspaceClaude(t, filepath.Join(t.TempDir(), "cwd"), false, "done")}); err != nil {
 				t.Fatal(err)
 			}
@@ -133,7 +137,8 @@ func TestWorkflowHookFailureAndTimeoutParkSetupFailed(t *testing.T) {
 				t.Fatalf("worktrees after rollback = %+v, %v", worktrees, err)
 			}
 			if test.name == "exit" {
-				writeWorkspaceProfile(t, configRoot, projectRow.Slug, "\nbase_branch: main\nreliability:\n  watchdog: 1h\n  backoff: [5ms]\nworktree_setup:\n  timeout: 2s\n")
+				// Clearing the recipe is the fix a human applies before resuming.
+				seedWorktreeSetup(t, app, projectRow.ID, worktreesetup.Config{})
 				if err := app.WorkflowResumeItem(context.Background(), item.ID, ""); err != nil {
 					t.Fatal(err)
 				}
@@ -185,7 +190,7 @@ func TestWorkflowResumeWithMissingWorktreeParksSetupFailed(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	projectRow := mustReloadProject(t, app.store, testutil.EnsureProject(t, app.store, repo).ID)
 	writeWorkspaceWorkflow(t, configRoot, "stuck")
-	writeWorkspaceProfile(t, configRoot, projectRow.Slug, "\nbase_branch: main\nreliability:\n  watchdog: 1h\n  backoff: [5ms]\nworktree_setup:\n  timeout: 2s\n")
+	writeWorkspaceProfile(t, configRoot, projectRow.Slug, workspaceProfileYAML)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeWorkspaceClaude(t, filepath.Join(t.TempDir(), "cwd"), false, "stuck")}); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +218,10 @@ func TestWorkflowRecoversInterruptedProvisioningWithoutSecondWorktree(t *testing
 	repo := testutil.InitGitRepo(t)
 	projectRow := mustReloadProject(t, app.store, testutil.EnsureProject(t, app.store, repo).ID)
 	writeWorkspaceWorkflow(t, configRoot, "done")
-	writeWorkspaceProfile(t, configRoot, projectRow.Slug, "\nbase_branch: main\nreliability:\n  watchdog: 1h\n  backoff: [5ms]\nworktree_setup:\n  run:\n    - [/bin/sh, -c, \"printf recovered > recovered.txt\"]\n  timeout: 2s\n")
+	writeWorkspaceProfile(t, configRoot, projectRow.Slug, workspaceProfileYAML)
+	seedWorktreeSetup(t, app, projectRow.ID, worktreesetup.Config{
+		Run: [][]string{{"/bin/sh", "-c", "printf recovered > recovered.txt"}}, Timeout: "2s",
+	})
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeWorkspaceClaude(t, filepath.Join(t.TempDir(), "cwd"), true, "done")}); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +302,7 @@ func TestWorkflowArtifactFailureDoesNotChangePhaseOutcome(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	projectRow := mustReloadProject(t, app.store, testutil.EnsureProject(t, app.store, repo).ID)
 	writeWorkspaceWorkflow(t, configRoot, "done")
-	writeWorkspaceProfile(t, configRoot, projectRow.Slug, "\nbase_branch: main\nreliability:\n  watchdog: 1h\n  backoff: [5ms]\nworktree_setup:\n  timeout: 2s\n")
+	writeWorkspaceProfile(t, configRoot, projectRow.Slug, workspaceProfileYAML)
 	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeWorkspaceClaudeWithArtifactPath(t, filepath.Join(t.TempDir(), "cwd"), false, "done", "../escape.md")}); err != nil {
 		t.Fatal(err)
 	}
@@ -327,48 +335,11 @@ func TestWorkflowArtifactFailureDoesNotChangePhaseOutcome(t *testing.T) {
 	}
 }
 
+// The worktree setup engine and its path-safety rules now live in
+// internal/worktreesetup (with internal/safecopy under it) and are covered
+// there. What stays here is the app-owned artifact capture that shares the
+// safe-copy primitive, plus the branch naming.
 func TestWorkflowWorkspacePureHelpers(t *testing.T) {
-	project := t.TempDir()
-	worktree := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(project, "config"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(project, "config", "local.env"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := copyWorkflowSetupEntries(context.Background(), project, worktree, []string{"config/*.env"}); err != nil {
-		t.Fatal(err)
-	}
-	if data, err := os.ReadFile(filepath.Join(worktree, "config", "local.env")); err != nil || string(data) != "x" {
-		t.Fatalf("copied setup file = %q, %v", data, err)
-	}
-	if err := os.WriteFile(filepath.Join(project, ".git"), []byte("source-git"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("worktree-git"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := copyWorkflowSetupEntries(context.Background(), project, worktree, []string{"*"}); err != nil {
-		t.Fatal(err)
-	}
-	if data, err := os.ReadFile(filepath.Join(worktree, ".git")); err != nil || string(data) != "worktree-git" {
-		t.Fatalf("wildcard replaced worktree .git = %q, %v", data, err)
-	}
-	for _, pattern := range []string{"../outside", "/absolute", ".git/config"} {
-		if err := copyWorkflowSetupEntries(context.Background(), project, worktree, []string{pattern}); err == nil {
-			t.Fatalf("unsafe pattern %q succeeded", pattern)
-		}
-	}
-	started := time.Now()
-	if err := runWorkflowWorktreeSetup(context.Background(), project, worktree, profile.WorktreeSetup{
-		Run: [][]string{{"/bin/sh", "-c", "sleep 10 & wait"}}, Timeout: "20ms",
-	}); err == nil || !strings.Contains(err.Error(), "timed out") {
-		t.Fatalf("timeout error = %v", err)
-	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("process-tree timeout took %s", elapsed)
-	}
-
 	artifactWorkspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(artifactWorkspace, "report.txt"), []byte("report"), 0o600); err != nil {
 		t.Fatal(err)
@@ -393,103 +364,8 @@ func TestWorkflowWorkspacePureHelpers(t *testing.T) {
 	if err := captureWorkflowArtifact(dataRoot, "item", "escape", artifactWorkspace, "../report.txt"); err == nil {
 		t.Fatal("escaping artifact path succeeded")
 	}
-	external := t.TempDir()
-	if err := os.WriteFile(filepath.Join(external, "outside.env"), []byte("secret"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(external, filepath.Join(project, "linked")); err != nil {
-		t.Fatal(err)
-	}
-	if err := copyWorkflowSetupEntries(context.Background(), project, worktree, []string{"linked/*.env"}); err == nil {
-		t.Fatal("symlinked source ancestor succeeded")
-	}
-	symlinkRoot := t.TempDir()
-	if err := os.Symlink(external, filepath.Join(symlinkRoot, "redirect")); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateWorkflowDestination(symlinkRoot, filepath.Join(symlinkRoot, "redirect", "file")); err == nil {
-		t.Fatal("symlinked destination parent succeeded")
-	}
 	if branch := workflowWorktreeBranch("task", "flow", "12345678-abcd"); !strings.HasPrefix(branch, "task-workflow-flow-12345678-abcd-") {
 		t.Fatalf("workflow branch = %q", branch)
-	}
-}
-
-// TestWorkflowWorktreeSetupInjectsCheckoutPaths pins the env contract setup
-// recipes are written against: both checkouts named, absolute, distinct, with
-// the inherited environment intact underneath — and an inherited value of
-// either name losing to the injected one, since the app can itself be launched
-// from inside an agent session that exports AO_* names.
-func TestWorkflowWorktreeSetupInjectsCheckoutPaths(t *testing.T) {
-	project := t.TempDir()
-	worktree := t.TempDir()
-	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("TOKEN=main-checkout\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv(workflowSetupProjectRootEnv, filepath.Join(t.TempDir(), "stale-project"))
-	t.Setenv(workflowSetupWorktreePathEnv, filepath.Join(t.TempDir(), "stale-worktree"))
-	if err := runWorkflowWorktreeSetup(context.Background(), project, worktree, profile.WorktreeSetup{
-		Run: [][]string{
-			// Relative redirect: also proves the variables agree with the cwd.
-			{"/bin/sh", "-c", `printf '%s\n%s\n%s\n' "$AO_PROJECT_ROOT" "$AO_WORKTREE_PATH" "$PATH" > reported.txt`},
-			// The recipe the contract exists for.
-			{"/bin/sh", "-c", `ln -s "$AO_PROJECT_ROOT/.env" "$AO_WORKTREE_PATH/.env"`},
-		},
-		Timeout: "30s",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	reported, err := os.ReadFile(filepath.Join(worktree, "reported.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSuffix(string(reported), "\n"), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("setup command reported %d lines: %q", len(lines), reported)
-	}
-	if !filepath.IsAbs(lines[0]) || lines[0] != project {
-		t.Fatalf("%s = %q, want absolute %q", workflowSetupProjectRootEnv, lines[0], project)
-	}
-	if !filepath.IsAbs(lines[1]) || lines[1] != worktree {
-		t.Fatalf("%s = %q, want absolute %q", workflowSetupWorktreePathEnv, lines[1], worktree)
-	}
-	if lines[2] != os.Getenv("PATH") {
-		t.Fatalf("inherited PATH = %q, want %q", lines[2], os.Getenv("PATH"))
-	}
-	target, err := os.Readlink(filepath.Join(worktree, ".env"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if target != filepath.Join(project, ".env") {
-		t.Fatalf("symlink target = %q, want %q", target, filepath.Join(project, ".env"))
-	}
-	linked, err := os.ReadFile(filepath.Join(worktree, ".env"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(linked) != "TOKEN=main-checkout\n" {
-		t.Fatalf("linked .env = %q", linked)
-	}
-}
-
-// TestWorkflowSetupEnvRelativeRootsResolveToTheCommandsTree covers the one
-// input shape the absolutising exists for: a relative root has to land on the
-// same tree exec resolves a relative command.Dir against.
-func TestWorkflowSetupEnvRelativeRootsResolveToTheCommandsTree(t *testing.T) {
-	workingDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := workflowSetupEnv("some/project", "some/worktree")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{
-		workflowSetupProjectRootEnv + "=" + filepath.Join(workingDir, "some/project"),
-		workflowSetupWorktreePathEnv + "=" + filepath.Join(workingDir, "some/worktree"),
-	}
-	if got := env[len(env)-2:]; got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("trailing setup env = %q, want %q", got, want)
 	}
 }
 
@@ -526,6 +402,50 @@ cleanup: auto
 	}
 	if err := os.WriteFile(filepath.Join(dir, "write.md"), []byte("Write the deliverable for "+outcome), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A profile.yaml that still carries the retired worktree_setup block must fail
+// LOUDLY with the message naming where the recipe moved to, rather than loading
+// and silently running no setup on every worktree the project cuts.
+func TestUnmigratedProfileWorktreeSetupBlockFailsLoudly(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	configRoot := t.TempDir()
+	app.configDir = configRoot
+	repo := testutil.InitGitRepo(t)
+	projectRow := mustReloadProject(t, app.store, testutil.EnsureProject(t, app.store, repo).ID)
+	writeWorkspaceWorkflow(t, configRoot, "done")
+	writeWorkspaceProfile(t, configRoot, projectRow.Slug, workspaceProfileYAML+"worktree_setup:\n  copy: [.env]\n")
+
+	_, err := app.WorkflowListDefinitions(projectRow.ID)
+	if err == nil {
+		t.Fatal("profile still carrying worktree_setup loaded")
+	}
+	if !strings.Contains(err.Error(), "Settings") || !strings.Contains(err.Error(), "worktree_setup") {
+		t.Fatalf("error does not direct the author to the new home: %v", err)
+	}
+
+	// Removing the block is the whole fix — the recipe now lives on the row.
+	writeWorkspaceProfile(t, configRoot, projectRow.Slug, workspaceProfileYAML)
+	seedWorktreeSetup(t, app, projectRow.ID, worktreesetup.Config{Copy: []string{".env"}})
+	if _, err := app.WorkflowListDefinitions(projectRow.ID); err != nil {
+		t.Fatalf("migrated profile = %v", err)
+	}
+}
+
+// workspaceProfileYAML is the profile these workspace tests share now that the
+// worktree setup recipe lives on the project row instead of in profile.yaml.
+const workspaceProfileYAML = "\nbase_branch: main\nreliability:\n  watchdog: 1h\n  backoff: [5ms]\n"
+
+// seedWorktreeSetup persists a project's setup recipe the way the Settings
+// editor does — through the validating binding, so a fixture cannot seed a
+// recipe the UI would have refused.
+func seedWorktreeSetup(t *testing.T, app *App, projectID string, config worktreesetup.Config) {
+	t.Helper()
+	if _, err := app.SetProjectWorktreeSetup(projectID, WorktreeSetupConfig{
+		Copy: config.Copy, Run: config.Run, Timeout: config.Timeout,
+	}); err != nil {
+		t.Fatalf("seed worktree setup: %v", err)
 	}
 }
 
@@ -571,4 +491,91 @@ done
 
 func workflowShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+// A unit setup failure must remove a worktree THIS provisioning call cut —
+// otherwise every failed try leaks its checkout until run discard — while an
+// ADOPTED worktree (a re-entered try, whose crash may have been mid-run) can
+// hold prior turns of work and is never this call's to destroy.
+func TestUnitWorktreeSetupFailureRollsBackOnlyFreshCut(t *testing.T) {
+	app, _ := setupE2EApp(t)
+	repo := testutil.InitGitRepo(t)
+	projectRow := testutil.EnsureProject(t, app.store, repo)
+	seedWorktreeSetup(t, app, projectRow.ID, worktreesetup.Config{
+		Run:     [][]string{{"/bin/sh", "-c", "exit 7"}},
+		Timeout: "5s",
+	})
+
+	core := app.gitCore()
+	itemBranch := "workflow-unit-rollback-item"
+	itemPath := filepath.Join(t.TempDir(), "item")
+	if err := core.CreateWorktreeFromBranch(repo, itemPath, "main", itemBranch); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = core.RemoveWorktreeForce(repo, itemPath, true) })
+
+	item := store.WorkItem{
+		ID: "unit-rollback", ProjectID: projectRow.ID, Goal: "unit rollback",
+		WorkflowID: "wf", WorkflowScope: "shared", State: string(engine.StateRunning),
+		Source: "manual", CreatedAt: 1,
+	}
+	if err := app.store.CreateWorkItem(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.CreateWorkItemUnits([]store.WorkItemUnit{{
+		ItemID: item.ID, PhaseID: "fan", Attempt: 1, UnitID: "u1", UnitIndex: 0,
+		Kind: store.WorkItemUnitKindUnit, Status: store.WorkItemUnitPending, UnitAttempt: 1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := newWorkflowAppRunner(app, t.TempDir(), nil)
+	primary := preparedWorkflowWorkspace{
+		path: itemPath, branch: itemBranch, baseBranch: "main", project: projectRow,
+	}
+	ref := workflowUnitWorkspaceRef{
+		projectID: projectRow.ID, itemID: item.ID, phaseID: "fan",
+		attempt: 1, unitID: "u1", unitAttempt: 1,
+	}
+	unitBranch := workflowUnitBranch(itemBranch, "u1", 1)
+
+	// Fresh cut: the failed setup's worktree is removed, the branch and the
+	// unit's registration survive (run discard enumerates them from rows).
+	if _, err := runner.provisionUnitWorktree(context.Background(), ref, primary); err == nil {
+		t.Fatal("fresh-cut provisioning should fail with the setup error")
+	}
+	worktrees, err := core.ListWorktrees(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, worktree := range worktrees {
+		if worktree.Branch == unitBranch {
+			t.Fatalf("failed fresh-cut setup left worktree %q on branch %q", worktree.Path, unitBranch)
+		}
+	}
+	unit, found, err := app.store.GetWorkItemUnit(item.ID, "fan", 1, "u1")
+	if err != nil || !found {
+		t.Fatalf("unit row after fresh-cut failure: found=%v err=%v", found, err)
+	}
+	if unit.Branch != unitBranch {
+		t.Fatalf("unit registration branch = %q, want %q", unit.Branch, unitBranch)
+	}
+
+	// Adopted: a checkout already on the unit's branch is a re-entered try.
+	// Give it uncommitted prior work; a failed setup must leave both alone.
+	adoptedPath := filepath.Join(t.TempDir(), "adopted")
+	if err := core.AttachWorktree(repo, adoptedPath, unitBranch); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = core.RemoveWorktreeForce(repo, adoptedPath, true) })
+	marker := filepath.Join(adoptedPath, "prior-work.txt")
+	if err := os.WriteFile(marker, []byte("turns of work\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.provisionUnitWorktree(context.Background(), ref, primary); err == nil {
+		t.Fatal("adopted provisioning should fail with the setup error")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("failed setup destroyed the adopted worktree's prior work: %v", err)
+	}
 }

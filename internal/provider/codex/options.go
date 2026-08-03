@@ -1,6 +1,10 @@
 package codex
 
-import "agent-overflow/internal/provider"
+import (
+	"strings"
+
+	"agent-overflow/internal/provider"
+)
 
 // codexEffortFromOption translates AO's stored ReasoningEffort onto Codex's
 // native app-server enum exposed by the live model catalog.
@@ -174,15 +178,24 @@ func ConfigFromOptions(opts provider.SessionOptions) Config {
 		ResumeThreadID:        opts.Resume,
 		SystemPrompt:          opts.SystemPrompt,
 		ReasoningEffort:       codexEffortFromOption(opts.ReasoningEffort),
-		ServiceTier:           codexServiceTier(opts.FastMode),
+		ServiceTier:           codexServiceTier(opts.FastMode, opts.FastModeTierID),
 		ContextWindow:         contextWindow,
 		AutoCompactTokenLimit: autoCompactTokenLimit(contextWindow, autoCompactPercent),
 	}
 }
 
-func codexServiceTier(fastMode bool) string {
+// codexServiceTier resolves the `serviceTier` a turn carries. Fast mode off
+// omits the key entirely (Codex then uses the account default). On, the id
+// comes from the model's own `model/list` entry, so an upstream tier rename
+// lands as data rather than breaking the feature; the legacy `priority` id is
+// the fallback for a model the catalog could not resolve or one whose
+// app-server predates `serviceTiers`.
+func codexServiceTier(fastMode bool, tierID string) string {
 	if !fastMode {
 		return ""
+	}
+	if trimmed := strings.TrimSpace(tierID); trimmed != "" {
+		return trimmed
 	}
 	return fastServiceTier
 }

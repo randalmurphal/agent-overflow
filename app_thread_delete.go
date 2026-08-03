@@ -106,6 +106,11 @@ func (a *App) deleteThreadTree(threadID string, subtreeLocksHeld bool) error {
 	if err := a.stopSession(threadID); err != nil {
 		errs = append(errs, fmt.Errorf("stop session: %w", err))
 	}
+	// Before the row goes away: settling a run writes the thread's durable
+	// setup state, and this blocks until the recipe's process group is dead,
+	// so the deletion can't leave a subprocess running against a thread that
+	// no longer exists.
+	a.cancelThreadWorktreeSetup(threadID)
 	if a.terminals != nil {
 		if err := a.terminals.CloseThread(threadID); err != nil {
 			errs = append(errs, fmt.Errorf("close terminals: %w", err))

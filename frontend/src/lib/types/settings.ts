@@ -263,12 +263,25 @@ export interface ProviderStatus {
   message: string;
 }
 
+// The provider-declared service tier a fast-mode turn runs on, mirroring
+// provider.FastModeTier. Codex reports it per model; Claude has no tier concept
+// and omits it. `capabilities` including "fast_mode" stays the support gate —
+// this only names the tier, so a rename upstream moves the label instead of
+// breaking the toggle. Absent on Claude models and on stale cached catalogs,
+// where the UI falls back to its "Fast" literals.
+export interface FastModeTier {
+  id: string;
+  name?: string;
+  description?: string;
+}
+
 export interface ModelInfo {
   slug: string;
   name: string;
   provider: string;
   isCustom?: boolean;
   capabilities?: string[];
+  fastModeTier?: FastModeTier;
   contextWindows?: ContextWindowOption[];
   reasoningEfforts?: ReasoningEffortOption[];
 }

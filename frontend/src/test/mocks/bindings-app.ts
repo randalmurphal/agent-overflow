@@ -159,6 +159,8 @@ export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
 export const SetProviderCustomEnvVar = dispatch('SetProviderCustomEnvVar');
 export const DeleteProviderCustomEnvVar = dispatch('DeleteProviderCustomEnvVar');
+export const GetProjectWorktreeSetup = dispatch('GetProjectWorktreeSetup');
+export const SetProjectWorktreeSetup = dispatch('SetProjectWorktreeSetup');
 export const Version = dispatch('Version');
 
 // Workflow surface.

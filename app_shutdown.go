@@ -218,6 +218,17 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.stopBackgroundGitFetch()
 	record("stop background git fetch", nil)
 
+	// Step 3e: stop in-flight chat-thread worktree setup runs. Same two
+	// reasons as 3d — each run owns a subprocess group whose output stops
+	// meaning anything past this point, and settling one writes the thread's
+	// durable setup state, so it must join before Step 9's store close.
+	// Deliberately leaves those threads' rows at 'running': the recipe was
+	// interrupted mid-flight and the worktree's state is genuinely unknown,
+	// which is exactly what the next boot's sweep turns into a visible
+	// failure. Idempotent and blocks until every goroutine returns.
+	a.stopThreadWorktreeSetups()
+	record("stop worktree setups", nil)
+
 	// Step 4: stop provider sessions. Each session's Close tears down
 	// its own design-thread state as part of the same parallel closer,
 	// so a slow design teardown can't serialize behind an unrelated

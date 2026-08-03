@@ -10,6 +10,7 @@
   import ArchivedThreads from './ArchivedThreads.svelte';
   import DiscussionsSettings from './DiscussionsSettings.svelte';
   import EditorSection from './EditorSection.svelte';
+  import ProjectsSettings from './ProjectsSettings.svelte';
   import KeybindingsSettings from './KeybindingsSettings.svelte';
   import McpServersSettings from './McpServersSettings.svelte';
   import ObservabilitySettings from './ObservabilitySettings.svelte';
@@ -143,6 +144,8 @@
           <ProviderSettings contextTarget={contextTarget} />
         {:else if activeSection === 'editor'}
           <EditorSection />
+        {:else if activeSection === 'projects'}
+          <ProjectsSettings />
         {:else if activeSection === 'network'}
           <NetworkSection />
           <!--

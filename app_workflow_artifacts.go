@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"agent-overflow/internal/safecopy"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workspacepath"
@@ -124,7 +125,7 @@ func captureWorkflowArtifact(dataRoot, itemID, outputName, workspace, relative s
 	if err != nil {
 		return fmt.Errorf("resolve artifact destination: %w", err)
 	}
-	if err := copyWorkflowFile(workspace, relative, dataRoot, destinationRelative, appSensitiveFilePerm); err != nil {
+	if err := safecopy.File(workspace, relative, dataRoot, destinationRelative, appSensitiveFilePerm); err != nil {
 		return fmt.Errorf("copy artifact: %w", err)
 	}
 	artifactRoot, err := openWorkflowArtifactRoot(dataRoot, itemID)
@@ -179,7 +180,7 @@ func listWorkflowArtifacts(dataRoot, itemID string) (result []WorkflowArtifact, 
 		return nil, fmt.Errorf("invalid work item id")
 	}
 	directory := workflowArtifactDir(dataRoot, itemID)
-	if err := validateWorkflowDestination(dataRoot, filepath.Join(directory, ".artifact")); err != nil {
+	if err := safecopy.ValidateDestination(dataRoot, filepath.Join(directory, ".artifact")); err != nil {
 		return nil, fmt.Errorf("list workflow artifacts: %w", err)
 	}
 	artifactRoot, err := openWorkflowArtifactRoot(dataRoot, itemID)
@@ -196,7 +197,7 @@ func listWorkflowArtifacts(dataRoot, itemID string) (result []WorkflowArtifact, 
 	}
 	byName := make(map[string]WorkflowArtifact, len(entries))
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".ao-copy-") {
+		if strings.HasPrefix(entry.Name(), safecopy.TempPrefix) {
 			continue
 		}
 		info, err := fs.Stat(artifactRoot.FS(), entry.Name())

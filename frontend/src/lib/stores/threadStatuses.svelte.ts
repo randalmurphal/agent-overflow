@@ -1,5 +1,6 @@
 import type { ApprovalKind } from '../types/events';
 import type { Item, Thread } from '../types/models';
+import { resolveEffectiveThreadStatus } from '../utils/threadStatusPill';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   clearForThread as clearSendQueueForThread,
@@ -74,6 +75,11 @@ export type ThreadLiveStatus =
   | 'pending-approval'
   | 'plan-ready'
   | 'error'
+  // 'setup-failed' is the odd one out: it is never pushed as a live status.
+  // It is resolved from the thread row's durable worktreeSetupState, the same
+  // way 'interrupted' and 'plan-ready' fall back — see
+  // resolveEffectiveThreadStatus.
+  | 'setup-failed'
   | 'interrupted';
 
 // Every per-thread live signal that the sidebar / working indicator
@@ -190,14 +196,19 @@ export function getThreadStatus(threadId: string): ThreadLiveStatus {
   return 'idle';
 }
 
+/**
+ * The registry-backed companion to resolveEffectiveThreadStatus: it looks the
+ * live status up by id and supplies the hydration guard, then defers to the
+ * pure resolver for the durable-fallback ordering. Delegation rather than a
+ * second copy — two implementations of that ordering would drift the moment a
+ * new fallback lands, and the pure one is the tested one.
+ */
 export function getEffectiveThreadStatus(
-  thread: Pick<Thread, 'id' | 'hasIncompleteTurn' | 'hasActionableProposedPlan'>,
+  thread: Pick<Thread, 'id' | 'hasIncompleteTurn' | 'hasActionableProposedPlan' | 'worktreeSetupState'>,
 ): ThreadLiveStatus {
-  const liveStatus = getThreadStatus(thread.id);
-  if (liveStatus !== 'idle') return liveStatus;
-  if (thread.hasIncompleteTurn && !isThreadLiveStateHydrating(thread.id)) return 'interrupted';
-  if (thread.hasActionableProposedPlan) return 'plan-ready';
-  return 'idle';
+  return resolveEffectiveThreadStatus(thread, getThreadStatus(thread.id), {
+    suppressDurableInterrupted: isThreadLiveStateHydrating(thread.id),
+  });
 }
 
 /**

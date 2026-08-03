@@ -67,6 +67,10 @@ const STATUS_PRIORITY: Record<ThreadLiveStatus, number> = {
   error: 100,
   'pending-approval': 90,
   'awaiting-input': 80,
+  // A worktree whose setup did not finish is a concrete repair the user
+  // has to run, so it outranks the two informational fallbacks below it —
+  // the same ordering resolveEffectiveThreadStatus applies.
+  'setup-failed': 70,
   'plan-ready': 60,
   running: 50,
   interrupted: 40,
@@ -133,6 +137,7 @@ function getStatusSortGroup(
     case 'pending-approval':
     case 'awaiting-input':
     case 'plan-ready':
+    case 'setup-failed':
     case 'interrupted':
       return 'needs-attention';
     case 'running':

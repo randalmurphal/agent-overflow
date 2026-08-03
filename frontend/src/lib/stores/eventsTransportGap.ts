@@ -11,6 +11,8 @@ import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
 import { hydrateProviderAccounts } from './eventsProvider';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
+import { resyncWorktreeSetups } from './eventsWorktreeSetup';
+import { getThreads } from './threads.svelte';
 
 // The handler matches on the channel name we lost rather than each
 // payload kind because a single gap on `provider:item_event` can
@@ -79,6 +81,13 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
           console.warn(`events: refresh thread ${threadId} after provider:usage gap: ${err}`);
         });
       }
+      return;
+    }
+    case 'worktree:setup': {
+      // The gap carries no range, so the run's snapshot is the only way back.
+      // Scoped to threads whose row says a setup ran — every other thread
+      // would be an RPC for a guaranteed-idle answer.
+      resyncWorktreeSetups(getThreads());
       return;
     }
     case 'discussion:message':

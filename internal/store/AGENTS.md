@@ -38,6 +38,15 @@ root `CLAUDE.md` principle 3.
   than erroring — a lost race is a normal outcome, and the caller
   re-reads the row.
 - `projects.go` — projects table (threads carry a `project_id` FK).
+- `project_worktree_setup.go` — the `projects.worktree_setup` JSON column
+  (migration v46): the project's worktree setup recipe, read and written
+  whole. `ProjectWorktreeSetup` decodes STRICTLY and reports a corrupt blob as
+  an error rather than an empty recipe — silently cutting a worktree without
+  the setup its project declared is the failure mode that refusal exists for.
+  `UpdateProjectWorktreeSetup` clears the column for a nil OR
+  asks-for-nothing config, so "cleared" has one representation. The column is
+  deliberately absent from `projectColumns`: it is needed at worktree creation
+  and in Settings, never in a sidebar list that ships to every client.
 - `channels.go` / `discussions.go` / `discussion_types.go` —
   multi-agent discussion persistence. `ListDiscussionDefs` drops a row
   whose `definition` blob no longer decodes (logged, named by id) instead
@@ -66,6 +75,9 @@ root `CLAUDE.md` principle 3.
   turn's last edit of a path in item order, matching the whole-turn
   concatenation). Misses return `found=false` — an expected state
   (pre-feature history), not an error.
+- `thread_worktree_setup_state.go` — the `threads.worktree_setup_state`
+  column (migration v47): the enum constants, the validating writer, and the
+  startup sweep. See "Recent schema changes (v47)" below.
 - `drafts.go` — composer drafts per thread.
 - `chat_bar.go` — composer favorites and last-used model profile seeds.
 - `search.go` — case-insensitive substring search across thread titles
@@ -380,6 +392,45 @@ baseline:
   restored came back on its old try with no feedback. The signature refuses a
   try number below 1 rather than accepting a value only the engine's own
   arithmetic makes correct.
+
+## Recent schema changes (v46) — per-project worktree setup
+
+- `projects.worktree_setup` (`TEXT NOT NULL DEFAULT ''`) holds the project's
+  worktree setup recipe as JSON — the copy globs and argv commands that used to
+  live in the hand-authored `profile.yaml` and were reachable only by the
+  workflow engine. Moving it onto the row is what lets chat-thread worktree
+  creation run the same recipe. Shape and execution belong to
+  `internal/worktreesetup`; this package only round-trips the blob.
+- Empty means unconfigured. NOT nullable on purpose: NULL and `''` would be two
+  indistinguishable spellings of the same state, and every reader would have to
+  agree about both.
+- A plain `ADD COLUMN` — no CHECK, no column-list change, so the FK-parent
+  `projects` table is not rebuilt.
+
+## Recent schema changes (v47) — chat-thread worktree setup state
+
+- `threads.worktree_setup_state` (`TEXT NOT NULL DEFAULT ''
+  CHECK(worktree_setup_state IN ('', 'running', 'failed'))`) is the durable half
+  of the per-project setup recipe running over a worktree a CHAT thread had cut
+  (`app_worktree_setup.go`; the recipe itself is v46's `projects.worktree_setup`).
+  A plain `ADD COLUMN` — SQLite allows a CHECK on one, so the FK-parent `threads`
+  table is not rebuilt.
+- Three states, not four: `''` covers never-ran, succeeded, cancelled, and
+  "the thread has since left that worktree", because all four are the same
+  absence to every reader. `failed` is the only one a restart must preserve —
+  the worktree exists and is usable, but the recipe did not finish, so the
+  sidebar advertises it and Retry stays reachable.
+- `thread_worktree_setup_state.go` owns both writers.
+  `SetThreadWorktreeSetupState` validates against the enum before SQLite would
+  report a raw CHECK failure, and deliberately leaves `updated_at` alone: a
+  setup transition is system work, and the sidebar sorts by `updated_at`.
+  `SweepRunningThreadWorktreeSetups` is the startup counterpart of
+  `FailRunningWorkItemUnits` — a `running` row at boot means the app died with
+  the recipe in flight, so the worktree's provisioning state is unknown, which
+  is what `failed` means here.
+- `updateThreadSetSQL` deliberately omits the column, so the whole-row
+  `UpdateThread` every workspace-switch path issues cannot clobber a live run's
+  state. Pinned by `TestUpdateThreadPreservesWorktreeSetupState`.
 
 ## Extension points
 

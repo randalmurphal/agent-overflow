@@ -9,6 +9,7 @@ type MinimalThread = Pick<
   | 'latestTurnCompletedAt'
   | 'hasIncompleteTurn'
   | 'hasActionableProposedPlan'
+  | 'worktreeSetupState'
 >;
 
 function t(overrides: Partial<MinimalThread> = {}): MinimalThread {
@@ -18,6 +19,7 @@ function t(overrides: Partial<MinimalThread> = {}): MinimalThread {
     latestTurnCompletedAt: 1_000,
     hasIncompleteTurn: false,
     hasActionableProposedPlan: false,
+    worktreeSetupState: '',
     ...overrides,
   };
 }
@@ -190,5 +192,61 @@ describe('resolveThreadStatusPill', () => {
       'running',
     );
     expect(pill?.label).toBe('Working');
+  });
+});
+
+describe('setup-failed', () => {
+  const failedSetup = { worktreeSetupState: 'failed' };
+
+  // The single most important property: a durable provisioning failure must
+  // never hide a live status the user is actually blocked on. The resolver's
+  // early return on a non-idle live status is what makes this structural, so
+  // the whole non-idle set is asserted rather than a sample.
+  it.each([
+    'error',
+    'pending-approval',
+    'awaiting-input',
+    'running',
+  ] as const)('never masks live status %s', (liveStatus) => {
+    expect(resolveEffectiveThreadStatus(t(failedSetup), liveStatus)).toBe(liveStatus);
+  });
+
+  it('resolves from the durable row state when idle', () => {
+    expect(resolveEffectiveThreadStatus(t(failedSetup), 'idle')).toBe('setup-failed');
+  });
+
+  it('outranks the other durable fallbacks', () => {
+    expect(
+      resolveEffectiveThreadStatus(t({
+        ...failedSetup,
+        hasIncompleteTurn: true,
+        hasActionableProposedPlan: true,
+      }), 'idle'),
+    ).toBe('setup-failed');
+  });
+
+  // 'running' is deliberately not a pill: a setup in flight is shown in the
+  // pane, and a second sidebar state for it would compete with the turn status.
+  it.each(['', 'running', undefined])('shows nothing for worktreeSetupState %p', (state) => {
+    expect(
+      resolveEffectiveThreadStatus(t({ worktreeSetupState: state }), 'idle'),
+    ).toBe('idle');
+  });
+
+  it('renders a warning pill, not an error pill', () => {
+    const pill = resolveThreadStatusPill(t(), 'setup-failed');
+    expect(pill).toEqual({
+      label: 'Setup Failed',
+      dotClass: 'bg-warning',
+      labelClass: 'text-warning',
+      pulse: false,
+    });
+    // No glow: nothing is blocked waiting on the user, unlike an approval.
+    expect(pill?.glowClass).toBeUndefined();
+  });
+
+  it('is distinct from the failed-turn pill', () => {
+    expect(resolveThreadStatusPill(t(), 'error')?.label).toBe('Failed');
+    expect(resolveThreadStatusPill(t(), 'setup-failed')?.label).toBe('Setup Failed');
   });
 });

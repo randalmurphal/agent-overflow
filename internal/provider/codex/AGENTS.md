@@ -102,6 +102,22 @@ over stdio.
   rollout `response_item` records, and legacy standalone user-message
   carriers. Pure parsing (regex + JSON decode), no Session state.
 - `options.go` — `SessionOptions → Config` hydration, binary probe.
+- `models.go` — `model/list` paging plus the `codexModel → provider.ModelInfo`
+  projection. **`serviceTiers` is the model's whole tier menu, not a fast-tier
+  list.** Upstream ships `flex` on the same enum
+  (`ServiceTier::Flex`, `codex-rs/protocol/src/config_types.rs`) and its own
+  fixtures carry `{id:"batch",name:"slow"}`, so "the model declares a tier"
+  never means "the model is fast-capable" — a fast-mode turn sent onto `flex`
+  or `batch` runs SLOWER. `codexFastModeTier` identifies the fast entry by
+  either of upstream's own two anchors, `id == "priority"`
+  (`ServiceTier::Fast.request_value()`, what `ModelPreset::supports_fast_mode`
+  matches) or `name == "fast"` (`SPEED_TIER_FAST`, what the TUI's
+  `current_model_fast_service_tier` matches), and carries the matched entry's
+  id, name and description onto `ModelInfo.FastModeTier`. That is what makes an
+  upstream rename inert in either direction: the id AO sends and the label the
+  composer shows both come off the wire, with `priority`/`Fast` surviving only
+  as the fallback for the deprecated `additionalSpeedTiers` path. Adding a
+  third anchor is a wire question — confirm it in codex-source first.
 - `mcpstatus.go` — ephemeral MCP status fetcher (`MCPStatusFetcher`,
   drives `mcpServerStatus/list` via an inline JSON-RPC client) plus
   the wire-shape projectors (`MCPStatusFromList`,

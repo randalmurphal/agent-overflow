@@ -103,5 +103,8 @@ export {
     WorkflowPRReviewComments,
     WorkspaceFileSearchResult,
     WorktreeListItem,
+    WorktreeSetupConfig,
+    WorktreeSetupRunState,
+    WorktreeSetupStep,
     WorktreeStatus
 } from "./models.js";

@@ -108,6 +108,14 @@ export interface Thread {
    */
   hasIncompleteTurn?: boolean;
   /**
+   * The durable half of the per-project worktree setup run this thread's
+   * worktree was cut with: 'running', 'failed', or '' / undefined for
+   * nothing to say. The streaming panel state is in-memory and dies with
+   * the backend process; this is what a restart still knows, and what the
+   * sidebar's Setup Failed pill falls back to.
+   */
+  worktreeSetupState?: string;
+  /**
    * True when no items have been persisted for the thread. The sidebar
    * renders a draft indicator and pins draft rows to the top of their
    * project group. Project sort excludes drafts from "last activity" so

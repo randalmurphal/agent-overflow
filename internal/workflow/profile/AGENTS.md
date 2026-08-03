@@ -16,8 +16,6 @@ resolution for the workflow system.
   collide on one variable), and `Mask` replaces every non-empty resolved value
   in text captured back from that process. Anything that hands secrets to a
   subprocess uses both — never one without the other.
-- Worktree setup is authoring data only here; execution belongs to the
-  app-owned runner before its first phase turn, never the engine goroutine.
 - Binding names are `[a-z0-9-]+`. `capacities` is the one exception: it also
   accepts `provider:<name>`, the reserved namespace for the implicit
   per-provider resource every agent phase acquires. No other colon-bearing
@@ -32,36 +30,25 @@ resolution for the workflow system.
   reason — one implementation of "unset means the default", not two that could
   drift.
 
-## The `worktree_setup.run` environment
+## The retired `worktree_setup` block
 
-Each `run` argv executes with its working directory set to the new worktree and
-the app's own environment (PATH and the user's toolchain intact) plus two
-variables. They are appended last, so an inherited variable of either name
-cannot shadow the real one. `workflowSetupEnv` (`app_workflow_setup.go`) is the
-sole writer; the reader is the authored recipe, so this table is the contract.
+The worktree setup recipe — files copied from the main checkout and argv
+commands run at worktree creation — no longer lives in this package. It is
+per-project app settings now (`internal/worktreesetup`, persisted on the
+project row, edited in Settings → Projects), so chat-thread worktrees and
+workflow worktrees run the same one.
 
-| Variable | Value |
-|---|---|
-| `AO_PROJECT_ROOT` | absolute path of the project's main checkout — the tree `copy:` globs read from |
-| `AO_WORKTREE_PATH` | absolute path of the worktree being set up — also the command's working directory |
+The `worktree_setup` field survives on `Profile` for exactly one reason:
+decoding is strict (`KnownFields(true)`), so deleting it would turn every
+profile.yaml that still carries the block into an unexplained unknown-field
+error. `Validate` reports its presence as the `worktree-setup.moved` finding
+naming the new home; the contents are not inspected, because nothing executes
+them. `Load` is fatal on findings, so an unmigrated profile refuses to load
+rather than silently running no setup.
 
-They exist because a recipe can name neither checkout on its own: the worktree
-path is generated per item, and the project root is not the working directory.
-Without them the only expressible way to bring `.env` across is a `copy:` glob,
-which snapshots the file and then silently diverges from the main checkout. A
-`run` entry is an argv, not a shell line, so a recipe that wants expansion asks
-for a shell explicitly:
-
-```yaml
-worktree_setup:
-  run:
-    - [sh, -c, 'ln -s "$AO_PROJECT_ROOT/.env" "$AO_WORKTREE_PATH/.env"']
-```
-
-`AO_PROJECT_ROOT` is deliberately not the same kind of value as the session
-contract's `AO_PROJECT` (`internal/aocli/AGENTS.md`), which is a project
-**slug**. A setup command runs no CLI and holds no session credential; these
-two paths are the whole of its AO_* surface.
+Authoring format, copy-safety rules, and the `AO_PROJECT_ROOT` /
+`AO_WORKTREE_PATH` environment contract are documented in
+[`internal/worktreesetup/AGENTS.md`](../../worktreesetup/AGENTS.md).
 
 ## Files
 

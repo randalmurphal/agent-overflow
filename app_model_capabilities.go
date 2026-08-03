@@ -19,6 +19,19 @@ func (a *App) supportsFastModeForModel(providerName, model string) bool {
 	return chatmodel.SupportsStoredFastMode(providerName, model)
 }
 
+// fastModeTierIDForModel resolves the wire service-tier id a fast-mode turn on
+// this model must carry (Codex; Claude models never declare one). Empty means
+// "no catalog opinion" — an unresolved slug, a catalog that could not be
+// reached, or a provider without tiers — and the provider translator falls back
+// to its legacy default rather than dropping fast mode.
+func (a *App) fastModeTierIDForModel(providerName, model string) string {
+	candidate, found, _ := a.modelInfoForProvider(providerName, model)
+	if !found || candidate.FastModeTier == nil {
+		return ""
+	}
+	return candidate.FastModeTier.ID
+}
+
 func (a *App) reasoningEffortSupportedForModel(providerName, model, effort string) bool {
 	candidate, found, catalogAuthoritative := a.modelInfoForProvider(providerName, model)
 	if found {

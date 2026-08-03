@@ -21,6 +21,4 @@ secret.env | profile secret "env-fields" | env source requires a non-empty env f
 secret.path | profile secret "env-fields" | env source must not set path
 secret.env | profile secret "file-fields" | file source must not set env
 secret.path | profile secret "file-fields" | file source requires a non-empty path field
-worktree-setup.copy | profile worktree_setup.copy[0] | glob must not be empty
-worktree-setup.run | profile worktree_setup.run[0] | argv must contain a non-empty executable at index 0
-worktree-setup.timeout | profile worktree_setup.timeout | must be a time.ParseDuration-compatible string
+worktree-setup.moved | profile worktree_setup | worktree setup moved to Settings → Projects (worktree setup); move the recipe there and remove this block

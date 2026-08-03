@@ -77,6 +77,16 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 	}
 
 	unlock := a.threadLocks().Lock(threadID)
+	// Registered BEFORE the unlock defer so LIFO runs it AFTER the lock is
+	// released: the setup run outlives this call, and starting it under the
+	// thread lock would block every other operation on the thread for as long
+	// as the record it registers takes to appear.
+	var provisioned *store.Thread
+	defer func() {
+		if provisioned != nil {
+			a.startThreadWorktreeSetup(*provisioned)
+		}
+	}()
 	defer unlock()
 	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
 		return store.Thread{}, err
@@ -179,10 +189,16 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 	}
 	// Commit succeeded — drop the stale pre-move copies (best-effort).
 	a.purgeRelocatedClaudeSessions(threadID, purge)
+	// The thread just left whatever workspace it was in; a setup run still
+	// going for that one describes a worktree it no longer occupies.
+	a.releaseThreadWorktreeSetup(threadID, thread.WorkspacePath)
 	refreshed, err := a.restartSessionIfAffected(threadID, "workspace")
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("create worktree: refresh thread after workspace switch: %w", err)
 	}
+	// This call cut the worktree, so the project's recipe runs over it — see
+	// the deferred kickoff above for why it is not started here.
+	provisioned = &refreshed
 	return refreshed, nil
 }
 
@@ -244,6 +260,11 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 		return store.Thread{}, err
 	}
 	a.purgeRelocatedClaudeSessions(threadID, purge)
+	// Attaching an existing branch's checkout deliberately does NOT run the
+	// project's setup recipe: the branch already exists and its checkout may
+	// be one a sibling thread provisioned. Only the run for the workspace the
+	// thread just left is released.
+	a.releaseThreadWorktreeSetup(threadID, thread.WorkspacePath)
 	refreshed, err := a.restartSessionIfAffected(threadID, "workspace")
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("attach worktree: refresh thread after workspace switch: %w", err)
@@ -404,6 +425,15 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 		}
 	}
 
+	// Every thread here occupies the worktree that is about to be deleted, so
+	// any setup run of theirs is running IN it. Cancel first and block on the
+	// join: a recipe still writing into the directory would race git's removal
+	// and could recreate paths under it after the removal succeeded. It also
+	// clears the failure state — a "Setup failed" pill for a worktree that no
+	// longer exists has nothing to offer.
+	for _, id := range attached {
+		a.cancelThreadWorktreeSetup(id)
+	}
 	if err := core.RemoveWorktreeForce(project, worktreePath, force); err != nil {
 		return err
 	}
@@ -848,6 +878,11 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 		return store.Thread{}, err
 	}
 	a.purgeRelocatedClaudeSessions(threadID, purge)
+	// Switching into an existing workspace never runs setup — the target was
+	// provisioned (or not) by whoever cut it. Switching AWAY releases the run
+	// whose worktree the thread has left; switching back into the same path is
+	// a no-op the helper recognises by comparing paths.
+	a.releaseThreadWorktreeSetup(threadID, thread.WorkspacePath)
 	refreshed, err := a.restartSessionIfAffected(threadID, "workspace")
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("switch workspace: refresh thread after workspace switch: %w", err)

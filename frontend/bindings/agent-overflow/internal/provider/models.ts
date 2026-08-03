@@ -318,6 +318,40 @@ export class ElicitationResolution {
 }
 
 /**
+ * FastModeTier is the provider-declared service tier a fast-mode turn runs on.
+ * Codex reports one per model on `model/list` (`serviceTiers[]`): ID is what
+ * goes on the wire, Name is what the composer labels the toggle, Description is
+ * the tier's own blurb ("1.5x speed, increased usage").
+ * 
+ * Nil means the provider has no tier to name — Claude, whose fast mode is a
+ * spawn flag with no wire tier, and any Codex catalog entry that predates the
+ * field. The ModelCapabilityFastMode marker on Capabilities remains the support
+ * gate for both providers; this only carries the WHICH, never the WHETHER.
+ */
+export class FastModeTier {
+    "id": string;
+    "name"?: string;
+    "description"?: string;
+
+    /** Creates a new FastModeTier instance. */
+    constructor($$source: Partial<FastModeTier> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new FastModeTier instance from a string or object.
+     */
+    static createFrom($$source: any = {}): FastModeTier {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new FastModeTier($$parsedSource as Partial<FastModeTier>);
+    }
+}
+
+/**
  * FileSystemPermissions controls filesystem access.
  */
 export class FileSystemPermissions {
@@ -356,6 +390,7 @@ export class ModelInfo {
     "provider": string;
     "isCustom"?: boolean;
     "capabilities"?: string[];
+    "fastModeTier"?: FastModeTier | null;
     "contextWindows"?: ContextWindowOption[];
     "reasoningEfforts"?: ReasoningEffortOption[];
 
@@ -381,15 +416,19 @@ export class ModelInfo {
         const $$createField4_0 = $$createType6;
         const $$createField5_0 = $$createType8;
         const $$createField6_0 = $$createType10;
+        const $$createField7_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("capabilities" in $$parsedSource) {
             $$parsedSource["capabilities"] = $$createField4_0($$parsedSource["capabilities"]);
         }
+        if ("fastModeTier" in $$parsedSource) {
+            $$parsedSource["fastModeTier"] = $$createField5_0($$parsedSource["fastModeTier"]);
+        }
         if ("contextWindows" in $$parsedSource) {
-            $$parsedSource["contextWindows"] = $$createField5_0($$parsedSource["contextWindows"]);
+            $$parsedSource["contextWindows"] = $$createField6_0($$parsedSource["contextWindows"]);
         }
         if ("reasoningEfforts" in $$parsedSource) {
-            $$parsedSource["reasoningEfforts"] = $$createField6_0($$parsedSource["reasoningEfforts"]);
+            $$parsedSource["reasoningEfforts"] = $$createField7_0($$parsedSource["reasoningEfforts"]);
         }
         return new ModelInfo($$parsedSource as Partial<ModelInfo>);
     }
@@ -441,8 +480,8 @@ export class PendingInteractiveRequests {
      * Creates a new PendingInteractiveRequests instance from a string or object.
      */
     static createFrom($$source: any = {}): PendingInteractiveRequests {
-        const $$createField0_0 = $$createType12;
-        const $$createField1_0 = $$createType14;
+        const $$createField0_0 = $$createType14;
+        const $$createField1_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("approvals" in $$parsedSource) {
             $$parsedSource["approvals"] = $$createField0_0($$parsedSource["approvals"]);
@@ -471,8 +510,8 @@ export class PermissionProfile {
      * Creates a new PermissionProfile instance from a string or object.
      */
     static createFrom($$source: any = {}): PermissionProfile {
-        const $$createField0_0 = $$createType16;
-        const $$createField1_0 = $$createType18;
+        const $$createField0_0 = $$createType18;
+        const $$createField1_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("network" in $$parsedSource) {
             $$parsedSource["network"] = $$createField0_0($$parsedSource["network"]);
@@ -600,7 +639,7 @@ export class RateLimitsSnapshot {
      * Creates a new RateLimitsSnapshot instance from a string or object.
      */
     static createFrom($$source: any = {}): RateLimitsSnapshot {
-        const $$createField2_0 = $$createType20;
+        const $$createField2_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("limits" in $$parsedSource) {
             $$parsedSource["limits"] = $$createField2_0($$parsedSource["limits"]);
@@ -674,7 +713,7 @@ export class UserInputQuestion {
      * Creates a new UserInputQuestion instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputQuestion {
-        const $$createField3_0 = $$createType22;
+        const $$createField3_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("options" in $$parsedSource) {
             $$parsedSource["options"] = $$createField3_0($$parsedSource["options"]);
@@ -755,7 +794,7 @@ export class UserInputRequest {
      * Creates a new UserInputRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputRequest {
-        const $$createField6_0 = $$createType24;
+        const $$createField6_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("questions" in $$parsedSource) {
             $$parsedSource["questions"] = $$createField6_0($$parsedSource["questions"]);
@@ -793,7 +832,7 @@ export class UserInputResponse {
      * Creates a new UserInputResponse instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputResponse {
-        const $$createField2_0 = $$createType25;
+        const $$createField2_0 = $$createType27;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answers" in $$parsedSource) {
             $$parsedSource["answers"] = $$createField2_0($$parsedSource["answers"]);
@@ -810,22 +849,24 @@ const $$createType3 = $Create.Nullable($$createType2);
 const $$createType4 = ElicitationResolution.createFrom;
 const $$createType5 = $Create.Nullable($$createType4);
 const $$createType6 = $Create.Array($Create.Any);
-const $$createType7 = ContextWindowOption.createFrom;
-const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = ReasoningEffortOption.createFrom;
+const $$createType7 = FastModeTier.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);
+const $$createType9 = ContextWindowOption.createFrom;
 const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = ApprovalRequest.createFrom;
+const $$createType11 = ReasoningEffortOption.createFrom;
 const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = UserInputRequest.createFrom;
+const $$createType13 = ApprovalRequest.createFrom;
 const $$createType14 = $Create.Array($$createType13);
-const $$createType15 = NetworkPermissions.createFrom;
-const $$createType16 = $Create.Nullable($$createType15);
-const $$createType17 = FileSystemPermissions.createFrom;
+const $$createType15 = UserInputRequest.createFrom;
+const $$createType16 = $Create.Array($$createType15);
+const $$createType17 = NetworkPermissions.createFrom;
 const $$createType18 = $Create.Nullable($$createType17);
-const $$createType19 = RateLimitEntry.createFrom;
-const $$createType20 = $Create.Array($$createType19);
-const $$createType21 = UserInputQuestionOption.createFrom;
+const $$createType19 = FileSystemPermissions.createFrom;
+const $$createType20 = $Create.Nullable($$createType19);
+const $$createType21 = RateLimitEntry.createFrom;
 const $$createType22 = $Create.Array($$createType21);
-const $$createType23 = UserInputQuestion.createFrom;
+const $$createType23 = UserInputQuestionOption.createFrom;
 const $$createType24 = $Create.Array($$createType23);
-const $$createType25 = $Create.Map($Create.Any, $Create.Any);
+const $$createType25 = UserInputQuestion.createFrom;
+const $$createType26 = $Create.Array($$createType25);
+const $$createType27 = $Create.Map($Create.Any, $Create.Any);

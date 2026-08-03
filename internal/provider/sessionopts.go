@@ -91,10 +91,25 @@ type SessionOptions struct {
 	// at the right bundle.
 	Provider string
 
-	Model                      string
-	WorkDir                    string
-	ReasoningEffort            ReasoningEffort
-	FastMode                   bool
+	Model           string
+	WorkDir         string
+	ReasoningEffort ReasoningEffort
+	FastMode        bool
+
+	// FastModeTierID is Codex-only: the wire `serviceTier` id to send while
+	// FastMode is on, taken from the model's own `model/list` entry
+	// (ModelInfo.FastModeTier). Empty means "no catalog opinion" and the Codex
+	// translator falls back to the legacy `priority` id, so an unresolved model
+	// behaves exactly as it did before the tier became wire-driven. Claude
+	// ignores it — its fast mode is a spawn flag with no tier.
+	//
+	// SessionOptionsFromThread cannot fill this in: the thread row persists
+	// only the bool, and resolving the tier needs the live catalog, which lives
+	// above this package. The app layer stamps it at its single construction
+	// site (buildSessionOptions) so the spawn path and the live-update
+	// reconciler always agree on the value.
+	FastModeTierID string
+
 	ContextWindow              int
 	AutoCompactPercent         int
 	AutoCompactStandardPercent int

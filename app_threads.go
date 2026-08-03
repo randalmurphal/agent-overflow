@@ -148,6 +148,12 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		workspace = project.Path
 	}
 	var branch, worktreePath string
+	// cutWorktree records that THIS call created the worktree, which is what
+	// makes running the project's setup recipe over it safe. Inheriting a
+	// sibling's worktree does not qualify: setup already ran there, and
+	// re-running an argv recipe over a checkout someone else is working in is
+	// not something a thread creation should decide to do.
+	cutWorktree := false
 	inheritWorktree := strings.TrimSpace(opts.WorktreePath)
 	switch {
 	case inheritWorktree != "":
@@ -182,6 +188,7 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		workspace = wtPath
 		worktreePath = wtPath
 		branch = wtBranch
+		cutWorktree = true
 	default:
 		// No worktree path supplied. If the caller passes an explicit
 		// branch (e.g. for the project root), sanitize it the same way
@@ -228,6 +235,14 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	a.rememberChatModelProfile(t)
 	if a.settings != nil {
 		a.settings.AddRecentWorkspace(workspace)
+	}
+	if cutWorktree {
+		// After the row commits, so the run's durable state has something to
+		// write to, and before the read below, so the thread this call returns
+		// already carries `running` instead of arriving via a race with the
+		// first pushed event. The run itself is async — a slow recipe must not
+		// hold thread creation open.
+		a.startThreadWorktreeSetup(t)
 	}
 	return a.store.GetThread(t.ID)
 }

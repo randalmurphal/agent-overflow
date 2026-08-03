@@ -485,3 +485,43 @@ export interface SystemStatsEvent {
   memUsedBytes: number;
   memTotalBytes: number;
 }
+
+/**
+ * WorktreeSetupEvent is one frame on the `worktree:setup` channel — the
+ * per-project setup recipe running over a worktree a chat thread just had cut
+ * (app_worktree_setup.go). `phase` names which fields are meaningful:
+ *
+ *   - `started`       — `steps`, `worktreePath`, `startedAt`
+ *   - `step-started`  — `stepIndex`
+ *   - `output`        — `stepIndex`, `seq`, `chunk`
+ *   - `step-finished` — `stepIndex`, `state` (succeeded | failed), `error`
+ *   - `finished`      — `state` (succeeded | failed | cancelled), `error`,
+ *                       `finishedAt`
+ *
+ * `seq` is a monotonic per-run chunk counter. It is what lets a snapshot and
+ * the live stream be reconciled without double-appending output, and what
+ * makes a lost frame detectable — see stores/worktreeSetup.svelte.ts.
+ */
+export interface WorktreeSetupEvent {
+  phase: 'started' | 'step-started' | 'output' | 'step-finished' | 'finished';
+  threadId: string;
+  runId: string;
+  worktreePath?: string;
+  steps?: WorktreeSetupStepFrame[];
+  stepIndex?: number;
+  seq?: number;
+  chunk?: string;
+  state?: string;
+  error?: string;
+  startedAt?: number;
+  finishedAt?: number;
+}
+
+/** One resolved step of a setup run, in execution order. */
+export interface WorktreeSetupStepFrame {
+  index: number;
+  /** `copy` for the file-copy phase, `command` for an argv command. */
+  kind: string;
+  label: string;
+  argv?: string[];
+}

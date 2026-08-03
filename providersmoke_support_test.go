@@ -112,9 +112,7 @@ func writeProviderSmokeProfile(t *testing.T, configRoot, slug string) {
 	profileYAML := "base_branch: main\n" +
 		"reliability:\n" +
 		"  watchdog: " + providerSmokeWatchdog.String() + "\n" +
-		"  backoff: [2s]\n" +
-		"worktree_setup:\n" +
-		"  timeout: 1m\n"
+		"  backoff: [2s]\n"
 	if err := os.WriteFile(filepath.Join(dir, "profile.yaml"), []byte(profileYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}

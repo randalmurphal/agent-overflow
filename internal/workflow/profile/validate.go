@@ -69,16 +69,14 @@ func Validate(profile Profile) ValidationResult {
 		}
 		seenMCP[server] = true
 	}
-	for index, pattern := range profile.WorktreeSetup.Copy {
-		if strings.TrimSpace(pattern) == "" {
-			add("worktree-setup.copy", fmt.Sprintf("profile worktree_setup.copy[%d]", index), "glob must not be empty")
-		}
-	}
-	for index, argv := range profile.WorktreeSetup.Run {
-		validateArgv(argv, fmt.Sprintf("profile worktree_setup.run[%d]", index), "worktree-setup.run", &findings)
-	}
-	if profile.WorktreeSetup.Timeout != "" {
-		validatePositiveDuration(profile.WorktreeSetup.Timeout, "profile worktree_setup.timeout", "worktree-setup.timeout", &findings)
+	// The recipe moved to per-project app settings; the block is kept decodable
+	// only so this finding is what an unmigrated profile gets instead of a bare
+	// unknown-field error. Its contents are deliberately not inspected —
+	// nothing executes them any more, so a valid-looking one would be worse
+	// than a rejected one.
+	if profile.WorktreeSetup.Declared() {
+		add("worktree-setup.moved", "profile worktree_setup",
+			"worktree setup moved to Settings → Projects (worktree setup); move the recipe there and remove this block")
 	}
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].Element == findings[j].Element {

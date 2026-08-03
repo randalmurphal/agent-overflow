@@ -147,6 +147,57 @@ func TestConfigFromOptionsFastModePreservesModelAndSetsServiceTier(t *testing.T)
 	}
 }
 
+// TestConfigFromOptionsServiceTierComesFromTheModelTier covers the axis as a
+// SEQUENCE, not a set of states: fast mode is a toggle and the tier id is
+// resolved per model, so the pairs that matter are the transitions. A tier id
+// left behind after a toggle-off, or a stale id surviving a model switch, would
+// pass a states-only test.
+func TestConfigFromOptionsServiceTierComesFromTheModelTier(t *testing.T) {
+	tests := []struct {
+		name     string
+		fastMode bool
+		tierID   string
+		want     string
+	}{
+		{name: "off ignores the tier id entirely", fastMode: false, tierID: "turbo", want: ""},
+		{name: "on sends the catalog tier id", fastMode: true, tierID: "turbo", want: "turbo"},
+		{name: "on with an unresolved model falls back to the legacy id", fastMode: true, tierID: "", want: fastServiceTier},
+		{name: "on with a blank-ish tier id falls back too", fastMode: true, tierID: "   ", want: fastServiceTier},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ConfigFromOptions(provider.SessionOptions{
+				Provider:       "codex",
+				Model:          "gpt-5.5",
+				FastMode:       tt.fastMode,
+				FastModeTierID: tt.tierID,
+			})
+			if cfg.ServiceTier != tt.want {
+				t.Fatalf("ServiceTier = %q, want %q", cfg.ServiceTier, tt.want)
+			}
+		})
+	}
+
+	base := provider.SessionOptions{Provider: "codex", Model: "gpt-5.5", FastModeTierID: "turbo"}
+
+	on := base
+	on.FastMode = true
+	if got := ConfigFromOptions(on).ServiceTier; got != "turbo" {
+		t.Fatalf("off→on ServiceTier = %q, want turbo", got)
+	}
+	off := on
+	off.FastMode = false
+	if got := ConfigFromOptions(off).ServiceTier; got != "" {
+		t.Fatalf("on→off ServiceTier = %q, want the key omitted", got)
+	}
+	backOn := off
+	backOn.FastMode = true
+	backOn.FastModeTierID = "priority"
+	if got := ConfigFromOptions(backOn).ServiceTier; got != "priority" {
+		t.Fatalf("off→on after a model switch ServiceTier = %q, want priority", got)
+	}
+}
+
 func TestBuildThreadParamsThreadsServiceTier(t *testing.T) {
 	params := buildThreadParams(Config{ServiceTier: "priority"})
 	if params["serviceTier"] != "priority" {

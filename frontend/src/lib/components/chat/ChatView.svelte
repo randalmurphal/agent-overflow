@@ -27,6 +27,8 @@
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
+  import { hydrateWorktreeSetupForThread } from '../../stores/eventsWorktreeSetup';
+  import { hasWorktreeSetupSurface } from '../../stores/worktreeSetup.svelte';
   import type { Item, Thread } from '../../types/models';
   import { userFacingError } from '../../utils/userFacingError';
   import type { UserMessageActions } from './userMessageActions';
@@ -358,6 +360,26 @@
     !!pane.thread && pane.thread.mode === 'terminal',
   );
 
+  // Worktree setup: the run streams over its own channel, but a pane mounting
+  // after (or reconnecting past) the run has to pull the snapshot. The row's
+  // durable state is the gate, so a thread that never had a setup — nearly all
+  // of them — costs no RPC.
+  $effect(() => {
+    hydrateWorktreeSetupForThread(pane.thread);
+  });
+  const showWorktreeSetup = $derived(
+    !!pane.threadId && hasWorktreeSetupSurface(pane.threadId),
+  );
+  // Lazily imported on first need, then held: the panel's chunk stays out of
+  // the startup graph, and the captured promise keeps a stable identity so the
+  // {#await} block cannot re-pend and remount the card mid-run.
+  let worktreeSetupPanelModule = $state.raw<Promise<typeof import('./WorktreeSetupPanel.svelte')> | null>(null);
+  $effect(() => {
+    if (showWorktreeSetup && !worktreeSetupPanelModule) {
+      worktreeSetupPanelModule = import('./WorktreeSetupPanel.svelte');
+    }
+  });
+
   function openImagePreview(preview: ExpandedImagePreview): void {
     // If a previous preview is still open (rapid re-click on a different
     // image before the dialog has closed), revoke its blob URLs before
@@ -578,6 +600,15 @@
         <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6">
           <SendQueuePreview {pane} />
         </div>
+        {#if showWorktreeSetup && worktreeSetupPanelModule && pane.threadId}
+          {#await worktreeSetupPanelModule then { default: WorktreeSetupPanel }}
+            <WorktreeSetupPanel threadId={pane.threadId} />
+          {:catch err}
+            <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-2 text-xs text-error">
+              Failed to load worktree setup panel: {err instanceof Error ? err.message : String(err)}
+            </div>
+          {/await}
+        {/if}
         {#if inDesignMode && pane.pendingClarification}
           <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-2">
             <div class="flex max-h-[35vh] min-h-0 flex-col overflow-y-auto border border-border-subtle bg-surface-1/95 shadow-sheet">

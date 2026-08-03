@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/worktreesetup"
 )
 
 // preparedWorkflowWorkspace is one resolved workspace: where work runs and, when
@@ -293,7 +294,11 @@ func (r *workflowAppRunner) provisionWorkspace(
 		}
 		return cause
 	}
-	if err := runWorkflowWorktreeSetup(ctx, project.Path, worktreePath, projectProfile.WorktreeSetup); err != nil {
+	setup, err := r.worktreeSetup(item.ProjectID)
+	if err != nil {
+		return preparedWorkflowWorkspace{}, rollback(err)
+	}
+	if err := worktreesetup.Run(ctx, project.Path, worktreePath, setup); err != nil {
 		return preparedWorkflowWorkspace{}, rollback(err)
 	}
 	if err := r.app.store.UpdateWorkItemWorkspace(item.ID, worktreePath, branch, baseBranch); err != nil {
@@ -302,6 +307,18 @@ func (r *workflowAppRunner) provisionWorkspace(
 	return preparedWorkflowWorkspace{
 		path: worktreePath, branch: branch, baseBranch: baseBranch, project: project,
 	}, nil
+}
+
+// worktreeSetup reads the project's setup recipe. A read failure is a SETUP
+// FAILURE, not a reason to skip setup: a worktree provisioned without the
+// recipe its project declared is broken in ways that only surface mid-turn.
+// An unconfigured project yields the zero config, which runs nothing.
+func (r *workflowAppRunner) worktreeSetup(projectID string) (worktreesetup.Config, error) {
+	setup, _, err := r.app.store.ProjectWorktreeSetup(projectID)
+	if err != nil {
+		return worktreesetup.Config{}, fmt.Errorf("load worktree setup for project %q: %w", projectID, err)
+	}
+	return setup, nil
 }
 
 // workflowUnitWorkspaceRef names the fan-out unit a sub-worktree belongs to.
@@ -366,7 +383,17 @@ func (r *workflowAppRunner) provisionUnitWorktree(
 			return preparedWorkflowWorkspace{}, fmt.Errorf("create unit worktree from %q: %w", primary.branch, err)
 		}
 	}
+	// rollback removes the worktree ONLY when this call cut it. An adopted
+	// worktree is a re-entered try — the crash it survived may have been
+	// mid-run, so the checkout can hold turns of work that are not this
+	// call's to destroy. The unit's registration is left alone in both
+	// cases: the branch it names still exists (rollback removes the
+	// checkout, never the branch), and run discard enumerates what to
+	// delete from the rows.
 	rollback := func(cause error) error {
+		if adopted {
+			return cause
+		}
 		if removeErr := core.RemoveWorktreeForce(primary.project.Path, worktreePath, true); removeErr != nil {
 			return errors.Join(cause, fmt.Errorf("rollback unit worktree %q: %w", worktreePath, removeErr))
 		}
@@ -377,14 +404,14 @@ func (r *workflowAppRunner) provisionUnitWorktree(
 	); err != nil {
 		return preparedWorkflowWorkspace{}, rollback(fmt.Errorf("register unit workspace: %w", err))
 	}
-	projectProfile, err := r.projectProfile(ctx, ref.projectID)
+	setup, err := r.worktreeSetup(ref.projectID)
 	if err != nil {
-		return preparedWorkflowWorkspace{}, err
+		return preparedWorkflowWorkspace{}, rollback(err)
 	}
 	// A sub-worktree is a fresh checkout: without the project's setup hooks it
 	// lacks exactly the installed state the item's own worktree was given.
-	if err := runWorkflowWorktreeSetup(ctx, primary.project.Path, worktreePath, projectProfile.WorktreeSetup); err != nil {
-		return preparedWorkflowWorkspace{}, err
+	if err := worktreesetup.Run(ctx, primary.project.Path, worktreePath, setup); err != nil {
+		return preparedWorkflowWorkspace{}, rollback(err)
 	}
 	return preparedWorkflowWorkspace{
 		path: worktreePath, branch: branch, baseBranch: primary.branch, project: primary.project,

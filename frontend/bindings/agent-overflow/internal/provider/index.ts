@@ -8,6 +8,7 @@ export {
     ContextWindowOption,
     ElicitationRequest,
     ElicitationResolution,
+    FastModeTier,
     FileSystemPermissions,
     ModelInfo,
     NetworkPermissions,

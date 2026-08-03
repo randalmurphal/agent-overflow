@@ -3066,3 +3066,74 @@ func TestMigrationV45WidensRuntimeModeCheckWithAuto(t *testing.T) {
 		t.Fatal("foreign_key_check reported a violation after v45 rebuild")
 	}
 }
+
+func TestMigrationV47AddsThreadWorktreeSetupState(t *testing.T) {
+	db := migrateThrough(t, 46)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v47', '/tmp/v47', 'V47', 'green', 4, 10, 11, 0)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (
+			id, project_id, title, provider, model, workspace_path, worktree_path,
+			branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+			fast_mode, context_window, auto_compact_standard_percent,
+			auto_compact_extended_percent, runtime_mode, last_token_usage, last_read_at,
+			pinned_at, created_at, updated_at, archived, disabled_mcp_servers
+		) VALUES (
+			'thread-v47', 'project-v47', 'Pre-migration row', 'codex', 'gpt-5.5-codex', '/tmp/v47', '/tmp/v47-wt',
+			'feature/v47', '', '', '', 'chat', 'xhigh',
+			0, 400000, 0, 0, 'auto', '', 31,
+			NULL, 33, 34, 0, NULL
+		)
+	`)
+
+	if err := applyMigration(db, migrationByVersion(t, 47)); err != nil {
+		t.Fatalf("apply migration v47: %v", err)
+	}
+
+	// A row that predates the column reads as "nothing to say", never NULL:
+	// the column is NOT NULL so every reader has one spelling of absence.
+	var state string
+	if err := db.QueryRow(
+		`SELECT worktree_setup_state FROM threads WHERE id = 'thread-v47'`,
+	).Scan(&state); err != nil {
+		t.Fatalf("read worktree_setup_state: %v", err)
+	}
+	if state != "" {
+		t.Fatalf("backfilled worktree_setup_state = %q, want empty", state)
+	}
+
+	for _, good := range []string{"running", "failed", ""} {
+		if _, err := db.Exec(
+			`UPDATE threads SET worktree_setup_state = ? WHERE id = 'thread-v47'`, good,
+		); err != nil {
+			t.Fatalf("threads rejected worktree_setup_state %q: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"succeeded", "cancelled", "RUNNING", "pending"} {
+		if _, err := db.Exec(
+			`UPDATE threads SET worktree_setup_state = ? WHERE id = 'thread-v47'`, bad,
+		); err == nil {
+			t.Errorf("threads accepted worktree_setup_state %q after v47", bad)
+		}
+	}
+	if _, err := db.Exec(
+		`UPDATE threads SET worktree_setup_state = NULL WHERE id = 'thread-v47'`,
+	); err == nil {
+		t.Error("threads accepted a NULL worktree_setup_state after v47")
+	}
+
+	// ADD COLUMN, not a rebuild: the threads indexes are untouched.
+	for _, index := range []string{
+		"idx_threads_project", "idx_threads_updated", "idx_threads_parent",
+		"idx_threads_forked_from", "idx_threads_pinned_at",
+	} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after v47: %v", index, err)
+		}
+	}
+}

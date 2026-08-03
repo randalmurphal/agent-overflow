@@ -68,6 +68,22 @@ export {
   SetProviderCustomEnvVar,
   DeleteProviderCustomEnvVar,
 
+  // Per-project worktree setup (Settings -> Projects). Dedicated
+  // read/write pair rather than settings keys: the recipe lives on the
+  // project row, and the setter validates before persisting because the
+  // argv commands it stores run unattended on every worktree the project
+  // cuts. See app_project_worktree_setup.go.
+  GetProjectWorktreeSetup,
+  SetProjectWorktreeSetup,
+
+  // Chat-thread worktree setup runs. The snapshot is the reconnect
+  // companion to the worktree:setup event stream (a client that missed
+  // every frame converges on the same state); the retry re-reads the
+  // project's recipe, so fixing it in Settings and pressing Retry does
+  // what the user means. See app_worktree_setup.go.
+  GetThreadWorktreeSetup,
+  RetryThreadWorktreeSetup,
+
   // Usage accounting (append-only ledger aggregates; costs are
   // wire-true for Claude, table-priced at read time for Codex /
   // claude-tui — see internal/usagecost).

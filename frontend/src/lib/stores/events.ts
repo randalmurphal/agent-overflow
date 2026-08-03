@@ -16,6 +16,7 @@
 //   - eventsDiscussion.ts    — discussion:message / discussion:state push
 //   - eventsNotification.ts  — OS activation routing + cold-start queue
 //   - eventsHighlight.ts     — highlight:seed span ingest (remote clients)
+//   - eventsWorktreeSetup.ts — worktree:setup run stream + snapshot resync
 //
 // This file itself stays a thin fan-in: channel names, generics, and the
 // teardown order live here; the reaction logic lives in the domain modules.
@@ -34,6 +35,7 @@ import type {
   TurnStartedEvent,
   UsageEvent,
   UserInputEvent,
+  WorktreeSetupEvent,
 } from '../types/events';
 import type {
   TerminalExitEventPayload,
@@ -98,6 +100,7 @@ import {
 } from './eventsQueue';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
+import { applyWorktreeSetup } from './eventsWorktreeSetup';
 import {
   applyDiscussionMessage,
   applyDiscussionState,
@@ -301,6 +304,16 @@ export function setupEventListeners(): () => void {
 
   const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', applyThreadUpdated);
 
+  // worktree:setup — the per-project setup recipe streaming over a worktree a
+  // chat thread just had cut. Its own channel because only the setup panel
+  // consumes it and its frames carry local command output (transport keeps it
+  // loopback-only). GetThreadWorktreeSetup is the reconnect companion; see
+  // stores/worktreeSetup.svelte.ts for the sequence/hydration contract.
+  const cancelWorktreeSetup = wailsEventOn<WorktreeSetupEvent>(
+    'worktree:setup',
+    applyWorktreeSetup,
+  );
+
   // provider:default_swapped — backend auto-flipped the default
   // provider because the saved one was not_found and the other was
   // ready. Surface a toast so the user notices the change before they
@@ -440,6 +453,7 @@ export function setupEventListeners(): () => void {
     cancelQueueRestored();
     cancelUserMessageReverted();
     cancelThreadUpdated();
+    cancelWorktreeSetup();
     cancelDefaultSwapped();
     cancelTransportGap();
     cancelDesignReloadMain();

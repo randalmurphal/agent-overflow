@@ -4260,6 +4260,162 @@ export class WorktreeListItem {
 }
 
 /**
+ * WorktreeSetupConfig is the wire shape of a project's worktree setup recipe.
+ * It mirrors worktreesetup.Config with the slices always materialised, so the
+ * editor binds against `[]` rather than having to treat null as empty.
+ */
+export class WorktreeSetupConfig {
+    "copy": string[];
+    "run": string[][];
+    "timeout": string;
+
+    /** Creates a new WorktreeSetupConfig instance. */
+    constructor($$source: Partial<WorktreeSetupConfig> = {}) {
+        if (!("copy" in $$source)) {
+            this["copy"] = [];
+        }
+        if (!("run" in $$source)) {
+            this["run"] = [];
+        }
+        if (!("timeout" in $$source)) {
+            this["timeout"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorktreeSetupConfig instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorktreeSetupConfig {
+        const $$createField0_0 = $$createType2;
+        const $$createField1_0 = $$createType81;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("copy" in $$parsedSource) {
+            $$parsedSource["copy"] = $$createField0_0($$parsedSource["copy"]);
+        }
+        if ("run" in $$parsedSource) {
+            $$parsedSource["run"] = $$createField1_0($$parsedSource["run"]);
+        }
+        return new WorktreeSetupConfig($$parsedSource as Partial<WorktreeSetupConfig>);
+    }
+}
+
+/**
+ * WorktreeSetupRunState is the whole panel state for one thread — the
+ * reconnect companion to the event stream, in the same contract shape as
+ * GetThreadLiveState. A client that saw every event and a client that saw none
+ * land on the same value.
+ */
+export class WorktreeSetupRunState {
+    "threadId": string;
+
+    /**
+     * RunID is empty when State is "idle", or when a durable failure outlived
+     * the process that produced it (the run's output is gone; the failure is
+     * not).
+     */
+    "runId": string;
+    "state": string;
+    "steps": WorktreeSetupStep[];
+    "stepStatuses": string[];
+    "output": string;
+
+    /**
+     * OutputSeq is the highest chunk sequence folded into Output. A client
+     * applies live chunks above it and ignores the rest, so a snapshot that
+     * races the stream cannot double-append.
+     */
+    "outputSeq": number;
+    "error"?: string;
+    "worktreePath"?: string;
+    "startedAt"?: number;
+    "finishedAt"?: number;
+
+    /** Creates a new WorktreeSetupRunState instance. */
+    constructor($$source: Partial<WorktreeSetupRunState> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("runId" in $$source)) {
+            this["runId"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("steps" in $$source)) {
+            this["steps"] = [];
+        }
+        if (!("stepStatuses" in $$source)) {
+            this["stepStatuses"] = [];
+        }
+        if (!("output" in $$source)) {
+            this["output"] = "";
+        }
+        if (!("outputSeq" in $$source)) {
+            this["outputSeq"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorktreeSetupRunState instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorktreeSetupRunState {
+        const $$createField3_0 = $$createType83;
+        const $$createField4_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("steps" in $$parsedSource) {
+            $$parsedSource["steps"] = $$createField3_0($$parsedSource["steps"]);
+        }
+        if ("stepStatuses" in $$parsedSource) {
+            $$parsedSource["stepStatuses"] = $$createField4_0($$parsedSource["stepStatuses"]);
+        }
+        return new WorktreeSetupRunState($$parsedSource as Partial<WorktreeSetupRunState>);
+    }
+}
+
+/**
+ * WorktreeSetupStep is one resolved step of a run, in execution order. Mirrors
+ * worktreesetup.Step; declared here because frontend-facing shapes belong
+ * beside the bound method, not in the pure package.
+ */
+export class WorktreeSetupStep {
+    "index": number;
+    "kind": string;
+    "label": string;
+    "argv"?: string[];
+
+    /** Creates a new WorktreeSetupStep instance. */
+    constructor($$source: Partial<WorktreeSetupStep> = {}) {
+        if (!("index" in $$source)) {
+            this["index"] = 0;
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("label" in $$source)) {
+            this["label"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorktreeSetupStep instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WorktreeSetupStep {
+        const $$createField3_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("argv" in $$parsedSource) {
+            $$parsedSource["argv"] = $$createField3_0($$parsedSource["argv"]);
+        }
+        return new WorktreeSetupStep($$parsedSource as Partial<WorktreeSetupStep>);
+    }
+}
+
+/**
  * WorktreeStatus describes a worktree's safety classification for the cleanup
  * UI: whether the working tree has uncommitted changes, whether the branch
  * has unpushed commits, whether an upstream is configured, and how many
@@ -4392,3 +4548,6 @@ const $$createType77 = $Create.Array($$createType76);
 const $$createType78 = store$0.WorkItemUsage.createFrom;
 const $$createType79 = workspacefiles$0.WorkspaceFile.createFrom;
 const $$createType80 = $Create.Array($$createType79);
+const $$createType81 = $Create.Array($$createType2);
+const $$createType82 = WorktreeSetupStep.createFrom;
+const $$createType83 = $Create.Array($$createType82);

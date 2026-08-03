@@ -45,6 +45,21 @@ type ReasoningEffortOption struct {
 	Default bool   `json:"default,omitempty"`
 }
 
+// FastModeTier is the provider-declared service tier a fast-mode turn runs on.
+// Codex reports one per model on `model/list` (`serviceTiers[]`): ID is what
+// goes on the wire, Name is what the composer labels the toggle, Description is
+// the tier's own blurb ("1.5x speed, increased usage").
+//
+// Nil means the provider has no tier to name — Claude, whose fast mode is a
+// spawn flag with no wire tier, and any Codex catalog entry that predates the
+// field. The ModelCapabilityFastMode marker on Capabilities remains the support
+// gate for both providers; this only carries the WHICH, never the WHETHER.
+type FastModeTier struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
 // ModelInfo describes a model available from a provider.
 type ModelInfo struct {
 	Slug             string                  `json:"slug"`
@@ -52,6 +67,7 @@ type ModelInfo struct {
 	Provider         string                  `json:"provider"`
 	IsCustom         bool                    `json:"isCustom,omitempty"`
 	Capabilities     []string                `json:"capabilities,omitempty"`
+	FastModeTier     *FastModeTier           `json:"fastModeTier,omitempty"`
 	ContextWindows   []ContextWindowOption   `json:"contextWindows,omitempty"`
 	ReasoningEfforts []ReasoningEffortOption `json:"reasoningEfforts,omitempty"`
 }
@@ -562,9 +578,32 @@ func ResolveContextWindowForModel(providerName, model string, requested int) int
 	return DefaultContextWindowForModel(providerName, model, requested)
 }
 
-// CloneModels returns a deep copy of a model list: the slice, plus every slice
-// field on every entry. The one copy helper for a type whose consumers
-// (the live Codex catalog, the probe-enriched Claude catalog, every
+// CloneModelInfo returns a deep copy of one entry: every reference-typed field
+// is reallocated, so the copy and the source share nothing a caller could
+// mutate across. This is the ONE place a new slice or pointer field on
+// ModelInfo has to be handled — CloneModels and the Codex custom-model template
+// both route through it, so neither can silently miss one.
+func CloneModelInfo(model ModelInfo) ModelInfo {
+	cloned := model
+	if len(model.Capabilities) > 0 {
+		cloned.Capabilities = append([]string(nil), model.Capabilities...)
+	}
+	if model.FastModeTier != nil {
+		tier := *model.FastModeTier
+		cloned.FastModeTier = &tier
+	}
+	if len(model.ContextWindows) > 0 {
+		cloned.ContextWindows = append([]ContextWindowOption(nil), model.ContextWindows...)
+	}
+	if len(model.ReasoningEfforts) > 0 {
+		cloned.ReasoningEfforts = append([]ReasoningEffortOption(nil), model.ReasoningEfforts...)
+	}
+	return cloned
+}
+
+// CloneModels returns a deep copy of a model list: the slice, plus every
+// reference-typed field on every entry. The one copy helper for a type whose
+// consumers (the live Codex catalog, the probe-enriched Claude catalog, every
 // ModelsForProvider caller) all mutate what they receive.
 func CloneModels(models []ModelInfo) []ModelInfo {
 	if models == nil {
@@ -572,16 +611,7 @@ func CloneModels(models []ModelInfo) []ModelInfo {
 	}
 	cloned := make([]ModelInfo, len(models))
 	for i, model := range models {
-		cloned[i] = model
-		if len(model.Capabilities) > 0 {
-			cloned[i].Capabilities = append([]string(nil), model.Capabilities...)
-		}
-		if len(model.ContextWindows) > 0 {
-			cloned[i].ContextWindows = append([]ContextWindowOption(nil), model.ContextWindows...)
-		}
-		if len(model.ReasoningEfforts) > 0 {
-			cloned[i].ReasoningEfforts = append([]ReasoningEffortOption(nil), model.ReasoningEfforts...)
-		}
+		cloned[i] = CloneModelInfo(model)
 	}
 	return cloned
 }

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/profile"
@@ -63,7 +64,7 @@ type workflowToolRun struct {
 // subprocess, and the run record's narrative is where a human reads what it did.
 type workflowToolAttempt struct {
 	workflowToolRun
-	output   *workflowTailBuffer
+	output   *procutil.TailBuffer
 	complete func(engine.Outcome)
 	cancel   context.CancelFunc
 	started  time.Time
@@ -142,7 +143,7 @@ func (r *workflowAppRunner) startToolRun(ctx context.Context, run workflowToolRu
 	processCtx, cancel := context.WithCancel(r.app.lifeCtx())
 	attempt := &workflowToolAttempt{
 		workflowToolRun: run,
-		output:          newWorkflowTailBuffer(workflowToolOutputTailBytes),
+		output:          procutil.NewTailBuffer(workflowToolOutputTailBytes),
 		complete:        complete, cancel: cancel, started: r.now(),
 	}
 	attempt.lastOutput.Store(attempt.started.UnixNano())
@@ -153,7 +154,7 @@ func (r *workflowAppRunner) startToolRun(ctx context.Context, run workflowToolRu
 	writer := &workflowToolWriter{attempt: attempt, now: r.now}
 	command.Stdout = writer
 	command.Stderr = writer
-	configureWorkflowCommand(command)
+	procutil.ConfigureGroup(command)
 
 	runKey := workflowRunKey(run.key)
 	r.mu.Lock()

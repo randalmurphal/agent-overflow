@@ -34,6 +34,7 @@ const threadColumns = `id, COALESCE(project_id, ''),
     (SELECT MAX(completed_at) FROM turns
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
     archived, last_read_at, pinned_at, disabled_mcp_servers,
+    worktree_setup_state,
     EXISTS (
       SELECT 1
         FROM proposed_plans
@@ -151,7 +152,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt,
-		&disabledMcpServersJSON,
+		&disabledMcpServersJSON, &t.WorktreeSetupState,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &isDraft,
 	); err != nil {
 		return Thread{}, err

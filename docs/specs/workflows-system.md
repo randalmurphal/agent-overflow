@@ -701,14 +701,18 @@ attempt may expand to, §3; default 32 when omitted, minimum 1, and deliberately
 **report-back / query-source
 command bindings** (§5, §11), the **MCP / tool configs**, the **reliability
 defaults** (the §12 inactivity timeout, envelope-retry count, optional
-per-item budget), **secret references**, a **worktree setup** step (files
-copied from the main workspace and commands run at worktree creation — `.env`,
-dependency install; each command runs in the new worktree with
-**`AO_PROJECT_ROOT`** and **`AO_WORKTREE_PATH`** exported as absolute paths, so
-a recipe can link back to the main checkout instead of only snapshotting it;
-**setup failure parks `needs-human(setup-failed)`** before
-any phase starts on a broken tree), and the **disposition policy** (`manual` |
-`auto-pr` | `auto-merge`, default `manual` — §9).
+per-item budget), **secret references**, and the **disposition policy**
+(`manual` | `auto-pr` | `auto-merge`, default `manual` — §9).
+
+The **worktree setup** step — files copied from the main workspace and commands
+run at worktree creation (`.env`, dependency install) — is NOT part of the
+profile. It is per-project **app settings** (Settings → Projects), persisted on
+the project row, so chat-thread worktrees run the same recipe workflow
+worktrees do. Each command runs in the new worktree with **`AO_PROJECT_ROOT`**
+and **`AO_WORKTREE_PATH`** exported as absolute paths, so a recipe can link back
+to the main checkout instead of only snapshotting it, and **setup failure parks
+`needs-human(setup-failed)`** before any phase starts on a broken tree. See
+`internal/worktreesetup/AGENTS.md`.
 
 **Secrets are references, never values.** Phases, scripts, and MCP servers
 often need credentials (a private registry, an MCP API key, a paid API). The

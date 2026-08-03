@@ -463,6 +463,14 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	} else {
 		logBootPhase("app.recover_orphaned_background_tasks", recoverStarted)
 	}
+	// Settle worktree setups the previous instance left mid-recipe. A run
+	// lives only inside a live process, so every 'running' row here is crash
+	// (or shutdown) residue over a worktree whose provisioning state nobody
+	// can vouch for — which is what 'failed' means, and what puts the retry
+	// affordance back in reach.
+	worktreeSetupSweepStarted := time.Now()
+	a.sweepCrashedWorktreeSetups()
+	logBootPhase("app.sweep_crashed_worktree_setups", worktreeSetupSweepStarted)
 	a.registry = discussion.NewRegistry(st)
 	a.channels = discussion.NewChannelService(st)
 	designBase := filepath.Join(dbDir, "design-workdirs")

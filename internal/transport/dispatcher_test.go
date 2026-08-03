@@ -608,6 +608,8 @@ func (p *privilegedApp) CloseThreadTerminals() string           { return "ok" }
 func (p *privilegedApp) ResizeTerminal() string                 { return "ok" }
 func (p *privilegedApp) RefreshTerminal() string                { return "ok" }
 func (p *privilegedApp) MoveThreadTerminals() string            { return "ok" }
+func (p *privilegedApp) RetryThreadWorktreeSetup() string       { return "ok" }
+func (p *privilegedApp) GetThreadWorktreeSetup() string         { return "ok" }
 func (p *privilegedApp) ProviderTerminalAttach() string         { return "ok" }
 func (p *privilegedApp) ProviderTerminalDetach() string         { return "ok" }
 func (p *privilegedApp) ProviderTerminalReplay() string         { return "ok" }
@@ -803,6 +805,8 @@ func (p *privilegedApp) ResetKeybindings() string             { return "ok" }
 func (p *privilegedApp) SetChatBarFavorite() string           { return "ok" }
 func (p *privilegedApp) SetProviderCustomEnvVar() string      { return "ok" }
 func (p *privilegedApp) DeleteProviderCustomEnvVar() string   { return "ok" }
+func (p *privilegedApp) GetProjectWorktreeSetup() string      { return "ok" }
+func (p *privilegedApp) SetProjectWorktreeSetup() string      { return "ok" }
 func (p *privilegedApp) SetWSLDistroPreference() string       { return "ok" }
 func (p *privilegedApp) ReconfigureObservability() string     { return "ok" }
 

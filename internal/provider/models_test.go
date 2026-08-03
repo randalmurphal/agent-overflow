@@ -638,3 +638,76 @@ func TestCoerceReasoningEffortKeepsALegalEnumForEffortlessModels(t *testing.T) {
 		t.Fatalf("fixture drift: this test only means something while haiku declares no tiers (found=%v)", found)
 	}
 }
+
+// TestCloneModelInfoDeepCopiesEveryReferenceField is the guard on the one copy
+// helper. Every consumer of a catalog mutates what it receives — the Codex
+// custom-model template, the Claude probe merge, ClaudeTUIModels' provider
+// re-stamp — so a field that escapes the deep copy lets one caller's edit
+// rewrite another caller's catalog. The FastModeTier pointer is the field this
+// is easiest to get wrong: a struct copy carries the pointer, not the tier.
+func TestCloneModelInfoDeepCopiesEveryReferenceField(t *testing.T) {
+	source := ModelInfo{
+		Slug:             "gpt-test",
+		Name:             "GPT Test",
+		Provider:         string(Codex),
+		Capabilities:     []string{ModelCapabilityFastMode},
+		FastModeTier:     &FastModeTier{ID: "priority", Name: "Fast", Description: "1.5x speed"},
+		ContextWindows:   []ContextWindowOption{{Tokens: 272000, Label: "272k", Tier: ContextTierStandard, Default: true}},
+		ReasoningEfforts: []ReasoningEffortOption{{Slug: "high", Label: "High", Default: true}},
+	}
+
+	cloned := CloneModelInfo(source)
+	if cloned.FastModeTier == source.FastModeTier {
+		t.Fatal("CloneModelInfo shares the FastModeTier pointer with its source")
+	}
+	if *cloned.FastModeTier != *source.FastModeTier {
+		t.Fatalf("cloned FastModeTier = %#v, want %#v", *cloned.FastModeTier, *source.FastModeTier)
+	}
+
+	// Mutating every reference-typed field on the copy must leave the source
+	// untouched, and vice versa.
+	cloned.FastModeTier.ID = "turbo"
+	cloned.Capabilities[0] = "mutated"
+	cloned.ContextWindows[0].Tokens = 1
+	cloned.ReasoningEfforts[0].Slug = "mutated"
+
+	if source.FastModeTier.ID != "priority" {
+		t.Errorf("source FastModeTier.ID = %q, want priority — the clone wrote through", source.FastModeTier.ID)
+	}
+	if source.Capabilities[0] != ModelCapabilityFastMode {
+		t.Errorf("source Capabilities = %#v, want untouched", source.Capabilities)
+	}
+	if source.ContextWindows[0].Tokens != 272000 {
+		t.Errorf("source ContextWindows = %#v, want untouched", source.ContextWindows)
+	}
+	if source.ReasoningEfforts[0].Slug != "high" {
+		t.Errorf("source ReasoningEfforts = %#v, want untouched", source.ReasoningEfforts)
+	}
+
+	// CloneModels is the list form of the same guarantee — the cache hands its
+	// entries out through it on every Get.
+	list := CloneModels([]ModelInfo{source})
+	if list[0].FastModeTier == source.FastModeTier {
+		t.Fatal("CloneModels shares the FastModeTier pointer with its source")
+	}
+	if CloneModels(nil) != nil {
+		t.Error("CloneModels(nil) should stay nil")
+	}
+}
+
+// TestModelInfoOmitsAnAbsentFastModeTier keeps the wire shape optional: Claude
+// declares no tier, and the frontend's fallback to its "Fast" literals is keyed
+// on the field being absent rather than an empty object.
+func TestModelInfoOmitsAnAbsentFastModeTier(t *testing.T) {
+	encoded, err := json.Marshal(ModelInfo{Slug: "claude-opus-5", Name: "Claude Opus 5", Provider: string(Claude)})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := decoded["fastModeTier"]; present {
+		t.Fatalf("encoded ModelInfo carries fastModeTier = %v, want the key omitted", decoded["fastModeTier"])
+	}
+}

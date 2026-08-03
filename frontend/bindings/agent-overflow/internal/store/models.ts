@@ -967,6 +967,17 @@ export class Thread {
     "pinnedAt"?: number | null;
 
     /**
+     * WorktreeSetupState is the durable half of the per-project worktree
+     * setup run this thread's worktree was cut with (migration v47):
+     * "running", "failed", or "" for nothing to say — never ran, succeeded,
+     * was cancelled, or the thread has since left that worktree. The
+     * streaming panel state is in-memory and dies with the process; this is
+     * what a restart still knows, and what the sidebar's "Setup failed" pill
+     * falls back to.
+     */
+    "worktreeSetupState": string;
+
+    /**
      * HasActionableProposedPlan is derived for sidebar boot state. It is
      * true when the latest assistant proposed plan is completed and has
      * not been implemented yet. It is not a persisted threads column.
@@ -1046,6 +1057,9 @@ export class Thread {
         }
         if (!("archived" in $$source)) {
             this["archived"] = false;
+        }
+        if (!("worktreeSetupState" in $$source)) {
+            this["worktreeSetupState"] = "";
         }
         if (!("hasActionableProposedPlan" in $$source)) {
             this["hasActionableProposedPlan"] = false;

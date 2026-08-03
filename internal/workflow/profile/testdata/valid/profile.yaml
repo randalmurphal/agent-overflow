@@ -20,8 +20,3 @@ secrets:
     source: file
     path: /run/secrets/signing-key
 mcp_servers: [github, sentry]
-worktree_setup:
-  copy: [.env, config/*.local]
-  run:
-    - [pnpm, install, --frozen-lockfile]
-  timeout: 15m

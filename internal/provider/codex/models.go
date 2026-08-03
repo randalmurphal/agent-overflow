@@ -17,8 +17,18 @@ const (
 	modelListLimit     = 100
 	modelListMaxPages  = 20
 	modelListMaxModels = 1000
+
+	// The two upstream spellings of "the fast tier", both sourced rather than
+	// guessed. fastServiceTier is ServiceTier::Fast.request_value()
+	// (codex-rs/protocol/src/config_types.rs) — the tier's canonical wire id.
+	// legacyFastTier is SPEED_TIER_FAST (codex-rs/protocol/src/openai_models.rs),
+	// which the wire uses in two places: as an entry of the deprecated
+	// `additionalSpeedTiers` array, and as a `serviceTiers[].name`.
+	// legacyFastTierName is the display name synthesized for the deprecated
+	// path, which carries no name of its own.
 	fastServiceTier    = "priority"
 	legacyFastTier     = "fast"
+	legacyFastTierName = "Fast"
 )
 
 type ModelListConfig struct {
@@ -45,8 +55,15 @@ type codexModel struct {
 	AdditionalSpeedTiers []string `json:"additionalSpeedTiers"`
 }
 
+// codexModelServiceTier is one entry of a model's `serviceTiers` array, e.g.
+// {"id":"priority","name":"Fast","description":"1.5x speed, increased usage"}.
+// All three fields are carried: the id is what `serviceTier` must be on the
+// wire, and the name/description are what the composer shows, so an upstream
+// rename lands as a label change instead of breaking fast mode.
 type codexModelServiceTier struct {
-	ID string `json:"id"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 type codexReasoningEffortModel struct {
@@ -263,7 +280,8 @@ func mapCodexModel(model codexModel) provider.ModelInfo {
 	}
 
 	capabilities := []string(nil)
-	if codexModelSupportsFastMode(model) {
+	fastTier := codexFastModeTier(model)
+	if fastTier != nil {
 		capabilities = append(capabilities, provider.ModelCapabilityFastMode)
 	}
 
@@ -272,21 +290,72 @@ func mapCodexModel(model codexModel) provider.ModelInfo {
 		Name:             displayNameForCodexModel(model),
 		Provider:         string(provider.Codex),
 		Capabilities:     capabilities,
+		FastModeTier:     fastTier,
 		ContextWindows:   provider.ContextWindowOptionsForModel(string(provider.Codex), slug),
 		ReasoningEfforts: mapCodexReasoningEfforts(model),
 	}
 }
 
-func codexModelSupportsFastMode(model codexModel) bool {
-	for _, tier := range model.ServiceTiers {
-		if tier.ID == fastServiceTier {
-			return true
+// codexFastModeTier picks the service tier a fast-mode turn on this model runs
+// on, or nil when the model has no fast tier — which is also the model's
+// fast-mode support answer, since the two questions have one source.
+//
+// `serviceTiers` is the model's WHOLE tier menu, not a fast-tier list: upstream
+// ships `flex` on the same enum (ServiceTier::Flex,
+// codex-rs/protocol/src/config_types.rs) and its own fixtures carry
+// {id:"batch",name:"slow"} alongside {id:"priority",name:"fast"}
+// (codex-rs/tui/src/bottom_pane/slash_commands.rs). Treating "any declared
+// tier" as the fast one would route a fast-mode turn onto a SLOWER tier, so the
+// fast tier is identified, never assumed. Two anchors, either sufficient:
+//
+//   - id == "priority" — ServiceTier::Fast.request_value(), what upstream's own
+//     ModelPreset::supports_fast_mode matches on.
+//   - name == "fast", case-insensitive — SPEED_TIER_FAST, what upstream's TUI
+//     matches on in current_model_fast_service_tier.
+//
+// Carrying both is what makes an upstream rename inert in either direction: a
+// display-name change still matches the id, an id change still matches the
+// name, and whichever entry matched supplies the id AO sends and the label the
+// composer shows. Neither anchor can promote a non-fast tier.
+//
+// The deprecated `additionalSpeedTiers` list is consulted ONLY when
+// `serviceTiers` is absent entirely: a model that declares tiers has already
+// answered, and the older key must not override it.
+func codexFastModeTier(model codexModel) *provider.FastModeTier {
+	if tier := findCodexFastServiceTier(model.ServiceTiers); tier != nil {
+		return &provider.FastModeTier{
+			ID:          strings.TrimSpace(tier.ID),
+			Name:        strings.TrimSpace(tier.Name),
+			Description: strings.TrimSpace(tier.Description),
 		}
 	}
 	if len(model.ServiceTiers) > 0 {
-		return false
+		return nil
 	}
-	return slices.Contains(model.AdditionalSpeedTiers, legacyFastTier)
+	if slices.Contains(model.AdditionalSpeedTiers, legacyFastTier) {
+		return &provider.FastModeTier{ID: fastServiceTier, Name: legacyFastTierName}
+	}
+	return nil
+}
+
+// findCodexFastServiceTier returns the fast entry of a serviceTiers array, or
+// nil. The id anchor wins over the name anchor so a catalog that renamed some
+// other tier to "Fast" cannot displace the canonical one. Entries with a blank
+// id are skipped: a tier AO cannot name on the wire is not one it can offer.
+func findCodexFastServiceTier(tiers []codexModelServiceTier) *codexModelServiceTier {
+	var byName *codexModelServiceTier
+	for i := range tiers {
+		if strings.TrimSpace(tiers[i].ID) == "" {
+			continue
+		}
+		if tiers[i].ID == fastServiceTier {
+			return &tiers[i]
+		}
+		if byName == nil && strings.EqualFold(strings.TrimSpace(tiers[i].Name), legacyFastTier) {
+			byName = &tiers[i]
+		}
+	}
+	return byName
 }
 
 func displayNameForCodexModel(model codexModel) string {
@@ -363,17 +432,18 @@ func appendCustomModels(models []provider.ModelInfo, customModels []string) []pr
 		}
 		seen[slug] = struct{}{}
 
-		custom := provider.ModelInfo{
-			Slug:     slug,
-			Name:     slug,
-			Provider: string(provider.Codex),
-			IsCustom: true,
-		}
-		if template.Slug != "" {
-			custom.Capabilities = append([]string(nil), template.Capabilities...)
-			custom.ContextWindows = append([]provider.ContextWindowOption(nil), template.ContextWindows...)
-			custom.ReasoningEfforts = append([]provider.ReasoningEffortOption(nil), template.ReasoningEfforts...)
-		}
+		// A user-added slug has no catalog entry of its own, so the first live
+		// model is the template for every capability-shaped field. Cloning the
+		// whole entry and then re-stamping identity is what keeps a new field
+		// (fast-mode tier, and whatever comes next) inherited without a second
+		// list to keep in sync — and CloneModelInfo is what keeps the two
+		// entries from sharing a slice or tier pointer. A zero template (no
+		// live models) clones to a zero value, leaving the custom entry bare.
+		custom := provider.CloneModelInfo(template)
+		custom.Slug = slug
+		custom.Name = slug
+		custom.Provider = string(provider.Codex)
+		custom.IsCustom = true
 		models = append(models, custom)
 	}
 	return models

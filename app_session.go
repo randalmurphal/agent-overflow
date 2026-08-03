@@ -102,6 +102,14 @@ func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, desi
 		forkSession,
 	)
 
+	// The fast-mode service tier is a live-catalog fact, so it can come from
+	// neither the thread row (which persists only the bool) nor the provider
+	// package (which has no catalog access). Stamping it here — the one
+	// SessionOptions construction site, shared by the spawn path and the live
+	// reconciler — is what keeps a config diff from flapping between a resolved
+	// and an unresolved tier for the same thread.
+	opts.FastModeTierID = a.fastModeTierIDForModel(t.Provider, t.Model)
+
 	if dir, err := a.designWorkDirOverride(t); err != nil {
 		return provider.SessionOptions{}, designSessionConfig{}, fmt.Errorf("resolve design workdir: %w", err)
 	} else if dir != "" {
