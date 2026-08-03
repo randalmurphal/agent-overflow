@@ -164,6 +164,8 @@ export const SetProviderCustomEnvVar = dispatch('SetProviderCustomEnvVar');
 export const DeleteProviderCustomEnvVar = dispatch('DeleteProviderCustomEnvVar');
 export const GetProjectWorktreeSetup = dispatch('GetProjectWorktreeSetup');
 export const SetProjectWorktreeSetup = dispatch('SetProjectWorktreeSetup');
+export const GetThreadWorktreeSetup = dispatch('GetThreadWorktreeSetup');
+export const RetryThreadWorktreeSetup = dispatch('RetryThreadWorktreeSetup');
 export const Version = dispatch('Version');
 
 // Workflow surface.
@@ -542,3 +544,11 @@ export const ProviderTerminalRefresh = dispatch('ProviderTerminalRefresh');
 export const ProviderTerminalReplay = dispatch('ProviderTerminalReplay');
 export const ProviderTerminalResize = dispatch('ProviderTerminalResize');
 export const ProviderTerminalSetControl = dispatch('ProviderTerminalSetControl');
+export const NotificationActivated = dispatch('NotificationActivated');
+export const WorkflowAgentGetNotes = dispatch('WorkflowAgentGetNotes');
+export const WorkflowAgentListRuns = dispatch('WorkflowAgentListRuns');
+export const WorkflowAgentRunOutput = dispatch('WorkflowAgentRunOutput');
+export const WorkflowAgentRunStatus = dispatch('WorkflowAgentRunStatus');
+export const WorkflowAgentSchedule = dispatch('WorkflowAgentSchedule');
+export const WorkflowAgentSetNotes = dispatch('WorkflowAgentSetNotes');
+export const WorkflowAgentStartRun = dispatch('WorkflowAgentStartRun');
