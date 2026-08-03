@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -739,6 +740,87 @@ func TestStatusOnCleanRepository(t *testing.T) {
 	}
 	if status.FileCount != 0 {
 		t.Fatalf("FileCount = %d, want 0", status.FileCount)
+	}
+}
+
+// TestStatusIsRaceFreeAndOrderIndependent covers baseStatus's fan-out on two
+// axes at once. Within one call the six probes run concurrently against a
+// single Core, and gitwatch additionally calls Status concurrently across
+// workspaces — so every cache they cross (forge classification, the untracked
+// line memo, the git-dir memo) is exercised cold-concurrent here, under -race.
+// The aggregate must not depend on which probe finishes first: all concurrent
+// results must agree with each other and with a subsequent serial call made
+// against warm caches.
+func TestStatusIsRaceFreeAndOrderIndependent(t *testing.T) {
+	repo, _ := repoWithOrigin(t)
+	core := NewCore()
+
+	// Give every probe real work: tracked churn (numstat), a staged path
+	// (porcelain), untracked files (the ls-files scan + line memo), and an
+	// origin remote (forge classification + default-branch resolution).
+	writeRepoFile(t, repo, "README.md", "tracked\nchurn\nhere\n")
+	writeRepoFile(t, repo, "staged.txt", "staged\n")
+	testutil.RunGit(t, repo, "add", "staged.txt")
+	writeRepoFile(t, repo, "untracked-a.txt", "one\ntwo\n")
+	writeRepoFile(t, repo, "nested/untracked-b.txt", "x\ny\nz\n")
+
+	const callers = 8
+	results := make([]GitStatus, callers)
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := range callers {
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = core.Status(repo)
+		}()
+	}
+	wg.Wait()
+
+	for i := range callers {
+		if errs[i] != nil {
+			t.Fatalf("concurrent Status[%d]: %v", i, errs[i])
+		}
+		if !results[i].Equal(results[0]) {
+			t.Fatalf("concurrent Status[%d] = %+v, want %+v (fan-out result must not depend on probe completion order)",
+				i, results[i], results[0])
+		}
+	}
+	if !results[0].IsRepo || !results[0].HasChanges || results[0].FileCount == 0 || results[0].Insertions == 0 {
+		t.Fatalf("fixture produced an inert status %+v; the probes must each have work to do", results[0])
+	}
+
+	// Warm caches must produce the same answer as the cold race did.
+	warm, err := core.Status(repo)
+	if err != nil {
+		t.Fatalf("warm Status: %v", err)
+	}
+	if !warm.Equal(results[0]) {
+		t.Fatalf("warm Status = %+v, want %+v", warm, results[0])
+	}
+}
+
+// TestStatusNonRepoLeavesNoForgeCacheEntry pins the one place the fan-out
+// could have leaked state the serial version never wrote: on a non-repo path
+// all six probes fail, and the origin read is discarded rather than recorded —
+// otherwise a `git init` inside the window would keep classifying as "no
+// forge" for forgeDetectionTTL.
+func TestStatusNonRepoLeavesNoForgeCacheEntry(t *testing.T) {
+	core := NewCore()
+	dir := t.TempDir()
+
+	status, err := core.Status(dir)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.IsRepo {
+		t.Fatal("expected IsRepo=false")
+	}
+
+	core.forgeCacheMu.RLock()
+	defer core.forgeCacheMu.RUnlock()
+	if entry, ok := core.forgeCache[dir]; ok {
+		t.Fatalf("non-repo Status recorded forge cache entry %+v, want none", entry)
 	}
 }
 

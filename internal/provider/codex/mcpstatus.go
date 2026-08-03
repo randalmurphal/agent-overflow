@@ -323,7 +323,11 @@ func (c *mcpStatusRPCClient) call(ctx context.Context, method string, params any
 		return nil, err
 	case resp := <-resultCh:
 		if resp.Error != nil {
-			return nil, fmt.Errorf("rpc error %d: %s", resp.Error.Code, resp.Error.Message)
+			// Typed, not rendered: a caller that has to tell "this binary
+			// doesn't know the method" from "the request was wrong" needs the
+			// code, and recovering it from a formatted string later would be
+			// a parser standing in for a type.
+			return nil, &RPCError{Method: method, Code: resp.Error.Code, Message: resp.Error.Message}
 		}
 		return resp.Result, nil
 	}

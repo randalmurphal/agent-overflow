@@ -65,6 +65,20 @@ over stdio.
   `ThreadSettings` is what Codex IS running; the `LiveUpdate` block on
   Session is what AO will ASK FOR next turn. They are deliberately
   separate — see the type doc before merging them.
+- `thread_settings_push.go` — the `thread/settings/update` RPC
+  (`PlanThreadSettingsPush` / `PushThreadSettings`) plus the echo
+  expectation it arms and the `serviceTier` write planner `turn/start`
+  shares. Strictly ADDITIVE over the `turn/start` overrides: model,
+  effort and fast mode were already next-turn-effective without it, so
+  every failure path degrades to exactly that. Runtime-mode axes are
+  deliberately NOT pushed — see the file's own doc block.
+- `account_usage.go` — `account/usage/read`: the wire shape
+  (`AccountUsage`, every summary field a pointer because absence is not
+  zero), `Session.ReadAccountUsage` for a live connection, and
+  `AccountUsageFetcher` for the ephemeral-process fallback.
+  `classifyAccountUsageError` is the split between "this account/binary
+  has nothing to report" (`ErrAccountUsageUnavailable`) and a real
+  failure. Caching lives in `internal/codexusage`.
 - `notification_catalog.go` — the pinned catalogue of upstream
   notification methods, the derived `optOutNotificationMethods` sent at
   initialize, the shared `codexInitializeParams` builder, and the
@@ -160,6 +174,36 @@ over stdio.
   enumerate, stop one, stop all model-initiated background PTYs
   (`session_background.go`). `terminate` joins on the `processId` the
   item meta already carries.
+- `thread/settings/update` — `#[experimental]` upstream, so it rides the
+  `capabilities.experimentalApi` every AO session handshake already sets.
+  Pushes a model / effort / `serviceTier` change into Codex's own thread
+  state BETWEEN turns (`thread_settings_push.go`), and gets the
+  authoritative
+  `thread/settings/updated` echo back instead of assuming. It is an
+  addition to the `turn/start` overrides below, never a replacement:
+  those already made the change next-turn-effective, so a codex that
+  refuses the method degrades to exactly the previous behavior. Two
+  rules the code enforces:
+  - **Never mid-turn.** The app layer gates the call on the thread being
+    idle (`app_session_config.go#threadTurnInFlight`). The RPC's value is
+    the echo and the absence of a restart, not mutating a running turn.
+  - **Runtime-mode axes are not routed through it.** `approvalPolicy`,
+    `sandboxPolicy` and `approvalsReviewer` stay on `turn/start` by
+    deliberate design (see RuntimeMode in the parent guide); pushing
+    them here would also arm the echo check against fields the
+    handshake already verifies.
+  Its params are the same double-option shape as `turn/start`'s: an
+  omitted key means "unchanged", an explicit `null` clears to the config
+  default. That is why turning fast mode OFF sends `serviceTier: null`
+  rather than omitting it, and why the clear is scoped to a tier AO
+  itself asserted — a user's `config.toml` tier must survive.
+- `account/usage/read` — Codex's account-level token report (lifetime /
+  peak-day / streak / longest-turn totals plus ~12 months of daily
+  buckets). Global (`serialization: None`), so it needs no thread
+  context: a live session answers it in one round trip and
+  `AccountUsageFetcher` starts a short-lived app-server when none is.
+  Absence is a state, not a failure — an API-key login has no usage
+  profile at all.
 - `turn/start`, `turn/steer`, `turn/interrupt` — deliver, steer, and stop
   user turns. `turn/start` carries per-turn config overrides (`model`,
   `effort`, `serviceTier`, `approvalPolicy`, `sandboxPolicy`,

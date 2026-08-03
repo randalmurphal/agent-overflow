@@ -45,6 +45,7 @@ The CLI emits newline-delimited JSON. Every line has a top-level
 | `result` | `parseResult` | **Turn-complete signal.** One per CLI turn. |
 | `control_request` | `parseControlRequest` | Bidirectional. Inbound: `can_use_tool`, `exit_plan_mode`. Outbound (client → CLI): `interrupt`, `stop_task`, `set_permission_mode`, `mcp_set_servers`, `mcp_authenticate`, `mcp_oauth_callback_url`, `mcp_status`. |
 | `rate_limit_event` | `parseRateLimitEvent` | Rate limit state changes. |
+| `command_lifecycle` | `parseCommandLifecycle` | Delivery ack for a user message written to stdin, keyed by the client-minted `uuid`. See [§command_lifecycle](#command_lifecycle--stdin-message-delivery-acks-verified-21219). |
 
 Unknown `type` values are dropped silently by the dispatcher, logged
 with the raw line for diagnosability. Every envelope carries
@@ -192,6 +193,51 @@ Three observations that drive parser behavior:
   this instead of assuming `200_000`
 - `permission_denials: []` — list of declined tool calls
 - `errors: []` — present when `is_error` or on interrupt
+- `fast_mode_state` / `fast_mode_disabled_reason` — see
+  [§fast_mode_state](#fast_mode_state--fast_mode_disabled_reason-verified-21219)
+
+### `fast_mode_state` / `fast_mode_disabled_reason` (verified 2.1.219)
+
+Two OPTIONAL top-level fields the CLI restates on **every `result`
+envelope** and on **`system/init`**. They report whether the running
+session is actually serving turns in fast mode — which is not the same
+question as whether the client asked for it.
+
+```json
+{"type":"result", …, "fast_mode_state":"off",
+ "fast_mode_disabled_reason":"sdk_opt_in_required"}
+```
+
+`fast_mode_state` values seen: `on`, `off`, `cooldown` (paused after a
+rate limit).
+
+`fast_mode_disabled_reason` enum on the 2.1.219 binary:
+`not_first_party`, `disabled_by_env`, `unknown`, `model_not_allowed`,
+`sdk_opt_in_required`, `pending`, `free`, `preference`,
+`extra_usage_disabled`, `network_error`.
+
+⚠ **Version tolerance.** The reason field was added between 2.1.105 and
+2.1.219. `internal/provider/claude/testdata/real_output.ndjson` (2.1.105)
+carries `fast_mode_state` on `result` and no reason key anywhere. An
+absent field is therefore **no signal**, never `off` — a parser or UI that
+defaults absence to "off" reports a denial the binary never made.
+`extractFastModeStatus` returns `(nil, false)` when neither key is
+present, and the frontend treats "no report yet" as unknown.
+
+**AO context.** AO passes `--settings {"fastMode":true}` on fast-mode
+threads, which DOES satisfy the `sdk_opt_in_required` gate for real
+sessions. Seeing `sdk_opt_in_required` on a live thread session is
+therefore an AO bug worth surfacing, not a normal state. The one place it
+is correct is the zero-token account probe, which never opts in — hence
+its presence in
+`docs/references/fixtures/claude/initialize_models_20260802.json`.
+
+**AO handling.** Live session state, not history: it flows
+`parse_result.go` / `parse_system.go` → `WireTurnCompleteMeta.FastMode` /
+`SessionInfo.FastMode` → triage `provider:fast_mode` → the frontend's
+per-thread `fastModeState` store, and is never persisted (Core Principle
+2 — don't duplicate provider state). The composer's fast-mode menu uses
+it to qualify a toggle the provider is not honouring.
 
 ### Context-window usage
 
@@ -266,14 +312,58 @@ Do not update the parent chat meter from Agent/Task side signals:
 assistant/stream event carrying `parent_tool_use_id`. Those belong to
 the subagent's private context/cost accounting.
 
-`get_context_usage` is the canonical `/context` breakdown and returns
-`totalTokens`, `maxTokens`, `rawMaxTokens`, categories, and `apiUsage`.
-Use it when exact category parity is needed (`totalTokens` matches
-top-level on non-advisor turns; advisor parity is still pending an
-explicit capture); otherwise the passive `message_delta.usage`
-top-level is enough for the live meter.
+#### `get_context_usage` (verified 2.1.219)
+
+`get_context_usage` is the canonical `/context` breakdown — the CLI
+routes the slash command and this control subtype through one
+`collectContextData` path, so the numbers are identical to what
+`/context` prints. It returns `totalTokens`, `maxTokens`,
+`rawMaxTokens`, `percentage`, `model`, `categories[]`, `gridRows[]`,
+per-item drilldowns (`memoryFiles`, `mcpTools`, `agents`,
+`slashCommands`, `skills`, `messageBreakdown`), the autocompact state
+(`autocompactSource`, `autoCompactThreshold`, `isAutoCompactEnabled`),
+and `apiUsage`. Use it when exact category parity is needed
+(`totalTokens` matches top-level on non-advisor turns; advisor parity
+is still pending an explicit capture); otherwise the passive
+`message_delta.usage` top-level is enough for the live meter.
+
+Three properties matter to any consumer:
+
+- **It consumes no turn and makes no API call.** The stream-json input
+  loop handles it out of band, so it answers on a session that has
+  never received a user message and is safe to issue mid-turn.
+- **Deferred categories are listed but NOT counted.** A row with
+  `isDeferred:true` (unloaded tool definitions) is excluded from
+  `totalTokens`. Summing every row overcounts by the deferred total;
+  the non-deferred rows sum to exactly `rawMaxTokens`, with
+  `Free space` as the remainder term.
+- **`apiUsage` is `null` before the process's first API call**, so it is
+  absent on exactly the fresh-session case. It carries the same
+  quantity `message_delta.usage` already supplies.
+
+⚠ **Version tolerance.** `autocompactSource` and `messageBreakdown`'s
+`redirectedContextTokens` / `unattributedTokens` are newer than the
+2.1.88 SDK schema; `deferredBuiltinTools`, `systemTools`, and
+`systemPromptSections` are optional and were absent on the 2.1.219
+capture. Category NAMES are not an enum — decode them as data.
+
+**AO handling.** On-demand only, and never persisted (Core Principle 2
+— the reading describes the provider process right now). The session
+method is `Session.GetContextUsage` /
+`ParseContextUsage` (`internal/provider/claude/context_usage.go`),
+surfaced through the `GetThreadContextUsage` binding and the
+`ContextBreakdown.svelte` expansion inside the context meter's popover;
+a thread with no live Claude session gets a typed "not available"
+answer rather than a synthesized one. AO decodes only
+`totalTokens` / `maxTokens` / `rawMaxTokens` / `percentage` / `model` /
+`categories[]` — `gridRows` is a terminal-UI artifact, the drilldowns
+are already summarised by their category row, and the per-category
+`color` is a CLI theme token.
 
 Captured references:
+`fixtures/claude/context_usage_control_20260803.summary.json`
+(2.1.219 — the control_response shape, the deferred-exclusion
+arithmetic, and the version drift above),
 `fixtures/claude/context_usage_spike_20260429.summary.json`
 (Bash + Agent subagent, single iteration on message_delta),
 `fixtures/claude/advisor_context_usage_20260522.summary.json`
@@ -296,7 +386,7 @@ Other captured usage-adjacent signals worth preserving for future UI:
 | `result.modelUsage[advisor_model]` | Advisor's own per-call usage (separate model run, separate context window). | Subagent-style private accounting; never updates the parent meter. |
 | `system.task_notification.usage` | Subagent/background-task progress or row-level token display. | Subagent-private accounting; do not update parent meter. |
 | `user.tool_use_result.usage` and `tool_use_result.totalTokens` | Completed Agent/Task details and subagent cost display. | Subagent-private accounting; do not update parent meter. |
-| `control_response` for `get_context_usage` | Canonical `/context` parity: exact `totalTokens`, `maxTokens`, category breakdown, and `apiUsage`; useful on resume/start or for audits. | Use `totalTokens` directly when actively requested. |
+| `control_response` for `get_context_usage` | Canonical `/context` parity: exact `totalTokens`, `maxTokens`, category breakdown, and `apiUsage`. SHIPPED as the meter popover's "Show exact breakdown" expansion (`GetThreadContextUsage` → `ContextBreakdown.svelte`) — user-initiated, live-session-only, never cached or polled. | Use `totalTokens` directly when actively requested. It does NOT drive the always-on meter: that stays on the passive `message_delta.usage` top-level, which costs nothing and updates every delta. |
 | `system.compact_boundary` `compactMetadata.preTokens` | The CLI's own measurement of context at auto-compact time. | Read-only ground truth for validating the meter; correlates with message_delta top-level within 1-2%. Do not drive the meter from this — it only fires at compaction. |
 | `context_management.applied_edits` | Potential future compaction/context-edit visualization; observed as empty in this spike. | Bookkeeping only. |
 
@@ -324,10 +414,17 @@ a convenience string only.
  "slash_commands": [...],
  "claude_code_version": "2.1.112",
  "output_style": "daily-driver",
- "apiKeySource": "none"}
+ "apiKeySource": "none",
+ "fast_mode_state": "on"}
 ```
 
-Emits `EventInit`. Parser extracts model id for usage pricing.
+Emits `EventInit`. Parser extracts model id for usage pricing, and the
+optional fast-mode pair (same shape and same version caveat as on
+`result` — see
+[§fast_mode_state](#fast_mode_state--fast_mode_disabled_reason-verified-21219)).
+`system/init` is the only fast-mode report a thread gets before its first
+turn ends, and the one that reflects a fresh session's spawn flags after
+a resume.
 
 ## `system/model_refusal_fallback`
 
@@ -705,6 +802,87 @@ mispair). Re-spike per [`spike-policy.md`](spike-policy.md) before
 assuming it still holds; `claude/session.go` rejects non-canonical input
 up front so the row, checkpoint, envelope, and echoed JSONL `uuid` stay
 byte-identical.
+
+---
+
+## `command_lifecycle` — stdin message delivery acks (verified 2.1.219)
+
+**Fires**: for **every** user message written to the CLI's stdin, direct
+sends included — not just mid-turn ones. Spiked 2026-08-02 on claude
+2.1.219 with AO's exact flag set.
+
+```json
+{"type":"command_lifecycle","command_uuid":"<client-minted uuid>","state":"queued"}
+```
+
+`command_uuid` is the **client-minted top-level `uuid`** AO put on the
+outbound envelope (see
+[§Outbound user message](#outbound-user-message--client-supplied-uuid---replay-user-messages)),
+so the ack correlates with no ordering assumptions.
+
+| `state` | Meaning |
+|---|---|
+| `queued` | The CLI accepted the envelope and holds it. Written immediately on stdin write, before the message reaches the model. |
+| `started` | The message reached the model. |
+| `completed` | The turn the message drove has finished. |
+| `cancelled` | The message will **never** be delivered. |
+
+### Why this is better than the `isReplay` echo
+
+AO's existing confirmation for a queued send is the `user{isReplay:true}`
+echo, which can arrive an arbitrarily long time after the stdin write —
+the whole remaining turn (documented above under
+[§Queued-message consumption](#queued-message-consumption--two-flavors-claude-21202--21205)).
+The lifecycle frames are prompt and explicit. They do NOT replace the
+echo: the echo is still what confirms the message entered context and
+what stamps `provider_item_id` on the row. The acks answer the different
+question of what is happening to a message that is still pending.
+
+### Reading the delivery flavour off the ordering
+
+A user message written to stdin mid-turn is **never dropped**. Default
+handling is a queue at priority `"next"`:
+
+- During a turn that still has tool iterations, the CLI's queue processor
+  drains it **mid-turn** (between a tool result and the next API round)
+  and the running turn visibly changes course — one `result`, no second
+  `system/init`.
+- During pure text streaming with no further tool iterations, it degrades
+  to running as the **next** turn after the current one completes.
+
+`started` **before** the running turn's `result` ⇒ delivered mid-turn.
+`started` **after** ⇒ it ran as a new turn. AO classifies this in triage
+by comparing the wire round open when the `queued` ack landed against the
+one open at `started` (`internal/triage/command_lifecycle.go`), because
+the enqueue-time round is not recoverable after the fact.
+
+### ⚠ The `priority` field is known and deliberately unused
+
+The queue honours a `priority` on the outbound envelope, and
+`priority:"now"` would force immediate mid-turn delivery rather than
+"next drain point". **AO does not send any `priority` field** — hard
+steer is a separate, on-hold scope decision, not an oversight. Documented
+here so the next reader does not re-derive it, and so adding it stays a
+deliberate act. The same drift caveat as the client-supplied `uuid`
+applies: this is an undocumented binary contract, spike before relying on
+it.
+
+### Version tolerance
+
+Older CLIs emit no `command_lifecycle` frames at all. Absence must never
+strand UI state: AO's queue events alone drive the pending overlay, the
+`isReplay` echo remains the confirmation signal, and every lifecycle
+detail is purely additive labelling. AO also drops any frame whose
+`state` it does not recognise rather than forwarding an unhandled value.
+
+### AO handling
+
+`parse_command_lifecycle.go` → `EventCommandLifecycle` → triage
+`handleCommandLifecycle`, which resolves the AO row id from the
+pending-send registry and emits `provider:command_lifecycle`. Live UI
+state only; nothing is persisted. The correlation is registered at
+`queued` and survives the wire echo popping the pending-send FIFO, so
+both arrival orders resolve.
 
 ---
 

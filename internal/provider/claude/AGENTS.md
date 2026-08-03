@@ -48,6 +48,16 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   and `appendToolResultCompletion` (standard inline path).
 - `parse_control.go` — `control_request` envelopes: CanUseTool
   approvals and the exit_plan_mode signal.
+- `parse_command_lifecycle.go` — `command_lifecycle` envelopes: the
+  CLI's delivery ack for a user message we wrote to stdin, keyed by
+  the client-minted `command_uuid`. Stateless — correlation lives in
+  triage, which owns the pending-send registry those ids belong to.
+  Unknown `state` values are dropped, not forwarded. See
+  claude-wire.md §command_lifecycle.
+- `fastmode.go` — `fast_mode_state` / `fast_mode_disabled_reason`
+  extraction, shared by `parse_result.go` and `parse_system.go`
+  (init). Both keys are optional and version-dependent: absence is
+  NO SIGNAL, never "off".
 - `parse_stream.go` — `stream_event` envelopes (incremental deltas
   between assistant-message boundaries).
 - `usage_accounting.go` — per-turn usage extraction for `result`
@@ -60,6 +70,15 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   `*_20260703.ndjson` fixtures below.
 - `protocol_meta.go` — `compact_boundary` / context-window meta
   normalisation shared across envelopes.
+- `context_usage.go` — the `get_context_usage` outbound control_request
+  and its response type (`Session.GetContextUsage` /
+  `ParseContextUsage`). This is the canonical `/context` breakdown, read
+  ON DEMAND from a live session and never persisted — the always-on
+  meter stays on the passive `message_delta.usage` signal in
+  `parse_stream.go`. Category names pass through as data, not an enum,
+  and `isDeferred` rows are excluded from `totalTokens` (summing every
+  row overcounts). See claude-wire.md §`get_context_usage` and the
+  `context_usage_control_20260803` fixture.
 - `approvals.go` — approval-response encoding for the SDK.
 - `session.go` — process lifecycle + read loop that feeds ParseLine.
   The read loop's control_response pre-handler also flags the parser's
@@ -192,7 +211,10 @@ Summary of what `ParseLine` dispatches:
   switch, `live_update.go` — acked mid-turn, applies from the next
   turn; verified 2.1.205), the four MCP control
   subtypes (`mcp_set_servers` / `mcp_authenticate` /
-  `mcp_oauth_callback_url` / `mcp_status`, all in `mcp.go`), and
+  `mcp_oauth_callback_url` / `mcp_status`, all in `mcp.go`),
+  `get_context_usage` (the canonical `/context` breakdown,
+  `context_usage.go` — answered out of band, consumes no turn and makes
+  no API call), and
   more. Every outbound subtype shares a single `sendControlRequest`
   helper that owns the allocate/register/marshal/write/await-response
   state machine; each caller adds its own response interpretation
@@ -209,6 +231,10 @@ Summary of what `ParseLine` dispatches:
   for the full schema and the verified `stop_task` / `mcp_status`
   flows.
 - `rate_limit_event` — rate-limit state.
+- `command_lifecycle` — per-message delivery ack for stdin user
+  messages (`queued` / `started` / `completed` / `cancelled`). Live UI
+  state, never history; older CLIs emit none, so nothing may depend on
+  its presence.
 
 `parent_tool_use_id` on tool events correlates subagent (`Task`) work
 back to the parent tool call.
@@ -344,6 +370,13 @@ start and complete. These are load-bearing rules enforced by
   `internal/claudemodels`'s merge policy: the alias/`[1m]`
   inconsistency, the two rows that resolve to one model, and Haiku's
   missing effort support all come from here.
+- `docs/references/fixtures/claude/context_usage_control_20260803.summary.json`
+  — sanitized capture of a `get_context_usage` control_response on
+  2.1.219: the full key set, the `categories[]` rows, and the
+  arithmetic the UI leans on (deferred rows excluded from
+  `totalTokens`; non-deferred rows sum to `rawMaxTokens`). Also records
+  the drift from the 2.1.88 SDK schema. Go regression guards are the
+  `TestParseContextUsage_*` set in `context_usage_test.go`.
 - `docs/references/fixtures/claude/monitor_wakeup_20260728.summary.json`
   — sanitized shape summary for the Monitor watch-task launch ack
   (§E7: `{taskId, timeoutMs, persistent}` — background `local_bash`

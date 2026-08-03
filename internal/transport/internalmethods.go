@@ -93,16 +93,16 @@ var InternalServiceMethods = map[string]bool{
 // any LocalOnlyMethods entry is missing from GeneratedMethods.
 var LocalOnlyMethods = map[string]bool{
 	// 1. RCE-equivalent (FS / process touching).
-	"OpenTerminal":                   true,
-	"ListTerminals":                  true,
-	"GetTerminalReplay":              true,
-	"WriteTerminal":                  true,
-	"RestartTerminal":                true,
-	"CloseTerminal":                  true,
-	"CloseThreadTerminals":           true,
-	"ResizeTerminal":                 true,
-	"RefreshTerminal":                true,
-	"MoveThreadTerminals":            true,
+	"OpenTerminal":         true,
+	"ListTerminals":        true,
+	"GetTerminalReplay":    true,
+	"WriteTerminal":        true,
+	"RestartTerminal":      true,
+	"CloseTerminal":        true,
+	"CloseThreadTerminals": true,
+	"ResizeTerminal":       true,
+	"RefreshTerminal":      true,
+	"MoveThreadTerminals":  true,
 	// RetryThreadWorktreeSetup executes the project's argv setup commands in
 	// the thread's worktree; GetThreadWorktreeSetup returns their captured
 	// output. RCE and the transcript of it, same pairing as
@@ -382,16 +382,23 @@ var LocalOnlyMethods = map[string]bool{
 	// Background-task control terminates host subprocesses.
 	"StopClaudeTask":                true,
 	"CleanCodexBackgroundTerminals": true,
-	"GetProviderStatuses":           true,
-	"ProbeClaudeAccount":            true,
-	"ProbeCodexAccount":             true,
-	"RecheckClaudeAccount":          true,
-	"RecheckCodexAccount":           true,
-	"ListProviderAccounts":          true,
-	"LoginProviderAccount":          true,
-	"SwitchProviderAccount":         true,
-	"RemoveProviderAccount":         true,
-	"RefreshProviderAccountUsage":   true,
+	// GetThreadContextUsage drives a live Claude session over its stdio
+	// control channel (a get_context_usage control_request). It reads
+	// rather than mutates, but it is still traffic on the local provider
+	// subprocess, and its answer names the memory files, skills, and
+	// agents loaded from the host — same session-control class as the
+	// stop primitives above.
+	"GetThreadContextUsage":       true,
+	"GetProviderStatuses":         true,
+	"ProbeClaudeAccount":          true,
+	"ProbeCodexAccount":           true,
+	"RecheckClaudeAccount":        true,
+	"RecheckCodexAccount":         true,
+	"ListProviderAccounts":        true,
+	"LoginProviderAccount":        true,
+	"SwitchProviderAccount":       true,
+	"RemoveProviderAccount":       true,
+	"RefreshProviderAccountUsage": true,
 
 	// claude-tui take-control: Attach arms raw-output fan-out and Replay
 	// returns the PTY frame buffer; Input/Resize/Refresh/SetControl steer the
@@ -543,6 +550,18 @@ var LocalOnlyMethods = map[string]bool{
 	"ListMcpServerStatuses":        true,
 	"RefreshMcpServerStatus":       true,
 	"TriggerMcpAuth":               true,
+
+	// 8b. Codex account-level usage. GetCodexAccountUsage drives the user's
+	// own `codex` CLI — a live session's app-server when one is open, a
+	// short-lived subprocess otherwise (category 1) — under the pinned
+	// provider credentials, and returns account-scoped figures for the
+	// signed-in ChatGPT login: lifetime tokens, peak day, streaks, and a
+	// per-day history covering every client that account has ever used, not
+	// just this app. That is the same account-enumeration shape category 6
+	// locks down. Note this is NOT GetUsageStats, which stays wire-reachable:
+	// that one reads AO's own SQLite ledger and discloses nothing about the
+	// login.
+	"GetCodexAccountUsage": true,
 
 	// 9. In-app self-update. CheckForUpdate / ListReleases / DownloadUpdate
 	// reach out to the GitHub releases API and stream a binary to disk

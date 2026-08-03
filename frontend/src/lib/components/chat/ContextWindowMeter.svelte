@@ -8,11 +8,28 @@
   import { useHoverPopover } from './hoverPopover.svelte';
   import MeterRing, { METER_BUTTON_CLASS } from './MeterRing.svelte';
   import Popover from '../primitives/Popover.svelte';
+  import ContextBreakdown from './ContextBreakdown.svelte';
 
   let { data, thread }: { data: ContextWindow; thread?: Thread | null } = $props();
 
   let buttonEl: HTMLButtonElement | undefined = $state(undefined);
+  // Expanding the breakdown is a click, not a hover: it costs a control
+  // round-trip to the live CLI plus a full re-tokenization of the
+  // conversation, so it must stay user-initiated. Hovering the meter is
+  // free and keeps showing the streaming estimate.
+  let breakdownOpen = $state(false);
   const popover = useHoverPopover();
+
+  // Closing the popover unmounts the breakdown, which is what keeps the
+  // exact reading from outliving the moment it was taken (Core Principle 2
+  // — no cached copy of provider state). Reopening re-reads.
+  $effect(() => {
+    if (!popover.show) breakdownOpen = false;
+  });
+
+  // Codex reports context as a running token count with no categories, so
+  // there is nothing to expand there.
+  let canReadBreakdown = $derived(thread?.provider === 'claude');
 
   let maxTokens = $derived(data.maxTokens ?? 0);
   // Trust the wire `usedPercentage`. The canonical normalizer lives in
@@ -112,6 +129,19 @@
           </p>
         {/if}
       </div>
+      {#if canReadBreakdown && thread}
+        {#if breakdownOpen}
+          <ContextBreakdown threadId={thread.id} />
+        {:else}
+          <button
+            type="button"
+            onclick={() => (breakdownOpen = true)}
+            class="mt-1.5 text-xs text-fg-hint hover:text-fg underline underline-offset-2 decoration-dotted cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-[var(--radius-field)]"
+          >
+            Show exact breakdown
+          </button>
+        {/if}
+      {/if}
     </div>
   {/snippet}
 </Popover>

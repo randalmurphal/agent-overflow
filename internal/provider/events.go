@@ -129,6 +129,15 @@ const (
 	// registered by the send path.
 	EventUserText EventKind = "user_text"
 
+	// EventCommandLifecycle is Claude's delivery ack for a user message
+	// AO wrote to stdin, keyed by the uuid AO stamped on the envelope
+	// (`command_uuid`). It reports queued → started → completed, or
+	// cancelled for a message the CLI will never deliver. Live UI state
+	// only — the durable record of the message is its user_text row, and
+	// the wire echo remains the row's confirmation signal. See
+	// docs/references/claude-wire.md §command_lifecycle.
+	EventCommandLifecycle EventKind = "command_lifecycle"
+
 	// Heavy events — persisted to SQLite, meta emitted to frontend.
 	EventDiff          EventKind = "diff"
 	EventCommandOutput EventKind = "command_output"
@@ -175,6 +184,7 @@ var AllEventKinds = []EventKind{
 	EventCodexExecResult,
 	EventTerminalInteraction,
 	EventUserText,
+	EventCommandLifecycle,
 	EventDiff,
 	EventCommandOutput,
 	EventThinking,
@@ -244,6 +254,12 @@ type WireTurnCompleteMeta struct {
 	ModelUsage         []ModelTokenUsage
 	Aborted            bool
 	ErrorMessage       string
+	// FastMode is the provider's fast-mode report for the turn that just
+	// ended. Nil when the envelope carried no fast-mode keys — see
+	// FastModeStatus for why absence is silence, not "off". Live state,
+	// not turn accounting: triage forwards it to the frontend and does
+	// not persist it.
+	FastMode *FastModeStatus
 }
 
 func (*WireTurnCompleteMeta) isTurnCompleteMeta() {}
@@ -274,6 +290,35 @@ func (*TruncatedTurnCompleteMeta) isTurnCompleteMeta() {}
 // (the `{stop:true}` ack reports `scheduledFor: 0, stopped: true`).
 type SessionWakeupMeta struct {
 	ScheduledForUnixMs int64 `json:"scheduledForUnixMs"`
+}
+
+// CommandLifecycleState is one of the four delivery states Claude's
+// `command_lifecycle` frames report for a stdin user message. The set is
+// closed by the parser: an unrecognised state is dropped rather than
+// forwarded, so no consumer has to carry an "unknown" branch.
+type CommandLifecycleState string
+
+const (
+	// CommandQueued — the CLI accepted the envelope and holds it. Emitted
+	// immediately on write, before the message reaches the model.
+	CommandQueued CommandLifecycleState = "queued"
+	// CommandStarted — the message reached the model. Arriving BEFORE the
+	// running turn's `result` means it was drained mid-turn and redirected
+	// that turn; after means it began a fresh turn.
+	CommandStarted CommandLifecycleState = "started"
+	// CommandCompleted — the turn the message drove has finished.
+	CommandCompleted CommandLifecycleState = "completed"
+	// CommandCancelled — the message will NEVER be delivered.
+	CommandCancelled CommandLifecycleState = "cancelled"
+)
+
+// CommandLifecycleMeta is the typed payload for EventCommandLifecycle.
+// CommandUUID is the client-minted uuid AO put on the outbound envelope's
+// top-level `uuid` field — the same value that lands on the user_text
+// row's `provider_item_id` meta.
+type CommandLifecycleMeta struct {
+	CommandUUID string                `json:"commandUuid"`
+	State       CommandLifecycleState `json:"state"`
 }
 
 // TaskCreateMeta is the typed payload for EventTaskCreate.

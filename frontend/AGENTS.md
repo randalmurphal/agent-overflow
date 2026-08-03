@@ -406,6 +406,33 @@ corrupt every project on the machine. Use
       shapes and both layers) and
       `chat/streamingIncrementalReuse.browser.test.ts` (DOM identity
       of sealed `<li>`s and `<tr>`s through a real timeline drain).
+  13. **marker-line alignment isn't code** (`marked/marked-list.js`,
+      `tokenizeListItemContent`; `marked/index.js` calls it from
+      `loosenTailItems`) — CommonMark reads five or more columns between a
+      list marker and its content as "list item starting with indented
+      code", so `-     $499 per month` is spec-correctly a code block.
+      LLM prose uses that spacing to ALIGN values, never to open a code
+      block, and the mis-render is a full code card per bullet. Deliberate
+      spec deviation, same scoping as t3-code's remark fix (54f167e2e),
+      widened to include the exactly-five-column form t3 leaves as code:
+      when a list item's FIRST child token is indented-style `code` (so it
+      opened on the marker's own line), the item is re-lexed with the
+      marker line's leading run stripped from every line, clamped per
+      line. The gate tests the TOKEN, not the raw indentation — block
+      extensions tokenize ahead of marked's built-ins, so an aligned
+      `$$…$$` is math and must not be dedented out from under the math
+      extension. Untouched: `- item\n\n        deep indent` (code, but not
+      the first child), `-\n\n    code` (blank marker line closes the
+      item; the code is the list's sibling), and any fence
+      (`codeBlockStyle` is only `'indented'` for the indented form).
+      `tokenizeListItemContent` is the one chokepoint for tokenizing item
+      content — `finalizeList`'s tight and loose passes and hunk 12's
+      `loosenTailItems` all route through it, so a streamed render can't
+      disagree with its settled one. Upstream-PR candidate only as an
+      opt-in: it is a knowing spec deviation, not a marked bug.
+      Regression: `markdown/listMarkerCode.test.ts` (artifact shapes,
+      the deliberate-code shapes that must survive, and streamed-vs-settled
+      parity across chunkings with the list-append fast path engaged).
 
 ## References
 

@@ -23,6 +23,25 @@ const claudeAccountJSON = `{"email":"mock@agent-overflow.test","subscriptionType
 // `account` out of it.
 const claudeInitializeResponsePayload = `{"commands":[],"agents":[],"account":` + claudeAccountJSON + `}`
 
+// claudeContextUsageResponsePayload is the inner response payload for a
+// control_request{subtype:"get_context_usage"} ack. Static: the mock has no
+// conversation to tokenize, and the surface under test (the meter's
+// breakdown popover) only needs a well-formed answer to render.
+//
+// Shaped after the real 2.1.219 capture in
+// docs/references/fixtures/claude/context_usage_control_20260803.summary.json,
+// including the arithmetic the UI depends on: the deferred row is NOT part
+// of totalTokens, and the non-deferred rows sum to rawMaxTokens.
+const claudeContextUsageResponsePayload = `{"totalTokens":24028,"maxTokens":200000,"rawMaxTokens":200000,"percentage":12,"model":"claude-mock-1","isAutoCompactEnabled":true,"apiUsage":null,"categories":[` +
+	`{"name":"System prompt","tokens":4027,"color":"promptBorder"},` +
+	`{"name":"System tools","tokens":15397,"color":"inactive"},` +
+	`{"name":"System tools (deferred)","tokens":13467,"color":"inactive","isDeferred":true},` +
+	`{"name":"Memory files","tokens":1424,"color":"claude"},` +
+	`{"name":"Skills","tokens":3067,"color":"warning"},` +
+	`{"name":"Messages","tokens":113,"color":"purple_FOR_SUBAGENTS_ONLY"},` +
+	`{"name":"Autocompact buffer","tokens":33000,"color":"inactive"},` +
+	`{"name":"Free space","tokens":142972,"color":"promptBorder"}]}`
+
 // claudeAdapter speaks Claude Code's stream-json NDJSON protocol:
 // inbound user envelopes trigger turns, inbound control_requests are
 // success-acked out-of-band, and inbound control_responses resolve the
@@ -113,14 +132,56 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		// user turn. The init + echo protocol frames (see the adapter
 		// doc) are written synchronously here so they precede every
 		// scenario step of the turn.
+		commandUUID := claudeEnvelopeUUID(line)
+		a.writeCommandLifecycle(commandUUID, "queued")
 		n, vars := a.e.beginTurn()
 		a.e.rep.report(control.Report{
 			Kind: control.ReportUserInput, Turn: n, Input: claudeUserText(line),
 		})
 		a.writeInit(vars)
 		a.echoUserEnvelope(line)
+		// `started` AFTER the init: this mock always picks a message up
+		// into a turn of its own, and writing the ack once the init has
+		// opened that turn is what makes the app classify the delivery
+		// as new_turn rather than mid-turn. See claude-wire.md
+		// §command_lifecycle for the real CLI's two flavours — this mock
+		// models only the immediate-pickup one, so the mid-turn-drain
+		// classification is covered by the triage unit tests instead.
+		a.writeCommandLifecycle(commandUUID, "started")
 		a.e.enqueueTurn(n)
 	}
+}
+
+// writeCommandLifecycle emits the CLI's per-message delivery ack. Skipped
+// entirely when the app supplied no `uuid` — the frames key on it, and
+// inventing one would fabricate a correlation the app cannot match.
+// Older real CLIs emit no lifecycle frames at all, which is exactly what
+// a uuid-less envelope reproduces here.
+//
+// `completed` is deliberately not emitted: turn termination is
+// scenario-driven, so the adapter has no honest point to write it from,
+// and no app state depends on it.
+func (a *claudeAdapter) writeCommandLifecycle(commandUUID, state string) {
+	if commandUUID == "" {
+		return
+	}
+	a.w.writeLine(mustJSON(map[string]any{
+		"type":         "command_lifecycle",
+		"command_uuid": commandUUID,
+		"state":        state,
+	}), 0, 0)
+}
+
+// claudeEnvelopeUUID reads the client-minted top-level `uuid` the app
+// stamps on outbound user envelopes.
+func claudeEnvelopeUUID(line []byte) string {
+	var env struct {
+		UUID string `json:"uuid"`
+	}
+	if err := json.Unmarshal(line, &env); err != nil {
+		return ""
+	}
+	return env.UUID
 }
 
 // sendInterruptedTurn emits the real Claude Code interrupted-result shape
@@ -220,13 +281,16 @@ func (a *claudeAdapter) echoUserEnvelope(line []byte) {
 }
 
 // writeClaudeControlAck answers an inbound control_request with the
-// standard success control_response. The initialize subtype carries the
-// account payload the app's account probe (and any live initialize)
-// expects; everything else gets an empty response object.
+// standard success control_response. The initialize and get_context_usage
+// subtypes carry the payloads their callers actually read; everything else
+// gets an empty response object.
 func writeClaudeControlAck(w *lineWriter, requestID, subtype string) {
 	payload := "{}"
-	if subtype == "initialize" {
+	switch subtype {
+	case "initialize":
 		payload = claudeInitializeResponsePayload
+	case "get_context_usage":
+		payload = claudeContextUsageResponsePayload
 	}
 	w.writeLine(fmt.Sprintf(
 		`{"type":"control_response","response":{"subtype":"success","request_id":%s,"response":%s}}`,

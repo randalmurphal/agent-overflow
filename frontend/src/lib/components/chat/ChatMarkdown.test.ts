@@ -279,6 +279,35 @@ describe('<ChatMarkdown> path-link rendering', () => {
     expect(container.textContent).toContain('More text.');
   });
 
+  // Token-level scope for the marker-line-alignment patch hunk lives in
+  // `markdown/listMarkerCode.test.ts`; this pair closes the loop from
+  // tokens to DOM — the reported artifact is a code card per bullet, and
+  // the deliberate indented block one blank line down must still get one.
+  it('renders a space-aligned bullet value as list text, not a code block', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: { source: '- Starter\n-     $499 per month', pathRefs: [] },
+    });
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('li').length).toBe(2);
+    });
+
+    expect(container.querySelector('[data-code-source]')).toBeNull();
+    expect(container.querySelectorAll('li')[1]?.textContent).toContain('$499 per month');
+  });
+
+  it('still renders an indented code block that starts below the marker line', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: { source: '- item one\n\n        deep indent', pathRefs: [] },
+    });
+
+    await waitFor(() => {
+      const codeBlock = container.querySelector('[data-code-source]');
+      expect(codeBlock).not.toBeNull();
+      expect(codeBlock?.getAttribute('data-code-source')).toContain('deep indent');
+    });
+  });
+
   it('does not encode the workspace param when workspacePath is empty', async () => {
     const { container } = render(ChatMarkdown, {
       props: {

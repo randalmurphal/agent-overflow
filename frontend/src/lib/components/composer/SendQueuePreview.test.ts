@@ -5,6 +5,7 @@ import SendQueuePreview from './SendQueuePreview.svelte';
 import { buildPane } from '../../../test/helpers/chat';
 import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import {
+  applyFlushedLifecycle,
   markItemsFlushed,
   replaceQueueForThread,
   resetForTest as resetSendQueueForTest,
@@ -91,6 +92,66 @@ describe('<SendQueuePreview>', () => {
       'span[aria-hidden="true"]',
     );
     expect(prefix?.className).toContain('animate-pulse');
+  });
+
+  // Provider delivery acks (Claude `command_lifecycle`) are additive: a
+  // row with no lifecycle renders exactly as it did before the channel
+  // existed, which is what a Codex thread or an older Claude CLI gets.
+  describe('provider delivery acks', () => {
+    async function renderFlushed(lifecycle?: Parameters<typeof applyFlushedLifecycle>[2]) {
+      const pane = await buildPane();
+      markItemsFlushed('thread-1', [
+        { queueItemId: 'q-1', userItemId: 'u-1', message: 'steer me' },
+      ]);
+      if (lifecycle) applyFlushedLifecycle('thread-1', 'u-1', lifecycle);
+      return render(SendQueuePreview, { props: { pane } });
+    }
+
+    it('leaves an unacked row exactly as before', async () => {
+      const { getByTestId } = await renderFlushed();
+      const row = getByTestId('send-queue-preview-row');
+      expect(row.getAttribute('data-lifecycle')).toBeNull();
+      expect(row.getAttribute('title')).toBe(
+        'Sent to the agent, waiting for it to enter context',
+      );
+    });
+
+    it('names a mid-turn delivery as steering', async () => {
+      const { getByTestId } = await renderFlushed({ state: 'started', delivery: 'mid_turn' });
+      const row = getByTestId('send-queue-preview-row');
+      expect(row.getAttribute('data-lifecycle')).toBe('started');
+      expect(row.getAttribute('data-delivery')).toBe('mid_turn');
+      expect(row.textContent).toContain('steering');
+      expect(row.getAttribute('title')).toBe('Delivered into the running turn');
+    });
+
+    it('does not call a new-turn delivery steering', async () => {
+      const { getByTestId } = await renderFlushed({ state: 'started', delivery: 'new_turn' });
+      const row = getByTestId('send-queue-preview-row');
+      expect(row.textContent).not.toContain('steering');
+      expect(row.getAttribute('title')).toBe('Started as its own turn');
+    });
+
+    // A cancelled message never arrives. Without this the row would sit
+    // above the composer pulsing forever.
+    it('stops the pulse and marks a cancelled message as undelivered', async () => {
+      const { getByTestId } = await renderFlushed({ state: 'cancelled' });
+      const row = getByTestId('send-queue-preview-row');
+      expect(row.getAttribute('data-lifecycle')).toBe('cancelled');
+      expect(row.textContent).toContain('not delivered');
+      expect(
+        row.querySelector('span[aria-hidden="true"]')?.className,
+      ).not.toContain('animate-pulse');
+    });
+
+    it('stays quiet for a plain queued ack', async () => {
+      const { getByTestId } = await renderFlushed({ state: 'queued' });
+      const row = getByTestId('send-queue-preview-row');
+      expect(row.getAttribute('data-lifecycle')).toBe('queued');
+      expect(row.getAttribute('title')).toBe('The agent has this message queued');
+      expect(row.textContent).toContain('steer me');
+      expect(row.textContent).not.toContain('steering');
+    });
   });
 
   it('exposes an aria-label naming pending messages', async () => {

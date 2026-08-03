@@ -1053,12 +1053,18 @@ func (a *App) nextFlushSequenceForTurn(threadID string, turnIndex int) (int, err
 //
 //   - Codex: Steer injects into the active turn's pending_input. The
 //     message is part of the current turn. Use the active turn's index.
-//   - Claude: Send writes to stdin. Claude's useQueueProcessor only
-//     dequeues between turns (queryGuard blocks while a query is
-//     active), so the message always starts a NEW turn. Using the
-//     active turn's index would cause setOpenTurn to reset
-//     id-allocating counters for the already-running turn, producing
-//     segment ID collisions (text:T:0 overwrites previous text:T:0).
+//   - Claude: Send writes to stdin, and the CLI may drain it either
+//     MID-loop (folded into the running wire round as a
+//     `queued_command` attachment, no new system.init) or at the next
+//     turn pickup. AO gives it a NEW logical turn index either way. That
+//     is a deliberate AO choice, not a reading of the CLI: reusing the
+//     active turn's index would make setOpenTurn reset id-allocating
+//     counters for the already-running turn and collide segment ids
+//     (text:T:0 overwriting the previous text:T:0). Triage owns the
+//     mid-loop case explicitly — openQueuedEchoTurn opens the logical
+//     turn when the echo arrives with no init behind it (see
+//     queue_dispatch_turn_test.go
+//     TestDeferredFlushEcho_MidLoopConsumption_OpensLogicalTurn).
 //
 // For the non-active-turn path (shared by both providers), in-flight
 // pending sends are consulted via MaxPendingSendTurnIndex because
@@ -1103,9 +1109,14 @@ func (a *App) nextSendTurnIndex(threadID string) (int, error) {
 // dispatchFlushToProvider routes the actual provider call based on
 // session type. Codex drains prefer Steer (mid-turn pending_input);
 // the caller handles no-active-turn fallback after it can re-register
-// the pending marker at the correct fresh-turn position. Claude has no
-// Steer equivalent; sess.Send writes a user envelope that Claude's
-// mid-loop drain (query.ts:1547) consumes at the next API iteration.
+// the pending marker at the correct fresh-turn position. Claude needs no
+// second call: sess.Send writes the user envelope to stdin, which IS the
+// steer — the CLI's queue processor drains it into the running turn at
+// the next API iteration (query.ts:1547) whenever that turn still has
+// tool iterations left, and otherwise runs it as the next turn. The
+// message is never dropped in either case. See app_steer.go's doc for
+// the verified behaviour and claude-wire.md §command_lifecycle for the
+// per-message ack that reports which path it took.
 //
 // Two distinct race shapes both trigger the fallback:
 //

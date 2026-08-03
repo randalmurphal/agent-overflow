@@ -50,6 +50,10 @@ export {
   StopClaudeTask,
   CleanCodexBackgroundTerminals,
 
+  // Live-session context breakdown (Claude's canonical /context read).
+  // On-demand only — the always-on meter is fed by streaming usage events.
+  GetThreadContextUsage,
+
   // Data access
   GetPayloadPreview,
   GetPayloadChunk,
@@ -88,6 +92,10 @@ export {
   // wire-true for Claude, table-priced at read time for Codex /
   // claude-tui — see internal/usagecost).
   GetUsageStats,
+  // Codex's OWN account-level token report, not the AO ledger. Returns
+  // null when there is nothing to report (older codex, an API-key login,
+  // a brand-new account) — absence, never zeros. See app_codex_usage.go.
+  GetCodexAccountUsage,
   GetRateLimitsSnapshots,
   ListProviderAccounts,
   LoginProviderAccount,
@@ -414,6 +422,8 @@ export {
 } from '../../../bindings/agent-overflow/internal/settings/models.js';
 export {
   ManagedProviderAccount,
+  CodexAccountUsage,
+  CodexAccountUsageBucket,
   ContextSettingsProfile,
   EditorInfo,
   GeneratedCommitMessage,

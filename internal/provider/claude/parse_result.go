@@ -42,7 +42,11 @@ import (
 // the turn but the final summary type stayed `success`.
 // `terminal_reason` is intentionally not carried into the normalized
 // completion payload; the raw line remains available for
-// replay/debug.
+// replay/debug. (That exclusion is a decision, not an oversight — the
+// hard-steer feature that would consume it is on hold. Do not "fix" it
+// without reviving that scope.) `fast_mode_state` /
+// `fast_mode_disabled_reason` ARE carried, but as live session state
+// (WireTurnCompleteMeta.FastMode → frontend), never as turn history.
 //
 // Interrupted detection: Claude does not expose a `"interrupted"`
 // stop_reason. The PRIMARY signal is ack correlation: the read loop
@@ -105,6 +109,12 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 		usagePayload = &usage
 	}
 
+	// Fast-mode report: live session state the CLI restates on every
+	// result, NOT turn accounting. Nil when the binary carried neither key
+	// (2.1.105 has no reason field at all) — triage forwards a present
+	// report to the frontend and persists nothing.
+	fastMode, _ := extractFastModeStatus(raw)
+
 	events := []provider.ProviderEvent{{
 		Kind:             provider.EventTurnComplete,
 		ThreadID:         threadID,
@@ -116,6 +126,7 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 			ModelUsage:         modelUsage,
 			Aborted:            aborted,
 			ErrorMessage:       errorMessage,
+			FastMode:           fastMode,
 		},
 		Timestamp: now,
 		Raw:       line,

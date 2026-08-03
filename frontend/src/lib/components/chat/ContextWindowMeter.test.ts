@@ -1,9 +1,31 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/svelte';
 
 import ContextWindowMeter from './ContextWindowMeter.svelte';
+import type { Thread } from '../../types/models';
+import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+
+const claudeThread: Thread = {
+  id: 'thread-claude',
+  title: 'Thread',
+  provider: 'claude',
+  model: 'claude-fable-5',
+  workspacePath: '/tmp',
+  projectPath: '/tmp',
+  mode: 'chat',
+  reasoningEffort: 'medium',
+  fastMode: false,
+  contextWindow: 1000000,
+  createdAt: 0,
+  updatedAt: 0,
+  archived: false,
+};
 
 describe('<ContextWindowMeter>', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+  });
+
   it('displays usage against the full context window when compact limit is present', async () => {
     const { getByLabelText } = render(ContextWindowMeter, {
       props: {
@@ -159,5 +181,109 @@ describe('<ContextWindowMeter>', () => {
 
     const arc = container.querySelectorAll('svg circle')[1];
     expect(Number(arc.getAttribute('stroke-dashoffset'))).toBe(0);
+  });
+
+  // The exact breakdown costs a control round-trip to the live CLI, so
+  // hovering must not trigger it — only the explicit click does.
+  describe('exact breakdown affordance', () => {
+    it('does not read the live session on hover alone', async () => {
+      const mock = setBindingMock('GetThreadContextUsage', () => Promise.resolve({}));
+
+      render(ContextWindowMeter, {
+        props: {
+          data: { usedTokens: 24028, maxTokens: 1000000, usedPercentage: 2.4 },
+          thread: claudeThread,
+        },
+      });
+
+      await fireEvent.mouseEnter(screen.getByLabelText(/Context Window/));
+      expect(await screen.findByText('Show exact breakdown')).toBeTruthy();
+      expect(mock).not.toHaveBeenCalled();
+    });
+
+    it('reads the live session when the user asks for it', async () => {
+      const mock = setBindingMock('GetThreadContextUsage', () =>
+        Promise.resolve({
+          available: true,
+          totalTokens: 24028,
+          maxTokens: 1000000,
+          percentage: 2,
+          categories: [{ name: 'System prompt', tokens: 4027 }],
+        }),
+      );
+
+      render(ContextWindowMeter, {
+        props: {
+          data: { usedTokens: 24028, maxTokens: 1000000, usedPercentage: 2.4 },
+          thread: claudeThread,
+        },
+      });
+
+      await fireEvent.mouseEnter(screen.getByLabelText(/Context Window/));
+      await fireEvent.click(await screen.findByText('Show exact breakdown'));
+
+      expect(await screen.findByText('System prompt')).toBeTruthy();
+      expect(mock).toHaveBeenCalledTimes(1);
+      expect(mock).toHaveBeenCalledWith('thread-claude');
+    });
+
+    // Codex reports a running token count with no categories, so offering
+    // the affordance there would only ever produce an "unavailable" answer.
+    it('is not offered on a Codex thread', async () => {
+      render(ContextWindowMeter, {
+        props: {
+          data: { usedTokens: 650, maxTokens: 2000, usedPercentage: 32.5 },
+          thread: { ...claudeThread, provider: 'codex', model: 'gpt-5.5' },
+        },
+      });
+
+      await fireEvent.mouseEnter(screen.getByLabelText(/Context Window/));
+      expect(await screen.findByText('33% used')).toBeTruthy();
+      expect(screen.queryByText('Show exact breakdown')).toBeNull();
+    });
+
+    it('is not offered when the meter has no thread', async () => {
+      render(ContextWindowMeter, {
+        props: { data: { usedTokens: 500, maxTokens: 2000, usedPercentage: 25 } },
+      });
+
+      await fireEvent.mouseEnter(screen.getByLabelText(/Context Window/));
+      expect(await screen.findByText('25% used')).toBeTruthy();
+      expect(screen.queryByText('Show exact breakdown')).toBeNull();
+    });
+
+    // Closing the popover unmounts the breakdown — that is what keeps the
+    // exact reading from outliving the moment it was taken. Reopening must
+    // land back on the collapsed affordance, not on stale numbers.
+    it('collapses again when the popover closes', async () => {
+      setBindingMock('GetThreadContextUsage', () =>
+        Promise.resolve({
+          available: true,
+          totalTokens: 24028,
+          maxTokens: 1000000,
+          percentage: 2,
+          categories: [{ name: 'System prompt', tokens: 4027 }],
+        }),
+      );
+
+      render(ContextWindowMeter, {
+        props: {
+          data: { usedTokens: 24028, maxTokens: 1000000, usedPercentage: 2.4 },
+          thread: claudeThread,
+        },
+      });
+
+      const button = screen.getByLabelText(/Context Window/);
+      await fireEvent.mouseEnter(button);
+      await fireEvent.click(await screen.findByText('Show exact breakdown'));
+      expect(await screen.findByText('System prompt')).toBeTruthy();
+
+      await fireEvent.mouseLeave(button);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(screen.queryByText('System prompt')).toBeNull();
+
+      await fireEvent.mouseEnter(button);
+      expect(await screen.findByText('Show exact breakdown')).toBeTruthy();
+    });
   });
 });

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -122,7 +123,9 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 		if !ok {
 			return false
 		}
+		push := codex.PlanThreadSettingsPush(sess.launchOpts, opts)
 		sess.codex.ApplyLiveUpdate(update)
+		a.pushCodexThreadSettings(threadID, sess.codex, push)
 	default:
 		// claudetui has no live-update surface; restart is the only path.
 		return false
@@ -130,6 +133,65 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 
 	a.sessionManager().updateLaunchOpts(threadID, sess.token, opts)
 	return true
+}
+
+// codexSettingsPushTimeout bounds the `thread/settings/update` round trip.
+// The app-server answers as soon as it has queued the core op, so this is a
+// local-IPC deadline, not a model-work one — it exists so a wedged
+// app-server can't hold a binding call for the 30s default.
+const codexSettingsPushTimeout = 5 * time.Second
+
+// pushCodexThreadSettings lands the model / effort / service-tier part of a
+// live config change on the Codex thread immediately, instead of leaving it
+// to ride the next turn/start.
+//
+// Two rules, both deliberate:
+//
+//  1. **Between turns only.** A push while a turn is in flight is skipped
+//     entirely rather than deferred. Nothing is lost by skipping: the same
+//     values are already in the session's turn config, so the next
+//     turn/start asserts them exactly as it did before this call existed.
+//     (The check is best-effort against a concurrent send from another
+//     goroutine — but that race is benign in both directions, because a push
+//     that lands beside a turn/start writes the very values that turn/start
+//     is itself carrying.)
+//
+//  2. **Never user-facing on failure.** A failed or unsupported push is a
+//     lost optimization, not a lost setting. It is logged; the thread's
+//     behavior is unchanged. Codex's own rejection of an override arrives
+//     separately as an `error` notification, which is already thread error
+//     state, and an echo that disagrees with the push is surfaced by
+//     verifyThreadSettingsEcho.
+func (a *App) pushCodexThreadSettings(threadID string, sess *codex.Session, push codex.ThreadSettingsPush) {
+	if sess == nil || push.Empty() {
+		return
+	}
+	if a.threadTurnInFlight(threadID) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), codexSettingsPushTimeout)
+	defer cancel()
+	if err := sess.PushThreadSettings(ctx, push); err != nil {
+		log.Printf("thread %s: codex thread/settings/update failed, change will apply on the next turn: %v", threadID, err)
+	}
+}
+
+// threadTurnInFlight reports whether a provider turn is currently running on
+// the thread. Narrower than threadConfigBusy on purpose: that one answers
+// "would restarting the session destroy live work" (and so also weighs
+// background tasks, queued sends, and a quiet window), while this answers
+// only "is a turn running right now", which is the sole thing a settings
+// push must not land beside.
+func (a *App) threadTurnInFlight(threadID string) bool {
+	if a.triage != nil {
+		if live := a.triage.LiveStateSnapshotForThread(threadID); live.ActiveTurn != nil {
+			return true
+		}
+	}
+	if sess, ok := a.sessionManager().get(threadID); ok && sess.liveness != nil {
+		return sess.liveness.activeTurns.Load() > 0
+	}
+	return false
 }
 
 // schedulePendingConfigReconnect arms the per-thread deferred-restart

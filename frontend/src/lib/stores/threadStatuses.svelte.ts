@@ -7,6 +7,10 @@ import {
   hasQueueItems,
   resetForTest as resetSendQueueForTest,
 } from './sendQueue.svelte';
+import {
+  clearFastModeStateForThread,
+  resetForTest as resetFastModeStateForTest,
+} from './fastModeState.svelte';
 
 /**
  * ActiveTurn is the live in-flight turn for a thread. Populated from
@@ -283,6 +287,9 @@ export function clearThreadStatus(threadId: string): void {
   liveStateHydrationTokenByThread.delete(threadId);
   liveStateHydratingThreads.drop(threadId);
   clearSendQueueForThread(threadId);
+  // The provider's fast-mode report belongs to the thread's session; a
+  // thread being archived/deleted has none.
+  clearFastModeStateForThread(threadId);
   statuses.drop(threadId);
 }
 
@@ -753,6 +760,7 @@ export function resetForTest(): void {
   interruptedThreads.clear();
   liveStateHydrationTokenByThread.clear();
   resetSendQueueForTest();
+  resetFastModeStateForTest();
   liveStateHydratingThreads.reset();
   statuses.reset();
 }

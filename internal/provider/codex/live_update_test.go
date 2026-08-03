@@ -199,10 +199,22 @@ func TestCodexPlanLiveUpdateFastModeTransitions(t *testing.T) {
 
 // TestApplyLiveUpdateFastModeToggleReachesTurnStart proves the transition at the
 // wire, not just in session state: a wire-driven tier id lands as `serviceTier`
-// on the next turn/start, and turning fast mode off omits the key entirely on
-// the turn after that. Codex reads an absent key as "inherit the thread
-// default", so sending a stale id and sending nothing are materially different
-// requests.
+// on the next turn/start, and turning fast mode off sends an explicit JSON
+// null on the turn after that.
+//
+// The null is the whole point. `service_tier` is a DOUBLE option on
+// TurnStartParams (codex-rs/app-server-protocol/src/protocol/v2/turn.rs:123,
+// `deserialize_double_option`): omitting the key means "leave the thread's
+// tier alone", and only an explicit null clears it
+// (codex-rs/core/src/session/session.rs:233 — `None` maps to
+// SERVICE_TIER_DEFAULT_REQUEST_VALUE). This test previously asserted the
+// omission, on the reading that an absent key means "inherit the thread
+// default"; that is true only for a thread nothing has ever set. Verified on
+// codex-cli 0.146.0 (scratchpad spike): set `serviceTier: "priority"`, then
+// send an update naming only `model`, and the settings echo still reports
+// `priority`. turn/start and thread/settings/update share one override
+// builder (turn_processor.rs `build_thread_settings_overrides`), so the two
+// cannot disagree about it.
 func TestApplyLiveUpdateFastModeToggleReachesTurnStart(t *testing.T) {
 	capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
 	scriptPath := filepath.Join(t.TempDir(), "codex")
@@ -249,8 +261,88 @@ func TestApplyLiveUpdateFastModeToggleReachesTurnStart(t *testing.T) {
 	if turns[0]["serviceTier"] != "turbo" {
 		t.Errorf("first turn serviceTier = %v, want turbo", turns[0]["serviceTier"])
 	}
-	if _, present := turns[1]["serviceTier"]; present {
-		t.Errorf("second turn carries serviceTier = %v, want the key omitted after fast mode off", turns[1]["serviceTier"])
+	tier, present := turns[1]["serviceTier"]
+	if !present {
+		t.Errorf("second turn omits serviceTier; want an explicit null to clear the tier fast mode asserted")
+	} else if tier != nil {
+		t.Errorf("second turn carries serviceTier = %v, want null after fast mode off", tier)
+	}
+}
+
+// TestServiceTierClearIsScopedToWhatAOAsserted covers the transition matrix
+// the clear has to survive, not just the on->off state: a session that never
+// turned fast mode on must never write the axis at all (a user whose
+// config.toml selects a tier AO does not model keeps it), and on->off->on->off
+// must clear every time rather than only the first.
+func TestServiceTierClearIsScopedToWhatAOAsserted(t *testing.T) {
+	capturePath := filepath.Join(t.TempDir(), "codex-stdin.log")
+	scriptPath := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(scriptPath, []byte(codexTurnCaptureScript(capturePath)), 0o755); err != nil {
+		t.Fatalf("write mock script: %v", err)
+	}
+
+	s, err := NewSession(context.Background(), testThread, Config{
+		Binary:         scriptPath,
+		Model:          "gpt-5.5",
+		WorkDir:        "/tmp",
+		ApprovalPolicy: "untrusted",
+		Sandbox:        "read-only",
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	fastOff := codexLiveUpdateBaseOptions()
+	fastOff.FastModeTierID = "turbo"
+	fastOn := fastOff
+	fastOn.FastMode = true
+
+	send := func(next provider.SessionOptions) {
+		t.Helper()
+		update, ok := PlanLiveUpdate(codexLiveUpdateBaseOptions(), next)
+		if !ok {
+			t.Fatalf("PlanLiveUpdate needs a restart")
+		}
+		s.ApplyLiveUpdate(update)
+		if err := s.Send(context.Background(), "hello", provider.SendOptions{}); err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+	}
+	// off (never asserted), off (still never asserted), on, off, on, off.
+	send(fastOff)
+	send(fastOff)
+	send(fastOn)
+	send(fastOff)
+	send(fastOn)
+	send(fastOff)
+	_ = s.Close()
+
+	turns := capturedTurnStartParams(t, capturePath)
+	if len(turns) != 6 {
+		t.Fatalf("captured %d turn/start requests, want 6", len(turns))
+	}
+	type want struct {
+		present bool
+		value   any
+	}
+	wants := []want{
+		{present: false},
+		{present: false},
+		{present: true, value: "turbo"},
+		{present: true, value: nil},
+		{present: true, value: "turbo"},
+		{present: true, value: nil},
+	}
+	for i, w := range wants {
+		value, present := turns[i]["serviceTier"]
+		if present != w.present {
+			t.Errorf("turn %d: serviceTier present = %v, want %v", i, present, w.present)
+			continue
+		}
+		if present && value != w.value {
+			t.Errorf("turn %d: serviceTier = %v, want %v", i, value, w.value)
+		}
 	}
 }
 

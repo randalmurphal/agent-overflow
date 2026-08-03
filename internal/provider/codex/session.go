@@ -78,6 +78,27 @@ type Session struct {
 	// reviewer sticky across a runtime-mode switch — the exact opt-out-must-
 	// clear-state failure t3-improvements.md §3.2 calls out.
 	approvalsReviewer string
+	// assertedServiceTier is the `serviceTier` value AO has most recently
+	// written onto this thread ("" = AO has never written the axis). Codex
+	// spells the axis as a double option on every params struct that carries
+	// it: omitted leaves it unchanged, explicit null clears it. Tracking what
+	// we asserted is what makes fast-mode OFF actually clear the tier a
+	// previous ON stored, without ever clobbering a tier the user's own
+	// config selected and AO never touched. Seeded from Config.ServiceTier in
+	// NewSession because buildThreadParams already sends the axis on the
+	// handshake, so a session that started fast has asserted the tier before
+	// it runs a turn. Guarded by mu; the only other writer is
+	// commitServiceTierWrite, after a write has landed.
+	assertedServiceTier string
+	// settingsUpdateUnsupported latches when this app-server answered
+	// `thread/settings/update` with a method-unknown error. Per session
+	// because a live session cannot swap binaries; a session started after an
+	// upgrade re-learns the answer. Guarded by mu.
+	settingsUpdateUnsupported bool
+	// pendingSettingsEcho is the single-shot, deadline-bounded expectation a
+	// successful settings push leaves for the next `thread/settings/updated`
+	// (thread_settings_push.go). Guarded by mu.
+	pendingSettingsEcho *settingsEchoExpectation
 	// observedSettings is Codex's own view of this thread's live config,
 	// reconciled from `thread/settings/updated` (thread_settings.go). It is
 	// deliberately separate from the requested config above: Codex can
@@ -367,6 +388,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		usageAcct:                 newUsageAccounting(cfg.ResumeThreadID != ""),
 		reasoningEffort:           cfg.ReasoningEffort,
 		serviceTier:               cfg.ServiceTier,
+		assertedServiceTier:       cfg.ServiceTier,
 		approvalPolicy:            cfg.ApprovalPolicy,
 		sandbox:                   cfg.Sandbox,
 		approvalsReviewer:         threadApprovalsReviewer(cfg),
@@ -511,8 +533,14 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	if cfg.ReasoningEffort != "" {
 		params["effort"] = cfg.ReasoningEffort
 	}
-	if cfg.ServiceTier != "" {
-		params["serviceTier"] = cfg.ServiceTier
+	// `serviceTier` is a double option upstream: omitting it means "leave the
+	// thread's tier alone", so switching fast mode OFF has to send an
+	// explicit null or the tier the previous ON asserted stays in force for
+	// the rest of the session. planServiceTierWrite decides which of the
+	// three cases (assert / clear / say nothing) this turn is in.
+	tierWrite := s.planServiceTierWrite()
+	if tierWrite.include {
+		params["serviceTier"] = tierWrite.value
 	}
 	if cfg.ApprovalPolicy != "" {
 		params["approvalPolicy"] = cfg.ApprovalPolicy
@@ -540,6 +568,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		s.clearPendingTurnSchema()
 		return fmt.Errorf("codex: turn/start: %w", err)
 	}
+	s.commitServiceTierWrite(tierWrite)
 
 	turnID := readNestedString(resp, "turn", "id")
 	if turnID != "" {

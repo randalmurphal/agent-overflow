@@ -567,6 +567,13 @@ func extractSessionInfo(raw map[string]json.RawMessage) provider.SessionInfo {
 			info.MCPServers = list
 		}
 	}
+	// `system/init` restates the fast-mode report at every session /
+	// resume boundary, which is the only place a thread learns it before
+	// its first turn ends. Left nil when the binary said nothing — see
+	// extractFastModeStatus.
+	if status, ok := extractFastModeStatus(raw); ok {
+		info.FastMode = status
+	}
 
 	return info
 }

@@ -31,6 +31,8 @@
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
   import { updatePlaceholderDefaults } from '../../../stores/newThreadDefaults';
   import { formatChord, keybindingForCommand } from '../../../stores/keybindings.svelte';
+  import { getFastModeReport } from '../../../stores/fastModeState.svelte';
+  import { fastModeContradictionText, isFastModeContradicted } from '../../../utils/fastMode';
 
   interface Props {
     pane: ThreadPane;
@@ -97,6 +99,18 @@
     fastModeLabel === 'Fast' ? 'Fast Mode' : `${fastModeLabel} Mode`,
   );
   let fastModeDescription = $derived(fastModeTier?.description?.trim() || undefined);
+  // What the PROVIDER says fast mode is doing right now, as opposed to
+  // what the thread asked for. Absent until a session reports it (older
+  // CLI, no turn finished yet, provider with no fast-mode concept), and
+  // absence is treated as unknown — never as a denial.
+  let fastModeReport = $derived(getFastModeReport(pane.threadId));
+  let fastModeContradicted = $derived(isFastModeContradicted(currentFast, fastModeReport));
+  let fastModeContradiction = $derived(
+    fastModeContradicted ? fastModeContradictionText(fastModeReport) : '',
+  );
+  // The "On" row must not claim a benefit the provider says it is not
+  // delivering: the tier blurb is displaced by the reason it is off.
+  let fastModeOnTitle = $derived(fastModeContradiction || fastModeDescription);
 
   // "We have no catalog entry for this model" and "the catalog says this model
   // has no effort tiers" are different answers and must not share a branch.
@@ -142,7 +156,7 @@
     if (showEffortSelection) {
       labelParts.push(effortLabel(currentEffort, currentEffortOption?.label));
     }
-    if (currentFast) labelParts.push(fastModeLabel);
+    if (currentFast) labelParts.push(fastModeContradicted ? `${fastModeLabel} (off)` : fastModeLabel);
     // The context window is the label's fallback subject: with no effort tiers
     // to name, it is the only thing left that describes the thread.
     if (currentContextWindow > 0 && (showContextSelection || labelParts.length === 0)) {
@@ -155,6 +169,12 @@
     return labelParts.join(' · ');
   });
   let triggerTitle = $derived(triggerLabel || 'Model options');
+  // Append the provider's contradiction to the trigger tooltip so the
+  // explanation is reachable without opening the menu — the toolbar label
+  // can only afford "(off)".
+  let triggerHoverText = $derived(
+    fastModeContradiction ? `Effort: ${triggerTitle} — ${fastModeContradiction}` : `Effort: ${triggerTitle}`,
+  );
   let pickerChord = $derived(
     formatChord(keybindingForCommand('composer.picker.effort') ?? 'mod+shift+e'),
   );
@@ -279,7 +299,7 @@
   aria-haspopup="menu"
   aria-expanded={open}
   aria-label={`Effort: ${triggerTitle}`}
-  title={`Effort: ${triggerTitle} (${pickerChord})`}
+  title={`${triggerHoverText} (${pickerChord})`}
   data-testid="composer-effort-trigger"
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
@@ -333,7 +353,8 @@
         <MenuItem
           label="On"
           checked={currentFast}
-          title={fastModeDescription}
+          suffix={fastModeContradicted ? 'provider: off' : undefined}
+          title={fastModeOnTitle}
           onSelect={() => handleFastMode(true)}
         />
         <MenuDivider />

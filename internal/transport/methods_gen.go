@@ -66,6 +66,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetBranchBaseDiff", ID: 1342635161},                    // main.App.GetBranchBaseDiff
 	{Name: "GetChannelMessages", ID: 3595031866},                   // main.App.GetChannelMessages
 	{Name: "GetChannelState", ID: 3664812883},                      // main.App.GetChannelState
+	{Name: "GetCodexAccountUsage", ID: 1110466608},                 // main.App.GetCodexAccountUsage
 	{Name: "GetCommitDiff", ID: 3399370629},                        // main.App.GetCommitDiff
 	{Name: "GetContextSettings", ID: 3416004963},                   // main.App.GetContextSettings
 	{Name: "GetDesignWorkdirInfo", ID: 2179885147},                 // main.App.GetDesignWorkdirInfo
@@ -98,6 +99,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetSettings", ID: 2554697378},                          // main.App.GetSettings
 	{Name: "GetTerminalReplay", ID: 2329592604},                    // main.App.GetTerminalReplay
 	{Name: "GetThread", ID: 1098302047},                            // main.App.GetThread
+	{Name: "GetThreadContextUsage", ID: 3852033265},                // main.App.GetThreadContextUsage
 	{Name: "GetThreadDefaults", ID: 3362481473},                    // main.App.GetThreadDefaults
 	{Name: "GetThreadItem", ID: 1969869112},                        // main.App.GetThreadItem
 	{Name: "GetThreadLiveState", ID: 70226550},                     // main.App.GetThreadLiveState

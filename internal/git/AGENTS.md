@@ -59,6 +59,12 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   ahead/behind, open PR, detected forge) and small status-related
   primitives (`CountWorkingTreeChanges`, `CountUnpushedCommits`,
   `upstreamFor`, `CurrentBranch`, `BranchIsDefault`).
+  `baseStatus` fans its six independent probes (status, numstat diff,
+  default branch, origin remote, untracked scan, pending operation) out
+  concurrently and joins with the serial version's exact error
+  precedence — the refresh costs max(probe) instead of the sum, which is
+  what makes the gitwatch cadence usable on a repo reached over WSL's 9P
+  bridge (2.4s serial vs 0.6s fanned out there; 14ms vs 6ms on ext4).
 - `status_branches.go` — `GitBranch` shape, branch-list parsing,
   default-branch helpers, and remote-name helpers.
 - `status_pr_cache.go` — open-PR lookup cache used by `Status` /

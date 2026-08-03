@@ -488,10 +488,10 @@ index fb337f5a9882a2c78b81e454da12e6879c1b5496..8753163d60344d9f1a5d2cc37003ee01
 +export declare const incrementalLex: (block: string, extensions: Extension[] | undefined, cache: IncrementalLexCache, complete?: ((markdown: string) => string) | null) => StreamdownToken[];
  export type { MathToken, AlertToken, FootnoteToken, SubSupToken, BrToken, HrToken, AlignToken, CitationToken, MdxToken };
 diff --git a/dist/marked/index.js b/dist/marked/index.js
-index 4b1a791048a65589bf9c9d9aa75717e64c5ce84f..5aa329e5a9b2085d1b8b5480f4498453d8462af1 100644
+index 4b1a791048a65589bf9c9d9aa75717e64c5ce84f..66ba42e30d5df6a7459dcebed89cdab4b21a000b 100644
 --- a/dist/marked/index.js
 +++ b/dist/marked/index.js
-@@ -1,4 +1,31 @@
+@@ -1,9 +1,36 @@
  import { Lexer } from 'marked';
 +// marked 16's GFM del regex treats ~text~ (single tilde) as strikethrough,
 +// producing false positives on approximate values like ~240MB. Require ~~.
@@ -523,6 +523,12 @@ index 4b1a791048a65589bf9c9d9aa75717e64c5ce84f..5aa329e5a9b2085d1b8b5480f4498453
  import { markedAlert } from './marked-alert.js';
  import { markedFootnote } from './marked-footnotes.js';
  import { markedMath } from './marked-math.js';
+ import { markedSub, markedSup } from './marked-subsup.js';
+-import { markedList } from './marked-list.js';
++import { markedList, tokenizeListItemContent } from './marked-list.js';
+ import { markedBr } from './marked-br.js';
+ import { markedHr } from './marked-hr.js';
+ import { markedTable } from './marked-table.js';
 @@ -106,18 +133,239 @@ export const lex = (markdown, extensions = []) => {
  export const createParseBlocksCache = () => ({
      content: '',
@@ -785,7 +791,7 @@ index 4b1a791048a65589bf9c9d9aa75717e64c5ce84f..5aa329e5a9b2085d1b8b5480f4498453
              cache.raws.push(token.raw);
              cache.keep.push(keep);
              total += token.raw.length;
-@@ -165,11 +414,295 @@ export const parseBlocks = (markdown, extensions = [], cache) => {
+@@ -165,11 +414,297 @@ export const parseBlocks = (markdown, extensions = [], cache) => {
          }
          // Only trust the cache for future appends if raws reconstruct the input.
          cache.content = total === markdown.length ? markdown : '';
@@ -924,7 +930,10 @@ index 4b1a791048a65589bf9c9d9aa75717e64c5ce84f..5aa329e5a9b2085d1b8b5480f4498453
 +// Mirror of finalizeList's loose branch for standalone-lexed tail items:
 +// paragraph-wrapped block tokens per item, then the inline pass the outer
 +// lex() would have run over its queue — seeded like the merge lexer so
-+// reflinks and footnotes inside loosened items resolve identically.
++// reflinks and footnotes inside loosened items resolve identically. Item
++// content goes through markedList's tokenizeListItemContent, the same
++// chokepoint finalizeList uses, so the marker-line indented-code rewrite
++// cannot depend on which path re-tokenized the item.
 +const loosenTailItems = (items, extensions, cache) => {
 +    const lexer = new Lexer(getLexOptions(extensions));
 +    if (cache.links)
@@ -935,8 +944,7 @@ index 4b1a791048a65589bf9c9d9aa75717e64c5ce84f..5aa329e5a9b2085d1b8b5480f4498453
 +    }
 +    for (const item of items) {
 +        item.loose = true;
-+        lexer.state.top = true;
-+        item.tokens = lexer.blockTokens(item.text, []);
++        tokenizeListItemContent(lexer, item, true);
 +    }
 +    for (let i = 0; i < lexer.inlineQueue.length; i++) {
 +        const next = lexer.inlineQueue[i];
@@ -1082,6 +1090,131 @@ index 4b1a791048a65589bf9c9d9aa75717e64c5ce84f..5aa329e5a9b2085d1b8b5480f4498453
 +    cache.lastPath = 'full';
 +    return cache.tokens;
 +};
+diff --git a/dist/marked/marked-list.d.ts b/dist/marked/marked-list.d.ts
+index 50b95965de60d217cadbd08889591fa63591718c..ce6aa88d29421a6baa1987c8d51a3798439d284a 100644
+--- a/dist/marked/marked-list.d.ts
++++ b/dist/marked/marked-list.d.ts
+@@ -1,3 +1,4 @@
++import type { Lexer } from 'marked';
+ import type { Extension, GenericToken } from './index.js';
+ export declare function letterToInt(letter: string): number;
+ export declare function romanToInt(roman: string): number;
+@@ -5,6 +6,13 @@ export declare const romanUpper = "(?:C|XC|L?X{0,3}(?:IX|IV|V?I{0,3}))";
+ export declare const romanLower = "(?:c|xc|l?x{0,3}(?:ix|iv|v?i{0,3}))";
+ export declare const bulletPattern = "(?:[*+-]|(?:\\d{1,9}|[a-zA-Z]|(?:C|XC|L?X{0,3}(?:IX|IV|V?I{0,3}))|(?:c|xc|l?x{0,3}(?:ix|iv|v?i{0,3})))[.)])";
+ export declare const rule = "^( {0,3}(?:[*+-]|(?:\\d{1,9}|[a-zA-Z]|(?:C|XC|L?X{0,3}(?:IX|IV|V?I{0,3}))|(?:c|xc|l?x{0,3}(?:ix|iv|v?i{0,3})))[.)]))([ \\t][^\\n]*|[ \\t])?(?:\\n|$)";
++/**
++ * The single chokepoint for turning a list item's text into its child
++ * tokens. Also rewrites the marker-line indented-code artifact (LLM prose
++ * aligns values with spaces; CommonMark reads 5+ columns as code) — see the
++ * source comment for the exact scope.
++ */
++export declare function tokenizeListItemContent(lexer: Lexer, item: ListItemToken, top: boolean): void;
+ export declare const markedList: Extension;
+ export interface ListToken {
+     type: 'list';
+diff --git a/dist/marked/marked-list.js b/dist/marked/marked-list.js
+index a1cf02477de53493ed94cb750540c52abbc008f8..d44b87ad508dc27afd9ac03c8fac785d1a5e1ca6 100644
+--- a/dist/marked/marked-list.js
++++ b/dist/marked/marked-list.js
+@@ -58,6 +58,77 @@ function getItemRegex(bull) {
+     }
+     return re;
+ }
++// --- Marker-line alignment is not an indented code block --------------------
++// CommonMark reads five or more columns between a list marker and its content
++// as "list item starting with indented code", so `-     $499 per month` is a
++// code block. Agent/LLM prose uses that spacing to ALIGN values in a bullet
++// list, never to open a code block, and the mis-render is the loudest one
++// there is: a full code card per bullet, mid-sentence.
++//
++// Deliberate spec deviation, scoped to exactly that shape — a `code` token
++// that is the FIRST child of a list item and indented-style, which can only
++// mean the code opened on the marker's own line. Everything else keeps
++// CommonMark's rules, including the two forms this must NOT touch:
++//   - `- item\n\n        deep indent` — code, but not the first child
++//     (paragraph, space, code), so the author's indent was deliberate.
++//   - `-\n\n    code` — the blank marker line closes the item; the code is a
++//     sibling of the list, not a child of the item.
++// Fenced code is likewise untouched: `codeBlockStyle` is only `'indented'`
++// for the indented form, so a first-child ``` fence never matches.
++//
++// This is the one chokepoint for tokenizing a list item's content — the
++// tight pass, the loose re-tokenize, and the incremental-lex tail loosener
++// all route through it, so streamed and settled renders cannot disagree.
++const MARKER_LINE_HAS_CONTENT = /^[^\n]*\S/;
++// The marker line's leading run is fake indentation (alignment), so remove
++// exactly that much from every line — clamped per line, so a line indented
++// less than the first keeps its own column. The first line lands at column 0,
++// which is what makes the re-lex unable to fall back into indented code.
++function stripMarkerAlignment(text) {
++    const lines = text.split('\n');
++    const alignment = /^ */.exec(lines[0])[0].length;
++    if (alignment === 0)
++        return text;
++    for (let i = 0; i < lines.length; i++) {
++        const line = lines[i];
++        let strip = 0;
++        while (strip < alignment && line[strip] === ' ')
++            strip++;
++        lines[i] = line.slice(strip);
++    }
++    return lines.join('\n');
++}
++export function tokenizeListItemContent(lexer, item, top) {
++    const queued = lexer.inlineQueue.length;
++    lexer.state.top = top;
++    const tokens = lexer.blockTokens(item.text, []);
++    // `tokens[0]` starts at offset 0 of the item's content, so an
++    // indented-style code token there — with a non-blank first line, which a
++    // blank marker line cannot produce (blockTokens emits `space` first) —
++    // is precisely code opened by the marker line's own alignment. Testing
++    // the TOKEN rather than the raw indentation matters: block extensions
++    // tokenize ahead of marked's built-ins, so an indented first line they
++    // claimed (math, mdx, …) is not this artifact and must not be dedented.
++    const first = tokens[0];
++    if (first !== undefined &&
++        first.type === 'code' &&
++        first.codeBlockStyle === 'indented' &&
++        MARKER_LINE_HAS_CONTENT.test(item.text)) {
++        // Re-lex the whole item with the alignment removed rather than
++        // hand-building a replacement token: inline content (emphasis,
++        // links, code spans) gets its real inline pass, nested lists
++        // re-enter this same chokepoint, a blank line inside the run still
++        // yields the several blocks the author wrote, and content after the
++        // code region rejoins its first line instead of being spliced onto
++        // a foreign token. The discarded pass's inline work goes with it —
++        // blockTokens only ever appends to the queue.
++        lexer.inlineQueue.length = queued;
++        lexer.state.top = top;
++        item.tokens = lexer.blockTokens(stripMarkerAlignment(item.text), []);
++        return;
++    }
++    item.tokens = tokens;
++}
+ function finalizeList(list, lexer) {
+     if (list.tokens.length === 0)
+         return;
+@@ -68,8 +139,7 @@ function finalizeList(list, lexer) {
+     list.raw = list.raw.trimEnd();
+     // Handle child tokens
+     for (const item of list.tokens) {
+-        lexer.state.top = false;
+-        item.tokens = lexer.blockTokens(item.text, []);
++        tokenizeListItemContent(lexer, item, false);
+         // A blank line inside a single item also makes the list loose
+         if (!list.loose) {
+             const spaceTokens = item.tokens.filter((token) => token.type === 'space');
+@@ -83,8 +153,7 @@ function finalizeList(list, lexer) {
+     if (list.loose) {
+         for (const item of list.tokens) {
+             item.loose = true;
+-            lexer.state.top = true;
+-            item.tokens = lexer.blockTokens(item.text, []);
++            tokenizeListItemContent(lexer, item, true);
+         }
+     }
+ }
 diff --git a/dist/marked/marked-math.js b/dist/marked/marked-math.js
 index 6410baf2e2d586647b47639ab72f9e041cd4a158..92c49d4965aa9273fd2685e2813ba786669fb33e 100644
 --- a/dist/marked/marked-math.js

@@ -17,6 +17,10 @@ import {
   buildPane as buildRegisteredPane,
   makeThread as makeBaseThread,
 } from "../../../../test/helpers/chat";
+import {
+  applyFastModeState,
+  resetForTest as resetFastModeStateForTest,
+} from "../../../stores/fastModeState.svelte";
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return makeBaseThread({
@@ -43,7 +47,79 @@ describe("<EffortMenu>", () => {
   beforeEach(() => {
     resetBindingMocks();
     resetProviderModelsForTest();
+    resetFastModeStateForTest();
     setBindingMock("GetModelsForProvider", async () => []);
+  });
+
+  // The fast-mode toggle records what the thread ASKED for. When the
+  // provider reports it is not actually serving fast mode, the menu must
+  // say so instead of showing an unqualified "Fast".
+  describe("provider fast-mode contradiction", () => {
+    async function buildFastClaudePane() {
+      setBindingMock("GetModelsForProvider", async () => [
+        {
+          slug: "claude-opus-4-6",
+          name: "Claude Opus 4.6",
+          provider: "claude",
+          capabilities: ["fast_mode"],
+          contextWindows: [{ tokens: 200000, label: "200k", tier: "standard" }],
+          reasoningEfforts: [{ slug: "high", label: "High", default: true }],
+        },
+      ]);
+      await ensureProviderModels("claude");
+      return buildPane(
+        makeThread({
+          provider: "claude",
+          model: "claude-opus-4-6",
+          contextWindow: 200000,
+          fastMode: true,
+        }),
+      );
+    }
+
+    it("marks the label and explains the reason when the wire says off", async () => {
+      const pane = await buildFastClaudePane();
+      applyFastModeState({
+        threadId: pane.threadId!,
+        state: "off",
+        disabledReason: "sdk_opt_in_required",
+      });
+      const { getByTestId, findByRole } = render(EffortMenu, { props: { pane } });
+
+      expect(triggerText(getByTestId)).toBe("High · Fast (off)");
+      expect(getByTestId("composer-effort-trigger").getAttribute("title")).toContain(
+        "the session did not opt in",
+      );
+
+      await fireEvent.click(getByTestId("composer-effort-trigger"));
+      const on = await findByRole("menuitem", { name: /^On/ });
+      expect(on.getAttribute("title")).toContain("the session did not opt in");
+    });
+
+    it("reports a cooldown as its own state", async () => {
+      const pane = await buildFastClaudePane();
+      applyFastModeState({ threadId: pane.threadId!, state: "cooldown" });
+      const { getByTestId } = render(EffortMenu, { props: { pane } });
+
+      expect(triggerText(getByTestId)).toBe("High · Fast (off)");
+      expect(getByTestId("composer-effort-trigger").getAttribute("title")).toContain(
+        "paused fast mode after a rate limit",
+      );
+    });
+
+    // Silence from an older CLI must not read as a denial.
+    it("says nothing when the provider has not reported", async () => {
+      const pane = await buildFastClaudePane();
+      const { getByTestId } = render(EffortMenu, { props: { pane } });
+      expect(triggerText(getByTestId)).toBe("High · Fast");
+    });
+
+    it("says nothing when the provider confirms fast mode is on", async () => {
+      const pane = await buildFastClaudePane();
+      applyFastModeState({ threadId: pane.threadId!, state: "on" });
+      const { getByTestId } = render(EffortMenu, { props: { pane } });
+      expect(triggerText(getByTestId)).toBe("High · Fast");
+    });
   });
 
   it("renders effort without context before model metadata is loaded", async () => {

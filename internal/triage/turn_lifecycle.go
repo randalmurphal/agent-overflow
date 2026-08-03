@@ -233,6 +233,13 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	//      subprocess kept streaming. takeOpenRound returns "" on the
 	//      second, so the wire-round emit is suppressed.
 	//
+	// Live fast-mode state rides the wire result envelope. Emitted before
+	// every settlement branch below (including the orphan-error and
+	// not-activity early returns) because it is a report about the
+	// SESSION, not about this turn's outcome — a turn that errored still
+	// tells the truth about whether fast mode was serving it.
+	r.emitFastModeState(evt.ThreadID, fastModeStatusFromTurnComplete(evt))
+
 	countsAsActivity := turnCountsAsThreadActivity(evt)
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 	meta, metaErr := turnCompleteMetaFromEvent(evt)
@@ -1526,6 +1533,11 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	// session, so its record must not outlive it and shield a future
 	// session from the idle reaper.
 	delete(r.pendingWakeupByThread, threadID)
+	// Command-lifecycle correlation is send-time carry-over for THIS
+	// process's stdin writes. A replacement session never acks them, so
+	// entries left behind would linger until the per-thread cap evicted
+	// them — and could attach a stale row id to a future uuid collision.
+	delete(r.commandLifecycle, threadID)
 	_, hadEffectiveModel := r.effectiveModelByThread[threadID]
 	delete(r.effectiveModelByThread, threadID)
 	var effectiveModelRevision uint64
@@ -1639,6 +1651,9 @@ func (r *Router) MarkThreadActive(threadID string) {
 	// fire time would shield the fresh session from the idle reaper for
 	// up to the wakeup clamp (60 min).
 	delete(r.pendingWakeupByThread, threadID)
+	// Same reasoning for the command-lifecycle correlation: the acks it
+	// waits on can only come from the process that just died.
+	delete(r.commandLifecycle, threadID)
 	// Interrupt marks are session-scoped: an in-flight echo cannot
 	// survive the session whose read loop carries it, and a replacement
 	// session after revert REUSES turn indexes — a lingering mark would

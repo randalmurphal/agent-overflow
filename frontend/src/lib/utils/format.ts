@@ -61,9 +61,15 @@ export function formatTimeOfDay(timestampMs: number): string {
 }
 
 /**
- * Format a token count for display (e.g., 1500 -> "1.5k", 2000000 -> "2.0M").
+ * Format a token count for display (e.g., 1500 -> "1.5k", 2000000 -> "2.0M",
+ * 11776335004 -> "11.8B").
+ *
+ * The billions step is not hypothetical: Codex reports a lifetime account
+ * total, which passes 10^9 within months of daily use and read as a
+ * five-digit "11776.3M" without it.
  */
 export function formatTokens(n: number): string {
+  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1) + 'B';
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
   if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
   return String(n);

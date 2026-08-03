@@ -785,6 +785,7 @@ func (p *privilegedApp) ForkThreadFromMessage() string          { return "ok" }
 func (p *privilegedApp) RevertConversationToMessage() string    { return "ok" }
 func (p *privilegedApp) StopClaudeTask() string                 { return "ok" }
 func (p *privilegedApp) CleanCodexBackgroundTerminals() string  { return "ok" }
+func (p *privilegedApp) GetThreadContextUsage() string          { return "ok" }
 func (p *privilegedApp) GetProviderStatuses() string            { return "ok" }
 func (p *privilegedApp) ProbeClaudeAccount() string             { return "ok" }
 func (p *privilegedApp) ProbeCodexAccount() string              { return "ok" }
@@ -853,6 +854,10 @@ func (p *privilegedApp) GetMcpServerStatus() string     { return "ok" }
 func (p *privilegedApp) ListMcpServerStatuses() string  { return "ok" }
 func (p *privilegedApp) RefreshMcpServerStatus() string { return "ok" }
 func (p *privilegedApp) TriggerMcpAuth() string         { return "ok" }
+
+// 8b. Provider-reported account usage (spawns the provider CLI under the
+// user's credentials and returns account-scoped data).
+func (p *privilegedApp) GetCodexAccountUsage() string { return "ok" }
 
 // 9. Native provider account credentials and login processes.
 func (p *privilegedApp) ListProviderAccounts() string        { return "ok" }

@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
 	"agent-overflow/internal/codexmodels"
+	"agent-overflow/internal/codexusage"
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
 	gitops "agent-overflow/internal/git"
@@ -357,6 +358,14 @@ type App struct {
 	// build an *App via &App{...} don't have to pre-wire it.
 	codexModelCatalogOnce sync.Once
 	codexModelCatalog     *codexmodels.Cache
+	// codexAccountUsageCache caches Codex's `account/usage/read` report per
+	// (binary, active account). The read leaves the machine — the app-server
+	// forwards it to the ChatGPT backend — and costs a whole subprocess when
+	// no Codex session is live, so the usage overlay must not call it per
+	// render. See internal/codexusage. Lazy-init through codexAccountUsage()
+	// for the same reason as the model catalog.
+	codexAccountUsageOnce  sync.Once
+	codexAccountUsageCache *codexusage.Cache
 	// mcpStatusCache is the provider-derived MCP status cache. Live
 	// thread sessions push into it from their init/notification
 	// events; the popup/settings pull from it and refresh via the

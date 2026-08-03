@@ -78,6 +78,16 @@ behavior. These back parser replay tests and the reference docs in
   sidechain 13229) and carries the CLI-computed per-model `costUSD`.
   Authoritative for preferring modelUsage over flat usage in turn
   accounting.
+- `context_usage_control_20260803.summary.json` — sanitized
+  `control_request{subtype:"get_context_usage"}` round-trip on 2.1.219,
+  issued on a session that had never received a user message (it
+  consumes no turn and makes no API call). Records the full response
+  key set, the `categories[]` rows, and the arithmetic AO's breakdown
+  UI leans on: deferred rows are excluded from `totalTokens`, and the
+  non-deferred rows sum to exactly `rawMaxTokens`. Also records the
+  drift from the 2.1.88 SDK schema (`autocompactSource` and two new
+  `messageBreakdown` keys). Backs
+  `internal/provider/claude/context_usage.go`.
 - `*_summary.json` — notes captured during the spike runs
 
 ## Refresh

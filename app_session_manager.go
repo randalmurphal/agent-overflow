@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/codex"
 )
 
 // sessionManager is the ONLY mutator of App.sessions, which is what lets the
@@ -181,6 +182,23 @@ func (m sessionManager) recordActivity(threadID, sessionToken string, kind provi
 			current.liveness.activeTurns.Store(0)
 		}
 	}
+}
+
+// anyCodexSession returns some live Codex session and the account id its
+// process authenticated as, or nil when none is running. "Some" is
+// deliberate: the caller (account-level usage) asks a question about the
+// LOGIN, not about a thread, and every session sharing that login answers it
+// identically — so the account id is returned alongside so the caller can
+// refuse a session whose process is still holding a superseded credential.
+func (m sessionManager) anyCodexSession() (*codex.Session, string) {
+	m.app.mu.Lock()
+	defer m.app.mu.Unlock()
+	for _, sess := range m.app.sessions {
+		if sess.codex != nil {
+			return sess.codex, sess.credentialAccountID
+		}
+	}
+	return nil, ""
 }
 
 func (m sessionManager) hasProvider(providerName string) bool {

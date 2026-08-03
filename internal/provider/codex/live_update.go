@@ -15,10 +15,13 @@ import (
 // needs a session restart: `approvalPolicy`, `sandboxPolicy`, and
 // `approvalsReviewer` are all TurnStartParams fields upstream documents as
 // applying "for this turn and subsequent turns". (Contrast Claude, where
-// read-only's `--disallowedTools` is spawn-only.) `thread/settings/update`
-// would let the change land without waiting for a turn; it is deliberately
-// not used here — see t3-improvements.md §3.4, which is still a DISCUSS item
-// because applying immediately vs. at the next turn is user-visible.
+// read-only's `--disallowedTools` is spawn-only.)
+//
+// `thread/settings/update` pushes the model / effort / service-tier subset of
+// this block into Codex between turns as well — see ThreadSettingsPush. It is
+// additive: the turn/start overrides below are unchanged and remain the
+// authority, so a push that fails, times out, or hits a codex that predates
+// the method leaves exactly today's behavior.
 type LiveUpdate struct {
 	Model             string
 	ReasoningEffort   string

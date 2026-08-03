@@ -1,24 +1,29 @@
-// Pure grid-building helper for UsageHeatmap.svelte. ALL date math for
-// the heatmap lives here — the component only renders the cells this
-// module produces.
+// Pure grid-building helper for the usage heatmaps. ALL date math for
+// the heatmap lives here — components only render the cells this module
+// produces.
 //
 // Shape: GitHub-style contribution grid. Columns are Sunday-start
 // weeks (Sunday..Saturday, matching GitHub and the usage period
 // selector's week boundary), most recent `weeks` of them, ending at
 // the week containing `nowMs`. Cell intensity is a 5-step quantization (0 = no
 // data/zero, 1-4 = quartile buckets of the non-zero values) over
-// per-day cost, falling back to output-token totals when every bucket's
-// cost is zero (subscription-less accounts still paint a heatmap).
-// Output only, like every usage surface's token count: input re-bills
-// the growing context each turn and would drown the produced work.
+// per-day cost, falling back to the day's token count when every
+// bucket's cost is zero (subscription-less accounts, and Codex's own
+// account report which carries no cost at all, still paint a heatmap).
 
-/** Minimal per-day bucket shape the grid needs. Structurally compatible
- *  with `UsageBucket` from stores/bindings — callers pass those directly. */
+/** Minimal per-day bucket shape the grid needs.
+ *
+ *  `tokens` is deliberately unqualified: this module plots whatever
+ *  per-day token metric its caller chose, and the two callers choose
+ *  differently — the AO ledger heatmap plots OUTPUT tokens (input
+ *  re-bills the growing context each turn and would drown the produced
+ *  work), while Codex's account report only publishes one combined
+ *  total. Naming the axis here would make one of them a lie. */
 export interface UsageDayBucket {
   /** Local calendar date, "YYYY-MM-DD" (per the query's tzOffsetMinutes). */
   bucket: string;
   costUsd: number;
-  outputTokens: number;
+  tokens: number;
   unpricedRows: number;
 }
 
@@ -34,7 +39,7 @@ export interface HeatmapCell {
   /** Day-of-month for this cell's date (tooltip use). */
   dayOfMonth: number;
   costUsd: number;
-  /** Output tokens for the day (the shared usage-surface token metric). */
+  /** Tokens for the day, on whatever axis the caller's buckets carry. */
   tokens: number;
   unpricedRows: number;
   /** True when a bucket exists for this date (distinguishes "zero usage"
@@ -147,7 +152,7 @@ export function buildHeatmapGrid(
 
   const metricFor = (b: UsageDayBucket | undefined): number => {
     if (!b) return 0;
-    return useTokenFallback ? b.outputTokens : b.costUsd;
+    return useTokenFallback ? b.tokens : b.costUsd;
   };
 
   // Enumerate every cell date up front so quartiles are computed over
@@ -181,7 +186,7 @@ export function buildHeatmapGrid(
         monthShort: MONTH_LABELS[date.getMonth()],
         dayOfMonth: date.getDate(),
         costUsd: bucket?.costUsd ?? 0,
-        tokens: bucket?.outputTokens ?? 0,
+        tokens: bucket?.tokens ?? 0,
         unpricedRows: bucket?.unpricedRows ?? 0,
         hasData: bucket !== undefined,
         level: levelFor(value, q1, q2, q3),

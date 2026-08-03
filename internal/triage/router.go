@@ -353,6 +353,13 @@ type Router struct {
 	// swept by cleanupThread AND MarkThreadActive (a replacement process
 	// never inherits the timer). See session_wakeup.go.
 	pendingWakeupByThread map[string]int64
+	// commandLifecycle correlates Claude's `command_lifecycle` acks back
+	// to the AO row and the wire round each stdin user message was queued
+	// into, keyed threadID → command_uuid. Send-time carry-over, released
+	// on the terminal ack and swept by cleanupThread; bounded per thread
+	// by maxCommandLifecycleEntriesPerThread. See command_lifecycle.go for
+	// why neither value can be recovered lazily.
+	commandLifecycle map[string]map[string]commandLifecycleEntry
 	// claimedFlushItems counts batch items mid-handoff between the
 	// queue delete in tryFlushQueue and the dispatcher's synchronous
 	// in-flight record. Folded into QueuedFlushItemCount so the
@@ -549,6 +556,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
 		queuedFlushItems:           make(map[string][]QueuedFlushItem),
 		pendingWakeupByThread:      make(map[string]int64),
+		commandLifecycle:           make(map[string]map[string]commandLifecycleEntry),
 		claimedFlushItems:          make(map[string]int),
 		workspacePathByThread:      make(map[string]string),
 		streamingPathRefsLast:      make(map[string]*streamingPathRefsState),
@@ -713,6 +721,8 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		return r.handleTerminalInteraction(evt)
 	case provider.EventUserText:
 		return r.handleUserText(evt)
+	case provider.EventCommandLifecycle:
+		return r.handleCommandLifecycle(evt)
 	case provider.EventDiff:
 		return r.handleDiff(evt)
 	case provider.EventCommandOutput:
@@ -911,10 +921,16 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 func (r *Router) handleInit(evt provider.ProviderEvent) error {
 	if evt.Meta != nil {
 		var info provider.SessionInfo
-		if json.Unmarshal(evt.Meta, &info) == nil && info.SessionID != "" {
-			if err := r.store.UpdateSessionRef(evt.ThreadID, info.SessionID); err != nil {
-				log.Printf("triage: update session ref: %v", err)
+		if json.Unmarshal(evt.Meta, &info) == nil {
+			if info.SessionID != "" {
+				if err := r.store.UpdateSessionRef(evt.ThreadID, info.SessionID); err != nil {
+					log.Printf("triage: update session ref: %v", err)
+				}
 			}
+			// `system/init` is the only fast-mode report a thread gets
+			// before its first turn ends, and the one that reflects a
+			// fresh session's spawn flags after a resume.
+			r.emitFastModeState(evt.ThreadID, info.FastMode)
 		}
 	}
 

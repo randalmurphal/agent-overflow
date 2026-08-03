@@ -33,6 +33,18 @@ export interface QueueItem {
   enqueuedAt: number;
 }
 
+/** What the provider has told us about a flushed message's delivery.
+ *
+ * Additive detail on top of Zone 2, never a precondition for it: only
+ * Claude emits the acks behind this, and only on recent CLIs, so every
+ * consumer must render correctly from `undefined`. See
+ * docs/references/claude-wire.md §command_lifecycle. */
+export interface FlushedLifecycle {
+  state: 'queued' | 'started' | 'completed' | 'cancelled';
+  /** Set only alongside `started`; absent when it could not be derived. */
+  delivery?: 'mid_turn' | 'new_turn';
+}
+
 /** Zone 2 entry. Carries the queue id (frontend-allocated) and the
  * backend-allocated `user:<turnIndex>:flush:<n>` id so the
  * "this row's Meta has provider_item_id" detection can clear the
@@ -42,6 +54,9 @@ export interface FlushedItem {
   userItemId: string;
   message: string;
   flushedAt: number;
+  /** Undefined until the provider acks — and forever on a CLI that
+   * never does. Never inferred from anything else. */
+  lifecycle?: FlushedLifecycle;
 }
 
 const EMPTY_QUEUE: readonly QueueItem[] = Object.freeze([]);
@@ -280,6 +295,38 @@ export function confirmFlushedByUserItemId(
     return;
   }
   rememberFlushedConfirmation(threadId, userItemId);
+}
+
+/** Stamp a provider delivery ack onto its Zone 2 entry.
+ *
+ * Keyed by the backend-resolved `userItemId`, which the backend derives
+ * from the pending-send registry — the frontend never sees the wire uuid.
+ * An ack for an entry that is no longer pending (its echo already cleared
+ * the marker, or it belongs to a direct send that never had one) is a
+ * no-op: the row it described has moved on, and re-adding state for it
+ * would resurrect a marker the user already watched disappear. */
+export function applyFlushedLifecycle(
+  threadId: string,
+  userItemId: string,
+  lifecycle: FlushedLifecycle,
+): void {
+  if (!threadId || !userItemId) return;
+  const current = flushedByThread.get(threadId);
+  let changed = false;
+  const next = current.map((entry) => {
+    if (entry.userItemId !== userItemId) return entry;
+    if (
+      entry.lifecycle?.state === lifecycle.state
+      && entry.lifecycle?.delivery === lifecycle.delivery
+    ) {
+      return entry;
+    }
+    changed = true;
+    return { ...entry, lifecycle };
+  });
+  if (!changed) return;
+  flushedByThread.set(threadId, next);
+  bumpQueueRevision(threadId);
 }
 
 export function removeRestoredQueueItems(

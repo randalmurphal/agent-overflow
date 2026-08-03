@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import UsageModal from './UsageModal.svelte';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { UsageBucket, type UsageQuery } from '../../stores/bindings';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { CodexAccountUsage, UsageBucket, type UsageQuery } from '../../stores/bindings';
 import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
 import { resetUsagePeriodForTest } from '../../stores/usagePeriod.svelte';
 
@@ -134,6 +134,121 @@ describe('<UsageModal>', () => {
       // 'day') all refetch with the project filter applied.
       const filtered = seenQueries.filter((q) => q.projectId === 'proj-known');
       expect(filtered.map((q) => q.groupBy).sort()).toEqual(['', 'day', 'model']);
+    });
+  });
+
+  // Codex's own account-level report. It is a different population from
+  // every other section (the whole login, including usage outside AO),
+  // so it renders only under the Codex filter, and "nothing to report"
+  // must render nothing rather than zeros.
+  describe('Codex account section', () => {
+    function todayKey(): string {
+      const now = new Date();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      return `${now.getFullYear()}-${month}-${day}`;
+    }
+
+    async function selectCodex(getByRole: (role: string, opts: object) => HTMLElement) {
+      await fireEvent.click(getByRole('radio', { name: 'Codex' }));
+    }
+
+    it('is not rendered — or even fetched — until the Codex filter is selected', async () => {
+      setBindingMock('GetCodexAccountUsage', async () =>
+        new CodexAccountUsage({ lifetimeTokens: 11_776_335_004, dailyBuckets: [] }),
+      );
+      const { queryByTestId, findByTestId, getByRole } = render(UsageModal, {
+        props: { open: true, onClose: () => {} },
+      });
+
+      // "All" is the default filter: the section answers for one login,
+      // not for a selection, so it must stay out of the combined view.
+      await waitFor(() => expect(getBindingMock('GetUsageStats')).toBeDefined());
+      expect(queryByTestId('usage-codex-account')).toBeNull();
+      expect(getBindingMock('GetCodexAccountUsage')).not.toHaveBeenCalled();
+
+      await selectCodex(getByRole);
+      await findByTestId('usage-codex-account');
+      expect(getBindingMock('GetCodexAccountUsage')).toHaveBeenCalledTimes(1);
+    });
+
+    it('renders only the stats Codex actually reported, and the day grid', async () => {
+      setBindingMock('GetCodexAccountUsage', async () =>
+        new CodexAccountUsage({
+          lifetimeTokens: 11_776_335_004,
+          currentStreakDays: 8,
+          longestStreakDays: 17,
+          // peakDailyTokens / longestRunningTurnSec deliberately absent.
+          dailyBuckets: [{ startDate: todayKey(), tokens: 725_458_670 }],
+          accountEmail: 'someone@example.com',
+        }),
+      );
+      const { findAllByTestId, findByText, getByRole } = render(UsageModal, {
+        props: { open: true, onClose: () => {} },
+      });
+      await selectCodex(getByRole);
+
+      const values = await findAllByTestId('usage-codex-account-value');
+      // An unreported stat produces no tile at all — never a zero.
+      expect(values.map((el) => el.textContent?.trim())).toEqual(['11.8B', '8d (best 17d)']);
+      await findByText('someone@example.com');
+
+      const cells = await findAllByTestId('usage-codex-account-cell');
+      expect(cells).toHaveLength(26 * 7);
+      const today = cells.find((el) => el.getAttribute('data-date') === todayKey());
+      expect(today?.getAttribute('data-level')).not.toBe('0');
+    });
+
+    it('leaves and re-enters cleanly as the filter moves', async () => {
+      // Transition coverage, not just state coverage: switching away has to
+      // drop the section AND the report behind it, so a later re-entry can
+      // never paint one account's figures while another's are loading.
+      setBindingMock('GetCodexAccountUsage', async () =>
+        new CodexAccountUsage({ lifetimeTokens: 5_000, dailyBuckets: [] }),
+      );
+      const { queryByTestId, findByTestId, getByRole } = render(UsageModal, {
+        props: { open: true, onClose: () => {} },
+      });
+
+      await selectCodex(getByRole);
+      await findByTestId('usage-codex-account');
+
+      await fireEvent.click(getByRole('radio', { name: 'All' }));
+      await waitFor(() => expect(queryByTestId('usage-codex-account')).toBeNull());
+
+      await selectCodex(getByRole);
+      await findByTestId('usage-codex-account');
+      expect(getBindingMock('GetCodexAccountUsage')).toHaveBeenCalledTimes(2);
+    });
+
+    it('renders nothing when Codex has nothing to report', async () => {
+      // Older codex, an API-key login, or a brand-new account: the
+      // backend answers null and absence must stay absence.
+      setBindingMock('GetCodexAccountUsage', async () => null);
+      const { queryByTestId, getByRole, findAllByTestId } = render(UsageModal, {
+        props: { open: true, onClose: () => {} },
+      });
+      await selectCodex(getByRole);
+
+      await waitFor(() => expect(getBindingMock('GetCodexAccountUsage')).toHaveBeenCalled());
+      // The ledger heatmap still renders; only the account section is gone.
+      await findAllByTestId('usage-heatmap-cell');
+      expect(queryByTestId('usage-codex-account')).toBeNull();
+    });
+
+    it('surfaces a real read failure instead of hiding it', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      setBindingMock('GetCodexAccountUsage', async () => {
+        throw new Error('codex account usage: codex binary not configured');
+      });
+      const { findByTestId, getByRole } = render(UsageModal, {
+        props: { open: true, onClose: () => {} },
+      });
+      await selectCodex(getByRole);
+
+      const error = await findByTestId('usage-codex-account-error');
+      expect(error.textContent).toContain('codex binary not configured');
+      consoleError.mockRestore();
     });
   });
 });

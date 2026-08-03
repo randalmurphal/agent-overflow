@@ -21,6 +21,36 @@ type UsageEvent struct {
 	RateLimits *RateLimitsSnapshot `json:"rateLimits,omitempty"`
 }
 
+// FastModeStatus is the provider's own report of whether the running
+// session is actually serving turns in fast mode, and why not when it
+// isn't. It is LIVE session state, never history: the CLI restates it on
+// every `system/init` and every `result` envelope, so the newest report
+// is the whole answer and nothing older is worth keeping.
+//
+// Claude carries it as `fast_mode_state` / `fast_mode_disabled_reason`.
+// BOTH fields are optional on the wire, and `fast_mode_disabled_reason`
+// only exists on newer binaries (absent on 2.1.105, present on 2.1.219),
+// so an absent field means "no signal", NEVER "off" — a nil
+// *FastModeStatus and a status whose State is "" are both silence and
+// must not be rendered as a denial.
+//
+// Observed State values: "on", "off", "cooldown" (paused after a rate
+// limit). Observed DisabledReason values (2.1.219): not_first_party,
+// disabled_by_env, unknown, model_not_allowed, sdk_opt_in_required,
+// pending, free, preference, extra_usage_disabled, network_error. Both
+// are carried as raw provider strings — the enum is undocumented and
+// version-dependent, so mapping to display copy happens at the UI edge
+// with a passthrough default rather than being narrowed here.
+type FastModeStatus struct {
+	State          string `json:"state,omitempty"`
+	DisabledReason string `json:"disabledReason,omitempty"`
+}
+
+// IsZero reports whether the wire carried no fast-mode signal at all.
+func (s FastModeStatus) IsZero() bool {
+	return s.State == "" && s.DisabledReason == ""
+}
+
 // SessionInfo contains metadata from the provider init/handshake.
 type SessionInfo struct {
 	SessionID  string      `json:"sessionId"`
@@ -29,6 +59,10 @@ type SessionInfo struct {
 	Tools      []string    `json:"tools,omitempty"`
 	Version    string      `json:"version,omitempty"`
 	MCPServers []MCPServer `json:"mcpServers,omitempty"`
+	// FastMode is Claude's `system/init` fast-mode report. Nil when the
+	// envelope carried neither key (older CLI, or a provider with no
+	// fast-mode concept).
+	FastMode *FastModeStatus `json:"fastMode,omitempty"`
 }
 
 // MCPServer reports an MCP server's name and provider-reported

@@ -22,9 +22,24 @@ import (
 // next iteration of Codex's run_turn loop) rather than being held in a
 // client-side queue until turn/completed.
 //
-// Codex-only. Claude has no equivalent steering primitive — its
-// frontend keeps the existing client-side enqueue path. Calling this on
-// a non-Codex thread fails fast.
+// Codex-only, because Codex needs a distinct RPC to reach a running
+// turn. Claude does NOT — and it is not because Claude can't steer. A
+// user envelope written to Claude's stdin mid-turn is never dropped: the
+// CLI queues it at priority "next" and its queue processor drains it
+// BETWEEN a tool result and the next API round, redirecting the running
+// turn (one `result`, no second `system/init`); during pure text
+// streaming with no further tool iterations it degrades to running as
+// the next turn (verified 2.1.219, AO's exact flag set). So on Claude an
+// ordinary `Send` to stdin IS the steer, and the flush-queue dispatcher
+// already does exactly that — see app_flush_queue.go
+// dispatchFlushToProvider. Calling this on a non-Codex thread fails fast
+// because the wire call it makes does not exist there, not because the
+// capability is missing.
+//
+// The CLI's `command_lifecycle` frames report which of the two happened
+// per message (claude-wire.md §command_lifecycle); the priority field
+// that would force mid-turn delivery is known but deliberately unused —
+// see that section.
 //
 // REQUIRES an active turn — callers should check the active-turn
 // registry before calling. If the active turn has just ended (race

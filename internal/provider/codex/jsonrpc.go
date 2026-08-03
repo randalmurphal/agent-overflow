@@ -88,7 +88,11 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 		}
 		if err := json.Unmarshal(resp, &rpcResp); err == nil {
 			if rpcResp.Error != nil {
-				return nil, fmt.Errorf("codex: %s: %s (code %d)", method, rpcResp.Error.Message, rpcResp.Error.Code)
+				return nil, &RPCError{
+					Method:  method,
+					Code:    rpcResp.Error.Code,
+					Message: rpcResp.Error.Message,
+				}
 			}
 			if len(rpcResp.Result) > 0 {
 				return rpcResp.Result, nil
@@ -99,6 +103,53 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 		abandon()
 		return nil, &RequestTimeoutError{Method: method}
 	}
+}
+
+// RPCError is a JSON-RPC error response from the Codex app-server, kept
+// typed so callers can branch on the code instead of matching the
+// rendered message. The Error() text is unchanged from the untyped
+// fmt.Errorf it replaced — IsNoActiveTurnRace still reads the message.
+type RPCError struct {
+	Method  string
+	Code    int
+	Message string
+}
+
+func (e *RPCError) Error() string {
+	if e == nil {
+		return "codex: rpc error"
+	}
+	return fmt.Sprintf("codex: %s: %s (code %d)", e.Method, e.Message, e.Code)
+}
+
+// IsMethodUnsupported reports whether err is the app-server's answer to a
+// method this binary does not implement — i.e. "upgrade codex", never
+// "the request was wrong".
+//
+// Two shapes, both observed on real binaries:
+//
+//   - -32601 MethodNotFound, the JSON-RPC standard answer.
+//   - -32600 InvalidRequest whose message carries serde's "unknown
+//     variant" text naming the method. Codex deserializes the whole frame
+//     into a ClientRequest enum, so an unrecognized method fails at
+//     deserialization before any dispatch table is consulted. Verified
+//     against codex-cli 0.146.0 (scratchpad spike, `thread/settings/updateX`
+//     → -32600 "Invalid request: unknown variant `thread/settings/updateX`,
+//     expected one of `initialize`, …").
+//
+// The method name is required rather than inferred from the error so a
+// -32600 raised by a DIFFERENT unknown variant (a nested params enum, say)
+// can never be read as "this method is missing".
+func IsMethodUnsupported(err error, method string) bool {
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) {
+		return false
+	}
+	if rpcErr.Code == -32601 {
+		return true
+	}
+	return rpcErr.Code == -32600 &&
+		strings.Contains(rpcErr.Message, "unknown variant `"+method+"`")
 }
 
 // RequestTimeoutError means a JSON-RPC request was written to Codex but no

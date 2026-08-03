@@ -125,6 +125,9 @@ export const SendPlanRevisionComments = dispatch('SendPlanRevisionComments');
 export const StopClaudeTask = dispatch('StopClaudeTask');
 export const CleanCodexBackgroundTerminals = dispatch('CleanCodexBackgroundTerminals');
 
+// Live-session context breakdown (Claude's canonical /context read).
+export const GetThreadContextUsage = dispatch('GetThreadContextUsage');
+
 // Thread-scoped model / workspace / message-search / commit-message bindings
 // (previously hand-wrapped with Call.ByName; now re-exported through the
 // generated app.js). Tests stub these through setBindingMock by method name.
@@ -483,6 +486,7 @@ export const GetThreadItem = dispatch('GetThreadItem');
 
 // Usage accounting
 export const GetUsageStats = dispatch('GetUsageStats');
+export const GetCodexAccountUsage = dispatch('GetCodexAccountUsage');
 
 // Per-client UI view state (appStorage)
 export const GetUIState = dispatch('GetUIState');

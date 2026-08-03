@@ -373,6 +373,11 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		return nil, nil
 	case "rate_limit_event":
 		return parseRateLimitEvent(threadID, raw, now)
+	case "command_lifecycle":
+		// Delivery ack for a user message we wrote to stdin, keyed by the
+		// uuid we minted. Stateless: correlation lives in triage, which
+		// owns the pending-send registry these ids belong to.
+		return parseCommandLifecycle(threadID, raw, now, line)
 	default:
 		// Unknown type — skip gracefully.
 		return nil, nil

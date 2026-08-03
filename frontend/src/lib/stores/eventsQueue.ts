@@ -3,10 +3,12 @@
 // frontend's Zone 1 send-queue store. Fan-in target of events.ts's
 // setupEventListeners.
 import {
+  applyFlushedLifecycle,
   markItemsFlushed,
   queueItemFromWire,
   removeRestoredQueueItems,
   replaceQueueForThread,
+  type FlushedLifecycle,
 } from './sendQueue.svelte';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
 import { iterPanes } from './panes.svelte';
@@ -27,6 +29,31 @@ export interface QueueRestoredPayload {
   reason: string;
   queueItemIds?: string[];
   userItemIds?: string[];
+}
+
+/** `provider:command_lifecycle` — the provider's delivery ack for a
+ * message AO wrote to its stdin. Claude-only and CLI-version-dependent;
+ * a session that never emits these leaves Zone 2 exactly as it was
+ * before this channel existed. */
+export interface CommandLifecyclePayload {
+  threadId: string;
+  commandUuid: string;
+  userItemId?: string;
+  state: FlushedLifecycle['state'];
+  delivery?: FlushedLifecycle['delivery'];
+}
+
+export function applyCommandLifecycle(evt: CommandLifecyclePayload | undefined): void {
+  if (!evt || !evt.threadId || !evt.state) return;
+  // No userItemId means the backend could not correlate the ack to a row
+  // (a uuid from a previous process, or one it never registered). There
+  // is nothing to attach it to, and guessing would attach it to the
+  // wrong message.
+  if (!evt.userItemId) return;
+  applyFlushedLifecycle(evt.threadId, evt.userItemId, {
+    state: evt.state,
+    delivery: evt.delivery,
+  });
 }
 
 export function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined): void {

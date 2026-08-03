@@ -91,6 +91,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventCodexExecResult:            true, // Codex raw exec_command result; live-state enrichment only
 		provider.EventTerminalInteraction:        true, // Codex polling marker; triage persists empty-stdin variant
 		provider.EventUserText:                   true, // Phase A: dispatch case wired; full handler lands in Phase E
+		provider.EventCommandLifecycle:           true, // Claude stdin delivery ack; live UI state only, never persisted
 		provider.EventDiff:                       true,
 		provider.EventCommandOutput:              true,
 		provider.EventThinking:                   true,

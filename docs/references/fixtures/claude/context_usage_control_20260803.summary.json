@@ -1,0 +1,96 @@
+{
+  "capturedAt": "2026-08-03T00:00:00Z",
+  "claudeCodeVersion": "2.1.219",
+  "purpose": "Pin the control_response shape of `control_request{subtype:\"get_context_usage\"}` on a current binary, and the arithmetic relating `categories[]` to `totalTokens` / `rawMaxTokens`.",
+  "rawLog": {
+    "checkedIn": false,
+    "reason": "The raw response embeds local memory-file paths, the capturing machine's custom agent + skill inventory, and its MCP server names. This sanitized summary keeps the durable protocol facts without machine-specific material."
+  },
+  "commandShape": [
+    "claude",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--print",
+    "--dangerously-skip-permissions"
+  ],
+  "request": {
+    "type": "control_request",
+    "request_id": "spike-1",
+    "request": { "subtype": "get_context_usage" }
+  },
+  "responseFraming": {
+    "type": "control_response",
+    "response": {
+      "subtype": "success",
+      "request_id": "spike-1",
+      "response": "<the object described below>"
+    }
+  },
+  "noTurnConsumed": "The CLI answered on a session that had never received a user message, before any API call. get_context_usage is handled out of band in the stream-json input loop — it consumes no turn and makes no API call, so it is safe to issue mid-turn or idle.",
+  "responseKeyOrder": [
+    "categories",
+    "totalTokens",
+    "maxTokens",
+    "rawMaxTokens",
+    "autocompactSource",
+    "percentage",
+    "gridRows",
+    "model",
+    "memoryFiles",
+    "mcpTools",
+    "agents",
+    "slashCommands",
+    "skills",
+    "autoCompactThreshold",
+    "isAutoCompactEnabled",
+    "messageBreakdown",
+    "apiUsage"
+  ],
+  "scalars": {
+    "totalTokens": 24028,
+    "maxTokens": 1000000,
+    "rawMaxTokens": 1000000,
+    "percentage": 2,
+    "model": "claude-fable-5",
+    "autocompactSource": "env",
+    "autoCompactThreshold": 967000,
+    "isAutoCompactEnabled": true,
+    "apiUsage": null
+  },
+  "categories": [
+    { "name": "System prompt", "tokens": 4027, "color": "promptBorder" },
+    { "name": "System tools", "tokens": 15397, "color": "inactive" },
+    { "name": "System tools (deferred)", "tokens": 13467, "color": "inactive", "isDeferred": true },
+    { "name": "Custom agents", "tokens": 105, "color": "permission" },
+    { "name": "Memory files", "tokens": 1424, "color": "claude" },
+    { "name": "Skills", "tokens": 3067, "color": "warning" },
+    { "name": "Messages", "tokens": 8, "color": "purple_FOR_SUBAGENTS_ONLY" },
+    { "name": "Autocompact buffer", "tokens": 33000, "color": "inactive" },
+    { "name": "Free space", "tokens": 942972, "color": "promptBorder" }
+  ],
+  "arithmetic": {
+    "totalTokensDefinition": "sum(categories where NOT isDeferred and name not in {'Free space','Autocompact buffer'}) — 4027+15397+105+1424+3067+8 = 24028, exactly the reported totalTokens.",
+    "deferredIsExcluded": "The 13467-token deferred row is listed but NOT counted. A consumer that naively sums every row overcounts by the deferred total.",
+    "nonDeferredRowsTileTheWindow": "sum(categories where NOT isDeferred) = 1000000 = rawMaxTokens exactly. 'Free space' is the remainder term, so the non-deferred rows tile the window. Summing ALL rows gives 1013467 — 13467 over the window.",
+    "percentageDenominator": "round(totalTokens / rawMaxTokens * 100) = round(2.4) = 2. Reported by the CLI; AO displays it rather than recomputing."
+  },
+  "omittedFromCapture": {
+    "gridRows": "10 rows x 20 squares of {color,isFilled,categoryName,tokens,percentage,squareFullness} — a pre-rendered grid for the CLI's terminal UI, derived from `categories`. AO draws its own meter and ignores it.",
+    "memoryFiles": "[{path,type,tokens}] — 1 entry (local path).",
+    "mcpTools": "[] on this capture — [{name,serverName,tokens[,isLoaded]}] when servers are configured.",
+    "agents": "[{agentType,source,tokens}] — 2 entries; summarised by the 'Custom agents' category row.",
+    "slashCommands": "{totalCommands,includedCommands,tokens}",
+    "skills": "{totalSkills,includedSkills,tokens,skillFrontmatter:[{name,source,tokens}]} — 23 frontmatter entries; summarised by the 'Skills' category row.",
+    "messageBreakdown": "{toolCallTokens,toolResultTokens,attachmentTokens,assistantMessageTokens,userMessageTokens,redirectedContextTokens,unattributedTokens,toolCallsByType[],attachmentsByType[]}"
+  },
+  "versionDrift": {
+    "vs2_1_88": "`autocompactSource` and messageBreakdown's `redirectedContextTokens` / `unattributedTokens` are new since the 2.1.88 SDK schema (SDKControlGetContextUsageResponseSchema). Optional-in-schema keys absent on this capture: deferredBuiltinTools, systemTools, systemPromptSections (the latter two are ant-only in the CLI's own /context renderer).",
+    "parserPolicy": "AO decodes only totalTokens / maxTokens / rawMaxTokens / percentage / model / categories[] and passes category names through verbatim, so new categories and new sibling keys are additive-safe."
+  },
+  "conclusion": {
+    "aoUse": "On-demand only, from the context meter's popover. `internal/provider/claude/context_usage.go` (Session.GetContextUsage + ParseContextUsage) -> `GetThreadContextUsage` -> ContextBreakdown.svelte. Never persisted, never polled — the passive message_delta.usage signal still drives the live meter."
+  }
+}

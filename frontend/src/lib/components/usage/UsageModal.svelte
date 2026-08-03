@@ -1,9 +1,14 @@
 <script lang="ts">
   // Usage modal: provider filter on top, the fixed 26-week heatmap, then
-  // a period + project filter line, totals, and the per-model table.
-  // Each section owns its own GetUsageStats fetch (filters passed down
-  // as props); this component is layout-only apart from the project
-  // option list it feeds its own dropdown.
+  // a period + project filter line, totals, the per-model table, and —
+  // under the Codex filter only — Codex's own account-wide report.
+  // Each section owns its own fetch (filters passed down as props); this
+  // component is layout-only apart from the project option list it feeds
+  // its own dropdown.
+  //
+  // Everything except the Codex account section is Agent Overflow's own
+  // usage ledger. That distinction is the section's whole point, so it
+  // is labelled where it renders rather than assumed here.
   //
   // The period selector shares the persisted usagePeriod store with the
   // sidebar UsageFooter, so changing it here moves the footer too. It
@@ -15,6 +20,7 @@
   import UsageHeatmap from './UsageHeatmap.svelte';
   import UsageTotalsRow from './UsageTotalsRow.svelte';
   import UsageModelTable from './UsageModelTable.svelte';
+  import UsageCodexAccount from './UsageCodexAccount.svelte';
   import { UsageQuery } from '../../stores/bindings';
   import { getUsageRefreshVersion } from '../../stores/usageRefresh.svelte';
   import { createUsageStats } from '../../stores/usageQuery.svelte';
@@ -115,6 +121,12 @@
       </div>
       <UsageTotalsRow provider={providerFilter} projectId={projectFilter} />
       <UsageModelTable provider={providerFilter} projectId={projectFilter} />
+      <!-- Codex's own account-wide report. Shown only under the Codex
+           filter: it answers for one login rather than for a selection,
+           so under "All" it would read as part of the combined totals,
+           and it is unaffected by the project filter by nature. It takes
+           no filter props for the same reason. -->
+      <UsageCodexAccount enabled={providerFilter === 'codex'} />
     </div>
   {/snippet}
 </Modal>

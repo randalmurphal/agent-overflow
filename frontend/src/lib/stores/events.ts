@@ -94,10 +94,16 @@ import {
   applyQueueStateChanged,
   applyQueueFlushed,
   applyQueueRestored,
+  applyCommandLifecycle,
   type QueueStateChangedPayload,
   type QueueFlushedPayload,
   type QueueRestoredPayload,
+  type CommandLifecyclePayload,
 } from './eventsQueue';
+import {
+  applyFastModeState,
+  type FastModeStatePayload,
+} from './fastModeState.svelte';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
 import { applyWorktreeSetup } from './eventsWorktreeSetup';
@@ -296,6 +302,23 @@ export function setupEventListeners(): () => void {
     'provider:queue_restored',
     applyQueueRestored,
   );
+  // provider:command_lifecycle — Claude's per-message delivery ack for a
+  // user message written to provider stdin, keyed onto the Zone 2 entry
+  // the backend resolved it to. Purely additive labelling: older CLIs
+  // emit nothing here and the queue events alone still drive the UI.
+  const cancelCommandLifecycle = wailsEventOn<CommandLifecyclePayload>(
+    'provider:command_lifecycle',
+    applyCommandLifecycle,
+  );
+
+  // provider:fast_mode — the provider's own live report of whether fast
+  // mode is actually serving this thread's turns. Restated on every
+  // session init and every turn-complete, so the newest frame is the
+  // whole answer; nothing is persisted on either side.
+  const cancelFastModeState = wailsEventOn<FastModeStatePayload>(
+    'provider:fast_mode',
+    applyFastModeState,
+  );
 
   const cancelUserMessageReverted = wailsEventOn<UserMessageRevertedEvent | null>(
     'user_message:reverted',
@@ -451,6 +474,8 @@ export function setupEventListeners(): () => void {
     cancelQueueStateChanged();
     cancelQueueFlushed();
     cancelQueueRestored();
+    cancelCommandLifecycle();
+    cancelFastModeState();
     cancelUserMessageReverted();
     cancelThreadUpdated();
     cancelWorktreeSetup();
