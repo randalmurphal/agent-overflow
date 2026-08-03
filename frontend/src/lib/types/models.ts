@@ -244,6 +244,13 @@ export interface CommandOutputMeta {
   preview?: string;
   errorMessage?: string;
   outputFileState?: string;
+  /**
+   * Loopback URL this command announced (vite/next/rails-style startup
+   * banner), detected in triage and normalized for the browser. While the
+   * row streams this reflects the latest flush window only; CommandOutput
+   * keeps the first detection for the row's visible lifetime.
+   */
+  devServerUrl?: string;
 }
 
 export interface ToolInlineDiffFile {

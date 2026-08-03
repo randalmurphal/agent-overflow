@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { waitFor } from '@testing-library/svelte';
 import {
   canUseHostOpenExternalURL,
+  devServerLabel,
   externalURLForEventTarget,
   handleExternalURL,
   installExternalLinkDelegate,
+  loopbackDevServerURL,
   safeExternalURL,
 } from './externalLinks';
 import { buildPathLinkHref } from './pathLinkExtension';
@@ -219,5 +221,41 @@ describe('installExternalLinkDelegate', () => {
 
     expect(allowed).toBe(true);
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe('loopbackDevServerURL', () => {
+  it('accepts loopback dev-server URLs', () => {
+    expect(loopbackDevServerURL('http://localhost:5173/')).toBe('http://localhost:5173/');
+    expect(loopbackDevServerURL('http://127.0.0.1:3000')).toBe('http://127.0.0.1:3000/');
+    expect(loopbackDevServerURL('http://127.0.0.53:9000/')).toBe('http://127.0.0.53:9000/');
+    expect(loopbackDevServerURL('https://localhost:5174/app')).toBe('https://localhost:5174/app');
+    expect(loopbackDevServerURL('http://[::1]:4321/')).toBe('http://[::1]:4321/');
+  });
+
+  it('rejects anything that is not a loopback http(s) URL', () => {
+    expect(loopbackDevServerURL(null)).toBeNull();
+    expect(loopbackDevServerURL('')).toBeNull();
+    expect(loopbackDevServerURL('https://example.com/')).toBeNull();
+    expect(loopbackDevServerURL('http://192.168.1.24:5173/')).toBeNull();
+    expect(loopbackDevServerURL('http://localhost.example.com/')).toBeNull();
+    expect(loopbackDevServerURL('ws://localhost:5173/hmr')).toBeNull();
+    expect(loopbackDevServerURL('javascript:alert(1)')).toBeNull();
+  });
+
+  it('rejects wildcard bind addresses the backend is expected to rewrite', () => {
+    expect(loopbackDevServerURL('http://0.0.0.0:5173/')).toBeNull();
+  });
+});
+
+describe('devServerLabel', () => {
+  it('reduces a URL to host:port', () => {
+    expect(devServerLabel('http://localhost:5173/some/path')).toBe('localhost:5173');
+    expect(devServerLabel('http://localhost/')).toBe('localhost');
+    expect(devServerLabel('http://[::1]:4321/')).toBe('[::1]:4321');
+  });
+
+  it('falls back to the raw value when it cannot be parsed', () => {
+    expect(devServerLabel('not a url')).toBe('not a url');
   });
 });

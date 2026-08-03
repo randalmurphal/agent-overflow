@@ -26,6 +26,7 @@ import { getXtermTheme } from './terminalTheme';
 import { eventEscapesTerminalToCommand } from '../../stores/keybindings.svelte';
 import { TERMINAL_ESCAPE_COMMAND_IDS } from '../../stores/paneNavCommands';
 import { copyToClipboard } from '../../utils/clipboard';
+import { handleExternalURL } from '../../utils/externalLinks';
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import { isClipboardChord } from './terminalKeys';
@@ -72,7 +73,15 @@ export function buildTerminal(
 
   const fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
-  terminal.loadAddon(new WebLinksAddon());
+  // A dev server started in this terminal prints its URL here, so xterm's
+  // link provider IS the open-in-browser affordance for this surface — no
+  // extra chrome needed. What it must not do is use its default handler:
+  // that calls window.open, which bypasses internal/externalurl and so
+  // loses the WSL → Windows browser bridge (a loopback link would open in
+  // a Linux/WSLg browser, or nowhere). Route through the same wrapper the
+  // document-level link delegate uses, which validates http(s) and picks
+  // the host binding or window.open by run mode.
+  terminal.loadAddon(new WebLinksAddon((_event, uri) => void handleExternalURL(uri)));
   terminal.open(mount);
 
   // Runs on every keydown in a focused xterm. It first fully consumes the

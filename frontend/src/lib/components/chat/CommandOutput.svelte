@@ -7,6 +7,8 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
+  import DevServerChip from './DevServerChip.svelte';
+  import { loopbackDevServerURL } from '../../utils/externalLinks';
   import {
     createPayloadExpansion,
     formatPayloadSize,
@@ -148,6 +150,25 @@
       meta: statusMeta ?? (meta as unknown as Record<string, unknown> | undefined),
     }),
   );
+  // Dev-server affordance (internal/triage/dev_server_url.go). Streaming
+  // payload meta is rebuilt from each 100ms flush window, so a startup
+  // banner is only present in the window that carried it — the chip would
+  // blink out the moment the server logged its first request. The
+  // completion rebuild recomputes the field over the cumulative output and
+  // persists it; between those two points the row keeps the first
+  // detection. This is last-known-value smoothing of a jittering SERVER
+  // field, not remembered reader intent, which is why it lives here rather
+  // than in a pane registry: a windowing remount re-reads meta and the
+  // persisted value takes over at settle, so nothing is durably lost.
+  let detectedDevServerURL = $state<string | null>(null);
+  let liveDevServerURL = $derived(
+    loopbackDevServerURL(meta?.devServerUrl ?? (payloadMeta?.devServerUrl as string | undefined)),
+  );
+  $effect(() => {
+    const next = liveDevServerURL;
+    if (next && next !== untrack(() => detectedDevServerURL)) detectedDevServerURL = next;
+  });
+
   let compactCollapsedPreview = $derived.by(() => {
     const normalized = collapsedPreview.replace(/\s+/g, ' ').trim();
     if (normalized.length <= 160) return normalized;
@@ -177,6 +198,9 @@
   {/snippet}
 
   {#snippet headerActions()}
+    {#if detectedDevServerURL}
+      <DevServerChip url={detectedDevServerURL} />
+    {/if}
     <ToolDecisionChip decision={effectiveDisplayItem.decision} />
     <ToolHeaderMeta
       statusSlotTestId="command-output-status-slot"

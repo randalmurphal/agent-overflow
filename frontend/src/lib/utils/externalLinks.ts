@@ -22,6 +22,33 @@ export function safeExternalURL(raw: string | null | undefined): string | null {
   }
 }
 
+/**
+ * Narrow a URL to the loopback dev-server subset. Backend triage already
+ * classifies command output (internal/triage/dev_server_url.go), but meta
+ * is untrusted data by the time it reaches a row, so the affordance
+ * re-validates before offering to open anything. Wildcard bind addresses
+ * are deliberately NOT accepted here — the backend rewrites 0.0.0.0 / ::
+ * to localhost, and a browser cannot navigate to the raw form.
+ */
+export function loopbackDevServerURL(raw: string | null | undefined): string | null {
+  const safeURL = safeExternalURL(raw);
+  if (!safeURL) return null;
+  try {
+    return isLoopbackHostname(new URL(safeURL).hostname) ? safeURL : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Compact `host:port` label for a dev-server affordance. */
+export function devServerLabel(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 export async function handleExternalURL(raw: string): Promise<boolean> {
   const safeURL = safeExternalURL(raw);
   if (!safeURL) return false;

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import CommandOutput from './CommandOutput.svelte';
 import { makeItem } from '../../../test/helpers/chat';
@@ -645,5 +645,115 @@ describe('<CommandOutput>', () => {
 
     expect(queryByText('87 lines')).toBeNull();
     expect(getByTestId('command-output-time').getAttribute('datetime')).toBe(new Date(createdAt).toISOString());
+  });
+  // Dev-server affordance. Detection happens in triage (see
+  // internal/triage/dev_server_url.go); the row renders it only after
+  // re-validating it as a loopback URL, and holds the first detection so
+  // the chip survives the per-flush-window meta rewrites while streaming.
+  describe('dev-server chip', () => {
+    it('is absent for a command that announced no server', () => {
+      const { queryByTestId } = render(CommandOutput, {
+        props: {
+          item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
+          meta: commandMeta({ command: 'go build ./...' }),
+        },
+      });
+
+      expect(queryByTestId('dev-server-chip')).toBeNull();
+    });
+
+    it('renders the chip from payload meta and opens the URL externally', async () => {
+      const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+
+      const { getByTestId } = render(CommandOutput, {
+        props: {
+          item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
+          meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
+        },
+      });
+
+      const chip = getByTestId('dev-server-chip');
+      expect(chip.textContent).toContain('localhost:5173');
+
+      await fireEvent.click(chip);
+      expect(open).toHaveBeenCalledWith('http://localhost:5173/');
+    });
+
+    it('opening the chip does not expand the row', async () => {
+      setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+
+      const { getByTestId } = render(CommandOutput, {
+        props: {
+          item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
+          meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
+          payloadId: 'cmd-payload',
+        },
+      });
+
+      await fireEvent.click(getByTestId('dev-server-chip'));
+
+      expect(getByTestId('command-output-toggle').getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('falls back to the raw payloadMeta when no normalized meta prop is passed', () => {
+      const { getByTestId } = render(CommandOutput, {
+        props: {
+          item: makeItem({
+            id: 'tool-cmd',
+            kind: 'tool_call',
+            payloadMeta: JSON.stringify({ command: 'npm run dev', devServerUrl: 'http://127.0.0.1:3000/' }),
+          }),
+        },
+      });
+
+      expect(getByTestId('dev-server-chip').dataset.url).toBe('http://127.0.0.1:3000/');
+    });
+
+    it('ignores a non-loopback URL that reached meta', () => {
+      const { queryByTestId } = render(CommandOutput, {
+        props: {
+          item: makeItem({ id: 'tool-cmd', kind: 'tool_call' }),
+          meta: commandMeta({ command: 'npm run dev', devServerUrl: 'https://example.com/' }),
+        },
+      });
+
+      expect(queryByTestId('dev-server-chip')).toBeNull();
+    });
+
+    it('keeps the chip when a later streaming window carries no URL', async () => {
+      const item = makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' });
+      const { getByTestId, rerender } = render(CommandOutput, {
+        props: {
+          item,
+          meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
+        },
+      });
+
+      expect(getByTestId('dev-server-chip').dataset.url).toBe('http://localhost:5173/');
+
+      await rerender({
+        item: { ...item, updatedAt: item.updatedAt + 1 },
+        meta: commandMeta({ command: 'npm run dev' }),
+      });
+
+      expect(getByTestId('dev-server-chip').dataset.url).toBe('http://localhost:5173/');
+    });
+
+    it('upgrades to a newly detected URL', async () => {
+      const item = makeItem({ id: 'tool-cmd', kind: 'tool_call', status: 'running' });
+      const { getByTestId, rerender } = render(CommandOutput, {
+        props: {
+          item,
+          meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:5173/' }),
+        },
+      });
+
+      await rerender({
+        item: { ...item, updatedAt: item.updatedAt + 1 },
+        meta: commandMeta({ command: 'npm run dev', devServerUrl: 'http://localhost:4173/' }),
+      });
+
+      expect(getByTestId('dev-server-chip').dataset.url).toBe('http://localhost:4173/');
+    });
   });
 });

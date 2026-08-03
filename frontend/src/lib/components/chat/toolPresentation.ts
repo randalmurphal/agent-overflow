@@ -248,6 +248,7 @@ function commandPresentation(
     lineCount: parsedMeta?.lineCount ?? 0,
     preview: parsedMeta?.preview,
     errorMessage: parsedMeta?.errorMessage,
+    devServerUrl: parsedMeta?.devServerUrl,
   };
   if (parsedMeta?.exitCode !== undefined) {
     meta.exitCode = parsedMeta.exitCode;

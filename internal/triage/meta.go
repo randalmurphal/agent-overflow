@@ -26,6 +26,13 @@ type CommandOutputMeta struct {
 	Preview      string `json:"preview,omitempty"`
 	ErrorMessage string `json:"errorMessage,omitempty"`
 	OutputState  string `json:"outputFileState,omitempty"`
+	// DevServerURL is the loopback URL this command announced, if any
+	// (see dev_server_url.go). Present so a collapsed command row can
+	// offer "open in browser" without loading the output blob. While the
+	// row streams this reflects the current flush window only — the
+	// completion rebuild recomputes it over the cumulative payload, and
+	// the row keeps the first detection for its visible lifetime.
+	DevServerURL string `json:"devServerUrl,omitempty"`
 }
 
 // ThinkingMeta is the JSON structure for thinking block payloads.
@@ -128,9 +135,10 @@ func ExtractDiffMeta(patch string) DiffMeta {
 // preview text.
 func ExtractCommandOutputMeta(output string, command string, exitCode int) CommandOutputMeta {
 	cm := CommandOutputMeta{
-		Command:   command,
-		ExitCode:  exitCode,
-		LineCount: strings.Count(output, "\n") + 1,
+		Command:      command,
+		ExitCode:     exitCode,
+		LineCount:    strings.Count(output, "\n") + 1,
+		DevServerURL: DetectDevServerURL(output),
 	}
 	return cm
 }

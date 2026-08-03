@@ -99,6 +99,19 @@ Use these pane registries instead of local row state:
 - `pane.activityRuns` for a run's collapse override, inner scroll position,
   mount window, and pending jump focus (see "Activity Runs" below).
 
+`CommandOutput.svelte` holds one deliberate piece of row-local state,
+`detectedDevServerURL`, and it is NOT an exception to the rule above.
+`payloadMeta.devServerUrl` (see `internal/triage/dev_server_url.go`) is
+rebuilt from each 100ms flush window while a command streams, so a startup
+banner is only present in the window that carried it; the completion
+rebuild recomputes it over the cumulative output and persists it. The row
+holds the first detection so the `DevServerChip` cannot blink out the
+moment the server logs its first request. That is last-known-value
+smoothing of a jittering SERVER field, not remembered user intent — a
+windowing remount mid-run re-reads whatever meta currently says and the
+persisted value takes over at settle, so nothing is durably lost. Do not
+copy this shape for anything a reader chose.
+
 Payload bytes go through `utils/payloadDataCache.ts`, keyed by
 `(threadId, payloadId, version)` and byte-bounded by its LRU. Per-pane
 registries track expansion intent; the data cache tracks loaded bytes.

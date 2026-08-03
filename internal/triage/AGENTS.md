@@ -127,6 +127,20 @@ none fits.
   can settle, so ordinary threads remain unattributed. Ledger append failure
   is error-logged, never dropped silently.
 - `meta.go` — shared JSON-inspection helpers.
+- `dev_server_url.go` — `DetectDevServerURL`: finds the loopback URL a
+  command announced ("Local: http://localhost:5173"), so a collapsed
+  command row can offer "open in browser" without loading the output
+  blob. Called from `ExtractCommandOutputMeta`, which already makes one
+  full pass over the same bytes for `lineCount` — the scan is a second
+  single pass anchored on `strings.Index(…, "://")`, no regex, first
+  match wins with an early exit, and it allocates only on a hit
+  (~4.5 GB/s on non-matching output). Wildcard binds (`0.0.0.0`, `::`)
+  are rewritten to `localhost`; non-loopback hosts and URLs embedded in
+  stack frames, markdown links, JSON, or env assignments are rejected.
+  The `devServerUrl` field inherits `command_output` meta's streaming
+  behavior: it reflects the current flush window while the row streams
+  and becomes cumulative at the completion rebuild, so the row smooths
+  it (see the chat area guide).
 - `maps.go` — generic map utilities (currently just `deleteByPrefix`).
 
 ## Routing table
