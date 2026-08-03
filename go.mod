@@ -221,6 +221,6 @@ tool github.com/wailsapp/wails/v3/cmd/wails3
 // COM bindings live there; both pins must reference the same fork
 // commit. Drop the DPI hunks once wails #5732 / #5733 land upstream;
 // the suspend API and notification fix are upstream-PR candidates.
-replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-alpha2.112.0.20260725041415-899abbbd5306
+replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-alpha2.112.0.20260803192222-4a80cd101f96
 
-replace github.com/wailsapp/wails/webview2 => github.com/randalmurphal/wails/webview2 v1.0.28-0.20260725041415-899abbbd5306
+replace github.com/wailsapp/wails/webview2 => github.com/randalmurphal/wails/webview2 v1.0.28-0.20260803192222-4a80cd101f96
