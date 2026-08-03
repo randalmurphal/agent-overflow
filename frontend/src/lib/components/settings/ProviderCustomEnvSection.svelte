@@ -208,21 +208,28 @@
       {/if}
 
       <div class="flex items-start gap-2">
-        <input
-          type="text"
-          data-testid="settings-provider-env-name-input"
-          value={draftName}
-          placeholder={namePlaceholder}
-          autocomplete="off"
-          spellcheck="false"
-          disabled={busy}
-          aria-label="New variable name"
-          aria-invalid={draftError !== null}
-          aria-describedby={draftError ? `env-error-${provider.id}` : undefined}
-          oninput={(e) => (draftName = (e.target as HTMLInputElement).value)}
-          onkeydown={handleDraftKeydown}
-          class="{INPUT_CLASS} w-[13rem] shrink-0 font-mono"
-        />
+        <!-- The width lives on a wrapper because INPUT_CLASS carries w-full:
+             stacking w-[13rem] onto it is a Tailwind class conflict whose
+             winner depends on stylesheet order, and when w-full wins the
+             shrink-0 name field swallows the row and crushes the value input
+             to a sliver. -->
+        <div class="w-[13rem] shrink-0">
+          <input
+            type="text"
+            data-testid="settings-provider-env-name-input"
+            value={draftName}
+            placeholder={namePlaceholder}
+            autocomplete="off"
+            spellcheck="false"
+            disabled={busy}
+            aria-label="New variable name"
+            aria-invalid={draftError !== null}
+            aria-describedby={draftError ? `env-error-${provider.id}` : undefined}
+            oninput={(e) => (draftName = (e.target as HTMLInputElement).value)}
+            onkeydown={handleDraftKeydown}
+            class="{INPUT_CLASS} font-mono"
+          />
+        </div>
         <input
           type={draftSensitive ? 'password' : 'text'}
           data-testid="settings-provider-env-value-input"
@@ -234,7 +241,7 @@
           aria-label="New variable value"
           oninput={(e) => (draftValue = (e.target as HTMLInputElement).value)}
           onkeydown={handleDraftKeydown}
-          class="{INPUT_CLASS} font-mono"
+          class="{INPUT_CLASS} min-w-0 font-mono"
         />
         <label class="flex shrink-0 items-center gap-1.5 py-1.5 text-[0.71875rem] text-fg-muted">
           <input
