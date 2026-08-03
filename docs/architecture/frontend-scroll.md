@@ -57,6 +57,12 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     sampling, and the content layer-promotion lease (promotion is
     leased against scroll activity and demotes after stillness — a
     permanent `will-change: transform` was a measured tile-memory tax).
+    A due demotion additionally waits for an app-wide motion lull
+    (`appMotion.ts`, probes registered per attached controller),
+    hard-capped at 30s: the demote's re-raster is only invisible on an
+    uncontended compositor, and one firing mid-stream of a neighboring
+    pane smeared across frames as a visible text shimmer
+    (2026-08-03). Both lease edges emit `scroll.lease` trace records.
     The chokepoint also owns the **fractional glide residue**: spring
     writes are fractional, the engine rounds `scrollTop` to whole CSS
     pixels, and the sub-pixel remainder is composited as a `translateY`

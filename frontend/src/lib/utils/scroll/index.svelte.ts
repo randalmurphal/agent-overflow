@@ -59,6 +59,7 @@
 import { tick } from 'svelte';
 import { getSettings } from '../../stores/settings.svelte';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
+import { appMotionActive, registerAppMotionProbe } from './appMotion';
 import { createScrollIntent, isSelectingInside } from './intent';
 import { createContentObserver } from './observers';
 import type { EngineCompensation } from '../virtual/types';
@@ -211,6 +212,7 @@ export function createUseStickToBottomController(
     refreshIsNearBottom,
     noteProgrammaticWrite: (top) => intent.noteProgrammaticWrite(top),
     springActive: () => spring.isActive(),
+    appMotionActive,
     traceState: () => ({
       isAtBottomState,
       escapedFromLockState,
@@ -218,6 +220,7 @@ export function createUseStickToBottomController(
       isNearBottomState,
     }),
     contentLeaseReleaseMs: options.contentLeaseReleaseMs,
+    contentLeaseMaxDeferMs: options.contentLeaseMaxDeferMs,
   });
   const {
     writeScrollTop,
@@ -822,11 +825,24 @@ export function createUseStickToBottomController(
   }
 
   // ===== Lifecycle =====
+  // While attached, this controller reports its motion into the
+  // app-wide registry so OTHER panes' lease demotions can wait for a
+  // lull (chokepoint.ts, the cross-pane deferral). Spring liveness and
+  // the armed structural one-shot cover glides current and imminent;
+  // the live-content hold covers streaming repaints that pin without
+  // springing (low-power mode, clamped rows). Registered on attach and
+  // released on detach: a detached controller produces no motion, and
+  // a leaked probe would keep its closure alive for the session.
+  let releaseAppMotionProbe: (() => void) | null = null;
+
   function attach(nextScrollEl: HTMLElement, nextContentEl: HTMLElement): void {
     if (scrollEl === nextScrollEl && contentEl === nextContentEl) return;
     detach();
     scrollEl = nextScrollEl;
     contentEl = nextContentEl;
+    releaseAppMotionProbe = registerAppMotionProbe(
+      () => spring.isActive() || spring.structuralAppendPending() || liveContentActiveNow(),
+    );
     observers.beginWarmup();
     if (isUiRenderTraceEnabled()) trace('scroll.attach', () => ({
       surface: nextScrollEl.dataset?.testid ?? '',
@@ -898,6 +914,8 @@ export function createUseStickToBottomController(
 
   function detach(): void {
     uninstallStickStateDevHook();
+    releaseAppMotionProbe?.();
+    releaseAppMotionProbe = null;
     // Disconnects the RO and resets classification + warm-up state
     // (warm → false).
     observers.detach();

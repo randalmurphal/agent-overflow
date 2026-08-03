@@ -4,6 +4,7 @@ import {
   type UseStickToBottomController,
   type UseStickToBottomOptions,
 } from './index.svelte';
+import { appMotionActive, registerAppMotionProbe } from './appMotion';
 import { resetScrollIntentModuleStateForTest } from './intent';
 import { RETAIN_ANIMATION_DURATION_MS } from './spring';
 import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../liveContentActivity';
@@ -3864,7 +3865,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // spring.isActive()) die so the lease can demote.
       let leaseLiveContent = true;
 
-      function buildLeaseController(releaseMs: number): {
+      function buildLeaseController(releaseMs: number, maxDeferMs?: number): {
         scrollEl: HTMLDivElement;
         contentEl: HTMLDivElement;
         geom: Geometry;
@@ -3880,6 +3881,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         const localController = createUseStickToBottomController({
           liveContentActive: () => leaseLiveContent,
           contentLeaseReleaseMs: releaseMs,
+          contentLeaseMaxDeferMs: maxDeferMs,
         });
         localController.attach(sEl, cEl);
         leaseScrollEl = sEl;
@@ -3920,6 +3922,10 @@ describe('createUseStickToBottomController — spring chase', () => {
 
       it('releases after the idle window and re-promotes on the next activity', async () => {
         const { scrollEl: sEl, contentEl: cEl } = buildLeaseController(40);
+        // Every surface quiet: the path under test is the plain deadline
+        // expiry, not the cross-pane deferral (its own tests below).
+        liveContent = false;
+        leaseLiveContent = false;
         fireScroll(sEl);
         expect(cEl.style.willChange).toBe('transform');
         // Deadline passes in mocked time; the real release timer then
@@ -3961,11 +3967,88 @@ describe('createUseStickToBottomController — spring chase', () => {
         await advanceUntil(() => g.scrollTop === 1200);
         await advanceUntil(() => cEl.style.transform === '');
         leaseLiveContent = false;
+        liveContent = false; // the outer controller's probe must not defer this demote
         await nextFrame();
         await nextFrame();
         mockNow += 5000;
         await waitMs(600);
         expect(cEl.style.willChange).toBe('');
+      });
+
+      it('a due demotion waits for app-wide motion to lull, then fires', async () => {
+        const { scrollEl: sEl, contentEl: cEl } = buildLeaseController(40);
+        liveContent = false;
+        leaseLiveContent = false;
+        // A neighboring pane mid-stream: demoting now would re-raster
+        // into a contended compositor and smear visibly (the 2026-08-03
+        // shimmer), so the due demote must hold for the lull.
+        let neighborBusy = true;
+        const releaseProbe = registerAppMotionProbe(() => neighborBusy);
+        try {
+          fireScroll(sEl);
+          expect(cEl.style.willChange).toBe('transform');
+          mockNow += 60;
+          await waitMs(600); // several rechecks past the deadline
+          expect(cEl.style.willChange).toBe('transform');
+          neighborBusy = false;
+          await waitMs(300); // next recheck sees the lull
+          expect(cEl.style.willChange).toBe('');
+        } finally {
+          releaseProbe();
+        }
+      });
+
+      it('the cross-pane deferral is hard-capped: continuous motion cannot starve the demote', async () => {
+        const { scrollEl: sEl, contentEl: cEl } = buildLeaseController(40, 500);
+        liveContent = false;
+        leaseLiveContent = false;
+        const releaseProbe = registerAppMotionProbe(() => true);
+        try {
+          fireScroll(sEl);
+          mockNow += 60;
+          await waitMs(300); // deferral starts
+          expect(cEl.style.willChange).toBe('transform');
+          mockNow += 500; // the cap elapses with motion still continuous
+          await waitMs(300);
+          // At the cap the demote fires under load — exactly the
+          // pre-deferral behavior, so memory reclamation is late but
+          // never starved.
+          expect(cEl.style.willChange).toBe('');
+        } finally {
+          releaseProbe();
+        }
+      });
+
+      it('activity during a cross-pane deferral renews the lease and restarts the wait', async () => {
+        const { scrollEl: sEl, contentEl: cEl } = buildLeaseController(40, 500);
+        liveContent = false;
+        leaseLiveContent = false;
+        const releaseProbe = registerAppMotionProbe(() => true);
+        try {
+          fireScroll(sEl);
+          mockNow += 60;
+          await waitMs(300); // deferral running
+          fireScroll(sEl); // fresh activity: new deadline, deferral reset
+          mockNow += 500; // past the OLD cap and the new deadline
+          await waitMs(300);
+          // The stale cap must not fire a demote the renewal superseded —
+          // this is a fresh attempt with its own full window.
+          expect(cEl.style.willChange).toBe('transform');
+          mockNow += 500; // the fresh window's cap
+          await waitMs(300);
+          expect(cEl.style.willChange).toBe('');
+        } finally {
+          releaseProbe();
+        }
+      });
+
+      it('detach releases the app-motion probe', () => {
+        buildLeaseController(40);
+        liveContent = false; // outer controller quiet
+        leaseLiveContent = true; // the lease controller reads as motion while attached
+        expect(appMotionActive()).toBe(true);
+        leaseController!.detach();
+        expect(appMotionActive()).toBe(false);
       });
 
       it('detach demotes and cancels the lease', () => {

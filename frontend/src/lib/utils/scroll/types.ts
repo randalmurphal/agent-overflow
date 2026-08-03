@@ -469,4 +469,12 @@ export interface UseStickToBottomOptions {
    * CONTENT_LEASE_RELEASE_MS.
    */
   contentLeaseReleaseMs?: number;
+  /**
+   * Cap on how long a due demotion may additionally wait for an
+   * app-wide motion lull (appMotion.ts) before firing under load
+   * anyway. Bounds the tile-memory hold; see the lease section in
+   * chokepoint.ts. Override is a test seam; the default is
+   * CONTENT_LEASE_MAX_DEFER_MS.
+   */
+  contentLeaseMaxDeferMs?: number;
 }

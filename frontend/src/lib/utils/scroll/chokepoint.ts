@@ -63,6 +63,15 @@ const CONTENT_LEASE_RELEASE_MS = 5000;
 // the residue is still easing out (the ease runs ~100ms; the spring
 // case renews the deadline itself via tick writes).
 const CONTENT_LEASE_BUSY_RECHECK_MS = 250;
+// Hard bound on the cross-pane motion deferral (see the lease section
+// comment): once a demote has waited this long for an app-wide lull,
+// it fires anyway — under load, which is exactly what every demote did
+// before the deferral existed, so the cap can never render worse than
+// the old behavior; it only bounds how long tile memory is held past
+// the deadline. Streaming has sub-second lulls (tool executions,
+// thinking pauses) many times a minute, so reaching the cap means
+// motion was genuinely continuous the whole time.
+const CONTENT_LEASE_MAX_DEFER_MS = 30_000;
 
 export interface WriteChokepointDeps {
   getScrollEl(): HTMLElement | undefined;
@@ -79,6 +88,13 @@ export interface WriteChokepointDeps {
   noteProgrammaticWrite(top: number): void;
   /** Late-bound spring liveness read for the lease's demotion deferral. */
   springActive(): boolean;
+  /**
+   * App-wide motion read (any pane's spring/live content — see
+   * appMotion.ts) for the lease's bounded cross-pane demote deferral.
+   * The own-pane springActive/residue deferral above stays separate
+   * and unbounded: it protects a layer that is literally mid-motion.
+   */
+  appMotionActive(): boolean;
   /** Controller flag snapshot for the write trace record. */
   traceState(): {
     isAtBottomState: boolean;
@@ -88,6 +104,8 @@ export interface WriteChokepointDeps {
   };
   /** Test override for the lease release window. */
   contentLeaseReleaseMs?: number;
+  /** Test override for the cross-pane deferral cap. */
+  contentLeaseMaxDeferMs?: number;
 }
 
 export interface WriteChokepoint {
@@ -295,19 +313,44 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
   // at demote time the pane is at rest and the repaint produces
   // identical pixels (modulo text-AA mode — see the launcher's
   // --disable-lcd-text rationale in cmd/agent-overflow-windows/main.go).
+  //
+  // "At rest" must mean the APP, not just this pane. A demote's
+  // re-raster is invisible only when it completes inside one vsync;
+  // while a neighboring pane streams, the raster threads are contended
+  // and the same re-raster smears across frames as a visible shimmer
+  // of the pane's text (2026-08-03 incident: a review-pane close
+  // renewed an idle pane's lease in passing, and the demote it armed
+  // fired 5s later mid-stream of the other pane, flickering everything
+  // below the reader's pointer). So a demote whose own pane is quiet
+  // additionally waits for an app-wide lull (deps.appMotionActive —
+  // any pane's spring or live-content hold), bounded by
+  // CONTENT_LEASE_MAX_DEFER_MS so tile reclamation can be late but
+  // never starved: at the cap it fires under load, exactly as every
+  // demote did before this deferral existed. The cap clock starts when
+  // the cross-pane wait starts, so the worst case is a fixed
+  // cap-per-demote beyond the old behavior, independent of how long
+  // the own-pane deferral ran first.
   const contentLeaseReleaseMs =
     deps.contentLeaseReleaseMs ?? CONTENT_LEASE_RELEASE_MS;
+  const contentLeaseMaxDeferMs =
+    deps.contentLeaseMaxDeferMs ?? CONTENT_LEASE_MAX_DEFER_MS;
   let contentPromoted = false;
   let contentLeaseDeadline = 0;
   let contentLeaseTimer: ReturnType<typeof setTimeout> | null = null;
+  // Wall-clock start of the current cross-pane deferral, null outside
+  // one. Reset by renewal: fresh activity moves the deadline, so any
+  // wait that follows is a NEW demote attempt with its own cap.
+  let contentLeaseDeferStart: number | null = null;
 
   function renewContentLease(): void {
     const contentEl = deps.getContentEl();
     if (!contentEl) return;
     contentLeaseDeadline = nowMs() + contentLeaseReleaseMs;
+    contentLeaseDeferStart = null;
     if (!contentPromoted) {
       contentPromoted = true;
       contentEl.style.willChange = 'transform';
+      if (isUiRenderTraceEnabled()) trace('scroll.lease', () => ({ action: 'promote' }));
     }
     if (contentLeaseTimer === null) {
       contentLeaseTimer = setTimeout(checkContentLeaseRelease, contentLeaseReleaseMs);
@@ -318,16 +361,39 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
     contentLeaseTimer = null;
     const contentEl = deps.getContentEl();
     if (!contentPromoted || !contentEl) return;
-    const remaining = contentLeaseDeadline - nowMs();
+    const now = nowMs();
+    const remaining = contentLeaseDeadline - now;
     if (remaining > 0 || deps.springActive() || glideResidue !== 0) {
+      contentLeaseDeferStart = null;
       contentLeaseTimer = setTimeout(
         checkContentLeaseRelease,
         Math.max(remaining, CONTENT_LEASE_BUSY_RECHECK_MS),
       );
       return;
     }
+    // Own pane is at rest past its deadline: wait for the app-wide
+    // lull, up to the cap.
+    if (deps.appMotionActive() && (contentLeaseDeferStart === null
+      || now - contentLeaseDeferStart < contentLeaseMaxDeferMs)) {
+      if (contentLeaseDeferStart === null) {
+        contentLeaseDeferStart = now;
+        if (isUiRenderTraceEnabled()) trace('scroll.lease', () => ({ action: 'defer' }));
+      }
+      contentLeaseTimer = setTimeout(
+        checkContentLeaseRelease,
+        CONTENT_LEASE_BUSY_RECHECK_MS,
+      );
+      return;
+    }
+    const deferredMs = contentLeaseDeferStart === null ? 0 : now - contentLeaseDeferStart;
+    contentLeaseDeferStart = null;
     contentPromoted = false;
     contentEl.style.willChange = '';
+    if (isUiRenderTraceEnabled()) trace('scroll.lease', () => ({
+      action: 'demote',
+      deferredMs: Math.round(deferredMs),
+      capHit: deferredMs >= contentLeaseMaxDeferMs,
+    }));
   }
 
   function clearContentLease(): void {
@@ -336,6 +402,7 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
       contentLeaseTimer = null;
     }
     contentPromoted = false;
+    contentLeaseDeferStart = null;
     const contentEl = deps.getContentEl();
     if (contentEl) contentEl.style.willChange = '';
   }
