@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -140,7 +141,18 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 		}
 		return store.Thread{}, err
 	}
-	if err := core.CreateWorktreeFromBranch(project, worktreePath, resolvedBase, resolvedBranch); err != nil {
+	// Carry-over pins the cut to the LOCAL base. The dirty tree about to be
+	// applied was authored against the branch as it exists on this machine,
+	// so starting the worktree at origin's newer tip would turn "move my
+	// changes" into "rebase my changes" — and a conflict there fails the
+	// whole create (the worktree is torn down, the stash left for manual
+	// recovery). Every other cut takes the fetched base.
+	if carryLocalChanges {
+		err = core.CreateWorktreeFromBranch(project, worktreePath, resolvedBase, resolvedBranch)
+	} else {
+		err = a.cutWorktreeFromFreshBase(a.lifeCtx(), project, worktreePath, resolvedBase, resolvedBranch)
+	}
+	if err != nil {
 		if stashed {
 			a.restoreStashOnError(sourceWorkspace, stashMessage)
 		}
@@ -903,6 +915,25 @@ func (a *App) findWorktree(project, path string) (gitops.Worktree, bool, error) 
 		}
 	}
 	return gitops.Worktree{}, false, nil
+}
+
+// cutWorktreeFromFreshBase is the app's one entry point for cutting a NEW
+// worktree branch from a base branch that may also live on origin: chat
+// threads (new-thread and switch-to-worktree) and workflow items all route
+// through it, so the fetch-first rule can't drift between them.
+//
+// It owns the failure posture that internal/git deliberately leaves to the
+// caller: a fetch that fails or times out is a log line and nothing more.
+// The user asked for a worktree, not for a network round trip, and the cut
+// they asked for succeeded — from the local base, exactly as it did before
+// this behaviour existed.
+func (a *App) cutWorktreeFromFreshBase(ctx context.Context, projectPath, worktreePath, baseBranch, newBranch string) error {
+	seed, err := a.gitCore().CreateWorktreeFromFreshBase(ctx, projectPath, worktreePath, baseBranch, newBranch)
+	if seed.FetchErr != nil {
+		log.Printf("create worktree %s: fetch origin for base %q: %v (cutting from the local branch)",
+			projectPath, baseBranch, seed.FetchErr)
+	}
+	return err
 }
 
 func (a *App) defaultWorktreePath(projectPath, branch string) (string, error) {

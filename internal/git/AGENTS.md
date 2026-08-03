@@ -29,8 +29,10 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   `Push` (but not `PushUnattended`), `Pull`, `SyncBranch`,
   `PruneRemotes`, `FetchRefOID`, `FetchBranch`, and the forge CLIs'
   `CreatePR` paths (which shell out to `git push` themselves).
-  Neither `MaybeFetchRemotes` nor `FetchRemotesBackground` opts out —
-  nobody asked for either of them.
+  Neither `MaybeFetchRemotes`, `FetchRemotesBackground`, nor the
+  worktree-seed fetch opts out — nobody asked for any of them (the seed
+  fetch is a side effect of pressing "new worktree", and it falls back to
+  the local base rather than prompting).
   `GIT_TERMINAL_PROMPT=0` alone is not enough: git tries an askpass
   helper first, so `GIT_ASKPASS=` (empty, not unset) is what closes the
   chain. Coverage: `noninteractive_test.go`.
@@ -42,13 +44,32 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   root, so N worktrees of one repository share one window — and that
   window is shared with `MaybeFetchRemotes` / `PruneRemotes` so the
   branch picker and the cadence can never double-fetch. Background
-  fetches are additionally single-flighted per repository. Origin only,
-  `--quiet`, never `--prune` and never extra tags: a timer must not
-  move or delete refs the user can see.
+  fetches are additionally single-flighted per repository (the
+  worktree-seed fetch joins the same flight, but waits on it through
+  `DoChan` so joining can't inherit the cadence's much longer deadline).
+  Origin only, `--quiet`, never `--prune` and never extra tags: a timer
+  must not move or delete refs the user can see. The same rule binds the
+  seed fetch — it reads `origin/<base>` as a start point and moves no ref.
 - `actions.go` — staging, commits, push/pull, branch create/checkout/
   rename. Worktree CRUD (`CreateWorktree*`, `RemoveWorktree*`,
   `ListWorktrees`) lives in `core.go` next to the `Worktree` struct
-  it returns.
+  it returns; `createWorktreeAt` there is the one `git worktree add -b`
+  invocation both cut paths share.
+- `worktree_seed.go` — `CreateWorktreeFromFreshBase`, the cut used
+  whenever the base branch is one that also lives on origin (chat
+  threads, workflow items — the app routes them all through
+  `App.cutWorktreeFromFreshBase`). It fetches origin first, bounded by
+  `worktreeSeedFetchTimeout` (5s — the user is watching) and throttled by
+  the shared `FetchStaleWindow` clock, then seeds the new branch from
+  `origin/<base>` when that ref exists. Origin only, matching the fetch;
+  `--no-track` so the new branch acquires no upstream; and the remote ref
+  is used only when the fetch succeeded or was skipped as fresh — a
+  failed or timed-out fetch falls back to the local base and reports the
+  failure as diagnostics (`WorktreeSeed.FetchErr`), never as an error.
+  `CreateWorktreeFromBranch` remains the local-only cut for a base no
+  remote has (a workflow unit cutting from its item's branch), and for
+  the carry-local-changes path, whose stash was authored against the
+  local base.
 - `disposition.go` — clean ff-or-merge-commit disposition with conflict
   preflight and durable-result SHA reporting.
 - `stash.go` — `git stash` helpers (push, apply-by-message,

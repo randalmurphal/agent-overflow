@@ -412,7 +412,7 @@ func (a *App) createWorktreeForNewThread(projectPath, branch string) (string, st
 		return "", "", err
 	}
 	baseBranch := a.gitCore().CurrentBranch(projectPath)
-	if err := a.gitCore().CreateWorktreeFromBranch(projectPath, worktreePath, baseBranch, resolvedBranch); err != nil {
+	if err := a.cutWorktreeFromFreshBase(a.lifeCtx(), projectPath, worktreePath, baseBranch, resolvedBranch); err != nil {
 		return "", "", err
 	}
 	return worktreePath, resolvedBranch, nil

@@ -924,6 +924,85 @@ func TestPrepareThreadWorktreeCarriesLocalChanges(t *testing.T) {
 	}
 }
 
+// gitRevParse resolves rev in cwd, failing the test if git cannot.
+func gitRevParse(t *testing.T, cwd, rev string) string {
+	t.Helper()
+	stdout, _, err := gitops.NewCore().Execute(cwd, "rev-parse", rev)
+	if err != nil {
+		t.Fatalf("git rev-parse %s in %s: %v", rev, cwd, err)
+	}
+	return strings.TrimSpace(stdout)
+}
+
+// staleCloneProject is a project whose local main is one commit behind
+// origin's, with no fetch since — the state every "why is my worktree
+// missing that commit" report starts from.
+func staleCloneProject(t *testing.T, app *App, threadID string) (string, store.Thread) {
+	t.Helper()
+	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	testutil.AdvanceOriginMain(t, bare)
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread(threadID)
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	thread.Branch = "main"
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	return repo, thread
+}
+
+func TestPrepareThreadWorktreeCutsFromTheFetchedOriginTip(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo, thread := staleCloneProject(t, app, "thread-worktree-fresh-base")
+	localMainBefore := gitRevParse(t, repo, "main")
+
+	updated, err := app.PrepareThreadWorktree(thread.ID, "main", "feature/fresh", false)
+	if err != nil {
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
+	}
+	// outside.txt only exists in the commit origin has and the local main
+	// does not, so its presence is proof the cut fetched and used
+	// origin/main rather than the stale local branch.
+	if _, err := os.Stat(filepath.Join(updated.WorktreePath, "outside.txt")); err != nil {
+		t.Fatalf("worktree did not start at origin/main: %v", err)
+	}
+	if after := gitRevParse(t, repo, "main"); after != localMainBefore {
+		t.Fatalf("local main moved from %s to %s; a worktree cut must not move refs", localMainBefore, after)
+	}
+}
+
+func TestPrepareThreadWorktreeCarryingChangesStaysOnTheLocalBase(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo, thread := staleCloneProject(t, app, "thread-worktree-carry-local-base")
+
+	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("hello\nedited\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+
+	updated, err := app.PrepareThreadWorktree(thread.ID, "main", "feature/carry-local", true)
+	if err != nil {
+		t.Fatalf("PrepareThreadWorktree() error = %v", err)
+	}
+	// The carried edits were authored against the LOCAL base, so the cut
+	// stays there: starting at origin's newer tip turns "move my changes"
+	// into "rebase my changes", and a conflict would fail the whole create.
+	if _, err := os.Stat(filepath.Join(updated.WorktreePath, "outside.txt")); !os.IsNotExist(err) {
+		t.Fatalf("carry-over cut from origin/main (stat err = %v)", err)
+	}
+	carried, err := os.ReadFile(filepath.Join(updated.WorktreePath, "README.txt"))
+	if err != nil {
+		t.Fatalf("read carried file: %v", err)
+	}
+	if !strings.Contains(string(carried), "edited") {
+		t.Fatalf("expected the edit to carry; got %q", string(carried))
+	}
+}
+
 func TestPrepareThreadWorktreeRejectsCarryFromDifferentBase(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)

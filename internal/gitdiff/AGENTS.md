@@ -18,10 +18,27 @@ constructors.
   first-parent for merge commits — matching how GitHub/GitLab render a
   commit — `diff-tree --root` for a root commit), and
   `ShowFileAtCommit` (hunk-gap expansion when a commit is selected).
-- `refs.go` — `resolveBaseRef`: maps the branch picker's short branch
-  names onto usable revisions (local name as-is, else the remote
-  tracking ref — the picker projects "origin/feature" to "feature",
-  which git's revision resolution won't DWIM on its own).
+- `refs.go` — the two ref resolvers, biased in opposite directions on
+  purpose:
+  - `resolveBaseRef` — the BASE side of every comparison (what a branch
+    is measured against). Prefers the remote-tracking ref: the base
+    branch's configured `@{upstream}` when it names one (a fork's `main`
+    tracking `upstream/main`), else `origin/<base>`, else the local ref,
+    else the remote-DWIM fallback below. A local `main` is only as fresh
+    as the user's last fetch, and the merge base against a stale one
+    under-reports the diff; preferring the remote-tracking ref makes the
+    review pane agree with what the forge will show for the same branch.
+    An upstream configured as another LOCAL branch (`branch.x.remote =
+    .`) is rejected — it is not evidence of a remote. No fetch happens
+    here: this reads whatever the last fetch left (worktree cuts and the
+    background cadence own the refreshing).
+  - `resolveNamedRef` — the ref the caller is DESCRIBING (the branch
+    whose own commits are listed, e.g. `ListBranchCommits`' second
+    argument). Local first, remote only as a fallback, because
+    "which commits would deleting this branch lose" must count unpushed
+    ones. Also what maps the picker's short names onto revisions: the
+    picker projects "origin/feature" to "feature", which git's revision
+    resolution won't DWIM on its own.
 - `run.go` — subprocess plumbing: `runGit` variants with env scrubbing
   (`GIT_EXTERNAL_DIFF` / `GIT_DIFF_OPTS` cleared), a hard
   `maxDiffOutputBytes` stdout cap, and `WaitDelay` so a wedged pipe

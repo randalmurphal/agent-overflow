@@ -279,7 +279,7 @@ func (r *workflowAppRunner) provisionWorkspace(
 		if err != nil {
 			return preparedWorkflowWorkspace{}, fmt.Errorf("choose worktree path: %w", err)
 		}
-		if err := core.CreateWorktreeFromBranch(project.Path, worktreePath, baseBranch, branch); err != nil {
+		if err := r.app.cutWorktreeFromFreshBase(ctx, project.Path, worktreePath, baseBranch, branch); err != nil {
 			return preparedWorkflowWorkspace{}, fmt.Errorf("create worktree from %q: %w", baseBranch, err)
 		}
 	}
@@ -379,6 +379,10 @@ func (r *workflowAppRunner) provisionUnitWorktree(
 		if err != nil {
 			return preparedWorkflowWorkspace{}, fmt.Errorf("choose unit worktree path: %w", err)
 		}
+		// Local base by construction: the unit cuts from the item's own
+		// branch, which this run created and no remote has. There is
+		// nothing to fetch and no remote-tracking ref to prefer — the
+		// item's cut already took origin into account (provisionWorkspace).
 		if err := core.CreateWorktreeFromBranch(primary.project.Path, worktreePath, primary.branch, branch); err != nil {
 			return preparedWorkflowWorkspace{}, fmt.Errorf("create unit worktree from %q: %w", primary.branch, err)
 		}

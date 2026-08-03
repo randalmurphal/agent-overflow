@@ -341,21 +341,40 @@ func (c *Core) AttachWorktree(cwd, path, branch string) error {
 }
 
 // CreateWorktreeFromBranch creates a new worktree backed by newBranch from an
-// explicit base branch. Empty baseBranch lets git use the current HEAD.
+// explicit base branch, exactly as it exists locally. Empty baseBranch lets
+// git use the current HEAD.
+//
+// Use this when the base is a ref only this machine has (a branch another
+// worktree just cut). When the base is a branch that also lives on origin,
+// CreateWorktreeFromFreshBase is the one to call: it refreshes origin first
+// so the new worktree doesn't inherit a stale local base.
 func (c *Core) CreateWorktreeFromBranch(cwd, path, baseBranch, newBranch string) error {
+	return c.createWorktreeAt(cwd, path, baseBranch, newBranch, false)
+}
+
+// createWorktreeAt is the one `git worktree add -b` invocation. startPoint is
+// a revision (a local branch, or a remote-tracking ref when the caller
+// resolved one); empty means the repository's current HEAD.
+//
+// noTrack suppresses git's branch.autoSetupMerge DWIM, which would otherwise
+// set the new branch's upstream whenever the start point is a remote-tracking
+// ref. It is the caller's decision because it is only correct for a start
+// point the caller resolved: a base the user named keeps git's default
+// behaviour.
+func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack bool) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("git worktree path is required")
 	}
 	newBranch = strings.TrimSpace(newBranch)
-	baseBranch = strings.TrimSpace(baseBranch)
+	startPoint = strings.TrimSpace(startPoint)
 	if newBranch == "" {
 		return errors.New("git worktree branch is required")
 	}
 	if err := validateBranchName(newBranch); err != nil {
 		return err
 	}
-	if baseBranch != "" {
-		if err := validateBranchName(baseBranch); err != nil {
+	if startPoint != "" {
+		if err := validateBranchName(startPoint); err != nil {
 			return err
 		}
 	}
@@ -363,9 +382,13 @@ func (c *Core) CreateWorktreeFromBranch(cwd, path, baseBranch, newBranch string)
 		return err
 	}
 
-	args := []string{"worktree", "add", "-b", newBranch, path}
-	if baseBranch != "" {
-		args = append(args, baseBranch)
+	args := []string{"worktree", "add"}
+	if noTrack {
+		args = append(args, "--no-track")
+	}
+	args = append(args, "-b", newBranch, path)
+	if startPoint != "" {
+		args = append(args, startPoint)
 	}
 	_, stderr, err := c.Execute(cwd, args...)
 	if err != nil {
