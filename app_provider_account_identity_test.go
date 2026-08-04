@@ -508,6 +508,84 @@ func TestManagedClaudeSwitchUpdatesLiveSessionsImmediately(t *testing.T) {
 	}
 }
 
+// After a dead account's failed refresh, the CLI blanks the canonical
+// credential in place. Switching away must read that husk as a sign-out and
+// proceed — preserving nothing — rather than refusing with "credentials
+// changed". Refusing bricked every switch and delete on 2026-08-03, because
+// nothing inside the app ever replaces the husk.
+func TestSwitchSucceedsAfterProviderBlanksCanonicalCredential(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	credFirst := []byte(`{"claudeAiOauth":{"accessToken":"first","refreshToken":"first-refresh"}}`)
+	credSecond := []byte(`{"claudeAiOauth":{"accessToken":"second","refreshToken":"second-refresh"}}`)
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Claude),
+		"first",
+		"first@example.com",
+		credFirst,
+	)
+	if err := app.providerCredentials.WriteAccountCredential(
+		string(provider.Claude),
+		"second",
+		credSecond,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.providerAccounts.UpsertAndActivate(provideraccounts.Account{
+		ID:       "second",
+		Provider: string(provider.Claude),
+		Email:    "second@example.com",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.providerAccounts.Activate(string(provider.Claude), "first"); err != nil {
+		t.Fatal(err)
+	}
+	// A husk must not send reconciliation or the switch to the identity probe.
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": filepath.Join(t.TempDir(), "must-not-run"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.providerCredentials.WriteNativeCredentialForTest(
+		string(provider.Claude),
+		[]byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}`),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := app.SwitchProviderAccount(string(provider.Claude), "second")
+	if err != nil {
+		t.Fatalf("SwitchProviderAccount() error = %v", err)
+	}
+	if got.Account.ID != "second" {
+		t.Fatalf("switched account = %+v, want second", got.Account)
+	}
+	canonical, err := app.providerCredentials.ReadCredential(string(provider.Claude), "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(canonical) != string(credSecond) {
+		t.Fatalf("canonical credential = %s, want the target account installed", canonical)
+	}
+	// The outgoing slot keeps its last saved pair; the husk reaches nothing.
+	saved, err := app.providerCredentials.ReadCredential(string(provider.Claude), "first", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(saved) != string(credFirst) {
+		t.Fatalf("outgoing slot = %s, want its saved credential preserved", saved)
+	}
+	app.providerAccountMu.RLock()
+	fingerprint := app.providerCredentialFingerprints[string(provider.Claude)]
+	app.providerAccountMu.RUnlock()
+	if fingerprint != sha256.Sum256(credSecond) {
+		t.Fatal("credential fingerprint was not advanced to the switched-in credential")
+	}
+}
+
 func TestUnchangedCredentialFingerprintSkipsIdentityProbe(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())

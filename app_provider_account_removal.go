@@ -80,14 +80,23 @@ func (a *App) RemoveProviderAccount(providerName, accountID string) error {
 
 	var activeSnapshot provideraccounts.CredentialSnapshot
 	hasActiveSnapshot := false
+	activeSignedOut := false
 	if removingActive {
 		var err error
 		activeSnapshot, err = a.verifiedActiveCredentialLocked(providerName)
-		if err == nil {
+		switch {
+		case err == nil:
 			hasActiveSnapshot = true
 			savedSnapshot = activeSnapshot
 			hasSavedSnapshot = true
-		} else if !provideraccounts.IsCredentialMissing(err) {
+		case errors.Is(err, errActiveCredentialSignedOut):
+			// The CLI blanked the canonical credential after a failed refresh.
+			// There is nothing worth preserving and the husk must not reach any
+			// slot; the removal itself proceeds — refusing here was the
+			// "cannot even delete the bricked account" half of the 2026-08-03
+			// lockout. The rollback below still restores the slot's own bytes.
+			activeSignedOut = true
+		case !provideraccounts.IsCredentialMissing(err):
 			return err
 		}
 
@@ -112,7 +121,10 @@ func (a *App) RemoveProviderAccount(providerName, accountID string) error {
 			); err != nil {
 				return err
 			}
-		} else if hasActiveSnapshot {
+		} else if hasActiveSnapshot || activeSignedOut {
+			// The husk counts here too: removing the final account promises a
+			// cleared canonical credential, and a leftover husk is still a
+			// file claiming a login exists.
 			if err := a.providerCredentials.RemoveActive(providerName); err != nil {
 				return fmt.Errorf("sign out final %s account: %w", providerName, err)
 			}

@@ -234,7 +234,7 @@ func (a *App) LoginProviderAccount(
 	if hasCurrent {
 		currentID = current.ID
 	}
-	currentCredential, err := a.reconciledActiveCredentialLocked(
+	preserveID, currentCredential, err := a.reconciledActiveCredentialLocked(
 		providerName,
 		currentID,
 		targetID,
@@ -251,7 +251,7 @@ func (a *App) LoginProviderAccount(
 	}
 	if err := a.providerCredentials.ActivateWithSnapshot(
 		providerName,
-		currentID,
+		preserveID,
 		targetID,
 		currentCredential,
 	); err != nil {
@@ -373,7 +373,7 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 	if hasCurrent {
 		currentID = current.ID
 	}
-	currentCredential, err := a.reconciledActiveCredentialLocked(
+	preserveID, currentCredential, err := a.reconciledActiveCredentialLocked(
 		providerName,
 		currentID,
 		accountID,
@@ -383,7 +383,7 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 	}
 	if err := a.providerCredentials.ActivateWithSnapshot(
 		providerName,
-		currentID,
+		preserveID,
 		accountID,
 		currentCredential,
 	); err != nil {
@@ -417,24 +417,45 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 }
 
 // reconciledActiveCredentialLocked captures the credential value already
-// associated with currentAccountID. The caller holds providerAccountMu after a
-// successful external-login reconciliation. Passing this exact snapshot into
-// activation prevents a concurrent native login from being preserved under
-// the stale account ID.
+// associated with currentAccountID so activation can preserve it into that
+// account's slot. Returns the account ID to preserve under — "" when there is
+// nothing to preserve — paired with the snapshot, so callers thread both
+// straight into ActivateWithSnapshot and cannot pass an ID without its value.
+// The caller holds providerAccountMu after a successful external-login
+// reconciliation. Passing this exact snapshot into activation prevents a
+// concurrent native login from being preserved under the stale account ID.
+//
+// A canonical credential the CLI blanked after a failed refresh reports
+// errActiveCredentialSignedOut from the verify below and is mapped to
+// "nothing to preserve" here: the outgoing slot already holds its last saved
+// pair, and the husk must not overwrite it. Refusing the mutation instead
+// locks the user out of every switch and delete until an external login
+// replaces the file (incident 2026-08-03).
 func (a *App) reconciledActiveCredentialLocked(
 	providerName string,
 	currentAccountID string,
 	targetAccountID string,
-) (*provideraccounts.CredentialSnapshot, error) {
+) (string, *provideraccounts.CredentialSnapshot, error) {
 	if currentAccountID == "" || currentAccountID == targetAccountID {
-		return nil, nil
+		return "", nil, nil
 	}
 	snapshot, err := a.verifiedActiveCredentialLocked(providerName)
-	if err != nil {
-		return nil, err
+	if errors.Is(err, errActiveCredentialSignedOut) {
+		return "", nil, nil
 	}
-	return &snapshot, nil
+	if err != nil {
+		return "", nil, err
+	}
+	return currentAccountID, &snapshot, nil
 }
+
+// errActiveCredentialSignedOut reports that the canonical credential is the
+// blank husk claude >= 2.1.219 leaves behind after a failed token refresh — a
+// sign-out by the provider, not a concurrent login. Account mutations treat
+// it as "no credential worth preserving" and proceed; treating it as
+// interference would refuse every switch and delete forever, because nothing
+// inside the app ever replaces the husk.
+var errActiveCredentialSignedOut = errors.New("active provider credential was signed out by the provider")
 
 func (a *App) verifiedActiveCredentialLocked(
 	providerName string,
@@ -446,6 +467,12 @@ func (a *App) verifiedActiveCredentialLocked(
 			providerName,
 			err,
 		)
+	}
+	// Checked before the fingerprint: a husk can never match the remembered
+	// fingerprint, and "changed; retry" would misdiagnose a sign-out as a
+	// concurrent login.
+	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(snapshot.Data) {
+		return provideraccounts.CredentialSnapshot{}, errActiveCredentialSignedOut
 	}
 	fingerprint := sha256.Sum256(snapshot.Data)
 	known, ok := a.providerCredentialFingerprints[providerName]

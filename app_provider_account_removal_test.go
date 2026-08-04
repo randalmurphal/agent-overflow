@@ -136,6 +136,72 @@ func TestRemoveInactiveProviderAccountLeavesActiveCredentialUntouched(t *testing
 	}
 }
 
+// The CLI blanks the canonical credential when a dead account's refresh
+// fails. Removing that account must read the husk as a sign-out and proceed:
+// refusing was the "cannot even delete the bricked account" half of the
+// 2026-08-03 lockout.
+func TestRemoveActiveAccountSucceedsAfterProviderBlanksCanonicalCredential(t *testing.T) {
+	app := newTestAppWithStore(t)
+	installRemovalTestAccounts(t, app, string(provider.Claude), "first", "second")
+	if err := app.providerCredentials.WriteNativeCredentialForTest(
+		string(provider.Claude),
+		[]byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}`),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.RemoveProviderAccount(string(provider.Claude), "second"); err != nil {
+		t.Fatalf("RemoveProviderAccount() error = %v", err)
+	}
+
+	active, ok := app.providerAccounts.Active(string(provider.Claude), time.Now())
+	if !ok || active.ID != "first" {
+		t.Fatalf("active account = %+v, ok=%v, want first", active, ok)
+	}
+	canonical, err := app.providerCredentials.ReadCredential(string(provider.Claude), "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(canonical) != `{"account":"first"}` {
+		t.Fatalf("canonical credential = %s, want the replacement installed over the husk", canonical)
+	}
+	if got, err := app.providerCredentials.ReadCredential(
+		string(provider.Claude),
+		"second",
+		false,
+	); !provideraccounts.IsCredentialMissing(err) {
+		t.Fatalf("removed saved credential = %s, %v, want missing", got, err)
+	}
+}
+
+// Removing the final account promises a cleared canonical credential; a
+// leftover husk is still a file claiming a login exists.
+func TestRemoveFinalAccountClearsBlankedCanonicalCredential(t *testing.T) {
+	app := newTestAppWithStore(t)
+	installRemovalTestAccounts(t, app, string(provider.Claude), "only")
+	if err := app.providerCredentials.WriteNativeCredentialForTest(
+		string(provider.Claude),
+		[]byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}`),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.RemoveProviderAccount(string(provider.Claude), "only"); err != nil {
+		t.Fatalf("RemoveProviderAccount() error = %v", err)
+	}
+
+	if _, ok := app.providerAccounts.Active(string(provider.Claude), time.Now()); ok {
+		t.Fatal("an account is still active after removing the final one")
+	}
+	if got, err := app.providerCredentials.ReadCredential(
+		string(provider.Claude),
+		"",
+		true,
+	); !provideraccounts.IsCredentialMissing(err) {
+		t.Fatalf("canonical credential = %s, %v, want cleared", got, err)
+	}
+}
+
 func installRemovalTestAccounts(
 	t *testing.T,
 	app *App,
