@@ -2324,9 +2324,52 @@ More spike-verified behavior (A1, B):
 AO enforcement: invariant 28 — `sessionfork` re-chains deferred
 api_error tails so fork output keeps its writable tail on-branch;
 `ScanSessionLeaf` validates its file-order pick against a branch index
-and repairs off-branch picks; `resolveClaudeResumeAt` validates
-explicit cursors at spawn. `internal/provider/claude/sessionleaf_branch.go`
-mirrors the row table above (`branchTranscriptTypes`).
+and repairs picks the CLI would reject (off-branch OR filter-dropped,
+next section); `resolveClaudeResumeAt` validates explicit cursors at
+spawn. `internal/provider/claude/sessionleaf_branch.go` mirrors the row
+table above via `sessionfork.TranscriptTypes`.
+
+## Session JSONL: resume deserialization filters (crash tails)
+
+Being on the active branch is necessary but NOT sufficient for a
+`--resume-session-at` cursor: the CLI validates the cursor against the
+branch chain **after** running `deserializeMessages`
+(`conversationRecovery.ts`) over it, so a row the filters drop
+hard-fails resume with the same pre-init
+`No message found with message.uuid of: <uuid>` error even when it is
+physically the file's branch tip. Incident 2026-08-03: a Windows BSOD
+killed a 34-minute Bash mid-run; the transcript ended at the assistant
+`tool_use` row (its `tool_result` was never written), AO's scan picked
+that row — correctly, by file order and branch — and every resume of
+the thread failed until the row was repaired.
+
+The filters, in order (source: `utils/messages.ts`, 2.1.219):
+
+1. **`filterUnresolvedToolUses`** — drops every assistant message with
+   ≥1 client `tool_use` block where ALL of them lack a matching
+   `tool_result` anywhere in the chain. Text in the same message does
+   not save it. This is the crash-mid-tool shape.
+2. **`filterOrphanedThinkingOnlyMessages`** — drops assistant messages
+   whose blocks are all `thinking`/`redacted_thinking` unless another
+   *remaining* assistant message with the same `message.id` has
+   non-thinking content. Streaming persists one row per content block,
+   so dropping a turn-final `tool_use` row (rule 1) usually takes its
+   thinking sibling with it.
+3. **`filterWhitespaceOnlyAssistantMessages`** — drops assistant
+   messages whose blocks are all whitespace-only text ("\n\n" then
+   cancel). If ANY row was dropped here, every adjacent user-row run
+   is additionally merged into its first row (`mergeUserMessages`),
+   erasing the later rows' uuids (the survivor is the run head's uuid
+   when the head is non-meta; meta-headed runs depend on the
+   HISTORY_SNIP feature flag).
+
+AO enforcement: `sessionleaf_resumefilters.go` mirrors the three
+filters over the active chain; `repairLeafForActiveBranch` substitutes
+the deepest surviving row (or no cursor at all — always safe) and
+`ResumeAtOnActiveBranch` rejects explicit cursors the filters would
+drop. The mirror is deliberately conservative — see the file header
+for the containment argument around
+`recoverOrphanedParallelToolResults`.
 
 ## Session JSONL: deferred `system/api_error` rows (stale parents)
 

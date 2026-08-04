@@ -956,24 +956,33 @@ column on the persisted row converges on the FINAL round's id via
 
 ---
 
-## 28. Claude resume-at must target the active parentUuid branch
+## 28. Claude resume-at must target a row claude's resume will keep
 
 **Rule.** Any uuid Agent Overflow passes as `--resume-session-at` must
-be a `user`/`assistant` row reachable by walking `parentUuid` back from
-the session file's last uuid-bearing transcript row (the **active
-branch** — the chain claude itself reconstructs on resume). And any
-session file AO writes (fork, revert slice) must keep its writable tail
-on that branch.
+be a `user`/`assistant` row that (a) is reachable by walking
+`parentUuid` back from the session file's last uuid-bearing transcript
+row (the **active branch** — the chain claude itself reconstructs on
+resume) AND (b) survives the CLI's resume deserialization filters
+(unresolved client tool_uses, orphaned thinking-only rows,
+whitespace-only rows + the user-run merge). And any session file AO
+writes (fork, revert slice) must keep its writable tail on that branch.
 
-**Rationale.** `--resume-session-at` is validated against the active
-branch only; an off-branch uuid hard-fails pre-init
-(`result{error_during_execution, errors:["No message found with
-message.uuid of: ..."]}`) and the process lingers. The CLI itself
-breaks this topology: deferred `system/api_error` rows are appended at
-the NEXT user send with a stale `parentUuid` that bypasses the prior
-turn's tail (upstream bug, 2.1.167–170). In the 2026-06-10 incident
-that combination bricked every resume of the thread — each retry
-re-forked the same poison.
+**Rationale.** `--resume-session-at` is validated against the
+**deserialized** active branch; a uuid the CLI rejects hard-fails
+pre-init (`result{error_during_execution, errors:["No message found
+with message.uuid of: ..."]}`) and the process lingers. Both halves
+have bricked real threads, deterministically on every retry:
+
+- Off-branch (2026-06-10 incident): deferred `system/api_error` rows
+  are appended at the NEXT user send with a stale `parentUuid` that
+  bypasses the prior turn's tail (upstream bug, 2.1.167–170); each
+  retry re-forked the same poison.
+- Filter-dropped (2026-08-03 incident): a Windows BSOD killed a
+  34-minute Bash mid-run, leaving the transcript leaf an assistant
+  `tool_use` row with no `tool_result`. The row is the branch tip, but
+  the CLI drops it (and its thinking sibling) before validating the
+  cursor — see
+  [`claude-wire.md §resume deserialization filters`](../references/claude-wire.md#session-jsonl-resume-deserialization-filters-crash-tails).
 
 **Enforcement, all three layers:**
 
@@ -982,14 +991,19 @@ re-forked the same poison.
   compact-boundary system rows are legitimate `parentUuid:null` roots
   and are never re-chained). User/assistant rows are never re-chained —
   claude's own walk correctly ignores abandoned content branches.
-- `sessionleaf_branch.go` — the cold scan validates the file-order leaf
-  against a branch index built in the same pass and repairs off-branch
-  picks to the deepest on-branch content row; no usable row → empty
-  leaf → the spawn omits `--resume-session-at` entirely (claude's own
-  default-leaf semantics, always safe).
+- `sessionleaf_branch.go` + `sessionleaf_resumefilters.go` — the cold
+  scan validates the file-order leaf against a branch index built in
+  the same pass, runs the CLI's three resume filters over the active
+  chain (conservative mirror — every blessed uuid survives the CLI's
+  possibly-larger list), and repairs rejected picks to the deepest
+  surviving row; no usable row → empty leaf → the spawn omits
+  `--resume-session-at` entirely (claude's own default-leaf semantics,
+  always safe).
 - `resolveClaudeResumeAt` (app_session.go) — explicit cursors (the
   live-tracker leaf from the context-repair restart) are validated via
-  `claude.ResumeAtOnActiveBranch` before spawn; rejected cursors fall
+  `claude.ResumeAtOnActiveBranch` before spawn — same branch + filter
+  screen, so a wire-derived leaf whose tool_result never reached the
+  file (process died mid-tool) is rejected; rejected cursors fall
   back to the file scan, loudly.
 
 The row-admission set for the branch walk
@@ -1004,7 +1018,10 @@ Fixture:
 **Test.** `sessionfork/rechain_test.go` (re-chain topology, compact
 boundaries, idempotence on fork-of-fork);
 `sessionleaf_branch_test.go` (off-branch repair, sidechains, broken
-chains, `TestResumeAtOnActiveBranch`); `app_session_resumeat_test.go`
+chains, `TestResumeAtOnActiveBranch`);
+`sessionleaf_resumefilters_test.go` (crash-dangling-tool_use tail,
+orphaned thinking, whitespace tails + user-run merge, explicit-cursor
+rejection); `app_session_resumeat_test.go`
 (spawn-time rejection + scan fallback);
 `TestE2E_ClaudeQueuedFlushRepairsRiskyAdvisorContextBeforeSend`
 (explicit cursor surviving validation end-to-end).

@@ -58,6 +58,7 @@ type claudeSessionRow struct {
 	ParentUUID      string          `json:"parentUuid"`
 	ParentToolUseID string          `json:"parent_tool_use_id"`
 	IsSidechain     bool            `json:"isSidechain"`
+	IsMeta          bool            `json:"isMeta"`
 	Message         json.RawMessage `json:"message"`
 }
 
@@ -341,10 +342,14 @@ func scanSessionLeafReader(r io.Reader) (SessionLeafState, error) {
 		return SessionLeafState{}, fmt.Errorf("claude: scan session leaf: %w", err)
 	}
 	// The tracker's leaf is file-order based; claude validates resume-at
-	// against the parentUuid branch from the file's last transcript row.
-	// The two disagree on files with late-written stale-parent rows
-	// (deferred api_error tails) — repair to the branch's deepest
-	// content row so cold resume never targets an off-branch uuid.
+	// against the parentUuid branch from the file's last transcript row
+	// AFTER running its resume deserialization filters over it. The two
+	// disagree on files with late-written stale-parent rows (deferred
+	// api_error tails) and on files whose tail rows the filters drop —
+	// a crash mid-tool-execution leaves a dangling tool_use leaf, an
+	// interrupted stream can leave orphaned thinking-only or
+	// whitespace-only rows. Repair to the deepest surviving branch row
+	// so cold resume never targets a uuid claude is about to discard.
 	return repairLeafForActiveBranch(tracker.stateForColdResume(), branch), nil
 }
 

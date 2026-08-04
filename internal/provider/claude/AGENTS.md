@@ -91,17 +91,21 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   image at its composer `[Image #N]` marker (inline placement) via the
   shared `provider.SplitContentByImageMarkers`. Headless Claude inlines
   image bytes as base64 (no local-path source on the Messages API).
-- `sessionleaf.go` / `sessionleaf_branch.go` — cold-resume leaf
-  reconstruction for `--resume-session-at`. `claudeLeafTracker` (shared
-  with the live wire path) picks the leaf in FILE order;
-  `claudeBranchIndex` validates that pick against the ACTIVE BRANCH
-  (parentUuid walk from the file's last transcript row — the chain the
-  CLI itself validates resume-at against) and repairs off-branch picks.
-  `ResumeAtOnActiveBranch` is the exported spawn-time validator.
-  Row admission for the branch walk IS `sessionfork.TranscriptTypes`
-  (one exported set shared with the fork transform — no copy to
-  drift). See invariant 28 and claude-wire.md
-  §"active-branch semantics".
+- `sessionleaf.go` / `sessionleaf_branch.go` /
+  `sessionleaf_resumefilters.go` — cold-resume leaf reconstruction for
+  `--resume-session-at`. `claudeLeafTracker` (shared with the live wire
+  path) picks the leaf in FILE order; `claudeBranchIndex` validates
+  that pick against what the CLI's resume will actually accept — the
+  ACTIVE BRANCH (parentUuid walk from the file's last transcript row)
+  run through a conservative mirror of the CLI's resume
+  deserialization filters (dangling client tool_uses from a crash
+  mid-tool, orphaned thinking-only rows, whitespace-only rows + the
+  user-run merge) — and repairs rejected picks to the deepest
+  surviving row. `ResumeAtOnActiveBranch` is the exported spawn-time
+  validator, same screen. Row admission for the branch walk IS
+  `sessionfork.TranscriptTypes` (one exported set shared with the fork
+  transform — no copy to drift). See invariant 28, claude-wire.md
+  §"active-branch semantics" and §"resume deserialization filters".
 - `models_wire.go` — the `models` array the `initialize` response
   carries (`WireModel`), its canonicalization (`CanonicalSlug` —
   resolvedModel over alias, then `provider.NormalizeModelSlug`, which

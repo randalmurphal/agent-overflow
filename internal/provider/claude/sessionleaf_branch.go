@@ -12,19 +12,28 @@ import (
 
 // claudeBranchIndex accumulates the session file's parentUuid graph
 // during a cold scan so the chosen resume-at leaf can be validated
-// against the ACTIVE BRANCH — the chain Claude itself reconstructs by
-// walking parentUuid back from the file's LAST uuid-bearing transcript
-// row. `--resume-session-at` is validated by the CLI against that
-// branch only; passing any other uuid hard-fails at startup ("No
-// message found with message.uuid of: ...", emitted as a pre-init
-// result{error_during_execution}).
+// against the rows that SURVIVE claude's resume load. Two properties
+// decide whether `--resume-session-at <uuid>` is accepted:
 //
-// The graph and file order can disagree because the CLI writes some
-// rows late with stale parents — deferred `system/api_error` rows are
-// the known case (incident 2026-06-10; see sessionfork/rechain.go and
-// claude-wire.md §"Session JSONL: deferred system/api_error rows").
-// The file-order leaf the tracker picks is then OFF the branch, and a
-// scanner that doesn't check would brick every resume of the session.
+//  1. The row must be on the ACTIVE BRANCH — the chain claude
+//     reconstructs by walking parentUuid back from the file's last
+//     uuid-bearing transcript row. The graph and file order can
+//     disagree because the CLI writes some rows late with stale
+//     parents — deferred `system/api_error` rows are the known case
+//     (incident 2026-06-10; see sessionfork/rechain.go and
+//     claude-wire.md §"Session JSONL: deferred system/api_error rows").
+//
+//  2. The row must survive the CLI's resume deserialization filters
+//     (deserializeMessages, conversationRecovery.ts): assistant rows
+//     whose client tool_use blocks all lack a tool_result, orphaned
+//     thinking-only rows, and whitespace-only rows are dropped BEFORE
+//     the CLI validates the cursor, so a uuid that is physically the
+//     file's branch tip can still hard-fail resume ("No message found
+//     with message.uuid of: ...", emitted as a pre-init
+//     result{error_during_execution}). A host crash mid-tool-execution
+//     produces exactly that tail (incident 2026-08-03: BSOD killed a
+//     34-minute Bash, leaving the leaf a dangling tool_use row). The
+//     filter mirror lives in sessionleaf_resumefilters.go.
 //
 // Row admission mirrors the fork transform's transcript set
 // (user/assistant/attachment/system/progress with a non-empty uuid,
@@ -33,19 +42,28 @@ import (
 // file) and ignores non-transcript furniture (custom-title / mode /
 // queue-operation rows never broke a verified resume).
 //
-// Memory: two maps bounded by the scan's existing row cap
+// Memory: one map bounded by the scan's existing row cap
 // (maxClaudeSessionLeafRows) — cold path only.
 type claudeBranchIndex struct {
-	parentByUUID  map[string]string
-	contentByUUID map[string]struct{}
-	tipUUID       string
+	rows    map[string]*claudeBranchRow
+	tipUUID string
+}
+
+// claudeBranchRow is what the index keeps per transcript row: the
+// parent edge for the branch walk plus the content-derived flags the
+// resume-filter mirror needs. Raw message bytes are parsed immediately
+// and discarded — claudeSessionRow.Message aliases the scanner's
+// reusable buffer and must not outlive the line.
+type claudeBranchRow struct {
+	uuid    string
+	parent  string
+	rowType string
+	isMeta  bool
+	flags   claudeRowContentFlags
 }
 
 func newClaudeBranchIndex() *claudeBranchIndex {
-	return &claudeBranchIndex{
-		parentByUUID:  make(map[string]string),
-		contentByUUID: make(map[string]struct{}),
-	}
+	return &claudeBranchIndex{rows: make(map[string]*claudeBranchRow)}
 }
 
 // alreadySeen mirrors claudeLeafTracker's uuid dedup: replay-echo rows
@@ -54,7 +72,7 @@ func newClaudeBranchIndex() *claudeBranchIndex {
 // tip would point the walk at a stale interior chain. First sighting
 // wins for both the parent edge and tip selection.
 func (b *claudeBranchIndex) alreadySeen(uuid string) bool {
-	_, ok := b.parentByUUID[uuid]
+	_, ok := b.rows[uuid]
 	return ok
 }
 
@@ -81,75 +99,93 @@ func (b *claudeBranchIndex) ingestRow(row claudeSessionRow) {
 	if uuid == "" || b.alreadySeen(uuid) {
 		return
 	}
-	b.parentByUUID[uuid] = strings.TrimSpace(row.ParentUUID)
-	if row.Type == "user" || row.Type == "assistant" {
-		b.contentByUUID[uuid] = struct{}{}
+	indexed := &claudeBranchRow{
+		uuid:    uuid,
+		parent:  strings.TrimSpace(row.ParentUUID),
+		rowType: row.Type,
+		isMeta:  row.IsMeta,
 	}
+	if row.Type == "user" || row.Type == "assistant" {
+		indexed.flags = parseClaudeRowContentFlags(row.Message)
+	}
+	b.rows[uuid] = indexed
 	b.tipUUID = uuid
 }
 
-// onActiveBranch reports whether uuid is reachable by walking
-// parentUuid from the file's last uuid-bearing transcript row. The
-// step bound guards against parent cycles in a corrupt file: an
-// acyclic chain can visit at most every indexed row once, so walking
-// past len(parentByUUID) steps proves a cycle without allocating a
-// visited set.
-func (b *claudeBranchIndex) onActiveBranch(uuid string) bool {
-	if uuid == "" {
-		return false
-	}
-	maxSteps := len(b.parentByUUID)
+// activeChain returns the active branch in root→tip order — the row
+// sequence claude's own loadTranscriptFile → buildConversationChain
+// walk materializes as the resumable message list. The step bound
+// guards against parent cycles in a corrupt file: an acyclic chain can
+// visit at most every indexed row once, so walking past len(rows)
+// steps proves a cycle without allocating a visited set.
+func (b *claudeBranchIndex) activeChain() []*claudeBranchRow {
+	maxSteps := len(b.rows)
+	chain := make([]*claudeBranchRow, 0, maxSteps)
 	cur := b.tipUUID
 	for steps := 0; cur != "" && steps <= maxSteps; steps++ {
-		if cur == uuid {
-			return true
+		row, ok := b.rows[cur]
+		if !ok {
+			break
 		}
-		cur = b.parentByUUID[cur]
+		chain = append(chain, row)
+		cur = row.parent
 	}
-	return false
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return chain
 }
 
-// deepestContentOnBranch walks from the tip toward the root and
-// returns the first user/assistant row that is not excluded — the
-// deepest valid resume-at cursor on the active branch. Returns ""
-// when the branch holds no usable content row (callers then omit
-// --resume-session-at entirely, claude's own default-leaf semantics).
-// Same step-bound cycle guard as onActiveBranch.
-func (b *claudeBranchIndex) deepestContentOnBranch(exclude map[string]struct{}) string {
-	maxSteps := len(b.parentByUUID)
-	cur := b.tipUUID
-	for steps := 0; cur != "" && steps <= maxSteps; steps++ {
-		if _, isContent := b.contentByUUID[cur]; isContent {
-			if _, excluded := exclude[cur]; !excluded {
-				return cur
-			}
+// survivingResumeCursors runs the resume-filter mirror over the active
+// chain and returns the set of uuids `--resume-session-at` will accept,
+// plus the deepest such uuid (the natural repair pick). Rows in exclude
+// are screened from both — the caller passes assistant rows with
+// unresolved server-side tools, which the CLI's filters keep but which
+// are not valid continuation leaves (the API rejects a dangling
+// server_tool_use on the resumed context).
+func (b *claudeBranchIndex) survivingResumeCursors(exclude map[string]struct{}) (map[string]struct{}, string) {
+	survivors := applyClaudeResumeFilters(b.activeChain())
+	set := make(map[string]struct{}, len(survivors))
+	deepest := ""
+	for _, s := range survivors {
+		if !s.cursorSafe {
+			continue
 		}
-		cur = b.parentByUUID[cur]
+		if _, excluded := exclude[s.uuid]; excluded {
+			continue
+		}
+		set[s.uuid] = struct{}{}
+		deepest = s.uuid
 	}
-	return ""
+	return set, deepest
 }
 
 // repairLeafForActiveBranch validates the tracker's file-order leaf
-// against the active branch and substitutes the deepest on-branch
-// user/assistant row when the pick is off-branch. Healthy files (the
-// overwhelming majority) take the no-op path: their file-order leaf IS
-// the branch leaf.
+// against the set of cursors claude's resume will actually accept and
+// substitutes the deepest surviving row when the pick would hard-fail.
+// Healthy files (the overwhelming majority) take the no-op path: their
+// file-order leaf IS the deepest surviving branch row.
 func repairLeafForActiveBranch(state SessionLeafState, idx *claudeBranchIndex) SessionLeafState {
-	if state.CanonicalLeafUUID == "" || idx.onActiveBranch(state.CanonicalLeafUUID) {
+	if state.CanonicalLeafUUID == "" {
 		return state
 	}
 	exclude := make(map[string]struct{}, len(state.UnresolvedServerToolUUIDs))
 	for _, uuid := range state.UnresolvedServerToolUUIDs {
 		exclude[uuid] = struct{}{}
 	}
-	state.CanonicalLeafUUID = idx.deepestContentOnBranch(exclude)
+	set, deepest := idx.survivingResumeCursors(exclude)
+	if _, ok := set[state.CanonicalLeafUUID]; ok {
+		return state
+	}
+	state.CanonicalLeafUUID = deepest
 	return state
 }
 
-// ResumeAtOnActiveBranch reports whether resumeAt is a user/assistant
-// row on the active parentUuid branch of the session's JSONL — i.e. a
-// uuid that `claude --resume <sessionID> --resume-session-at <resumeAt>`
-// will accept. Used by the spawn path to validate EXPLICIT resume-at
+// ResumeAtOnActiveBranch reports whether resumeAt is a cursor that
+// `claude --resume <sessionID> --resume-session-at <resumeAt>` will
+// accept: a user/assistant row on the active parentUuid branch of the
+// session's JSONL that survives the CLI's resume deserialization
+// filters. Used by the spawn path to validate EXPLICIT resume-at
 // cursors (the live-tracker context-repair restart passes a
 // wire-derived leaf that can disagree with the file). See invariant 28.
 //
@@ -172,10 +208,9 @@ func ResumeAtOnActiveBranch(sessionID, workspacePath, resumeAt string) (bool, er
 	if err != nil {
 		return false, err
 	}
-	if _, isContent := idx.contentByUUID[resumeAt]; !isContent {
-		return false, nil
-	}
-	return idx.onActiveBranch(resumeAt), nil
+	set, _ := idx.survivingResumeCursors(nil)
+	_, ok := set[resumeAt]
+	return ok, nil
 }
 
 // scanBranchIndexFile builds a claudeBranchIndex from the session JSONL
