@@ -92,11 +92,28 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     key/touch listeners, escape and re-stick, restore-snap consent, and
     programmatic-write tagging. Intent is never geometry-inferred.
   - `spring.ts` — chase kinematics: HOW a spring advances scrollTop
-    frame to frame once the controller decides one runs. Also owns the
+    frame to frame once the controller decides one runs. Speed each
+    step is capped by three ceilings recomputed from live geometry
+    (below all three, the spring's own decay governs): the
+    **acceleration slew** (a geometric onset ramp, ×1.10 per 60Hz frame
+    over max(ramp base, current speed toward the target), the base a
+    display-independent 1.0 px/frame floored by the fusion floor — a
+    standstill quantum eases in instead of jumping to its peak, and
+    glides stretch into the next quantum's arrival instead of
+    stop-starting per line), the **deceleration envelope** (0.11 ×
+    remaining, the ease-out), and the **hard velocity cap**
+    (27 px/frame); the
+    accelerate→decelerate crossover is wherever the falling envelope
+    undercuts the rising ramp, so it needs no mode state. Carried
+    momentum decays by the slew factor per real elapsed frame while
+    parked, so a brief inter-quantum catch-up resumes at speed while a
+    longer pause re-enters at the base ramp. Also owns the
     chase-distance clamp: after an observed rAF discontinuity (tick gap
     ≥1s, or document visibility resumed ≤2s ago) a chase more than one
     viewport behind jump-enters the glide (`spring.catchupJump` write)
-    so exactly one viewport animates — distance alone never clamps.
+    so exactly one viewport animates — distance alone never clamps, and
+    the jump's cap-speed entry is exempt from the slew (the seed is the
+    ramp's base).
   - `observers.ts` — the content-geometry delivery pipeline, the warm-up
     (quiescence) gate, and resize classification. Two sources feed the
     one pipeline: engine-sourced samples in chat

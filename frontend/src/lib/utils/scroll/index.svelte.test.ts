@@ -3796,7 +3796,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         // least some frames carry one (fractional spring output cannot
         // stay integer-aligned for a whole chase).
         let residueFrames = 0;
-        for (let i = 0; i < 60 && geom.scrollTop !== 800; i++) {
+        for (let i = 0; i < 100 && geom.scrollTop !== 800; i++) {
           await nextFrame();
           const transform = contentEl.style.transform;
           if (transform !== '') {
@@ -4079,18 +4079,19 @@ describe('createUseStickToBottomController — spring chase', () => {
         ro.fire(contentEl, 800);
         await waitMs(150); // warm
 
-        // Build a gentle follow velocity (below the carry ceiling), then a
+        // Build a gentle follow velocity (below the carry ceiling — the
+        // slew ramp reaches ~2.5 px/frame in 8 frames), then a
         // cross-target clamp lands exactly on target so the diff === 0
         // catch-up tick runs quickly — well inside the retain window,
         // where the carry path (not the settle path) applies. A natural
-        // single-growth catch-up takes ~24 frames (> the retain window),
+        // single-growth catch-up takes > the retain window,
         // which is the streaming case where consecutive lines keep
         // refreshing the window; the clamp reproduces "caught up shortly
         // after the last growth" deterministically.
         geom.scrollHeight = 1050;
         geom.contentHeight = 850;
         ro.fire(contentEl, 850); // target = 450
-        for (let i = 0; i < 2; i++) await nextFrame();
+        for (let i = 0; i < 8; i++) await nextFrame();
         const mid = geom.scrollTop;
         const nearTarget = Math.ceil(mid) + 1;
         geom.scrollHeight = nearTarget + 600;
@@ -4102,8 +4103,9 @@ describe('createUseStickToBottomController — spring chase', () => {
 
         // Small +3px growth. With momentum carried, the first frame moves
         // noticeably more than a cold start from rest would (cold
-        // first-frame move for a 3px diff is ~0.12px); with velocity zeroed
-        // (old behavior) it would BE that cold value.
+        // first-frame move for a 3px diff is ~0.19px, under every
+        // ceiling); with velocity zeroed (old behavior) it would BE that
+        // cold value.
         geom.scrollHeight = nearTarget + 603;
         geom.contentHeight = nearTarget + 403;
         ro.fire(contentEl, nearTarget + 403); // target = nearTarget + 3
@@ -4111,7 +4113,7 @@ describe('createUseStickToBottomController — spring chase', () => {
         await nextFrame();
         const warmFirstFrameMove = geom.scrollTop - beforeWarm;
 
-        expect(warmFirstFrameMove).toBeGreaterThan(0.3); // > cold (~0.12)
+        expect(warmFirstFrameMove).toBeGreaterThan(0.5); // > cold (~0.19)
         // Still a smooth chase, not a snap to the new bottom.
         expect(geom.scrollTop).toBeLessThan(nearTarget + 3);
       });
@@ -4963,14 +4965,17 @@ describe('createUseStickToBottomController — spring chase', () => {
       expect(controller.escapedFromLock).toBe(false);
       expect(controller.isSticky).toBe(true);
 
-      // 8. More streaming chunks after re-stick. They MUST pin.
+      // 8. More streaming chunks after re-stick. They MUST pin. From a
+      // standstill the 200px chase ramps up (×1.1/frame), hands off to
+      // the 0.09·remaining envelope, then rides the 1.6px/frame floor
+      // in — ~55 frames end to end.
       const beforeMoreStream = geom.scrollHeight;
       geom.scrollHeight += 200;
       geom.contentHeight += 200;
       ro.fire(contentEl, geom.contentHeight);
       await advanceUntil(
         () => geom.scrollTop >= geom.scrollHeight - geom.clientHeight - 4,
-        50,
+        75,
       );
       // Final assertion: streaming should follow.
       expect(geom.scrollTop).toBeGreaterThanOrEqual(beforeMoreStream - geom.clientHeight);

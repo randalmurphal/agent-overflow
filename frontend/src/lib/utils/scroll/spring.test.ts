@@ -1,9 +1,10 @@
 // Unit tests for the spring chase kinematics (createSpringChase) that
 // need frame-precise control over rAF timing and target geometry:
-// the hard velocity cap, the deceleration envelope, the
-// integer-rounding remainder carry (glide-residue continuity),
-// the clamp-not-zero momentum carry, and the per-chase telemetry
-// summary. Controller-level
+// the hard velocity cap, the deceleration envelope, the acceleration
+// slew (onset ramp, parked carry decay, seed exemption, integrator
+// composability), the integer-rounding remainder carry (glide-residue
+// continuity), the clamp-not-zero momentum carry, and the per-chase
+// telemetry summary. Controller-level
 // choreography (when a chase runs) lives in index.svelte.test.ts; these
 // tests pin HOW a chase advances, driven through a fake deps harness.
 
@@ -178,15 +179,17 @@ describe('spring velocity cap', () => {
     h.spring.markTargetChanged();
     h.spring.start();
 
-    const moves = displacements(h, 40);
+    const moves = displacements(h, 90);
     // Uncapped, a 900px chase peaks near ~0.12·D ≈ 100px/frame. The cap
     // holds every frame to SPRING_MAX_VELOCITY_PX_PER_FRAME (27) — small
     // epsilon for the fractional-step integration.
     for (const move of moves) {
       expect(move).toBeLessThanOrEqual(27.5);
     }
-    // Still actually gets there: 900px at ≤27px/frame needs ≥33 frames.
-    expect(h.getScrollTop()).toBeGreaterThan(700);
+    // The slew ramp spools floor→cap over ~29 frames; the chase then
+    // genuinely cruises AT the cap and still gets there.
+    expect(Math.max(...moves)).toBeGreaterThan(26.5);
+    expect(h.getScrollTop()).toBeGreaterThan(850);
   });
 
   it('bounds a stalled frame to the catch-up burst instead of paying the whole gap', () => {
@@ -194,7 +197,7 @@ describe('spring velocity cap', () => {
     h.setTarget(900);
     h.spring.markTargetChanged();
     h.spring.start();
-    for (let i = 0; i < 10; i++) frame(); // reach the capped cruise speed
+    for (let i = 0; i < 35; i++) frame(); // spool past the slew ramp to capped cruise
 
     const before = h.getScrollTop();
     frame(100); // stall: dtFrames = 6, clamped to SPRING_MAX_CATCHUP_STEPS (3)
@@ -210,7 +213,7 @@ describe('spring velocity cap', () => {
     h.setTarget(900);
     h.spring.markTargetChanged();
     h.spring.start();
-    for (let i = 0; i < 60; i++) frame();
+    for (let i = 0; i < 70; i++) frame();
     expect(h.getScrollTop()).toBeGreaterThan(850);
 
     // Content shrinks far below the current position mid-follow.
@@ -264,6 +267,10 @@ describe('chase-distance clamp', () => {
     expect(jumps[0].value).toBe(5400); // target − one viewport
     // The cut is instant; everything after it is bounded glide.
     const moves = displacements(h, 40);
+    // The seeded cap-speed entry is exempt from the acceleration slew
+    // (the seed becomes the ramp's base): the glide continues AT cruise
+    // rather than re-ramping from the floor.
+    expect(moves[0]).toBeGreaterThan(26);
     for (const move of moves) {
       expect(move).toBeLessThanOrEqual(27.5);
     }
@@ -322,7 +329,7 @@ describe('chase-distance clamp', () => {
     h.setTarget(900);
     h.spring.markTargetChanged();
     h.spring.start();
-    for (let i = 0; i < 60; i++) frame();
+    for (let i = 0; i < 70; i++) frame();
     expect(h.getScrollTop()).toBeGreaterThan(850);
 
     // Content collapses far above the current position while rAF was
@@ -371,47 +378,260 @@ describe('momentum carry across catch-up', () => {
 
   it('clamps an above-ceiling remnant to the carry ceiling instead of zeroing it (no dead stop)', () => {
     const h = makeHarness();
-    // ~5 frames into a 300px chase the velocity is well above the
-    // ceiling (4).
-    catchUpWithRemnant(h, 300, 5);
+    // ~20 frames into a 300px chase the slew ramp has the velocity well
+    // above the ceiling (4).
+    catchUpWithRemnant(h, 300, 20);
 
-    // Next line-sized growth: the carried remnant (4) integrates to
-    // (0.7·4 + 0.08·20)/1.25 ≈ 3.52, which the decel envelope shapes
-    // down to 0.11·20 = 2.2 on the first frame. A cold start (the old
-    // zeroing) would move only (0.08·20)/1.25 = 1.28 — carry is what
-    // keeps the next quantum measurably in motion.
+    // Next line-sized growth: the carried remnant (clamped to 4, one
+    // parked-frame decay → ~3.57) integrates well above the decel
+    // envelope, which shapes the first frame to 0.09·20 = 1.8. A cold
+    // start (the old zeroing) would enter at the floor-based slew ramp
+    // (~1.10, asserted below) — carry is what keeps the next quantum
+    // measurably in motion.
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
     const before = h.getScrollTop();
     frame();
     const firstFrameMove = h.getScrollTop() - before;
-    expect(firstFrameMove).toBeGreaterThan(2.1);
-    expect(firstFrameMove).toBeLessThan(2.3);
+    expect(firstFrameMove).toBeGreaterThan(1.7);
+    expect(firstFrameMove).toBeLessThan(1.9);
   });
 
   it('sheds all momentum once the retain window has lapsed', () => {
     const h = makeHarness();
-    catchUpWithRemnant(h, 300, 5);
+    catchUpWithRemnant(h, 300, 20);
     // Idle past the retain window (350ms) with no target changes; the
     // spring settles (sentinel under 'spring' mode keeps it alive).
     for (let i = 0; i < 30; i++) frame();
 
     // A fresh growth after the gap starts cold — no carried velocity.
-    // Cold spring physics move (0.08·20)/1.25 = 1.28 on the first
-    // frame (the envelope, 2.2, doesn't bind), clearly below the
-    // envelope-clamped carried-momentum value (2.2) asserted above.
+    // A cold start's first frame is the floor-based slew ramp: the
+    // 60Hz phase-lock floor (1.0) × the ramp factor (1.10) ≈ 1.10,
+    // clearly below the envelope-clamped carried-momentum value (1.8)
+    // asserted above.
     h.setTarget(h.getTarget() + 20);
     h.spring.markTargetChanged();
     const before = h.getScrollTop();
     frame();
     const firstFrameMove = h.getScrollTop() - before;
-    expect(firstFrameMove).toBeGreaterThan(1.2);
-    expect(firstFrameMove).toBeLessThan(1.4);
+    expect(firstFrameMove).toBeGreaterThan(1.05);
+    expect(firstFrameMove).toBeLessThan(1.2);
+  });
+});
+
+describe('acceleration slew (onset ramp + parked decay)', () => {
+  it('ramps a standstill onset geometrically from the fusion floor instead of jumping to the envelope peak', () => {
+    const h = makeHarness();
+    h.setTarget(60);
+    h.spring.markTargetChanged();
+    h.spring.start();
+
+    const moves = displacements(h, 6);
+    // Pre-slew, the first frame jumped straight to min(raw spring
+    // ≈3.8, envelope 6.6). Slewed: the fusion floor (the 60Hz phase
+    // lock, 1.0) × the ramp factor, compounding ~10% per frame.
+    expect(moves[0]).toBeGreaterThan(1.0);
+    expect(moves[0]).toBeLessThan(1.2);
+    for (let i = 1; i < moves.length; i++) {
+      const ratio = moves[i] / moves[i - 1];
+      expect(ratio).toBeGreaterThan(1.08);
+      expect(ratio).toBeLessThan(1.16);
+    }
+  });
+
+  it('shapes a paragraph-sized quantum as ease-in-out: rise to a mid-glide peak, then fall', () => {
+    const h = makeHarness();
+    h.setTarget(100);
+    h.spring.markTargetChanged();
+    h.spring.start();
+
+    const moves: number[] = [];
+    for (let i = 0; i < 60 && Math.abs(h.getScrollTop() - 100) > 1; i++) {
+      const before = h.getScrollTop();
+      frame();
+      moves.push(h.getScrollTop() - before);
+    }
+    expect(Math.abs(h.getScrollTop() - 100)).toBeLessThanOrEqual(1);
+    // The peak is the slew↔envelope crossover — mid-glide, not frame
+    // one. Rise is monotone (the ramp), fall is monotone (the
+    // envelope); the final arrival frame is excluded since it folds in
+    // the sentinel-entry exact snap.
+    const peakIndex = moves.indexOf(Math.max(...moves));
+    expect(peakIndex).toBeGreaterThan(5);
+    for (let i = 1; i <= peakIndex; i++) {
+      expect(moves[i]).toBeGreaterThan(moves[i - 1] - 0.01);
+    }
+    for (let i = peakIndex + 1; i < moves.length - 1; i++) {
+      expect(moves[i]).toBeLessThanOrEqual(moves[i - 1] + 0.01);
+    }
+  });
+
+  it('decays parked carry toward the floor: a long pause re-enters at the floor ramp, not at speed', () => {
+    const h = makeHarness();
+    // Build real speed, then park caught-up (target moved to the
+    // current position) while target changes keep the retain window
+    // open — the carry is licensed the whole time, but each parked
+    // frame divides it down toward the floor.
+    h.setTarget(300);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 20; i++) frame();
+    h.setTarget(h.getScrollTop());
+    for (let i = 0; i < 16; i++) {
+      h.spring.markTargetChanged();
+      frame();
+    }
+
+    // 16 parked frames decay the carried ceiling (4) to the base, so
+    // the next quantum enters at the standstill ramp (~1.10) — a pause
+    // long enough to read as stillness must not relaunch at speed.
+    h.setTarget(h.getTarget() + 20);
+    h.spring.markTargetChanged();
+    const before = h.getScrollTop();
+    frame();
+    const entry = h.getScrollTop() - before;
+    expect(entry).toBeGreaterThan(1.0);
+    expect(entry).toBeLessThan(1.3);
+  });
+
+  it('advances the ramp by wall time, not tick count, on high-refresh displays', () => {
+    // 60Hz vs 120Hz drives of the same chase land at ~the same position
+    // after the same wall time: the ramp compounds G^stepFraction. In
+    // this ceiling-dominated regime the tolerance pins the RAMP's time
+    // scaling only — the integrator's own composability is pinned
+    // separately by the ceiling-free test below. 120Hz is
+    // the comparison point because its fusion floor rung equals 60Hz's
+    // (both 1.0 px/frame), isolating time-scaling from the
+    // refresh-aware floor ladder.
+    // 1s window over a long chase: ramp (~0.5s) + cruise. Bounded
+    // one-off artifacts — the first tick integrates a full 60Hz step in
+    // both drives (no prior timestamp), handing the finer drive ~half a
+    // frame of ramp head start — stay constant while distance grows, so
+    // the tolerance is meaningful here where a broken time scaling
+    // (e.g. per-tick instead of per-fraction compounding) would diverge
+    // by the ramp's whole shape.
+    const run = (frameMs: number): number => {
+      const h = makeHarness();
+      h.setTarget(2000);
+      h.spring.markTargetChanged();
+      h.spring.start();
+      for (let elapsed = 0; elapsed < 1000; elapsed += frameMs) frame(frameMs);
+      return h.getScrollTop();
+    };
+    const at60 = run(1000 / 60);
+    const at120 = run(1000 / 120);
+    expect(at60).toBeGreaterThan(600); // ramp + genuine cruise both ran
+    expect(Math.abs(at60 - at120)).toBeLessThan(at60 * 0.05);
+  });
+
+  it('integrates composably across fractional steps (60Hz vs 120Hz, ceiling-free regime)', () => {
+    // A 6px quantum keeps every velocity below the slew base ramp
+    // (1.10), the envelope min (1.6), and the fusion floor — pure
+    // spring physics, so this directly pins the integrator's
+    // fractional-step composability: retention must be
+    // (damping/mass)^f, not (damping^f)/mass. The historical form's
+    // effective 120Hz retention was 0.448/frame vs the tuned 0.56 —
+    // ~20% velocity bleed per extra step — which diverges far outside
+    // this tolerance.
+    const run = (frameMs: number): number => {
+      const h = makeHarness();
+      h.setTarget(6);
+      h.spring.markTargetChanged();
+      h.spring.start();
+      // Identical first tick in both drives: a chase's first tick has
+      // no prior timestamp and integrates one full frame regardless of
+      // cadence — a start transient, not a composability property.
+      frame();
+      // Then exactly 100ms of wall time at each cadence.
+      const count = Math.round(100 / frameMs);
+      for (let i = 0; i < count; i++) frame(frameMs);
+      return h.getScrollTop();
+    };
+    const at60 = run(1000 / 60);
+    const at120 = run(1000 / 120);
+    expect(at60).toBeGreaterThan(2); // meaningfully mid-glide, not arrived
+    expect(at60).toBeLessThan(5.5);
+    // Velocity composes exactly; the ~2% residual is position sampling
+    // (displacement per step is end-of-step velocity × fraction, so
+    // finer steps undershoot slightly while velocity ramps — bounded,
+    // decaying, sub-pixel). The historical integrator's per-step mass
+    // divide bled ~20% velocity per extra step and lands far outside
+    // this bound.
+    expect(Math.abs(at60 - at120)).toBeLessThan(at60 * 0.04);
+  });
+
+  it('re-ramps a reversal from the base: the flipped direction never opens with a hard attack', () => {
+    const h = makeHarness();
+    // Build real upward speed (~9.6 px/frame at frame 20), then flip
+    // the target far below the current position mid-chase.
+    h.setTarget(300);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 20; i++) frame();
+    expect(h.getScrollTop()).toBeGreaterThan(50);
+    h.setTarget(0);
+    h.spring.markTargetChanged();
+
+    // The old velocity sheds through zero on the spring curve
+    // (deceleration is never slew-limited), then the downward leg
+    // ramps geometrically from the base — without the negative-side
+    // clamp the first downward frame would be ~-5 (raw spring), a
+    // visible kick.
+    const moves = displacements(h, 6);
+    const firstDown = moves.findIndex((m) => m < 0);
+    expect(firstDown).toBeGreaterThanOrEqual(0);
+    expect(firstDown).toBeLessThanOrEqual(2);
+    expect(moves[firstDown]).toBeGreaterThanOrEqual(-1.2);
+    for (let i = firstDown + 1; i < moves.length; i++) {
+      const ratio = moves[i] / moves[i - 1];
+      expect(ratio).toBeGreaterThan(1.05);
+      expect(ratio).toBeLessThan(1.2);
+    }
+  });
+
+  it('keeps the standstill attack display-independent on high-DPR panels (perceptual ramp base)', () => {
+    // At dpr 3 the fusion floor clamps to 0.4 — display physics says
+    // sub-pixel breathing is negligible there, but a 0.4-based ramp
+    // would stretch the same quantum's attack to ~2× its 1× duration.
+    // The ramp bases at max(1.0, floor), so the onset matches dpr 1.
+    const h = makeHarness({ dpr: 3 });
+    h.setTarget(60);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    const moves = displacements(h, 3);
+    expect(moves[0]).toBeGreaterThan(1.0);
+    expect(moves[0]).toBeLessThan(1.2);
+    expect(moves[1] / moves[0]).toBeGreaterThan(1.08);
+    expect(moves[1] / moves[0]).toBeLessThan(1.16);
+  });
+
+  it('counts a long-task gap while parked in full: decay uses real elapsed time, not the catch-up cap', () => {
+    const h = makeHarness();
+    h.setTarget(300);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 20; i++) frame();
+    // Park caught-up, then one 250ms stalled tick (15 frames of real
+    // time in a single rAF callback). The carried ceiling (4) must
+    // decay over all 15 frames — the 3-step integration cap bounds
+    // motion, not decay — reaching the ramp base.
+    h.setTarget(h.getScrollTop());
+    h.spring.markTargetChanged();
+    frame(250);
+
+    h.setTarget(h.getTarget() + 20);
+    h.spring.markTargetChanged();
+    const before = h.getScrollTop();
+    frame();
+    const entry = h.getScrollTop() - before;
+    expect(entry).toBeGreaterThan(1.0);
+    expect(entry).toBeLessThan(1.3);
   });
 });
 
 describe('glide shaping (decel envelope + fractional tail)', () => {
-  // The envelope (0.11 · remaining) bounds the peak and shapes the
+  // The peak sits at the slew-ramp ↔ envelope crossover; the envelope
+  // (0.09 · remaining) shapes the
   // ease-out; the exponential tail below it is deliberately UNSHAPED —
   // sub-pixel motion renders continuously through the controller's
   // fractional glide residue, so the historical anti-judder floor and
@@ -446,8 +666,8 @@ describe('glide shaping (decel envelope + fractional tail)', () => {
     h.spring.markTargetChanged();
     const moves = movesUntilNear(h, 160, 60);
 
-    // Envelope: a 60px quantum peaks near 0.11·remaining (integration
-    // peaks ≈5.7 before the clamp binds), never the raw spring's
+    // Envelope: a 60px quantum's peak is where the slew ramp crosses
+    // the falling envelope (≈2.5–3), never the raw spring's
     // distance-proportional zoom (≈8.7 for 60px).
     for (const move of moves) {
       expect(move).toBeLessThanOrEqual(7);

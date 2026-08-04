@@ -30,6 +30,16 @@ import type { ScrollWriteCaller } from './types';
 // line-sized target jumps quickly enough that consecutive wraps read as one
 // continuous follow.
 const DEFAULT_SPRING = { damping: 0.7, stiffness: 0.08, mass: 1.25 } as const;
+// The derived pair the integrator actually uses (see the
+// composability note at the integration site). Tune DEFAULT_SPRING,
+// not these. RETENTION is the per-frame velocity carry-over
+// (damping/mass = 0.56); the FOLLOW RATIO is the recurrence's fixed
+// point per px of remaining distance — velocity converges toward
+// 0.145·remaining, the quasi-steady follow speed the deceleration
+// envelope is tuned just under.
+const SPRING_VELOCITY_RETENTION = DEFAULT_SPRING.damping / DEFAULT_SPRING.mass;
+const SPRING_QUASI_STEADY_FOLLOW_RATIO =
+  DEFAULT_SPRING.stiffness / (DEFAULT_SPRING.mass - DEFAULT_SPRING.damping);
 const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
 // Cap on how many fixed 60Hz steps one rAF tick may integrate. A
 // stalled rAF (heavy frame, tab back from background) would otherwise
@@ -89,6 +99,11 @@ const ARRIVAL_VELOCITY_THRESHOLD = 0.5;
 // scenarios (frozen remnants ~8/14/28 from instant pins) shedding down
 // exactly as the zeroing did, minus the dead stop.
 //
+// The kept remnant additionally decays toward the slew ramp base per
+// parked frame (see SPRING_ACCEL_SLEW_FACTOR_PER_FRAME): carry
+// bridges brief inter-quantum gaps at speed without laundering a
+// long visible stop into a fast restart.
+//
 // A quantum-EMA adaptive ceiling (floor 4, max 12, learned from growth
 // quanta observed while parked) shipped briefly in 2026-07 and was
 // removed: a real-session capture showed the sampler never fired —
@@ -109,7 +124,10 @@ const SPRING_CARRY_VELOCITY_CEILING = 4;
 // The follower being faster than the growth is what keeps steady-state
 // follow lag-free at ANY wire speed — reveal rate-limits rendered
 // height, not the wire. Raising reveal rates requires raising this in
-// step. The successor-waiting fast-drain (FAST_DRAIN_MAX_CHARS_PER_SEC)
+// step. The acceleration ramp (SPRING_ACCEL_SLEW_FACTOR_PER_FRAME)
+// makes a cold follower temporarily slower than peak growth; that
+// transient is bounded and reclaimed precisely because this cap far
+// exceeds growth and the envelope licenses 0.09× of any accrued lag. The successor-waiting fast-drain (FAST_DRAIN_MAX_CHARS_PER_SEC)
 // deliberately exceeds this cap: it is a bounded burst, and the
 // viewport trailing it at cap speed then closing the gap is intended
 // catch-up motion, not broken follow.
@@ -148,17 +166,23 @@ const RESUME_CLAMP_WINDOW_MS = 2000;
 // Deceleration envelope: max chase speed as a fraction of the REMAINING
 // distance (per 60Hz frame), never squeezed below the _MIN below and
 // capped at SPRING_MAX. This shapes the perceived ease-out — speed
-// bleeds off in proportion to how close the glide is — and it doubles
-// as the small-quantum peak limiter: a single-line 26px growth peaks at
-// ≈ 0.11·26 ≈ 2.6 px/frame instead of the raw spring's ≈ 3.4, and a
-// carried (≤4) start into a line is immediately shaped down to the same
-// envelope (2026-07-04 feedback: line-sized glides started too fast;
-// catch-up latency explicitly matters less than perceived smoothness).
-// 0.11 sits just under the spring's natural quasi-steady follow ratio
-// (≈ 0.145·remaining at 60Hz), so it binds gently rather than fighting
-// the integrator. Large chases cruise at SPRING_MAX until the envelope
-// takes over below ≈ 245px remaining, giving big glides a progressive
-// slowdown instead of cruise-until-stop.
+// bleeds off in proportion to how close the glide is — and it caps the
+// entry speed of a CARRIED start: a remnant (≤4) landing on a
+// line-sized growth is shaped to 0.09·remaining on its first frame
+// (2026-07-04 feedback: line-sized glides started too fast; catch-up
+// latency explicitly matters less than perceived smoothness). A cold
+// onset peaks lower still — at the crossover where this falling
+// envelope meets the rising acceleration ramp (see
+// SPRING_ACCEL_SLEW_FACTOR_PER_FRAME).
+// Shipped at 0.11 — just under the spring's natural quasi-steady
+// follow ratio (SPRING_QUASI_STEADY_FOLLOW_RATIO ≈ 0.145), so it
+// bound gently rather than fighting the integrator — and softened to
+// 0.09 on 2026-08-04 feel-tuning feedback: line quanta complete
+// before the next line arrives, so slower cruise means glides overlap
+// the next arrival instead of parking between lines. Large chases
+// cruise at SPRING_MAX until the envelope takes over below ≈ 300px
+// remaining, giving big glides a progressive slowdown instead of
+// cruise-until-stop.
 //
 // The tail below the envelope is the spring's own decay, rendered
 // continuously through the fractional glide residue (the controller
@@ -173,13 +197,67 @@ const RESUME_CLAMP_WINDOW_MS = 2000;
 // breathing invisible; it replaces the historical anti-judder
 // floor/taper (integer-quantized scrollTop rendering slow tails as
 // 1px steps), which the residue made obsolete.
-const SPRING_DECEL_ENVELOPE_RATIO = 0.11;
+const SPRING_DECEL_ENVELOPE_RATIO = 0.09;
 // Lower cap on the envelope itself (an upper bound never squeezed below
 // this), NOT a forced minimum speed: without it the envelope would
 // strangle a tiny growth's natural motion (a 3px quantum would be
 // capped at 0.33 px/frame and take ~300ms). The spring's own velocity
 // below this value is untouched.
 const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
+// Acceleration slew: ceiling on how fast target-pointing speed may
+// BUILD, as a growth factor per 60Hz frame. The decel envelope above
+// is a PERMIT that is largest exactly when a glide begins (remaining
+// peaks at onset), so without a build limit every quantum starts at
+// its peak speed and only decelerates — a hard attack per line wrap,
+// and a glide that finishes early then parks dead until the next
+// quantum (the stop-start sawtooth of line-after-line streaming;
+// 2026-08-04 feedback). The slew turns onsets into a ramp: each step,
+// speed toward the target may grow by at most this factor over
+// max(ramp base, previous speed toward the target) — based at the
+// ramp base (see SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME below) so a
+// standstill start never ramps through the sub-floor breathing band,
+// and at current speed so a growth landing mid-motion continues from
+// where it is. Speed each step is capped by min(slew, envelope, hard
+// cap), all recomputed from live geometry (below every ceiling the
+// spring's own decay governs), so accelerate→decelerate needs no mode
+// state: the falling envelope undercuts the rising ramp wherever they
+// cross — a few frames in for a line quantum, near the midpoint for a
+// paragraph (a natural ease-in-out), after ~0.6s of spool-up to the
+// hard cap for a multi-viewport backlog.
+//
+// Geometric rather than additive because speed-change perception is
+// relative (Weber's law): ×1.10/frame reads as the same "push" at
+// 1.5 px/frame as at 20, which lets ONE constant give line quanta a
+// soft ~100ms attack AND big backlogs a brisk floor→cap spool
+// (ln 27 / ln 1.10 ≈ 35 frames). An additive rate tuned soft enough
+// for lines made large catch-ups crawl (~1.7s to cap). Shipped at
+// 1.12; softened to 1.10 on 2026-08-04 feel-tuning feedback.
+//
+// Deliberately NOT applied to deceleration or to a reversal's shed —
+// the envelope must dump speed as fast as landing requires or glides
+// would overshoot into the cross-target clamp, and the base counts
+// only speed already pointing at the target, so a direction flip
+// re-ramps from the base. The stall-resume catch-up jump is exempt
+// by construction: its cap-speed velocity seed becomes the next
+// step's base. While the spring idles caught-up between quanta, the
+// carried remnant decays by this same factor per REAL elapsed frame
+// toward the ramp base (see the caught-up branch): a couple-frame
+// catch-up resumes essentially where it left off, a longer park
+// converges to the standstill onset — licensed speed reflects how
+// long the pane has actually been still.
+const SPRING_ACCEL_SLEW_FACTOR_PER_FRAME = 1.1;
+// Where a standstill ramp starts, in px per 60Hz frame. The ramp base
+// is max(this, fusion floor): the floor term keeps the ramp out of
+// the sub-floor breathing band on displays where that band bites
+// (the floor reaches 1.6 on some refresh rungs), while this constant
+// keeps the ATTACK a perceptual quantity rather than a display one —
+// the floor alone drops to its 0.4 clamp on a 3× retina panel (where
+// sub-pixel breathing is negligible), which would stretch the same
+// line quantum's attack to ~2× its 1×-display duration for no
+// perceptual gain. 1.0 equals the 60Hz phase-lock floor, so the
+// common case is unchanged and every display starts its ramp within
+// [1.0, 1.6].
+const SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME = 1;
 // The fusion floor releases inside this remaining distance, letting
 // the spring's natural exponential decay land the glide — a ~3-frame
 // ritardando (the "cradle") instead of constant-speed-then-stop,
@@ -752,7 +830,14 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       // see every other frame held. Long gaps are capped to a bounded burst
       // so a blocked frame cannot pay the entire stall in one write.
       const previousTickAt = lastTickAt;
-      const dtFrames = previousTickAt === null ? 1 : (now - previousTickAt) / SIXTY_FPS_INTERVAL_MS;
+      const rawDtFrames =
+        previousTickAt === null ? 1 : (now - previousTickAt) / SIXTY_FPS_INTERVAL_MS;
+      // Sanitized elapsed time in 60Hz frames: a negative gap (clock
+      // skew) degrades to zero motion, a non-finite timestamp to one
+      // frame — a NaN here would otherwise poison velocity through the
+      // parked decay and ride through every sign-conditioned clamp
+      // into writeScrollTop.
+      const dtFrames = Number.isFinite(rawDtFrames) ? Math.max(rawDtFrames, 0) : 1;
       lastTickAt = now;
       if (previousTickAt !== null) {
         const frameGapMs = now - previousTickAt;
@@ -767,7 +852,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         }
       }
       if (chaseTelemetry) recordChaseFrame(now, previousTickAt, dtFrames);
-      const integrationFrames = Math.min(Math.max(dtFrames, 0), SPRING_MAX_CATCHUP_STEPS);
+      const integrationFrames = Math.min(dtFrames, SPRING_MAX_CATCHUP_STEPS);
 
       // Cache per-tick. `targetScrollTop()` reads `scrollHeight` /
       // `clientHeight` — both force layout. Compute once per frame.
@@ -816,6 +901,18 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const wantsSpringNow = wantsStreamingSpringNow || springStartedFromStructuralAppend;
       const withinTargetChangeRetainWindow =
         wantsSpringNow && now - lastTargetChangedAt < RETAIN_ANIMATION_DURATION_MS;
+
+      // Both inputs (dpr, cadence EMA) are constant within a tick, so
+      // derive the floor once here — the chase steps' floor hold, the
+      // slew ramp's base, and the caught-up branch's carry decay all
+      // read it.
+      const fusionFloor = fusionFloorPxPerFrame(
+        deps.devicePixelRatio(),
+        frameIntervalEmaMs,
+      );
+      // Standstill entry speed for the acceleration ramp — perceptual
+      // base, floored by display physics (see the constant).
+      const slewRampBase = Math.max(SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME, fusionFloor);
 
       if (current !== target && !deps.arrival.matches(target)) {
         // Content oscillation guard: if the sentinel was idle
@@ -892,15 +989,44 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               // Re-derive the remaining gap per step from the in-frame
               // position (`current + accumulated`) — pure arithmetic, no
               // extra layout reads — so a multi-step catch-up follows the
-              // same curve N sequential 60Hz frames would have. Fractional
-              // steps use proportional stiffness and exponential damping so
-              // high-refresh frames advance smoothly without changing the
-              // 60Hz shape.
+              // same curve N sequential 60Hz frames would have.
               const stepDiff = target - (current + accumulated);
+              // Slew base: the speed already pointing at the target when
+              // this step began. A reversal contributes zero, so the new
+              // direction ramps from the base; the catch-up jump's
+              // cap-speed seed lands here and passes untouched. See
+              // SPRING_ACCEL_SLEW_FACTOR_PER_FRAME.
+              const towardTargetSpeed =
+                stepDiff > 0
+                  ? Math.max(0, velocity)
+                  : stepDiff < 0
+                    ? Math.max(0, -velocity)
+                    : 0;
+              const slewCeiling =
+                Math.max(slewRampBase, towardTargetSpeed)
+                * Math.pow(SPRING_ACCEL_SLEW_FACTOR_PER_FRAME, stepFraction);
+              // Composable fractional-step discretization. The full-step
+              // recurrence v' = (damping·v + stiffness·diff)/mass is an
+              // exponential approach toward the quasi-steady follow
+              // speed (RATIO·diff): v' = R·v + (1−R)·RATIO·diff with
+              // R = damping/mass. A fraction f of it is exactly
+              // R^f·v + (1−R^f)·RATIO·diff — identical at f=1, and BOTH
+              // terms compose (two half-steps reproduce one full step
+              // for a held diff), keeping high-refresh displays on the
+              // same 60Hz-tuned shape. The historical form
+              // ((damping^f·v + stiffness·f·diff)/mass) failed this
+              // twice: the /mass didn't scale with f, so every extra
+              // step bled 20% of the velocity regardless of fraction —
+              // even the ~0.0002-frame micro-step that rAF timestamp
+              // jitter (16.67ms vs the exact 60Hz 16.6667ms) appends to
+              // nearly every tick (the slew ramp's velocity history
+              // exposed that as a ramp resetting to the base every
+              // tick) — and a linear f·gain input term under-drives
+              // split steps by ~12% at 120Hz.
+              const retention = Math.pow(SPRING_VELOCITY_RETENTION, stepFraction);
               velocity =
-                (Math.pow(DEFAULT_SPRING.damping, stepFraction) * velocity
-                  + DEFAULT_SPRING.stiffness * stepFraction * stepDiff)
-                / DEFAULT_SPRING.mass;
+                retention * velocity
+                + (1 - retention) * SPRING_QUASI_STEADY_FOLLOW_RATIO * stepDiff;
               // Hard speed cap: large chases glide at a bounded constant
               // speed instead of a distance-proportional zoom (see
               // SPRING_MAX_VELOCITY_PX_PER_FRAME).
@@ -929,6 +1055,18 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               } else if (stepDiff < 0 && velocity < -envelope) {
                 velocity = -envelope;
               }
+              // Acceleration slew: an onset builds speed at the ramp,
+              // never jumping straight to the envelope's permit (see
+              // SPRING_ACCEL_SLEW_FACTOR_PER_FRAME). Ordering with the
+              // envelope is immaterial (both are ceilings); the floor
+              // push-up below can never exceed the slew ceiling (its
+              // base is ≥ the floor), so the three compose without
+              // fighting.
+              if (stepDiff > 0 && velocity > slewCeiling) {
+                velocity = slewCeiling;
+              } else if (stepDiff < 0 && velocity < -slewCeiling) {
+                velocity = -slewCeiling;
+              }
               // Fusion floor: once this quantum's glide has run faster
               // than the floor, don't let the deceleration sink below
               // it until the release distance — the sub-floor speed
@@ -937,10 +1075,6 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               // the constant block). Applies only to velocity already
               // pointing at the target; reversals decelerate through
               // zero naturally.
-              const fusionFloor = fusionFloorPxPerFrame(
-                deps.devicePixelRatio(),
-                frameIntervalEmaMs,
-              );
               if (Math.abs(velocity) >= fusionFloor) {
                 fusionFloorEngaged = true;
               } else if (
@@ -1005,7 +1139,9 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         // stop-start pulse per quantum. Clamping (not zeroing) an
         // above-ceiling remnant is equally snap-safe: the kept value is
         // by construction one the ceiling rule already licenses (see
-        // SPRING_CARRY_VELOCITY_CEILING for the derivation).
+        // SPRING_CARRY_VELOCITY_CEILING for the derivation). The kept
+        // remnant DECAYS toward the slew ramp base per REAL elapsed
+        // frame (below, rationale at SPRING_ACCEL_SLEW_FACTOR_PER_FRAME).
         // Shed velocity entirely when:
         //   - outside the retain window → streaming paused; the arrival
         //     check below needs |velocity| < 0.5 to settle the spring (or
@@ -1031,6 +1167,19 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         if (withinTargetChangeRetainWindow && velocity > 0) {
           if (velocity > SPRING_CARRY_VELOCITY_CEILING) {
             velocity = SPRING_CARRY_VELOCITY_CEILING;
+          }
+          // Parked decay, over the REAL elapsed frames — deliberately
+          // NOT the catch-up-capped integrationFrames: that cap bounds
+          // motion per tick, and decay is not motion. A long-task gap
+          // while parked must count in full, or a pane visually still
+          // for 300ms re-enters at carried speed. Guarded so a remnant
+          // already at or below the base is left alone — the decay
+          // converges on the base, never raises toward it.
+          if (velocity > slewRampBase) {
+            velocity = Math.max(
+              slewRampBase,
+              velocity / Math.pow(SPRING_ACCEL_SLEW_FACTOR_PER_FRAME, dtFrames),
+            );
           }
         } else {
           velocity = 0;
