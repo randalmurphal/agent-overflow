@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/workflow/def"
@@ -41,12 +42,30 @@ inputs:
       type: string`
 
 // newCLIFixture boots the tool-driver workflow fixture with a command that
-// always succeeds, so a run started through the agent surface reaches `done`
-// without any provider process.
+// always succeeds, so a run itself reaches `done` without any provider
+// process. A run BOUND to a thread still wakes that thread on rest, and wake
+// delivery to an idle thread starts a real session — so the fixture installs a
+// mock claude for the tests that bind one. Before the mock (and the poisoned
+// defaults enforcing it), that wake spawn silently resolved the developer's
+// real `claude` and ran a billed turn on their real credentials every time
+// `go test` ran (incident 2026-08-03).
 func newCLIFixture(t *testing.T) *toolWorkflowFixture {
 	t.Helper()
 	fixture := newToolWorkflowFixture(t, cliToolPhase+cliWorkflowInputs)
 	fixture.writeProfile(t, map[string][]string{"verify": {"/bin/true"}}, nil, "")
+	wakeTurn := func(msgID string) []string {
+		return append(
+			[]string{`{"type":"system","subtype":"init","session_id":"sess-wake","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`},
+			append(testutil.MockClaudeStreamedText(msgID, "acknowledged"),
+				`{"type":"result","subtype":"success","is_error":false}`)...,
+		)
+	}
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{
+		wakeTurn("msg-wake-1"), wakeTurn("msg-wake-2"), wakeTurn("msg-wake-3"),
+	})
+	if _, err := fixture.app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("install mock claude for wake delivery: %v", err)
+	}
 	return fixture
 }
 

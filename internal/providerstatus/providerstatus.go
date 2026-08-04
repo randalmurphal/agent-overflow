@@ -118,6 +118,15 @@ const claudeFirstPartyAPIProvider = "firstParty"
 // value the builder emits before deciding it has nothing to add, so it
 // is exactly what a signed-out first-party CLI reports.
 //
+// `tokenSource:"none"` is NOT evidence either — it is the CLI's explicit
+// no-token marker, not a token source. Spike-verified on 2.1.219
+// (2026-08-03): a startup token refresh that fails with invalid_grant
+// blanks the stored tokens in place, and the very same probe then
+// answers initialize with `{tokenSource:"none", apiProvider:"firstParty"}`
+// and exit 0. Reading that "none" as identity evidence reported a
+// just-destroyed login as authenticated, which let the destructive
+// refresh failure surface only as downstream 401s.
+//
 // Claude-only by contract. Codex hardcodes `apiProvider:"openai"` even
 // when it knows nothing about the account, so a Codex AccountInfo would
 // always read as authenticated here — `app_codex_probe.go` deliberately
@@ -127,8 +136,12 @@ func ClaudeUnauthenticated(info provider.AccountInfo) bool {
 	// hand-builds an AccountInfo) can't masquerade as identity evidence.
 	// The persisted-account path in app_provider_accounts.go already
 	// trims; probe results do not.
+	tokenSource := strings.TrimSpace(info.TokenSource)
+	if strings.EqualFold(tokenSource, "none") {
+		tokenSource = ""
+	}
 	if strings.TrimSpace(info.SubscriptionType) != "" ||
-		strings.TrimSpace(info.TokenSource) != "" ||
+		tokenSource != "" ||
 		strings.TrimSpace(info.Email) != "" ||
 		strings.TrimSpace(info.DisplayName) != "" {
 		return false

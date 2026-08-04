@@ -116,6 +116,23 @@ func TestClaudeUnauthenticated(t *testing.T) {
 		{"email only", provider.AccountInfo{Email: "user@example.com"}, false},
 		{"display name only", provider.AccountInfo{DisplayName: "Ada"}, false},
 
+		// `tokenSource:"none"` is the CLI's explicit no-token marker, not a
+		// token source. Spike-verified on 2.1.219 (2026-08-03): after a failed
+		// startup refresh blanks the stored tokens, initialize reports exactly
+		// {tokenSource:"none", apiProvider:"firstParty"} — a destroyed login
+		// that must read as logged out.
+		{"blanked login", provider.AccountInfo{
+			TokenSource: "none",
+			APIProvider: "firstParty",
+		}, true},
+		{"token source none only", provider.AccountInfo{TokenSource: "none"}, true},
+		{"token source none padded", provider.AccountInfo{TokenSource: " None "}, true},
+		// "none" must not veto real evidence riding alongside it.
+		{"token source none with email", provider.AccountInfo{
+			TokenSource: "none",
+			Email:       "user@example.com",
+		}, false},
+
 		// Whitespace is not identity. A padded field must not read as
 		// evidence, and must not rescue an otherwise-empty account.
 		{"whitespace fields", provider.AccountInfo{

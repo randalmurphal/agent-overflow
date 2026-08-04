@@ -203,6 +203,28 @@ thread — `close_agent` is a model tool only.
   defensively in `frontend/vite.config.ts#server.watch.ignored` even
   though those paths sit outside Vite's project root.
 
+- **Tests MUST never reach a real provider binary or the developer's
+  real provider homes.** `make go-test` runs on machines whose
+  `~/.claude` / `~/.codex` hold live logins. Claude refresh tokens are
+  single-use: a test that spawns the real CLI and then kills it (every
+  fixture teardown does) can consume a refresh token without persisting
+  the rotation, which destroys the developer's login hours later — and
+  every leaked session burns real, billed tokens (incidents 2026-07-29:
+  HOME-unisolated startup test pruned all saved credential slots;
+  2026-08-03: workflow wake delivery spawned 143 real Claude sessions
+  over nine days and killed the active account's OAuth grant). Spawning
+  a real CLI is what `make provider-smoke` is for — an explicit, manual,
+  token-spending gate — never `make go-test`. Enforcement:
+  `setupE2EApp` poisons both provider binary settings, stubs text
+  generation and the live Codex model catalog, detaches
+  HOME/USERPROFILE, and fails any test that still spawns
+  (`app_e2e_isolation_test.go`); a session-starting test installs
+  `testutil.WriteMockClaudeScript` / `WriteMockCodexSession` over the
+  poison. Any NEW fixture that constructs an `*App` able to start
+  sessions, and any new spawn path (probes, catalogs, textgen-style
+  side effects), must be wired into the same guard — mocking stays
+  mandatory-by-default, never opt-in per test.
+
 ## Deferred (Not Currently in Scope)
 
 These are intentional non-goals for the current phase — don't implement

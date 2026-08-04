@@ -257,6 +257,10 @@ func setupE2EApp(t *testing.T) (*App, *capturedEventBus) {
 	app.triage = triage.NewRouter(st, bus.emit)
 	app.triage.SetEventHook(bus.observeRouterEvent)
 	ensureDefaultTestProject(t, app)
+	// No test may reach a real provider binary or the developer's provider
+	// homes; a session-starting test installs a mock over the poisoned
+	// defaults. See isolateE2EProviderSpawns.
+	isolateE2EProviderSpawns(t, app)
 
 	// Ensure any sessions that remain open at test end are torn down.
 	t.Cleanup(func() {

@@ -147,6 +147,15 @@ one closest to what you're touching.
   workflow).
 - Tests must be deterministic. Use `t.TempDir()` for fixtures; never
   scan shared system state.
+- Tests must never spawn a real provider CLI or touch the real
+  `~/.claude` / `~/.codex` homes — real spawns burn billed tokens and a
+  teardown kill mid token-refresh destroys the developer's login
+  (root `AGENTS.md` §Permanent invariants has the incident history).
+  Use `testutil.WriteMockClaudeScript` / `WriteMockCodexSession` (or a
+  package-local fake binary) for anything that spawns, and an injected
+  temp home for anything that reads or writes provider state. App-level
+  tests get this enforced by `setupE2EApp`'s poisoned defaults; package
+  tests under `internal/` have no such net and must isolate themselves.
 - `make go-test` must pass cleanly before any commit. Use
   `go test <pkg> -count=1` only for focused reruns.
 
