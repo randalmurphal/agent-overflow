@@ -6,7 +6,9 @@ import (
 )
 
 // IsEmptyDraftThread reports whether threadID is still a materialized chat/plan
-// draft that has not gained durable conversation state.
+// draft that has not gained durable conversation state. A worktree counts as
+// durable state: deleting the thread row would orphan a checkout the user
+// deliberately created.
 func (s *Store) IsEmptyDraftThread(threadID string) (bool, error) {
 	if threadID == "" {
 		return false, fmt.Errorf("store: check empty draft thread: thread id is required")
@@ -17,6 +19,7 @@ func (s *Store) IsEmptyDraftThread(threadID string) (bool, error) {
 		   FROM threads
 		  WHERE id = ?
 		    AND mode IN ('chat', 'plan')
+		    AND COALESCE(worktree_path, '') = ''
 		    AND NOT EXISTS (
 		    	SELECT 1 FROM threads child WHERE child.parent_thread_id = threads.id
 		    )
@@ -53,6 +56,7 @@ func (s *Store) DeleteEmptyDraftThread(threadID string) (bool, error) {
 		`DELETE FROM threads
 		  WHERE id = ?
 		    AND mode IN ('chat', 'plan')
+		    AND COALESCE(worktree_path, '') = ''
 		    AND NOT EXISTS (
 		    	SELECT 1 FROM threads child WHERE child.parent_thread_id = threads.id
 		    )

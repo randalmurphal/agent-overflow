@@ -126,6 +126,66 @@ func TestAttachThreadWorktreeKeepsMessageAnchors(t *testing.T) {
 	assertThreadMessageAnchorCount(t, app, thread.ID, 1)
 }
 
+// Regression: the empty-draft cleanup can delete a freshly materialized
+// thread row while a worktree attach for it is queued on the thread lock.
+// The attach must read the thread UNDER the lock so it fails fast at the
+// load — before any git mutation — instead of cutting a worktree and then
+// failing UpdateThread with a bare "no rows in result set".
+func TestAttachThreadWorktreeReadsThreadUnderLock(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "branch", "feature/deleted-thread")
+
+	project, err := app.ensureProjectForWorkspace(repo)
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace() error = %v", err)
+	}
+	thread := testThread("thread-attach-deleted-race")
+	thread.ProjectID = project.ID
+	thread.WorkspacePath = repo
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	// Resolved BEFORE the attach: with nothing on disk yet this is the path
+	// the attach would use, while a post-attach call would dodge an existing
+	// directory via the unique-path suffix and blind the assertion below.
+	wtPath, err := app.defaultWorktreePath(repo, "feature/deleted-thread")
+	if err != nil {
+		t.Fatalf("defaultWorktreePath() error = %v", err)
+	}
+
+	// Hold the thread lock (as the cleanup's DeleteEmptyDraftThread does),
+	// start the attach so it queues on the lock, delete the row, release.
+	// Because the attach reads the row under the lock, this ordering is
+	// deterministic: it must observe the deletion.
+	unlock := app.threadLocks().Lock(thread.ID)
+	attachErr := make(chan error, 1)
+	go func() {
+		_, err := app.AttachThreadWorktree(thread.ID, "feature/deleted-thread")
+		attachErr <- err
+	}()
+	deleted, err := app.store.DeleteEmptyDraftThread(thread.ID)
+	if err != nil {
+		t.Fatalf("DeleteEmptyDraftThread() error = %v", err)
+	}
+	if !deleted {
+		t.Fatal("test thread should qualify as an empty draft")
+	}
+	unlock()
+
+	err = <-attachErr
+	if err == nil {
+		t.Fatal("AttachThreadWorktree() against a deleted thread must fail")
+	}
+	if !strings.Contains(err.Error(), "get thread") {
+		t.Fatalf("attach failed at %q, want the thread load (pre-git), not a later step", err)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("a worktree was cut for the deleted thread at %s", wtPath)
+	}
+}
+
 func TestSwitchThreadWorkspaceKeepsMessageAnchors(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)

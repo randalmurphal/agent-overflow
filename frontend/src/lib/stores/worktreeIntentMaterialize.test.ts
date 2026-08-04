@@ -5,6 +5,7 @@ import {
   prepareThreadWorktreeIntent,
 } from './worktreeIntentMaterialize';
 import {
+  isWorktreeIntentApplying,
   resetForTest as resetWorktreeIntent,
   setThreadEnvMode,
   worktreeIntentForThread,
@@ -64,6 +65,34 @@ describe('worktreeIntentMaterialize', () => {
     expect(firstResult?.worktreePath).toBe('/wt/main');
     expect(secondResult).toBe(firstResult);
     expect(worktreeIntentForThread(thread).mode).toBe('local');
+  });
+
+  it('flags the thread as applying for the whole RPC, success or failure', async () => {
+    // The empty-draft cleanup reads this flag: the apply path materializes an
+    // item-less draft row first, and deleting it mid-RPC failed the apply
+    // backend-side ("no rows in result set").
+    const thread = stagedThread();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    setBindingMock('AttachThreadWorktree', async () => {
+      await gate;
+      return makeThread({ ...thread, worktreePath: '/wt/main' });
+    });
+
+    const run = prepareThreadWorktreeIntent({ thread });
+    expect(isWorktreeIntentApplying(thread.id)).toBe(true);
+    release();
+    await run;
+    expect(isWorktreeIntentApplying(thread.id)).toBe(false);
+
+    setThreadEnvMode(thread, 'new-worktree');
+    setBindingMock('AttachThreadWorktree', async () => {
+      throw new Error('boom');
+    });
+    await expect(prepareThreadWorktreeIntent({ thread })).rejects.toThrow('boom');
+    expect(isWorktreeIntentApplying(thread.id)).toBe(false);
   });
 
   it('allows a fresh prepare after the in-flight one settles', async () => {

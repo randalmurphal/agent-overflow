@@ -53,6 +53,7 @@
     refreshDiffReviewComments,
   } from '../../stores/diffReviewComments.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { isWorktreeIntentApplying } from '../../stores/worktreeIntent.svelte';
   import { providerSupports } from '../../providers/catalog';
   import { registerQueueItem } from '../../stores/sendQueue.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
@@ -280,7 +281,10 @@
       sending ||
       pane.sendInFlight ||
       isTurnActive ||
-      uploads.uploading
+      uploads.uploading ||
+      // Applying a staged branch/worktree intent materializes an item-less
+      // draft row first; deleting it mid-RPC fails the apply on the backend.
+      isWorktreeIntentApplying(pane.threadId)
     );
   }
 

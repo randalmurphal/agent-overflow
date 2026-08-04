@@ -8,6 +8,7 @@ import { recordBranchSelection } from './branchMru';
 import type { Thread } from '../types/models';
 import {
   clearWorktreeIntent,
+  markWorktreeIntentApplying,
   resolveBaseForWire,
   type WorktreeIntent,
   worktreeIntentForThread,
@@ -86,6 +87,9 @@ export async function materializeWorktreeIntentOnThread(
   if (!needsWorkspaceWork) return null;
 
   opts.onWorktreePrepareStarted?.();
+  // Unconditional, unlike the caller callbacks: every apply must count as
+  // active work for the empty-draft cleanup, whoever initiated it.
+  markWorktreeIntentApplying(opts.targetThread.id, true);
   let updated: Thread | null = null;
   try {
     if (intent.mode === 'new-worktree' && intent.creatingBranch) {
@@ -123,6 +127,7 @@ export async function materializeWorktreeIntentOnThread(
       )) as Thread;
     }
   } finally {
+    markWorktreeIntentApplying(opts.targetThread.id, false);
     opts.onWorktreePrepareFinished?.();
   }
 

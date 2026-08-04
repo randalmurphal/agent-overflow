@@ -178,6 +178,34 @@ func TestDeleteEmptyDraftThreadKeepsThreadWithTurns(t *testing.T) {
 	}
 }
 
+func TestDeleteEmptyDraftThreadKeepsThreadWithWorktree(t *testing.T) {
+	s := newTestStore(t)
+	thread := createDraftCleanupThread(t, s, "draft-with-worktree", "chat")
+	thread.WorktreePath = "/tmp/worktrees/draft-with-worktree"
+	thread.WorkspacePath = thread.WorktreePath
+	if err := s.UpdateThread(thread); err != nil {
+		t.Fatalf("UpdateThread: %v", err)
+	}
+
+	empty, err := s.IsEmptyDraftThread(thread.ID)
+	if err != nil {
+		t.Fatalf("IsEmptyDraftThread: %v", err)
+	}
+	if empty {
+		t.Fatal("thread with a worktree should not be classified as empty — deleting it would orphan the checkout")
+	}
+	deleted, err := s.DeleteEmptyDraftThread(thread.ID)
+	if err != nil {
+		t.Fatalf("DeleteEmptyDraftThread: %v", err)
+	}
+	if deleted {
+		t.Fatal("thread with a worktree should not be deleted")
+	}
+	if !threadRowExists(t, s, thread.ID) {
+		t.Fatal("thread row was deleted")
+	}
+}
+
 func TestDeleteEmptyDraftThreadKeepsNonChatPlanModes(t *testing.T) {
 	s := newTestStore(t)
 	thread := createDraftCleanupThread(t, s, "design-draft", "design")

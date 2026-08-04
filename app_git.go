@@ -416,6 +416,11 @@ func (a *App) GitCreateBranch(threadID, name string) error {
 // restartSessionIfAffected because the cwd is unchanged — the provider
 // session keeps running.
 func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalChanges bool) (store.Thread, error) {
+	// Lock before the read — see PrepareThreadWorktree for why a pre-lock read
+	// races the empty-draft cleanup's delete.
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return store.Thread{}, err
@@ -451,9 +456,6 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 	if carryLocalChanges && !baseIsCurrent {
 		return store.Thread{}, fmt.Errorf("create branch: 'Local with changes' only applies when the base matches the current branch")
 	}
-
-	unlock := a.threadLocks().Lock(threadID)
-	defer unlock()
 
 	if !baseIsCurrent {
 		if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {

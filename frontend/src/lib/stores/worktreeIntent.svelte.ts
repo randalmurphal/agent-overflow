@@ -182,6 +182,25 @@ export function clearWorktreeIntent(threadId: string): void {
   intents = next;
 }
 
+// Threads whose staged intent is being materialized right now (the
+// branch/worktree RPC is in flight). Reactive so the composer's empty-draft
+// cleanup can treat an application in progress as active work — the apply
+// path materializes an item-less draft row first, and deleting it mid-RPC is
+// what used to surface as "no rows in result set" from UpdateThread.
+let applyingThreadIds: ReadonlySet<string> = $state(new Set());
+
+export function markWorktreeIntentApplying(threadId: string, applying: boolean): void {
+  if (threadId === '' || applyingThreadIds.has(threadId) === applying) return;
+  const next = new Set(applyingThreadIds);
+  if (applying) next.add(threadId);
+  else next.delete(threadId);
+  applyingThreadIds = next;
+}
+
+export function isWorktreeIntentApplying(threadId: string | null | undefined): boolean {
+  return threadId != null && applyingThreadIds.has(threadId);
+}
+
 // Re-key a draft placeholder's intent under its newly-materialized
 // thread id. Called from ThreadPane.ensureMaterializedThread after
 // CreateThread returns so worktree/branch picks made on the placeholder
@@ -198,4 +217,5 @@ export function migrateWorktreeIntent(fromThreadId: string, toThreadId: string):
 
 export function resetForTest(): void {
   intents = new Map();
+  applyingThreadIds = new Set();
 }

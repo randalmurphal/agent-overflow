@@ -67,16 +67,6 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 // On stash-apply failure the worktree is removed and the stash entry is
 // kept so the user can recover via `git stash list`.
 func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string, carryLocalChanges bool) (store.Thread, error) {
-	thread, err := a.store.GetThread(threadID)
-	if err != nil {
-		return store.Thread{}, err
-	}
-
-	project, _, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return store.Thread{}, err
-	}
-
 	unlock := a.threadLocks().Lock(threadID)
 	// Registered BEFORE the unlock defer so LIFO runs it AFTER the lock is
 	// released: the setup run outlives this call, and starting it under the
@@ -89,6 +79,21 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 		}
 	}()
 	defer unlock()
+
+	// Read under the lock: a freshly materialized draft thread can be deleted
+	// concurrently (empty-draft cleanup), and a row read before the lock could
+	// vanish before the UpdateThread below — the worktree would be cut for a
+	// thread that no longer exists.
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return store.Thread{}, err
+	}
+
+	project, _, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return store.Thread{}, err
+	}
+
 	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
 		return store.Thread{}, err
 	}
@@ -221,6 +226,11 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 // elsewhere — git's own one-branch-one-worktree invariant. Frontend dedups by
 // flipping to the existing worktree before calling here.
 func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error) {
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+
+	// Read under the lock — see PrepareThreadWorktree for why a pre-lock read
+	// races the empty-draft cleanup's delete.
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return store.Thread{}, err
@@ -231,8 +241,6 @@ func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error
 		return store.Thread{}, err
 	}
 
-	unlock := a.threadLocks().Lock(threadID)
-	defer unlock()
 	if err := a.ensureWorkspaceChangeAllowed(threadID); err != nil {
 		return store.Thread{}, err
 	}
