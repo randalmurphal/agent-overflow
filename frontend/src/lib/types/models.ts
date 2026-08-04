@@ -135,6 +135,10 @@ export interface Thread {
  *   interaction marker persisted from typed `write_stdin` notifications.
  * - `notification` is a provider notification row that must not mutate
  *   tool/task lifecycle state.
+ * - `command_result` is the output of a slash command the provider CLI ran
+ *   itself (`/usage`, `/context`, a skill). Role `system`, written completed
+ *   in one shot, never streams, and never model output — it must not render
+ *   as an assistant bubble. See `internal/triage/command_result.go`.
  */
 export type ItemKind =
   | "user_text"
@@ -148,7 +152,8 @@ export type ItemKind =
   | "terminal_interaction"
   | "notification"
   | "api_retry"
-  | "api_error";
+  | "api_error"
+  | "command_result";
 
 /**
  * One validated file-path reference for the chat surface's auto

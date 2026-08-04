@@ -40,14 +40,16 @@ func claudeAccountProbeCache() *claude.ProbeCache {
 // fresh instance. Call from test setup to guarantee a clean cache
 // without racing against concurrent probes via claudeAccountProbeCache.
 //
-// It resets the probe-enriched model catalog with it, because one probe fills
-// both: a test that cleared only the identity cache would re-probe and then
-// compare against another test's model list. One reset, no drift.
+// It resets the probe-enriched model catalog and command list with it, because
+// one probe fills all three: a test that cleared only the identity cache would
+// re-probe and then compare against another test's model list. One reset, no
+// drift.
 func resetClaudeProbeCacheForTest() {
 	claudeProbeCacheMu.Lock()
 	claudeProbeCache = claude.NewProbeCache(claude.DefaultProbeTTL)
 	claudeProbeCacheMu.Unlock()
 	resetClaudeModelCatalogForTest()
+	resetClaudeCommandCacheForTest()
 }
 
 // ProbeClaudeAccount spawns a short-lived Claude CLI subprocess (via
@@ -70,19 +72,20 @@ func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	selection := a.captureProviderAccountSelection(string(provider.Claude))
 	key := a.providerProbeCacheKeyForAccount(string(provider.Claude), binary, selection.AccountID)
 
-	// The model list rides on this probe's initialize response — see
-	// app_claude_models.go. Only this probe path collects it: the rate-limit
-	// and adoption probes run under an ephemeral credential home for a
-	// possibly non-active account, so their answer describes an identity this
-	// key does not name.
+	// The model list and the slash-command list both ride on this probe's
+	// initialize response — see app_claude_models.go / app_claude_commands.go.
+	// Only this probe path collects them: the rate-limit and adoption probes
+	// run under an ephemeral credential home for a possibly non-active
+	// account, so their answer describes an identity this key does not name.
 	//
 	// Held here and stored AFTER the orchestrator returns, rather than from
 	// inside the callback, because the callback can fire more than once per
 	// call (runStableAccountProbe re-probes when credentials rotate mid-flight)
 	// and can fire on an attempt whose result is then discarded. Storing on the
-	// way out keeps the rule simple: the list we keep is the one that came with
-	// the identity we returned.
+	// way out keeps the rule simple: the lists we keep are the ones that came
+	// with the identity we returned.
 	var wire claudeProbeModels
+	var wireCommands claudeProbeCommands
 	info, err := a.runAccountProbe(providerProbeRunner{
 		providerName: string(provider.Claude),
 		cache:        claudeAccountProbeCache(),
@@ -90,6 +93,7 @@ func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 		probe: func(ctx context.Context) (provider.AccountInfo, error) {
 			cfg := a.claudeProbeConfig(binary, nil)
 			cfg.OnModels = wire.capture
+			cfg.OnCommands = wireCommands.capture
 			return claude.ProbeAccount(ctx, cfg)
 		},
 		unauthenticated: providerstatus.ClaudeUnauthenticated,
@@ -100,6 +104,9 @@ func (a *App) ProbeClaudeAccount() (provider.AccountInfo, error) {
 	}
 	if wire.reported {
 		a.storeClaudeWireModels(key, wire.models, wire.err)
+	}
+	if wireCommands.reported {
+		a.storeClaudeWireCommands(key, wireCommands.commands, wireCommands.err)
 	}
 	return info, nil
 }

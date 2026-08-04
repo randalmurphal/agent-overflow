@@ -75,6 +75,29 @@ var wireSafeMethods = map[string]bool{
 	"GetUsageStats":          true,
 	"GetRateLimitsSnapshots": true,
 
+	// GetClaudeSlashCommands returns {name, description, argumentHint} for
+	// the provider-executed commands the last account probe reported. It is
+	// the composer's cold-thread menu seed and is deliberately NOT
+	// loopback-only, on the same grounds as GetKeybindings below:
+	//
+	//   - it never spawns, never reads the filesystem, and never touches
+	//     credentials — it is an in-memory read of what a probe already
+	//     left behind (internal/claudecommands);
+	//   - the shape carries no paths and no environment: names, prose
+	//     descriptions, and argument hints, which is UI affordance data,
+	//     not the URL/bearer-reference inventory that puts the MCP surface
+	//     in category 8;
+	//   - the SAME rich entries already reach remote peers on the
+	//     `provider:commands` event channel, which is not in
+	//     loopbackOnlyEventChannels, so refusing the RPC would buy no
+	//     confidentiality while emptying the command menu on any thread
+	//     without a live session.
+	//
+	// A future reviewer running this exercise: if provider:commands ever
+	// becomes loopback-only, or the shape grows a path/env field, re-run the
+	// decision — don't leave this entry standing on a premise that moved.
+	"GetClaudeSlashCommands": true,
+
 	// Per-client UI view state (ui_state table). Remote clients are
 	// the point: each presents an opaque client ID and can only touch
 	// its own "client:<id>" scope (built server-side in app_uistate.go,

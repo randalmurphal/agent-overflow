@@ -155,8 +155,13 @@ func TestSendMessageExpandsComposerCommandOnTheWireOnly(t *testing.T) {
 	_ = sess.Close()
 
 	sent := readCapturedUserTexts(t, capturePath, 2)
-	if !strings.HasPrefix(sent[0], commandText+"\n\n") {
-		t.Fatalf("provider payload does not open with the typed text: %q", sent[0])
+	// The leading "\n" is Claude's outbound slash guard
+	// (internal/provider/claude/slash_guard.go). Without it the CLI's command
+	// router claims the whole message — "Unknown command: /workflow",
+	// num_turns 0 — and the model never sees the expanded block this test is
+	// about. Verified 2.1.219, 2026-08-03 live probe.
+	if !strings.HasPrefix(sent[0], "\n"+commandText+"\n\n") {
+		t.Fatalf("provider payload does not open with the guarded typed text: %q", sent[0])
 	}
 	if !strings.Contains(sent[0], "Agent Overflow workflows are available") {
 		t.Fatalf("provider payload is missing the expanded block: %q", sent[0])
@@ -231,8 +236,12 @@ func TestSendMessageSkipsExpansionForInjectedText(t *testing.T) {
 	_ = sess.Close()
 
 	sent := readCapturedUserTexts(t, capturePath, 1)
-	if sent[0] != injected {
-		t.Fatalf("injected text was expanded: %q", sent[0])
+	// No expansion, but the outbound slash guard still applies: this text
+	// opens with a command-shaped word, so an unguarded send would be
+	// swallowed by the CLI's command router before the model ever saw the
+	// wake prompt. The guard's single "\n" is the only difference allowed.
+	if sent[0] != "\n"+injected {
+		t.Fatalf("injected text was rewritten beyond the slash guard: %q", sent[0])
 	}
 	items, err := app.store.ListItems(thread.ID)
 	if err != nil {

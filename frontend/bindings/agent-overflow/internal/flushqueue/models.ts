@@ -34,6 +34,14 @@ export class QueuedItem {
     "revisionSourceDiffCommentIds"?: string[];
     "enqueuedAt": number;
 
+    /**
+     * ProviderCommand mirrors Payload.ProviderCommand so a client
+     * re-rendering the queue from a snapshot still shows the entry as the
+     * command the user invoked, not as prose that happens to start with a
+     * slash.
+     */
+    "providerCommand"?: boolean;
+
     /** Creates a new QueuedItem instance. */
     constructor($$source: Partial<QueuedItem> = {}) {
         if (!("id" in $$source)) {

@@ -67,6 +67,7 @@ func (a *App) SteerMessageWithOptions(threadID string, content string, opts Send
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		// Wire entry: this text was typed into a composer (D31).
 		ExpandComposerCommands: true,
+		ProviderCommand:        opts.ProviderCommand,
 	}); err != nil {
 		return store.Thread{}, err
 	}
@@ -192,9 +193,15 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	// a slow Steer-and-respawn against its own teardown. Mirrors the
 	// pre-Send stamp in sendToProvider.
 	sess.liveness.bumpActivity(time.Now())
+	// AllowClaudeSlashCommand is carried even though this path is Codex-only
+	// and Codex ignores it: the flag belongs to the message, not to the
+	// provider that happens to be reading it, and a future steer-capable
+	// provider must not silently start guarding a deliberate command because
+	// this call site forgot the field.
 	steerErr := codexSess.Steer(context.Background(), providerContent, provider.SendOptions{
-		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
-		Attachments:     providerAttachments,
+		InteractionMode:         provider.NormalizeInteractionMode(thread.Mode),
+		Attachments:             providerAttachments,
+		AllowClaudeSlashCommand: opts.ProviderCommand,
 	})
 	if steerErr != nil {
 		// Drop the pending-send marker so a stale wire echo from the

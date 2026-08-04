@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 	"time"
@@ -81,63 +80,31 @@ func ListModels(ctx context.Context, cfg ModelListConfig) ([]provider.ModelInfo,
 		defer cancel()
 	}
 
-	binary := strings.TrimSpace(cfg.Binary)
-	if binary == "" {
-		binary = "codex"
-	}
-
-	client, err := newModelListClient(ctx, binary, cfg.WorkDir, cfg.Env)
+	// Response-only client: one model/list round-trip, no notification is
+	// ever awaited. experimentalApi rides along because this handshake has
+	// always sent it; model/list itself is not `#[experimental]`.
+	// An empty Binary falls through to startOneshotClient's "codex" default.
+	client, err := startOneshotClient(ctx, oneshotSpec{
+		Binary:       cfg.Binary,
+		WorkDir:      cfg.WorkDir,
+		Env:          cfg.Env,
+		ClientName:   "agent_overflow",
+		Experimental: true,
+		Label:        "model/list",
+	})
 	if err != nil {
 		return nil, err
 	}
 	defer client.close()
 
-	// Response-only client: one model/list round-trip, no notification
-	// is ever awaited.
-	if _, err := client.request(ctx, "initialize",
-		codexInitializeParams("agent_overflow", oneShotOptOutNotificationMethods()),
-	); err != nil {
-		return nil, fmt.Errorf("codex: initialize for model/list: %w", err)
-	}
-
-	if err := client.notify("initialized", nil); err != nil {
-		return nil, fmt.Errorf("codex: send initialized for model/list: %w", err)
-	}
-
-	models, err := client.listModels(ctx)
+	models, err := listModelPages(ctx, client)
 	if err != nil {
 		return nil, err
 	}
 	return appendCustomModels(models, cfg.CustomModels), nil
 }
 
-type modelListClient struct {
-	proc   *provider.Process
-	nextID int64
-}
-
-func newModelListClient(ctx context.Context, binary, workDir string, env map[string]string) (*modelListClient, error) {
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
-		Binary:   binary,
-		Args:     codexAppServerArgs(),
-		Dir:      workDir,
-		Env:      env,
-		UnsetEnv: []string{"CODEX_HOME"},
-		Provider: string(provider.Codex),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("codex: spawn for model/list: %w", err)
-	}
-	return &modelListClient{proc: proc}, nil
-}
-
-func (c *modelListClient) close() {
-	if c.proc != nil {
-		_ = c.proc.Close()
-	}
-}
-
-func (c *modelListClient) listModels(ctx context.Context) ([]provider.ModelInfo, error) {
+func listModelPages(ctx context.Context, c *oneshotClient) ([]provider.ModelInfo, error) {
 	var models []provider.ModelInfo
 	var cursor *string
 	seenCursors := make(map[string]bool)
@@ -183,94 +150,6 @@ func (c *modelListClient) listModels(ctx context.Context) ([]provider.ModelInfo,
 		cursor = response.NextCursor
 	}
 	return nil, fmt.Errorf("codex: model/list exceeded %d pages", modelListMaxPages)
-}
-
-func (c *modelListClient) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	c.nextID++
-	id := c.nextID
-
-	message := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"method":  method,
-	}
-	if params != nil {
-		message["params"] = params
-	}
-
-	data, err := json.Marshal(message)
-	if err != nil {
-		return nil, fmt.Errorf("codex: marshal %s: %w", method, err)
-	}
-	if err := c.proc.WriteLine(data); err != nil {
-		return nil, err
-	}
-
-	for {
-		line, err := c.readLine(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		var response struct {
-			ID     int64           `json:"id"`
-			Result json.RawMessage `json:"result"`
-			Error  *struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(line, &response); err != nil {
-			return nil, fmt.Errorf("codex: decode %s response: %w", method, err)
-		}
-		if response.ID != id {
-			continue
-		}
-		if response.Error != nil {
-			return nil, fmt.Errorf("%s (code %d)", response.Error.Message, response.Error.Code)
-		}
-		return response.Result, nil
-	}
-}
-
-func (c *modelListClient) notify(method string, params any) error {
-	message := map[string]any{
-		"jsonrpc": "2.0",
-		"method":  method,
-	}
-	if params != nil {
-		message["params"] = params
-	}
-	data, err := json.Marshal(message)
-	if err != nil {
-		return fmt.Errorf("codex: marshal %s notification: %w", method, err)
-	}
-	return c.proc.WriteLine(data)
-}
-
-func (c *modelListClient) readLine(ctx context.Context) ([]byte, error) {
-	type readResult struct {
-		line []byte
-		err  error
-	}
-	ch := make(chan readResult, 1)
-	go func() {
-		line, err := c.proc.ReadLine()
-		ch <- readResult{line: line, err: err}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case result := <-ch:
-		if result.err != nil {
-			if result.err == io.EOF {
-				return nil, fmt.Errorf("codex: model/list app-server exited")
-			}
-			return nil, result.err
-		}
-		return result.line, nil
-	}
 }
 
 func mapCodexModel(model codexModel) provider.ModelInfo {

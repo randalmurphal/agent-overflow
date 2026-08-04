@@ -210,6 +210,12 @@ var LocalOnlyMethods = map[string]bool{
 	// subprocess. It looks like a catalog read, but the local process
 	// execution makes it loopback-only.
 	"GetModelsForProvider": true,
+	// GetCodexSkills is the same shape as GetModelsForProvider one line up:
+	// it rides a live `codex app-server` connection when one exists and
+	// spawns a short-lived one otherwise, and the answer it returns names
+	// absolute SKILL.md paths under the user's home and repo. Local process
+	// execution plus host-path disclosure — loopback-only on both counts.
+	"GetCodexSkills":       true,
 	"CreateProject":        true,
 	"ListAvailableEditors": true,
 	// GenerateCommitMessage runs `claude` / `codex` in the workspace
@@ -382,6 +388,13 @@ var LocalOnlyMethods = map[string]bool{
 	// Background-task control terminates host subprocesses.
 	"StopClaudeTask":                true,
 	"CleanCodexBackgroundTerminals": true,
+	// StartCodexReview and CompactCodexThread each start a real, billed,
+	// non-steerable turn on the thread's live provider subprocess — the
+	// review one that reads the user's working tree or git history and runs
+	// tools in it. Same session-control class as SendMessage, just reached
+	// through a purpose-built RPC instead of a prompt.
+	"StartCodexReview":   true,
+	"CompactCodexThread": true,
 	// GetThreadContextUsage drives a live Claude session over its stdio
 	// control channel (a get_context_usage control_request). It reads
 	// rather than mutates, but it is still traffic on the local provider

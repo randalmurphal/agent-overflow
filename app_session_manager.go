@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -199,6 +200,40 @@ func (m sessionManager) anyCodexSession() (*codex.Session, string) {
 		}
 	}
 	return nil, ""
+}
+
+// codexSessionForBinary returns some live Codex session whose process was
+// spawned from binary, or nil when none is.
+//
+// The binary match is the caution this read needs, and it is a different
+// one from anyCodexSession's account match. `skills/list` is answered out
+// of the running binary's bundled skill set and its config schema, so a
+// session still running an older codex than the setting now names would
+// answer a question about a build the caller is not asking about. The
+// account is deliberately NOT matched: skills resolve from the canonical
+// CODEX_HOME plus the requested cwd, neither of which a login switch
+// touches (see internal/codexskills.Key).
+func (m sessionManager) codexSessionForBinary(binary string) *codex.Session {
+	binary = normalizeCodexBinary(binary)
+	m.app.mu.Lock()
+	defer m.app.mu.Unlock()
+	for _, sess := range m.app.sessions {
+		if sess.codex != nil && normalizeCodexBinary(sess.codex.Binary()) == binary {
+			return sess.codex
+		}
+	}
+	return nil
+}
+
+// normalizeCodexBinary folds the unset binary setting onto the same value
+// codex.NewSession defaults to, so "" and "codex" cannot look like two
+// different builds.
+func normalizeCodexBinary(binary string) string {
+	binary = strings.TrimSpace(binary)
+	if binary == "" {
+		return "codex"
+	}
+	return binary
 }
 
 func (m sessionManager) hasProvider(providerName string) bool {

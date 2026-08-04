@@ -10,6 +10,7 @@ import type { SourceDiffReview, SourceProposedPlan } from '../types/models';
 export interface OutgoingSendOptions {
   attachmentIds: string[];
   runtimeMode?: string;
+  providerCommand?: boolean;
   sourceProposedPlan?: SourceProposedPlan;
   revisionSourceProposedPlan?: SourceProposedPlan;
   revisionSourceCommentIds?: string[];
@@ -26,6 +27,13 @@ export interface OutgoingSendOptions {
 export interface SendOptionsInput {
   attachmentIds: string[];
   runtimeMode?: string;
+  /**
+   * True only when the draft's first word names a command this thread's
+   * provider reports it will execute itself. Carried through both send
+   * vectors so a queued command still bypasses Claude's slash guard when
+   * the backend eventually drains it.
+   */
+  providerCommand?: boolean;
   sourceProposedPlan?: SourceProposedPlan | null;
   revisionSourceProposedPlan?: SourceProposedPlan;
   revisionSourceCommentIds?: readonly string[];
@@ -46,6 +54,7 @@ export function buildSendOptions(input: SendOptionsInput): OutgoingSendOptions {
     attachmentIds: input.attachmentIds,
   };
   if (input.runtimeMode) out.runtimeMode = input.runtimeMode;
+  if (input.providerCommand) out.providerCommand = true;
   if (input.revisionSourceProposedPlan) {
     out.revisionSourceProposedPlan = input.revisionSourceProposedPlan;
   } else if (input.sourceProposedPlan) {

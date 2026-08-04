@@ -3,19 +3,17 @@
   // thresholds live in Settings and are opened from the composer context meter.
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
-  import type { Thread } from '../../../types/models';
   import type { ContextWindowOption, ModelInfo, ReasoningEffortOption } from '../../../types/settings';
   import {
-    UpdateThreadFastMode,
-    UpdateThreadContextWindow,
-    UpdateThreadReasoningEffort,
-  } from '../../../stores/bindings';
+    applyThreadContextWindow,
+    applyThreadFastMode,
+    applyThreadReasoningEffort,
+  } from '../../../stores/threadModelControls';
   import { asProviderID } from '../../../types/providers';
   import {
     ensureProviderModels,
     getProviderModels,
   } from '../../../stores/providerModels.svelte';
-  import { syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
   import { formatTokens } from '../../../utils/format';
@@ -29,7 +27,6 @@
   import Icon from '../../primitives/Icon.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
-  import { updatePlaceholderDefaults } from '../../../stores/newThreadDefaults';
   import { formatChord, keybindingForCommand } from '../../../stores/keybindings.svelte';
   import { getFastModeReport } from '../../../stores/fastModeState.svelte';
   import { fastModeContradictionText, isFastModeContradicted } from '../../../utils/fastMode';
@@ -224,70 +221,26 @@
     if (!focusPaneComposer(pane.paneId)) triggerEl?.focus();
   }
 
+  // Each handler drives the shared apply path in threadModelControls, which
+  // owns the placeholder-vs-thread branch and the no-op short circuit. The
+  // menu's only remaining job is where the failure goes — a toast here, a
+  // composer-local error when the same path runs from `/effort` or `/fast`.
   async function handleEffort(next: Effort): Promise<void> {
-    if (!pane.thread || next === currentEffort) {
-      closeMenu();
-      return;
-    }
-    try {
-      if (pane.hasDraftPlaceholder) {
-        await updatePlaceholderDefaults(pane, { reasoningEffort: next });
-        return;
-      }
-      const threadId = pane.threadId;
-      if (!threadId) return;
-      const updated = (await UpdateThreadReasoningEffort(threadId, next)) as Thread;
-      syncThread(updated);
-    } catch (err) {
-      console.error('UpdateThreadReasoningEffort failed:', err);
-      addToast('error', `Failed to set effort: ${errString(err)}`);
-    } finally {
-      closeMenu();
-    }
+    const result = await applyThreadReasoningEffort(pane, next);
+    if (!result.ok && result.error) addToast('error', result.error);
+    closeMenu();
   }
 
   async function handleFastMode(on: boolean): Promise<void> {
-    if (!pane.thread || on === currentFast) {
-      closeMenu();
-      return;
-    }
-    try {
-      if (pane.hasDraftPlaceholder) {
-        await updatePlaceholderDefaults(pane, { fastMode: on });
-        return;
-      }
-      const threadId = pane.threadId;
-      if (!threadId) return;
-      const updated = (await UpdateThreadFastMode(threadId, on)) as Thread;
-      syncThread(updated);
-    } catch (err) {
-      console.error('UpdateThreadFastMode failed:', err);
-      addToast('error', `Failed to set fast mode: ${errString(err)}`);
-    } finally {
-      closeMenu();
-    }
+    const result = await applyThreadFastMode(pane, on);
+    if (!result.ok && result.error) addToast('error', result.error);
+    closeMenu();
   }
 
   async function handleContextWindow(tokens: number): Promise<void> {
-    if (!pane.thread || tokens === currentContextWindow) {
-      closeMenu();
-      return;
-    }
-    try {
-      if (pane.hasDraftPlaceholder) {
-        await updatePlaceholderDefaults(pane, { contextWindow: tokens });
-        return;
-      }
-      const threadId = pane.threadId;
-      if (!threadId) return;
-      const updated = (await UpdateThreadContextWindow(threadId, tokens)) as Thread;
-      syncThread(updated);
-    } catch (err) {
-      console.error('UpdateThreadContextWindow failed:', err);
-      addToast('error', `Failed to set context window: ${errString(err)}`);
-    } finally {
-      closeMenu();
-    }
+    const result = await applyThreadContextWindow(pane, tokens);
+    if (!result.ok && result.error) addToast('error', result.error);
+    closeMenu();
   }
 </script>
 

@@ -517,7 +517,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	message := map[string]any{
 		"role": "user",
 	}
-	blocks, err := buildUserMessageBlocks(content, attachments)
+	blocks, err := buildUserMessageBlocks(content, attachments, opts.AllowClaudeSlashCommand)
 	if err != nil {
 		return err
 	}

@@ -115,6 +115,30 @@ over stdio.
   for detached-child-agent terminal signals in raw mailbox carriers,
   rollout `response_item` records, and legacy standalone user-message
   carriers. Pure parsing (regex + JSON decode), no Session state.
+- `session_review.go` — `review/start` (`StartReview`) and
+  `thread/compact/start` (`CompactThread`). `ReviewTarget` is a closed
+  union with unexported fields and four validating constructors, so the
+  four variants' different required payloads cannot be mixed and the zero
+  value refuses to marshal rather than defaulting to reviewing something.
+  `ReviewStarted.Detached` is derived from the RETURNED `reviewThreadId`
+  versus the session's own thread — never from the requested delivery,
+  which is what upstream's own TUI routes on. A detached review's
+  notifications land on a thread this session does not own and are
+  quarantined fail-closed; surfacing them needs the returned id registered
+  with the routing tables first.
+- `skills.go` — `skills/list` (`Session.ListSkills` for a live connection,
+  `SkillsFetcher` for the ephemeral fallback), the wire→`codexskills.Skill`
+  projection, and the `skills/changed` side channel. Every cwd must be
+  absolute and the list must be non-empty: upstream resolves a relative
+  path against the ANSWERING process's cwd and an empty list against that
+  process's own directory, so both would mean different things on a live
+  session than on a throwaway fetcher. Caching lives in
+  `internal/codexskills`.
+- `oneshot_client.go` — the shared spawn + `initialize`/`initialized` +
+  sequential request/response client behind the thread-less reads
+  (`model/list`, `skills/list`). `oneshotSpec.Experimental` and
+  `KeepNotifications` are per-caller because a throwaway process asking
+  for more than it uses changes what the server emits.
 - `options.go` — `SessionOptions → Config` hydration, binary probe.
 - `models.go` — `model/list` paging plus the `codexModel → provider.ModelInfo`
   projection. **`serviceTiers` is the model's whole tier menu, not a fast-tier
@@ -204,6 +228,24 @@ over stdio.
   `AccountUsageFetcher` starts a short-lived app-server when none is.
   Absence is a state, not a failure — an API-key login has no usage
   profile at all.
+- `skills/list` — which skills are visible from a set of directories.
+  Global (`serialization: global_shared_read("config")`), not
+  `#[experimental]`, since 0.73.0, so a live session answers it for ANY
+  workspace in one round trip and `SkillsFetcher` starts a short-lived
+  app-server when none is. Skills replaced custom prompts, which upstream
+  removed in 0.118 — there is no legacy method to fall back to. The
+  request always names absolute directories; see `skills.go` for why the
+  wire's empty-`cwds` default is never used.
+- `review/start` — Codex's built-in code review, on one of four targets
+  (`uncommittedChanges` / `baseBranch` / `commit` / `custom`) delivered
+  `inline` (default) or `detached`. Not experimental, since 0.59.0. The
+  response's `reviewThreadId` is the routing authority for everything the
+  review emits.
+- `thread/compact/start` — compact this thread's context now. Not
+  experimental, since 0.96.0; response body is empty. The boundary arrives
+  as the `contextCompaction` item, NOT on the response, and the older
+  `thread/compacted` notification is deprecated — both feed the same
+  `EventCompactBoundary`.
 - `turn/start`, `turn/steer`, `turn/interrupt` — deliver, steer, and stop
   user turns. `turn/start` carries per-turn config overrides (`model`,
   `effort`, `serviceTier`, `approvalPolicy`, `sandboxPolicy`,
@@ -247,6 +289,12 @@ Summary:
 - `model/safetyBuffering/updated` — the response is held while OpenAI
   reviews the turn. Emits a notification row on `showBufferingUi: true`
   only; the clear edge is handled but silent.
+- `skills/changed` — side channel, not transcript content. Upstream types
+  it as an EMPTY struct and documents it as an invalidation signal, so it
+  carries no cwd, no scope and no skill name: the App layer drops the whole
+  `internal/codexskills` cache rather than pretending to narrow the scope.
+  Claimed in `sessionSideChannelNotifications`, which is also what keeps it
+  out of the initialize opt-out list.
 - Rate-limit, model-reroute, reasoning-delta, thread-rename,
   thread-compact events.
 - `error` notifications (user-facing state, not log entries).

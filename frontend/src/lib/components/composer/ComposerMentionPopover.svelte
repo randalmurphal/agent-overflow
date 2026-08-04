@@ -5,6 +5,7 @@
   // block ancestor — see Popover.svelte for the CSS-spec explanation.
 
   import type { WorkspaceFile } from '../../types/workspaceFile';
+  import { createActiveOptionReveal } from './popoverOptionReveal';
   import Popover from '../primitives/Popover.svelte';
   import EditorLink from '../common/EditorLink.svelte';
 
@@ -35,11 +36,21 @@
     onHover,
     onClose = () => {},
   }: Props = $props();
+
+  let listEl = $state<HTMLElement | undefined>();
+  const reveal = createActiveOptionReveal();
+  $effect(() => {
+    // `results` is a dependency on purpose: a new result set can leave the
+    // index unchanged while a different row becomes the active one.
+    void results;
+    reveal.sync(activeIndex, listEl);
+  });
 </script>
 
 <Popover {anchor} {open} {onClose} placement="top-start" role="listbox" ariaLabel="Workspace File Mentions">
   {#snippet children()}
     <div
+      bind:this={listEl}
       class="w-[22rem] max-h-72 overflow-y-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 shadow-menu"
       data-testid="mention-popover"
     >
@@ -64,12 +75,15 @@
                 type="button"
                 role="option"
                 aria-selected={active}
-                class="flex w-full items-center justify-between gap-3 px-3 py-1.5 pr-9 text-left text-[0.8125rem] hover:bg-surface-2/40 focus-visible:outline-none transition-colors"
+                class="flex w-full items-center justify-between gap-3 px-3 py-1.5 pr-9 text-left text-[0.8125rem] focus-visible:outline-none transition-colors"
                 class:bg-accent={active}
                 class:text-surface-0={active}
                 data-testid="mention-option"
                 onclick={() => onSelect(file)}
-                onmouseenter={() => onHover?.(index)}
+                onmousemove={() => {
+                  reveal.hovered(index);
+                  onHover?.(index);
+                }}
               >
                 <span class="truncate" title={file.path}>{file.path}</span>
                 <span class="text-[0.625rem] text-fg-hint shrink-0">

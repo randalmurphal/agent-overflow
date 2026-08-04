@@ -90,7 +90,7 @@
     getThreadId: () => pane.threadId,
   });
 
-  const slash = createComposerSlash({ getTextarea: () => textarea });
+  const slash = createComposerSlash({ getTextarea: () => textarea, getPane: () => pane });
 
   const uploads = createComposerUploads({
     getThreadId: threadIdForUpload,
@@ -232,9 +232,14 @@
   let composingText = $state(false);
   let textareaScrollTop = $state(0);
   let selectionCollapsed = $state(true);
+  // AO's registered words at any position, plus a leading intercepted command
+  // (`/model`, `/clear`, …) — both are words AO acts on rather than sends, so
+  // both read as commands. The intercepted one is painted only at position 0,
+  // where interception actually fires. The two lists cannot overlap: no name
+  // is in both registries.
   let commandRanges = $derived.by(() => {
     if (hasUserInputPrompt || inputDisabled || composingText || !selectionCollapsed) return [];
-    return slashCommandMatches(inputValue);
+    return [...slash.interceptedRanges(inputValue), ...slashCommandMatches(inputValue)];
   });
   $effect(() => {
     activeUserInput?.requestId;
@@ -415,6 +420,18 @@
 
   async function send(includeReviewComments = true) {
     if (!canSend) return;
+    // Intercepted commands (`/model`, `/clear`, `/compact`, …) are decided
+    // from the text alone and BEFORE anything else the send path does — they
+    // must not materialize a thread, open a queue slot, or leave a persisted
+    // draft behind. The composed message is what the backend would have seen,
+    // so the classification matches what a send would actually have sent.
+    if (!hasUserInputPrompt && slash.consumeInterceptedSend(draft.composeOutgoingMessage())) {
+      // Consume the TEXT only. Attachments and terminal chips are the user's
+      // uploads, not part of the command, so they stay in the draft.
+      draft.setContent('');
+      resetTextareaHeight();
+      return;
+    }
     if (!pane.threadId) {
       if (!(await pane.ensureMaterializedThread())) return;
     }
@@ -456,6 +473,12 @@
       ? activeDiffReviewDraftComments
       : [];
     const message = hasDraftContentForSend ? composedMessage : '';
+    // Send-time classification: the first word naming a command the thread's
+    // provider reports means the CLI should execute it, so the send opts out
+    // of Claude's outbound slash guard. Derived from the message, never from
+    // whether the menu was used — a hand-typed `/usage` works, and an unknown
+    // `/word` stays guarded.
+    const providerCommand = message !== '' && slash.isProviderCommandSend(message);
     // Drafts seeded by "Implement plan in new thread" carry a persisted
     // sourceProposedPlan ref. dispatchSend applies the revision-vs-source
     // precedence rule, so we forward both fields and let composerSend
@@ -493,6 +516,7 @@
 
       try {
         await registerQueueItem(midTurnThreadId, message, {
+          providerCommand,
           attachmentIds: queuedAttachmentIds,
           sourceProposedPlan: draftSourcePlan ?? null,
           revisionSourceProposedPlan: revisionPlanForMidTurn ?? null,
@@ -553,6 +577,7 @@
       const sent = await dispatchSend({
         threadId,
         message,
+        providerCommand,
         attachmentIds: snapshot.attachments.map((attachment) => attachment.id),
         sourceProposedPlan: draftSourcePlan ?? undefined,
         revisionSourceProposedPlan: sourceForSend && (hasDraftContentForSend || commentsForSend.length > 0)
@@ -653,7 +678,7 @@
     // guard skips this branch when the popover is open, but
     // `handleMentionPopoverKeydown` below has its own Shift+Tab
     // bail-out so the chord still reaches the global dispatcher.
-    if (e.key === 'Tab' && e.shiftKey && !mentions.mentionTrigger && !slash.slashTrigger) {
+    if (e.key === 'Tab' && e.shiftKey && !mentions.mentionTrigger && !slash.slashOpen) {
       return;
     }
 
@@ -662,7 +687,7 @@
     // want — users navigate panes/sidebar via explicit chords. With either
     // completion menu open, Tab belongs to the menu (it completes) and the
     // dispatch below claims it.
-    if (e.key === 'Tab' && !e.shiftKey && !mentions.mentionTrigger && !slash.slashTrigger) {
+    if (e.key === 'Tab' && !e.shiftKey && !mentions.mentionTrigger && !slash.slashOpen) {
       e.preventDefault();
       return;
     }
@@ -707,6 +732,7 @@
       }
     }
     autosizeTextarea();
+    slash.clearCommandError();
     refreshCompletionTriggers();
   }
 
@@ -954,8 +980,8 @@
 
         <ComposerSlashPopover
           anchor={textarea}
-          open={slash.slashTrigger !== null}
-          results={slash.slashResults}
+          open={slash.slashOpen}
+          sections={slash.slashSections}
           activeIndex={slash.slashActiveIndex}
           onSelect={slash.insertCommand}
           onClose={slash.closeSlash}
@@ -994,6 +1020,18 @@
 
     </div>
 
+    {#if !hasInteractivePrompt && slash.commandError}
+      <!-- Composer-local, not a toast and not the pane banner: the user is
+           looking at the text they just typed, which is where the answer to
+           "that command did not work" belongs. Cleared by the next edit. -->
+      <div
+        class="px-4 pb-1 text-[0.6875rem] text-error"
+        role="alert"
+        data-testid="composer-command-error"
+      >
+        {slash.commandError}
+      </div>
+    {/if}
     {#if !hasInteractivePrompt && preparingWorktree}
       <div
         class="px-4 pb-1 text-[0.6875rem] text-text-secondary/70"

@@ -1,49 +1,217 @@
-// Composer slash-command menu state (D31).
+// Composer command-menu state.
 //
-// Owns: the open trigger (which implies the filtered result list) and the
-// active index. There is no async work — the registry is a static list in
-// `slashCommands.ts` — so unlike the @-mention twin this module has no
-// generation counter and no loading flag.
+// Owns: which trigger is open (the `/name` completion, or `/review`'s target
+// completion), the filtered sections that implies, the active row, the lazily
+// loaded sources those rows come from, and the composer-local error an
+// intercepted command reports.
 //
-// The caller provides a textarea reference. Rendering lives in
-// Composer.svelte / ComposerSlashPopover; this module is state + dispatch.
+// It also owns the SEND decision, because the same three facts decide it:
+// which commands the provider reports, which names AO intercepts, and what the
+// draft's first word is. Keeping it here means there is no hidden per-send
+// flag — a hand-typed command behaves exactly like a menu-selected one.
+//
+// Rendering lives in Composer.svelte / ComposerSlashPopover.
 
-import { detectSlashTrigger, slashCommandWord, type SlashCommand, type SlashTrigger } from './slashCommands';
+import { GitListBranches, ListBranchCommits } from '../../stores/bindings';
+import { getCodexSkills, ensureCodexSkills } from '../../stores/codexSkills.svelte';
+import {
+  ensureClaudeProbeCommands,
+  getClaudeProbeCommands,
+  getProviderCommandsFrame,
+} from '../../stores/providerCommands.svelte';
+import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+import type { BranchCommit, GitBranch } from '../../types/git';
+import { errString } from '../../utils/errors';
+import { runInterceptedCommand } from './composerCommandActions';
+import {
+  buildCommandSections,
+  filterCommandSections,
+  flattenSections,
+  interceptedCommandNames,
+  unionProviderCommands,
+  type ComposerCommandEntry,
+  type ComposerCommandSection,
+} from './composerCommandEntries';
+import {
+  interceptedCommandRange,
+  isProviderCommandMessage,
+  parseInterceptedCommand,
+} from './composerCommandParse';
+import {
+  detectCommandTrigger,
+  detectReviewTargetTrigger,
+} from './composerCommandTrigger';
+import { buildReviewSections } from './composerReviewTargets';
 import { replaceTextareaRange } from './textareaEdit';
 
 export interface ComposerSlashOptions {
   /** Returns the textarea DOM element. May be undefined before mount. */
   getTextarea: () => HTMLTextAreaElement | undefined;
+  /**
+   * Getter, not the pane itself: the caller reads it off `$props()`, and
+   * capturing that value at construction would freeze this handle to whichever
+   * pane was mounted first.
+   */
+  getPane: () => ThreadPane;
+}
+
+interface OpenTrigger {
+  level: 'command' | 'review';
+  query: string;
+  start: number;
+  end: number;
+  atStart: boolean;
+}
+
+interface ReviewGitData {
+  threadId: string;
+  branches: GitBranch[];
+  commits: BranchCommit[];
+  loading: boolean;
+  error: string;
 }
 
 export interface ComposerSlashHandle {
-  readonly slashTrigger: SlashTrigger | null;
-  readonly slashResults: SlashCommand[];
+  readonly slashTrigger: OpenTrigger | null;
+  /**
+   * Whether the menu should be visible. A trigger with no matching rows stays
+   * OPEN as state but shows nothing: that is what leaves `/workflowish` as
+   * plain text while a later backspace re-reveals the menu without the user
+   * having to retype the slash.
+   */
+  readonly slashOpen: boolean;
+  readonly slashSections: ComposerCommandSection[];
+  readonly slashResults: ComposerCommandEntry[];
   readonly slashActiveIndex: number;
+  readonly commandError: string;
   setSlashActiveIndex(i: number): void;
 
-  /**
-   * Inspect the textarea's value + caret and open / filter / close the
-   * command menu.
-   */
+  /** Inspect the textarea's value + caret and open / filter / close the menu. */
   refreshTrigger(): void;
 
-  insertCommand(command: SlashCommand): void;
+  insertCommand(entry: ComposerCommandEntry): void;
   closeSlash(): void;
+  clearCommandError(): void;
+
+  /**
+   * Consume the draft if it invokes an intercepted command. Returns true when
+   * the composer must NOT send — the text has already been handled.
+   */
+  consumeInterceptedSend(message: string): boolean;
+  /** Whether this message should carry `providerCommand: true`. */
+  isProviderCommandSend(message: string): boolean;
+  /**
+   * Accent-overlay range of a leading intercepted command, for the same
+   * treatment AO's own command words get. Empty list when there is none.
+   */
+  interceptedRanges(value: string): { name: string; start: number; end: number }[];
 }
 
 export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHandle {
-  let slashTrigger: SlashTrigger | null = $state(null);
+  const pane = $derived(opts.getPane());
+
+  let trigger: OpenTrigger | null = $state(null);
   let slashActiveIndex = $state(0);
+  let commandError = $state('');
   // Set while the menu is deliberately dismissed (Escape) for a draft that
   // still matches. Cleared as soon as the draft stops matching, so the next
   // `/` types a fresh menu rather than staying suppressed forever.
   let dismissed = $state(false);
+  let reviewGit = $state.raw<ReviewGitData | null>(null);
+
+  const workspacePath = $derived(paneWorkspacePath(pane));
+  const provider = $derived(pane.thread?.provider ?? '');
+
+  /**
+   * The command names this thread's provider says it will execute.
+   *
+   * Claude unions two sources; Codex has no `provider:commands` wire at all,
+   * so the set stays empty and no Codex send is ever marked as a provider
+   * command (skills are `$name` tokens the model scans for, not commands).
+   */
+  const providerCommandNames = $derived.by(() => {
+    if (provider === 'codex' || provider === '') return new Set<string>();
+    const frame = getProviderCommandsFrame(pane.threadId);
+    const probe = getClaudeProbeCommands();
+    const union = unionProviderCommands(
+      frame ? frame.commands : null,
+      probe.probed ? probe.commands : null,
+    );
+    return new Set(union.map((command) => command.name));
+  });
+
+  const interceptedNames = $derived(interceptedCommandNames(provider));
+
+  const slashSections = $derived.by(() => {
+    if (!trigger) return [];
+    if (trigger.level === 'review') {
+      const git = reviewGit?.threadId === pane.threadId ? reviewGit : null;
+      return filterCommandSections(
+        buildReviewSections({
+          branches: git?.branches ?? [],
+          commits: git?.commits ?? [],
+          loading: git?.loading ?? true,
+          error: git?.error ?? '',
+        }),
+        trigger.query,
+      );
+    }
+    const frame = getProviderCommandsFrame(pane.threadId);
+    const probe = getClaudeProbeCommands();
+    const sections = buildCommandSections({
+      provider,
+      atStart: trigger.atStart,
+      sessionCommands: frame ? frame.commands : null,
+      probeCommands: probe.probed ? probe.commands : null,
+      skills: getCodexSkills(workspacePath).skills,
+    });
+    return filterCommandSections(sections, trigger.query);
+  });
+
+  const slashResults = $derived(flattenSections(slashSections));
 
   function closeSlash(): void {
-    slashTrigger = null;
+    trigger = null;
     slashActiveIndex = 0;
     dismissed = true;
+  }
+
+  function warmSources(next: OpenTrigger): void {
+    if (next.level === 'review') {
+      void loadReviewGit();
+      return;
+    }
+    if (!next.atStart) return;
+    if (provider === 'codex') void ensureCodexSkills(workspacePath);
+    else if (provider !== '') void ensureClaudeProbeCommands();
+  }
+
+  async function loadReviewGit(): Promise<void> {
+    const threadId = pane.threadId;
+    if (!threadId) return;
+    if (reviewGit?.threadId === threadId) return;
+    reviewGit = { threadId, branches: [], commits: [], loading: true, error: '' };
+    try {
+      const branches = ((await GitListBranches(threadId)) ?? []) as GitBranch[];
+      // Commits are `base..HEAD` — the same list the review pane's per-commit
+      // selector shows, resolved against the repository's default branch.
+      // A thread sitting ON the default branch legitimately has none.
+      const base = branches.find((branch) => branch.isDefault)?.name ?? '';
+      const commits = base
+        ? (((await ListBranchCommits(threadId, base)) ?? []) as BranchCommit[])
+        : [];
+      if (pane.threadId !== threadId) return;
+      reviewGit = { threadId, branches, commits, loading: false, error: '' };
+    } catch (err) {
+      if (pane.threadId !== threadId) return;
+      reviewGit = {
+        threadId,
+        branches: [],
+        commits: [],
+        loading: false,
+        error: errString(err),
+      };
+    }
   }
 
   function refreshTrigger(): void {
@@ -51,39 +219,80 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
     if (!textarea) return;
     const value = textarea.value;
     const caret = textarea.selectionStart ?? value.length;
-    const next = detectSlashTrigger(value, caret);
+
+    // `/review …` is a second completion level over the SAME text, so it is
+    // tried first: once the command word is settled, the word-scoped `/`
+    // trigger has already closed and only the target trigger can be open.
+    const review = interceptedNames.has('review')
+      ? detectReviewTargetTrigger(value, caret)
+      : null;
+    const next: OpenTrigger | null = review
+      ? { level: 'review', ...review, atStart: true }
+      : (() => {
+          const command = detectCommandTrigger(value, caret);
+          return command ? { level: 'command' as const, ...command } : null;
+        })();
+
     if (!next) {
-      slashTrigger = null;
+      trigger = null;
       slashActiveIndex = 0;
       dismissed = false;
       return;
     }
     if (dismissed) return;
-    // Keep the highlighted row inside the (possibly narrowed) result list.
-    if (slashActiveIndex >= next.results.length) slashActiveIndex = 0;
-    slashTrigger = next;
+    // The active row is clamped on READ, not here: `slashResults` derives from
+    // `trigger`, so it still holds the previous trigger's rows at this point.
+    trigger = next;
+    warmSources(next);
   }
 
-  function insertCommand(command: SlashCommand): void {
+  function insertCommand(entry: ComposerCommandEntry): void {
     const textarea = opts.getTextarea();
-    if (!slashTrigger || !textarea) return;
-    // Trailing space: the command word is complete, so the caret belongs at
-    // the start of the instruction the user is about to type — and the space
-    // is what closes the trigger on the next refresh.
-    replaceTextareaRange(textarea, slashTrigger.start, slashTrigger.end, `${slashCommandWord(command)} `);
-    slashTrigger = null;
+    if (!trigger || !textarea || entry.disabled) return;
+    replaceTextareaRange(textarea, trigger.start, trigger.end, entry.insertText);
+    trigger = null;
     slashActiveIndex = 0;
     dismissed = false;
   }
 
+  function consumeInterceptedSend(message: string): boolean {
+    const invocation = parseInterceptedCommand(message, interceptedNames);
+    if (!invocation) return false;
+    commandError = '';
+    closeSlash();
+    // The menu is closed and the text is already gone by the time the action
+    // resolves; only its failure needs somewhere to land.
+    void runInterceptedCommand(pane, invocation).then((result) => {
+      if (result.error !== '') commandError = result.error;
+    });
+    return true;
+  }
+
   return {
-    get slashTrigger() { return slashTrigger; },
-    get slashResults() { return slashTrigger?.results ?? []; },
-    get slashActiveIndex() { return slashActiveIndex; },
+    get slashTrigger() { return trigger; },
+    get slashOpen() { return trigger !== null && slashResults.length > 0; },
+    get slashSections() { return slashSections; },
+    get slashResults() { return slashResults; },
+    get slashActiveIndex() {
+      const count = slashResults.length;
+      if (count === 0) return 0;
+      return Math.min(slashActiveIndex, count - 1);
+    },
+    get commandError() { return commandError; },
     setSlashActiveIndex(i: number): void { slashActiveIndex = i; },
 
     refreshTrigger,
     insertCommand,
     closeSlash,
+    clearCommandError(): void { commandError = ''; },
+
+    consumeInterceptedSend,
+    isProviderCommandSend(message: string): boolean {
+      return isProviderCommandMessage(message, providerCommandNames);
+    },
+    interceptedRanges(value: string) {
+      const range = interceptedCommandRange(value, interceptedNames);
+      return range ? [range] : [];
+    },
   };
 }

@@ -2015,6 +2015,147 @@ catalog declared low/medium/high — the catalog was corrected.
 
 ---
 
+## Slash commands (provider-executed)
+
+Verified on **claude 2.1.219** by a 2026-08-03 live probe using AO's exact
+flag set (`--output-format stream-json --input-format stream-json --verbose`).
+Every command exercised was a zero-token local one.
+
+The CLI executes a whole class of commands itself — built-ins (`/usage`,
+`/context`, `/cost`), skills, user/project commands, plugin commands, and MCP
+prompts. None of them make an API call.
+
+### ⚠ The CLI routes stdin user messages, and a routed message never reaches the model
+
+A `user` message whose text starts with `/` goes to the CLI's own command
+router. Three verified consequences:
+
+1. **It executes.** `{"type":"user","message":{"role":"user","content":[
+   {"type":"text","text":"/usage"}]}}` runs `/usage` CLI-side, `num_turns: 0`,
+   no API call. **Routing happens for the array-of-content-blocks shape too** —
+   AO's wire shape from `buildUserMessageBlocks` is not a hiding place.
+2. **An unknown name swallows the WHOLE message.**
+   `"/workflow run nightly\n\n[appended block]"` produces the assistant text
+   "Unknown command: /workflow" and `result{subtype:"success", num_turns:0}`.
+   The model never sees any of it, and the swallow is silent — a `success`
+   result, not an error.
+3. **First-word shape decides.** Command-shaped words (`/workflow`,
+   `/zzz-not-a-real-command`) are routed; a word with an INTERIOR slash
+   (`/etc/hosts on this box …`) is passed to the model as prose.
+
+AO's outbound guard is `internal/provider/claude/slash_guard.go`: when a
+message's first word matches `^/[A-Za-z0-9_:-]+(\s|$)` it prefixes a single
+`"\n"`, which defeats the CLI's `startsWith('/')` test. `provider.SendOptions.
+AllowClaudeSlashCommand` opts a deliberate command out of the guard.
+
+### Local command envelope sequence
+
+Captured fixture:
+[`docs/references/fixtures/claude/local_command_20260803.ndjson`](fixtures/claude/local_command_20260803.ndjson)
+(hand-written from the probe's shapes).
+
+```
+command_lifecycle{state:"queued"}
+command_lifecycle{state:"started"}
+system/init                          ← re-fires per command turn
+assistant                            ← the command output (see below)
+user{isReplay:true}                  ← the <command-name> metadata echo
+result{subtype:"success",num_turns:0,total_cost_usd:0,result:<same text>}
+command_lifecycle{state:"completed"}
+```
+
+**The output rides an `assistant` envelope stamped `<synthetic>`:**
+
+```json
+{"type":"assistant","message":{
+  "id":"…","model":"<synthetic>","role":"assistant",
+  "stop_reason":"stop_sequence","stop_sequence":"","type":"message",
+  "usage":{"input_tokens":0,"output_tokens":0,
+           "cache_read_input_tokens":0,"cache_creation_input_tokens":0},
+  "content":[{"type":"text","text":"<command output>"}]},
+ "parent_tool_use_id":null,"session_id":"…","uuid":"…"}
+```
+
+`<synthetic>` is upstream's `SYNTHETIC_MODEL`
+(`claude-code-source-code/src/utils/messages.ts:300`), and
+`localCommandOutputToSDKAssistantMessage`
+(`src/utils/messages/mappers.ts:196`) is what builds this envelope — it strips
+ANSI and unwraps `<local-command-stdout>` / `<local-command-stderr>` before
+handing the body over. The comment there records why it is an `assistant`
+envelope rather than the dedicated `system/local_command_output` subtype:
+mobile clients and session-ingress have no handler for that subtype.
+
+**⚠ `<synthetic>` is not exclusive to command output.** The same sentinel is on
+the CLI's own synthesized API-error message
+(`createAssistantAPIErrorMessage`), which additionally carries the
+`assistant.error` enum. The enum therefore takes precedence in AO's parser: a
+`<synthetic>` envelope WITH an error enum is an error, one WITHOUT is command
+output. No content matching is involved either way.
+
+Older CLIs (the 2.1.88 source copy) delivered the same body as a
+`user{isReplay:true}` envelope wrapped in `<local-command-stdout>`; that wrapper
+is in `sessionfork.InjectedUserContentWrappers` and stays suppressed.
+
+**The `<command-name>` metadata echo** rides a `user{isReplay:true}` envelope
+on the LIVE wire (not only on resume), preserving the CLIENT-minted uuid:
+
+```json
+{"type":"user","message":{"role":"user","content":
+  "<command-name>/usage</command-name>\n            <command-message>usage</command-message>\n            <command-args></command-args>"},
+ "uuid":"<the uuid AO stamped>","isReplay":true}
+```
+
+Aliases echo the CANONICAL name — `/cost` echoes `<command-name>/usage`. The
+2.1.88 source filtered this shape out of the SDK stream ("command input
+metadata … must not leak", `mappers.ts:160-165`); 2.1.219 emits it. AO
+suppresses it through `sessionfork.InjectedUserContentWrappers`
+(`<command-name>` … `</command-name>`), which covers both the live
+`parse_user_replay.go` path and the fork-point detector.
+
+`result.result` repeats the command output verbatim. `parse_result.go` reads
+that field only when building an error message, so it produces no second row.
+
+**No `stream_event` deltas were observed for command output** — the assistant
+envelope is a complete snapshot, and AO persists it as one completed
+`command_result` row.
+
+### Discovery surfaces (three, none subsuming another)
+
+| Surface | Shape | Notes |
+|---|---|---|
+| `initialize` control_response `commands[]` | `{name, description, argumentHint}` | The RICH list. 52 entries on a real 2.1.219 install: built-ins, skills, user/project commands, plugin commands. Rides the zero-token account probe. **Omits MCP prompt commands.** |
+| `system/init` `slash_commands[]` | `string[]` | Names only. The ONLY surface that includes MCP prompts (`mcp__server__prompt`). Restated per session/resume. |
+| `system/commands_changed` | `{commands:[{name, description, argumentHint}]}` | Spontaneous push; contract is **REPLACE your cached list**. |
+
+`name` carries **no leading slash** on every surface (the CLI's zod:
+"Skill name (without the leading slash)"). `description` carries provenance
+suffixes the CLI renders in its own picker — `"… (user)"`, `"… (project)"` —
+passed through as prose, never parsed.
+
+`system/init` also carries two sibling lists AO decodes onto
+`provider.SessionInfo`:
+
+```json
+{"skills":["ship-it"],
+ "plugins":[{"name":"release-tools","path":"/…/plugins/release-tools","source":"local"}]}
+```
+
+All three init lists are optional and version-dependent: **absence is no
+signal**, never "this session has no commands".
+
+`system/commands_changed` is undocumented and absent from the 2.1.88 source
+copy; it was observed on 2.1.219 firing after mid-session skill discovery and
+after `reload_plugins` (whose control_response carries the same
+`commands`/`agents`/`plugins` triple). AO treats an envelope with a `commands`
+key as a replacement — including `"commands": []` — and drops one without the
+key, because the two are different statements.
+
+AO consumers: `internal/provider/claude/commands_wire.go` (decode),
+`internal/claudecommands` (per-probe-identity cache, replace-only),
+`internal/triage/provider_commands.go` (`provider:commands` live projection).
+
+---
+
 ## `rate_limit_event`
 
 ```json

@@ -230,6 +230,15 @@ type InjectedUserContentWrapper struct{ Open, Close string }
 //   - <system-reminder>        claude-code-source-code/src/utils/messages.ts (pervasive wrapper)
 //   - <bash-input/-stdout/-stderr>  claude-code-source-code/src/services/processBashCommand.tsx
 //   - <local-command-stdout>   claude-code-source-code/src/services/processSlashCommand.tsx
+//   - <local-command-stderr>   same wrapper family; the error half
+//   - <command-name>           2.1.219 binary — the command-INPUT metadata echo
+//     (`<command-name>/usage</command-name><command-message>…</command-message>
+//     <command-args>…</command-args>`) that rides an `isReplay:true` user
+//     envelope after a local slash command runs. The 2.1.88 source copy filters
+//     this shape out of the SDK stream (mappers.ts: "command input metadata …
+//     must not leak"); 2.1.219 emits it. Suppressing the OPEN/CLOSE pair of
+//     `<command-name>` alone covers the whole triple — the three tags always
+//     arrive together and the first one anchors the body.
 var InjectedUserContentWrappers = []InjectedUserContentWrapper{
 	{"<task-notification", "</task-notification>"},
 	{"<agent-message", "</agent-message>"},
@@ -238,6 +247,8 @@ var InjectedUserContentWrappers = []InjectedUserContentWrapper{
 	{"<bash-stdout>", "</bash-stdout>"},
 	{"<bash-stderr>", "</bash-stderr>"},
 	{"<local-command-stdout>", "</local-command-stdout>"},
+	{"<local-command-stderr>", "</local-command-stderr>"},
+	{"<command-name>", "</command-name>"},
 }
 
 // isRealUserPrompt reports whether a JSONL entry represents a user-typed

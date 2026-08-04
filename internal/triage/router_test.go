@@ -92,6 +92,8 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventTerminalInteraction:        true, // Codex polling marker; triage persists empty-stdin variant
 		provider.EventUserText:                   true, // Phase A: dispatch case wired; full handler lands in Phase E
 		provider.EventCommandLifecycle:           true, // Claude stdin delivery ack; live UI state only, never persisted
+		provider.EventCommandsChanged:            true, // Claude push of the whole slash-command list; replaces the live projection
+		provider.EventCommandResult:              true, // Claude local (provider-executed) command output; its own persisted item kind
 		provider.EventDiff:                       true,
 		provider.EventCommandOutput:              true,
 		provider.EventThinking:                   true,

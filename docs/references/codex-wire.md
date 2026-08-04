@@ -908,6 +908,211 @@ Available since codex 0.140.0; verified on 0.146.0.
 
 ---
 
+## Skills
+
+Skills are Codex's user-invokable prompt units — a directory holding a
+`SKILL.md` (plus an optional `SKILL.json` interface block). **They are the
+replacement for custom prompts, which upstream removed in 0.118**; there is
+no `customPrompts/list` to fall back to.
+
+Types: [`codex-rs/app-server-protocol/src/protocol/v2/plugin.rs`](/home/rmurphy/repos/codex/codex-rs/app-server-protocol/src/protocol/v2/plugin.rs)
+(`SkillsListParams`, `SkillsListResponse`, `SkillsListEntry`,
+`SkillMetadata`, `SkillInterface`, `SkillErrorInfo`,
+`SkillsChangedNotification`). Method registration:
+`codex-rs/app-server-protocol/src/protocol/common.rs`. Shapes below verified
+against `rust-v0.146.0-alpha.4`.
+
+### `skills/list`
+
+`SkillsList => "skills/list"` with `serialization:
+global_shared_read("config")` — **global**, no thread, no turn, no
+`#[experimental]` gate. Since codex 0.73.0, far below AO's 0.143 floor, so
+no capability probe is needed.
+
+```json
+{"method": "skills/list",
+ "params": {"cwds": ["/repo"], "forceReload": false}}
+→ {"data": [{
+     "cwd": "/repo",
+     "skills": [{
+       "name": "code-review",
+       "description": "Reviews a diff",
+       "shortDescription": "legacy short",
+       "interface": {"displayName": "Code Review",
+                     "shortDescription": "Review a diff",
+                     "iconSmall": "/repo/.codex/skills/code-review/small.png",
+                     "iconLarge": null, "brandColor": "#ff0000",
+                     "defaultPrompt": "Review my working tree"},
+       "dependencies": {"tools": [{"type": "mcp", "value": "github"}]},
+       "path": "/repo/.codex/skills/code-review/SKILL.md",
+       "scope": "repo",
+       "enabled": true}],
+     "errors": [{"path": "/repo/.codex/skills/broken",
+                 "message": "missing SKILL.md"}]}]}
+```
+
+- **`cwds` is per-directory and the answer is per-directory.** Skills are
+  directory-scoped: the `repo` tier comes from the workspace itself, so two
+  workspaces genuinely have different answers. The response `cwd` echoes the
+  REQUESTED path, not the resolved absolute form, so it joins back to the
+  request.
+- **Always send absolute paths.** The handler resolves each entry with
+  `AbsolutePathBuf::relative_to_current_dir`
+  (`app-server/src/request_processors/catalog_processor.rs`), so a relative
+  cwd means a different directory depending on which process answered — a
+  live session's workspace versus an ephemeral fetcher's WorkDir.
+- **An empty `cwds` defaults to the answering process's own cwd.** That
+  default is a property of the process, not of the request, so AO never
+  relies on it (`buildSkillsListParams` rejects an empty list).
+- `scope` is snake_case (`user | repo | system | admin`) while everything
+  else on this wire is camelCase — `SkillScope` carries
+  `#[serde(rename_all = "snake_case")]`.
+- `interface.shortDescription` wins over the top-level `shortDescription`;
+  upstream's own comment marks the latter legacy.
+- `enabled: false` is a skill the user turned off in Codex's config. It is
+  still returned, so a UI shows it as off rather than omitting it.
+- `errors[]` is per-cwd load failure, not per-skill. A directory that could
+  not be read reports here instead of shortening the list silently.
+- `forceReload: true` bypasses the app-server's own on-disk skill cache.
+  Reserve it for a user-initiated refresh.
+
+### `skills/changed`
+
+```json
+{"method": "skills/changed", "params": {}}
+```
+
+`SkillsChangedNotification` is an **empty struct**. Upstream documents it
+as "treat this as an invalidation signal and re-run `skills/list` with the
+client's current parameters". It carries no cwd, no scope and no skill
+name, so a consumer cannot narrow the drop — the only correct response is
+to invalidate everything it has cached.
+
+### Invoking a skill
+
+Two forms, both server-side; neither takes arguments (there is no
+`arguments` field anywhere in the skill surface).
+
+1. **Text token.** A `$skill-name` token inside ordinary turn text is
+   scanned server-side and expanded.
+2. **Structured input.** `turn/start`'s `input` array accepts a
+   `UserInput::Skill` variant
+   (`codex-rs/app-server-protocol/src/protocol/v2/turn.rs`):
+
+```json
+{"type": "skill", "name": "code-review",
+ "path": "/repo/.codex/skills/code-review/SKILL.md"}
+```
+
+Both `name` and `path` are required, which is why AO drops a listed skill
+missing either — it could be shown but not invoked.
+
+---
+
+## Code review — `review/start`
+
+Types: [`codex-rs/app-server-protocol/src/protocol/v2/review.rs`](/home/rmurphy/repos/codex/codex-rs/app-server-protocol/src/protocol/v2/review.rs).
+`ReviewStart => "review/start"` with `serialization:
+thread_id(params.thread_id)`; **not** `#[experimental]`. Since codex
+0.59.0; `detached` delivery since 0.64.0.
+
+```json
+{"method": "review/start",
+ "params": {"threadId": "...",
+            "target": {"type": "baseBranch", "branch": "main"},
+            "delivery": "detached"}}
+→ {"turn": {"id": "turn-1", "items": [], "status": "inProgress"},
+   "reviewThreadId": "review-thread-9"}
+```
+
+`ReviewTarget` is an internally-tagged union — `#[serde(tag = "type",
+rename_all = "camelCase")]` on the enum (so the tag is the camelCased
+variant name) plus `#[serde(rename_all = "camelCase")]` on each struct
+variant:
+
+```json
+{"type": "uncommittedChanges"}
+{"type": "baseBranch",  "branch": "main"}
+{"type": "commit",      "sha": "abc123", "title": "fix: thing"}
+{"type": "commit",      "sha": "abc123", "title": null}
+{"type": "custom",      "instructions": "look for races"}
+```
+
+`commit.title` is `Option<String>` with **no** `skip_serializing_if`, so
+the key is always present and `null` when there is no label.
+
+`delivery` ∈ `"inline"` (default when omitted) | `"detached"`
+(`ReviewDelivery`, camelCase via `v2_enum_from_core!`).
+
+⚠ **Route on the returned `reviewThreadId`, never on the requested
+delivery and never on your own thread id.** Upstream's TUI does exactly
+this (`codex-rs/tui/src/app/thread_routing.rs`). For an inline review the
+returned id is the original thread; for a detached one it is a freshly
+created thread. Assuming inline means the original thread happens to be
+true today and is not what the protocol promises.
+
+The transcript is bracketed by two thread items
+(`codex-rs/app-server-protocol/src/protocol/v2/item.rs`):
+
+```json
+{"type": "enteredReviewMode", "id": "...", "review": "..."}
+{"type": "exitedReviewMode",  "id": "...", "review": "..."}
+```
+
+A review runs as a **non-steerable turn**: `turn/start` or `turn/steer`
+against it fails with `codexErrorInfo:
+{"type":"activeTurnNotSteerable","turnKind":"review"}`
+(`v2/shared.rs`).
+
+### Current state in agent-overflow
+
+`Session.StartReview` (`session_review.go`) sends the RPC through a closed
+`ReviewTarget` union whose only constructors are the four validated
+variants; the zero value refuses to marshal. `ReviewStarted.Detached` is
+derived from the returned id versus the session's own thread, so a server
+that answers differently than asked is observed rather than assumed away.
+
+`enteredReviewMode` / `exitedReviewMode` already reach the transcript as
+`review_status` notification rows (`protocol_item.go`, rendered by
+`NotificationRow.svelte`). A DETACHED review's own notifications arrive on
+a thread this session does not own, so they hit the fail-closed
+child-thread quarantine and are dropped — safe but inert until the
+returned `reviewThreadId` is registered with the routing tables.
+
+---
+
+## Manual compaction — `thread/compact/start`
+
+```json
+{"method": "thread/compact/start", "params": {"threadId": "..."}}
+→ {}
+```
+
+`ThreadCompactStart` with `serialization: thread_id(params.thread_id)`;
+not `#[experimental]`. Since codex 0.96.0. Params and response are typed at
+`codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
+(`ThreadCompactStartParams` / `ThreadCompactStartResponse`).
+
+The response body is empty — **the boundary is not on it**. It surfaces as
+the `contextCompaction` thread item:
+
+```json
+{"method": "item/completed",
+ "params": {"threadId": "...", "turnId": "...",
+            "item": {"type": "contextCompaction", "id": "..."}}}
+```
+
+⚠ **`thread/compacted` is deprecated.** It is still in the notification
+catalogue and still fires on older builds, so both paths must produce the
+same downstream input. Agent Overflow emits `EventCompactBoundary` from
+each (`protocol_item.go` for the item, `protocol_thread.go` for the
+notification), which triage routes through one compaction-divider case.
+
+Compaction is also a non-steerable turn (`turnKind: "compact"`), so callers
+gate it on the thread being idle rather than racing a live turn.
+
+---
+
 ## `<subagent_notification>` parent-mailbox carrier
 
 When Codex core detects a detached child thread that finished without

@@ -480,6 +480,19 @@ var rebuildItemsWorkflowProposalV31SQL = mustReplaceOnce(
 	"        'compaction_reasoning',\n        'workflow_proposal',",
 )
 
+// rebuildItemsCommandResultV48SQL widens the items.kind CHECK once more, for
+// the row that holds the output of a slash command the provider CLI executed
+// itself (Claude's `<synthetic>` assistant envelope — see
+// docs/references/claude-wire.md §"Slash commands"). Derived from the v31
+// rebuild for the same reason v31 derived from v11: the complete rebuild stays
+// mechanically inherited, so every column, index, trigger, and FK-safety
+// property carries forward unchanged.
+var rebuildItemsCommandResultV48SQL = mustReplaceOnce(
+	rebuildItemsWorkflowProposalV31SQL,
+	"        'workflow_proposal',",
+	"        'workflow_proposal',\n        'command_result',",
+)
+
 const rebuildDiffReviewCommentsV16SQL = `
 CREATE TABLE diff_review_comments_new (
 	id            TEXT    PRIMARY KEY,
@@ -1588,6 +1601,17 @@ CREATE INDEX idx_work_items_automation_source_ref
 		// not rebuilt.
 		SQL: `ALTER TABLE threads ADD COLUMN worktree_setup_state TEXT NOT NULL DEFAULT ''
 		    CHECK(worktree_setup_state IN ('', 'running', 'failed'));`,
+	},
+	{
+		Version: 48,
+		Name:    "command_result_item_kind",
+		// The persisted row for a slash command the provider CLI ran itself
+		// (`/usage`, a skill, a plugin command): no API call, no model output,
+		// so it must not share `assistant_text`. SQLite cannot alter a CHECK
+		// in place, so this is a table rewrite — mechanically derived from the
+		// v31 rebuild, which was derived from v11.
+		SQL:     rebuildItemsCommandResultV48SQL,
+		Rebuild: true,
 	},
 }
 

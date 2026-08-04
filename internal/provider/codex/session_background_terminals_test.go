@@ -65,36 +65,61 @@ func newCapturingSession(t *testing.T, codexThreadID string) (*Session, string) 
 }
 
 // waitForCapturedFrames polls the capture file until it holds at least
-// count decodable frames. `cat` copies our writes asynchronously, so the
-// frame can trail the pending-channel registration by a scheduling slice.
+// count decodable frames, then decodes them into the background-terminal
+// shape.
 func waitForCapturedFrames(t *testing.T, path string, count int, within time.Duration) []backgroundTerminalRequestFrame {
+	t.Helper()
+	raw := waitForCapturedRawFrames(t, path, count, within)
+	frames := make([]backgroundTerminalRequestFrame, 0, len(raw))
+	for _, line := range raw {
+		var frame backgroundTerminalRequestFrame
+		if err := json.Unmarshal(line, &frame); err != nil {
+			t.Fatalf("decode captured frame %s: %v", line, err)
+		}
+		frames = append(frames, frame)
+	}
+	return frames
+}
+
+// waitForCapturedRawFrames polls the capture file until it holds at least
+// count JSON lines. `cat` copies our writes asynchronously, so a frame can
+// trail the pending-channel registration by a scheduling slice.
+func waitForCapturedRawFrames(t *testing.T, path string, count int, within time.Duration) []json.RawMessage {
 	t.Helper()
 	deadline := time.Now().Add(within)
 	for {
-		raw, err := os.ReadFile(path)
-		if err != nil && !os.IsNotExist(err) {
-			t.Fatalf("read captured requests: %v", err)
-		}
-		var frames []backgroundTerminalRequestFrame
-		for _, line := range strings.Split(string(raw), "\n") {
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			var frame backgroundTerminalRequestFrame
-			if json.Unmarshal([]byte(line), &frame) != nil {
-				continue
-			}
-			frames = append(frames, frame)
-		}
+		frames := readCapturedRawFrames(t, path)
 		if len(frames) >= count {
 			return frames
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %d captured frames, got %d (raw: %s)", count, len(frames), string(raw))
+			t.Fatalf("timed out waiting for %d captured frames, got %d", count, len(frames))
 			return nil
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
+}
+
+// readCapturedRawFrames returns every complete JSON line written so far.
+// A missing file reads as zero frames — that is the state before the first
+// write, not a failure.
+func readCapturedRawFrames(t *testing.T, path string) []json.RawMessage {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read captured requests: %v", err)
+	}
+	var frames []json.RawMessage
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if !json.Valid([]byte(line)) {
+			continue
+		}
+		frames = append(frames, json.RawMessage(line))
+	}
+	return frames
 }
 
 // pendingAnswerer answers in-flight requests one at a time. It tracks the

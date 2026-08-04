@@ -63,6 +63,19 @@ type SessionInfo struct {
 	// envelope carried neither key (older CLI, or a provider with no
 	// fast-mode concept).
 	FastMode *FastModeStatus `json:"fastMode,omitempty"`
+	// SlashCommands is Claude's `system/init` `slash_commands[]`: the NAMES
+	// (no leading slash, no descriptions) of every provider-executed command
+	// this session can run. It is the only discovery surface that includes MCP
+	// prompt commands (`mcp__server__prompt`); the richer `initialize`
+	// control_response list does not. Empty means the envelope said nothing —
+	// never "this session has no commands".
+	SlashCommands []string `json:"slashCommands,omitempty"`
+	// Skills is `system/init`'s `skills[]` — names only, same absence rule.
+	// Skills are also invocable as `/name`, so they appear in SlashCommands
+	// too; this list is what tells them apart.
+	Skills []string `json:"skills,omitempty"`
+	// Plugins is `system/init`'s `plugins[]`. Same absence rule.
+	Plugins []PluginInfo `json:"plugins,omitempty"`
 }
 
 // MCPServer reports an MCP server's name and provider-reported

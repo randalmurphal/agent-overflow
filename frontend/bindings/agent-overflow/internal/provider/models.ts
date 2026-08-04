@@ -678,6 +678,41 @@ export class ReasoningEffortOption {
 }
 
 /**
+ * SlashCommand is one command the provider CLI executes itself, without an
+ * API call — Claude's built-ins (`/usage`, `/context`), user and project
+ * commands, skills, plugin commands, and MCP prompts.
+ * 
+ * Name is WITHOUT the leading slash, matching every wire surface that reports
+ * one (the `initialize` control_response's `commands[]`, `system/init`'s
+ * `slash_commands[]`, and `system/commands_changed`). Description and
+ * ArgumentHint are optional: `system/init` reports names only, so an entry
+ * sourced from it carries neither and absence must never be rendered as "this
+ * command has no description".
+ */
+export class SlashCommand {
+    "name": string;
+    "description"?: string;
+    "argumentHint"?: string;
+
+    /** Creates a new SlashCommand instance. */
+    constructor($$source: Partial<SlashCommand> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SlashCommand instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SlashCommand {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SlashCommand($$parsedSource as Partial<SlashCommand>);
+    }
+}
+
+/**
  * UserInputAnswer stores one or more selected answers for a question.
  * It marshals as a string for single-select answers and a string array for
  * multi-select answers to match the frontend contract.

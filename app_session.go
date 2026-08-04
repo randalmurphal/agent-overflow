@@ -542,6 +542,13 @@ func (a *App) spawnProviderSession(
 		sess.SetMCPStartupUpdateHandler(func(u codex.MCPStartupUpdate) {
 			a.handleCodexMCPStartupUpdate(u)
 		})
+		// `skills/changed` is the app-server's own signal that its watched
+		// skill files moved. Drop the skills cache so the next composer
+		// render re-reads instead of offering a list that no longer
+		// matches disk.
+		sess.SetSkillsChangedHandler(func() {
+			a.handleCodexSkillsChanged()
+		})
 		return session{
 			provider:             string(provider.Codex),
 			token:                sessionToken,
@@ -624,6 +631,12 @@ type SendMessageOptions struct {
 	RevisionSourceCommentIDs     []string            `json:"revisionSourceCommentIds,omitempty"`
 	RevisionSourceDiffReview     *SourceDiffReview   `json:"revisionSourceDiffReview,omitempty"`
 	RevisionSourceDiffCommentIDs []string            `json:"revisionSourceDiffCommentIds,omitempty"`
+	// ProviderCommand marks the message as a deliberate provider-executed
+	// command so the Claude slash guard lets it through (see
+	// sendMessageOptions.ProviderCommand). The composer sets it only when
+	// the user actually invoked a command from the command menu; typing
+	// prose that happens to open with `/word` must leave it false.
+	ProviderCommand bool `json:"providerCommand,omitempty"`
 }
 
 // SendMessage is the Wails-bound compatibility entry point for user-typed
@@ -659,6 +672,7 @@ func (a *App) SendMessageWithOptions(threadID string, content string, opts SendM
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		// Wire entry: this text was typed into a composer (D31).
 		ExpandComposerCommands: true,
+		ProviderCommand:        opts.ProviderCommand,
 	}); err != nil {
 		return store.Thread{}, err
 	}

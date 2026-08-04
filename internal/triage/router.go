@@ -166,10 +166,15 @@ type Router struct {
 	// scoped counter gates the QUEUE decision so a new row defers
 	// (invariant 11) only behind a SAME-scope stream. A main-scope
 	// completion must not queue behind a concurrent subagent-scope stream.
-	streamingScopeCounts   map[string]int
-	errorSeqByScope        map[string]int
-	compactionSeqByScope   map[string]int
-	notificationSeqByScope map[string]int
+	streamingScopeCounts map[string]int
+	errorSeqByScope      map[string]int
+	compactionSeqByScope map[string]int
+	// timelineSeqByScope allocates per-(thread, turn, label) ids for the
+	// timeline rows whose wire envelope carries no usable provider id of its
+	// own — notifications, and command results whose synthetic envelope
+	// omitted `message.id`. The label dimension keeps those namespaces apart;
+	// go through nextScopeSequence rather than indexing it directly.
+	timelineSeqByScope map[string]int
 	// streamPersistBuffers decouple the live UI stream from durable
 	// history writes. Text/thinking deltas emit immediately on ordered
 	// provider:item_event deltas, then flush to SQLite by interval, byte
@@ -531,7 +536,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		streamingScopeCounts:       make(map[string]int),
 		errorSeqByScope:            make(map[string]int),
 		compactionSeqByScope:       make(map[string]int),
-		notificationSeqByScope:     make(map[string]int),
+		timelineSeqByScope:         make(map[string]int),
 		streamPersistBuffers:       make(map[string]*streamPersistBuffer),
 		settledTurns:               make(map[string]bool),
 		currentRoundByThread:       make(map[string]ActiveTurnSnapshot),
@@ -723,6 +728,10 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		return r.handleUserText(evt)
 	case provider.EventCommandLifecycle:
 		return r.handleCommandLifecycle(evt)
+	case provider.EventCommandsChanged:
+		return r.handleCommandsChanged(evt)
+	case provider.EventCommandResult:
+		return r.handleCommandResult(evt)
 	case provider.EventDiff:
 		return r.handleDiff(evt)
 	case provider.EventCommandOutput:
@@ -931,6 +940,11 @@ func (r *Router) handleInit(evt provider.ProviderEvent) error {
 			// before its first turn ends, and the one that reflects a
 			// fresh session's spawn flags after a resume.
 			r.emitFastModeState(evt.ThreadID, info.FastMode)
+			// Same shape for the command list: init restates the whole set
+			// at every session / resume boundary, and it is the only
+			// discovery surface carrying MCP prompt commands. Emitted only
+			// when the envelope carried one — see provider_commands.go.
+			r.emitSessionSlashCommands(evt.ThreadID, info.SlashCommands)
 		}
 	}
 

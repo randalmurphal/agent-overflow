@@ -9,7 +9,7 @@
   import type { ModelInfo } from '../../../types/settings';
   import type { ProviderID } from '../../../types/providers';
   import { getSettings } from '../../../stores/settings.svelte';
-  import { hiddenModelSlugs } from '../../../utils/hiddenModels';
+  import { pickerVisibleModels } from '../../../utils/hiddenModels';
   import { displayModelLabel } from '../../../utils/modelLabels';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import Icon from '../../primitives/Icon.svelte';
@@ -56,25 +56,16 @@
   let currentModel = $derived(pane.activeModel);
   let isActiveProvider = $derived(pane.thread?.provider === provider);
   // Hidden models are dropped from the list, except the pane's active
-  // model — a thread already riding a hidden model keeps its checkmark
-  // row so the picker never shows "nothing selected".
-  let models = $derived.by(() => {
-    const all = getModels(provider);
-    const hidden = hiddenModelSlugs(getSettings(), provider);
-    if (hidden.size === 0) return all;
-    const visible = all.filter(
-      (model) =>
-        !hidden.has(model.slug) ||
-        (isActiveProvider && model.slug === currentModel),
-    );
-    // The settings UI refuses to hide the last visible model, but a
-    // hand-edited settings.json (or a second connected client) can
-    // still hide everything — fall back to the full catalog rather
-    // than presenting an empty picker. Same backstop as the Go seed
-    // path's firstVisibleModel.
-    if (visible.length === 0) return all;
-    return visible;
-  });
+  // model. Shared with the composer's `/model <arg>` resolver via
+  // pickerVisibleModels so the two see the same list.
+  let models = $derived(
+    pickerVisibleModels(
+      getSettings(),
+      provider,
+      getModels(provider),
+      isActiveProvider ? currentModel : undefined,
+    ),
+  );
 </script>
 
 {#if loading && models.length === 0}

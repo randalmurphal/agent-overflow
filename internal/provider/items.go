@@ -29,4 +29,10 @@ const (
 	// payload — the kind alone carries the semantic; meta carries
 	// process_id for debugging.
 	ItemTerminalInteraction ItemKind = "terminal_interaction"
+	// ItemCommandResult is the output of a slash command the provider CLI
+	// executed itself — no API call, no model output, `num_turns: 0`. Kept
+	// distinct from ItemAssistantText because it is not the model speaking:
+	// the renderer must not attribute it to the agent, and history/fork logic
+	// must not treat it as a turn's reply.
+	ItemCommandResult ItemKind = "command_result"
 )

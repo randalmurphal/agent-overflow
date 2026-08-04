@@ -293,6 +293,13 @@ export class NetworkSettings {
 
 export const GetProviderStatuses = dispatch('GetProviderStatuses');
 export const GetModelsForProvider = dispatch('GetModelsForProvider');
+// Composer command-menu sources + the two Codex thread commands the menu
+// drives. All four are re-exported from stores/bindings.ts, so the mock has to
+// carry them or the browser project's strict ESM loader fails the import.
+export const GetClaudeSlashCommands = dispatch('GetClaudeSlashCommands');
+export const GetCodexSkills = dispatch('GetCodexSkills');
+export const CompactCodexThread = dispatch('CompactCodexThread');
+export const StartCodexReview = dispatch('StartCodexReview');
 export const ProbeClaudeAccount = dispatch('ProbeClaudeAccount');
 export const RecheckClaudeAccount = dispatch('RecheckClaudeAccount');
 export const RecheckCodexAccount = dispatch('RecheckCodexAccount');

@@ -113,33 +113,56 @@ export function handleMentionPopoverKeydown(
 }
 
 /**
- * Handle a keydown against an open slash-command popover. Same contract as
+ * First selectable row at or past `from`, walking in `step` direction.
+ *
+ * Disabled rows exist (a Codex skill turned off in config, a "loading branches"
+ * placeholder) and must not be landable: arrowing onto one would strand the
+ * user on a row Enter refuses. Falls back to the starting index when every
+ * candidate in that direction is disabled, so the highlight never leaves the
+ * list.
+ */
+function nextSelectableIndex(
+  entries: readonly { disabled?: boolean }[],
+  from: number,
+  step: 1 | -1,
+): number {
+  for (let i = from; i >= 0 && i < entries.length; i += step) {
+    if (!entries[i]?.disabled) return i;
+  }
+  return -1;
+}
+
+/**
+ * Handle a keydown against an open command popover. Same contract as
  * `handleMentionPopoverKeydown` — `true` means consumed — and the same
  * navigation reducer, so the two menus cannot drift on what Enter or Escape
- * does. The two are mutually exclusive in practice (`/` only triggers at the
- * start of the draft, `@` only after whitespace), but the caller still
- * dispatches them in a fixed order rather than relying on that.
+ * does. The two are mutually exclusive in practice (`@` only triggers after
+ * whitespace and the `/` menu's provider rows only at position 0), but the
+ * caller still dispatches them in a fixed order rather than relying on that.
  */
 export function handleSlashPopoverKeydown(
   e: KeyboardEvent,
   slash: ComposerSlashHandle,
 ): boolean {
   if (popoverYieldsKey(e)) return false;
-  if (!slash.slashTrigger) return false;
+  if (!slash.slashOpen) return false;
 
+  const results = slash.slashResults;
   const action = popoverNav({
     key: e.key,
     activeIndex: slash.slashActiveIndex,
-    itemCount: slash.slashResults.length,
+    itemCount: results.length,
   });
   if (action.kind === 'move') {
     e.preventDefault();
-    slash.setSlashActiveIndex(action.nextIndex);
+    const step = action.nextIndex >= slash.slashActiveIndex ? 1 : -1;
+    const target = nextSelectableIndex(results, action.nextIndex, step);
+    if (target >= 0) slash.setSlashActiveIndex(target);
     return true;
   }
   if (action.kind === 'insert') {
-    const target = slash.slashResults[slash.slashActiveIndex];
-    if (target) {
+    const target = results[slash.slashActiveIndex];
+    if (target && !target.disabled) {
       e.preventDefault();
       slash.insertCommand(target);
       return true;

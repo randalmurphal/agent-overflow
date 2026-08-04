@@ -55,6 +55,24 @@ type sendMessageOptions struct {
 	// default, so a new internal send path can never expand a `/…` opener
 	// in a prompt the app itself wrote just by forgetting a flag.
 	ExpandComposerCommands bool
+	// ProviderCommand marks this send as a DELIBERATE invocation of a
+	// provider-executed command (Claude's `/usage`, `/context`, a plugin or
+	// MCP prompt), so the outbound slash guard lets the leading `/word`
+	// reach the CLI's own command router
+	// (provider.SendOptions.AllowClaudeSlashCommand).
+	//
+	// Send-time transport state, never history: it changes what goes on the
+	// wire for exactly one message and is not recorded on the persisted row.
+	// The one place it has to survive a hop is the flush queue, where a
+	// message typed during an active turn waits for a boundary — see
+	// flushqueue.Payload.
+	//
+	// Default false is load-bearing in the same direction the provider
+	// field's is: an ordinary message that merely OPENS with `/word` must be
+	// guarded, because an unguarded one is swallowed by the CLI and the
+	// model never sees it. Every way of losing the flag therefore degrades
+	// to "delivered as prose", never to "silently dropped".
+	ProviderCommand bool
 }
 
 // userMessageInputs is the projection of fields shared by every
@@ -442,7 +460,13 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 	// provider-injected user envelope can never mispair with it.
 	a.triage.RegisterPendingSendExpecting(threadID, userItem.ID, turnIndex, sendUUID)
 
-	if err := sendToProvider(sess, threadID, providerContent, provider.NormalizeInteractionMode(thread.Mode), providerAttachments, sendUUID, opts.OutputSchema); err != nil {
+	if err := sendToProvider(sess, threadID, providerContent, provider.SendOptions{
+		InteractionMode:         provider.NormalizeInteractionMode(thread.Mode),
+		Attachments:             providerAttachments,
+		UserMessageUUID:         sendUUID,
+		OutputSchema:            opts.OutputSchema,
+		AllowClaudeSlashCommand: opts.ProviderCommand,
+	}); err != nil {
 		// Drop the pending-send marker before persisting the error row.
 		// Without this, the marker would still be live when the next AO
 		// send registers a new entry, and a stale wire init for an orphaned
@@ -882,15 +906,12 @@ func (a *App) refreshProposedPlanItem(threadID, itemID string) {
 // sendToProvider forwards the user content to the active provider
 // session. Extracted so sendMessage keeps the provider routing and
 // logging in one place after persisting the optimistic user item.
-func sendToProvider(
-	sess session,
-	threadID string,
-	content string,
-	mode provider.InteractionMode,
-	attachments []provider.ImageAttachment,
-	userMessageUUID string,
-	outputSchema json.RawMessage,
-) error {
+//
+// Takes the assembled provider.SendOptions rather than its fields so a new
+// per-turn option cannot reach one send entry point and miss another — the
+// flush dispatcher's dispatchFlushToProvider has the same shape for the same
+// reason.
+func sendToProvider(sess session, threadID string, content string, opts provider.SendOptions) error {
 	providerSess := sess.providerSession()
 	if providerSess == nil {
 		log.Printf("send message: session for thread %s has no provider", threadID)
@@ -901,12 +922,7 @@ func sendToProvider(
 	// The matching provider events that follow will bump again — the
 	// reaper only cares about the latest stamp.
 	sess.liveness.bumpActivity(time.Now())
-	return providerSess.Send(context.Background(), content, provider.SendOptions{
-		InteractionMode: mode,
-		Attachments:     attachments,
-		UserMessageUUID: userMessageUUID,
-		OutputSchema:    outputSchema,
-	})
+	return providerSess.Send(context.Background(), content, opts)
 }
 
 func (a *App) sendWorkflowMessage(threadID, content string, outputSchema json.RawMessage) error {

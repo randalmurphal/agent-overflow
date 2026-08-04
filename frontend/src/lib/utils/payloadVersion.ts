@@ -12,6 +12,10 @@ export const COMPACTION_PAYLOAD_EXPANSION_STATE_KEY = 'compaction-full';
 // reasoning row and a divider for the same compaction never share an entry.
 export const COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY =
   'compaction-reasoning-full';
+// Output of a provider-executed slash command whose text exceeded the inline
+// bound. The payload is written once with the row and never grows, so the
+// default module cache and `payloadVersionForItem` are correct here.
+export const COMMAND_RESULT_PAYLOAD_EXPANSION_STATE_KEY = 'command-result-full';
 
 function stableStringHash(value: string): string {
   let hash = 0x811c9dc5;

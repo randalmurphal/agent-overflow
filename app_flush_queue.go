@@ -974,6 +974,12 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:     providerAttachments,
 		UserMessageUUID: sendUUID,
+		// The slash-guard opt-in survives the queue wait on the payload, so
+		// a `/usage` typed during an active turn still reaches the CLI's
+		// command router when the boundary finally arrives — resolved here,
+		// at dispatch, from the same payload the direct send would have
+		// carried inline.
+		AllowClaudeSlashCommand: payload.ProviderCommand,
 	}
 
 	dispatchErr := a.dispatchFlushToProvider(sess, providerContent, sendOpts)
@@ -1271,6 +1277,7 @@ func (a *App) registerQueueItem(threadID string, message string, opts SendMessag
 		RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
+		ProviderCommand:              opts.ProviderCommand,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -1293,6 +1300,7 @@ func (a *App) registerQueueItem(threadID string, message string, opts SendMessag
 		RevisionSourceCommentIDs:     opts.RevisionSourceCommentIDs,
 		RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
+		ProviderCommand:              opts.ProviderCommand,
 		EnqueuedAt:                   enqueuedAt,
 	}
 	if !preserveDraft {

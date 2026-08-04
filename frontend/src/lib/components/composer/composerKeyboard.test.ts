@@ -118,12 +118,19 @@ function stubSlash(): ComposerSlashHandle & {
 } {
   return {
     slashTrigger: null,
+    slashOpen: false,
+    slashSections: [],
     slashResults: [],
     slashActiveIndex: 0,
+    commandError: '',
     setSlashActiveIndex: vi.fn(),
     refreshTrigger: vi.fn(),
     insertCommand: vi.fn(),
     closeSlash: vi.fn(),
+    clearCommandError: vi.fn(),
+    consumeInterceptedSend: vi.fn(() => false),
+    isProviderCommandSend: vi.fn(() => false),
+    interceptedRanges: vi.fn(() => []),
   } as unknown as ReturnType<typeof stubSlash>;
 }
 
@@ -231,6 +238,7 @@ describe('handleSlashPopoverKeydown', () => {
   function openSlashPopover(): ReturnType<typeof stubSlash> {
     const slash = stubSlash();
     (slash as { slashTrigger: unknown }).slashTrigger = { query: '' };
+    (slash as { slashOpen: boolean }).slashOpen = true;
     (slash as { slashResults: unknown[] }).slashResults = [{ name: 'plan' }, { name: 'review' }];
     return slash;
   }
@@ -240,6 +248,29 @@ describe('handleSlashPopoverKeydown', () => {
     (slash as { slashActiveIndex: number }).slashActiveIndex = 1;
     expect(handleSlashPopoverKeydown(kdown('Enter'), slash)).toBe(true);
     expect(slash.insertCommand).toHaveBeenCalledWith({ name: 'review' });
+  });
+
+  it('slash popover: arrowing skips a disabled row rather than stranding on it', () => {
+    const slash = openSlashPopover();
+    (slash as { slashResults: unknown[] }).slashResults = [
+      { name: 'plan' },
+      { name: 'off', disabled: true },
+      { name: 'review' },
+    ];
+    expect(handleSlashPopoverKeydown(kdown('ArrowDown'), slash)).toBe(true);
+    expect(slash.setSlashActiveIndex).toHaveBeenCalledWith(2);
+
+    (slash as { slashActiveIndex: number }).slashActiveIndex = 2;
+    slash.setSlashActiveIndex.mockClear();
+    expect(handleSlashPopoverKeydown(kdown('ArrowUp'), slash)).toBe(true);
+    expect(slash.setSlashActiveIndex).toHaveBeenCalledWith(0);
+  });
+
+  it('slash popover: Enter on a disabled row inserts nothing', () => {
+    const slash = openSlashPopover();
+    (slash as { slashResults: unknown[] }).slashResults = [{ name: 'off', disabled: true }];
+    expect(handleSlashPopoverKeydown(kdown('Enter'), slash)).toBe(false);
+    expect(slash.insertCommand).not.toHaveBeenCalled();
   });
 
   it('slash popover: Enter mid-IME-composition never inserts', () => {

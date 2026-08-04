@@ -190,12 +190,19 @@ export async function registerQueueItem(
     revisionSourceCommentIds?: readonly string[];
     revisionSourceDiffReview?: SourceDiffReview | null;
     revisionSourceDiffCommentIds?: readonly string[];
+    /**
+     * Carried through the queue so a command enqueued mid-turn still bypasses
+     * Claude's outbound slash guard when the backend drains it — the guard
+     * runs at delivery, not at registration.
+     */
+    providerCommand?: boolean;
   } = {},
 ): Promise<QueueItem> {
   if (!threadId) {
     throw new Error('sendQueue.registerQueueItem: threadId is required');
   }
   const wire = await bindings.RegisterQueueItem(threadId, message, {
+    providerCommand: options.providerCommand ? true : undefined,
     attachmentIds: options.attachmentIds ? [...options.attachmentIds] : undefined,
     sourceProposedPlan: options.sourceProposedPlan ?? undefined,
     revisionSourceProposedPlan: options.revisionSourceProposedPlan ?? undefined,

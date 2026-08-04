@@ -104,6 +104,10 @@ import {
   applyFastModeState,
   type FastModeStatePayload,
 } from './fastModeState.svelte';
+import {
+  applyProviderCommands,
+  type ProviderCommandsPayload,
+} from './providerCommands.svelte';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
 import { applyWorktreeSetup } from './eventsWorktreeSetup';
@@ -320,6 +324,16 @@ export function setupEventListeners(): () => void {
     applyFastModeState,
   );
 
+  // provider:commands — the CLI's own list of slash commands it will execute
+  // without an API call. Restated wholesale on every session init and every
+  // `commands_changed` push, so the newest frame REPLACES the previous one;
+  // never merge two frames. Absence of any frame is "unknown", which the
+  // composer's menu renders differently from "this session has none".
+  const cancelProviderCommands = wailsEventOn<ProviderCommandsPayload>(
+    'provider:commands',
+    applyProviderCommands,
+  );
+
   const cancelUserMessageReverted = wailsEventOn<UserMessageRevertedEvent | null>(
     'user_message:reverted',
     applyUserMessageReverted,
@@ -476,6 +490,7 @@ export function setupEventListeners(): () => void {
     cancelQueueRestored();
     cancelCommandLifecycle();
     cancelFastModeState();
+    cancelProviderCommands();
     cancelUserMessageReverted();
     cancelThreadUpdated();
     cancelWorktreeSetup();

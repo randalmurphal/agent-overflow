@@ -18,7 +18,7 @@ func TestBuildUserMessageBlocksInlinePlacement(t *testing.T) {
 	}
 
 	content := "first [Image #1] then [Image #2] end"
-	blocks, err := buildUserMessageBlocks(content, []provider.ImageAttachment{att("a"), att("b")})
+	blocks, err := buildUserMessageBlocks(content, []provider.ImageAttachment{att("a"), att("b")}, false)
 	if err != nil {
 		t.Fatalf("buildUserMessageBlocks: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestBuildUserMessageBlocksInlinePlacement(t *testing.T) {
 // text, and the empty-turn rejection.
 func TestBuildUserMessageBlocksEdgeCases(t *testing.T) {
 	// Image-only (composer sent only a marker, which the split drops) → one image.
-	blocks, err := buildUserMessageBlocks("[Image #1]", []provider.ImageAttachment{{ID: "a", MimeType: "image/png", Data: []byte("x")}})
+	blocks, err := buildUserMessageBlocks("[Image #1]", []provider.ImageAttachment{{ID: "a", MimeType: "image/png", Data: []byte("x")}}, false)
 	if err != nil {
 		t.Fatalf("image-only: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestBuildUserMessageBlocksEdgeCases(t *testing.T) {
 	}
 
 	// Text-only (no attachments) → one text block carrying the content verbatim.
-	blocks, err = buildUserMessageBlocks("hello world", nil)
+	blocks, err = buildUserMessageBlocks("hello world", nil, false)
 	if err != nil {
 		t.Fatalf("text-only: %v", err)
 	}
@@ -70,19 +70,19 @@ func TestBuildUserMessageBlocksEdgeCases(t *testing.T) {
 	}
 
 	// No text and no images is an empty turn — rejected, matching claude-tui.
-	if _, err := buildUserMessageBlocks("", nil); err == nil {
+	if _, err := buildUserMessageBlocks("", nil, false); err == nil {
 		t.Fatal("expected error for an empty turn (no text, no images)")
 	}
 
 	// Whitespace-only with no images is also empty — rejected (parity with claude-tui
 	// and Codex, both of which reject whitespace-only sends).
-	if _, err := buildUserMessageBlocks("   ", nil); err == nil {
+	if _, err := buildUserMessageBlocks("   ", nil, false); err == nil {
 		t.Fatal("expected error for a whitespace-only turn (no images)")
 	}
 
 	// Whitespace around an image is NOT empty: the image makes it a real turn and the
 	// surrounding whitespace run is preserved as its own text block.
-	blocks, err = buildUserMessageBlocks("  ", []provider.ImageAttachment{{ID: "a", MimeType: "image/png", Data: []byte("x")}})
+	blocks, err = buildUserMessageBlocks("  ", []provider.ImageAttachment{{ID: "a", MimeType: "image/png", Data: []byte("x")}}, false)
 	if err != nil {
 		t.Fatalf("whitespace + image: %v", err)
 	}

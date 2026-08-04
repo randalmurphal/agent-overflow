@@ -38,7 +38,14 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   as user aborts; same-goroutine state, no lock; see
   claude-wire.md §"Interrupted-turn result envelope").
 - `parse_system.go` — `system` envelopes (init metadata, compact_boundary,
-  model_refusal_fallback, task_started / task_updated / task_notification).
+  model_refusal_fallback, task_started / task_updated / task_notification,
+  `commands_changed`). `commands_changed` is an undocumented push whose
+  contract is REPLACE-the-cached-list, so it emits
+  `EventCommandsChanged` with the whole list; an empty `commands` array
+  is a real replacement while an ABSENT key is dropped. `system/init`
+  additionally carries the `slash_commands` / `skills` / `plugins`
+  discovery arrays onto `SessionInfo` — `slash_commands` is the only
+  surface listing MCP prompt commands (`mcp__server__prompt`).
 - `parse_assistant.go` — `assistant` envelopes (text deltas, tool_use
   blocks, thinking blocks, usage). Dispatches each content block to
   `appendTextEvent` / `appendToolUseEvent` / `appendThinkingEvent` /
@@ -91,6 +98,21 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   image at its composer `[Image #N]` marker (inline placement) via the
   shared `provider.SplitContentByImageMarkers`. Headless Claude inlines
   image bytes as base64 (no local-path source on the Messages API).
+  Applies `slash_guard.go` before the image split.
+- `slash_guard.go` — the outbound slash guard. The CLI routes any user
+  message whose FIRST word is command-shaped to its own command router
+  and the model never sees it (an unknown one answers "Unknown command:
+  /x" with `num_turns: 0`), so AO prefixes a single `"\n"` unless the
+  caller opted in via `SendOptions.AllowClaudeSlashCommand`. Default-off
+  is load-bearing: AO's own composer commands (`/workflow`) and injected
+  wake prompts are prose, not CLI commands. A word with an interior
+  slash (`/etc/hosts …`) is not command-shaped and passes through
+  untouched. See claude-wire.md §"Slash commands (provider-executed)".
+- `commands_wire.go` — decoders + bounds for the two discovery surfaces
+  (`initialize` control_response `commands[]`, `system/commands_changed`)
+  and the name/plugin arrays on `system/init`. Parsing only; the cache
+  lives in `internal/claudecommands`. Names and hints are cut without an
+  ellipsis — they are identifiers, not prose.
 - `sessionleaf.go` / `sessionleaf_branch.go` /
   `sessionleaf_resumefilters.go` — cold-resume leaf reconstruction for
   `--resume-session-at`. `claudeLeafTracker` (shared with the live wire
@@ -374,6 +396,17 @@ start and complete. These are load-bearing rules enforced by
   `internal/claudemodels`'s merge policy: the alias/`[1m]`
   inconsistency, the two rows that resolve to one model, and Haiku's
   missing effort support all come from here.
+- `docs/references/fixtures/claude/local_command_20260803.ndjson` — the
+  full envelope sequence of a provider-executed local slash command on
+  2.1.219 (`/usage`), hand-written from a zero-token live probe:
+  `command_lifecycle{queued,started}` → `system/init` (with
+  `slash_commands` / `skills` / `plugins`) → the synthetic `assistant`
+  (`message.model: "<synthetic>"`, `stop_reason: "stop_sequence"`, zero
+  usage) → the `user{isReplay:true}` `<command-name>` metadata echo →
+  `result` (which repeats the output verbatim in `result.result`) →
+  `command_lifecycle{completed}` → a `system/commands_changed` push.
+  Pins the two regressions worth pinning: exactly ONE persisted row for
+  the whole sequence, and the metadata echo staying off the timeline.
 - `docs/references/fixtures/claude/context_usage_control_20260803.summary.json`
   — sanitized capture of a `get_context_usage` control_response on
   2.1.219: the full key set, the `categories[]` rows, and the

@@ -62,6 +62,8 @@ const ROW_KIND_ESTIMATE_PX: Readonly<Record<string, number>> = {
   error: 42,
   notification: 24,
   api_retry: 24,
+  // Label line + the shortest possible one-line monospaced output block.
+  command_result: 44,
   read_group: 20,
   group: 36,
   wait_group: 36,

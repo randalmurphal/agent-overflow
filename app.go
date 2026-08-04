@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
 	"agent-overflow/internal/codexmodels"
+	"agent-overflow/internal/codexskills"
 	"agent-overflow/internal/codexusage"
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
@@ -366,6 +367,14 @@ type App struct {
 	// for the same reason as the model catalog.
 	codexAccountUsageOnce  sync.Once
 	codexAccountUsageCache *codexusage.Cache
+	// codexSkillsCache caches Codex's `skills/list` answer per
+	// (binary, cwd). Skills are directory-scoped, so a composer menu asks
+	// once per workspace, and every miss is either a round trip on a live
+	// session or a whole subprocess. Live sessions push invalidation into
+	// it from `skills/changed`. See internal/codexskills. Lazy-init through
+	// codexSkills() for the same reason as the model catalog.
+	codexSkillsOnce  sync.Once
+	codexSkillsCache *codexskills.Cache
 	// mcpStatusCache is the provider-derived MCP status cache. Live
 	// thread sessions push into it from their init/notification
 	// events; the popup/settings pull from it and refresh via the

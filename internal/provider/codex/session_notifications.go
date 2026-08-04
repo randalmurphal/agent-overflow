@@ -28,6 +28,9 @@ type subagentNotificationDedupKey struct {
 var sessionSideChannelNotifications = map[string]func(*Session, json.RawMessage){
 	"mcpServer/oauthLogin/completed":  (*Session).dispatchMCPOAuthCompletion,
 	"mcpServer/startupStatus/updated": (*Session).dispatchMCPStartupUpdate,
+	// skills/changed carries no threadId at all, so it must be claimed
+	// before the child-routing check below rather than after it.
+	skillsChangedMethod: (*Session).dispatchSkillsChanged,
 }
 
 func (s *Session) dispatchNotification(method string, params json.RawMessage) {

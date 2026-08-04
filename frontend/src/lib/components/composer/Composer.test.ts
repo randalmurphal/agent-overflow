@@ -64,6 +64,10 @@ function installDraftMocks() {
     truncated: false,
     root: '/tmp/workspace',
   }));
+  // Command-menu sources. `probed: false` is the honest default for a test
+  // that never ran a probe: unknown, so nothing provider-specific renders.
+  setBindingMock('GetClaudeSlashCommands', async () => ({ probed: false, commands: [] }));
+  setBindingMock('GetCodexSkills', async () => ({ cwd: '/tmp/workspace', skills: [], errors: [] }));
 }
 
 async function buildDraft(threadId: string | null = 'thread-1') {
@@ -2705,8 +2709,17 @@ describe('<Composer>', () => {
 
       await typeInto(textarea, '/');
       await waitFor(() => expect(queryByTestId('slash-popover')).not.toBeNull());
-      expect(getAllByTestId('slash-option').map((el) => el.getAttribute('data-command')))
-        .toEqual(['workflow']);
+      // At the start of the draft the AO section is the built-in `/workflow`
+      // plus the app-side reroutes; provider sections need a provider.
+      expect(getAllByTestId('slash-option').map((el) => el.getAttribute('data-command'))).toEqual([
+        'workflow',
+        'model',
+        'effort',
+        'fast',
+        'config',
+        'clear',
+        'rename',
+      ]);
 
       await typeInto(textarea, '/work');
       expect(queryByTestId('slash-popover')).not.toBeNull();

@@ -72,6 +72,24 @@ none fits.
   wire `result`). Emitted only when the wire carried one, because
   absence is "unknown" and an empty frame would render as a denial. No
   state, no persistence.
+- `provider_commands.go` — `provider:commands`, the live per-thread
+  projection of the provider's slash-command list. Fed by `system/init`
+  (names only) and by `EventCommandsChanged` (rich entries). Follows
+  `fast_mode.go` exactly: live-only, emitted only when the wire carried
+  a list, nothing persisted, no state. `Replace` is always true and on
+  the wire anyway because it is the contract: both producers restate the
+  whole set, so a consumer must never merge one frame into another, and a
+  future producer that can only report a delta has to say so rather than
+  silently change what an existing frame means. The provider name is read
+  from the thread row, so claude-tui replaying the same shapes is
+  labelled correctly.
+- `command_result.go` — output of a provider-executed (local) slash
+  command as its own `command_result` item kind: role `system`, status
+  `completed`, never an assistant bubble. Output under
+  `commandResultInlineRunes` lives in the summary; larger output moves
+  to a payload with a bounded preview. Idempotent on the CLI's
+  `message.id`, so the `result` envelope's verbatim repeat of the same
+  text can never become a second row.
 - `session_wakeup.go` — Claude-only pending-harness-wakeup record.
   Handles `EventSessionWakeup` (the ScheduleWakeup ack, claude-wire.md
   §E8): stores the fire time per thread, clears on the stop ack, and
@@ -160,6 +178,8 @@ none fits.
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
 | Command lifecycle (Claude) | Live-only `provider:command_lifecycle` keyed onto the AO row id; nothing persists. Older CLIs emit no acks, so no routing decision may depend on them. See `command_lifecycle.go`. |
 | Fast-mode report (Claude) | Live-only `provider:fast_mode` from `system/init` and the wire `result`; nothing persists. Absence is unknown, never "off". See `fast_mode.go`. |
+| Slash-command list (Claude) | Live-only `provider:commands` from `system/init` and `commands_changed`; nothing persists. Absence is silence, never an empty palette. See `provider_commands.go`. |
+| Command result (Claude local command) | `command_result` item (role `system`, status `completed`) + on-demand payload above the inline bound. Idempotent on the provider message id so the `result` echo does not duplicate it. See `command_result.go`. |
 | Session wakeup (Claude) | Per-thread pending-wakeup fire time in router state only — nothing persists, nothing emits. Consumed by the idle reaper via `PendingWakeupAt`. See `session_wakeup.go`. |
 | Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; typed command completions clear live state and persist normal command rows using the original item id only while a Codex wire round is active. Spawn-agent starts are pending-only; terminal spawn completions persist the visible row and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |
 | Codex terminal interaction | Empty stdin persists/reuses one visible `terminal_interaction` wait carrier on the current open turn while the PTY tracker is live. Non-empty stdin first flushes any active wait for that process, then persists an interaction marker without storing stdin bytes. See `terminal_interaction.go`. |

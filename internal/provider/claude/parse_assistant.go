@@ -92,6 +92,32 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 	// stays uniform.
 	_ = line
 
+	// `assistant.error` (e.g. `rate_limit`, `authentication_failed`) is
+	// surfaced as a fatal EventError below. Claude has emitted this enum in
+	// two places across versions: under `message.error`, and as a top-level
+	// envelope field next to `message`. Computed here because BOTH the
+	// synthetic-command-result branch and the text/thinking recovery branches
+	// below gate on it: an error envelope's text is the error copy, owned by
+	// the EventError path, and re-emitting it as content duplicates the
+	// api_error row (see TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent).
+	errorEnum := assistantErrorEnum(raw, msg)
+
+	// CLI-generated local command output. The CLI runs `/usage`, `/context`,
+	// a skill, a plugin command etc. itself — no API call, num_turns 0 — and
+	// delivers the output as an `assistant` envelope stamped with its own
+	// `<synthetic>` model sentinel (upstream `SYNTHETIC_MODEL`, emitted by
+	// `localCommandOutputToSDKAssistantMessage`). Routed to its own event so
+	// it can never land in an assistant bubble, and returned early so it
+	// neither becomes the turn's `assistant_message_id` (it is not model
+	// output) nor gets recovered a second time by the text branch below.
+	//
+	// The errorEnum precedence is load-bearing: `<synthetic>` is ALSO the
+	// model on the CLI's synthesized API-error message, and that one belongs
+	// to the EventError path.
+	if errorEnum == "" && isSyntheticCLIModel(msg.Model) {
+		return p.commandResultEvents(threadID, msg, now, line), nil
+	}
+
 	// Track the final assistant message id at the session level so the
 	// eventual `result` envelope (which does NOT carry this id) can
 	// emit it on provider.WireTurnCompleteMeta. Only
@@ -140,17 +166,6 @@ func (p *Parser) parseAssistant(threadID string, raw map[string]json.RawMessage,
 			break
 		}
 	}
-
-	// An `assistant.error` envelope (e.g. the synthetic "API Error: …"
-	// snapshot) carries its human-readable error copy as a `text` block AND
-	// an error enum. That text is surfaced once below as the EventError
-	// summary (assistantErrorSummary). Computed here so the recovery branch
-	// can skip it: recovering a never-streamed error text block would emit
-	// it a SECOND time as a normal assistant_text row, duplicating the
-	// api_error row (the "error messages come in as normal text"
-	// regression — see TestAssistantErrorEnvelopeDoesNotRecoverErrorTextAsContent).
-	// The error path is the sole owner of an error envelope's content.
-	errorEnum := assistantErrorEnum(raw, msg)
 
 	for _, block := range msg.Content {
 		switch block.Type {
@@ -269,6 +284,56 @@ func (p *Parser) appendRecoveredBlockEvent(
 		ParentToolUseID: parentToolUseID,
 		Timestamp:       now,
 	})
+}
+
+// syntheticCLIModel is the sentinel the Claude CLI stamps on every assistant
+// message it authored itself rather than received from the API (upstream
+// `SYNTHETIC_MODEL`, claude-code-source-code/src/utils/messages.ts). On AO's
+// stream-json wire the only producer that reaches us with content and no error
+// enum is local slash-command output; the error producer is discriminated by
+// `assistant.error` before this is consulted. See claude-wire.md §"Slash
+// commands".
+const syntheticCLIModel = "<synthetic>"
+
+func isSyntheticCLIModel(model string) bool {
+	return strings.TrimSpace(model) == syntheticCLIModel
+}
+
+// commandResultEvents projects a `<synthetic>`-model assistant envelope into a
+// single EventCommandResult carrying the command's output text.
+//
+// The envelope is a complete snapshot — the CLI never streams command output
+// (no `stream_event` deltas were observed for it on 2.1.219) — so this is one
+// completed event, not a stream lifecycle. Multiple text blocks are joined
+// with a blank line, the same way the CLI's own wrapper concatenates stdout and
+// stderr sections; non-text blocks cannot occur on this envelope and are
+// ignored rather than guessed at.
+//
+// Empty output emits nothing: a command that printed nothing has no row to
+// show, and a blank one would read as a failed command.
+func (p *Parser) commandResultEvents(threadID string, msg assistantMessage, now time.Time, line []byte) []provider.ProviderEvent {
+	var parts []string
+	for _, block := range msg.Content {
+		if block.Type != "text" {
+			continue
+		}
+		if text := strings.TrimRight(block.Text, "\n"); strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+		}
+	}
+	text := strings.Join(parts, "\n\n")
+	if text == "" {
+		return nil
+	}
+	return []provider.ProviderEvent{{
+		Kind:           provider.EventCommandResult,
+		ThreadID:       threadID,
+		ItemID:         strings.TrimSpace(msg.ID),
+		Content:        text,
+		ContentPresent: true,
+		Timestamp:      now,
+		Raw:            line,
+	}}
 }
 
 func assistantErrorEnum(raw map[string]json.RawMessage, msg assistantMessage) string {

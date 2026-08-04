@@ -10,9 +10,8 @@
     SetChatBarFavorite,
     StartDiscussionByID,
     GetThread,
-    ReconnectSession,
-    UpdateThreadModelSelection,
   } from '../../../stores/bindings';
+  import { applyThreadModelSelection } from '../../../stores/threadModelControls';
   import {
     asProviderID,
     getProviderDefinition,
@@ -42,7 +41,6 @@
   import DiscussionsSubmenu from './DiscussionsSubmenu.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
-  import { updatePlaceholderDefaults } from '../../../stores/newThreadDefaults';
 
   interface Props {
     pane: ThreadPane;
@@ -158,40 +156,18 @@
     });
   });
 
+  // The selection itself lives in threadModelControls — shared with the
+  // composer's `/model` command, so the placeholder branch and the
+  // reconnect-on-reselect rule cannot drift between the two entry points.
   async function handleSelectModel(
     provider: ProviderID,
     slug: string,
   ): Promise<void> {
     if (!pane.thread || applying) return;
-    const currentProvider = pane.thread.provider;
-    const currentModel = pane.thread.model;
-    const activeModel = pane.activeModel;
-    if (provider === currentProvider && slug === currentModel && slug === activeModel) {
-      closeMenu();
-      return;
-    }
-
     applying = true;
     try {
-      if (pane.hasDraftPlaceholder) {
-        await updatePlaceholderDefaults(pane, { provider, model: slug });
-        return;
-      }
-      const threadId = pane.threadId;
-      if (!threadId) return;
-      // Re-selecting the requested model while a fallback is active means
-      // "try my preferred model again". The durable selection is already
-      // correct, so restart the session instead of issuing a no-op update.
-      if (provider === currentProvider && slug === currentModel) {
-        await ReconnectSession(threadId);
-        pane.setEffectiveModel('');
-        return;
-      }
-      const updated = (await UpdateThreadModelSelection(threadId, provider, slug)) as Thread;
-      syncThread(updated);
-    } catch (err) {
-      console.error('model/provider update failed:', err);
-      addToast('error', `Failed to switch model: ${errString(err)}`);
+      const result = await applyThreadModelSelection(pane, provider, slug);
+      if (!result.ok && result.error) addToast('error', result.error);
     } finally {
       applying = false;
       closeMenu();

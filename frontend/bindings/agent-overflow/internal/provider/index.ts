@@ -18,6 +18,7 @@ export {
     RateLimitEntry,
     RateLimitsSnapshot,
     ReasoningEffortOption,
+    SlashCommand,
     UserInputQuestion,
     UserInputQuestionOption,
     UserInputRequest,

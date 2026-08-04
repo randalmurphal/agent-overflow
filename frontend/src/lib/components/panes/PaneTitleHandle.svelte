@@ -13,10 +13,11 @@
 
   import { tick } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { Thread } from '../../types/models';
-  import { RenameThread, GetThread } from '../../stores/bindings';
-  import { getFocusedPaneId, syncThread } from '../../stores/panes.svelte';
-  import { errString } from '../../utils/errors';
+  import {
+    registerPaneTitleRename,
+    renameThreadTitle,
+  } from '../../stores/paneTitleRename';
+  import { getFocusedPaneId } from '../../stores/panes.svelte';
   import { isImeComposingEvent } from '../../utils/imeComposition';
 
   interface Props {
@@ -66,6 +67,11 @@
     renamePending = false;
   });
 
+  // Published so the composer's bare `/rename` opens THIS editor rather than
+  // growing a second rename surface. Registered per pane, like the composer
+  // pickers, so a multi-pane layout routes the command to the right one.
+  $effect(() => registerPaneTitleRename(pane.paneId, { start: startRename }));
+
   function startRename(): void {
     if (!pane.thread || !pane.threadId) return;
     draftTitle = pane.thread.title;
@@ -83,24 +89,14 @@
 
   async function commitRename(): Promise<void> {
     if (!pane.thread || !pane.threadId) return;
-    const next = draftTitle.trim();
-    // Empty and no-op submits both bail quietly — the user already sees the
-    // current title, so there's nothing to toast.
-    if (next === '' || next === pane.thread.title) {
-      cancelRename();
-      return;
-    }
+    // Empty and no-op submits both bail quietly inside renameThreadTitle —
+    // the user already sees the current title, so there's nothing to report.
     const threadId = pane.threadId;
+    const currentTitle = pane.thread.title;
     renamePending = true;
     try {
-      await RenameThread(threadId, next);
-      // RenameThread returns void; re-read the row so the pane + sidebar pick
-      // up the new title without hand-assembling a Thread.
-      const updated = (await GetThread(threadId)) as Thread;
-      syncThread(updated);
-    } catch (err) {
-      console.error('Rename thread failed:', err);
-      pane.setGeneralError(`Failed to rename thread: ${errString(err)}`);
+      const result = await renameThreadTitle(threadId, draftTitle, currentTitle);
+      if (!result.ok && result.error) pane.setGeneralError(result.error);
     } finally {
       renamePending = false;
       editing = false;

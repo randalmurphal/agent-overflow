@@ -684,6 +684,7 @@ func (p *privilegedApp) DeleteDiffReviewComment() string        { return "ok" }
 func (p *privilegedApp) MarkDiffReviewCommentsSent() string     { return "ok" }
 func (p *privilegedApp) SendDiffReviewComments() string         { return "ok" }
 func (p *privilegedApp) GetModelsForProvider() string           { return "ok" }
+func (p *privilegedApp) GetCodexSkills() string                 { return "ok" }
 func (p *privilegedApp) CreateProject() string                  { return "ok" }
 func (p *privilegedApp) ListAvailableEditors() string           { return "ok" }
 func (p *privilegedApp) GenerateCommitMessage() string          { return "ok" }
@@ -785,6 +786,8 @@ func (p *privilegedApp) ForkThreadFromMessage() string          { return "ok" }
 func (p *privilegedApp) RevertConversationToMessage() string    { return "ok" }
 func (p *privilegedApp) StopClaudeTask() string                 { return "ok" }
 func (p *privilegedApp) CleanCodexBackgroundTerminals() string  { return "ok" }
+func (p *privilegedApp) StartCodexReview() string               { return "ok" }
+func (p *privilegedApp) CompactCodexThread() string             { return "ok" }
 func (p *privilegedApp) GetThreadContextUsage() string          { return "ok" }
 func (p *privilegedApp) GetProviderStatuses() string            { return "ok" }
 func (p *privilegedApp) ProbeClaudeAccount() string             { return "ok" }

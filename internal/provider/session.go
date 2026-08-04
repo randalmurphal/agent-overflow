@@ -25,6 +25,22 @@ type SendOptions struct {
 	// Optional: empty means "let the provider assign the id" (legacy
 	// behaviour, id learned from the echo).
 	UserMessageUUID string
+	// AllowClaudeSlashCommand opts this send OUT of the Claude slash-command
+	// guard, letting a message whose first word is command-shaped ("/usage",
+	// "/workflow run x") reach the CLI's own command router.
+	//
+	// Default false, and that default is load-bearing: the Claude CLI routes
+	// any stdin user message starting with `/word` to its command router and
+	// SWALLOWS it — an unknown name answers "Unknown command: /x" with
+	// num_turns 0 and the model never sees the text (verified 2.1.219,
+	// 2026-08-03 live probe). Ordinary sends therefore go out guarded, with a
+	// leading newline that defeats the CLI's `startsWith('/')` test. Set true
+	// only when the user DELIBERATELY invoked a provider command.
+	//
+	// Claude-only: Codex has no text command router, and claude-tui types into
+	// the real TUI where commands are already a first-class affordance. Both
+	// ignore this field.
+	AllowClaudeSlashCommand bool
 }
 
 // ImageAttachment is the provider-ready form of a user-attached image.

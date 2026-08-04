@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/slicesx"
 )
 
 func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, now time.Time, line []byte) ([]provider.ProviderEvent, error) {
@@ -37,6 +38,30 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 			Meta:      meta,
 			Timestamp: now,
 			Raw:       line,
+		}}, nil
+
+	case "commands_changed":
+		// Spontaneous full-list push after mid-session skill discovery or a
+		// plugin reload (verified 2.1.219, 2026-08-03 live probe;
+		// claude-wire.md §"Slash commands"). REPLACE semantics: the payload is
+		// the whole answer, and a name that fell off the list is gone. An
+		// envelope with no `commands` key says nothing and is dropped —
+		// see decodeCommandsChanged for why that is not the same as `[]`.
+		commands, present := decodeCommandsChanged(raw["commands"])
+		if !present {
+			return nil, nil
+		}
+		meta, err := json.Marshal(provider.CommandsChangedMeta{
+			Commands: slicesx.OrEmpty(commands),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("parse commands_changed: marshal meta: %w", err)
+		}
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventCommandsChanged,
+			ThreadID:  threadID,
+			Meta:      meta,
+			Timestamp: now,
 		}}, nil
 
 	case "session_state_changed":
@@ -573,6 +598,29 @@ func extractSessionInfo(raw map[string]json.RawMessage) provider.SessionInfo {
 	// extractFastModeStatus.
 	if status, ok := extractFastModeStatus(raw); ok {
 		info.FastMode = status
+	}
+	// Command discovery. All three lists are optional and version-dependent:
+	// absence is NO SIGNAL, never "this session has no commands". A decode
+	// failure leaves the field nil for the same reason — the init envelope's
+	// job is the session id and the model, and a malformed cosmetic array must
+	// not take those down with it.
+	if v, ok := raw["slash_commands"]; ok {
+		var names []string
+		if json.Unmarshal(v, &names) == nil {
+			info.SlashCommands = normalizeCommandNames(names)
+		}
+	}
+	if v, ok := raw["skills"]; ok {
+		var names []string
+		if json.Unmarshal(v, &names) == nil {
+			info.Skills = normalizeCommandNames(names)
+		}
+	}
+	if v, ok := raw["plugins"]; ok {
+		var plugins []provider.PluginInfo
+		if json.Unmarshal(v, &plugins) == nil {
+			info.Plugins = normalizePlugins(plugins)
+		}
 	}
 
 	return info

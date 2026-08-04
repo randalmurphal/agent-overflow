@@ -32,6 +32,11 @@ type QueuedItem struct {
 	RevisionSourceDiffReview     *store.DiffReviewSourceRef   `json:"revisionSourceDiffReview,omitempty"`
 	RevisionSourceDiffCommentIDs []string                     `json:"revisionSourceDiffCommentIds,omitempty"`
 	EnqueuedAt                   int64                        `json:"enqueuedAt"`
+	// ProviderCommand mirrors Payload.ProviderCommand so a client
+	// re-rendering the queue from a snapshot still shows the entry as the
+	// command the user invoked, not as prose that happens to start with a
+	// slash.
+	ProviderCommand bool `json:"providerCommand,omitempty"`
 }
 
 // Payload is the wire shape of triage.QueuedFlushItem.Payload — the
@@ -47,6 +52,21 @@ type Payload struct {
 	RevisionSourceCommentIDs     []string                     `json:"revisionSourceCommentIds,omitempty"`
 	RevisionSourceDiffReview     *store.DiffReviewSourceRef   `json:"revisionSourceDiffReview,omitempty"`
 	RevisionSourceDiffCommentIDs []string                     `json:"revisionSourceDiffCommentIds,omitempty"`
+	// ProviderCommand carries the send-time slash-guard opt-in across the
+	// queue wait (sendMessageOptions.ProviderCommand →
+	// provider.SendOptions.AllowClaudeSlashCommand). It is the ONE field
+	// here that is not also durable on the persisted user row: a `/usage`
+	// typed while a turn is running has to still be a command when the
+	// boundary arrives, but it is transport state and nothing in history
+	// depends on it.
+	//
+	// A recovery that rebuilds this payload from a persisted row therefore
+	// cannot restore it (queuePayloadFromUserItem,
+	// flushPayloadFromUserMeta). That loss is in the guarded direction: the
+	// message is delivered as prose the model reads, never swallowed by the
+	// CLI's command router. The primary session-death recovery restores the
+	// text to the composer anyway, where the composer re-marks it.
+	ProviderCommand bool `json:"providerCommand,omitempty"`
 }
 
 // ItemFromTriage decodes a triage QueuedFlushItem back into the
@@ -75,6 +95,7 @@ func ItemFromTriage(threadID string, item triage.QueuedFlushItem) QueuedItem {
 	out.RevisionSourceCommentIDs = payload.RevisionSourceCommentIDs
 	out.RevisionSourceDiffReview = payload.RevisionSourceDiffReview
 	out.RevisionSourceDiffCommentIDs = payload.RevisionSourceDiffCommentIDs
+	out.ProviderCommand = payload.ProviderCommand
 	return out
 }
 

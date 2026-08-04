@@ -50,6 +50,20 @@ export function toggleComposerPicker(paneId: string | null, pickerId: ComposerPi
   return true;
 }
 
+/**
+ * Open a picker without the toggle's close-if-open branch. The composer's
+ * `/model` and `/effort` commands mean "show me the picker", so re-running one
+ * while its menu is already up must not dismiss it. Returns false when the
+ * pane has no such picker mounted (a placeholder with nothing to choose).
+ */
+export function openComposerPicker(paneId: string | null, pickerId: ComposerPickerId): boolean {
+  if (!paneId) return false;
+  const handle = entries.get(entryKey(paneId, pickerId));
+  if (!handle) return false;
+  handle.open();
+  return true;
+}
+
 export function isAnyComposerPickerOpen(): boolean {
   for (const handle of entries.values()) {
     if (handle.isOpen()) return true;

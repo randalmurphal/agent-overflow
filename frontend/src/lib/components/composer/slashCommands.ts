@@ -17,8 +17,6 @@
 
 import {
   commandWordRanges,
-  hasWordSeparator,
-  isWordSeparator,
   type CommandWordRange,
 } from '../../utils/commandWords';
 
@@ -66,45 +64,10 @@ export function slashCommandMatches(value: string): SlashCommandMatch[] {
   return matches;
 }
 
-/** Registered commands whose name starts with `query`, in registry order. */
-export function matchSlashCommands(query: string): SlashCommand[] {
-  return SLASH_COMMANDS.filter((command) => command.name.startsWith(query));
-}
-
-export interface SlashTrigger {
-  /** What the user has typed after the slash, up to the caret. */
-  query: string;
-  /** Commands matching `query`, in registry order. Never empty. */
-  results: SlashCommand[];
-  /** Inclusive index of the `/`. Carried so the caller replaces a range. */
-  start: number;
-  /** Exclusive end of the replacement range: the caret. */
-  end: number;
-}
-
 /**
- * Detect an open slash-command completion at the caret, or null.
- *
- * Word-boundary rules, deliberately the same shape as `detectMentionTrigger`:
- * the `/` must sit at the start of the value or immediately after a separator,
- * and the caret must still be inside that word — a space between the `/` and
- * the caret closes the menu. At least one command must match, so typing past a
- * full name (`/workflowish`) simply leaves the text alone, and a path segment
- * (`src/lib`) never opens the menu because its `/` follows a letter.
- *
- * "Separator" is `commandWordRanges`' separator, not a second definition of
- * one: the menu must never offer a completion for a word the matcher would
- * then refuse to colour.
+ * Where a completion menu opens over this text is `composerCommandTrigger.ts`,
+ * and which rows it offers is `composerCommandEntries.ts`. Neither lives here:
+ * the menu now lists provider-executed commands and Codex skills alongside
+ * these, and this module stays the AO registry plus the one question it can
+ * answer about a draft — which words the backend will expand.
  */
-export function detectSlashTrigger(value: string, caret: number): SlashTrigger | null {
-  if (caret < 1 || caret > value.length) return null;
-  const before = value.slice(0, caret);
-  const slash = before.lastIndexOf('/');
-  if (slash < 0) return null;
-  if (slash > 0 && !isWordSeparator(before[slash - 1])) return null;
-  const query = before.slice(slash + 1);
-  if (hasWordSeparator(query)) return null;
-  const results = matchSlashCommands(query);
-  if (results.length === 0) return null;
-  return { query, results, start: slash, end: caret };
-}

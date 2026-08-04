@@ -50,6 +50,12 @@ export {
   StopClaudeTask,
   CleanCodexBackgroundTerminals,
 
+  // Codex thread operations the composer's `/compact` and `/review`
+  // commands drive. Both are LOCAL-ONLY, both need a live session, and
+  // both start a NON-STEERABLE turn — callers must refuse on a busy
+  // thread rather than queue.
+  CompactCodexThread,
+
   // Live-session context breakdown (Claude's canonical /context read).
   // On-demand only — the always-on meter is fed by streaming usage events.
   GetThreadContextUsage,
@@ -141,6 +147,13 @@ export {
   // Provider detection
   GetProviderStatuses,
   GetModelsForProvider,
+  // Composer command menu sources. GetClaudeSlashCommands is a pure read
+  // of what the zero-token account probe left behind (never spawns) and
+  // is available on a cold thread; GetCodexSkills is LOCAL-ONLY and
+  // directory-scoped, so callers pass the thread's workspace path and
+  // must tolerate a remote-client refusal.
+  GetClaudeSlashCommands,
+  GetCodexSkills,
   ProbeClaudeAccount,
   RecheckClaudeAccount,
   RecheckCodexAccount,
@@ -563,6 +576,15 @@ export interface SendMessageOptions {
   revisionSourceCommentIds?: string[];
   revisionSourceDiffReview?: SourceDiffReview;
   revisionSourceDiffCommentIds?: string[];
+  /**
+   * Marks the message as a DELIBERATE provider-executed command, which
+   * opts the send out of Claude's outbound slash guard so the CLI runs
+   * the command instead of the model reading a neutralised copy of it.
+   * Set only when the draft's first word names a command the thread's
+   * provider actually reports; prose that happens to open with `/word`
+   * must leave it false.
+   */
+  providerCommand?: boolean;
 }
 
 export function SendMessageWithOptions(
@@ -624,3 +646,55 @@ export { UsageBucket, UsageQuery } from '../../../bindings/agent-overflow/intern
 // Picker-facing worktree model. Unlike the lower-level internal/git shape,
 // this includes backend-computed delete availability.
 export { WorktreeListItem } from '../../../bindings/agent-overflow/models.js';
+
+// Composer command-menu wire shapes. `SlashCommand.name` never carries a
+// leading slash on any of the three surfaces that report one, and
+// `ClaudeSlashCommands.probed === false` means UNKNOWN — a menu must not
+// render it as "this binary has none".
+export type { ClaudeSlashCommands } from '../../../bindings/agent-overflow/models';
+export type { SlashCommand } from '../../../bindings/agent-overflow/internal/provider/models';
+export type {
+  CwdSkills as CodexCwdSkills,
+  Skill as CodexSkill,
+} from '../../../bindings/agent-overflow/internal/codexskills/models';
+
+// StartCodexReview wrapper. Same plain-object-in / class-wrap pattern as
+// CreateThread: the generated signature types the target as a class
+// instance, and every call site wants to hand a literal. The four
+// variants share one flat shape discriminated by `kind`; the backend
+// validates the per-variant required field and ignores the rest.
+import {
+  StartCodexReview as StartCodexReviewRaw,
+} from '../../../bindings/agent-overflow/app.js';
+import {
+  CodexReviewTarget as CodexReviewTargetClass,
+} from '../../../bindings/agent-overflow/models.js';
+import type { CodexReviewStarted } from '../../../bindings/agent-overflow/models';
+
+export type CodexReviewTargetKind =
+  | 'uncommittedChanges'
+  | 'baseBranch'
+  | 'commit'
+  | 'custom';
+
+export interface CodexReviewTargetInput {
+  kind: CodexReviewTargetKind;
+  /** Required for `baseBranch`. */
+  branch?: string;
+  /** Required for `commit`. */
+  sha?: string;
+  /** Optional human label for a `commit` target. */
+  title?: string;
+  /** Required for `custom`. */
+  instructions?: string;
+}
+
+export function StartCodexReview(
+  threadId: string,
+  target: CodexReviewTargetInput,
+): Promise<CodexReviewStarted> {
+  return StartCodexReviewRaw(
+    threadId,
+    new CodexReviewTargetClass(target),
+  ) as unknown as Promise<CodexReviewStarted>;
+}

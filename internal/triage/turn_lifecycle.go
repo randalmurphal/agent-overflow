@@ -1510,7 +1510,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	deleteByPrefix(r.activeThinkingBlockRefs, prefix)
 	deleteByPrefix(r.errorSeqByScope, prefix)
 	deleteByPrefix(r.compactionSeqByScope, prefix)
-	deleteByPrefix(r.notificationSeqByScope, prefix)
+	deleteByPrefix(r.timelineSeqByScope, prefix)
 	for key := range r.streamPersistBuffers {
 		if strings.HasPrefix(key, prefix) {
 			if buffer := r.streamPersistBuffers[key]; buffer != nil && buffer.timer != nil {

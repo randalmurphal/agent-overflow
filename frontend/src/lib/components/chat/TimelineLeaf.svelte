@@ -6,6 +6,7 @@
   import AssistantMessage from './AssistantMessage.svelte';
   import CompactionDivider from './CompactionDivider.svelte';
   import CompactionReasoning from './CompactionReasoning.svelte';
+  import CommandResultRow from './CommandResultRow.svelte';
   import NotificationRow from './NotificationRow.svelte';
   import SessionDiedNotification from './SessionDiedNotification.svelte';
   import TerminalInteractionRow from './TerminalInteractionRow.svelte';
@@ -86,6 +87,11 @@
     <ThinkingBlock {pane} item={displayItem} />
   {:else if displayItem.kind === 'compaction_reasoning'}
     <CompactionReasoning {pane} item={displayItem} />
+  {:else if displayItem.kind === 'command_result'}
+    <!-- Output of a CLI-executed slash command. Explicit branch, because the
+         fallback below is the assistant bubble and this row has no model
+         behind it at all. -->
+    <CommandResultRow {pane} item={displayItem} />
   {:else if displayItem.kind === 'terminal_interaction'}
     <TerminalInteractionRow {pane} item={displayItem} />
   {:else if displayItem.kind === 'notification'}

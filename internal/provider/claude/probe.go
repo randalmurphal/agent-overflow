@@ -39,6 +39,21 @@ type ProbeConfig struct {
 	//     what the probe exists for, and a malformed cosmetic sub-field must
 	//     not report a logged-in user as broken.
 	OnModels func(models []WireModel, err error)
+
+	// OnCommands, when non-nil, fires exactly once on a successful probe with
+	// the `commands` array the same initialize response carries — the rich
+	// {name, description, argumentHint} list of every command the CLI executes
+	// itself. Same free-ride rationale as OnModels: no second subprocess.
+	//
+	// The two arguments follow OnModels' contract exactly:
+	//
+	//   - (commands, nil) — the CLI reported this list. An EMPTY list is a real
+	//     answer (a CLI too old to report commands) and must replace whatever
+	//     the consumer held.
+	//   - (nil, err) — the array was present but unreadable. That is no
+	//     information, so the consumer keeps what it had. Non-fatal to the
+	//     probe: identity is what the probe exists for.
+	OnCommands func(commands []provider.SlashCommand, err error)
 }
 
 // defaultProbeTimeout is the per-spawn deadline. Deliberately generous, and
@@ -134,6 +149,9 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 	if cfg.OnModels != nil {
 		cfg.OnModels(response.Models, response.ModelsErr)
 	}
+	if cfg.OnCommands != nil {
+		cfg.OnCommands(response.Commands, response.CommandsErr)
+	}
 	return response.Account, nil
 }
 
@@ -161,13 +179,17 @@ func buildProbeArgs() []string {
 }
 
 // initResponse is everything ProbeAccount reads out of one initialize
-// control_response. Account is the probe's product; Models rides along because
-// the same response carries it (ModelsErr is its independent decode outcome —
-// see ProbeConfig.OnModels for why the two cannot share one error).
+// control_response. Account is the probe's product; Models and Commands ride
+// along because the same response carries them. Each cosmetic sub-field keeps
+// its OWN decode error (see ProbeConfig.OnModels for why they cannot share
+// one, or share the probe's): one unreadable array must not report the other,
+// or the account, as broken.
 type initResponse struct {
-	Account   provider.AccountInfo
-	Models    []WireModel
-	ModelsErr error
+	Account     provider.AccountInfo
+	Models      []WireModel
+	ModelsErr   error
+	Commands    []provider.SlashCommand
+	CommandsErr error
 }
 
 // readControlInitResponse reads stdout lines, skips intervening system
@@ -260,7 +282,17 @@ func tryParseControlInitResponse(line []byte) (initResponse, bool, error) {
 	if modelsErr != nil {
 		modelsErr = fmt.Errorf("claude: probe initialize: decode models: %w", modelsErr)
 	}
-	return initResponse{Account: account, Models: models, ModelsErr: modelsErr}, true, nil
+	commands, commandsErr := decodeWireCommands(envelope.Response.Response)
+	if commandsErr != nil {
+		commandsErr = fmt.Errorf("claude: probe initialize: decode commands: %w", commandsErr)
+	}
+	return initResponse{
+		Account:     account,
+		Models:      models,
+		ModelsErr:   modelsErr,
+		Commands:    commands,
+		CommandsErr: commandsErr,
+	}, true, nil
 }
 
 // extractAccountInfoFromInitResponse decodes the `account` object out

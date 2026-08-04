@@ -35,6 +35,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ClearDraft", ID: 296814681},                            // main.App.ClearDraft
 	{Name: "CloseTerminal", ID: 2702963191},                        // main.App.CloseTerminal
 	{Name: "CloseThreadTerminals", ID: 1705768020},                 // main.App.CloseThreadTerminals
+	{Name: "CompactCodexThread", ID: 4090329093},                   // main.App.CompactCodexThread
 	{Name: "ConcludeDiscussion", ID: 4019739936},                   // main.App.ConcludeDiscussion
 	{Name: "CountRunningBackgroundTasks", ID: 2617952423},          // main.App.CountRunningBackgroundTasks
 	{Name: "CreateDiffReviewComment", ID: 565306783},               // main.App.CreateDiffReviewComment
@@ -66,7 +67,9 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetBranchBaseDiff", ID: 1342635161},                    // main.App.GetBranchBaseDiff
 	{Name: "GetChannelMessages", ID: 3595031866},                   // main.App.GetChannelMessages
 	{Name: "GetChannelState", ID: 3664812883},                      // main.App.GetChannelState
+	{Name: "GetClaudeSlashCommands", ID: 2854892544},               // main.App.GetClaudeSlashCommands
 	{Name: "GetCodexAccountUsage", ID: 1110466608},                 // main.App.GetCodexAccountUsage
+	{Name: "GetCodexSkills", ID: 1018032480},                       // main.App.GetCodexSkills
 	{Name: "GetCommitDiff", ID: 3399370629},                        // main.App.GetCommitDiff
 	{Name: "GetContextSettings", ID: 3416004963},                   // main.App.GetContextSettings
 	{Name: "GetDesignWorkdirInfo", ID: 2179885147},                 // main.App.GetDesignWorkdirInfo
@@ -248,6 +251,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465},              // main.App.SetProviderCustomEnvVar
 	{Name: "SetUIState", ID: 1514250938},                           // main.App.SetUIState
 	{Name: "SetWSLDistroPreference", ID: 3978807241},               // main.App.SetWSLDistroPreference
+	{Name: "StartCodexReview", ID: 1913732562},                     // main.App.StartCodexReview
 	{Name: "StartDiscussion", ID: 3188309099},                      // main.App.StartDiscussion
 	{Name: "StartDiscussionByID", ID: 2336869067},                  // main.App.StartDiscussionByID
 	{Name: "StartSession", ID: 2850159713},                         // main.App.StartSession

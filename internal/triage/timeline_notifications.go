@@ -261,11 +261,18 @@ func decodeTimelineNotificationMeta(raw json.RawMessage) timelineNotificationMet
 }
 
 func (r *Router) nextNotificationSequence(threadID string, turnIndex int) int {
+	return r.nextScopeSequence(threadID, turnIndex, "notification")
+}
+
+// nextScopeSequence allocates the next id ordinal for one (thread, turn,
+// label) namespace. Id-allocating counter: swept by CleanupThread, never at a
+// turn boundary — see the triage area guide's correlation-state categories.
+func (r *Router) nextScopeSequence(threadID string, turnIndex int, label string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := scopeCounterKey(threadID, turnIndex, "notification")
-	seq := r.notificationSeqByScope[key]
-	r.notificationSeqByScope[key] = seq + 1
+	key := scopeCounterKey(threadID, turnIndex, label)
+	seq := r.timelineSeqByScope[key]
+	r.timelineSeqByScope[key] = seq + 1
 	return seq
 }
 

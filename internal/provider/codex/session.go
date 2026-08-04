@@ -250,7 +250,25 @@ type Session struct {
 	// a refetch. Per-thread-only emission — there's no app-server-wide
 	// stream. Guarded by mu; nil when no observer is registered.
 	mcpStartupUpdateHandler MCPStartupUpdateHandler
+	// skillsChangedHandler fires when Codex emits `skills/changed` — the
+	// app-server's own signal that its watched skill files moved. The App
+	// layer drops the skills cache so the next composer render re-reads
+	// instead of serving a list that no longer matches disk. Guarded by mu;
+	// nil when no observer is registered.
+	skillsChangedHandler SkillsChangedHandler
+	// binary is the codex CLI this process was spawned from. Kept so a
+	// caller deciding whether to ride this session's connection for a
+	// binary-scoped read (skills) can match on it rather than assuming the
+	// current setting still describes a process that started earlier.
+	binary string
 }
+
+// Binary returns the codex CLI path this session's app-server process was
+// spawned from. It is fixed for the life of the process: a settings change
+// takes effect on the next session, so a caller comparing this against the
+// configured binary is asking "is this process still the one the setting
+// describes", which is exactly the question a shared-read fallback needs.
+func (s *Session) Binary() string { return s.binary }
 
 // rootThreadID returns the Codex app-server thread ID this session's root
 // thread is bound to, or "" before the thread/start handshake has answered
@@ -384,6 +402,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		proc:                      proc,
 		ctx:                       childCtx,
 		threadID:                  threadID,
+		binary:                    binary,
 		model:                     cfg.Model,
 		usageAcct:                 newUsageAccounting(cfg.ResumeThreadID != ""),
 		reasoningEffort:           cfg.ReasoningEffort,

@@ -138,6 +138,21 @@ const (
 	// docs/references/claude-wire.md §command_lifecycle.
 	EventCommandLifecycle EventKind = "command_lifecycle"
 
+	// EventCommandsChanged is Claude's spontaneous `system/commands_changed`
+	// push: the CLI re-announces the FULL command list after mid-session
+	// skill discovery or a `reload_plugins`. Its contract is REPLACE, not
+	// merge — a command that dropped off the list is gone. Live session
+	// state; nothing persists.
+	EventCommandsChanged EventKind = "commands_changed"
+
+	// EventCommandResult carries the output of a slash command the provider
+	// CLI executed itself — no API call, no model output. Claude delivers it
+	// as an `assistant` envelope whose `message.model` is the CLI's
+	// `<synthetic>` sentinel (see claude-wire.md §"Slash commands"); the
+	// parser routes it here so it can never render as an assistant bubble.
+	// Triage persists it as a `command_result` row.
+	EventCommandResult EventKind = "command_result"
+
 	// Heavy events — persisted to SQLite, meta emitted to frontend.
 	EventDiff          EventKind = "diff"
 	EventCommandOutput EventKind = "command_output"
@@ -185,6 +200,8 @@ var AllEventKinds = []EventKind{
 	EventTerminalInteraction,
 	EventUserText,
 	EventCommandLifecycle,
+	EventCommandsChanged,
+	EventCommandResult,
 	EventDiff,
 	EventCommandOutput,
 	EventThinking,
@@ -319,6 +336,14 @@ const (
 type CommandLifecycleMeta struct {
 	CommandUUID string                `json:"commandUuid"`
 	State       CommandLifecycleState `json:"state"`
+}
+
+// CommandsChangedMeta is the typed payload for EventCommandsChanged: the
+// provider's FULL replacement list. An empty Commands slice is a real answer
+// (every command went away) and consumers must apply it as such — the wire
+// contract is replace, never merge.
+type CommandsChangedMeta struct {
+	Commands []SlashCommand `json:"commands"`
 }
 
 // TaskCreateMeta is the typed payload for EventTaskCreate.
