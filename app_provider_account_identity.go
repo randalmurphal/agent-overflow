@@ -59,6 +59,16 @@ func (a *App) reconcileExternalProviderAccountWithMutexHeld(
 	if observed && known == sha256.Sum256(before.Data) {
 		return nil
 	}
+	if providerName == string(provider.Claude) && claude.CredentialsSignedOut(before.Data) {
+		// claude >= 2.1.219 blanks the canonical credential in place when its
+		// startup token refresh fails (spike 2026-08-03). That husk is a
+		// sign-out, not an external login: adopting it would copy unusable
+		// bytes over the active account's saved slot — the exact write that
+		// destroyed a saved login on 2026-08-03. The fingerprint stays
+		// untouched so a later real login still reads as a change and
+		// reconciles.
+		return nil
+	}
 
 	// An external login process does not participate in providerAccountMu, so
 	// the identity has to be paired with a canonical credential value that did

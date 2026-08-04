@@ -22,22 +22,11 @@ import (
 // see probeSelectedClaudeRateLimits.
 //
 // This manual path deliberately bypasses the usage gate's cooldown — a user
-// demand should not silently coalesce away — but it still honors a
-// server-imposed 429 backoff (retrying into one only extends it), and it
-// reports its own outcome so a 429 here holds the automatic probes too.
-func (a *App) RefreshProviderAccountUsage(
-	providerName,
-	accountID string,
-) (retErr error) {
-	if providerName == string(provider.Claude) {
-		if remaining := a.claudeUsageGate().BackoffRemaining(); remaining > 0 {
-			return fmt.Errorf(
-				"the Claude usage endpoint is rate limited; try again in %s",
-				remaining.Round(time.Second),
-			)
-		}
-		defer func() { a.claudeUsageGate().NoteResult(retErr) }()
-	}
+// demand should not silently coalesce away. Server-imposed 429 backoffs are
+// enforced inside refreshProviderAccountUsage, scoped to the one account that
+// earned them: the throttle is per-bearer, so another account's card must stay
+// refreshable while the selected account waits one out.
+func (a *App) RefreshProviderAccountUsage(providerName, accountID string) error {
 	return a.refreshProviderAccountUsage(a.lifeCtx(), providerName, accountID)
 }
 
@@ -49,6 +38,16 @@ func (a *App) refreshProviderAccountUsage(
 	if err := validateManagedProvider(providerName); err != nil {
 		return err
 	}
+	// Refuse up front while this account's 429 backoff holds — retrying into
+	// one only extends the penalty — and record the outcome on the way out so
+	// every later caller, manual or automatic, is held the same way.
+	if remaining := a.usageBackoff.Remaining(providerName, accountID); remaining > 0 {
+		return fmt.Errorf(
+			"the usage endpoint rate limited this account; try again in %s",
+			remaining.Round(time.Second),
+		)
+	}
+	defer func() { a.usageBackoff.Note(providerName, accountID, retErr) }()
 	if a.providerAccounts == nil || a.providerCredentials == nil {
 		return errors.New("provider account storage is unavailable")
 	}
@@ -103,6 +102,7 @@ func (a *App) refreshProviderAccountUsage(
 	var (
 		snapshot  provider.RateLimitsSnapshot
 		ephemeral *provideraccounts.EphemeralHome
+		probeErr  error
 	)
 	if !refresh.refreshesInCanonicalHome() {
 		ephemeral, err = a.providerCredentials.NewEphemeralHomeWithCredential(
@@ -122,13 +122,13 @@ func (a *App) refreshProviderAccountUsage(
 	switch providerName {
 	case string(provider.Claude):
 		if refresh.refreshesInCanonicalHome() {
-			snapshot, refresh.refreshed, err = a.probeSelectedClaudeRateLimits(
+			snapshot, refresh.refreshed, probeErr = a.probeSelectedClaudeRateLimits(
 				ctx,
 				selection,
 				credential.Data,
 			)
 		} else {
-			snapshot, refresh.refreshed, err = a.probeClaudeRateLimitsForSelection(
+			snapshot, refresh.refreshed, probeErr = a.probeClaudeRateLimitsForSelection(
 				ctx,
 				claudeRateLimitSelection{
 					providerAccountSelection: selection,
@@ -139,8 +139,15 @@ func (a *App) refreshProviderAccountUsage(
 				},
 			)
 		}
-		if err != nil {
-			return err
+		// A probe can rotate the credential and still fail: its usage retry
+		// after a successful native refresh can be throttled even though the
+		// token endpoint was not. Claude refresh tokens are single-use and an
+		// inactive account's rotation lives only in the ephemeral home deleted
+		// on return, so a rotation must reach the commit even when the probe's
+		// answer is an error — dropping it here retires the slot's only
+		// working refresh chain.
+		if probeErr != nil && len(refresh.refreshed) == 0 {
+			return probeErr
 		}
 	case string(provider.Codex):
 		probeCfg := a.codexProbeConfig(
@@ -150,9 +157,9 @@ func (a *App) refreshProviderAccountUsage(
 		probeCfg.OnSnapshot = func(value provider.RateLimitsSnapshot) {
 			snapshot = value
 		}
-		info, probeErr := codex.ProbeAccount(ctx, probeCfg)
-		if probeErr != nil {
-			return probeErr
+		info, codexErr := codex.ProbeAccount(ctx, probeCfg)
+		if codexErr != nil {
+			return codexErr
 		}
 		if len(snapshot.Limits) == 0 {
 			return errors.New("Codex did not return usage limits")
@@ -181,13 +188,15 @@ func (a *App) refreshProviderAccountUsage(
 	}
 	// The snapshot is what the probe measured. It does not depend on the
 	// credential bookkeeping around it settling, so withholding it on a commit
-	// failure would blank the rings for data that was fetched successfully.
-	if commit.snapshotDescribesAccount {
+	// failure would blank the rings for data that was fetched successfully. A
+	// failed probe measured nothing, though — its zero snapshot must not reach
+	// the rings even when a rotation was worth committing.
+	if commit.snapshotDescribesAccount && probeErr == nil {
 		snapshot.Provider = providerName
 		snapshot.AccountID = accountID
 		a.emitRateLimitsSnapshot(snapshot)
 	}
-	return commitErr
+	return errors.Join(probeErr, commitErr)
 }
 
 // providerUsageRefresh is one usage probe awaiting commit.

@@ -158,6 +158,58 @@ func TestReconciliationAbsorbsARotationDuringTheIdentityProbe(t *testing.T) {
 	}
 }
 
+// claude >= 2.1.219 blanks the canonical credential in place when its startup
+// token refresh fails. Reconciliation must read that husk as a sign-out and
+// leave the saved slot alone — adopting it is the write that destroyed a saved
+// login on 2026-08-03.
+func TestReconciliationRefusesToAdoptABlankedClaudeCredential(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	good := []byte(`{"claudeAiOauth":{"accessToken":"good","refreshToken":"good-refresh"}}`)
+	installIdentityTestAccount(
+		t,
+		app,
+		string(provider.Claude),
+		"first",
+		"first@example.com",
+		good,
+	)
+	// A husk must never reach the identity probe: spawning the CLI against a
+	// destroyed login is a wasted process that answers tokenSource:"none".
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": filepath.Join(t.TempDir(), "must-not-run"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	husk := []byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}`)
+	if err := app.providerCredentials.WriteNativeCredentialForTest(
+		string(provider.Claude),
+		husk,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.reconcileExternalProviderAccount(string(provider.Claude)); err != nil {
+		t.Fatalf("reconcileExternalProviderAccount: %v", err)
+	}
+
+	saved, err := app.providerCredentials.ReadCredential(string(provider.Claude), "first", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(saved) != string(good) {
+		t.Fatalf("saved slot = %s, want the original credential preserved", saved)
+	}
+	// The husk must not be fingerprint-blessed either: a real login replacing
+	// it has to look like a change and reconcile.
+	app.providerAccountMu.RLock()
+	fingerprint := app.providerCredentialFingerprints[string(provider.Claude)]
+	app.providerAccountMu.RUnlock()
+	if fingerprint != sha256.Sum256(good) {
+		t.Fatal("credential fingerprint moved off the saved credential for a blanked canonical file")
+	}
+}
+
 func TestExternalClaudeLoginReconcilesMetadataAndLiveSessions(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())

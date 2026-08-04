@@ -2389,9 +2389,10 @@ export function RefreshMcpServerStatus(providerName: string): $CancellablePromis
  * see probeSelectedClaudeRateLimits.
  * 
  * This manual path deliberately bypasses the usage gate's cooldown — a user
- * demand should not silently coalesce away — but it still honors a
- * server-imposed 429 backoff (retrying into one only extends it), and it
- * reports its own outcome so a 429 here holds the automatic probes too.
+ * demand should not silently coalesce away. Server-imposed 429 backoffs are
+ * enforced inside refreshProviderAccountUsage, scoped to the one account that
+ * earned them: the throttle is per-bearer, so another account's card must stay
+ * refreshable while the selected account waits one out.
  */
 export function RefreshProviderAccountUsage(providerName: string, accountID: string): $CancellablePromise<void> {
     return $Call.ByID(2539237007, providerName, accountID);

@@ -2,12 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"testing"
 	"time"
-
-	"agent-overflow/internal/provider/claude"
 )
 
 // gateClock is a deterministic clock plus timer capture for usageProbeGate.
@@ -118,93 +114,5 @@ func TestUsageProbeGateCooldownCollapsesRequestsIntoOneTimer(t *testing.T) {
 	}
 }
 
-// A probe answered 429 with Retry-After holds automatic probing for exactly
-// that long, even past the cooldown, and a timer that fires while the backoff
-// still holds re-arms instead of probing.
-func TestUsageProbeGateBackoffFromRateLimitedProbe(t *testing.T) {
-	clock := newGateClock()
-	calls := 0
-	probeErr := error(&claude.RateLimitedError{RetryAfter: 45 * time.Second})
-	gate := newGateForTest(clock, func(context.Context) error { calls++; return probeErr })
-
-	gate.Request()
-	if calls != 1 {
-		t.Fatalf("probe calls = %d, want 1", calls)
-	}
-	if got := gate.BackoffRemaining(); got != 45*time.Second {
-		t.Fatalf("BackoffRemaining = %v, want 45s", got)
-	}
-
-	// Cooldown fully elapsed; only the backoff still holds.
-	clock.advance(usageProbeMinInterval)
-	if got := gate.BackoffRemaining(); got != 15*time.Second {
-		t.Fatalf("BackoffRemaining after 30s = %v, want 15s", got)
-	}
-	gate.Request()
-	if calls != 1 {
-		t.Fatalf("probe calls during backoff = %d, want 1", calls)
-	}
-	if len(clock.timers) != 1 || clock.timers[0].wait != 15*time.Second {
-		t.Fatalf("timers = %+v, want one at the 15s backoff remainder", clock.timers)
-	}
-
-	// Fire without advancing: backoff still holds, so it must re-arm.
-	clock.fire(t)
-	if calls != 1 {
-		t.Fatalf("probe calls after early fire = %d, want 1", calls)
-	}
-	if len(clock.timers) != 1 || clock.timers[0].wait != 15*time.Second {
-		t.Fatalf("timers after early fire = %+v, want one re-armed at 15s", clock.timers)
-	}
-
-	probeErr = nil
-	clock.advance(15 * time.Second)
-	clock.fire(t)
-	if calls != 2 {
-		t.Fatalf("probe calls after backoff expiry = %d, want 2", calls)
-	}
-	if got := gate.BackoffRemaining(); got != 0 {
-		t.Fatalf("BackoffRemaining after clean probe = %v, want 0", got)
-	}
-}
-
-// A 429 without a usable Retry-After falls back to the default backoff.
-func TestUsageProbeGateDefaultBackoffWithoutRetryAfter(t *testing.T) {
-	clock := newGateClock()
-	gate := newGateForTest(clock, func(context.Context) error {
-		return &claude.RateLimitedError{}
-	})
-
-	gate.Request()
-	if got := gate.BackoffRemaining(); got != defaultUsageProbeBackoff {
-		t.Fatalf("BackoffRemaining = %v, want the %v default", got, defaultUsageProbeBackoff)
-	}
-}
-
-// NoteResult lets the manual refresh path report its outcome: a wrapped 429
-// starts a backoff that holds automatic probes, while nil and ordinary errors
-// change nothing.
-func TestUsageProbeGateNoteResultFeedsExternalOutcome(t *testing.T) {
-	clock := newGateClock()
-	calls := 0
-	gate := newGateForTest(clock, func(context.Context) error { calls++; return nil })
-
-	gate.NoteResult(nil)
-	gate.NoteResult(errors.New("connection reset"))
-	if got := gate.BackoffRemaining(); got != 0 {
-		t.Fatalf("BackoffRemaining after non-429 outcomes = %v, want 0", got)
-	}
-
-	gate.NoteResult(fmt.Errorf("manual refresh: %w", &claude.RateLimitedError{RetryAfter: 90 * time.Second}))
-	if got := gate.BackoffRemaining(); got != 90*time.Second {
-		t.Fatalf("BackoffRemaining after wrapped 429 = %v, want 90s", got)
-	}
-
-	gate.Request()
-	if calls != 0 {
-		t.Fatalf("probe calls during externally-reported backoff = %d, want 0", calls)
-	}
-	if len(clock.timers) != 1 || clock.timers[0].wait != 90*time.Second {
-		t.Fatalf("timers = %+v, want one at the 90s backoff", clock.timers)
-	}
-}
+// Server 429 backoffs are per-account state and live in usageBackoffLedger
+// (app_usage_backoff_test.go), not here — the gate only coalesces and paces.

@@ -334,9 +334,10 @@ func usageClientWritingCredential(
 	}
 }
 
-// A manual refresh during a server-imposed backoff must refuse up front —
-// retrying into a 429 only extends the penalty — and must do so without
-// sending anything: the tripwire transport fails the test on any request.
+// A manual refresh during that account's server-imposed backoff must refuse
+// up front — retrying into a 429 only extends the penalty — and must do so
+// without sending anything: the tripwire transport fails the test on any
+// request.
 func TestManualUsageRefreshRefusesDuringBackoff(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
@@ -346,7 +347,11 @@ func TestManualUsageRefreshRefusesDuringBackoff(t *testing.T) {
 	})
 	app.rateLimitProbeClientOverride = &http.Client{Transport: tripwireRoundTripper{t: t}}
 
-	app.claudeUsageGate().NoteResult(&claude.RateLimitedError{RetryAfter: time.Minute})
+	app.usageBackoff.Note(
+		string(provider.Claude),
+		"selected",
+		&claude.RateLimitedError{RetryAfter: time.Minute},
+	)
 
 	err := app.RefreshProviderAccountUsage(string(provider.Claude), "selected")
 	if err == nil || !strings.Contains(err.Error(), "rate limited") {
@@ -354,15 +359,19 @@ func TestManualUsageRefreshRefusesDuringBackoff(t *testing.T) {
 	}
 }
 
-// A manual refresh that earns a 429 must feed that outcome back into the
-// gate, so automatic probes hold instead of piling onto the same penalty.
-func TestManualUsageRefreshReportsRateLimitToTheGate(t *testing.T) {
+// A manual refresh that earns a 429 must record it against exactly that
+// account: later probes for it hold, while every other account stays
+// refreshable — the server throttle is per-bearer (observed 2026-08-03, when
+// a provider-wide hold made throttled-but-alive accounts look dead).
+func TestManualUsageRefreshRecordsAPerAccountBackoff(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
-	installUsageTestAccounts(t, app, usageTestAccount{
-		"selected",
-		[]byte(`{"claudeAiOauth":{"accessToken":"original"}}`),
-	})
+	installUsageTestAccounts(
+		t,
+		app,
+		usageTestAccount{"other", []byte(`{"claudeAiOauth":{"accessToken":"other"}}`)},
+		usageTestAccount{"selected", []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)},
+	)
 	app.rateLimitProbeClientOverride = rateLimitedUsageClient(t, "45")
 
 	err := app.RefreshProviderAccountUsage(string(provider.Claude), "selected")
@@ -370,9 +379,42 @@ func TestManualUsageRefreshReportsRateLimitToTheGate(t *testing.T) {
 	if !errors.As(err, &limited) {
 		t.Fatalf("refresh error = %v, want *claude.RateLimitedError", err)
 	}
-	remaining := app.claudeUsageGate().BackoffRemaining()
+	remaining := app.usageBackoff.Remaining(string(provider.Claude), "selected")
 	if remaining <= 0 || remaining > 45*time.Second {
-		t.Fatalf("BackoffRemaining = %v, want (0s, 45s] from the manual 429", remaining)
+		t.Fatalf("Remaining(selected) = %v, want (0s, 45s] from the manual 429", remaining)
+	}
+	if got := app.usageBackoff.Remaining(string(provider.Claude), "other"); got != 0 {
+		t.Fatalf("Remaining(other) = %v, want 0 — one account's 429 must not hold the rest", got)
+	}
+}
+
+// The selected account waiting out a 429 must not block another card's
+// refresh: that inactive account's own probe goes through and succeeds.
+func TestBackoffOnOneAccountDoesNotBlockAnotherCardsRefresh(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	installUsageTestAccounts(
+		t,
+		app,
+		usageTestAccount{"other", []byte(`{"claudeAiOauth":{"accessToken":"other"}}`)},
+		usageTestAccount{"selected", []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)},
+	)
+	// The inactive account's token is valid, so no CLI refresh may run.
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": filepath.Join(t.TempDir(), "must-not-run"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.rateLimitProbeClientOverride = expiringUsageClient(t, "other")
+
+	app.usageBackoff.Note(
+		string(provider.Claude),
+		"selected",
+		&claude.RateLimitedError{RetryAfter: time.Hour},
+	)
+
+	if err := app.RefreshProviderAccountUsage(string(provider.Claude), "other"); err != nil {
+		t.Fatalf("refresh of the un-throttled account failed: %v", err)
 	}
 }
 
@@ -398,6 +440,178 @@ func rateLimitedUsageClient(t *testing.T, retryAfter string) *http.Client {
 	}
 	return &http.Client{
 		Transport: redirectRoundTripper{target: target, inner: http.DefaultTransport},
+	}
+}
+
+// writeEphemeralRotatingClaudeBinary stands in for the CLI refreshing an
+// INACTIVE account: it rotates the credential inside the probe's own config
+// home ($CLAUDE_CONFIG_DIR, the ephemeral copy) and reports the account it
+// authenticated as. It refuses to run without the override — an inactive
+// account's refresh must never touch the canonical home.
+func writeEphemeralRotatingClaudeBinary(t *testing.T, rotated, email string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "mock-claude")
+	response := `{"type":"control_response","response":{"subtype":"success",` +
+		`"request_id":"ao-probe-init","response":{"account":` +
+		`{"email":"` + email + `","subscriptionType":"max","tokenSource":"oauth"}}}}`
+	script := "#!/bin/bash\n" +
+		"if [ -z \"$CLAUDE_CONFIG_DIR\" ]; then\n" +
+		"  echo 'inactive refresh must not touch the canonical home' >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"read -r _ || true\n" +
+		"printf '%s' '" + rotated + "' > \"$CLAUDE_CONFIG_DIR/.credentials.json\"\n" +
+		"printf '%s\\n' '" + response + "'\n" +
+		"exit 0\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// rotatedThrottledUsageClient answers 401 for the stale bearer — sending the
+// probe into its native-refresh heal — and 429 for the rotated bearer, the
+// shape of a usage endpoint that throttles while the token endpoint stays
+// clear.
+func rotatedThrottledUsageClient(
+	t *testing.T,
+	staleBearer,
+	rotatedBearer,
+	retryAfter string,
+) *http.Client {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("Authorization") {
+		case "Bearer " + staleBearer:
+			w.WriteHeader(http.StatusUnauthorized)
+		case "Bearer " + rotatedBearer:
+			w.Header().Set("Retry-After", retryAfter)
+			w.WriteHeader(http.StatusTooManyRequests)
+		default:
+			t.Errorf("usage request with unexpected bearer %q", r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	t.Cleanup(server.Close)
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Client{
+		Transport: redirectRoundTripper{target: target, inner: http.DefaultTransport},
+	}
+}
+
+// A heal cycle can rotate the token and still fail: the usage retry after a
+// successful native refresh can be throttled even though the token endpoint
+// was not. The rotation must reach the saved slot anyway — Claude refresh
+// tokens are single-use and an inactive account's rotation lives only in the
+// ephemeral home deleted on return, so dropping it with the error would
+// retire the slot's only working refresh chain.
+func TestInactiveClaudeUsageRefreshCommitsRotationWhenRetryIsThrottled(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	rotated := `{"claudeAiOauth":{"accessToken":"rotated","refreshToken":"rotated-refresh"}}`
+	installUsageTestAccounts(
+		t,
+		app,
+		usageTestAccount{
+			"inactive",
+			[]byte(`{"claudeAiOauth":{"accessToken":"stale","refreshToken":"stale-refresh"}}`),
+		},
+		usageTestAccount{
+			"selected",
+			[]byte(`{"claudeAiOauth":{"accessToken":"active"}}`),
+		},
+	)
+	binary := writeEphemeralRotatingClaudeBinary(t, rotated, "inactive@example.com")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	app.rateLimitProbeClientOverride = rotatedThrottledUsageClient(t, "stale", "rotated", "45")
+
+	var published int
+	app.testEmitHook = func(name string, _ any) {
+		if name == "provider:usage" {
+			published++
+		}
+	}
+
+	err := app.refreshProviderAccountUsage(
+		context.Background(),
+		string(provider.Claude),
+		"inactive",
+	)
+	var limited *claude.RateLimitedError
+	if !errors.As(err, &limited) {
+		t.Fatalf("refresh error = %v, want the 429 surfaced", err)
+	}
+	saved, readErr := app.providerCredentials.ReadCredential(
+		string(provider.Claude),
+		"inactive",
+		false,
+	)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(saved) != rotated {
+		t.Fatalf("saved slot = %s, want the rotation committed despite the throttled retry", saved)
+	}
+	if published != 0 {
+		t.Fatalf("published %d snapshots, want none for a failed probe", published)
+	}
+	if remaining := app.usageBackoff.Remaining(string(provider.Claude), "inactive"); remaining <= 0 {
+		t.Fatalf("Remaining(inactive) = %v, want the 429 recorded for this account", remaining)
+	}
+}
+
+// The same rule in the canonical home: the CLI already published the rotation
+// there, so the slot and the fingerprint must catch up even though the usage
+// retry was throttled — otherwise the next switch restores a retired token
+// and the next reconciliation misreads Agent Overflow's own rotation as an
+// external login.
+func TestSelectedClaudeUsageRefreshCommitsRotationWhenRetryIsThrottled(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	original := []byte(`{"claudeAiOauth":{"accessToken":"original"}}`)
+	rotated := `{"claudeAiOauth":{"accessToken":"rotated"}}`
+	installUsageTestAccounts(t, app, usageTestAccount{"selected", original})
+
+	canonical, err := app.providerCredentials.ActiveCredentialPath(string(provider.Claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := writeClaudeRefreshMockBinary(t, canonical, rotated, "selected@example.com")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	app.rateLimitProbeClientOverride = rotatedThrottledUsageClient(t, "original", "rotated", "45")
+
+	err = app.refreshProviderAccountUsage(
+		context.Background(),
+		string(provider.Claude),
+		"selected",
+	)
+	var limited *claude.RateLimitedError
+	if !errors.As(err, &limited) {
+		t.Fatalf("refresh error = %v, want the 429 surfaced", err)
+	}
+	saved, readErr := app.providerCredentials.ReadCredential(
+		string(provider.Claude),
+		"selected",
+		false,
+	)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(saved) != rotated {
+		t.Fatalf("saved slot = %s, want the rotation committed despite the throttled retry", saved)
+	}
+	app.providerAccountMu.RLock()
+	fingerprint := app.providerCredentialFingerprints[string(provider.Claude)]
+	app.providerAccountMu.RUnlock()
+	if fingerprint != sha256.Sum256([]byte(rotated)) {
+		t.Fatal("credential fingerprint was not advanced to the rotated value")
 	}
 }
 

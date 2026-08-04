@@ -461,13 +461,16 @@ type App struct {
 	worktreeSetupWG sync.WaitGroup
 	// Per-provider usage-probe gates (app_usage_probe_gate.go): every
 	// automatic rate-limit refresh trigger funnels through one so bursts
-	// coalesce, a cooldown bounds request rate, and a server 429 holds
-	// probing until its backoff expires. Lazily built via
+	// coalesce and a cooldown bounds request rate. Lazily built via
 	// claudeUsageGate() / codexUsageGate().
 	claudeUsageGateOnce sync.Once
 	claudeUsageGateVal  *usageProbeGate
 	codexUsageGateOnce  sync.Once
 	codexUsageGateVal   *usageProbeGate
+	// usageBackoff holds per-account usage-endpoint 429 backoffs
+	// (app_usage_backoff.go); the refresh paths consult it before sending
+	// anything. Zero value ready.
+	usageBackoff usageBackoffLedger
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn        func(string) error
 	stopSessionFn         func(string) error

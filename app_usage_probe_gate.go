@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
-
-	"agent-overflow/internal/provider/claude"
 )
 
 // usageProbeMinInterval is the floor between two automatic usage probes for
@@ -16,20 +13,18 @@ import (
 // request against the usage endpoint; bursts like that are what earn a 429.
 const usageProbeMinInterval = 30 * time.Second
 
-// defaultUsageProbeBackoff applies after a 429 whose Retry-After header was
-// absent or unusable.
-const defaultUsageProbeBackoff = time.Minute
-
-// usageProbeGate bounds one provider's usage-probe traffic. Concurrent
-// triggers collapse into the in-flight probe plus at most one trailing run;
-// triggers inside the cooldown collapse into that same trailing run; a
-// server-imposed backoff (429) holds automatic probes until it expires. The
-// trailing run exists because the last trigger of a burst is the one carrying
-// the freshest turn cost — dropping it outright would leave the rings stale
-// until the next periodic tick.
+// usageProbeGate bounds one provider's automatic usage-probe traffic.
+// Concurrent triggers collapse into the in-flight probe plus at most one
+// trailing run; triggers inside the cooldown collapse into that same trailing
+// run. The trailing run exists because the last trigger of a burst is the one
+// carrying the freshest turn cost — dropping it outright would leave the rings
+// stale until the next periodic tick.
 //
-// The gate recognizes claude.RateLimitedError as the backoff signal; the
-// Codex probe never produces one, so its gate only ever coalesces.
+// Server-imposed 429 backoffs are deliberately NOT tracked here: the throttle
+// is per-account, not per-provider, so that state lives in usageBackoffLedger
+// (app_usage_backoff.go), which the refresh path consults before touching the
+// endpoint. A probe the gate lets through can therefore still return without
+// having sent a request.
 type usageProbeGate struct {
 	probe func(context.Context) error
 	ctxFn func() context.Context
@@ -38,12 +33,11 @@ type usageProbeGate struct {
 	now       func() time.Time
 	afterFunc func(time.Duration, func())
 
-	mu           sync.Mutex
-	lastStart    time.Time
-	inFlight     bool
-	trailing     bool
-	timerSet     bool
-	backoffUntil time.Time
+	mu        sync.Mutex
+	lastStart time.Time
+	inFlight  bool
+	trailing  bool
+	timerSet  bool
 }
 
 func newUsageProbeGate(
@@ -61,9 +55,8 @@ func newUsageProbeGate(
 }
 
 // Request runs the probe now, or folds this trigger into the single pending
-// trailing run when a probe is in flight, inside the cooldown, or inside a
-// backoff. Runs the probe synchronously on the caller's goroutine when it
-// runs at all.
+// trailing run when a probe is in flight or inside the cooldown. Runs the
+// probe synchronously on the caller's goroutine when it runs at all.
 func (g *usageProbeGate) Request() { g.request(false) }
 
 func (g *usageProbeGate) request(fromTimer bool) {
@@ -85,11 +78,13 @@ func (g *usageProbeGate) request(fromTimer bool) {
 	g.lastStart = g.now()
 	g.mu.Unlock()
 
-	err := g.probe(g.ctxFn())
+	// The probe's error surface is owned elsewhere: probeClaudeRateLimits /
+	// probeCodexRateLimits log their own failures and usageBackoffLedger
+	// records any 429.
+	_ = g.probe(g.ctxFn())
 
 	g.mu.Lock()
 	g.inFlight = false
-	g.noteResultLocked(err)
 	if g.trailing {
 		g.trailing = false
 		g.scheduleLocked(g.holdLocked(g.now()))
@@ -97,39 +92,15 @@ func (g *usageProbeGate) request(fromTimer bool) {
 	g.mu.Unlock()
 }
 
-// NoteResult records the outcome of a probe the gate did not run itself (the
-// manual refresh path), so a 429 from any path holds automatic probes too.
-func (g *usageProbeGate) NoteResult(err error) {
-	g.mu.Lock()
-	g.noteResultLocked(err)
-	g.mu.Unlock()
-}
-
-// BackoffRemaining reports how much of a server-imposed backoff still holds.
-// Zero means requests are allowed.
-func (g *usageProbeGate) BackoffRemaining() time.Duration {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if remaining := g.backoffUntil.Sub(g.now()); remaining > 0 {
-		return remaining
-	}
-	return 0
-}
-
-// holdLocked returns how long automatic probing must still wait: the longer
-// of the cooldown remainder and any server-imposed backoff. Non-positive
-// means clear to run.
+// holdLocked returns how much of the cooldown automatic probing must still
+// wait out. Non-positive means clear to run.
 func (g *usageProbeGate) holdLocked(now time.Time) time.Duration {
-	wait := usageProbeMinInterval - now.Sub(g.lastStart)
-	if backoff := g.backoffUntil.Sub(now); backoff > wait {
-		wait = backoff
-	}
-	return wait
+	return usageProbeMinInterval - now.Sub(g.lastStart)
 }
 
 // scheduleLocked arms the single trailing timer. An already-armed timer
 // absorbs the trigger: its firing re-enters request(), which re-derives the
-// wait from current state, so a backoff extended meanwhile is still honored.
+// wait from current state.
 func (g *usageProbeGate) scheduleLocked(wait time.Duration) {
 	if g.timerSet {
 		return
@@ -139,18 +110,6 @@ func (g *usageProbeGate) scheduleLocked(wait time.Duration) {
 		wait = 0
 	}
 	g.afterFunc(wait, func() { g.request(true) })
-}
-
-func (g *usageProbeGate) noteResultLocked(err error) {
-	var limited *claude.RateLimitedError
-	if !errors.As(err, &limited) {
-		return
-	}
-	retry := limited.RetryAfter
-	if retry <= 0 {
-		retry = defaultUsageProbeBackoff
-	}
-	g.backoffUntil = g.now().Add(retry)
 }
 
 // claudeUsageGate lazily builds the Claude gate so directly-constructed test
