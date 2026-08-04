@@ -260,10 +260,10 @@ func TestCommandEcho_ConsumesPendingSendAndTurnIndexingSurvives(t *testing.T) {
 		t.Fatalf("init for command send: %v", err)
 	}
 	if err := router.Handle(provider.ProviderEvent{
-		Kind:     provider.EventUserText,
-		ThreadID: "t1",
-		Content:  "<command-name>/skill</command-name>\n<command-message>skill</command-message>\n<command-args>go again</command-args>",
-		Meta:     commandEchoMeta,
+		Kind:      provider.EventUserText,
+		ThreadID:  "t1",
+		Content:   "<command-name>/skill</command-name>\n<command-message>skill</command-message>\n<command-args>go again</command-args>",
+		Meta:      commandEchoMeta,
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("command echo: %v", err)

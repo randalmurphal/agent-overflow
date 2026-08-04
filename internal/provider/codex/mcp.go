@@ -115,14 +115,21 @@ func (s *Session) WriteMCPServerToUserConfig(ctx context.Context, name string, s
 	return nil
 }
 
-// MCPServerStatus is one entry returned by `mcpServerStatus/list`. Mirrors
-// the wire shape; we ignore the `tools`, `resources`, `resourceTemplates`
-// payloads since the AO probe handles tool counting via its own
-// initialize handshake. AuthStatus is one of `"unsupported" |
-// "notLoggedIn" | "bearerToken" | "oAuth"` per the Codex enum.
+// MCPServerStatus is one entry returned by `mcpServerStatus/list`.
+// Tools carries the wire's name→definition map so callers can list a
+// server's tool names; values (schemas) are never inspected, and
+// `resources` / `resourceTemplates` are not decoded. AuthStatus is one
+// of `"unsupported" | "notLoggedIn" | "bearerToken" | "oAuth"` per the
+// Codex enum.
 type MCPServerStatus struct {
-	Name       string `json:"name"`
-	AuthStatus string `json:"authStatus"`
+	Name       string                     `json:"name"`
+	AuthStatus string                     `json:"authStatus"`
+	Tools      map[string]json.RawMessage `json:"tools"`
+}
+
+// ToolNames returns the entry's tool names, sorted.
+func (m MCPServerStatus) ToolNames() []string {
+	return sortedToolNames(m.Tools)
 }
 
 // MCPServerStatusList is the response shape: paginated list of statuses.
@@ -131,13 +138,20 @@ type MCPServerStatusList struct {
 	NextCursor *string           `json:"nextCursor,omitempty"`
 }
 
-// ListMCPServerStatuses asks Codex for the current auth/connection status
-// of every configured MCP server. Detail is hardcoded to
-// "toolsAndAuthOnly" — AO's own probe cache owns full tool inventory, so
-// we only need this for "does the server need OAuth?" decisions.
+// ListMCPServerStatuses asks Codex for the current auth/connection
+// status and tool inventory of every MCP server visible to THIS
+// session's root thread. The `threadId` param is what scopes the answer
+// to the thread — without it the app-server answers for the global
+// config view, which can omit thread-scoped servers (plugins, project
+// layers). Detail stays "toolsAndAuthOnly": full detail additionally
+// ships resources and resource templates the status surface has no use
+// for.
 func (s *Session) ListMCPServerStatuses(ctx context.Context) (*MCPServerStatusList, error) {
 	params := map[string]any{
 		"detail": "toolsAndAuthOnly",
+	}
+	if id := s.rootThreadID(); id != "" {
+		params["threadId"] = id
 	}
 	resp, err := s.sendRequest(ctx, "mcpServerStatus/list", params)
 	if err != nil {

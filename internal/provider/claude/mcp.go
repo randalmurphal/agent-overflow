@@ -7,63 +7,50 @@ import (
 	"strings"
 )
 
-// MCPSetServersResult is the diff Claude returns from a
-// `control_request{subtype:"mcp_set_servers"}` round-trip. Added /
-// Removed enumerate which servers actually changed; Errors maps a
-// server name to the failure surfaced during reconcile (e.g.
-// connection refused). The presence of an entry in Errors does NOT
-// mean we should fail loudly here — that's up to the caller; a
-// non-fatal startup error per server is the documented behavior
-// (the rest of the configured servers still come up).
-type MCPSetServersResult struct {
-	Added   []string          `json:"added,omitempty"`
-	Removed []string          `json:"removed,omitempty"`
-	Errors  map[string]string `json:"errors,omitempty"`
-}
-
-// SetMCPServers reconciles the live session's MCP server list against
-// the desired full set. Sends `control_request{subtype:"mcp_set_servers"}`
-// and waits for the CLI's diff response. The `servers` argument MUST be
-// the complete desired set — names not present are removed in-process,
-// names already present pass through, new names spawn a fresh server
-// connection. The map shape is the same as Config.MCPServers; this method
-// re-applies `withClaudeTransportType` so callers can pass the same merged
-// map they pass at launch (where design MCP entries arrive untagged with
-// just a `url` field and need backfilling).
-//
-// On success the CLI handles add/remove/reload synchronously and the
-// next user turn sees the updated tool list. Returns the typed diff so
-// the App layer can surface "1 server added, 1 failed to start" to the
-// UI.
-func (s *Session) SetMCPServers(ctx context.Context, servers map[string]any) (*MCPSetServersResult, error) {
-	stamped := make(map[string]any, len(servers))
-	for name, spec := range servers {
-		stamped[name] = withClaudeTransportType(spec)
+// ToggleMCPServer sends `control_request{subtype:"mcp_toggle"}` for one
+// server. This is the CLI's own persist-and-apply toggle: disabling
+// disconnects the server, strips its tools from the model's view, and
+// writes the name into the session cwd's `disabledMcpServers` list;
+// enabling reverses all three. Plugin servers toggle by their
+// qualified `plugin:<plugin>:<server>` name. Verified live on 2.1.219
+// (2026-08-04 spike); the config write is debounced CLI-side, so
+// callers must not read the config file back to confirm it.
+func (s *Session) ToggleMCPServer(ctx context.Context, serverName string, enabled bool) error {
+	serverName = strings.TrimSpace(serverName)
+	if serverName == "" {
+		return fmt.Errorf("claude: mcp_toggle: server name required")
 	}
-	res, err := s.sendControlRequest(ctx, "mcp_set_servers", map[string]any{
-		"subtype": "mcp_set_servers",
-		"servers": stamped,
+	res, err := s.sendControlRequest(ctx, "mcp_toggle "+serverName, map[string]any{
+		"subtype":    "mcp_toggle",
+		"serverName": serverName,
+		"enabled":    enabled,
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if !res.ok {
-		if res.errMsg == "" {
-			return nil, fmt.Errorf("claude: mcp_set_servers: provider returned unspecified error")
-		}
-		return nil, fmt.Errorf("claude: mcp_set_servers: %s", res.errMsg)
+	return interpretControlResponse(res, "mcp_toggle "+serverName)
+}
+
+// ReconnectMCPServer sends `control_request{subtype:"mcp_reconnect"}`
+// for a disconnected or failed server. The CLI re-runs the connection
+// in place — the fix for "authenticated the server after the session
+// spawned" without killing the session. A server that still cannot
+// connect surfaces as an error response with the connection failure.
+// Verified live on 2.1.219 (2026-08-04 spike: failed → fixed →
+// reconnect → connected with tools restored).
+func (s *Session) ReconnectMCPServer(ctx context.Context, serverName string) error {
+	serverName = strings.TrimSpace(serverName)
+	if serverName == "" {
+		return fmt.Errorf("claude: mcp_reconnect: server name required")
 	}
-	out := &MCPSetServersResult{}
-	if len(res.payload) > 0 {
-		if err := json.Unmarshal(res.payload, out); err != nil {
-			// Reconcile succeeded on the CLI side; an opaque payload
-			// shouldn't fail the call. Log via the wrapped error and
-			// return an empty diff so the caller still treats the
-			// outcome as success.
-			return &MCPSetServersResult{}, nil
-		}
+	res, err := s.sendControlRequest(ctx, "mcp_reconnect "+serverName, map[string]any{
+		"subtype":    "mcp_reconnect",
+		"serverName": serverName,
+	})
+	if err != nil {
+		return err
 	}
-	return out, nil
+	return interpretControlResponse(res, "mcp_reconnect "+serverName)
 }
 
 // MCPAuthResult mirrors the response shape of mcp_authenticate. AuthURL
@@ -115,18 +102,43 @@ func (s *Session) AuthenticateMCP(ctx context.Context, serverName string) (*MCPA
 
 // MCPServerStatus is a slim projection of a single entry in the
 // `control_response.response.mcpServers[]` array Claude returns for
-// `control_request{subtype:"mcp_status"}`. We decode only the fields
-// AO needs (name + raw status + optional error). The CLI also returns
-// `serverInfo`, `config`, `tools[]` per entry — those are skipped on
-// purpose because we already have AO-side renderings of all three and
-// the popup consumes them through the `mcp:status` channel projection.
+// `control_request{subtype:"mcp_status"}`. We decode name, raw status,
+// scope, error, and tool NAMES. The CLI also returns `serverInfo` and
+// `config` per entry — `config` is deliberately never decoded: it
+// carries the server's args/env verbatim, which can hold live tokens
+// (a real GITLAB_TOKEN was observed in the 2026-08-03 probe), and this
+// shape flows to the `mcp:status` wire channel.
 //
 // Use [MCPStatusFromRaw] to project Status onto the unified
 // `mcpstatus.Status` enum.
 type MCPServerStatus struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
+	Name   string        `json:"name"`
+	Status string        `json:"status"`
+	Scope  string        `json:"scope,omitempty"`
+	Error  string        `json:"error,omitempty"`
+	Tools  []MCPToolInfo `json:"tools,omitempty"`
+}
+
+// MCPToolInfo is the name-only projection of a tool entry in the
+// `mcp_status` response. Schemas and annotations are dropped by not
+// being declared, and `config` (args/env can carry live tokens) is
+// never decoded for the same reason.
+type MCPToolInfo struct {
+	Name string `json:"name"`
+}
+
+// ToolNames returns the entry's tool names in wire order.
+func (m MCPServerStatus) ToolNames() []string {
+	if len(m.Tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(m.Tools))
+	for _, t := range m.Tools {
+		if t.Name != "" {
+			names = append(names, t.Name)
+		}
+	}
+	return names
 }
 
 // QueryMCPStatus sends `control_request{subtype:"mcp_status"}` and

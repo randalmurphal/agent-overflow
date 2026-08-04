@@ -23,12 +23,6 @@ var ErrMCPProviderUnsupported = errors.New("mcp: unsupported provider")
 // provider-side operation it needs.
 var ErrMCPSessionUnavailable = errors.New("mcp: thread session not available")
 
-// ErrMCPReadOnlyEntry fires when a binding tries to mutate a Claude
-// plugin/cloud entry. Those are surfaced to the UI so the user can
-// toggle them on/off via `disabledMcpServers`, but AO doesn't own
-// their definitions.
-var ErrMCPReadOnlyEntry = errors.New("mcp: entry is not user-managed")
-
 const (
 	mcpProviderClaude = "claude"
 	mcpProviderCodex  = "codex"
@@ -44,41 +38,14 @@ const (
 	// flow, so a longer ceiling is intentional — too short and a
 	// distracted approval re-issues a fresh login.
 	mcpAuthRoundTripTimeout = 60 * time.Second
-	// mcpLiveReconcileTimeout bounds the per-thread live reconcile
-	// sent to an active provider session (Claude `mcp_set_servers`,
-	// Codex `RefreshMCPServers`). 30s is the same ceiling as
-	// reconcileCodexAfterStart and absorbs the provider's per-server
-	// connect fan-out without holding a thread-action lock forever.
-	mcpLiveReconcileTimeout = 30 * time.Second
+	// mcpLiveApplyTimeout bounds the RPCs that apply an MCP change to a
+	// live provider session: Claude `mcp_toggle` / `mcp_reconnect` and
+	// Codex `config/mcpServer/reload`. Enabling or reconnecting makes
+	// the provider actually connect the server, so the ceiling absorbs
+	// a cold stdio-server spawn (npx download and the like) without
+	// holding the caller forever when a server is wedged.
+	mcpLiveApplyTimeout = 30 * time.Second
 )
-
-// MCPServer is the wire shape every MCP binding speaks. It unifies
-// claudeconfig.Server (which carries Source + the per-workspace
-// Disabled flag) and codexconfig.Server (which carries a global
-// Enabled flag and Codex-specific transport names) into a single shape
-// the frontend renders without a provider branch. Transport values
-// stay provider-native ("stdio" | "http" | "sse" for Claude;
-// "stdio" | "streamable_http" for Codex) so the editor form can pick
-// the right input set.
-//
-// Disabled is the unified UI flag — true means "this server is not
-// active in the current scope". For Claude that translates to the
-// thread's workspace `disabledMcpServers` list; for Codex it
-// translates to the global `enabled = false` field in
-// ~/.codex/config.toml.
-type MCPServer struct {
-	Provider       string            `json:"provider"`
-	Name           string            `json:"name"`
-	Source         string            `json:"source,omitempty"`
-	Transport      string            `json:"transport"`
-	Command        string            `json:"command,omitempty"`
-	Args           []string          `json:"args,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	URL            string            `json:"url,omitempty"`
-	Headers        map[string]string `json:"headers,omitempty"`
-	BearerTokenEnv string            `json:"bearerTokenEnv,omitempty"`
-	Disabled       bool              `json:"disabled"`
-}
 
 // MCPAuthInitResult is the response shape for TriggerMcpAuth.
 type MCPAuthInitResult struct {
@@ -95,92 +62,48 @@ func (a *App) TriggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 	return a.triggerMcpAuth(threadID, name)
 }
 
-// ListMcpServers returns every MCP server visible to the caller's
-// scope. `provider` selects which config file we read. For Claude,
-// `workspacePath` resolves the `projects.<path>.disabledMcpServers`
-// list so the unified `Disabled` flag reflects this workspace; passing
-// an empty workspacePath returns the library with every entry as
-// enabled (used by the Settings UI's "library" view that doesn't
-// belong to a specific thread). For Codex, workspacePath is ignored —
-// the `enabled` flag is global.
-func (a *App) ListMcpServers(provider, workspacePath string) ([]MCPServer, error) {
-	switch provider {
-	case mcpProviderClaude:
-		return a.listClaudeMcpServers(workspacePath)
-	case mcpProviderCodex:
-		return a.listCodexMcpServers()
-	default:
-		return nil, fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, provider)
-	}
-}
-
-// CreateMcpServer adds a new entry to the provider's config file.
-// Plugin/cloud Claude entries are refused — AO only manages
-// SourceUser. The provider name is taken from input.Provider so the
-// binding stays a single Wails entry rather than two parallel ones.
-func (a *App) CreateMcpServer(input MCPServer) (MCPServer, error) {
-	switch input.Provider {
-	case mcpProviderClaude:
-		return a.createClaudeMcpServer(input)
-	case mcpProviderCodex:
-		return a.createCodexMcpServer(input)
-	default:
-		return MCPServer{}, fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, input.Provider)
-	}
-}
-
-// UpdateMcpServer replaces the entry at input.Provider+input.Name with
-// the new shape. Renaming is not supported.
-func (a *App) UpdateMcpServer(input MCPServer) (MCPServer, error) {
-	switch input.Provider {
-	case mcpProviderClaude:
-		return a.updateClaudeMcpServer(input)
-	case mcpProviderCodex:
-		return a.updateCodexMcpServer(input)
-	default:
-		return MCPServer{}, fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, input.Provider)
-	}
-}
-
-// DeleteMcpServer removes the entry. For Claude the call also strips
-// the name from every workspace's `disabledMcpServers` so re-adding
-// the server later doesn't silently surface as disabled.
-func (a *App) DeleteMcpServer(provider, name string) error {
-	switch provider {
-	case mcpProviderClaude:
-		return a.deleteClaudeMcpServer(name)
-	case mcpProviderCodex:
-		return a.deleteCodexMcpServer(name)
-	default:
-		return fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, provider)
-	}
-}
-
-// SetMcpServerEnabled toggles the unified Disabled flag for a server
-// in the calling thread's scope. Claude: writes to the workspace's
-// `disabledMcpServers` array. Codex: writes the global
-// `enabled = false` field. After the file write the binding tries to
-// reconcile the calling thread's live session so the change applies
-// without a manual restart (Claude: mcp_set_servers; Codex:
-// config/mcpServer/reload). Other live sessions outside this thread
-// pick up the change on their next session start — that's the
-// documented divergence from "every thread sees live disk state".
-func (a *App) SetMcpServerEnabled(threadID, name string, enabled bool) error {
+// ReconnectMcpServer re-runs the connection for one MCP server on the
+// thread's live session — the fix for "I authenticated / repaired the
+// server after the session spawned" without waiting out the idle
+// reaper. Claude reconnects the named server in place (`mcp_reconnect`);
+// Codex has no per-server primitive, so it re-reads config and
+// re-pushes MCP state into the loaded thread (`config/mcpServer/reload`).
+// Requires a live session: with none, the next session start connects
+// fresh anyway, so there is nothing to fix.
+func (a *App) ReconnectMcpServer(threadID, name string) error {
 	if a.store == nil {
-		return errors.New("set mcp server enabled: store unavailable")
+		return errors.New("reconnect mcp server: store unavailable")
 	}
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
-		return fmt.Errorf("set mcp server enabled: load thread: %w", err)
+		return fmt.Errorf("reconnect mcp server: load thread: %w", err)
 	}
+	sess, ok := a.sessionManager().get(threadID)
+	if !ok {
+		return ErrMCPSessionUnavailable
+	}
+	ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveApplyTimeout)
+	defer cancel()
 	switch thread.Provider {
 	case string(provider.Claude):
-		return a.setClaudeMcpDisabled(thread, name, !enabled)
+		if sess.claude == nil {
+			return ErrMCPSessionUnavailable
+		}
+		if err := sess.claude.ReconnectMCPServer(ctx, name); err != nil {
+			return err
+		}
 	case string(provider.Codex):
-		return a.setCodexMcpEnabled(thread, name, enabled)
+		if sess.codex == nil {
+			return ErrMCPSessionUnavailable
+		}
+		if err := sess.codex.RefreshMCPServers(ctx); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, thread.Provider)
 	}
+	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.Provider(thread.Provider), Name: name})
+	return nil
 }
 
 // GetMcpServerStatus returns the cached status for one server. If
@@ -194,7 +117,7 @@ func (a *App) GetMcpServerStatus(providerName, name string, force bool) (mcpstat
 		return mcpstatus.ServerStatus{}, err
 	}
 	key := mcpstatus.Key{Provider: prov, Name: name}
-	fetcher, err := a.mcpStatusFetcher(prov)
+	fetcher, err := a.mcpStatusFetcher(prov, "")
 	if err != nil {
 		return mcpstatus.ServerStatus{}, err
 	}
@@ -220,15 +143,18 @@ func (a *App) ListMcpServerStatuses(providerName string) ([]mcpstatus.ServerStat
 }
 
 // RefreshMcpServerStatus forces a fresh ephemeral fetch for the
-// named provider and returns the resulting list. The popup's
-// Refresh button uses this when the cached snapshot looks stale or
-// the user wants to re-check after editing a server.
-func (a *App) RefreshMcpServerStatus(providerName string) ([]mcpstatus.ServerStatus, error) {
+// named provider and returns the resulting list. The menu chains this
+// after a config-sourced listing whose cache looks cold, then re-lists
+// — it is how enabled plugin servers (invisible in ~/.claude.json)
+// reach the no-session view. workspacePath becomes the fetch cwd so
+// `claude mcp list` sees the workspace's project-scope servers; pass
+// "" for a workspace-agnostic refresh.
+func (a *App) RefreshMcpServerStatus(providerName, workspacePath string) ([]mcpstatus.ServerStatus, error) {
 	prov, err := parseMCPStatusProvider(providerName)
 	if err != nil {
 		return nil, err
 	}
-	fetcher, err := a.mcpStatusFetcher(prov)
+	fetcher, err := a.mcpStatusFetcher(prov, workspacePath)
 	if err != nil {
 		return nil, err
 	}
@@ -243,23 +169,25 @@ func (a *App) RefreshMcpServerStatus(providerName string) ([]mcpstatus.ServerSta
 }
 
 // mcpStatusFetcher returns the per-provider ephemeral fetcher,
-// configured with the user's installed CLI binary. Errors surface
-// when the user hasn't installed the provider's CLI; callers
-// translate that into a user-facing "binary not found" toast.
-func (a *App) mcpStatusFetcher(prov mcpstatus.Provider) (mcpstatus.Fetcher, error) {
+// configured with the user's installed CLI binary. cwd scopes the
+// fetch to a workspace (project-layer servers are cwd-dependent for
+// both CLIs); "" runs from the app's own cwd. Errors surface when the
+// user hasn't installed the provider's CLI; callers translate that
+// into a user-facing "binary not found" toast.
+func (a *App) mcpStatusFetcher(prov mcpstatus.Provider, cwd string) (mcpstatus.Fetcher, error) {
 	switch prov {
 	case mcpstatus.ProviderClaude:
 		bin := a.providerBinaryPath(string(provider.Claude))
 		if bin == "" {
 			return nil, fmt.Errorf("mcp status: claude binary not configured")
 		}
-		return &claude.MCPStatusFetcher{Binary: bin}, nil
+		return &claude.MCPStatusFetcher{Binary: bin, Cwd: cwd}, nil
 	case mcpstatus.ProviderCodex:
 		bin := a.providerBinaryPath(string(provider.Codex))
 		if bin == "" {
 			return nil, fmt.Errorf("mcp status: codex binary not configured")
 		}
-		return &codex.MCPStatusFetcher{Binary: bin}, nil
+		return &codex.MCPStatusFetcher{Binary: bin, Cwd: cwd}, nil
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrMCPProviderUnsupported, prov)
 	}

@@ -1613,6 +1613,19 @@ CREATE INDEX idx_work_items_automation_source_ref
 		SQL:     rebuildItemsCommandResultV48SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 49,
+		Name:    "drop_per_thread_mcp_state",
+		// Provider-native MCP config replaced AO's per-thread MCP snapshot
+		// model: Claude's `disabledMcpServers` (per-workspace in
+		// ~/.claude.json, written live by the CLI's own mcp_toggle) and
+		// Codex's global `enabled` flag in ~/.codex/config.toml are the only
+		// durable toggle state now, so the AO-side copies are dead data.
+		// `disabled_mcp_servers`' CHECK references only the column itself, so
+		// SQLite drops the constraint with the column — no threads rebuild.
+		SQL: `ALTER TABLE threads DROP COLUMN disabled_mcp_servers;
+DROP TABLE new_thread_mcp_defaults;`,
+	},
 }
 
 // rebuildWorkItemsSoftStopV44SQL adds `soft_stop` — a standing request to stop

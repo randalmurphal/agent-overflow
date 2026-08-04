@@ -441,18 +441,21 @@ func (s *Session) dispatchMCPOAuthCompletion(params json.RawMessage) {
 	if handler == nil {
 		return
 	}
+	// Wire field is `name` (McpServerOauthLoginCompletedNotification,
+	// camelCase serde) — decoding `serverName` here meant OAuth completion
+	// never resolved in AO.
 	var parsed struct {
-		ServerName string `json:"serverName"`
-		Success    bool   `json:"success"`
-		Error      string `json:"error,omitempty"`
+		Name    string `json:"name"`
+		Success bool   `json:"success"`
+		Error   string `json:"error,omitempty"`
 	}
 	if err := json.Unmarshal(params, &parsed); err != nil {
 		log.Printf("codex: decode mcpServer/oauthLogin/completed: %v", err)
 		return
 	}
-	if parsed.ServerName == "" {
-		log.Printf("codex: mcpServer/oauthLogin/completed: missing serverName")
+	if parsed.Name == "" {
+		log.Printf("codex: mcpServer/oauthLogin/completed: missing name")
 		return
 	}
-	handler(parsed.ServerName, parsed.Success, parsed.Error)
+	handler(parsed.Name, parsed.Success, parsed.Error)
 }

@@ -9,7 +9,6 @@ export const SETTINGS_SECTIONS = [
   { id: 'providers', label: 'Providers' },
   { id: 'editor', label: 'Editor' },
   { id: 'projects', label: 'Projects' },
-  { id: 'mcp', label: 'MCP Servers' },
   { id: 'network', label: 'Network' },
   { id: 'discussions', label: 'Discussions' },
   { id: 'keybindings', label: 'Keybindings' },

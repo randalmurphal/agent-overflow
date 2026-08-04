@@ -55,7 +55,6 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			sawInit = true
 			if providerType == string(provider.Claude) {
 				a.ingestClaudeInitMCPStatus(evt.Meta)
-				go a.reconcileClaudeMCPOnInit(threadID)
 			}
 		}
 

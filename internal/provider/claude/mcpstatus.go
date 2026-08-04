@@ -140,12 +140,14 @@ func parseMCPList(out string, now time.Time) []mcpstatus.ServerStatus {
 }
 
 // MCPStatusFromRaw projects Claude's wire-level `client.type` enum onto
-// the unified mcpstatus.Status. The four values seen in
-// `system/init.mcp_servers[].status` are:
+// the unified mcpstatus.Status. The five values seen in
+// `system/init.mcp_servers[].status` and the `mcp_status`
+// control_response are:
 //   - "connected"    → StatusConnected
 //   - "needs-auth"   → StatusNeedsAuth
 //   - "failed"       → StatusFailed
 //   - "pending"      → StatusStarting
+//   - "disabled"     → StatusDisabled
 //
 // Any other value → StatusUnknown. The caller should preserve the
 // original string in ServerStatus.Raw so forensics survive.
@@ -159,6 +161,8 @@ func MCPStatusFromRaw(raw string) mcpstatus.Status {
 		return mcpstatus.StatusFailed
 	case "pending", "starting":
 		return mcpstatus.StatusStarting
+	case "disabled":
+		return mcpstatus.StatusDisabled
 	default:
 		return mcpstatus.StatusUnknown
 	}

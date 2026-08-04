@@ -170,4 +170,3 @@ func (a *App) hasActiveSession(threadID string) bool {
 	_, ok := a.sessionManager().get(threadID)
 	return ok
 }
-

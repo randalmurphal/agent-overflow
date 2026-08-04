@@ -12,7 +12,6 @@
   import EditorSection from './EditorSection.svelte';
   import ProjectsSettings from './ProjectsSettings.svelte';
   import KeybindingsSettings from './KeybindingsSettings.svelte';
-  import McpServersSettings from './McpServersSettings.svelte';
   import ObservabilitySettings from './ObservabilitySettings.svelte';
   import UpdatesSettings from './UpdatesSettings.svelte';
   import UpdateBadge from '../shared/UpdateBadge.svelte';
@@ -164,8 +163,6 @@
           </div>
         {:else if activeSection === 'discussions'}
           <DiscussionsSettings />
-        {:else if activeSection === 'mcp'}
-          <McpServersSettings />
         {:else if activeSection === 'keybindings'}
           <KeybindingsSettings />
         {:else if activeSection === 'observability'}

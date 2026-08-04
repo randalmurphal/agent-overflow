@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -51,67 +52,123 @@ func writeCodexConfig(t *testing.T, path, body string) {
 	}
 }
 
-// TestListMcpServers_Claude_UserAndPluginWithWorkspaceDisabledFlag
-// asserts that user + plugin entries both surface to the UI, the
-// workspace's disabledMcpServers list flows through to the unified
-// `Disabled` flag, and the Source discriminator carries plugin lines
-// untouched.
-func TestListMcpServers_Claude_UserAndPluginWithWorkspaceDisabledFlag(t *testing.T) {
+// writeClaudePluginFixture installs a fake enabled plugin with one MCP
+// server into the claude home next to claudePath, so config listings
+// can enumerate `plugin:<plugin>:<server>` without spawning anything.
+// Safe to call repeatedly: settings.json and installed_plugins.json
+// accumulate entries.
+func writeClaudePluginFixture(t *testing.T, claudePath, plugin, server string) {
+	t.Helper()
+	home := filepath.Join(filepath.Dir(claudePath), ".claude")
+	install := filepath.Join(home, "plugins", "cache", "market", plugin, "1.0.0")
+	if err := os.MkdirAll(install, 0o755); err != nil {
+		t.Fatalf("mkdir plugin install: %v", err)
+	}
+	writeJSONFixture(t, filepath.Join(install, ".mcp.json"), map[string]any{
+		server: map[string]any{"command": "stub"},
+	})
+
+	pluginID := plugin + "@market"
+	mergeJSONFixture(t, filepath.Join(home, "settings.json"), func(doc map[string]any) {
+		enabled, _ := doc["enabledPlugins"].(map[string]any)
+		if enabled == nil {
+			enabled = map[string]any{}
+		}
+		enabled[pluginID] = true
+		doc["enabledPlugins"] = enabled
+	})
+	mergeJSONFixture(t, filepath.Join(home, "plugins", "installed_plugins.json"), func(doc map[string]any) {
+		doc["version"] = 2
+		plugins, _ := doc["plugins"].(map[string]any)
+		if plugins == nil {
+			plugins = map[string]any{}
+		}
+		plugins[pluginID] = []any{map[string]any{"scope": "user", "installPath": install}}
+		doc["plugins"] = plugins
+	})
+}
+
+func writeJSONFixture(t *testing.T, path string, doc map[string]any) {
+	t.Helper()
+	data, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal fixture %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write fixture %s: %v", path, err)
+	}
+}
+
+func mergeJSONFixture(t *testing.T, path string, mutate func(map[string]any)) {
+	t.Helper()
+	doc := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &doc); err != nil {
+			t.Fatalf("parse fixture %s: %v", path, err)
+		}
+	}
+	mutate(doc)
+	writeJSONFixture(t, path, doc)
+}
+
+// TestListWorkspaceMcpServers_Claude_UserAndPluginWithWorkspaceDisabledFlag
+// asserts the config listing: user entries and installed-plugin
+// servers both surface, the workspace's disabledMcpServers list flows
+// through to Disabled (and the "disabled" status), claude.ai cloud
+// connectors are filtered out, and rows are labeled Source "config".
+// The disable is workspace-scoped: another workspace sees the same
+// membership fully enabled.
+func TestListWorkspaceMcpServers_Claude_UserAndPluginWithWorkspaceDisabledFlag(t *testing.T) {
 	app, claudePath, _ := newMCPTestApp(t)
-	// Plugin entries live only in a workspace's disabledMcpServers
-	// list (Claude itself owns the plugin definitions). Place the
-	// plugin name in /workspace/a so the listing surfaces it; the fs
-	// user entry is in workspace A's disabled list too so we can
-	// assert the unified Disabled flag flows through workspace-scoped.
+	writeClaudePluginFixture(t, claudePath, "foo", "bar")
 	writeClaudeConfig(t, claudePath, `{
   "mcpServers": {
     "fs": {"type": "stdio", "command": "fs-bin", "args": ["--root", "/tmp"]}
   },
   "projects": {
-    "/workspace/a": {"disabledMcpServers": ["fs", "plugin:foo:bar"]},
+    "/workspace/a": {"disabledMcpServers": ["fs", "plugin:foo:bar", "claude.ai Gmail"]},
     "/workspace/b": {}
   }
 }`)
 
-	gotA, err := app.ListMcpServers("claude", "/workspace/a")
+	gotA, err := app.ListWorkspaceMcpServers("claude", "/workspace/a")
 	if err != nil {
-		t.Fatalf("ListMcpServers /workspace/a: %v", err)
+		t.Fatalf("ListWorkspaceMcpServers /workspace/a: %v", err)
 	}
 	if len(gotA) != 2 {
-		t.Fatalf("workspace A: want 2 entries (fs + plugin), got %d (%#v)", len(gotA), gotA)
+		t.Fatalf("workspace A: want 2 entries (fs + plugin, claude.ai filtered), got %d (%#v)", len(gotA), gotA)
 	}
-	byName := map[string]MCPServer{}
-	for _, srv := range gotA {
-		byName[srv.Name] = srv
+	fs := findServer(gotA, "fs")
+	if !fs.Disabled || fs.Scope != string(claudeconfig.SourceUser) {
+		t.Errorf("workspace A fs: want disabled+user, got disabled=%v scope=%q", fs.Disabled, fs.Scope)
 	}
-	if fs := byName["fs"]; !fs.Disabled || fs.Source != string(claudeconfig.SourceUser) {
-		t.Errorf("workspace A fs: want disabled+user, got disabled=%v source=%q", fs.Disabled, fs.Source)
+	if fs.Status != string(mcpstatus.StatusDisabled) {
+		t.Errorf("workspace A fs status = %q, want disabled", fs.Status)
 	}
-	if pl := byName["plugin:foo:bar"]; pl.Source == string(claudeconfig.SourceUser) {
-		t.Errorf("workspace A plugin entry surfaced as user-source: %#v", pl)
+	if fs.Source != "config" {
+		t.Errorf("workspace A fs source = %q, want config", fs.Source)
+	}
+	pl := findServer(gotA, "plugin:foo:bar")
+	if pl.Name == "" || !pl.Disabled || pl.Scope != string(claudeconfig.SourcePlugin) {
+		t.Errorf("workspace A plugin row = %#v, want disabled plugin-scope row", pl)
 	}
 
-	gotB, err := app.ListMcpServers("claude", "/workspace/b")
+	gotB, err := app.ListWorkspaceMcpServers("claude", "/workspace/b")
 	if err != nil {
-		t.Fatalf("ListMcpServers /workspace/b: %v", err)
+		t.Fatalf("ListWorkspaceMcpServers /workspace/b: %v", err)
 	}
-	bByName := map[string]MCPServer{}
-	for _, srv := range gotB {
-		bByName[srv.Name] = srv
-	}
-	if fs := bByName["fs"]; fs.Disabled {
+	if fs := findServer(gotB, "fs"); fs.Disabled {
 		t.Errorf("workspace B fs: want enabled, got disabled (disabled flag leaked across workspaces)")
 	}
-	if _, ok := bByName["plugin:foo:bar"]; ok {
-		t.Errorf("workspace B should not surface plugin entry disabled only in workspace A: %#v", bByName)
+	if pl := findServer(gotB, "plugin:foo:bar"); pl.Name == "" || pl.Disabled {
+		t.Errorf("workspace B plugin row = %#v, want enabled (plugins are installation-global; only A disabled it)", pl)
 	}
 }
 
-// TestListMcpServers_Codex_ReadsGlobalEnabledFlag confirms the Codex
-// `enabled = false` global flag flows through to the unified Disabled
-// field, and workspacePath is ignored (Codex's flag is not workspace-
-// scoped).
-func TestListMcpServers_Codex_ReadsGlobalEnabledFlag(t *testing.T) {
+// TestListWorkspaceMcpServers_Codex_ReadsGlobalEnabledFlag confirms the
+// Codex `enabled = false` global flag flows through to Disabled, and
+// workspacePath is ignored (Codex's flag is not workspace-scoped).
+func TestListWorkspaceMcpServers_Codex_ReadsGlobalEnabledFlag(t *testing.T) {
 	app, _, codexPath := newMCPTestApp(t)
 	writeCodexConfig(t, codexPath, `
 [mcp_servers.github]
@@ -122,181 +179,35 @@ enabled = false
 [mcp_servers.linear]
 url = "https://mcp.linear.app/api"
 `)
-	got, err := app.ListMcpServers("codex", "/any/workspace/ignored")
+	got, err := app.ListWorkspaceMcpServers("codex", "/any/workspace/ignored")
 	if err != nil {
-		t.Fatalf("ListMcpServers codex: %v", err)
+		t.Fatalf("ListWorkspaceMcpServers codex: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("want 2 entries, got %d", len(got))
 	}
-	byName := map[string]MCPServer{}
-	for _, srv := range got {
-		byName[srv.Name] = srv
+	if gh := findServer(got, "github"); !gh.Disabled || gh.Status != string(mcpstatus.StatusDisabled) {
+		t.Errorf("github: want disabled, got %#v", gh)
 	}
-	if !byName["github"].Disabled {
-		t.Errorf("github: want disabled, got %#v", byName["github"])
-	}
-	if byName["linear"].Disabled {
+	if findServer(got, "linear").Disabled {
 		t.Errorf("linear: want enabled, got disabled")
-	}
-	if byName["linear"].Transport != codexconfig.TransportStreamable {
-		t.Errorf("linear transport: want streamable_http, got %q", byName["linear"].Transport)
 	}
 }
 
-// TestListMcpServers_UnsupportedProvider returns ErrMCPProviderUnsupported.
-func TestListMcpServers_UnsupportedProvider(t *testing.T) {
+// TestListWorkspaceMcpServers_UnsupportedProvider returns ErrMCPProviderUnsupported.
+func TestListWorkspaceMcpServers_UnsupportedProvider(t *testing.T) {
 	app, _, _ := newMCPTestApp(t)
-	_, err := app.ListMcpServers("gemini", "")
+	_, err := app.ListWorkspaceMcpServers("gemini", "")
 	if !errors.Is(err, ErrMCPProviderUnsupported) {
 		t.Fatalf("want ErrMCPProviderUnsupported, got %v", err)
 	}
 }
 
-func TestNewThreadMCPDefaultsOverrideFutureThreadsWithoutMutatingProviderConfig(t *testing.T) {
-	app, claudePath, _ := newMCPTestApp(t)
-	workspace := t.TempDir()
-	writeClaudeConfig(t, claudePath, fmt.Sprintf(`{
-  "mcpServers": {
-    "fs": {"type": "stdio", "command": "fs-bin", "args": ["--root", "/tmp"]}
-  },
-  "projects": {
-    %q: {"disabledMcpServers": ["fs"]}
-  }
-}`, workspace))
-
-	initial, err := app.ListMcpServersForNewThread("claude", workspace)
-	if err != nil {
-		t.Fatalf("ListMcpServersForNewThread initial: %v", err)
-	}
-	if !findServer(initial, "fs").Disabled {
-		t.Fatal("initial new-thread list should fall back to provider config disabled state")
-	}
-
-	if err := app.SetNewThreadMcpServerEnabled("claude", workspace, "fs", true); err != nil {
-		t.Fatalf("SetNewThreadMcpServerEnabled: %v", err)
-	}
-	next, err := app.ListMcpServersForNewThread("claude", workspace)
-	if err != nil {
-		t.Fatalf("ListMcpServersForNewThread next: %v", err)
-	}
-	if findServer(next, "fs").Disabled {
-		t.Fatal("new-thread default override should enable fs")
-	}
-
-	providerScoped, err := app.ListMcpServers("claude", workspace)
-	if err != nil {
-		t.Fatalf("ListMcpServers provider-scoped: %v", err)
-	}
-	if !findServer(providerScoped, "fs").Disabled {
-		t.Fatal("provider config should remain disabled after new-thread override")
-	}
-
-	project, err := app.ensureProjectForWorkspace(workspace)
-	if err != nil {
-		t.Fatalf("ensureProjectForWorkspace: %v", err)
-	}
-	thread, err := app.CreateThread(CreateThreadOptions{
-		ProjectID:         project.ID,
-		Provider:          "claude",
-		Model:             "claude-sonnet-4-6",
-		WorkspaceOverride: workspace,
-	})
-	if err != nil {
-		t.Fatalf("CreateThread: %v", err)
-	}
-	disabled, snapshotted, err := app.store.GetDisabledMcpServers(thread.ID)
-	if err != nil {
-		t.Fatalf("GetDisabledMcpServers: %v", err)
-	}
-	if !snapshotted {
-		t.Fatal("created thread should snapshot MCP defaults")
-	}
-	if len(disabled) != 0 {
-		t.Fatalf("created thread disabled MCP servers = %v, want empty", disabled)
-	}
-}
-
-func TestNewThreadMCPDefaultsAreWorkspaceScopedForClaude(t *testing.T) {
-	app, claudePath, _ := newMCPTestApp(t)
-	workspaceA := t.TempDir()
-	workspaceB := t.TempDir()
-	writeClaudeConfig(t, claudePath, fmt.Sprintf(`{
-  "mcpServers": {
-    "fs": {"type": "stdio", "command": "fs-bin"}
-  },
-  "projects": {
-    %q: {"disabledMcpServers": ["fs"]},
-    %q: {}
-  }
-}`, workspaceA, workspaceB))
-
-	if err := app.SetNewThreadMcpServerEnabled("claude", workspaceA, "fs", true); err != nil {
-		t.Fatalf("SetNewThreadMcpServerEnabled workspaceA: %v", err)
-	}
-	listA, err := app.ListMcpServersForNewThread("claude", workspaceA)
-	if err != nil {
-		t.Fatalf("ListMcpServersForNewThread workspaceA: %v", err)
-	}
-	if findServer(listA, "fs").Disabled {
-		t.Fatal("workspace A override should enable fs")
-	}
-	listB, err := app.ListMcpServersForNewThread("claude", workspaceB)
-	if err != nil {
-		t.Fatalf("ListMcpServersForNewThread workspaceB: %v", err)
-	}
-	if findServer(listB, "fs").Disabled {
-		t.Fatal("workspace A override leaked into workspace B")
-	}
-}
-
-func TestSetMcpServerEnabled_ClaudeValidatesBeforeMutatingConfig(t *testing.T) {
-	app, claudePath, _ := newMCPTestApp(t)
-	workspace := t.TempDir()
-	writeClaudeConfig(t, claudePath, fmt.Sprintf(`{
-  "projects": {
-    %q: {"disabledMcpServers": ["plugin:foo:bar"]}
-  }
-}`, workspace))
-	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-sonnet-4-5", "chat")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-
-	if err := app.SetMcpServerEnabled(thread.ID, "missing", false); err == nil {
-		t.Fatal("SetMcpServerEnabled missing server error = nil, want validation error")
-	}
-	raw, err := os.ReadFile(claudePath)
-	if err != nil {
-		t.Fatalf("read claude config: %v", err)
-	}
-	if strings.Contains(string(raw), "missing") {
-		t.Fatalf("missing server was written before validation:\n%s", raw)
-	}
-
-	if err := app.SetMcpServerEnabled(thread.ID, "plugin:foo:bar", true); err != nil {
-		t.Fatalf("SetMcpServerEnabled enable plugin: %v", err)
-	}
-	defaults, found, err := app.store.GetNewThreadDisabledMCPServers("claude", workspace)
-	if err != nil {
-		t.Fatalf("GetNewThreadDisabledMCPServers: %v", err)
-	}
-	if !found {
-		t.Fatal("plugin toggle should persist a new-thread defaults row")
-	}
-	if len(defaults) != 0 {
-		t.Fatalf("plugin defaults = %v, want empty enabled set", defaults)
-	}
-	list, err := app.ListMcpServers("claude", workspace)
-	if err != nil {
-		t.Fatalf("ListMcpServers: %v", err)
-	}
-	if found := findServer(list, "plugin:foo:bar"); found.Name != "" {
-		t.Fatalf("enabled disabled-only plugin should disappear from native disabled-only list: %#v", found)
-	}
-}
-
-func TestBuildCodexMCPServersForThreadEmitsExplicitDisabledOverlays(t *testing.T) {
+// TestListWorkspaceMcpServers_CacheStatusOverlay pins the fallback row
+// shaping: an enabled server picks up the cached connection status and
+// tool names, while a disabled server reports "disabled" even when a
+// stale cache entry claims it was connected.
+func TestListWorkspaceMcpServers_CacheStatusOverlay(t *testing.T) {
 	app, _, codexPath := newMCPTestApp(t)
 	writeCodexConfig(t, codexPath, `
 [mcp_servers.github]
@@ -304,221 +215,398 @@ command = "gh-mcp"
 
 [mcp_servers.linear]
 url = "https://mcp.linear.app/api"
+enabled = false
 `)
-	thread, err := createTestThread(t, app, string(provider.Codex), t.TempDir(), "gpt-5.2", "chat")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-
-	if err := app.store.SetDisabledMcpServers(thread.ID, nil); err != nil {
-		t.Fatalf("SetDisabledMcpServers empty: %v", err)
-	}
-	allEnabled, err := app.buildCodexMCPServersForThread(thread)
-	if err != nil {
-		t.Fatalf("buildCodexMCPServersForThread all enabled: %v", err)
-	}
-	if len(allEnabled) != 2 {
-		t.Fatalf("all-enabled overlay len = %d, want 2 (%#v)", len(allEnabled), allEnabled)
-	}
-
-	if err := app.store.SetDisabledMcpServers(thread.ID, []string{"github", "linear"}); err != nil {
-		t.Fatalf("SetDisabledMcpServers all disabled: %v", err)
-	}
-	allDisabled, err := app.buildCodexMCPServersForThread(thread)
-	if err != nil {
-		t.Fatalf("buildCodexMCPServersForThread all disabled: %v", err)
-	}
-	if len(allDisabled) != 2 {
-		t.Fatalf("all-disabled overlay len = %d, want 2 explicit entries (%#v)", len(allDisabled), allDisabled)
-	}
-	for _, name := range []string{"github", "linear"} {
-		if enabled, ok := allDisabled[name].(map[string]any)["enabled"].(bool); !ok || enabled {
-			t.Fatalf("all-disabled overlay %q = %#v, want enabled:false", name, allDisabled[name])
-		}
-	}
-}
-
-// TestCreateMcpServer_Claude_WritesToFile confirms the binding wires
-// through to the Claude adapter on input.Provider=="claude" and
-// produces a parseable on-disk entry.
-func TestCreateMcpServer_Claude_WritesToFile(t *testing.T) {
-	app, claudePath, _ := newMCPTestApp(t)
-	created, err := app.CreateMcpServer(MCPServer{
-		Provider:  "claude",
-		Name:      "everything",
-		Transport: "stdio",
-		Command:   "npx",
-		Args:      []string{"-y", "@modelcontextprotocol/server-everything"},
-	})
-	if err != nil {
-		t.Fatalf("CreateMcpServer: %v", err)
-	}
-	if created.Provider != "claude" || created.Name != "everything" {
-		t.Errorf("unexpected returned shape: %#v", created)
-	}
-	raw, err := os.ReadFile(claudePath)
-	if err != nil {
-		t.Fatalf("read claude.json: %v", err)
-	}
-	if !strings.Contains(string(raw), `"everything"`) {
-		t.Errorf("expected entry on disk, got:\n%s", raw)
-	}
-}
-
-// TestCreateMcpServer_Codex_WritesTomlSection confirms the binding
-// emits a `[mcp_servers.<name>]` section into the TOML file when the
-// provider discriminator is "codex".
-func TestCreateMcpServer_Codex_WritesTomlSection(t *testing.T) {
-	app, _, codexPath := newMCPTestApp(t)
-	if _, err := app.CreateMcpServer(MCPServer{
-		Provider:  "codex",
-		Name:      "github",
-		Transport: codexconfig.TransportStdio,
-		Command:   "gh-mcp",
-		Args:      []string{"serve"},
-	}); err != nil {
-		t.Fatalf("CreateMcpServer: %v", err)
-	}
-	raw, err := os.ReadFile(codexPath)
-	if err != nil {
-		t.Fatalf("read codex toml: %v", err)
-	}
-	if !strings.Contains(string(raw), "[mcp_servers.github]") {
-		t.Errorf("expected section header on disk, got:\n%s", raw)
-	}
-}
-
-// TestCreateMcpServer_RejectsPluginSource asserts that AO refuses to
-// create a Claude entry tagged plugin/cloud — only user-source entries
-// live in the top-level mcpServers map.
-func TestCreateMcpServer_RejectsPluginSource(t *testing.T) {
-	app, _, _ := newMCPTestApp(t)
-	_, err := app.CreateMcpServer(MCPServer{
-		Provider:  "claude",
-		Name:      "plugin:foo:bar",
-		Source:    string(claudeconfig.SourcePlugin),
-		Transport: "stdio",
-		Command:   "x",
-	})
-	if !errors.Is(err, ErrMCPReadOnlyEntry) {
-		t.Fatalf("want ErrMCPReadOnlyEntry, got %v", err)
-	}
-}
-
-// TestCreateMcpServer_UnsupportedProvider returns the sentinel.
-func TestCreateMcpServer_UnsupportedProvider(t *testing.T) {
-	app, _, _ := newMCPTestApp(t)
-	_, err := app.CreateMcpServer(MCPServer{Provider: "gemini", Name: "x"})
-	if !errors.Is(err, ErrMCPProviderUnsupported) {
-		t.Fatalf("want ErrMCPProviderUnsupported, got %v", err)
-	}
-}
-
-// TestUpdateMcpServer_InvalidatesStatusCache pins the contract: after
-// editing an entry, the matching status-cache slot is dropped so the
-// UI doesn't show a stale "connected" against a now-broken config.
-// Seeds the cache via Put then asserts the update path Invalidates.
-func TestUpdateMcpServer_InvalidatesStatusCache(t *testing.T) {
-	app, claudePath, _ := newMCPTestApp(t)
-	writeClaudeConfig(t, claudePath, `{
-  "mcpServers": {
-    "fs": {"type": "stdio", "command": "fs-bin"}
-  }
-}`)
-	key := mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "fs"}
 	app.mcpStatus().Put(mcpstatus.ServerStatus{
-		Key:    key,
+		Key:    mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: "github"},
+		Status: mcpstatus.StatusConnected,
+		Tools:  []string{"issues_list", "pr_read"},
+		Source: mcpstatus.SourceLiveSession,
+	})
+	app.mcpStatus().Put(mcpstatus.ServerStatus{
+		Key:    mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: "linear"},
 		Status: mcpstatus.StatusConnected,
 		Source: mcpstatus.SourceLiveSession,
 	})
-	if _, ok := app.mcpStatus().Get(key); !ok {
-		t.Fatalf("preflight: cache should contain seed")
+
+	got, err := app.ListWorkspaceMcpServers("codex", "")
+	if err != nil {
+		t.Fatalf("ListWorkspaceMcpServers: %v", err)
 	}
-	if _, err := app.UpdateMcpServer(MCPServer{
-		Provider:  "claude",
-		Name:      "fs",
-		Transport: "stdio",
-		Command:   "fs-bin-v2",
-	}); err != nil {
-		t.Fatalf("UpdateMcpServer: %v", err)
+	gh := findServer(got, "github")
+	if gh.Status != string(mcpstatus.StatusConnected) {
+		t.Errorf("github status = %q, want connected from cache", gh.Status)
 	}
-	if _, ok := app.mcpStatus().Get(key); ok {
-		t.Errorf("cache should be invalidated for %+v after update", key)
+	if len(gh.Tools) != 2 {
+		t.Errorf("github tools = %v, want cached tool names", gh.Tools)
+	}
+	if ln := findServer(got, "linear"); ln.Status != string(mcpstatus.StatusDisabled) {
+		t.Errorf("linear status = %q, want disabled (config wins over stale cache)", ln.Status)
 	}
 }
 
-// TestDeleteMcpServer_Claude_StripsDisabledList confirms that deleting
-// a Claude entry also removes its name from every workspace's
-// disabledMcpServers list — re-adding the server later must not
-// silently surface as disabled.
-func TestDeleteMcpServer_Claude_StripsDisabledList(t *testing.T) {
+// TestListWorkspaceMcpServers_Claude_PluginRowsFromManifests pins the
+// plugin-visibility contract for the no-session view: membership comes
+// from plugin manifests (enabledPlugins + installed_plugins.json), so
+// the rows exist with zero spawns and no cache warm-up; the status
+// cache only overlays connection state. A cross-workspace "disabled"
+// cache entry degrades to unknown instead of contradicting the enabled
+// config, and a config-disabled plugin keeps its disabled row no
+// matter what the cache claims.
+func TestListWorkspaceMcpServers_Claude_PluginRowsFromManifests(t *testing.T) {
+	app, claudePath, _ := newMCPTestApp(t)
+	writeClaudePluginFixture(t, claudePath, "playwright", "playwright")
+	writeClaudePluginFixture(t, claudePath, "other", "x")
+	writeClaudePluginFixture(t, claudePath, "off", "svc")
+	writeClaudeConfig(t, claudePath, `{
+  "mcpServers": {},
+  "projects": {
+    "/workspace/a": {"disabledMcpServers": ["plugin:off:svc"]}
+  }
+}`)
+
+	// No cache at all: rows still exist (the startup-badge case).
+	cold, err := app.ListWorkspaceMcpServers("claude", "/workspace/a")
+	if err != nil {
+		t.Fatalf("ListWorkspaceMcpServers cold: %v", err)
+	}
+	if len(cold) != 3 {
+		t.Fatalf("cold: want 3 manifest rows, got %d (%#v)", len(cold), cold)
+	}
+	if pw := findServer(cold, "plugin:playwright:playwright"); pw.Disabled || pw.Status != string(mcpstatus.StatusUnknown) {
+		t.Errorf("cold playwright row = %#v, want enabled with unknown status", pw)
+	}
+
+	put := func(name string, status mcpstatus.Status, tools ...string) {
+		app.mcpStatus().Put(mcpstatus.ServerStatus{
+			Key:    mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: name},
+			Status: status,
+			Tools:  tools,
+			Source: mcpstatus.SourceEphemeralFetch,
+		})
+	}
+	put("plugin:playwright:playwright", mcpstatus.StatusConnected, "browser_click")
+	put("plugin:other:x", mcpstatus.StatusDisabled)
+	put("plugin:off:svc", mcpstatus.StatusConnected)
+
+	got, err := app.ListWorkspaceMcpServers("claude", "/workspace/a")
+	if err != nil {
+		t.Fatalf("ListWorkspaceMcpServers: %v", err)
+	}
+	pw := findServer(got, "plugin:playwright:playwright")
+	if pw.Disabled || pw.Source != "config" || pw.Scope != string(claudeconfig.SourcePlugin) {
+		t.Fatalf("playwright row = %#v, want enabled config-sourced plugin row", pw)
+	}
+	if pw.Status != string(mcpstatus.StatusConnected) || len(pw.Tools) != 1 {
+		t.Errorf("playwright row = %#v, want cached connected status + tools", pw)
+	}
+	if other := findServer(got, "plugin:other:x"); other.Disabled || other.Status != string(mcpstatus.StatusUnknown) {
+		t.Errorf("plugin:other:x = %#v, want enabled row with unknown status (cross-workspace disabled cache entry)", other)
+	}
+	if off := findServer(got, "plugin:off:svc"); !off.Disabled || off.Status != string(mcpstatus.StatusDisabled) {
+		t.Errorf("plugin:off:svc = %#v, want config-disabled row (cache must not resurrect it)", off)
+	}
+}
+
+// TestListWorkspaceMcpServers_Claude_CacheOnlyNamesNeverCreateRows pins
+// the no-leak contract: the status cache is a status overlay, never
+// membership. Cached names with no config/manifest definition — bare
+// names from another workspace's .mcp.json, plugin-qualified names
+// from an uninstalled plugin, cloud connectors — must not appear.
+func TestListWorkspaceMcpServers_Claude_CacheOnlyNamesNeverCreateRows(t *testing.T) {
+	app, claudePath, _ := newMCPTestApp(t)
+	writeClaudeConfig(t, claudePath, `{"mcpServers": {}, "projects": {}}`)
+	for _, name := range []string{"context7", "plugin:playwright:playwright", "claude.ai Gmail"} {
+		app.mcpStatus().Put(mcpstatus.ServerStatus{
+			Key:    mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: name},
+			Status: mcpstatus.StatusConnected,
+			Source: mcpstatus.SourceEphemeralFetch,
+		})
+	}
+	got, err := app.ListWorkspaceMcpServers("claude", "/workspace/a")
+	if err != nil {
+		t.Fatalf("ListWorkspaceMcpServers: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("cache-only names leaked into the listing: %#v", got)
+	}
+}
+
+// TestListWorkspaceMcpServers_Claude_HidesOrphanDisabledOnlyNames pins
+// the orphan filter: a disabledMcpServers name with no definition
+// anywhere (no user/local entry, no installed plugin) is a leftover
+// Claude Code itself doesn't list — AO must not invent a row for it,
+// and a cache entry for the name (another workspace's project-scope
+// server) must not resurrect it either.
+func TestListWorkspaceMcpServers_Claude_HidesOrphanDisabledOnlyNames(t *testing.T) {
 	app, claudePath, _ := newMCPTestApp(t)
 	writeClaudeConfig(t, claudePath, `{
+  "projects": {
+    "/workspace/a": {"disabledMcpServers": ["code-index", "plugin:foo:bar"]}
+  }
+}`)
+	app.mcpStatus().Put(mcpstatus.ServerStatus{
+		Key:    mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "code-index"},
+		Status: mcpstatus.StatusConnected,
+		Source: mcpstatus.SourceEphemeralFetch,
+	})
+
+	got, err := app.ListWorkspaceMcpServers("claude", "/workspace/a")
+	if err != nil {
+		t.Fatalf("ListWorkspaceMcpServers: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("orphan disabled-only names should be hidden, got %#v", got)
+	}
+}
+
+// TestListWorkspaceMcpServers_Claude_ListsLocalScopeServers pins the
+// local-scope surface: servers added with `claude mcp add --scope
+// local` live under projects.<workspace>.mcpServers and belong only to
+// that workspace's listing.
+func TestListWorkspaceMcpServers_Claude_ListsLocalScopeServers(t *testing.T) {
+	app, claudePath, _ := newMCPTestApp(t)
+	writeClaudeConfig(t, claudePath, `{
+  "mcpServers": {},
+  "projects": {
+    "/workspace/a": {
+      "mcpServers": {"jira": {"type": "stdio", "command": "jira-bin"}},
+      "disabledMcpServers": []
+    },
+    "/workspace/b": {}
+  }
+}`)
+
+	gotA, err := app.ListWorkspaceMcpServers("claude", "/workspace/a")
+	if err != nil {
+		t.Fatalf("ListWorkspaceMcpServers /workspace/a: %v", err)
+	}
+	jira := findServer(gotA, "jira")
+	if jira.Name == "" || jira.Disabled || jira.Scope != string(claudeconfig.SourceLocal) {
+		t.Fatalf("jira = %#v, want enabled local-scope row", jira)
+	}
+
+	gotB, err := app.ListWorkspaceMcpServers("claude", "/workspace/b")
+	if err != nil {
+		t.Fatalf("ListWorkspaceMcpServers /workspace/b: %v", err)
+	}
+	if leaked := findServer(gotB, "jira"); leaked.Name != "" {
+		t.Errorf("local-scope jira leaked into workspace B: %#v", leaked)
+	}
+}
+
+// TestListWorkspaceMcpServers_StaleStatusOverlayFlagged pins the
+// staleness contract: when a status entry expires past the TTL, the
+// row keeps its last-known status marked Stale=true (membership is
+// config-derived and never lapses), so the frontend chains a
+// background refresh instead of trusting or dropping it.
+func TestListWorkspaceMcpServers_StaleStatusOverlayFlagged(t *testing.T) {
+	app, claudePath, _ := newMCPTestApp(t)
+	writeClaudePluginFixture(t, claudePath, "pw", "pw")
+	writeClaudeConfig(t, claudePath, `{"mcpServers": {}, "projects": {}}`)
+	now := time.Now()
+	app.mcpStatusCacheOnce.Do(func() {})
+	app.mcpStatusCache = mcpstatus.NewWith(30*time.Second, nil, func() time.Time { return now })
+	app.mcpStatus().Put(mcpstatus.ServerStatus{
+		Key:    mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "plugin:pw:pw"},
+		Status: mcpstatus.StatusConnected,
+		Tools:  []string{"browser_click"},
+		Source: mcpstatus.SourceEphemeralFetch,
+	})
+
+	fresh, err := app.ListWorkspaceMcpServers("claude", "/w")
+	if err != nil {
+		t.Fatalf("ListWorkspaceMcpServers fresh: %v", err)
+	}
+	if row := findServer(fresh, "plugin:pw:pw"); row.Name == "" || row.Stale {
+		t.Fatalf("fresh row = %#v, want present and not stale", row)
+	}
+
+	now = now.Add(2 * time.Minute) // expire the entry
+	stale, err := app.ListWorkspaceMcpServers("claude", "/w")
+	if err != nil {
+		t.Fatalf("ListWorkspaceMcpServers stale: %v", err)
+	}
+	row := findServer(stale, "plugin:pw:pw")
+	if row.Name == "" {
+		t.Fatalf("row vanished — membership is config-derived and must survive the status TTL")
+	}
+	if !row.Stale || row.Status != string(mcpstatus.StatusConnected) {
+		t.Errorf("stale row = %#v, want Stale=true with last-known connected status", row)
+	}
+}
+
+// TestListWorkspaceMcpServers_Claude_ProjectScopeFromMcpJSON pins the
+// .mcp.json surface: a workspace's .mcp.json names project-scope
+// servers that AO's non-interactive sessions load, so they render as
+// enabled project rows — unless the workspace's disabledMcpServers
+// names them.
+func TestListWorkspaceMcpServers_Claude_ProjectScopeFromMcpJSON(t *testing.T) {
+	app, claudePath, _ := newMCPTestApp(t)
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, ".mcp.json"), []byte(`{"mcpServers": {"context7": {"command": "npx"}, "gone": {"command": "x"}}}`), 0o644); err != nil {
+		t.Fatalf("write .mcp.json: %v", err)
+	}
+	writeClaudeConfig(t, claudePath, fmt.Sprintf(`{
+  "mcpServers": {},
+  "projects": {%q: {"disabledMcpServers": ["gone"]}}
+}`, workspace))
+
+	got, err := app.ListWorkspaceMcpServers("claude", workspace)
+	if err != nil {
+		t.Fatalf("ListWorkspaceMcpServers: %v", err)
+	}
+	c7 := findServer(got, "context7")
+	if c7.Name == "" || c7.Disabled || c7.Scope != string(claudeconfig.SourceProject) {
+		t.Errorf("context7 = %#v, want enabled project-scope row", c7)
+	}
+	if gone := findServer(got, "gone"); gone.Name == "" || !gone.Disabled {
+		t.Errorf("gone = %#v, want disabled via disabledMcpServers", gone)
+	}
+}
+
+// TestListWorkspaceMcpServers_Codex_IgnoresCacheOnlyNames pins the
+// no-leak contract for Codex: config.toml enumerates the global server
+// set completely, so a cached name it doesn't carry is a project-layer
+// server from whatever cwd fed the cache — it must not appear in a
+// workspace config listing.
+func TestListWorkspaceMcpServers_Codex_IgnoresCacheOnlyNames(t *testing.T) {
+	app, _, codexPath := newMCPTestApp(t)
+	writeCodexConfig(t, codexPath, `
+[mcp_servers.github]
+command = "gh-mcp"
+`)
+	app.mcpStatus().Put(mcpstatus.ServerStatus{
+		Key:    mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: "project-layer"},
+		Status: mcpstatus.StatusConnected,
+		Tools:  []string{"do_thing"},
+		Source: mcpstatus.SourceLiveSession,
+	})
+
+	got, err := app.ListWorkspaceMcpServers("codex", "")
+	if err != nil {
+		t.Fatalf("ListWorkspaceMcpServers: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "github" {
+		t.Fatalf("want only the config-named github row, got %#v", got)
+	}
+}
+
+// TestListThreadMcpServers_NoSession_FallsBackToWorkspaceConfig pins
+// the fallback contract: with no live session, the thread listing is
+// exactly the workspace config view for the thread's provider and
+// workspace path.
+func TestListThreadMcpServers_NoSession_FallsBackToWorkspaceConfig(t *testing.T) {
+	app, claudePath, _ := newMCPTestApp(t)
+	workspace := t.TempDir()
+	writeClaudeConfig(t, claudePath, fmt.Sprintf(`{
   "mcpServers": {
     "fs": {"type": "stdio", "command": "fs-bin"}
   },
   "projects": {
-    "/workspace/a": {"disabledMcpServers": ["fs"]},
-    "/workspace/b": {"disabledMcpServers": ["fs"]}
+    %q: {"disabledMcpServers": ["fs"]}
   }
-}`)
-	if err := app.DeleteMcpServer("claude", "fs"); err != nil {
-		t.Fatalf("DeleteMcpServer: %v", err)
+}`, workspace))
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-sonnet-4-5", "chat")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
 	}
-	raw, _ := os.ReadFile(claudePath)
-	if strings.Contains(string(raw), `"fs"`) {
-		t.Errorf("expected fs to be stripped everywhere; got:\n%s", raw)
+	if app.hasActiveSession(thread.ID) {
+		t.Fatalf("precondition: no session expected")
+	}
+
+	got, err := app.ListThreadMcpServers(thread.ID)
+	if err != nil {
+		t.Fatalf("ListThreadMcpServers: %v", err)
+	}
+	fs := findServer(got, "fs")
+	if fs.Name == "" || !fs.Disabled || fs.Source != "config" {
+		t.Fatalf("fs row = %#v, want disabled config-sourced row", fs)
 	}
 }
 
-// TestSetMcpServerEnabled_Claude_TogglesWorkspaceDisabledList exercises
-// the load-bearing semantic: Disabled is workspace-scoped for Claude,
-// so the toggle writes to the calling thread's workspace projects
-// entry — not the top-level mcpServers definition.
-func TestSetMcpServerEnabled_Claude_TogglesWorkspaceDisabledList(t *testing.T) {
+// TestSetWorkspaceMcpServerEnabled_Claude_TogglesWorkspaceDisabledList
+// exercises the load-bearing semantic: Disabled is workspace-scoped for
+// Claude, so the toggle writes to that workspace's projects entry — the
+// same `disabledMcpServers` list the CLI's own mcp_toggle persists to.
+func TestSetWorkspaceMcpServerEnabled_Claude_TogglesWorkspaceDisabledList(t *testing.T) {
 	app, claudePath, _ := newMCPTestApp(t)
 	writeClaudeConfig(t, claudePath, `{
   "mcpServers": {
     "fs": {"type": "stdio", "command": "fs-bin"}
   }
 }`)
-	thread, err := createTestThread(t, app, string(provider.Claude), "/workspace/a", "claude-sonnet-4-5", "chat")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
 
-	if err := app.SetMcpServerEnabled(thread.ID, "fs", false); err != nil {
-		t.Fatalf("SetMcpServerEnabled disable: %v", err)
+	if err := app.SetWorkspaceMcpServerEnabled("claude", "/workspace/a", "fs", false); err != nil {
+		t.Fatalf("SetWorkspaceMcpServerEnabled disable: %v", err)
 	}
-	got, err := app.ListMcpServers("claude", "/workspace/a")
+	got, err := app.ListWorkspaceMcpServers("claude", "/workspace/a")
 	if err != nil {
-		t.Fatalf("ListMcpServers post-disable: %v", err)
+		t.Fatalf("ListWorkspaceMcpServers post-disable: %v", err)
 	}
 	if !findServer(got, "fs").Disabled {
 		t.Errorf("workspace /workspace/a fs: want disabled after toggle")
 	}
 
-	otherWorkspace, err := app.ListMcpServers("claude", "/workspace/b")
+	otherWorkspace, err := app.ListWorkspaceMcpServers("claude", "/workspace/b")
 	if err != nil {
-		t.Fatalf("ListMcpServers /workspace/b: %v", err)
+		t.Fatalf("ListWorkspaceMcpServers /workspace/b: %v", err)
 	}
 	if findServer(otherWorkspace, "fs").Disabled {
 		t.Errorf("workspace /workspace/b fs: want enabled (disable leaked across workspaces)")
 	}
 
-	if err := app.SetMcpServerEnabled(thread.ID, "fs", true); err != nil {
-		t.Fatalf("SetMcpServerEnabled enable: %v", err)
+	if err := app.SetWorkspaceMcpServerEnabled("claude", "/workspace/a", "fs", true); err != nil {
+		t.Fatalf("SetWorkspaceMcpServerEnabled enable: %v", err)
 	}
-	got2, _ := app.ListMcpServers("claude", "/workspace/a")
+	got2, _ := app.ListWorkspaceMcpServers("claude", "/workspace/a")
 	if findServer(got2, "fs").Disabled {
 		t.Errorf("workspace /workspace/a fs: want enabled after re-toggle")
 	}
 }
 
-// TestSetMcpServerEnabled_Codex_TogglesGlobalFlag ensures the binding
-// writes the global `enabled` field rather than any per-workspace
-// state (Codex doesn't have per-workspace MCP scoping).
-func TestSetMcpServerEnabled_Codex_TogglesGlobalFlag(t *testing.T) {
+// TestSetWorkspaceMcpServerEnabled_Claude_RequiresWorkspacePath: the
+// disabledMcpServers list is keyed by workspace path — a blank key
+// would write toggle state nowhere any session reads from.
+func TestSetWorkspaceMcpServerEnabled_Claude_RequiresWorkspacePath(t *testing.T) {
+	app, _, _ := newMCPTestApp(t)
+	if err := app.SetWorkspaceMcpServerEnabled("claude", "  ", "fs", false); err == nil {
+		t.Fatal("expected error for blank workspace path")
+	}
+}
+
+// TestSetThreadMcpServerEnabled_Claude_NoSession_WritesWorkspaceConfig
+// confirms the no-live-session Claude path writes the thread's
+// workspace-scoped disabled list directly.
+func TestSetThreadMcpServerEnabled_Claude_NoSession_WritesWorkspaceConfig(t *testing.T) {
+	app, claudePath, _ := newMCPTestApp(t)
+	workspace := t.TempDir()
+	writeClaudeConfig(t, claudePath, `{
+  "mcpServers": {
+    "fs": {"type": "stdio", "command": "fs-bin"}
+  }
+}`)
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-sonnet-4-5", "chat")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+
+	if err := app.SetThreadMcpServerEnabled(thread.ID, "fs", false); err != nil {
+		t.Fatalf("SetThreadMcpServerEnabled disable: %v", err)
+	}
+	got, err := app.ListWorkspaceMcpServers("claude", workspace)
+	if err != nil {
+		t.Fatalf("ListWorkspaceMcpServers: %v", err)
+	}
+	if !findServer(got, "fs").Disabled {
+		t.Errorf("fs: want disabled in thread workspace after toggle")
+	}
+}
+
+// TestSetThreadMcpServerEnabled_Codex_TogglesGlobalFlag ensures the
+// binding writes the global `enabled` field (Codex has no per-workspace
+// MCP scoping) and completes cleanly with no live session.
+func TestSetThreadMcpServerEnabled_Codex_TogglesGlobalFlag(t *testing.T) {
 	app, _, codexPath := newMCPTestApp(t)
 	writeCodexConfig(t, codexPath, `
 [mcp_servers.github]
@@ -528,18 +616,21 @@ command = "gh-mcp"
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
 	}
+	if app.hasActiveSession(thread.ID) {
+		t.Fatalf("precondition: no session expected")
+	}
 
-	if err := app.SetMcpServerEnabled(thread.ID, "github", false); err != nil {
-		t.Fatalf("SetMcpServerEnabled disable: %v", err)
+	if err := app.SetThreadMcpServerEnabled(thread.ID, "github", false); err != nil {
+		t.Fatalf("SetThreadMcpServerEnabled disable: %v", err)
 	}
 	raw, _ := os.ReadFile(codexPath)
 	if !strings.Contains(string(raw), "enabled = false") {
 		t.Errorf("expected `enabled = false` in toml after disable, got:\n%s", raw)
 	}
 
-	listed, err := app.ListMcpServers("codex", "")
+	listed, err := app.ListWorkspaceMcpServers("codex", "")
 	if err != nil {
-		t.Fatalf("ListMcpServers: %v", err)
+		t.Fatalf("ListWorkspaceMcpServers: %v", err)
 	}
 	if !findServer(listed, "github").Disabled {
 		t.Errorf("github: want disabled after toggle")
@@ -567,25 +658,6 @@ func TestStatusCache_CrossProviderNamesDoNotCollide(t *testing.T) {
 	}
 	if _, ok := cache.Get(codexKey); !ok {
 		t.Errorf("codex key should survive a claude-scoped Invalidate")
-	}
-}
-
-// TestSetMcpServerEnabled_NoSession_Succeeds confirms the binding
-// completes cleanly when the calling thread has no live provider
-// session — the file write must commit and no live-reconcile error
-// should bubble up.
-func TestSetMcpServerEnabled_NoSession_Succeeds(t *testing.T) {
-	app, _, codexPath := newMCPTestApp(t)
-	writeCodexConfig(t, codexPath, "[mcp_servers.github]\ncommand = \"gh-mcp\"\n")
-	thread, err := createTestThread(t, app, string(provider.Codex), "/workspace/a", "gpt-5.2", "chat")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-	if app.hasActiveSession(thread.ID) {
-		t.Fatalf("precondition: no session expected")
-	}
-	if err := app.SetMcpServerEnabled(thread.ID, "github", false); err != nil {
-		t.Fatalf("SetMcpServerEnabled with no session: %v", err)
 	}
 }
 
@@ -716,15 +788,15 @@ func TestHandleCodexMCPOAuthCompleted_FailurePayloadCarriesError(t *testing.T) {
 	}
 }
 
-// findServer is a tiny test helper that scans for an MCPServer by
+// findServer is a tiny test helper that scans for a ThreadMCPServer by
 // name. Returns the zero value if missing.
-func findServer(in []MCPServer, name string) MCPServer {
+func findServer(in []ThreadMCPServer, name string) ThreadMCPServer {
 	for _, s := range in {
 		if s.Name == name {
 			return s
 		}
 	}
-	return MCPServer{}
+	return ThreadMCPServer{}
 }
 
 // scriptedQuerier returns a claudeMCPStatusQuerier whose i-th call

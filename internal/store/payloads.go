@@ -419,4 +419,3 @@ func (s *Store) GetPayloadSpans(id string) (string, error) {
 	}
 	return spans, nil
 }
-

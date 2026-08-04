@@ -25,7 +25,13 @@ The `Cache` is per-App (lazy-init through `(*App).mcpStatus()`); see
 - `cache.go` — `Cache` + `Fetcher` interface, with TTL + per-key
   (`GetOrFetch`) and per-provider (`RefreshProvider`) single-flight
   gates. `NewCache` is the production constructor; `NewWith` injects
-  a clock for tests.
+  a clock for tests. `SnapshotProviderWithFreshness` returns expired
+  entries too (annotated `Fresh: false`) — the config-fallback MCP
+  listing overlays cached statuses onto config-derived membership and
+  renders expired entries with their last-known status marked stale
+  while a background refresh runs. The cache is status-only, never
+  membership: a cached name the config can't derive is another
+  workspace's server and must not create a row.
 - `events.go` — `EventBus` seam so the App can hook the cache's
   Put/Invalidate emissions onto the `mcp:status` Wails channel without
   this package importing `*App`.
@@ -54,8 +60,8 @@ implement.
     + ephemeral-fetch paths are authoritative.
   - `*App` state or Wails-binding types — the App composes this
     package with its event bus.
-  - Reactive UI projections — the popup / settings derive everything
-    they need from the `mcp:status` event channel.
+  - Reactive UI projections — the composer popup derives everything
+    it needs from the `mcp:status` event channel.
 
 ## Invariants
 

@@ -228,7 +228,6 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		CreatedAt:                  now,
 		UpdatedAt:                  now,
 	}
-	t.DisabledMcpServers = a.snapshotDisabledMcpServers(t.Provider, t.WorkspacePath)
 	if err := a.store.CreateThread(t); err != nil {
 		return store.Thread{}, err
 	}

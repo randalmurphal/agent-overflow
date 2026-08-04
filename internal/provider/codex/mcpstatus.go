@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -221,17 +222,32 @@ func parseMCPList(body []byte, now time.Time) ([]mcpstatus.ServerStatus, error) 
 		if name == "" {
 			continue
 		}
-		toolCount := len(entry.Tools)
 		out = append(out, mcpstatus.ServerStatus{
 			Key:        mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: name},
-			Status:     MCPStatusFromList(entry.AuthStatus, toolCount),
+			Status:     MCPStatusFromList(entry.AuthStatus, len(entry.Tools)),
 			AuthStatus: entry.AuthStatus,
-			ToolCount:  toolCount,
+			ToolCount:  len(entry.Tools),
+			Tools:      sortedToolNames(entry.Tools),
 			Source:     mcpstatus.SourceEphemeralFetch,
 			CheckedAt:  now,
 		})
 	}
 	return out, nil
+}
+
+// sortedToolNames projects the wire's tools map onto its sorted key
+// list. Names only — the map values carry tool schemas the status
+// surface has no use for.
+func sortedToolNames(tools map[string]json.RawMessage) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(tools))
+	for name := range tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // mcpStatusRPCClient is a tiny single-request-at-a-time JSON-RPC

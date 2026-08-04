@@ -47,7 +47,6 @@ func BuildForkedThread(source Thread) Thread {
 		ContextWindow:      source.ContextWindow,
 		RuntimeMode:        source.RuntimeMode,
 		LastTokenUsage:     source.LastTokenUsage,
-		DisabledMcpServers: source.DisabledMcpServers,
 		ForkedFromThreadID: source.ID,
 		CreatedAt:          now,
 		UpdatedAt:          now,

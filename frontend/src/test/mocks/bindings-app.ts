@@ -502,17 +502,13 @@ export const GetUIState = dispatch('GetUIState');
 export const SetUIState = dispatch('SetUIState');
 export const DeleteUIState = dispatch('DeleteUIState');
 
-// MCP library
-export const ListMcpServers = dispatch('ListMcpServers');
-export const ListMcpServersForThread = dispatch('ListMcpServersForThread');
-export const ListMcpServersForNewThread = dispatch('ListMcpServersForNewThread');
-export const CreateMcpServer = dispatch('CreateMcpServer');
-export const UpdateMcpServer = dispatch('UpdateMcpServer');
-export const DeleteMcpServer = dispatch('DeleteMcpServer');
-export const SetMcpServerEnabled = dispatch('SetMcpServerEnabled');
-export const SetNewThreadMcpServerEnabled = dispatch('SetNewThreadMcpServerEnabled');
+// MCP (provider-native state)
+export const ListThreadMcpServers = dispatch('ListThreadMcpServers');
+export const ListWorkspaceMcpServers = dispatch('ListWorkspaceMcpServers');
+export const SetThreadMcpServerEnabled = dispatch('SetThreadMcpServerEnabled');
+export const SetWorkspaceMcpServerEnabled = dispatch('SetWorkspaceMcpServerEnabled');
+export const ReconnectMcpServer = dispatch('ReconnectMcpServer');
 export const GetMcpServerStatus = dispatch('GetMcpServerStatus');
-export const ListMcpServerStatuses = dispatch('ListMcpServerStatuses');
 export const RefreshMcpServerStatus = dispatch('RefreshMcpServerStatus');
 export const TriggerMcpAuth = dispatch('TriggerMcpAuth');
 

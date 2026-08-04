@@ -529,36 +529,34 @@ var LocalOnlyMethods = map[string]bool{
 	"ListWSLDistros":         true,
 	"GetWSLDistroPreference": true,
 
-	// 8. MCP library / per-thread config and status. The whole surface
-	// is local-only:
+	// 8. MCP per-thread state and status. The whole surface is
+	// local-only:
 	//   - GetMcpServerStatus / RefreshMcpServerStatus spawn the
 	//     provider's own CLI (`claude mcp list`, `codex app-server`)
 	//     as a short-lived subprocess to read the live server list
 	//     using the user's env-var bearer tokens — external-process
 	//     invocation (category 1).
-	//   - CreateMcpServer / UpdateMcpServer / DeleteMcpServer mutate
-	//     ~/.claude.json or ~/.codex/config.toml (category 3) and
-	//     reshape what tools the provider can call.
-	//   - SetMcpServerEnabled toggles the provider-native disable list
-	//     and live-reconciles the affected provider session (category 2);
-	//     Claude diff-reconciles in-process, Codex hot-reloads, either
-	//     way the subprocess sees a new tool surface.
+	//   - SetThreadMcpServerEnabled / SetWorkspaceMcpServerEnabled
+	//     toggle the provider-native disable state — a live-session
+	//     `mcp_toggle` RPC or a direct ~/.claude.json /
+	//     ~/.codex/config.toml write (categories 2 + 3) — and reshape
+	//     what tools the provider can call. ReconnectMcpServer drives
+	//     the live session's reconnect the same way (category 2).
 	//   - TriggerMcpAuth starts a session if needed (category 2) and
 	//     emits the authorization URL the desktop user opens locally — a
 	//     LAN peer opening the URL would land on the AO backend's
 	//     loopback OAuth callback, not their own browser.
-	//   - ListMcpServers / ListMcpServerStatuses disclose URLs, env-var
-	//     bearer references, and tool inventory — the same enumeration
-	//     shape category 6 locks down. Conservative + consistent:
+	//   - ListThreadMcpServers / ListWorkspaceMcpServers /
+	//     ListMcpServerStatuses disclose server names, scopes, and tool
+	//     inventory (never args/env) — the same enumeration shape
+	//     category 6 locks down, and the thread listing can drive a
+	//     live-session control RPC. Conservative + consistent:
 	//     everything goes loopback-only.
-	"ListMcpServers":               true,
-	"ListMcpServersForThread":      true,
-	"ListMcpServersForNewThread":   true,
-	"CreateMcpServer":              true,
-	"UpdateMcpServer":              true,
-	"DeleteMcpServer":              true,
-	"SetMcpServerEnabled":          true,
-	"SetNewThreadMcpServerEnabled": true,
+	"ListThreadMcpServers":         true,
+	"ListWorkspaceMcpServers":      true,
+	"SetThreadMcpServerEnabled":    true,
+	"SetWorkspaceMcpServerEnabled": true,
+	"ReconnectMcpServer":           true,
 	"GetMcpServerStatus":           true,
 	"ListMcpServerStatuses":        true,
 	"RefreshMcpServerStatus":       true,

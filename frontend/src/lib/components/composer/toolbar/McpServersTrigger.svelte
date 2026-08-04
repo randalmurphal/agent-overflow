@@ -3,14 +3,14 @@
   // trigger button (icon + "MCP" + active count) and hosts the
   // popup that lets the user toggle which provider-configured
   // servers are active for this thread. The count reflects the
-  // unified Disabled flag: it counts servers with !disabled for the
-  // current thread's provider.
+  // provider-native listing: it counts non-disabled rows for the
+  // pane's scope.
 
   import Plug from 'lucide-svelte/icons/plug';
   import ChevronDown from 'lucide-svelte/icons/chevron-down';
   import Icon from '../../primitives/Icon.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
-  import { mcpServersStore } from '../../../stores/mcpServers.svelte';
+  import { mcpServersStore, mcpScopeFor } from '../../../stores/mcpServers.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
   import McpServersMenu from './McpServersMenu.svelte';
@@ -24,23 +24,13 @@
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
 
-  function loadCurrentScope(): void {
-    if (!pane.thread) return;
-    if (pane.hasDraftPlaceholder) {
-      void mcpServersStore.loadForNewThread(pane.thread.provider, pane.thread.workspacePath ?? '');
-      return;
-    }
-    if (pane.threadId) {
-      void mcpServersStore.loadForThread(pane.threadId, pane.thread.provider);
-    }
-  }
-
   function openMenu(): void {
     if (!pane.thread) return;
     open = true;
-    // Prime the store on open. McpServersMenu also re-loads when it
-    // mounts, but firing here avoids a flash of empty state.
-    loadCurrentScope();
+    // Prime the store on open. McpServersMenu's own load effect also
+    // fires, but load() single-flights per scope, so this just starts
+    // the background refresh a frame earlier while cached rows render.
+    if (scope) void mcpServersStore.load(scope).catch(() => undefined);
   }
 
   function closeMenu(): void {
@@ -61,21 +51,29 @@
     });
   });
 
+  // Value-stable deriveds: the raw pane.thread reference is replaced
+  // on every streaming event; deriving the strings first keeps the
+  // scope (and the priming effect below) quiet while a turn runs.
   let provider = $derived(pane.thread?.provider ?? '');
   let threadId = $derived(pane.threadId ?? '');
   let workspacePath = $derived(pane.thread?.workspacePath ?? '');
   let isPlaceholder = $derived(pane.hasDraftPlaceholder);
+  let scope = $derived(mcpScopeFor(provider, threadId, workspacePath, isPlaceholder));
   let enabledCount = $derived(
-    provider
-      ? (
-        isPlaceholder
-          ? mcpServersStore.serversForNewThread(provider, workspacePath)
-          : threadId
-            ? mcpServersStore.serversForThread(threadId, provider)
-            : []
-      ).filter((s) => !s.disabled).length
-      : 0,
+    scope ? mcpServersStore.rowsFor(scope).filter((r) => !r.disabled).length : 0,
   );
+
+  // Prime the row cache when the pane's scope settles, so the badge
+  // shows the enabled count without waiting for a menu open. noFetch:
+  // priming must never spawn a provider health-check — the count comes
+  // from config plus whatever the status cache already knows, and the
+  // menu's own load (which may fetch) takes over on open. Failures
+  // stay silent here; opening the menu surfaces the same error as a
+  // toast.
+  $effect(() => {
+    if (!scope) return;
+    void mcpServersStore.load(scope, { noFetch: true }).catch(() => undefined);
+  });
 </script>
 
 <button

@@ -40,7 +40,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "CountRunningBackgroundTasks", ID: 2617952423},          // main.App.CountRunningBackgroundTasks
 	{Name: "CreateDiffReviewComment", ID: 565306783},               // main.App.CreateDiffReviewComment
 	{Name: "CreateDiscussion", ID: 757689265},                      // main.App.CreateDiscussion
-	{Name: "CreateMcpServer", ID: 3722089728},                      // main.App.CreateMcpServer
 	{Name: "CreateProject", ID: 969543070},                         // main.App.CreateProject
 	{Name: "CreateProposedPlanComment", ID: 4246792665},            // main.App.CreateProposedPlanComment
 	{Name: "CreateThread", ID: 2579322833},                         // main.App.CreateThread
@@ -49,7 +48,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteDiffReviewComment", ID: 1303317790},              // main.App.DeleteDiffReviewComment
 	{Name: "DeleteDiscussion", ID: 302062730},                      // main.App.DeleteDiscussion
 	{Name: "DeleteEmptyDraftThread", ID: 3876094070},               // main.App.DeleteEmptyDraftThread
-	{Name: "DeleteMcpServer", ID: 4263017529},                      // main.App.DeleteMcpServer
 	{Name: "DeleteProject", ID: 3379369923},                        // main.App.DeleteProject
 	{Name: "DeleteProposedPlanComment", ID: 554913120},             // main.App.DeleteProposedPlanComment
 	{Name: "DeleteProviderCustomEnvVar", ID: 784096448},            // main.App.DeleteProviderCustomEnvVar
@@ -166,9 +164,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListItemsBeforeTurn", ID: 2147361923},                  // main.App.ListItemsBeforeTurn
 	{Name: "ListLiveBackgroundTasks", ID: 320784263},               // main.App.ListLiveBackgroundTasks
 	{Name: "ListMcpServerStatuses", ID: 2582096622},                // main.App.ListMcpServerStatuses
-	{Name: "ListMcpServers", ID: 1105613677},                       // main.App.ListMcpServers
-	{Name: "ListMcpServersForNewThread", ID: 3030514258},           // main.App.ListMcpServersForNewThread
-	{Name: "ListMcpServersForThread", ID: 2790948120},              // main.App.ListMcpServersForThread
 	{Name: "ListPRCommits", ID: 4110818691},                        // main.App.ListPRCommits
 	{Name: "ListPRReviewThreads", ID: 763649720},                   // main.App.ListPRReviewThreads
 	{Name: "ListPendingInteractiveRequests", ID: 4186874978},       // main.App.ListPendingInteractiveRequests
@@ -182,10 +177,12 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListSubagentDescendants", ID: 1299118478},              // main.App.ListSubagentDescendants
 	{Name: "ListTerminals", ID: 2445206506},                        // main.App.ListTerminals
 	{Name: "ListThreadEditDiffs", ID: 2243533007},                  // main.App.ListThreadEditDiffs
+	{Name: "ListThreadMcpServers", ID: 245278513},                  // main.App.ListThreadMcpServers
 	{Name: "ListThreadProposedPlans", ID: 2485050629},              // main.App.ListThreadProposedPlans
 	{Name: "ListThreadSliceAround", ID: 4176102096},                // main.App.ListThreadSliceAround
 	{Name: "ListThreads", ID: 1090132042},                          // main.App.ListThreads
 	{Name: "ListWSLDistros", ID: 2332614075},                       // main.App.ListWSLDistros
+	{Name: "ListWorkspaceMcpServers", ID: 2808137798},              // main.App.ListWorkspaceMcpServers
 	{Name: "LoginProviderAccount", ID: 1520009058},                 // main.App.LoginProviderAccount
 	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995},           // main.App.MarkDiffReviewCommentsSent
 	{Name: "MarkThreadRead", ID: 1480646012},                       // main.App.MarkThreadRead
@@ -211,6 +208,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RecheckClaudeAccount", ID: 2274850917},                 // main.App.RecheckClaudeAccount
 	{Name: "RecheckCodexAccount", ID: 227978482},                   // main.App.RecheckCodexAccount
 	{Name: "ReconfigureObservability", ID: 225050321},              // main.App.ReconfigureObservability
+	{Name: "ReconnectMcpServer", ID: 878560845},                    // main.App.ReconnectMcpServer
 	{Name: "ReconnectSession", ID: 1420075138},                     // main.App.ReconnectSession
 	{Name: "RefreshMcpServerStatus", ID: 2215279661},               // main.App.RefreshMcpServerStatus
 	{Name: "RefreshProviderAccountUsage", ID: 2539237007},          // main.App.RefreshProviderAccountUsage
@@ -243,14 +241,14 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SendPlanRevisionComments", ID: 1407159655},             // main.App.SendPlanRevisionComments
 	{Name: "SetChatBarFavorite", ID: 2813580982},                   // main.App.SetChatBarFavorite
 	{Name: "SetEditorSettings", ID: 3655340267},                    // main.App.SetEditorSettings
-	{Name: "SetMcpServerEnabled", ID: 3696908699},                  // main.App.SetMcpServerEnabled
 	{Name: "SetNetworkSettings", ID: 3915514446},                   // main.App.SetNetworkSettings
-	{Name: "SetNewThreadMcpServerEnabled", ID: 545823411},          // main.App.SetNewThreadMcpServerEnabled
 	{Name: "SetPRUpdatesActive", ID: 1078249699},                   // main.App.SetPRUpdatesActive
 	{Name: "SetProjectWorktreeSetup", ID: 322092470},               // main.App.SetProjectWorktreeSetup
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465},              // main.App.SetProviderCustomEnvVar
+	{Name: "SetThreadMcpServerEnabled", ID: 1041195811},            // main.App.SetThreadMcpServerEnabled
 	{Name: "SetUIState", ID: 1514250938},                           // main.App.SetUIState
 	{Name: "SetWSLDistroPreference", ID: 3978807241},               // main.App.SetWSLDistroPreference
+	{Name: "SetWorkspaceMcpServerEnabled", ID: 2181574220},         // main.App.SetWorkspaceMcpServerEnabled
 	{Name: "StartCodexReview", ID: 1913732562},                     // main.App.StartCodexReview
 	{Name: "StartDiscussion", ID: 3188309099},                      // main.App.StartDiscussion
 	{Name: "StartDiscussionByID", ID: 2336869067},                  // main.App.StartDiscussionByID
@@ -273,7 +271,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "UpdateDiffReviewComment", ID: 2452201652},              // main.App.UpdateDiffReviewComment
 	{Name: "UpdateDiscussion", ID: 1706395020},                     // main.App.UpdateDiscussion
 	{Name: "UpdateKeybindings", ID: 3490094229},                    // main.App.UpdateKeybindings
-	{Name: "UpdateMcpServer", ID: 4282105115},                      // main.App.UpdateMcpServer
 	{Name: "UpdateNewThreadDefaults", ID: 595194384},               // main.App.UpdateNewThreadDefaults
 	{Name: "UpdateProjectSortPositions", ID: 3717363955},           // main.App.UpdateProjectSortPositions
 	{Name: "UpdateProposedPlanComment", ID: 2747956806},            // main.App.UpdateProposedPlanComment

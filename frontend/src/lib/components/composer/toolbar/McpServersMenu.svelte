@@ -1,29 +1,27 @@
 <script lang="ts">
-  // The popup behind the composer-toolbar "MCP" trigger. Lists every
-  // server visible to the thread's provider + per-server status chip
-  // + checkbox; the row's primary onSelect toggles the unified
-  // Disabled flag (Claude: workspace-scoped; Codex: global). The
-  // trailing action button surfaces the most useful next step for
-  // the row's state (Sign in for needs-auth http/sse, Refresh
-  // otherwise). A "Manage…" link in the footer navigates to the
-  // Settings → MCP pane where CRUD lives.
+  // The popup behind the composer-toolbar "MCP" trigger. Rows come
+  // from the provider-native listing for the pane's scope (live
+  // session truth when the thread has one, config + status cache
+  // otherwise) and render instantly from the last load while a
+  // background reload runs. The row's primary onSelect toggles the
+  // server; the trailing action is the most useful next step for the
+  // row's state: Sign in for needs-auth, Reconnect for live-session
+  // rows, Refresh (ephemeral status re-check) for config rows.
 
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
-  import MenuDivider from '../../primitives/MenuDivider.svelte';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import LogIn from 'lucide-svelte/icons/log-in';
-  import Settings from 'lucide-svelte/icons/settings';
   import Icon from '../../primitives/Icon.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import {
     mcpServersStore,
-    mcpStatusKey,
+    mcpRowKey,
+    mcpScopeFor,
   } from '../../../stores/mcpServers.svelte';
-  import type { MCPServer, MCPServerStatus } from '../../../stores/bindings';
+  import type { ThreadMCPServer } from '../../../stores/bindings';
   import { OpenExternalURL } from '../../../stores/bindings';
-  import { OPEN_SETTINGS_EVENT } from '../../../stores/eventNames';
   import { addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
 
@@ -36,58 +34,37 @@
 
   let { anchor, open, pane, onClose }: Props = $props();
 
-  // Derive the fields the load effect actually depends on. The raw
+  // Derive the fields the scope actually depends on. The raw
   // `pane.thread` reference is replaced on every usage event / item
   // upsert / durable-status patch, so reading it inside the effect
   // would re-trigger the loader on every Codex streaming token while
   // the popup is mounted.
-  let loadProvider = $derived(pane.thread?.provider ?? '');
-  let loadThreadId = $derived(pane.threadId ?? '');
-  let loadWorkspacePath = $derived(pane.thread?.workspacePath ?? '');
+  let scopeProvider = $derived(pane.thread?.provider ?? '');
+  let scopeThreadId = $derived(pane.threadId ?? '');
+  let scopeWorkspacePath = $derived(pane.thread?.workspacePath ?? '');
   let isPlaceholder = $derived(pane.hasDraftPlaceholder);
 
+  let scope = $derived(
+    mcpScopeFor(scopeProvider, scopeThreadId, scopeWorkspacePath, isPlaceholder),
+  );
+
   $effect(() => {
-    if (!(open && loadProvider)) return;
-    const provider = loadProvider;
-    const threadId = loadThreadId;
-    const workspacePath = loadWorkspacePath;
-    const placeholder = isPlaceholder;
-    void (async () => {
-      const [library] = await Promise.all([
-        placeholder
-          ? mcpServersStore.loadForNewThread(provider, workspacePath)
-          : threadId
-            ? mcpServersStore.loadForThread(threadId, provider)
-            : Promise.resolve([]),
-        mcpServersStore.loadStatuses(provider),
-      ]);
-      // Live sessions feed the cache continuously, so a thread that
-      // has been active in this app session already has every row
-      // populated. For inactive threads (or first open of the day)
-      // the snapshot is missing entries — trigger an ephemeral
-      // refresh so rows don't sit at "Not checked" until the user
-      // clicks Refresh manually. refreshStatuses single-flights, so
-      // concurrent opens collapse to one underlying CLI call.
-      const snapshot = mcpServersStore.statuses;
-      const missing = library.some(
-        (s) => s.provider === provider && !snapshot.has(mcpStatusKey(s.provider, s.name)),
-      );
-      if (missing) {
-        await mcpServersStore.refreshStatuses(provider).catch(() => undefined);
-      }
-    })();
+    if (!(open && scope)) return;
+    // Background refresh: cached rows stay on screen while the
+    // authoritative listing loads, so opening the menu never blanks
+    // or blocks on a provider round-trip.
+    void mcpServersStore.load(scope).catch((err: unknown) => {
+      addToast('error', `MCP server listing failed: ${errString(err)}`);
+    });
   });
 
-  type StatusKey = 'connected' | 'starting' | 'needs-auth' | 'failed' | 'unknown' | 'refreshing';
+  type StatusKey = 'connected' | 'starting' | 'needs-auth' | 'failed' | 'disabled' | 'unknown';
 
-  function statusKey(status: MCPServerStatus | undefined, refreshing: boolean): StatusKey {
-    if (refreshing && !status) return 'refreshing';
-    if (!status) return 'unknown';
-    const s = status.status as string;
-    if (s === 'connected') return 'connected';
-    if (s === 'starting') return 'starting';
-    if (s === 'needs-auth') return 'needs-auth';
-    if (s === 'failed') return 'failed';
+  function statusKey(row: ThreadMCPServer): StatusKey {
+    const s = row.status;
+    if (s === 'connected' || s === 'starting' || s === 'needs-auth' || s === 'failed' || s === 'disabled') {
+      return s;
+    }
     return 'unknown';
   }
 
@@ -96,8 +73,8 @@
     starting: 'bg-accent/60 animate-pulse',
     'needs-auth': 'bg-warning',
     failed: 'bg-error',
+    disabled: 'bg-fg-subtle/40',
     unknown: 'bg-fg-subtle/40',
-    refreshing: 'bg-accent/60 animate-pulse',
   };
 
   const STATUS_LABEL: Record<StatusKey, string> = {
@@ -105,92 +82,70 @@
     starting: 'Starting…',
     'needs-auth': 'Needs sign-in',
     failed: 'Failed',
+    disabled: 'Disabled',
     unknown: 'Not checked',
-    refreshing: 'Checking…',
   };
 
-  function describe(server: MCPServer, status: MCPServerStatus | undefined, key: StatusKey): string {
-    const transport = server.transport ?? 'stdio';
-    let detail = STATUS_LABEL[key];
-    if (key === 'connected' && status && (status.toolCount ?? 0) > 0) {
-      const n = status.toolCount ?? 0;
-      detail = `Connected · ${n} tool${n === 1 ? '' : 's'}`;
-    } else if (key === 'failed' && status?.error) {
-      detail = `Failed · ${status.error.slice(0, 80)}`;
+  function describe(row: ThreadMCPServer, key: StatusKey): string {
+    if (key === 'connected' && (row.tools?.length ?? 0) > 0) {
+      const n = row.tools?.length ?? 0;
+      return `Connected · ${n} tool${n === 1 ? '' : 's'}`;
     }
-    return `${transport} · ${detail}`;
+    if (key === 'failed' && row.error) {
+      return `Failed · ${row.error.slice(0, 80)}`;
+    }
+    return STATUS_LABEL[key];
   }
 
-  async function toggleServer(server: MCPServer, enable: boolean): Promise<void> {
+  async function toggleServer(row: ThreadMCPServer, enable: boolean): Promise<void> {
+    if (!scope) return;
     try {
-      const threadId = pane.threadId;
-      if (pane.hasDraftPlaceholder) {
-        await mcpServersStore.setDefaultEnabled(
-          server.provider,
-          pane.thread?.workspacePath ?? '',
-          server.name,
-          enable,
-        );
-        await mcpServersStore.loadForNewThread(server.provider, pane.thread?.workspacePath ?? '');
-      } else if (threadId) {
-        await mcpServersStore.setEnabled(threadId, server.name, enable);
-        await mcpServersStore.loadForThread(threadId, pane.thread?.provider ?? '');
-      }
+      await mcpServersStore.setEnabled(scope, row.name, enable);
     } catch (err) {
       addToast('error', `Failed to update MCP server: ${errString(err)}`);
     }
   }
 
-  async function signIn(server: MCPServer): Promise<void> {
-    if (server.disabled) {
-      addToast('info', `Enable ${server.name} first, then sign in.`);
+  async function signIn(row: ThreadMCPServer): Promise<void> {
+    if (row.disabled) {
+      addToast('info', `Enable ${row.name} first, then sign in.`);
       return;
     }
-    const threadId = pane.threadId;
-    if (!threadId) {
+    if (scope?.kind !== 'thread') {
       addToast('info', 'Start the thread before signing in.');
       return;
     }
     try {
-      const res = await mcpServersStore.triggerAuth(threadId, server.name);
+      const res = await mcpServersStore.triggerAuth(scope.threadId, row.name);
       if (res?.authUrl) {
         await OpenExternalURL(res.authUrl);
       } else {
-        addToast('info', `Sign-in already complete for ${server.name}.`);
+        addToast('info', `Sign-in already complete for ${row.name}.`);
       }
     } catch (err) {
-      addToast('error', `Sign-in failed for ${server.name}: ${errString(err)}`);
+      addToast('error', `Sign-in failed for ${row.name}: ${errString(err)}`);
     }
   }
 
-  async function refresh(server: MCPServer): Promise<void> {
+  async function reconnect(row: ThreadMCPServer): Promise<void> {
+    if (scope?.kind !== 'thread') return;
     try {
-      await mcpServersStore.fetchStatus(server.provider, server.name, true);
+      await mcpServersStore.reconnect(scope, row.name);
     } catch (err) {
-      addToast('error', `Status check failed for ${server.name}: ${errString(err)}`);
+      addToast('error', `Reconnect failed for ${row.name}: ${errString(err)}`);
     }
   }
 
-  function openSettings(): void {
-    onClose();
-    window.dispatchEvent(
-      new CustomEvent(OPEN_SETTINGS_EVENT, { detail: { section: 'mcp' } }),
-    );
+  async function refresh(row: ThreadMCPServer): Promise<void> {
+    try {
+      await mcpServersStore.refreshStatus(row.provider, row.name);
+    } catch (err) {
+      addToast('error', `Status check failed for ${row.name}: ${errString(err)}`);
+    }
   }
 
-  let provider = $derived(pane.thread?.provider ?? '');
-  let visible = $derived(
-    provider
-      ? isPlaceholder
-        ? mcpServersStore.serversForNewThread(provider, loadWorkspacePath)
-        : loadThreadId
-          ? mcpServersStore.serversForThread(loadThreadId, provider)
-          : []
-      : [],
-  );
-  let allStatuses = $derived(mcpServersStore.statuses);
-  let refreshingProviders = $derived(mcpServersStore.refreshingProvider);
-  let providerRefreshing = $derived(provider ? refreshingProviders.has(provider) : false);
+  let rows = $derived(scope ? mcpServersStore.rowsFor(scope) : []);
+  let loading = $derived(scope ? mcpServersStore.isLoading(scope) : false);
 </script>
 
 <Popover
@@ -201,40 +156,51 @@
   role="none"
 >
   <Menu ariaLabel="MCP servers" {onClose}>
-    {#if visible.length === 0}
-      <div class="px-3 py-4 text-[0.75rem] text-fg-muted">
-        <div class="mb-2 font-medium text-fg">No MCP servers configured</div>
-        <div class="text-fg-subtle">
-          Add a server in Settings to expose extra tools to this thread.
-        </div>
+    {#if rows.length === 0}
+      <div class="px-3 py-4 text-[0.75rem] text-fg-muted" data-testid="mcp-menu-empty">
+        {#if loading}
+          <div class="font-medium text-fg">Loading MCP servers…</div>
+        {:else}
+          <div class="mb-2 font-medium text-fg">No MCP servers configured</div>
+          <div class="text-fg-subtle">
+            Servers configured for {scopeProvider === 'codex' ? 'Codex' : 'Claude Code'} appear
+            here with a per-thread toggle.
+          </div>
+        {/if}
       </div>
-      <MenuDivider />
-      <MenuItem
-        label="Manage MCP servers…"
-        onSelect={openSettings}
-      >
-        {#snippet icon()}
-          <Icon icon={Settings} size={13} strokeWidth={1.75} />
-        {/snippet}
-      </MenuItem>
     {:else}
-      {#each visible as server (mcpStatusKey(server.provider, server.name))}
-        {@const key0 = mcpStatusKey(server.provider, server.name)}
-        {@const status = allStatuses.get(key0)}
-        {@const key = statusKey(status, providerRefreshing)}
-        {@const inSet = !server.disabled}
-        {@const needsAuth = key === 'needs-auth' && (server.transport === 'http' || server.transport === 'sse' || server.transport === 'streamable_http')}
+      {#each rows as row (mcpRowKey(row.provider, row.name))}
+        {@const key = statusKey(row)}
+        {@const inSet = !row.disabled}
+        {@const needsAuth = key === 'needs-auth'}
+        {@const canReconnect = row.source === 'session' && scope?.kind === 'thread'}
+        {#snippet rowAction()}
+          <Icon
+            icon={needsAuth ? LogIn : RefreshCw}
+            size={12}
+            strokeWidth={1.75}
+            class={loading ? 'animate-spin' : ''}
+          />
+        {/snippet}
         <MenuItem
-          label={server.name}
-          description={describe(server, status, key)}
-          onSelect={() => void toggleServer(server, !inSet)}
-          actionLabel={needsAuth ? 'Sign in' : 'Refresh'}
-          actionTitle={needsAuth ? `Sign in to ${server.name}` : `Re-check ${server.name}`}
-          actionDisabled={providerRefreshing || (needsAuth && !inSet)}
-          onAction={() => {
-            if (needsAuth) void signIn(server);
-            else void refresh(server);
-          }}
+          label={row.name}
+          description={describe(row, key)}
+          onSelect={() => void toggleServer(row, !inSet)}
+          action={inSet ? rowAction : undefined}
+          actionLabel={needsAuth ? 'Sign in' : canReconnect ? 'Reconnect' : 'Refresh'}
+          actionTitle={needsAuth
+            ? `Sign in to ${row.name}`
+            : canReconnect
+              ? `Reconnect ${row.name}`
+              : `Re-check ${row.name}`}
+          actionDisabled={loading}
+          onAction={inSet
+            ? () => {
+                if (needsAuth) void signIn(row);
+                else if (canReconnect) void reconnect(row);
+                else void refresh(row);
+              }
+            : undefined}
         >
           {#snippet indicator()}
             <span
@@ -255,25 +221,8 @@
               data-mcp-status={key}
             ></span>
           {/snippet}
-          {#snippet action()}
-            <Icon
-              icon={needsAuth ? LogIn : RefreshCw}
-              size={12}
-              strokeWidth={1.75}
-              class={providerRefreshing ? 'animate-spin' : ''}
-            />
-          {/snippet}
         </MenuItem>
       {/each}
-      <MenuDivider />
-      <MenuItem
-        label="Manage MCP servers…"
-        onSelect={openSettings}
-      >
-        {#snippet icon()}
-          <Icon icon={Settings} size={13} strokeWidth={1.75} />
-        {/snippet}
-      </MenuItem>
     {/if}
   </Menu>
 </Popover>

@@ -50,7 +50,7 @@ type subagentAnchorAggregate struct {
 //
 // Plan notes (verified with EXPLAIN QUERY PLAN, SQLite 3.45):
 //   - Both hops probe the partial idx_items_parent (thread_id,
-//     parent_id) WHERE parent_id <> ''. The explicit `parent_id <> ''`
+//     parent_id) WHERE parent_id <> ”. The explicit `parent_id <> ”`
 //     terms below are load-bearing for that: SQLite cannot prove the
 //     index predicate from a bound parameter or the `rel.id` join term
 //     alone, and without the proof both hops degrade to a whole-thread

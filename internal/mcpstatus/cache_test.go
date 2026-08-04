@@ -66,6 +66,35 @@ func TestCache_PutThenGetAfterTTL(t *testing.T) {
 	}
 }
 
+func TestCache_SnapshotProviderWithFreshness_KeepsExpiredEntries(t *testing.T) {
+	now := time.Now()
+	clock := now
+	c := NewWith(50*time.Millisecond, nil, func() time.Time { return clock })
+	c.Put(ServerStatus{Key: Key{Provider: ProviderClaude, Name: "old"}, Status: StatusConnected, Source: SourceEphemeralFetch})
+	clock = now.Add(time.Second)
+	c.Put(ServerStatus{Key: Key{Provider: ProviderClaude, Name: "new"}, Status: StatusConnected, Source: SourceEphemeralFetch})
+
+	// The TTL-filtered snapshot drops the expired entry...
+	if got := c.SnapshotProvider(ProviderClaude); len(got) != 1 || got[0].Name != "new" {
+		t.Fatalf("SnapshotProvider = %#v, want only the fresh entry", got)
+	}
+	// ...the freshness-annotated one keeps it, marked stale.
+	all := c.SnapshotProviderWithFreshness(ProviderClaude)
+	if len(all) != 2 {
+		t.Fatalf("SnapshotProviderWithFreshness = %#v, want both entries", all)
+	}
+	byName := map[string]CachedStatus{}
+	for _, e := range all {
+		byName[e.Name] = e
+	}
+	if e := byName["old"]; e.Fresh || e.Status != StatusConnected {
+		t.Errorf("old entry = %#v, want stale with last-known status", e)
+	}
+	if e := byName["new"]; !e.Fresh {
+		t.Errorf("new entry = %#v, want fresh", e)
+	}
+}
+
 func TestCache_InvalidateEmitsUnknown(t *testing.T) {
 	bus := &recordingBus{}
 	c := NewCache(time.Minute, bus)

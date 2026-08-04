@@ -11,17 +11,25 @@ import (
 // our read and our write attempt. The caller may retry once.
 var ErrConcurrentWrite = errors.New("claudeconfig: concurrent write detected")
 
-// Store reads and writes ~/.claude.json. Tests inject a temp path via
-// the constructor — the package never reads $HOME directly.
+// Store reads and writes ~/.claude.json, plus the read-only slices of
+// the sibling ~/.claude directory (settings.json, plugin manifests)
+// that MCP enumeration needs. Tests inject a temp path via the
+// constructor — the package never reads $HOME directly.
 type Store struct {
 	path string
+	// home is the ~/.claude directory derived from path's parent —
+	// claude.json lives at $HOME/.claude.json, next to $HOME/.claude/.
+	home string
 }
 
 // New returns a Store bound to the given file path. A non-existent
 // file is treated as an empty config on Load; Save creates the file
 // (and its parent directory) on first write.
 func New(path string) *Store {
-	return &Store{path: path}
+	return &Store{
+		path: path,
+		home: filepath.Join(filepath.Dir(path), ".claude"),
+	}
 }
 
 // DefaultPath returns ~/.claude.json based on the current user. The

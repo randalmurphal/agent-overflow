@@ -840,19 +840,14 @@ func (p *privilegedApp) GetNetworkSettings() string     { return "ok" }
 func (p *privilegedApp) ListWSLDistros() string         { return "ok" }
 func (p *privilegedApp) GetWSLDistroPreference() string { return "ok" }
 
-// 8. MCP library / per-thread config and status.
-func (p *privilegedApp) ListMcpServers() string          { return "ok" }
-func (p *privilegedApp) ListMcpServersForThread() string { return "ok" }
-func (p *privilegedApp) ListMcpServersForNewThread() string {
+// 8. MCP per-thread state and status.
+func (p *privilegedApp) ListThreadMcpServers() string      { return "ok" }
+func (p *privilegedApp) ListWorkspaceMcpServers() string   { return "ok" }
+func (p *privilegedApp) SetThreadMcpServerEnabled() string { return "ok" }
+func (p *privilegedApp) SetWorkspaceMcpServerEnabled() string {
 	return "ok"
 }
-func (p *privilegedApp) CreateMcpServer() string     { return "ok" }
-func (p *privilegedApp) UpdateMcpServer() string     { return "ok" }
-func (p *privilegedApp) DeleteMcpServer() string     { return "ok" }
-func (p *privilegedApp) SetMcpServerEnabled() string { return "ok" }
-func (p *privilegedApp) SetNewThreadMcpServerEnabled() string {
-	return "ok"
-}
+func (p *privilegedApp) ReconnectMcpServer() string     { return "ok" }
 func (p *privilegedApp) GetMcpServerStatus() string     { return "ok" }
 func (p *privilegedApp) ListMcpServerStatuses() string  { return "ok" }
 func (p *privilegedApp) RefreshMcpServerStatus() string { return "ok" }

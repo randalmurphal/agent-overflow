@@ -65,48 +65,6 @@ func findSectionByName(data []byte, name string) (int, int, error) {
 	return -1, -1, nil
 }
 
-// spliceInsert returns data with the given section bytes inserted at
-// a stable location. It tries to place the new section adjacent to
-// any existing [mcp_servers.*] block; if none exists it appends at
-// EOF (with leading/trailing newlines normalized so unrelated
-// sections aren't fused).
-func spliceInsert(data, section []byte) []byte {
-	if len(section) == 0 {
-		return data
-	}
-	insertAt, hasExistingMcp := findAfterLastMcpSection(data)
-	prefix := []byte{}
-	if insertAt > 0 && !endsWithBlankLine(data[:insertAt]) {
-		prefix = []byte("\n")
-	}
-	trailing := []byte{}
-	if insertAt < len(data) && !sectionEndsWithNewline(section) {
-		trailing = []byte("\n")
-	}
-	// Ensure a blank line between the new section and whatever
-	// follows when we land mid-file (e.g. before a sibling [notice]
-	// block). Skip when we're appending at EOF and the section
-	// already ends with a newline.
-	var middle bytes.Buffer
-	middle.Write(prefix)
-	middle.Write(section)
-	middle.Write(trailing)
-	if insertAt < len(data) {
-		// Add a blank-line separator between our trailing newline and
-		// the next section's header so the result doesn't fuse two
-		// `[...]` lines.
-		if !startsWithBlankLine(data[insertAt:]) {
-			middle.WriteByte('\n')
-		}
-	}
-	_ = hasExistingMcp
-	out := make([]byte, 0, len(data)+middle.Len())
-	out = append(out, data[:insertAt]...)
-	out = append(out, middle.Bytes()...)
-	out = append(out, data[insertAt:]...)
-	return out
-}
-
 // spliceReplace returns data with the [start, end) byte range
 // replaced by replacement. A nil replacement deletes the range; in
 // that case we also consume the immediately-following blank line so
@@ -140,50 +98,6 @@ func spliceReplace(data []byte, start, end int, replacement []byte) []byte {
 	}
 	out = append(out, data[end:]...)
 	return out
-}
-
-// findAfterLastMcpSection returns the byte offset where a new
-// [mcp_servers.*] section should be inserted. If any existing
-// [mcp_servers.*] section is present, we return the offset just past
-// its end so the new entry stays grouped with the existing ones.
-// Otherwise we return len(data) so the new section appends at EOF.
-func findAfterLastMcpSection(data []byte) (int, bool) {
-	pos := 0
-	hasAny := false
-	lastEnd := -1
-	inMcp := false
-	for pos < len(data) {
-		lineEnd := bytes.IndexByte(data[pos:], '\n')
-		var line []byte
-		var advance int
-		if lineEnd < 0 {
-			line = data[pos:]
-			advance = len(line)
-		} else {
-			line = data[pos : pos+lineEnd+1]
-			advance = lineEnd + 1
-		}
-		trimmed := bytes.TrimLeft(line, " \t")
-		if len(trimmed) > 0 && trimmed[0] == '[' {
-			if bytes.HasPrefix(trimmed, []byte("[mcp_servers.")) {
-				hasAny = true
-				inMcp = true
-				lastEnd = pos + advance
-			} else if inMcp {
-				// Just hit a non-mcp section while tracking — record
-				// the previous boundary and stop tracking.
-				inMcp = false
-			}
-		}
-		if inMcp {
-			lastEnd = pos + advance
-		}
-		pos += advance
-	}
-	if hasAny && lastEnd >= 0 {
-		return lastEnd, true
-	}
-	return len(data), false
 }
 
 func endsWithBlankLine(b []byte) bool {

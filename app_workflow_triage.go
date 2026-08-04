@@ -123,7 +123,6 @@ func (a *App) newWorkflowTriageThread(threadID string, project store.Project, wo
 	// sanitizeThreadModelSettings does not touch RuntimeMode (see its doc
 	// comment), so the full-access setting above survives it.
 	thread = a.sanitizeThreadModelSettings(thread)
-	thread.DisabledMcpServers = a.snapshotDisabledMcpServers(thread.Provider, thread.WorkspacePath)
 	return thread
 }
 

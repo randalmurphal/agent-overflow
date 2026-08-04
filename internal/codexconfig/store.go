@@ -96,61 +96,6 @@ func (s *Store) ListServers() ([]Server, error) {
 	return out, nil
 }
 
-// CreateServer adds a new section at the end of the file (or just
-// after the last existing [mcp_servers.*] section if any). Returns an
-// error if the name already exists or contains characters that would
-// require a quoted TOML key.
-func (s *Store) CreateServer(srv Server) error {
-	if err := validateServer(srv); err != nil {
-		return err
-	}
-	return s.modify(func(data []byte) ([]byte, error) {
-		if existing, _, _ := findSectionByName(data, srv.Name); existing >= 0 {
-			return nil, fmt.Errorf("codexconfig: server %q already exists", srv.Name)
-		}
-		body, err := renderSection(srv)
-		if err != nil {
-			return nil, err
-		}
-		return spliceInsert(data, body), nil
-	})
-}
-
-// UpdateServer replaces an existing [mcp_servers.<name>] section
-// in-place, preserving its byte position. Returns ErrNotFound if no
-// such section exists.
-func (s *Store) UpdateServer(srv Server) error {
-	if err := validateServer(srv); err != nil {
-		return err
-	}
-	return s.modify(func(data []byte) ([]byte, error) {
-		start, end, _ := findSectionByName(data, srv.Name)
-		if start < 0 {
-			return nil, fmt.Errorf("%w: %s", ErrNotFound, srv.Name)
-		}
-		body, err := renderSection(srv)
-		if err != nil {
-			return nil, err
-		}
-		return spliceReplace(data, start, end, body), nil
-	})
-}
-
-// DeleteServer removes the [mcp_servers.<name>] section if present.
-// Returns ErrNotFound if the section is missing.
-func (s *Store) DeleteServer(name string) error {
-	if !bareKey.MatchString(name) {
-		return ErrInvalidName
-	}
-	return s.modify(func(data []byte) ([]byte, error) {
-		start, end, _ := findSectionByName(data, name)
-		if start < 0 {
-			return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
-		}
-		return spliceReplace(data, start, end, nil), nil
-	})
-}
-
 // SetEnabled flips the `enabled` key for the given server. Codex's
 // `enabled` is global (not per-thread), and so is this method.
 // Missing servers return ErrNotFound. enabled=true with no existing
@@ -303,25 +248,6 @@ func serverFromRaw(name string, raw map[string]any) (Server, error) {
 		return srv, nil
 	}
 	return Server{}, fmt.Errorf("server %q has neither command nor url", name)
-}
-
-func validateServer(srv Server) error {
-	if !bareKey.MatchString(srv.Name) {
-		return ErrInvalidName
-	}
-	switch srv.Transport {
-	case TransportStdio:
-		if srv.Command == "" {
-			return errors.New("codexconfig: stdio server requires a command")
-		}
-	case TransportStreamable:
-		if srv.URL == "" {
-			return errors.New("codexconfig: streamable_http server requires a url")
-		}
-	default:
-		return fmt.Errorf("codexconfig: unsupported transport %q", srv.Transport)
-	}
-	return nil
 }
 
 func stringSlice(in []any) []string {

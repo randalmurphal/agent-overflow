@@ -110,6 +110,9 @@ func TestSession_QueryMCPStatus_TwoServers(t *testing.T) {
 	if got := byName["github"].Status; got != "connected" {
 		t.Errorf("github status = %q, want connected", got)
 	}
+	if got := byName["github"].ToolNames(); len(got) != 1 || got[0] != "a" {
+		t.Errorf("github tools = %v, want [a]", got)
+	}
 	if got := byName["sentry"].Status; got != "needs-auth" {
 		t.Errorf("sentry status = %q, want needs-auth", got)
 	}
@@ -207,5 +210,113 @@ func TestSession_QueryMCPStatus_Timeout(t *testing.T) {
 	}
 	if elapsed > time.Second {
 		t.Errorf("timeout took too long: %v", elapsed)
+	}
+}
+
+// mcpControlResponderScript acks any mcp_toggle / mcp_reconnect
+// control_request with `subtype` ("success" or "error") and appends
+// every received line to capturePath so tests can assert the outgoing
+// request shape.
+func mcpControlResponderScript(subtype, capturePath string) string {
+	return `#!/bin/sh
+set -u
+while IFS= read -r line; do
+    printf '%s\n' "$line" >> '` + capturePath + `'
+    case "$line" in
+        *'"mcp_toggle"'* | *'"mcp_reconnect"'*)
+            reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+            if [ '` + subtype + `' = success ]; then
+                printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$reqid"
+            else
+                printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"Server not found: nope"}}\n' "$reqid"
+            fi
+            ;;
+    esac
+done
+`
+}
+
+func newMCPControlResponderSession(t *testing.T, subtype string) (*Session, string) {
+	t.Helper()
+	dir := t.TempDir()
+	capturePath := dir + "/capture.ndjson"
+	scriptPath := dir + "/fake-claude"
+	if err := os.WriteFile(scriptPath, []byte(mcpControlResponderScript(subtype, capturePath)), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	s := &Session{
+		proc:                  proc,
+		threadID:              "thread-mcp-test",
+		onEvent:               func(evt provider.ProviderEvent) { _ = evt },
+		cancel:                cancel,
+		readDone:              make(chan struct{}),
+		controlRequestTimeout: 2 * time.Second,
+	}
+	go s.readLoop()
+	t.Cleanup(func() { _ = s.Close() })
+	return s, capturePath
+}
+
+func TestSession_ToggleMCPServer_SendsNameAndEnabled(t *testing.T) {
+	s, capturePath := newMCPControlResponderSession(t, "success")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := s.ToggleMCPServer(ctx, "plugin:playwright:playwright", false); err != nil {
+		t.Fatalf("ToggleMCPServer: %v", err)
+	}
+	captured, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	for _, want := range []string{`"subtype":"mcp_toggle"`, `"serverName":"plugin:playwright:playwright"`, `"enabled":false`} {
+		if !strings.Contains(string(captured), want) {
+			t.Errorf("request missing %s; captured: %s", want, captured)
+		}
+	}
+}
+
+func TestSession_ToggleMCPServer_EmptyNameRefused(t *testing.T) {
+	s, _ := newMCPControlResponderSession(t, "success")
+	if err := s.ToggleMCPServer(context.Background(), "  ", true); err == nil {
+		t.Fatal("expected error for empty server name")
+	}
+}
+
+func TestSession_ReconnectMCPServer_Success(t *testing.T) {
+	s, capturePath := newMCPControlResponderSession(t, "success")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := s.ReconnectMCPServer(ctx, "github"); err != nil {
+		t.Fatalf("ReconnectMCPServer: %v", err)
+	}
+	captured, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	for _, want := range []string{`"subtype":"mcp_reconnect"`, `"serverName":"github"`} {
+		if !strings.Contains(string(captured), want) {
+			t.Errorf("request missing %s; captured: %s", want, captured)
+		}
+	}
+}
+
+func TestSession_ReconnectMCPServer_ErrorSurfaces(t *testing.T) {
+	s, _ := newMCPControlResponderSession(t, "error")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	err := s.ReconnectMCPServer(ctx, "nope")
+	if err == nil {
+		t.Fatal("expected provider error, got nil")
+	}
+	if !strings.Contains(err.Error(), "Server not found") {
+		t.Errorf("error should carry provider detail, got: %v", err)
 	}
 }

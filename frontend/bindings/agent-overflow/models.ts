@@ -1607,74 +1607,6 @@ export class MCPAuthInitResult {
     }
 }
 
-/**
- * MCPServer is the wire shape every MCP binding speaks. It unifies
- * claudeconfig.Server (which carries Source + the per-workspace
- * Disabled flag) and codexconfig.Server (which carries a global
- * Enabled flag and Codex-specific transport names) into a single shape
- * the frontend renders without a provider branch. Transport values
- * stay provider-native ("stdio" | "http" | "sse" for Claude;
- * "stdio" | "streamable_http" for Codex) so the editor form can pick
- * the right input set.
- * 
- * Disabled is the unified UI flag — true means "this server is not
- * active in the current scope". For Claude that translates to the
- * thread's workspace `disabledMcpServers` list; for Codex it
- * translates to the global `enabled = false` field in
- * ~/.codex/config.toml.
- */
-export class MCPServer {
-    "provider": string;
-    "name": string;
-    "source"?: string;
-    "transport": string;
-    "command"?: string;
-    "args"?: string[];
-    "env"?: { [_ in string]?: string };
-    "url"?: string;
-    "headers"?: { [_ in string]?: string };
-    "bearerTokenEnv"?: string;
-    "disabled": boolean;
-
-    /** Creates a new MCPServer instance. */
-    constructor($$source: Partial<MCPServer> = {}) {
-        if (!("provider" in $$source)) {
-            this["provider"] = "";
-        }
-        if (!("name" in $$source)) {
-            this["name"] = "";
-        }
-        if (!("transport" in $$source)) {
-            this["transport"] = "";
-        }
-        if (!("disabled" in $$source)) {
-            this["disabled"] = false;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new MCPServer instance from a string or object.
-     */
-    static createFrom($$source: any = {}): MCPServer {
-        const $$createField5_0 = $$createType2;
-        const $$createField6_0 = $$createType3;
-        const $$createField8_0 = $$createType3;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("args" in $$parsedSource) {
-            $$parsedSource["args"] = $$createField5_0($$parsedSource["args"]);
-        }
-        if ("env" in $$parsedSource) {
-            $$parsedSource["env"] = $$createField6_0($$parsedSource["env"]);
-        }
-        if ("headers" in $$parsedSource) {
-            $$parsedSource["headers"] = $$createField8_0($$parsedSource["headers"]);
-        }
-        return new MCPServer($$parsedSource as Partial<MCPServer>);
-    }
-}
-
 export class ManagedProviderAccount {
     "id": string;
     "provider": string;
@@ -3082,6 +3014,84 @@ export class ThreadLiveState {
             $$parsedSource["providerAccount"] = $$createField8_0($$parsedSource["providerAccount"]);
         }
         return new ThreadLiveState($$parsedSource as Partial<ThreadLiveState>);
+    }
+}
+
+/**
+ * ThreadMCPServer is the per-thread MCP row the composer menu renders.
+ * The provider session is the source of truth for what a thread can
+ * actually see (Source "session"); when no session is live the row
+ * comes from provider-native config plus the status cache (Source
+ * "config"). The shape deliberately carries no command/args/env/headers
+ * — server config can hold live tokens and this shape flows to the
+ * wire (see claude.MCPServerStatus's config rationale).
+ */
+export class ThreadMCPServer {
+    "provider": string;
+    "name": string;
+
+    /**
+     * Status is a mcpstatus.Status string ("connected", "needs-auth",
+     * "failed", "starting", "disabled", "unknown").
+     */
+    "status": string;
+    "error"?: string;
+    "tools"?: string[];
+
+    /**
+     * Scope is provider vocabulary: Claude session rows report the
+     * CLI's own scope ("user", "project", "local", "dynamic" for
+     * plugin servers), config rows report the claudeconfig source
+     * ("user", "plugin"). Codex rows carry no scope.
+     */
+    "scope"?: string;
+    "disabled": boolean;
+
+    /**
+     * Source is "session" when the row is live provider truth for this
+     * thread, "config" when it is the config+cache fallback.
+     */
+    "source": string;
+
+    /**
+     * Stale marks a config row whose Status is a last-known value from
+     * an expired cache entry. Membership is still real — the menu keeps
+     * rendering the row — but the frontend chains a background status
+     * refresh instead of trusting it.
+     */
+    "stale"?: boolean;
+
+    /** Creates a new ThreadMCPServer instance. */
+    constructor($$source: Partial<ThreadMCPServer> = {}) {
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("disabled" in $$source)) {
+            this["disabled"] = false;
+        }
+        if (!("source" in $$source)) {
+            this["source"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadMCPServer instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadMCPServer {
+        const $$createField4_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("tools" in $$parsedSource) {
+            $$parsedSource["tools"] = $$createField4_0($$parsedSource["tools"]);
+        }
+        return new ThreadMCPServer($$parsedSource as Partial<ThreadMCPServer>);
     }
 }
 

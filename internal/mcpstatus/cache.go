@@ -169,6 +169,40 @@ func (c *Cache) SnapshotProvider(p Provider) []ServerStatus {
 	return out
 }
 
+// CachedStatus is a snapshot entry annotated with TTL freshness, for
+// callers that treat the cache as two signals: which servers EXIST
+// (membership — a plugin server the config files cannot name doesn't
+// stop existing because 30s passed) and what their last-known status
+// was (fresh vs stale).
+type CachedStatus struct {
+	ServerStatus
+	Fresh bool
+}
+
+// SnapshotProviderWithFreshness returns every entry for the provider —
+// expired ones included — with Fresh reporting whether the entry is
+// still within TTL. Backs the config-fallback MCP listing, where
+// dropping an expired plugin entry would make the server flicker out
+// of the menu until the next ephemeral fetch; a stale entry instead
+// renders with its last-known status and triggers a background
+// refresh.
+func (c *Cache) SnapshotProviderWithFreshness(p Provider) []CachedStatus {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	out := make([]CachedStatus, 0, len(c.entries))
+	for k, entry := range c.entries {
+		if k.Provider != p {
+			continue
+		}
+		out = append(out, CachedStatus{
+			ServerStatus: entry.status,
+			Fresh:        c.ttl <= 0 || now.Sub(entry.storedAt) <= c.ttl,
+		})
+	}
+	return out
+}
+
 // Fetcher runs a provider-side status fetch and returns every server
 // status it can see. The cache treats the slice as authoritative for
 // that provider: each entry is Put, and the requested Key's result is

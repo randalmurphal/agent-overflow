@@ -22,15 +22,19 @@ export enum Provider {
 
 /**
  * ServerStatus is the wire shape every binding speaks. ToolCount /
- * AuthStatus / Error / Raw are best-effort — present when the wire
- * source carries them, empty otherwise. CheckedAt is for "how stale"
- * display; the cache uses its own clock for TTL.
+ * Tools / AuthStatus / Error / Raw are best-effort — present when the
+ * wire source carries them, empty otherwise. Tools holds tool NAMES
+ * only: both providers' status responses also carry server config
+ * (args/env can hold live tokens) and tool schemas, and neither may
+ * ever reach this shape. CheckedAt is for "how stale" display; the
+ * cache uses its own clock for TTL.
  */
 export class ServerStatus {
     "provider": Provider;
     "name": string;
     "status": Status;
     "toolCount"?: number;
+    "tools"?: string[];
     "authStatus"?: string;
     "error"?: string;
     "raw"?: string;
@@ -62,7 +66,11 @@ export class ServerStatus {
      * Creates a new ServerStatus instance from a string or object.
      */
     static createFrom($$source: any = {}): ServerStatus {
+        const $$createField4_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("tools" in $$parsedSource) {
+            $$parsedSource["tools"] = $$createField4_0($$parsedSource["tools"]);
+        }
         return new ServerStatus($$parsedSource as Partial<ServerStatus>);
     }
 }
@@ -127,4 +135,12 @@ export enum Status {
      * Codex notif "failed"|"cancelled" / Claude "failed"
      */
     StatusFailed = "failed",
+
+    /**
+     * Claude "disabled" (toggled off; the CLI keeps the row and reports it)
+     */
+    StatusDisabled = "disabled",
 };
+
+// Private type creation functions
+const $$createType0 = $Create.Array($Create.Any);

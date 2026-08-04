@@ -31,6 +31,7 @@ const (
 	StatusConnected Status = "connected"  // Codex authStatus∈{unsupported,bearerToken,oAuth} ∧ len(tools)>0 OR notif "ready" / Claude "connected"
 	StatusNeedsAuth Status = "needs-auth" // Codex "notLoggedIn" / Claude "needs-auth"
 	StatusFailed    Status = "failed"     // Codex notif "failed"|"cancelled" / Claude "failed"
+	StatusDisabled  Status = "disabled"   // Claude "disabled" (toggled off; the CLI keeps the row and reports it)
 )
 
 // Key uniquely identifies a status entry across both providers.
@@ -54,13 +55,17 @@ const (
 )
 
 // ServerStatus is the wire shape every binding speaks. ToolCount /
-// AuthStatus / Error / Raw are best-effort — present when the wire
-// source carries them, empty otherwise. CheckedAt is for "how stale"
-// display; the cache uses its own clock for TTL.
+// Tools / AuthStatus / Error / Raw are best-effort — present when the
+// wire source carries them, empty otherwise. Tools holds tool NAMES
+// only: both providers' status responses also carry server config
+// (args/env can hold live tokens) and tool schemas, and neither may
+// ever reach this shape. CheckedAt is for "how stale" display; the
+// cache uses its own clock for TTL.
 type ServerStatus struct {
 	Key
 	Status     Status    `json:"status"`
 	ToolCount  int       `json:"toolCount,omitempty"`
+	Tools      []string  `json:"tools,omitempty"`
 	AuthStatus string    `json:"authStatus,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	Raw        string    `json:"raw,omitempty"`

@@ -344,17 +344,14 @@ export {
   UnarchiveProject,
   UpdateProjectSortPositions,
 
-  // MCP library (1:1 sync with ~/.claude.json + ~/.codex/config.toml)
-  ListMcpServers,
-  ListMcpServersForThread,
-  ListMcpServersForNewThread,
-  CreateMcpServer,
-  UpdateMcpServer,
-  DeleteMcpServer,
-  SetMcpServerEnabled,
-  SetNewThreadMcpServerEnabled,
+  // MCP (provider-native state: live session truth per thread, config
+  // + status cache for threads without a session)
+  ListThreadMcpServers,
+  ListWorkspaceMcpServers,
+  SetThreadMcpServerEnabled,
+  SetWorkspaceMcpServerEnabled,
+  ReconnectMcpServer,
   GetMcpServerStatus,
-  ListMcpServerStatuses,
   RefreshMcpServerStatus,
   TriggerMcpAuth,
 
@@ -422,13 +419,7 @@ export {
 } from '../../../bindings/agent-overflow/internal/store/models.js';
 export {
   ServerStatus as MCPServerStatus,
-  Provider as MCPStatusProvider,
-  Status as MCPStatus,
-  Source as MCPStatusSource,
 } from '../../../bindings/agent-overflow/internal/mcpstatus/models.js';
-export {
-  MCPServer,
-} from '../../../bindings/agent-overflow/models.js';
 export {
   EditorSettings,
   RemoteEndpoint,
@@ -446,6 +437,7 @@ export {
   ReleaseSummary,
   RemoteEndpointSummary,
   TerminalOpenOptions,
+  ThreadMCPServer,
   UpdateAvailability,
   WorktreeStatus,
 } from '../../../bindings/agent-overflow/models.js';

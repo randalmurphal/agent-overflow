@@ -74,7 +74,11 @@ func TestListServers_userOnly(t *testing.T) {
 	}
 }
 
-func TestListServers_pluginAndCloudOnlyEntries(t *testing.T) {
+func TestListServers_cloudOnlyEntriesKeptPluginOrphansDropped(t *testing.T) {
+	// A disabled-only "claude.ai *" name stays visible (the enabled
+	// cloud set lives in the claude.ai account, so the disabled name is
+	// the only trace). A disabled-only plugin: name with no installed
+	// plugin behind it is an orphan, exactly like a bare name.
 	body := `{
   "mcpServers": {"alpha": {"type": "stdio", "command": "/bin/alpha"}},
   "projects": {
@@ -92,13 +96,11 @@ func TestListServers_pluginAndCloudOnlyEntries(t *testing.T) {
 		names = append(names, srv.Name)
 		sources[srv.Name] = srv.Source
 	}
-	want := []string{"alpha", "claude.ai Gmail", "plugin:p:tool"}
+	want := []string{"alpha", "claude.ai Gmail"}
 	sortedNames := append([]string{}, names...)
 	sort.Strings(sortedNames)
-	wantSorted := append([]string{}, want...)
-	sort.Strings(wantSorted)
-	if !reflect.DeepEqual(sortedNames, wantSorted) {
-		t.Fatalf("names = %v, want %v", sortedNames, wantSorted)
+	if !reflect.DeepEqual(sortedNames, want) {
+		t.Fatalf("names = %v, want %v", sortedNames, want)
 	}
 	if sources["alpha"] != SourceUser {
 		t.Errorf("alpha source = %q, want user", sources["alpha"])
@@ -106,8 +108,129 @@ func TestListServers_pluginAndCloudOnlyEntries(t *testing.T) {
 	if sources["claude.ai Gmail"] != SourceCloud {
 		t.Errorf("claude.ai Gmail source = %q, want cloud", sources["claude.ai Gmail"])
 	}
-	if sources["plugin:p:tool"] != SourcePlugin {
-		t.Errorf("plugin:p:tool source = %q, want plugin", sources["plugin:p:tool"])
+}
+
+func TestListServers_localScopeEntries(t *testing.T) {
+	body := `{
+  "mcpServers": {"alpha": {"type": "stdio", "command": "/bin/alpha"}},
+  "projects": {
+    "/work": {
+      "mcpServers": {
+        "jira": {"type": "stdio", "command": "/bin/jira"},
+        "alpha": {"type": "stdio", "command": "/bin/alpha-local"}
+      },
+      "disabledMcpServers": ["jira"]
+    },
+    "/other": {}
+  }
+}`
+	store := newStoreWithFile(t, body)
+	got, err := store.ListServers("/work")
+	if err != nil {
+		t.Fatalf("ListServers: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d servers, want 2 (alpha deduped, jira local); got=%+v", len(got), got)
+	}
+	byName := map[string]Server{}
+	for _, srv := range got {
+		byName[srv.Name] = srv
+	}
+	if jira := byName["jira"]; jira.Source != SourceLocal || !jira.Disabled {
+		t.Errorf("jira = %+v, want disabled local-scope entry", jira)
+	}
+	// Same name in user and local scope: one row, user entry wins.
+	if alpha := byName["alpha"]; alpha.Source != SourceUser {
+		t.Errorf("alpha = %+v, want deduped to the user entry", alpha)
+	}
+
+	// Local entries are workspace-scoped: /other sees only the user set.
+	other, err := store.ListServers("/other")
+	if err != nil {
+		t.Fatalf("ListServers /other: %v", err)
+	}
+	if len(other) != 1 || other[0].Name != "alpha" {
+		t.Errorf("/other = %+v, want only the user alpha", other)
+	}
+}
+
+func TestListServers_disabledOnlyOrphansAreDropped(t *testing.T) {
+	// A name in disabledMcpServers that nothing defines any more — a
+	// removed server, or a plugin since uninstalled — is an orphan;
+	// Claude Code itself doesn't list it, so neither does AO.
+	body := `{
+  "mcpServers": {},
+  "projects": {
+    "/work": {"disabledMcpServers": ["code-index", "plugin:p:tool"]}
+  }
+}`
+	store := newStoreWithFile(t, body)
+	got, err := store.ListServers("/work")
+	if err != nil {
+		t.Fatalf("ListServers: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %+v, want no rows (both orphans dropped)", got)
+	}
+}
+
+// TestListServers_worktreeSharesMainCheckoutEntry pins the canonical
+// keying contract end to end: a Claude session in a linked worktree
+// reads and writes `projects.<main root>` (the CLI resolves the
+// worktree to the canonical git root), so AO's listing and toggle for
+// a worktree workspace must use the same entry — keying by the raw
+// worktree path shows servers as enabled that the session actually
+// has disabled.
+func TestListServers_worktreeSharesMainCheckoutEntry(t *testing.T) {
+	mainRoot, worktree := writeWorktreeLayout(t, "blitz-388")
+	body := `{
+  "mcpServers": {"dispatch": {"type": "stdio", "command": "/bin/d"}},
+  "projects": {
+    ` + quoteJSON(mainRoot) + `: {
+      "mcpServers": {"jira": {"type": "stdio", "command": "/bin/j"}},
+      "disabledMcpServers": ["dispatch"]
+    }
+  }
+}`
+	store := newStoreWithFile(t, body)
+
+	got, err := store.ListServers(worktree)
+	if err != nil {
+		t.Fatalf("ListServers(worktree): %v", err)
+	}
+	byName := map[string]Server{}
+	for _, srv := range got {
+		byName[srv.Name] = srv
+	}
+	if d := byName["dispatch"]; !d.Disabled {
+		t.Errorf("dispatch = %+v, want disabled via the main root's entry", d)
+	}
+	if j, ok := byName["jira"]; !ok || j.Source != SourceLocal {
+		t.Errorf("jira = %+v, want the main root's local-scope row visible from the worktree", j)
+	}
+
+	// A toggle through the worktree path writes the main root's entry,
+	// never a worktree-keyed one.
+	if err := store.SetDisabled(worktree, "jira", true); err != nil {
+		t.Fatalf("SetDisabled: %v", err)
+	}
+	raw, _ := os.ReadFile(store.path)
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode written config: %v", err)
+	}
+	projects := decoded["projects"].(map[string]any)
+	if _, leaked := projects[worktree]; leaked {
+		t.Errorf("toggle created a worktree-keyed projects entry")
+	}
+	main := projects[mainRoot].(map[string]any)
+	list := main["disabledMcpServers"].([]any)
+	found := false
+	for _, v := range list {
+		found = found || v == "jira"
+	}
+	if !found {
+		t.Errorf("jira missing from main root's disabledMcpServers: %v", list)
 	}
 }
 
@@ -119,123 +242,6 @@ func TestListServers_missingFile(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected empty list, got %+v", got)
-	}
-}
-
-func TestCreateServer_writesAndPreservesUnrelatedKeys(t *testing.T) {
-	body := `{
-  "numStartups": 17,
-  "mcpServers": {"alpha": {"type": "stdio", "command": "/bin/alpha"}},
-  "projects": {"/x": {"hasTrustDialogAccepted": true}}
-}`
-	store := newStoreWithFile(t, body)
-	err := store.CreateServer(Server{
-		Name:      "bravo",
-		Source:    SourceUser,
-		Transport: TransportStdio,
-		Command:   "/bin/bravo",
-		Args:      []string{"--flag"},
-		Env:       map[string]string{"K": "${V}"},
-	})
-	if err != nil {
-		t.Fatalf("CreateServer: %v", err)
-	}
-	raw, err := os.ReadFile(store.path)
-	if err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	if !strings.Contains(string(raw), `"numStartups": 17`) {
-		t.Errorf("untouched top-level key lost; file=\n%s", raw)
-	}
-	if !strings.Contains(string(raw), `"hasTrustDialogAccepted": true`) {
-		t.Errorf("untouched project key lost; file=\n%s", raw)
-	}
-	if !strings.Contains(string(raw), `"bravo"`) {
-		t.Errorf("new server not written; file=\n%s", raw)
-	}
-
-	got, err := store.ListServers("/x")
-	if err != nil {
-		t.Fatalf("ListServers after write: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("len=%d after create, want 2; got=%+v", len(got), got)
-	}
-}
-
-func TestCreateServer_rejectsDuplicate(t *testing.T) {
-	store := newStoreWithFile(t, `{"mcpServers": {"alpha": {"type": "stdio", "command": "/a"}}}`)
-	err := store.CreateServer(Server{Name: "alpha", Source: SourceUser, Transport: TransportStdio, Command: "/b"})
-	if err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("expected duplicate error, got %v", err)
-	}
-}
-
-func TestUpdateServer_replacesEntryFields(t *testing.T) {
-	store := newStoreWithFile(t, `{"mcpServers": {"alpha": {"type": "stdio", "command": "/a", "args": ["one"]}}}`)
-	err := store.UpdateServer(Server{
-		Name:      "alpha",
-		Source:    SourceUser,
-		Transport: TransportStdio,
-		Command:   "/a-new",
-		Args:      []string{"two"},
-	})
-	if err != nil {
-		t.Fatalf("UpdateServer: %v", err)
-	}
-	got, err := store.ListServers("/x")
-	if err != nil {
-		t.Fatalf("ListServers: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("len=%d, want 1", len(got))
-	}
-	if got[0].Command != "/a-new" || !reflect.DeepEqual(got[0].Args, []string{"two"}) {
-		t.Errorf("unexpected: %+v", got[0])
-	}
-}
-
-func TestUpdateServer_missingErrors(t *testing.T) {
-	store := newStoreWithFile(t, `{"mcpServers": {}}`)
-	err := store.UpdateServer(Server{Name: "ghost", Source: SourceUser, Transport: TransportStdio, Command: "/g"})
-	if err == nil {
-		t.Fatalf("expected ErrNotFound, got nil")
-	}
-}
-
-func TestDeleteServer_stripsDisabledEverywhere(t *testing.T) {
-	body := `{
-  "mcpServers": {"alpha": {"type": "stdio", "command": "/a"}, "bravo": {"type": "stdio", "command": "/b"}},
-  "projects": {
-    "/x": {"disabledMcpServers": ["alpha", "bravo"]},
-    "/y": {"disabledMcpServers": ["alpha"]}
-  }
-}`
-	store := newStoreWithFile(t, body)
-	if err := store.DeleteServer("alpha"); err != nil {
-		t.Fatalf("DeleteServer: %v", err)
-	}
-	raw, _ := os.ReadFile(store.path)
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	mcps := decoded["mcpServers"].(map[string]any)
-	if _, ok := mcps["alpha"]; ok {
-		t.Errorf("alpha not removed from mcpServers")
-	}
-	if _, ok := mcps["bravo"]; !ok {
-		t.Errorf("bravo lost from mcpServers")
-	}
-	projects := decoded["projects"].(map[string]any)
-	for _, key := range []string{"/x", "/y"} {
-		proj := projects[key].(map[string]any)
-		disabled, _ := proj["disabledMcpServers"].([]any)
-		for _, d := range disabled {
-			if d.(string) == "alpha" {
-				t.Errorf("alpha still listed under %s", key)
-			}
-		}
 	}
 }
 
@@ -289,14 +295,6 @@ func TestSetDisabled_unknownServerIsAllowed(t *testing.T) {
 	}
 	if got[0].Source != SourceCloud {
 		t.Errorf("source = %q, want cloud", got[0].Source)
-	}
-}
-
-func TestValidate_rejectsBadTransport(t *testing.T) {
-	store := newStoreWithFile(t, `{}`)
-	err := store.CreateServer(Server{Name: "x", Source: SourceUser, Transport: "websocket", URL: "wss://x"})
-	if err == nil || !strings.Contains(err.Error(), "unsupported transport") {
-		t.Fatalf("expected unsupported transport error, got %v", err)
 	}
 }
 

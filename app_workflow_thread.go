@@ -73,7 +73,6 @@ func (a *App) createWorkflowThread(spec workflowThreadSpec) (store.Thread, error
 	// sanitizeThreadModelSettings does not touch RuntimeMode (see its doc
 	// comment), so the access mapping set above survives it.
 	thread = a.sanitizeThreadModelSettings(thread)
-	thread.DisabledMcpServers = a.snapshotDisabledMcpServers(thread.Provider, thread.WorkspacePath)
 	if err := a.store.CreateThread(thread); err != nil {
 		return store.Thread{}, fmt.Errorf("workflow runner: create thread for %s: %w", spec.label, err)
 	}

@@ -55,7 +55,7 @@ func TestMigrationFreshDB(t *testing.T) {
 		"channels", "channel_messages", "discussion_definitions",
 		"attachments", "thread_drafts", "message_anchors", "turns",
 		"proposed_plans", "proposed_plan_comments",
-		"chat_bar_favorites", "chat_model_profiles", "new_thread_mcp_defaults",
+		"chat_bar_favorites", "chat_model_profiles",
 		"diff_review_comments", "pending_background_task_terminals",
 		"projects", "usage_ledger", "ui_state", "edit_file_snapshots",
 	}
@@ -3134,6 +3134,78 @@ func TestMigrationV47AddsThreadWorktreeSetupState(t *testing.T) {
 			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
 		).Scan(&found); err != nil {
 			t.Fatalf("index %s missing after v47: %v", index, err)
+		}
+	}
+}
+
+func TestMigrationV49DropsPerThreadMCPState(t *testing.T) {
+	db := migrateThrough(t, 48)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v49', '/tmp/v49', 'V49', 'blue', 5, 10, 11, 0)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (
+			id, project_id, title, provider, model, workspace_path, worktree_path,
+			branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+			fast_mode, context_window, auto_compact_standard_percent,
+			auto_compact_extended_percent, runtime_mode, last_token_usage, last_read_at,
+			pinned_at, created_at, updated_at, archived, disabled_mcp_servers
+		) VALUES (
+			'thread-v49', 'project-v49', 'Pre-migration row', 'claude', 'claude-opus-4-8', '/tmp/v49', NULL,
+			NULL, '', '', '', 'chat', 'high',
+			0, 1000000, 0, 0, 'full-access', '', 31,
+			NULL, 33, 34, 0, '["stale-server"]'
+		)
+	`)
+	mustExec(t, db, `
+		INSERT INTO new_thread_mcp_defaults (provider, workspace_path, disabled_servers, updated_at)
+		VALUES ('claude', '/tmp/v49', '["stale-server"]', 1)
+	`)
+
+	if err := applyMigration(db, migrationByVersion(t, 49)); err != nil {
+		t.Fatalf("apply migration v49: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('threads') WHERE name = 'disabled_mcp_servers'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("probe threads columns: %v", err)
+	}
+	if count != 0 {
+		t.Error("disabled_mcp_servers column still present after v49")
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'new_thread_mcp_defaults'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("probe sqlite_master: %v", err)
+	}
+	if count != 0 {
+		t.Error("new_thread_mcp_defaults table still present after v49")
+	}
+
+	// The thread row itself survives the column drop.
+	var title string
+	if err := db.QueryRow(
+		`SELECT title FROM threads WHERE id = 'thread-v49'`,
+	).Scan(&title); err != nil {
+		t.Fatalf("read migrated thread: %v", err)
+	}
+	if title != "Pre-migration row" {
+		t.Fatalf("migrated thread title = %q", title)
+	}
+
+	// DROP COLUMN, not a rebuild: the threads indexes are untouched.
+	for _, index := range []string{
+		"idx_threads_project", "idx_threads_updated", "idx_threads_parent",
+		"idx_threads_forked_from", "idx_threads_pinned_at",
+	} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after v49: %v", index, err)
 		}
 	}
 }

@@ -173,20 +173,12 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
-	// designServers is non-nil only for design threads. For Codex
-	// chat/plan threads we inject the per-thread enabled set via
-	// config.mcp_servers so each session is isolated from global config
-	// changes. Claude chat/plan sessions use native discovery +
-	// post-init mcp_set_servers reconcile instead (see
-	// reconcileClaudeMCPOnInit in app_mcp_claude.go).
+	// designServers is non-nil only for design threads. Chat/plan
+	// sessions on both providers use native MCP discovery from the
+	// provider's own config (Claude's per-workspace disabledMcpServers,
+	// Codex's global enabled flags) — AO injects nothing, so a config
+	// toggle made anywhere is simply what the next session start gets.
 	designCfg.MCPServers = designServers
-	if designServers == nil && t.Provider == string(provider.Codex) {
-		if servers, err := a.buildCodexMCPServersForThread(t); err != nil {
-			log.Printf("start session: build codex mcp for thread %s: %v", threadID, err)
-		} else if servers != nil {
-			designCfg.MCPServers = servers
-		}
-	}
 	// The `ao` credential is minted here, before the spawn, because the
 	// process env is what carries it. It only becomes usable when the session
 	// is registered (sessionManager.put), so a failed spawn leaves nothing

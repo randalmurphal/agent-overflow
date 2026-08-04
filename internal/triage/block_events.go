@@ -84,4 +84,3 @@ func (r *Router) blockTypeForStop(threadID string, turnIndex int, scope, provide
 	}
 	return ""
 }
-
