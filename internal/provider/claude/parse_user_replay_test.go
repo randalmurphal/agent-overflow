@@ -558,6 +558,52 @@ func TestParseUser_Replay_DefensiveXMLWrappers(t *testing.T) {
 	}
 }
 
+// TestParseUser_Replay_CommandInputEcho_ForwardsFlagged is the incident
+// replica (2026-08-04). The `<command-name>` command-INPUT triple is the
+// CLI's replay echo OF a client-sent slash command, carrying the send's
+// client-minted uuid — suppressing it like the other wrappers stranded
+// the send's pending-send entry, and the stale entry made the NEXT
+// send's init reopen the settled turn's index (new response rows sorted
+// above the newer user message, reset id counters overwrote persisted
+// rows). It must forward as exactly one EventUserText flagged
+// `command_echo`, keeping the uuid, so triage can consume the entry —
+// and drop the XML when nothing matches.
+func TestParseUser_Replay_CommandInputEcho_ForwardsFlagged(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		// The prompt-command shape (plugin skill): message first, as the
+		// incident session's live wire carried it.
+		{"prompt_command", "<command-message>i-have-adhd:i-have-adhd</command-message>\n<command-name>/i-have-adhd:i-have-adhd</command-name>\n<command-args>lets go again</command-args>"},
+		// The local-command metadata shape (/usage): name first.
+		{"local_command", "<command-name>/usage</command-name>\n<command-message>usage</command-message>\n<command-args></command-args>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parser := NewParser()
+			line := []byte(`{"type":"user","isReplay":true,"uuid":"cmd-echo-` + tc.name + `","message":{"role":"user","content":` + jsonString(tc.content) + `}}`)
+			events, err := parser.ParseLine(testThread, line)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(events) != 1 || events[0].Kind != provider.EventUserText {
+				t.Fatalf("expected 1 EventUserText for the command echo, got %+v", events)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if flagged, _ := meta["command_echo"].(bool); !flagged {
+				t.Fatalf("meta = %s, want command_echo=true", events[0].Meta)
+			}
+			if id, _ := meta["provider_item_id"].(string); id != "cmd-echo-"+tc.name {
+				t.Fatalf("provider_item_id = %q, want the envelope uuid", id)
+			}
+		})
+	}
+}
+
 // TestParseUser_Replay_AgentMessage_Suppressed is the incident replica
 // (2026-07). Claude 2.1.x injects a completed subagent's final report
 // into the PARENT conversation as a `queued_command` attachment, echoed

@@ -138,6 +138,16 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 		// content — persist as the nested user_text row.
 		return r.persistWireOnlySubagentPrompt(evt, providerItemID)
 	}
+	if readCommandEchoFromMeta(evt.Meta) {
+		// A command-INPUT metadata echo (`<command-name>` triple) whose send
+		// this process didn't register — a session-resume replay, or a
+		// command issued by another client on the same session. The XML is
+		// CLI bookkeeping, not conversation content; matched echoes stamp
+		// the optimistic user row above, and an unmatched one has no row to
+		// stamp and nothing worth showing.
+		log.Printf("triage: dropping unmatched command-input echo %s on %s", providerItemID, evt.ThreadID)
+		return nil
+	}
 	// Top-level echo that matched no pending send: provider-injected
 	// context, NOT user-authored. Persist as a non-user notification so it
 	// can never masquerade as a user message.
@@ -282,6 +292,24 @@ func readParentUUIDFromMeta(meta json.RawMessage) string {
 	}
 	id, _ := m["parent_uuid"].(string)
 	return id
+}
+
+// readCommandEchoFromMeta reports whether the Claude parser flagged this
+// EventUserText as the CLI's command-INPUT metadata echo
+// (`<command-name>` triple; parse_user_replay.go). A matched echo stamps
+// the optimistic user row like any direct send; the flag exists so the
+// UNMATCHED top-level branch drops the raw XML instead of persisting it
+// as an injected-context row.
+func readCommandEchoFromMeta(meta json.RawMessage) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	var m map[string]any
+	if json.Unmarshal(meta, &m) != nil {
+		return false
+	}
+	flagged, _ := m["command_echo"].(bool)
+	return flagged
 }
 
 // attachProviderItemIDToUserRow merges `provider_item_id` onto the

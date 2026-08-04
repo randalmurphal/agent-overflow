@@ -236,9 +236,15 @@ type InjectedUserContentWrapper struct{ Open, Close string }
 //     <command-args>…</command-args>`) that rides an `isReplay:true` user
 //     envelope after a local slash command runs. The 2.1.88 source copy filters
 //     this shape out of the SDK stream (mappers.ts: "command input metadata …
-//     must not leak"); 2.1.219 emits it. Suppressing the OPEN/CLOSE pair of
+//     must not leak"); 2.1.219 emits it. Matching the OPEN/CLOSE pair of
 //     `<command-name>` alone covers the whole triple — the three tags always
-//     arrive together and the first one anchors the body.
+//     arrive together and the first one anchors the body. NOTE: the live-wire
+//     replay path branches on this shape BEFORE the wrapper suppression
+//     (parse_user_replay.go isCommandInputEcho) — the echo carries the send's
+//     client-minted uuid and must reach triage to consume its pending-send
+//     entry (a suppressed echo strands the entry and poisons turn indexing —
+//     incident 2026-08-04). The entry here still serves the fork-point
+//     detector, which must not count the echo as a real user prompt.
 var InjectedUserContentWrappers = []InjectedUserContentWrapper{
 	{"<task-notification", "</task-notification>"},
 	{"<agent-message", "</agent-message>"},

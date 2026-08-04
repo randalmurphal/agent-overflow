@@ -44,9 +44,10 @@ const (
 //
 // Command is deliberately absent: the CLI reports the command's NAME only
 // afterwards, on the `<command-name>` metadata echo that arrives after this
-// envelope and is suppressed as injected content. Correlating the two would
-// mean holding parser state across envelopes for a cosmetic label; the row is
-// legible without it.
+// envelope — which handleUserText consumes as the send's echo (stamping the
+// optimistic user row) or drops when unmatched, never showing the XML.
+// Correlating the two would mean holding parser state across envelopes for a
+// cosmetic label; the row is legible without it.
 type commandResultMeta struct {
 	Kind string `json:"kind"`
 	// Preview is the head of the output, always present. When Truncated is

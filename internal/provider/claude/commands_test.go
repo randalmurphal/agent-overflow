@@ -44,13 +44,18 @@ func fixtureLines(t *testing.T, path string) [][]byte {
 //
 //   - the `<synthetic>` assistant envelope becomes exactly ONE
 //     EventCommandResult, never assistant text;
-//   - the `<command-name>` metadata echo on the isReplay user envelope
-//     produces NO EventUserText, so it can't become a user bubble;
+//   - the `<command-name>` metadata echo on the isReplay user envelope is
+//     FORWARDED as exactly one `command_echo`-flagged EventUserText carrying
+//     the send's uuid — it must reach triage to consume the pending-send
+//     entry (a suppressed echo strands the entry and poisons turn indexing —
+//     incident 2026-08-04); triage's unmatched branch keeps the XML off the
+//     timeline;
 //   - `result.result` repeats the same text and produces no second row.
 func TestLocalCommandFixtureProducesOneCommandResultRow(t *testing.T) {
 	parser := &Parser{}
 	counts := map[provider.EventKind]int{}
 	var commandResults []provider.ProviderEvent
+	var userTexts []provider.ProviderEvent
 
 	for _, line := range fixtureLines(t, localCommandFixture) {
 		events, err := parser.ParseLine("thread-1", line)
@@ -62,14 +67,27 @@ func TestLocalCommandFixtureProducesOneCommandResultRow(t *testing.T) {
 			if evt.Kind == provider.EventCommandResult {
 				commandResults = append(commandResults, evt)
 			}
+			if evt.Kind == provider.EventUserText {
+				userTexts = append(userTexts, evt)
+			}
 		}
 	}
 
 	if got := counts[provider.EventCommandResult]; got != 1 {
 		t.Fatalf("command result events = %d, want 1 (counts: %v)", got, counts)
 	}
-	if got := counts[provider.EventUserText]; got != 0 {
-		t.Fatalf("user text events = %d, want 0 — the <command-name> echo must not become a user bubble", got)
+	if got := counts[provider.EventUserText]; got != 1 {
+		t.Fatalf("user text events = %d, want 1 — the <command-name> echo must reach triage to consume its pending send", got)
+	}
+	var echoMeta map[string]any
+	if err := json.Unmarshal(userTexts[0].Meta, &echoMeta); err != nil {
+		t.Fatalf("unmarshal command echo meta: %v", err)
+	}
+	if flagged, _ := echoMeta["command_echo"].(bool); !flagged {
+		t.Fatalf("command echo meta = %s, want command_echo=true so triage's unmatched branch can drop the XML", userTexts[0].Meta)
+	}
+	if id, _ := echoMeta["provider_item_id"].(string); id != "f47ac10b-58cc-4372-a567-0e02b2c3d479" {
+		t.Fatalf("command echo provider_item_id = %q, want the send's client-minted uuid", id)
 	}
 	if got := counts[provider.EventContentBlockStop]; got != 0 {
 		t.Fatalf("content block stop events = %d, want 0 — the synthetic envelope must not recover as assistant text", got)

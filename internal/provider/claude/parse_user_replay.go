@@ -169,7 +169,21 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 
 	content := extractToolResultText(msg.Content)
 
-	if isClaudeInjectedReplayContent(content) {
+	// The `<command-name>` command-INPUT metadata triple is checked BEFORE
+	// the injected-content suppression: it is not injected context but the
+	// CLI's replay echo OF a client-sent slash command, carrying the send's
+	// own client-minted uuid. Suppressing it strands the send's
+	// pending-send entry forever — that entry is consumed only by the
+	// matching EventUserText — and a stranded entry poisons
+	// resolveTurnIndexOnStart for every later turn in the session: turn
+	// indexes repeat, new responses sort above newer user messages, and
+	// reset id-scope counters overwrite rows the previous turn persisted
+	// (incident 2026-08-04). The event is flagged `command_echo` so
+	// triage's unmatched-echo branch drops it instead of persisting the
+	// raw XML as an injected-context row.
+	commandEcho := isCommandInputEcho(content)
+
+	if !commandEcho && isClaudeInjectedReplayContent(content) {
 		// Replay every `<task-notification>` in the body, not just the
 		// first. The coalesced multi-notification flush is confirmed on
 		// the claude-tui /v1/messages wire (sibling completions during a
@@ -194,11 +208,15 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 	parentUUID := readRawString(raw["parentUuid"])
 
 	var meta json.RawMessage
-	if providerItemID != "" || parentUUID != "" {
-		marshaled, err := json.Marshal(map[string]string{
+	if providerItemID != "" || parentUUID != "" || commandEcho {
+		fields := map[string]any{
 			"provider_item_id": providerItemID,
 			"parent_uuid":      parentUUID,
-		})
+		}
+		if commandEcho {
+			fields["command_echo"] = true
+		}
+		marshaled, err := json.Marshal(fields)
 		if err == nil {
 			meta = marshaled
 		}
@@ -212,6 +230,19 @@ func (p *Parser) parseUserReplay(threadID string, raw map[string]json.RawMessage
 		Timestamp: now,
 		Raw:       line,
 	}}, nil
+}
+
+// isCommandInputEcho reports whether replay-envelope content is the CLI's
+// command-INPUT metadata echo — the `<command-name>` / `<command-message>` /
+// `<command-args>` triple emitted after a client-sent slash command runs
+// (2.1.219; see the local_command_20260803 fixture and the incident-shape
+// prompt-command echo, which wraps the same triple around the expansion).
+// `<command-name>` anchors the triple, so its balanced pair is the whole
+// test; requiring both halves keeps a user merely quoting the tag from
+// matching, same as InjectedUserContentWrappers.
+func isCommandInputEcho(content string) bool {
+	return strings.Contains(content, "<command-name>") &&
+		strings.Contains(content, "</command-name>")
 }
 
 // TaskNotificationFields holds the inner-tag values lifted from a
