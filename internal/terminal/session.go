@@ -199,11 +199,15 @@ func (s *Session) Refresh() error {
 
 // Replay returns the entire current replay buffer as a single byte slice.
 // Callers should treat this as an opaque blob to feed straight into xterm.
+// Terminal query sequences are stripped so the hydrating xterm doesn't
+// re-answer them into the shell's input — see stripReplayableQueries.
 func (s *Session) Replay() []byte {
-	return s.ring.snapshot()
+	return stripReplayableQueries(s.ring.snapshot())
 }
 
 // ReplaySnapshot returns replay bytes and a sequence watermark atomically.
+// Data is query-stripped like Replay; the watermarks describe the raw
+// chunk sequence, which the stripping does not renumber.
 func (s *Session) ReplaySnapshot() ReplaySnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -212,7 +216,7 @@ func (s *Session) ReplaySnapshot() ReplaySnapshot {
 		fromSequence = s.ranges[0].sequence
 	}
 	return ReplaySnapshot{
-		Data:            s.ring.snapshot(),
+		Data:            stripReplayableQueries(s.ring.snapshot()),
 		FromSequence:    fromSequence,
 		ThroughSequence: s.sequence.Load(),
 	}

@@ -157,3 +157,51 @@ func TestSessionReplayBounded(t *testing.T) {
 		t.Fatal("expected some replay content")
 	}
 }
+
+// TestSessionReplayStripsQueriesButLiveOutputKeepsThem — a query the
+// child writes must reach live subscribers raw (the attached xterm has
+// to answer it) while the replay snapshot drops it (a hydrating xterm
+// answering it again would inject junk into the shell's input).
+func TestSessionReplayStripsQueriesButLiveOutputKeepsThem(t *testing.T) {
+	var outputs []string
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	onOutput := func(id string, seq uint64, data []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		outputs = append(outputs, string(data))
+	}
+	onExit := func(id string, status ExitStatus) { close(done) }
+
+	sess, err := newSession("t-strip", "thread-strip", SessionOptions{
+		Shell: "/bin/sh",
+		Args:  []string{"-c", `printf 'before\033[6nafter'`},
+		Cwd:   t.TempDir(),
+	}, onOutput, onExit)
+	if err != nil {
+		t.Fatalf("newSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Kill() })
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("session did not exit")
+	}
+
+	mu.Lock()
+	live := strings.Join(outputs, "")
+	mu.Unlock()
+	if !strings.Contains(live, "\x1b[6n") {
+		t.Fatalf("live output lost the query: %q", live)
+	}
+
+	replay := string(sess.ReplaySnapshot().Data)
+	if strings.Contains(replay, "\x1b[6n") {
+		t.Fatalf("replay still contains the query: %q", replay)
+	}
+	if !strings.Contains(replay, "before") || !strings.Contains(replay, "after") {
+		t.Fatalf("replay lost surrounding content: %q", replay)
+	}
+}

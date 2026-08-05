@@ -25,6 +25,12 @@ session for replay on reconnect.
   `GSETTINGS_SCHEMA_DIR` so the user's commands resolve
   against their real system. Every other launch shape (dev, `.deb`,
   macOS) is passed through unchanged.
+- `replay_sanitize.go` — `stripReplayableQueries`: drops terminal query
+  sequences (DA, DSR, DECRQM, XTVERSION, kitty-keyboard, DECRQSS/
+  XTGETTCAP, OSC color queries) from replay snapshots so a hydrating
+  xterm doesn't re-answer them into the shell's input. Applied only on
+  the `Replay` / `ReplaySnapshot` path — live output stays raw because
+  the attached xterm must answer queries for programs to work.
 - `ring.go` — byte-oriented circular buffer capped at 256 KiB per
   session.
 - `shell.go` — `resolveShell`: explicit > `$SHELL` > `/bin/sh`.
