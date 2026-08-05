@@ -1,54 +1,80 @@
+// Contract of the diagram copy pipeline:
+//   - format selection (PNG → ClipboardItem, SVG/source → text),
+//   - activation-preserving call order (write reached synchronously),
+//   - loud failure (every path throws a toast-ready message, nothing
+//     silently degrades to a different format).
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { copyAsPNG, copyAsSVG, copySource } from './diagramClipboard';
 
 type WriteSpy = ReturnType<typeof vi.fn<(items: ClipboardItem[]) => Promise<void>>>;
 type TextSpy = ReturnType<typeof vi.fn<(text: string) => Promise<void>>>;
 
-function installClipboard(options: {
-  writeSucceeds?: boolean | ((items: ClipboardItem[]) => boolean);
-  textSucceeds?: boolean;
-} = {}): { write: WriteSpy; writeText: TextSpy } {
-  const writeSucceeds = options.writeSucceeds ?? true;
-  const textSucceeds = options.textSucceeds ?? true;
-
+function installClipboard(
+  options: { writeError?: string; textError?: string } = {},
+): { write: WriteSpy; writeText: TextSpy } {
   const write = vi.fn<(items: ClipboardItem[]) => Promise<void>>(async (items) => {
-    const ok = typeof writeSucceeds === 'function' ? writeSucceeds(items) : writeSucceeds;
-    if (!ok) throw new Error('mock: write rejected');
+    // Mirror the engines: the browser awaits the payload promise itself
+    // and reports its OWN failure when that promise rejects — it never
+    // surfaces the page's error. That is why the module records the
+    // rasterisation failure separately.
+    try {
+      await Promise.all(items.map((item) => item.getType('image/png')));
+    } catch {
+      throw new Error('NotAllowedError: clipboard write failed');
+    }
+    if (options.writeError) throw new Error(options.writeError);
   });
   const writeText = vi.fn<(text: string) => Promise<void>>(async () => {
-    if (!textSucceeds) throw new Error('mock: writeText rejected');
+    if (options.textError) throw new Error(options.textError);
   });
 
-  Object.defineProperty(navigator, 'clipboard', {
-    value: { write, writeText },
-    configurable: true,
-    writable: true,
-  });
+  setClipboard({ write, writeText });
   return { write, writeText };
 }
 
-function makeSvg(): SVGSVGElement {
-  const ns = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('xmlns', ns);
-  svg.setAttribute('viewBox', '0 0 100 50');
-  svg.setAttribute('width', '100');
-  svg.setAttribute('height', '50');
-  const rect = document.createElementNS(ns, 'rect');
-  rect.setAttribute('width', '100');
-  rect.setAttribute('height', '50');
-  svg.appendChild(rect);
-  return svg as SVGSVGElement;
+function setClipboard(value: unknown): void {
+  Object.defineProperty(navigator, 'clipboard', {
+    value,
+    configurable: true,
+    writable: true,
+  });
 }
 
-// The PNG path goes through <canvas>.toBlob + <img> decoding, which
-// jsdom does not emulate. Stub both to return deterministic values.
-function stubRasterPipeline() {
-  const origCreateObjectURL = URL.createObjectURL;
-  const origRevokeObjectURL = URL.revokeObjectURL;
+const NS = 'http://www.w3.org/2000/svg';
 
-  URL.createObjectURL = vi.fn(() => 'blob:mock-url');
-  URL.revokeObjectURL = vi.fn();
+/**
+ * The live DOM shape svelte-streamdown produces: mermaid's own `<svg>`
+ * (percentage width + inline max-width) nested inside the panzoom host
+ * `<svg data-mermaid-svg>`, which carries the reader's pan/zoom transform.
+ */
+function makeSvg(): SVGSVGElement {
+  const host = document.createElementNS(NS, 'svg');
+  host.setAttribute('data-mermaid-svg', '');
+  host.setAttribute('viewBox', '0 0 200 100');
+  host.setAttribute('style', 'transform: translate3d(12px, 34px, 0) scale(0.71); cursor: grab');
+
+  const diagram = document.createElementNS(NS, 'svg');
+  diagram.setAttribute('viewBox', '0 0 200 100');
+  diagram.setAttribute('width', '100%');
+  diagram.setAttribute('style', 'max-width: 200px;');
+  const rect = document.createElementNS(NS, 'rect');
+  rect.setAttribute('id', 'diagram-body');
+  diagram.appendChild(rect);
+  host.appendChild(diagram);
+
+  document.body.appendChild(host);
+  return host as SVGSVGElement;
+}
+
+// The PNG path goes through <img> decoding + <canvas>.toBlob, which
+// happy-dom does not emulate. Stub both to return deterministic values.
+// `hold` keeps toBlob's callback un-invoked until `release()` so a test
+// can observe the clipboard write happening while the raster is pending.
+function stubRasterPipeline(
+  options: { imageFails?: boolean; blob?: Blob | null; hold?: boolean } = {},
+) {
+  const blob = options.blob === undefined ? new Blob(['png-bytes'], { type: 'image/png' }) : options.blob;
 
   const OriginalImage = window.Image;
   class MockImage {
@@ -56,134 +82,189 @@ function stubRasterPipeline() {
     onerror: (() => void) | null = null;
     set src(_v: string) {
       // Resolve on the next microtask so `await loadImage` sees the callback.
-      queueMicrotask(() => this.onload?.());
+      queueMicrotask(() => (options.imageFails ? this.onerror?.() : this.onload?.()));
     }
   }
   (window as unknown as { Image: typeof Image }).Image = MockImage as unknown as typeof Image;
 
+  let deliverCallback: (cb: BlobCallback) => void = () => {};
+  const held = new Promise<BlobCallback>((resolve) => (deliverCallback = resolve));
   const origToBlob = HTMLCanvasElement.prototype.toBlob;
   HTMLCanvasElement.prototype.toBlob = function (cb: BlobCallback) {
-    cb(new Blob(['png-bytes'], { type: 'image/png' }));
+    if (options.hold) deliverCallback(cb);
+    else cb(blob);
   } as typeof HTMLCanvasElement.prototype.toBlob;
 
   const origGetContext = HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.getContext = function () {
-    return {
-      scale: vi.fn(),
-      drawImage: vi.fn(),
-    } as unknown as CanvasRenderingContext2D;
+    return { scale: vi.fn(), drawImage: vi.fn() } as unknown as CanvasRenderingContext2D;
   } as unknown as typeof HTMLCanvasElement.prototype.getContext;
 
-  return () => {
-    URL.createObjectURL = origCreateObjectURL;
-    URL.revokeObjectURL = origRevokeObjectURL;
-    (window as unknown as { Image: typeof Image }).Image = OriginalImage;
-    HTMLCanvasElement.prototype.toBlob = origToBlob;
-    HTMLCanvasElement.prototype.getContext = origGetContext;
+  return {
+    release: async () => (await held)(blob),
+    restore: () => {
+      (window as unknown as { Image: typeof Image }).Image = OriginalImage;
+      HTMLCanvasElement.prototype.toBlob = origToBlob;
+      HTMLCanvasElement.prototype.getContext = origGetContext;
+    },
   };
 }
 
 describe('diagramClipboard', () => {
-  let restoreRaster: (() => void) | null = null;
+  let raster: ReturnType<typeof stubRasterPipeline> | null = null;
   const originalClipboard = navigator.clipboard;
 
+  function useRaster(options: Parameters<typeof stubRasterPipeline>[0] = {}) {
+    raster?.restore();
+    raster = stubRasterPipeline(options);
+    return raster;
+  }
+
   beforeEach(() => {
-    restoreRaster = stubRasterPipeline();
+    raster = stubRasterPipeline();
   });
 
   afterEach(() => {
-    restoreRaster?.();
-    restoreRaster = null;
-    if (originalClipboard) {
-      Object.defineProperty(navigator, 'clipboard', {
-        value: originalClipboard,
-        configurable: true,
-        writable: true,
-      });
-    }
+    raster?.restore();
+    raster = null;
+    document.body.innerHTML = '';
+    setClipboard(originalClipboard);
   });
 
-  it('copyAsPNG writes an image/png ClipboardItem', async () => {
-    const { write } = installClipboard();
-    const result = await copyAsPNG(makeSvg());
-    expect(result).toBe('png');
-    expect(write).toHaveBeenCalledTimes(1);
-    const item = write.mock.calls[0][0][0];
-    expect(item.types).toContain('image/png');
-  });
+  describe('copyAsPNG', () => {
+    it('writes an image/png ClipboardItem', async () => {
+      const { write, writeText } = installClipboard();
+      await expect(copyAsPNG(makeSvg())).resolves.toBeUndefined();
 
-  it('copyAsPNG reaches clipboard.write before rasterisation completes (WebKit gesture rule)', async () => {
-    // Hold the raster pipeline open: capture toBlob's callback instead of
-    // invoking it, so the PNG blob stays pending. WebKit rejects a
-    // clipboard.write that runs after an await consumed the user gesture,
-    // so the write must happen synchronously with the blob still pending
-    // (passed to ClipboardItem as a Promise).
-    let releaseBlob: (() => void) | undefined;
-    HTMLCanvasElement.prototype.toBlob = function (cb: BlobCallback) {
-      releaseBlob = () => cb(new Blob(['png-bytes'], { type: 'image/png' }));
-    } as typeof HTMLCanvasElement.prototype.toBlob;
-
-    const { write } = installClipboard();
-    const pending = copyAsPNG(makeSvg());
-    expect(write).toHaveBeenCalledTimes(1);
-    await expect(pending).resolves.toBe('png');
-    // Settle the held raster promise so nothing dangles past the test.
-    releaseBlob?.();
-  });
-
-  it('copyAsPNG falls back to image/svg+xml when PNG write rejects', async () => {
-    // Only accept the SVG MIME — pretend the host rejects PNG writes.
-    const { write } = installClipboard({
-      writeSucceeds: (items) => items[0].types.includes('image/svg+xml'),
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(write.mock.calls[0][0][0].types).toContain('image/png');
+      expect(writeText).not.toHaveBeenCalled();
     });
-    const result = await copyAsPNG(makeSvg());
-    expect(result).toBe('svg');
-    // Two attempts: PNG (rejected) then SVG (accepted).
-    expect(write).toHaveBeenCalledTimes(2);
-    expect(write.mock.calls[0][0][0].types).toContain('image/png');
-    expect(write.mock.calls[1][0][0].types).toContain('image/svg+xml');
-  });
 
-  it('copyAsPNG falls back all the way to text when both MIMEs reject', async () => {
-    const { write, writeText } = installClipboard({
-      writeSucceeds: false,
-      textSucceeds: true,
+    it('reaches clipboard.write synchronously, with the blob still pending', async () => {
+      // WebKit rejects a write that resumes after an await consumed the
+      // user gesture, and Chromium's transient activation can expire
+      // across the raster. The write must therefore be issued in the
+      // click's own task, with the PNG handed over as a pending Promise.
+      const held = useRaster({ hold: true });
+      const { write } = installClipboard();
+      const pending = copyAsPNG(makeSvg());
+      expect(write).toHaveBeenCalledTimes(1);
+
+      await held.release();
+      await expect(pending).resolves.toBeUndefined();
     });
-    const result = await copyAsPNG(makeSvg());
-    expect(result).toBe('text');
-    expect(write).toHaveBeenCalledTimes(2); // PNG, then SVG
-    expect(writeText).toHaveBeenCalledTimes(1);
-    expect(writeText.mock.calls[0][0]).toContain('<svg');
+
+    it('reports the rasterisation failure rather than the clipboard DOMException', async () => {
+      useRaster({ imageFails: true });
+      const { write, writeText } = installClipboard();
+
+      await expect(copyAsPNG(makeSvg())).rejects.toThrow(
+        'Could not copy the diagram as PNG: the diagram SVG could not be decoded as an image',
+      );
+      // No second attempt in another format: a PNG copy that failed must
+      // not silently leave SVG or text on the clipboard.
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(writeText).not.toHaveBeenCalled();
+    });
+
+    it('reports a null toBlob encode', async () => {
+      useRaster({ blob: null });
+      installClipboard();
+      await expect(copyAsPNG(makeSvg())).rejects.toThrow(
+        'Could not copy the diagram as PNG: the diagram could not be encoded as a PNG',
+      );
+    });
+
+    it('reports a rejected clipboard write', async () => {
+      const { writeText } = installClipboard({ writeError: 'Document is not focused.' });
+      await expect(copyAsPNG(makeSvg())).rejects.toThrow(
+        'Could not copy the diagram as PNG: Document is not focused.',
+      );
+      expect(writeText).not.toHaveBeenCalled();
+    });
+
+    it('reports a missing clipboard API without touching the raster', async () => {
+      setClipboard(undefined);
+      await expect(copyAsPNG(makeSvg())).rejects.toThrow(
+        'Could not copy the diagram as PNG: this browser provides no clipboard access',
+      );
+    });
   });
 
-  it('copyAsPNG returns failed when every path rejects', async () => {
-    installClipboard({ writeSucceeds: false, textSucceeds: false });
-    const result = await copyAsPNG(makeSvg());
-    expect(result).toBe('failed');
+  describe('copyAsSVG', () => {
+    it('writes markup as text, never an image/svg+xml ClipboardItem', async () => {
+      // Chromium gates image/svg+xml behind the experimental ClipboardSvg
+      // feature and WebKit/Gecko do not implement it, so a ClipboardItem
+      // of that type can only ever reject.
+      const { write, writeText } = installClipboard();
+      await expect(copyAsSVG(makeSvg())).resolves.toBeUndefined();
+      expect(write).not.toHaveBeenCalled();
+      expect(writeText).toHaveBeenCalledTimes(1);
+      expect(writeText.mock.calls[0][0]).toContain('<svg');
+    });
+
+    it('exports the diagram root without the panzoom transform or a percentage width', async () => {
+      const { writeText } = installClipboard();
+      await copyAsSVG(makeSvg());
+      const markup = writeText.mock.calls[0][0];
+
+      expect(markup).toContain('xmlns="http://www.w3.org/2000/svg"');
+      expect(markup).toContain('id="diagram-body"');
+      // The live element carries the reader's pan/zoom and mermaid's
+      // viewport-relative sizing; neither means anything outside the page.
+      expect(markup).not.toContain('translate3d');
+      expect(markup).not.toContain('max-width');
+      // Sized in user-space units from the viewBox, so a standalone
+      // consumer (and the PNG raster) has an intrinsic size to work from.
+      expect(markup).toContain('width="200"');
+      expect(markup).toContain('height="100"');
+    });
+
+    it('leaves the live element untouched', async () => {
+      installClipboard();
+      const svg = makeSvg();
+      const diagram = svg.querySelector('svg') as SVGSVGElement;
+      await copyAsSVG(svg);
+      expect(svg.getAttribute('style')).toContain('translate3d');
+      expect(diagram.getAttribute('width')).toBe('100%');
+    });
+
+    it('reports a rejected write', async () => {
+      installClipboard({ textError: 'NotAllowedError' });
+      await expect(copyAsSVG(makeSvg())).rejects.toThrow(
+        'Could not copy the diagram as SVG: NotAllowedError',
+      );
+    });
+
+    it('reports a missing clipboard API', async () => {
+      setClipboard(undefined);
+      await expect(copyAsSVG(makeSvg())).rejects.toThrow(
+        'Could not copy the diagram as SVG: this browser provides no clipboard access',
+      );
+    });
   });
 
-  it('copyAsSVG writes image/svg+xml and ensures the xmlns is present', async () => {
-    const { write } = installClipboard();
-    const result = await copyAsSVG(makeSvg());
-    expect(result).toBe('svg');
-    const item = write.mock.calls[0][0][0];
-    expect(item.types).toContain('image/svg+xml');
-    const blob = await item.getType('image/svg+xml');
-    const text = await blob.text();
-    expect(text).toContain('xmlns="http://www.w3.org/2000/svg"');
-  });
+  describe('copySource', () => {
+    it('writes the raw text', async () => {
+      const { writeText } = installClipboard();
+      await expect(copySource('graph TD\nA-->B')).resolves.toBeUndefined();
+      expect(writeText).toHaveBeenCalledWith('graph TD\nA-->B');
+    });
 
-  it('copySource writes the raw text', async () => {
-    const { writeText } = installClipboard();
-    const result = await copySource('graph TD\nA-->B');
-    expect(result).toBe('text');
-    expect(writeText).toHaveBeenCalledWith('graph TD\nA-->B');
-  });
+    it('reports an empty source without touching the clipboard', async () => {
+      const { writeText } = installClipboard();
+      await expect(copySource('')).rejects.toThrow(
+        'Could not copy the diagram source: this diagram carries no source text',
+      );
+      expect(writeText).not.toHaveBeenCalled();
+    });
 
-  it('copySource returns failed on an empty source without touching the clipboard', async () => {
-    const { writeText } = installClipboard();
-    const result = await copySource('');
-    expect(result).toBe('failed');
-    expect(writeText).not.toHaveBeenCalled();
+    it('reports a rejected write', async () => {
+      installClipboard({ textError: 'NotAllowedError' });
+      await expect(copySource('graph TD')).rejects.toThrow(
+        'Could not copy the diagram source: NotAllowedError',
+      );
+    });
   });
 });

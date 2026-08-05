@@ -13,17 +13,14 @@
    * actions allocate one Canvas per PNG copy and release immediately.
    */
 
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import DiagramModal from './DiagramModal.svelte';
   import DiagramContextMenu, {
     type DiagramAction,
   } from './DiagramContextMenu.svelte';
-  import {
-    copyAsPNG,
-    copyAsSVG,
-    copySource,
-    type CopyResult,
-  } from '../../utils/diagramClipboard';
+  import { copyAsPNG, copyAsSVG, copySource } from '../../utils/diagramClipboard';
+  import { addToast } from '../../stores/toast.svelte';
+  import { errString } from '../../utils/errors';
 
   type MenuState = {
     x: number;
@@ -63,77 +60,56 @@
     menu = { x: e.clientX, y: e.clientY, svg, context: 'modal' };
   }
 
-  async function runAction(action: DiagramAction): Promise<void> {
+  function runAction(action: DiagramAction): void {
     if (!menu) return;
     const current = menu;
     menu = null;
 
-    let result: CopyResult | null = null;
     switch (action) {
       case 'copy-png':
-        result = await copyAsPNG(current.svg);
-        break;
+        void report(copyAsPNG(current.svg), 'Diagram copied as PNG');
+        return;
       case 'copy-svg':
-        result = await copyAsSVG(current.svg);
-        break;
+        void report(copyAsSVG(current.svg), 'Diagram copied as SVG');
+        return;
       case 'copy-source': {
-        // The inline wrapper carries the original Mermaid source on
-        // a `data-mermaid-source` attribute (see StreamdownMermaidHost).
-        // The modal copy doesn't have this — it only holds the
-        // already-rendered SVG — so it falls back to SVG.
+        // The inline wrapper carries the original Mermaid source on a
+        // `data-mermaid-source` attribute (see StreamdownMermaidHost).
+        // The modal copy doesn't have it — it only holds the rendered
+        // SVG — so it copies the markup instead, and says which it did.
         const host = current.svg.closest<HTMLElement>('[data-mermaid-source]');
-        const raw = host?.dataset.mermaidSource ?? null;
-        if (raw) {
-          result = await copySource(raw);
-        } else {
-          result = await copyAsSVG(current.svg);
-        }
-        break;
+        const raw = host?.dataset.mermaidSource;
+        if (raw) void report(copySource(raw), 'Diagram source copied');
+        else void report(copyAsSVG(current.svg), 'Diagram copied as SVG');
+        return;
       }
       case 'expand': {
         const host = current.svg.closest<HTMLElement>('[data-mermaid-source]');
         const diagramSvg =
           host?.querySelector<SVGSVGElement>('svg[data-mermaid-svg]') ?? current.svg;
         modalHtml = diagramSvg.outerHTML;
-        break;
+        return;
       }
       case 'close':
         modalHtml = '';
-        break;
+        return;
     }
-    if (result !== null) announce(result);
   }
 
-  // Lightweight toast substitute — the app doesn't have a global
-  // toast store today, so we surface success/failure via a hidden
-  // aria-live region so screen readers still get feedback. Upgrade
-  // to a real toast store in one place if/when we add it.
-  let announcement: string = $state('');
-  // Tracked handle so repeat announcements don't leave a second timer
-  // firing after unmount. The host is a singleton in the app shell, so
-  // the leak window is small — but still worth the five extra lines.
-  let announceTimer: ReturnType<typeof setTimeout> | null = null;
-  function announce(result: CopyResult): void {
-    announcement = (
-      result === 'png'
-        ? 'Diagram copied as PNG'
-        : result === 'svg'
-          ? 'Diagram copied as SVG'
-          : result === 'text'
-            ? 'Diagram copied as text'
-            : 'Copy failed'
-    );
-    // Clear after a short delay so repeated announcements re-fire.
-    if (announceTimer) clearTimeout(announceTimer);
-    announceTimer = setTimeout(() => {
-      announcement = '';
-      announceTimer = null;
-    }, 1500);
+  // Report a copy's outcome. It takes the in-flight promise rather than a
+  // callback so the clipboard call is unmistakably made at the call site,
+  // inside the click's user-gesture task — a thunk invoked here would be
+  // one refactor away from being awaited first, which is what makes
+  // WebKit reject the write. A copy never resolves without the clipboard
+  // holding the content, so the success toast can't lie.
+  async function report(copy: Promise<void>, success: string): Promise<void> {
+    try {
+      await copy;
+      addToast('success', success);
+    } catch (err) {
+      addToast('error', errString(err));
+    }
   }
-
-  onDestroy(() => {
-    if (announceTimer) clearTimeout(announceTimer);
-  });
 
   function dismissMenu(): void {
     menu = null;
@@ -174,6 +150,3 @@
     onDismiss={dismissMenu}
   />
 {/if}
-
-<!-- Screen-reader-only live region for copy outcome. -->
-<div class="sr-only" aria-live="polite" role="status">{announcement}</div>
