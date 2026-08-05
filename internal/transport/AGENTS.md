@@ -25,6 +25,23 @@ backend.
 - TLS termination. Local binds are always plain `ws://`; real public
   exposure goes behind Tailscale Serve / SSH tunnel / reverse proxy.
 
+## Token refusal is a 404, and the SPA depends on it
+
+Both credentialled entry points — `/bootstrap.json?t=` (`handleBootstrap`)
+and the `/ws` upgrade (`upgrade`) — answer a wrong or empty token with
+`http.NotFound`, deliberately indistinguishable from "no such path" so a
+LAN scanner can't fingerprint us. That 404 is the only positive
+auth-rejection signal on the wire, and it is the one the SPA keys its
+terminal state on: `wsClient` refetches the manifest during a reconnect
+outage, and a 401/403/404 there latches `'unauthorized'` and STOPS the
+reconnect ladder for a session served over the network (tokens are
+per-launch, so only a freshly-opened share link can recover it). A
+transient failure must therefore keep its own status — the readiness gate
+stays 503 and the startup-failure page stays 500; neither may become a
+404, or a client that is merely early would be told its credential is
+dead. See `frontend/src/lib/transport/bootstrap.ts`
+(`BootstrapRejectedError`) and `wsClient.ts` (`enterCredentialDead`).
+
 ## Method-level authorization
 
 `internalmethods.go` defines two filter sets the dispatcher consults:

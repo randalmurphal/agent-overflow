@@ -18,12 +18,15 @@
   // to force an attempt sooner. It calls wsClient.triggerReconnect via
   // the store, which resets the backoff counter.
   //
-  // 'unauthorized' is the one state retrying cannot resolve: the
-  // backend answered and refused this session's token, which is what a
-  // remote/LAN client sees after the backend restarts (tokens are
-  // minted per launch). The loop keeps running underneath — Retry is
-  // still honest — but the message has to name the action that
-  // actually works, otherwise the user watches "Reconnecting…" forever.
+  // 'unauthorized' is the one state the automatic loop cannot resolve:
+  // the backend answered and refused this session's token, which is what
+  // a remote/LAN client sees after the backend restarts (tokens are
+  // minted per launch). The wsClient stops retrying there, so this
+  // banner is the whole recovery story and has to name the action that
+  // actually works — otherwise the user watches "Reconnecting…" forever
+  // on a client that is no longer even trying. Retry stays because
+  // triggerReconnect un-latches (one attempt, user-initiated); the
+  // countdown does not, because no attempt is scheduled.
 
   import { fade } from 'svelte/transition';
   import { getTransportStatus, retryTransport } from '../../stores/transportStatus.svelte';

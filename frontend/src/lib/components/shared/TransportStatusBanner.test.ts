@@ -68,9 +68,13 @@ describe('<TransportStatusBanner>', () => {
   });
 
   // A refused credential (backend restarted, tokens are per-launch) is
-  // the one state the retry loop can never resolve, so the banner must
-  // name the action that does instead of counting down forever.
+  // terminal: the wsClient has stopped retrying, so this banner is the
+  // entire recovery story and must name the action that works.
   it('names the recovery action when the backend refuses the credential', async () => {
+    // The client publishes this state with nextAttemptAt: null (nothing
+    // is scheduled). Feed a stale timestamp anyway — no countdown may
+    // leak out of this state, whatever the snapshot carries, because it
+    // would promise a recovery that is not coming.
     h.snapshot = { status: 'unauthorized', nextAttemptAt: Date.now() + 5_000 };
     const { getByTestId } = render(TransportStatusBanner);
     await settleBootGrace();
@@ -78,10 +82,9 @@ describe('<TransportStatusBanner>', () => {
     const banner = getByTestId('transport-status-banner');
     expect(banner.dataset.status).toBe('unauthorized');
     expect(banner.textContent).toContain('The backend restarted. Reopen the share link to reconnect.');
-    // No countdown: the scheduled attempt is real, but presenting it as
-    // "Reconnecting in Ns" would promise a recovery that isn't coming.
     expect(banner.textContent).not.toContain('Reconnecting');
-    // Retry stays available — it performs a genuine attempt.
+    // Retry stays available — it un-latches the client for one
+    // user-initiated attempt (wsClient.triggerReconnect).
     expect(getByTestId('transport-status-retry')).not.toBeNull();
   });
 

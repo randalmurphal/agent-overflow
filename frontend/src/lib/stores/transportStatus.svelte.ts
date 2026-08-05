@@ -27,7 +27,10 @@ export function getTransportStatus(): TransportStatusSnapshot {
 }
 
 /** Force a reconnect attempt immediately. Wired to the banner's "Retry"
- * button; safe to call when already connected (no-op). */
+ * button; safe to call when already connected (no-op). This is also the
+ * only way out of the terminal 'unauthorized' state — it un-latches the
+ * client for one user-initiated attempt — so keep it reachable from any
+ * surface that renders that state. */
 export function retryTransport(): void {
   wsClient.triggerReconnect();
 }

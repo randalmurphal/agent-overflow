@@ -36,6 +36,7 @@ import {
   BootstrapRejectedError,
   defaultBootstrap,
   appendToken,
+  pageServedOverLoopback,
 } from './bootstrap';
 import {
   type ClientFrame,
@@ -162,20 +163,25 @@ let fanoutScratchInUse = false;
 // in-flight after a previous close. nextAttemptAt is the wall-clock
 // millis when the next attempt is scheduled — null if the attempt is
 // already in flight.
-// 'unauthorized' means the backend refused our bootstrap credential
-// (BootstrapRejectedError): the server is reachable and answering, but
-// the token this session holds is dead — a `--connect` / LAN client
-// whose backend restarted. The retry loop keeps running (it is one
-// fetch per backoff period and it recovers for free if the refusal was
-// somehow transient), but the state is surfaced separately because
-// only reopening the share link actually fixes it, and "Reconnecting…"
-// forever tells the user nothing.
+// 'unauthorized' is the one TERMINAL state: the backend answered and
+// positively refused our bootstrap credential (BootstrapRejectedError —
+// internal/transport/server.go handleBootstrap answers a stale `?t=`
+// with 404), AND this session has no way to obtain a fresh one because
+// it was served over the network. Tokens are minted per backend launch,
+// so a LAN/remote client whose backend restarted holds a token that will
+// be refused identically forever; the automatic ladder stops rather than
+// burn the device's radio and battery on attempts that cannot succeed.
+// Recovery is re-opening the share link — a fresh page load, hence a
+// fresh client. The banner's Retry still works as a manual escape hatch
+// (see triggerReconnect), which is what un-latches it if the refusal
+// turns out to have been a lie from something in the path.
+// A loopback session never enters this state: the embedded webview and
+// the --connect stub are handed a live token by the shell that owns the
+// backend, so their refusals stay ordinary 'reconnecting' retries.
 // 'disconnected' is the zero-value before any connect has been
 // attempted; we never re-enter it once a connect cycle starts (we stay
-// in 'reconnecting' across attempts, even after permanent failure)
-// because exposing a permanent terminal state would require a manual
-// retry control we haven't wired and would lie to the user when the
-// loop is still running.
+// in 'reconnecting' across attempts) because a still-running loop must
+// not present itself as settled.
 export type TransportStatus = 'connected' | 'reconnecting' | 'unauthorized' | 'disconnected';
 
 export interface TransportStatusSnapshot {
@@ -220,6 +226,10 @@ interface WSClientOptions {
   // For tests: skip the auto-connect on first call so a test can drive
   // events into an explicit harness instead.
   autoConnect?: boolean;
+  // For tests: override the "was this page served over loopback?" probe
+  // that gates the terminal 'unauthorized' state. Production reads
+  // window.location through bootstrap.ts's pageServedOverLoopback.
+  loopbackOrigin?: () => boolean;
   // For tests: override MAX_FRAME_BYTES. Production code MUST NOT pass
   // this — the cap matters as a defence and the symmetry with the
   // server's DefaultReadLimit is the contract. Tests pass a small
@@ -256,6 +266,7 @@ export class WSClient {
   private readonly fetchBootstrap: BootstrapFetcher;
   private readonly WebSocketCtor: WSConstructor;
   private readonly maxFrameBytes: number;
+  private readonly probeLoopbackOrigin: () => boolean;
 
   // Cached bootstrap and the resolved WS URL with token query param.
   private bootstrap: Bootstrap | null = null;
@@ -311,12 +322,13 @@ export class WSClient {
   // the bootstrap cache mid-outage doesn't flip a remote client onto
   // the aggressive local retry cadence.
   private remoteBackend = false;
-  // True while the last bootstrap attempt was REFUSED (as opposed to
-  // failing transiently). Reported as the 'unauthorized' status by
-  // every reconnecting transition; cleared the moment a bootstrap
-  // fetch succeeds again, so a refusal can never outlive the condition
-  // that set it.
-  private credentialRejected = false;
+  // Terminal latch: the backend refused this session's credential and
+  // this session cannot mint another one (see enterCredentialDead).
+  // While set, the automatic reconnect ladder is stopped and the status
+  // reads 'unauthorized'. Cleared only by an explicit triggerReconnect
+  // (the banner's Retry) or a manifest that fetches clean — never by
+  // the passive loop, which is the whole point.
+  private credentialDead = false;
   // Date.now() of the current socket's open, 0 when no socket is open.
   // The backoff ladder resets from this at close (see
   // BACKOFF_RESET_AFTER_MS) rather than on open.
@@ -359,6 +371,7 @@ export class WSClient {
     this.WebSocketCtor = opts.WebSocketCtor ??
       ((globalThis as { WebSocket?: WSConstructor }).WebSocket as WSConstructor);
     this.maxFrameBytes = opts.maxFrameBytes ?? MAX_FRAME_BYTES;
+    this.probeLoopbackOrigin = opts.loopbackOrigin ?? pageServedOverLoopback;
     this.detachLifecycleListeners = this.attachLifecycleListeners();
   }
 
@@ -467,9 +480,18 @@ export class WSClient {
    * Force a reconnect attempt immediately. Cancels any queued backoff
    * timer and kicks off a fresh connect. Safe to call from a UI button
    * — when an attempt is already in flight, this is a no-op.
+   *
+   * This is also the manual escape hatch out of the terminal
+   * 'unauthorized' latch. Un-latching on an explicit user action keeps
+   * the stop-the-ladder decision about the AUTOMATIC loop: one attempt
+   * per click can't storm anything, and if the refusal was a lie told by
+   * something in the path (a proxy 404-ing while the backend was down)
+   * this is what recovers. A second refusal re-latches within one round
+   * trip.
    */
   triggerReconnect(): void {
     if (this.closed) return;
+    this.clearCredentialDead();
     if (this.ws && this.ws.readyState === WS_OPEN) {
       // A half-open socket also reads as OPEN. An explicit retry
       // deserves the watchdog's staleness verdict now rather than at
@@ -658,6 +680,14 @@ export class WSClient {
     if (this.ws && this.ws.readyState === WS_OPEN) {
       return Promise.resolve();
     }
+    if (this.credentialDead) {
+      // Terminal: refuse without touching the network. Passive demand
+      // (a background poll, a subscribe from a remounting pane) must not
+      // turn the stopped ladder back into one fetch per caller.
+      return Promise.reject(
+        new DisconnectedError('backend refused this session credential; reopen the share link'),
+      );
+    }
     if (this.connectPromise) {
       return this.connectPromise;
     }
@@ -680,23 +710,19 @@ export class WSClient {
     let bootstrap: Bootstrap;
     try {
       bootstrap = await this.getBootstrap();
-      // A manifest in hand means the credential was accepted; any
-      // earlier refusal is history. Republish immediately rather than
-      // waiting for the socket to open, so the banner stops naming a
-      // cause that no longer holds.
-      if (this.credentialRejected) {
-        this.credentialRejected = false;
-        if (this.statusSnapshot.status === 'unauthorized') this.setReconnecting(null);
-      }
+      // A manifest in hand means the credential was accepted, so a
+      // latched refusal is history. Republishing here rather than at
+      // socket-open means the banner stops naming a cause that no
+      // longer holds as soon as we have the evidence.
+      this.clearCredentialDead();
     } catch (err) {
       this.connectPromise = null;
-      // A refused credential is not a transient failure — record it so
-      // the reconnect transitions below report the actionable state
-      // instead of an indefinite "Reconnecting…". A later transient
-      // failure must not clear the verdict (the token is still dead),
-      // only a successful fetch does.
-      if (err instanceof BootstrapRejectedError) {
-        this.credentialRejected = true;
+      // A refused credential is not a transient failure. For a session
+      // that can't mint a new token it is terminal — latch it BEFORE
+      // scheduleReconnect below, which is what reads the latch and
+      // declines to queue another attempt.
+      if (err instanceof BootstrapRejectedError && this.isRemoteSession()) {
+        this.enterCredentialDead(err);
       }
       console.warn('wsClient: bootstrap failed', err);
       // Bootstrap-stage failures count toward the outage's attempt
@@ -903,14 +929,73 @@ export class WSClient {
     this.scheduleReconnect();
   }
 
-  // setReconnecting publishes a between-connections status. The loop is
-  // the same either way; `unauthorized` names the one cause the loop
-  // cannot resolve on its own so the banner can say what will.
+  // isRemoteSession reports whether this session would have to be handed
+  // a brand-new credential to reconnect after a backend restart. Two
+  // independent signals, OR'd because either one alone leaves a real
+  // case uncovered:
+  //
+  //   - `remoteBackend`, from the last manifest the server served us
+  //     (`remote` is the server's own pre-upgrade loopback verdict —
+  //     internal/transport/server.go handleBootstrap). Covers a session
+  //     that connected fine and then lost its backend.
+  //   - a non-loopback document origin. Covers the session that NEVER
+  //     connected: a bookmarked share link opened against a rebooted
+  //     backend has no manifest to have learned `remote` from.
+  //
+  // A session tunnelled over SSH satisfies neither (both ends read as
+  // loopback, exactly as LocalOnlyMethods sees it) and keeps the
+  // ordinary retry loop — honest-but-vague beats claiming a share link
+  // that may not exist.
+  private isRemoteSession(): boolean {
+    return this.remoteBackend || !this.probeLoopbackOrigin();
+  }
+
+  // enterCredentialDead latches the transport's one terminal state and
+  // is the ONLY place the automatic reconnect ladder is stopped. The
+  // backend answered and refused this session's credential, and this
+  // session cannot produce another one, so every further attempt is
+  // structurally doomed: retrying would be a battery-burning loop
+  // against a server that will refuse each attempt identically.
+  //
+  // The latch is deliberately not self-clearing — no timer un-sets it —
+  // because nothing about waiting makes a per-launch token valid again.
+  // It clears on exactly two events, both of them evidence rather than
+  // hope: a manual triggerReconnect (bounded by the user's finger) and
+  // a manifest that fetches clean.
+  //
+  // Leaves any queued attempt alone: whatever settles that attempt's
+  // promise is what awaiting RPCs are parked on, and the attempt itself
+  // re-enters this path and stops there.
+  private enterCredentialDead(err: BootstrapRejectedError): void {
+    if (this.credentialDead) return;
+    this.credentialDead = true;
+    console.warn(
+      `wsClient: backend refused this session's credential (${err.message}); ` +
+        'reconnect stopped — the token is minted per backend launch, so only a ' +
+        'freshly-opened share link can restore this session',
+    );
+    this.setReconnecting(null);
+  }
+
+  // clearCredentialDead is the single un-latch. Both callers are
+  // evidence-driven — a manifest that fetched clean, or a user asking
+  // for one more attempt — and both want the terminal message to stop
+  // immediately rather than linger until a socket opens.
+  private clearCredentialDead(): void {
+    if (!this.credentialDead) return;
+    this.credentialDead = false;
+    if (this.statusSnapshot.status === 'unauthorized') this.setReconnecting(null);
+  }
+
+  // setReconnecting publishes a between-connections status. The terminal
+  // latch wins over anything a caller asks for, and carries no
+  // nextAttemptAt — there is no next attempt to count down to.
   private setReconnecting(nextAttemptAt: number | null): void {
-    this.setStatus({
-      status: this.credentialRejected ? 'unauthorized' : 'reconnecting',
-      nextAttemptAt,
-    });
+    if (this.credentialDead) {
+      this.setStatus({ status: 'unauthorized', nextAttemptAt: null });
+      return;
+    }
+    this.setStatus({ status: 'reconnecting', nextAttemptAt });
   }
 
   // scheduleReconnect waits an exponentially-backoff'd delay and then
@@ -926,6 +1011,12 @@ export class WSClient {
   // strictly the safety net for the no-awaiter path.
   private scheduleReconnect(): void {
     if (this.closed) return;
+    if (this.credentialDead) {
+      // Terminal (see enterCredentialDead): no timer, no ladder, no
+      // countdown — just the state that says what the user has to do.
+      this.setReconnecting(null);
+      return;
+    }
     if (this.queuedAttempt !== null) {
       // A reconnect is already queued — let it run; doubling up would
       // drop the pending close-handler attempt and risk synchronising
@@ -969,12 +1060,16 @@ export class WSClient {
     promise.catch(() => {});
   }
 
-  // getBootstrap caches the manifest fetch so reconnect doesn't re-hit
-  // /bootstrap.json. The bootstrap is stable for the lifetime of the
-  // process — the token is bound to the server start and a new server
-  // would issue a new one. A rejected fetch is NOT cached: nulling the
-  // promise on rejection lets the next reconnect retry instead of
-  // permanently re-throwing the cached error.
+  // getBootstrap caches the manifest fetch so a reconnect doesn't re-hit
+  // /bootstrap.json on every attempt. The cache is NOT permanent, and
+  // must not be: the token is bound to one server launch, so a client
+  // that keeps replaying a cached manifest at a restarted backend never
+  // learns it has been refused. handleSocketClose drops the cache every
+  // BOOTSTRAP_INVALIDATE_AFTER_FAILURES consecutive pre-open failures,
+  // which is what turns a doomed reconnect loop into the observable
+  // refusal that latches the terminal state. A rejected fetch is not
+  // cached either: nulling the promise on rejection lets the next
+  // reconnect retry instead of permanently re-throwing the cached error.
   private getBootstrap(): Promise<Bootstrap> {
     if (this.bootstrap) return Promise.resolve(this.bootstrap);
     if (!this.bootstrapPromise) {

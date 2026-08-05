@@ -45,6 +45,35 @@ export class BootstrapRejectedError extends Error {
 // than "try again later".
 const CREDENTIAL_REFUSED_STATUSES = new Set([401, 403, 404]);
 
+// isLoopbackHostname reports whether a document host names this machine.
+// Exported pure so the predicate is testable without a document.
+//
+// The distinction matters exactly once: a refused credential is only
+// terminal for a session that cannot mint a new one. The embedded
+// webview and the `--connect` stub always load from loopback and are
+// handed a live token by the shell that owns the backend, so a refusal
+// there is a transient boot race worth retrying. A page served over the
+// network got its token from a share link, and only re-opening that link
+// (a fresh page load) can produce another one.
+export function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  // location.hostname strips the brackets from an IPv6 authority, but
+  // accept the bracketed form too so a hand-built host string matches.
+  if (host === '::1' || host === '[::1]') return true;
+  // IPv4 loopback is the whole 127.0.0.0/8 block, not just 127.0.0.1.
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
+// pageServedOverLoopback answers isLoopbackHostname for the current
+// document. A non-browser embedding (no window/location) answers "yes":
+// the remote-only terminal state must never be reachable from a context
+// whose locality we cannot establish.
+export function pageServedOverLoopback(): boolean {
+  if (typeof window === 'undefined' || typeof window.location === 'undefined') return true;
+  return isLoopbackHostname(window.location.hostname ?? '');
+}
+
 // Bootstrap is the JSON the SPA fetches at /bootstrap.json on first load.
 // Mirror the Go-side shape (internal/transport/server.go Bootstrap).
 // `mode` is optional on the wire — only the clientmode injection

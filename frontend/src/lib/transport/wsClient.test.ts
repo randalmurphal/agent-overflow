@@ -17,8 +17,12 @@
 //   - exponential backoff: second reconnect waits >first delay
 //   - backoff resets on stability (BACKOFF_RESET_AFTER_MS), not on
 //     open — an accept-then-close server keeps climbing the ladder
-//   - refused bootstrap credential surfaces as 'unauthorized' and
-//     clears the moment the manifest is served again
+//   - refused bootstrap credential latches the TERMINAL 'unauthorized'
+//     state on a session that can't re-mint a token (non-loopback
+//     origin, or a manifest that said remote): the ladder stops, RPCs
+//     are refused locally, a manual retry un-latches and a repeat
+//     refusal re-latches. A loopback session, a 1005 relay teardown,
+//     and a network-down loop all keep the ordinary retry behavior.
 //   - backoff collapse: an RPC / page resume / triggerReconnect fires a
 //     queued backoff attempt immediately; the RPC path is rate-floored
 //     (one attempt per RECONNECT_INITIAL_MS); resume-while-hidden no-ops
@@ -1690,64 +1694,140 @@ describe('WSClient', () => {
 
   // A restarted backend answers the stale token with a refusal, not a
   // dead socket: the loop would otherwise show "Reconnecting…" forever
-  // while every attempt is structurally doomed.
-  it('reports unauthorized on a refused credential and clears it when the manifest returns', async () => {
+  // while every attempt is structurally doomed. On a session that cannot
+  // mint a new token the refusal is TERMINAL — the ladder stops.
+  it('latches a terminal unauthorized state on a refused credential and stops retrying', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const fetchSpy = vi
       .fn<() => Promise<{ wsUrl: string; token: string }>>()
-      // Transient first (server up, manifest gated), then the refusal,
-      // then another transient failure — which must NOT clear the
-      // verdict, the token is still dead — then a served manifest.
+      // Transient first (server up, manifest gated) — that one must keep
+      // the ordinary loop — then the refusal.
       .mockRejectedValueOnce(new Error('bootstrap fetch failed: HTTP 503'))
-      .mockRejectedValueOnce(new BootstrapRejectedError(404))
-      .mockRejectedValueOnce(new Error('network down'))
-      .mockResolvedValue({ wsUrl: 'ws://example/ws', token: 't' });
+      .mockRejectedValue(new BootstrapRejectedError(404));
 
-    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap: fetchSpy });
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: fetchSpy,
+      // Stale bookmarked share link: this session never got a manifest,
+      // so the non-loopback document origin is the only locality signal.
+      loopbackOrigin: () => false,
+    });
     client.subscribe('x', () => {});
 
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(client.getStatus().status).toBe('reconnecting');
 
-    // attempt=0 backoff is 250 * 0.5 = 125ms; each rung doubles.
+    // attempt=0 backoff is 250 * 0.5 = 125ms.
     await vi.advanceTimersByTimeAsync(150);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(client.getStatus()).toEqual({ status: 'unauthorized', nextAttemptAt: null });
+
+    // Terminal: minutes of wall clock produce no further attempt and no
+    // socket. This is the whole point — a phone on the couch must not
+    // keep dialling a server that will refuse it identically forever.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(MockWebSocket.instances).toHaveLength(0);
     expect(client.getStatus().status).toBe('unauthorized');
-
-    await vi.advanceTimersByTimeAsync(300);
-    expect(fetchSpy).toHaveBeenCalledTimes(3);
-    expect(client.getStatus().status).toBe('unauthorized');
-
-    await vi.advanceTimersByTimeAsync(600);
-    expect(fetchSpy).toHaveBeenCalledTimes(4);
-    expect(MockWebSocket.instances).toHaveLength(1);
-    // Manifest served: the refusal is over before the socket even opens.
-    expect(client.getStatus().status).toBe('reconnecting');
-
-    MockWebSocket.instances[0]!.acceptOpen();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(client.getStatus().status).toBe('connected');
 
     client.close();
   });
 
-  // Transition the other way: a healthy session whose backend restarts
-  // must ENTER unauthorized, not stay in 'reconnecting'.
-  it('enters unauthorized when a live session\'s backend restarts', async () => {
+  // Passive demand must not defeat the stop: an RPC issued while
+  // latched is refused locally rather than turning the dead ladder into
+  // one bootstrap fetch per caller.
+  it('refuses RPCs without a network fetch while the credential is dead', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const fetchSpy = vi
       .fn<() => Promise<{ wsUrl: string; token: string }>>()
-      .mockResolvedValueOnce({ wsUrl: 'ws://example/ws', token: 't' })
+      .mockRejectedValue(new BootstrapRejectedError(401));
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: fetchSpy,
+      loopbackOrigin: () => false,
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('unauthorized');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    const call = client.callByName('App.Anything', []);
+    await expect(call).rejects.toBeInstanceOf(DisconnectedError);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    client.close();
+  });
+
+  // Transitions on the latch itself: a manual Retry un-latches (one
+  // attempt, user-initiated), a second refusal re-latches, and a served
+  // manifest recovers. State coverage is not transition coverage.
+  it('un-latches on manual retry and re-latches when the refusal repeats', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const fetchSpy = vi
+      .fn<() => Promise<{ wsUrl: string; token: string }>>()
+      .mockRejectedValueOnce(new BootstrapRejectedError(404))
+      .mockRejectedValueOnce(new BootstrapRejectedError(404))
+      .mockResolvedValue({ wsUrl: 'ws://example/ws', token: 'fresh' });
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: fetchSpy,
+      loopbackOrigin: () => false,
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('unauthorized');
+
+    // on -> off -> on: retry attempts exactly once and re-latches.
+    client.triggerReconnect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(client.getStatus().status).toBe('unauthorized');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    // on -> off, this time with a server willing to serve us.
+    client.triggerReconnect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(client.getStatus().status).toBe('reconnecting');
+    MockWebSocket.instances.at(-1)!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('connected');
+
+    client.close();
+  });
+
+  // Transition the other way: a healthy remote session whose backend
+  // restarts must ENTER the terminal state, not stay in 'reconnecting'.
+  it('enters the terminal state when a live remote session\'s backend restarts', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const fetchSpy = vi
+      .fn<() => Promise<{ wsUrl: string; token: string; remote?: boolean }>>()
+      // `remote: true` is the server's own pre-upgrade verdict — this
+      // session's locality is known from the manifest, not the origin.
+      .mockResolvedValueOnce({ wsUrl: 'ws://example/ws', token: 't', remote: true })
       .mockRejectedValue(new BootstrapRejectedError(404));
 
-    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap: fetchSpy });
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: fetchSpy,
+      loopbackOrigin: () => true,
+    });
     client.subscribe('x', () => {});
     await vi.advanceTimersByTimeAsync(0);
     MockWebSocket.instances[0]!.acceptOpen();
@@ -1760,15 +1840,132 @@ describe('WSClient', () => {
     MockWebSocket.instances[0]!.triggerClose();
     expect(client.getStatus().status).toBe('reconnecting');
     for (let i = 0; i < BOOTSTRAP_INVALIDATE_AFTER_FAILURES; i++) {
-      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
       MockWebSocket.instances.at(-1)!.triggerClose();
     }
-    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_LOCAL_MS);
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
     // The refetch happened (bootstrap-cache invalidation) and the
     // refusal it surfaced is what the user now sees. Later attempts
     // cascade inside this window — the count is a floor, not a total.
     expect(fetchSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(client.getStatus().status).toBe('unauthorized');
+    expect(client.getStatus()).toEqual({ status: 'unauthorized', nextAttemptAt: null });
+
+    const socketsAtLatch = MockWebSocket.instances.length;
+    const fetchesAtLatch = fetchSpy.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(MockWebSocket.instances).toHaveLength(socketsAtLatch);
+    expect(fetchSpy.mock.calls.length).toBe(fetchesAtLatch);
+
+    client.close();
+  });
+
+  // Requirement the other side of the gate protects: the embedded
+  // webview loads from loopback and is handed a live token by the shell
+  // that owns the backend. It must never be told to "reopen the share
+  // link" — there is no share link — so a refusal there stays an
+  // ordinary retry.
+  it('never latches for a loopback session', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const fetchSpy = vi
+      .fn<() => Promise<{ wsUrl: string; token: string }>>()
+      .mockRejectedValueOnce(new BootstrapRejectedError(404))
+      .mockRejectedValueOnce(new BootstrapRejectedError(404))
+      .mockResolvedValue({ wsUrl: 'ws://example/ws', token: 't' });
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: fetchSpy,
+      loopbackOrigin: () => true,
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('reconnecting');
+
+    // The ladder keeps climbing through the refusals and recovers on
+    // its own when the local backend finishes coming back up.
+    await vi.advanceTimersByTimeAsync(150);
+    expect(client.getStatus().status).toBe('reconnecting');
+    await vi.advanceTimersByTimeAsync(300);
+    expect(fetchSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('connected');
+
+    client.close();
+  });
+
+  // The WSL relay tears sockets down with 1005 and a minimised WebView2
+  // gets suspended out from under its connection; neither is an auth
+  // failure. Same backend, same token, recovery must be silent.
+  it('rides out a relay teardown on a remote session without latching', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const fetchSpy = vi
+      .fn<() => Promise<{ wsUrl: string; token: string; remote?: boolean }>>()
+      .mockResolvedValue({ wsUrl: 'ws://example/ws', token: 'same-token', remote: true });
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: fetchSpy,
+      loopbackOrigin: () => false,
+    });
+    const seen: string[] = [];
+    client.onStatusChange((snap) => seen.push(snap.status));
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 1005: closed with no close frame — the intermediary-teardown
+    // signature (internal/transport/AGENTS.md §Keepalive).
+    MockWebSocket.instances[0]!.triggerClose(1005);
+    // Two pre-open deaths force a bootstrap refetch; the server is the
+    // same one, so the manifest comes back clean and nothing latches.
+    for (let i = 0; i < BOOTSTRAP_INVALIDATE_AFTER_FAILURES; i++) {
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
+      MockWebSocket.instances.at(-1)!.triggerClose(1005);
+    }
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
+    expect(fetchSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    MockWebSocket.instances.at(-1)!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.getStatus().status).toBe('connected');
+    expect(seen).not.toContain('unauthorized');
+
+    client.close();
+  });
+
+  // An unreachable backend throws a network error, which proves nothing
+  // about the token. That loop must keep running forever.
+  it('keeps retrying a network-down remote session and never latches', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const fetchSpy = vi
+      .fn<() => Promise<{ wsUrl: string; token: string }>>()
+      .mockRejectedValue(new TypeError('Failed to fetch'));
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: fetchSpy,
+      loopbackOrigin: () => false,
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getStatus().status).toBe('reconnecting');
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(fetchSpy.mock.calls.length).toBeGreaterThan(5);
+    expect(client.getStatus().status).toBe('reconnecting');
+    expect(client.getStatus().nextAttemptAt).not.toBeNull();
 
     client.close();
   });
