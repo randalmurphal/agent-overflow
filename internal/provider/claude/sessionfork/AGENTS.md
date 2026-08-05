@@ -19,6 +19,8 @@ SDK `fork_session(session_id, up_to_message_id)`:
   branch walk can never drift apart (invariant 28).
 - `rechain.go` — `isDeferredAPIErrorRow`, the predicate behind the
   fork transform's re-chain rule (below).
+- `compact_rewind.go` — `compactCommandSliceAnchor`, the anchor rewind
+  behind `WriteForkFileForUserMessageUUID` (rule below).
 - `findmessage.go` — `FindUUIDBeforeUserTurn` and `SliceUUIDForLastKeptTurn`:
   stream the JSONL and return the parentUuid of the Nth (0-indexed)
   **real** user prompt — i.e. the slice point that keeps everything
@@ -101,6 +103,29 @@ Fixture:
 `docs/references/fixtures/claude/session_api_error_offbranch.jsonl`
 (sanitized incident replica; rechain_test.go drives it through the
 transform).
+
+## Compact-anchor rewind rule
+
+`WriteForkFileForUserMessageUUID` normally slices at the anchored
+message's `parentUuid` — file order guarantees a message's effects come
+after it, so the slice drops them. A successful `/compact` inverts that
+layout: the CLI writes the compaction's effects BEFORE the command echo,
+as the echo's own ancestors (`compact_boundary` chain root →
+`isCompactSummary` summary → `isMeta` caveat → echo), so slicing at the
+echo's parent keeps the compacted provider state while the caller's
+timeline deletes the compaction divider — silent context/timeline
+divergence. When the anchored entry is a `/compact` command echo whose
+kept ancestor chain is compact prelude down to a `compact_boundary`,
+`compactCommandSliceAnchor` rewinds the anchor to the boundary's
+`logicalParentUuid` (the pre-compact leaf), so reverting to the
+`/compact` message undoes the compaction. Scope is strict: any
+off-pattern chain — a different command, a canceled compaction (no
+boundary written), a boundary without a resolvable `logicalParentUuid`,
+a real content row inside the walk — keeps the plain parent anchor.
+Ordinal-walk fallbacks never hit this case (the echo is
+wrapper-filtered out of `isRealUserPrompt`), and a normal user message
+sent after a compaction anchors past the stdout row, so compacted state
+is deliberately kept there.
 
 ## Why JSONL manipulation, not CLI commands
 

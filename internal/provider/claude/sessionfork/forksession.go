@@ -168,6 +168,13 @@ func WriteForkFileFullTranscript(
 // prompt in the transcript — mirrors `SliceUUIDForLastKeptTurn(-1)`
 // so `revertClaudeThreadToMessage` can route through its
 // "anchor.TurnIndex == 0" branch identically.
+//
+// One anchored shape rewinds further than the message's parent: a
+// successful `/compact` command echo, whose effects (compact_boundary
+// + summary + caveat) the CLI writes as the echo's ANCESTORS. There
+// the slice anchor is the boundary's logicalParentUuid — the
+// pre-compact leaf — so reverting to the /compact message actually
+// undoes the compaction. See compactCommandSliceAnchor.
 func WriteForkFileForUserMessageUUID(
 	srcPath string,
 	upToUserMessageUUID string,
@@ -177,14 +184,15 @@ func WriteForkFileForUserMessageUUID(
 		return "", "", nil, fmt.Errorf("sessionfork: empty user message uuid")
 	}
 	return writeForkFileFromTranscript(srcPath, customTitle, func(transcript []map[string]any) (string, error) {
-		upToParentUUID, err := parentUUIDForUserMessageUUIDInTranscript(transcript, upToUserMessageUUID)
+		anchored, err := entryForUserMessageUUIDInTranscript(transcript, upToUserMessageUUID)
 		if err != nil {
 			return "", err
 		}
+		upToParentUUID, _ := anchored["parentUuid"].(string)
 		if upToParentUUID == "" {
 			return "", ErrSessionEmpty
 		}
-		return upToParentUUID, nil
+		return compactCommandSliceAnchor(transcript, anchored, upToParentUUID), nil
 	})
 }
 
@@ -323,10 +331,21 @@ func writeForkOutput(srcPath, newID string, lines []string) (string, string, err
 	return newID, out, nil
 }
 
-// parentUUIDForUserMessageUUIDInTranscript walks an already-parsed
-// transcript and returns the parentUuid of the entry carrying the user
-// message identified by messageUUID. It operates on the in-memory
-// transcript slice so the fork pipeline doesn't re-open the file.
+// parentUUIDForUserMessageUUIDInTranscript returns the parentUuid of
+// the entry entryForUserMessageUUIDInTranscript matches.
+func parentUUIDForUserMessageUUIDInTranscript(transcript []map[string]any, messageUUID string) (string, error) {
+	entry, err := entryForUserMessageUUIDInTranscript(transcript, messageUUID)
+	if err != nil {
+		return "", err
+	}
+	parent, _ := entry["parentUuid"].(string)
+	return parent, nil
+}
+
+// entryForUserMessageUUIDInTranscript walks an already-parsed
+// transcript and returns the entry carrying the user message
+// identified by messageUUID. It operates on the in-memory transcript
+// slice so the fork pipeline doesn't re-open the file.
 //
 // The CLI persists a queued message under one of two shapes depending
 // on WHEN it consumed it (claude-wire.md §"Queued-message consumption"):
@@ -357,27 +376,23 @@ func writeForkOutput(srcPath, newID string, lines []string) (string, string, err
 // Returns ErrMessageNotFound when messageUUID appears in none of the
 // shapes (most often: the AO row's stored UUID is more than one remap
 // generation stale, or the session pre-dates the wire-id stamp).
-func parentUUIDForUserMessageUUIDInTranscript(transcript []map[string]any, messageUUID string) (string, error) {
+func entryForUserMessageUUIDInTranscript(transcript []map[string]any, messageUUID string) (map[string]any, error) {
 	if messageUUID == "" {
-		return "", fmt.Errorf("sessionfork: empty user message uuid")
+		return nil, fmt.Errorf("sessionfork: empty user message uuid")
 	}
-	forkedFromParent := ""
-	forkedFromFound := false
-	attachmentParent := ""
-	attachmentFound := false
+	var forkedFromEntry map[string]any
+	var attachmentEntry map[string]any
 	for _, entry := range transcript {
 		switch t, _ := entry["type"].(string); t {
 		case "user":
 			if u, _ := entry["uuid"].(string); u == messageUUID {
-				parent, _ := entry["parentUuid"].(string)
-				return parent, nil
+				return entry, nil
 			}
-			if !forkedFromFound && entryForkedFromUUID(entry) == messageUUID {
-				forkedFromParent, _ = entry["parentUuid"].(string)
-				forkedFromFound = true
+			if forkedFromEntry == nil && entryForkedFromUUID(entry) == messageUUID {
+				forkedFromEntry = entry
 			}
 		case "attachment":
-			if attachmentFound {
+			if attachmentEntry != nil {
 				continue
 			}
 			att, ok := entry["attachment"].(map[string]any)
@@ -388,18 +403,17 @@ func parentUUIDForUserMessageUUIDInTranscript(transcript []map[string]any, messa
 				continue
 			}
 			if su, _ := att["source_uuid"].(string); su == messageUUID {
-				attachmentParent, _ = entry["parentUuid"].(string)
-				attachmentFound = true
+				attachmentEntry = entry
 			}
 		}
 	}
-	if forkedFromFound {
-		return forkedFromParent, nil
+	if forkedFromEntry != nil {
+		return forkedFromEntry, nil
 	}
-	if attachmentFound {
-		return attachmentParent, nil
+	if attachmentEntry != nil {
+		return attachmentEntry, nil
 	}
-	return "", fmt.Errorf("%w: user message uuid %q", ErrMessageNotFound, messageUUID)
+	return nil, fmt.Errorf("%w: user message uuid %q", ErrMessageNotFound, messageUUID)
 }
 
 // entryForkedFromUUID extracts the fork-provenance source uuid the
