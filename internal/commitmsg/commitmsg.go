@@ -29,7 +29,69 @@ const Timeout = 180 * time.Second
 const (
 	PromptStagedSummaryLimit = 6_000
 	PromptStagedPatchLimit   = 40_000
+	// PromptCustomStyleLimit caps the user's free-text style
+	// instructions — guidance, not payload, so it never crowds out
+	// the diff sections.
+	PromptCustomStyleLimit = 2_000
 )
+
+// Style kinds, mirroring settings.CommitMessageStyle values. The
+// settings layer validates the enum; this package treats anything
+// unrecognized as StyleConventional so a stale settings file can't
+// produce a guidance-free prompt.
+const (
+	StyleConventional = "conventional"
+	StyleCustom       = "custom"
+	StyleRepo         = "repo"
+)
+
+// RepoStyleSubjectCount is how many recent commit subjects the repo
+// style samples as examples. Matches t3-code's source-control writing
+// config (git log -n 20 --no-merges).
+const RepoStyleSubjectCount = 20
+
+// StyleGuidance describes how a generated message should be phrased.
+// Kind selects the strategy; Custom carries the user's instructions
+// for StyleCustom, RecentSubjects the sampled history for StyleRepo.
+// A kind whose payload is empty (blank instructions, no history yet)
+// falls back to the conventional guidance rather than emitting an
+// empty section.
+type StyleGuidance struct {
+	Kind           string
+	Custom         string
+	RecentSubjects []string
+}
+
+// lines renders the guidance as prompt rule lines.
+func (g StyleGuidance) lines() []string {
+	switch g.Kind {
+	case StyleCustom:
+		custom := strings.TrimSpace(g.Custom)
+		if custom == "" {
+			break
+		}
+		return []string{
+			"- follow these commit message style instructions from the user:",
+			textgen.LimitPromptSection(custom, PromptCustomStyleLimit),
+		}
+	case StyleRepo:
+		if len(g.RecentSubjects) == 0 {
+			break
+		}
+		out := []string{"- match the style of these recent commit subjects from this repository:"}
+		for i, subject := range g.RecentSubjects {
+			if i >= RepoStyleSubjectCount {
+				break
+			}
+			out = append(out, "  * "+subject)
+		}
+		return out
+	}
+	return []string{
+		"- use Conventional Commits format: type(scope): summary" +
+			" (types: feat, fix, refactor, docs, test, chore, perf, build, ci)",
+	}
+}
 
 // CodexSchemaJSON is the JSON schema passed to `codex exec
 // --output-schema`. Matches t3-code's BuildPrompt output schema:
@@ -52,28 +114,33 @@ const CodexSchemaJSON = `{` +
 const ClaudeSchemaJSON = `{"type":"object","properties":{"subject":{"type":"string"},"body":{"type":"string"}},"required":["subject"]}`
 
 // BuildPrompt assembles the natural-language instruction sent to the
-// provider CLI. Matches t3-code's Prompts.ts line-for-line so the two
-// apps produce identical output shape for identical input.
-func BuildPrompt(summary, patch, branch string) string {
+// provider CLI. The base rules and section shape match t3-code's
+// Prompts.ts; the style rule appended after them mirrors t3-code's
+// source-control writing-style configuration.
+func BuildPrompt(summary, patch, branch string, style StyleGuidance) string {
 	if strings.TrimSpace(branch) == "" {
 		branch = "(detached)"
 	}
-	return strings.Join([]string{
+	lines := []string{
 		"You write concise git commit messages.",
 		"Return a JSON object with keys: subject, body.",
 		"Rules:",
 		"- subject must be imperative, <= 72 chars, and no trailing period",
 		"- body can be empty string or short bullet points",
 		"- capture the primary user-visible or developer-visible change",
+	}
+	lines = append(lines, style.lines()...)
+	lines = append(lines,
 		"",
-		"Branch: " + branch,
+		"Branch: "+branch,
 		"",
 		"Staged files:",
 		textgen.LimitPromptSection(summary, PromptStagedSummaryLimit),
 		"",
 		"Staged patch:",
 		textgen.LimitPromptSection(patch, PromptStagedPatchLimit),
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
 }
 
 // DecodeClaude pulls the structured output out of a Claude JSON

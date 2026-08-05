@@ -26,6 +26,8 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     textGenerationProvider: 'codex',
     textGenerationModel: '',
     textGenerationReasoningEffort: 'low',
+    commitMessageStyle: 'conventional',
+    commitMessageStyleCustom: '',
     claudeAutoCompactStandardPercent: 90,
     claudeAutoCompactExtendedPercent: 90,
     codexAutoCompactStandardPercent: 90,

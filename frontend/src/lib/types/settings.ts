@@ -41,6 +41,7 @@ export type MonoFont = "geist" | "hack-nerd" | "system";
 export type PaneDensityMode = "compact" | "comfortable" | "spacious";
 export type ActivityRunDefaultMode = "expanded" | "collapsed";
 export type ProjectSortMode = "lastActivity" | "createdAt" | "manual";
+export type CommitMessageStyle = "conventional" | "repo" | "custom";
 
 export interface PaneLayoutPersistedPane {
   paneId: string;
@@ -147,12 +148,20 @@ export interface Settings {
   textGenerationProvider: ProviderID;
   /**
    * Text generation model id. Empty string = "use the per-provider
-   * default" (codex → gpt-5.6-sol, claude → claude-haiku-4-5).
+   * default" (codex → gpt-5.6-luna, claude → claude-haiku-4-5).
    */
   textGenerationModel: string;
   /** Text generation reasoning-effort tier. Defaults to "low" — these
    * calls prioritise speed over depth. */
   textGenerationReasoningEffort: ReasoningEffort;
+  /**
+   * Writing style for generated commit messages: Conventional Commits
+   * (default), match the repo's recent commit subjects, or follow the
+   * user's custom instructions.
+   */
+  commitMessageStyle: CommitMessageStyle;
+  /** Free-text style instructions used when commitMessageStyle === "custom". */
+  commitMessageStyleCustom: string;
   /**
    * Per-provider auto-compact thresholds (percent of the active context
    * window). Each provider has a standard and extended tier; the slider

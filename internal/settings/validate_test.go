@@ -229,6 +229,40 @@ func TestTextGenerationDefaultsAndRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCommitMessageStyleDefaultsAndRoundTrip(t *testing.T) {
+	svc := NewService(t.TempDir())
+	got := svc.Get()
+	if got.CommitMessageStyle != "conventional" {
+		t.Fatalf("CommitMessageStyle default = %q, want conventional", got.CommitMessageStyle)
+	}
+	if got.CommitMessageStyleCustom != "" {
+		t.Fatalf("CommitMessageStyleCustom default = %q, want empty", got.CommitMessageStyleCustom)
+	}
+
+	updated, err := svc.Update(map[string]any{
+		"commitMessageStyle":       "custom",
+		"commitMessageStyleCustom": "  Always use emoji prefixes.  ",
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.CommitMessageStyle != "custom" {
+		t.Errorf("style round-trip: got %q", updated.CommitMessageStyle)
+	}
+	if updated.CommitMessageStyleCustom != "Always use emoji prefixes." {
+		t.Errorf("custom trim: got %q", updated.CommitMessageStyleCustom)
+	}
+
+	if _, err := svc.Update(map[string]any{"commitMessageStyle": "haiku"}); err == nil {
+		t.Fatal("unknown commitMessageStyle should be rejected")
+	}
+	if _, err := svc.Update(map[string]any{
+		"commitMessageStyleCustom": strings.Repeat("x", maxCommitMessageStyleCustomLen+1),
+	}); err == nil {
+		t.Fatal("oversized commitMessageStyleCustom should be rejected")
+	}
+}
+
 func TestTextGenerationReasoningEffortIsProviderSpecific(t *testing.T) {
 	svc := NewService(t.TempDir())
 

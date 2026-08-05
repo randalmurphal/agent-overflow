@@ -9,7 +9,6 @@ import (
 
 	"agent-overflow/internal/commitmsg"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
 )
 
@@ -47,8 +46,12 @@ func (a *App) GenerateCommitMessage(threadID string) (GeneratedCommitMessage, er
 	if err != nil {
 		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: %w", err)
 	}
+	_, workspace, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: %w", err)
+	}
 
-	summary, patch, branch, err := a.gatherStagedDiffForCommit(thread)
+	summary, patch, branch, err := a.gatherStagedDiffForCommit(workspace)
 	if err != nil {
 		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: %w", err)
 	}
@@ -56,12 +59,29 @@ func (a *App) GenerateCommitMessage(threadID string) (GeneratedCommitMessage, er
 		return GeneratedCommitMessage{}, fmt.Errorf("generate commit message: no uncommitted changes to describe")
 	}
 
-	prompt := commitmsg.BuildPrompt(summary, patch, branch)
+	prompt := commitmsg.BuildPrompt(summary, patch, branch, a.commitMessageStyleGuidance(workspace))
 	deadline := time.Now().Add(commitmsg.Timeout)
 	primary := a.resolveTextGenerationConfig()
 	return runTextGenWithFallback(a, primary, deadline, func(cfg textgen.Config) (GeneratedCommitMessage, error) {
-		return a.runCommitMessageOnce(cfg, thread, prompt, deadline)
+		return a.runCommitMessageOnce(cfg, workspace, prompt, deadline)
 	})
+}
+
+// commitMessageStyleGuidance resolves the user's configured writing
+// style into the guidance BuildPrompt embeds. The repo style samples
+// recent commit subjects from the workspace best-effort — a fresh repo
+// with no history falls back to the conventional guidance inside
+// commitmsg.
+func (a *App) commitMessageStyleGuidance(workspace string) commitmsg.StyleGuidance {
+	s := a.currentSettings()
+	guidance := commitmsg.StyleGuidance{
+		Kind:   s.CommitMessageStyle,
+		Custom: s.CommitMessageStyleCustom,
+	}
+	if guidance.Kind == commitmsg.StyleRepo {
+		guidance.RecentSubjects = a.gitCore().RecentCommitSubjects(workspace, commitmsg.RepoStyleSubjectCount)
+	}
+	return guidance
 }
 
 // runCommitMessageOnce dispatches a single commit-message attempt to the
@@ -71,7 +91,7 @@ func (a *App) GenerateCommitMessage(threadID string) (GeneratedCommitMessage, er
 // instead of orphaning past the binding return — matches runThreadTitleOnce.
 func (a *App) runCommitMessageOnce(
 	cfg textgen.Config,
-	thread store.Thread,
+	workspace string,
 	prompt string,
 	deadline time.Time,
 ) (GeneratedCommitMessage, error) {
@@ -80,9 +100,9 @@ func (a *App) runCommitMessageOnce(
 
 	switch cfg.Provider {
 	case string(provider.Codex):
-		return a.generateCodexCommitMessage(ctx, cfg, thread, prompt)
+		return a.generateCodexCommitMessage(ctx, cfg, workspace, prompt)
 	case string(provider.Claude):
-		return a.generateClaudeCommitMessage(ctx, cfg, thread, prompt)
+		return a.generateClaudeCommitMessage(ctx, cfg, workspace, prompt)
 	default:
 		return GeneratedCommitMessage{}, fmt.Errorf(
 			"generate commit message: unsupported provider %q; expected 'codex' or 'claude'",
@@ -91,8 +111,8 @@ func (a *App) runCommitMessageOnce(
 	}
 }
 
-// gatherStagedDiffForCommit stages everything in the thread's workspace
-// and returns the resulting summary, patch, and current branch. Matches
+// gatherStagedDiffForCommit stages everything in the workspace and
+// returns the resulting summary, patch, and current branch. Matches
 // t3-code's GitCore.getCommitContext: stage → read summary → read patch
 // → read branch.
 //
@@ -102,11 +122,7 @@ func (a *App) runCommitMessageOnce(
 // Running `git add -A` here can pick up untracked files the user didn't
 // mean to commit; the dialog shows the staged diff before the commit is
 // executed, so the user has the last word.
-func (a *App) gatherStagedDiffForCommit(thread store.Thread) (summary, patch, branch string, err error) {
-	_, workspace, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return "", "", "", err
-	}
+func (a *App) gatherStagedDiffForCommit(workspace string) (summary, patch, branch string, err error) {
 	core := a.gitCore()
 	if err := core.StageAll(workspace); err != nil {
 		return "", "", "", fmt.Errorf("stage-all: %w", err)
@@ -131,14 +147,9 @@ func (a *App) gatherStagedDiffForCommit(thread store.Thread) (summary, patch, br
 func (a *App) generateCodexCommitMessage(
 	ctx context.Context,
 	cfg textgen.Config,
-	thread store.Thread,
+	workspace string,
 	prompt string,
 ) (GeneratedCommitMessage, error) {
-	_, workspace, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return GeneratedCommitMessage{}, err
-	}
-
 	raw, err := textgen.RunCodex(ctx, cfg, workspace, commitmsg.CodexSchemaJSON, nil, prompt, remainingBudget(ctx, commitmsg.Timeout))
 	if err != nil {
 		return GeneratedCommitMessage{}, err
@@ -167,14 +178,9 @@ func (a *App) generateCodexCommitMessage(
 func (a *App) generateClaudeCommitMessage(
 	ctx context.Context,
 	cfg textgen.Config,
-	thread store.Thread,
+	workspace string,
 	prompt string,
 ) (GeneratedCommitMessage, error) {
-	_, workspace, err := a.resolveGitPaths(thread)
-	if err != nil {
-		return GeneratedCommitMessage{}, err
-	}
-
 	// Effort is not passed here: RunClaude renders cfg.Effort itself, so
 	// thread-title and workflow-digest generation get the same flag.
 	extra := []string{"--dangerously-skip-permissions"}

@@ -397,7 +397,7 @@ export class Settings {
     /**
      * TextGenerationModel is the model id the text-generation CLI uses.
      * Empty string means "use the per-provider default" (codex ->
-     * gpt-5.6-sol, claude -> claude-haiku-4-5). We avoid forcing a
+     * gpt-5.6-luna, claude -> claude-haiku-4-5). We avoid forcing a
      * concrete default on the field itself because the right model
      * depends on which provider is selected, and a cross-provider
      * default would be wrong half the time.
@@ -411,6 +411,22 @@ export class Settings {
      * more from speed than from heavy reasoning.
      */
     "textGenerationReasoningEffort": string;
+
+    /**
+     * CommitMessageStyle selects the phrasing guidance generated commit
+     * messages follow: "conventional" (Conventional Commits, the
+     * default), "repo" (match the repository's recent commit subjects),
+     * or "custom" (follow CommitMessageStyleCustom). Mirrors t3-code's
+     * source-control writing-style options.
+     */
+    "commitMessageStyle": string;
+
+    /**
+     * CommitMessageStyleCustom holds the user's free-text style
+     * instructions, consumed only when CommitMessageStyle == "custom".
+     * Trimmed and length-capped at validation.
+     */
+    "commitMessageStyleCustom": string;
 
     /**
      * Auto-compact thresholds, percent-of-window. Per provider per tier;
@@ -621,6 +637,12 @@ export class Settings {
         if (!("textGenerationReasoningEffort" in $$source)) {
             this["textGenerationReasoningEffort"] = "";
         }
+        if (!("commitMessageStyle" in $$source)) {
+            this["commitMessageStyle"] = "";
+        }
+        if (!("commitMessageStyleCustom" in $$source)) {
+            this["commitMessageStyleCustom"] = "";
+        }
         if (!("claudeAutoCompactStandardPercent" in $$source)) {
             this["claudeAutoCompactStandardPercent"] = 0;
         }
@@ -679,12 +701,12 @@ export class Settings {
         const $$createField18_0 = $$createType0;
         const $$createField19_0 = $$createType2;
         const $$createField20_0 = $$createType2;
-        const $$createField36_0 = $$createType3;
-        const $$createField37_0 = $$createType4;
-        const $$createField38_0 = $$createType5;
-        const $$createField40_0 = $$createType0;
-        const $$createField41_0 = $$createType7;
-        const $$createField45_0 = $$createType8;
+        const $$createField38_0 = $$createType3;
+        const $$createField39_0 = $$createType4;
+        const $$createField40_0 = $$createType5;
+        const $$createField42_0 = $$createType0;
+        const $$createField43_0 = $$createType7;
+        const $$createField47_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField6_0($$parsedSource["recentWorkspaces"]);
@@ -702,22 +724,22 @@ export class Settings {
             $$parsedSource["codexCustomEnv"] = $$createField20_0($$parsedSource["codexCustomEnv"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField36_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField38_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField37_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField39_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField38_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField40_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField40_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField42_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField41_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField43_0($$parsedSource["remoteEndpoints"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField45_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField47_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

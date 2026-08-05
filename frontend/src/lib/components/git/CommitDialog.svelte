@@ -3,7 +3,7 @@
   import Button from '../primitives/Button.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { GitActionResult } from '../../types/git';
-  import { GitCommit } from '../../stores/bindings';
+  import { GenerateCommitMessage, GitCommit } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
 
   let { pane, open, onClose }: {
@@ -15,7 +15,24 @@
   let subject = $state('');
   let body = $state('');
   let committing = $state(false);
+  let generating = $state(false);
   let error = $state<string | null>(null);
+
+  async function handleGenerate() {
+    if (generating || committing || !pane.threadId) return;
+    generating = true;
+    error = null;
+    try {
+      const message = await GenerateCommitMessage(pane.threadId);
+      subject = message.subject ?? '';
+      body = message.body ?? '';
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      addToast('error', `Couldn't generate commit message: ${reason}`);
+    } finally {
+      generating = false;
+    }
+  }
 
   async function handleCommit() {
     if (!subject.trim() || !pane.threadId || committing) return;
@@ -49,7 +66,19 @@
   {#snippet children()}
     <div class="space-y-3">
       <div>
-        <label for="commit-subject" class="text-[0.75rem] text-fg-muted block mb-1 font-medium">Subject</label>
+        <div class="flex items-center justify-between gap-2 mb-1">
+          <label for="commit-subject" class="text-[0.75rem] text-fg-muted font-medium">Subject</label>
+          <button
+            type="button"
+            data-testid="commit-dialog-generate"
+            onclick={handleGenerate}
+            disabled={generating || committing}
+            title="Ask the agent to draft a commit message from the current diff"
+            class="text-[0.625rem] px-2 py-0.5 rounded border border-border-subtle text-fg-muted hover:text-accent hover:border-accent/40 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            {generating ? 'Generating…' : 'Generate'}
+          </button>
+        </div>
         <input
           id="commit-subject"
           type="text"

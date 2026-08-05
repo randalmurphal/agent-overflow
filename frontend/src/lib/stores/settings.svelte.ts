@@ -30,6 +30,8 @@ const DEFAULT_SETTINGS: Settings = {
   textGenerationProvider: "codex",
   textGenerationModel: "",
   textGenerationReasoningEffort: "low",
+  commitMessageStyle: "conventional",
+  commitMessageStyleCustom: "",
   // Auto-compact thresholds default to 90% per provider per tier — same
   // value as the Go DefaultSettings so an unloaded settings store doesn't
   // disagree with what the backend would send back on first GetSettings.

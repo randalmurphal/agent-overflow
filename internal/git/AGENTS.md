@@ -141,7 +141,9 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   `-N` suffixing with a unix-millis fallback).
 - `branch_names.go` — branch-name sanitation.
 - `commit_context.go` — commit-message context gathering for model-
-  assisted commits.
+  assisted commits: staged summary/patch reads plus
+  `RecentCommitSubjects` (best-effort `git log --no-merges` subjects
+  backing the "match repo history" commit-message style).
 - `forge.go` — `Forge` interface + `PRReference` / `PRMetadata` /
   `PRFile` types; `SplitProjectForForge` per-forge namespace splitter;
   `ValidateProjectSegment` safe-name check; `BuildPRAnchor` /

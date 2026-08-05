@@ -178,6 +178,18 @@ type Settings struct {
 	// more from speed than from heavy reasoning.
 	TextGenerationReasoningEffort string `json:"textGenerationReasoningEffort"`
 
+	// CommitMessageStyle selects the phrasing guidance generated commit
+	// messages follow: "conventional" (Conventional Commits, the
+	// default), "repo" (match the repository's recent commit subjects),
+	// or "custom" (follow CommitMessageStyleCustom). Mirrors t3-code's
+	// source-control writing-style options.
+	CommitMessageStyle string `json:"commitMessageStyle"`
+
+	// CommitMessageStyleCustom holds the user's free-text style
+	// instructions, consumed only when CommitMessageStyle == "custom".
+	// Trimmed and length-capped at validation.
+	CommitMessageStyleCustom string `json:"commitMessageStyleCustom"`
+
 	// Auto-compact thresholds, percent-of-window. Per provider per tier;
 	// model-agnostic by design (the user picks model + active window via
 	// the composer's pickers, not via Settings). At session start the
@@ -327,6 +339,7 @@ var DefaultSettings = Settings{
 	TextGenerationProvider:        "codex",
 	TextGenerationModel:           "",
 	TextGenerationReasoningEffort: "low",
+	CommitMessageStyle:            "conventional",
 	// Both providers ship a 90% default — aggressive enough that the
 	// user notices auto-compact when it triggers, conservative enough
 	// to leave headroom for the final response. The percent applies to

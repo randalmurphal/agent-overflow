@@ -96,7 +96,7 @@ func TestSanitizeBody_PreservesSingleNewlines(t *testing.T) {
 // ---- BuildPrompt ----
 
 func TestBuildPrompt_IncludesBranchAndSections(t *testing.T) {
-	prompt := BuildPrompt("A\tREADME\n", "+++ b/README\n+new line\n", "main")
+	prompt := BuildPrompt("A\tREADME\n", "+++ b/README\n+new line\n", "main", StyleGuidance{})
 	for _, needle := range []string{
 		"You write concise git commit messages.",
 		"Return a JSON object with keys: subject, body.",
@@ -114,9 +114,73 @@ func TestBuildPrompt_IncludesBranchAndSections(t *testing.T) {
 }
 
 func TestBuildPrompt_DetachedHEADRendersSentinel(t *testing.T) {
-	prompt := BuildPrompt("A\tx", "+++", "")
+	prompt := BuildPrompt("A\tx", "+++", "", StyleGuidance{})
 	if !strings.Contains(prompt, "Branch: (detached)") {
 		t.Errorf("expected '(detached)' sentinel; got:\n%s", prompt)
+	}
+}
+
+// ---- StyleGuidance ----
+
+func TestBuildPrompt_DefaultStyleIsConventional(t *testing.T) {
+	for _, g := range []StyleGuidance{
+		{},
+		{Kind: StyleConventional},
+		{Kind: "bogus-from-stale-settings"},
+		{Kind: StyleCustom, Custom: "   "},
+		{Kind: StyleRepo},
+	} {
+		prompt := BuildPrompt("A\tx", "+++", "main", g)
+		if !strings.Contains(prompt, "Conventional Commits") {
+			t.Errorf("guidance %+v: expected conventional fallback; got:\n%s", g, prompt)
+		}
+	}
+}
+
+func TestBuildPrompt_CustomStyleEmbedsInstructions(t *testing.T) {
+	g := StyleGuidance{Kind: StyleCustom, Custom: "All subjects start with an emoji."}
+	prompt := BuildPrompt("A\tx", "+++", "main", g)
+	if !strings.Contains(prompt, "All subjects start with an emoji.") {
+		t.Errorf("custom instructions missing; got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "Conventional Commits") {
+		t.Errorf("custom style must replace the conventional rule; got:\n%s", prompt)
+	}
+}
+
+func TestBuildPrompt_CustomStyleIsCapped(t *testing.T) {
+	g := StyleGuidance{Kind: StyleCustom, Custom: strings.Repeat("x", PromptCustomStyleLimit*2)}
+	prompt := BuildPrompt("A\tx", "+++", "main", g)
+	if !strings.Contains(prompt, "[truncated]") {
+		t.Errorf("oversized instructions not truncated; prompt length %d", len(prompt))
+	}
+}
+
+func TestBuildPrompt_RepoStyleListsSubjects(t *testing.T) {
+	g := StyleGuidance{
+		Kind:           StyleRepo,
+		RecentSubjects: []string{"feat(auth): add SSO", "fix: stop leaking handles"},
+	}
+	prompt := BuildPrompt("A\tx", "+++", "main", g)
+	for _, needle := range []string{
+		"recent commit subjects",
+		"  * feat(auth): add SSO",
+		"  * fix: stop leaking handles",
+	} {
+		if !strings.Contains(prompt, needle) {
+			t.Errorf("prompt missing %q; got:\n%s", needle, prompt)
+		}
+	}
+}
+
+func TestBuildPrompt_RepoStyleCapsSubjectCount(t *testing.T) {
+	subjects := make([]string, RepoStyleSubjectCount+10)
+	for i := range subjects {
+		subjects[i] = "subject-" + strings.Repeat("x", i%5)
+	}
+	prompt := BuildPrompt("A\tx", "+++", "main", StyleGuidance{Kind: StyleRepo, RecentSubjects: subjects})
+	if got := strings.Count(prompt, "  * "); got != RepoStyleSubjectCount {
+		t.Errorf("embedded %d subjects, want %d", got, RepoStyleSubjectCount)
 	}
 }
 

@@ -13,7 +13,11 @@
     updateSettingsPatch,
   } from '../../stores/settings.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import type { ProviderStatus, ReasoningEffort } from '../../types/settings';
+  import type {
+    CommitMessageStyle,
+    ProviderStatus,
+    ReasoningEffort,
+  } from '../../types/settings';
   import {
     getProviderDefinition,
     PROVIDER_SETTINGS_ORDER,
@@ -125,6 +129,12 @@
   let textGenerationDefaultModel = $derived(
     getProviderDefinition(settings.textGenerationProvider).textGenerationDefaultModel,
   );
+
+  const COMMIT_STYLE_OPTIONS: { value: CommitMessageStyle; label: string }[] = [
+    { value: 'conventional', label: 'Conventional Commits' },
+    { value: 'repo', label: 'Match repo history' },
+    { value: 'custom', label: 'Custom instructions' },
+  ];
 </script>
 
 <div class="flex flex-col gap-10">
@@ -285,6 +295,52 @@
           {/each}
         </select>
       </SettingsField>
+
+      <SettingsField
+        label="Commit message style"
+        hint="Phrasing guidance for generated commit messages."
+        htmlFor="textgen-commit-style"
+      >
+        <select
+          id="textgen-commit-style"
+          data-testid="settings-commit-message-style"
+          value={settings.commitMessageStyle}
+          onchange={(e) =>
+            updateSetting(
+              'commitMessageStyle',
+              (e.target as HTMLSelectElement).value as CommitMessageStyle,
+            )}
+          class={SELECT_CLASS}
+        >
+          {#each COMMIT_STYLE_OPTIONS as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </SettingsField>
+
+      {#if settings.commitMessageStyle === 'custom'}
+        <SettingsField
+          label="Style instructions"
+          hint="Free-text rules the generated subject and body should follow."
+          htmlFor="textgen-commit-style-custom"
+          align="start"
+        >
+          <textarea
+            id="textgen-commit-style-custom"
+            data-testid="settings-commit-message-style-custom"
+            rows={3}
+            maxlength={4000}
+            value={settings.commitMessageStyleCustom}
+            onchange={(e) =>
+              updateSetting(
+                'commitMessageStyleCustom',
+                (e.target as HTMLTextAreaElement).value,
+              )}
+            placeholder="e.g. Start subjects with a Jira ticket key; keep bodies to one bullet per change."
+            class="{INPUT_CLASS} max-w-[24rem] resize-none"
+          ></textarea>
+        </SettingsField>
+      {/if}
     </div>
   </section>
 </div>

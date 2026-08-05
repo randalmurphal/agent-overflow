@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -38,6 +39,14 @@ var (
 		"xhigh":   {},
 		"max":     {},
 		"ultra":   {},
+	}
+	// allowedCommitMessageStyles enumerates the writing-style guidance
+	// for generated commit messages. Values mirror
+	// commitmsg.Style{Conventional,Custom,Repo}.
+	allowedCommitMessageStyles = map[string]struct{}{
+		"conventional": {},
+		"custom":       {},
+		"repo":         {},
 	}
 	allowedClaudeTextGenerationEfforts = map[string]struct{}{
 		"low":    {},
@@ -160,6 +169,19 @@ func validateSettings(current Settings) (Settings, error) {
 		current.TextGenerationProvider,
 		current.TextGenerationReasoningEffort,
 	); err != nil {
+		return Settings{}, err
+	}
+
+	current.CommitMessageStyle = strings.TrimSpace(current.CommitMessageStyle)
+	if err := validateOption(
+		"commitMessageStyle",
+		current.CommitMessageStyle,
+		allowedCommitMessageStyles,
+	); err != nil {
+		return Settings{}, err
+	}
+	current.CommitMessageStyleCustom = strings.TrimSpace(current.CommitMessageStyleCustom)
+	if err := validateCommitMessageStyleCustom(current.CommitMessageStyleCustom); err != nil {
 		return Settings{}, err
 	}
 
@@ -310,6 +332,13 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		DefaultSettings.TextGenerationReasoningEffort,
 		allowedTextGenerationEfforts(current.TextGenerationProvider),
 	)
+	current.CommitMessageStyle = sanitizeOption(
+		"commitMessageStyle",
+		current.CommitMessageStyle,
+		DefaultSettings.CommitMessageStyle,
+		allowedCommitMessageStyles,
+	)
+	current.CommitMessageStyleCustom = sanitizeCommitMessageStyleCustom(current.CommitMessageStyleCustom)
 	current.Editor.Preference = strings.TrimSpace(current.Editor.Preference)
 
 	// Auto-compact thresholds: clamp on load so a hand-edited file with
@@ -495,6 +524,42 @@ func validateTextGenerationReasoningEffort(provider, effort string) error {
 		joinAllowedValues(allowedTextGenerationEfforts(provider)),
 		provider,
 	)
+}
+
+// maxCommitMessageStyleCustomLen bounds the free-text style
+// instructions. The prompt layer caps what it embeds anyway
+// (commitmsg.PromptCustomStyleLimit); this keeps the settings file from
+// carrying an accidentally-pasted document.
+const maxCommitMessageStyleCustomLen = 4_000
+
+func validateCommitMessageStyleCustom(value string) error {
+	if len(value) > maxCommitMessageStyleCustomLen {
+		return fmt.Errorf(
+			"commitMessageStyleCustom must be at most %d bytes (got %d)",
+			maxCommitMessageStyleCustomLen,
+			len(value),
+		)
+	}
+	return nil
+}
+
+// sanitizeCommitMessageStyleCustom trims and hard-caps the stored
+// instructions on load — a hand-edited file over the cap is truncated
+// (on a rune boundary) rather than rejected wholesale.
+func sanitizeCommitMessageStyleCustom(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) <= maxCommitMessageStyleCustomLen {
+		return trimmed
+	}
+	log.Printf(
+		"settings: commitMessageStyleCustom over %d bytes, truncating",
+		maxCommitMessageStyleCustomLen,
+	)
+	cut := trimmed[:maxCommitMessageStyleCustomLen]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 func allowedTextGenerationEfforts(provider string) map[string]struct{} {
