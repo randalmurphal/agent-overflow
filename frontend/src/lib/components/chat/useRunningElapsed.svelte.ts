@@ -104,7 +104,11 @@ export function createRunningElapsed(
  *
  * Must be called from component/effect-root context (uses runes).
  */
-export function createSharedNowClock(isTicking: () => boolean): { readonly now: number } {
+export interface SharedNowClock {
+  readonly now: number;
+}
+
+export function createSharedNowClock(isTicking: () => boolean): SharedNowClock {
   // Refresh the clock at creation so the first render doesn't compute
   // against a sharedNow left over from whenever the last subscriber
   // released (acquire refreshes too, but effects run after render).

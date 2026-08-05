@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import ActivityRail from './ActivityRail.svelte';
+// The rail's visibility predicate + background controller live in its
+// host (Composer, via createActivityRailHost); the fixture wires the
+// rail exactly like Composer does so these tests exercise the
+// production predicate.
+import ActivityRailHost from '../../../test/mocks/ActivityRailTestHost.svelte';
 import type { UserInputRequest } from '../../types/events';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
@@ -61,7 +65,7 @@ describe('<ActivityRail>', () => {
 
   it('renders nothing when idle, no todos, no background', async () => {
     const pane = await buildPane();
-    const { queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     expect(queryByTestId('activity-rail')).toBeNull();
   });
@@ -69,7 +73,7 @@ describe('<ActivityRail>', () => {
   it('shows the working segment with elapsed timer when a turn is active', async () => {
     const pane = await buildPane();
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     expect(await findByTestId('activity-rail')).toBeInTheDocument();
     expect(await findByTestId('activity-rail-working')).toBeInTheDocument();
@@ -85,7 +89,7 @@ describe('<ActivityRail>', () => {
   it('mounts the hairline and LEDs in the bridge state too (queue item, no active turn)', async () => {
     const pane = await buildPane();
     enqueueSimple(pane.threadId!, 'queued bridge');
-    const { findByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     expect(await findByTestId('activity-rail-hairline')).toBeInTheDocument();
     expect(await findByTestId('activity-rail-working-leds')).toBeInTheDocument();
@@ -99,7 +103,7 @@ describe('<ActivityRail>', () => {
     getSettings().lowPowerMode = true;
     const pane = await buildPane();
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
-    const { findByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     expect(await findByTestId('activity-rail-working')).toBeInTheDocument();
     expect(await findByTestId('activity-rail-hairline')).toBeInTheDocument();
@@ -113,7 +117,7 @@ describe('<ActivityRail>', () => {
     // `railVisible` instead of the stricter `isWorking` predicate.
     const pane = await buildPane();
     pane.setLiveTodo([{ step: 'one', status: 'inProgress' }]);
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     expect(await findByTestId('activity-rail')).toBeInTheDocument();
     expect(queryByTestId('activity-rail-hairline')).toBeNull();
@@ -128,7 +132,7 @@ describe('<ActivityRail>', () => {
       { step: 'Update wire contract docs', status: 'pending' },
       { step: 'Read flush_queue.go for context', status: 'completed' },
     ]);
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     const toggle = await findByTestId('activity-rail-todos-toggle');
     expect(toggle).toBeInTheDocument();
@@ -153,7 +157,7 @@ describe('<ActivityRail>', () => {
       { step: 'two', status: 'completed' },
       { step: 'three', status: 'completed' },
     ]);
-    const { findByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     expect((await findByTestId('activity-rail-todos-count')).textContent?.trim()).toBe('3/3');
   });
@@ -170,7 +174,7 @@ describe('<ActivityRail>', () => {
       { step: 'queued', status: 'pending' },
       { step: 'done', status: 'completed' },
     ]);
-    const { container, findByTestId, queryAllByTestId } = render(ActivityRail, {
+    const { container, findByTestId, queryAllByTestId } = render(ActivityRailHost, {
       props: { pane },
     });
     await tick();
@@ -190,7 +194,7 @@ describe('<ActivityRail>', () => {
     getSettings().lowPowerMode = true;
     const pane = await buildPane();
     pane.setLiveTodo([{ step: 'active', status: 'inProgress' }]);
-    const { findByTestId, queryAllByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryAllByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     await fireEvent.click(await findByTestId('activity-rail-todos-toggle'));
     await tick();
@@ -211,7 +215,7 @@ describe('<ActivityRail>', () => {
       { step: 'Solo task', status: 'inProgress' },
       { step: 'Claimed task', status: 'pending', owner: 'helper-agent' },
     ]);
-    const { findByTestId, findAllByTestId } = render(ActivityRail, {
+    const { findByTestId, findAllByTestId } = render(ActivityRailHost, {
       props: { pane },
     });
     await tick();
@@ -233,7 +237,7 @@ describe('<ActivityRail>', () => {
       { step: 'first', status: 'inProgress' },
       { step: 'second', status: 'pending', owner: '' },
     ]);
-    const { findByTestId, queryAllByTestId } = render(ActivityRail, {
+    const { findByTestId, queryAllByTestId } = render(ActivityRailHost, {
       props: { pane },
     });
     await tick();
@@ -249,7 +253,7 @@ describe('<ActivityRail>', () => {
     const pane = await buildPane();
     pane.upsertItem(launch);
 
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     await tick();
 
@@ -271,7 +275,7 @@ describe('<ActivityRail>', () => {
     pane.upsertItem(launch);
     pane.setLiveTodo([{ step: 'one', status: 'inProgress' }]);
 
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     await tick();
 
@@ -297,7 +301,7 @@ describe('<ActivityRail>', () => {
     // not render.
     const pane = await buildPane();
     pane.setLiveTodo([{ step: 'one', status: 'inProgress' }]);
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     expect(await findByTestId('activity-rail')).toBeInTheDocument();
     expect(queryByTestId('activity-rail-working')).toBeNull();
@@ -313,7 +317,7 @@ describe('<ActivityRail>', () => {
     const pane = await buildPane(threadA);
     pane.setLiveTodo([{ step: 'one', status: 'inProgress' }]);
 
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
 
     // Open Todos on thread A.
@@ -338,7 +342,7 @@ describe('<ActivityRail>', () => {
     const pane = await buildPane();
     enqueueSimple(pane.threadId!, 'queued follow-up');
 
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     expect(await findByTestId('activity-rail')).toBeInTheDocument();
     expect(await findByTestId('activity-rail-working')).toBeInTheDocument();
@@ -357,7 +361,7 @@ describe('<ActivityRail>', () => {
     ]);
     pane.toggleActivityRailTodos();
 
-    const { findByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
 
     const list = await findByTestId('activity-rail-todos-list');
@@ -379,7 +383,7 @@ describe('<ActivityRail>', () => {
     ]);
     pane.toggleActivityRailTodos();
 
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
 
     const list = await findByTestId('activity-rail-todos-list');
@@ -408,7 +412,7 @@ describe('<ActivityRail>', () => {
       { step: 'rebalance loader windows', status: 'inProgress' },
       { step: 'queued cleanup', status: 'pending' },
     ]);
-    const { findByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     const preview = await findByTestId('activity-rail-todos-preview');
     expect(preview.textContent?.trim()).toBe('rebalance loader windows');
@@ -430,7 +434,7 @@ describe('<ActivityRail>', () => {
     ]);
     pane.upsertItem(launch);
 
-    const { findByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     await tick();
 
@@ -459,7 +463,7 @@ describe('<ActivityRail>', () => {
     // width while the todos toggle absorbs the deficit.
     const pane = await buildPane();
     pane.setLiveTodo([{ step: 'in flight', status: 'inProgress' }]);
-    const { findByTestId } = render(ActivityRail, {
+    const { findByTestId } = render(ActivityRailHost, {
       props: { pane, inputRequest: userInputRequest() },
     });
     await tick();
@@ -476,7 +480,7 @@ describe('<ActivityRail>', () => {
       { step: 'b', status: 'completed' },
     ]);
 
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     expect(await findByTestId('activity-rail-todos-toggle')).toBeInTheDocument();
 
@@ -499,7 +503,7 @@ describe('<ActivityRail>', () => {
     const pane = await buildPane(threadA);
     pane.upsertItem(launchA);
 
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     await tick();
 
@@ -534,7 +538,7 @@ describe('<ActivityRail>', () => {
 
     const pane = await buildPane();
     pane.upsertItem(launch);
-    const { findByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     await tick();
     await fireEvent.click(await findByTestId('activity-rail-background-toggle'));
@@ -557,7 +561,7 @@ describe('<ActivityRail>', () => {
     const pane = await buildPane();
     pane.upsertItem(a);
     pane.upsertItem(b);
-    const { findByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     await tick();
     await fireEvent.click(await findByTestId('activity-rail-background-toggle'));
@@ -587,7 +591,7 @@ describe('<ActivityRail>', () => {
 
     const pane = await buildPane(makeThread({ provider: 'codex' }));
     pane.upsertItem(exec);
-    const { findByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     await tick();
     await fireEvent.click(await findByTestId('activity-rail-background-toggle'));
@@ -620,7 +624,7 @@ describe('<ActivityRail>', () => {
     setBindingMock('CleanCodexBackgroundTerminals', async () => { codexCalls++; });
 
     const pane = await buildPane(makeThread({ provider: 'codex' }));
-    const { findByTestId, queryByTestId } = render(ActivityRail, { props: { pane } });
+    const { findByTestId, queryByTestId } = render(ActivityRailHost, { props: { pane } });
     await tick();
     await tick();
 
@@ -645,7 +649,7 @@ describe('<ActivityRail>', () => {
     });
     const pane = await buildPane();
     pane.upsertItem(launch);
-    render(ActivityRail, { props: { pane } });
+    render(ActivityRailHost, { props: { pane } });
     await tick();
     await tick();
     const baseline = fetches;
@@ -674,7 +678,7 @@ describe('<ActivityRail>', () => {
   it('renders the input-requested chip and toggles via onToggleInput', async () => {
     const pane = await buildPane();
     const onToggleInput = vi.fn();
-    const { getByTestId, rerender } = render(ActivityRail, {
+    const { getByTestId, rerender } = render(ActivityRailHost, {
       props: { pane, inputRequest: userInputRequest(), inputCollapsed: false, onToggleInput },
     });
     await tick();
@@ -692,7 +696,7 @@ describe('<ActivityRail>', () => {
   it('hides the working segment while an input request is pending', async () => {
     const pane = await buildPane();
     pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: Date.now() - 3_000 });
-    const { getByTestId, queryByTestId } = render(ActivityRail, {
+    const { getByTestId, queryByTestId } = render(ActivityRailHost, {
       props: { pane, inputRequest: userInputRequest() },
     });
     await tick();

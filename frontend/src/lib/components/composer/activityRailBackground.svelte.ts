@@ -6,11 +6,13 @@
 // `anyRunning` / `hasPendingCompletion` for the rail's toggle pill and
 // expanded body.
 //
-// Pulled out of `ActivityRail.svelte` so the rail file stays under the
-// 300-line ceiling enforced by `frontend/AGENTS.md`. Lifecycle is
-// driven by `mount(...)` (call from the host's `onMount`) and the
-// returned `dispose` function (call from `onDestroy`). No global
-// state — one controller per ActivityRail mount.
+// Owned by `Composer.svelte`, not the rail: the composer's `railVisible`
+// predicate reads `count`, and the rail + height-reservation spacer must
+// render as complements of that one predicate — a controller living
+// inside the rail would be torn down by the very unmount its count
+// triggers. Lifecycle is driven by `mount(...)` (call from the host's
+// `onMount`) and the returned `dispose` function (call from
+// `onDestroy`). No global state — one controller per Composer mount.
 
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { ListLiveBackgroundTasks } from '../../stores/bindings';

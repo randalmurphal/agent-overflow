@@ -15,6 +15,7 @@
   import ComposerTerminalChip from './ComposerTerminalChip.svelte';
   import ComposerToolbar from './toolbar/ComposerToolbar.svelte';
   import ActivityRail from './ActivityRail.svelte';
+  import { createActivityRailHost } from './activityRailHost.svelte';
   import { activityRailChipClasses, activityRailRowClasses } from './activityRailClasses';
   import ComposerWorkspaceStrip from './ComposerWorkspaceStrip.svelte';
   import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
@@ -137,21 +138,14 @@
   let hasUserInputPrompt = $derived(!hasBlockingPrompt && Boolean(activeUserInput));
   let hasInteractivePrompt = $derived(hasBlockingPrompt || hasUserInputPrompt);
 
-  // Reserve the activity row's height ABOVE the composer card whenever the
-  // ActivityRail isn't occupying it, so the composer's measured height — and
-  // the timeline's padding-bottom it drives via --composer-height — stays
-  // constant across turn start/complete and the last message doesn't jump.
-  // Derives from the same shared state ActivityRail reads to decide its own
-  // visibility (`isThreadWorking`, `pane.liveTodo`, and a pending user input),
-  // so the spacer and the rail swap within a single reactive flush — net
-  // composer height unchanged, no 1-frame blip. Background tasks are
-  // intentionally excluded: their liveness lives in a per-mount controller,
-  // not shared pane state, so a bg task that outlives its turn (no active
-  // turn, no todos) leaves one extra row of padding until it ends — rare, and
-  // never a jump on the common turn boundary.
-  let reserveActivityRow = $derived(
-    !isThreadWorking(pane.threadId) && !pane.liveTodo && !hasUserInputPrompt,
-  );
+  // ActivityRail host state: background controller, shared clock, and the
+  // ONE visibility predicate that the rail mount and the transparent
+  // height-reservation spacer render as exact complements of — the
+  // composer's measured height never changes across rail transitions.
+  // See activityRailHost.svelte.ts for the full contract.
+  const activityRail = createActivityRailHost(() => pane, () => hasUserInputPrompt);
+  let releaseActivityRail: (() => void) | null = null;
+  let railVisible = $derived(activityRail.railVisible);
   let userInputSubmitSignal = $state(0);
   let userInputCustomAnswer = $state('');
   // Collapse state for the pending-user-input popup lives on the pane (via
@@ -868,18 +862,21 @@
     // standalone Composer mount (tests, future design-only composer
     // path) has a working registration.
     releaseDraftRegistration = registerComposerDraft(pane.paneId, draft);
+    releaseActivityRail = activityRail.mount();
   });
 
   onDestroy(() => {
     releasePlanEvents?.();
     releaseDraftRegistration?.();
     releaseDraftRegistration = null;
+    releaseActivityRail?.();
+    releaseActivityRail = null;
     mentions.closeMention();
   });
 </script>
 
 <div class="relative px-6 pb-4 pointer-events-none">
-  {#if reserveActivityRow}
+  {#if !railVisible}
     <!--
       Reserve the ActivityRail's single-row height here, ABOVE the card and
       transparent, rather than inside it — the card must look identical to
@@ -887,7 +884,8 @@
       row: the row + chip classes shared via activityRailClasses.ts, a
       transparent border standing in for the rail's 1px separator, and a
       zero-width space giving the chip its line box, so the reserved height
-      matches by construction.
+      matches by construction. Rendered iff the rail is not — the exact
+      complement of the mount below; see railVisible.
     -->
     <div aria-hidden="true" data-testid="composer-activity-reserve" class="border-b border-transparent">
       <div class={activityRailRowClasses}>
@@ -907,12 +905,16 @@
     ondragleave={uploads.handleDragLeave}
     ondrop={handleDrop}
   >
-    <ActivityRail
-      {pane}
-      inputRequest={hasUserInputPrompt ? activeUserInput : null}
-      inputCollapsed={userInputCollapsed}
-      onToggleInput={() => pane.toggleActivityRailInputCollapsed()}
-    />
+    {#if railVisible}
+      <ActivityRail
+        {pane}
+        bg={activityRail.bg}
+        clock={activityRail.clock}
+        inputRequest={hasUserInputPrompt ? activeUserInput : null}
+        inputCollapsed={userInputCollapsed}
+        onToggleInput={() => pane.toggleActivityRailInputCollapsed()}
+      />
+    {/if}
 
     {#if activeApproval}
       {#key activeApproval.requestId}

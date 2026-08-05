@@ -18,8 +18,13 @@
   //    background items. Toggle expands an inline body listing the
   //    rows with provider-aware stop affordances.
   //
-  // The whole rail collapses out completely when none of those are
-  // active (idle thread, no pending input, no todos, no background tasks).
+  // Visibility is the HOST's call: Composer mounts the rail iff any
+  // sub-state is active (`railVisible`) and renders its transparent
+  // height-reservation spacer as the exact complement, so exactly one of
+  // the two holds the row at all times and the composer's measured height
+  // never changes across rail transitions. The background controller and
+  // the shared clock are owned by Composer for the same reason (its
+  // predicate reads `bg.count`) and arrive here as props.
   //
   // The row is single-line by contract: Composer.svelte reserves exactly
   // one row of height (`composer-activity-reserve`) while the rail is
@@ -27,15 +32,14 @@
   // the todos toggle, which shrinks so its preview can ellipsize when the
   // pane is too narrow to fit everything (see activityRailClasses.ts).
 
-  import { onDestroy, onMount } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { UserInputRequest } from '../../types/events';
   import { getActiveTurn, isThreadWorking } from '../../stores/threadStatuses.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
-  import { createSharedNowClock } from '../chat/useRunningElapsed.svelte';
+  import type { SharedNowClock } from '../chat/useRunningElapsed.svelte';
   import { activityRailChipClasses, activityRailRowClasses } from './activityRailClasses';
-  import { createBackgroundController } from './activityRailBackground.svelte';
+  import type { BackgroundController } from './activityRailBackground.svelte';
   import ActivityRailTodosBody from './ActivityRailTodosBody.svelte';
   import ActivityRailBackgroundBody from './ActivityRailBackgroundBody.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -44,6 +48,10 @@
 
   interface Props {
     pane: ThreadPane;
+    /** Composer-owned background-tasks controller (mounted there). */
+    bg: BackgroundController;
+    /** Composer-owned shared 1Hz clock for elapsed labels + retention. */
+    clock: SharedNowClock;
     /** Active pending user-input request, or null when none is pending or an
      *  approval is blocking. Drives the accent "Input requested" chip and,
      *  while present, suppresses the working timer (the agent is blocked on
@@ -55,6 +63,8 @@
 
   let {
     pane,
+    bg,
+    clock,
     inputRequest = null,
     inputCollapsed = false,
     onToggleInput = () => {},
@@ -98,11 +108,6 @@
     return null;
   });
 
-  const bg = createBackgroundController(() => pane, () => clock.now);
-  let bgDispose: (() => void) | null = null;
-  onMount(() => { bgDispose = bg.mount(); });
-  onDestroy(() => { bgDispose?.(); });
-
   // While an input request is pending the agent is blocked on the user, so the
   // working hairline/LEDs/timer are suppressed and only the "Input requested"
   // chip shows. `showWorking` gates every working-segment render below.
@@ -113,175 +118,151 @@
   // chase; the LEDs render static at their resting opacity. The
   // hairline never animates, so it shows in every mode.
   let ledChase = $derived(!getSettings().lowPowerMode);
-
-  // Rail visible when ANY sub-state is non-empty (a pending input always shows
-  // its chip). Each segment within the row has its own predicate so e.g. a
-  // background-only render doesn't include working chrome.
-  let railVisible = $derived(
-    inputRequest !== null || showWorking || liveTodo !== null || bg.count > 0,
-  );
-
-  // 1Hz clock for the working elapsed label and the background body's
-  // elapsed labels + retention prune. The shared row-header ticker
-  // (useRunningElapsed.svelte.ts) rather than a private interval: while
-  // a turn streams, tool rows already hold the shared clock, so the rail
-  // rides the same tick instead of running a second interval + a second
-  // invalidation cascade per second. Ownership is gated on the same
-  // predicates the private interval had; nothing rendered reads the
-  // clock while neither predicate holds.
-  const clock = createSharedNowClock(() => {
-    const wantsClockForWorking = activeTurn !== null && inputRequest === null;
-    const wantsClockForBackground = backgroundOpen || bg.hasPendingCompletion;
-    return wantsClockForWorking || wantsClockForBackground;
-  });
-
 </script>
 
-{#if railVisible}
-  <div
-    class="relative border-b border-border-subtle"
-    role="region"
-    aria-label="Activity"
-    data-testid="activity-rail"
-  >
+<div
+  class="relative border-b border-border-subtle"
+  role="region"
+  aria-label="Activity"
+  data-testid="activity-rail"
+>
+  {#if showWorking}
+    <span
+      class="working-hairline pointer-events-none absolute inset-x-0 top-0 z-10 block h-px"
+      aria-hidden="true"
+      data-testid="activity-rail-hairline"
+    ></span>
+  {/if}
+  <div class={activityRailRowClasses}>
+    {#if inputRequest}
+      <button
+        type="button"
+        class="{activityRailChipClasses} shrink-0 font-bold uppercase tracking-[0.08em] text-accent transition-colors hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
+        onclick={onToggleInput}
+        aria-controls="composer-pending-user-input"
+        aria-expanded={!inputCollapsed}
+        data-testid="activity-rail-input-toggle"
+      >
+        <Icon
+          icon={inputCollapsed ? ChevronRight : ChevronDown}
+          size={11}
+          strokeWidth={2.25}
+          class="shrink-0"
+        />
+        <span>Input requested</span>
+      </button>
+    {/if}
+
     {#if showWorking}
       <span
-        class="working-hairline pointer-events-none absolute inset-x-0 top-0 z-10 block h-px"
-        aria-hidden="true"
-        data-testid="activity-rail-hairline"
-      ></span>
-    {/if}
-    <div class={activityRailRowClasses}>
-      {#if inputRequest}
-        <button
-          type="button"
-          class="{activityRailChipClasses} shrink-0 font-bold uppercase tracking-[0.08em] text-accent transition-colors hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35"
-          onclick={onToggleInput}
-          aria-controls="composer-pending-user-input"
-          aria-expanded={!inputCollapsed}
-          data-testid="activity-rail-input-toggle"
-        >
-          <Icon
-            icon={inputCollapsed ? ChevronRight : ChevronDown}
-            size={11}
-            strokeWidth={2.25}
-            class="shrink-0"
-          />
-          <span>Input requested</span>
-        </button>
-      {/if}
-
-      {#if showWorking}
+        class="{activityRailChipClasses} shrink-0"
+        role="status"
+        aria-live="polite"
+        data-testid="activity-rail-working"
+      >
         <span
-          class="{activityRailChipClasses} shrink-0"
-          role="status"
-          aria-live="polite"
-          data-testid="activity-rail-working"
+          class="inline-flex items-center gap-1 {ledChase ? 'working-leds' : ''}"
+          aria-hidden="true"
+          data-testid="activity-rail-working-leds"
         >
-          <span
-            class="inline-flex items-center gap-1 {ledChase ? 'working-leds' : ''}"
-            aria-hidden="true"
-            data-testid="activity-rail-working-leds"
-          >
-            <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
-            <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
-            <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
-          </span>
-          {#if activeTurn}
-            <span class="text-fg-muted">
-              Working <span
-                class="tabular-nums text-fg-default"
-                data-testid="activity-rail-working-elapsed"
-              >{elapsedLabel}</span>
-            </span>
-          {:else}
-            <span class="text-fg-muted" data-testid="activity-rail-working-bridge">Working</span>
-          {/if}
+          <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
+          <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
+          <span class="working-led h-2 w-1 rounded-[1.5px] bg-accent"></span>
         </span>
-      {/if}
-
-      {#if liveTodo}
-        {#if inputRequest || showWorking}
-          <span class="shrink-0 select-none text-fg-hint/60" aria-hidden="true">·</span>
+        {#if activeTurn}
+          <span class="text-fg-muted">
+            Working <span
+              class="tabular-nums text-fg-default"
+              data-testid="activity-rail-working-elapsed"
+            >{elapsedLabel}</span>
+          </span>
+        {:else}
+          <span class="text-fg-muted" data-testid="activity-rail-working-bridge">Working</span>
         {/if}
-        <!-- The one shrinkable segment (min-w-0): the truncate preview gives
-             up width first; overflow-hidden additionally clips at the
-             button's own edge in the degenerate case where even the fixed
-             label/badge can't fit, instead of bleeding over the next chip. -->
-        <button
-          type="button"
-          class="{activityRailChipClasses} min-w-0 overflow-hidden text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {todosOpen ? 'bg-accent/10 text-accent' : ''}"
-          onclick={() => pane.toggleActivityRailTodos()}
-          aria-controls="activity-rail-todos-body"
-          aria-expanded={todosOpen}
-          data-testid="activity-rail-todos-toggle"
-        >
-          <Icon
-            icon={todosOpen ? ChevronDown : ChevronRight}
-            size={11}
-            strokeWidth={2.25}
-            class="shrink-0 text-fg-hint/70"
-          />
-          <span class="shrink-0">Todos</span>
-          <span
-            class="shrink-0 rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
-            data-testid="activity-rail-todos-count"
-          >{completedCount}/{liveTodo.steps.length}</span>
-          {#if inProgressPreview}
-            <span
-              class="min-w-0 truncate text-fg-hint/70"
-              data-testid="activity-rail-todos-preview"
-            >{inProgressPreview}</span>
-          {/if}
-        </button>
-      {/if}
-
-      {#if bg.count > 0}
-        {#if inputRequest || showWorking || liveTodo}
-          <span class="shrink-0 select-none text-fg-hint/60" aria-hidden="true">·</span>
-        {/if}
-        <button
-          type="button"
-          class="{activityRailChipClasses} shrink-0 text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {backgroundOpen ? 'bg-accent/10 text-accent' : ''}"
-          onclick={() => pane.toggleActivityRailBackground()}
-          aria-controls="activity-rail-background-body"
-          aria-expanded={backgroundOpen}
-          data-testid="activity-rail-background-toggle"
-        >
-          <Icon
-            icon={backgroundOpen ? ChevronDown : ChevronRight}
-            size={11}
-            strokeWidth={2.25}
-            class="shrink-0 text-fg-hint/70"
-          />
-          <span>Background</span>
-          <span
-            class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
-            data-testid="activity-rail-background-count"
-          >{bg.count}</span>
-          {#if bg.anyRunning}
-            <span
-              class="h-1.5 w-1.5 rounded-full bg-accent animate-pulse"
-              aria-hidden="true"
-              data-testid="activity-rail-background-pulse"
-            ></span>
-          {/if}
-        </button>
-      {/if}
-    </div>
-
-    {#if todosOpen && liveTodo}
-      <ActivityRailTodosBody {liveTodo} {pane} />
+      </span>
     {/if}
 
-    {#if backgroundOpen && bg.count > 0}
-      <ActivityRailBackgroundBody
-        tasks={bg.tasks}
-        provider={bg.provider}
-        threadId={bg.threadId}
-        runningCount={bg.runningCount}
-        anyRunning={bg.anyRunning}
-      />
+    {#if liveTodo}
+      {#if inputRequest || showWorking}
+        <span class="shrink-0 select-none text-fg-hint/60" aria-hidden="true">·</span>
+      {/if}
+      <!-- The one shrinkable segment (min-w-0): the truncate preview gives
+           up width first; overflow-hidden additionally clips at the
+           button's own edge in the degenerate case where even the fixed
+           label/badge can't fit, instead of bleeding over the next chip. -->
+      <button
+        type="button"
+        class="{activityRailChipClasses} min-w-0 overflow-hidden text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {todosOpen ? 'bg-accent/10 text-accent' : ''}"
+        onclick={() => pane.toggleActivityRailTodos()}
+        aria-controls="activity-rail-todos-body"
+        aria-expanded={todosOpen}
+        data-testid="activity-rail-todos-toggle"
+      >
+        <Icon
+          icon={todosOpen ? ChevronDown : ChevronRight}
+          size={11}
+          strokeWidth={2.25}
+          class="shrink-0 text-fg-hint/70"
+        />
+        <span class="shrink-0">Todos</span>
+        <span
+          class="shrink-0 rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
+          data-testid="activity-rail-todos-count"
+        >{completedCount}/{liveTodo.steps.length}</span>
+        {#if inProgressPreview}
+          <span
+            class="min-w-0 truncate text-fg-hint/70"
+            data-testid="activity-rail-todos-preview"
+          >{inProgressPreview}</span>
+        {/if}
+      </button>
+    {/if}
+
+    {#if bg.count > 0}
+      {#if inputRequest || showWorking || liveTodo}
+        <span class="shrink-0 select-none text-fg-hint/60" aria-hidden="true">·</span>
+      {/if}
+      <button
+        type="button"
+        class="{activityRailChipClasses} shrink-0 text-fg-muted transition-colors hover:bg-surface-2/45 hover:text-fg-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 {backgroundOpen ? 'bg-accent/10 text-accent' : ''}"
+        onclick={() => pane.toggleActivityRailBackground()}
+        aria-controls="activity-rail-background-body"
+        aria-expanded={backgroundOpen}
+        data-testid="activity-rail-background-toggle"
+      >
+        <Icon
+          icon={backgroundOpen ? ChevronDown : ChevronRight}
+          size={11}
+          strokeWidth={2.25}
+          class="shrink-0 text-fg-hint/70"
+        />
+        <span>Background</span>
+        <span
+          class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
+          data-testid="activity-rail-background-count"
+        >{bg.count}</span>
+        {#if bg.anyRunning}
+          <span
+            class="h-1.5 w-1.5 rounded-full bg-accent animate-pulse"
+            aria-hidden="true"
+            data-testid="activity-rail-background-pulse"
+          ></span>
+        {/if}
+      </button>
     {/if}
   </div>
-{/if}
+
+  {#if todosOpen && liveTodo}
+    <ActivityRailTodosBody {liveTodo} {pane} />
+  {/if}
+
+  {#if backgroundOpen && bg.count > 0}
+    <ActivityRailBackgroundBody
+      tasks={bg.tasks}
+      provider={bg.provider}
+      threadId={bg.threadId}
+      runningCount={bg.runningCount}
+      anyRunning={bg.anyRunning}
+    />
+  {/if}
+</div>

@@ -2064,9 +2064,10 @@ describe('<Composer>', () => {
   });
 
   it('does not double-reserve: a todos-only rail (no active turn) occupies the row and the spacer stays collapsed', async () => {
-    // reserveActivityRow mirrors the rail's own visibility predicate for
-    // the synchronous cases (working + todos), so a settled-turn rail that
-    // still shows todos doesn't stack an extra transparent row above the card.
+    // The spacer renders as the exact complement of the rail's one
+    // visibility predicate (createActivityRailHost), so a settled-turn rail
+    // that still shows todos doesn't stack an extra transparent row above
+    // the card.
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     const pane = await buildPane();
     pane.setLiveTodo([{ step: 'one', status: 'inProgress' }]);
@@ -2076,6 +2077,70 @@ describe('<Composer>', () => {
     await tick();
     await tick();
 
+    expect(getByTestId('activity-rail')).toBeInTheDocument();
+    expect(queryByTestId('composer-activity-reserve')).toBeNull();
+  });
+
+  it('does not double-reserve: a background-only rail (no active turn) occupies the row and the spacer stays collapsed', async () => {
+    // The regression this guards: the spacer once re-derived "is the rail
+    // showing" without the background term, so a background task that
+    // outlived its turn rendered rail + spacer together — two rows of
+    // clearance where one is real, pushing the settled final message a
+    // phantom row above the composer.
+    setBindingMock('ListLiveBackgroundTasks', async () => [{
+      id: 'launch-a',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'running',
+      summary: 'Bash',
+      isBackground: true,
+      createdAt: Date.now() - 1_000,
+      updatedAt: Date.now() - 1_000,
+    }]);
+    const pane = await buildPane();
+    const draft = await buildDraft();
+
+    const { getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
+    await tick();
+    await tick();
+
+    expect(getByTestId('activity-rail')).toBeInTheDocument();
+    expect(queryByTestId('composer-activity-reserve')).toBeNull();
+  });
+
+  it('keeps exactly one reserved row when a turn completes while a background task is still running', async () => {
+    // Turn end with a live background task is NOT a rail/spacer swap: the
+    // rail keeps the row (background segment) and the spacer must stay
+    // collapsed, so the composer's measured height — and the timeline
+    // padding it drives — does not change at the boundary.
+    setBindingMock('ListLiveBackgroundTasks', async () => [{
+      id: 'launch-a',
+      threadId: 'thread-1',
+      turnIndex: 0,
+      itemIndex: 0,
+      kind: 'tool_call',
+      role: 'assistant',
+      status: 'running',
+      summary: 'Bash',
+      isBackground: true,
+      createdAt: Date.now() - 1_000,
+      updatedAt: Date.now() - 1_000,
+    }]);
+    const pane = await buildPane();
+    pane.setActiveTurn({ turnId: 't1', turnIndex: 0, startedAt: 0 });
+    const draft = await buildDraft();
+
+    const { getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });
+    await tick();
+    await tick();
+    expect(getByTestId('activity-rail')).toBeInTheDocument();
+    expect(queryByTestId('composer-activity-reserve')).toBeNull();
+
+    pane.clearActiveTurn();
+    await tick();
     expect(getByTestId('activity-rail')).toBeInTheDocument();
     expect(queryByTestId('composer-activity-reserve')).toBeNull();
   });
