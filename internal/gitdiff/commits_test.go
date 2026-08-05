@@ -323,3 +323,49 @@ func TestListBranchCommitsRefusesUnresolvableRefs(t *testing.T) {
 		t.Fatal("ListBranchCommits accepted an unknown base")
 	}
 }
+
+// The `/review` commit completion mirrors codex's own picker: plain
+// recent history from HEAD, merges included — NOT a base..HEAD range,
+// so a checkout on the default branch still lists commits.
+func TestListRecentCommitsListsHeadHistoryIncludingMerges(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	commitFile(t, repo, "a.txt", "a\n", "first change")
+	testutil.RunGit(t, repo, "checkout", "-b", "feature")
+	commitFile(t, repo, "b.txt", "b\n", "feature change")
+	testutil.RunGit(t, repo, "checkout", "main")
+	testutil.RunGit(t, repo, "merge", "--no-ff", "-m", "merge feature", "feature")
+
+	commits, err := ListRecentCommits(context.Background(), repo, 100)
+	if err != nil {
+		t.Fatalf("ListRecentCommits: %v", err)
+	}
+	if len(commits) < 4 {
+		t.Fatalf("commits = %d, want the full history incl. the merge: %+v", len(commits), commits)
+	}
+	if commits[0].Subject != "merge feature" {
+		t.Fatalf("newest = %q, want the merge commit first", commits[0].Subject)
+	}
+
+	limited, err := ListRecentCommits(context.Background(), repo, 2)
+	if err != nil {
+		t.Fatalf("ListRecentCommits limited: %v", err)
+	}
+	if len(limited) != 2 {
+		t.Fatalf("limited = %d commits, want 2", len(limited))
+	}
+}
+
+// An unborn HEAD (fresh repo, no commits) is a real empty answer — the
+// completion shows no commit rows — never an error toast.
+func TestListRecentCommitsEmptyForUnbornHead(t *testing.T) {
+	repo := t.TempDir()
+	testutil.RunGit(t, repo, "init")
+
+	commits, err := ListRecentCommits(context.Background(), repo, 100)
+	if err != nil {
+		t.Fatalf("ListRecentCommits: %v", err)
+	}
+	if len(commits) != 0 {
+		t.Fatalf("commits = %+v, want empty", commits)
+	}
+}

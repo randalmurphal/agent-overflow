@@ -1,9 +1,10 @@
 // `/review` — the argument grammar and the second-level completion rows.
 //
 // Pure. The git data the rows are built from is fetched by the caller
-// (`composerSlash.svelte.ts`, through the same `GitListBranches` /
-// `ListBranchCommits` bindings the review pane uses); this module only decides
-// what the rows say and what a typed argument means.
+// (`composerSlash.svelte.ts`: `GitListBranches` for branch rows, and
+// `ListRecentCommits` — codex's own review-picker source — for commit
+// rows); this module only decides what the rows say and what a typed
+// argument means.
 //
 // The grammar mirrors the backend's closed union in `app_codex_review.go`:
 // four variants, discriminated by the first argument word, each with its own

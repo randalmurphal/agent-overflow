@@ -85,13 +85,46 @@ func ListBranchCommits(ctx context.Context, workspace, base, branch string) ([]C
 	return logCommitRange(ctx, workspace, base, branch)
 }
 
+// ListRecentCommits returns the workspace's most recent commits from
+// HEAD (plain `git log`, merges included), newest first, capped at
+// limit. This mirrors codex's own "Review a commit" picker
+// (recent_commits(cwd, 100)) — deliberately NOT a base..head range, so
+// a checkout sitting on the default branch still gets a list. A repo
+// with an unborn HEAD (no commits yet) is an empty answer, not an
+// error.
+func ListRecentCommits(ctx context.Context, workspace string, limit int) ([]Commit, error) {
+	if limit <= 0 || limit > maxListedCommits {
+		limit = maxListedCommits
+	}
+	if _, _, exitCode, err := runGit(ctx, workspace, nil, true,
+		"rev-parse", "--verify", "--quiet", "HEAD"); err != nil || exitCode != 0 {
+		if err != nil {
+			return nil, fmt.Errorf("gitdiff: verify HEAD: %w", err)
+		}
+		return []Commit{}, nil
+	}
+	commits, err := logRev(ctx, workspace, limit, "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("gitdiff: log HEAD: %w", err)
+	}
+	return commits, nil
+}
+
 func logCommitRange(ctx context.Context, workspace, base, head string) ([]Commit, error) {
-	stdout, _, _, err := runGit(ctx, workspace, nil, false,
-		"log", "--no-decorate", "--max-count="+strconv.Itoa(maxListedCommits),
-		"--pretty=format:%x00%H"+logFieldSep+"%h"+logFieldSep+"%an"+logFieldSep+"%at"+logFieldSep+"%s",
-		base+".."+head, "--")
+	commits, err := logRev(ctx, workspace, maxListedCommits, base+".."+head)
 	if err != nil {
 		return nil, fmt.Errorf("gitdiff: log %s..%s: %w", base, head, err)
+	}
+	return commits, nil
+}
+
+func logRev(ctx context.Context, workspace string, limit int, rev string) ([]Commit, error) {
+	stdout, _, _, err := runGit(ctx, workspace, nil, false,
+		"log", "--no-decorate", "--max-count="+strconv.Itoa(limit),
+		"--pretty=format:%x00%H"+logFieldSep+"%h"+logFieldSep+"%an"+logFieldSep+"%at"+logFieldSep+"%s",
+		rev, "--")
+	if err != nil {
+		return nil, err
 	}
 	return parseCommitLog(stdout)
 }

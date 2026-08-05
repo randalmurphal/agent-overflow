@@ -171,6 +171,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListProjects", ID: 2721360259},                         // main.App.ListProjects
 	{Name: "ListProposedPlanComments", ID: 2030403250},             // main.App.ListProposedPlanComments
 	{Name: "ListProviderAccounts", ID: 981125684},                  // main.App.ListProviderAccounts
+	{Name: "ListRecentCommits", ID: 1937809620},                    // main.App.ListRecentCommits
 	{Name: "ListRecentThreadItems", ID: 2604956482},                // main.App.ListRecentThreadItems
 	{Name: "ListRecentTurns", ID: 1083162294},                      // main.App.ListRecentTurns
 	{Name: "ListReleases", ID: 397986043},                          // main.App.ListReleases

@@ -541,7 +541,7 @@ describe('composer command menu', () => {
       setBindingMock('GitListBranches', async () => [
         { name: 'main', isCurrent: false, isDefault: true },
       ]);
-      setBindingMock('ListBranchCommits', async () => [
+      setBindingMock('ListRecentCommits', async () => [
         { sha: 'abc1234000', shortSha: 'abc1234', subject: 'Fix the parser', author: 'a', authoredAt: 0 },
       ]);
       const start = setBindingMock('StartCodexReview', async () => ({

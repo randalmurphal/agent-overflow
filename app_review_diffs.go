@@ -94,6 +94,34 @@ func (a *App) ListBranchCommits(threadID string, baseBranch string) ([]BranchCom
 	return commits, nil
 }
 
+// recentCommitLimit matches codex's own "Review a commit" picker
+// (recent_commits(cwd, 100)); the `/review` completion mirrors it.
+const recentCommitLimit = 100
+
+// ListRecentCommits returns the workspace's most recent commits (plain
+// `git log` from HEAD, newest first) — the same source codex's own
+// review picker uses, so a thread on the default branch still gets a
+// list. Empty for non-git workspaces.
+func (a *App) ListRecentCommits(threadID string) ([]BranchCommit, error) {
+	const action = "list recent commits"
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	_, workspace, err := a.resolveGitPaths(thread)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	if !gitdiff.IsGitRepository(context.Background(), workspace) {
+		return []BranchCommit{}, nil
+	}
+	commits, err := gitdiff.ListRecentCommits(context.Background(), workspace, recentCommitLimit)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	return commits, nil
+}
+
 // GetCommitDiff returns the unified patch a single local commit
 // introduced (first-parent diff; empty-tree diff for a root commit).
 func (a *App) GetCommitDiff(threadID string, sha string, ignoreWhitespace bool) (string, error) {

@@ -12,7 +12,7 @@
 //
 // Rendering lives in Composer.svelte / ComposerSlashPopover.
 
-import { GitListBranches, ListBranchCommits } from '../../stores/bindings';
+import { GitListBranches, ListRecentCommits } from '../../stores/bindings';
 import { getClaudeSkills, ensureClaudeSkills } from '../../stores/claudeSkills.svelte';
 import { getCodexSkills, ensureCodexSkills } from '../../stores/codexSkills.svelte';
 import {
@@ -205,14 +205,14 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
     if (reviewGit?.threadId === threadId) return;
     reviewGit = { threadId, branches: [], commits: [], loading: true, error: '' };
     try {
-      const branches = ((await GitListBranches(threadId)) ?? []) as GitBranch[];
-      // Commits are `base..HEAD` — the same list the review pane's per-commit
-      // selector shows, resolved against the repository's default branch.
-      // A thread sitting ON the default branch legitimately has none.
-      const base = branches.find((branch) => branch.isDefault)?.name ?? '';
-      const commits = base
-        ? (((await ListBranchCommits(threadId, base)) ?? []) as BranchCommit[])
-        : [];
+      // Commits are the workspace's recent commits (plain `git log` from
+      // HEAD) — the same source codex's own review picker uses — NOT the
+      // review pane's `base..HEAD` list, which is empty for a thread
+      // sitting on the default branch.
+      const [branches, commits] = await Promise.all([
+        GitListBranches(threadId).then((b) => (b ?? []) as GitBranch[]),
+        ListRecentCommits(threadId).then((c) => (c ?? []) as BranchCommit[]),
+      ]);
       if (pane.threadId !== threadId) return;
       reviewGit = { threadId, branches, commits, loading: false, error: '' };
     } catch (err) {

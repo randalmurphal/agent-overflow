@@ -412,6 +412,7 @@ export const ResetKeybindings = dispatch('ResetKeybindings');
 export const GetBranchBaseDiff = dispatch('GetBranchBaseDiff');
 export const GetWorkspaceCurrentDiff = dispatch('GetWorkspaceCurrentDiff');
 export const ListBranchCommits = dispatch('ListBranchCommits');
+export const ListRecentCommits = dispatch('ListRecentCommits');
 export const GetCommitDiff = dispatch('GetCommitDiff');
 export const ListThreadEditDiffs = dispatch('ListThreadEditDiffs');
 export const GetTurnEditsDiff = dispatch('GetTurnEditsDiff');

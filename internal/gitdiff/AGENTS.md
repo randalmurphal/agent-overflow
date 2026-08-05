@@ -14,7 +14,10 @@ constructors.
   `IsGitRepository` probe.
 - `commits.go` — `ListCommits` / `ListCommitsRange` (the per-commit
   selector rows, `base..head` newest first, capped at
-  `maxListedCommits`), `CommitDiff` (a single commit's patch:
+  `maxListedCommits`), `ListRecentCommits` (plain `git log` from HEAD,
+  merges included — codex's own review-picker source, backing the
+  `/review` commit completion; unborn HEAD is an empty answer),
+  `CommitDiff` (a single commit's patch:
   first-parent for merge commits — matching how GitHub/GitLab render a
   commit — `diff-tree --root` for a root commit), and
   `ShowFileAtCommit` (hunk-gap expansion when a commit is selected).

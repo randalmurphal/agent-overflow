@@ -1888,6 +1888,18 @@ export function ListProviderAccounts(): $CancellablePromise<$models.ManagedProvi
 }
 
 /**
+ * ListRecentCommits returns the workspace's most recent commits (plain
+ * `git log` from HEAD, newest first) — the same source codex's own
+ * review picker uses, so a thread on the default branch still gets a
+ * list. Empty for non-git workspaces.
+ */
+export function ListRecentCommits(threadID: string): $CancellablePromise<$models.BranchCommit[]> {
+    return $Call.ByID(1937809620, threadID).then(($result: any) => {
+        return $$createType78($result);
+    });
+}
+
+/**
  * ListRecentThreadItems loads a broad recent tail window. Active chat panes
  * use ListThreadSliceAround for bounded switch/refresh loads; this method is
  * retained for legacy callers and any future full-tail refresh surfaces.

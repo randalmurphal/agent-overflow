@@ -264,6 +264,7 @@ export {
   GetBranchBaseDiff,
   GetWorkspaceCurrentDiff,
   ListBranchCommits,
+  ListRecentCommits,
   GetCommitDiff,
   GetDiffContextLines,
   VerifyEditDiffs,

@@ -671,6 +671,7 @@ func (p *privilegedApp) GetBranchBaseDiff() string              { return "ok" }
 func (p *privilegedApp) GetWorkingTreeDiff() string             { return "ok" }
 func (p *privilegedApp) GetWorkspaceCurrentDiff() string        { return "ok" }
 func (p *privilegedApp) ListBranchCommits() string              { return "ok" }
+func (p *privilegedApp) ListRecentCommits() string              { return "ok" }
 func (p *privilegedApp) GetCommitDiff() string                  { return "ok" }
 func (p *privilegedApp) ListPRCommits() string                  { return "ok" }
 func (p *privilegedApp) GetPRCommitDiff() string                { return "ok" }
