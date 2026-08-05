@@ -194,6 +194,19 @@ export function interceptedCommandEntry(command: InterceptedCommandDef): Compose
   };
 }
 
+/**
+ * Claude commands hidden from the MENU, never from send classification —
+ * a hand-typed `/color` still sends as a provider command. These drive the
+ * CLI's own terminal UI, so in AO their effect is invisible: `/color`
+ * (theme), `/agents` (interactive agent editor), `/extra-usage` (display
+ * toggle). The dunder prefix covers the CLI's internal entries.
+ */
+const HIDDEN_PROVIDER_COMMANDS = new Set(['color', 'agents', 'extra-usage']);
+
+export function isHiddenProviderCommand(name: string): boolean {
+  return name.startsWith('__') || HIDDEN_PROVIDER_COMMANDS.has(name);
+}
+
 export function providerCommandEntry(command: SlashCommand): ComposerCommandEntry {
   return {
     kind: 'provider',
@@ -291,7 +304,7 @@ export function buildCommandSections(sources: CommandMenuSources): ComposerComma
 
   const staticCommands = mergeStaticClaudeCommands(sources.probeCommands, sources.claudeSkills);
   const commands = unionProviderCommands(sources.sessionCommands, staticCommands)
-    .filter((command) => !shadowed.has(command.name))
+    .filter((command) => !shadowed.has(command.name) && !isHiddenProviderCommand(command.name))
     .map(providerCommandEntry);
   if (commands.length > 0) {
     sections.push({ id: 'provider', header: 'Provider commands', entries: commands });

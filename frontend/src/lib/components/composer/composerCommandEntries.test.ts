@@ -158,6 +158,24 @@ describe('buildCommandSections', () => {
     expect(skills[1].disabledReason).toBeTruthy();
   });
 
+  it('hides CLI-terminal-UI commands and dunder internals from the menu only', () => {
+    const sections = buildCommandSections({
+      ...base,
+      probeCommands: [
+        cmd('usage', 'Show usage'),
+        cmd('color', 'Change the theme'),
+        cmd('agents', 'Manage agent configurations'),
+        cmd('extra-usage', 'Toggle extra usage'),
+        cmd('__internal', 'Reserved'),
+      ],
+    });
+    const names = flattenSections(sections).map((e) => e.name);
+    expect(names).toContain('usage');
+    for (const hidden of ['color', 'agents', 'extra-usage', '__internal']) {
+      expect(names).not.toContain(hidden);
+    }
+  });
+
   it('shows filesystem-enumerated Claude skills as provider rows pre-session', () => {
     const sections = buildCommandSections({
       ...base,
