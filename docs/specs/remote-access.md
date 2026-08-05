@@ -553,7 +553,10 @@ declared properties: **listener** (which port/origin), **principal tiers
 admitted**, **required scope**, **content-type posture**. The
 enumeration is code, not prose, and a CI gate fails the build when a
 route, event channel, or listener exists without an entry — the same
-fail-closed pattern the method table uses.
+fail-closed pattern the method table uses. The enumeration and gate
+land with phase 0 covering HTTP routes, listeners, and content origins,
+so every later phase builds against the gate; the RPC-method and
+event-channel classes join in phase 3 when the scope table generates.
 
 Classes to enumerate:
 
@@ -648,12 +651,23 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    bypassing `transformUrl`), an anchor-navigation guard, `/design/`
    hardening (origin/content-type posture, response headers, symlink
    containment via `os.OpenRoot` as `internal/safecopy` already does,
-   per-thread scoping, no directory listing), a baseline CSP, moving the
-   transport token out of `sessionStorage` and off
-   `window.__AO_BOOTSTRAP__`, `safeExternalURL` on the two unvalidated
-   `PRStep.svelte` hrefs, and either using or dropping the unused
-   `dompurify` dependency. Tests for `/`- and `//`-leading hrefs, and a
-   correction to the false claim in `frontend/CLAUDE.md`.
+   per-thread scoping, no directory listing), and a baseline CSP —
+   strict in production, relaxed in dev (the Vite dev server injects
+   inline styles regardless of HMR, so the split is not an HMR
+   concession; disabling HMR is an independent preference). The boot
+   credential moves out of script reach entirely: bootstrap exchanges
+   the one-time `?t=` URL token for an HttpOnly cookie, strips the
+   token from the URL, and the WS upgrade authenticates via cookie
+   plus the §7 Origin allow-list — deleting the `sessionStorage` copy
+   and `window.__AO_BOOTSTRAP__`. This is the same channel that
+   carries session credentials from phase 2 on, not a stopgap. Also:
+   `safeExternalURL` on the two unvalidated `PRStep.svelte` hrefs,
+   either using or dropping the unused `dompurify` dependency, tests
+   for `/`- and `//`-leading hrefs, a correction to the false claim in
+   `frontend/CLAUDE.md`, and the §13 surface enumeration + CI gate
+   seeded with HTTP routes, listeners, and content origins (the
+   RPC-method and event-channel columns join in phase 3 when the scope
+   table generates).
 
 1. **Sync sweep + seams.** Emits, channels, gap entries, race handling,
    device attribution column, thread branch/remote/head recording,
@@ -716,4 +730,9 @@ Each phase leaves `make check` green.
 
 Settled in review: approvals are never gated on the owner's own devices;
 terminal access is not withheld from native clients by device class;
-scope narrowing is per-device and opt-in, never imposed.
+scope narrowing is per-device and opt-in, never imposed; the boot
+credential rides an HttpOnly cookie with an Origin-checked WS upgrade
+from phase 0 rather than deferring that shape to the session work; the
+CSP is strict in production and relaxed in dev, with HMR removal an
+independent preference rather than a CSP prerequisite; the surface
+enumeration gate lands in phase 0, not phase 3.
