@@ -192,7 +192,11 @@ func isDefaultBranchName(branchName, defaultBranch string) bool {
 	return strings.HasSuffix(branchName, "/"+defaultBranch)
 }
 
-func (c *Core) defaultBranchName(cwd string) (string, error) {
+// readDefaultBranchName resolves the branch refs/remotes/origin/HEAD
+// points at, or "" when the symref does not exist. Callers go through
+// defaultBranchName (repo_meta_cache.go), which fronts this read with the
+// per-repository TTL cache.
+func (c *Core) readDefaultBranchName(cwd string) (string, error) {
 	result, err := c.run(cwd, "symbolic-ref", "refs/remotes/origin/HEAD")
 	if err != nil {
 		return "", err

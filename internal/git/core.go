@@ -177,6 +177,15 @@ type Core struct {
 	commonDirCacheMu sync.RWMutex
 	commonDirCache   map[string]string
 
+	// repoMetaMu guards the two repo-metadata probe caches below, both
+	// keyed by canonical git common dir and TTL'd via repoMetaTTL (see
+	// repo_meta_cache.go). They keep baseStatus's per-refresh
+	// default-branch and origin-remote probes from spawning a subprocess
+	// each on every gitwatch debounce edge.
+	repoMetaMu         sync.RWMutex
+	defaultBranchCache map[string]repoMetaEntry[string]
+	originCache        map[string]repoMetaEntry[originIdentity]
+
 	// fetchCache records the last time a `git fetch` succeeded against a
 	// given repository, whoever ran it (MaybeFetchRemotes,
 	// FetchRemotesBackground, PruneRemotes). Keyed by the CANONICAL GIT
@@ -230,6 +239,9 @@ func NewCore() *Core {
 		forgeCache:     make(map[string]forgeCacheEntry),
 		gitDirCache:    make(map[string]string),
 		commonDirCache: make(map[string]string),
+
+		defaultBranchCache: make(map[string]repoMetaEntry[string]),
+		originCache:        make(map[string]repoMetaEntry[originIdentity]),
 		fetchCache:     make(map[string]time.Time),
 		untrackedLines: make(map[string]*untrackedLineCache),
 		nowFn:          time.Now,

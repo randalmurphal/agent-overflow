@@ -88,6 +88,15 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   bridge (2.4s serial vs 0.6s fanned out there; 14ms vs 6ms on ext4).
 - `status_branches.go` — `GitBranch` shape, branch-list parsing,
   default-branch helpers, and remote-name helpers.
+- `repo_meta_cache.go` — per-repository TTL cache (5 min, keyed by the
+  canonical git common dir so worktrees share one entry) fronting the
+  two repo-config probes `baseStatus` runs on every refresh:
+  `defaultBranchName` (`symbolic-ref refs/remotes/origin/HEAD`) and
+  `originRemote` (`remote get-url origin`). Positive answers only —
+  a missing symref or unknown origin is re-probed every call so a repo
+  gaining origin/HEAD or an origin remote is seen immediately.
+  `InvalidateForgeCache` drops these entries alongside the
+  classification derived from them.
 - `status_pr_cache.go` — open-PR lookup cache used by `Status` /
   `StatusFast`; `InvalidatePRCache` lives here too. A failed forge
   lookup keeps serving the branch's last successfully-read PR next to
@@ -148,8 +157,9 @@ status, diff, branches, commits, worktrees, and PR/MR creation.
   `originIdentity` it was derived from — `status_pr_cache.go` reads that
   identity back via `cachedOrigin` instead of re-shelling `git remote
   get-url`. Public `Core.InvalidateForgeCache(cwd)` drops the cached
-  entry so callers that know the origin URL just changed can skip the
-  TTL window.
+  entry — plus the repo-meta entries (`repo_meta_cache.go`) the
+  classification was derived from — so callers that know the origin URL
+  just changed can skip the TTL window.
 - `github.go` — `githubForge` implementation backed by the `gh` CLI;
   thin `Core.CreatePR` / `Core.ListOpenPRs` wrappers that dispatch
   through `forgeFor`. Every `--json` field list in this file is governed

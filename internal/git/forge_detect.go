@@ -36,10 +36,12 @@ func (o originIdentity) retargets(other originIdentity) bool {
 	return o.known && other.known && o.url != other.url
 }
 
-// originRemote runs `git remote get-url origin` and reports the URL. The
-// returned identity is unknown when the cwd has no "origin" remote, is not
-// a repository, or git failed for any other reason.
-func (c *Core) originRemote(cwd string) originIdentity {
+// readOriginRemote runs `git remote get-url origin` and reports the URL.
+// The returned identity is unknown when the cwd has no "origin" remote, is
+// not a repository, or git failed for any other reason. Callers go through
+// originRemote (repo_meta_cache.go), which fronts this read with the
+// per-repository TTL cache.
+func (c *Core) readOriginRemote(cwd string) originIdentity {
 	result, err := c.run(cwd, "remote", "get-url", "origin")
 	if err != nil || result.exitCode != 0 {
 		return originIdentity{}
@@ -108,15 +110,17 @@ func (c *Core) cachedOrigin(cwd string) originIdentity {
 	return originIdentity{}
 }
 
-// InvalidateForgeCache drops the cached forge classification for cwd.
-// Use after a known origin-URL change (e.g., the user reconfigured
-// their remote and clicked Refresh) so the next DetectForge / Status
-// call re-runs `git remote get-url origin` rather than waiting up to
-// forgeDetectionTTL for the cached value to expire.
+// InvalidateForgeCache drops the cached forge classification for cwd,
+// together with the cached origin identity and default branch it was
+// derived from. Use after a known origin-URL change (e.g., the user
+// reconfigured their remote and clicked Refresh) so the next DetectForge
+// / Status call re-runs `git remote get-url origin` rather than waiting
+// up to forgeDetectionTTL / repoMetaTTL for the cached values to expire.
 func (c *Core) InvalidateForgeCache(cwd string) {
 	c.forgeCacheMu.Lock()
-	defer c.forgeCacheMu.Unlock()
 	delete(c.forgeCache, cwd)
+	c.forgeCacheMu.Unlock()
+	c.invalidateRepoMeta(cwd)
 }
 
 // InvalidateAllForgeCache drops every cached forge classification.
