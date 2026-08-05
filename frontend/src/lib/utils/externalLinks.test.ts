@@ -239,6 +239,9 @@ describe('loopbackDevServerURL', () => {
     expect(loopbackDevServerURL('https://example.com/')).toBeNull();
     expect(loopbackDevServerURL('http://192.168.1.24:5173/')).toBeNull();
     expect(loopbackDevServerURL('http://localhost.example.com/')).toBeNull();
+    // A name that merely STARTS with "127." is a resolvable public
+    // domain, not a loopback address.
+    expect(loopbackDevServerURL('http://127.example.com/')).toBeNull();
     expect(loopbackDevServerURL('ws://localhost:5173/hmr')).toBeNull();
     expect(loopbackDevServerURL('javascript:alert(1)')).toBeNull();
   });

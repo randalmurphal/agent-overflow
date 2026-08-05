@@ -9,6 +9,13 @@ import (
 // startup ("Local: http://localhost:5173") so a command row can offer an
 // "open in browser" affordance without the user expanding the output.
 //
+// This scan is a CANDIDATE generator, not proof a server exists —
+// output that merely mentions a loopback URL (a `tail` of a file
+// containing one) matches identically. The frontend gates the chip on
+// ProbeDevServerURL (internal/devserverprobe), which confirms a
+// listener on the port; textual filters here only need to pick the
+// right candidate, never to prove liveness.
+//
 // This runs inside ExtractCommandOutputMeta, which already makes one full
 // pass over the same bytes (strings.Count for lineCount). The scan below
 // is a second single pass anchored on strings.Index(…, "://") — no regex,

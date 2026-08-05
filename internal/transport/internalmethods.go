@@ -528,6 +528,17 @@ var LocalOnlyMethods = map[string]bool{
 	// read companion keeps the token off the LAN regardless of which
 	// direction the call comes from.
 	"GetNetworkSettings": true,
+	// ProbeDevServerURL TCP-dials a loopback port on the backend host to
+	// gate the dev-server chip. Wire-reachable it would be a loopback
+	// port-scan oracle (which local services exist, one call per port) —
+	// the same host-fingerprinting shape as the enumeration entries
+	// above. The UX cost is nil: a remote viewer's localhost is not this
+	// machine, so a chip it cannot verify is a chip that would open the
+	// wrong host. Like every entry here, loopback classification assumes
+	// the SPA origin is not model-writable; the open /design/ origin-
+	// isolation defect (docs/specs/remote-access.md §16 phase 0) is the
+	// gate that makes that assumption real.
+	"ProbeDevServerURL": true,
 
 	// 7. WSL inventory / preference. ListWSLDistros spawns wsl.exe per
 	// invocation — that's an external-process invocation under category 1

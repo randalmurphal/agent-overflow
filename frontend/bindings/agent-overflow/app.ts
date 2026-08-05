@@ -2304,6 +2304,22 @@ export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo>
 }
 
 /**
+ * ProbeDevServerURL reports whether something is currently listening on
+ * the loopback URL a command row's meta announced. Triage's textual
+ * detection (internal/triage/dev_server_url.go) proves only that the
+ * output mentioned the URL — a `cat` of a file containing
+ * "http://localhost:5173" produces the same meta as a Vite banner — so
+ * the DevServerChip calls this before rendering, and the "open in
+ * browser" affordance is offered only while a server is actually
+ * reachable. Loopback-only on the wire: the answer is a port-scan
+ * oracle for the backend host, and a remote viewer's localhost is not
+ * this machine anyway.
+ */
+export function ProbeDevServerURL(rawURL: string): $CancellablePromise<boolean> {
+    return $Call.ByID(3448359500, rawURL);
+}
+
+/**
  * ProjectDeletionPreview reports what deleting a project would do on the
  * workflow side. It runs read-only SQLite and git queries and mutates nothing.
  * 

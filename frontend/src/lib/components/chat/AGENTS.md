@@ -99,18 +99,32 @@ Use these pane registries instead of local row state:
 - `pane.activityRuns` for a run's collapse override, inner scroll position,
   mount window, and pending jump focus (see "Activity Runs" below).
 
-`CommandOutput.svelte` holds one deliberate piece of row-local state,
-`detectedDevServerURL`, and it is NOT an exception to the rule above.
-`payloadMeta.devServerUrl` (see `internal/triage/dev_server_url.go`) is
-rebuilt from each 100ms flush window while a command streams, so a startup
-banner is only present in the window that carried it; the completion
-rebuild recomputes it over the cumulative output and persists it. The row
-holds the first detection so the `DevServerChip` cannot blink out the
-moment the server logs its first request. That is last-known-value
-smoothing of a jittering SERVER field, not remembered user intent — a
-windowing remount mid-run re-reads whatever meta currently says and the
-persisted value takes over at settle, so nothing is durably lost. Do not
-copy this shape for anything a reader chose.
+`CommandOutput.svelte` holds two deliberate pieces of row-local state,
+`detectedDevServerURL` and `confirmedDevServerURL`, and they are NOT an
+exception to the rule above. `payloadMeta.devServerUrl` (see
+`internal/triage/dev_server_url.go`) is rebuilt from each 100ms flush
+window while a command streams, so a startup banner is only present in
+the window that carried it; the completion rebuild recomputes it over
+the cumulative output and persists it. The row holds the first detection
+so the `DevServerChip` cannot blink out the moment the server logs its
+first request. That is last-known-value smoothing of a jittering SERVER
+field, not remembered user intent — a windowing remount mid-run re-reads
+whatever meta currently says and the persisted value takes over at
+settle, so nothing is durably lost. Do not copy this shape for anything
+a reader chose. The chip itself renders only from
+`confirmedDevServerURL`: detection proves the output MENTIONED a
+loopback URL, so the row asks the backend to confirm a listener
+(`utils/devServerProbe.ts` → `ProbeDevServerURL`; the backend owns the
+verdict TTLs). While the command runs, an unconfirmed candidate
+re-probes on a bounded fast cadence and a confirmed one is re-verified
+on a slower one, retracting the chip if its server dies mid-run; a
+candidate moving to a different URL deliberately does not retract a
+confirmed chip (the settle rebuild recomputes the candidate as the
+first URL in cumulative output, so a mere mention of another loopback
+URL must not blank a verified chip). A settle stops rescheduling — the
+last pending tick is the final probe — and a remount re-asks the
+backend, so a chip for a dead server does not come back (modulo the
+backend's short live-verdict TTL).
 
 Payload bytes go through `utils/payloadDataCache.ts`, keyed by
 `(threadId, payloadId, version)` and byte-bounded by its LRU. Per-pane

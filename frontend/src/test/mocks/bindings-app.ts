@@ -249,6 +249,7 @@ export class WSLDistro {
 // the real generated classes — only the RPC functions need stubs.
 export const OpenInEditor = dispatch('OpenInEditor');
 export const OpenExternalURL = dispatch('OpenExternalURL');
+export const ProbeDevServerURL = dispatch('ProbeDevServerURL');
 export const ListAvailableEditors = dispatch('ListAvailableEditors');
 export const GetEditorSettings = dispatch('GetEditorSettings');
 export const SetEditorSettings = dispatch('SetEditorSettings');

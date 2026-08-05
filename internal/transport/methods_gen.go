@@ -199,6 +199,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "PrepareThreadWorktree", ID: 2870364785},                // main.App.PrepareThreadWorktree
 	{Name: "ProbeClaudeAccount", ID: 1313986574},                   // main.App.ProbeClaudeAccount
 	{Name: "ProbeCodexAccount", ID: 2614227175},                    // main.App.ProbeCodexAccount
+	{Name: "ProbeDevServerURL", ID: 3448359500},                    // main.App.ProbeDevServerURL
 	{Name: "ProjectDeletionPreview", ID: 2575010484},               // main.App.ProjectDeletionPreview
 	{Name: "ProviderTerminalAttach", ID: 1393518281},               // main.App.ProviderTerminalAttach
 	{Name: "ProviderTerminalDetach", ID: 2584141779},               // main.App.ProviderTerminalDetach

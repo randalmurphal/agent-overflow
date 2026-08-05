@@ -619,6 +619,7 @@ func (p *privilegedApp) ProviderTerminalRefresh() string        { return "ok" }
 func (p *privilegedApp) ProviderTerminalSetControl() string     { return "ok" }
 func (p *privilegedApp) OpenInEditor() string                   { return "ok" }
 func (p *privilegedApp) OpenExternalURL() string                { return "ok" }
+func (p *privilegedApp) ProbeDevServerURL() string              { return "ok" }
 func (p *privilegedApp) BrowseDirectory() string                { return "ok" }
 func (p *privilegedApp) SavePayloadToFile() string              { return "ok" }
 func (p *privilegedApp) WriteThreadWorkspaceFile() string       { return "ok" }

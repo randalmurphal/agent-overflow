@@ -116,7 +116,12 @@ function handleExternalLinkClick(event: MouseEvent): void {
 
 function isLoopbackHostname(hostname: string): boolean {
   const host = hostname.toLowerCase();
-  return host === 'localhost' || host === '::1' || host === '[::1]' || host.startsWith('127.');
+  if (host === 'localhost' || host === '::1' || host === '[::1]') return true;
+  // A full dotted-quad match, not a `127.` prefix — `127.example.com`
+  // is a resolvable public name, not a loopback address. Shorthand
+  // forms (`127.1`) never reach here: WHATWG URL parsing normalizes
+  // IPv4 hosts to the dotted quad before `.hostname` is read.
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
 
 function currentHostname(): string {

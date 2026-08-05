@@ -138,6 +138,10 @@ export {
   GetEditorSettings,
   SetEditorSettings,
 
+  // Liveness gate for the dev-server chip: loopback-only on the wire,
+  // so a remote session's probe fails and the chip stays hidden there.
+  ProbeDevServerURL,
+
   // Remote endpoint storage. Token-redacted Summary on every read
   // path; explicit GetRemoteEndpointToken for the copy-launch-command
   // flow. See app_remote.go for the threat model.

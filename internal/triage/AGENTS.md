@@ -169,7 +169,11 @@ none fits.
   The `devServerUrl` field inherits `command_output` meta's streaming
   behavior: it reflects the current flush window while the row streams
   and becomes cumulative at the completion rebuild, so the row smooths
-  it (see the chat area guide).
+  it (see the chat area guide). Detection is a CANDIDATE generator, not
+  proof a server exists — output that merely mentions a loopback URL
+  (a `tail` of a test file) carries the same meta as a startup banner.
+  The frontend renders the chip only after `ProbeDevServerURL`
+  (`internal/devserverprobe`) confirms a listener on the port.
 - `maps.go` — generic map utilities (currently just `deleteByPrefix`).
 
 ## Routing table
