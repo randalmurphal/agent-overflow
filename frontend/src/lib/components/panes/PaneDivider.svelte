@@ -226,6 +226,12 @@
       dragging ? 'bg-accent/60' : 'bg-border-subtle/30 group-hover:bg-accent/40',
     ].join(' ')}
   ></div>
-  <!-- Widened invisible hit area; the visible strip stays slim. -->
-  <div class={['absolute inset-y-0 w-3 touch-none', rightPaneId ? '-left-1.5' : '-left-3'].join(' ')}></div>
+  <!-- Widened invisible hit area; the visible strip stays slim. The end
+       handle's is half-width: an interior divider centers 12px on the
+       boundary so only 6px land on the left pane, but the end handle has
+       no right side — a full 12px extending leftward would blanket the
+       last pane's 10px scrollbar (app.css ::-webkit-scrollbar) and make
+       it unclickable. 6px matches the overlap every interior divider
+       already imposes, which leaves the thumb's inner half reachable. -->
+  <div class={['absolute inset-y-0 -left-1.5 touch-none', rightPaneId ? 'w-3' : 'w-1.5'].join(' ')}></div>
 </div>
