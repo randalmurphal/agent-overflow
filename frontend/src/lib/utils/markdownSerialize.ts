@@ -331,20 +331,32 @@ function serializePre(el: HTMLElement): string {
   // to mislead the clipboard result.
   const mermaidSource = el.dataset.mermaidSource;
   if (mermaidSource !== undefined && el.querySelector(':scope > svg')) {
-    return `\`\`\`mermaid\n${mermaidSource}\n\`\`\`\n\n`;
+    return fencedBlock('mermaid', mermaidSource);
   }
   // Code block (Shiki-highlighted or plain). The <code> textContent
   // is the raw program source either way; Shiki wraps in token spans
   // but textContent walks through them.
   const code = el.querySelector(':scope > code');
   if (code) {
-    const lang = languageFromCodeClass(code.className);
-    const text = code.textContent ?? '';
-    return `\`\`\`${lang}\n${text}\n\`\`\`\n\n`;
+    return fencedBlock(languageFromCodeClass(code.className), code.textContent ?? '');
   }
   // No <code> child — emit the pre's text under an unlabelled fence.
-  const text = el.textContent ?? '';
-  return `\`\`\`\n${text}\n\`\`\`\n\n`;
+  return fencedBlock('', el.textContent ?? '');
+}
+
+function fencedBlock(lang: string, text: string): string {
+  // Like the inline-code path, the fence must be longer than the
+  // longest backtick run in the content (CommonMark: a shorter run
+  // inside an N-length fence is content) — a block holding a markdown
+  // example with its own ``` would otherwise close ours early.
+  // Only line-leading runs can close a fence, so mid-line ``` in prose
+  // examples doesn't force a longer one.
+  const longestRun = (text.match(/^[ \t]*`{3,}/gm) ?? []).reduce(
+    (max, run) => Math.max(max, run.trimStart().length),
+    0,
+  );
+  const fence = '`'.repeat(Math.max(3, longestRun + 1));
+  return `${fence}${lang}\n${text}\n${fence}\n\n`;
 }
 
 function languageFromCodeClass(className: string): string {

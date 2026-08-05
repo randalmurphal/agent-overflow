@@ -316,6 +316,26 @@ describe('serializeRangeToMarkdown — code blocks', () => {
     expect(serializeRangeToMarkdown(selectAll(host))).toBe('```\nraw\ntext\n```');
   });
 
+  it('escalates the block fence past line-leading ``` runs in the content', () => {
+    const host = asMarkdownBody(
+      '<pre><code class="language-markdown">```js\nlet x;\n```</code></pre>',
+    );
+    // A three-backtick fence would be closed early by the content's own
+    // ```; the emitted fence must be longer.
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe(
+      '````markdown\n```js\nlet x;\n```\n````',
+    );
+  });
+
+  it('keeps a three-backtick fence when ``` only appears mid-line', () => {
+    const host = asMarkdownBody(
+      '<pre><code>use ``` to fence code</code></pre>',
+    );
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe(
+      '```\nuse ``` to fence code\n```',
+    );
+  });
+
   it('strips per-pre CopyButton mounts from output', () => {
     // markdownEnhance injects [data-code-copy-mount] inside <pre>.
     // The serializer must skip that chrome.
