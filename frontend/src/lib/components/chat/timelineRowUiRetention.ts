@@ -109,7 +109,7 @@ export function collectTimelineRowUiRetention(
 
   return {
     itemIds: retained.itemIds,
-    payloads: retained.payloads.values(),
+    payloads: [...retained.payloads.values()],
     groupKeys: retained.groupKeys,
   };
 }

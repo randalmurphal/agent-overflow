@@ -6219,6 +6219,12 @@ describe('createThreadPane', () => {
         expect(pane.items[0].summary).toBe(fullText.slice(-400));
         expect(pane.items[0].status).toBe('completed');
         expect(clock.pendingCount()).toBe(0);
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        // The onReveal auto-cleanup settles RETAINING the tail: the
+        // extending summary drained fully, so the full final text keeps
+        // serving past the settle (content-consistent with the trimmed
+        // summary recorded above).
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe(fullText);
       } finally {
         __setSmoothingClockForTest(undefined);
       }
@@ -6421,12 +6427,15 @@ describe('createThreadPane', () => {
       }
     });
 
-    it('clears the live thinking tail when the smoother disposes on completion', async () => {
-      // Once the stream settles the smoother auto-disposes; the live
-      // tail map entry must drop with it so ThinkingBlock falls back to
-      // `item.summary` (the persisted trimmed tail) for the settled
-      // row. A stranded live-tail entry would keep the collapsed view
-      // showing the full pre-settle text indefinitely.
+    it('retains the live thinking tail when the smoother disposes on completion', async () => {
+      // Once the stream settles the smoother auto-disposes, but the live
+      // tail entry is RETAINED: the collapsed clamp is rendering exactly
+      // that string, and swapping to the trimmed summary at settle
+      // re-wraps the visible 3 lines in front of the reader (wrap
+      // depends on where the string starts; the trim starts
+      // mid-sentence). The offscreen row-UI prune bounds the retention
+      // (see the prune test below) — settle-time is the one moment the
+      // swap must NOT happen.
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);
       try {
@@ -6463,7 +6472,13 @@ describe('createThreadPane', () => {
         let safety = 500;
         while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
         expect(pane.items[0].status).toBe('completed');
-        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+        // Smoother disposed (the resource cleanup the settle owes) …
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        // … but the tail is retained byte-identical to the last reveal,
+        // and diverges from the trimmed summary (fullText > 400 runes),
+        // proving the collapsed render did not swap sources at settle.
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe(fullText);
+        expect(pane.items[0].summary.length).toBeLessThan(fullText.length);
       } finally {
         __setSmoothingClockForTest(undefined);
       }
@@ -6478,11 +6493,12 @@ describe('createThreadPane', () => {
       // extend-or-snap branch (no summary). The `onReveal` auto-cleanup
       // at the smoother factory site only runs on a subsequent rAF
       // tick, so a smoother that's already caught up by the time the
-      // patch lands would never re-fire — the `itemSmoothers` and
-      // `itemLiveThinkingTail` entries leaked until the next thread
-      // switch, keeping the collapsed ThinkingBlock pinned to the
-      // pre-settle live text instead of falling back to the persisted
-      // summary.
+      // patch lands would never re-fire — the `itemSmoothers` entry
+      // (and its zombie rAF scheduling) leaked until the next thread
+      // switch. The live TAIL, by contrast, is deliberately retained on
+      // this content-consistent settle: the leak's harm was the
+      // undisposed smoother, and the retained string is what keeps the
+      // collapsed clamp from re-wrapping at the settle boundary.
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);
       try {
@@ -6520,13 +6536,633 @@ describe('createThreadPane', () => {
         });
 
         expect(pane.items[0].status).toBe('completed');
-        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe('reasoning text ');
         // Drain again to confirm no zombie rAF ticks (a fresh tick
-        // after a leak would re-populate the live tail and re-fire
-        // onReveal against the disposed slot).
+        // after a leak would re-fire onReveal against the disposed
+        // slot); the retained tail must stay byte-stable through it.
         safety = 20;
         while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe('reasoning text ');
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('drops the retained tail when a snap-status patch overwrites the summary', async () => {
+      // Tail retention is for content-consistent settles ONLY. A
+      // kill/error patch rewrites the summary (e.g. an "[interrupted] "
+      // prefix); a retained tail would keep the collapsed clamp showing
+      // the pre-patch text and mask the authoritative summary.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-snap-drop' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-snap-drop',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
+        pane.applyItemDelta({
+          threadId: 'thread-snap-drop',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'partial reasoning ',
+          updatedAt: 2,
+        });
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.liveThinkingTailForItem('think:0:0')).not.toBeNull();
+
+        pane.applyItemPatch({
+          threadId: 'thread-snap-drop',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: {
+            status: 'killed',
+            summary: '[interrupted] partial reasoning ',
+            updatedAt: 3,
+          },
+        });
+
+        expect(pane.items[0].summary).toBe('[interrupted] partial reasoning ');
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
         expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('drops a retained tail when the settled row is removed', async () => {
+      // Guards the dispose-order fix: a settled row has a retained tail
+      // but NO smoother, and disposeSmootherFor used to early-return on
+      // the missing smoother before touching the tail map — a removal
+      // after settle would have leaked the string until thread switch.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-remove-tail' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-remove-tail',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
+        pane.applyItemDelta({
+          threadId: 'thread-remove-tail',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'settled reasoning ',
+          updatedAt: 2,
+        });
+        pane.applyItemPatch({
+          threadId: 'thread-remove-tail',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', updatedAt: 3 },
+        });
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(pane.liveThinkingTailForItem('think:0:0')).not.toBeNull();
+
+        pane.removeItemById('think:0:0');
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('prunes retained tails offscreen, never live ones', async () => {
+      // The offscreen row-UI prune is what bounds tail retention. A
+      // settled tail outside the retention set drops; a STREAMING row's
+      // tail survives regardless of retention — the live reveal owns it.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-tail-prune' }));
+        for (const [itemIndex, id] of (['think:0:0', 'think:0:1'] as const).entries()) {
+          pane.upsertItem(
+            makeItem({
+              id,
+              threadId: 'thread-tail-prune',
+              turnIndex: 0,
+              itemIndex,
+              kind: 'thinking',
+              role: 'assistant',
+              status: 'streaming',
+              summary: '',
+              payloadId: `thinking:${id}`,
+              updatedAt: 1,
+            }),
+          );
+        }
+        // Settle the first row (tail retained, smoother gone).
+        pane.applyItemDelta({
+          threadId: 'thread-tail-prune',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'first reasoning ',
+          updatedAt: 2,
+        });
+        pane.applyItemPatch({
+          threadId: 'thread-tail-prune',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', updatedAt: 3 },
+        });
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        // Stream the second row and drain: the smoother catches up but
+        // stays LIVE (no terminal status arrived), so its tail is owned
+        // by the reveal, not the settled map.
+        pane.applyItemDelta({
+          threadId: 'thread-tail-prune',
+          itemId: 'think:0:1',
+          kind: 'thinking',
+          delta: 'second reasoning ',
+          updatedAt: 4,
+        });
+        safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe('first reasoning ');
+        expect(pane.liveThinkingTailForItem('think:0:1')).toBe('second reasoning ');
+
+        // Retention keeps the settled row → both tails survive.
+        pane.pruneRowUiState({ itemIds: new Set(['think:0:0']), payloads: [], groupKeys: new Set() });
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe('first reasoning ');
+        expect(pane.liveThinkingTailForItem('think:0:1')).toBe('second reasoning ');
+
+        // Empty retention: the settled tail drops; the live one is owned
+        // by its smoother and must survive.
+        pane.pruneRowUiState({ itemIds: new Set(), payloads: [], groupKeys: new Set() });
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+        expect(pane.liveThinkingTailForItem('think:0:1')).toBe('second reasoning ');
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('invalidates a retained tail when a terminal re-upsert rewrites the summary', async () => {
+      // THE consistency case retention must survive: triage re-persists
+      // a completed thinking row when a late content-present stop's
+      // text differs (persistOrUpdateCompletedThinkingItem), and that
+      // upsert lands on a row that already settled — no smoother, no
+      // reconcile entry, nothing writer-side to notice. The read-time
+      // validation in liveThinkingTailFor is what catches it: the
+      // summary recorded at settle no longer matches the row, so the
+      // stale tail must stop being served.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-divergent-upsert' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-divergent-upsert',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
+        pane.applyItemDelta({
+          threadId: 'thread-divergent-upsert',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'original reasoning ',
+          updatedAt: 2,
+        });
+        pane.applyItemPatch({
+          threadId: 'thread-divergent-upsert',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', updatedAt: 3 },
+        });
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe('original reasoning ');
+
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-divergent-upsert',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'completed',
+            summary: 'authoritative rewritten reasoning',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 4,
+          }),
+        );
+        expect(pane.items[0].summary).toBe('authoritative rewritten reasoning');
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('invalidates a retained tail when a correction patch rewrites the settled summary', async () => {
+      // Same consistency story as the re-upsert test, through the patch
+      // path: a post-settle correction rewrites items[].summary with no
+      // smoother alive to observe it.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-divergent-patch' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-divergent-patch',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
+        pane.applyItemDelta({
+          threadId: 'thread-divergent-patch',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'settled reasoning ',
+          updatedAt: 2,
+        });
+        pane.applyItemPatch({
+          threadId: 'thread-divergent-patch',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', updatedAt: 3 },
+        });
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe('settled reasoning ');
+
+        pane.applyItemPatch({
+          threadId: 'thread-divergent-patch',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { summary: 'corrected reasoning', updatedAt: 4 },
+        });
+        expect(pane.items[0].summary).toBe('corrected reasoning');
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('keeps serving a retained tail through a consistent summary re-assert', async () => {
+      // The validation must be a consistency check, not a
+      // one-shot fuse: a patch that re-asserts the SAME summary the
+      // settle recorded (Claude terminal replays do this) leaves the
+      // rendered string untouched, so the tail keeps serving.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-reassert' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-reassert',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
+        pane.applyItemDelta({
+          threadId: 'thread-reassert',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'stable reasoning ',
+          updatedAt: 2,
+        });
+        pane.applyItemPatch({
+          threadId: 'thread-reassert',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', updatedAt: 3 },
+        });
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe('stable reasoning ');
+
+        pane.applyItemPatch({
+          threadId: 'thread-reassert',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', summary: pane.items[0].summary, updatedAt: 4 },
+        });
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe('stable reasoning ');
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('reseeds a resumed smoother from the retained tail when the summary is unchanged', async () => {
+      // A replay upsert can flip a settled row back to streaming and
+      // follow with deltas (turn resume). The fresh smoother must seed
+      // from the retained FULL tail, not the trimmed summary — seeding
+      // from the summary would shrink the rendered string and re-wrap
+      // the clamp, the exact jump retention exists to prevent.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-reseed' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-reseed',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
+        const words: string[] = [];
+        for (let i = 0; i < 80; i++) words.push(`tok${String(i).padStart(2, '0')}`);
+        const fullText = words.join(' ') + ' ';
+        pane.applyItemDelta({
+          threadId: 'thread-reseed',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: fullText,
+          updatedAt: 2,
+        });
+        pane.applyItemPatch({
+          threadId: 'thread-reseed',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', updatedAt: 3 },
+        });
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        const trimmedSummary = pane.items[0].summary;
+        // >400 runes, so the trim is a real shrink — the seed choice is
+        // observable.
+        expect(trimmedSummary.length).toBeLessThan(fullText.length);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe(fullText);
+
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-reseed',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: trimmedSummary,
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 4,
+          }),
+        );
+        pane.applyItemDelta({
+          threadId: 'thread-reseed',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'resumed ',
+          updatedAt: 5,
+        });
+        safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe(`${fullText}resumed `);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('drops a stale retained tail when the row resumes with a rewritten summary', async () => {
+      // The reseed's negative: if the resuming row's summary is NOT the
+      // one the settle recorded, the retained tail belongs to a dead
+      // version of the row. The seed must start from the new summary
+      // and clear the stale entry rather than shadow the resumed reveal.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-stale-reseed' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-stale-reseed',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
+        pane.applyItemDelta({
+          threadId: 'thread-stale-reseed',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'first life reasoning ',
+          updatedAt: 2,
+        });
+        pane.applyItemPatch({
+          threadId: 'thread-stale-reseed',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          patch: { status: 'completed', updatedAt: 3 },
+        });
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe('first life reasoning ');
+
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-stale-reseed',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: 'rewritten start ',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 4,
+          }),
+        );
+        // Already invalid at read time before any delta arrives.
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+        pane.applyItemDelta({
+          threadId: 'thread-stale-reseed',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'next ',
+          updatedAt: 5,
+        });
+        safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe('rewritten start next ');
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('retains the tail when a caught-up smoother settles via terminal upsert', async () => {
+      // Terminal upserts (upsertItemsBatch reconcile) are the third
+      // settle path next to the summary-carrying and bare-status
+      // patches; a caught-up reveal must retain its tail there too.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-upsert-settle' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-upsert-settle',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
+        pane.applyItemDelta({
+          threadId: 'thread-upsert-settle',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: 'upsert settle reasoning ',
+          updatedAt: 2,
+        });
+        let safety = 500;
+        while (clock.pendingCount() > 0 && safety-- > 0) clock.tickFrame(16);
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-upsert-settle',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'completed',
+            summary: pane.items[0].summary,
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 3,
+          }),
+        );
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe('upsert settle reasoning ');
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('drops the tail when a mid-drain smoother is replaced by a terminal upsert', async () => {
+      // A mid-drain smoother's tail is partial — it can never match a
+      // terminal summary, so the reconcile disposes rather than retains.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-middrain-upsert' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-middrain-upsert',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
+        const words: string[] = [];
+        for (let i = 0; i < 80; i++) words.push(`tok${String(i).padStart(2, '0')}`);
+        pane.applyItemDelta({
+          threadId: 'thread-middrain-upsert',
+          itemId: 'think:0:0',
+          kind: 'thinking',
+          delta: words.join(' ') + ' ',
+          updatedAt: 2,
+        });
+        // A few frames: enough for a partial reveal (the tail entry
+        // exists), far from caught up.
+        for (let i = 0; i < 3; i++) clock.tickFrame(16);
+        expect(pane.liveThinkingTailForItem('think:0:0')).not.toBeNull();
+
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-middrain-upsert',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'completed',
+            summary: 'final from upsert',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 3,
+          }),
+        );
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('evicts the oldest settled tails past the retained-char budget', async () => {
+      // The offscreen prune only runs while a MessageTimeline is
+      // mounted; a backgrounded pane (Settings replaces the surface)
+      // keeps settling rows with no prune cadence. The store-side char
+      // budget is the backstop: oldest settled tails evict once the
+      // total passes SETTLED_TAIL_BUDGET_CHARS (131072).
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-tail-budget' }));
+        const tailFor = (i: number): string => `row${i} ` + 'x'.repeat(59_995);
+        for (const i of [0, 1, 2]) {
+          pane.upsertItem(
+            makeItem({
+              id: `think:0:${i}`,
+              threadId: 'thread-tail-budget',
+              turnIndex: 0,
+              itemIndex: i,
+              kind: 'thinking',
+              role: 'assistant',
+              status: 'streaming',
+              summary: '',
+              payloadId: `thinking:think:0:${i}`,
+              updatedAt: 1,
+            }),
+          );
+          pane.applyItemDelta({
+            threadId: 'thread-tail-budget',
+            itemId: `think:0:${i}`,
+            kind: 'thinking',
+            delta: tailFor(i),
+            updatedAt: 2,
+          });
+        }
+        // Snap + settle all three in insertion order; the third settle
+        // pushes the total to ~180k and evicts the oldest back under
+        // budget.
+        pane.__flushItemSmoothersForTest();
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+        expect(pane.liveThinkingTailForItem('think:0:1')).toBe(tailFor(1));
+        expect(pane.liveThinkingTailForItem('think:0:2')).toBe(tailFor(2));
+        expect(pane.debugMemoryStats().liveThinkingTailChars).toBe(tailFor(1).length * 2);
       } finally {
         __setSmoothingClockForTest(undefined);
       }

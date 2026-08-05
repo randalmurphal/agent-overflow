@@ -535,14 +535,26 @@ different bugs, split by whether the row's height is clamped:
   window's geometry or the body width — so its zero is **consistent with** an
   internal jump but is **not** positive evidence. Do not cite it as proof in
   either direction.
-- **First cause considered — `liveTail→summary` handoff — REFUTED.** The earlier
-  theory: at settle the body switches from the live smoother `liveTail` to the
-  tail-trimmed `summary`, and if their last 3 lines differ the
-  `scrollTop = scrollHeight` pin lands on a different `scrollHeight`. The pure
-  function settles it: `liveTail = revealed` (full) and
+- **First cause considered — `liveTail→summary` handoff — REFUTED for the
+  flicker under investigation, but the handoff DOES jump in a different way.**
+  The earlier theory: at settle the body switches from the live smoother
+  `liveTail` to the tail-trimmed `summary`, and if their last 3 lines differ
+  the `scrollTop = scrollHeight` pin lands on a different `scrollHeight`. The
+  pure function settles it: `liveTail = revealed` (full) and
   `summary = trimToTailRunes(revealed, 400)` share the **same suffix**, so the
-  last 3 lines can never diverge. The handoff does not jump. (This is the
-  divergence check §B itself demanded — it came back negative.)
+  last 3 lines can never diverge *as character strings*. (This is the
+  divergence check §B itself demanded — it came back negative for THIS bug.)
+  **Amendment (2026-08-04):** the same-suffix argument holds for characters,
+  not for the **line partition** under greedy wrapping — where a line breaks
+  depends on the string's *start*, so the identical suffix can wrap into a
+  different set of lines when the string above it is removed. The swap
+  therefore re-wraps the visible 3 lines at settle: not the height/pin jump
+  §B chased, but a real, user-visible reflow of the text in place. Fixed by
+  retaining the full live tail across a content-consistent settle
+  (`threadStreamingReveal.svelte.ts`, `settledTailSummaries` — served while
+  the row's `summary` still matches what was retained, dropped on overwrite,
+  offscreen prune, or budget eviction), so the collapsed body never swaps
+  strings in front of the reader.
 - **Confirmed cause — imperative tail-pin stale on a width re-wrap.**
   `TailClampedText` bottom-pinned its 3-line window with an
   `$effect: scrollTop = scrollHeight` whose only dependency was `text`. With

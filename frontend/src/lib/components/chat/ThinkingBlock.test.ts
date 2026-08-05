@@ -132,11 +132,17 @@ describe('<ThinkingBlock>', () => {
         props: { pane, item: pane.items[0] },
       });
 
+      // >400 runes, so the trimmed summary is a REAL shrink of the tail
+      // — a body that swapped to it at settle would change textContent,
+      // making the byte-equality assertion below load-bearing.
+      const words: string[] = [];
+      for (let i = 0; i < 80; i++) words.push(`tok${String(i).padStart(2, '0')}`);
+      const fullText = words.join(' ') + ' ';
       pane.applyItemDelta({
         threadId: 'thread-1',
         itemId: 'think:0:0',
         kind: 'thinking',
-        delta: 'live delta text ',
+        delta: fullText,
         updatedAt: 2,
       });
       let safety = 500;
@@ -146,8 +152,9 @@ describe('<ThinkingBlock>', () => {
 
       let body = container.querySelector('[data-testid="thinking-body"]');
       expect(body?.className).toMatch(/max-h-\[3lh\]/);
-      expect(body?.textContent).toContain('live delta text');
-      expect(pane.liveThinkingTailForItem('think:0:0')).not.toBeNull();
+      const streamingText = body?.textContent ?? '';
+      expect(streamingText).toBe(fullText);
+      expect(pane.liveThinkingTailForItem('think:0:0')).toBe(fullText);
 
       pane.applyItemPatch({
         threadId: 'thread-1',
@@ -160,10 +167,15 @@ describe('<ThinkingBlock>', () => {
 
       body = container.querySelector('[data-testid="thinking-body"]');
       expect(body?.className).toMatch(/max-h-\[3lh\]/);
-      expect(body?.textContent).toContain('live delta text');
-      // Smoother disposed on the bare-status patch — body now reads
-      // the persisted summary, not the (now-cleared) live tail.
-      expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
+      // Smoother disposed on the bare-status patch, but the live tail is
+      // RETAINED on this content-consistent settle — the collapsed body
+      // keeps rendering the byte-identical string it streamed, so its
+      // wrap cannot reshuffle at the boundary (the offscreen row-UI
+      // prune or the char budget, not the settle, reclaims the entry
+      // later). The trimmed summary would be a different, shorter string.
+      expect(body?.textContent).toBe(streamingText);
+      expect(pane.liveThinkingTailForItem('think:0:0')).toBe(fullText);
+      expect(pane.items[0].summary.length).toBeLessThan(fullText.length);
     } finally {
       __setSmoothingClockForTest(undefined);
     }

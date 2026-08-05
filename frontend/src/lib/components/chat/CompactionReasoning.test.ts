@@ -127,6 +127,21 @@ describe('<CompactionReasoning>', () => {
       expect(body?.textContent).toContain('streaming reasoning tail');
       expect(body?.className).toMatch(/max-h-\[3lh\]/);
       expect(pane.liveThinkingTailForItem(reasoning.id)).not.toBeNull();
+
+      // Settle parity with thinking: the smoother disposes on the
+      // terminal patch but the tail is retained on this
+      // content-consistent settle, so the collapsed body keeps its
+      // exact string across the boundary.
+      pane.applyItemPatch({
+        threadId: 'thread-1',
+        itemId: reasoning.id,
+        kind: 'compaction_reasoning',
+        patch: { status: 'completed', updatedAt: 3 },
+      });
+      await rerender({ pane, item: pane.items[0] });
+      await tick();
+      expect(pane.liveThinkingTailForItem(reasoning.id)).toBe('streaming reasoning tail ');
+      expect(body?.textContent).toContain('streaming reasoning tail');
     } finally {
       __setSmoothingClockForTest(undefined);
     }

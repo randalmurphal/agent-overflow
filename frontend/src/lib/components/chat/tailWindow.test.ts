@@ -75,7 +75,7 @@ describe('isMonotonicAppend', () => {
     expect(check('hello', '')).toBe(true);
   });
 
-  it('rejects a shrink (the settle swap to the trimmed summary)', () => {
+  it('rejects a shrink (a dropped retained tail swapping to the trimmed summary)', () => {
     expect(check('short summary', 'a much longer accumulated live tail string')).toBe(false);
   });
 

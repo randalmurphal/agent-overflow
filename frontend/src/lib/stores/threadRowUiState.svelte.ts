@@ -135,10 +135,14 @@ export interface PayloadExpansionLease {
   release(): void;
 }
 
+// Concrete re-iterable collections on purpose — this retention is
+// consumed by more than one pruner (rowUiState's own prune plus the
+// settled-thinking-tail prune in thread.svelte.ts), and a one-shot
+// iterator here would silently starve the second consumer.
 export interface RowUiStateRetention {
-  itemIds: Iterable<string>;
-  payloads: Iterable<PayloadExpansionRetentionKey>;
-  groupKeys: Iterable<string>;
+  itemIds: ReadonlySet<string>;
+  payloads: readonly PayloadExpansionRetentionKey[];
+  groupKeys: ReadonlySet<string>;
 }
 
 /**
@@ -639,12 +643,12 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
   }
 
   function pruneRowUiState(retention: RowUiStateRetention): void {
-    const retainedItemIds = new Set(retention.itemIds);
+    const retainedItemIds = retention.itemIds;
     const retainedPayloads = new Set<string>();
     for (const payload of retention.payloads) {
       retainedPayloads.add(payloadExpansionRegistryKey(payload.threadId, payload.payloadId));
     }
-    const retainedGroupKeys = new Set(retention.groupKeys);
+    const retainedGroupKeys = retention.groupKeys;
 
     for (const [key, entry] of expansionStates) {
       if (entry.owner.kind === 'item') {

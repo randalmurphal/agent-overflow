@@ -28,8 +28,10 @@
   // tailWindow.ts), which keeps the visible lines pixel-identical while
   // capping per-tick layout at the window cap (~8k chars) instead of the
   // whole accumulated tail. Append-detection
-  // sentinels reset the window on the one non-append transition (the settle
-  // swap to the rune-trimmed summary). When expanded the clamp, anchor, and
+  // sentinels reset the window on the non-append transitions — the swap to
+  // the rune-trimmed summary when the retained tail is dropped (offscreen
+  // prune, budget eviction, post-settle summary overwrite; see
+  // threadStreamingReveal.svelte.ts). When expanded the clamp, anchor, and
   // window are all dropped (plain `block`; full text flows to full height).
   import { untrack } from 'svelte';
   import {
@@ -62,13 +64,30 @@
   let cutOffset = $state(0);
 
   // Non-reactive bookkeeping for isMonotonicAppend (which detects the
-  // one non-append transition — the settle swap to the shorter
-  // rune-trimmed summary — and resets the window) and for throttling
-  // failed measurements.
+  // non-append transitions — the swap to the shorter rune-trimmed
+  // summary when the retained tail is dropped — and resets the window)
+  // and for throttling failed measurements.
   let prevLen = 0;
   let prevLastCharCode = 0;
   let cutFirstCharCode = 0;
   let measureFloor = 0;
+
+  // Seed the window before the first render: a windowing remount can
+  // arrive with the full retained tail (tens of KB), and starting at
+  // cutOffset 0 would line-break the entire string once before the
+  // effect below installs a cut. Newline cuts need no geometry, so they
+  // can run at init; the monster-single-paragraph case still pays one
+  // full first layout and gets its measured cut after the first flush.
+  // untrack: the INITIAL prop values are exactly what a mount seed
+  // wants — later changes are the effect's job.
+  const initialText = untrack(() => text);
+  if (!untrack(() => expanded) && initialText.length > TAIL_WINDOW_CAP_CHARS) {
+    const initialCut = newlineCutOffset(initialText, 0, TAIL_WINDOW_MIN_KEEP_CHARS);
+    if (initialCut !== null) {
+      cutOffset = initialCut;
+      cutFirstCharCode = initialText.charCodeAt(initialCut);
+    }
+  }
 
   const rendered = $derived(expanded || cutOffset === 0 ? text : text.slice(cutOffset));
 

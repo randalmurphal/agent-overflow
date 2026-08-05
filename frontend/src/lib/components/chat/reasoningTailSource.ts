@@ -12,10 +12,13 @@ export interface ReasoningBodyTextInput {
   /** The row's persisted (tail-trimmed) summary — the settled fallback. */
   summary: string;
   /**
-   * The per-pane live smoother tail for this item, or null once the stream
-   * settles and the smoother disposes. Grows monotonically — TailClampedText
-   * scrolls it off the top via CSS clip and bounds its layout cost with a
-   * wrap-stable window, both of which rely on append-only growth.
+   * The per-pane live smoother tail for this item. Grows monotonically —
+   * TailClampedText scrolls it off the top via CSS clip and bounds its
+   * layout cost with a wrap-stable window, both of which rely on
+   * append-only growth. Retained across a content-consistent settle so
+   * the collapsed clamp stays byte-stable at the streaming → settled
+   * boundary; null after an overwrite settle, an offscreen prune, a
+   * remount, or a thread switch (the trimmed summary takes over there).
    */
   liveTail: string | null;
   /** Full payload loaded on expand (empty until the user expands). */

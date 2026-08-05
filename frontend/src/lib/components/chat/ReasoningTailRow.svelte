@@ -108,9 +108,11 @@
   // the top, and its wrap-stable layout window assumes append-only growth
   // (`item.summary` is trimmed to THINKING_TAIL_RUNES for memory — reading
   // it directly reintroduces the "5 words appear at once past 400 runes"
-  // symptom). The live-tail map is non-null only while the smoother runs;
-  // once it settles we fall back to the trimmed summary / loaded payload.
-  // See reasoningTailSource for the merge.
+  // symptom). The live tail survives a content-consistent settle (retained
+  // until the offscreen row-UI prune reclaims it) so the clamp's visible
+  // lines never re-wrap in front of the reader at the settle boundary;
+  // overwrite settles, removal, and remounts fall back to the trimmed
+  // summary / loaded payload. See reasoningTailSource for the merge.
   const bodyText = $derived(
     reasoningBodyText({
       summary: item.summary ?? '',

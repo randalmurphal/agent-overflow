@@ -76,12 +76,13 @@ export function newlineCutOffset(text: string, cutOffset: number, minKeep: numbe
  * This is a sentinel, not a proof — a same-or-longer replacement that
  * happens to preserve both probed characters is misclassified as an
  * append and would render a stale (but wrap-valid) window. Accepted:
- * callers contractually feed a monotonically-growing tail, and the one
- * real replacement — the settle swap to the rune-trimmed summary — is
- * always caught by the length probe, because the backend trims
- * summaries to 400 runes (triage `thinkingPreviewRunes`) while a live
- * cut keeps at least TAIL_WINDOW_MIN_KEEP_CHARS (2048): the swap can
- * only shrink the text.
+ * callers contractually feed a monotonically-growing tail, and the
+ * real replacements — the swaps to the rune-trimmed summary when the
+ * retained tail is dropped (offscreen prune, budget eviction,
+ * post-settle summary overwrite; see threadStreamingReveal.svelte.ts) —
+ * are always caught by the length probe, because summaries are trimmed
+ * to 400 runes (≤ 800 UTF-16 units) while a live cut keeps at least
+ * TAIL_WINDOW_MIN_KEEP_CHARS (2048): the swap can only shrink the text.
  */
 export function isMonotonicAppend(
   text: string,

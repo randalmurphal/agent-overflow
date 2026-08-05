@@ -89,7 +89,7 @@ import {
   type SettledTurn,
   type TurnRow,
 } from './threadTurnProjection';
-import { createThreadRowUiState } from './threadRowUiState.svelte';
+import { createThreadRowUiState, type RowUiStateRetention } from './threadRowUiState.svelte';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import { createThreadTimelineWindow } from './threadTimelineWindow.svelte';
 import { createThreadSubagentMemory } from './threadSubagentMemory';
@@ -1380,6 +1380,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
         rowUiState: rowUiState.debugStats(),
         itemSmoothers: streamingStats.itemSmoothers,
         liveThinkingTails: streamingStats.liveThinkingTails,
+        liveThinkingTailChars: streamingStats.liveThinkingTailChars,
         optimisticItems: optimisticItemIds.size,
         oldestLoadedCursor: timelineWindow.oldestLoadedCursor,
         newestLoadedCursor: timelineWindow.newestLoadedCursor,
@@ -2198,12 +2199,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     hasUserExpansionWithin: rowUiState.hasUserExpansionWithin,
     activityRuns,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
-    pruneRowUiState: rowUiState.pruneRowUiState,
-    // Live smoother-revealed text for a streaming thinking row.
-    // Returns null when no smoother is active (settled rows, non-thinking
-    // rows, pre-stream cache hits) — callers fall back to `item.summary`.
-    // See threadStreamingReveal.svelte.ts `itemLiveThinkingTail` for why
-    // ThinkingBlock prefers this over the trimmed-summary sliding window.
+    pruneRowUiState(retention: RowUiStateRetention): void {
+      rowUiState.pruneRowUiState(retention);
+      streamingReveal.pruneSettledThinkingTails(retention.itemIds);
+    },
+    // Full revealed text for a reasoning-tail row. Live while the row
+    // streams and retained across a content-consistent settle (see
+    // threadStreamingReveal.svelte.ts `itemLiveThinkingTail` for the
+    // lifetime and the wrap-stability rationale). Returns null once the
+    // entry is dropped (overwrite settle, removal, offscreen prune,
+    // thread switch) — callers fall back to `item.summary`.
     liveThinkingTailForItem(itemId: string): string | null {
       return streamingReveal.liveThinkingTailFor(itemId);
     },

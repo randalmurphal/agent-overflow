@@ -67,9 +67,20 @@ export interface ThreadStreamingReveal {
   disposeAll(): void;
   /** visibilitychange snap (body of pane's snapSmoothersToReceived, incl. its recomputeReveal). */
   snapAllToReceived(): void;
-  /** Live smoother-revealed text for a streaming thinking row, or null. */
+  /**
+   * Full revealed text for a reasoning-tail row, or null. Live while the
+   * row streams, and RETAINED across a content-consistent settle so the
+   * collapsed clamp never re-wraps in front of the reader; dropped on
+   * overwrite/removal, by the offscreen prune, and on thread switch.
+   */
   liveThinkingTailFor(itemId: string): string | null;
-  debugStats(): { itemSmoothers: number; liveThinkingTails: number };
+  /** Row-UI prune hook: drop retained settled tails not in the retention set. */
+  pruneSettledThinkingTails(retainedItemIds: ReadonlySet<string>): void;
+  debugStats(): {
+    itemSmoothers: number;
+    liveThinkingTails: number;
+    liveThinkingTailChars: number;
+  };
   /** Test-only: snap + dispose every smoother (body of pane's __flushItemSmoothersForTest). */
   __flushForTest(): void;
   /** Test-only: live smoother count. */
@@ -113,8 +124,7 @@ export function createThreadStreamingReveal(
   // reactive wrapper costs nothing on the hot path.
   const itemSmoothers: SvelteMap<string, ItemSmoothing> = new SvelteMap();
   // Live full revealed text for streaming thinking rows, keyed by item
-  // id. Sibling to `itemSmoothers`: written from every onReveal and
-  // deleted on every smoother dispose path. Decouples the collapsed
+  // id. Written from every onReveal. Decouples the collapsed
   // ThinkingBlock render from `items[].summary` (which is trimmed to
   // THINKING_TAIL_RUNES for memory and persistence). The trimmed summary
   // sliding-window forces the collapsed `<span>{bodyText}</span>` to
@@ -126,9 +136,36 @@ export function createThreadStreamingReveal(
   // tail instead gives the span monotonically-growing content so wrap
   // layout never reshuffles older text — only the bottom 3 lines scroll
   // up as content arrives. SvelteMap so Map.get inside a $derived
-  // re-runs on Map.set. Cleared in the same paths that clear
-  // itemSmoothers.
+  // re-runs on Map.set.
+  //
+  // Lifetime: an entry OUTLIVES its smoother across a settle
+  // (settleSmootherRetainingTail) — falling back to the trimmed summary
+  // at settle re-wraps the clamp's visible lines in front of the reader,
+  // because wrap depends on where the string starts and the trim starts
+  // mid-sentence. Consistency is enforced at READ time, not by writer
+  // discipline: a settled entry is served only while the row's current
+  // summary still equals the summary recorded at settle
+  // (`settledTailSummaries` below), so any later authoritative summary
+  // write — a correction patch, a terminal re-upsert, a whole-window
+  // replace — silently invalidates the tail without every write path
+  // needing to know it exists. Removal paths drop the entry
+  // (disposeSmootherFor), the offscreen row-UI prune reclaims settled
+  // entries once the row leaves retention (pruneSettledThinkingTails),
+  // a store-side char budget bounds panes whose timeline is unmounted
+  // (evictSettledTailsOverBudget — the prune is a MessageTimeline quiet
+  // pass and never runs there, e.g. while Settings replaces the pane
+  // strip), and disposeAll clears everything on thread switch.
   const itemLiveThinkingTail: SvelteMap<string, string> = new SvelteMap();
+  // For each SETTLED retained tail: the row summary recorded at settle
+  // (always `trimToTailRunes(tail)` — the settle paths wrote or verified
+  // it). `liveThinkingTailFor` compares it against the row's CURRENT
+  // summary to decide whether the retained text still describes the row.
+  // Plain Map on purpose: reads happen inside row `$derived`s that
+  // already track `item.summary` (the prop) and the SvelteMap entry, so
+  // every mutation that matters re-runs them without this map being
+  // reactive itself. Entries pair 1:1 with settled tail entries; every
+  // path that deletes from `itemLiveThinkingTail` deletes here too.
+  const settledTailSummaries: Map<string, string> = new Map();
   // Reveal gate. While a turn streams, the timeline reveals one top-level
   // item at a time: the next row is withheld until the current item's
   // smoother drains. `revealBoundary` is the position of the item currently
@@ -155,18 +192,75 @@ export function createThreadStreamingReveal(
   // there is no reactive backstop (a parallel $effect over the timeline
   // is forbidden; see frontend/AGENTS.md).
 
+  // Dispose a smoother and DROP the row's live tail. Correct for every
+  // removal/overwrite caller: the row is gone, or its summary no longer
+  // matches what was revealed. The tail delete runs unconditionally,
+  // BEFORE the missing-smoother early return — a settled row's retained
+  // tail (settleSmootherRetainingTail below) has no smoother left, and a
+  // removal arriving after that settle must still clear it.
   function disposeSmootherFor(itemId: string): void {
+    itemLiveThinkingTail.delete(itemId);
+    settledTailSummaries.delete(itemId);
     const entry = itemSmoothers.get(itemId);
     if (!entry) return;
     entry.smoother.dispose();
     itemSmoothers.delete(itemId);
-    itemLiveThinkingTail.delete(itemId);
+  }
+
+  // Store-side bound on settled-tail retention, independent of any
+  // mounted timeline: the offscreen row-UI prune is a MessageTimeline
+  // quiet pass, and a pane can keep settling reasoning rows while its
+  // timeline is unmounted (Settings replaces the whole pane strip; the
+  // wire keeps fanning deltas to matching panes). Sized for dozens of
+  // large thinking blocks — far more than any visible window needs —
+  // while capping what a long unattended session can pin.
+  const SETTLED_TAIL_BUDGET_CHARS = 131_072;
+
+  function evictSettledTailsOverBudget(): void {
+    let totalChars = 0;
+    for (const [id, text] of itemLiveThinkingTail) {
+      if (!itemSmoothers.has(id)) totalChars += text.length;
+    }
+    if (totalChars <= SETTLED_TAIL_BUDGET_CHARS) return;
+    // Map iteration order is insertion order, which for settled entries
+    // is stream order — evict oldest first. Live entries are never
+    // evicted; their reveal owns them.
+    for (const [id, text] of itemLiveThinkingTail) {
+      if (totalChars <= SETTLED_TAIL_BUDGET_CHARS) break;
+      if (itemSmoothers.has(id)) continue;
+      itemLiveThinkingTail.delete(id);
+      settledTailSummaries.delete(id);
+      totalChars -= text.length;
+    }
+  }
+
+  // Dispose a smoother at settle, RETAINING the live-tail entry (present
+  // only for reasoning-tail rows) and recording the summary it settled
+  // with. The collapsed clamp is already rendering exactly that string;
+  // swapping to the tail-trimmed summary at settle re-wraps the visible
+  // lines — the "think text shifts right as the response mounts" flicker
+  // — because wrap layout depends on where the string starts and the
+  // trim starts mid-sentence. The recorded summary is what makes the
+  // retention safe WITHOUT trusting callers: `liveThinkingTailFor`
+  // serves the tail only while the row's current summary still equals
+  // it, so a later summary rewrite invalidates the tail at read time.
+  function settleSmootherRetainingTail(itemId: string): void {
+    const entry = itemSmoothers.get(itemId);
+    if (!entry) return;
+    entry.smoother.dispose();
+    itemSmoothers.delete(itemId);
+    const tail = itemLiveThinkingTail.get(itemId);
+    if (tail !== undefined) {
+      settledTailSummaries.set(itemId, trimToTailRunes(tail, THINKING_TAIL_RUNES));
+      evictSettledTailsOverBudget();
+    }
   }
 
   function disposeAll(): void {
     for (const entry of itemSmoothers.values()) entry.smoother.dispose();
     itemSmoothers.clear();
     itemLiveThinkingTail.clear();
+    settledTailSummaries.clear();
     revealBoundary = null;
   }
 
@@ -361,6 +455,24 @@ export function createThreadStreamingReveal(
     const existing = itemSmoothers.get(itemId);
     if (existing) return existing;
 
+    // A retained settled tail is the full text the row is still
+    // rendering; a smoother re-created after that settle (a replay
+    // upsert flipping the row back to streaming, then a delta) must
+    // seed from it — seeding from the tail-trimmed summary would shrink
+    // the rendered string and re-wrap the clamp. Only when consistent:
+    // the summary recorded at settle must still be the current summary,
+    // else the row was overwritten since and the stale tail is dropped
+    // here rather than left to shadow the resumed reveal for a frame.
+    const retainedTail = itemLiveThinkingTail.get(itemId);
+    if (retainedTail !== undefined) {
+      if (settledTailSummaries.get(itemId) === initialReceived) {
+        initialReceived = retainedTail;
+      } else {
+        itemLiveThinkingTail.delete(itemId);
+        settledTailSummaries.delete(itemId);
+      }
+    }
+
     // Closure state for this item's smoother. Updated by each delta
     // and read inside `onReveal` so the row's `updatedAt` stays close
     // to wire time even as the smoother lags.
@@ -400,9 +512,7 @@ export function createThreadStreamingReveal(
       onReveal: (revealed, delta) => {
         const idx = options.getItemIndex(itemId);
         if (idx === undefined) {
-          smoother.dispose();
-          itemSmoothers.delete(itemId);
-          itemLiveThinkingTail.delete(itemId);
+          disposeSmootherFor(itemId);
           return;
         }
         // A reveal is genuine live content advancing the bottom — stamp
@@ -448,11 +558,11 @@ export function createThreadStreamingReveal(
         // wait for the next thread switch. Terminal-status paths
         // (upsert reconcile and `applyItemPatch`'s snap branch) both
         // dispose synchronously before any further rAF fires, so this
-        // never tramples an authoritative summary.
+        // never tramples an authoritative summary. The live tail is
+        // retained — this reveal just wrote the summary as the trimmed
+        // view of it, the definition of a content-consistent settle.
         if (current.status !== 'streaming' && smoother.isCaughtUp()) {
-          smoother.dispose();
-          itemSmoothers.delete(itemId);
-          itemLiveThinkingTail.delete(itemId);
+          settleSmootherRetainingTail(itemId);
         }
         // Advance the reveal gate the moment the frontier catches up so the
         // withheld successor reveals in the same frame, without waiting on an
@@ -545,17 +655,18 @@ export function createThreadStreamingReveal(
         ) {
           // Terminal status AND nothing left to reveal. No further rAF
           // tick will fire, so the onReveal auto-cleanup can't dispose
-          // — do it here or the smoother (and its itemLiveThinkingTail
-          // entry) leaks until the next thread switch. This is the
-          // completion shape wherever content-block-stop carries
-          // ContentPresent=true (Codex always; Claude recovered
-          // blocks): the settle re-asserts the summary the smoother
-          // already received. The bare-status branch below only covers
-          // the case where that equal summary is OMITTED from the
-          // patch. A not-yet-caught-up smoother keeps draining and
-          // disposes via onReveal once it catches up (applyItemPatch
-          // skips the direct summary write while it lives).
-          disposeSmootherFor(itemId);
+          // — do it here or the smoother leaks until the next thread
+          // switch. This is the completion shape wherever
+          // content-block-stop carries ContentPresent=true (Codex
+          // always; Claude recovered blocks): the settle re-asserts
+          // the summary the smoother already received — content-
+          // consistent by the equality check above, so the live tail
+          // is retained. The bare-status branch below only covers the
+          // case where that equal summary is OMITTED from the patch. A
+          // not-yet-caught-up smoother keeps draining and disposes via
+          // onReveal once it catches up (applyItemPatch skips the
+          // direct summary write while it lives).
+          settleSmootherRetainingTail(itemId);
         }
       } else if (patchSummary.startsWith(received)) {
         if (patch.updatedAt !== undefined) {
@@ -576,11 +687,12 @@ export function createThreadStreamingReveal(
       // summary (e.g. `{status: 'completed', updatedAt: T}`). The
       // `onReveal` auto-cleanup only fires on a subsequent rAF tick;
       // if the smoother is already caught up, no further ticks will
-      // arrive and the `itemSmoothers` + `itemLiveThinkingTail`
-      // entries would leak until the next thread switch. Non-caught-
-      // up smoothers keep streaming text and dispose via `onReveal`
-      // once they catch up (the status check at line 732).
-      disposeSmootherFor(itemId);
+      // arrive and the `itemSmoothers` entry would leak until the next
+      // thread switch. The row's summary was last written by onReveal
+      // as the trimmed view of the revealed text — content-consistent,
+      // so the live tail is retained. Non-caught-up smoothers keep
+      // streaming text and dispose via `onReveal` once they catch up.
+      settleSmootherRetainingTail(itemId);
     }
 
     // Snap/dispose above may have cleared the frontier (interrupt, error,
@@ -609,9 +721,16 @@ export function createThreadStreamingReveal(
       const entry = itemSmoothers.get(it.id);
       if (!entry) continue;
       if (it.status !== 'streaming') {
-        entry.smoother.dispose();
-        itemSmoothers.delete(it.id);
-        itemLiveThinkingTail.delete(it.id);
+        // Terminal upsert replaces the row wholesale, with its own
+        // summary. A caught-up reveal settles normally — whether the
+        // upsert's summary matches the retained tail is not decided
+        // here: `liveThinkingTailFor` validates the recorded settle
+        // summary against the row's current summary on every read, so
+        // a divergent upsert simply renders its own summary. A mid-
+        // drain smoother's tail is partial and can never match a
+        // terminal summary — drop it with the smoother.
+        if (entry.smoother.isCaughtUp()) settleSmootherRetainingTail(it.id);
+        else disposeSmootherFor(it.id);
         continue;
       }
       if (!isSmoothLiveContentKind(it.kind)) continue;
@@ -623,9 +742,7 @@ export function createThreadStreamingReveal(
       ) {
         entry.smoother.appendDelta(it.summary.slice(received.length));
       } else {
-        entry.smoother.dispose();
-        itemSmoothers.delete(it.id);
-        itemLiveThinkingTail.delete(it.id);
+        disposeSmootherFor(it.id);
       }
     }
   }
@@ -660,30 +777,83 @@ export function createThreadStreamingReveal(
   }
 
   function liveThinkingTailFor(itemId: string): string | null {
-    return itemLiveThinkingTail.get(itemId) ?? null;
+    const tail = itemLiveThinkingTail.get(itemId);
+    if (tail === undefined) return null;
+    // Live entry: the reveal that writes the tail also writes the
+    // summary as its trimmed view every frame — consistent by
+    // construction, no validation needed.
+    if (itemSmoothers.has(itemId)) return tail;
+    // Settled entry: serve it only while the row's current summary is
+    // still the one recorded at settle. This is the whole consistency
+    // story for retained tails — a correction patch, a terminal
+    // re-upsert (triage re-persists a completed thinking row when a
+    // late content-present stop's text differs), or a whole-window
+    // replace rewrites the summary without knowing this map exists, and
+    // the mismatch invalidates the tail right here at read time.
+    const item = options.getItemById(itemId);
+    return item !== undefined && item.summary === settledTailSummaries.get(itemId)
+      ? tail
+      : null;
   }
 
-  function debugStats(): { itemSmoothers: number; liveThinkingTails: number } {
+  /**
+   * Offscreen row-UI prune hook: drop retained (settled) live tails for
+   * rows outside the retention window, bounding what
+   * `settleSmootherRetainingTail` keeps. A row with a live smoother
+   * never loses its tail here regardless of retention — an active
+   * reveal owns its entry (streaming rows are always retained anyway,
+   * but the guard makes that structural rather than hoped-for). The
+   * pruned row re-renders from its trimmed summary on its next mount.
+   * "The re-wrap happens offscreen" leans on the retention window
+   * (ROW_UI_RETAIN_NODE_BUFFER + the tail band) comfortably exceeding
+   * the virtualizer's render overscan — a retained set that shrank
+   * below what is mounted would re-wrap visible rows on the quiet
+   * cadence.
+   */
+  function pruneSettledThinkingTails(retainedItemIds: ReadonlySet<string>): void {
+    for (const itemId of itemLiveThinkingTail.keys()) {
+      if (retainedItemIds.has(itemId)) continue;
+      if (itemSmoothers.has(itemId)) continue;
+      itemLiveThinkingTail.delete(itemId);
+      settledTailSummaries.delete(itemId);
+    }
+  }
+
+  function debugStats(): {
+    itemSmoothers: number;
+    liveThinkingTails: number;
+    liveThinkingTailChars: number;
+  } {
+    // Chars, not just count: entries now hold full reasoning texts past
+    // settle, so the count alone hides the memory that matters.
+    let liveThinkingTailChars = 0;
+    for (const text of itemLiveThinkingTail.values()) {
+      liveThinkingTailChars += text.length;
+    }
     return {
       itemSmoothers: itemSmoothers.size,
       liveThinkingTails: itemLiveThinkingTail.size,
+      liveThinkingTailChars,
     };
   }
 
   /**
    * Test-only synchronous flush of every per-item streaming smoother
    * in this pane. Snaps each active smoother so items[].summary
-   * reflects the full received text immediately, then disposes the
-   * entry. Used by tests that assert summary content right after
-   * applying deltas without waiting for the smoother's rAF schedule.
-   * Not part of the production surface.
+   * reflects the full received text immediately, then settles the
+   * entry EXACTLY as production settle does — smoother disposed, tail
+   * retained with its settle summary recorded — so tests that flush to
+   * a settled state observe the same retention the app ships. Used by
+   * tests that assert summary content right after applying deltas
+   * without waiting for the smoother's rAF schedule. Not part of the
+   * production surface.
    */
   function __flushForTest(): void {
-    for (const [id, entry] of itemSmoothers) {
+    // snap() → onReveal can settle+delete entries (terminal rows), so
+    // iterate a snapshot rather than the live map.
+    for (const [id, entry] of [...itemSmoothers]) {
       entry.smoother.snap();
-      entry.smoother.dispose();
-      itemSmoothers.delete(id);
-      itemLiveThinkingTail.delete(id);
+      if (itemSmoothers.has(id)) settleSmootherRetainingTail(id);
     }
   }
 
@@ -704,6 +874,7 @@ export function createThreadStreamingReveal(
     disposeAll,
     snapAllToReceived,
     liveThinkingTailFor,
+    pruneSettledThinkingTails,
     debugStats,
     __flushForTest,
     __smootherCountForTest,

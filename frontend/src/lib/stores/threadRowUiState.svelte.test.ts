@@ -632,9 +632,9 @@ describe('createThreadRowUiState', () => {
       await vi.waitFor(() => expect(resolvePreview).toBeDefined());
 
       rowUiState.pruneRowUiState({
-        itemIds: [],
+        itemIds: new Set(),
         payloads: [],
-        groupKeys: [],
+        groupKeys: new Set(),
       });
 
       expect(rowUiState.debugStats().expansionStates).toBe(0);
@@ -683,9 +683,9 @@ describe('createThreadRowUiState', () => {
     await lease.handle.expand();
 
     rowUiState.pruneRowUiState({
-      itemIds: [],
+      itemIds: new Set(),
       payloads: [],
-      groupKeys: [],
+      groupKeys: new Set(),
     });
     rowUiState.appendLivePayloadDeltaForItem(
       item.id,
@@ -773,9 +773,9 @@ describe('createThreadRowUiState', () => {
     });
 
     rowUiState.pruneRowUiState({
-      itemIds: [retainedItem.id],
+      itemIds: new Set([retainedItem.id]),
       payloads: [{ threadId: 'thread-a', payloadId: 'payload-retained' }],
-      groupKeys: ['group-retained'],
+      groupKeys: new Set(['group-retained']),
     });
 
     expect(rowUiState.debugStats()).toMatchObject({
@@ -1156,7 +1156,7 @@ describe('createThreadRowUiState', () => {
 
       const lease = rowUiState.retainExpansionStateFor(item);
       await lease.handle.expand();
-      rowUiState.pruneRowUiState({ itemIds: [], payloads: [], groupKeys: [] });
+      rowUiState.pruneRowUiState({ itemIds: new Set(), payloads: [], groupKeys: new Set() });
 
       expect(rowUiState.hasUserExpansionWithin([item.id])).toBe(true);
 

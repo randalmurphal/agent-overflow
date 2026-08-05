@@ -330,7 +330,7 @@ describe('TailClampedText wrap-stable window', () => {
     expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
   });
 
-  it('resets the window when the text is replaced (settle swap)', async () => {
+  it('resets the window when the text is replaced (retained-tail drop)', async () => {
     const line = 'r'.repeat(100);
     const long = Array.from({ length: 120 }, () => line).join('\n');
     const { body, rerender } = mountWindowed(long);

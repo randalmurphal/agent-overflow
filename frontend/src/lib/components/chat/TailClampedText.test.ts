@@ -66,6 +66,19 @@ describe('<TailClampedText>', () => {
       expect(text[text.length - shown.length - 1]).toBe('\n');
     });
 
+    it('seeds the window at mount, before effects run', () => {
+      const text = longText(120);
+      const { container } = render(TailClampedText, {
+        props: { text, expanded: false, testId: 'body' },
+      });
+      // No flushSync: the init-time seed must window the FIRST render,
+      // so a windowing remount with a large retained tail never lays
+      // out the full string even once.
+      const shown = bodyText(container);
+      expect(shown.length).toBeLessThanOrEqual(TAIL_WINDOW_CAP_CHARS);
+      expect(text.endsWith(shown)).toBe(true);
+    });
+
     it('keeps rendering the full text while under the cap', async () => {
       const under = longText(50); // ~5k chars
       const { container, rerender } = render(TailClampedText, {
@@ -108,7 +121,8 @@ describe('<TailClampedText>', () => {
       flushSync();
       expect(bodyText(container).length).toBeLessThan(longText(120).length);
 
-      // The settle swap: live tail → shorter rune-trimmed summary.
+      // A dropped retained tail (prune/eviction/overwrite): live tail →
+      // shorter rune-trimmed summary.
       await rerender({ text: 'settled summary tail' });
       flushSync();
       expect(bodyText(container)).toBe('settled summary tail');
