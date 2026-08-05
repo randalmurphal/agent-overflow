@@ -18,13 +18,12 @@ session for replay on reconnect.
   forces a TUI repaint via a one-row winsize nudge (shrink, pause,
   restore) — see its doc comment for why a bare SIGWINCH is insufficient.
 - `env.go` — `normalizeTerminalEnv`: the child environment a PTY spawn
-  gets. Replaces the inherited `TERM`/`COLORTERM` with what xterm.js
-  actually renders, and — only when the AppImage markers are present —
-  drops `APPIMAGE`/`APPDIR`/`ARGV0`/`OWD` and strips the `APPDIR`-mount
-  segments out of `PATH`/`LD_LIBRARY_PATH`/`XDG_DATA_DIRS`/
-  `GSETTINGS_SCHEMA_DIR` so the user's commands resolve
-  against their real system. Every other launch shape (dev, `.deb`,
-  macOS) is passed through unchanged.
+  gets. Owns one rule — replacing the inherited `TERM`/`COLORTERM` with
+  what xterm.js actually renders — and delegates the AppImage scrub to
+  `internal/appimage` (`Scrub`), which is the same marker-gated scrub
+  every other process Agent Overflow spawns gets. Change the scrub there,
+  not here; every other launch shape (dev, `.deb`, macOS) is passed
+  through unchanged.
 - `replay_sanitize.go` — `stripReplayableQueries`: drops terminal query
   sequences (DA, DSR, DECRQM, XTVERSION, kitty-keyboard, DECRQSS/
   XTGETTCAP, OSC color queries) from replay snapshots so a hydrating

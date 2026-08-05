@@ -27,7 +27,12 @@ The App-coupled config resolver (`app_text_generation.go`'s
 ## Responsibility boundary
 
 - What BELONGS here:
-  - Pure provider-CLI invocation + output capture.
+  - Pure provider-CLI invocation + output capture. `ExecCLI` builds the
+    child environment through `provider.BuildEnvironment`
+    unconditionally, overrides or not — that is the one env rule every
+    provider subprocess gets, and it carries the `internal/appimage`
+    scrub, so the override-free callers are not the only spawns whose
+    CLI resolves its runtime against an AppImage mount.
   - JSON post-processing (last-line extraction, normalize, rune cap).
   - Test-injectable executor seam (`CLIExecutor`).
 - What does NOT belong here:

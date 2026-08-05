@@ -12,6 +12,11 @@ Opens user-visible HTTP(S) links in the host operating system's browser.
   shell syntax.
 - WSL opens through Windows interop because the visible desktop is Windows.
   Native Linux uses desktop opener commands in fallback order.
+- The opener inherits our environment minus the AppImage launch artifacts
+  (`appimage.ScrubInherited` in `startCommand`; nil on every other launch
+  shape, so `exec.Cmd` inherits directly). The browser it hands the URL to
+  outlives Agent Overflow, and a mount-local `LD_LIBRARY_PATH` /
+  `XDG_DATA_DIRS` points at a squashfs that is gone once we exit.
 
 ## Frontend entry points
 

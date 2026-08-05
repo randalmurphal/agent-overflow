@@ -46,6 +46,26 @@ reconciliation, and Claude's canonical-home OAuth refresh. Making probes
 reflect the active thread's workspace instead is a product change, not a
 bug fix — see `t3-improvements.md` §2.3.
 
+## Child environment
+
+`BuildEnvironment` and `FilterEnvironment` (`process.go`) are the two
+entry points every provider child environment is assembled through —
+`Spawn`, `claude.Login`, both MCP-status fetchers, `claudetui`'s full
+`[]string` environment, and `textgen.ExecCLI`. Both apply `appimage.Scrub`
+to the inherited environment, so a provider CLI launched from an AppImage
+build resolves its runtime against the user's real system rather than a
+squashfs mount that disappears when Agent Overflow exits (see
+`internal/appimage/AGENTS.md`). It is marker-gated and idempotent: every
+other launch shape is untouched, and an already-scrubbed environment
+passed back in stays as it is.
+
+The additive `PATH` merge reads the inherited half back off the *scrubbed*
+base, not `os.Getenv`. That ordering is load-bearing — reading the live
+variable would re-admit the mount's bin directory through the override
+path, which is the one hole a scrub applied "at the end" would leave open.
+`runVersionCommand` (`detect.go`) takes the same scrub via
+`appimage.ScrubInherited`.
+
 ## Model catalogs
 
 `ClaudeModels` / `CodexModels` (`models.go`) are the shipped catalogs.

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"agent-overflow/internal/appimage"
 	"agent-overflow/internal/platform"
 )
 
@@ -112,6 +113,13 @@ func commandCandidates(goos string, isWSL bool, safeURL string) []Command {
 
 func startCommand(ctx context.Context, command Command) error {
 	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
+	// The opener — and the browser it hands the URL to — inherits our
+	// environment, minus the AppImage launch artifacts. A browser started
+	// with the mount's LD_LIBRARY_PATH / XDG_DATA_DIRS resolves libraries and
+	// .desktop entries against a squashfs that disappears when Agent Overflow
+	// exits, and it outlives us by design. nil on every other launch shape,
+	// which keeps exec.Cmd on its own inherit path.
+	cmd.Env = appimage.ScrubInherited()
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("open dev null: %w", err)

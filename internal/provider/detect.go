@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/appimage"
 )
 
 const versionTimeout = 5 * time.Second
@@ -102,6 +104,11 @@ func runVersionCommand(binary string, args ...string) (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binary, args...)
+	// The version probe wants the inherited environment, minus the AppImage
+	// launch artifacts a provider CLI would otherwise resolve its own runtime
+	// against. nil outside an AppImage launch, which keeps exec.Cmd on its own
+	// inherit path.
+	cmd.Env = appimage.ScrubInherited()
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

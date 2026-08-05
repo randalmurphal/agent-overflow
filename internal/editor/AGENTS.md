@@ -21,7 +21,12 @@ editor reachable via the vendor's WSL Remote integration.
   the catalog priority order and ultimately the env fallback.
 - `spawn.go` + `spawn_unix.go` / `spawn_windows.go` — argv assembly
   per launch style, OS-specific `SysProcAttr` so the child outlives
-  the parent, and `ResolvePath` — the path-shape contract `Open`
+  the parent, the child environment (inherited, minus the AppImage
+  launch artifacts — `appimage.ScrubInherited`, which returns nil on
+  every other launch shape so `exec.Cmd` inherits directly; an editor
+  outlives us, so a mount-local `PATH`/`LD_LIBRARY_PATH` would break
+  it the moment Agent Overflow exits), and `ResolvePath` — the
+  path-shape contract `Open`
   enforces (absolute-canonical pass-through when no workspace is
   supplied; absolute-with-workspace must be inside the workspace;
   relative-against-workspace joining with traversal-escape and

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/appimage"
 )
 
 // fastExitWindow caps how long Open waits for the spawned editor to
@@ -216,6 +218,13 @@ func Open(ctx context.Context, opts SpawnOptions) error {
 
 	args := buildArgs(opts)
 	cmd := exec.CommandContext(ctx, resolved, args...)
+	// The editor inherits our environment, minus the AppImage launch
+	// artifacts: an editor started from an AppImage build would otherwise
+	// load its libraries out of our squashfs mount and lose them the moment
+	// Agent Overflow exits, and every terminal it opens would inherit a PATH
+	// pointing into that mount. nil on every other launch shape, which keeps
+	// exec.Cmd on its own inherit path.
+	cmd.Env = appimage.ScrubInherited()
 	devNull, err := openDevNull()
 	if err != nil {
 		return fmt.Errorf("editor: open dev null: %w", err)

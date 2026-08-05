@@ -116,10 +116,11 @@ type CLISpec struct {
 	Cwd    string
 	Stdin  string
 	// Env are environment overrides applied over the current process
-	// environment (nil inherits it unchanged), through the same
+	// environment (nil applies none), through the same
 	// provider.BuildEnvironment rule every provider subprocess gets — one env
 	// rule across every CLI Agent Overflow spawns, so an injected variable
-	// cannot go missing on one of them.
+	// cannot go missing on one of them, and so the AppImage launch artifacts
+	// that rule scrubs are gone from this CLI's environment too.
 	Env map[string]string
 }
 
@@ -139,9 +140,12 @@ func ExecCLI(ctx context.Context, spec CLISpec) (CLIResult, error) {
 	cmd := exec.CommandContext(ctx, spec.Binary, spec.Args...)
 	cmd.Dir = spec.Cwd
 	cmd.Stdin = strings.NewReader(spec.Stdin)
-	if len(spec.Env) > 0 {
-		cmd.Env = provider.BuildEnvironment(spec.Env)
-	}
+	// Unconditional: with no overrides this is the inherited environment
+	// scrubbed of the AppImage launch artifacts, which a provider CLI must not
+	// resolve its own runtime against. Gating it on len(spec.Env) would leave
+	// the override-free callers — the ones that look most like a plain inherit
+	// — as the only spawns without the shared rule.
+	cmd.Env = provider.BuildEnvironment(spec.Env)
 
 	stdout := newCappedOutput(ProcessOutputLimit)
 	stderr := newCappedOutput(ProcessOutputLimit)

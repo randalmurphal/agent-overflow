@@ -258,6 +258,43 @@ func TestBuildEnvironmentRemovesInheritedProviderHomeAndAppliesOverride(t *testi
 	}
 }
 
+// TestProviderEnvironmentAppliesTheAppImageScrub pins the integration with
+// internal/appimage at both env entry points, including the one place the
+// mount could re-enter after the scrub: BuildEnvironment's additive PATH
+// merge, which must read the inherited half back off the SCRUBBED base.
+// (The scrub's own semantics are covered in internal/appimage.)
+func TestProviderEnvironmentAppliesTheAppImageScrub(t *testing.T) {
+	const mount = "/tmp/.mount_agent1A2B3C"
+	t.Setenv("APPDIR", mount)
+	t.Setenv("APPIMAGE", "/home/dev/Apps/agent-overflow.AppImage")
+	t.Setenv("ARGV0", "./agent-overflow.AppImage")
+	t.Setenv("OWD", "/home/dev/projects")
+	t.Setenv("PATH", mount+"/usr/bin:/usr/bin")
+
+	assertScrubbed := func(t *testing.T, label string, env []string, wantPath string) {
+		t.Helper()
+		for _, marker := range []string{"APPDIR", "APPIMAGE", "ARGV0", "OWD"} {
+			if slices.ContainsFunc(env, func(entry string) bool {
+				key, _, ok := strings.Cut(entry, "=")
+				return ok && key == marker
+			}) {
+				t.Errorf("%s retained the %s marker: %q", label, marker, env)
+			}
+		}
+		if !slices.Contains(env, "PATH="+wantPath) {
+			t.Errorf("%s PATH is not %q: %q", label, wantPath, env)
+		}
+	}
+
+	assertScrubbed(t, "BuildEnvironment(nil)", BuildEnvironment(nil), "/usr/bin")
+	assertScrubbed(t, "FilterEnvironment(nil)", FilterEnvironment(nil), "/usr/bin")
+	assertScrubbed(t,
+		"BuildEnvironment(PATH override)",
+		BuildEnvironment(map[string]string{"PATH": "/opt/ao/bin"}),
+		"/opt/ao/bin"+string(os.PathListSeparator)+"/usr/bin",
+	)
+}
+
 func TestProviderEventLoggingCapturesInputAndOutput(t *testing.T) {
 	ctx := context.Background()
 	logPath := filepath.Join(t.TempDir(), "provider-events.ndjson")

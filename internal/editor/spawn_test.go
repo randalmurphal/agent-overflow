@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -248,6 +249,85 @@ func TestOpen_ResolvesRelativeAgainstWorkspace(t *testing.T) {
 	if !found {
 		t.Fatalf("editor argv missing resolved path %q; got %v", wantArg, captured.Args)
 	}
+}
+
+// TestOpen_AppliesTheAppImageScrub pins both directions of the shared
+// scrub's marker gate at the editor spawn: an AppImage launch hands the
+// child an explicit environment with the mount removed, and every other
+// launch leaves cmd.Env nil so exec.Cmd inherits directly. The scrub's own
+// semantics are covered in internal/appimage.
+func TestOpen_AppliesTheAppImageScrub(t *testing.T) {
+	const mount = "/tmp/.mount_agent1A2B3C"
+
+	spawnEnv := func(t *testing.T) []string {
+		t.Helper()
+		originalLookPath := lookPath
+		originalStart := startCmd
+		originalObserve := observeFastExit
+		t.Cleanup(func() {
+			lookPath = originalLookPath
+			startCmd = originalStart
+			observeFastExit = originalObserve
+		})
+
+		lookPath = func(string) (string, error) { return "/usr/bin/code", nil }
+		var captured *exec.Cmd
+		startCmd = func(cmd *exec.Cmd) error {
+			captured = cmd
+			return nil
+		}
+		observeFastExit = func(*exec.Cmd, string) error { return nil }
+
+		err := Open(context.Background(), SpawnOptions{
+			Editor: &Editor{
+				ID: "code", Name: "VS Code", Command: "code",
+				Available: true, ResolvedPath: "/usr/bin/code",
+				LaunchStyle: LaunchStyleGoto,
+			},
+			Path:          "internal/uikeys/keys.go",
+			WorkspacePath: "/home/user/repo",
+		})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		if captured == nil {
+			t.Fatal("startCmd not invoked")
+		}
+		return captured.Env
+	}
+
+	t.Run("appimage launch", func(t *testing.T) {
+		t.Setenv("APPDIR", mount)
+		t.Setenv("APPIMAGE", "/home/dev/Apps/agent-overflow.AppImage")
+		t.Setenv("PATH", mount+"/usr/bin:/usr/bin")
+
+		env := spawnEnv(t)
+		if env == nil {
+			t.Fatal("cmd.Env is nil under an AppImage launch; the editor inherits the mount")
+		}
+		if !slices.Contains(env, "PATH=/usr/bin") {
+			t.Errorf("cmd.Env PATH still points into the mount: %q", env)
+		}
+		for _, marker := range []string{"APPDIR=", "APPIMAGE="} {
+			for _, entry := range env {
+				if strings.HasPrefix(entry, marker) {
+					t.Errorf("cmd.Env retained %q", entry)
+				}
+			}
+		}
+	})
+
+	t.Run("ordinary launch inherits directly", func(t *testing.T) {
+		for _, marker := range []string{"APPDIR", "APPIMAGE", "ARGV0", "OWD"} {
+			t.Setenv(marker, "")
+			if err := os.Unsetenv(marker); err != nil {
+				t.Fatalf("unset %s: %v", marker, err)
+			}
+		}
+		if env := spawnEnv(t); env != nil {
+			t.Fatalf("cmd.Env = %q, want nil so exec.Cmd inherits os.Environ()", env)
+		}
+	})
 }
 
 // TestOpen_RejectsWorkspaceEscape pins the traversal-escape guard: a
