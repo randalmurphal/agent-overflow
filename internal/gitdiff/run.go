@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/appimage"
 )
 
 const maxDiffOutputBytes int64 = 10 * 1024 * 1024
@@ -149,10 +151,13 @@ func runGitWithStdoutLimit(
 }
 
 // gitEnv strips diff-driver overrides so user config can't inject an
-// external command into automatic diff runs, then appends extraEnv.
+// external command into automatic diff runs, then appends extraEnv. The
+// inherited base is scrubbed of AppImage launch artifacts like every
+// other child environment (see internal/appimage).
 func gitEnv(extraEnv []string) []string {
-	env := make([]string, 0, len(os.Environ())+len(extraEnv)+2)
-	for _, entry := range os.Environ() {
+	base := appimage.Scrub(os.Environ())
+	env := make([]string, 0, len(base)+len(extraEnv)+2)
+	for _, entry := range base {
 		if strings.HasPrefix(entry, "GIT_EXTERNAL_DIFF=") || strings.HasPrefix(entry, "GIT_DIFF_OPTS=") {
 			continue
 		}

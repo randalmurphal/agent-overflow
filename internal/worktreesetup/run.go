@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/appimage"
 	"agent-overflow/internal/procutil"
 )
 
@@ -187,7 +188,11 @@ func Env(projectRoot, worktreeRoot string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve worktree path %q for worktree setup: %w", worktreeRoot, err)
 	}
-	return append(os.Environ(),
+	// Setup commands are the user's own toolchain (npm install, bundle,
+	// …) — long-lived and PATH-resolving, so the inherited base is
+	// scrubbed of AppImage launch artifacts like every other spawned
+	// child (see internal/appimage).
+	return append(appimage.Scrub(os.Environ()),
 		ProjectRootEnv+"="+absoluteProjectRoot,
 		WorktreePathEnv+"="+absoluteWorktreeRoot,
 	), nil

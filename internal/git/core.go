@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"agent-overflow/internal/appimage"
 )
 
 const (
@@ -615,7 +617,12 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	// git dir — feeding the very refresh loop that ran the status, and
 	// tripping the watcher's index-write rebuild trigger. Mandatory
 	// locks (add, commit) are unaffected. Harmless for gh/glab.
-	env := append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+	//
+	// The base is scrubbed of AppImage launch artifacts like every other
+	// child environment: git itself resolves hooks, credential helpers,
+	// and gh/glab resolve editors via PATH, none of which should point
+	// into the squashfs mount.
+	env := append(appimage.Scrub(os.Environ()), "GIT_OPTIONAL_LOCKS=0")
 	if !spec.allowCredentialPrompt {
 		env = append(env, nonInteractiveEnv...)
 	}

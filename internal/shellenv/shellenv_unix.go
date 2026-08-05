@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/appimage"
 )
 
 // pathStartSentinel / pathEndSentinel bracket the captured PATH value
@@ -117,6 +119,14 @@ func probe(ctx context.Context, shell string) (string, error) {
 		pathStartSentinel, pathEndSentinel,
 	)
 	cmd := exec.CommandContext(pctx, shell, "-ilc", script)
+
+	// The probe's whole job is to report the user's REAL PATH. Started
+	// from an AppImage, the inherited PATH carries the squashfs mount's
+	// bin dirs, and profiles that extend rather than assign
+	// (`PATH=$PATH:…`) would fold those into the answer — which outlives
+	// the mount. Scrub the launch artifacts so the shell rebuilds from a
+	// clean base; nil on every other launch shape.
+	cmd.Env = appimage.ScrubInherited()
 
 	// Detach stdin so an `-i` shell that briefly probes for a TTY
 	// doesn't hang forever waiting for input. /dev/null is the
