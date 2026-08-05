@@ -426,6 +426,40 @@ optional fast-mode pair (same shape and same version caveat as on
 turn ends, and the one that reflects a fresh session's spawn flags after
 a resume.
 
+## `system/status` (verified 2.1.219)
+
+**Fires**: on session-status transitions. Two families share the channel:
+
+- `status:"requesting"` — per-API-request noise, emitted constantly
+  during normal turns. Dropped by the parser; nothing may route on it.
+- `status:"compacting"` — a compaction (manual `/compact` AND
+  auto-compact; both route through the CLI's shared
+  `compactConversation`) has started. The window then runs in near-total
+  wire silence — observed 108–184s across 17 production auto-compacts —
+  and closes with a `status:null` frame carrying `compact_result`:
+
+```json
+{"type":"system","subtype":"status","status":"compacting",
+ "session_id":"...","uuid":"..."}
+{"type":"system","subtype":"status","status":null,
+ "compact_result":"success","session_id":"...","uuid":"..."}
+{"type":"system","subtype":"status","status":null,
+ "compact_result":"failed",
+ "compact_error":"API Error: Request was aborted.","session_id":"...","uuid":"..."}
+```
+
+On success the `system/compact_boundary` follows ~20ms after the close
+frame; on failure/cancel no boundary follows. Auto-compact runs
+MID-TURN (tool loop → compacting → silence → close → boundary → summary
+user row → turn continues, with no `system/init` in the auto path). The
+30s re-emit of the open frame is remote-session-only
+(`isSessionActivityTrackingActive`); locally exactly one open frame
+fires. Parser (`parseStatusEvent` in `parse_system.go`) maps
+`compacting` → `EventCompactionStatus` Active and `compact_result` →
+the inactive close (carrying the error string); `requesting` and
+unknown statuses are dropped. Triage projects the window onto
+`provider:compacting` (see `internal/triage/compaction_status.go`).
+
 ## `system/model_refusal_fallback`
 
 **Fires**: when Fable's safety classifier refuses a request and Claude Code

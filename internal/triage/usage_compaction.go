@@ -71,6 +71,12 @@ func encodeContextWindow(window provider.ContextWindow) string {
 }
 
 func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
+	// The boundary is both providers' success signal, so it closes the
+	// live compacting window (compaction_status.go). Claude also sends
+	// an explicit close frame ~20ms earlier, making this a no-op there;
+	// for Codex this IS the close (its open was item/started).
+	r.clearCompacting(evt.ThreadID)
+
 	now := eventTimestampMillis(evt)
 	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
 	if err != nil {

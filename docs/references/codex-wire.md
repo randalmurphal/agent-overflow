@@ -1097,10 +1097,21 @@ The response body is empty — **the boundary is not on it**. It surfaces as
 the `contextCompaction` thread item:
 
 ```json
+{"method": "item/started",
+ "params": {"threadId": "...", "turnId": "...",
+            "item": {"type": "contextCompaction", "id": "..."}}}
 {"method": "item/completed",
  "params": {"threadId": "...", "turnId": "...",
             "item": {"type": "contextCompaction", "id": "..."}}}
 ```
+
+All three compaction paths in codex core (`compact.rs`,
+`compact_remote.rs`, `compact_remote_v2.rs` — auto-compact included)
+emit both halves. AO consumes `item/started` as `EventCompactionStatus`
+Active (the `provider:compacting` window open) and `item/completed` as
+the boundary. ⚠ A **failed** compaction sends an error event and never
+completes its item — triage's turn-completion clear is the only close
+on that path.
 
 ⚠ **`thread/compacted` is deprecated.** It is still in the notification
 catalogue and still fires on older builds, so both paths must produce the

@@ -12,6 +12,10 @@ import {
   resetForTest as resetFastModeStateForTest,
 } from './fastModeState.svelte';
 import {
+  clearCompactingForThread,
+  resetForTest as resetCompactingStateForTest,
+} from './compactingState.svelte';
+import {
   clearProviderCommandsForThread,
   resetForTest as resetProviderCommandsForTest,
 } from './providerCommands.svelte';
@@ -291,9 +295,11 @@ export function clearThreadStatus(threadId: string): void {
   liveStateHydrationTokenByThread.delete(threadId);
   liveStateHydratingThreads.drop(threadId);
   clearSendQueueForThread(threadId);
-  // The provider's fast-mode report and its slash-command list both belong
-  // to the thread's session; a thread being archived/deleted has none.
+  // The provider's fast-mode report, compacting flag, and slash-command
+  // list all belong to the thread's session; a thread being
+  // archived/deleted has none.
   clearFastModeStateForThread(threadId);
+  clearCompactingForThread(threadId);
   clearProviderCommandsForThread(threadId);
   statuses.drop(threadId);
 }
@@ -766,6 +772,7 @@ export function resetForTest(): void {
   liveStateHydrationTokenByThread.clear();
   resetSendQueueForTest();
   resetFastModeStateForTest();
+  resetCompactingStateForTest();
   resetProviderCommandsForTest();
   liveStateHydratingThreads.reset();
   statuses.reset();

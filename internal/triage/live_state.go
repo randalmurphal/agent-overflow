@@ -18,6 +18,12 @@ type LiveStateSnapshot struct {
 	Todo                   *LiveTodoSnapshot
 	EffectiveModel         string
 	EffectiveModelRevision uint64
+	// CompactingSinceUnixMs is the open compacting window's start (epoch
+	// ms), or 0 when the provider is not compacting this thread's
+	// context. Snapshot-carried because the window can span minutes of
+	// total wire silence — a reconnect inside it has no upcoming frame
+	// to re-learn the state from. See compaction_status.go.
+	CompactingSinceUnixMs int64
 }
 
 // LiveStateSnapshotForThread copies all frontend-visible live state for one
@@ -45,6 +51,7 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 
 	snapshot.EffectiveModel = r.effectiveModelByThread[threadID]
 	snapshot.EffectiveModelRevision = r.effectiveModelRevisions[threadID]
+	snapshot.CompactingSinceUnixMs = r.compactingSinceByThread[threadID]
 
 	if queue := r.queuedFlushItems[threadID]; len(queue) > 0 {
 		snapshot.QueueItems = make([]QueuedFlushItem, len(queue))

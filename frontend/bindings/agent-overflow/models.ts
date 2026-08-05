@@ -2966,6 +2966,14 @@ export class ThreadLiveState {
     "todo"?: LiveStateTodo | null;
     "providerAccount"?: ProviderSessionAccountEvent | null;
 
+    /**
+     * CompactingSinceUnixMs is non-zero while the provider is compacting
+     * this thread's context (epoch ms of the window's start). Mirrors the
+     * `provider:compacting` push channel for refresh/reconnect — the
+     * window can span minutes of wire silence, so no push will restate it.
+     */
+    "compactingSinceUnixMs"?: number;
+
     /** Creates a new ThreadLiveState instance. */
     constructor($$source: Partial<ThreadLiveState> = {}) {
         if (!("threadId" in $$source)) {

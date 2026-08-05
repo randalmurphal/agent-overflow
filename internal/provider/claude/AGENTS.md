@@ -39,13 +39,17 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   claude-wire.md §"Interrupted-turn result envelope").
 - `parse_system.go` — `system` envelopes (init metadata, compact_boundary,
   model_refusal_fallback, task_started / task_updated / task_notification,
-  `commands_changed`). `commands_changed` is an undocumented push whose
-  contract is REPLACE-the-cached-list, so it emits
+  `commands_changed`, `status`). `commands_changed` is an undocumented push
+  whose contract is REPLACE-the-cached-list, so it emits
   `EventCommandsChanged` with the whole list; an empty `commands` array
   is a real replacement while an ABSENT key is dropped. `system/init`
   additionally carries the `slash_commands` / `skills` / `plugins`
   discovery arrays onto `SessionInfo` — `slash_commands` is the only
   surface listing MCP prompt commands (`mcp__server__prompt`).
+  `system/status` maps `status:"compacting"` and the `compact_result`
+  close onto `EventCompactionStatus`; the per-API-request
+  `status:"requesting"` noise is dropped. See claude-wire.md
+  §`system/status`.
 - `parse_assistant.go` — `assistant` envelopes (text deltas, tool_use
   blocks, thinking blocks, usage). Dispatches each content block to
   `appendTextEvent` / `appendToolUseEvent` / `appendThinkingEvent` /

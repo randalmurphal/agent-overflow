@@ -35,6 +35,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { UserInputRequest } from '../../types/events';
   import { getActiveTurn, isThreadWorking } from '../../stores/threadStatuses.svelte';
+  import { isThreadCompacting } from '../../stores/compactingState.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import { formatElapsedSeconds } from '../../utils/format';
   import type { SharedNowClock } from '../chat/useRunningElapsed.svelte';
@@ -74,6 +75,9 @@
 
   let activeTurn = $derived(getActiveTurn(pane.threadId));
   let isWorking = $derived(isThreadWorking(pane.threadId));
+  // Label-only swap while the provider summarizes the thread's context;
+  // the elapsed timer keeps running off the turn start as usual.
+  let workingLabel = $derived(isThreadCompacting(pane.threadId) ? 'Compacting' : 'Working');
 
   let elapsedLabel = $derived.by(() => {
     if (!activeTurn) return '0s';
@@ -171,13 +175,13 @@
         </span>
         {#if activeTurn}
           <span class="text-fg-muted">
-            Working <span
+            {workingLabel} <span
               class="tabular-nums text-fg-default"
               data-testid="activity-rail-working-elapsed"
             >{elapsedLabel}</span>
           </span>
         {:else}
-          <span class="text-fg-muted" data-testid="activity-rail-working-bridge">Working</span>
+          <span class="text-fg-muted" data-testid="activity-rail-working-bridge">{workingLabel}</span>
         {/if}
       </span>
     {/if}

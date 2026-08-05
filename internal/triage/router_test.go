@@ -86,6 +86,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventBackgroundTaskTerminal:     true, // Wave 1 — new, Wave 2 wires triage
 		provider.EventBackgroundTaskNotification: true, // Claude task_notification is a notification, not a terminal lifecycle signal
 		provider.EventSessionWakeup:              true, // Claude ScheduleWakeup ack; records pending in-process wakeup for reaper protection
+		provider.EventCompactionStatus:           true, // live compacting window open/close; drives provider:compacting, never persisted
 		provider.EventSubagentNotification:       true, // reserved for Codex subagent UI
 		provider.EventSubagentStatus:             true, // Codex child lifecycle marker; updates live state only
 		provider.EventCodexExecResult:            true, // Codex raw exec_command result; live-state enrichment only

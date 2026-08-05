@@ -89,6 +89,20 @@ const (
 	// clears the pending state (the `{stop:true}` ack).
 	EventSessionWakeup EventKind = "session_wakeup"
 
+	// EventCompactionStatus is the live signal that the provider is
+	// summarizing the thread's context right now — a window that can run
+	// for minutes with no other wire traffic. Claude emits it from
+	// `system/status` (`status:"compacting"` opens, a `compact_result`
+	// frame closes, success or failure alike); Codex opens it from
+	// `item/started` for a `contextCompaction` item, whose completion
+	// already arrives as EventCompactBoundary. Both manual and
+	// auto-triggered compaction emit it. Triage keeps it as live-only
+	// per-thread state (`provider:compacting`) — session state, never
+	// history — with the boundary, turn completion, and thread cleanup
+	// as defensive clears because a failed Codex compaction never
+	// completes its item. Meta is CompactionStatusMeta.
+	EventCompactionStatus EventKind = "compaction_status"
+
 	// EventSubagentNotification surfaces Codex's `<subagent_notification>`
 	// tag detections (session.go parser → triage handler →
 	// provider:subagent_notification on the frontend event bus). Emitted
@@ -194,6 +208,7 @@ var AllEventKinds = []EventKind{
 	EventBackgroundTaskTerminal,
 	EventBackgroundTaskNotification,
 	EventSessionWakeup,
+	EventCompactionStatus,
 	EventSubagentNotification,
 	EventSubagentStatus,
 	EventCodexExecResult,
@@ -307,6 +322,19 @@ func (*TruncatedTurnCompleteMeta) isTurnCompleteMeta() {}
 // (the `{stop:true}` ack reports `scheduledFor: 0, stopped: true`).
 type SessionWakeupMeta struct {
 	ScheduledForUnixMs int64 `json:"scheduledForUnixMs"`
+}
+
+// CompactionStatusMeta is the typed payload for EventCompactionStatus.
+// Active=true opens the thread's compacting window; Active=false closes
+// it. Result and ErrorMessage are only populated on a close, and only
+// when the wire reported them — Claude's `compact_result` frame carries
+// `"success"`/`"failed"` plus a `compact_error` string on failure, while
+// Codex's close (the completed item) says nothing beyond that it
+// finished. Triage logs a failure's error; nothing persists.
+type CompactionStatusMeta struct {
+	Active       bool   `json:"active"`
+	Result       string `json:"result,omitempty"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
 // CommandLifecycleState is one of the four delivery states Claude's

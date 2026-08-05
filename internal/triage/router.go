@@ -358,6 +358,13 @@ type Router struct {
 	// swept by cleanupThread AND MarkThreadActive (a replacement process
 	// never inherits the timer). See session_wakeup.go.
 	pendingWakeupByThread map[string]int64
+	// compactingSinceByThread is the open compacting window per thread:
+	// the epoch-ms timestamp of the frame that opened it. Live-only
+	// projection behind `provider:compacting` (compaction_status.go);
+	// closed by the explicit close frame, the compact boundary, or turn
+	// completion, and swept by cleanupThread AND MarkThreadActive (a
+	// replacement process is never mid-compaction).
+	compactingSinceByThread map[string]int64
 	// commandLifecycle correlates Claude's `command_lifecycle` acks back
 	// to the AO row and the wire round each stdin user message was queued
 	// into, keyed threadID → command_uuid. Send-time carry-over, released
@@ -561,6 +568,7 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
 		queuedFlushItems:           make(map[string][]QueuedFlushItem),
 		pendingWakeupByThread:      make(map[string]int64),
+		compactingSinceByThread:    make(map[string]int64),
 		commandLifecycle:           make(map[string]map[string]commandLifecycleEntry),
 		claimedFlushItems:          make(map[string]int),
 		workspacePathByThread:      make(map[string]string),
@@ -714,6 +722,8 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		return nil
 	case provider.EventBackgroundTaskNotification:
 		return r.handleBackgroundTaskNotification(evt)
+	case provider.EventCompactionStatus:
+		return r.handleCompactionStatus(evt)
 	case provider.EventSessionWakeup:
 		return r.handleSessionWakeup(evt)
 	case provider.EventSubagentNotification:

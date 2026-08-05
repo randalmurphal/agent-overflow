@@ -72,6 +72,17 @@ none fits.
   wire `result`). Emitted only when the wire carried one, because
   absence is "unknown" and an empty frame would render as a denial. No
   state, no persistence.
+- `compaction_status.go` — `provider:compacting`, the live per-thread
+  flag that the provider is summarizing this thread's context right now
+  (drives the activity rail's "Working" → "Compacting" label swap).
+  Opened by `EventCompactionStatus` Active frames (idempotent under
+  Claude's remote keep-alive repeats), closed by the explicit close
+  frame, the compact boundary, or turn completion — the turn boundary
+  is load-bearing because a failed Codex compaction abandons its item.
+  One bounded map (`compactingSinceByThread`, swept by `cleanupThread`
+  AND `MarkThreadActive`); nothing persists. Snapshot-carried in
+  `LiveStateSnapshot` because the window spans minutes of wire silence,
+  so a reconnect inside it has no frame to re-learn from.
 - `provider_commands.go` — `provider:commands`, the live per-thread
   projection of the provider's slash-command list. Fed by `system/init`
   (names only) and by `EventCommandsChanged` (rich entries). Follows
@@ -178,6 +189,7 @@ none fits.
 | Background task terminal (Claude) | `tool_completion` sibling row upsert (idempotent). See `turn-lifecycle.md`. |
 | Command lifecycle (Claude) | Live-only `provider:command_lifecycle` keyed onto the AO row id; nothing persists. Older CLIs emit no acks, so no routing decision may depend on them. See `command_lifecycle.go`. |
 | Fast-mode report (Claude) | Live-only `provider:fast_mode` from `system/init` and the wire `result`; nothing persists. Absence is unknown, never "off". See `fast_mode.go`. |
+| Compaction status | Live-only `provider:compacting` window per thread (open on Active frames, closed by close frame / compact boundary / turn completion); nothing persists. Snapshot-carried for reconnect. See `compaction_status.go`. |
 | Slash-command list (Claude) | Live-only `provider:commands` from `system/init` and `commands_changed`; nothing persists. Absence is silence, never an empty palette. See `provider_commands.go`. |
 | Command result (Claude local command) | `command_result` item (role `system`, status `completed`) + on-demand payload above the inline bound. Idempotent on the provider message id so the `result` echo does not duplicate it. See `command_result.go`. |
 | Session wakeup (Claude) | Per-thread pending-wakeup fire time in router state only — nothing persists, nothing emits. Consumed by the idle reaper via `PendingWakeupAt`. See `session_wakeup.go`. |

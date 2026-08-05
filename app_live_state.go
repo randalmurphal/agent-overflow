@@ -22,6 +22,11 @@ type ThreadLiveState struct {
 	Interactive            provider.PendingInteractiveRequests `json:"interactive"`
 	Todo                   *LiveStateTodo                      `json:"todo,omitempty"`
 	ProviderAccount        *ProviderSessionAccountEvent        `json:"providerAccount,omitempty"`
+	// CompactingSinceUnixMs is non-zero while the provider is compacting
+	// this thread's context (epoch ms of the window's start). Mirrors the
+	// `provider:compacting` push channel for refresh/reconnect — the
+	// window can span minutes of wire silence, so no push will restate it.
+	CompactingSinceUnixMs int64 `json:"compactingSinceUnixMs,omitempty"`
 }
 
 type LiveStateActiveTurn struct {
@@ -76,6 +81,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	live := a.triage.LiveStateSnapshotForThread(threadID)
 	state.EffectiveModel = live.EffectiveModel
 	state.EffectiveModelRevision = live.EffectiveModelRevision
+	state.CompactingSinceUnixMs = live.CompactingSinceUnixMs
 	if live.ActiveTurn != nil {
 		state.ActiveTurn = &LiveStateActiveTurn{
 			ThreadID:  live.ActiveTurn.ThreadID,

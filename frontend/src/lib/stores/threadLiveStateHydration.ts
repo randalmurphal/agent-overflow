@@ -26,6 +26,7 @@ import {
 } from './sendQueue.svelte';
 import type { ThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import type { LiveTodoState } from './liveTodoState.svelte';
+import { hydrateCompactingState } from './compactingState.svelte';
 
 export interface ThreadLiveStateHydrationOptions {
   getThread(): Thread | null;
@@ -162,6 +163,10 @@ export function createThreadLiveStateHydration(
       snapshot.effectiveModelRevision ?? 0,
       guard.effectiveModelRevisionAtRequest,
     );
+    // Compacting can span minutes of wire silence, so a refresh inside the
+    // window has no upcoming frame to learn it from — the snapshot is the
+    // only source. 0 clears a flag the window's close outran.
+    hydrateCompactingState(threadID, snapshot.compactingSinceUnixMs ?? 0);
   }
 
   async function hydrateThreadLiveState(

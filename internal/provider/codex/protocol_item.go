@@ -81,7 +81,25 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 				Meta:      mergeMetaKeys(params, map[string]any{"kind": "review_status", "title": "Code review started"}),
 				Timestamp: now,
 			}}, true
-		case "send_input", "close_agent", "exitedReviewMode", "contextCompaction", "hookPrompt":
+		case "contextCompaction":
+			// Compaction start (manual thread/compact/start or auto,
+			// codex ≥0.96 — all three core compaction paths emit the
+			// item pair). Opens the live compacting window; the matching
+			// item/completed arrives below as EventCompactBoundary and
+			// closes it. A FAILED compaction never completes its item
+			// (core sends an error and abandons it), so triage also
+			// clears on turn completion.
+			meta, _ := json.Marshal(provider.CompactionStatusMeta{Active: true})
+			return []provider.ProviderEvent{{
+				Kind:      provider.EventCompactionStatus,
+				ThreadID:  threadID,
+				TurnID:    readTopLevelString(params, "turnId"),
+				ItemID:    itemID,
+				ItemType:  itemType,
+				Meta:      meta,
+				Timestamp: now,
+			}}, true
+		case "send_input", "close_agent", "exitedReviewMode", "hookPrompt":
 			return nil, true
 		}
 		if itemType == "" || isNonToolCodexItemType(itemType) {

@@ -196,6 +196,13 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		}
 	}()
 
+	// A turn boundary always closes the live compacting window: a failed
+	// Codex compaction abandons its contextCompaction item without
+	// completing it, so no boundary or explicit close frame ever arrives —
+	// the turn's own completion is the only reliable close. No-op when no
+	// window is open (compaction_status.go).
+	r.clearCompacting(evt.ThreadID)
+
 	// Two-cadence shape (see internal/triage/AGENTS.md "Wire-round vs
 	// logical-turn"):
 	//
@@ -1533,6 +1540,10 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	// session, so its record must not outlive it and shield a future
 	// session from the idle reaper.
 	delete(r.pendingWakeupByThread, threadID)
+	// A compacting window belongs to the process running the compaction;
+	// the frontend drops its copy on the same session-teardown path, so
+	// no inactive frame is emitted here.
+	delete(r.compactingSinceByThread, threadID)
 	// Command-lifecycle correlation is send-time carry-over for THIS
 	// process's stdin writes. A replacement session never acks them, so
 	// entries left behind would linger until the per-thread cap evicted
@@ -1651,6 +1662,9 @@ func (r *Router) MarkThreadActive(threadID string) {
 	// fire time would shield the fresh session from the idle reaper for
 	// up to the wakeup clamp (60 min).
 	delete(r.pendingWakeupByThread, threadID)
+	// A replacement process is never mid-compaction; a stale window would
+	// pin a "Compacting" label onto the fresh session.
+	delete(r.compactingSinceByThread, threadID)
 	// Same reasoning for the command-lifecycle correlation: the acks it
 	// waits on can only come from the process that just died.
 	delete(r.commandLifecycle, threadID)

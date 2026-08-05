@@ -573,3 +573,78 @@ func TestParseResult_SuccessSubtypeIsErrorTruePopulatesMetaError(t *testing.T) {
 		t.Fatalf("ErrorMessage: got %v, want rate_limit", meta.ErrorMessage)
 	}
 }
+
+// -- system/status tests (claude-wire.md §system/status; envelopes verified
+// against real 2.1.219 captures, manual /compact + auto-compact runs of
+// 2026-08-05) --
+
+func requireCompactionStatus(t *testing.T, events []provider.ProviderEvent) provider.CompactionStatusMeta {
+	t.Helper()
+	if len(events) != 1 || events[0].Kind != provider.EventCompactionStatus {
+		t.Fatalf("events = %+v, want one EventCompactionStatus", events)
+	}
+	var meta provider.CompactionStatusMeta
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	return meta
+}
+
+func TestParseSystem_StatusCompactingOpensWindow(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"status","status":"compacting","session_id":"s1","uuid":"u1"}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	meta := requireCompactionStatus(t, events)
+	if !meta.Active || meta.Result != "" || meta.ErrorMessage != "" {
+		t.Fatalf("meta = %+v, want bare Active=true", meta)
+	}
+}
+
+func TestParseSystem_StatusCompactResultSuccessClosesWindow(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"s1","uuid":"u2"}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	meta := requireCompactionStatus(t, events)
+	if meta.Active || meta.Result != "success" || meta.ErrorMessage != "" {
+		t.Fatalf("meta = %+v, want inactive success", meta)
+	}
+}
+
+func TestParseSystem_StatusCompactResultFailedCarriesError(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"API Error: Request was aborted.","session_id":"s1","uuid":"u3"}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	meta := requireCompactionStatus(t, events)
+	if meta.Active || meta.Result != "failed" {
+		t.Fatalf("meta = %+v, want inactive failed", meta)
+	}
+	if meta.ErrorMessage != "API Error: Request was aborted." {
+		t.Fatalf("ErrorMessage = %q", meta.ErrorMessage)
+	}
+}
+
+// `status:"requesting"` fires on every API request during ordinary turns;
+// it must stay dropped — turn activity is already wire-pushed through the
+// round lifecycle. Unknown values take the same path: this channel is
+// additive and a new value must not become an event nothing routes.
+func TestParseSystem_StatusRequestingAndUnknownDropped(t *testing.T) {
+	for _, line := range []string{
+		`{"type":"system","subtype":"status","status":"requesting","session_id":"s1","uuid":"u4"}`,
+		`{"type":"system","subtype":"status","status":"defragmenting","session_id":"s1","uuid":"u5"}`,
+		`{"type":"system","subtype":"status","status":null,"session_id":"s1","uuid":"u6"}`,
+	} {
+		events, err := ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("parse %s: %v", line, err)
+		}
+		if len(events) != 0 {
+			t.Fatalf("events for %s = %+v, want none", line, events)
+		}
+	}
+}

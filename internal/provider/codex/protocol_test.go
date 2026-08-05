@@ -1448,3 +1448,26 @@ func TestClassifyNotification_TurnCompletedNormalizesStatus(t *testing.T) {
 		})
 	}
 }
+
+// `item/started` for a contextCompaction item opens the live compacting
+// window (codex ≥0.96 emits the pair from every compaction path, manual
+// and auto). Its `item/completed` half is separately pinned as the
+// EventCompactBoundary source; a FAILED compaction never completes the
+// item, which is why triage also clears the window on turn completion.
+func TestClassifyItemNotification_ContextCompactionStartedOpensCompactingWindow(t *testing.T) {
+	params := `{"turnId":"turn-9","item":{"id":"item-cc1","type":"contextCompaction"}}`
+	events := ClassifyNotification("thread-1", "item/started", json.RawMessage(params))
+	if len(events) != 1 || events[0].Kind != provider.EventCompactionStatus {
+		t.Fatalf("events = %+v, want one EventCompactionStatus", events)
+	}
+	if events[0].ItemID != "item-cc1" || events[0].TurnID != "turn-9" {
+		t.Fatalf("event ids = %+v", events[0])
+	}
+	var meta provider.CompactionStatusMeta
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	if !meta.Active {
+		t.Fatalf("meta = %+v, want Active=true", meta)
+	}
+}

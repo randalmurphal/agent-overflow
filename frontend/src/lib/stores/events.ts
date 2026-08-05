@@ -105,6 +105,10 @@ import {
   type FastModeStatePayload,
 } from './fastModeState.svelte';
 import {
+  applyCompactingState,
+  type CompactingStatePayload,
+} from './compactingState.svelte';
+import {
   applyProviderCommands,
   type ProviderCommandsPayload,
 } from './providerCommands.svelte';
@@ -324,6 +328,15 @@ export function setupEventListeners(): () => void {
     applyFastModeState,
   );
 
+  // provider:compacting — the provider is summarizing this thread's context
+  // right now. Swaps the activity rail's "Working" label to "Compacting" for
+  // the duration; the window can span minutes of wire silence, so refresh
+  // re-learns it from GetThreadLiveState rather than from a frame.
+  const cancelCompactingState = wailsEventOn<CompactingStatePayload>(
+    'provider:compacting',
+    applyCompactingState,
+  );
+
   // provider:commands — the CLI's own list of slash commands it will execute
   // without an API call. Restated wholesale on every session init and every
   // `commands_changed` push, so the newest frame REPLACES the previous one;
@@ -490,6 +503,7 @@ export function setupEventListeners(): () => void {
     cancelQueueRestored();
     cancelCommandLifecycle();
     cancelFastModeState();
+    cancelCompactingState();
     cancelProviderCommands();
     cancelUserMessageReverted();
     cancelThreadUpdated();

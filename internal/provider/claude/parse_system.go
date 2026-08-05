@@ -73,6 +73,9 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 			Timestamp: now,
 		}}, nil
 
+	case "status":
+		return parseStatusEvent(threadID, raw, now)
+
 	case "tool_progress":
 		// Streaming tool progress is intentionally dropped. The chat rewrite
 		// renders successive tool_call summary upserts rather than a parallel
@@ -296,6 +299,59 @@ const (
 	maxClaudeFallbackLabelRunes       = 64
 	maxClaudeFallbackIDRunes          = 128
 )
+
+// parseStatusEvent handles `system/status`, the CLI's general activity
+// status channel (claude-wire.md §system/status; verified 2.1.219):
+//
+//   - `{"status":"compacting"}` — a compaction (manual /compact or
+//     auto, both route through the CLI's shared compactConversation)
+//     just started, and the wire will now go silent until it resolves.
+//     Remote sessions may re-emit it as a 30s keep-alive; triage treats
+//     repeats as idempotent.
+//   - `{"status":null,"compact_result":"success"}` — compaction
+//     finished; `system/compact_boundary` follows within milliseconds.
+//   - `{"status":null,"compact_result":"failed","compact_error":…}` —
+//     compaction failed or was interrupted; no boundary follows.
+//   - `{"status":"requesting"}` — the CLI opened an API request. Fires
+//     constantly during ordinary turns; deliberately dropped because
+//     turn activity is already wire-pushed through the round lifecycle.
+//
+// Unknown status values are dropped like `requesting` — this channel is
+// additive and a new value must not become an event nothing routes.
+func parseStatusEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
+	status := readRawString(raw["status"])
+	compactResult := readRawString(raw["compact_result"])
+	switch {
+	case status == "compacting":
+		meta, err := json.Marshal(provider.CompactionStatusMeta{Active: true})
+		if err != nil {
+			return nil, fmt.Errorf("parse system status: marshal compacting meta: %w", err)
+		}
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventCompactionStatus,
+			ThreadID:  threadID,
+			Meta:      meta,
+			Timestamp: now,
+		}}, nil
+	case compactResult != "":
+		meta, err := json.Marshal(provider.CompactionStatusMeta{
+			Active:       false,
+			Result:       compactResult,
+			ErrorMessage: readRawString(raw["compact_error"]),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("parse system status: marshal compact_result meta: %w", err)
+		}
+		return []provider.ProviderEvent{{
+			Kind:      provider.EventCompactionStatus,
+			ThreadID:  threadID,
+			Meta:      meta,
+			Timestamp: now,
+		}}, nil
+	default:
+		return nil, nil
+	}
+}
 
 func boundedClaudeFallbackField(value string, maxRunes int) string {
 	value = strings.TrimSpace(value)
