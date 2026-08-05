@@ -54,11 +54,17 @@ hostile token literal can't break out of the inline `<script>` tag.
 - Do NOT add a WebSocket upgrade or RPC dispatch here. The whole
   point of `--connect` is to skip the local transport; reintroducing
   it would defeat the design.
-- Do NOT pipe the bootstrap through `/bootstrap.json` instead of
-  injecting into the page. The manifest fetch path is for the
-  embedded-webview deployment; the `--connect` path uses the
-  global to avoid an extra round-trip and to keep the loopback
-  HTTP server side-effect free.
+- Do NOT replace the index injection with a first-load
+  `/bootstrap.json` fetch. The global keeps startup zero-round-trip
+  and tolerant of a briefly unreachable upstream. The stub DOES serve
+  `/bootstrap.json` — but only as the credential revalidation probe
+  (`handleBootstrap`): the SPA refetches it mid-outage, the stub asks
+  the upstream from Go (CORS-free), and a refused token maps to the
+  same 404 a browser session observes, which is what lets the SPA's
+  terminal 'unauthorized' state cover `--connect` clients. On success
+  it answers with the stub's OWN manifest — the upstream's names wsUrl
+  from the server's perspective (wrong through an SSH tunnel) and
+  carries no `mode:"client"`.
 - Do NOT bind to anything other than 127.0.0.1. The loopback server
   is the boot shim for the local Wails webview; nothing else should
   reach it.

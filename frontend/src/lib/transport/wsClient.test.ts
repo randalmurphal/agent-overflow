@@ -767,6 +767,42 @@ describe('WSClient', () => {
     }
   });
 
+  it('marks the post-invalidation refetch as a revalidation', async () => {
+    // An injected (--connect) manifest short-circuits an ordinary fetch,
+    // so the fetcher must be told when the refetch exists to observe a
+    // suspect credential (defaultBootstrap then routes it through the
+    // stub's /bootstrap.json probe). The flag arms on invalidation and
+    // stands down once a fetch resolves.
+    vi.useFakeTimers();
+    try {
+      const calls: Array<boolean | undefined> = [];
+      const client = createWSClient({
+        WebSocketCtor: FakeCtor,
+        bootstrap: async (opts?: { revalidate?: boolean }) => {
+          calls.push(opts?.revalidate);
+          return { wsUrl: 'ws://example/ws', token: 't', remote: true };
+        },
+      });
+      client.subscribe('x', () => {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toEqual([false]);
+
+      // Two consecutive pre-open deaths trip the cache invalidation; the
+      // refetch that follows must carry the revalidation mark, and the
+      // pre-invalidation attempts must not have fetched at all (cache).
+      for (let i = 0; i < BOOTSTRAP_INVALIDATE_AFTER_FAILURES; i++) {
+        MockWebSocket.instances.at(-1)!.triggerClose();
+        await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
+      }
+      expect(calls).toEqual([false, true]);
+      MockWebSocket.instances.at(-1)!.acceptOpen();
+      await vi.advanceTimersByTimeAsync(0);
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps a stashed token the server refuses', async () => {
     // Re-presenting a stale token costs the identical 404, so clearing
     // buys nothing — and it would destroy the one copy that lets a page

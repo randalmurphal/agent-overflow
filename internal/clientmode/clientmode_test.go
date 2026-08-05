@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -582,5 +583,130 @@ func TestServe_ShutdownIsIdempotent(t *testing.T) {
 	}
 	if err := srv.Shutdown(ctx); err != nil {
 		t.Fatalf("second Shutdown: %v", err)
+	}
+}
+
+func TestUpstreamBootstrapURL(t *testing.T) {
+	tests := []struct {
+		wsURL string
+		want  string
+	}{
+		{"ws://host:1234/ws", "http://host:1234/bootstrap.json"},
+		{"wss://host/ws", "https://host/bootstrap.json"},
+		{"wss://host/ao/ws", "https://host/ao/bootstrap.json"},
+		{"ws://host:1234/", "http://host:1234/bootstrap.json"},
+		{"ws://host:1234", "http://host:1234/bootstrap.json"},
+	}
+	for _, tt := range tests {
+		got, err := upstreamBootstrapURL(tt.wsURL)
+		if err != nil {
+			t.Errorf("upstreamBootstrapURL(%q): %v", tt.wsURL, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("upstreamBootstrapURL(%q) = %q, want %q", tt.wsURL, got, tt.want)
+		}
+	}
+}
+
+// serveWithUpstream boots a stub whose WSURL points at the given
+// upstream httptest server, so /bootstrap.json probes land there.
+func serveWithUpstream(t *testing.T, upstream *httptest.Server) *Server {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(upstream.URL, "http") + "/ws"
+	srv, err := Serve(Config{
+		WSURL:  wsURL,
+		Token:  "tok-live",
+		Assets: fakeAssets(),
+	})
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+	return srv
+}
+
+// TestHandleBootstrap_RelaysVerdicts pins the whole revalidation
+// contract: the stub probes the upstream manifest endpoint with its
+// configured token, and maps upstream 200 → the stub's OWN manifest
+// (upstream wsUrl would be wrong through a tunnel and carries no
+// mode:"client"), refusal → 404, upstream-down → 503.
+func TestHandleBootstrap_RelaysVerdicts(t *testing.T) {
+	var upstreamStatus int
+	var sawToken string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bootstrap.json" {
+			t.Errorf("upstream probed at %q, want /bootstrap.json", r.URL.Path)
+		}
+		sawToken = r.URL.Query().Get("t")
+		w.WriteHeader(upstreamStatus)
+		if upstreamStatus == http.StatusOK {
+			_, _ = w.Write([]byte(`{"wsUrl":"ws://upstream-perspective/ws","token":"tok-live"}`))
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	srv := serveWithUpstream(t, upstream)
+
+	get := func() (*http.Response, string) {
+		t.Helper()
+		resp, err := http.Get(srv.AppURL() + "bootstrap.json")
+		if err != nil {
+			t.Fatalf("GET /bootstrap.json: %v", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		return resp, string(body)
+	}
+
+	upstreamStatus = http.StatusOK
+	resp, body := get()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upstream 200: stub status = %d, want 200", resp.StatusCode)
+	}
+	if sawToken != "tok-live" {
+		t.Errorf("upstream saw token %q, want the configured tok-live", sawToken)
+	}
+	if !strings.Contains(body, `"mode":"client"`) || strings.Contains(body, "upstream-perspective") {
+		t.Errorf("stub must serve its own manifest, not the upstream's: %s", body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	upstreamStatus = http.StatusNotFound
+	resp, _ = get()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("upstream 404: stub status = %d, want 404", resp.StatusCode)
+	}
+
+	upstreamStatus = http.StatusServiceUnavailable
+	resp, _ = get()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("upstream 503: stub status = %d, want 503 (transient stays transient)", resp.StatusCode)
+	}
+}
+
+// TestHandleBootstrap_UnreachableUpstreamIsTransient pins that a dead
+// network answers 503, never 404 — the SPA latches its terminal state
+// on 404, and "can't reach the backend" is not "the backend refused".
+func TestHandleBootstrap_UnreachableUpstreamIsTransient(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	upstream.Close() // deliberately dead
+	srv := serveWithUpstream(t, upstream)
+
+	resp, err := http.Get(srv.AppURL() + "bootstrap.json")
+	if err != nil {
+		t.Fatalf("GET /bootstrap.json: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("dead upstream: stub status = %d, want 503", resp.StatusCode)
 	}
 }

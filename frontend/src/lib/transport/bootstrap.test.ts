@@ -65,7 +65,69 @@ describe('pageServedOverLoopback', () => {
 describe('defaultBootstrap', () => {
   afterEach(() => {
     window.sessionStorage.clear();
+    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
     vi.unstubAllGlobals();
+  });
+
+  const INJECTED = {
+    wsUrl: 'ws://desktop.tailnet.ts.net:8790/ws',
+    token: 'tok-injected',
+    mode: 'client',
+    remote: true,
+  };
+
+  it('returns the injected manifest without fetching on first load', async () => {
+    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { ...INJECTED };
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const b = await defaultBootstrap();
+
+    expect(b.token).toBe('tok-injected');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // The `--connect` stub serves /bootstrap.json on the page's own
+  // origin by probing the upstream from Go (CORS-free), so a
+  // revalidation must NOT short-circuit on the injected global — the
+  // fetch is the whole point.
+  it('revalidates an injected manifest through the stub origin', async () => {
+    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { ...INJECTED };
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify(INJECTED), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const b = await defaultBootstrap({ revalidate: true });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/bootstrap.json?t=tok-injected',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    );
+    expect(b.wsUrl).toBe(INJECTED.wsUrl);
+    expect(b.remote).toBe(true);
+  });
+
+  it('surfaces the stub-relayed refusal as BootstrapRejectedError', async () => {
+    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { ...INJECTED };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+
+    await expect(defaultBootstrap({ revalidate: true })).rejects.toBeInstanceOf(
+      BootstrapRejectedError,
+    );
+  });
+
+  it('keeps a stub-relayed 503 transient', async () => {
+    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { ...INJECTED };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('unreachable', { status: 503 })));
+
+    const err = await defaultBootstrap({ revalidate: true }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(BootstrapRejectedError);
   });
 
   // Clearing on refusal would buy nothing (a re-presented stale token

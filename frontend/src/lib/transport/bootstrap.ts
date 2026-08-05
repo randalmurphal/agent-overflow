@@ -127,17 +127,26 @@ function writeStoredToken(token: string): void {
 // the first time anyone calls `ensureConnected`; subsequent calls reuse
 // the cached promise.
 //
-// Known gap on the injected path: `--connect` clients never issue this
-// fetch, so a refused credential has no observable signal there. The
-// browser WebSocket API reports a rejected upgrade as a bare 1006, and
-// probing the remote `/bootstrap.json` cross-origin fails on CORS +
-// the loopback Host guard (server.go) — i.e. it is indistinguishable
-// from "server down" too. Those clients stay in the honest-but-vague
-// 'reconnecting' state; closing the gap needs a CORS-safe backend
-// affordance, which is a wire-surface change, not a client fix.
-export async function defaultBootstrap(): Promise<Bootstrap> {
+// The injected path CAN observe a refusal, via its own origin: the
+// `--connect` stub serves /bootstrap.json by probing the upstream
+// backend with its configured token from Go, where CORS does not apply
+// (clientmode.handleBootstrap). The page itself could never ask the
+// upstream — a cross-origin fetch dies on CORS and a rejected WS
+// upgrade is a bare 1006 — so `revalidate` is what routes a reconnect
+// outage's refetch through the stub instead of short-circuiting on the
+// injected global. First load keeps the zero-round-trip injected
+// answer.
+export async function defaultBootstrap(opts?: { revalidate?: boolean }): Promise<Bootstrap> {
   const injected = (globalThis as { __AO_BOOTSTRAP__?: Bootstrap }).__AO_BOOTSTRAP__;
   if (injected && typeof injected.wsUrl === 'string' && typeof injected.token === 'string') {
+    if (opts?.revalidate) {
+      // Ask the stub for the upstream's verdict. 404 → the same
+      // BootstrapRejectedError a browser session gets, which is what
+      // lets the credentialDead latch cover --connect clients too; the
+      // manifest a 200 returns is the stub's own (wsUrl as configured,
+      // mode:"client"), so nothing about the session shifts.
+      return fetchManifest(injected.token, '');
+    }
     validateWsUrl(injected.wsUrl);
     const normalized = { ...injected, mode: normalizeRunMode(injected.mode), remote: injected.remote === true };
     setViewOnlySessionFromBootstrap(normalized.remote);
@@ -147,6 +156,15 @@ export async function defaultBootstrap(): Promise<Bootstrap> {
   const params = new URLSearchParams(search);
   const urlToken = params.get('t') ?? '';
   const token = urlToken !== '' ? urlToken : readStoredToken();
+  return fetchManifest(token, urlToken);
+}
+
+// fetchManifest is the one /bootstrap.json fetch + validation path,
+// shared by the browser flow (token from URL or sessionStorage) and the
+// injected flow's revalidation (token from the injected manifest, and
+// the stub answers). urlToken gates the history scrub — only a page
+// that actually carries ?t= has anything to remove.
+async function fetchManifest(token: string, urlToken: string): Promise<Bootstrap> {
   const url = `/bootstrap.json?t=${encodeURIComponent(token)}`;
   const resp = await fetch(url, { credentials: 'same-origin' });
   if (!resp.ok) {

@@ -76,6 +76,19 @@ type Server struct {
 	// Serve returns.
 	indexHTML []byte
 
+	// bootstrapJSON is the same manifest the index injection carries,
+	// served on /bootstrap.json after a successful upstream probe. One
+	// build at Serve time; never mutated.
+	bootstrapJSON []byte
+
+	// upstreamBootstrapURL is the upstream backend's own /bootstrap.json
+	// (derived from Config.WSURL), which the probe hits with the
+	// configured token to learn whether that token is still honoured.
+	upstreamBootstrapURL string
+
+	// probeClient bounds the upstream probe. Overridable in tests.
+	probeClient *http.Client
+
 	wg       sync.WaitGroup
 	stopOnce sync.Once
 }
@@ -142,11 +155,13 @@ func ParseConnectURL(raw string) (Config, error) {
 // bound — caller can read AppURL() to discover the resolved address
 // and hand it to the Wails webview.
 //
-// The server is single-purpose: serve the embedded SPA bundle with
-// the bootstrap manifest injected into index.html. There is no WS
-// upgrade, no RPC dispatch, no /bootstrap.json endpoint; the SPA's
-// wsClient reads window.__AO_BOOTSTRAP__ on first call and never
-// hits the loopback HTTP server again after the initial page load.
+// The server serves the embedded SPA bundle with the bootstrap
+// manifest injected into index.html — the SPA's wsClient reads
+// window.__AO_BOOTSTRAP__ on first call — plus one /bootstrap.json
+// route that revalidates the configured token against the upstream
+// backend when the SPA suspects it died (see handleBootstrap). There
+// is no WS upgrade and no RPC dispatch; the SPA talks to the upstream
+// transport directly.
 func Serve(cfg Config) (*Server, error) {
 	if cfg.Assets == nil {
 		return nil, errors.New("clientmode: Config.Assets is required")
@@ -170,9 +185,17 @@ func Serve(cfg Config) (*Server, error) {
 		cfg.HTTPWriteTimeout = 60 * time.Second
 	}
 
-	indexHTML, err := buildInjectedIndex(cfg.Assets, cfg.WSURL, cfg.Token, cfg.ClientID)
+	bootstrapJSON, err := manifestJSON(cfg.WSURL, cfg.Token, cfg.ClientID)
+	if err != nil {
+		return nil, fmt.Errorf("clientmode: build bootstrap manifest: %w", err)
+	}
+	indexHTML, err := buildInjectedIndex(cfg.Assets, bootstrapJSON)
 	if err != nil {
 		return nil, fmt.Errorf("clientmode: build injected index: %w", err)
+	}
+	upstreamBootstrap, err := upstreamBootstrapURL(cfg.WSURL)
+	if err != nil {
+		return nil, fmt.Errorf("clientmode: derive upstream bootstrap URL: %w", err)
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.BindAddr, cfg.Port)
@@ -182,13 +205,17 @@ func Serve(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		cfg:       cfg,
-		listener:  listener,
-		indexHTML: indexHTML,
+		cfg:                  cfg,
+		listener:             listener,
+		indexHTML:            indexHTML,
+		bootstrapJSON:        bootstrapJSON,
+		upstreamBootstrapURL: upstreamBootstrap,
+		probeClient:          &http.Client{Timeout: bootstrapProbeTimeout},
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/bootstrap.json", s.handleBootstrap)
 	mux.Handle("/assets/", withSecurityHeaders(http.FileServerFS(cfg.Assets)))
 
 	// loopbackOnly wraps every route with a Host-header check so an
@@ -284,6 +311,106 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(s.indexHTML)
 }
 
+// bootstrapProbeTimeout bounds one upstream credential probe. The SPA
+// treats a probe failure as transient and stays on its reconnect
+// ladder, so a slow answer only delays the verdict — it never wedges
+// anything.
+const bootstrapProbeTimeout = 5 * time.Second
+
+// handleBootstrap serves the stub's own manifest after revalidating the
+// configured token against the upstream backend. It exists for exactly
+// one caller: the SPA's reconnect path, which — after consecutive
+// connect failures — refetches /bootstrap.json from its own origin to
+// learn whether its credential is still honoured. The webview page
+// cannot ask the upstream itself (cross-origin fetch dies on CORS, and
+// a rejected WS upgrade is a bare 1006), but this Go process can, which
+// is what turns "backend restarted, token dead" from an indefinite
+// reconnect loop into the SPA's terminal unauthorized state. No
+// upstream change, no CORS exposure: the upstream still answers a
+// wrong token with its unfingerprintable 404, and only this loopback
+// stub — which already holds the token — gets to observe it.
+//
+// The response body on success is the stub's OWN manifest, not the
+// upstream's: the upstream names wsUrl from its perspective, which is
+// the wrong host through an SSH tunnel, and it carries neither
+// mode:"client" nor the clientId. Status mapping mirrors the upstream
+// transport's semantics (transport/AGENTS.md "Token refusal is a
+// 404"): refusal maps to 404, everything transient — network failure
+// included — to 503 so the SPA keeps its ladder.
+func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	probeURL := s.upstreamBootstrapURL + "?t=" + url.QueryEscape(s.cfg.Token)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, probeURL, nil)
+	if err != nil {
+		log.Printf("clientmode: build bootstrap probe request: %v", err)
+		http.Error(w, "bootstrap probe unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	resp, err := s.probeClient.Do(req)
+	if err != nil {
+		// Unreachable upstream is indistinguishable from a mid-outage
+		// backend; the SPA's ladder owns retrying.
+		http.Error(w, "backend unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	// The verdict is the status code; the body is drained only so the
+	// connection can be reused.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	_ = resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		// The token is no longer honoured. Same set the SPA's
+		// CREDENTIAL_REFUSED_STATUSES treats as definitive.
+		http.NotFound(w, r)
+		return
+	default:
+		// 503 readiness gate, 500 startup failure, anything unexpected:
+		// transient by the upstream's own contract.
+		http.Error(w, "backend not ready", http.StatusServiceUnavailable)
+		return
+	}
+
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	// The manifest holds the token — same no-store posture as the shell.
+	h.Set("Cache-Control", "no-store, max-age=0")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_, _ = w.Write(s.bootstrapJSON)
+}
+
+// upstreamBootstrapURL maps the configured WS endpoint onto the upstream
+// transport's manifest endpoint: ws→http / wss→https, and a trailing
+// /ws path segment (the transport's upgrade route) replaced by
+// /bootstrap.json so a reverse-proxy path prefix survives.
+func upstreamBootstrapURL(wsURL string) (string, error) {
+	parsed, err := url.Parse(wsURL)
+	if err != nil {
+		return "", fmt.Errorf("parse ws url: %w", err)
+	}
+	switch parsed.Scheme {
+	case "ws":
+		parsed.Scheme = "http"
+	case "wss":
+		parsed.Scheme = "https"
+	default:
+		return "", fmt.Errorf("unsupported scheme %q", parsed.Scheme)
+	}
+	prefix := strings.TrimSuffix(strings.TrimSuffix(parsed.Path, "/"), "/ws")
+	parsed.Path = prefix + "/bootstrap.json"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
+
 // loopbackOnly is a DNS-rebinding defense. The stub binds to 127.0.0.1,
 // but a hostile site whose DNS resolves to 127.0.0.1 could navigate the
 // user to http://attacker.tld:<our-port>/ and the embedded bootstrap
@@ -329,42 +456,28 @@ func withSecurityHeaders(next http.Handler) http.Handler {
 // <head> tag, so it executes before any module preload completes.
 const bootstrapTag = "<head>"
 
-// buildInjectedIndex reads index.html from the embedded fs and
-// inserts the bootstrap script immediately after the opening <head>
-// tag. The script declares window.__AO_BOOTSTRAP__ so wsClient.ts
-// reads it on its first call and skips the /bootstrap.json fetch.
+// manifestJSON marshals the bootstrap manifest the stub hands the SPA —
+// via the index injection at first load, and again from /bootstrap.json
+// when the SPA revalidates a suspect credential. One builder for both,
+// so the two answers can never disagree about wsUrl, mode, or locality.
 //
-// JSON marshalling of the {wsUrl, token} pair is the single source of
-// the literal we inject — manual string concatenation would risk
-// quote-escaping bugs against tokens or URLs containing arbitrary
-// bytes.
-func buildInjectedIndex(assets fs.FS, wsURL, token, clientID string) ([]byte, error) {
-	indexFile, err := assets.Open("index.html")
-	if err != nil {
-		return nil, fmt.Errorf("open index.html: %w", err)
-	}
-	defer indexFile.Close()
-	raw, err := io.ReadAll(indexFile)
-	if err != nil {
-		return nil, fmt.Errorf("read index.html: %w", err)
-	}
-
-	// mode: "client" tells the SPA it is attached to a remote backend
-	// rather than a local Wails-embedded transport. Local-only settings
-	// panels (Network bind toggle, Remote endpoints list) inspect this
-	// field and render a "edit from your local install" placeholder
-	// instead of letting the user mutate the *remote* server's settings
-	// through it. The transport's Bootstrap (server.go) does not carry mode;
-	// defaultBootstrap in wsClient.ts treats its absence as "local". The
-	// separate remote bit is derived below from the upstream endpoint, matching
-	// the locality bit a browser receives from the transport bootstrap.
+// mode: "client" tells the SPA it is attached to a remote backend
+// rather than a local Wails-embedded transport. Local-only settings
+// panels (Network bind toggle, Remote endpoints list) inspect this
+// field and render a "edit from your local install" placeholder
+// instead of letting the user mutate the *remote* server's settings
+// through it. The transport's Bootstrap (server.go) does not carry mode;
+// defaultBootstrap in wsClient.ts treats its absence as "local". The
+// separate remote bit is derived from the upstream endpoint, matching
+// the locality bit a browser receives from the transport bootstrap.
+func manifestJSON(wsURL, token, clientID string) ([]byte, error) {
 	parsedWSURL, err := url.Parse(wsURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse bootstrap websocket URL: %w", err)
 	}
 	remote := !isLoopbackEndpointHost(parsedWSURL.Host)
 
-	bootstrapJSON, err := json.Marshal(struct {
+	manifest, err := json.Marshal(struct {
 		WSURL    string `json:"wsUrl"`
 		Token    string `json:"token"`
 		Mode     string `json:"mode"`
@@ -379,6 +492,27 @@ func buildInjectedIndex(assets fs.FS, wsURL, token, clientID string) ([]byte, er
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal bootstrap: %w", err)
+	}
+	return manifest, nil
+}
+
+// buildInjectedIndex reads index.html from the embedded fs and
+// inserts the bootstrap script immediately after the opening <head>
+// tag. The script declares window.__AO_BOOTSTRAP__ so wsClient.ts
+// reads it on its first call and skips the /bootstrap.json fetch.
+//
+// JSON marshalling of the manifest is the single source of the literal
+// we inject — manual string concatenation would risk quote-escaping
+// bugs against tokens or URLs containing arbitrary bytes.
+func buildInjectedIndex(assets fs.FS, bootstrapJSON []byte) ([]byte, error) {
+	indexFile, err := assets.Open("index.html")
+	if err != nil {
+		return nil, fmt.Errorf("open index.html: %w", err)
+	}
+	defer indexFile.Close()
+	raw, err := io.ReadAll(indexFile)
+	if err != nil {
+		return nil, fmt.Errorf("read index.html: %w", err)
 	}
 
 	// </script>-safe rendering. encoding/json's default (escapeHTML=true)

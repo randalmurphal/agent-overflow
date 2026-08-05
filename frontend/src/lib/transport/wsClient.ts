@@ -215,8 +215,13 @@ interface WSLike {
 const WS_OPEN = 1;
 
 // BootstrapFetcher is the indirection that lets tests inject a fake
-// bootstrap without poking at window.location.
-type BootstrapFetcher = () => Promise<Bootstrap>;
+// bootstrap without poking at window.location. `revalidate` is set on
+// the refetch that follows a bootstrap-cache invalidation: an injected
+// (`--connect`) manifest must not short-circuit that fetch, because the
+// whole point of the refetch is to observe whether the credential is
+// still honoured (defaultBootstrap routes it through the stub's
+// /bootstrap.json probe). Fetchers that don't distinguish may ignore it.
+type BootstrapFetcher = (opts?: { revalidate?: boolean }) => Promise<Bootstrap>;
 
 interface WSClientOptions {
   // For tests: a constructor that yields a fake WSLike.
@@ -322,6 +327,11 @@ export class WSClient {
   // the bootstrap cache mid-outage doesn't flip a remote client onto
   // the aggressive local retry cadence.
   private remoteBackend = false;
+  // Set when the bootstrap cache was invalidated on suspicion of a dead
+  // credential; tells the next fetch to actually revalidate instead of
+  // short-circuiting on an injected manifest. Cleared once a fetch
+  // resolves — the answer it produced is current again.
+  private bootstrapRevalidate = false;
   // Terminal latch: the backend refused this session's credential and
   // this session cannot mint another one (see enterCredentialDead).
   // While set, the automatic reconnect ladder is stopped and the status
@@ -915,6 +925,7 @@ export class WSClient {
         // failure from here on.
         this.bootstrap = null;
         this.bootstrapPromise = null;
+        this.bootstrapRevalidate = true;
         this.preOpenFailures = 0;
       }
       // First-attempt failure: surface to the awaiter so the call
@@ -1073,7 +1084,7 @@ export class WSClient {
   private getBootstrap(): Promise<Bootstrap> {
     if (this.bootstrap) return Promise.resolve(this.bootstrap);
     if (!this.bootstrapPromise) {
-      const p = this.fetchBootstrap().then((b) => {
+      const p = this.fetchBootstrap({ revalidate: this.bootstrapRevalidate }).then((b) => {
         // Only a still-current fetch may populate the cache: the close
         // handler nulls bootstrapPromise mid-flight when it invalidates
         // the cache, and a superseded fetch landing late must not
@@ -1081,6 +1092,7 @@ export class WSClient {
         if (this.bootstrapPromise === p) {
           this.bootstrap = b;
           this.remoteBackend = b.remote === true;
+          this.bootstrapRevalidate = false;
         }
         return b;
       });
