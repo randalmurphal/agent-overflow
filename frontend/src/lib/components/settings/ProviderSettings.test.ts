@@ -245,7 +245,7 @@ describe("<ProviderSettings> — Text generation section", () => {
     await seed({ textGenerationProvider: "codex" });
     const { getByTestId } = render(ProviderSettings);
     const input = getByTestId("settings-textgen-model") as HTMLInputElement;
-    expect(input.placeholder).toContain("gpt-5.6-sol");
+    expect(input.placeholder).toContain("gpt-5.6-luna");
   });
 
   it("shows the claude default model in the placeholder when provider is claude", async () => {

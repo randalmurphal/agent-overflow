@@ -133,7 +133,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderID, ProviderDefinition> = {
     shortLabel: 'X',
     badgeClass: 'bg-provider-codex/10 text-provider-codex',
     installActionLabel: 'Install Codex CLI',
-    textGenerationDefaultModel: 'gpt-5.6-sol',
+    textGenerationDefaultModel: 'gpt-5.6-luna',
     textGenerationEffortOptions: [
       { value: 'none', label: 'None' },
       { value: 'minimal', label: 'Minimal' },

@@ -31,8 +31,10 @@ const (
 	JSONOutputLimit = 256 * 1024
 
 	// DefaultCodexModel / DefaultClaudeModel are the per-provider model
-	// defaults used when settings leaves them blank.
-	DefaultCodexModel  = "gpt-5.6-sol"
+	// defaults used when settings leaves them blank. Both deliberately
+	// pick the cheapest/fastest tier — textgen runs are short structured
+	// outputs (titles, commit messages), not reasoning work.
+	DefaultCodexModel  = "gpt-5.6-luna"
 	DefaultClaudeModel = "claude-haiku-4-5"
 )
 

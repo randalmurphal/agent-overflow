@@ -32,7 +32,7 @@ describe('provider catalog', () => {
     // out of the settings order (no binary/enable settings of its own).
     expect(PROVIDER_MODEL_MENU_ORDER).toEqual(['codex', 'claude', 'claude-tui']);
     expect(PROVIDER_DEFINITIONS.claude.textGenerationDefaultModel).toBe('claude-haiku-4-5');
-    expect(PROVIDER_DEFINITIONS.codex.textGenerationDefaultModel).toBe('gpt-5.6-sol');
+    expect(PROVIDER_DEFINITIONS.codex.textGenerationDefaultModel).toBe('gpt-5.6-luna');
     expect(PROVIDER_DEFINITIONS.claude.contextLabels.standard).toBe('200k');
     expect(PROVIDER_DEFINITIONS.codex.contextLabels.standard).toBe('272k');
     expect(PROVIDER_DEFINITIONS.claude.backgroundStop).toBe('claude-task');
