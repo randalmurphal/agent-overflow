@@ -767,9 +767,11 @@ describe('WSClient', () => {
     }
   });
 
-  it('clears a stashed token the server refuses', async () => {
-    // A stale stash (backend restarted, new token minted) must not be
-    // re-presented forever — one 404 drops it.
+  it('keeps a stashed token the server refuses', async () => {
+    // Re-presenting a stale token costs the identical 404, so clearing
+    // buys nothing — and it would destroy the one copy that lets a page
+    // reload recover from a refusal that wasn't real (a proxy blip
+    // answering 404 for a token the server still honours).
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     window.sessionStorage.setItem('ao:bootstrap-token', 'stale');
     const fetchMock = vi.fn(async () => ({ ok: false, status: 404 }));
@@ -785,7 +787,7 @@ describe('WSClient', () => {
       }
       expect((caught as Error).message).toMatch(/HTTP 404/);
       expect(fetchMock).toHaveBeenCalledWith('/bootstrap.json?t=stale', expect.anything());
-      expect(window.sessionStorage.getItem('ao:bootstrap-token')).toBeNull();
+      expect(window.sessionStorage.getItem('ao:bootstrap-token')).toBe('stale');
       client.close();
     } finally {
       window.sessionStorage.clear();

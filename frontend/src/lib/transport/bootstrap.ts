@@ -120,14 +120,6 @@ function writeStoredToken(token: string): void {
   }
 }
 
-function clearStoredToken(): void {
-  try {
-    window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-  } catch {
-    // Nothing to clear if the stash itself is unreadable.
-  }
-}
-
 // Default bootstrap fetcher: read from window.__AO_BOOTSTRAP__ (set by
 // Phase F's `--connect` flow) or fall back to `/bootstrap.json?t=<token>`
 // where the token comes from `?t=` in window.location.search, or — on a
@@ -164,12 +156,11 @@ export async function defaultBootstrap(): Promise<Bootstrap> {
       // between failed. The stashed token is still the right one.
       throw new Error(`bootstrap fetch failed: HTTP ${resp.status}`);
     }
-    if (urlToken === '' && token !== '') {
-      // The stashed token was refused — stale after a backend restart
-      // (tokens are minted per boot). Drop it so retries surface the
-      // real "no valid token" state instead of re-presenting it.
-      clearStoredToken();
-    }
+    // The stashed token is deliberately KEPT on a refusal. Dropping it
+    // buys nothing — re-presenting a stale token yields the identical
+    // 404 — and it destroys the one copy that would let a page reload
+    // recover from a refusal that wasn't real (a proxy blip answering
+    // 404 for a token the server still honours).
     throw new BootstrapRejectedError(resp.status);
   }
   const contentType = resp.headers.get('content-type') ?? '';

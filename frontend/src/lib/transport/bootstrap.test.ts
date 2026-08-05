@@ -7,8 +7,13 @@
 // share link that does not exist, and a false "loopback" leaves a phone
 // retrying a dead token forever.
 
-import { describe, expect, it } from 'vitest';
-import { isLoopbackHostname, pageServedOverLoopback } from './bootstrap';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  BootstrapRejectedError,
+  defaultBootstrap,
+  isLoopbackHostname,
+  pageServedOverLoopback,
+} from './bootstrap';
 
 describe('isLoopbackHostname', () => {
   it('accepts every host that names this machine', () => {
@@ -54,5 +59,29 @@ describe('pageServedOverLoopback', () => {
   // happy-dom serves tests from http://localhost/.
   it('reads the current document origin', () => {
     expect(pageServedOverLoopback()).toBe(true);
+  });
+});
+
+describe('defaultBootstrap', () => {
+  afterEach(() => {
+    window.sessionStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  // Clearing on refusal would buy nothing (a re-presented stale token
+  // 404s identically) while destroying the one copy that lets a page
+  // reload recover from a refusal that wasn't real.
+  it('keeps the stashed token when the server refuses it', async () => {
+    window.sessionStorage.setItem('ao:bootstrap-token', 'stashed-token');
+    const fetchMock = vi.fn(async () => new Response('not found', { status: 404 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(defaultBootstrap()).rejects.toBeInstanceOf(BootstrapRejectedError);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/bootstrap.json?t=stashed-token',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    );
+    expect(window.sessionStorage.getItem('ao:bootstrap-token')).toBe('stashed-token');
   });
 });
