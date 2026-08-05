@@ -1561,11 +1561,11 @@ describe('<MessageTimeline>', () => {
         expect(countRows(scroll)).toBe(2);
         expect(scroll.textContent).not.toContain('Bash command');
 
-        // Drain the thinking smoother (fast-drain finishes within ~200ms) and
-        // the gate drops — the tool call row reveals. Loop until the boundary
-        // clears rather than a fixed frame count so the assertion proves "the
-        // gate dropped", independent of the exact fast-drain constant.
-        for (let i = 0; i < 40 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
+        // Drain the thinking smoother and the gate drops — the tool call
+        // row reveals. Loop until the boundary clears rather than a fixed
+        // frame count so the assertion proves "the gate dropped",
+        // independent of the reveal rate constants.
+        for (let i = 0; i < 200 && pane.revealBoundary !== null; i++) clock.tickFrame(16);
         await tick();
 
         expect(countRows(scroll)).toBe(3);

@@ -7,7 +7,7 @@ import {
   type TimelineWindowAnchorOperation,
 } from './thread.svelte';
 import {
-  FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS,
+  MAX_ADAPTIVE_CHARS_PER_SEC,
   MAX_ADVANCE_PER_TICK_CHARS,
   type SmoothingClock,
 } from '../markdown/smoothing/PerItemSmoother';
@@ -5967,33 +5967,35 @@ describe('createThreadPane', () => {
       }
     });
 
-    it('does not produce wire-chunk-sized reveals when Claude bursts faster than the base rate', async () => {
-      // Reproduces the user-reported regression: past ~400 chars, thinking
-      // text appears in chunks "exactly like the old behavior before any
-      // smoothing changes" — 5 words, pause, 15 words. The hypothesis is
-      // that the adaptive catch-up math (`drain lag in 500ms`) scales the
-      // per-tick reveal proportional to lag, so a wire that bursts faster
-      // than the 160 cps base rate eventually settles at a steady-state
-      // lag where per-tick = wire_rate * (16/500) — for a 2000 cps wire,
-      // that's 64 chars (~10 words) per tick.
+    it('does not produce wire-chunk-sized reveals when the wire bursts faster than the base rate', async () => {
+      // Reproduces the user-reported regression: past ~400 chars,
+      // streamed text appears in chunks "exactly like the old behavior
+      // before any smoothing changes" — 5 words, pause, 15 words. The
+      // hypothesis is that the adaptive catch-up math (`drain lag in
+      // 500ms`) scales the per-tick reveal proportional to lag, so a wire
+      // that bursts faster than the 160 cps base rate eventually settles
+      // at a steady-state lag where per-tick = wire_rate * (16/500) — for
+      // a 2000 cps wire, that's 64 chars (~10 words) per tick.
+      //
+      // Run on assistant_text; the reasoning counterpart is the next test.
+      // The guarantee is kind-independent — no smoother skips or chunks —
+      // so both kinds hold the same per-tick cap.
       //
       // Wire pattern is realistic: 50-char wire bursts arriving every
       // 25ms (= 2000 cps sustained, close to Claude's burst rate for
-      // reasoning text). Streamed for ~1.5s so we walk well past the
-      // 400-rune trim cap and reach steady-state lag.
+      // reasoning text). Streamed for ~1.5s so we reach steady-state lag.
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 'thread-burst' }));
         pane.upsertItem(
           makeItem({
-            id: 'think:0:0',
+            id: 'text:0:0',
             threadId: 'thread-burst',
-            kind: 'thinking',
+            kind: 'assistant_text',
             role: 'assistant',
             status: 'streaming',
             summary: '',
-            payloadId: 'thinking:think:0:0',
             updatedAt: 1,
           }),
         );
@@ -6052,8 +6054,8 @@ describe('createThreadPane', () => {
             const burst = makeBurst(burstIdx++);
             pane.applyItemDelta({
               threadId: 'thread-burst',
-              itemId: 'think:0:0',
-              kind: 'thinking',
+              itemId: 'text:0:0',
+              kind: 'assistant_text',
               delta: burst,
               updatedAt: 100 + burstIdx,
             });
@@ -6083,6 +6085,84 @@ describe('createThreadPane', () => {
         // and the user perceives those as chunks of 5–15 words.
         expect(maxLengthJump).toBeLessThanOrEqual(MAX_ADVANCE_PER_TICK_CHARS);
         expect(maxContentJump).toBeLessThanOrEqual(MAX_ADVANCE_PER_TICK_CHARS);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('never chunks a reasoning row either — and the wire gap drains it to zero', async () => {
+      // A collapsed reasoning row gets the SAME guarantee as prose: every
+      // character animates, in order, at no more than the per-tick cap.
+      // A bounded-backlog skip for reasoning rows was implemented and
+      // rejected — dropping characters the reader might expand into is
+      // worse than making a queued row wait.
+      //
+      // The second half is why the wait is acceptable: the wire is bursty.
+      // Once the overspeed burst stops (tool call, API round-trip, model
+      // pause), the drain keeps running and returns the row to zero lag.
+      // If this test is ever "fixed" by capping the backlog, read the
+      // rationale in PerItemSmoother.ts first.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-think-bound' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'think:0:0',
+            threadId: 'thread-think-bound',
+            kind: 'thinking',
+            role: 'assistant',
+            status: 'streaming',
+            summary: '',
+            payloadId: 'thinking:think:0:0',
+            updatedAt: 1,
+          }),
+        );
+
+        // ~50 chars every 16ms ≈ 3000 cps, an order above the reveal
+        // ceiling, sustained for 100 frames.
+        const burst = 'word '.repeat(10);
+        let received = '';
+        let maxJump = 0;
+        let previousRevealed = 0;
+        for (let i = 0; i < 100; i++) {
+          received += burst;
+          pane.applyItemDelta({
+            threadId: 'thread-think-bound',
+            itemId: 'think:0:0',
+            kind: 'thinking',
+            delta: burst,
+            updatedAt: 100 + i,
+          });
+          clock.tickFrame(16);
+          const revealed = (pane.liveThinkingTailForItem('think:0:0') ?? '')
+            .length;
+          maxJump = Math.max(maxJump, revealed - previousRevealed);
+          previousRevealed = revealed;
+        }
+        // No frame delivered more than a tick's animated work — the wire
+        // ran far ahead, and the row simply fell behind rather than
+        // jumping to catch it.
+        expect(maxJump).toBeLessThanOrEqual(MAX_ADVANCE_PER_TICK_CHARS);
+        // It genuinely fell behind, so the drain below is not vacuous.
+        const lagAtBurstEnd = received.length - previousRevealed;
+        expect(lagAtBurstEnd).toBeGreaterThan(MAX_ADVANCE_PER_TICK_CHARS * 10);
+
+        // The gap: the wire stops, frames keep coming. The backlog drains
+        // to zero at the ceiling — no skip needed, and the reader gets
+        // every character.
+        let gapFrames = 0;
+        while (clock.pendingCount() > 0 && gapFrames < 20000) {
+          clock.tickFrame(16);
+          gapFrames++;
+        }
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe(received);
+        expect(pane.items[0].summary).toBe(received.slice(-400));
+        // Drained at the reveal ceiling, not faster: a rush regime would
+        // finish materially sooner than the rate implies.
+        expect(gapFrames * 16).toBeGreaterThan(
+          (lagAtBurstEnd / MAX_ADAPTIVE_CHARS_PER_SEC) * 1000 * 0.9,
+        );
       } finally {
         __setSmoothingClockForTest(undefined);
       }
@@ -7281,7 +7361,7 @@ describe('createThreadPane', () => {
     // a pending callback that never fires — the hidden-tab state. The
     // visibilitychange→visible entry point (App.svelte) calls
     // `snapSmoothersToReceived` so the backlog catches up to the wire in one
-    // frame instead of crawling in at the ~840 cps per-tick cap on return.
+    // frame instead of crawling in at MAX_ADAPTIVE_CHARS_PER_SEC on return.
     function manyWords(prefix: string, n: number): string {
       return Array.from(
         { length: n },
@@ -7484,8 +7564,10 @@ describe('createThreadPane', () => {
         // Frontier is the only/last node → boundary points at it but the
         // slice helper (covered in subagentGrouping.test.ts) withholds nothing.
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
-        // It drains at the base cadence (no successor → no fast-drain).
-        for (let i = 0; i < 80; i++) clock.tickFrame(16);
+        // It drains at the ordinary reveal cadence and the gate drops.
+        for (let i = 0; i < 200 && pane.revealBoundary !== null; i++) {
+          clock.tickFrame(16);
+        }
         expect(pane.revealBoundary).toBeNull();
       } finally {
         __setSmoothingClockForTest(undefined);
@@ -7521,20 +7603,25 @@ describe('createThreadPane', () => {
         );
         // Gate stays at the thinking row — the tool call is withheld.
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
-        // Fast-drain finishes the thinking within ~200ms (≈13 frames).
-        for (let i = 0; i < 14; i++) clock.tickFrame(16);
+        // The thinking row finishes at the ordinary cadence — no rush —
+        // and only then does the gate drop.
+        for (let i = 0; i < 200 && pane.revealBoundary !== null; i++) {
+          clock.tickFrame(16);
+        }
         expect(pane.revealBoundary).toBeNull();
       } finally {
         __setSmoothingClockForTest(undefined);
       }
     });
 
-    it('fast-drains the frontier only when a successor is waiting', async () => {
+    it('a waiting successor does not speed the frontier up', async () => {
+      // The successor-waiting fast-drain is gone: a queued row changes
+      // WHAT renders (it is withheld), never how fast the frontier
+      // animates. Both panes get the same backlog; the one with a
+      // successor must not finish sooner.
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);
       try {
-        // Control: no successor — drains at the base cadence and is NOT done
-        // after the ~200ms fast-drain window.
         const solo = await buildPane(makeThread({ id: 'solo' }));
         solo.upsertItem(streamingThinking('think:0:0', 0, 'solo'));
         solo.applyItemDelta({
@@ -7544,10 +7631,7 @@ describe('createThreadPane', () => {
           delta: 'word '.repeat(40),
           updatedAt: 2,
         });
-        for (let i = 0; i < 14; i++) clock.tickFrame(16);
-        expect(solo.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
 
-        // With a successor, the same lag drains inside the window.
         const gated = await buildPane(makeThread({ id: 'gated' }));
         gated.upsertItem(streamingThinking('think:0:0', 0, 'gated'));
         gated.applyItemDelta({
@@ -7570,8 +7654,17 @@ describe('createThreadPane', () => {
             updatedAt: 3,
           }),
         );
-        for (let i = 0; i < 14; i++) clock.tickFrame(16);
-        expect(gated.revealBoundary).toBeNull();
+
+        // Both panes share the clock, so one loop drives both.
+        let soloFrames = 0;
+        let gatedFrames = 0;
+        for (let i = 1; i <= 300; i++) {
+          clock.tickFrame(16);
+          if (soloFrames === 0 && solo.revealBoundary === null) soloFrames = i;
+          if (gatedFrames === 0 && gated.revealBoundary === null) gatedFrames = i;
+        }
+        expect(soloFrames).toBeGreaterThan(0);
+        expect(gatedFrames).toBe(soloFrames);
       } finally {
         __setSmoothingClockForTest(undefined);
       }
@@ -7618,11 +7711,19 @@ describe('createThreadPane', () => {
         for (let i = 0; i < 5; i++) clock.tickFrame(16);
         expect(pane.items[textIdx].summary).toBe('');
 
-        // Thinking fast-drains → gate advances to the text row, which now
+        // Thinking drains → gate advances to the text row, which now
         // reveals from the start.
-        for (let i = 0; i < 14; i++) clock.tickFrame(16);
+        for (
+          let i = 0;
+          i < 200 && pane.revealBoundary?.itemIndex === 0;
+          i++
+        ) {
+          clock.tickFrame(16);
+        }
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });
-        for (let i = 0; i < 80; i++) clock.tickFrame(16);
+        for (let i = 0; i < 200 && pane.revealBoundary !== null; i++) {
+          clock.tickFrame(16);
+        }
         expect(pane.items[textIdx].summary).toBe(
           'Hello world this is the answer',
         );
@@ -7851,10 +7952,14 @@ describe('createThreadPane', () => {
         // Gate at thinking; text AND tool both withheld.
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
         // thinking drains → gate steps to the text row (not straight to null).
-        for (let i = 0; i < 14; i++) clock.tickFrame(16);
+        for (let i = 0; i < 200 && pane.revealBoundary?.itemIndex === 0; i++) {
+          clock.tickFrame(16);
+        }
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 1 });
         // text drains → gate drops (tool has no smoother, reveals immediately).
-        for (let i = 0; i < 20; i++) clock.tickFrame(16);
+        for (let i = 0; i < 200 && pane.revealBoundary !== null; i++) {
+          clock.tickFrame(16);
+        }
         expect(pane.revealBoundary).toBeNull();
       } finally {
         __setSmoothingClockForTest(undefined);
@@ -7966,34 +8071,27 @@ describe('createThreadPane', () => {
       expect(pane.revealBoundary).toBeNull();
     });
 
-    it('fast-drains an oversized backlog in bounded per-frame chunks — never a wholesale snap', async () => {
+    it('holds a successor behind a multi-KB reasoning frontier for the whole readable drain', async () => {
+      // The contract that replaced BOTH removed shortcuts (the
+      // successor-waiting fast-drain, then the bounded-backlog skip): a
+      // queued row waits. It waits for every character of the frontier to
+      // animate, at no more than the reveal ceiling, and is released only
+      // when the frontier is genuinely caught up.
+      //
+      // This is affordable because the wire is bursty — the drain below
+      // runs with NO further appends, which is exactly what a tool call or
+      // an API round-trip looks like. Do not "fix" a long wait here by
+      // skipping, rushing, or popping the frontier.
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 't' }));
-        pane.upsertItem(
-          makeItem({
-            id: 'text:0:0',
-            threadId: 't',
-            kind: 'assistant_text',
-            role: 'assistant',
-            status: 'streaming',
-            turnIndex: 0,
-            itemIndex: 0,
-            summary: '',
-            updatedAt: 2,
-          }),
-        );
-        // Backlog well above what the old snap threshold covered. The
-        // sequencer used to reveal this in one wholesale write (a giant
-        // re-parse + multi-viewport layout jump); now it rate-ceilinged
-        // fast-drains, so the successor waits a moment longer and every
-        // frame's reveal stays bounded.
-        const text = 'word '.repeat(400); // 2000 chars
+        pane.upsertItem(streamingThinking('think:0:0', 0, 't'));
+        const text = 'word '.repeat(1200); // 6000 chars
         pane.applyItemDelta({
           threadId: 't',
-          itemId: 'text:0:0',
-          kind: 'assistant_text',
+          itemId: 'think:0:0',
+          kind: 'thinking',
           delta: text,
           updatedAt: 3,
         });
@@ -8012,34 +8110,110 @@ describe('createThreadPane', () => {
             updatedAt: 4,
           }),
         );
-        // No synchronous wholesale reveal: the successor upsert leaves
-        // the frontier mid-drain and the gate in place.
-        const summaryAfterUpsert =
-          pane.items.find((i) => i.id === 'text:0:0')?.summary ?? '';
-        expect(summaryAfterUpsert.length).toBeLessThan(text.length);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
         expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
 
-        // Drain to completion, asserting every frame's advance stays
-        // within the fast-drain per-tick cap (+trailing-whitespace slack
-        // for the word-unit rounding).
-        let previousLength = summaryAfterUpsert.length;
+        let revealedLength = 0;
         let frames = 0;
-        while (pane.revealBoundary !== null && frames < 400) {
+        // The wire gap: frames tick, nothing new arrives.
+        while (pane.revealBoundary !== null && frames < 3000) {
           clock.tickFrame(16);
           frames++;
-          const summary =
-            pane.items.find((i) => i.id === 'text:0:0')?.summary ?? '';
-          expect(summary.length - previousLength).toBeLessThanOrEqual(
-            FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS,
+          const length = pane.liveThinkingTailForItem('think:0:0')?.length ?? 0;
+          // Every frame is ordinary bounded work — no frame hands over a
+          // skipped middle.
+          expect(length - revealedLength).toBeLessThanOrEqual(
+            MAX_ADVANCE_PER_TICK_CHARS,
           );
-          previousLength = summary.length;
+          revealedLength = length;
+          // The gate may only release on the frame the frontier finishes.
+          // Releasing on any earlier frame would mean it popped a still
+          // -revealing row.
+          if (pane.revealBoundary === null) {
+            expect(length).toBe(text.length);
+          }
         }
-        expect(pane.items.find((i) => i.id === 'text:0:0')?.summary).toBe(
-          text,
-        );
+        // Released exactly at catch-up, with every character animated.
         expect(pane.revealBoundary).toBeNull();
-        // Bounded rate means the drain genuinely took multiple frames.
-        expect(frames).toBeGreaterThan(5);
+        expect(pane.liveThinkingTailForItem('think:0:0')).toBe(text);
+        // And it took the ceiling-implied time — the wait was paid, not
+        // shortened. ~19s of frames for 6000 chars at 320cps.
+        expect(frames * 16).toBeGreaterThanOrEqual(
+          (text.length / MAX_ADAPTIVE_CHARS_PER_SEC) * 1000,
+        );
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('never skips any frontier — it animates every char at the adaptive cap', async () => {
+      // The prose counterpart of the test above; the guarantee is
+      // kind-independent, so both are asserted. A queued successor waits
+      // out the whole reveal, and the reveal stays inside the rate ceiling
+      // throughout.
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 't',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 0,
+            summary: '',
+            updatedAt: 2,
+          }),
+        );
+        const text = 'word '.repeat(400); // 2000 chars
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: text,
+          updatedAt: 3,
+        });
+        pane.upsertItem(
+          makeItem({
+            id: 'tool:0:1',
+            threadId: 't',
+            kind: 'tool_call',
+            status: 'running',
+            turnIndex: 0,
+            itemIndex: 1,
+            toolName: 'Bash',
+            summary: 'Bash',
+            updatedAt: 4,
+          }),
+        );
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+
+        const summaryOf = () =>
+          pane.items.find((i) => i.id === 'text:0:0')?.summary ?? '';
+        let previousLength = summaryOf().length;
+        expect(previousLength).toBe(0);
+        let frames = 0;
+        while (pane.revealBoundary !== null && frames < 900) {
+          clock.tickFrame(16);
+          frames++;
+          const length = summaryOf().length;
+          // Per-frame WORK bound: no frame ever dumps a chunk, and no
+          // frame ever jumps a skipped middle.
+          expect(length - previousLength).toBeLessThanOrEqual(
+            MAX_ADVANCE_PER_TICK_CHARS,
+          );
+          previousLength = length;
+        }
+        expect(pane.revealBoundary).toBeNull();
+        expect(summaryOf()).toBe(text);
+        // Average rate over the whole drain stayed under the ceiling —
+        // which also proves nothing was skipped.
+        expect(frames * 16).toBeGreaterThanOrEqual(
+          (text.length / MAX_ADAPTIVE_CHARS_PER_SEC) * 1000,
+        );
       } finally {
         __setSmoothingClockForTest(undefined);
       }
@@ -8122,12 +8296,12 @@ describe('createThreadPane', () => {
             updatedAt: 2,
           }),
         );
-        // 2000-char backlog on a solo tail row: the sequencer never
-        // fast-drains it (no successor). The historical end-of-turn
-        // fast-drain rushed this at the elevated per-tick cap (~3360
-        // cps) — rushed motion the user read as jank. Deliberately
-        // removed: the backlog now drains at the same steady cadence
-        // as live streaming (adaptive catch-up, ≤ ~840 cps).
+        // 2000-char backlog on a solo tail row. The historical
+        // end-of-turn fast-drain rushed this at an elevated per-tick cap
+        // (~3360 cps) — rushed motion the user read as jank.
+        // Deliberately removed: the backlog drains at the same steady
+        // cadence as live streaming (adaptive catch-up, ≤
+        // MAX_ADAPTIVE_CHARS_PER_SEC).
         const text = 'word '.repeat(400);
         pane.applyItemDelta({
           threadId: 't',
@@ -8155,10 +8329,10 @@ describe('createThreadPane', () => {
           pane.items.find((i) => i.id === 'text:0:0')?.summary ?? '';
         expect(midSummary.length).toBeGreaterThan(0);
         expect(midSummary.length).toBeLessThan(text.length);
-        // At the steady cadence (~10 word-aligned chars/frame while the
+        // At the steady cadence (~5 word-aligned chars/frame while the
         // lag is large, tapering below) the full 2000-char backlog
         // completes within a few hundred frames.
-        for (let i = 0; i < 400; i++) clock.tickFrame(16);
+        for (let i = 0; i < 600; i++) clock.tickFrame(16);
         expect(pane.items.find((i) => i.id === 'text:0:0')?.summary).toBe(
           text,
         );
@@ -8464,8 +8638,7 @@ describe('createThreadPane', () => {
         const { markStructuralContentPending } = attachMockScrollController(pane);
 
         // Short delta: enough lag to engage the gate, small enough that
-        // the successor's fast-drain finishes it via clock ticks instead
-        // of the oversized-backlog snap.
+        // the frontier finishes within the drain loop below.
         pane.applyItemDelta({
           threadId: thread.id,
           itemId: 'front',
@@ -8744,10 +8917,12 @@ describe('createThreadPane', () => {
   // "stamped at time 0".
   describe('live-content stamp (scroll animation latch source)', () => {
     // Long backlog so the smoother reveals across many frames (never
-    // caught up in 2-3 ticks). 120 words ≈ 840 chars; even at the
-    // fast-drain cap that is ~60 frames, so frames 1-3 always reveal.
+    // caught up in 2-3 ticks). 60 words ≈ 230 chars, which at the
+    // adaptive ceiling is >40 frames. Short words on purpose: one 16ms
+    // frame's budget at the ceiling is ~5 chars, so a 3-char word unit
+    // means frames 1-3 each land a reveal (and therefore a stamp).
     const longText = (n: number) =>
-      Array.from({ length: n }, (_, i) => `word${i}`).join(' ') + ' ';
+      Array.from({ length: n }, (_, i) => `w${i}`).join(' ') + ' ';
 
     it('stamps on each smoother reveal frame, never on switch/upsert/delta-append', async () => {
       const clock = new FakeSmoothingClock();

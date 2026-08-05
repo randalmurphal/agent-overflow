@@ -138,7 +138,8 @@ function buildScenario(): Record<string, unknown> {
               ],
             },
           },
-          // …with a successor tool call right behind it (fast-drain trigger).
+          // …with a successor tool call right behind it — the row the reveal
+          // gate withholds until the frontier drains.
           {
             emit: {
               delayBetweenMs: 60,

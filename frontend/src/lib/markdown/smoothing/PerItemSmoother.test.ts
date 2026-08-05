@@ -5,9 +5,9 @@ import {
   BASE_CHARS_PER_SEC,
   ADAPTIVE_TRIGGER_CHARS,
   ADAPTIVE_CATCHUP_MS,
-  FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS,
   MAX_ADVANCE_PER_TICK_CHARS,
   MAX_ADAPTIVE_CHARS_PER_SEC,
+  MIN_REVEAL_TICK_INTERVAL_MS,
   type SmoothingClock,
 } from './PerItemSmoother';
 
@@ -46,16 +46,28 @@ interface RevealEntry {
   delta: string;
 }
 
-function makeSmoother(initial = '', initialRevealed?: string) {
+function makeSmoother(initial = '') {
   const clock = new FakeClock();
   const reveals: RevealEntry[] = [];
   const smoother = new PerItemSmoother({
     initialReceived: initial,
-    initialRevealed,
     onReveal: (revealed, delta) => reveals.push({ revealed, delta }),
     clock,
   });
   return { clock, reveals, smoother };
+}
+
+function drain(clock: FakeClock, smoother: PerItemSmoother, maxFrames = 2000) {
+  let frames = 0;
+  while (!smoother.isCaughtUp() && frames < maxFrames) {
+    clock.tickFrame(16);
+    frames++;
+  }
+  return frames;
+}
+
+function concatDeltas(reveals: RevealEntry[]): string {
+  return reveals.map((r) => r.delta).join('');
 }
 
 describe('computeAdvanceEnd', () => {
@@ -95,6 +107,39 @@ describe('computeAdvanceEnd', () => {
     // "more" (4 chars).
     expect(computeAdvanceEnd('para\n\nmore', 0, 6)).toBe(6);
     expect(computeAdvanceEnd('para\n\nmore', 0, 10)).toBe(10);
+  });
+});
+
+// Relationships between the tuned constants that the behavioral tests
+// below silently assume. Kept separate so a constant change fails HERE,
+// naming the assumption, rather than inside a timing assertion.
+describe('PerItemSmoother — constant relationships', () => {
+  it('adaptive catch-up is genuinely faster than the base rate', () => {
+    expect(MAX_ADAPTIVE_CHARS_PER_SEC).toBeGreaterThan(BASE_CHARS_PER_SEC);
+  });
+
+  it('the ceiling makes the 500ms trigger window a lower bound on urgency, not a promise', () => {
+    // A backlog exactly at the trigger threshold would need
+    // ADAPTIVE_TRIGGER_CHARS/ceiling seconds; anything materially larger
+    // overruns ADAPTIVE_CATCHUP_MS, which is why the drain-in-500ms
+    // wording in the tick's math is not a completion guarantee.
+    const drainMsAtCeiling = (chars: number) =>
+      (chars / MAX_ADAPTIVE_CHARS_PER_SEC) * 1000;
+    expect(drainMsAtCeiling(ADAPTIVE_TRIGGER_CHARS)).toBeLessThan(
+      ADAPTIVE_CATCHUP_MS,
+    );
+    expect(drainMsAtCeiling(200)).toBeGreaterThan(ADAPTIVE_CATCHUP_MS);
+  });
+
+  it('the per-tick work cap keeps the rate ceiling reachable at the slowest throttled cadence', () => {
+    // Processed ticks bottom out at ~48Hz (MIN_REVEAL_TICK_INTERVAL_MS
+    // against a 144Hz panel); the cap must clear the per-tick chars the
+    // ceiling implies there, or the cap — not the rate — becomes the
+    // ceiling.
+    const slowestProcessedHz = 1000 / (MIN_REVEAL_TICK_INTERVAL_MS * 1.4);
+    expect(MAX_ADVANCE_PER_TICK_CHARS).toBeGreaterThan(
+      MAX_ADAPTIVE_CHARS_PER_SEC / slowestProcessedHz,
+    );
   });
 });
 
@@ -152,12 +197,14 @@ describe('PerItemSmoother', () => {
 
   it('engages adaptive catch-up when lag exceeds the threshold', () => {
     const { clock, smoother } = makeSmoother();
-    // Lag of 200 chars (> 80 trigger). Adaptive rate = 200*1000/500 = 400 cps.
+    // Lag of 200 chars (> 80 trigger). The adaptive math wants
+    // 200*1000/500 = 400 cps; the ceiling clamps it to
+    // MAX_ADAPTIVE_CHARS_PER_SEC, so the drain takes the ceiling's time,
+    // not the 500ms the trigger math asks for.
     const text = 'a'.repeat(200);
     smoother.appendDelta(text);
-    // At adaptive rate, full drain should complete in <= ~500ms.
-    // Run for 520ms in 16ms frames.
-    const frames = Math.ceil((ADAPTIVE_CATCHUP_MS + 20) / 16);
+    const ceilingMs = (text.length / MAX_ADAPTIVE_CHARS_PER_SEC) * 1000;
+    const frames = Math.ceil((ceilingMs + 32) / 16);
     for (let i = 0; i < frames; i++) clock.tickFrame(16);
     // Single long word reveals all-at-once when budget catches up.
     expect(smoother.getRevealed().length).toBe(200);
@@ -273,23 +320,18 @@ describe('PerItemSmoother', () => {
     expect(smoother.getLag()).toBe(0);
   });
 
-  it('honors a smaller initialRevealed than initialReceived', () => {
-    // Equivalent to mid-flight where revealed lags received slightly.
-    const { clock, smoother } = makeSmoother(
-      'hello world here',
-      'hello ',
-    );
-    expect(smoother.getRevealed()).toBe('hello ');
-    expect(smoother.getReceived()).toBe('hello world here');
-    expect(smoother.isCaughtUp()).toBe(false);
-    // Should schedule and progress.
-    expect(clock.pendingCount()).toBe(1);
-    let frames = 0;
-    while (!smoother.isCaughtUp() && frames < 200) {
-      clock.tickFrame(16);
-      frames++;
-    }
-    expect(smoother.getRevealed()).toBe('hello world here');
+  it('animates only what arrives after the seed (mid-flight resume)', () => {
+    // A resumed smoother starts caught up on its seed and animates the
+    // wire from there — the seed text is already on screen, so replaying
+    // it would be a visible rewind.
+    const { clock, reveals, smoother } = makeSmoother('already on screen ');
+    expect(smoother.isCaughtUp()).toBe(true);
+    expect(clock.pendingCount()).toBe(0);
+
+    smoother.appendDelta('and the rest arrives');
+    drain(clock, smoother);
+    expect(smoother.getRevealed()).toBe('already on screen and the rest arrives');
+    expect(concatDeltas(reveals)).toBe('and the rest arrives');
   });
 
   it('rate stays close to 160 cps over a full stream', () => {
@@ -315,9 +357,7 @@ describe('PerItemSmoother', () => {
   });
 });
 
-const FAST_DRAIN_WINDOW = 200;
-
-describe('PerItemSmoother — adaptive rate ceiling', () => {
+describe('PerItemSmoother — rate ceiling and per-tick work cap', () => {
   // A fat wire burst opens a large lag; the adaptive catch-up must
   // drain it at MAX_ADAPTIVE_CHARS_PER_SEC regardless of display
   // refresh. Before the rate clamp, only the per-tick cap bounded the
@@ -362,6 +402,48 @@ describe('PerItemSmoother — adaptive rate ceiling', () => {
     for (let i = 0; i < 165; i++) clock.tickFrame(frameMs);
     expect(reveals.length).toBeGreaterThan(30);
     expect(reveals.length).toBeLessThanOrEqual(67); // 1000ms / 15ms
+  });
+
+  it('advances through a word unit larger than the per-tick cap', () => {
+    // A single unbroken token bigger than the cap (long URL / identifier).
+    // The cap expands to that one unit's size — budget accumulates until it
+    // fits — so the reveal never stalls on it and the word never splits.
+    const giant = 'x'.repeat(MAX_ADVANCE_PER_TICK_CHARS + 24);
+    const text = `${giant} tail words follow now`;
+    const { clock, smoother, reveals } = makeSmoother();
+    smoother.appendDelta(text);
+    drain(clock, smoother);
+    expect(smoother.getRevealed()).toBe(text);
+    // The giant token revealed as one whole chunk, never split mid-word.
+    const giantReveal = reveals.find((r) => r.delta.includes(giant));
+    expect(giantReveal).toBeDefined();
+  });
+
+  it('clamps a stalled frame’s ballooned budget instead of bursting later frames', () => {
+    // A long frame gap (occluded window, a blocked main thread) accrues a
+    // budget far past the per-tick cap. The tick spends at most the cap and
+    // must clamp the residual, or the next frames sustain full-cap advances
+    // off leftover budget instead of easing back to the reveal cadence.
+    const backlog = 'ab '.repeat(67); // 201 chars
+    const { clock, smoother, reveals } = makeSmoother();
+    smoother.appendDelta(backlog);
+    clock.tickFrame(1000); // ~320 chars of budget accrued in one tick
+    expect(reveals.at(-1)!.revealed.length).toBeLessThanOrEqual(
+      MAX_ADVANCE_PER_TICK_CHARS,
+    );
+
+    reveals.length = 0;
+    clock.tickFrame(16);
+    clock.tickFrame(16);
+    clock.tickFrame(16);
+    const revealedAfterStall = reveals.reduce((n, r) => n + r.delta.length, 0);
+    // Clamped: one residual spend of ≤ the cap, then the ordinary
+    // rate-limited accrual. Unclamped, all three frames would run at the
+    // full cap off the stall's leftover budget.
+    expect(revealedAfterStall).toBeLessThanOrEqual(
+      MAX_ADVANCE_PER_TICK_CHARS * 2,
+    );
+    expect(revealedAfterStall).toBeGreaterThan(0);
   });
 });
 
@@ -420,148 +502,115 @@ describe('PerItemSmoother — reveal sequencing primitives', () => {
     expect(smoother.isCaughtUp()).toBe(true);
   });
 
-  it('requestFastDrain finishes a large lag sooner than the per-tick cap would', () => {
-    // 80 three-char word units = 320 chars. Without fast-drain the per-tick
-    // cap (14 chars) bounds the rate; fast-drain raises the cap so the lag
-    // clears near the requested window.
-    const text = 'ab '.repeat(80);
-    const { clock, smoother, reveals } = makeSmoother();
+});
+
+describe('PerItemSmoother — never skips (the queue is self-correcting)', () => {
+  it('animates every character of a multi-KB backlog, never jumping ahead', () => {
+    // A fat burst (a whole reasoning block landing in one wire chunk) is
+    // drained in full, at the ceiling, in order. There is no bound, no
+    // floor, and no skip: the reader sees every character.
+    const text = 'word '.repeat(1200); // 6000 chars
+    const { clock, reveals, smoother } = makeSmoother();
     smoother.appendDelta(text);
-    smoother.requestFastDrain(FAST_DRAIN_WINDOW);
-    let frames = 0;
-    while (!smoother.isCaughtUp() && frames < 200) {
-      clock.tickFrame(16);
-      frames++;
-    }
-    const elapsed = clock.now();
+    expect(smoother.getLag()).toBe(text.length);
+
+    const frames = drain(clock, smoother, 20000);
     expect(smoother.getRevealed()).toBe(text);
-    // No reveal split a word — each ends on whitespace or is the final value.
+    expect(concatDeltas(reveals)).toBe(text);
+    // Nothing arrived as an over-cap jump — every frame is bounded work.
     for (const r of reveals) {
-      const last = r.revealed[r.revealed.length - 1];
-      expect(last === ' ' || r.revealed === text).toBe(true);
+      expect(r.delta.length).toBeLessThanOrEqual(MAX_ADVANCE_PER_TICK_CHARS);
     }
-
-    // Control: same lag with the normal cap takes materially longer.
-    const control = makeSmoother();
-    control.smoother.appendDelta(text);
-    let cf = 0;
-    while (!control.smoother.isCaughtUp() && cf < 400) {
-      control.clock.tickFrame(16);
-      cf++;
-    }
-    const controlElapsed = control.clock.now();
-    expect(elapsed).toBeLessThan(controlElapsed);
-    // And the control really was cap-bound (>= text.length / cap frames).
-    const minCapMs = (text.length / MAX_ADVANCE_PER_TICK_CHARS) * 16;
-    expect(controlElapsed).toBeGreaterThanOrEqual(minCapMs * 0.9);
+    // And it genuinely took the rate-limited time. A skip of any kind
+    // would land this well under the ceiling's implied duration.
+    const ceilingFrames = (text.length / MAX_ADAPTIVE_CHARS_PER_SEC) * 1000 / 16;
+    expect(frames).toBeGreaterThan(ceilingFrames * 0.9);
   });
 
-  it('requestFastDrain ignores later calls so the deadline cannot be pushed out', () => {
-    const text = 'cd '.repeat(60); // 180 chars
-    const { clock, smoother } = makeSmoother();
-    smoother.appendDelta(text);
-    smoother.requestFastDrain(FAST_DRAIN_WINDOW);
-    clock.tickFrame(16);
-    // A second, far longer request must not extend the window.
-    smoother.requestFastDrain(5000);
-    let frames = 1;
-    while (!smoother.isCaughtUp() && frames < 200) {
-      clock.tickFrame(16);
-      frames++;
-    }
-    // Finished near the original window, nowhere near the 5s second request.
-    expect(clock.now()).toBeLessThanOrEqual(FAST_DRAIN_WINDOW + 64);
-  });
+  it('an idle wire gap drains the backlog to zero — lag is transient, not carried', () => {
+    // THE rationale for having no skip: the wire is bursty. Tool calls,
+    // API round-trips and model pauses are stretches with no appends, and
+    // the drain keeps running through them. Two bursts with a gap between
+    // them must leave the smoother fully caught up in the gap, not
+    // accumulating across bursts.
+    const { clock, reveals, smoother } = makeSmoother();
+    const burst = 'word '.repeat(60); // 300 chars
 
-  it('requestFastDrain is a no-op when already caught up', () => {
-    const { clock, smoother } = makeSmoother('all done');
-    smoother.requestFastDrain();
-    expect(clock.pendingCount()).toBe(0);
+    smoother.appendDelta(burst);
+    expect(smoother.getLag()).toBe(burst.length);
+    // The gap: a tool call executing. No appends, frames keep ticking.
+    const gapFrames = drain(clock, smoother, 20000);
+    expect(smoother.getLag()).toBe(0);
     expect(smoother.isCaughtUp()).toBe(true);
+    // The gap needed is bounded by the ceiling, i.e. ~1s here — well
+    // inside a real tool call, which is why the queue self-corrects.
+    expect(gapFrames * 16).toBeLessThan(
+      (burst.length / MAX_ADAPTIVE_CHARS_PER_SEC) * 1000 * 1.6,
+    );
+
+    // Second burst after the gap starts from zero lag, so backlog does
+    // not compound across bursts.
+    smoother.appendDelta(burst);
+    expect(smoother.getLag()).toBe(burst.length);
+    drain(clock, smoother, 20000);
+    expect(smoother.getRevealed()).toBe(burst + burst);
+    expect(concatDeltas(reveals)).toBe(burst + burst);
   });
 
-  it('fast-drain reveals in bounded per-tick chunks, never one giant frame', () => {
-    // 400 three-char units = 1200 chars. The drain-rate math wants this
-    // gone inside the 200ms window (~96 chars/frame, and once the deadline
-    // passes, the whole remainder in one frame); the finite drain cap must
-    // bound every frame's reveal so the backlog lands as fast motion, not
-    // a single mega markdown re-parse.
-    const text = 'ab '.repeat(400);
-    const { clock, smoother, reveals } = makeSmoother();
-    smoother.appendDelta(text);
-    smoother.requestFastDrain(FAST_DRAIN_WINDOW);
-    let frames = 0;
-    while (!smoother.isCaughtUp() && frames < 200) {
-      clock.tickFrame(16);
-      frames++;
+  it('replays a withheld row\'s whole backlog when it resumes', () => {
+    // A row the reveal sequencer held back streamed invisibly. On resume
+    // it animates from where it left off — the start — rather than
+    // catching up to the wire head. Nothing that streamed while it was
+    // withheld is dropped.
+    const { clock, reveals, smoother } = makeSmoother();
+    smoother.pause();
+    const withheld = 'word '.repeat(60); // 300 chars
+    smoother.appendDelta(withheld);
+    for (let f = 0; f < 40; f++) clock.tickFrame(16);
+    expect(reveals).toHaveLength(0);
+    expect(smoother.getLag()).toBe(withheld.length);
+
+    smoother.resume();
+    clock.tickFrame(16);
+    // First resumed frame is ordinary bounded work starting at index 0,
+    // not a jump to the tail.
+    expect(reveals).toHaveLength(1);
+    expect(reveals[0].delta.length).toBeLessThanOrEqual(
+      MAX_ADVANCE_PER_TICK_CHARS,
+    );
+    expect(withheld.startsWith(reveals[0].revealed)).toBe(true);
+
+    drain(clock, smoother, 20000);
+    expect(smoother.getRevealed()).toBe(withheld);
+    expect(concatDeltas(reveals)).toBe(withheld);
+  });
+
+  it('keeps the emitted deltas gap-free under interleaved bursts (expansion-payload integrity)', () => {
+    // Consumers accumulating deltas (the live payload expansion) rebuild
+    // the text from the delta stream alone, so `revealed` must always be
+    // exactly the running concatenation.
+    const { clock, reveals, smoother } = makeSmoother();
+    let received = '';
+    for (let burst = 0; burst < 4; burst++) {
+      const chunk = `burst${burst} ` + 'word '.repeat(30);
+      received += chunk;
+      smoother.appendDelta(chunk);
+      for (let f = 0; f < 3; f++) clock.tickFrame(16);
+      const small = `tail${burst} `;
+      received += small;
+      smoother.appendDelta(small);
+      for (let f = 0; f < 2; f++) clock.tickFrame(16);
     }
-    expect(smoother.getRevealed()).toBe(text);
+    drain(clock, smoother, 20000);
+
+    expect(smoother.getReceived()).toBe(received);
+    expect(smoother.getRevealed()).toBe(received);
+    expect(concatDeltas(reveals)).toBe(received);
+    let running = '';
     for (const r of reveals) {
-      expect(r.delta.length).toBeLessThanOrEqual(
-        FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS,
-      );
+      running += r.delta;
+      expect(r.revealed).toBe(running);
     }
-    // Capped throughput means the drain deliberately overshoots its 200ms
-    // target instead of bursting: 1200 chars needs at least len/cap frames.
-    expect(frames).toBeGreaterThanOrEqual(
-      Math.floor(text.length / FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS),
-    );
-  });
-
-  it('fast-drain still advances through a word unit larger than the drain cap', () => {
-    // A single unbroken token bigger than the drain cap (long URL /
-    // identifier). The cap expands to that one unit's size — budget
-    // accumulates until it fits — so the drain never stalls on it.
-    const giant = 'x'.repeat(FAST_DRAIN_MAX_ADVANCE_PER_TICK_CHARS + 24);
-    const text = `${giant} tail words follow now`;
-    const { clock, smoother, reveals } = makeSmoother();
-    smoother.appendDelta(text);
-    smoother.requestFastDrain(FAST_DRAIN_WINDOW);
-    let frames = 0;
-    while (!smoother.isCaughtUp() && frames < 200) {
-      clock.tickFrame(16);
-      frames++;
-    }
-    expect(smoother.getRevealed()).toBe(text);
-    // The giant token revealed as one whole chunk, never split mid-word.
-    const giantReveal = reveals.find((r) => r.delta.includes(giant));
-    expect(giantReveal).toBeDefined();
-  });
-
-  it('returns to steady-state cadence immediately after a drain finishes', () => {
-    // Drain a backlog with an already-expired deadline so the rate math
-    // dumps the full lag into the budget each tick, leaving a large
-    // residual at the moment of catch-up. That residual must clamp back
-    // to the steady-state cap (not the drain cap) so text appended right
-    // after the drain reveals at the normal cadence instead of briefly
-    // rushing through the leftover budget.
-    const backlog = 'ab '.repeat(67);
-    const { clock, smoother, reveals } = makeSmoother();
-    smoother.appendDelta(backlog);
-    smoother.requestFastDrain(0);
-    let frames = 0;
-    while (!smoother.isCaughtUp() && frames < 50) {
-      clock.tickFrame(16);
-      frames++;
-    }
-    expect(smoother.getRevealed()).toBe(backlog);
-
-    reveals.length = 0;
-    smoother.appendDelta('xy '.repeat(20));
-    clock.tickFrame(16);
-    clock.tickFrame(16);
-    clock.tickFrame(16);
-    const revealedAfterDrain = reveals.reduce(
-      (n, r) => n + r.delta.length,
-      0,
-    );
-    // Steady state over 3 frames: one residual spend of ≤ the per-tick cap
-    // plus ~2.5 chars/frame of base-rate accrual (word-rounded) ≈ 21 chars.
-    // A residual clamped at the drain cap instead would sustain the full
-    // 14-char cap for all 3 frames (~36 chars).
-    expect(revealedAfterDrain).toBeLessThanOrEqual(
-      MAX_ADVANCE_PER_TICK_CHARS + 12,
-    );
   });
 });
 

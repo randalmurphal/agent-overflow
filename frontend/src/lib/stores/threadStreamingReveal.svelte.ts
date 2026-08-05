@@ -317,11 +317,23 @@ export function createThreadStreamingReveal(
    *     top-level smoother is mid-reveal — render everything),
    *   - pauses smoothers for withheld successors so they animate from their
    *     start when their turn comes rather than snapping in text that streamed
-   *     while hidden, and resumes the frontier,
-   *   - fast-drains the frontier when any later top-level row is already
-   *     waiting, so the next row appears quickly (rate-ceilinged — see
-   *     FAST_DRAIN_MAX_CHARS_PER_SEC) instead of stalling behind a long
-   *     (often collapsed) thinking block.
+   *     while hidden, and resumes the frontier.
+   *
+   * The frontier is never rushed AND never skipped — for every kind, prose
+   * and reasoning alike. A withheld successor simply waits for the frontier
+   * to drain, in full, at the ordinary reveal cadence (capped by
+   * MAX_ADAPTIVE_CHARS_PER_SEC; no rush regime exists any more — the
+   * successor-waiting fast-drain was removed 2026-08-05 because the rush
+   * read as an unwanted zoom and clustered the released rows into one janky
+   * flush, and the bounded-backlog skip that briefly replaced it was
+   * rejected because dropping characters is worse than waiting for them).
+   *
+   * That wait stays short in practice because the wire is BURSTY: tool-call
+   * execution, API round-trips, and the model's own pauses are stretches
+   * with no appends during which the frontier keeps draining and catches
+   * back up to zero. The queue is self-correcting, so a backlog is a
+   * transient condition, not a growing one. Do not "fix" a pileup by
+   * skipping, rushing, or popping the frontier.
    *
    * The frontier is the earliest top-level (`!parentId`) item whose smoother
    * is still revealing. Subagent children are excluded so a streaming child
@@ -360,7 +372,6 @@ export function createThreadStreamingReveal(
   }
 
   function recomputeRevealPass(): void {
-    const items = options.getItems();
     let frontier: Item | null = null;
     for (const [id, entry] of itemSmoothers) {
       const item = options.getItemById(id);
@@ -377,37 +388,15 @@ export function createThreadStreamingReveal(
 
     if (frontier) {
       const f = frontier;
-      // A successor is any later TOP-LEVEL row. `items` is sorted by
-      // (turnIndex, itemIndex), so scan FORWARD from the frontier's index
-      // instead of the whole array — the common case (streaming the tail
-      // row with nothing after it yet) then costs O(1), not O(items), on
-      // the per-chunk hot path.
-      let hasSuccessor = false;
-      const frontierIdx = options.getItemIndex(f.id) ?? -1;
-      for (let i = frontierIdx + 1; i < items.length; i++) {
-        if (!items[i].parentId) {
-          hasSuccessor = true;
-          break;
-        }
-      }
       for (const [id, entry] of itemSmoothers) {
         const item = options.getItemById(id);
         if (!item || item.parentId) continue;
         // Withheld successors pause; the frontier (and any earlier top-level
-        // smoother, though none should outrank it) resumes.
+        // smoother, though none should outrank it) resumes. Nothing else
+        // happens here — the frontier drains at its own cadence whether or
+        // not rows are queued behind it (see the header comment).
         if (compareItemsByTimelinePosition(item, f) > 0) entry.smoother.pause();
         else entry.smoother.resume();
-      }
-      if (hasSuccessor) {
-        // Drain at the elevated (finite) per-tick cap so the finish
-        // reads as motion. Deliberately NO snap valve for oversized
-        // backlogs: a wholesale reveal is a single giant re-parse plus
-        // a multi-viewport layout jump, and the successor waiting a few
-        // extra seconds behind a rate-ceilinged drain is the better
-        // trade (the drain rate is bounded by
-        // FAST_DRAIN_MAX_CHARS_PER_SEC, so even an essay-sized backlog
-        // reveals as fast intentional streaming).
-        itemSmoothers.get(f.id)?.smoother.requestFastDrain();
       }
     } else {
       // Nothing is gating — make sure no smoother is left paused (the
@@ -484,9 +473,6 @@ export function createThreadStreamingReveal(
 
     const smoother = new PerItemSmoother({
       initialReceived,
-      // Seed revealed = received so a mid-flight feature deploy or
-      // turn-resume sees no visible snap.
-      initialRevealed: initialReceived,
       // Reveal the whole received backlog per wire chunk (one mutation
       // per chunk, a few Hz) instead of the animated 48–60Hz cadence.
       // Two independent settings want this, for different reasons:
@@ -593,7 +579,7 @@ export function createThreadStreamingReveal(
     entry.setLatestUpdatedAt(updatedAt);
     entry.smoother.appendDelta(delta);
     // A new smoothed row (or fresh lag on the frontier) may move the gate;
-    // recompute so a withheld successor pauses and the frontier fast-drains.
+    // recompute so a withheld successor pauses behind the frontier.
     recomputeReveal();
   }
 
@@ -754,8 +740,8 @@ export function createThreadStreamingReveal(
    * is suspended while the tab is hidden, but the WebSocket keeps delivering
    * deltas into each smoother's `received` buffer. A turn that streamed — or
    * fully completed — in the background therefore leaves smoothers with a
-   * large unrevealed backlog that, on return, would otherwise crawl in at the
-   * per-tick cap (~840 cps): a multi-KB response typing itself out for
+   * large unrevealed backlog that, on return, would otherwise crawl in at
+   * MAX_ADAPTIVE_CHARS_PER_SEC: a multi-KB response typing itself out for
    * seconds even though it is already done. Before the per-item smoother this
    * never happened — `applyItemDelta` wrote `summary += delta` directly, so a
    * hidden tab showed the full text the instant it regained focus; the rAF

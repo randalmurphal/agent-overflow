@@ -37,8 +37,10 @@ import {
 import type { ThreadPane } from '../../stores/thread.svelte';
 
 // Real-timer beat cadence in the 30-60ms band the task targets; ~60 chars per
-// beat lands near the pane smoother's ~840cps reveal ceiling, so the harness
-// exercises both live reveal and the post-turn backlog drain.
+// beat is ~1700cps, deliberately well past the pane smoother's
+// MAX_ADAPTIVE_CHARS_PER_SEC reveal ceiling, so the wire opens a backlog the
+// reveal must keep draining after the turn ends — the harness exercises both
+// live reveal and that post-turn drain tail.
 const BEAT_MS = 35;
 
 // Outcome thresholds, calibrated against healthy and deliberately-broken

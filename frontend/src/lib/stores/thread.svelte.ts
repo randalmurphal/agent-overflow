@@ -682,8 +682,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       }
     }
     // A newly-appended successor row should withhold behind the streaming
-    // frontier and trigger its fast-drain; a terminal upsert that disposed
-    // the frontier should drop the gate. Recompute once per batch.
+    // frontier; a terminal upsert that disposed the frontier should drop
+    // the gate. Recompute once per batch.
     streamingReveal.recomputeReveal();
     return next;
   }
@@ -2391,12 +2391,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       latestSettledTurn = settled;
       // Any smoother still behind keeps revealing at the normal cadence
       // (adaptive catch-up, PerItemSmoother) — there is deliberately no
-      // end-of-turn fast-drain: the rushed reveal read as jank, and a
-      // long final message finishing a few seconds after the wire
-      // settles is the accepted trade for uniform reveal speed. The
-      // reveal sequencer still fast-drains/snaps when a successor row
-      // is waiting, so nothing structural is ever blocked behind the
-      // tail row's backlog.
+      // end-of-turn drain, and no successor-waiting one either: rushed
+      // reveal motion read as jank both times. A long final message
+      // finishing a few seconds after the wire settles is the accepted
+      // trade for uniform reveal speed. Nothing is skipped to shorten that
+      // wait either — the bursty wire's idle gaps are what let the drain
+      // catch back up, so a queued row's wait is transient without a rush.
       // The deferred window prune does NOT run here: wire settle is not
       // visual quiet — the reveal above keeps draining for seconds. A
       // mounted timeline records the prune as pending and the quiet

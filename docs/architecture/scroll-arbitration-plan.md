@@ -38,7 +38,7 @@ re-derives these lessons as a user-visible bug.
 A second, related problem: **structural mutations are scheduled at wire
 events, not visual quiet.** The recent-window prune runs at
 `settleTurn` — but the reveal smoother deliberately keeps draining for
-seconds after the wire settles (no end-of-turn fast-drain), so the most
+seconds after the wire settles (the reveal is never rushed), so the most
 expensive flush in the app (40–80ms measured; 78–186ms in production
 traces) lands mid-glide by construction. The auto-collapse gate and the
 row-UI prune each independently grew the correct "structural change +

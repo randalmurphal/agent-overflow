@@ -659,8 +659,8 @@ export function createThreadTimelineWindow(
   /**
    * Turn-settle entry point for the recent-window prune. Wire settle is
    * NOT visual quiet: the reveal smoother keeps draining the tail for
-   * seconds after the turn completes (deliberately — no end-of-turn
-   * fast-drain), and the head-drop's flush is the most expensive in the
+   * seconds after the turn completes (deliberately — the reveal is never
+   * rushed), and the head-drop's flush is the most expensive in the
    * app, so landing it here put the stall inside the glide the reader
    * was watching (bug-report-20260801T214455Z traces; measured 78–186ms).
    * When a mounted timeline is behind the pane (the controller offers
