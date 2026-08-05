@@ -16,6 +16,7 @@ import {
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { applyProviderCommands } from '../../stores/providerCommands.svelte';
+import { resetForTest as resetClaudeSkills } from '../../stores/claudeSkills.svelte';
 import { resetForTest as resetCodexSkills } from '../../stores/codexSkills.svelte';
 import {
   projectTurnStarted,
@@ -56,6 +57,7 @@ function installBaseMocks() {
   }));
   setBindingMock('GetClaudeSlashCommands', async () => ({ probed: false, commands: [] }));
   setBindingMock('GetCodexSkills', async () => ({ cwd: '/tmp/workspace', skills: [], errors: [] }));
+  setBindingMock('GetClaudeSkills', async () => []);
   setBindingMock('SendMessageWithOptions', async () => makeThread());
   // The model catalog the picker — and therefore `/model <arg>` — resolves
   // against. Two Opus rows on purpose: the ambiguity case is real.
@@ -111,6 +113,7 @@ describe('composer command menu', () => {
     resetPaneLayoutForTest();
     resetCompanionPanesForTest();
     resetCodexSkills();
+    resetClaudeSkills();
     resetProviderModelsForTest();
     resetComposerPickerRegistryForTest();
     resetPaneTitleRenameForTest();

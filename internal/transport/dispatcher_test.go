@@ -685,6 +685,7 @@ func (p *privilegedApp) MarkDiffReviewCommentsSent() string     { return "ok" }
 func (p *privilegedApp) SendDiffReviewComments() string         { return "ok" }
 func (p *privilegedApp) GetModelsForProvider() string           { return "ok" }
 func (p *privilegedApp) GetCodexSkills() string                 { return "ok" }
+func (p *privilegedApp) GetClaudeSkills() string                { return "ok" }
 func (p *privilegedApp) CreateProject() string                  { return "ok" }
 func (p *privilegedApp) ListAvailableEditors() string           { return "ok" }
 func (p *privilegedApp) GenerateCommitMessage() string          { return "ok" }

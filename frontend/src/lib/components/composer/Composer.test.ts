@@ -68,6 +68,7 @@ function installDraftMocks() {
   // that never ran a probe: unknown, so nothing provider-specific renders.
   setBindingMock('GetClaudeSlashCommands', async () => ({ probed: false, commands: [] }));
   setBindingMock('GetCodexSkills', async () => ({ cwd: '/tmp/workspace', skills: [], errors: [] }));
+  setBindingMock('GetClaudeSkills', async () => []);
 }
 
 async function buildDraft(threadId: string | null = 'thread-1') {

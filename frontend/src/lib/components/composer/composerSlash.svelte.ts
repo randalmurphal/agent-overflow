@@ -13,6 +13,7 @@
 // Rendering lives in Composer.svelte / ComposerSlashPopover.
 
 import { GitListBranches, ListBranchCommits } from '../../stores/bindings';
+import { getClaudeSkills, ensureClaudeSkills } from '../../stores/claudeSkills.svelte';
 import { getCodexSkills, ensureCodexSkills } from '../../stores/codexSkills.svelte';
 import {
   ensureClaudeProbeCommands,
@@ -28,6 +29,7 @@ import {
   filterCommandSections,
   flattenSections,
   interceptedCommandNames,
+  mergeStaticClaudeCommands,
   unionProviderCommands,
   type ComposerCommandEntry,
   type ComposerCommandSection,
@@ -133,9 +135,15 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
     if (provider === 'codex' || provider === '') return new Set<string>();
     const frame = getProviderCommandsFrame(pane.threadId);
     const probe = getClaudeProbeCommands();
+    // Filesystem-enumerated skills count as provider commands too: the CLI
+    // executes `/skill-name`, and a pre-session send must carry the same
+    // providerCommand flag it would after `system/init` lists the skill.
     const union = unionProviderCommands(
       frame ? frame.commands : null,
-      probe.probed ? probe.commands : null,
+      mergeStaticClaudeCommands(
+        probe.probed ? probe.commands : null,
+        getClaudeSkills(workspacePath).skills,
+      ),
     );
     return new Set(union.map((command) => command.name));
   });
@@ -164,6 +172,7 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
       sessionCommands: frame ? frame.commands : null,
       probeCommands: probe.probed ? probe.commands : null,
       skills: getCodexSkills(workspacePath).skills,
+      claudeSkills: getClaudeSkills(workspacePath).skills,
     });
     return filterCommandSections(sections, trigger.query);
   });
@@ -182,8 +191,12 @@ export function createComposerSlash(opts: ComposerSlashOptions): ComposerSlashHa
       return;
     }
     if (!next.atStart) return;
-    if (provider === 'codex') void ensureCodexSkills(workspacePath);
-    else if (provider !== '') void ensureClaudeProbeCommands();
+    if (provider === 'codex') {
+      void ensureCodexSkills(workspacePath);
+    } else if (provider !== '') {
+      void ensureClaudeProbeCommands();
+      void ensureClaudeSkills(workspacePath);
+    }
   }
 
   async function loadReviewGit(): Promise<void> {

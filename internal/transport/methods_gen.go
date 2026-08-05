@@ -65,6 +65,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetBranchBaseDiff", ID: 1342635161},                    // main.App.GetBranchBaseDiff
 	{Name: "GetChannelMessages", ID: 3595031866},                   // main.App.GetChannelMessages
 	{Name: "GetChannelState", ID: 3664812883},                      // main.App.GetChannelState
+	{Name: "GetClaudeSkills", ID: 1573335127},                      // main.App.GetClaudeSkills
 	{Name: "GetClaudeSlashCommands", ID: 2854892544},               // main.App.GetClaudeSlashCommands
 	{Name: "GetCodexAccountUsage", ID: 1110466608},                 // main.App.GetCodexAccountUsage
 	{Name: "GetCodexSkills", ID: 1018032480},                       // main.App.GetCodexSkills

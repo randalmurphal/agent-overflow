@@ -297,6 +297,7 @@ export const GetModelsForProvider = dispatch('GetModelsForProvider');
 // drives. All four are re-exported from stores/bindings.ts, so the mock has to
 // carry them or the browser project's strict ESM loader fails the import.
 export const GetClaudeSlashCommands = dispatch('GetClaudeSlashCommands');
+export const GetClaudeSkills = dispatch('GetClaudeSkills');
 export const GetCodexSkills = dispatch('GetCodexSkills');
 export const CompactCodexThread = dispatch('CompactCodexThread');
 export const StartCodexReview = dispatch('StartCodexReview');

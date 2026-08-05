@@ -27,6 +27,10 @@
 //     its ancestor directories, gated by `disabledMcpjsonServers` (the
 //     non-interactive sessions AO spawns auto-approve everything not
 //     explicitly rejected).
+//   - Skills — ListSkills enumerates the SKILL.md tiers a session would
+//     load (user, project, enabled plugins), because the zero-token
+//     probe's --safe-mode initialize reports none and the composer menu
+//     needs them before any session exists (see skills.go).
 //
 // Only server NAMES from those sources ever leave this package's
 // plugin/project rows — command/args/env can hold live tokens and

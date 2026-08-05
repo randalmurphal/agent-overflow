@@ -124,6 +124,32 @@ export function interceptedCommandNames(
  * answered; a caller must not pass `[]` for that, since an empty array is a
  * real "this identity has none".
  */
+/**
+ * Fold the filesystem-enumerated Claude skills into the probe list, forming
+ * the full "static" (no-session-needed) command source.
+ *
+ * The probe's `--safe-mode` initialize deliberately reports no skills, so
+ * the two lists are disjoint in practice; when they do collide, the probe
+ * entry wins — it is the CLI's own answer for the name. Null-ness carries
+ * meaning: null probe + no skills stays null (nothing has answered), while
+ * skills alone form a real list so a cold menu can show them before the
+ * probe lands.
+ */
+export function mergeStaticClaudeCommands(
+  probeCommands: readonly SlashCommand[] | null,
+  skills: readonly { name: string; description?: string }[],
+): SlashCommand[] | null {
+  if (skills.length === 0) return probeCommands === null ? null : [...probeCommands];
+  const out: SlashCommand[] = [...(probeCommands ?? [])];
+  const taken = new Set(out.map((command) => command.name));
+  for (const skill of skills) {
+    if (taken.has(skill.name)) continue;
+    taken.add(skill.name);
+    out.push({ name: skill.name, description: skill.description ?? '', argumentHint: '' });
+  }
+  return out;
+}
+
 export function unionProviderCommands(
   sessionCommands: readonly SlashCommand[] | null,
   probeCommands: readonly SlashCommand[] | null,
@@ -224,6 +250,13 @@ export interface CommandMenuSources {
     displayName?: string;
     enabled?: boolean;
   }[];
+  /**
+   * Claude skills enumerated from the filesystem for the thread's
+   * workspace; empty when not loaded. Merged into the static command
+   * source via `mergeStaticClaudeCommands` — a live session's name set
+   * still wins once a frame exists.
+   */
+  claudeSkills: readonly { name: string; description?: string }[];
 }
 
 /**
@@ -256,7 +289,8 @@ export function buildCommandSections(sources: CommandMenuSources): ComposerComma
     return sections;
   }
 
-  const commands = unionProviderCommands(sources.sessionCommands, sources.probeCommands)
+  const staticCommands = mergeStaticClaudeCommands(sources.probeCommands, sources.claudeSkills);
+  const commands = unionProviderCommands(sources.sessionCommands, staticCommands)
     .filter((command) => !shadowed.has(command.name))
     .map(providerCommandEntry);
   if (commands.length > 0) {

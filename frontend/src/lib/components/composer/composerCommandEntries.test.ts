@@ -5,6 +5,7 @@ import {
   flattenSections,
   interceptedCommandNames,
   interceptedCommandsFor,
+  mergeStaticClaudeCommands,
   unionProviderCommands,
 } from './composerCommandEntries';
 import type { SlashCommand } from '../../stores/bindings';
@@ -52,6 +53,33 @@ describe('unionProviderCommands', () => {
   });
 });
 
+describe('mergeStaticClaudeCommands', () => {
+  it('stays null when nothing has answered', () => {
+    expect(mergeStaticClaudeCommands(null, [])).toBeNull();
+  });
+
+  it('forms a real list from skills alone so a cold menu can show them', () => {
+    expect(mergeStaticClaudeCommands(null, [{ name: 'commit-helper', description: 'Commit' }]))
+      .toEqual([{ name: 'commit-helper', description: 'Commit', argumentHint: '' }]);
+  });
+
+  it('appends skills after the probe list, defaulting a missing description', () => {
+    const merged = mergeStaticClaudeCommands([cmd('usage', 'Show usage')], [{ name: 'deploy' }]);
+    expect(merged).toEqual([
+      cmd('usage', 'Show usage'),
+      { name: 'deploy', description: '', argumentHint: '' },
+    ]);
+  });
+
+  it('lets a probe entry win a name collision — it is the CLI’s own answer', () => {
+    const merged = mergeStaticClaudeCommands(
+      [cmd('deploy', 'From the CLI')],
+      [{ name: 'deploy', description: 'From the filesystem' }],
+    );
+    expect(merged).toEqual([cmd('deploy', 'From the CLI')]);
+  });
+});
+
 describe('interceptedCommandsFor', () => {
   it('exposes the provider-agnostic reroutes everywhere', () => {
     const names = interceptedCommandNames('claude');
@@ -76,6 +104,7 @@ describe('buildCommandSections', () => {
     sessionCommands: null,
     probeCommands: null,
     skills: [],
+    claudeSkills: [],
   };
 
   it('offers only AO commands away from the start of the draft', () => {
@@ -127,6 +156,42 @@ describe('buildCommandSections', () => {
     });
     expect(skills[1]).toMatchObject({ label: '$legacy', disabled: true });
     expect(skills[1].disabledReason).toBeTruthy();
+  });
+
+  it('shows filesystem-enumerated Claude skills as provider rows pre-session', () => {
+    const sections = buildCommandSections({
+      ...base,
+      claudeSkills: [{ name: 'commit-helper', description: 'Commit like a pro' }],
+    });
+    const provider = sections.find((s) => s.id === 'provider')!;
+    expect(provider.entries).toHaveLength(1);
+    expect(provider.entries[0]).toMatchObject({
+      kind: 'provider',
+      label: '/commit-helper',
+      insertText: '/commit-helper ',
+      description: 'Commit like a pro',
+    });
+  });
+
+  it('drops a skill the live session frame does not list — the frame is authoritative', () => {
+    const sections = buildCommandSections({
+      ...base,
+      sessionCommands: [cmd('usage')],
+      claudeSkills: [{ name: 'commit-helper', description: 'Commit like a pro' }],
+    });
+    const names = flattenSections(sections).map((e) => e.name);
+    expect(names).toContain('usage');
+    expect(names).not.toContain('commit-helper');
+  });
+
+  it('shadows a skill whose name AO intercepts', () => {
+    const sections = buildCommandSections({
+      ...base,
+      claudeSkills: [{ name: 'model', description: 'A skill unluckily named model' }],
+    });
+    const rows = flattenSections(sections).filter((e) => e.name === 'model');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe('intercepted');
   });
 
   it('never shows provider commands on a Codex thread', () => {

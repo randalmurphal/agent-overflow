@@ -3042,7 +3042,8 @@ export class ThreadMCPServer {
      * Scope is provider vocabulary: Claude session rows report the
      * CLI's own scope ("user", "project", "local", "dynamic" for
      * plugin servers), config rows report the claudeconfig source
-     * ("user", "plugin"). Codex rows carry no scope.
+     * ("user", "local", "plugin", "project"). Codex rows carry no
+     * scope.
      */
     "scope"?: string;
     "disabled": boolean;

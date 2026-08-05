@@ -149,10 +149,11 @@ export {
   GetModelsForProvider,
   // Composer command menu sources. GetClaudeSlashCommands is a pure read
   // of what the zero-token account probe left behind (never spawns) and
-  // is available on a cold thread; GetCodexSkills is LOCAL-ONLY and
-  // directory-scoped, so callers pass the thread's workspace path and
-  // must tolerate a remote-client refusal.
+  // is available on a cold thread; GetCodexSkills and GetClaudeSkills
+  // are LOCAL-ONLY and directory-scoped, so callers pass the thread's
+  // workspace path and must tolerate a remote-client refusal.
   GetClaudeSlashCommands,
+  GetClaudeSkills,
   GetCodexSkills,
   ProbeClaudeAccount,
   RecheckClaudeAccount,
@@ -649,6 +650,7 @@ export type {
   CwdSkills as CodexCwdSkills,
   Skill as CodexSkill,
 } from '../../../bindings/agent-overflow/internal/codexskills/models';
+export type { Skill as ClaudeSkill } from '../../../bindings/agent-overflow/internal/claudeconfig/models';
 
 // StartCodexReview wrapper. Same plain-object-in / class-wrap pattern as
 // CreateThread: the generated signature types the target as a class

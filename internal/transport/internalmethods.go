@@ -216,6 +216,11 @@ var LocalOnlyMethods = map[string]bool{
 	// absolute SKILL.md paths under the user's home and repo. Local process
 	// execution plus host-path disclosure — loopback-only on both counts.
 	"GetCodexSkills":       true,
+	// GetClaudeSkills reads the user's ~/.claude/skills, the workspace's
+	// .claude/skills, and enabled plugins' installation directories.
+	// Pure filesystem reads (no spawn), but the answer enumerates what
+	// is installed on the host — loopback-only like GetCodexSkills.
+	"GetClaudeSkills": true,
 	"CreateProject":        true,
 	"ListAvailableEditors": true,
 	// GenerateCommitMessage runs `claude` / `codex` in the workspace
