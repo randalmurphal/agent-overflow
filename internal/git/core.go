@@ -242,9 +242,9 @@ func NewCore() *Core {
 
 		defaultBranchCache: make(map[string]repoMetaEntry[string]),
 		originCache:        make(map[string]repoMetaEntry[originIdentity]),
-		fetchCache:     make(map[string]time.Time),
-		untrackedLines: make(map[string]*untrackedLineCache),
-		nowFn:          time.Now,
+		fetchCache:         make(map[string]time.Time),
+		untrackedLines:     make(map[string]*untrackedLineCache),
+		nowFn:              time.Now,
 	}
 	core.fetchFn = core.fetchOriginQuiet
 	core.forges = map[string]Forge{
