@@ -16,7 +16,7 @@ async function seed(): Promise<void> {
   setBindingMock('GetProviderStatuses', async () => []);
   setBindingMock('GetModelsForProvider', async () => []);
   setBindingMock('ListDiscussions', async () => []);
-  setBindingMock('GetKeybindings', async () => []);
+  setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('ListThreads', async () => []);
   resetKeybindingsStore();
   await loadSettings();
@@ -44,22 +44,24 @@ describe('<SettingsView> tabs', () => {
   });
 
   it('renders the Keybindings panel when multiple chords target the same command context', async () => {
-    setBindingMock('GetKeybindings', async () => [
-      {
-        key: 'mod+n',
-        command: 'thread.new',
-        when: '!terminalFocus',
-        defaultId: 'thread.new.primary',
-        defaultKey: 'mod+n',
-      },
-      {
-        key: 'mod+shift+o',
-        command: 'thread.new',
-        when: '!terminalFocus',
-        defaultId: 'thread.new.alternate',
-        defaultKey: 'mod+shift+o',
-      },
-    ]);
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [
+        {
+          key: 'mod+n',
+          command: 'thread.new',
+          when: '!terminalFocus',
+          defaultId: 'thread.new.primary',
+          defaultKey: 'mod+n',
+        },
+        {
+          key: 'mod+shift+o',
+          command: 'thread.new',
+          when: '!terminalFocus',
+          defaultId: 'thread.new.alternate',
+          defaultKey: 'mod+shift+o',
+        },
+      ],
+    }));
 
     const { getByRole, findAllByText, findByRole } = render(SettingsView, { onClose: vi.fn() });
     const tab = getByRole('tab', { name: 'Keybindings' });

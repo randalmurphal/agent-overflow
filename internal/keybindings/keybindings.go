@@ -263,16 +263,45 @@ func New(configDir string) (*Service, error) {
 // user.
 func (s *Service) Path() string { return s.path }
 
+// LoadResult is everything Get has to say: the effective bindings and,
+// when the user's override file existed but could not be read, why.
+//
+// Deliberately one value instead of a ([]Keybinding, error) pair. Both
+// halves are non-nil together in the failure case — the bindings are
+// always usable (Defaults, plus whatever was readable) and the error
+// only reports that the user file was not — and a pair in that shape
+// invites the reflexive `if err != nil { return }` that throws a
+// perfectly good binding list away. Here the failure IS data: it
+// travels to the frontend beside the bindings and renders as
+// user-facing state instead of being dropped on the floor.
+type LoadResult struct {
+	Bindings  []Keybinding `json:"bindings"`
+	LoadError string       `json:"loadError,omitempty"`
+}
+
 // Get returns the effective keybindings: Defaults with any user
-// overrides layered on top. Invalid entries in the user file are
-// dropped silently (the frontend surfaces parse errors on its own);
-// a completely malformed file falls back to Defaults.
-func (s *Service) Get() ([]Keybinding, error) {
+// overrides layered on top.
+//
+// A user file that cannot be read (missing permissions, malformed
+// JSON) does not hide the bindings — Defaults come back and the reason
+// rides along in LoadError, because the next Update overwrites that
+// file and the user deserves to know before it happens. A file that is
+// simply absent is not an error: absence is a fresh install.
+//
+// Per-entry validation is NOT done here. The frontend owns chord and
+// `when` syntax (see the responsibility boundary in AGENTS.md) and
+// reports those rows as configuration issues; this layer only reports
+// whether the file as a whole was readable.
+func (s *Service) Get() LoadResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	user, _ := readFile(s.path)
-	return Merge(Defaults, user), nil
+	user, err := readFile(s.path)
+	result := LoadResult{Bindings: Merge(Defaults, user)}
+	if err != nil {
+		result.LoadError = err.Error()
+	}
+	return result
 }
 
 // Update replaces the user keybindings file. The config is capped at
@@ -347,7 +376,11 @@ func readFile(path string) ([]Keybinding, error) {
 	}
 	var parsed []Keybinding
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		return nil, fmt.Errorf("parse keybindings: %w", err)
+		// Named with the path because this string reaches the user via
+		// LoadResult.LoadError, and their next move is to go rescue that
+		// exact file before Settings overwrites it. The read/chmod errors
+		// above already carry the path from the os package.
+		return nil, fmt.Errorf("parse keybindings %s: %w", path, err)
 	}
 	return parsed, nil
 }

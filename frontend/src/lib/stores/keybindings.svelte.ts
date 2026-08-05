@@ -70,6 +70,7 @@ let rules: KeybindingRule[] = $state([]);
 let resolved: ResolvedKeybinding[] = $state([]);
 let issues: KeybindingIssue[] = $state([]);
 let loaded = $state(false);
+let loadError: string | null = $state(null);
 
 function compileEffectiveRules(): void {
   const compiled = compileAll(rules);
@@ -159,6 +160,19 @@ export function getKeybindingIssues(): KeybindingIssue[] {
 
 export function isKeybindingsLoaded(): boolean {
   return loaded;
+}
+
+/**
+ * Why the user's keybindings file could not be read, or null when it was
+ * (including the fresh-install case where there is no file yet).
+ *
+ * The rules above are still the effective ones — shipped defaults — so this
+ * is not "keybindings are broken". It is the warning that the file backing
+ * this surface is unreadable and that saving any row here REPLACES it, which
+ * is the only chance the user gets to rescue their overrides first.
+ */
+export function getKeybindingLoadError(): string | null {
+  return loadError;
 }
 
 /**
@@ -271,10 +285,21 @@ function compileAll(input: KeybindingRule[]): {
 
 export async function loadKeybindings(): Promise<void> {
   try {
-    const raw = (await GetKeybindings()) as KeybindingRule[] | null;
-    rules = Array.isArray(raw) ? raw : [];
+    const result = await GetKeybindings();
+    rules = Array.isArray(result?.bindings) ? result.bindings : [];
+    // `||`, not `??`: the field is `omitempty` on the wire, so an absent
+    // field and an empty string both mean "nothing to report" — and one
+    // reaching the banner as a falsy-but-set value would toast about a
+    // failure the banner then refuses to render.
+    loadError = result?.loadError || null;
     compileEffectiveRules();
     loaded = true;
+    if (loadError !== null) {
+      addToast(
+        'error',
+        `Could not read your keybindings file (${loadError}). Showing defaults — saving a shortcut replaces the file.`,
+      );
+    }
   } catch (err) {
     console.error('Failed to load keybindings:', err);
     addToast('error', 'Failed to load keybindings');
@@ -282,6 +307,10 @@ export async function loadKeybindings(): Promise<void> {
     resolved = [];
     issues = [];
     loaded = true;
+    // The call never reached the file, so any earlier file-read failure is
+    // no longer something we know to be true — leaving it set would keep a
+    // banner up about a file this load never looked at.
+    loadError = null;
   }
 }
 
@@ -329,6 +358,8 @@ export function setKeybindingsForTest(input: KeybindingRule[]): void {
   rules = input.slice();
   compileEffectiveRules();
   loaded = true;
+  // Seeded rules came from the caller, not from a file that failed to load.
+  loadError = null;
 }
 
 export function resetKeybindingsStore(): void {
@@ -336,6 +367,7 @@ export function resetKeybindingsStore(): void {
   resolved = [];
   issues = [];
   loaded = false;
+  loadError = null;
 }
 
 /**

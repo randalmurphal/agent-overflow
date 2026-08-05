@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -19,10 +20,12 @@ func newServiceWithTempDir(t *testing.T) *Service {
 
 func TestGetReturnsDefaultsWhenNoFile(t *testing.T) {
 	svc := newServiceWithTempDir(t)
-	kb, err := svc.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
+	res := svc.Get()
+	if res.LoadError != "" {
+		// A missing file is a fresh install, not a failure to read one.
+		t.Fatalf("Get() LoadError = %q, want empty", res.LoadError)
 	}
+	kb := res.Bindings
 	if len(kb) != len(Defaults) {
 		t.Fatalf("len(kb) = %d, want %d", len(kb), len(Defaults))
 	}
@@ -304,10 +307,11 @@ func TestUpdatePersistsAndMergesOverDefaults(t *testing.T) {
 		t.Fatalf("persisted entries = %d, want 2", len(persisted))
 	}
 
-	merged, err := svc.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
+	loaded := svc.Get()
+	if loaded.LoadError != "" {
+		t.Fatalf("Get() LoadError = %q, want empty", loaded.LoadError)
 	}
+	merged := loaded.Bindings
 	// Palette should be rebound to mod+shift+p (legacy override by command+when).
 	var palette Keybinding
 	var termToggle Keybinding
@@ -374,8 +378,8 @@ func TestGetRepairsExistingFilePermissions(t *testing.T) {
 		t.Fatalf("writing keybindings file: %v", err)
 	}
 
-	if _, err := svc.Get(); err != nil {
-		t.Fatalf("Get() error = %v", err)
+	if got := svc.Get().LoadError; got != "" {
+		t.Fatalf("Get() LoadError = %q, want empty", got)
 	}
 
 	assertMode(t, svc.Path(), 0o600)
@@ -437,10 +441,7 @@ func TestUnboundOverrideSuppressesTheDefaultChord(t *testing.T) {
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	merged, err := svc.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
+	merged := svc.Get().Bindings
 	row, ok := findMerged(t, merged, "palette.open", "")
 	if !ok {
 		// The row must SURVIVE with no chord: settings renders it so the
@@ -473,11 +474,7 @@ func TestUnboundSurvivesBindUnbindRebindResetSequence(t *testing.T) {
 	}
 	keyAfter := func(t *testing.T) string {
 		t.Helper()
-		merged, err := svc.Get()
-		if err != nil {
-			t.Fatalf("Get() error = %v", err)
-		}
-		row, ok := findMerged(t, merged, "palette.open", "")
+		row, ok := findMerged(t, svc.Get().Bindings, "palette.open", "")
 		if !ok {
 			t.Fatal("palette.open row missing from merged output")
 		}
@@ -547,11 +544,8 @@ func TestUnbindingOneRowLeavesItsSiblingBound(t *testing.T) {
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	merged, err := svc.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
 	byID := map[string]Keybinding{}
+	merged := svc.Get().Bindings
 	for _, b := range merged {
 		if b.Command == "thread.new" {
 			byID[b.DefaultID] = b
@@ -574,11 +568,7 @@ func TestGetNormalizesWhitespaceOnlyKeyToUnbound(t *testing.T) {
 		t.Fatalf("writing keybindings file: %v", err)
 	}
 
-	merged, err := svc.Get()
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	row, ok := findMerged(t, merged, "palette.open", "")
+	row, ok := findMerged(t, svc.Get().Bindings, "palette.open", "")
 	if !ok {
 		t.Fatal("palette.open row missing from merged output")
 	}
@@ -687,17 +677,78 @@ func TestResetDeletesUserFile(t *testing.T) {
 	}
 }
 
-func TestGetFallsBackWhenFileMalformed(t *testing.T) {
+// --- the load-error contract ---
+
+// A malformed file must not read as a fresh install. The bindings still
+// come back (Defaults), and the reason is reported so the frontend can
+// warn before the next Update overwrites the file.
+func TestGetReportsLoadErrorForMalformedFile(t *testing.T) {
 	svc := newServiceWithTempDir(t)
-	if err := os.WriteFile(svc.Path(), []byte("{not json"), 0o644); err != nil {
+	if err := os.WriteFile(svc.Path(), []byte("{not json"), 0o600); err != nil {
 		t.Fatalf("writing malformed file: %v", err)
 	}
-	kb, err := svc.Get()
-	if err != nil {
-		t.Fatalf("Get() returned error: %v", err)
+
+	res := svc.Get()
+	if len(res.Bindings) != len(Defaults) {
+		t.Fatalf("fallback len(Bindings) = %d, want %d", len(res.Bindings), len(Defaults))
 	}
-	if len(kb) != len(Defaults) {
-		t.Fatalf("fallback len(kb) = %d, want %d", len(kb), len(Defaults))
+	if res.LoadError == "" {
+		t.Fatal("LoadError is empty for a malformed file — the overwrite would be silent")
+	}
+	if !strings.Contains(res.LoadError, "parse keybindings") {
+		t.Fatalf("LoadError = %q, want it to name the parse failure", res.LoadError)
+	}
+}
+
+func TestGetReportsNoLoadErrorForAReadableFile(t *testing.T) {
+	svc := newServiceWithTempDir(t)
+	if err := svc.Update([]Keybinding{
+		{Key: "mod+o", Command: "palette.open", DefaultID: "palette.open"},
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	res := svc.Get()
+	if res.LoadError != "" {
+		t.Fatalf("LoadError = %q, want empty for a readable file", res.LoadError)
+	}
+	row, ok := findMerged(t, res.Bindings, "palette.open", "")
+	if !ok {
+		t.Fatal("palette.open row missing from merged output")
+	}
+	if row.Key != "mod+o" {
+		t.Fatalf("palette.open key = %q, want mod+o", row.Key)
+	}
+}
+
+// The TRANSITION, not just the two states: a broken file reports, and
+// repairing it clears the report AND applies the repaired overrides.
+// A LoadError that outlives the file it described would warn about an
+// overwrite that is no longer destructive.
+func TestGetLoadErrorClearsWhenTheFileIsRepaired(t *testing.T) {
+	svc := newServiceWithTempDir(t)
+	if err := os.WriteFile(svc.Path(), []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("writing malformed file: %v", err)
+	}
+	if svc.Get().LoadError == "" {
+		t.Fatal("LoadError is empty for a malformed file")
+	}
+
+	repaired := `[{"key":"mod+o","command":"palette.open","defaultId":"palette.open"}]`
+	if err := os.WriteFile(svc.Path(), []byte(repaired), 0o600); err != nil {
+		t.Fatalf("writing repaired file: %v", err)
+	}
+
+	res := svc.Get()
+	if res.LoadError != "" {
+		t.Fatalf("LoadError = %q after repair, want empty", res.LoadError)
+	}
+	row, ok := findMerged(t, res.Bindings, "palette.open", "")
+	if !ok {
+		t.Fatal("palette.open row missing from merged output")
+	}
+	if row.Key != "mod+o" {
+		t.Fatalf("palette.open key = %q after repair, want the repaired override", row.Key)
 	}
 }
 

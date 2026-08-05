@@ -86,7 +86,7 @@ export function installAppDefaults(): void {
   setBindingMock('UpdateSettings', async (patch: unknown) => makeSettings(patch as Parameters<typeof makeSettings>[0]));
   setBindingMock('Version', async () => '0.0.1');
   setBindingMock('ListThreads', async () => []);
-  setBindingMock('GetKeybindings', async () => []);
+  setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('GetProviderStatuses', async () => []);
   setBindingMock('GetModelsForProvider', async () => []);
   setBindingMock('GetRateLimitsSnapshots', async () => []);

@@ -13,13 +13,19 @@ func (a *App) keybindingsService() (*keybindings.Service, error) {
 }
 
 // GetKeybindings returns the effective keybindings: defaults with any
-// user overrides layered on top.
-func (a *App) GetKeybindings() ([]keybindings.Keybinding, error) {
+// user overrides layered on top, plus the reason the user's override
+// file could not be read when that happened.
+//
+// The error return covers service construction only (no writable config
+// path). An unreadable user file is not an error here — it is a field
+// of the result the frontend renders, so the bindings survive the
+// report; see keybindings.LoadResult.
+func (a *App) GetKeybindings() (keybindings.LoadResult, error) {
 	svc, err := a.keybindingsService()
 	if err != nil {
-		return nil, err
+		return keybindings.LoadResult{}, err
 	}
-	return svc.Get()
+	return svc.Get(), nil
 }
 
 // UpdateKeybindings replaces the user keybindings file with the

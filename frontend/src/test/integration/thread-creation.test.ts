@@ -121,9 +121,9 @@ describe('App integration — thread creation', () => {
       projectId: 'proj-int',
     });
     const binding = setBindingMock('CreateThreadFromPR', async () => created);
-    setBindingMock('GetKeybindings', async () => [
-      { key: 'mod+k', command: 'palette.open' },
-    ]);
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [{ key: 'mod+k', command: 'palette.open' }],
+    }));
     installThreadViewDefaults();
 
     const { getByTestId, findByTestId, findAllByText } = render(App);
@@ -160,9 +160,9 @@ describe('App integration — thread creation', () => {
     const existing = makeThread({ id: 'origin', title: 'Origin Thread' });
     setBindingMock('ListThreads', async () => [existing]);
     seedSidebarProject([existing]);
-    setBindingMock('GetKeybindings', async () => [
-      { key: 'mod+k', command: 'palette.open' },
-    ]);
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [{ key: 'mod+k', command: 'palette.open' }],
+    }));
     setBindingMock('ListDiscussions', async () => []);
     installThreadViewDefaults();
 

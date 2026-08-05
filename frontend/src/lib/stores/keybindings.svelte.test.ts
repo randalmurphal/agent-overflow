@@ -7,6 +7,7 @@ import {
   setKeybindingsForTest,
   saveKeybindings,
   getKeybindingIssues,
+  getKeybindingLoadError,
   resetKeybindingsToDefaults,
   formatChord,
   encodeChordFromEvent,
@@ -30,6 +31,7 @@ import {
   type CommandContext,
 } from './commandRegistry.svelte';
 import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavCommands';
+import { getToasts, removeToast } from './toast.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
 type TestKeyMods = {
@@ -442,10 +444,12 @@ describe('keybindings store — loading', () => {
   });
 
   it('loadKeybindings calls the backend and compiles the rules', async () => {
-    setBindingMock('GetKeybindings', async () => [
-      { key: 'mod+k', command: 'palette.open' },
-      { key: 'garbage garbage', command: 'bad' },
-    ]);
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [
+        { key: 'mod+k', command: 'palette.open' },
+        { key: 'garbage garbage', command: 'bad' },
+      ],
+    }));
     await loadKeybindings();
     expect(getKeybindingIssues()).toHaveLength(1);
     expect(getKeybindingIssues()[0]?.rule.command).toBe('bad');
@@ -453,22 +457,26 @@ describe('keybindings store — loading', () => {
 
   it('saveKeybindings persists then reloads', async () => {
     setBindingMock('UpdateKeybindings', vi.fn(async () => {}));
-    setBindingMock('GetKeybindings', async () => [{ key: 'mod+o', command: 'palette.open' }]);
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [{ key: 'mod+o', command: 'palette.open' }],
+    }));
     await saveKeybindings([{ key: 'mod+o', command: 'palette.open' }]);
     expect(keybindingForCommand('palette.open')).toBe('mod+o');
   });
 
   it('saveKeybindings preserves default binding identity', async () => {
     const update = setBindingMock('UpdateKeybindings', vi.fn(async () => {}));
-    setBindingMock('GetKeybindings', async () => [
-      {
-        key: 'mod+x',
-        command: 'thread.new',
-        when: '!terminalFocus',
-        defaultId: 'thread.new.alternate',
-        defaultKey: 'mod+shift+o',
-      },
-    ]);
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [
+        {
+          key: 'mod+x',
+          command: 'thread.new',
+          when: '!terminalFocus',
+          defaultId: 'thread.new.alternate',
+          defaultKey: 'mod+shift+o',
+        },
+      ],
+    }));
 
     await saveKeybindings([
       {
@@ -492,10 +500,69 @@ describe('keybindings store — loading', () => {
     ]);
   });
 
+  // An unreadable user file is state the user has to see, not a log line:
+  // the bindings on screen are defaults, and the next save in Settings
+  // overwrites the file that failed to load. The clean-reload half is the
+  // transition — a banner that outlives the file it described is its own bug.
+  it('exposes a user-file load error, toasts it, and clears it on a clean reload', async () => {
+    for (const t of [...getToasts()]) removeToast(t.id);
+    const loadError = 'parse keybindings /cfg/keybindings.json: invalid character \'n\'';
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [{ key: 'mod+k', command: 'palette.open' }],
+      loadError,
+    }));
+    await loadKeybindings();
+
+    // The salvaged bindings are still live — the failure costs the user no
+    // shortcuts, it only warns them before the overwrite.
+    expect(keybindingForCommand('palette.open')).toBe('mod+k');
+    expect(getKeybindingLoadError()).toBe(loadError);
+    expect(getToasts()).toHaveLength(1);
+    expect(getToasts()[0]?.type).toBe('error');
+    expect(getToasts()[0]?.message).toContain(loadError);
+
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [{ key: 'mod+k', command: 'palette.open' }],
+    }));
+    await loadKeybindings();
+    expect(getKeybindingLoadError()).toBeNull();
+  });
+
+  // `loadError: ""` is the same wire state as an omitted field (the Go tag is
+  // omitempty). It must not half-report: no toast, and nothing for the banner.
+  it('treats an empty load error as no error at all', async () => {
+    for (const t of [...getToasts()]) removeToast(t.id);
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [{ key: 'mod+k', command: 'palette.open' }],
+      loadError: '',
+    }));
+    await loadKeybindings();
+    expect(getKeybindingLoadError()).toBeNull();
+    expect(getToasts()).toHaveLength(0);
+  });
+
+  it('drops a stale load error when the call itself fails', async () => {
+    for (const t of [...getToasts()]) removeToast(t.id);
+    setBindingMock('GetKeybindings', async () => ({ bindings: [], loadError: 'boom' }));
+    await loadKeybindings();
+    expect(getKeybindingLoadError()).toBe('boom');
+
+    // This load never reached the file, so what it said about the file is no
+    // longer something we know — the RPC failure gets its own toast instead.
+    setBindingMock('GetKeybindings', async () => {
+      throw new Error('transport down');
+    });
+    await loadKeybindings();
+    expect(getKeybindingLoadError()).toBeNull();
+    expect(getToasts().map((t) => t.type)).toEqual(['error', 'error']);
+  });
+
   it('resetKeybindingsToDefaults triggers ResetKeybindings then reloads', async () => {
     const reset = vi.fn(async () => {});
     setBindingMock('ResetKeybindings', reset);
-    setBindingMock('GetKeybindings', async () => [{ key: 'mod+k', command: 'palette.open' }]);
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [{ key: 'mod+k', command: 'palette.open' }],
+    }));
     await resetKeybindingsToDefaults();
     expect(reset).toHaveBeenCalledTimes(1);
     expect(keybindingForCommand('palette.open')).toBe('mod+k');
@@ -709,9 +776,10 @@ describe('keybindings store — unbound bindings', () => {
     });
     // Model the Go merge closely enough for the sequence: the default row
     // unless an override for its identity was stored.
-    setBindingMock('GetKeybindings', async () =>
-      [stored.find((r) => r.defaultId === 'palette.open') ?? PALETTE_ROW]
-        .map((r) => ({ ...r, defaultId: 'palette.open', defaultKey: 'mod+shift+k' })));
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [stored.find((r) => r.defaultId === 'palette.open') ?? PALETTE_ROW]
+        .map((r) => ({ ...r, defaultId: 'palette.open', defaultKey: 'mod+shift+k' })),
+    }));
 
     const current = (): KeybindingRule => getKeybindingRules()[0];
 
@@ -742,18 +810,22 @@ describe('keybindings store — unbound bindings', () => {
 
   it('survives unbind → reset-to-defaults', async () => {
     setBindingMock('UpdateKeybindings', vi.fn(async () => {}));
-    setBindingMock('GetKeybindings', async () => [{ ...PALETTE_ROW, key: UNBOUND_CHORD }]);
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [{ ...PALETTE_ROW, key: UNBOUND_CHORD }],
+    }));
     await loadKeybindings();
     expect(keybindingForCommand('palette.open')).toBeNull();
 
     setBindingMock('ResetKeybindings', vi.fn(async () => {}));
-    setBindingMock('GetKeybindings', async () => [PALETTE_ROW]);
+    setBindingMock('GetKeybindings', async () => ({ bindings: [PALETTE_ROW] }));
     await resetKeybindingsToDefaults();
     expect(keybindingForCommand('palette.open')).toBe('mod+shift+k');
   });
 
   it('an unbind persisted before a reload is still unbound after it', async () => {
-    setBindingMock('GetKeybindings', async () => [{ ...PALETTE_ROW, key: UNBOUND_CHORD }]);
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [{ ...PALETTE_ROW, key: UNBOUND_CHORD }],
+    }));
     await loadKeybindings();
     expect(keybindingForCommand('palette.open')).toBeNull();
     // Reload from the same backing store — "absent" must not creep back in.
@@ -764,7 +836,7 @@ describe('keybindings store — unbound bindings', () => {
 
   it('persists a clear but never an identity-less one', async () => {
     const update = setBindingMock('UpdateKeybindings', vi.fn(async () => {}));
-    setBindingMock('GetKeybindings', async () => []);
+    setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
 
     await saveKeybindings([
       // Cleared default row: a real override, must be written.

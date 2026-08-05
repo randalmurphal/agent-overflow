@@ -44,3 +44,46 @@ export class Keybinding {
         return new Keybinding($$parsedSource as Partial<Keybinding>);
     }
 }
+
+/**
+ * LoadResult is everything Get has to say: the effective bindings and,
+ * when the user's override file existed but could not be read, why.
+ * 
+ * Deliberately one value instead of a ([]Keybinding, error) pair. Both
+ * halves are non-nil together in the failure case — the bindings are
+ * always usable (Defaults, plus whatever was readable) and the error
+ * only reports that the user file was not — and a pair in that shape
+ * invites the reflexive `if err != nil { return }` that throws a
+ * perfectly good binding list away. Here the failure IS data: it
+ * travels to the frontend beside the bindings and renders as
+ * user-facing state instead of being dropped on the floor.
+ */
+export class LoadResult {
+    "bindings": Keybinding[];
+    "loadError"?: string;
+
+    /** Creates a new LoadResult instance. */
+    constructor($$source: Partial<LoadResult> = {}) {
+        if (!("bindings" in $$source)) {
+            this["bindings"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LoadResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LoadResult {
+        const $$createField0_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("bindings" in $$parsedSource) {
+            $$parsedSource["bindings"] = $$createField0_0($$parsedSource["bindings"]);
+        }
+        return new LoadResult($$parsedSource as Partial<LoadResult>);
+    }
+}
+
+// Private type creation functions
+const $$createType0 = Keybinding.createFrom;
+const $$createType1 = $Create.Array($$createType0);

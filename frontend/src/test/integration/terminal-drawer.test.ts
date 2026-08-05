@@ -51,9 +51,9 @@ function openedHandle(terminalID: string): TerminalHandle {
 }
 
 async function loadTerminalToggleKeybinding() {
-  setBindingMock('GetKeybindings', async () => [
-    { key: 'mod+j', command: 'terminal.toggle', when: 'hasActiveThread' },
-  ]);
+  setBindingMock('GetKeybindings', async () => ({
+    bindings: [{ key: 'mod+j', command: 'terminal.toggle', when: 'hasActiveThread' }],
+  }));
   const mod = await import('../../lib/stores/keybindings.svelte');
   await mod.loadKeybindings();
 }
@@ -164,10 +164,12 @@ describe('App integration — terminal drawer', () => {
     // path; a runCommand unit test rebuilds the context each call and cannot
     // reproduce the staleness.
     const rendered = await mountWithActiveThread();
-    setBindingMock('GetKeybindings', async () => [
-      { key: 'mod+j', command: 'terminal.toggle', when: 'hasActiveThread' },
-      { key: 'mod+w', command: 'pane.close', when: '!terminalFocus' },
-    ]);
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: [
+        { key: 'mod+j', command: 'terminal.toggle', when: 'hasActiveThread' },
+        { key: 'mod+w', command: 'pane.close', when: '!terminalFocus' },
+      ],
+    }));
     const kb = await import('../../lib/stores/keybindings.svelte');
     await kb.loadKeybindings();
 

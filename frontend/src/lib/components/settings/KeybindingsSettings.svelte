@@ -3,6 +3,7 @@
   import {
     findDuplicateChordRow,
     getKeybindingIssues,
+    getKeybindingLoadError,
     getKeybindingRules,
     isKeybindingsLoaded,
     isUnboundChord,
@@ -29,6 +30,7 @@
   // would make it uneditable — including un-clearable back to its default.
   let rules = $derived(getKeybindingRules());
   let issues = $derived(getKeybindingIssues());
+  let loadError = $derived(getKeybindingLoadError());
 
   let capturingFor = $state<number | null>(null);
   let saving = $state(false);
@@ -139,6 +141,18 @@
     title="Keybindings"
     description="Customize keyboard shortcuts. Click a chord to re-bind; press the desired key combination or Escape to cancel. Shortcuts use mod as ⌘ on macOS and Ctrl elsewhere."
   />
+
+  {#if loadError}
+    <SettingsCallout tone="error">
+      <p class="font-semibold">Your keybindings file could not be read</p>
+      <p class="mt-1.5 font-mono text-[0.71875rem]">{loadError}</p>
+      <p class="mt-1.5">
+        The shipped defaults are shown below. Changing any shortcut here replaces
+        the file, discarding whatever it still holds — copy it somewhere safe first
+        if you want to keep it.
+      </p>
+    </SettingsCallout>
+  {/if}
 
   {#if issues.length > 0}
     <SettingsCallout tone="error">

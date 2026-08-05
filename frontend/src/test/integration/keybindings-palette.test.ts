@@ -27,7 +27,7 @@ async function loadKeybindingsFromMock(rules: Array<{
   defaultId?: string;
   defaultKey?: string;
 }>) {
-  setBindingMock('GetKeybindings', async () => rules);
+  setBindingMock('GetKeybindings', async () => ({ bindings: rules }));
   const mod = await import('../../lib/stores/keybindings.svelte');
   await mod.loadKeybindings();
 }

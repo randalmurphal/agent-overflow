@@ -42,7 +42,7 @@ describe('<KeybindingsSettings>', () => {
   it('rebinds duplicate command/context rows by default identity', async () => {
     const initialRules = THREAD_NEW_ROWS;
     const update = setBindingMock('UpdateKeybindings', vi.fn(async () => {}));
-    setBindingMock('GetKeybindings', async () => initialRules);
+    setBindingMock('GetKeybindings', async () => ({ bindings: initialRules }));
 
     const { findByRole, getByRole } = render(KeybindingsSettings);
     await findByRole('button', { name: 'Ctrl+N' });
@@ -69,7 +69,7 @@ describe('<KeybindingsSettings>', () => {
     // could only persist a second row displaying the same chord for the same
     // command — invisible to tell apart, and unreachable past the first match.
     const update = setBindingMock('UpdateKeybindings', vi.fn(async () => {}));
-    setBindingMock('GetKeybindings', async () => THREAD_NEW_ROWS);
+    setBindingMock('GetKeybindings', async () => ({ bindings: THREAD_NEW_ROWS }));
 
     const { findByRole, getByRole } = render(KeybindingsSettings);
     await findByRole('button', { name: 'Ctrl+N' });
@@ -91,7 +91,7 @@ describe('<KeybindingsSettings>', () => {
   it('allows re-capturing a row onto the chord it already has', async () => {
     // Same-identity capture is a no-op rebind, not a collision.
     const update = setBindingMock('UpdateKeybindings', vi.fn(async () => {}));
-    setBindingMock('GetKeybindings', async () => THREAD_NEW_ROWS);
+    setBindingMock('GetKeybindings', async () => ({ bindings: THREAD_NEW_ROWS }));
 
     const { findByRole, getByRole } = render(KeybindingsSettings);
     await findByRole('button', { name: 'Ctrl+N' });
@@ -102,6 +102,50 @@ describe('<KeybindingsSettings>', () => {
 
     expect(update).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(getToasts().map((t) => t.type)).toEqual(['success']));
+  });
+});
+
+// --- the unreadable-file warning ---
+//
+// Saving any row here REPLACES the user's file. When that file could not be
+// read, the table is showing defaults, so an edit silently destroys overrides
+// the user still has on disk. The banner is the informed consent for that.
+
+describe('<KeybindingsSettings> unreadable keybindings file', () => {
+  const LOAD_ERROR =
+    "parse keybindings /home/u/.config/agent-overflow/keybindings.json: invalid character 'n'";
+
+  beforeEach(() => {
+    resetKeybindingsStore();
+    for (const t of [...getToasts()]) removeToast(t.id);
+  });
+
+  it('warns with the backend reason and says a save replaces the file', async () => {
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: THREAD_NEW_ROWS,
+      loadError: LOAD_ERROR,
+    }));
+
+    const { findByRole, getByRole } = render(KeybindingsSettings);
+
+    const banner = await findByRole('alert');
+    const text = banner.textContent ?? '';
+    expect(text).toContain('could not be read');
+    // The path is in the reason, and the reason is what tells the user which
+    // file to rescue before touching anything here.
+    expect(text).toContain(LOAD_ERROR);
+    expect(text).toContain('replaces');
+    // The defaults are still editable underneath — the warning is not a
+    // blocked state.
+    expect(getByRole('button', { name: 'Ctrl+N' })).toBeInTheDocument();
+  });
+
+  it('renders no warning when the file loaded cleanly', async () => {
+    setBindingMock('GetKeybindings', async () => ({ bindings: THREAD_NEW_ROWS }));
+
+    const { findByRole, queryByRole } = render(KeybindingsSettings);
+    await findByRole('button', { name: 'Ctrl+N' });
+    expect(queryByRole('alert')).toBeNull();
   });
 });
 
@@ -122,11 +166,12 @@ describe('<KeybindingsSettings> unbound bindings', () => {
     const update = setBindingMock('UpdateKeybindings', vi.fn(async (payload) => {
       stored = (payload as Array<Record<string, unknown>>).map((r) => ({ ...r }));
     }));
-    setBindingMock('GetKeybindings', async () =>
-      defaults.map((d) => {
+    setBindingMock('GetKeybindings', async () => ({
+      bindings: defaults.map((d) => {
         const override = stored.find((r) => r.defaultId === d.defaultId);
         return override ? { ...d, ...override, defaultKey: d.defaultKey } : d;
-      }));
+      }),
+    }));
     return { update, stored: () => stored };
   }
 
@@ -319,7 +364,7 @@ describe('<KeybindingsSettings> chord capture vs. global dispatch', () => {
   for (const phase of ['capture', 'bubble'] as const) {
     it(`records mod+b instead of collapsing the sidebar (${phase}-phase listener)`, async () => {
       const update = setBindingMock('UpdateKeybindings', vi.fn(async () => {}));
-      setBindingMock('GetKeybindings', async () => ROWS);
+      setBindingMock('GetKeybindings', async () => ({ bindings: ROWS }));
 
       const { findByRole, getByRole } = render(KeybindingsSettings);
       await findByRole('button', { name: 'Ctrl+B' });
@@ -344,7 +389,7 @@ describe('<KeybindingsSettings> chord capture vs. global dispatch', () => {
 
   it('still collapses when the same chord arrives from outside the recorder', async () => {
     setBindingMock('UpdateKeybindings', vi.fn(async () => {}));
-    setBindingMock('GetKeybindings', async () => ROWS);
+    setBindingMock('GetKeybindings', async () => ({ bindings: ROWS }));
 
     const { findByRole } = render(KeybindingsSettings);
     await findByRole('button', { name: 'Ctrl+B' });
