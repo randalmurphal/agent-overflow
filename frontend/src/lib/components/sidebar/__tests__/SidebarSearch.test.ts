@@ -6,10 +6,24 @@ import {
   getThreadFilterQuery,
   setThreadFilterQuery,
 } from '../../../stores/threadFilter.svelte';
+import {
+  resetKeybindingsStore,
+  setKeybindingsForTest,
+  UNBOUND_CHORD,
+} from '../../../stores/keybindings.svelte';
+
+const FOCUS_SEARCH_ROW = {
+  key: 'mod+/',
+  command: 'sidebar.focus-search',
+  defaultId: 'sidebar.focus-search',
+  defaultKey: 'mod+/',
+};
 
 describe('<SidebarSearch>', () => {
   beforeEach(() => {
     setThreadFilterQuery('');
+    resetKeybindingsStore();
+    setKeybindingsForTest([FOCUS_SEARCH_ROW]);
   });
 
   it('renders the search input with a keybind affordance when empty', () => {
@@ -22,15 +36,30 @@ describe('<SidebarSearch>', () => {
   });
 
   it('keybind affordance reflects the configured sidebar.focus-search chord', () => {
-    // Regression guard for the hardcoded-chord bug: the keybindings store is
-    // unpopulated in tests (no Wails backend), so the lookup falls back to
-    // the default chord `mod+/`. Whether the displayed text is `Ctrl+/` or
-    // `⌘/` depends on platform, but `/` is invariant — and the broken state
-    // (hardcoded `mod+k`) would render `K`, not `/`.
+    // Regression guard for the hardcoded-chord bug: the pill must read the
+    // live binding. Whether the displayed text is `Ctrl+/` or `⌘/` depends
+    // on platform, but `/` is invariant — and the broken state (a hardcoded
+    // chord) would render whatever was hardcoded instead.
+    setKeybindingsForTest([{ ...FOCUS_SEARCH_ROW, key: 'mod+/' }]);
     const { getByTestId } = render(SidebarSearch, { props: {} });
     const text = getByTestId('sidebar-thread-search-kbd').textContent ?? '';
     expect(text).toContain('/');
     expect(text).not.toContain('K');
+  });
+
+  it('re-reads the chord after a rebind', () => {
+    setKeybindingsForTest([{ ...FOCUS_SEARCH_ROW, key: 'mod+shift+j' }]);
+    const { getByTestId } = render(SidebarSearch, { props: {} });
+    expect(getByTestId('sidebar-thread-search-kbd').textContent ?? '').toContain('J');
+  });
+
+  it('drops the affordance entirely when sidebar.focus-search is unbound', () => {
+    // The hint promises a keystroke. With the command cleared there is no
+    // keystroke to promise, and the old `?? 'mod+/'` fallback would have
+    // shown the very chord the user removed.
+    setKeybindingsForTest([{ ...FOCUS_SEARCH_ROW, key: UNBOUND_CHORD }]);
+    const { queryByTestId } = render(SidebarSearch, { props: {} });
+    expect(queryByTestId('sidebar-thread-search-kbd')).toBeNull();
   });
 
   it('swaps the keybind affordance for a clear button once the input has content', async () => {

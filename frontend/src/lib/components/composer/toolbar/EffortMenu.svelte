@@ -27,7 +27,7 @@
   import Icon from '../../primitives/Icon.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
-  import { formatChord, keybindingForCommand } from '../../../stores/keybindings.svelte';
+  import { chordHintSuffix } from '../../../stores/keybindings.svelte';
   import { getFastModeReport } from '../../../stores/fastModeState.svelte';
   import { fastModeContradictionText, isFastModeContradicted } from '../../../utils/fastMode';
 
@@ -172,9 +172,7 @@
   let triggerHoverText = $derived(
     fastModeContradiction ? `Effort: ${triggerTitle} — ${fastModeContradiction}` : `Effort: ${triggerTitle}`,
   );
-  let pickerChord = $derived(
-    formatChord(keybindingForCommand('composer.picker.effort') ?? 'mod+shift+e'),
-  );
+  let pickerChordSuffix = $derived(chordHintSuffix('composer.picker.effort'));
 
   // Eagerly load the model catalog as soon as the active thread's
   // provider/model is known, so the trigger label shows the context window
@@ -252,7 +250,7 @@
   aria-haspopup="menu"
   aria-expanded={open}
   aria-label={`Effort: ${triggerTitle}`}
-  title={`${triggerHoverText} (${pickerChord})`}
+  title={`${triggerHoverText}${pickerChordSuffix}`}
   data-testid="composer-effort-trigger"
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',

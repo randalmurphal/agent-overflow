@@ -21,7 +21,7 @@
   import { withViewportBottomHeld } from '../../stores/threadPaneShared';
   import { getProject } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
+  import { chordHintForCommand, chordHintSuffix } from '../../stores/keybindings.svelte';
   import { getTransportStatus } from '../../stores/transportStatus.svelte';
   import { runTerminalToggle } from '../terminal/terminalToggle';
   import { openTerminalThread } from '../../stores/threadCreation.svelte';
@@ -44,12 +44,8 @@
   let isClaudeTui = $derived(pane.thread?.provider === 'claude-tui');
   let takeControlOpen = $derived(isCompanionOpen(pane.paneId, 'take-control'));
 
-  let terminalToggleChord = $derived(
-    formatChord(keybindingForCommand('terminal.toggle') ?? 'mod+`'),
-  );
-  let reviewToggleChord = $derived(
-    formatChord(keybindingForCommand('diff.panel.toggle') ?? 'mod+shift+g'),
-  );
+  let terminalToggleSuffix = $derived(chordHintSuffix('terminal.toggle'));
+  let reviewToggleChord = $derived(chordHintForCommand('diff.panel.toggle'));
 
   // Subscription deps. Derived primitives so the attach $effect re-runs only
   // when the actual value changes — pane.replaceThread() for unrelated metadata
@@ -216,7 +212,7 @@
     size="xs"
     pressed={pane.showTerminal}
     ariaLabel="Toggle Terminal"
-    title={`Toggle Terminal (${terminalToggleChord})`}
+    title={`Toggle Terminal${terminalToggleSuffix}`}
     onclick={(e) => {
       if (e.metaKey || e.ctrlKey) {
         void openTerminalThread({

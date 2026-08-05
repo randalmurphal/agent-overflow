@@ -14,7 +14,15 @@ import {
   eventEscapesTerminalToCommand,
   findDuplicateChordRow,
   isKeybindingCaptureTarget,
+  chordHintForCommand,
+  chordHintSuffix,
+  getKeybindingRules,
+  getResolvedKeybindings,
+  isUnboundChord,
+  withReboundRow,
   KEYBINDING_CAPTURE_ATTR,
+  UNBOUND_CHORD,
+  type KeybindingRule,
 } from './keybindings.svelte';
 import {
   clearCommandRegistry,
@@ -584,6 +592,219 @@ describe('keybindings store — duplicate chord detection', () => {
     const legacyAlternate = { key: 'mod+shift+o', command: 'thread.new', when: '!terminalFocus' };
     expect(findDuplicateChordRow([legacyPrimary, legacyAlternate], legacyPrimary, 'mod+shift+o'))
       .toBe(legacyAlternate);
+  });
+});
+
+// --- the unbound state ---
+//
+// Absent means "use the shipped default"; UNBOUND_CHORD means "the user
+// cleared it". These pin that the two never collapse into each other, and
+// they exercise SEQUENCES (bind → unbind → rebind, unbind → reset, unbind
+// across a store reload), because a state-only pass would miss an unbind
+// that fails to clear what a previous bind stored.
+describe('keybindings store — unbound bindings', () => {
+  const PALETTE_ROW: KeybindingRule = {
+    key: 'mod+shift+k',
+    command: 'palette.open',
+    defaultId: 'palette.open',
+    defaultKey: 'mod+shift+k',
+  };
+
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetKeybindingsStore();
+  });
+
+  it('classifies keys: empty and whitespace are unbound, a chord is not', () => {
+    expect(isUnboundChord(UNBOUND_CHORD)).toBe(true);
+    expect(isUnboundChord('   ')).toBe(true);
+    expect(isUnboundChord(null)).toBe(true);
+    expect(isUnboundChord(undefined)).toBe(true);
+    expect(isUnboundChord('mod+k')).toBe(false);
+  });
+
+  it('compiles no dispatchable rule and reports no issue for an unbound row', () => {
+    setKeybindingsForTest([{ ...PALETTE_ROW, key: UNBOUND_CHORD }]);
+    expect(getResolvedKeybindings()).toHaveLength(0);
+    // NOT an issue — the user asked for this. An unparseable chord still is.
+    expect(getKeybindingIssues()).toHaveLength(0);
+    // The row itself survives so settings can offer the default back.
+    expect(getKeybindingRules()).toHaveLength(1);
+  });
+
+  it('keeps reporting a genuinely broken chord as an issue', () => {
+    setKeybindingsForTest([{ ...PALETTE_ROW, key: 'garbage garbage' }]);
+    expect(getKeybindingIssues()).toHaveLength(1);
+  });
+
+  it('does not fire the default chord for an unbound command', () => {
+    const run = vi.fn();
+    registerCommand({ id: 'palette.open', label: 'Open Palette', run });
+
+    setKeybindingsForTest([PALETTE_ROW]);
+    expect(dispatchKey(ev('k', { ctrlKey: true, shiftKey: true }), baseCtx(), { isMac: false }))
+      .toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+
+    setKeybindingsForTest([{ ...PALETTE_ROW, key: UNBOUND_CHORD }]);
+    expect(dispatchKey(ev('k', { ctrlKey: true, shiftKey: true }), baseCtx(), { isMac: false }))
+      .toBe(false);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports no chord instead of falling back to the default', () => {
+    setKeybindingsForTest([{ ...PALETTE_ROW, key: UNBOUND_CHORD }]);
+    expect(keybindingForCommand('palette.open')).toBeNull();
+    expect(chordHintForCommand('palette.open')).toBeNull();
+    expect(chordHintSuffix('palette.open')).toBe('');
+  });
+
+  it('formats a hint suffix for a bound command', () => {
+    setKeybindingsForTest([PALETTE_ROW]);
+    expect(chordHintSuffix('palette.open', false)).toBe(' (Ctrl+Shift+K)');
+    expect(chordHintForCommand('palette.open', false)).toBe('Ctrl+Shift+K');
+  });
+
+  it('leaves a sibling row of the same command bound when one row is cleared', () => {
+    // thread.new ships two default rows; clearing one must not silence the
+    // command, and the hint must show the row that is still bound.
+    const run = vi.fn();
+    registerCommand({ id: 'thread.new', label: 'New Thread', run });
+    setKeybindingsForTest([
+      { key: 'mod+n', command: 'thread.new', defaultId: 'thread.new.primary', defaultKey: 'mod+n' },
+      { key: UNBOUND_CHORD, command: 'thread.new', defaultId: 'thread.new.alternate', defaultKey: 'mod+shift+o' },
+    ]);
+    expect(keybindingForCommand('thread.new')).toBe('mod+n');
+    expect(dispatchKey(ev('n', { ctrlKey: true }), baseCtx(), { isMac: false })).toBe(true);
+    expect(dispatchKey(ev('o', { ctrlKey: true, shiftKey: true }), baseCtx(), { isMac: false }))
+      .toBe(false);
+  });
+
+  it('does not let an unbound row escape a focused terminal', () => {
+    registerCommand({ id: 'pane.focusLeft', label: 'Pane Left', run: vi.fn() });
+    setKeybindingsForTest([
+      { key: UNBOUND_CHORD, command: 'pane.focusLeft', defaultId: 'pane.focusLeft.vim', defaultKey: 'alt+h' },
+    ]);
+    expect(
+      eventEscapesTerminalToCommand(ev('h', { altKey: true }), PANE_NAV_COMMAND_IDS, { isMac: false }),
+    ).toBe(false);
+  });
+
+  it('never reports a collision for a clear', () => {
+    // Two unbound rows are not "indistinguishable in the table" the way two
+    // rows sharing a real chord are — neither is reachable.
+    const alternate = { ...PALETTE_ROW, key: UNBOUND_CHORD, command: 'thread.new', defaultId: 'a' };
+    const primary = { ...PALETTE_ROW, key: UNBOUND_CHORD, command: 'thread.new', defaultId: 'b' };
+    expect(findDuplicateChordRow([primary, alternate], primary, UNBOUND_CHORD)).toBeNull();
+    // And an unbound row never blocks a rebind onto a real chord.
+    expect(findDuplicateChordRow([primary, alternate], primary, 'mod+z')).toBeNull();
+  });
+
+  // --- transitions, not states ---
+
+  it('survives bind → unbind → rebind through the persisted round-trip', async () => {
+    let stored: KeybindingRule[] = [];
+    setBindingMock('UpdateKeybindings', async (payload: KeybindingRule[]) => {
+      stored = payload.map((r) => ({ ...r }));
+    });
+    // Model the Go merge closely enough for the sequence: the default row
+    // unless an override for its identity was stored.
+    setBindingMock('GetKeybindings', async () =>
+      [stored.find((r) => r.defaultId === 'palette.open') ?? PALETTE_ROW]
+        .map((r) => ({ ...r, defaultId: 'palette.open', defaultKey: 'mod+shift+k' })));
+
+    const current = (): KeybindingRule => getKeybindingRules()[0];
+
+    await loadKeybindings();
+    expect(keybindingForCommand('palette.open')).toBe('mod+shift+k');
+
+    // bind
+    await saveKeybindings(withReboundRow(getKeybindingRules(), current(), 'mod+o'));
+    expect(keybindingForCommand('palette.open')).toBe('mod+o');
+
+    // unbind — the previous bind's chord must be gone AND must not fall back
+    await saveKeybindings(withReboundRow(getKeybindingRules(), current(), UNBOUND_CHORD));
+    expect(keybindingForCommand('palette.open')).toBeNull();
+    expect(stored).toMatchObject([{ key: UNBOUND_CHORD, defaultId: 'palette.open' }]);
+
+    // rebind out of unbound
+    await saveKeybindings(withReboundRow(getKeybindingRules(), current(), 'mod+shift+z'));
+    expect(keybindingForCommand('palette.open')).toBe('mod+shift+z');
+
+    // unbind again, then restore the default by writing the default chord —
+    // the override drops out of the payload entirely.
+    await saveKeybindings(withReboundRow(getKeybindingRules(), current(), UNBOUND_CHORD));
+    expect(keybindingForCommand('palette.open')).toBeNull();
+    await saveKeybindings(withReboundRow(getKeybindingRules(), current(), 'mod+shift+k'));
+    expect(stored).toEqual([]);
+    expect(keybindingForCommand('palette.open')).toBe('mod+shift+k');
+  });
+
+  it('survives unbind → reset-to-defaults', async () => {
+    setBindingMock('UpdateKeybindings', vi.fn(async () => {}));
+    setBindingMock('GetKeybindings', async () => [{ ...PALETTE_ROW, key: UNBOUND_CHORD }]);
+    await loadKeybindings();
+    expect(keybindingForCommand('palette.open')).toBeNull();
+
+    setBindingMock('ResetKeybindings', vi.fn(async () => {}));
+    setBindingMock('GetKeybindings', async () => [PALETTE_ROW]);
+    await resetKeybindingsToDefaults();
+    expect(keybindingForCommand('palette.open')).toBe('mod+shift+k');
+  });
+
+  it('an unbind persisted before a reload is still unbound after it', async () => {
+    setBindingMock('GetKeybindings', async () => [{ ...PALETTE_ROW, key: UNBOUND_CHORD }]);
+    await loadKeybindings();
+    expect(keybindingForCommand('palette.open')).toBeNull();
+    // Reload from the same backing store — "absent" must not creep back in.
+    await loadKeybindings();
+    expect(keybindingForCommand('palette.open')).toBeNull();
+    expect(getKeybindingRules()).toHaveLength(1);
+  });
+
+  it('persists a clear but never an identity-less one', async () => {
+    const update = setBindingMock('UpdateKeybindings', vi.fn(async () => {}));
+    setBindingMock('GetKeybindings', async () => []);
+
+    await saveKeybindings([
+      // Cleared default row: a real override, must be written.
+      { ...PALETTE_ROW, key: UNBOUND_CHORD },
+      // Unchanged default: nothing to persist.
+      { key: 'mod+b', command: 'sidebar.toggle', defaultId: 'sidebar.toggle', defaultKey: 'mod+b' },
+      // Unbound with no default to clear: it silences nothing, and the
+      // backend rejects it — dropping it here is what keeps a dropped chord
+      // from reaching Update as a deliberate clear.
+      { key: UNBOUND_CHORD, command: 'orphan.command' },
+    ]);
+
+    expect(update.mock.calls[0]?.[0]).toMatchObject([
+      { key: UNBOUND_CHORD, command: 'palette.open', defaultId: 'palette.open' },
+    ]);
+    expect(update.mock.calls[0]?.[0]).toHaveLength(1);
+  });
+
+  it('withReboundRow replaces by identity and appends when the row is new', () => {
+    const rows: KeybindingRule[] = [
+      PALETTE_ROW,
+      { key: 'mod+b', command: 'sidebar.toggle', defaultId: 'sidebar.toggle', defaultKey: 'mod+b' },
+    ];
+    expect(withReboundRow(rows, PALETTE_ROW, UNBOUND_CHORD)).toEqual([
+      { ...PALETTE_ROW, key: UNBOUND_CHORD },
+      rows[1],
+    ]);
+
+    const absent: KeybindingRule = {
+      key: 'mod+p',
+      command: 'thread.search',
+      defaultId: 'thread.search',
+      defaultKey: 'mod+p',
+    };
+    expect(withReboundRow(rows, absent, UNBOUND_CHORD)).toHaveLength(3);
+    expect(withReboundRow(rows, absent, UNBOUND_CHORD)[2]).toMatchObject({
+      key: UNBOUND_CHORD,
+      command: 'thread.search',
+      defaultId: 'thread.search',
+    });
   });
 });
 

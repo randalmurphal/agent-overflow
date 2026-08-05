@@ -17,7 +17,8 @@
   interface Props {
     status: GitStatus | null;
     pressed: boolean;
-    chord: string;
+    /** Display chord for the toggle, or null when the command is unbound. */
+    chord: string | null;
     onActivate: () => void;
   }
 
@@ -35,7 +36,7 @@
   size="xs"
   {pressed}
   {ariaLabel}
-  title={`Toggle Review Pane (${chord})`}
+  title={chord ? `Toggle Review Pane (${chord})` : 'Toggle Review Pane'}
   onclick={onActivate}
   testId="review-toggle"
   class="shrink-0"

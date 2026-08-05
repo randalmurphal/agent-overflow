@@ -105,6 +105,162 @@ describe('<KeybindingsSettings>', () => {
   });
 });
 
+// --- clearing a binding to "unbound", and getting back out of it ---
+//
+// "Absent" already meant "use the default", so before the sentinel existed a
+// user could not remove a default chord at all. These cover the round trip in
+// the surface that owns it, including the transition back to the default.
+
+describe('<KeybindingsSettings> unbound bindings', () => {
+  /**
+   * A stand-in for keybindings.Merge: shipped defaults with the stored user
+   * overrides layered on by defaultId. Lets a test drive several edits in a
+   * row and see each one through a real save + reload.
+   */
+  function mockBackend(defaults: typeof THREAD_NEW_ROWS) {
+    let stored: Array<Record<string, unknown>> = [];
+    const update = setBindingMock('UpdateKeybindings', vi.fn(async (payload) => {
+      stored = (payload as Array<Record<string, unknown>>).map((r) => ({ ...r }));
+    }));
+    setBindingMock('GetKeybindings', async () =>
+      defaults.map((d) => {
+        const override = stored.find((r) => r.defaultId === d.defaultId);
+        return override ? { ...d, ...override, defaultKey: d.defaultKey } : d;
+      }));
+    return { update, stored: () => stored };
+  }
+
+  /**
+   * Click a control in the table, waiting for it to be enabled first.
+   *
+   * The table disables its controls while a save is in flight, and the row
+   * re-renders with the saved value one flush BEFORE `saving` clears — so the
+   * new chord is on screen while the buttons are still disabled. happy-dom
+   * drops a click on a disabled button silently (returns false without
+   * dispatching), which would make a follow-up interaction a no-op that reads
+   * as a product bug. Waiting is the fix; the `!== false` assertion is the
+   * tripwire so a dropped click can never pass quietly.
+   */
+  async function click(get: () => HTMLElement): Promise<void> {
+    await waitFor(() => expect((get() as HTMLButtonElement).disabled).toBe(false));
+    expect(await fireEvent.click(get())).not.toBe(false);
+  }
+
+  beforeEach(() => {
+    resetKeybindingsStore();
+    for (const t of [...getToasts()]) removeToast(t.id);
+  });
+
+  it('clears a row to unbound and persists the sentinel with its identity', async () => {
+    const { update } = mockBackend(THREAD_NEW_ROWS);
+
+    const { findByRole, getByRole } = render(KeybindingsSettings);
+    await findByRole('button', { name: 'Ctrl+N' });
+
+    await click(() => getByRole('button', { name: 'Clear the Ctrl+N shortcut for thread.new' }));
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update.mock.calls[0]?.[0]).toMatchObject([
+      { key: '', command: 'thread.new', defaultId: 'thread.new.primary', defaultKey: 'mod+n' },
+    ]);
+    // The chord is gone from the table, and the row is still there.
+    await waitFor(() => expect(getByRole('button', { name: 'Unbound' })).toBeInTheDocument());
+    expect(getByRole('button', { name: 'Ctrl+Shift+O' })).toBeInTheDocument();
+  });
+
+  it('restores the default after a clear, dropping the override entirely', async () => {
+    const backend = mockBackend(THREAD_NEW_ROWS);
+
+    const { findByRole, getByRole, queryByRole } = render(KeybindingsSettings);
+    await findByRole('button', { name: 'Ctrl+N' });
+
+    await click(() => getByRole('button', { name: 'Clear the Ctrl+N shortcut for thread.new' }));
+    await waitFor(() => expect(getByRole('button', { name: 'Unbound' })).toBeInTheDocument());
+
+    await click(() =>
+      getByRole('button', { name: 'Restore thread.new to its default shortcut Ctrl+N' }));
+
+    // Restoring writes no override at all — absence IS the default, so the
+    // user file must not pin today's chord against a future change to it.
+    await waitFor(() => expect(backend.stored()).toEqual([]));
+    await waitFor(() => expect(getByRole('button', { name: 'Ctrl+N' })).toBeInTheDocument());
+    expect(queryByRole('button', { name: 'Unbound' })).toBeNull();
+  });
+
+  it('survives rebind → clear → rebind on the same row', async () => {
+    const backend = mockBackend(THREAD_NEW_ROWS);
+
+    const { findByRole, getByRole } = render(KeybindingsSettings);
+    await findByRole('button', { name: 'Ctrl+N' });
+
+    async function capture(from: string, key: string, mods: Record<string, boolean>): Promise<void> {
+      await click(() => getByRole('button', { name: from }));
+      await fireEvent.keyDown(
+        getByRole('button', { name: 'Press keys... (Esc to cancel)' }),
+        { key, ...mods },
+      );
+    }
+
+    await capture('Ctrl+N', 'x', { ctrlKey: true });
+    await waitFor(() => expect(getByRole('button', { name: 'Ctrl+X' })).toBeInTheDocument());
+
+    await click(() => getByRole('button', { name: 'Clear the Ctrl+X shortcut for thread.new' }));
+    await waitFor(() => expect(getByRole('button', { name: 'Unbound' })).toBeInTheDocument());
+    // The clear must overwrite the previous rebind, not sit beside it.
+    expect(backend.stored()).toMatchObject([{ key: '', defaultId: 'thread.new.primary' }]);
+
+    // ...and a rebind must lift the row back out of unbound.
+    await capture('Unbound', 'y', { ctrlKey: true });
+    await waitFor(() => expect(getByRole('button', { name: 'Ctrl+Y' })).toBeInTheDocument());
+    expect(backend.stored()).toMatchObject([{ key: 'mod+y', defaultId: 'thread.new.primary' }]);
+  });
+
+  it('distinguishes default, custom and unbound chords visually', async () => {
+    mockBackend(THREAD_NEW_ROWS);
+
+    const { findByRole, getByRole, getByTestId } = render(KeybindingsSettings);
+    await findByRole('button', { name: 'Ctrl+N' });
+
+    const chordState = (defaultId: string): string | null =>
+      getByTestId(`keybinding-row-${defaultId}`)
+        .querySelector('[data-chord-state]')
+        ?.getAttribute('data-chord-state') ?? null;
+
+    expect(chordState('thread.new.primary')).toBe('default');
+
+    await click(() => getByRole('button', { name: 'Ctrl+N' }));
+    await fireEvent.keyDown(
+      getByRole('button', { name: 'Press keys... (Esc to cancel)' }),
+      { key: 'x', ctrlKey: true },
+    );
+    await waitFor(() => expect(chordState('thread.new.primary')).toBe('custom'));
+
+    await click(() => getByRole('button', { name: 'Clear the Ctrl+X shortcut for thread.new' }));
+    await waitFor(() => expect(chordState('thread.new.primary')).toBe('unbound'));
+    // Only the edited row changes appearance.
+    expect(chordState('thread.new.alternate')).toBe('default');
+  });
+
+  it('clearing a second row is not treated as a collision with the first', async () => {
+    // Both rows share a command and context. Rebinding one onto the other's
+    // chord is refused, but CLEARING both is legitimate — neither cleared row
+    // is reachable, so they cannot shadow each other.
+    const backend = mockBackend(THREAD_NEW_ROWS);
+
+    const { findByRole, getByRole } = render(KeybindingsSettings);
+    await findByRole('button', { name: 'Ctrl+N' });
+
+    await click(() => getByRole('button', { name: 'Clear the Ctrl+N shortcut for thread.new' }));
+    await waitFor(() => expect(backend.stored()).toHaveLength(1));
+    await click(() =>
+      getByRole('button', { name: 'Clear the Ctrl+Shift+O shortcut for thread.new' }));
+
+    await waitFor(() => expect(backend.stored()).toHaveLength(2));
+    expect(backend.stored().map((r) => r.key)).toEqual(['', '']);
+    expect(getToasts().every((t) => t.type === 'info')).toBe(true);
+  });
+});
+
 // --- chord recording must not fire the chord (t3 bug dfbda8436) ---
 //
 // While this table is capturing, a keystroke is the chord being

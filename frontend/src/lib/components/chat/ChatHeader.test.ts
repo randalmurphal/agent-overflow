@@ -19,6 +19,10 @@ import {
   setPaneLayoutItemsForTest,
 } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
+import {
+  resetKeybindingsStore,
+  setKeybindingsForTest,
+} from '../../stores/keybindings.svelte';
 import { projectTurnStarted, setThreadStatus } from '../../stores/threadStatuses.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
@@ -279,11 +283,23 @@ describe('<ChatHeader>', () => {
   });
 
   it('uses platform-aware shortcut labels in action tooltips', async () => {
-    const pane = await buildPane();
-    const { getByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-    expect(getByTestId('terminal-toggle').getAttribute('title')).toBe('Toggle Terminal (Ctrl+`)');
-    expect(getByTestId('review-toggle').getAttribute('title')).toBe('Toggle Review Pane (Ctrl+Shift+G)');
+    // Chord hints come from the loaded keybindings store — there is no
+    // hardcoded fallback (one would resurrect a chord the user rebound
+    // or cleared), so the test seeds the store like the runtime load
+    // does.
+    setKeybindingsForTest([
+      { key: 'ctrl+`', command: 'terminal.toggle' },
+      { key: 'ctrl+shift+g', command: 'diff.panel.toggle' },
+    ]);
+    try {
+      const pane = await buildPane();
+      const { getByTestId } = render(ChatHeader, { props: { pane } });
+      await tick();
+      expect(getByTestId('terminal-toggle').getAttribute('title')).toBe('Toggle Terminal (Ctrl+`)');
+      expect(getByTestId('review-toggle').getAttribute('title')).toBe('Toggle Review Pane (Ctrl+Shift+G)');
+    } finally {
+      resetKeybindingsStore();
+    }
   });
 
   it('opens the project root in the editor via the Open button', async () => {

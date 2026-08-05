@@ -28,6 +28,34 @@ type Keybinding struct {
 	DefaultKey string `json:"defaultKey,omitempty"`
 }
 
+// Unbound is the persisted `Key` value meaning "this command is
+// deliberately bound to nothing".
+//
+// Encoding choice — the empty string, not an extra boolean field and
+// not a JSON null. `Key` already answers "which chord runs this
+// command", so "no chord" belongs in that field: a second field could
+// disagree with it, and a null would need a `*string` on the wire plus
+// a matching frontend type for no extra expressiveness.
+//
+// An entry carrying Unbound is NOT the same as an absent entry. Absent
+// means "no override — use the shipped default". Unbound means
+// "suppress the shipped default": Merge lets it replace its default
+// row exactly like a rebind does, so the effective list carries the
+// row with no chord and the frontend compiles nothing dispatchable for
+// it. That distinction is the whole point of the sentinel; without it
+// a user cannot clear a default and have the clear survive a restart.
+//
+// Normalization — a whitespace-only Key expresses the same intent, so
+// every entry crossing Update or Merge is trimmed onto this canonical
+// form. Configs written before the sentinel existed cannot contain an
+// accidental equivalent (Update rejected an empty key outright), but a
+// hand-edited file can, and it means what it looks like.
+const Unbound = ""
+
+// IsUnbound reports whether b explicitly clears its chord rather than
+// naming one.
+func IsUnbound(b Keybinding) bool { return strings.TrimSpace(b.Key) == Unbound }
+
 // FileName is the basename of the persisted user-override file inside
 // the app's config dir.
 const FileName = "keybindings.json"
@@ -249,23 +277,42 @@ func (s *Service) Get() ([]Keybinding, error) {
 
 // Update replaces the user keybindings file. The config is capped at
 // MaxCount entries; entries past the cap are dropped from the tail.
-// Empty key / empty command both return errors.
+// An empty command is always an error. An empty key is the Unbound
+// sentinel and is accepted only when the entry names the default row
+// it clears — see the per-branch reasoning below. Keys are persisted
+// trimmed so the sentinel has exactly one spelling on disk.
 func (s *Service) Update(bindings []Keybinding) error {
 	if len(bindings) > MaxCount {
 		bindings = bindings[:MaxCount]
 	}
+	normalized := make([]Keybinding, 0, len(bindings))
 	for i, b := range bindings {
-		if strings.TrimSpace(b.Key) == "" {
-			return fmt.Errorf("keybinding %d: key is empty", i)
-		}
+		b.Key = strings.TrimSpace(b.Key)
 		if strings.TrimSpace(b.Command) == "" {
 			return fmt.Errorf("keybinding %d: command is empty", i)
 		}
+		if b.Key == Unbound {
+			// Deliberate acceptance, not a fallthrough: this is a user
+			// clearing a shipped default. Clearing is only meaningful as
+			// an override of a specific default row, and every row the UI
+			// can clear carries that identity (Merge stamps DefaultID and
+			// DefaultKey on everything it emits). An empty key with no
+			// identity is a caller that dropped the chord, not a user who
+			// cleared one — refuse it rather than silently unbinding
+			// whatever (command, when) happens to match first.
+			if b.DefaultID == "" && b.DefaultKey == "" {
+				return fmt.Errorf(
+					"keybinding %d (%s): key is empty and the entry names no default binding to clear",
+					i, b.Command,
+				)
+			}
+		}
+		normalized = append(normalized, b)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return writeFile(s.path, bindings)
+	return writeFile(s.path, normalized)
 }
 
 // Reset deletes the user file so Get returns Defaults. Reset on a
@@ -371,6 +418,20 @@ func chmodSensitiveFile(path string) error {
 	return os.Chmod(path, sensitiveFilePerm)
 }
 
+// normalizeUserEntries canonicalises a user override list before it is
+// merged or written: `Key` is trimmed, so a whitespace-only chord from
+// a hand-edited file collapses onto the Unbound sentinel instead of
+// reaching the frontend as an unparseable chord. Copies — the caller's
+// slice is never mutated.
+func normalizeUserEntries(user []Keybinding) []Keybinding {
+	out := make([]Keybinding, len(user))
+	for i, u := range user {
+		u.Key = strings.TrimSpace(u.Key)
+		out[i] = u
+	}
+	return out
+}
+
 // Merge applies user overrides over defaults.
 //
 // User entries with DefaultID replace that shipped row and are
@@ -378,7 +439,17 @@ func chmodSensitiveFile(path string) error {
 // overrides precedence. Entries with only DefaultKey use the legacy
 // command/context/original-key identity. Older entries without
 // either field replace the first matching command/context default.
+//
+// An Unbound user entry (empty Key) participates exactly like a
+// rebind: it replaces the default row it identifies, so the merged
+// list carries that row with no chord and the shipped chord is gone.
+// One asymmetry — an Unbound entry that matches NO default row is
+// dropped instead of appended. A rebind that matches nothing is an
+// extra binding the user wanted; a clear that matches nothing silences
+// nothing (the default it named is gone from this release), so keeping
+// it would only render a chordless ghost row nothing can restore.
 func Merge(defaults, user []Keybinding) []Keybinding {
+	user = normalizeUserEntries(user)
 	type defaultID string
 	type defaultKey struct{ command, when, originalKey string }
 	type legacyKey struct{ command, when string }
@@ -450,25 +521,27 @@ func Merge(defaults, user []Keybinding) []Keybinding {
 	}
 	out = append(out, overrides...)
 
-	// Append remaining user entries in their original order.
+	// Append remaining user entries — the ones that matched no default —
+	// in their original order. Unbound leftovers are dropped here (see the
+	// doc comment): they name a default that no longer exists.
 	for _, entry := range userOrder {
+		var u Keybinding
+		var ok bool
 		switch entry.kind {
 		case "id":
-			if u, ok := userByID[entry.defaultID]; ok {
-				out = append(out, u)
-				delete(userByID, entry.defaultID)
-			}
+			u, ok = userByID[entry.defaultID]
+			delete(userByID, entry.defaultID)
 		case "key":
-			if u, ok := userByDefault[entry.defaultKey]; ok {
-				out = append(out, u)
-				delete(userByDefault, entry.defaultKey)
-			}
+			u, ok = userByDefault[entry.defaultKey]
+			delete(userByDefault, entry.defaultKey)
 		case "legacy":
-			if u, ok := userByLegacy[entry.legacyKey]; ok {
-				out = append(out, u)
-				delete(userByLegacy, entry.legacyKey)
-			}
+			u, ok = userByLegacy[entry.legacyKey]
+			delete(userByLegacy, entry.legacyKey)
 		}
+		if !ok || IsUnbound(u) {
+			continue
+		}
+		out = append(out, u)
 	}
 
 	return out

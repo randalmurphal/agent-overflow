@@ -10,7 +10,7 @@
   import { enabledCommands, type Command, type CommandContext } from '../../stores/commandRegistry.svelte';
   import { fuzzyFilter } from '../../utils/fuzzy';
   import { isImeComposingEvent } from '../../utils/imeComposition';
-  import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
+  import { chordHintForCommand } from '../../stores/keybindings.svelte';
   import { PICKER_TOGGLE_INPUT_EVENT } from '../../stores/events';
   import Modal from '../primitives/Modal.svelte';
   import PaletteResultRow from './PaletteResultRow.svelte';
@@ -83,9 +83,7 @@
   });
 
   function shortcutFor(id: string): string | null {
-    const raw = keybindingForCommand(id);
-    if (!raw) return null;
-    return formatChord(raw);
+    return chordHintForCommand(id);
   }
 
   $effect(() => {

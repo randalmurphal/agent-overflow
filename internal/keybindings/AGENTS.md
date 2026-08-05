@@ -13,6 +13,43 @@ frontend reads.
   `~/.agent-overflow/keybindings.json` when configDir is empty so an
   early-boot RPC can still resolve a writable path.
 
+## The unbound sentinel
+
+`Keybinding.Key == Unbound` (the empty string) is the persisted
+representation of "this command is deliberately bound to nothing". It
+is distinct from the entry being ABSENT:
+
+| user file state | meaning |
+|---|---|
+| no entry for the default row | use the shipped chord |
+| entry with a non-empty `key` | use the user's chord instead |
+| entry with `key: ""` | suppress the shipped chord; nothing dispatches |
+
+Why the empty string rather than a `unbound bool` field or a JSON
+null: `key` already answers "which chord runs this command", so "no
+chord" is a value of that field. A second field could disagree with
+it, and a null would need `*string` on the wire plus a matching
+frontend type for no extra expressiveness. `keybindings.Unbound` /
+`IsUnbound` name it on the Go side; `UNBOUND_CHORD` / `isUnboundChord`
+in `frontend/src/lib/stores/keybindings.svelte.ts` mirror them.
+
+Rules that hold across the package:
+
+- Keys are trimmed by `Update` and by `Merge`, so a whitespace-only
+  key from a hand-edited file collapses onto the canonical sentinel
+  instead of reaching the frontend as an unparseable chord.
+- `Update` accepts the sentinel only when the entry names the default
+  row it clears (`DefaultID` or `DefaultKey`). An empty key with no
+  identity is a caller that dropped the chord, not a user who cleared
+  one.
+- `Merge` treats an unbound entry exactly like a rebind — it replaces
+  its default row — except that an unbound entry matching NO default
+  is dropped rather than appended. It silences nothing, and keeping it
+  would render a chordless row nothing can restore.
+- `Defaults` never contains the sentinel
+  (`TestDefaultsUseValidChordSyntax` pins that), so every unbound row
+  has a default chord to restore.
+
 ## Responsibility boundary
 
 - What BELONGS here: defaults, the merge (DefaultID / DefaultKey /

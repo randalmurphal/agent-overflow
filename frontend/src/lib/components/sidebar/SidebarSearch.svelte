@@ -3,7 +3,8 @@
   // command palette can imperatively focus us even when this component
   // isn't the active focus. The shortcut pill on the right is a live hint —
   // it reads the configured chord for `sidebar.focus-search` so user
-  // rebinds in Settings flow through without a reload.
+  // rebinds in Settings flow through without a reload, and the pill
+  // disappears entirely when that command is unbound.
 
   import Search from 'lucide-svelte/icons/search';
   import X from 'lucide-svelte/icons/x';
@@ -11,7 +12,7 @@
     getThreadFilterQuery,
     setThreadFilterQuery,
   } from '../../stores/threadFilter.svelte';
-  import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
+  import { chordHintForCommand } from '../../stores/keybindings.svelte';
   import Icon from '../primitives/Icon.svelte';
   import Kbd from '../primitives/Kbd.svelte';
 
@@ -24,9 +25,7 @@
 
   let searchEl: HTMLInputElement | undefined = $state(undefined);
   let query = $derived(getThreadFilterQuery());
-  let searchShortcut = $derived(
-    formatChord(keybindingForCommand('sidebar.focus-search') ?? 'mod+/'),
-  );
+  let searchShortcut = $derived(chordHintForCommand('sidebar.focus-search'));
 
   $effect(() => {
     if (registerFocusSearch && searchEl) {
@@ -75,7 +74,7 @@
       >
         <Icon icon={X} size={12} strokeWidth={2.5} class="opacity-90" />
       </button>
-    {:else}
+    {:else if searchShortcut}
       <span
         class="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none select-none"
         aria-hidden="true"

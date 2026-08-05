@@ -18,7 +18,7 @@
   import { cycleMode, type CycleMode } from '../../../utils/modeCycle';
   import { errString } from '../../../utils/errors';
   import Icon from '../../primitives/Icon.svelte';
-  import { formatChord, keybindingForCommand } from '../../../stores/keybindings.svelte';
+  import { chordHintForCommand, chordHintSuffix } from '../../../stores/keybindings.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -40,9 +40,8 @@
   };
 
   let modeLabel = $derived(MODE_LABELS[currentMode] ?? MODE_LABELS.chat);
-  let cycleChord = $derived(
-    formatChord(keybindingForCommand('mode.cycle') ?? 'shift+tab'),
-  );
+  let cycleChord = $derived(chordHintForCommand('mode.cycle'));
+  let cycleChordSuffix = $derived(chordHintSuffix('mode.cycle'));
 
   async function handleClick(): Promise<void> {
     if (applying || !pane.thread) return;
@@ -71,8 +70,10 @@
   onclick={handleClick}
   disabled={applying || !pane.thread}
   data-testid="composer-agent-mode-toggle"
-  aria-label={`Agent mode: ${modeLabel}. Toggle with ${cycleChord}`}
-  title={`Agent mode: ${modeLabel} (${cycleChord})`}
+  aria-label={cycleChord
+    ? `Agent mode: ${modeLabel}. Toggle with ${cycleChord}`
+    : `Agent mode: ${modeLabel}. Toggle`}
+  title={`Agent mode: ${modeLabel}${cycleChordSuffix}`}
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
     'px-1.5 py-1 text-[0.6875rem] text-fg-muted',

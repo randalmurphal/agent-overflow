@@ -3,7 +3,7 @@
     getJumpHintsVisible,
     jumpLabelForThread,
   } from '../../stores/keyboardModifiers.svelte';
-  import { formatChord, keybindingForCommand } from '../../stores/keybindings.svelte';
+  import { chordHintForCommand } from '../../stores/keybindings.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import { clearSidebarCursor, getSidebarCursorThreadId } from '../../stores/sidebarCursor.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -239,7 +239,10 @@
   });
   let jumpShortcut = $derived.by<string | null>(() => {
     if (!jumpLabel) return null;
-    return formatChord(keybindingForCommand(`thread.jump.${jumpLabel}`) ?? `mod+${jumpLabel}`);
+    // null when that slot's command is unbound — the pill is a hint for a
+    // chord that exists, so it renders nothing rather than a chord the
+    // user cleared.
+    return chordHintForCommand(`thread.jump.${jumpLabel}`);
   });
 
   function sidebarTimeLabel(timestampMs: number): string {

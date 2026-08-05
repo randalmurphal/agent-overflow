@@ -26,7 +26,7 @@
   import MenuItem from '../../primitives/MenuItem.svelte';
   import { registerComposerPicker } from '../../../stores/composerPickerRegistry.svelte';
   import { focusPaneComposer } from '../../panes/paneComposerFocus';
-  import { formatChord, keybindingForCommand } from '../../../stores/keybindings.svelte';
+  import { chordHintSuffix } from '../../../stores/keybindings.svelte';
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   type IconComponent = any;
@@ -114,9 +114,7 @@
     );
     return info?.supportsAutoMode === false;
   });
-  let pickerChord = $derived(
-    formatChord(keybindingForCommand('composer.picker.access') ?? 'mod+shift+a'),
-  );
+  let pickerChordSuffix = $derived(chordHintSuffix('composer.picker.access'));
 
   function runtimeModeForThread(thread: Thread | null | undefined): RuntimeMode {
     return (thread?.runtimeMode as RuntimeMode | undefined) ?? DEFAULT_MODE;
@@ -203,7 +201,7 @@
   aria-label={`Runtime Access Mode: ${currentMeta.label}`}
   data-testid="composer-access-toggle"
   data-mode={current}
-  title={`${currentMeta.description} (${pickerChord})`}
+  title={`${currentMeta.description}${pickerChordSuffix}`}
   class={[
     'inline-flex items-center gap-1.5 rounded-[var(--radius-field)]',
     'px-1.5 py-1 text-[0.6875rem] text-fg-muted',

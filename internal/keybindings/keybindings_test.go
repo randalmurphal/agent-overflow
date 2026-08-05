@@ -384,11 +384,262 @@ func TestGetRepairsExistingFilePermissions(t *testing.T) {
 func TestUpdateRejectsEmptyKeyOrCommand(t *testing.T) {
 	svc := newServiceWithTempDir(t)
 
+	// An empty key with no default identity is a dropped chord, not a
+	// deliberate clear — see Service.Update.
 	if err := svc.Update([]Keybinding{{Key: "", Command: "x"}}); err == nil {
-		t.Fatal("expected error for empty key")
+		t.Fatal("expected error for empty key with no default identity")
+	}
+	if err := svc.Update([]Keybinding{{Key: "   ", Command: "x"}}); err == nil {
+		t.Fatal("expected error for whitespace-only key with no default identity")
 	}
 	if err := svc.Update([]Keybinding{{Key: "mod+k", Command: "   "}}); err == nil {
 		t.Fatal("expected error for empty command")
+	}
+	if err := svc.Update([]Keybinding{{Key: Unbound, Command: "   ", DefaultID: "palette.open"}}); err == nil {
+		t.Fatal("expected error for empty command on an unbound entry")
+	}
+}
+
+// --- unbound sentinel ---
+
+// findMerged returns the merged row for a command in a `when` context.
+func findMerged(t *testing.T, merged []Keybinding, command, when string) (Keybinding, bool) {
+	t.Helper()
+	for _, b := range merged {
+		if b.Command == command && b.When == when {
+			return b, true
+		}
+	}
+	return Keybinding{}, false
+}
+
+func TestUpdateAcceptsUnboundWithDefaultIdentity(t *testing.T) {
+	svc := newServiceWithTempDir(t)
+
+	// Both identity shapes are accepted: the stable DefaultID and the
+	// legacy DefaultKey a pre-DefaultID config carries.
+	for _, entry := range []Keybinding{
+		{Key: Unbound, Command: "palette.open", DefaultID: "palette.open"},
+		{Key: Unbound, Command: "palette.open", DefaultKey: "mod+shift+k"},
+	} {
+		if err := svc.Update([]Keybinding{entry}); err != nil {
+			t.Fatalf("Update(%+v) error = %v", entry, err)
+		}
+	}
+}
+
+func TestUnboundOverrideSuppressesTheDefaultChord(t *testing.T) {
+	svc := newServiceWithTempDir(t)
+
+	if err := svc.Update([]Keybinding{
+		{Key: Unbound, Command: "palette.open", DefaultID: "palette.open", DefaultKey: "mod+shift+k"},
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	merged, err := svc.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	row, ok := findMerged(t, merged, "palette.open", "")
+	if !ok {
+		// The row must SURVIVE with no chord: settings renders it so the
+		// user can restore the default. Dropping it would strand them.
+		t.Fatal("palette.open row missing from merged output after unbind")
+	}
+	if !IsUnbound(row) {
+		t.Fatalf("palette.open key = %q, want unbound", row.Key)
+	}
+	if row.DefaultKey != "mod+shift+k" {
+		t.Fatalf("palette.open defaultKey = %q, want mod+shift+k (needed to restore)", row.DefaultKey)
+	}
+	// No other row may still carry the shipped chord for that command.
+	for _, b := range merged {
+		if b.Command == "palette.open" && b.Key == "mod+shift+k" {
+			t.Fatal("shipped palette.open chord still present after unbind")
+		}
+	}
+}
+
+// The transition sequence, not just the states: bind → unbind → rebind
+// → reset, each step observed through a fresh Get so persistence is in
+// the loop.
+func TestUnboundSurvivesBindUnbindRebindResetSequence(t *testing.T) {
+	svc := newServiceWithTempDir(t)
+	identity := Keybinding{
+		Command:    "palette.open",
+		DefaultID:  "palette.open",
+		DefaultKey: "mod+shift+k",
+	}
+	keyAfter := func(t *testing.T) string {
+		t.Helper()
+		merged, err := svc.Get()
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		row, ok := findMerged(t, merged, "palette.open", "")
+		if !ok {
+			t.Fatal("palette.open row missing from merged output")
+		}
+		return row.Key
+	}
+
+	if got := keyAfter(t); got != "mod+shift+k" {
+		t.Fatalf("initial key = %q, want the shipped default", got)
+	}
+
+	// bind
+	bound := identity
+	bound.Key = "mod+o"
+	if err := svc.Update([]Keybinding{bound}); err != nil {
+		t.Fatalf("Update(bind) error = %v", err)
+	}
+	if got := keyAfter(t); got != "mod+o" {
+		t.Fatalf("after bind key = %q, want mod+o", got)
+	}
+
+	// unbind — must not fall back to the default
+	cleared := identity
+	cleared.Key = Unbound
+	if err := svc.Update([]Keybinding{cleared}); err != nil {
+		t.Fatalf("Update(unbind) error = %v", err)
+	}
+	if got := keyAfter(t); got != Unbound {
+		t.Fatalf("after unbind key = %q, want unbound", got)
+	}
+
+	// rebind out of unbound
+	rebound := identity
+	rebound.Key = "mod+shift+z"
+	if err := svc.Update([]Keybinding{rebound}); err != nil {
+		t.Fatalf("Update(rebind) error = %v", err)
+	}
+	if got := keyAfter(t); got != "mod+shift+z" {
+		t.Fatalf("after rebind key = %q, want mod+shift+z", got)
+	}
+
+	// unbind again, then reset back to defaults
+	if err := svc.Update([]Keybinding{cleared}); err != nil {
+		t.Fatalf("Update(unbind again) error = %v", err)
+	}
+	if got := keyAfter(t); got != Unbound {
+		t.Fatalf("after second unbind key = %q, want unbound", got)
+	}
+	if err := svc.Reset(); err != nil {
+		t.Fatalf("Reset() error = %v", err)
+	}
+	if got := keyAfter(t); got != "mod+shift+k" {
+		t.Fatalf("after reset key = %q, want the shipped default", got)
+	}
+}
+
+func TestUnbindingOneRowLeavesItsSiblingBound(t *testing.T) {
+	svc := newServiceWithTempDir(t)
+	// thread.new ships two default rows; clearing one must not disturb
+	// the other.
+	if err := svc.Update([]Keybinding{{
+		Key:        Unbound,
+		Command:    "thread.new",
+		When:       "!terminalFocus",
+		DefaultID:  "thread.new.alternate",
+		DefaultKey: "mod+shift+o",
+	}}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	merged, err := svc.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	byID := map[string]Keybinding{}
+	for _, b := range merged {
+		if b.Command == "thread.new" {
+			byID[b.DefaultID] = b
+		}
+	}
+	if got := byID["thread.new.primary"].Key; got != "mod+n" {
+		t.Fatalf("thread.new.primary key = %q, want mod+n", got)
+	}
+	if got := byID["thread.new.alternate"].Key; got != Unbound {
+		t.Fatalf("thread.new.alternate key = %q, want unbound", got)
+	}
+}
+
+func TestGetNormalizesWhitespaceOnlyKeyToUnbound(t *testing.T) {
+	svc := newServiceWithTempDir(t)
+	// Hand-edited file: a whitespace key is the same intent as an empty
+	// one, and must not reach the frontend as an unparseable chord.
+	raw := `[{"key":"   ","command":"palette.open","defaultId":"palette.open"}]`
+	if err := os.WriteFile(svc.Path(), []byte(raw), 0o600); err != nil {
+		t.Fatalf("writing keybindings file: %v", err)
+	}
+
+	merged, err := svc.Get()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	row, ok := findMerged(t, merged, "palette.open", "")
+	if !ok {
+		t.Fatal("palette.open row missing from merged output")
+	}
+	if row.Key != Unbound {
+		t.Fatalf("palette.open key = %q, want the canonical empty sentinel", row.Key)
+	}
+}
+
+func TestUpdatePersistsTheTrimmedKey(t *testing.T) {
+	svc := newServiceWithTempDir(t)
+	if err := svc.Update([]Keybinding{
+		{Key: " mod+o ", Command: "palette.open", DefaultID: "palette.open"},
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	raw, err := os.ReadFile(svc.Path())
+	if err != nil {
+		t.Fatalf("reading persisted file: %v", err)
+	}
+	var persisted []Keybinding
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatalf("parsing persisted file: %v", err)
+	}
+	if persisted[0].Key != "mod+o" {
+		t.Fatalf("persisted key = %q, want mod+o", persisted[0].Key)
+	}
+}
+
+func TestMergeDropsUnboundEntryThatMatchesNoDefault(t *testing.T) {
+	defaults := []Keybinding{{Key: "mod+k", Command: "palette.open", DefaultID: "palette.open"}}
+	user := []Keybinding{
+		// Names a default this release no longer ships.
+		{Key: Unbound, Command: "gone.command", DefaultID: "gone.command"},
+		// A REBIND that matches nothing is an extra binding the user
+		// wanted — it must still survive.
+		{Key: "mod+t", Command: "custom.action"},
+	}
+	out := Merge(defaults, user)
+
+	for _, b := range out {
+		if b.Command == "gone.command" {
+			t.Fatal("orphan unbound entry survived the merge")
+		}
+	}
+	hasCustom := false
+	for _, b := range out {
+		if b.Command == "custom.action" {
+			hasCustom = true
+		}
+	}
+	if !hasCustom {
+		t.Fatal("orphan REBIND was dropped; only unbound orphans should be")
+	}
+}
+
+func TestMergeDoesNotMutateCallerSlice(t *testing.T) {
+	defaults := []Keybinding{{Key: "mod+k", Command: "palette.open", DefaultID: "palette.open"}}
+	user := []Keybinding{{Key: "  mod+o  ", Command: "palette.open", DefaultID: "palette.open"}}
+	Merge(defaults, user)
+	if user[0].Key != "  mod+o  " {
+		t.Fatalf("Merge mutated its input: key = %q", user[0].Key)
 	}
 }
 
