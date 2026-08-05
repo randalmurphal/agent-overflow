@@ -988,7 +988,20 @@ func (s *Store) setThreadPinnedAt(id string, ts *int64) error {
 // UpdateSessionRef records the provider resume cursor without touching
 // updated_at. Provider init can happen during sidebar-driven auto-resume, and
 // opening a thread must not count as new thread activity.
-func (s *Store) UpdateSessionRef(threadID, ref string) error {
+//
+// The returned changed flag reports whether session_ref actually moved —
+// callers gate the thread:updated push on it, so a resumed session restating
+// the same ref on every init doesn't spam the frontend. The read-then-write
+// is race-free in practice: all writers go through the single writer
+// connection, and both callers (triage handleInit, the pre-send context
+// repair) are serialized per thread.
+func (s *Store) UpdateSessionRef(threadID, ref string) (changed bool, err error) {
+	var prev sql.NullString
+	if err := s.db.QueryRow(
+		`SELECT session_ref FROM threads WHERE id = ?`, threadID,
+	).Scan(&prev); err != nil {
+		return false, fmt.Errorf("store: update session ref for %s: %w", threadID, err)
+	}
 	result, err := s.db.Exec(
 		`UPDATE threads
 		 SET session_ref = ?, pending_fork_session_ref = NULL
@@ -996,9 +1009,12 @@ func (s *Store) UpdateSessionRef(threadID, ref string) error {
 		ref, threadID,
 	)
 	if err != nil {
-		return fmt.Errorf("store: update session ref for %s: %w", threadID, err)
+		return false, fmt.Errorf("store: update session ref for %s: %w", threadID, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update session ref for %s", threadID))
+	if err := requireRowsAffected(result, fmt.Sprintf("store: update session ref for %s", threadID)); err != nil {
+		return false, err
+	}
+	return prev.String != ref, nil
 }
 
 // In-thread setters below intentionally do NOT bump updated_at. Title

@@ -297,6 +297,7 @@ export interface ThreadUpdateEvent {
   id?: string;
   title?: string;
   model?: string;
+  sessionRef?: string;
 }
 
 export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
@@ -308,6 +309,7 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
     const merged = { ...cached };
     if (evt.title !== undefined) merged.title = evt.title;
     if (evt.model !== undefined) merged.model = evt.model;
+    if (evt.sessionRef !== undefined) merged.sessionRef = evt.sessionRef;
     syncThreadRow(merged);
     return;
   }

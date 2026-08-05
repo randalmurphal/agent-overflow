@@ -447,7 +447,7 @@ func TestUpdateSessionRefClearsPendingForkRef(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	if err := s.UpdateSessionRef(thread.ID, "session-456"); err != nil {
+	if _, err := s.UpdateSessionRef(thread.ID, "session-456"); err != nil {
 		t.Fatalf("UpdateSessionRef() error = %v", err)
 	}
 
@@ -463,6 +463,27 @@ func TestUpdateSessionRefClearsPendingForkRef(t *testing.T) {
 	}
 	if got.UpdatedAt != thread.UpdatedAt {
 		t.Fatalf("UpdatedAt = %d, want %d", got.UpdatedAt, thread.UpdatedAt)
+	}
+
+	// A restated (unchanged) ref must still clear a pending fork ref: the
+	// changed flag gates the frontend push, never the write itself.
+	got.PendingForkRef = "pending-again"
+	if err := s.UpdateThread(got); err != nil {
+		t.Fatalf("UpdateThread() error = %v", err)
+	}
+	changed, err := s.UpdateSessionRef(thread.ID, "session-456")
+	if err != nil {
+		t.Fatalf("UpdateSessionRef() (restate) error = %v", err)
+	}
+	if changed {
+		t.Fatal("changed = true when restating the same session ref, want false")
+	}
+	got, err = s.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread() error = %v", err)
+	}
+	if got.PendingForkRef != "" {
+		t.Fatalf("PendingForkRef = %q after restate, want empty (clear must not be gated on changed)", got.PendingForkRef)
 	}
 }
 
@@ -1716,7 +1737,7 @@ func TestThreadMutationsReturnNotFoundForMissingRows(t *testing.T) {
 	if err := s.ArchiveThread(thread.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("ArchiveThread() error = %v, want sql.ErrNoRows", err)
 	}
-	if err := s.UpdateSessionRef(thread.ID, "session-ref"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.UpdateSessionRef(thread.ID, "session-ref"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("UpdateSessionRef() error = %v, want sql.ErrNoRows", err)
 	}
 	if err := s.UpdateTitle(thread.ID, "Renamed"); !errors.Is(err, sql.ErrNoRows) {

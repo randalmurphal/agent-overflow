@@ -5,6 +5,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 func (a *App) ensureClaudeContextReadyForUserSendLocked(thread store.Thread) error {
@@ -33,8 +34,16 @@ func (a *App) ensureClaudeContextReadyForUserSendLocked(thread store.Thread) err
 		if sessionID == "" {
 			return fmt.Errorf("Claude session context needs repair before sending, but the live session id is not known")
 		}
-		if err := a.store.UpdateSessionRef(thread.ID, sessionID); err != nil {
+		changed, err := a.store.UpdateSessionRef(thread.ID, sessionID)
+		if err != nil {
 			return fmt.Errorf("record Claude session ref before context repair: %w", err)
+		}
+		if changed {
+			a.emitEvent("thread:updated", triage.ThreadUpdateEvent{
+				Action:     "patch",
+				ID:         thread.ID,
+				SessionRef: &sessionID,
+			})
 		}
 	}
 	if err := a.runSessionStart(thread.ID, func() error {

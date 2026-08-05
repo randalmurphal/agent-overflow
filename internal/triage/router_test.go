@@ -1817,10 +1817,21 @@ func TestEventInitUpdatesSessionRef(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 
-	// EventInit persists the session ref but does not emit on a wire
-	// channel — there is no frontend contract for "init arrived".
-	if len(emissions.snapshot()) != 0 {
-		t.Fatalf("expected 0 emissions for EventInit, got %d: %+v", len(emissions.snapshot()), emissions.snapshot())
+	// EventInit persists the session ref and announces the assignment as
+	// a thread:updated patch (the sidebar's fork gate reads the cached
+	// row's sessionRef) — and nothing else: no turn lifecycle, no items.
+	// The change-only cadence of that patch is pinned by
+	// TestHandleInit_SessionRefAssignment_EmitsThreadPatch.
+	snapshot := emissions.snapshot()
+	if len(snapshot) != 1 || snapshot[0].eventName != "thread:updated" {
+		t.Fatalf("expected exactly 1 thread:updated emission for EventInit, got %+v", snapshot)
+	}
+	tue, ok := snapshot[0].data.(ThreadUpdateEvent)
+	if !ok || tue.Action != "patch" || tue.ID != "t1" {
+		t.Fatalf("emission payload = %+v, want patch for t1", snapshot[0].data)
+	}
+	if tue.SessionRef == nil || *tue.SessionRef != "session-abc" {
+		t.Fatalf("SessionRef patch = %v, want session-abc", tue.SessionRef)
 	}
 
 	// Should update session ref.

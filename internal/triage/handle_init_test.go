@@ -1,12 +1,80 @@
 package triage
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
+
+func initEventWithSessionID(threadID, sessionID string) provider.ProviderEvent {
+	meta, err := json.Marshal(provider.SessionInfo{SessionID: sessionID})
+	if err != nil {
+		panic(err)
+	}
+	return provider.ProviderEvent{
+		Kind:      provider.EventInit,
+		ThreadID:  threadID,
+		Meta:      meta,
+		Timestamp: time.Now(),
+	}
+}
+
+func threadPatchSessionRefs(emissions *emissionLog) []string {
+	var out []string
+	for _, e := range filterEmissions(emissions.snapshot(), "thread:updated") {
+		payload, ok := e.data.(ThreadUpdateEvent)
+		if !ok || payload.Action != "patch" || payload.SessionRef == nil {
+			continue
+		}
+		out = append(out, *payload.SessionRef)
+	}
+	return out
+}
+
+// TestHandleInit_SessionRefAssignment_EmitsThreadPatch pins the
+// sessionRef push: the sidebar's fork affordance gates on the cached
+// row's sessionRef, and handleInit's UpdateSessionRef is the only
+// writer during a session — so the assignment must announce itself as
+// a thread:updated patch, exactly once per actual change. A resumed
+// session restating the same id on every init stays silent (the
+// duplicate would be harmless but noisy), and a moved ref announces
+// again.
+func TestHandleInit_SessionRefAssignment_EmitsThreadPatch(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(initEventWithSessionID("t1", "session-a")); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	refs := threadPatchSessionRefs(emissions)
+	if len(refs) != 1 || refs[0] != "session-a" {
+		t.Fatalf("sessionRef patches after first init = %v, want [session-a]", refs)
+	}
+
+	// Same session id on a later init (resume): no re-announcement.
+	if err := router.Handle(initEventWithSessionID("t1", "session-a")); err != nil {
+		t.Fatalf("re-init same session: %v", err)
+	}
+	if refs := threadPatchSessionRefs(emissions); len(refs) != 1 {
+		t.Fatalf("sessionRef patches after restated init = %v, want no new emission", refs)
+	}
+
+	// The ref moved (e.g. a fresh session after a rollback): announce again.
+	if err := router.Handle(initEventWithSessionID("t1", "session-b")); err != nil {
+		t.Fatalf("init with new session: %v", err)
+	}
+	refs = threadPatchSessionRefs(emissions)
+	if len(refs) != 2 || refs[1] != "session-b" {
+		t.Fatalf("sessionRef patches after moved ref = %v, want [session-a session-b]", refs)
+	}
+	patches := filterEmissions(emissions.snapshot(), "thread:updated")
+	if payload, ok := patches[0].data.(ThreadUpdateEvent); !ok || payload.ID != "t1" {
+		t.Fatalf("patch payload = %+v, want ID t1", patches[0].data)
+	}
+}
 
 // TestHandleInit_PendingSendPresent_FiresHandleTurnStart pins the
 // Phase F wiring for fresh AO sends: when triage.handleInit sees a

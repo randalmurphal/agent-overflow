@@ -1488,6 +1488,29 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.latestTurnCompletedAt).toBe(300);
   });
 
+  it('merges a sessionRef patch into the sidebar row and pane copies', async () => {
+    // A thread created mid-run has no sessionRef until the provider's
+    // system/init assigns one; the backend announces the assignment as
+    // a thread:updated patch. The sidebar row is what gates the Fork
+    // context-menu item, so both copies must pick it up.
+    setBindingMock('ListThreads', async () => [
+      makeThread({ id: 'thread-1', title: 'Fresh' }),
+    ]);
+    await refreshThreads();
+    const pane = await buildPane(makeThread({ id: 'thread-1', title: 'Fresh' }));
+    expect(getThreads()[0]?.sessionRef).toBeUndefined();
+
+    emitWailsEvent('thread:updated', {
+      action: 'patch',
+      id: 'thread-1',
+      sessionRef: 'session-abc',
+    });
+
+    expect(getThreads()[0]?.sessionRef).toBe('session-abc');
+    expect(pane.thread?.sessionRef).toBe('session-abc');
+    expect(getThreads()[0]?.title).toBe('Fresh');
+  });
+
   it('projects a model fallback without overwriting the requested model', async () => {
     const pane = await buildPane(makeThread({
       id: 'thread-1',

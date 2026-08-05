@@ -225,7 +225,7 @@ func (h *Harness) seedThread(projectID string, spec HarnessSeedThread) (string, 
 	}
 
 	if spec.SessionRef != "" {
-		if err := h.app.store.UpdateSessionRef(thread.ID, spec.SessionRef); err != nil {
+		if _, err := h.app.store.UpdateSessionRef(thread.ID, spec.SessionRef); err != nil {
 			return thread.ID, fmt.Errorf("set session ref: %w", err)
 		}
 	}

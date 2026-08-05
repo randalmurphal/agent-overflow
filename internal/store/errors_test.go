@@ -46,7 +46,7 @@ func TestStoreMethodsReturnErrorsAfterClose(t *testing.T) {
 	if err := s.ArchiveThread(thread.ID); err == nil {
 		t.Fatal("expected ArchiveThread to fail after store close")
 	}
-	if err := s.UpdateSessionRef(thread.ID, "session-ref"); err == nil {
+	if _, err := s.UpdateSessionRef(thread.ID, "session-ref"); err == nil {
 		t.Fatal("expected UpdateSessionRef to fail after store close")
 	}
 	if err := s.InsertPayload(payload); err == nil {

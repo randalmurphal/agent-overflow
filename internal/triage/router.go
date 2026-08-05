@@ -932,8 +932,16 @@ func (r *Router) handleInit(evt provider.ProviderEvent) error {
 		var info provider.SessionInfo
 		if json.Unmarshal(evt.Meta, &info) == nil {
 			if info.SessionID != "" {
-				if err := r.store.UpdateSessionRef(evt.ThreadID, info.SessionID); err != nil {
+				changed, err := r.store.UpdateSessionRef(evt.ThreadID, info.SessionID)
+				if err != nil {
 					log.Printf("triage: update session ref: %v", err)
+				} else if changed {
+					// This write is the only place a thread gains its resume
+					// cursor during a session, and the sidebar's fork
+					// affordance gates on it — without a push, a thread
+					// created mid-run never shows Fork until the next full
+					// thread-list load.
+					r.emitThreadPatch(evt.ThreadID, ThreadUpdateEvent{SessionRef: &info.SessionID})
 				}
 			}
 			// `system/init` is the only fast-mode report a thread gets
@@ -1389,11 +1397,12 @@ func (r *Router) handleSubagentStatus(evt provider.ProviderEvent) error {
 // ThreadUpdateEvent is the wire shape for thread:updated. Action "full"
 // carries the entire Thread struct; "patch" carries only the changed fields.
 type ThreadUpdateEvent struct {
-	Action string        `json:"action"`
-	Thread *store.Thread `json:"thread,omitempty"`
-	ID     string        `json:"id,omitempty"`
-	Title  *string       `json:"title,omitempty"`
-	Model  *string       `json:"model,omitempty"`
+	Action     string        `json:"action"`
+	Thread     *store.Thread `json:"thread,omitempty"`
+	ID         string        `json:"id,omitempty"`
+	Title      *string       `json:"title,omitempty"`
+	Model      *string       `json:"model,omitempty"`
+	SessionRef *string       `json:"sessionRef,omitempty"`
 }
 
 func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {

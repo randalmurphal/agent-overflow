@@ -541,8 +541,12 @@ func TestUpdateSessionRef(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	if err := s.UpdateSessionRef("t1", "session-new"); err != nil {
+	changed, err := s.UpdateSessionRef("t1", "session-new")
+	if err != nil {
 		t.Fatalf("update session ref: %v", err)
+	}
+	if !changed {
+		t.Error("changed = false for a first-time session ref, want true")
 	}
 
 	got, err := s.GetThread("t1")
@@ -555,6 +559,24 @@ func TestUpdateSessionRef(t *testing.T) {
 	}
 	if got.UpdatedAt != 1000 {
 		t.Errorf("UpdatedAt: got %d, want 1000", got.UpdatedAt)
+	}
+
+	// Transition coverage: restating the same ref is a no-op for the
+	// changed flag (a resumed session's init must not re-announce), and
+	// moving to a new ref flips it back on.
+	changed, err = s.UpdateSessionRef("t1", "session-new")
+	if err != nil {
+		t.Fatalf("update session ref (same): %v", err)
+	}
+	if changed {
+		t.Error("changed = true when restating the same session ref, want false")
+	}
+	changed, err = s.UpdateSessionRef("t1", "session-other")
+	if err != nil {
+		t.Fatalf("update session ref (new): %v", err)
+	}
+	if !changed {
+		t.Error("changed = false when the session ref moved, want true")
 	}
 }
 
