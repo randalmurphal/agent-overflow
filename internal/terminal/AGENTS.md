@@ -21,7 +21,8 @@ session for replay on reconnect.
   gets. Replaces the inherited `TERM`/`COLORTERM` with what xterm.js
   actually renders, and — only when the AppImage markers are present —
   drops `APPIMAGE`/`APPDIR`/`ARGV0`/`OWD` and strips the `APPDIR`-mount
-  segments out of `PATH`/`LD_LIBRARY_PATH` so the user's commands resolve
+  segments out of `PATH`/`LD_LIBRARY_PATH`/`XDG_DATA_DIRS`/
+  `GSETTINGS_SCHEMA_DIR` so the user's commands resolve
   against their real system. Every other launch shape (dev, `.deb`,
   macOS) is passed through unchanged.
 - `ring.go` — byte-oriented circular buffer capped at 256 KiB per

@@ -114,6 +114,23 @@ func TestNormalizeTerminalEnvAppImageScrubbing(t *testing.T) {
 			want: []string{"PATH=/usr/bin"},
 		},
 		{
+			// The linuxdeploy GTK plugin prepends the mount's share dir to
+			// XDG_DATA_DIRS and points GSETTINGS_SCHEMA_DIR at the mount's
+			// schemas; a shell inheriting them resolves .desktop entries and
+			// gsettings against a squashfs that vanishes on app exit.
+			name: "GTK data and schema paths lose their mount segments",
+			base: []string{
+				"APPDIR=" + mount,
+				"XDG_DATA_DIRS=" + mount + "/usr/share:/usr/local/share:/usr/share",
+				"GSETTINGS_SCHEMA_DIR=" + mount + "/usr/share/glib-2.0/schemas",
+				"PATH=/usr/bin",
+			},
+			want: []string{
+				"XDG_DATA_DIRS=/usr/local/share:/usr/share",
+				"PATH=/usr/bin",
+			},
+		},
+		{
 			name: "APPIMAGE without APPDIR drops markers but keeps paths",
 			base: []string{
 				"APPIMAGE=/home/dev/Apps/agent-overflow.AppImage",
