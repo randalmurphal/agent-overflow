@@ -23,6 +23,7 @@ import {
   hasImagePayload,
   rejectionReason,
 } from './attachmentHelpers';
+import { compressImageToFit, shouldCompressImage } from './imageCompress';
 
 export interface UploadInsertionPoint {
   start: number;
@@ -73,21 +74,34 @@ export function createComposerUploads(opts: ComposerUploadsOptions): ComposerUpl
     file: File,
     insertion: UploadInsertionPoint | null,
   ): Promise<boolean> {
+    // An over-limit image gets one recompression attempt before the
+    // size guard runs — a HiDPI screenshot paste routinely exceeds the
+    // limit and re-encoding it beats bouncing the user to an editor.
+    // Failure (undecodable, or still too large at the smallest ladder
+    // step) falls through to the original file and its size rejection.
+    let upload = file;
+    if (shouldCompressImage(file, maxSize)) {
+      try {
+        upload = (await compressImageToFit(file, maxSize)) ?? file;
+      } catch (err) {
+        console.error('image compression failed:', err);
+      }
+    }
     // Pre-upload guard: reject by size + MIME / extension before we
     // burn cycles on base64 + ship the bytes over the wire. The same
     // check runs server-side, but failing early here keeps a
     // misclicked 50MB drop from freezing the UI for the round-trip.
-    const rejection = rejectionReason(file, maxSize);
+    const rejection = rejectionReason(upload, maxSize);
     if (rejection) {
       addToast('warning', rejection);
       return false;
     }
     try {
-      const base64 = await fileToBase64(file);
+      const base64 = await fileToBase64(upload);
       const record = (await UploadAttachment(
         threadId,
-        file.name,
-        file.type || '',
+        upload.name,
+        upload.type || '',
         base64,
       )) as Attachment;
       // Guard against thread-switch-in-flight: only stamp the draft when

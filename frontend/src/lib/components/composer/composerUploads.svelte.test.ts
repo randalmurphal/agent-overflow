@@ -2,6 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Attachment } from '../../types/attachment';
 import { createComposerUploads, type UploadInsertionPoint } from './composerUploads.svelte';
+import { compressImageToFit } from './imageCompress';
+
+// The canvas pipeline needs a real browser; the upload flow's use of it
+// (attempt on over-limit images, fall back to the size rejection) is
+// what these tests pin down.
+vi.mock('./imageCompress', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./imageCompress')>()),
+  compressImageToFit: vi.fn(),
+}));
 
 function attachment(id: string, filename = `${id}.png`): Attachment {
   return {
@@ -32,6 +41,7 @@ function makeClipboardPaste(files: File[]): ClipboardEvent {
 describe('createComposerUploads', () => {
   beforeEach(() => {
     resetBindingMocks();
+    vi.mocked(compressImageToFit).mockReset();
   });
 
   it('does not spend an attachment slot on rejected files', async () => {
@@ -84,5 +94,63 @@ describe('createComposerUploads', () => {
 
     expect(addAttachment.mock.calls[0]?.[1]).toBe(firstInsertion);
     expect(addAttachment.mock.calls[1]?.[1]).toBe(secondInsertion);
+  });
+
+  it('compresses an over-limit image and uploads the re-encoded file', async () => {
+    const oversized = new File(['big'], 'huge.png', { type: 'image/png' });
+    Object.defineProperty(oversized, 'size', { value: 20 * 1024 * 1024 });
+    const compressed = new File(['small'], 'huge.webp', { type: 'image/webp' });
+    vi.mocked(compressImageToFit).mockResolvedValue(compressed);
+    const upload = setBindingMock('UploadAttachment', async (
+      _threadId: string,
+      filename: string,
+    ) => attachment(`att-${filename}`, filename));
+    const uploads = createComposerUploads({
+      getThreadId: () => 'thread-1',
+      addAttachment: vi.fn(),
+      removeAttachment: vi.fn(),
+    });
+
+    await uploads.handlePaste(makeClipboardPaste([oversized]));
+
+    expect(compressImageToFit).toHaveBeenCalledWith(oversized, 10 * 1024 * 1024);
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(upload.mock.calls[0]?.[1]).toBe('huge.webp');
+    expect(upload.mock.calls[0]?.[2]).toBe('image/webp');
+  });
+
+  it('falls back to the size rejection when compression cannot fit the image', async () => {
+    const oversized = new File(['big'], 'huge.png', { type: 'image/png' });
+    Object.defineProperty(oversized, 'size', { value: 20 * 1024 * 1024 });
+    vi.mocked(compressImageToFit).mockResolvedValue(null);
+    const upload = setBindingMock('UploadAttachment', async () => attachment('att-x'));
+    const uploads = createComposerUploads({
+      getThreadId: () => 'thread-1',
+      addAttachment: vi.fn(),
+      removeAttachment: vi.fn(),
+    });
+
+    await uploads.handlePaste(makeClipboardPaste([oversized]));
+
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('does not attempt compression for images already within the limit', async () => {
+    vi.mocked(compressImageToFit).mockResolvedValue(null);
+    setBindingMock('UploadAttachment', async (
+      _threadId: string,
+      filename: string,
+    ) => attachment(`att-${filename}`, filename));
+    const uploads = createComposerUploads({
+      getThreadId: () => 'thread-1',
+      addAttachment: vi.fn(),
+      removeAttachment: vi.fn(),
+    });
+
+    await uploads.handlePaste(makeClipboardPaste([
+      new File(['tiny'], 'tiny.png', { type: 'image/png' }),
+    ]));
+
+    expect(compressImageToFit).not.toHaveBeenCalled();
   });
 });
