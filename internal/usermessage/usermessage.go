@@ -39,6 +39,13 @@ type Meta struct {
 	// later changes. One marker per row: naming a command twice expands
 	// it once.
 	Command string `json:"command,omitempty"`
+	// ProviderCommand records that this send deliberately invoked a
+	// provider-executed slash command (the composer's send-time
+	// classification), which is what opts the outbound text out of the
+	// Claude slash guard. Persisted so a session-death requeue that
+	// rebuilds its payload from this row keeps the opt-in — without it
+	// the redelivery would arrive as guarded prose instead of executing.
+	ProviderCommand bool `json:"providerCommand,omitempty"`
 }
 
 // Input is the per-entry-point projection Marshal encodes. A struct
@@ -53,6 +60,7 @@ type Input struct {
 	RevisionSourceDiff     *store.DiffReviewSourceRef
 	RevisionDiffCommentIDs []string
 	Command                string
+	ProviderCommand        bool
 }
 
 // AttachmentMeta is the per-attachment slice element. The Go side
@@ -79,7 +87,8 @@ func Marshal(in Input) (string, error) {
 		len(in.RevisionCommentIDs) == 0 &&
 		in.RevisionSourceDiff == nil &&
 		len(in.RevisionDiffCommentIDs) == 0 &&
-		in.Command == "" {
+		in.Command == "" &&
+		!in.ProviderCommand {
 		return "", nil
 	}
 	metaAttachments := make([]AttachmentMeta, 0, len(in.Attachments))
@@ -100,6 +109,7 @@ func Marshal(in Input) (string, error) {
 		RevisionSourceDiffReview:     in.RevisionSourceDiff,
 		RevisionSourceDiffCommentIDs: in.RevisionDiffCommentIDs,
 		Command:                      in.Command,
+		ProviderCommand:              in.ProviderCommand,
 	}
 	data, err := json.Marshal(meta)
 	if err != nil {

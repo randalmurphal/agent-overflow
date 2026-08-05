@@ -96,6 +96,29 @@ func TestMarshalJSONShapeMatchesContract(t *testing.T) {
 	}
 }
 
+func TestMarshalProviderCommandRoundTrip(t *testing.T) {
+	got, err := Marshal(Input{ProviderCommand: true})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	// The flag alone is a non-empty meta: it is the only durable record
+	// of the slash-guard opt-in a requeue rebuilds its payload from.
+	if !strings.Contains(got, `"providerCommand":true`) {
+		t.Fatalf("missing providerCommand flag: %s", got)
+	}
+	meta, err := FromItem(store.Item{Meta: got})
+	if err != nil {
+		t.Fatalf("FromItem: %v", err)
+	}
+	if !meta.ProviderCommand {
+		t.Fatal("ProviderCommand lost on decode")
+	}
+	// A plain prose send still serialises to the empty meta.
+	if got, err := Marshal(Input{}); err != nil || got != "" {
+		t.Fatalf("Marshal(zero) = %q, %v — want empty", got, err)
+	}
+}
+
 func TestFromItemEmptyMeta(t *testing.T) {
 	meta, err := FromItem(store.Item{Meta: ""})
 	if err != nil {

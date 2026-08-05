@@ -533,6 +533,9 @@ func flushPayloadFromUserMeta(meta string) (json.RawMessage, error) {
 		SourceProposedPlan:         m.SourceProposedPlan,
 		RevisionSourceProposedPlan: m.RevisionSourceProposedPlan,
 		RevisionSourceDiffReview:   m.RevisionSourceDiffReview,
+		// The slash-guard opt-in survives the requeue: without it the
+		// redispatch would deliver `/command` as guarded prose.
+		ProviderCommand: m.ProviderCommand,
 	}
 	for _, att := range m.Attachments {
 		payload.AttachmentIDs = append(payload.AttachmentIDs, att.ID)
@@ -838,6 +841,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// long turn would otherwise carry a stale picture. Nothing about
 		// the block is persisted, so a requeue re-resolves it too.
 		expandComposerCommands: true,
+		providerCommand:        payload.ProviderCommand,
 	})
 	if err != nil {
 		return QueueFlushedItem{}, false, requeue, err

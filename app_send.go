@@ -94,6 +94,10 @@ type userMessageInputs struct {
 	// sends), whose text did not come from a composer and must reach the
 	// provider byte-for-byte as composed.
 	expandComposerCommands bool
+	// providerCommand mirrors sendMessageOptions.ProviderCommand into the
+	// persisted user meta so a requeue that rebuilds its payload from the
+	// row keeps the slash-guard opt-in.
+	providerCommand bool
 }
 
 // resolvedUserMessage bundles everything resolveUserMessageEnvelope
@@ -214,6 +218,7 @@ func (a *App) resolveUserMessageEnvelope(
 		RevisionSourceDiff:     revisionSourceDiff,
 		RevisionDiffCommentIDs: revisionDiffCommentIDs,
 		Command:                command,
+		ProviderCommand:        inputs.providerCommand,
 	})
 	if err != nil {
 		return resolvedUserMessage{}, fmt.Errorf("user meta: %w", err)
@@ -313,6 +318,7 @@ func (a *App) sendMessageWithOptions(threadID string, content string, opts sendM
 		revisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 		revisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		expandComposerCommands:       opts.ExpandComposerCommands,
+		providerCommand:              opts.ProviderCommand,
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)

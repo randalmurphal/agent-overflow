@@ -119,6 +119,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 		// (D31). Anything else would make the same typed message mean two
 		// different things depending on whether a turn happened to be open.
 		expandComposerCommands: opts.ExpandComposerCommands,
+		providerCommand:        opts.ProviderCommand,
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("steer message: %w", err)

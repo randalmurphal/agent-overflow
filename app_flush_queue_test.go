@@ -3193,6 +3193,23 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 	}
 }
 
+// TestFlushPayloadFromUserMeta_KeepsProviderCommandOptIn pins the
+// slash-guard opt-in across a requeue: a persisted `/command` row must
+// redispatch as a provider command, not as guarded prose.
+func TestFlushPayloadFromUserMeta_KeepsProviderCommandOptIn(t *testing.T) {
+	raw, err := flushPayloadFromUserMeta(`{"providerCommand":true}`)
+	if err != nil {
+		t.Fatalf("flushPayloadFromUserMeta: %v", err)
+	}
+	var payload flushQueuePayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if !payload.ProviderCommand {
+		t.Error("ProviderCommand = false, want the persisted opt-in to survive the rebuild")
+	}
+}
+
 // TestFlushUserMetaHelpers_RejectNullMeta pins the round-14 strictness
 // guard (C14-5): a persisted meta of literal JSON null unmarshals into
 // the zero struct without error, which would silently drop attachments
