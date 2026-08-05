@@ -10,6 +10,7 @@ import {
   isCodexSubagentTask,
   statusClass,
   statusLabel,
+  trayRowStopTarget,
   trayTaskLabel,
   type TrayTask,
 } from './backgroundTray';
@@ -198,6 +199,147 @@ describe('isCodexStoppableTask', () => {
         }),
       })),
     ).toBe(false);
+  });
+});
+
+describe('trayRowStopTarget', () => {
+  it('resolves the Claude task_id for a claude-task thread', () => {
+    expect(
+      trayRowStopTarget(
+        makeTrayTask({
+          launch: makeItem({ id: 'L', meta: JSON.stringify({ task_id: 'tsk-7' }) }),
+        }),
+        'claude-task',
+      ),
+    ).toBe('tsk-7');
+  });
+
+  it('resolves the Codex PTY process_id for a codex thread', () => {
+    expect(
+      trayRowStopTarget(
+        makeTrayTask({
+          launch: makeItem({
+            id: 'L',
+            isBackground: true,
+            toolName: 'exec_command',
+            meta: JSON.stringify({ source: 'unifiedExecStartup', process_id: '1734029' }),
+          }),
+        }),
+        'codex-background-terminals',
+      ),
+    ).toBe('1734029');
+  });
+
+  it('never crosses the two id namespaces', () => {
+    // A Claude row's task_id must not be offered to the Codex terminate
+    // RPC (which parses the id as an i32 and would refuse it), and a
+    // Codex process_id must not be offered to StopClaudeTask. Each
+    // provider reads only its own key.
+    const claudeRow = makeTrayTask({
+      launch: makeItem({ id: 'L', meta: JSON.stringify({ task_id: 'tsk-7' }) }),
+    });
+    expect(trayRowStopTarget(claudeRow, 'codex-background-terminals')).toBeNull();
+
+    const codexRow = makeTrayTask({
+      launch: makeItem({
+        id: 'L',
+        isBackground: true,
+        toolName: 'exec_command',
+        meta: JSON.stringify({ source: 'unifiedExecStartup', process_id: '42' }),
+      }),
+    });
+    expect(trayRowStopTarget(codexRow, 'claude-task')).toBeNull();
+  });
+
+  it('returns null for a Codex row the terminate RPC cannot reach', () => {
+    // Not yielded yet: still a foreground command, not a background
+    // terminal, so there is nothing for terminate to match.
+    expect(
+      trayRowStopTarget(
+        makeTrayTask({
+          launch: makeItem({
+            id: 'pending',
+            isBackground: false,
+            toolName: 'exec_command',
+            meta: JSON.stringify({ source: 'unifiedExecStartup', process_id: '42' }),
+          }),
+        }),
+        'codex-background-terminals',
+      ),
+    ).toBeNull();
+
+    // Spawned collab-agent child — a separate thread, and `close_agent`
+    // is a model tool with no client path.
+    expect(
+      trayRowStopTarget(
+        makeTrayTask({
+          launch: makeItem({
+            id: 'agent',
+            isBackground: true,
+            toolName: 'collab_agent',
+            meta: JSON.stringify({ input: { tool: 'spawn_agent' }, process_id: '42' }),
+          }),
+        }),
+        'codex-background-terminals',
+      ),
+    ).toBeNull();
+
+    // Backgrounded, but the wire has not named a process id yet.
+    expect(
+      trayRowStopTarget(
+        makeTrayTask({
+          launch: makeItem({
+            id: 'unnamed',
+            isBackground: true,
+            toolName: 'exec_command',
+            meta: JSON.stringify({ source: 'unifiedExecStartup' }),
+          }),
+        }),
+        'codex-background-terminals',
+      ),
+    ).toBeNull();
+  });
+
+  it('returns null for non-running rows and rows whose launch is gone', () => {
+    const meta = JSON.stringify({
+      task_id: 'tsk-7',
+      source: 'unifiedExecStartup',
+      process_id: '42',
+    });
+    for (const stop of ['claude-task', 'codex-background-terminals'] as const) {
+      expect(
+        trayRowStopTarget(
+          makeTrayTask({
+            status: 'completed',
+            launch: makeItem({ id: 'L', isBackground: true, toolName: 'exec_command', meta }),
+          }),
+          stop,
+        ),
+      ).toBeNull();
+
+      const completion = makeItem({ id: 'C', meta, completionOf: 'L' });
+      expect(
+        trayRowStopTarget(
+          makeTrayTask({ launch: null, completion, anchor: completion, rowId: 'C' }),
+          stop,
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it('returns null for a provider with no background stop primitive', () => {
+    expect(
+      trayRowStopTarget(
+        makeTrayTask({
+          launch: makeItem({
+            id: 'L',
+            isBackground: true,
+            meta: JSON.stringify({ task_id: 'tsk-7', process_id: '42' }),
+          }),
+        }),
+        'none',
+      ),
+    ).toBeNull();
   });
 });
 

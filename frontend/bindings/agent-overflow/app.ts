@@ -185,11 +185,7 @@ export function CheckForUpdate(): $CancellablePromise<$models.UpdateAvailability
  * CleanCodexBackgroundTerminals asks the Codex app-server to terminate
  * every running unified-exec background PTY for `threadID`. This is the
  * thread-wide "Stop all" primitive for Codex; the per-row stop is
- * codex.Session.TerminateBackgroundTerminal, which takes the
- * `meta.process_id` the item row already carries (see
- * docs/references/codex.md#background-terminals). No binding wraps the
- * per-row RPC yet — it needs a thread-id + process-id method here plus a
- * LocalOnlyMethods classification.
+ * TerminateCodexBackgroundTerminal below.
  * 
  * After the RPC succeeds, Codex emits one `item/completed` notification
  * per terminated PTY. Those update triage's transient tray state; the
@@ -3126,6 +3122,38 @@ export function SwitchThread(threadID: string): $CancellablePromise<store$0.Thre
     return $Call.ByID(3897387725, threadID).then(($result: any) => {
         return $$createType1($result);
     });
+}
+
+/**
+ * TerminateCodexBackgroundTerminal stops ONE running unified-exec
+ * background PTY on `threadID`, identified by the app-server process id
+ * the tray row carries as `meta.process_id`. It is the Codex counterpart
+ * of StopClaudeTask — same tray affordance, different id namespace and a
+ * different RPC (`thread/backgroundTerminals/terminate`), which is why
+ * the frontend branches on provider rather than sharing one binding.
+ * 
+ * The bool is the wire's own answer, not a success flag: `false, nil`
+ * means the RPC succeeded and matched no running process (the shell had
+ * already exited, or the id belongs to another thread). Callers must
+ * surface that as state — a stop that killed nothing emits no follow-up
+ * `item/completed`, so silently discarding it would leave the user
+ * staring at a row that never changes.
+ * 
+ * On a real termination Codex emits `item/completed` for that PTY, which
+ * flows through the existing triage path and clears the tray row. No
+ * follow-up work is needed here.
+ * 
+ * Returns typed errors for:
+ * 
+ *   - session-missing: no Codex session for this thread. The caller
+ *     reached the binding before Start / after Close.
+ *   - provider-mismatch: the thread exists but it's a Claude session.
+ *     Claude's per-row stop is StopClaudeTask, keyed by task id.
+ *   - blank process id / timeout / provider error: surfaced verbatim so
+ *     the UI can render the CLI-supplied message.
+ */
+export function TerminateCodexBackgroundTerminal(threadID: string, processID: string): $CancellablePromise<boolean> {
+    return $Call.ByID(870653875, threadID, processID);
 }
 
 /**

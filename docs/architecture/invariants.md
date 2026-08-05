@@ -785,10 +785,13 @@ per-process termination as blocked on upstream. It shipped in codex
 0.140.0 and is verified on 0.146.0: `thread/backgroundTerminals/terminate
 {threadId, processId}` → `{terminated}`, alongside
 `thread/backgroundTerminals/list` for enumeration and the thread-wide
-`clean`. `processId` is on the wire and Agent Overflow already persists
-it on the item (`enrichItemMeta`), so the row → RPC join needs no new
-plumbing. The RPCs live in
-`internal/provider/codex/session_background.go`; see
+`clean`. `processId` is on the wire, Agent Overflow stamps it onto the
+item (`enrichItemMeta`) and allowlists it onto the transient tray row
+(`codexLiveUnifiedExecMeta`), so a tray row joins to its PTY without a
+`list` round trip. The RPCs live in
+`internal/provider/codex/session_background.go`, `terminate` is bound as
+`App.TerminateCodexBackgroundTerminal`, and the tray renders the same
+per-row Stop button Claude's `stop_task` renders; see
 [`codex.md §Background terminals`](../references/codex.md#background-terminals).
 
 This changes nothing about the rule above. Stopping a background terminal

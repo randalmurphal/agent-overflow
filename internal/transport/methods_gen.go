@@ -263,6 +263,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SubscribePRUpdates", ID: 3272491649},                   // main.App.SubscribePRUpdates
 	{Name: "SwitchProviderAccount", ID: 1249964095},                // main.App.SwitchProviderAccount
 	{Name: "SwitchThread", ID: 3897387725},                         // main.App.SwitchThread
+	{Name: "TerminateCodexBackgroundTerminal", ID: 870653875},      // main.App.TerminateCodexBackgroundTerminal
 	{Name: "TouchRemoteEndpoint", ID: 2647456459},                  // main.App.TouchRemoteEndpoint
 	{Name: "TriggerMcpAuth", ID: 1291217507},                       // main.App.TriggerMcpAuth
 	{Name: "UnarchiveProject", ID: 2561521885},                     // main.App.UnarchiveProject

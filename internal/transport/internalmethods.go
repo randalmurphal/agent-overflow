@@ -391,9 +391,13 @@ var LocalOnlyMethods = map[string]bool{
 	// slice / Codex thread/fork) and truncates SQLite in place — same
 	// session-control + FS class as the fork variants above.
 	"RevertConversationToMessage": true,
-	// Background-task control terminates host subprocesses.
-	"StopClaudeTask":                true,
-	"CleanCodexBackgroundTerminals": true,
+	// Background-task control terminates host subprocesses. All three are
+	// the same class: a PTY / task the model launched on this machine dies
+	// when the call lands. TerminateCodexBackgroundTerminal is the per-row
+	// sibling of the thread-wide clean.
+	"StopClaudeTask":                   true,
+	"CleanCodexBackgroundTerminals":    true,
+	"TerminateCodexBackgroundTerminal": true,
 	// StartCodexReview and CompactCodexThread each start a real, billed,
 	// non-steerable turn on the thread's live provider subprocess — the
 	// review one that reads the user's working tree or git history and runs

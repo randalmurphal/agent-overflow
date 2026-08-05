@@ -26,10 +26,10 @@ func TestStopClaudeTask_SessionMissing(t *testing.T) {
 }
 
 // TestStopClaudeTask_ProviderMismatch covers the Codex-thread branch:
-// Codex has no per-row stop primitive (only a thread-wide
-// CleanBackgroundTerminals), so a caller who reached the Claude stop
-// binding for a Codex thread is programming against the wrong API and
-// must see a loud error. Silently dropping would leave the UI's
+// Codex's per-row stop is TerminateCodexBackgroundTerminal, keyed by PTY
+// process id rather than task id, so a caller who reached the Claude
+// stop binding for a Codex thread is programming against the wrong API
+// and must see a loud error. Silently dropping would leave the UI's
 // per-row Stop button broken on Codex threads with no indication why.
 func TestStopClaudeTask_ProviderMismatch(t *testing.T) {
 	a := NewApp()

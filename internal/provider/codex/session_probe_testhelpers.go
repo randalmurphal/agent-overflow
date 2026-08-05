@@ -57,3 +57,21 @@ func NewCleanBackgroundTerminalsTestSession(cleanFn func(ctx context.Context) er
 		cleanBackgroundTerminalsFn: cleanFn,
 	}
 }
+
+// NewTerminateBackgroundTerminalTestSession is the per-row sibling of
+// NewCleanBackgroundTerminalsTestSession: the returned *Session resolves
+// TerminateBackgroundTerminal from the supplied function instead of the
+// app-server wire, so the binding test can assert that the tray's Stop
+// button forwards the right process id (and a deadline) without a real
+// subprocess. Argument validation still runs before the override, so a
+// blank process id is refused here exactly as it is in production.
+//
+// Same caveat as the other helpers: the rest of the session is zero, so
+// callers MUST NOT call Send / Interrupt / Close on it.
+func NewTerminateBackgroundTerminalTestSession(
+	terminateFn func(ctx context.Context, processID string) (bool, error),
+) *Session {
+	return &Session{
+		terminateBackgroundTerminalFn: terminateFn,
+	}
+}

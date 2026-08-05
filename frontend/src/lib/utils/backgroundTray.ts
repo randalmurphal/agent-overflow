@@ -3,11 +3,14 @@
 // without mounting the component and so the .svelte file stays under
 // the 300-line ceiling.
 
+import type { ProviderBackgroundStop } from '../providers/catalog';
 import type { Item } from '../types/models';
 import { extractClaudeTaskID } from './claudeTaskMeta';
+import { extractCodexProcessID } from './codexProcessMeta';
 import { isCodexSubagentLaunchItem } from './subagentLaunch';
 
 export { extractClaudeTaskID } from './claudeTaskMeta';
+export { extractCodexProcessID } from './codexProcessMeta';
 
 export interface TrayTask {
   /** Stable id used for the row key and scroll-to-item request. */
@@ -53,15 +56,46 @@ export function isCodexSubagentTask(task: TrayTask): boolean {
 }
 
 /**
- * Codex can only stop yielded unifiedExec PTYs via
- * CleanCodexBackgroundTerminals. Pending foreground commands are
- * visible in the same running tray, but they are not background
- * terminals yet, so rendering Stop-all for them would promise a kill
- * primitive the backend does not have.
+ * Codex's stop primitives (per-row `TerminateCodexBackgroundTerminal`
+ * and thread-wide `CleanCodexBackgroundTerminals`) both act only on
+ * yielded unifiedExec PTYs. Pending foreground commands are visible in
+ * the same running tray, but they are not background terminals yet, so
+ * offering a stop for them would promise a kill primitive the backend
+ * does not have.
  */
 export function isCodexStoppableTask(task: TrayTask): boolean {
   if (isCodexSubagentTask(task)) return false;
   return task.launch?.isBackground === true;
+}
+
+/**
+ * Resolve the id a row's Stop button would target, or null when the row
+ * has no per-row stop at all. The id namespace is per provider — a
+ * Claude task id for `claude-task`, a Codex PTY process id for
+ * `codex-background-terminals` — and the caller pairs it with the
+ * matching binding.
+ *
+ * Only running rows with a live launch are stoppable: a completed row
+ * has nothing to kill, and a launch that has already been pruned from
+ * the tray's source list carries no id to kill it by.
+ */
+export function trayRowStopTarget(
+  task: TrayTask,
+  backgroundStop: ProviderBackgroundStop,
+): string | null {
+  if (task.status !== 'running' || task.launch === null) return null;
+  switch (backgroundStop) {
+    case 'claude-task':
+      return extractClaudeTaskID(task.launch);
+    case 'codex-background-terminals':
+      // Same gate as Stop-all, plus the id: a spawned collab-agent child
+      // and a not-yet-yielded foreground command are both untouchable by
+      // the terminate RPC, and the wire may not have named the process
+      // yet on a row that just started.
+      return isCodexStoppableTask(task) ? extractCodexProcessID(task.launch) : null;
+    case 'none':
+      return null;
+  }
 }
 
 /**

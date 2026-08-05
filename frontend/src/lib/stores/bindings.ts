@@ -46,8 +46,12 @@ export {
   RespondToUserInput,
   SendPlanRevisionComments,
 
-  // Background tasks (per-item + thread-wide stop primitives)
+  // Background tasks (per-item + thread-wide stop primitives). The two
+  // per-row stops are deliberately separate bindings: they take
+  // different id namespaces (Claude task id vs Codex PTY process id) and
+  // drive different provider RPCs, so callers branch on provider.
   StopClaudeTask,
+  TerminateCodexBackgroundTerminal,
   CleanCodexBackgroundTerminals,
 
   // Codex thread operations the composer's `/compact` and `/review`

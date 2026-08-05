@@ -100,10 +100,22 @@ zero when absent. `terminated: false` means the RPC matched no running
 process (already exited, or not this thread's) — a state answer, not a
 failure.
 
+`processId` is a STRING on the wire that upstream parses as an `i32`
+(`thread_background_terminals_terminate_inner`), and it is the same
+value the `commandExecution` item carries as `processId` — both come
+from `UnifiedExecProcessManager`'s process-store key
+(`ToolEmitter::unified_exec(..., Some(request.process_id.to_string()))`
+in `codex-rs/core/src/unified_exec/process_manager.rs`, versus
+`entry.process_id.to_string()` in the same file's `list_processes`).
+That identity is what lets the tray's per-row Stop join a transcript row
+to a running PTY without a `list` call.
+
 Types: `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
 (`ThreadBackgroundTerminals*`); dispatch table
 `codex-rs/app-server-protocol/src/protocol/common.rs`. Agent Overflow
 wraps all three in `internal/provider/codex/session_background.go`.
+`terminate` is bound as `App.TerminateCodexBackgroundTerminal` and backs
+the tray's per-row Stop button; `clean` backs Stop-all.
 Version floor: `terminate`/`list` shipped in 0.140.0, below AO's
 provider-wide minimum of 0.143.0, so no runtime capability probe is
 needed (guarded by

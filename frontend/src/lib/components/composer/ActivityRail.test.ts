@@ -10,6 +10,7 @@ import type { UserInputRequest } from '../../types/events';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
+import { getToasts, removeToast } from '../../stores/toast.svelte';
 import { resetForTest as resetThreadStatuses } from '../../stores/threadStatuses.svelte';
 import { resetForTest as resetSendQueue, replaceQueueForThread } from '../../stores/sendQueue.svelte';
 import { __resetActivityRailUiPrefsForTest, __resetLiveTodoUiPrefsForTest, LIVE_TODO_AUTOHIDE_MS } from '../../stores/thread.svelte';
@@ -53,9 +54,11 @@ describe('<ActivityRail>', () => {
     resetSendQueue();
     __resetLiveTodoUiPrefsForTest();
     __resetActivityRailUiPrefsForTest();
+    for (const toast of [...getToasts()]) removeToast(toast.id);
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     setBindingMock('StopClaudeTask', async () => {});
     setBindingMock('CleanCodexBackgroundTerminals', async () => {});
+    setBindingMock('TerminateCodexBackgroundTerminal', async () => true);
   });
 
   afterEach(() => {
@@ -601,6 +604,114 @@ describe('<ActivityRail>', () => {
 
     expect(codexCalls).toBe(1);
     expect(claudeCalls).toBe(0);
+  });
+
+  // --- Codex per-row stop (thread/backgroundTerminals/terminate) ---
+  //
+  // Parity with the Claude per-row stop above: the same tray button, on
+  // the same rows, over a different primitive. The id namespace differs
+  // (PTY process id, not task id) and so does the binding, so these
+  // tests pin that the process_id reaches the right RPC and that no
+  // Claude call is made on a Codex thread.
+
+  function codexBackgroundLaunch(overrides = {}) {
+    return backgroundLaunch({
+      id: 'codex-exec',
+      summary: 'exec_command',
+      toolName: 'exec_command',
+      payloadKind: 'command_output',
+      meta: JSON.stringify({ source: 'unifiedExecStartup', process_id: '1734029' }),
+      ...overrides,
+    });
+  }
+
+  async function openCodexBackgroundTray(launch: ReturnType<typeof codexBackgroundLaunch>) {
+    setBindingMock('ListLiveBackgroundTasks', async () => [launch]);
+    const pane = await buildPane(makeThread({ provider: 'codex' }));
+    pane.upsertItem(launch);
+    const view = render(ActivityRailHost, { props: { pane } });
+    await tick();
+    await tick();
+    await fireEvent.click(await view.findByTestId('activity-rail-background-toggle'));
+    await tick();
+    return { pane, ...view };
+  }
+
+  it('renders a per-row Stop on a Codex background terminal and dispatches TerminateCodexBackgroundTerminal with the process_id', async () => {
+    const calls: unknown[][] = [];
+    setBindingMock('TerminateCodexBackgroundTerminal', async (...args: unknown[]) => {
+      calls.push(args);
+      return true;
+    });
+    let claudeCalls = 0;
+    setBindingMock('StopClaudeTask', async () => { claudeCalls++; });
+
+    const { pane, findByTestId } = await openCodexBackgroundTray(codexBackgroundLaunch());
+    await fireEvent.click(await findByTestId('background-task-tray-row-stop'));
+    await tick();
+
+    expect(calls).toEqual([[pane.thread!.id, '1734029']]);
+    expect(claudeCalls).toBe(0);
+  });
+
+  it('renders no per-row Stop for a Codex background row the wire has not named a process for', async () => {
+    // Stop-all still applies (it is thread-wide and needs no id), but a
+    // per-row button would have nothing to terminate.
+    let terminateCalls = 0;
+    setBindingMock('TerminateCodexBackgroundTerminal', async () => { terminateCalls++; return true; });
+
+    const { findByTestId, queryByTestId } = await openCodexBackgroundTray(
+      codexBackgroundLaunch({ meta: JSON.stringify({ source: 'unifiedExecStartup' }) }),
+    );
+
+    expect(await findByTestId('background-task-tray-row')).toBeInTheDocument();
+    expect(queryByTestId('background-task-tray-row-stop')).toBeNull();
+    expect(await findByTestId('activity-rail-background-stop-all')).toBeInTheDocument();
+    expect(terminateCalls).toBe(0);
+  });
+
+  it('surfaces terminated:false as state instead of swallowing it', async () => {
+    // `terminated:false` means the RPC matched no running process, so no
+    // item/completed follows and the row will not change on its own. A
+    // silent no-op would read as a broken button.
+    setBindingMock('TerminateCodexBackgroundTerminal', async () => false);
+
+    const { findByTestId } = await openCodexBackgroundTray(codexBackgroundLaunch());
+    const before = getToasts().length;
+    await fireEvent.click(await findByTestId('background-task-tray-row-stop'));
+    await tick();
+
+    const added = getToasts().slice(before);
+    expect(added).toHaveLength(1);
+    expect(added[0].type).toBe('info');
+    expect(added[0].message).toMatch(/already exited/i);
+  });
+
+  it('stays quiet when the terminate actually killed something', async () => {
+    setBindingMock('TerminateCodexBackgroundTerminal', async () => true);
+
+    const { findByTestId } = await openCodexBackgroundTray(codexBackgroundLaunch());
+    const before = getToasts().length;
+    await fireEvent.click(await findByTestId('background-task-tray-row-stop'));
+    await tick();
+
+    expect(getToasts().slice(before)).toHaveLength(0);
+  });
+
+  it('surfaces a failed Codex terminate as an error toast carrying the backend message', async () => {
+    setBindingMock('TerminateCodexBackgroundTerminal', async () => {
+      throw new Error('codex: thread/backgroundTerminals/terminate 1734029: thread not found');
+    });
+
+    const { findByTestId } = await openCodexBackgroundTray(codexBackgroundLaunch());
+    const before = getToasts().length;
+    await fireEvent.click(await findByTestId('background-task-tray-row-stop'));
+    await tick();
+
+    const added = getToasts().slice(before);
+    expect(added).toHaveLength(1);
+    expect(added[0].type).toBe('error');
+    expect(added[0].message).toContain('thread not found');
   });
 
   it('shows active Codex subagents in Background without stop controls', async () => {

@@ -788,14 +788,16 @@ func (p *privilegedApp) ForkThreadFromMessage() string          { return "ok" }
 func (p *privilegedApp) RevertConversationToMessage() string    { return "ok" }
 func (p *privilegedApp) StopClaudeTask() string                 { return "ok" }
 func (p *privilegedApp) CleanCodexBackgroundTerminals() string  { return "ok" }
-func (p *privilegedApp) StartCodexReview() string               { return "ok" }
-func (p *privilegedApp) CompactCodexThread() string             { return "ok" }
-func (p *privilegedApp) GetThreadContextUsage() string          { return "ok" }
-func (p *privilegedApp) GetProviderStatuses() string            { return "ok" }
-func (p *privilegedApp) ProbeClaudeAccount() string             { return "ok" }
-func (p *privilegedApp) ProbeCodexAccount() string              { return "ok" }
-func (p *privilegedApp) RecheckClaudeAccount() string           { return "ok" }
-func (p *privilegedApp) RecheckCodexAccount() string            { return "ok" }
+
+func (p *privilegedApp) TerminateCodexBackgroundTerminal() string { return "ok" }
+func (p *privilegedApp) StartCodexReview() string                 { return "ok" }
+func (p *privilegedApp) CompactCodexThread() string               { return "ok" }
+func (p *privilegedApp) GetThreadContextUsage() string            { return "ok" }
+func (p *privilegedApp) GetProviderStatuses() string              { return "ok" }
+func (p *privilegedApp) ProbeClaudeAccount() string               { return "ok" }
+func (p *privilegedApp) ProbeCodexAccount() string                { return "ok" }
+func (p *privilegedApp) RecheckClaudeAccount() string             { return "ok" }
+func (p *privilegedApp) RecheckCodexAccount() string              { return "ok" }
 
 // 3. Settings mutation.
 func (p *privilegedApp) UpdateSettings() string               { return "ok" }

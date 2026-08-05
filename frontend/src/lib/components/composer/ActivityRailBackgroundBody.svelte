@@ -1,14 +1,19 @@
 <script lang="ts">
   // Expanded body for the activity rail's Background segment. Lists
-  // tray-eligible background tasks. Provider-aware stop affordances:
-  // Claude exposes a per-row stop (mapped to a Task subagent stop)
-  // plus a bulk Stop All; Codex backgrounds expose only Stop All
-  // (`CleanCodexBackgroundTerminals`) — see the Codex backgrounding
-  // invariant in the project's reference docs for why.
+  // tray-eligible background tasks. Both providers expose the same two
+  // affordances — a per-row stop and a bulk Stop All — over different
+  // primitives: Claude stops a backgrounded task by its task id
+  // (`StopClaudeTask`, fanned out for Stop All), Codex terminates one
+  // unified-exec PTY by its process id
+  // (`TerminateCodexBackgroundTerminal`) and has a thread-wide
+  // `CleanCodexBackgroundTerminals` for Stop All. Spawned Codex
+  // collab-agent children remain unstoppable from the client — there is
+  // no wire path — so they render without either control.
 
   import {
     CleanCodexBackgroundTerminals,
     StopClaudeTask,
+    TerminateCodexBackgroundTerminal,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
   import {
@@ -17,8 +22,8 @@
     type ProviderID,
   } from '../../providers/catalog';
   import {
-    extractClaudeTaskID,
     isCodexStoppableTask,
+    trayRowStopTarget,
     type TrayTask,
   } from '../../utils/backgroundTray';
   import { errString } from '../../utils/errors';
@@ -37,12 +42,15 @@
     provider ? getProviderDefinition(provider).backgroundStop : 'none',
   );
 
+  // Claude's Stop All is a fan-out over the same per-row targets, so it
+  // resolves through the same helper — one definition of "which rows are
+  // stoppable" keeps the bulk button from ever disagreeing with the rows
+  // beneath it. Codex's Stop All is a single thread-wide RPC instead.
   let claudeStoppableTaskIDs = $derived.by<string[]>(() => {
     if (backgroundStop !== 'claude-task') return [];
     const ids: string[] = [];
     for (const t of tasks) {
-      if (t.status !== 'running' || t.launch === null) continue;
-      const id = extractClaudeTaskID(t.launch);
+      const id = trayRowStopTarget(t, backgroundStop);
       if (id !== null) ids.push(id);
     }
     return ids;
@@ -63,11 +71,22 @@
     stoppingRows = next;
   }
 
-  async function onStopRow(rowId: string, taskID: string) {
+  async function onStopRow(rowId: string, stopTarget: string) {
     if (!threadId) return;
     markStopping(rowId, true);
     try {
-      await StopClaudeTask(threadId, taskID);
+      if (backgroundStop === 'claude-task') {
+        await StopClaudeTask(threadId, stopTarget);
+      } else if (backgroundStop === 'codex-background-terminals') {
+        // The boolean is the wire's own answer: false means the RPC
+        // matched no running process. No item/completed follows, so the
+        // row would sit at "running" with no explanation — say so
+        // instead of letting the click look ignored.
+        const terminated = await TerminateCodexBackgroundTerminal(threadId, stopTarget);
+        if (!terminated) {
+          addToast('info', 'That background terminal had already exited.');
+        }
+      }
     } catch (err) {
       addToast('error', `Failed to stop task: ${errString(err)}`);
     } finally {
@@ -96,12 +115,6 @@
     } finally {
       stopAllInFlight = false;
     }
-  }
-
-  function rowStopTarget(task: TrayTask): string | null {
-    if (backgroundStop !== 'claude-task') return null;
-    if (task.status !== 'running' || !task.launch) return null;
-    return extractClaudeTaskID(task.launch);
   }
 </script>
 
@@ -133,7 +146,7 @@
         <BackgroundTaskTrayRow
           {task}
           {provider}
-          stopTarget={rowStopTarget(task)}
+          stopTarget={trayRowStopTarget(task, backgroundStop)}
           isStopping={stoppingRows.has(task.rowId)}
           onStop={onStopRow}
         />

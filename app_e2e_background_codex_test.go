@@ -113,6 +113,13 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 	if len(liveBefore) != 1 || liveBefore[0].ID != "cmd-e2e" || liveBefore[0].IsBackground {
 		t.Fatalf("unexpected pre-yield tray state: %+v", liveBefore)
 	}
+	// The tray row must carry the PTY process id all the way to the
+	// binding's caller: it is the only handle the frontend has for
+	// TerminateCodexBackgroundTerminal, and the row would render a Stop
+	// button with nothing to target without it.
+	if got := decodeE2EItemMeta(t, liveBefore[0].Meta)["process_id"]; got != "pid-777" {
+		t.Fatalf("tray row meta process_id = %v, want pid-777", got)
+	}
 
 	// Model-visible yield: Codex returns "Process running with session ID"
 	// to the model from the original exec_command call. Text/reasoning
@@ -385,6 +392,160 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 	// The fake session isn't a real codex.Session with a live proc —
 	// StopSession would try to close a nil Process. Drop it from the
 	// map directly so setupE2EApp's cleanup loop has nothing to close.
+	app.mu.Lock()
+	delete(app.sessions, thread.ID)
+	app.mu.Unlock()
+}
+
+// TestE2E_Codex_PerRowStop_TerminateRPC is the per-row counterpart of the
+// Stop-all test above, and it closes the loop the binding unit tests
+// cannot: the process id the tray PUBLISHES is the id the terminate RPC
+// RECEIVES. The test never fabricates that id — it reads it back off
+// ListLiveBackgroundTasks the way the frontend does, so a break anywhere
+// in the chain (parser enrichment → tracker → the tray meta allowlist)
+// fails here rather than shipping a Stop button that kills nothing.
+//
+// It also pins the "per-row" half: two live terminals, one stop, and the
+// untouched one must still be running afterwards.
+func TestE2E_Codex_PerRowStop_TerminateRPC(t *testing.T) {
+	app, bus := setupE2EApp(t)
+
+	workspace := t.TempDir()
+	thread, err := createTestThread(t, app, string(provider.Codex), workspace, "gpt-5", "chat")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: thread.ID, TurnID: "turn-0",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	const stopID, keepID = "cmd-row-stop", "cmd-row-keep"
+	for _, id := range []string{stopID, keepID} {
+		command := "server for " + id
+		startMeta, _ := json.Marshal(map[string]any{
+			"source":      "unifiedExecStartup",
+			"item_status": "inProgress",
+			"process_id":  "pid-" + id,
+			"toolName":    "command_execution",
+			"input":       map[string]any{"command": command},
+			"item": map[string]any{
+				"id":        id,
+				"type":      "commandExecution",
+				"source":    "unifiedExecStartup",
+				"status":    "inProgress",
+				"processId": "pid-" + id,
+				"command":   command,
+			},
+		})
+		if err := app.triage.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: thread.ID, ItemID: id,
+			ItemType: "commandExecution", TurnID: "turn-0", Meta: startMeta,
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("tool start %s: %v", id, err)
+		}
+		if err := app.triage.Handle(provider.ProviderEvent{
+			Kind: provider.EventCodexExecResult, ThreadID: thread.ID, ItemID: id,
+			TurnID:    "turn-0",
+			Meta:      codexE2EExecResultMeta(t, "running", "pid-"+id, command),
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("exec running result %s: %v", id, err)
+		}
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: thread.ID,
+		Meta:      json.RawMessage(`{"blockType":"text"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("content block stop: %v", err)
+	}
+	waitUntilE2E(t, 3*time.Second, "both launches in live tray", func() bool {
+		live, err := app.ListLiveBackgroundTasks(thread.ID)
+		return err == nil && len(live) == 2
+	})
+
+	// Resolve the target exactly as the tray row does: read process_id
+	// out of the item meta the binding handed back.
+	live, err := app.ListLiveBackgroundTasks(thread.ID)
+	if err != nil {
+		t.Fatalf("ListLiveBackgroundTasks: %v", err)
+	}
+	target := ""
+	for _, item := range live {
+		if item.ID == stopID {
+			id, _ := decodeE2EItemMeta(t, item.Meta)["process_id"].(string)
+			target = id
+		}
+	}
+	if target == "" {
+		t.Fatalf("tray row %s published no process_id; the Stop button would have no target", stopID)
+	}
+
+	var terminateCalls atomic.Int32
+	var gotProcessID atomic.Value
+	fakeSess := codex.NewTerminateBackgroundTerminalTestSession(
+		func(ctx context.Context, processID string) (bool, error) {
+			terminateCalls.Add(1)
+			if ctx == nil {
+				t.Error("nil context passed to TerminateBackgroundTerminal")
+			} else if _, ok := ctx.Deadline(); !ok {
+				t.Error("TerminateBackgroundTerminal context missing deadline")
+			}
+			gotProcessID.Store(processID)
+			return true, nil
+		})
+	app.mu.Lock()
+	app.sessions[thread.ID] = session{
+		provider: string(provider.Codex),
+		codex:    fakeSess,
+	}
+	app.mu.Unlock()
+
+	terminated, err := app.TerminateCodexBackgroundTerminal(thread.ID, target)
+	if err != nil {
+		t.Fatalf("TerminateCodexBackgroundTerminal: %v", err)
+	}
+	if !terminated {
+		t.Fatal("terminated = false, want the session's true passed through")
+	}
+	if got := terminateCalls.Load(); got != 1 {
+		t.Fatalf("TerminateBackgroundTerminal calls = %d, want exactly 1", got)
+	}
+	if got, _ := gotProcessID.Load().(string); got != target {
+		t.Fatalf("RPC received process id %q, want the tray's %q", got, target)
+	}
+
+	// The app-server answers a real termination with item/completed for
+	// that PTY only. The stopped row leaves the tray and persists; the
+	// untouched one keeps running.
+	completeMeta, _ := json.Marshal(map[string]any{
+		"source":      "unifiedExecStartup",
+		"item_status": "completed",
+	})
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolComplete, ThreadID: thread.ID, ItemID: stopID,
+		ItemType: "commandExecution", TurnID: "turn-0", Meta: completeMeta,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("tool complete %s: %v", stopID, err)
+	}
+
+	waitUntilE2E(t, 3*time.Second, "stopped row cleared, sibling still running", func() bool {
+		remaining, err := app.ListLiveBackgroundTasks(thread.ID)
+		if err != nil || len(remaining) != 1 || remaining[0].ID != keepID {
+			return false
+		}
+		row, found, err := app.store.GetThreadItem(thread.ID, stopID)
+		return err == nil && found && row.Status == "completed"
+	})
+
+	_ = bus.allEvents()
+
 	app.mu.Lock()
 	delete(app.sessions, thread.ID)
 	app.mu.Unlock()

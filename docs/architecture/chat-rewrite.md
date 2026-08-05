@@ -1612,10 +1612,24 @@ window. Renders running background launches plus pairs whose
 "+N more". Tray rows are informational; the launch and completion
 also render inline in chat history.
 
-Stop controls follow provider capabilities: Claude rows can show
-per-row Stop when `task_id` is known, Claude Stop-all fans out
-`StopClaudeTask`, Codex Stop-all calls `thread/backgroundTerminals/clean`
-for unified exec PTYs, and Codex subagent rows have no stop control.
+Stop controls follow provider capabilities. Both providers get the same
+two affordances over different primitives, resolved by one helper
+(`trayRowStopTarget`) so a row and the bulk button can never disagree:
+
+- **Claude** — per-row Stop when the launch meta carries `task_id`
+  (`StopClaudeTask`); Stop-all fans the same call out per id.
+- **Codex** — per-row Stop when a yielded unified-exec PTY carries
+  `process_id` (`TerminateCodexBackgroundTerminal` →
+  `thread/backgroundTerminals/terminate`, available since codex 0.140,
+  below AO's provider floor); Stop-all is the single thread-wide
+  `thread/backgroundTerminals/clean`. The terminate response's
+  `terminated: false` means "matched nothing" and surfaces as an info
+  toast, because no `item/completed` follows to change the row.
+- **Codex subagent rows** have no stop control in either place —
+  `close_agent` is a model tool with no client path.
+
+A not-yet-yielded Codex command is tray-visible but not stoppable: it is
+not a background terminal yet, so neither primitive can reach it.
 
 ### Working indicator
 

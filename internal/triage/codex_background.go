@@ -222,12 +222,27 @@ func codexCommandFromMeta(raw json.RawMessage) string {
 	return parsed.Input.Command
 }
 
-func codexLiveUnifiedExecMeta(command string) string {
+// codexLiveUnifiedExecMeta builds the transient tray row's meta. It is an
+// ALLOWLIST, not a passthrough of the provider blob: raw Codex item meta
+// stays off the wire, and a field earns a place here only when a renderer
+// or a user affordance needs it.
+//
+//   - `source` is the wire-typed background-terminal marker
+//     (invariant 25) every consumer branches on.
+//   - `command` backs the command row's full-command hover text.
+//   - `process_id` is the handle `thread/backgroundTerminals/terminate`
+//     joins on, so it is what the tray's per-row Stop button targets.
+//     It is empty until the wire names it; the row simply has no stop
+//     affordance until then.
+func codexLiveUnifiedExecMeta(command, processID string) string {
 	meta := map[string]any{
 		"source": "unifiedExecStartup",
 	}
 	if trimmed := strings.TrimSpace(command); trimmed != "" {
 		meta["command"] = trimmed
+	}
+	if trimmed := strings.TrimSpace(processID); trimmed != "" {
+		meta["process_id"] = trimmed
 	}
 	encoded, err := json.Marshal(meta)
 	if err != nil {
@@ -1062,7 +1077,7 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64)
 			ParentID:     tracker.parentID,
 			IsBackground: tracker.backgrounded,
 			ToolName:     "command_execution",
-			Meta:         codexLiveUnifiedExecMeta(tracker.command),
+			Meta:         codexLiveUnifiedExecMeta(tracker.command, tracker.processID),
 			CreatedAt:    tracker.createdAt,
 			UpdatedAt:    tracker.updatedAt,
 		}

@@ -123,6 +123,7 @@ export const SendPlanRevisionComments = dispatch('SendPlanRevisionComments');
 
 // Background tasks (per-item + thread-wide stop primitives)
 export const StopClaudeTask = dispatch('StopClaudeTask');
+export const TerminateCodexBackgroundTerminal = dispatch('TerminateCodexBackgroundTerminal');
 export const CleanCodexBackgroundTerminals = dispatch('CleanCodexBackgroundTerminals');
 
 // Live-session context breakdown (Claude's canonical /context read).

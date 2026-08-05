@@ -233,6 +233,13 @@ type Session struct {
 	// verify the binding wires through to a Codex session without
 	// spinning up a real app-server. Production NewSession never sets it.
 	cleanBackgroundTerminalsFn func(ctx context.Context) error
+	// terminateBackgroundTerminalFn mirrors cleanBackgroundTerminalsFn for
+	// TerminateBackgroundTerminal(). Used by app_codex_background_test.go to
+	// verify the per-row stop binding forwards the process id and installs a
+	// deadline without spinning up a real app-server. Production NewSession
+	// never sets it; the wire shape itself is pinned by the in-package tests
+	// in session_background_terminals_test.go.
+	terminateBackgroundTerminalFn func(ctx context.Context, processID string) (bool, error)
 	// mcpOAuthCompletedHandler fires when Codex emits an
 	// `mcpServer/oauthLogin/completed` notification after the user
 	// finishes the browser hop on a previously-issued

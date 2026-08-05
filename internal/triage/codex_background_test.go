@@ -141,8 +141,16 @@ func TestCodexUnifiedExecStartWaitsForTypedTerminalInteraction(t *testing.T) {
 	if meta["command"] != "sleep 15" {
 		t.Fatalf("live command meta = %v, want full command", meta["command"])
 	}
-	if _, ok := meta["process_id"]; ok {
-		t.Fatalf("live command meta leaked process_id: %+v", meta)
+	// process_id is allowlisted onto the tray row on purpose: it is the
+	// handle `thread/backgroundTerminals/terminate` joins on, so the
+	// per-row Stop button has nothing to target without it. Everything
+	// else in the provider blob still stays off the wire — assert that
+	// the allowlist is exactly these three keys.
+	if meta["process_id"] != "pid-live" {
+		t.Fatalf("live command meta process_id = %v, want pid-live", meta["process_id"])
+	}
+	if len(meta) != 3 {
+		t.Fatalf("live command meta is an allowlist, got %d keys: %+v", len(meta), meta)
 	}
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTextDelta, ThreadID: "t1", Content: "continuing",

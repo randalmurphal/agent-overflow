@@ -336,9 +336,13 @@ arrives, and unknown is loud.
   live-state enrichment.
   Heuristic event-ordering classifiers are still forbidden as the
   authorization — the yield moment is just the observable trigger for
-  an already wire-authorized commitment. Per-row stop is available:
-  `thread/backgroundTerminals/terminate {threadId, processId}` since
-  codex 0.140.0, wrapped in `session_background.go` — see
+  an already wire-authorized commitment. Per-row stop is wired end to
+  end: `thread/backgroundTerminals/terminate {threadId, processId}`
+  (codex 0.140.0+) is wrapped in `session_background.go`, bound as
+  `App.TerminateCodexBackgroundTerminal`, and drives the same tray Stop
+  button Claude's `stop_task` drives. The join key is the `process_id`
+  `enrichItemMeta` stamps on the item, which triage allowlists onto the
+  transient tray row — see
   [`codex.md §Background terminals`](../../../docs/references/codex.md#background-terminals).
   Stopping a row is a user action on an already-authorized row and never
   a source of `is_background` authorization.

@@ -125,6 +125,13 @@ func (s *Session) TerminateBackgroundTerminal(ctx context.Context, processID str
 	if processID == "" {
 		return false, fmt.Errorf("codex: thread/backgroundTerminals/terminate: process id required")
 	}
+	// Test-only seam, same shape as cleanBackgroundTerminalsFn. It stands in
+	// for the session/wire half only — argument validation above still runs,
+	// so a test session cannot accept a process id the real one refuses.
+	// Production NewSession never sets it.
+	if s.terminateBackgroundTerminalFn != nil {
+		return s.terminateBackgroundTerminalFn(ctx, processID)
+	}
 	rootThreadID := s.rootThreadID()
 	if rootThreadID == "" {
 		return false, fmt.Errorf("codex: thread/backgroundTerminals/terminate: session has no thread id")
