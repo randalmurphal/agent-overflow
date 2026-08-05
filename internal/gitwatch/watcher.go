@@ -5,6 +5,7 @@ import (
 	"log"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -215,7 +216,19 @@ func (w *workspaceWatcher) setWatchRoots(roots []gitops.WatchRoot) {
 
 // installNotifyWatcher attaches watchers rooted at each path. rjeczalik/notify
 // uses the path/... glob suffix for recursive watches on Linux/Darwin/Windows.
+//
+// Roots are installed deepest-first because notify's darwin (FSEvents)
+// watchpoint tree silently drops a recursive watch registered under an
+// already-watched non-recursive ancestor: the recursive root install
+// "succeeds" but never delivers an event (verified against notify v0.9.3
+// on macOS 26 — a fresh `.git` + `.git/refs/...` install misses every refs
+// write). Installing children before their ancestors sidesteps the merge
+// bug; on Linux inotify the order never mattered.
 func installNotifyWatcher(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error {
+	roots = slices.Clone(roots)
+	slices.SortStableFunc(roots, func(a, b gitops.WatchRoot) int {
+		return strings.Count(b.Path, string(filepath.Separator)) - strings.Count(a.Path, string(filepath.Separator))
+	})
 	for _, root := range roots {
 		path := root.Path
 		if root.Recursive {

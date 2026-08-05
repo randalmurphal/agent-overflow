@@ -114,12 +114,15 @@ reliability:
 	}
 	unitCwds := map[string]bool{}
 	joinRuns := 0
+	// The provider records its real cwd, which on macOS is the /private/var
+	// resolution of the /var temp path the run record stores.
+	itemWorktree := testutil.CanonicalPath(t, item.WorktreePath)
 	for _, cwd := range cwds {
-		if filepath.Clean(cwd) == filepath.Clean(item.WorktreePath) {
+		if testutil.CanonicalPath(t, cwd) == itemWorktree {
 			joinRuns++
 			continue
 		}
-		unitCwds[filepath.Clean(cwd)] = true
+		unitCwds[testutil.CanonicalPath(t, cwd)] = true
 	}
 	if joinRuns != 1 || len(unitCwds) != 2 {
 		t.Fatalf("cwds = %v; want two distinct unit worktrees and one run in %q", cwds, item.WorktreePath)

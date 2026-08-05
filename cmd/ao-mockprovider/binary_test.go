@@ -413,7 +413,12 @@ func TestClaudeApprovalRoundTrip(t *testing.T) {
 	}
 
 	run := func(t *testing.T, behavior, want string) {
-		dir := t.TempDir()
+		// ${CWD} is substituted from the mock's os.Getwd(), which reports the
+		// symlink-resolved path (/private/var vs /var on macOS temp dirs).
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
 		env := writeScenarioFile(t, approvalScenario, "")
 		p := startMock(t, claudeSessionArgs, env, dir)
 		p.send(userLine)

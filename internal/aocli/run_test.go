@@ -63,7 +63,9 @@ func TestValidateExitCodes(t *testing.T) {
 }
 
 func TestListResolvedViewIncludesShadowing(t *testing.T) {
-	configRoot := t.TempDir()
+	// Listing reports paths under the EvalSymlinks-resolved config root, so
+	// resolve here too (/var vs /private/var on macOS temp dirs).
+	configRoot := canonicalTempDir(t)
 	sharedDir := filepath.Join(configRoot, "workflows")
 	projectDir := filepath.Join(configRoot, "projects", "sample", "workflows")
 	mustMkdirAll(t, sharedDir)
@@ -320,7 +322,9 @@ func TestOfflineCommandsDefaultTheProjectScopeFromTheSession(t *testing.T) {
 // a human reads must say so, and validate's failure must carry it: "not found"
 // for an id whose file is right there is otherwise unexplainable.
 func TestSkippedWorkflowDirectoriesAreReported(t *testing.T) {
-	configRoot := t.TempDir()
+	// The skip note names the EvalSymlinks-resolved directory, so resolve here
+	// too (/var vs /private/var on macOS temp dirs).
+	configRoot := canonicalTempDir(t)
 	sharedDir := filepath.Join(configRoot, "workflows")
 	nested := filepath.Join(sharedDir, "nested-flow")
 	mustMkdirAll(t, nested)
@@ -453,6 +457,18 @@ func TestCommandsMatchesWhatRunDispatches(t *testing.T) {
 
 func workflowYAML(id, name string) string {
 	return "id: " + id + "\nname: " + name + "\nphases:\n  - id: run\n    driver: tool\n    check: test\n    gate:\n      routes:\n        - to: done\n"
+}
+
+// canonicalTempDir is t.TempDir() with symlinks resolved, for tests comparing
+// against output derived from the EvalSymlinks-resolved config root (on macOS
+// the default TMPDIR is a /var symlink into /private/var).
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func mustMkdirAll(t *testing.T, path string) {

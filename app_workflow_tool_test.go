@@ -257,7 +257,7 @@ func TestWorkflowToolPhaseUnboundCheckParksAsWiringError(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := fixture.start(t, "unbound check")
-	fixture.writeProfile(t, map[string][]string{"other": {"/bin/true"}}, nil, "")
+	fixture.writeProfile(t, map[string][]string{"other": {"/usr/bin/true"}}, nil, "")
 	if err := fixture.app.WorkflowSetGlobalPause(false); err != nil {
 		t.Fatal(err)
 	}

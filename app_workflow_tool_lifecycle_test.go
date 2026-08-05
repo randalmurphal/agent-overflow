@@ -23,9 +23,12 @@ import (
 func TestWorkflowToolPhaseWatchdogKillsTheProcessGroup(t *testing.T) {
 	fixture := newToolWorkflowFixture(t, toolLifecyclePhase)
 	pidPath := filepath.Join(t.TempDir(), "pids")
+	// The window must outlast script startup: on macOS, spawning a freshly
+	// written script can take longer than 100ms, and a group killed before the
+	// script runs its first line never records the pids this test waits on.
 	fixture.writeProfile(t, map[string][]string{
 		"verify": {writeSilentSleepScript(t, pidPath)},
-	}, nil, "reliability:\n  watchdog: 100ms\n  backoff: [1ms]\n")
+	}, nil, "reliability:\n  watchdog: 500ms\n  backoff: [1ms]\n")
 	item := fixture.start(t, "watchdog")
 
 	// The command emits nothing, so the inactivity window elapses and the one
@@ -39,7 +42,7 @@ func TestWorkflowToolPhaseWatchdogKillsTheProcessGroup(t *testing.T) {
 		t.Fatalf("phases = %+v", phases)
 	}
 	narrative := readFileForTest(t, phases[0].NarrativePath)
-	if !strings.Contains(narrative, "killed after 100ms without output") {
+	if !strings.Contains(narrative, "killed after 500ms without output") {
 		t.Fatalf("narrative did not record the watchdog kill:\n%s", narrative)
 	}
 }

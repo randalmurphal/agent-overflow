@@ -104,6 +104,10 @@ func (c *Core) WatchRoots(cwd string) ([]WatchRoot, error) {
 	if cwd == "" {
 		return nil, fmt.Errorf("git watch roots: cwd is required")
 	}
+	// git resolves symlinks in --absolute-git-dir, so an unresolved cwd
+	// (macOS /var → /private/var tmp) would fail the Rel-based git-dir
+	// prune below and drag the git dir in as a recursive workspace root.
+	cwd = CanonicalPath(cwd)
 
 	gitDir, ok, err := c.revParsePath(cwd, "--absolute-git-dir")
 	if err != nil {

@@ -63,7 +63,7 @@ reliability:
 		}
 	}
 	cwd, err := os.ReadFile(cwdCapture)
-	if err != nil || filepath.Clean(strings.TrimSpace(string(cwd))) != filepath.Clean(item.WorktreePath) {
+	if err != nil || testutil.CanonicalPath(t, strings.TrimSpace(string(cwd))) != testutil.CanonicalPath(t, item.WorktreePath) {
 		t.Fatalf("provider cwd = %q, %v; want %q", cwd, err, item.WorktreePath)
 	}
 	detail, err := app.WorkflowGetItem(item.ID)
@@ -246,7 +246,9 @@ func TestWorkflowRecoversInterruptedProvisioningWithoutSecondWorktree(t *testing
 		t.Fatal(err)
 	}
 	item = waitForWorkflowItem(t, app, item.ID, engine.StateDone, "")
-	if item.WorktreePath != interruptedPath || item.Branch != branch {
+	// Recovery adopts the path `git worktree list` reports, which on macOS is
+	// the /private/var resolution of the /var temp path this test computed.
+	if testutil.CanonicalPath(t, item.WorktreePath) != testutil.CanonicalPath(t, interruptedPath) || item.Branch != branch {
 		t.Fatalf("recovered workspace = %+v, want %q on %q", item, interruptedPath, branch)
 	}
 	if _, err := os.Stat(filepath.Join(interruptedPath, "recovered.txt")); err != nil {

@@ -163,7 +163,8 @@ func TestWatchRootsFallsBackForNonRepoUnderLocalizedGit(t *testing.T) {
 	t.Setenv("LC_ALL", userLocale)
 	t.Setenv("LANG", userLocale)
 
-	cwd := t.TempDir()
+	// WatchRoots canonicalizes cwd, so expect the resolved temp path.
+	cwd := CanonicalPath(t.TempDir())
 	roots, err := NewCore().WatchRoots(cwd)
 	if err != nil {
 		t.Fatalf("WatchRoots: %v (a localized non-repo message must not surface as an error)", err)

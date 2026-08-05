@@ -52,7 +52,7 @@ inputs:
 func newCLIFixture(t *testing.T) *toolWorkflowFixture {
 	t.Helper()
 	fixture := newToolWorkflowFixture(t, cliToolPhase+cliWorkflowInputs)
-	fixture.writeProfile(t, map[string][]string{"verify": {"/bin/true"}}, nil, "")
+	fixture.writeProfile(t, map[string][]string{"verify": {"/usr/bin/true"}}, nil, "")
 	wakeTurn := func(msgID string) []string {
 		return append(
 			[]string{`{"type":"system","subtype":"init","session_id":"sess-wake","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`},

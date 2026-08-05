@@ -464,7 +464,7 @@ while IFS= read -r line; do
     else
       text='{"status":"done","outputs":{"complete":true},"question":null,"reason":null}'
     fi
-    escaped=$(/bin/printf '%%s' "$text" | /usr/bin/sed 's/\\/\\\\/g; s/"/\\"/g')
+    escaped=$(/usr/bin/printf '%%s' "$text" | /usr/bin/sed 's/\\/\\\\/g; s/"/\\"/g')
     printf '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"takeover-provider-thread","turnId":"turn-%%s","item":{"id":"message-%%s","type":"agentMessage","text":"%%s"}}}\n' "$turn" "$turn" "$escaped"
     printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"takeover-provider-thread","turn":{"id":"turn-%%s","status":"completed"}}}\n' "$turn"
     continue
