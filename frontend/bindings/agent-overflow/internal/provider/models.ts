@@ -391,6 +391,17 @@ export class ModelInfo {
     "isCustom"?: boolean;
     "capabilities"?: string[];
     "fastModeTier"?: FastModeTier | null;
+
+    /**
+     * SupportsAutoMode is deliberately three-state: nil means no source
+     * has SAID whether the model can run the Auto runtime mode — the
+     * hand-maintained catalog never states it, only the Claude wire does
+     * (per-model `supportsAutoMode` on the probe's `initialize` models).
+     * Consumers may restrict Auto ONLY on an explicit false; treating
+     * nil as false would mis-disable Auto on every model the wire
+     * doesn't list.
+     */
+    "supportsAutoMode"?: boolean | null;
     "contextWindows"?: ContextWindowOption[];
     "reasoningEfforts"?: ReasoningEffortOption[];
 
@@ -415,8 +426,8 @@ export class ModelInfo {
     static createFrom($$source: any = {}): ModelInfo {
         const $$createField4_0 = $$createType6;
         const $$createField5_0 = $$createType8;
-        const $$createField6_0 = $$createType10;
-        const $$createField7_0 = $$createType12;
+        const $$createField7_0 = $$createType10;
+        const $$createField8_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("capabilities" in $$parsedSource) {
             $$parsedSource["capabilities"] = $$createField4_0($$parsedSource["capabilities"]);
@@ -425,10 +436,10 @@ export class ModelInfo {
             $$parsedSource["fastModeTier"] = $$createField5_0($$parsedSource["fastModeTier"]);
         }
         if ("contextWindows" in $$parsedSource) {
-            $$parsedSource["contextWindows"] = $$createField6_0($$parsedSource["contextWindows"]);
+            $$parsedSource["contextWindows"] = $$createField7_0($$parsedSource["contextWindows"]);
         }
         if ("reasoningEfforts" in $$parsedSource) {
-            $$parsedSource["reasoningEfforts"] = $$createField7_0($$parsedSource["reasoningEfforts"]);
+            $$parsedSource["reasoningEfforts"] = $$createField8_0($$parsedSource["reasoningEfforts"]);
         }
         return new ModelInfo($$parsedSource as Partial<ModelInfo>);
     }

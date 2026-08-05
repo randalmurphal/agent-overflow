@@ -62,12 +62,20 @@ type FastModeTier struct {
 
 // ModelInfo describes a model available from a provider.
 type ModelInfo struct {
-	Slug             string                  `json:"slug"`
-	Name             string                  `json:"name"`
-	Provider         string                  `json:"provider"`
-	IsCustom         bool                    `json:"isCustom,omitempty"`
-	Capabilities     []string                `json:"capabilities,omitempty"`
-	FastModeTier     *FastModeTier           `json:"fastModeTier,omitempty"`
+	Slug         string        `json:"slug"`
+	Name         string        `json:"name"`
+	Provider     string        `json:"provider"`
+	IsCustom     bool          `json:"isCustom,omitempty"`
+	Capabilities []string      `json:"capabilities,omitempty"`
+	FastModeTier *FastModeTier `json:"fastModeTier,omitempty"`
+	// SupportsAutoMode is deliberately three-state: nil means no source
+	// has SAID whether the model can run the Auto runtime mode — the
+	// hand-maintained catalog never states it, only the Claude wire does
+	// (per-model `supportsAutoMode` on the probe's `initialize` models).
+	// Consumers may restrict Auto ONLY on an explicit false; treating
+	// nil as false would mis-disable Auto on every model the wire
+	// doesn't list.
+	SupportsAutoMode *bool                   `json:"supportsAutoMode,omitempty"`
 	ContextWindows   []ContextWindowOption   `json:"contextWindows,omitempty"`
 	ReasoningEfforts []ReasoningEffortOption `json:"reasoningEfforts,omitempty"`
 }
@@ -591,6 +599,10 @@ func CloneModelInfo(model ModelInfo) ModelInfo {
 	if model.FastModeTier != nil {
 		tier := *model.FastModeTier
 		cloned.FastModeTier = &tier
+	}
+	if model.SupportsAutoMode != nil {
+		supports := *model.SupportsAutoMode
+		cloned.SupportsAutoMode = &supports
 	}
 	if len(model.ContextWindows) > 0 {
 		cloned.ContextWindows = append([]ContextWindowOption(nil), model.ContextWindows...)

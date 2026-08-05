@@ -653,3 +653,54 @@ func TestFixtureIsTheRealEnvelope(t *testing.T) {
 		t.Error("fixture must stay a captured control_response envelope")
 	}
 }
+
+// The three states of supportsAutoMode must survive the merge intact: an
+// explicit wire answer (either way) lands on the model, an absent key
+// leaves it nil ("nobody said"), and consumers restrict Auto only on the
+// explicit false. The 2026-08-02 capture proves absent is a real case —
+// its Haiku row omits the key.
+func TestMergeCarriesSupportsAutoModeThreeState(t *testing.T) {
+	yes, no := true, false
+	base := []provider.ModelInfo{
+		{Slug: "claude-fable-5", Name: "Fable", Provider: "claude"},
+		{Slug: "claude-sonnet-5", Name: "Sonnet", Provider: "claude"},
+		{Slug: "claude-opus-4-7", Name: "Old Opus", Provider: "claude"},
+	}
+	wire := []claude.WireModel{
+		{Value: "fable", ResolvedModel: "claude-fable-5", DisplayName: "Fable", SupportsAutoMode: &yes},
+		{Value: "sonnet", ResolvedModel: "claude-sonnet-5", DisplayName: "Sonnet", SupportsAutoMode: &no},
+		// claude-opus-4-7 not listed by the wire at all.
+		// A wire-only model with an explicit answer takes it too.
+		{Value: "spark", ResolvedModel: "claude-spark-1", DisplayName: "Spark", SupportsAutoMode: &yes},
+		// A wire-only model with no answer stays unknown.
+		{Value: "mist", ResolvedModel: "claude-mist-1", DisplayName: "Mist"},
+	}
+
+	merged, _ := Merge(base, wire)
+	byName := make(map[string]provider.ModelInfo, len(merged))
+	for _, m := range merged {
+		byName[m.Slug] = m
+	}
+
+	if v := byName["claude-fable-5"].SupportsAutoMode; v == nil || !*v {
+		t.Errorf("fable = %v, want explicit true", v)
+	}
+	if v := byName["claude-sonnet-5"].SupportsAutoMode; v == nil || *v {
+		t.Errorf("sonnet = %v, want explicit false", v)
+	}
+	if v := byName["claude-opus-4-7"].SupportsAutoMode; v != nil {
+		t.Errorf("unlisted catalog model = %v, want nil (nobody said)", *v)
+	}
+	if v := byName["claude-spark-1"].SupportsAutoMode; v == nil || !*v {
+		t.Errorf("wire-only spark = %v, want explicit true", v)
+	}
+	if v := byName["claude-mist-1"].SupportsAutoMode; v != nil {
+		t.Errorf("wire-only mist = %v, want nil (nobody said)", *v)
+	}
+
+	// The merged value must be a copy, not an alias into the wire slice.
+	*wire[0].SupportsAutoMode = false
+	if v := byName["claude-fable-5"].SupportsAutoMode; v == nil || !*v {
+		t.Error("merged value aliases the wire row")
+	}
+}

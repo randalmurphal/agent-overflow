@@ -65,15 +65,22 @@ flag (an org's Zero Data Retention setting excluding a model) but no capture
 has ever carried it, and hiding a working model on an unverified field is the
 worse failure.
 
+## supportsAutoMode is three-state end to end
+
+The wire's per-model answer about `--permission-mode auto` is a `*bool`
+on both `claude.WireModel` and `ModelInfo.SupportsAutoMode`, never a
+`Capabilities` marker: nil means "nobody said". That third state is
+load-bearing — the 2026-08-02 capture itself omits the key on the Haiku
+row, and the catalog never states it, so a two-state carrier would
+manufacture explicit denials for every unlisted model. The consumer
+contract (pinned by the frontend AccessToggle): restrict Auto ONLY on
+an explicit wire `false`; unknown behaves exactly like true, because
+mis-disabling a working mode is the worse failure. The merge copies the
+value on both the enrich path and the wire-only path; no drift line —
+the catalog deliberately has no opinion to disagree with.
+
 ## Deliberately not consumed
 
-- **`supportsAutoMode`** — the wire's per-model answer about
-  `--permission-mode auto`. It is decoded on `claude.WireModel` but not merged
-  into `ModelInfo.Capabilities`, because `Capabilities` is a two-state list and
-  the third state is the one that matters here: models the wire does not list
-  (every opus-4.x) would read as "auto unsupported" when the truth is "nobody
-  said". Consuming it needs a three-state carrier and a decision about the
-  unknown case — a scope conversation, not a merge rule.
 - **`description` / `promoListPrice`** — prose and pricing for the CLI's own
   picker. `ModelInfo` has no field for either, and adding one is UI work.
 - **`supportsAdaptiveThinking`** — no AO surface consumes it.

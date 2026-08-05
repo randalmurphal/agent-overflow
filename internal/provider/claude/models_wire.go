@@ -44,9 +44,12 @@ type WireModel struct {
 	SupportsAdaptiveThinking bool     `json:"supportsAdaptiveThinking"`
 	SupportsFastMode         bool     `json:"supportsFastMode"`
 	// SupportsAutoMode reports whether the model can run under
-	// `--permission-mode auto`. Decoded but deliberately not merged into
-	// ModelInfo.Capabilities — see internal/claudemodels/AGENTS.md.
-	SupportsAutoMode bool `json:"supportsAutoMode"`
+	// `--permission-mode auto`. A pointer on purpose: an absent key is
+	// "the wire didn't say", and decoding it as false would manufacture
+	// an explicit denial. Merged into ModelInfo.SupportsAutoMode (its own
+	// three-state field, not a Capabilities marker) — see
+	// internal/claudemodels/AGENTS.md.
+	SupportsAutoMode *bool `json:"supportsAutoMode"`
 	// Disabled marks a model the CLI shows but refuses to select (an org's
 	// Zero Data Retention setting excluding it, per the binary's own field
 	// doc; the human-readable reason is folded into Description). Decoded and

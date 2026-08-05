@@ -10,6 +10,11 @@
   import ShieldCheck from 'lucide-svelte/icons/shield-check';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { RuntimeMode, Thread } from '../../../types/models';
+  import { asProviderID } from '../../../types/providers';
+  import {
+    ensureProviderModels,
+    getProviderModels,
+  } from '../../../stores/providerModels.svelte';
   import { UpdateThreadRuntimeMode } from '../../../stores/bindings';
   import { updatePlaceholderDefaults } from '../../../stores/newThreadDefaults';
   import { syncThread } from '../../../stores/panes.svelte';
@@ -95,6 +100,20 @@
 
   let current = $derived<RuntimeMode>(runtimeModeForThread(pane.thread));
   let currentMeta = $derived(TIERS.find((t) => t.mode === current) ?? DEFAULT_TIER);
+  let activeProvider = $derived(asProviderID(pane.thread?.provider));
+  let activeModel = $derived(pane.thread?.model ?? '');
+  // Auto is withheld ONLY on the model's explicit `supportsAutoMode: false`
+  // (the CLI's own per-model answer, carried three-state end to end — see
+  // internal/claudemodels/AGENTS.md). Unknown — the wire didn't say, the
+  // catalog isn't loaded yet, or the model isn't listed — behaves exactly
+  // like supported: mis-disabling a working mode is the worse failure.
+  let autoModeUnsupported = $derived.by(() => {
+    if (!activeProvider || !activeModel) return false;
+    const info = getProviderModels(activeProvider).find(
+      (candidate) => candidate.slug === activeModel,
+    );
+    return info?.supportsAutoMode === false;
+  });
   let pickerChord = $derived(
     formatChord(keybindingForCommand('composer.picker.access') ?? 'mod+shift+a'),
   );
@@ -113,12 +132,31 @@
     if (!focusPaneComposer(pane.paneId)) triggerEl?.focus();
   }
 
+  // Loads the provider catalog so autoModeUnsupported has an answer while
+  // the menu is up. A load failure only leaves Auto selectable — which is
+  // the contract's default posture anyway — so it logs rather than toasts.
+  function warmModelCapabilities(): void {
+    const provider = activeProvider;
+    if (!provider || !activeModel) return;
+    ensureProviderModels(provider).catch((err: unknown) => {
+      console.error('GetModelsForProvider failed:', err);
+    });
+  }
+
   function handleTrigger(): void {
     open = !open;
+    if (open) warmModelCapabilities();
   }
 
   async function selectMode(mode: RuntimeMode): Promise<void> {
     if (!pane.thread) {
+      closeMenu();
+      return;
+    }
+    // Belt to the MenuItem `disabled` suspender: nothing else calls
+    // selectMode today, but a future entry point must not be able to
+    // persist a mode the model explicitly refused.
+    if (mode === 'auto' && autoModeUnsupported) {
       closeMenu();
       return;
     }
@@ -148,6 +186,7 @@
       open: () => {
         if (!pane.thread) return;
         open = true;
+        warmModelCapabilities();
       },
       close: closeMenu,
     });
@@ -188,10 +227,12 @@
 >
   <Menu ariaLabel="Runtime Access Mode" onClose={closeMenu}>
     {#each TIERS as tier (tier.mode)}
+      {@const unavailable = tier.mode === 'auto' && autoModeUnsupported}
       <MenuItem
         label={tier.label}
-        description={tier.description}
+        description={unavailable ? 'Not supported by the current model.' : tier.description}
         checked={tier.mode === current}
+        disabled={unavailable}
         onSelect={() => void selectMode(tier.mode)}
       >
         {#snippet icon()}

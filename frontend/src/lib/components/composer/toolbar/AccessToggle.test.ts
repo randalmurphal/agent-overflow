@@ -10,6 +10,11 @@ import {
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { buildPane as buildRegisteredPane } from '../../../../test/helpers/chat';
+import {
+  ensureProviderModels,
+  resetProviderModelsForTest,
+} from '../../../stores/providerModels.svelte';
+import type { ModelInfo } from '../../../types/settings';
 
 function makeThread(runtimeMode: RuntimeMode): Thread {
   return {
@@ -46,6 +51,8 @@ function makeProject(): Project {
 describe('<AccessToggle>', () => {
   beforeEach(() => {
     resetBindingMocks();
+    resetProviderModelsForTest();
+    setBindingMock('GetModelsForProvider', async () => []);
   });
 
   it('renders the current tier label', async () => {
@@ -231,5 +238,69 @@ describe('<AccessToggle>', () => {
     const title = trigger.getAttribute('title') ?? '';
     expect(title).toMatch(/Costs extra tokens/);
     expect(title).toMatch(/it can refuse/);
+  });
+
+  // The Auto tier is withheld ONLY on the model's explicit
+  // `supportsAutoMode: false` — the CLI's own per-model answer, three-state
+  // end to end (internal/claudemodels/AGENTS.md). Anything short of that
+  // explicit denial (absent key, unlisted model, catalog not loaded) must
+  // leave Auto exactly as selectable as before the field existed.
+  describe('supportsAutoMode gate', () => {
+    function catalogRow(supportsAutoMode?: boolean | null): ModelInfo {
+      return {
+        slug: 'claude-sonnet-4-6',
+        name: 'Claude Sonnet 4.6',
+        provider: 'claude',
+        ...(supportsAutoMode === undefined ? {} : { supportsAutoMode }),
+      };
+    }
+
+    it('disables Auto when the model explicitly refuses it', async () => {
+      setBindingMock('GetModelsForProvider', async () => [catalogRow(false)]);
+      await ensureProviderModels('claude');
+      const pane = await buildPane('approval-required');
+      setBindingMock('UpdateThreadRuntimeMode', async () => makeThread('auto'));
+      const { getByRole, getByText, getByTestId } = render(AccessToggle, { props: { pane } });
+
+      await fireEvent.click(getByTestId('composer-access-toggle'));
+
+      const autoRow = getByRole('menuitem', { name: /^Auto\b(?!-)/ });
+      expect(autoRow.getAttribute('aria-disabled')).toBe('true');
+      expect(getByText('Not supported by the current model.')).toBeTruthy();
+
+      await fireEvent.click(autoRow);
+      expect(getBindingMock('UpdateThreadRuntimeMode')).not.toHaveBeenCalled();
+    });
+
+    it('keeps Auto selectable when the wire never answered', async () => {
+      setBindingMock('GetModelsForProvider', async () => [catalogRow()]);
+      await ensureProviderModels('claude');
+      const pane = await buildPane('approval-required');
+      const update = setBindingMock('UpdateThreadRuntimeMode', async () => makeThread('auto'));
+      const { getByRole, getByTestId } = render(AccessToggle, { props: { pane } });
+
+      await fireEvent.click(getByTestId('composer-access-toggle'));
+
+      const autoRow = getByRole('menuitem', { name: /^Auto\b(?!-)/ });
+      expect(autoRow.getAttribute('aria-disabled')).toBeNull();
+
+      await fireEvent.click(autoRow);
+      expect(update).toHaveBeenCalledWith('thread-1', 'auto');
+    });
+
+    it('keeps Auto selectable for a model the catalog does not list', async () => {
+      setBindingMock('GetModelsForProvider', async () => [
+        { slug: 'some-other-model', name: 'Other', provider: 'claude', supportsAutoMode: false },
+      ]);
+      await ensureProviderModels('claude');
+      const pane = await buildPane('approval-required');
+      const update = setBindingMock('UpdateThreadRuntimeMode', async () => makeThread('auto'));
+      const { getByRole, getByTestId } = render(AccessToggle, { props: { pane } });
+
+      await fireEvent.click(getByTestId('composer-access-toggle'));
+      await fireEvent.click(getByRole('menuitem', { name: /^Auto\b(?!-)/ }));
+
+      expect(update).toHaveBeenCalledWith('thread-1', 'auto');
+    });
   });
 });

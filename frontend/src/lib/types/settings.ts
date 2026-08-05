@@ -293,6 +293,12 @@ export interface ModelInfo {
   fastModeTier?: FastModeTier;
   contextWindows?: ContextWindowOption[];
   reasoningEfforts?: ReasoningEffortOption[];
+  // Three-state, mirroring provider.ModelInfo.SupportsAutoMode: true/false
+  // are the CLI's own answer, absent means nobody said. Consumers may
+  // restrict the Auto tier ONLY on an explicit false — treating absence as
+  // denial would disable a working mode for every model the wire doesn't
+  // list. See internal/claudemodels/AGENTS.md.
+  supportsAutoMode?: boolean | null;
 }
 
 export interface ContextWindowOption {

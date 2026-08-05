@@ -94,14 +94,16 @@ func TestParseInitResponseReadsCapturedModels(t *testing.T) {
 		}
 	}
 
-	// supportsAutoMode is decoded even though the merge deliberately does not
-	// consume it (see internal/claudemodels/AGENTS.md) — the flag is the wire's
-	// only per-model answer about `--permission-mode auto`.
-	if !parsed.Models[0].SupportsAutoMode {
-		t.Error("Opus row: SupportsAutoMode = false, want true")
+	// supportsAutoMode is three-state on decode. The capture proves why:
+	// the Haiku row OMITS the key, and the old bool decode read that as
+	// an explicit "false" — a manufactured denial. Absent must stay nil;
+	// the merge restricts Auto only on explicit denials (see
+	// internal/claudemodels/AGENTS.md).
+	if v := parsed.Models[0].SupportsAutoMode; v == nil || !*v {
+		t.Errorf("Opus row: SupportsAutoMode = %v, want explicit true", v)
 	}
-	if parsed.Models[4].SupportsAutoMode {
-		t.Error("Haiku row: SupportsAutoMode = true, want false")
+	if v := parsed.Models[4].SupportsAutoMode; v != nil {
+		t.Errorf("Haiku row: SupportsAutoMode = %v, want nil — the capture omits the key", *v)
 	}
 }
 

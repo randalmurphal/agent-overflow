@@ -193,6 +193,15 @@ func sameCapabilities(a, b claude.WireModel) bool {
 func applyWireCapabilities(model *provider.ModelInfo, group wireGroup) []Drift {
 	var drift []Drift
 
+	// Three-state on purpose: the catalog never states auto-mode
+	// support, so a wire row that says it is the first (and only)
+	// source. An absent key leaves the model at "unknown" — consumers
+	// restrict Auto only on an explicit false.
+	if group.capabilities.SupportsAutoMode != nil {
+		supports := *group.capabilities.SupportsAutoMode
+		model.SupportsAutoMode = &supports
+	}
+
 	wantsFast := group.capabilities.SupportsFastMode
 	hasFast := slices.Contains(model.Capabilities, provider.ModelCapabilityFastMode)
 	if wantsFast != hasFast {
@@ -268,6 +277,10 @@ func newWireOnlyModel(group wireGroup, base []provider.ModelInfo) (provider.Mode
 	}
 	if group.capabilities.SupportsFastMode {
 		model.Capabilities = []string{provider.ModelCapabilityFastMode}
+	}
+	if group.capabilities.SupportsAutoMode != nil {
+		supports := *group.capabilities.SupportsAutoMode
+		model.SupportsAutoMode = &supports
 	}
 
 	family, matched := familyMatch(group.slug, base)
