@@ -56,7 +56,7 @@
 // 'composer-geometry' from their composer ResizeObservers when
 // out-of-content height changes; the seam is identical on both surfaces.
 
-import { tick } from 'svelte';
+import { tick, untrack } from 'svelte';
 import { getSettings } from '../../stores/settings.svelte';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import { appMotionActive, registerAppMotionProbe } from './appMotion';
@@ -213,6 +213,7 @@ export function createUseStickToBottomController(
     noteProgrammaticWrite: (top) => intent.noteProgrammaticWrite(top),
     springActive: () => spring.isActive(),
     appMotionActive,
+    motionImminent: () => options.motionImminent?.() === true,
     traceState: () => ({
       isAtBottomState,
       escapedFromLockState,
@@ -230,6 +231,7 @@ export function createUseStickToBottomController(
     applyGlideResidue,
     settleGlideResidue,
     renewContentLease,
+    holdContentLease,
     clearContentLease,
   } = chokepoint;
   // Cached MediaQueryList — `matchMedia('(prefers-reduced-motion: reduce)')`
@@ -857,6 +859,20 @@ export function createUseStickToBottomController(
     observers.attach();
     intent.attach(nextScrollEl);
     refreshIsNearBottom();
+    // A controller attaching mid-motion-window — a run clip mounting
+    // while its run is live, a pane remounting during a turn — promotes
+    // here, which is the one moment it is guaranteed to be at rest.
+    // Without it the first promote would wait for scroll activity, i.e.
+    // the first frame of the glide it should have preceded.
+    //
+    // UNTRACKED because every consumer calls attach() from inside an
+    // $effect: a tracked read would make the consumer's motion predicate
+    // (`isThreadWorking`, a run's liveness) a dependency of the
+    // DOM-binding effect, which would then tear down and re-add its
+    // scroll/gesture listeners on every working-flip — and, because the
+    // re-run early-returns above before reaching this line, the
+    // dependency would vanish again, leaving a one-shot phantom.
+    if (untrack(() => options.motionImminent?.()) === true) holdContentLease();
     installStickStateDevHook();
   }
 
@@ -961,6 +977,7 @@ export function createUseStickToBottomController(
     markStructuralContentPending: spring.markStructuralAppend,
     autoScrollInFlight: () => spring.isActive() || spring.structuralAppendPending(),
     preserveScrollAnchor,
+    holdContentLease,
     attach,
     detach,
     forceStick,

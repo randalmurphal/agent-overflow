@@ -55,14 +55,41 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     programmatic write routes through, plus its satellites: the
     provenance ledger, arrival-readback acceptance, spring-tick trace
     sampling, and the content layer-promotion lease (promotion is
-    leased against scroll activity and demotes after stillness — a
-    permanent `will-change: transform` was a measured tile-memory tax).
+    leased rather than permanent — a permanent `will-change: transform`
+    was a measured tile-memory tax). **A lease transition may only
+    happen while the surface is at rest**: at rest the re-raster
+    produces identical pixels, mid-motion it is a raster storm over a
+    full-content-height layer. So the promotion is held while motion is
+    IMMINENT — the `motionImminent` option, wired to
+    `isThreadWorking(pane.threadId) || <live-content hold>` on
+    chat/discussion (the OR is load-bearing: `isThreadWorking` is
+    per-wire-round and reads false inside multi-round logical turns) and
+    to the run's liveness on an activity-run clip. The two pane surfaces
+    pair it with a rising-edge `holdContentLease()`; the run clip does
+    not need to, because its controller only exists while the run is
+    live, so `attach()` reading the same option IS the rising edge.
+    Motion may also be RECENT (scroll activity, the lagging signal that
+    also covers unheld surfaces). Leasing against scroll activity ALONE
+    demoted through mid-turn model gaps and re-promoted from the first
+    spring tick of the next burst, which is the 2026-08-05 boundary
+    stutter (worst on WKWebView). The hold is deliberately uncapped and
+    not gated on escape, so the tile-memory guarantee is conditional on
+    the consumer's predicate falling when the turn ends — a pane parked
+    on an open approval keeps its layer by design.
     A due demotion additionally waits for an app-wide motion lull
     (`appMotion.ts`, probes registered per attached controller),
     hard-capped at 30s: the demote's re-raster is only invisible on an
     uncontended compositor, and one firing mid-stream of a neighboring
     pane smeared across frames as a visible text shimmer
-    (2026-08-03). Both lease edges emit `scroll.lease` trace records.
+    (2026-08-03). Detach's CLEAR is the third transition and takes the
+    same route — inline when the element has left the DOM or the app is
+    quiet, otherwise handed to a module-level deferred-clear registry
+    that applies it at the next lull (same 30s cap). All three edges
+    emit `scroll.lease` trace records (`promote` / `demote` / `defer` /
+    `clear` / `clear-applied`); the two flips carry `midMotion` (spring
+    active or residue live at the flip) as the invariant's tripwire — a
+    promote with `midMotion: true` is a surface that produced
+    programmatic motion without holding the lease.
     The chokepoint also owns the **fractional glide residue**: spring
     writes are fractional, the engine rounds `scrollTop` to whole CSS
     pixels, and the sub-pixel remainder is composited as a `translateY`

@@ -192,7 +192,7 @@ describe('spring velocity cap', () => {
     expect(h.getScrollTop()).toBeGreaterThan(850);
   });
 
-  it('bounds a stalled frame to the catch-up burst instead of paying the whole gap', () => {
+  it('bounds a stalled frame to a single step instead of paying the whole gap', () => {
     const h = makeHarness();
     h.setTarget(900);
     h.spring.markTargetChanged();
@@ -200,12 +200,16 @@ describe('spring velocity cap', () => {
     for (let i = 0; i < 35; i++) frame(); // spool past the slew ramp to capped cruise
 
     const before = h.getScrollTop();
-    frame(100); // stall: dtFrames = 6, clamped to SPRING_MAX_CATCHUP_STEPS (3)
+    frame(100); // stall: dtFrames = 6, clamped to SPRING_MAX_CATCHUP_STEPS (1)
     const move = h.getScrollTop() - before;
-    // Three capped steps: ≤ 3 × 27px (+ integration epsilon), far short of
-    // the remaining ~600px gap — a blocked frame never becomes a teleport.
-    expect(move).toBeLessThanOrEqual(81.5);
-    expect(move).toBeGreaterThan(54); // multiple steps actually ran
+    // ONE capped step: the resume tick advances no further than an
+    // ordinary cruising frame, so a stall can never present as a jump.
+    // Stalls are routine on WebKit (2026-08-05 probe: 6–7 per chase), and
+    // the lost time is recovered by the spring's distance term over the
+    // following frames, not paid off in this write.
+    expect(move).toBeLessThanOrEqual(27.5);
+    // Still real motion — a stall must not stall the chase.
+    expect(move).toBeGreaterThan(20);
   });
 
   it('caps downward (shrink-follow) chases symmetrically', () => {
@@ -875,6 +879,40 @@ describe('chase telemetry', () => {
     expect(data.gapBuckets[5]).toBe(1);
     expect(data.catchupClamps).toBe(1);
     expect(data.durationMs).toBeGreaterThan(0);
+  });
+
+  it('counts stall ticks at 3 frames while integrating only 1 — the two thresholds are separate', () => {
+    // `catchupClamps` is a STALL counter pinned at 3 frames so traces stay
+    // comparable across the SPRING_MAX_CATCHUP_STEPS 3→1 change; the
+    // integration cap is now stricter than it. Both are pinned here
+    // because the two used to be one constant, and re-coupling them would
+    // either silently redefine the metric or undo the 1-step cap.
+    setUiRenderTraceEnabled(true);
+    clearUiRenderTrace();
+    const h = makeHarness();
+    h.setTarget(900);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 35; i++) frame(); // capped cruise
+
+    // A 2-frame gap: past the integration cap (1), short of the stall
+    // threshold (3). Physics clamps, telemetry stays silent.
+    const beforeShort = h.getScrollTop();
+    frame(33.34);
+    expect(h.getScrollTop() - beforeShort).toBeLessThanOrEqual(27.5);
+
+    // A 6-frame gap: past both.
+    frame(100);
+    h.spring.cancel();
+
+    const records = getUiRenderTraceRecords().filter(
+      (r) => r.label === 'scroll.spring.chase',
+    );
+    expect(records).toHaveLength(1);
+    const data = records[0].data as { catchupClamps: number };
+    // Exactly one — the 2-frame gap was clamped by the integrator but is
+    // not a stall, so it must not appear in the counter.
+    expect(data.catchupClamps).toBe(1);
   });
 
   it('emits nothing when tracing is disabled', () => {

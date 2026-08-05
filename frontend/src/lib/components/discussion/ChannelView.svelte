@@ -5,6 +5,7 @@
   import { PostChannelMessage, ConcludeDiscussion } from '../../stores/bindings';
   import { refreshDiscussionChannel, DISCUSSION_CHANNEL_FETCH_LIMIT } from '../../stores/eventsDiscussion';
   import { getSettings } from '../../stores/settings.svelte';
+  import { isThreadWorking } from '../../stores/threadStatuses.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
@@ -43,13 +44,36 @@
   // `lastLiveContentAt` tracks the timeline, which this surface doesn't
   // render). Liveness only — growth physics is decided by the
   // controller, identically to the chat surface.
+  function channelLiveContentActive(): boolean {
+    return isLiveContentActive(
+      performance.now(),
+      pane.channelLastLiveContentAt,
+      LIVE_CONTENT_ACTIVE_HOLD_MS,
+    );
+  }
+
   const stick = createUseStickToBottomController({
-    liveContentActive: () =>
-      isLiveContentActive(
-        performance.now(),
-        pane.channelLastLiveContentAt,
-        LIVE_CONTENT_ACTIVE_HOLD_MS,
-      ),
+    liveContentActive: channelLiveContentActive,
+    // Leading motion signal for the content-layer lease. Discussion
+    // turns flow through the same thread statuses, so the same predicate
+    // holds the layer across the gaps between speakers instead of
+    // letting it demote and re-promote on a glide's first frame. Same
+    // three clauses as chat, for the same reasons — open wire round,
+    // content inside the 500ms hold, an item still engaged — with the
+    // channel's own stamp standing in for the timeline's (see
+    // MessageTimeline for the full rationale).
+    motionImminent: () =>
+      isThreadWorking(pane.threadId)
+      || channelLiveContentActive()
+      || pane.hasEngagedItems(),
+  });
+
+  // Rising edge of the round signal: promote while the surface is still
+  // at rest, ahead of the turn's first glide. Keyed on `isThreadWorking`
+  // alone — the channel stamp is deliberately non-reactive, and each new
+  // round flips this back before its content arrives.
+  $effect(() => {
+    if (isThreadWorking(pane.threadId)) stick.holdContentLease();
   });
 
   let messages = $derived(pane.channelMessages);

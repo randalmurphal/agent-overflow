@@ -141,6 +141,18 @@
           pane.lastLiveContentAt,
           LIVE_CONTENT_ACTIVE_HOLD_MS,
         ),
+      // Leading motion signal for the clip's content-layer lease: while
+      // this run holds the tail, activity keeps landing in it, so the
+      // layer must survive the gaps between rows rather than be created
+      // on the first frame of the next glide. Read from the lease's timer
+      // callback (and untracked by attach()).
+      //
+      // No rising-edge `holdContentLease()` pairs with it here, unlike
+      // the two pane surfaces: this controller EXISTS only while the run
+      // is live, so every false→true transition re-runs the effect above
+      // and the fresh `attach()` promotes from this same predicate. A
+      // second call would be unreachable.
+      motionImminent: () => isLive,
     });
   }
 

@@ -42,17 +42,43 @@ const SPRING_QUASI_STEADY_FOLLOW_RATIO =
   DEFAULT_SPRING.stiffness / (DEFAULT_SPRING.mass - DEFAULT_SPRING.damping);
 const SIXTY_FPS_INTERVAL_MS = 1000 / 60;
 // Cap on how many fixed 60Hz steps one rAF tick may integrate. A
-// stalled rAF (heavy frame, tab back from background) would otherwise
-// pay its entire gap at once — a many-step advance the cross-target
-// clamp turns into a visible teleport. Four steps ≈ 67ms of motion per
-// real frame kept post-stall catch-up brisk but smooth with the original
-// spring. The faster streaming-follow spring uses three steps to preserve
-// the same bounded-burst behavior; anything
-// longer is absorbed by subsequent frames and the arrival snap.
+// stalled rAF would otherwise pay its entire gap at once — a many-step
+// advance the cross-target clamp turns into a visible teleport.
+//
+// History: four steps (≈67ms of motion per real frame) with the
+// original spring, then three for the faster streaming-follow spring to
+// preserve the same bounded burst (04d393fb). Both were chosen to keep
+// post-stall catch-up BRISK, tuned when a stall meant something rare —
+// a tab returning from background, one pathological frame.
+//
+// That premise was wrong for WebKit. The 2026-08-05 boundary probe
+// measured rAF gaps of 25–129ms and 6–7 stall ticks per chase on Linux
+// WebKit, against zero on Chromium: there, stalls are ROUTINE. At three
+// steps the resume tick writes up to ~81px in one go (3 × the 27px
+// velocity cap), and a single write that large IS the mechanism behind
+// the residual Mac "fast jump" — several times per chase.
+//
+// One step. Multi-frame catch-up was never needed for TRACKING: the
+// stall grows the distance to the target, and the spring's distance
+// term accelerates into it on the following frames (still velocity-
+// capped), so the lost integration time is recovered smoothly instead
+// of instantly. The extremes stay bounded by the two mechanisms that
+// always handled them — the arrival snap, and the >1-viewport
+// catchupJump for gaps a spring should not chase at all.
+//
 // Exported for the interleaving invariant suite
 // (scrollInterleavings.test.ts), which holds every non-snap frame to
-// the bounded step these two imply.
-export const SPRING_MAX_CATCHUP_STEPS = 3;
+// the bounded step this and the velocity cap imply.
+export const SPRING_MAX_CATCHUP_STEPS = 1;
+// The stall-tick threshold for CHASE TELEMETRY, deliberately decoupled
+// from the integration cap above. `catchupClamps` has meant "ticks that
+// arrived 3+ frames late" across every trace we have, including the
+// incident bookmarks; leaving it pinned to SPRING_MAX_CATCHUP_STEPS
+// would have silently redefined the counter when that dropped to 1 and
+// made post-change traces incomparable with the ones that motivated the
+// change. The integration cap is now STRICTER than this threshold —
+// that asymmetry is the point, and spring.test.ts pins both.
+const SPRING_STALL_TICK_FRAMES = 3;
 // Keep chasing for this long after the last positive grow event. Without
 // this, the spring would consider itself "arrived" between streaming
 // chunks and stop, then have to spin up again on the next chunk —
@@ -371,6 +397,13 @@ interface ChaseTelemetry {
   sentinelTicks: number;
   maxGapMs: number;
   gapBuckets: number[];
+  /**
+   * Ticks that arrived more than SPRING_STALL_TICK_FRAMES (3) frames
+   * late. A stall counter, NOT a count of integration clamps — every
+   * tick past one frame is clamped since SPRING_MAX_CATCHUP_STEPS
+   * dropped to 1. The threshold is held at 3 so the series stays
+   * comparable with the traces that predate that change.
+   */
   catchupClamps: number;
   distanceJumps: number;
   targetChanges: number;
@@ -667,7 +700,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     const stats = chaseTelemetry;
     if (!stats) return;
     stats.ticks += 1;
-    if (dtFrames > SPRING_MAX_CATCHUP_STEPS) stats.catchupClamps += 1;
+    if (dtFrames > SPRING_STALL_TICK_FRAMES) stats.catchupClamps += 1;
     if (previousTickAt === null) return;
     const gapMs = now - previousTickAt;
     if (gapMs > stats.maxGapMs) stats.maxGapMs = gapMs;

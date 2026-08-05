@@ -13,7 +13,7 @@
   import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
   import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
   import { timelineNodeKey, type TimelineNode } from '../../utils/subagentGrouping';
-  import { getActiveTurn } from '../../stores/threadStatuses.svelte';
+  import { getActiveTurn, isThreadWorking } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
   import ReadGroupRow from './ReadGroupRow.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
@@ -212,6 +212,38 @@
     // IS the content height) — the controller creates no contentEl RO;
     // samples arrive through `onContentGeometry` below.
     externalContentGeometry: true,
+    // Leading motion signal for the content-layer lease: a turn in
+    // flight (send included) means glides are coming, so the layer must
+    // not demote through the model gaps between them.
+    //
+    // Three clauses because no one of them covers a whole logical turn,
+    // and the union has to: a demote anywhere inside one puts the next
+    // promote on a glide's first frame.
+    //
+    //   - `isThreadWorking` — an open WIRE ROUND (send included). It is
+    //     per-round by design: `activeTurns` is nulled by every
+    //     `provider:turn_completed`, and turn-lifecycle.md documents
+    //     logical turns spanning several rounds plus waits where a
+    //     subagent outlives the round that spawned it.
+    //   - `liveContentActiveNow()` — content advanced within the last
+    //     500ms, whatever the round bookkeeping says.
+    //   - `pane.hasEngagedItems()` — an item is still `streaming` or
+    //     `running`. This is the round-independent one, and it is what
+    //     closes the quiet-wait window: a subagent-outlives wait holds a
+    //     `running` task row for as long as it lasts, with no round open
+    //     and nothing advancing.
+    //
+    // Between them the turn is covered end to end: open round → clause 1;
+    // content inside the hold → clause 2; a quiet stretch inside a
+    // logical turn → clause 3; and a genuinely NEW turn re-holds at rest
+    // on the `turn_started` rising edge below, before its content lands.
+    // The `midMotion` tripwire in the scroll.lease trace is now purely a
+    // detector for something unforeseen, not a known hole's recorder.
+    //
+    // Read per-fire from the lease's timer callback, outside any
+    // reactive scope (attach()'s read is explicitly untracked).
+    motionImminent: () =>
+      isThreadWorking(pane.threadId) || liveContentActiveNow() || pane.hasEngagedItems(),
   });
 
   function markMarkdownSettled(): void {
@@ -466,6 +498,23 @@
       surface.removeEventListener('touchmove', onUserGesture);
       surface.removeEventListener('keydown', onUserGesture);
     };
+  });
+
+  // Promote the content layer the moment a turn starts (send included),
+  // while the pane is still at rest — the lease's transitions are only
+  // invisible at rest, and scroll activity alone can't see motion
+  // coming. Falling edge does nothing; the lease timer demotes after the
+  // turn + idle + app lull.
+  //
+  // Keyed on `isThreadWorking` ONLY, not on the composed predicate the
+  // option uses: `pane.lastLiveContentAt` is deliberately non-reactive,
+  // and a new round's `turn_started` flips this back to true and
+  // re-holds at rest before that round's content lands. Nothing further
+  // reactive belongs in here — the keyed-signal registry keeps the
+  // re-runs to that flag's transitions (plus the occasional
+  // creation-version wakeup, which no-ops).
+  $effect(() => {
+    if (isThreadWorking(pane.threadId)) stick.holdContentLease();
   });
 
   // The scroll surface's CONTENT-box width, sourced ONLY from the async
