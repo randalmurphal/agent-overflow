@@ -1,7 +1,7 @@
 # Agent Overflow
 
 Desktop app for using coding agents (Claude Code, Codex) with a shared UX.
-Built on Go 1.26, Wails v3, and Svelte 5.
+Built on Go 1.26, Wails v3, and Svelte 5. Inspired by t3-code.
 
 ## For friends helping test
 
