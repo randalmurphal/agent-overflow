@@ -10,10 +10,10 @@
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { Thread } from '../../../types/models';
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
-  import Folder from 'lucide-svelte/icons/folder';
-  import FolderGit2 from 'lucide-svelte/icons/folder-git-2';
-  import Trash2 from 'lucide-svelte/icons/trash-2';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import Folder from '@lucide/svelte/icons/folder';
+  import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
   import {

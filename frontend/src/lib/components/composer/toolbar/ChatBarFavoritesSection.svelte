@@ -10,7 +10,7 @@
   import MenuItem from '../../primitives/MenuItem.svelte';
   import MenuSectionHeader from '../../primitives/MenuSectionHeader.svelte';
   import Icon from '../../primitives/Icon.svelte';
-  import MessagesSquare from 'lucide-svelte/icons/messages-square';
+  import MessagesSquare from '@lucide/svelte/icons/messages-square';
 
   interface Props {
     favorites: ChatBarFavorite[];

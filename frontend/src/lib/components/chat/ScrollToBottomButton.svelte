@@ -29,7 +29,7 @@
   // the scroll container and the chip), set `--composer-height` to its
   // height the same way ChatView does.
 
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import { fade } from 'svelte/transition';
   import Icon from '../primitives/Icon.svelte';
 

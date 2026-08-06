@@ -16,12 +16,12 @@
   // new-worktree-mode entry point. Both call enterCreateBranchMode and
   // surface the same WorktreeNameInput text input above the strip.
 
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
-  import GitBranchIcon from 'lucide-svelte/icons/git-branch';
-  import Plus from 'lucide-svelte/icons/plus';
-  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
-  import Trash2 from 'lucide-svelte/icons/trash-2';
-  import X from 'lucide-svelte/icons/x';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import GitBranchIcon from '@lucide/svelte/icons/git-branch';
+  import Plus from '@lucide/svelte/icons/plus';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import X from '@lucide/svelte/icons/x';
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
   import type { ThreadPane } from '../../../stores/thread.svelte';

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import GitFork from 'lucide-svelte/icons/git-fork';
+  import GitFork from '@lucide/svelte/icons/git-fork';
   import type { Thread } from '../../types/models';
   import Icon from '../primitives/Icon.svelte';
 

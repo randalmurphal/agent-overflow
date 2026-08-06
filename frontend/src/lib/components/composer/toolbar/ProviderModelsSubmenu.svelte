@@ -13,7 +13,7 @@
   import { displayModelLabel } from '../../../utils/modelLabels';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import Icon from '../../primitives/Icon.svelte';
-  import Star from 'lucide-svelte/icons/star';
+  import Star from '@lucide/svelte/icons/star';
 
   interface Props {
     pane: ThreadPane;

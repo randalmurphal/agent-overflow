@@ -8,7 +8,7 @@
   // layer behind that store seam: close if the source pane disappears, stops
   // showing the pinned thread, or the provider session dies. The xterm
   // surface + control-lease toggle are layered in by TakeControlTerminal.
-  import X from 'lucide-svelte/icons/x';
+  import X from '@lucide/svelte/icons/x';
   import { closeCompanion, getCompanionPane } from '../../stores/companionPanes.svelte';
   import { getPane } from '../../stores/panes.svelte';
   import { wailsEventOn } from '../../stores/wailsEvents';

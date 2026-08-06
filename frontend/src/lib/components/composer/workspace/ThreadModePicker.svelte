@@ -11,9 +11,9 @@
   // draft text is keyed by pane.paneId (not thread id) so typed text
   // survives the placeholder swap.
 
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
-  import MessagesSquare from 'lucide-svelte/icons/messages-square';
-  import Palette from 'lucide-svelte/icons/palette';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import MessagesSquare from '@lucide/svelte/icons/messages-square';
+  import Palette from '@lucide/svelte/icons/palette';
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
   import type { ThreadPane } from '../../../stores/thread.svelte';

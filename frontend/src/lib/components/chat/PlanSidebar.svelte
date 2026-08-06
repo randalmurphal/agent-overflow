@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
-  import Send from 'lucide-svelte/icons/send';
-  import X from 'lucide-svelte/icons/x';
-  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import Send from '@lucide/svelte/icons/send';
+  import X from '@lucide/svelte/icons/x';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import {
     getPlanComments,
     getThreadCurrentProposedPlan,

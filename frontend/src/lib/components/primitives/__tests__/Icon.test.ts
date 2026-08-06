@@ -1,13 +1,13 @@
 // Verifies the Icon primitive's contract:
-//   - renders the lucide-svelte component it's handed via `icon`
+//   - renders the @lucide/svelte component it's handed via `icon`
 //   - forwards size (as pixels) and strokeWidth to the underlying svg
 //   - merges opacity-80 default with caller's additional classes
 //   - swaps icon when the prop changes (via re-render)
 
 import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/svelte';
-import Search from 'lucide-svelte/icons/search';
-import X from 'lucide-svelte/icons/x';
+import Search from '@lucide/svelte/icons/search';
+import X from '@lucide/svelte/icons/x';
 import Icon from '../Icon.svelte';
 
 describe('<Icon>', () => {

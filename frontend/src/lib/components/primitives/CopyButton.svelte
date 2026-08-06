@@ -17,8 +17,8 @@
   // instead of in the primitives layer, and keeps the flavor policy in
   // one module rather than one branch per button.
   import { onDestroy } from 'svelte';
-  import Copy from 'lucide-svelte/icons/copy';
-  import Check from 'lucide-svelte/icons/check';
+  import Copy from '@lucide/svelte/icons/copy';
+  import Check from '@lucide/svelte/icons/check';
   import Icon from './Icon.svelte';
   import IconButton from './IconButton.svelte';
   import { copyToClipboard } from '../../utils/clipboard';

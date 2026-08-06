@@ -9,7 +9,7 @@
   // entirely; the in-pane ThreadModePicker in the workspace strip is
   // where the mode is surfaced. ComposerToolbar gates the render.
 
-  import Bot from 'lucide-svelte/icons/bot';
+  import Bot from '@lucide/svelte/icons/bot';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { Thread } from '../../../types/models';
   import { UpdateThreadMode } from '../../../stores/bindings';

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import Pencil from 'lucide-svelte/icons/pencil';
-  import GitFork from 'lucide-svelte/icons/git-fork';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import GitFork from '@lucide/svelte/icons/git-fork';
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
-  import FileText from 'lucide-svelte/icons/file-text';
-  import MessageSquare from 'lucide-svelte/icons/message-square';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import MessageSquare from '@lucide/svelte/icons/message-square';
   import ChatMarkdown from '../chat/ChatMarkdown.svelte';
   import Icon from '../primitives/Icon.svelte';
   import type { ReviewVerdict } from '../../types/models';

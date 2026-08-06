@@ -16,7 +16,7 @@
    * placeholder so the row still appears with its metadata.
   */
   import { untrack } from 'svelte';
-  import PanelRightOpen from 'lucide-svelte/icons/panel-right-open';
+  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
   import { parsePatchFilesCached, type PatchFile, type PatchLine } from '../../utils/patchFiles';

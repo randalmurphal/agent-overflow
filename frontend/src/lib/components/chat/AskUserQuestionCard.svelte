@@ -23,8 +23,8 @@
    * show an error indicator plus RowError.
    */
   import { untrack } from 'svelte';
-  import Check from 'lucide-svelte/icons/check';
-  import X from 'lucide-svelte/icons/x';
+  import Check from '@lucide/svelte/icons/check';
+  import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import ChatMarkdown from './ChatMarkdown.svelte';
   import type { Item } from '../../types/models';

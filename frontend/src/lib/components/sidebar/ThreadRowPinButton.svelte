@@ -12,7 +12,7 @@
   // children don't pin individually — the parent thread is the pin
   // target for that whole subtree. The guard lives in ThreadRow.
 
-  import Pin from 'lucide-svelte/icons/pin';
+  import Pin from '@lucide/svelte/icons/pin';
   import Icon from '../primitives/Icon.svelte';
   import {
     pinThreadAction,

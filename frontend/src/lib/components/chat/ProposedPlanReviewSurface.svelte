@@ -1,8 +1,8 @@
 <script lang="ts">
-  import MessageSquarePlus from 'lucide-svelte/icons/message-square-plus';
-  import X from 'lucide-svelte/icons/x';
-  import Pencil from 'lucide-svelte/icons/pencil';
-  import Check from 'lucide-svelte/icons/check';
+  import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
+  import X from '@lucide/svelte/icons/x';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import Check from '@lucide/svelte/icons/check';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import Button from '../primitives/Button.svelte';

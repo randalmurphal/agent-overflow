@@ -8,7 +8,7 @@
   // uses, so the two surfaces can never disagree about what is active.
 
   import { untrack } from 'svelte';
-  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Modal from '../primitives/Modal.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Check from 'lucide-svelte/icons/check';
+  import Check from '@lucide/svelte/icons/check';
   import Icon from '../primitives/Icon.svelte';
 
   interface Props {

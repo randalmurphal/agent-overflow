@@ -27,7 +27,7 @@
     openDraftThreadForProject,
     openTerminalThread,
   } from '../../stores/threadCreation.svelte';
-  import Plus from 'lucide-svelte/icons/plus';
+  import Plus from '@lucide/svelte/icons/plus';
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';

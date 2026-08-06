@@ -1,6 +1,6 @@
 <script lang="ts">
-  import ArchiveRestore from 'lucide-svelte/icons/archive-restore';
-  import Trash2 from 'lucide-svelte/icons/trash-2';
+  import ArchiveRestore from '@lucide/svelte/icons/archive-restore';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
   import Icon from '../primitives/Icon.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';

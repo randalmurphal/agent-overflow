@@ -32,7 +32,7 @@
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
   import { autoAnimate } from '../../utils/autoAnimate';
-  import Plus from 'lucide-svelte/icons/plus';
+  import Plus from '@lucide/svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
   import ThreadRow from './ThreadRow.svelte';
   import {

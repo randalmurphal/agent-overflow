@@ -6,8 +6,8 @@
   // "log in to another account" button, the cards, and the removal confirm.
 
   import { onMount } from 'svelte';
-  import RefreshCw from 'lucide-svelte/icons/refresh-cw';
-  import Trash2 from 'lucide-svelte/icons/trash-2';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
   import Icon from '../primitives/Icon.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import ProviderAccountLimits from '../shared/ProviderAccountLimits.svelte';

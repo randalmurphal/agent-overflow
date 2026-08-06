@@ -11,7 +11,7 @@
    * internal/triage/timeline_notifications.go):
    *   { kind: "session_died", title, reason?, exitCode?, signal?, stderrTail? }
    */
-  import PowerOff from 'lucide-svelte/icons/power-off';
+  import PowerOff from '@lucide/svelte/icons/power-off';
   import Icon from '../primitives/Icon.svelte';
   import type { Item } from '../../types/models';
   import { parseJsonObject } from '../../utils/parseJsonObject';

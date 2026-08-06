@@ -1,5 +1,5 @@
 <script lang="ts">
-  import ListTodo from 'lucide-svelte/icons/list-todo';
+  import ListTodo from '@lucide/svelte/icons/list-todo';
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import Icon from '../../primitives/Icon.svelte';
 

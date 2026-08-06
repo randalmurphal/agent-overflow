@@ -10,8 +10,8 @@
   import { getSettings } from '../../stores/settings.svelte';
   import Icon from '../primitives/Icon.svelte';
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
-  import Circle from 'lucide-svelte/icons/circle';
-  import CircleCheck from 'lucide-svelte/icons/circle-check';
+  import Circle from '@lucide/svelte/icons/circle';
+  import CircleCheck from '@lucide/svelte/icons/circle-check';
 
   interface Props {
     liveTodo: LiveTodo;

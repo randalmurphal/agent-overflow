@@ -1,8 +1,8 @@
 <script lang="ts">
-  import Bell from 'lucide-svelte/icons/bell';
-  import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
-  import ClipboardList from 'lucide-svelte/icons/clipboard-list';
-  import SearchCheck from 'lucide-svelte/icons/search-check';
+  import Bell from '@lucide/svelte/icons/bell';
+  import AlertTriangle from '@lucide/svelte/icons/alert-triangle';
+  import ClipboardList from '@lucide/svelte/icons/clipboard-list';
+  import SearchCheck from '@lucide/svelte/icons/search-check';
   import Icon from '../primitives/Icon.svelte';
   import type { Item } from '../../types/models';
   import { parseJsonObject } from '../../utils/parseJsonObject';

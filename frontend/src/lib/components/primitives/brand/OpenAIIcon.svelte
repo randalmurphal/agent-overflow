@@ -7,7 +7,7 @@
   Path copied verbatim from t3-code's Icons.tsx — the canonical SVG
   that simple-icons originally shipped. `fill="currentColor"` so the
   caller controls color via CSS / Tailwind; sizing is driven by width
-  and height attrs to match the lucide-svelte convention.
+  and height attrs to match the @lucide/svelte convention.
 -->
 <script lang="ts">
   interface Props {

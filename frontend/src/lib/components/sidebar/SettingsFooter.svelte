@@ -1,7 +1,7 @@
 <script lang="ts">
   // Bottom-of-sidebar settings launcher. Extracted from the monolithic
   // Sidebar.svelte so the shell stays a layout-only file.
-  import Settings from 'lucide-svelte/icons/settings';
+  import Settings from '@lucide/svelte/icons/settings';
   import Icon from '../primitives/Icon.svelte';
   import Button from '../primitives/Button.svelte';
   import UpdateBadge from '../shared/UpdateBadge.svelte';

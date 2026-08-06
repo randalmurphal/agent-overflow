@@ -12,7 +12,7 @@
   // The button works before the editor catalog loads: an empty editorID
   // lets the backend resolve the default independently, so only the icon
   // and the dropdown depend on the shared store having loaded.
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import { OpenInEditor } from '../../stores/bindings';
   import { errString } from '../../utils/errors';
   import { addToast } from '../../stores/toast.svelte';

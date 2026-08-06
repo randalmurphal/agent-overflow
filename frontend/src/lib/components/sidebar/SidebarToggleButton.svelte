@@ -7,8 +7,8 @@
   // Settings shows up here without a reload — and the label loses its
   // suffix entirely when the command is unbound.
 
-  import PanelLeftClose from 'lucide-svelte/icons/panel-left-close';
-  import PanelLeftOpen from 'lucide-svelte/icons/panel-left-open';
+  import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
+  import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import { chordHintSuffix } from '../../stores/keybindings.svelte';

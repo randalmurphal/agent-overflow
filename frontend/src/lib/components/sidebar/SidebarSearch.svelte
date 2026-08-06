@@ -6,8 +6,8 @@
   // rebinds in Settings flow through without a reload, and the pill
   // disappears entirely when that command is unbound.
 
-  import Search from 'lucide-svelte/icons/search';
-  import X from 'lucide-svelte/icons/x';
+  import Search from '@lucide/svelte/icons/search';
+  import X from '@lucide/svelte/icons/x';
   import {
     getThreadFilterQuery,
     setThreadFilterQuery,

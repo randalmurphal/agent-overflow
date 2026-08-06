@@ -17,7 +17,7 @@
   // so we surface them verbatim rather than wrapping in a generic
   // "Failed to open editor" prefix.
 
-  import Edit3 from 'lucide-svelte/icons/edit-3';
+  import Edit3 from '@lucide/svelte/icons/edit-3';
   import Icon from '../primitives/Icon.svelte';
   import { OpenInEditor } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';

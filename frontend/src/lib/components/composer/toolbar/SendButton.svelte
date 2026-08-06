@@ -8,10 +8,10 @@
   // can opt into a split menu for secondary actions like "new thread" or
   // "send without comments".
 
-  import ArrowUp from 'lucide-svelte/icons/arrow-up';
-  import ChevronDown from 'lucide-svelte/icons/chevron-down';
-  import Play from 'lucide-svelte/icons/play';
-  import Square from 'lucide-svelte/icons/square';
+  import ArrowUp from '@lucide/svelte/icons/arrow-up';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import Play from '@lucide/svelte/icons/play';
+  import Square from '@lucide/svelte/icons/square';
   import Icon from '../../primitives/Icon.svelte';
   import Popover from '../../primitives/Popover.svelte';
   import Menu from '../../primitives/Menu.svelte';

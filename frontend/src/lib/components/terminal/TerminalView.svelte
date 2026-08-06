@@ -2,7 +2,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getProject } from '../../stores/projects.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import SquareTerminal from 'lucide-svelte/icons/square-terminal';
+  import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import PaneTitleHandle from '../panes/PaneTitleHandle.svelte';
   import PaneCloseButton from '../panes/PaneCloseButton.svelte';
   import TerminalSurface from './TerminalSurface.svelte';

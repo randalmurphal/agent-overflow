@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { untrack } from 'svelte';
-  import Bot from 'lucide-svelte/icons/bot';
-  import MessageSquare from 'lucide-svelte/icons/message-square';
-  import XCircle from 'lucide-svelte/icons/x-circle';
-  import Play from 'lucide-svelte/icons/play';
-  import Clock from 'lucide-svelte/icons/clock';
-  import CheckCircle2 from 'lucide-svelte/icons/check-circle-2';
+  import Bot from '@lucide/svelte/icons/bot';
+  import MessageSquare from '@lucide/svelte/icons/message-square';
+  import XCircle from '@lucide/svelte/icons/x-circle';
+  import Play from '@lucide/svelte/icons/play';
+  import Clock from '@lucide/svelte/icons/clock';
+  import CheckCircle2 from '@lucide/svelte/icons/check-circle-2';
   import Icon from '../primitives/Icon.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import type { Item } from '../../types/models';
