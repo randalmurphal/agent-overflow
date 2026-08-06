@@ -98,8 +98,12 @@ tasks:
       - "darwin/icons.icns"
       - "windows/icon.ico"
     cmds:
-      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -iconcomposerinput appicon.icon -macassetdir darwin
-      - wails3 generate icons -input appicon-square.png -windowsfilename windows/icon.ico
+      # wails3 beta defaults -windowsfilename/-macfilename to build/windows/… /
+      # build/darwin/… (resolved against this task's cwd, build/), so each
+      # single-platform run must explicitly blank the other platform's output
+      # or the CLI dies on the nonexistent build/build/ parent directory.
+      - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -iconcomposerinput appicon.icon -macassetdir darwin -windowsfilename ""
+      - wails3 generate icons -input appicon-square.png -windowsfilename windows/icon.ico -macfilename ""
 
   dev:frontend:
     summary: Runs the frontend in development mode
