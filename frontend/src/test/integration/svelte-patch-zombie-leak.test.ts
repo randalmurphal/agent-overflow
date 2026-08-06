@@ -1,20 +1,22 @@
-// Regression test for the zombie-derived leak fixed by
-// frontend/patches/svelte@5.56.3.patch ("zombie-mint fix" hunk).
+// Regression test for the zombie-derived leak. This was the
+// "zombie-mint fix" hunk of frontend/patches/svelte@5.56.3.patch; the
+// hunk was DROPPED on the 5.56.8 re-roll because upstream fixed the same
+// class of leak in 5.56.5 (sveltejs/svelte#18517: update_effect leaves
+// is_updating_effect false for branch/root effects). The suite stays as
+// the tripwire — it must keep passing UNPATCHED.
 //
 // Pristine svelte 5.56.3: reading a parent's prop-expression memo during
 // component init happens while the active reader is an UNCONNECTED
-// derived. Because is_updating_effect is true during init, get()'s
-// should_connect force-connects every derived the memo reads into its
+// derived. Because is_updating_effect was true during init, get()'s
+// should_connect force-connected every derived the memo reads into its
 // deps' reactions arrays — but the unconnected reader can never register
-// as a subscriber, so the connection is permanent. Each mount/unmount
-// cycle leaks the whole derived chain plus everything it retains (in the
+// as a subscriber, so the connection was permanent. Each mount/unmount
+// cycle leaked the whole derived chain plus everything it retains (in the
 // real app: per-diff-row memos pinning detached DOM, ~520 MB in a 12 h
 // session). Two shapes trigger the init-time read: a prop DEFAULT
 // (prop() reads the memo even if app code never does) and an explicit
-// init-time read of a plain prop. Both leak on pristine 5.56.3 (verified
-// externally) and both must stay clean under the patch. If a svelte
-// upgrade drops the patch before upstream ships an equivalent fix, this
-// suite fails.
+// init-time read of a plain prop. Both leaked on pristine 5.56.3
+// (verified externally) and both must stay clean going forward.
 import { describe, expect, it } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { get, set, state } from 'svelte/internal/client';

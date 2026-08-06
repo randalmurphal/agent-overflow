@@ -456,7 +456,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     let handle: PayloadExpansionHandle | undefined;
     // Entries are created lazily from whichever row component first asks,
     // but live until the item leaves retention. The svelte patch's
-    // "ownerless-roots" hunk (patches/svelte@5.56.3.patch) keeps this
+    // "ownerless-roots" hunk (patches/svelte@5.56.8.patch) keeps this
     // root from inheriting the creating row's component context — without
     // it, every entry pins that row instance's props, scopes, and
     // detached DOM for the entry's whole lifetime.

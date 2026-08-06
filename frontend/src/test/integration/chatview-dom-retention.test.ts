@@ -23,7 +23,7 @@
 //  - svelte keeps the last delegated event in a module slot
 //    (`last_propagated_event`); pristine svelte never clears it, so its
 //    `target` would retain a just-closed tree until the next user event.
-//    The "event-slot-release" hunk of patches/svelte@5.56.3.patch clears
+//    The "event-slot-release" hunk of patches/svelte@5.56.8.patch clears
 //    the slot a macrotask after each dispatch (focused regression:
 //    svelte-patch-event-slot.test.ts), so this suite needs no flush —
 //    the settle waits in collectHard let the clear fire.

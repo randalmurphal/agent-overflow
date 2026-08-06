@@ -1,7 +1,8 @@
 // Regression test for the "event-slot-release" hunk of
-// frontend/patches/svelte@5.56.3.patch.
+// frontend/patches/svelte@5.56.8.patch.
 //
-// Pristine svelte (through 5.56.3 and upstream main as of 2026-07)
+// Pristine svelte (through 5.56.8; PR sveltejs/svelte#18569 is this hunk
+// verbatim but is still open as of 2026-08)
 // stores every delegated event in a module-level slot
 // (`last_propagated_event` in internal/client/dom/elements/events.js) as
 // a deliberate Firefox workaround: if the event wrapper is GC'd

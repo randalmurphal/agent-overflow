@@ -1,0 +1,691 @@
+diff --git a/src/internal/client/dom/blocks/boundary.js b/src/internal/client/dom/blocks/boundary.js
+index 4f655a369504c2fd27f511744159694c2377a8da..845f0e31f6b6c8bd74d2cefd3839187446394168 100644
+--- a/src/internal/client/dom/blocks/boundary.js
++++ b/src/internal/client/dom/blocks/boundary.js
+@@ -13,6 +13,7 @@ import {
+ 	block,
+ 	branch,
+ 	destroy_effect,
++	flush_destroy_errors,
+ 	move_effect,
+ 	pause_effect
+ } from '../../reactivity/effects.js';
+@@ -459,19 +460,32 @@ export class Boundary {
+ 	 * @param {unknown} error
+ 	 */
+ 	#handle_error(error) {
+-		if (this.#main_effect) {
+-			destroy_effect(this.#main_effect);
+-			this.#main_effect = null;
+-		}
++		// PATCH(agent-overflow destroy-pass-errors): defer teardown errors so one
++		// throwing teardown can't strand the boundary's other effects, still
++		// queued for destruction below (#18415, PR #18566)
++		/** @type {import('../../reactivity/effects.js').DestroyErrors} */
++		var errors = [];
++		var completed = false;
+ 
+-		if (this.#pending_effect) {
+-			destroy_effect(this.#pending_effect);
+-			this.#pending_effect = null;
+-		}
++		try {
++			if (this.#main_effect) {
++				destroy_effect(this.#main_effect, true, errors);
++				this.#main_effect = null;
++			}
++
++			if (this.#pending_effect) {
++				destroy_effect(this.#pending_effect, true, errors);
++				this.#pending_effect = null;
++			}
+ 
+-		if (this.#failed_effect) {
+-			destroy_effect(this.#failed_effect);
+-			this.#failed_effect = null;
++			if (this.#failed_effect) {
++				destroy_effect(this.#failed_effect, true, errors);
++				this.#failed_effect = null;
++			}
++
++			completed = true;
++		} finally {
++			flush_destroy_errors(errors, completed);
+ 		}
+ 
+ 		if (hydrating) {
+diff --git a/src/internal/client/dom/blocks/branches.js b/src/internal/client/dom/blocks/branches.js
+index 141b914537e3e9a463061a34eab08cba85bff86e..dd3e4a22147ceacaa1b3708052c4f811b464fa84 100644
+--- a/src/internal/client/dom/blocks/branches.js
++++ b/src/internal/client/dom/blocks/branches.js
+@@ -3,6 +3,7 @@ import { Batch, current_batch } from '../../reactivity/batch.js';
+ import {
+ 	branch,
+ 	destroy_effect,
++	flush_destroy_errors,
+ 	move_effect,
+ 	pause_effect,
+ 	resume_effect
+@@ -110,55 +111,71 @@ export class BranchManager {
+ 			}
+ 		}
+ 
+-		for (const [b, k] of this.#batches) {
+-			this.#batches.delete(b);
++		// PATCH(agent-overflow destroy-pass-errors): defer teardown errors so one
++		// throwing teardown can't strand the branches still queued for destruction
++		// below (#18415, PR #18566)
++		/** @type {import('../../reactivity/effects.js').DestroyErrors} */
++		var errors = [];
++		var completed = false;
+ 
+-			if (b === batch) {
+-				// keep values for newer batches
+-				break;
+-			}
+-
+-			const offscreen = this.#offscreen.get(k);
+-
+-			if (offscreen) {
+-				// for older batches, destroy offscreen effects
+-				// as they will never be committed
+-				destroy_effect(offscreen.effect);
+-				this.#offscreen.delete(k);
+-			}
+-		}
+-
+-		// outro/destroy all onscreen effects...
+-		for (const [k, effect] of this.#onscreen) {
+-			// ...except the one that was just committed
+-			//    or those that are already outroing (else the transition is aborted and the effect destroyed right away)
+-			if (k === key || this.#outroing.has(k)) continue;
++		try {
++			for (const [b, k] of this.#batches) {
++				this.#batches.delete(b);
+ 
+-			const on_destroy = () => {
+-				const keys = Array.from(this.#batches.values());
++				if (b === batch) {
++					// keep values for newer batches
++					break;
++				}
+ 
+-				if (keys.includes(k)) {
+-					// keep the effect offscreen, as another batch will need it
+-					var fragment = document.createDocumentFragment();
+-					move_effect(effect, fragment);
++				const offscreen = this.#offscreen.get(k);
+ 
+-					fragment.append(create_text()); // TODO can we avoid this?
++				if (offscreen) {
++					// for older batches, destroy offscreen effects
++					// as they will never be committed
++					destroy_effect(offscreen.effect, true, errors);
++					this.#offscreen.delete(k);
++				}
++			}
+ 
+-					this.#offscreen.set(k, { effect, fragment });
++			// outro/destroy all onscreen effects...
++			for (const [k, effect] of this.#onscreen) {
++				// ...except the one that was just committed
++				//    or those that are already outroing (else the transition is aborted and the effect destroyed right away)
++				if (k === key || this.#outroing.has(k)) continue;
++
++				const on_destroy = () => {
++					const keys = Array.from(this.#batches.values());
++
++					if (keys.includes(k)) {
++						// keep the effect offscreen, as another batch will need it
++						var fragment = document.createDocumentFragment();
++						move_effect(effect, fragment);
++
++						fragment.append(create_text()); // TODO can we avoid this?
++
++						this.#offscreen.set(k, { effect, fragment });
++					} else {
++						// after an outro transition this callback runs once the pass has
++						// flushed — the destroy then owns its own errors and throws
++						// synchronously, same as any standalone destroy
++						destroy_effect(effect, true, errors.closed ? null : errors);
++					}
++
++					this.#outroing.delete(k);
++					this.#onscreen.delete(k);
++				};
++
++				if (this.#transition || !onscreen) {
++					this.#outroing.add(k);
++					pause_effect(effect, on_destroy, false);
+ 				} else {
+-					destroy_effect(effect);
++					on_destroy();
+ 				}
+-
+-				this.#outroing.delete(k);
+-				this.#onscreen.delete(k);
+-			};
+-
+-			if (this.#transition || !onscreen) {
+-				this.#outroing.add(k);
+-				pause_effect(effect, on_destroy, false);
+-			} else {
+-				on_destroy();
+ 			}
++
++			completed = true;
++		} finally {
++			flush_destroy_errors(errors, completed);
+ 		}
+ 	};
+ 
+@@ -170,11 +187,24 @@ export class BranchManager {
+ 
+ 		const keys = Array.from(this.#batches.values());
+ 
+-		for (const [k, branch] of this.#offscreen) {
+-			if (!keys.includes(k)) {
+-				destroy_effect(branch.effect);
+-				this.#offscreen.delete(k);
++		// PATCH(agent-overflow destroy-pass-errors): this loop initiates a destroy
++		// pass; collect teardown errors so one throwing teardown can't strand the
++		// branches still queued for destruction (#18415, PR #18566)
++		/** @type {import('../../reactivity/effects.js').DestroyErrors} */
++		var errors = [];
++		var completed = false;
++
++		try {
++			for (const [k, branch] of this.#offscreen) {
++				if (!keys.includes(k)) {
++					destroy_effect(branch.effect, true, errors);
++					this.#offscreen.delete(k);
++				}
+ 			}
++
++			completed = true;
++		} finally {
++			flush_destroy_errors(errors, completed);
+ 		}
+ 	};
+ 
+diff --git a/src/internal/client/dom/blocks/each.js b/src/internal/client/dom/blocks/each.js
+index 2df1d6ffa144e138c868bceec406d0899d74a864..08e9c444c32d4141697f0d14955bb60bfa18bbfb 100644
+--- a/src/internal/client/dom/blocks/each.js
++++ b/src/internal/client/dom/blocks/each.js
+@@ -29,6 +29,7 @@ import {
+ 	block,
+ 	branch,
+ 	destroy_effect,
++	flush_destroy_errors,
+ 	move_effect,
+ 	pause_effect,
+ 	resume_effect
+@@ -147,17 +148,30 @@ function destroy_effects(state, to_destroy, remove_dom = true) {
+ 		}
+ 	}
+ 
+-	for (var i = 0; i < to_destroy.length; i++) {
+-		var e = to_destroy[i];
++	// PATCH(agent-overflow destroy-pass-errors): this loop initiates a destroy
++	// pass; collect teardown errors so one throwing teardown can't strand the
++	// items still queued for destruction (#18415, PR #18566)
++	/** @type {import('../../reactivity/effects.js').DestroyErrors} */
++	var errors = [];
++	var completed = false;
+ 
+-		if (preserved_effects?.has(e)) {
+-			e.f |= EFFECT_OFFSCREEN;
++	try {
++		for (var i = 0; i < to_destroy.length; i++) {
++			var e = to_destroy[i];
+ 
+-			const fragment = document.createDocumentFragment();
+-			move_effect(e, fragment);
+-		} else {
+-			destroy_effect(to_destroy[i], remove_dom);
++			if (preserved_effects?.has(e)) {
++				e.f |= EFFECT_OFFSCREEN;
++
++				const fragment = document.createDocumentFragment();
++				move_effect(e, fragment);
++			} else {
++				destroy_effect(to_destroy[i], remove_dom, errors);
++			}
+ 		}
++
++		completed = true;
++	} finally {
++		flush_destroy_errors(errors, completed);
+ 	}
+ }
+ 
+diff --git a/src/internal/client/dom/elements/attributes.js b/src/internal/client/dom/elements/attributes.js
+index 589685b5f2e4468a4ecd7e94dedcd49398898a81..fd4c44d15db3fd6aaf90169ee0e03ebbe0111907 100644
+--- a/src/internal/client/dom/elements/attributes.js
++++ b/src/internal/client/dom/elements/attributes.js
+@@ -25,7 +25,13 @@ import { clsx } from '../../../shared/attributes.js';
+ import { set_class } from './class.js';
+ import { set_style } from './style.js';
+ import { ATTACHMENT_KEY, NAMESPACE_HTML, UNINITIALIZED } from '../../../../constants.js';
+-import { branch, destroy_effect, effect, managed } from '../../reactivity/effects.js';
++import {
++	branch,
++	destroy_effect,
++	effect,
++	flush_destroy_errors,
++	managed
++} from '../../reactivity/effects.js';
+ import { init_select, select_option } from './bindings/select.js';
+ import { flatten } from '../../reactivity/async.js';
+ 
+@@ -537,19 +543,32 @@ export function attribute_effect(
+ 				select_option(/** @type {HTMLSelectElement} */ (element), next.value);
+ 			}
+ 
+-			for (let symbol of Object.getOwnPropertySymbols(effects)) {
+-				if (!next[symbol]) destroy_effect(effects[symbol]);
+-			}
++			// PATCH(agent-overflow destroy-pass-errors): defer attachment-cleanup
++			// errors so one throwing cleanup can't strand the attachment effects
++			// still queued for destruction/replacement below (#18415, PR #18566)
++			/** @type {import('../../reactivity/effects.js').DestroyErrors} */
++			var errors = [];
++			var completed = false;
++
++			try {
++				for (let symbol of Object.getOwnPropertySymbols(effects)) {
++					if (!next[symbol]) destroy_effect(effects[symbol], true, errors);
++				}
++
++				for (let symbol of Object.getOwnPropertySymbols(next)) {
++					var n = next[symbol];
+ 
+-			for (let symbol of Object.getOwnPropertySymbols(next)) {
+-				var n = next[symbol];
++					if (symbol.description === ATTACHMENT_KEY && (!prev || n !== prev[symbol])) {
++						if (effects[symbol]) destroy_effect(effects[symbol], true, errors);
++						effects[symbol] = branch(() => attach(element, () => n));
++					}
+ 
+-				if (symbol.description === ATTACHMENT_KEY && (!prev || n !== prev[symbol])) {
+-					if (effects[symbol]) destroy_effect(effects[symbol]);
+-					effects[symbol] = branch(() => attach(element, () => n));
++					current[symbol] = n;
+ 				}
+ 
+-				current[symbol] = n;
++				completed = true;
++			} finally {
++				flush_destroy_errors(errors, completed);
+ 			}
+ 
+ 			prev = current;
+diff --git a/src/internal/client/dom/elements/events.js b/src/internal/client/dom/elements/events.js
+index 45e042a8c6ddb6837fad161f0f3ecba2f11fdf97..4047e16c477b54f260a795b5713c383d3cc74a64 100644
+--- a/src/internal/client/dom/elements/events.js
++++ b/src/internal/client/dom/elements/events.js
+@@ -159,12 +159,17 @@ export function delegate(events) {
+ }
+ 
+ // used to store the reference to the currently propagated event
+-// to prevent garbage collection between microtasks in Firefox
++// to prevent garbage collection between microtasks in Firefox (<= 141)
+ // If the event object is GCed too early, the expando __root property
+ // set on the event object is lost, causing the event delegation
+ // to process the event twice
+ let last_propagated_event = null;
+ 
++// PATCH(event-slot-release): whether a task is already queued to clear
++// `last_propagated_event`.
++// Upstream: https://github.com/sveltejs/svelte/pull/18569
++let last_propagated_event_clear_scheduled = false;
++
+ /**
+  * @this {EventTarget}
+  * @param {Event} event
+@@ -179,6 +184,26 @@ export function handle_event_propagation(event) {
+ 
+ 	last_propagated_event = event;
+ 
++	// PATCH(event-slot-release): the reference is only needed while the event
++	// can still reach another delegated root, i.e. during the current
++	// (synchronous) dispatch and its microtask checkpoints. Clearing it in a
++	// later task preserves the Firefox workaround while making sure the slot
++	// doesn't retain the last event forever — through `event.target` it would
++	// otherwise keep the entire detached subtree of whatever the user last
++	// clicked in alive until the next delegated event happens to arrive
++	// (in this app: a whole closed pane).
++	// Upstream: https://github.com/sveltejs/svelte/pull/18569
++	// Regression tests: src/test/integration/svelte-patch-event-slot.test.ts
++	// and src/test/integration/chatview-dom-retention.test.ts. Drop this hunk
++	// when they pass on an unpatched svelte release.
++	if (!last_propagated_event_clear_scheduled) {
++		last_propagated_event_clear_scheduled = true;
++		setTimeout(() => {
++			last_propagated_event_clear_scheduled = false;
++			last_propagated_event = null;
++		});
++	}
++
+ 	// composedPath contains list of nodes the event has propagated through.
+ 	// We check `event_symbol` to skip all nodes below it in case this is a
+ 	// parent of the `event_symbol` node, which indicates that there's nested
+diff --git a/src/internal/client/reactivity/deriveds.js b/src/internal/client/reactivity/deriveds.js
+index 6b48bc8a2320b895773eb0d222eb7bed92a5e0e9..323a31ac973e85fc06db8c4208a32e90834433a1 100644
+--- a/src/internal/client/reactivity/deriveds.js
++++ b/src/internal/client/reactivity/deriveds.js
+@@ -37,6 +37,7 @@ import {
+ 	destroy_effect,
+ 	destroy_effect_children,
+ 	effect_tracking,
++	flush_destroy_errors,
+ 	teardown
+ } from './effects.js';
+ import { eager_effects, internal_set, set_eager_effects, source } from './sources.js';
+@@ -319,8 +320,21 @@ export function destroy_derived_effects(derived) {
+ 	if (effects !== null) {
+ 		derived.effects = null;
+ 
+-		for (var i = 0; i < effects.length; i += 1) {
+-			destroy_effect(/** @type {Effect} */ (effects[i]));
++		// PATCH(agent-overflow destroy-pass-errors): this loop initiates a destroy
++		// pass; collect teardown errors so one throwing teardown can't strand the
++		// effects still queued for destruction (#18415, PR #18566)
++		/** @type {import('./effects.js').DestroyErrors} */
++		var errors = [];
++		var completed = false;
++
++		try {
++			for (var i = 0; i < effects.length; i += 1) {
++				destroy_effect(/** @type {Effect} */ (effects[i]), true, errors);
++			}
++
++			completed = true;
++		} finally {
++			flush_destroy_errors(errors, completed);
+ 		}
+ 	}
+ }
+diff --git a/src/internal/client/reactivity/effects.js b/src/internal/client/reactivity/effects.js
+index c5d195dfaeb41422bbdd2923f239b248be0240c9..dd2ce22bbaa90ca2ff5185d3e8d595cb9bc95350 100644
+--- a/src/internal/client/reactivity/effects.js
++++ b/src/internal/client/reactivity/effects.js
+@@ -40,7 +40,12 @@ import * as e from '../errors.js';
+ import { DEV } from 'esm-env';
+ import { define_property } from '../../shared/utils.js';
+ import { get_next_sibling } from '../dom/operations.js';
+-import { component_context, dev_current_component_function, dev_stack } from '../context.js';
++import {
++	component_context,
++	set_component_context,
++	dev_current_component_function,
++	dev_stack
++} from '../context.js';
+ import { Batch, collected_effects, current_batch } from './batch.js';
+ import { flatten } from './async.js';
+ import { without_reactive_context } from '../dom/elements/bindings/shared.js';
+@@ -262,11 +267,44 @@ export function eager_effect(fn) {
+  */
+ export function effect_root(fn) {
+ 	Batch.ensure();
+-	const effect = create_effect(ROOT_EFFECT | EFFECT_PRESERVED, fn);
+-
+-	return () => {
+-		destroy_effect(effect);
+-	};
++	// PATCH(agent-overflow ownerless-roots): create_effect stamps every
++	// effect with whatever is live at creation time (`ctx`, `parent`,
++	// `b`). A long-lived store-level $effect.root created during
++	// component render then pins that component instance — props
++	// accessors, closure scopes, detached DOM — for the root's whole
++	// lifetime, even though a root's lifetime is managed solely by the
++	// returned dispose function (pristine destroy_effect_children already
++	// detaches roots from a destroyed parent instead of destroying them).
++	// Create roots ownerless from birth instead, like mount()-level
++	// roots. Inner effects see the null ctx on every run because
++	// update_reaction restores component_context from each effect's own
++	// `ctx`. Dropped birth-stamps, all deliberate:
++	//  - ctx: getContext() is unavailable inside root bodies. Nothing in
++	//    this app or its deps calls it there; svelte's own effect_root
++	//    callers (toStore, custom-element $$me) don't either.
++	//  - parent: no INERT inheritance at creation, and toStore's
++	//    re-application of a captured active_effect around effect_root
++	//    no longer parents the root. Lifetime is unchanged either way —
++	//    parented roots were detached, never destroyed, by the parent.
++	//  - b: errors thrown in root bodies no longer route to the creating
++	//    component's <svelte:boundary>; this app uses no boundaries.
++	// Deliberate divergence from upstream (no issue filed) — re-evaluate
++	// on every svelte version bump.
++	// Regression test: src/test/integration/svelte-patch-ownerless-roots.test.ts
++	var previous_context = component_context;
++	var previous_effect = active_effect;
++	set_component_context(null);
++	set_active_effect(null);
++	try {
++		const effect = create_effect(ROOT_EFFECT | EFFECT_PRESERVED, fn);
++
++		return () => {
++			destroy_effect(effect);
++		};
++	} finally {
++		set_component_context(previous_context);
++		set_active_effect(previous_effect);
++	}
+ }
+ 
+ /**
+@@ -437,6 +475,52 @@ export function branch(fn) {
+ 	return create_effect(BRANCH_EFFECT | EFFECT_PRESERVED, fn);
+ }
+ 
++/**
++ * PATCH(agent-overflow destroy-pass-errors): teardown errors collected during a
++ * destroy pass, threaded explicitly through the destroy call chain. Deferring
++ * them lets the whole pass complete — every effect's structural cleanup
++ * (`remove_reactions`, DOM removal, unlinking) must run even if a sibling's
++ * teardown throws, otherwise the un-destroyed siblings stay subscribed to their
++ * dependencies and retain detached DOM for the lifetime of the parent block.
++ * The frame that CREATED the array (the owner — any destroy entry point that was
++ * not handed one) flushes it when its pass ends.
++ * `closed` is set on flush: destroy passes are synchronous, so a late push means
++ * the invariant was broken — surfaced loudly in DEV via {@link flush_destroy_errors}.
++ * Upstream: https://github.com/sveltejs/svelte/pull/18566
++ * (fixes https://github.com/sveltejs/svelte/issues/18415)
++ * Regression test: src/test/integration/svelte-patch-destroy-pass.test.ts.
++ * Drop this hunk (and its siblings in boundary.js / branches.js / each.js /
++ * attributes.js / deriveds.js) when that suite passes on an unpatched release.
++ * @typedef {unknown[] & { closed?: boolean }} DestroyErrors
++ */
++
++/**
++ * PATCH(agent-overflow destroy-pass-errors): conclude a destroy pass — rethrow
++ * the first deferred teardown error, surface the rest in DEV. Pass
++ * `completed = false` when the pass is unwinding because of a structural
++ * (non-teardown) error — that error must keep propagating, so the deferred
++ * teardown errors are surfaced in DEV instead of being rethrown over it.
++ * @param {DestroyErrors} errors
++ * @param {boolean} completed
++ */
++export function flush_destroy_errors(errors, completed) {
++	errors.closed = true;
++
++	if (errors.length === 0) return;
++
++	if (DEV) {
++		// only the first deferred teardown error can be rethrown (none, if a structural
++		// error is already propagating); surface the rest in DEV so a cascade of
++		// throwing teardowns isn't silently swallowed (#18415)
++		for (var i = completed ? 1 : 0; i < errors.length; i++) {
++			// eslint-disable-next-line no-console
++			console.error(errors[i]);
++		}
++	}
++
++	if (completed) throw errors[0];
++}
++
+ /**
+  * @param {Effect} effect
+  */
+@@ -447,6 +531,10 @@ export function execute_effect_teardown(effect) {
+ 		const previous_reaction = active_reaction;
+ 		set_is_destroying_effect(true);
+ 		set_active_reaction(null);
++		// PATCH(agent-overflow destroy-pass-errors): a destroy triggered from
++		// within a teardown (e.g. unmounting another root, guarded by the user's
++		// own try/catch) receives no errors array, so it is naturally its own
++		// pass and throws synchronously — no state to isolate
+ 		try {
+ 			teardown.call(null);
+ 		} finally {
+@@ -459,9 +547,27 @@ export function execute_effect_teardown(effect) {
+ /**
+  * @param {Effect} signal
+  * @param {boolean} remove_dom
++ * @param {DestroyErrors | null} [errors] enclosing destroy pass's accumulator; omitted = this call owns the pass
+  * @returns {void}
+  */
+-export function destroy_effect_children(signal, remove_dom = false) {
++export function destroy_effect_children(signal, remove_dom = false, errors = null) {
++	if (errors === null) {
++		// PATCH(agent-overflow destroy-pass-errors): this call initiates the
++		// destroy pass, so it owns the errors array
++		/** @type {DestroyErrors} */
++		var owned = [];
++		var completed = false;
++
++		try {
++			destroy_effect_children(signal, remove_dom, owned);
++			completed = true;
++		} finally {
++			flush_destroy_errors(owned, completed);
++		}
++
++		return;
++	}
++
+ 	var effect = signal.first;
+ 	signal.first = signal.last = null;
+ 
+@@ -480,7 +586,7 @@ export function destroy_effect_children(signal, remove_dom = false) {
+ 			// this is now an independent root
+ 			effect.parent = null;
+ 		} else {
+-			destroy_effect(effect, remove_dom);
++			destroy_effect(effect, remove_dom, errors);
+ 		}
+ 
+ 		effect = next;
+@@ -489,15 +595,33 @@ export function destroy_effect_children(signal, remove_dom = false) {
+ 
+ /**
+  * @param {Effect} signal
++ * @param {DestroyErrors | null} [errors] enclosing destroy pass's accumulator; omitted = this call owns the pass
+  * @returns {void}
+  */
+-export function destroy_block_effect_children(signal) {
++export function destroy_block_effect_children(signal, errors = null) {
++	if (errors === null) {
++		// PATCH(agent-overflow destroy-pass-errors): this call initiates the
++		// destroy pass, so it owns the errors array
++		/** @type {DestroyErrors} */
++		var owned = [];
++		var completed = false;
++
++		try {
++			destroy_block_effect_children(signal, owned);
++			completed = true;
++		} finally {
++			flush_destroy_errors(owned, completed);
++		}
++
++		return;
++	}
++
+ 	var effect = signal.first;
+ 
+ 	while (effect !== null) {
+ 		var next = effect.next;
+ 		if ((effect.f & BRANCH_EFFECT) === 0) {
+-			destroy_effect(effect);
++			destroy_effect(effect, true, errors);
+ 		}
+ 		effect = next;
+ 	}
+@@ -506,9 +630,38 @@ export function destroy_block_effect_children(signal) {
+ /**
+  * @param {Effect} effect
+  * @param {boolean} [remove_dom]
++ * @param {DestroyErrors | null} [errors] enclosing destroy pass's accumulator; omitted = this call owns the pass
+  * @returns {void}
+  */
+-export function destroy_effect(effect, remove_dom = true) {
++export function destroy_effect(effect, remove_dom = true, errors = null) {
++	if (errors !== null) {
++		// PATCH(agent-overflow destroy-pass-errors): part of an enclosing
++		// destroy pass — the owner of `errors` flushes it
++		destroy(effect, remove_dom, errors);
++		return;
++	}
++
++	// PATCH(agent-overflow destroy-pass-errors): this call initiates the destroy
++	// pass, so it owns the errors array
++	/** @type {DestroyErrors} */
++	var owned = [];
++	var completed = false;
++
++	try {
++		destroy(effect, remove_dom, owned);
++		completed = true;
++	} finally {
++		flush_destroy_errors(owned, completed);
++	}
++}
++
++/**
++ * @param {Effect} effect
++ * @param {boolean} remove_dom
++ * @param {DestroyErrors} errors
++ * @returns {void}
++ */
++function destroy(effect, remove_dom, errors) {
+ 	var removed = false;
+ 
+ 	if (
+@@ -521,7 +674,7 @@ export function destroy_effect(effect, remove_dom = true) {
+ 	}
+ 
+ 	effect.f |= DESTROYING;
+-	destroy_effect_children(effect, remove_dom && !removed);
++	destroy_effect_children(effect, remove_dom && !removed, errors);
+ 	remove_reactions(effect, 0);
+ 
+ 	var transitions = effect.nodes && effect.nodes.t;
+@@ -532,7 +685,26 @@ export function destroy_effect(effect, remove_dom = true) {
+ 		}
+ 	}
+ 
+-	execute_effect_teardown(effect);
++	try {
++		execute_effect_teardown(effect);
++	} catch (error) {
++		if (DEV && errors.closed) {
++			// PATCH(agent-overflow destroy-pass-errors): destroy passes are
++			// synchronous; a teardown error arriving after its pass flushed means
++			// that invariant was broken — surface the violation loudly and rethrow
++			// the error immediately rather than losing it in a closed array
++			// eslint-disable-next-line no-console
++			console.error(
++				'Svelte internal invariant violated: a teardown error was reported after its destroy pass finished'
++			);
++			throw error;
++		}
++
++		// PATCH(agent-overflow destroy-pass-errors): defer the error so a throwing
++		// teardown can't abort the destroy pass and strand the effects still
++		// queued for destruction (#18415)
++		errors.push(error);
++	}
+ 
+ 	effect.f ^= DESTROYING;
+ 	effect.f |= DESTROYED;

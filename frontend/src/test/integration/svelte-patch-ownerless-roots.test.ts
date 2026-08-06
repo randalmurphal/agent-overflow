@@ -1,5 +1,5 @@
 // Regression test for the "ownerless-roots" hunk of
-// frontend/patches/svelte@5.56.3.patch.
+// frontend/patches/svelte@5.56.8.patch.
 //
 // Pristine svelte stamps every effect — including $effect.root — with the
 // component context and parent effect that happen to be live at creation

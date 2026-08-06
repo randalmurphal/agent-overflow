@@ -3,7 +3,6 @@ import App from './App.svelte';
 import { appTitleForEnv } from './appTitle';
 import { installBrowserHistoryGuard } from './lib/utils/browserHistoryGuard';
 import { installFrontendErrorCapture } from './lib/utils/frontendErrorCapture';
-import { maybeInstallZombieMintProbe } from './lib/utils/zombieMintProbe';
 import type { MemoryReport } from './lib/utils/memoryReport';
 
 // Self-hosted fonts. Four weights of each family covers every surface
@@ -25,12 +24,6 @@ document.title = appTitleForEnv(import.meta.env);
 // Install before mount so mount-time exceptions are captured too.
 installFrontendErrorCapture();
 installBrowserHistoryGuard();
-// Receiver for the patched Svelte runtime's leak probe. The probe is
-// intentionally opt-in because the global callback itself shows up as
-// a heap root in production/debug snapshots; enable with
-// VITE_AGENT_OVERFLOW_ZOMBIE_MINT_PROBE=1 when re-rolling the Svelte
-// patch or investigating a suspected regression.
-maybeInstallZombieMintProbe();
 // On-demand memory accounting for console / CDP probes. The stub keeps
 // the collector chunk out of the startup graph entirely; the dynamic
 // import resolves from the module cache on every call after the first.

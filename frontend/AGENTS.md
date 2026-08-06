@@ -252,32 +252,49 @@ directly; packages are hardlinked from the pnpm store, so direct edits
 corrupt every project on the machine. Use
 `pnpm patch <pkg>@<version> --edit-dir <dir>` + `pnpm patch-commit`.
 
-- `svelte@5.56.3.patch` — four hunks with different drop rules:
-  1. **zombie-mint fix** — reactivity leak where deriveds read during
-     component init are force-connected and never released (upstream
-     [sveltejs/svelte#18420](https://github.com/sveltejs/svelte/issues/18420)).
-     Drop when `src/test/integration/svelte-patch-zombie-leak.test.ts`
-     passes on an unpatched release.
-  2. **ownerless-roots** — `$effect.root` no longer inherits the
+- `svelte@5.56.8.patch` — three hunks with different drop rules:
+  1. **ownerless-roots** — `$effect.root` no longer inherits the
      creating component's context/parent, so store-level roots
      (threadRowUiState's expansion registry) don't pin dead row
      instances. Deliberate divergence, no upstream issue — carry it
      forward and re-evaluate on every version bump. Regression suite:
      `svelte-patch-ownerless-roots.test.ts`.
-  3. **zombie-mint probe** — diagnostic tripwire (receiver:
-     `src/lib/utils/zombieMintProbe.ts`) that fires if a future svelte
-     re-introduces the hunk-1 shape. Keep while hunk 1 exists; drop
-     alongside it.
-  4. **event-slot-release** — svelte's delegated-event dispatcher pins
+  2. **event-slot-release** — svelte's delegated-event dispatcher pins
      every event in a module slot (`last_propagated_event`, a Firefox
      GC workaround) and never clears it, so `event.target` anchors the
      last-clicked component's detached subtree — a whole closed pane —
      until the next delegated event. The hunk schedules a macrotask
      clear after each dispatch (strictly after propagation settles, so
-     the Firefox window is preserved). Unreported upstream as of
-     2026-07 (upstream `main` still never clears). Drop when
+     the Firefox window is preserved). Upstream PR
+     [#18569](https://github.com/sveltejs/svelte/pull/18569) (open) is
+     this hunk verbatim. Drop when
      `svelte-patch-event-slot.test.ts` passes on an unpatched release;
      `chatview-dom-retention.test.ts` also relies on the clear.
+  3. **destroy-pass-errors** — a throwing user `$effect` teardown aborts
+     the sibling-destroy loop (keyed `{#each}` reconcile, branch
+     teardown, unmount), so the effects still queued for destruction stay
+     subscribed and retain detached DOM for the parent's lifetime.
+     Teardown errors are collected into an array threaded through the
+     destroy call chain; `destroy_effect`'s single catch site pushes and
+     completes all structural cleanup, and the entry point that created
+     the array rethrows the first error in a `try`/`finally` once its
+     pass ends (`flush_destroy_errors(errors, completed)`). Touches
+     `reactivity/{effects,deriveds}.js` and
+     `dom/blocks/{boundary,branches,each}.js` +
+     `dom/elements/attributes.js`. Upstream PR
+     [#18566](https://github.com/sveltejs/svelte/pull/18566) (open) for
+     [#18415](https://github.com/sveltejs/svelte/issues/18415); this
+     hunk is that PR's source diff. Drop when
+     `svelte-patch-destroy-pass.test.ts` passes on an unpatched release.
+
+  Dropped on the 5.56.3 → 5.56.8 re-roll: the **zombie-mint fix** and its
+  **probe** (`src/lib/utils/zombieMintProbe.ts`, deleted). Upstream fixed
+  the same class of leak in 5.56.5 via
+  [#18517](https://github.com/sveltejs/svelte/pull/18517) — `update_effect`
+  now leaves `is_updating_effect` false for branch/root effects, so
+  init-time prop reads no longer force-connect what they read.
+  `svelte-patch-zombie-leak.test.ts` passes unpatched on 5.56.8 and stays
+  as the tripwire if that regresses.
 - `svelte-streamdown@3.1.2.patch` — markdown-pipeline fixes, grouped by
   concern. Behavior is held across version bumps: re-roll by
   `git apply --reject`-ing the prior patch into a clean `pnpm patch`
