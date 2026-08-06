@@ -6,16 +6,23 @@
   // `max-h-[3lh] overflow-hidden` box, so older lines overflow (and are
   // clipped) off the TOP while the newest line stays pinned at the bottom.
   //
-  // This is intentionally pure CSS. The previous implementation pinned the tail
-  // imperatively (`$effect: bodyEl.scrollTop = bodyEl.scrollHeight`) with `text`
-  // as its only dependency, so it never re-ran on a width change. With
-  // `whitespace-pre-wrap`, a mid-stream width oscillation (the a5a5d032 scroll-
-  // spring width-reflow strand) re-wrapped the body, grew its content height,
-  // and left the stale `scrollTop` scrolled UP — the tail jumped out of the
-  // 3-line window until the next delta re-pinned it. The flex-end anchor is
-  // re-evaluated on every reflow (width re-wrap included), so it cannot go
-  // stale, and it does the work without a forced `scrollHeight` read per delta.
-  // Regression: tailClampedText.browser.test.ts.
+  // The ANCHOR is intentionally pure CSS. The previous implementation pinned
+  // the tail imperatively (`$effect: bodyEl.scrollTop = bodyEl.scrollHeight`)
+  // with `text` as its only dependency, so it never re-ran on a width change.
+  // With `whitespace-pre-wrap`, a mid-stream width oscillation (the a5a5d032
+  // scroll-spring width-reflow strand) re-wrapped the body, grew its content
+  // height, and left the stale `scrollTop` scrolled UP — the tail jumped out
+  // of the 3-line window until the next delta re-pinned it. The flex-end
+  // anchor is re-evaluated on every reflow (width re-wrap included), so it
+  // cannot go stale, and it does the work without a forced `scrollHeight`
+  // read per delta. Regression: tailClampedText.browser.test.ts.
+  //
+  // On TOP of that anchor sits one presentational enhancement: the
+  // line-slide FLIP (see the animation section below), which turns the
+  // anchor's instant one-line re-pack at each line boundary into a short
+  // transition. It is decoration over the CSS truth — every guard path
+  // falls back to exactly the un-animated anchor, so correctness never
+  // depends on it.
   //
   // Callers feed a MONOTONICALLY-GROWING live tail (the per-pane smoother
   // tail) — never a pre-trimmed sliding window, whose moving start offset
@@ -34,6 +41,13 @@
   // threadStreamingReveal.svelte.ts). When expanded the clamp, anchor, and
   // window are all dropped (plain `block`; full text flows to full height).
   import { untrack } from 'svelte';
+  import { motionReduced } from '../../utils/reducedMotion';
+  import {
+    SLIDE_MS,
+    slideDecision,
+    transformTranslateY,
+    type SlideObservation,
+  } from './tailSlide';
   import {
     TAIL_CLAMP_LINES,
     TAIL_WINDOW_CAP_CHARS,
@@ -60,6 +74,7 @@
   } = $props();
 
   let el: HTMLSpanElement | undefined = $state();
+  let innerEl: HTMLSpanElement | undefined = $state();
 
   /** Start of the wrap-stable window into `text` while collapsed. */
   let cutOffset = $state(0);
@@ -72,6 +87,86 @@
   let prevLastCharCode = 0;
   let cutFirstCharCode = 0;
   let measureFloor = 0;
+
+  // ── Line-slide animation ─────────────────────────────────────────────
+  // FLIP on the inner wrapper: when the flex-end anchor re-packs the
+  // content one line up at a line boundary, invert the jump with a
+  // transform in the same frame the layout moved (ResizeObserver
+  // callbacks run after layout, before paint, so nothing flashes), then
+  // release it to rest — the newest line rises from under the bottom
+  // clip edge, which is exactly what a smooth ticker scroll looks like.
+  //
+  // The RO watches the inner wrapper and the clamp box, whose heights
+  // only change at line boundaries (and reflows) — zero per-reveal-tick
+  // cost, no forced layout reads on the streaming path. WHICH
+  // observations animate — and the full recalibrate-and-snap matrix
+  // (mount, width reflow, box-height change incl. the expanded flip,
+  // whole-window discontinuity, hidden ancestor) — is tailSlide.ts's
+  // `slideDecision`, unit-tested there. `slideMemory === null` is the
+  // one reset sentinel: the RO's next delivery recalibrates.
+  //
+  // The motion itself is one fill-none `Element.animate()` from the
+  // inverted offset to rest. Spike-verified (2026-08-06, Playwright
+  // Chromium + WebKit): an animation created inside an RO callback
+  // applies before the first paint after the layout move — same no-flash
+  // guarantee as an inline style write, without its costs: at finish the
+  // effect stops applying on its own (the element carries no inline
+  // residue, ever), and every guard path is a single cancel() instead of
+  // a transition/transform unwind plus rAF bookkeeping. (Transform
+  // transitions and WAAPI both run on the compositor; that is not the
+  // difference. Note the animated inner promotes a layer sized to the
+  // FULL windowed content, and `contain: paint` on the box measurably
+  // does not bound it — tiled rasterization is what keeps the real cost
+  // near the visible tiles.)
+  let slideMemory: SlideObservation | null = null;
+  let slideAnim: Animation | null = null;
+
+  function clearSlide(): void {
+    slideAnim?.cancel();
+    slideAnim = null;
+  }
+
+  $effect(() => {
+    const inner = innerEl;
+    const outer = el;
+    if (!inner || !outer || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      // Layout is clean inside an RO callback, so these rect reads force
+      // nothing. Fractional rects on purpose: the 19.5px line height and
+      // sub-pixel width oscillations both round away in offset* ints.
+      const rect = inner.getBoundingClientRect();
+      const decision = slideDecision(
+        slideMemory,
+        { innerH: rect.height, innerW: rect.width, outerH: outer.getBoundingClientRect().height },
+        // The live interpolated translateY — a slide landing mid-slide
+        // compounds from where the text IS, so the start position cannot
+        // come from a remembered target.
+        transformTranslateY(getComputedStyle(inner).transform),
+      );
+      slideMemory = decision.memory;
+      if (decision.kind === 'clear') {
+        clearSlide();
+        return;
+      }
+      // Gate checked after the baseline update so a low-power toggle
+      // mid-stream leaves the geometry bookkeeping calibrated.
+      if (decision.kind !== 'slide' || motionReduced()) return;
+      // startPx already carries the in-flight displacement (read above,
+      // before this cancel), so replacing the animation is seamless —
+      // nothing paints between cancel and animate in the same callback.
+      slideAnim?.cancel();
+      slideAnim = inner.animate(
+        [{ transform: `translateY(${decision.startPx}px)` }, { transform: 'translateY(0px)' }],
+        { duration: SLIDE_MS, easing: 'ease-out' },
+      );
+    });
+    ro.observe(inner);
+    ro.observe(outer);
+    return () => {
+      ro.disconnect();
+      clearSlide();
+    };
+  });
 
   // Seed the window before the first render: a windowing remount can
   // arrive with the full retained tail (tens of KB), and starting at
@@ -102,6 +197,13 @@
     if (!isMonotonicAppend(t, prevLen, prevLastCharCode, cut, cutFirstCharCode)) {
       cut = 0;
       measureFloor = 0;
+      // The content was REPLACED (retained-tail drop → trimmed summary).
+      // Any clip change is a swap, not a slide — recalibrate, and drop an
+      // in-flight slide even if the swap lands height-identical (the one
+      // swap shape the RO cannot see). The expanded flip needs no arm
+      // here: it moves the clamp box, and the RO watches the box.
+      slideMemory = null;
+      clearSlide();
     }
     prevLen = t.length;
     prevLastCharCode = t.length > 0 ? t.charCodeAt(t.length - 1) : 0;
@@ -117,7 +219,7 @@
         // and the measured offset is relative to it — which is why a
         // run that just reset the cut must not measure (the DOM still
         // shows the pre-reset window until the next flush).
-        const node = el?.firstChild;
+        const node = innerEl?.firstChild;
         if (el && node instanceof Text) {
           const lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight);
           const rel = measuredLineStartOffset(node, TAIL_WINDOW_KEEP_LINES, lineHeight);
@@ -139,6 +241,11 @@
      adds only the height beyond the clamp (utils/activityRunClip.ts). Present
      in both states: the cap reads it while the row is EXPANDED, including a
      row that remounts already-expanded and never renders its clamp. -->
+<!-- The inner wrapper exists for the slide animation: it is the element
+     whose height tracks the content (the RO's line-boundary signal) and the
+     transform target for the FLIP. It must be the outer flex column's ONLY
+     child — with `whitespace-pre-wrap`, stray template whitespace inside
+     the flex container would become a real anonymous flex item. -->
 <span
   bind:this={el}
   {id}
@@ -149,4 +256,4 @@
     expanded ? 'block' : 'flex flex-col justify-end max-h-[3lh] overflow-hidden',
     extraClass || null,
   ]}
->{rendered}</span>
+><span bind:this={innerEl} class="block">{rendered}</span></span>

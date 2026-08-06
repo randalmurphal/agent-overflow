@@ -57,7 +57,7 @@
 // out-of-content height changes; the seam is identical on both surfaces.
 
 import { tick, untrack } from 'svelte';
-import { getSettings } from '../../stores/settings.svelte';
+import { motionReduced } from '../reducedMotion';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import { appMotionActive, registerAppMotionProbe } from './appMotion';
 import { createScrollIntent, isSelectingInside } from './intent';
@@ -234,34 +234,9 @@ export function createUseStickToBottomController(
     holdContentLease,
     clearContentLease,
   } = chokepoint;
-  // Cached MediaQueryList — `matchMedia('(prefers-reduced-motion: reduce)')`
-  // is called inside both the contentRO positive-delta branch and the
-  // spring tick (which runs at 60Hz). Parsing the query and constructing
-  // a fresh `MediaQueryList` per call is wasted work; query the cached
-  // list's `matches` instead. Cached lazily so SSR / non-window contexts
-  // don't blow up.
-  let reducedMotionQuery: MediaQueryList | null | undefined;
-  function prefersReducedMotion(): boolean {
-    if (reducedMotionQuery === undefined) {
-      reducedMotionQuery = typeof window !== 'undefined'
-        && typeof window.matchMedia === 'function'
-        ? window.matchMedia('(prefers-reduced-motion: reduce)')
-        : null;
-    }
-    return reducedMotionQuery?.matches ?? false;
-  }
-  // The app-level low-power setting rides the same gate as the OS
-  // reduced-motion preference: both mean "place instantly, never
-  // spring-glide". Spring glides are the app's dominant GPU cost —
-  // one compositor frame per vsync for the whole chase — so this is
-  // the scroll half of low-power mode (the reveal smoother and the
-  // working-LED chase gate on the same setting at their own sites).
-  // Read live (plain non-reactive read; the spring gate and resolver
-  // sample it per event/tick, so a toggle applies to the next
-  // decision without any subscription).
-  function motionReduced(): boolean {
-    return prefersReducedMotion() || getSettings().lowPowerMode;
-  }
+  // OS reduced-motion OR the app's low-power setting, both meaning
+  // "place instantly, never spring-glide" — see utils/reducedMotion.ts,
+  // the shared gate every JS motion site rides.
 
   // ===== Spring chase =====
   // Kinematics live in scroll/spring.ts. This wiring hands the spring its

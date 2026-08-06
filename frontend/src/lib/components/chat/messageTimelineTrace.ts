@@ -5,6 +5,7 @@
 
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { ThreadPane } from '../../stores/thread.svelte';
+import { transformTranslateY } from './tailSlide';
 import { timelineNodeTurnIndex, type TimelineNode } from '../../utils/subagentGrouping';
 import {
   isUiOracleTraceEnabled,
@@ -386,15 +387,19 @@ const TAIL_JUMP_MIN_PX = 2;
 
 // Pixels the newest glyph sits BELOW the bottom edge of the clamped window.
 // A forced read — callers gate it to the rare re-wrap-without-delta frame.
-// Relies on TailClampedText rendering a flat `<span>{text}</span>`, so
-// `lastChild` is the trailing text node; if the component ever wraps `text` in
-// a child element this measures whole-content bottom (≈ body bottom for
-// bottom-anchored content) and silently goes blind — keep them together.
+// Descends to the deepest trailing leaf: TailClampedText renders `text`
+// inside an inner slide wrapper (the line-slide FLIP's transform target), so
+// `body.lastChild` is an element, not the text node. Client rects include
+// that wrapper's in-flight transform, and a re-wrap can land mid-slide (the
+// component snaps NEW slides on a width change but lets an in-flight release
+// finish) — subtract its live translateY so the oracle measures the LAYOUT
+// position and a slide can't read as a stale-pin jump.
 // (Twin of `lastCharRect`/`tailOverflowPx` in tailClampedText.browser.test.ts;
-// intentionally separate — the test descends to the deepest leaf and keeps
-// sub-pixel precision, this rounds and thresholds for a dev-trace payload.)
+// intentionally separate — the test keeps sub-pixel precision, this rounds
+// and thresholds for a dev-trace payload.)
 function tailOverflowPx(body: HTMLElement): number {
-  const last = body.lastChild;
+  let last: Node | null = body.lastChild;
+  while (last?.lastChild) last = last.lastChild;
   if (!last) return 0;
   const len = last.textContent?.length ?? 0;
   const range = document.createRange();
@@ -404,7 +409,11 @@ function tailOverflowPx(body: HTMLElement): number {
   } else {
     range.selectNodeContents(last);
   }
-  return Math.round(range.getBoundingClientRect().bottom - body.getBoundingClientRect().bottom);
+  const wrapper = body.firstElementChild;
+  const slideTy = wrapper ? transformTranslateY(getComputedStyle(wrapper).transform) : 0;
+  return Math.round(
+    range.getBoundingClientRect().bottom - slideTy - body.getBoundingClientRect().bottom,
+  );
 }
 
 export function startReasoningTailJumpTrace(root: Element): () => void {

@@ -42,6 +42,10 @@
 // Reduced motion: writes are withheld and anything written is cleared,
 // leaving the static CSS rest states (pulse at base opacity, LEDs at
 // their resting 0.45, glow at t=0 border-only, spinner unrotated).
+// Deliberately the OS preference only: the app's low-power setting is
+// enforced upstream — surfaces pass `animate={false}` / drop the marker
+// classes, so low power leaves the ticker nothing to drive.
+import { prefersReducedMotion, reducedMotionQuery } from './reducedMotion';
 
 /** One step slot. Every waveform's value changes only on multiples of
  * this (pulse 125ms, LEDs/glow 250ms, spin 125ms), so one grid-aligned
@@ -99,7 +103,6 @@ type StyledKind = 'pulse' | 'leds' | 'glow' | 'spin';
 
 let refs = 0;
 let timer: ReturnType<typeof setTimeout> | null = null;
-let reducedMotionQuery: MediaQueryList | null = null;
 /** Elements carrying ticker-written inline styles, for mark-and-sweep
  * clearing when they lose their marker class or leave the collections. */
 const styled = new Map<Element, StyledKind>();
@@ -187,7 +190,7 @@ function writeStyles(tMs: number): void {
 }
 
 function tick(): void {
-  if (reducedMotionQuery?.matches) {
+  if (prefersReducedMotion()) {
     // Static indicators: fall back to the CSS rest states.
     clearAllStyles();
   } else if (!document.hidden) {
@@ -206,11 +209,7 @@ function syncNow(): void {
 }
 
 function install(): void {
-  reducedMotionQuery =
-    typeof window.matchMedia === 'function'
-      ? window.matchMedia('(prefers-reduced-motion: reduce)')
-      : null;
-  reducedMotionQuery?.addEventListener('change', syncNow);
+  reducedMotionQuery()?.addEventListener('change', syncNow);
   document.addEventListener('visibilitychange', syncNow);
   tick();
 }
@@ -218,8 +217,7 @@ function install(): void {
 function uninstall(): void {
   if (timer !== null) clearTimeout(timer);
   timer = null;
-  reducedMotionQuery?.removeEventListener('change', syncNow);
-  reducedMotionQuery = null;
+  reducedMotionQuery()?.removeEventListener('change', syncNow);
   document.removeEventListener('visibilitychange', syncNow);
   clearAllStyles();
 }
