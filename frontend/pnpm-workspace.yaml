@@ -1,3 +1,9 @@
+# ws: @vitest/browser 4.x pins a ws range with known advisories (fragment
+# DoS < 8.21.0, uninitialized-memory disclosure < 8.20.1); dev-only test
+# server, but override until vitest moves its pin.
+overrides:
+  ws: '>=8.21.0'
+
 patchedDependencies:
   svelte-streamdown@3.1.2: patches/svelte-streamdown@3.1.2.patch
   svelte@5.56.8: patches/svelte@5.56.8.patch
