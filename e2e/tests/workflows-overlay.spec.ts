@@ -278,7 +278,12 @@ test('/workflow completes in the composer and expands on the wire, not in the tr
   const wireText = (await received).report.input ?? '';
 
   // Typed text first (it is the instruction), block second (it is context).
-  expect(wireText.startsWith('/workflow start the release\n\n')).toBe(true);
+  // The leading "\n" is Claude's outbound slash guard
+  // (internal/provider/claude/slash_guard.go): a first word that is
+  // command-shaped would be routed to the CLI's own command router and never
+  // reach the model, so the send prefixes one newline. `/workflow` is an AO
+  // composer command, not a provider command, so it takes the guard.
+  expect(wireText.startsWith('\n/workflow start the release\n\n')).toBe(true);
   expect(wireText).toContain('Agent Overflow workflows are available');
   expect(wireText).toContain('agent-overflow run start');
   expect(wireText).toContain('ctx-flow');
