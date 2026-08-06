@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
@@ -1054,14 +1053,34 @@ func newTestAppWithStore(t *testing.T) *App {
 		gitWatchPumps:          make(map[string]*gitWatchPump),
 	}
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
-	app.codexModelCatalogOnce.Do(func() {
-		app.codexModelCatalog = codexmodels.NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) {
-			return nil, errors.New("live Codex catalog disabled in App tests")
-		}, time.Now)
-	})
+	// The same structural spawn/home isolation setupE2EApp gets. This
+	// fixture is the majority one (~600 call sites); before this call was
+	// here, its defaults left `claude`/`codex` resolvable from PATH and
+	// HOME real, and the only thing between a detached side-effect
+	// goroutine (thread titles, commit messages) and the developer's real
+	// ~/.claude was testThread() happening not to use the default title —
+	// the exact shape of incident 2026-08-03. Includes the Codex catalog
+	// stub and the textgen poison; tests that assert those behaviors
+	// install their own fakes over the top.
+	isolateE2EProviderSpawns(t, app)
 	t.Cleanup(app.appCancel)
 	ensureDefaultTestProject(t, app)
 	return app
+}
+
+// resetProviderBinarySettings restores the bare-name binary defaults that
+// isolateE2EProviderSpawns poisons. For tests that assert PATH-resolution and
+// provider-fallback behavior through an injected lookPathFn — the fake makes
+// a real spawn impossible, and the assertions are about the names "claude"
+// and "codex", not about a poison path.
+func resetProviderBinarySettings(t *testing.T, app *App) {
+	t.Helper()
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": "claude",
+		"codexBinaryPath":  "codex",
+	}); err != nil {
+		t.Fatalf("reset provider binary settings: %v", err)
+	}
 }
 
 func insertCompletedTurnForAppTest(t *testing.T, app *App, threadID, turnID string, startedAt, completedAt int64) {

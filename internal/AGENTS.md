@@ -159,8 +159,12 @@ one closest to what you're touching.
   Use `testutil.WriteMockClaudeScript` / `WriteMockCodexSession` (or a
   package-local fake binary) for anything that spawns, and an injected
   temp home for anything that reads or writes provider state. App-level
-  tests get this enforced by `setupE2EApp`'s poisoned defaults; package
-  tests under `internal/` have no such net and must isolate themselves.
+  tests get this enforced by the fixtures themselves: `setupE2EApp` AND
+  `newTestAppWithStore` both run `isolateE2EProviderSpawns` (poisoned
+  binaries, detached HOME, stubbed textgen/catalog), and
+  `resolveTextGenerationExecutor` refuses real CLI execution in any test
+  binary. Package tests under `internal/` have no such net and must
+  isolate themselves.
 - `make go-test` must pass cleanly before any commit. Use
   `go test <pkg> -count=1` only for focused reruns.
 

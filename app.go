@@ -578,6 +578,18 @@ type App struct {
 	// the developer's real Claude Code login. Set once before Start;
 	// never mutated afterwards.
 	fileKeychainOverride bool
+	// credentialHomeOverride, when non-empty, replaces os.UserHomeDir()
+	// as the home that provideraccounts.Credentials operates under —
+	// slot storage, canonical credential, ephemeral probe homes, and the
+	// orphan prune all resolve beneath it. Harness mode always sets it
+	// to the harness-owned home so that even AO_HARNESS_KEEP_HOME (which
+	// keeps the real $HOME for provider session-file replay) can never
+	// point the credential surface at the developer's real ~/.claude /
+	// ~/.codex. Set once before Start; never mutated afterwards.
+	credentialHomeOverride string
+	// accountAuditPath is the durable append-only file auditAccountEvent
+	// writes to (<dataDir>/account-audit.log). Written once by initStores.
+	accountAuditPath string
 	// backgroundFetchDisabled suppresses the background `git fetch`
 	// cadence entirely. Harness mode sets it: e2e runs must be
 	// deterministic and offline, and the harness's fixture repositories

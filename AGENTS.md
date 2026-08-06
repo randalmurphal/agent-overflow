@@ -215,10 +215,13 @@ thread — `close_agent` is a model tool only.
   over nine days and killed the active account's OAuth grant). Spawning
   a real CLI is what `make provider-smoke` is for — an explicit, manual,
   token-spending gate — never `make go-test`. Enforcement:
-  `setupE2EApp` poisons both provider binary settings, stubs text
-  generation and the live Codex model catalog, detaches
-  HOME/USERPROFILE, and fails any test that still spawns
-  (`app_e2e_isolation_test.go`); a session-starting test installs
+  `setupE2EApp` and `newTestAppWithStore` both poison the provider
+  binary settings, stub text generation and the live Codex model
+  catalog, detach HOME/USERPROFILE, and fail any test that still spawns
+  (`app_e2e_isolation_test.go`); `resolveTextGenerationExecutor`
+  additionally refuses real CLI execution inside any test binary, and
+  the boot prune refuses a metadata store whose `providerHome` stamp
+  does not match the credential home; a session-starting test installs
   `testutil.WriteMockClaudeScript` / `WriteMockCodexSession` over the
   poison. Any NEW fixture that constructs an `*App` able to start
   sessions, and any new spawn path (probes, catalogs, textgen-style

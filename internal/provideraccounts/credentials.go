@@ -1,6 +1,7 @@
 package provideraccounts
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -35,6 +36,14 @@ type ProviderPaths struct {
 type Credentials struct {
 	userHome string
 	keychain claudeKeychain
+	// signedOut reports that provider-authored credential bytes are the
+	// provider's own post-refresh-failure sign-out marker (for Claude,
+	// the blanked husk >= 2.1.219 writes on invalid_grant) rather than a
+	// usable credential. Activation uses it to refuse to preserve such
+	// bytes into an account slot, where they would overwrite the slot's
+	// last saved pair. Nil means "never signed out"; the app wires the
+	// provider-specific detector so this package stays provider-agnostic.
+	signedOut func(providerName string, data []byte) bool
 }
 
 // CredentialSnapshot is one stable read from a provider-native credential
@@ -69,6 +78,16 @@ func NewCredentialsWithFileKeychain(userHome string) (*Credentials, error) {
 	}
 	credentials.keychain = fileClaudeKeychain{}
 	return credentials, nil
+}
+
+// SetSignedOutDetector installs the provider-aware predicate for "these
+// credential bytes are the provider's own sign-out marker, not a login".
+func (c *Credentials) SetSignedOutDetector(detector func(providerName string, data []byte) bool) {
+	c.signedOut = detector
+}
+
+func (c *Credentials) credentialSignedOut(providerName string, data []byte) bool {
+	return c.signedOut != nil && c.signedOut(providerName, data)
 }
 
 func (c *Credentials) Paths(providerName string) (ProviderPaths, error) {
@@ -348,22 +367,34 @@ func (c *Credentials) writeActiveCredential(providerName string, data []byte) er
 // Activate atomically replaces the canonical provider credential with the
 // selected account. When switching away from currentAccountID, the current
 // canonical bytes are first preserved in that account slot so native refresh
-// token rotations are not lost.
+// token rotations are not lost. A canonical credential that is missing or is
+// the provider's own sign-out husk carries nothing worth preserving; the
+// activation proceeds without touching currentAccountID's slot.
 func (c *Credentials) Activate(providerName, currentAccountID, targetAccountID string) error {
 	var current *CredentialSnapshot
 	if currentAccountID != "" && currentAccountID != targetAccountID {
 		snapshot, err := c.ReadCredentialSnapshot(providerName, "", true)
-		if err != nil {
+		switch {
+		case IsCredentialMissing(err):
+			currentAccountID = ""
+		case err != nil:
 			return fmt.Errorf("provideraccounts: read current account before switch: %w", err)
+		case c.credentialSignedOut(providerName, snapshot.Data):
+			currentAccountID = ""
+		default:
+			current = &snapshot
 		}
-		current = &snapshot
 	}
 	return c.ActivateWithSnapshot(providerName, currentAccountID, targetAccountID, current)
 }
 
 // ActivateWithSnapshot is Activate with a caller-verified current credential.
-// It prevents an external login racing activation from being saved under the
-// stale current account ID.
+// The snapshot is the caller's claim of what the outgoing account held when
+// it validated the switch; if the canonical store has moved by the time the
+// final overwrite happens, the newer bytes win the preservation (see the
+// re-preserve below) — a mid-switch move is a provider rotation of a
+// single-use chain far more often than anything else, and a preserved
+// pre-rotation snapshot is a bricked login.
 func (c *Credentials) ActivateWithSnapshot(
 	providerName string,
 	currentAccountID string,
@@ -391,6 +422,28 @@ func (c *Credentials) ActivateWithSnapshot(
 	if currentAccountID != targetAccountID {
 		if err := c.retireProviderIdentity(providerName); err != nil {
 			return err
+		}
+	}
+	// Last-moment re-preserve: a provider process running against the
+	// canonical home (a live session, the user's own CLI in a terminal)
+	// can rotate the credential between the caller's snapshot and this
+	// overwrite. Claude refresh tokens are single-use, so saving the
+	// pre-rotation snapshot while discarding the rotation bricks the
+	// outgoing account. Re-read canonical now and, if it moved, preserve
+	// the newer bytes instead — unless they are the provider's sign-out
+	// husk, which must never overwrite a slot's last saved pair. The
+	// read is best-effort: a missing canonical means nothing rotated
+	// worth keeping beyond the snapshot already preserved above.
+	if currentAccountID != "" && currentAccountID != targetAccountID && current != nil {
+		if latest, err := c.ReadCredentialSnapshot(providerName, "", true); err == nil &&
+			!bytes.Equal(latest.Data, current.Data) &&
+			!c.credentialSignedOut(providerName, latest.Data) {
+			if err := c.WriteAccountCredential(providerName, currentAccountID, latest.Data); err != nil {
+				return fmt.Errorf(
+					"provideraccounts: preserve rotated current account before switch: %w",
+					err,
+				)
+			}
 		}
 	}
 	if err := c.writeActiveCredential(providerName, data); err != nil {

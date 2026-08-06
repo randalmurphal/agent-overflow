@@ -76,6 +76,26 @@ Because a rotation legitimately changes the credential bytes, the guard that
 the canonical home still belongs to the selected account is the identity the
 CLI reports, not a byte comparison.
 
+Rotations must survive every failure path. The inactive-account probe reads
+the temporary home back on EVERY exit after the CLI ran (a rotation lands on
+disk before the CLI answers initialize), and the app persists a non-selected
+rotation to its slot before any selection re-validation can refuse.
+Activation re-reads canonical immediately before the final overwrite and,
+if it moved since the caller's snapshot, preserves the newer bytes into the
+outgoing slot — a mid-switch move is a rotation of a single-use chain far
+more often than anything else, and a preserved pre-rotation snapshot is a
+bricked login. The one thing never preserved anywhere is the provider's
+sign-out husk, recognized through the `SetSignedOutDetector` seam (the app
+wires `claude.CredentialsSignedOut`; this package stays provider-agnostic).
+
+The metadata store carries a `providerHome` stamp (`ClaimProviderHome`,
+first claim wins). `PruneOrphanedAccounts` is only run when the stamp
+matches the home the credentials operate under: a store paired with a
+foreign home (a scratch --data-dir against a real $HOME) must degrade to
+"never prune", not "prune someone else's logins". Slot destruction is
+announced through the app's `auditAccountEvent` — durable at
+`<dataDir>/account-audit.log`, not just stderr.
+
 ## Layout
 
 - `store.go` — thread-safe metadata and last-known quota persistence.

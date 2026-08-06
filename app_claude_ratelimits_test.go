@@ -60,6 +60,9 @@ func TestHasActiveClaudeSession_Mixed(t *testing.T) {
 // probe call succeeds, the snapshot lands on the provider:usage channel,
 // and the event carries no threadId (rate limits are account-wide).
 func TestProbeClaudeRateLimits_EmitsOnSuccess(t *testing.T) {
+	app := newTestAppWithStore(t)
+	// Seed the canonical credential AFTER the fixture's HOME detach so the
+	// probe finds it under the home this test controls.
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
@@ -82,7 +85,6 @@ func TestProbeClaudeRateLimits_EmitsOnSuccess(t *testing.T) {
 	defer srv.Close()
 	srvURL, _ := url.Parse(srv.URL)
 
-	app := newTestAppWithStore(t)
 	app.rateLimitProbeClientOverride = &http.Client{
 		Transport: redirectRoundTripper{target: srvURL, inner: http.DefaultTransport},
 	}

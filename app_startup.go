@@ -19,6 +19,7 @@ import (
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/settings"
@@ -207,6 +208,9 @@ func (a *App) initStores() (string, *store.Store, error) {
 			errorsx.WrapLifecycle("close store after provider credential initialization failure", closeErr),
 		)
 	}
+	if a.credentialHomeOverride != "" {
+		userHome = a.credentialHomeOverride
+	}
 	newCredentials := provideraccounts.NewCredentials
 	if a.fileKeychainOverride {
 		newCredentials = provideraccounts.NewCredentialsWithFileKeychain
@@ -219,28 +223,55 @@ func (a *App) initStores() (string, *store.Store, error) {
 			errorsx.WrapLifecycle("close store after provider credential initialization failure", closeErr),
 		)
 	}
-	for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
-		keep := make(map[string]bool)
-		for _, account := range a.providerAccounts.List(providerName, time.Now()) {
-			keep[account.ID] = true
-		}
-		pruned, err := a.providerCredentials.PruneOrphanedAccounts(providerName, keep)
-		// A removed slot is an unrecoverable login (Claude refresh tokens are
-		// single-use), so every one is announced — silent destruction here
-		// once cost days of "sign in again" debugging.
-		for _, accountID := range pruned {
-			log.Printf(
-				"provider accounts: removed orphaned %s credential slot %s (no saved account references it)",
-				providerName,
-				accountID,
-			)
-		}
-		if err != nil {
-			closeErr := st.Close()
-			return "", nil, errors.Join(
-				fmt.Errorf("clean orphaned %s account credentials: %w", providerName, err),
-				errorsx.WrapLifecycle("close store after provider credential cleanup failure", closeErr),
-			)
+	a.providerCredentials.SetSignedOutDetector(func(providerName string, data []byte) bool {
+		return providerName == string(provider.Claude) && claude.CredentialsSignedOut(data)
+	})
+	a.accountAuditPath = filepath.Join(dbDir, "account-audit.log")
+	// The prune deletes credential slots, and a metadata store paired with
+	// the WRONG provider home deletes slots that were never its to manage
+	// (incident 2026-07-29: a scratch data dir against the real ~/.claude
+	// pruned every saved login). The stamp binds store to home on first
+	// contact; on mismatch the prune is skipped outright — orphan slots
+	// are benign, destroyed logins are not.
+	claimedHome, homeMatches, claimErr := a.providerAccounts.ClaimProviderHome(userHome)
+	if claimErr != nil {
+		closeErr := st.Close()
+		return "", nil, errors.Join(
+			fmt.Errorf("bind provider account metadata to credential home: %w", claimErr),
+			errorsx.WrapLifecycle("close store after provider account home claim failure", closeErr),
+		)
+	}
+	if !homeMatches {
+		a.auditAccountEvent(
+			"prune skipped: metadata store %s is bound to provider home %s but this process resolves %s",
+			filepath.Join(dbDir, "provider-accounts.json"),
+			claimedHome,
+			userHome,
+		)
+	} else {
+		for _, providerName := range []string{string(provider.Claude), string(provider.Codex)} {
+			keep := make(map[string]bool)
+			for _, account := range a.providerAccounts.List(providerName, time.Now()) {
+				keep[account.ID] = true
+			}
+			pruned, err := a.providerCredentials.PruneOrphanedAccounts(providerName, keep)
+			// A removed slot is an unrecoverable login (Claude refresh tokens are
+			// single-use), so every one is announced — silent destruction here
+			// once cost days of "sign in again" debugging.
+			for _, accountID := range pruned {
+				a.auditAccountEvent(
+					"removed orphaned %s credential slot %s (no saved account references it)",
+					providerName,
+					accountID,
+				)
+			}
+			if err != nil {
+				closeErr := st.Close()
+				return "", nil, errors.Join(
+					fmt.Errorf("clean orphaned %s account credentials: %w", providerName, err),
+					errorsx.WrapLifecycle("close store after provider credential cleanup failure", closeErr),
+				)
+			}
 		}
 	}
 	a.hydratePersistedAccountRateLimits()

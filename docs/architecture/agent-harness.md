@@ -39,7 +39,15 @@ Boot performs, in order (`prepareHarness`):
    `<dataRoot>/home`, so `~/.claude` scans, `~/.codex` tails, and git's
    global config are harness-local and seedable. A minimal `.gitconfig`
    is written so fixture commits work. Set `AO_HARNESS_KEEP_HOME=1` to
-   opt out (e.g. replaying against real provider session files).
+   opt out (e.g. replaying against real provider session files) —
+   **read-only widening only**: the credential surface (account slots,
+   canonical credential, orphan prune) stays pinned under
+   `<dataRoot>/home` via `App.credentialHomeOverride` in both modes, so
+   a keep-home run can read the real session trees but can never write
+   to or prune the real `~/.claude` / `~/.codex` credential state.
+   (Before that pin, a keep-home run with a reused data dir handed the
+   boot prune a foreign keep-set aimed at the real home — the
+   2026-07-29 incident class.)
 3. **Mock provider resolution.** `--mock-provider`, else the
    `ao-mockprovider` binary next to the running executable (where
    `make harness-build` puts it). Validated eagerly.

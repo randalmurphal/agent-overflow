@@ -115,14 +115,25 @@ func (securityClaudeKeychain) present(configHome string, active bool) (bool, err
 		return false, err
 	}
 	// No -w: an attribute-only lookup never returns the secret, so the
-	// probe costs a subprocess but not a credential read. Exit 44 means
-	// "no such item"; any other failure also counts as absent — for
-	// this question an unreadable credential is no more usable than a
-	// missing one.
+	// probe costs a subprocess but not a credential read. Only exit 44
+	// ("no such item") is a real answer of "absent". Every other failure
+	// — locked keychain, a spawn failure under load — is an error, NOT
+	// absence: account listings map a failed presence check to "still
+	// usable", and collapsing errors into false here painted saved
+	// accounts with a spurious "Sign in again" while the credential sat
+	// intact in the Keychain.
 	cmd := exec.Command("security", "find-generic-password", "-a", username, "-s", service)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	return cmd.Run() == nil, nil
+	err = cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 44 {
+		return false, nil
+	}
+	return false, fmt.Errorf("provideraccounts: query Claude Keychain credential: %v", err)
 }
 
 func (securityClaudeKeychain) write(configHome string, active bool, data []byte) error {

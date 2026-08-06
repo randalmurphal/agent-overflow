@@ -235,17 +235,6 @@ func TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel(t *testing.T) {
 // the goroutines launched from sessionEventHandler have their own cadence so
 // we await up to 1s for each provider signal.
 func TestSessionEventHandlerTurnCompleteFiresProviderRateLimitProbe(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
-	credsDir := filepath.Join(tmpHome, ".claude")
-	if err := os.MkdirAll(credsDir, 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(credsDir, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"bearer-x"}}`), 0o600); err != nil {
-		t.Fatalf("write creds: %v", err)
-	}
-
 	hits := atomic.Int32{}
 	hitCh := make(chan struct{}, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -263,6 +252,18 @@ func TestSessionEventHandlerTurnCompleteFiresProviderRateLimitProbe(t *testing.T
 	srvURL, _ := url.Parse(srv.URL)
 
 	app := newTestAppWithStore(t)
+	// Seed the canonical credential AFTER the fixture's HOME detach so the
+	// Claude probe finds it under the home this test controls.
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	credsDir := filepath.Join(tmpHome, ".claude")
+	if err := os.MkdirAll(credsDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(credsDir, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"bearer-x"}}`), 0o600); err != nil {
+		t.Fatalf("write creds: %v", err)
+	}
 	app.settings = settings.NewService(t.TempDir())
 	app.rateLimitProbeClientOverride = &http.Client{
 		Transport: redirectRoundTripper{target: srvURL, inner: http.DefaultTransport},

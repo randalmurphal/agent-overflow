@@ -283,7 +283,7 @@ func (a *App) LoginProviderAccount(
 		if restoreErr := restoreTarget(); restoreErr != nil {
 			rollbackErrs = append(rollbackErrs, restoreErr)
 		}
-		if rollbackErr := a.rollbackProviderAccountActivation(providerName, currentID); rollbackErr != nil {
+		if rollbackErr := a.rollbackProviderAccountActivation(providerName, targetID, currentID); rollbackErr != nil {
 			rollbackErrs = append(rollbackErrs, rollbackErr)
 		}
 		if len(rollbackErrs) > 0 {
@@ -397,7 +397,7 @@ func (a *App) SwitchProviderAccount(providerName, accountID string) (ManagedProv
 	}
 	account, err := a.providerAccounts.Activate(providerName, accountID)
 	if err != nil {
-		if rollbackErr := a.rollbackProviderAccountActivation(providerName, currentID); rollbackErr != nil {
+		if rollbackErr := a.rollbackProviderAccountActivation(providerName, accountID, currentID); rollbackErr != nil {
 			return ManagedProviderAccount{}, fmt.Errorf("%w (credential rollback also failed: %v)", err, rollbackErr)
 		}
 		return ManagedProviderAccount{}, err
@@ -624,9 +624,15 @@ func (a *App) adoptCanonicalProviderAccountLocked(providerName, binary string) e
 	return nil
 }
 
-func (a *App) rollbackProviderAccountActivation(providerName, currentID string) error {
+// rollbackProviderAccountActivation reinstates currentID's credential as
+// canonical after a failed activation. canonicalHolderID names the account
+// whose credential the canonical store holds at this moment (the activation
+// that is being unwound), so Activate can preserve those bytes — including
+// any rotation a live CLI performed since — into that account's slot instead
+// of destroying them. Pass "" when canonical holds nothing attributable.
+func (a *App) rollbackProviderAccountActivation(providerName, canonicalHolderID, currentID string) error {
 	if currentID != "" {
-		return a.providerCredentials.Activate(providerName, "", currentID)
+		return a.providerCredentials.Activate(providerName, canonicalHolderID, currentID)
 	}
 	return a.providerCredentials.RemoveActive(providerName)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os/exec"
 	"strings"
+	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
@@ -246,9 +247,23 @@ func (a *App) resolveLookPath() func(string) error {
 // primary and the Layer 2 fallback path. Production callers leave
 // textGenerationExecutor nil and the executor falls through to
 // textgen.ExecCLI; tests install a fake.
+//
+// Inside a test binary the fallthrough is refused outright: textgen runs a
+// real provider CLI, usually from a detached goroutine (thread titles,
+// commit messages) that outlives its test, against whatever HOME the
+// fixture left in place — the exact shape of incident 2026-08-03. A fixture
+// that wants textgen behavior installs a fake; testing.Testing() is false
+// in every production process, so this branch costs ordinary runs nothing.
 func (a *App) resolveTextGenerationExecutor() textgen.CLIExecutor {
 	if a.textGenerationExecutor != nil {
 		return a.textGenerationExecutor
+	}
+	if testing.Testing() {
+		return func(context.Context, textgen.CLISpec) (textgen.CLIResult, error) {
+			return textgen.CLIResult{}, errors.New(
+				"tests must not run a real provider CLI through textgen; assign app.textGenerationExecutor a fake",
+			)
+		}
 	}
 	return textgen.ExecCLI
 }

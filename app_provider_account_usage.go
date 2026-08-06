@@ -172,6 +172,27 @@ func (a *App) refreshProviderAccountUsage(
 		refresh.observed = info
 	}
 
+	// A rotation for a non-selected account is durable NOWHERE once the
+	// deferred ephemeral cleanup runs — its slot is the only holder of the
+	// chain. Persist it before the commit's selection re-validation gets a
+	// chance to refuse (a metadata generation bump is no reason to discard
+	// a rotation): the slot is keyed by account ID, and the reconcile
+	// mutex held for this whole call keeps switches, logins, and removals
+	// from re-homing that ID underneath us. A failed write falls through —
+	// the commit's own slot write below is the retry.
+	// (Selected accounts stay out of this: their commit goes canonical-first
+	// through CommitSelectedCredential, and a slot-ahead-of-canonical write
+	// would invert that ordering.)
+	if !refresh.isSelected &&
+		len(refresh.refreshed) > 0 &&
+		!bytes.Equal(refresh.refreshed, refresh.probed) {
+		refresh.slotPersisted = a.providerCredentials.WriteAccountCredential(
+			refresh.providerName,
+			refresh.accountID,
+			refresh.refreshed,
+		) == nil
+	}
+
 	a.providerAccountMu.Lock()
 	commit, commitErr := a.commitProviderUsageRefreshLocked(refresh)
 	a.providerAccountMu.Unlock()
@@ -212,6 +233,10 @@ type providerUsageRefresh struct {
 	// observed is the identity the provider reported during the probe, when
 	// it reports one at all. Stays zero otherwise.
 	observed provider.AccountInfo
+	// slotPersisted records that the rotated credential already reached this
+	// account's slot ahead of the commit, so the commit's non-selected slot
+	// write can skip a redundant rewrite.
+	slotPersisted bool
 }
 
 // refreshesInCanonicalHome reports that this account's token refresh, if the
@@ -307,7 +332,7 @@ func (a *App) commitProviderUsageRefreshLocked(
 		latest = refresh.probed
 	}
 	if !refresh.isSelected {
-		if len(refresh.refreshed) == 0 {
+		if len(refresh.refreshed) == 0 || refresh.slotPersisted {
 			return commit, nil
 		}
 		if err := a.providerCredentials.WriteAccountCredential(

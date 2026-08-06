@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -210,15 +211,26 @@ func (a *App) probeClaudeRateLimitsForSelection(
 		a.providerBinaryPath(string(provider.Claude)),
 		selection.Env,
 	))
+	// The CLI writes a rotated credential to the temporary home BEFORE it
+	// answers initialize, and the server retires the slot's previous
+	// refresh token the moment the rotation happens. From here on, every
+	// exit — a probe timeout that killed the CLI after the write, an
+	// unauthenticated verdict, a throttled usage retry — must surface
+	// whatever the temporary home now holds, or the deferred home cleanup
+	// discards the only working copy of this account's chain and the slot
+	// is left on a consumed token (a login the user cannot recover). The
+	// sign-out husk is the one exception: it is not a credential, and
+	// committing it would overwrite the slot for no gain.
+	rotated := a.claudeSelectionRotation(selection, data)
 	if refreshErr != nil {
-		return provider.RateLimitsSnapshot{}, nil, fmt.Errorf("refresh Claude credentials: %w", refreshErr)
+		return provider.RateLimitsSnapshot{}, rotated, fmt.Errorf("refresh Claude credentials: %w", refreshErr)
 	}
 	if providerstatus.ClaudeUnauthenticated(info) {
-		return provider.RateLimitsSnapshot{}, nil, errors.New("Claude credentials expired; log in again")
+		return provider.RateLimitsSnapshot{}, rotated, errors.New("Claude credentials expired; log in again")
 	}
 	data, readErr := a.readClaudeSelectionCredential(selection)
 	if readErr != nil {
-		return provider.RateLimitsSnapshot{}, nil, readErr
+		return provider.RateLimitsSnapshot{}, rotated, readErr
 	}
 	snapshot, retryErr := claude.ProbeRateLimitsFromCredentialData(
 		ctx,
@@ -226,6 +238,22 @@ func (a *App) probeClaudeRateLimitsForSelection(
 		data,
 	)
 	return snapshot, data, retryErr
+}
+
+// claudeSelectionRotation reports the credential the probe's temporary home
+// holds after a native CLI run, when it differs from the bytes the probe
+// started from and is not the provider's sign-out husk. Best-effort by
+// design: it runs on failure paths whose primary error is already decided,
+// and a nil return simply means "nothing rotated worth committing".
+func (a *App) claudeSelectionRotation(
+	selection claudeRateLimitSelection,
+	before []byte,
+) []byte {
+	after, err := a.readClaudeSelectionCredential(selection)
+	if err != nil || bytes.Equal(after, before) || claude.CredentialsSignedOut(after) {
+		return nil
+	}
+	return after
 }
 
 func (a *App) readClaudeSelectionCredential(

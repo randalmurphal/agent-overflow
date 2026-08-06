@@ -174,10 +174,17 @@ func TestActivatePreservesRotatedCurrentCredential(t *testing.T) {
 	assertFileContents(t, active, "second-token")
 }
 
-func TestActivateWithSnapshotDoesNotMisattributeRacingCredential(t *testing.T) {
-	if runtime.GOOS == "darwin" {
-		t.Skip("Claude uses the native Keychain on macOS")
-	}
+// A canonical credential that moves between the caller's verified snapshot
+// and the activation write is, in practice, the provider rotating the
+// outgoing account's single-use chain (a live session, the user's own CLI in
+// a terminal). The pre-rotation snapshot is worthless the moment that
+// happens, so activation must preserve the NEWER bytes into the outgoing
+// slot — preserving the snapshot instead was a guaranteed bricked login. The
+// theoretical alternative (an external login as a different account landing
+// inside this same instant) mislabels one slot and self-corrects through the
+// identity reconcile on that slot's next activation; a lost rotation never
+// self-heals.
+func TestActivateWithSnapshotPreservesRotationRacingActivation(t *testing.T) {
 	credentials, err := NewCredentials(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +206,47 @@ func TestActivateWithSnapshotDoesNotMisattributeRacingCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(active, []byte("racing-third-account"), 0o600); err != nil {
+	if err := os.WriteFile(active, []byte("first-rotated-mid-switch"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := credentials.ActivateWithSnapshot("claude", "first", "second", &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := credentials.AccountCredentialPath("claude", "first")
+	assertFileContents(t, first, "first-rotated-mid-switch")
+	assertFileContents(t, active, "second-token")
+}
+
+// The provider's sign-out husk is the one racing write that must NOT be
+// preserved: it is not a credential, and overwriting the outgoing slot with
+// it would destroy the slot's last saved pair for nothing.
+func TestActivateWithSnapshotDoesNotPreserveRacingSignedOutHusk(t *testing.T) {
+	credentials, err := NewCredentials(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials.SetSignedOutDetector(func(providerName string, data []byte) bool {
+		return providerName == "claude" && string(data) == "husk"
+	})
+	if err := credentials.WriteAccountCredential("claude", "first", []byte("first-old")); err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.WriteAccountCredential("claude", "second", []byte("second-token")); err != nil {
+		t.Fatal(err)
+	}
+	active, _ := credentials.ActiveCredentialPath("claude")
+	if err := os.MkdirAll(filepath.Dir(active), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(active, []byte("verified-first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := credentials.ReadCredentialSnapshot("claude", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(active, []byte("husk"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,6 +256,39 @@ func TestActivateWithSnapshotDoesNotMisattributeRacingCredential(t *testing.T) {
 	first, _ := credentials.AccountCredentialPath("claude", "first")
 	assertFileContents(t, first, "verified-first")
 	assertFileContents(t, active, "second-token")
+}
+
+// Activate called with a canonical-holder ID (the rollback shape) treats a
+// husk canonical as "nothing to preserve" and still completes the
+// reinstatement, rather than stamping the husk into the holder's slot.
+func TestActivateTreatsSignedOutCanonicalAsNothingToPreserve(t *testing.T) {
+	credentials, err := NewCredentials(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials.SetSignedOutDetector(func(providerName string, data []byte) bool {
+		return providerName == "claude" && string(data) == "husk"
+	})
+	if err := credentials.WriteAccountCredential("claude", "holder", []byte("holder-saved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.WriteAccountCredential("claude", "target", []byte("target-token")); err != nil {
+		t.Fatal(err)
+	}
+	active, _ := credentials.ActiveCredentialPath("claude")
+	if err := os.MkdirAll(filepath.Dir(active), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(active, []byte("husk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := credentials.Activate("claude", "holder", "target"); err != nil {
+		t.Fatal(err)
+	}
+	holder, _ := credentials.AccountCredentialPath("claude", "holder")
+	assertFileContents(t, holder, "holder-saved")
+	assertFileContents(t, active, "target-token")
 }
 
 func TestCommitSelectedCredentialPublishesCanonicalBeforeSavedSlot(t *testing.T) {

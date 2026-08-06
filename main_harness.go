@@ -47,6 +47,11 @@ type harnessPaths struct {
 	// was set). Provider-session fixtures (~/.claude/projects/...) are
 	// seeded under it.
 	HomeDir string
+	// CredentialHome is the home the credential surface is pinned under
+	// (App.credentialHomeOverride). Always <dataRoot>/home — identical to
+	// HomeDir on a normal run, and still harness-owned when
+	// AO_HARNESS_KEEP_HOME leaves $HOME real.
+	CredentialHome string
 	// MockProvider is the resolved ao-mockprovider binary path that
 	// both provider binary settings point at.
 	MockProvider string
@@ -74,6 +79,12 @@ func runHarness(flags cliFlags) {
 	// macOS Keychain (the active Claude slot's service name ignores the
 	// home), so credential storage is pinned to the file-backed stand-in.
 	appService.fileKeychainOverride = true
+	// Pin the credential surface under the harness-owned home
+	// unconditionally: AO_HARNESS_KEEP_HOME keeps the real $HOME for
+	// provider session-file reads, and this pin is what keeps that flag
+	// read-only — slots, canonical credential, and the orphan prune must
+	// never resolve against the developer's real provider homes.
+	appService.credentialHomeOverride = paths.CredentialHome
 	// No timer may run `git fetch` against the fixture repositories: e2e
 	// assertions read ahead/behind counts as fixed state, and a harness
 	// run must never reach a network.
@@ -170,10 +181,11 @@ func prepareHarness(flags cliFlags) (harnessPaths, error) {
 	}
 
 	return harnessPaths{
-		DataRoot:     dataRoot,
-		DataDir:      dataDir,
-		HomeDir:      homeDir,
-		MockProvider: mockProvider,
+		DataRoot:       dataRoot,
+		DataDir:        dataDir,
+		HomeDir:        homeDir,
+		CredentialHome: filepath.Join(dataRoot, "home"),
+		MockProvider:   mockProvider,
 	}, nil
 }
 
@@ -233,18 +245,31 @@ func sameCanonicalPath(a, b string) bool {
 // identity detection under the empty home.
 //
 // Returns the redirected home path, or "" when AO_HARNESS_KEEP_HOME
-// opted out.
+// opted out. The harness home directory is created in BOTH cases: even a
+// keep-home run pins the credential surface (provideraccounts slots,
+// canonical credential, orphan prune) under it via
+// App.credentialHomeOverride, so the flag only ever widens what the
+// harness can READ (~/.claude session files, ~/.codex rollouts) — never
+// what it can destroy. Before that pin existed, a keep-home run whose
+// reused data dir already listed a mock account handed the boot-time
+// prune a non-empty foreign keep-set aimed at the real ~/.claude — the
+// 2026-07-29 incident class.
 func isolateHarnessHome(dataRoot string) (string, error) {
-	if os.Getenv(harnessKeepHomeEnv) != "" {
-		log.Printf("harness: %s set — keeping real HOME %s", harnessKeepHomeEnv, os.Getenv("HOME"))
-		return "", nil
-	}
 	homeDir := filepath.Join(dataRoot, "home")
 	if err := refuseSymlink(homeDir); err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(homeDir, 0o700); err != nil {
 		return "", fmt.Errorf("create harness home: %w", err)
+	}
+	if os.Getenv(harnessKeepHomeEnv) != "" {
+		log.Printf(
+			"harness: %s set — keeping real HOME %s for provider session reads; credential storage stays in %s",
+			harnessKeepHomeEnv,
+			os.Getenv("HOME"),
+			homeDir,
+		)
+		return "", nil
 	}
 	gitconfig := filepath.Join(homeDir, ".gitconfig")
 	if _, err := os.Stat(gitconfig); errors.Is(err, os.ErrNotExist) {

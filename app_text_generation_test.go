@@ -32,6 +32,7 @@ func fakeLookPath(available ...string) func(string) error {
 // Codex config that will fail on every exec.LookPath retry.
 func TestResolveTextGenerationConfig_Layer1FallbackCodexMissing(t *testing.T) {
 	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude") // Codex not installed.
 
 	cfg := app.resolveTextGenerationConfig()
@@ -182,6 +183,7 @@ func TestResolveTextGenerationConfig_PreservesUltraForSol(t *testing.T) {
 
 func TestResolveTextGenerationConfigFor_ReturnsFalseWhenBinaryMissing(t *testing.T) {
 	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude")
 
 	if _, ok := app.resolveTextGenerationConfigFor(string(provider.Codex)); ok {
@@ -201,6 +203,7 @@ func TestResolveTextGenerationConfigFor_ReturnsFalseWhenBinaryMissing(t *testing
 // ok=false. Catches regressions where one branch loses its lookPath check.
 func TestResolveTextGenerationConfigFor_SymmetricClaudeMissing(t *testing.T) {
 	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("codex")
 
 	if _, ok := app.resolveTextGenerationConfigFor(string(provider.Claude)); ok {
@@ -237,6 +240,7 @@ func TestOtherProvider(t *testing.T) {
 
 func TestAvailableTextGenerationProviders(t *testing.T) {
 	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
 
 	// Order matters: chatmodel.FallbackProvider prefers the first known
 	// entry it sees, and the caller (seedChatModelProfile) feeds this

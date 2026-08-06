@@ -145,7 +145,11 @@ func (a *App) RemoveProviderAccount(providerName, accountID string) error {
 		if removingActive {
 			var err error
 			if hasSavedSnapshot {
-				err = a.providerCredentials.Activate(providerName, "", accountID)
+				// Canonical holds the replacement's credential at this point
+				// (its activation succeeded above); name it so any rotation a
+				// live CLI performed since is preserved into its slot rather
+				// than destroyed by the reinstatement below.
+				err = a.rollbackProviderAccountActivation(providerName, replacement.ID, accountID)
 			} else {
 				err = a.providerCredentials.RemoveActive(providerName)
 			}

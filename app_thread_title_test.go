@@ -469,6 +469,7 @@ func TestGeneratedThreadTitle_RoutesToClaudeWhenConfigured(t *testing.T) {
 // Claude is also installed, and surface Claude's title.
 func TestGeneratedThreadTitle_Layer2PrimaryFailsAlternateSucceeds(t *testing.T) {
 	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
 	app.lookPathFn = fakeLookPath("claude", "codex") // both installed.
 
 	thread := testThread("thread-title-l2-fallback")
@@ -611,6 +612,7 @@ func TestGeneratedThreadTitle_Layer2ContextCanceledNoRetry(t *testing.T) {
 // or where the alternate-missing branch loses its `ok=false` guard.
 func TestGeneratedThreadTitle_Layer1SubstitutesThenLayer2NoAlternate(t *testing.T) {
 	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
 	// Default settings prefer Codex; only Claude is on PATH.
 	app.lookPathFn = fakeLookPath("claude")
 

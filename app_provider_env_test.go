@@ -292,6 +292,7 @@ func TestClaudeTUIRoutesCustomBaseURLToTheGatewayUpstream(t *testing.T) {
 // other provider, where it must take the OTHER provider's list.
 func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 	app := newTestAppWithStore(t)
+	resetProviderBinarySettings(t, app)
 	if _, err := app.SetProviderCustomEnvVar("claude", "ANTHROPIC_BASE_URL", "https://claude.test", false); err != nil {
 		t.Fatal(err)
 	}

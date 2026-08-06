@@ -179,3 +179,64 @@ func assertAppMode(t *testing.T, path string, want os.FileMode) {
 		t.Fatalf("mode %s = %o, want %o", path, got, want)
 	}
 }
+
+// The empty-keep-set guard above covers a FRESH foreign metadata store; a
+// REUSED one (a harness data dir whose store already registered a mock
+// account, a second install's store) hands the prune a non-empty keep-set
+// that vouches for nothing on this machine. The home stamp closes that
+// half: a store bound to one provider home must never authorize slot
+// destruction under another.
+func TestInitStoresSkipsPruneWhenMetadataBelongsToAnotherHome(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+
+	seeded, err := provideraccounts.NewCredentials(homeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seeded.WriteAccountCredential(
+		"claude",
+		"saved-login",
+		[]byte(`{"account":"precious"}`),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// A metadata store born under a different home, with an account of its
+	// own — the reused-foreign-store shape. "saved-login" is not in its
+	// keep-set, so an ungated prune would delete it.
+	dataRoot := t.TempDir()
+	dbDir := filepath.Join(dataRoot, "agent-overflow")
+	if err := os.MkdirAll(dbDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := provideraccounts.NewStore(dbDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := foreign.ClaimProviderHome(filepath.Join(dataRoot, "some-other-home")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := foreign.UpsertAndActivate(provideraccounts.Account{
+		ID:       "foreign-account",
+		Provider: "claude",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.dataDirOverride = dataRoot
+	_, st, err := app.initStores()
+	if err != nil {
+		t.Fatalf("initStores: %v", err)
+	}
+	defer st.Close()
+	if app.logger != nil {
+		defer app.logger.Close()
+	}
+
+	if _, err := seeded.ReadCredential("claude", "saved-login", false); err != nil {
+		t.Fatalf("slot destroyed by a boot over a foreign metadata store: %v", err)
+	}
+}

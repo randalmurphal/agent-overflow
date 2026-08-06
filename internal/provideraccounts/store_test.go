@@ -394,3 +394,46 @@ func TestStoreResetsExpiredLastKnownLimitsWithoutMutatingPersistedReading(t *tes
 		t.Fatal("read normalization mutated the caller's snapshot")
 	}
 }
+
+// The home stamp is what stops a metadata store from authorizing slot
+// destruction against a provider home it never described (a scratch
+// --data-dir paired with a real $HOME — the 2026-07-29 incident class).
+// First claim binds and persists; a matching claim is a yes; a foreign
+// claim is a no that leaves the original binding untouched.
+func TestClaimProviderHomeBindsOnceAndRefusesForeignHomes(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(dir, "home")
+	claimed, matched, err := store.ClaimProviderHome(home)
+	if err != nil || !matched || claimed != filepath.Clean(home) {
+		t.Fatalf("first claim = (%q, %v, %v), want (%q, true, nil)", claimed, matched, err, home)
+	}
+
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, matched, err = reloaded.ClaimProviderHome(home)
+	if err != nil || !matched || claimed != filepath.Clean(home) {
+		t.Fatalf("matching claim after reload = (%q, %v, %v), want (%q, true, nil)", claimed, matched, err, home)
+	}
+
+	foreign := filepath.Join(dir, "other-home")
+	claimed, matched, err = reloaded.ClaimProviderHome(foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matched {
+		t.Fatal("foreign home claim matched; the prune gate would act on someone else's slots")
+	}
+	if claimed != filepath.Clean(home) {
+		t.Fatalf("foreign claim rebound the store to %q, want original %q kept", claimed, home)
+	}
+
+	if _, _, err := reloaded.ClaimProviderHome("  "); err == nil {
+		t.Fatal("blank home claim succeeded, want error")
+	}
+}

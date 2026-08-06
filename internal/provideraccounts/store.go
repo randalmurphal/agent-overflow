@@ -42,8 +42,16 @@ type ProviderState struct {
 }
 
 type persistedState struct {
-	Version   int                      `json:"version"`
-	Providers map[string]ProviderState `json:"providers"`
+	Version int `json:"version"`
+	// ProviderHome is the user home directory whose provider trees
+	// (~/.claude, ~/.codex) hold the credential slots this metadata
+	// describes. Stamped on first claim so a process pairing this store
+	// with a DIFFERENT home — a scratch --data-dir against a real home,
+	// or vice versa — can be detected before it acts on slots that were
+	// never its to manage (the orphan-slot prune is the destructive
+	// consumer). Absent in stores written before the stamp existed.
+	ProviderHome string                   `json:"providerHome,omitempty"`
+	Providers    map[string]ProviderState `json:"providers"`
 }
 
 // Store persists account metadata only. It is safe for concurrent probe,
@@ -426,6 +434,31 @@ func (s *Store) RememberRateLimits(providerName, accountID string, snapshot prov
 		return nil
 	}
 	return nil
+}
+
+// ClaimProviderHome binds this metadata store to userHome, the home whose
+// provider trees hold the credential slots it describes. The first claim
+// wins and is persisted; later claims only compare. It returns the home the
+// store is bound to and whether that matches userHome — callers gate slot
+// destruction (the orphan prune) on a true match, so a store paired with a
+// foreign home degrades to "never prune" rather than "prune someone else's
+// logins".
+func (s *Store) ClaimProviderHome(userHome string) (string, bool, error) {
+	cleaned := filepath.Clean(userHome)
+	if strings.TrimSpace(userHome) == "" {
+		return "", false, errors.New("provideraccounts: empty provider home claim")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.ProviderHome == "" {
+		s.state.ProviderHome = cleaned
+		if err := s.saveLocked(); err != nil {
+			s.state.ProviderHome = ""
+			return "", false, err
+		}
+		return cleaned, true, nil
+	}
+	return s.state.ProviderHome, s.state.ProviderHome == cleaned, nil
 }
 
 func (s *Store) saveLocked() error {
