@@ -55,7 +55,7 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	if f.Cwd != "" {
 		cmd.Dir = f.Cwd
 	}
-	cmd.Env = provider.FilterEnvironment(f.Env, "CLAUDE_CONFIG_DIR")
+	cmd.Env = provider.FilterEnvironment(f.Env, "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR")
 	// WaitDelay bounds the time `cmd.Wait` will spend after ctx expires
 	// waiting for grandchild processes that inherit our stdout pipe
 	// (e.g., a `sleep` inside a bash script) to close their fds. Without

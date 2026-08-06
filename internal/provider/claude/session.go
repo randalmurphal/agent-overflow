@@ -261,7 +261,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		Args:        args,
 		Dir:         cfg.WorkDir,
 		Env:         withClaudeCodeEntrypoint(cfg.Env),
-		UnsetEnv:    []string{"CLAUDE_CONFIG_DIR"},
+		UnsetEnv:    []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"},
 		EventLogger: cfg.EventLogger,
 		ThreadID:    threadID,
 		Provider:    string(provider.Claude),

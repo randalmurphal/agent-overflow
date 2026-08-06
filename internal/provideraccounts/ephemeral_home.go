@@ -28,26 +28,29 @@ type EphemeralHome struct {
 // small provider configuration files required to preserve native login
 // behavior are copied; session history and caches stay in the canonical home.
 func (c *Credentials) NewEphemeralHome(providerName string) (*EphemeralHome, error) {
-	return c.newEphemeralHome(providerName, nil)
+	return c.newEphemeralHome(providerName, nil, "")
 }
 
 // NewEphemeralHomeWithCredential creates an isolated provider home seeded with
 // one caller-verified opaque credential snapshot. It is used for inactive
 // account probes without rereading mutable account storage after the caller
-// releases its selection lock.
+// releases its selection lock. ownerAccountID names the slot the seed came
+// from so the boot sweep can restore a crash-orphaned rotation to it.
 func (c *Credentials) NewEphemeralHomeWithCredential(
 	providerName string,
 	credential []byte,
+	ownerAccountID string,
 ) (*EphemeralHome, error) {
 	if len(credential) == 0 {
 		return nil, errors.New("provideraccounts: empty temporary credential snapshot")
 	}
-	return c.newEphemeralHome(providerName, credential)
+	return c.newEphemeralHome(providerName, credential, ownerAccountID)
 }
 
 func (c *Credentials) newEphemeralHome(
 	providerName string,
 	credential []byte,
+	ownerAccountID string,
 ) (*EphemeralHome, error) {
 	paths, err := c.Paths(providerName)
 	if err != nil {
@@ -67,6 +70,15 @@ func (c *Credentials) newEphemeralHome(
 			return nil, errors.Join(cause, cleanupErr)
 		}
 		return nil, cause
+	}
+	// Registration precedes everything that could place a credential in
+	// the home — the CLI in a login home writes one on its own — because
+	// an unrecorded home that crashes is invisible to the boot sweep
+	// forever (ephemeral_registry.go).
+	if providerName == "claude" {
+		if err := c.registerEphemeralClaudeHome(path, ownerAccountID); err != nil {
+			return cleanupOnError(err)
+		}
 	}
 	if err := os.Chmod(path, 0o700); err != nil {
 		return cleanupOnError(fmt.Errorf("provideraccounts: secure temporary %s home: %w", providerName, err))
@@ -187,6 +199,13 @@ func (h *EphemeralHome) Cleanup() error {
 	}
 	if err := os.RemoveAll(h.Path); err != nil {
 		cleanupErrs = append(cleanupErrs, fmt.Errorf("provideraccounts: remove temporary %s home: %w", h.providerName, err))
+	}
+	// The registry entry goes last: it must outlive any partial cleanup,
+	// or the boot sweep loses its only pointer to whatever remains.
+	if len(cleanupErrs) == 0 && h.providerName == "claude" {
+		if err := h.credentials.unregisterEphemeralClaudeHome(h.Path); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
 	}
 	err := errors.Join(cleanupErrs...)
 	if err == nil {

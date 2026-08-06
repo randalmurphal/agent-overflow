@@ -209,6 +209,7 @@ func TestEphemeralClaudeHomeCopiesConfigWithoutTheIdentity(t *testing.T) {
 	home, err := credentials.NewEphemeralHomeWithCredential(
 		"claude",
 		[]byte(`{"claudeAiOauth":{"accessToken":"probe"}}`),
+		"probe-account",
 	)
 	if err != nil {
 		t.Fatal(err)

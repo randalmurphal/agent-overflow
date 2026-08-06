@@ -89,6 +89,7 @@ var deniedProviderEnvNames = map[string]map[string]string{
 	},
 	"claude": {
 		"CLAUDE_CONFIG_DIR":               "Agent Overflow owns Claude's config home: every spawn clears this variable, and managed-account probes set it to a temporary home. Claude treats its PRESENCE (not its value) as \"non-default home\", which on macOS hashes into a different Keychain service",
+		"CLAUDE_SECURESTORAGE_CONFIG_DIR": "Claude 2.1.220+ keys its credential-storage (macOS Keychain service) naming off this variable when present, overriding CLAUDE_CONFIG_DIR — a custom value would make Agent Overflow's account probes write rotated tokens into the wrong account's storage",
 		"CLAUDE_CODE_ENTRYPOINT":          "Agent Overflow pins this to \"agent-overflow\" so its sessions stay listed in `claude --resume`",
 		"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "set by the per-provider auto-compact threshold, delivered through `--settings` (whose flagSettings source outranks the subprocess environment), so a value here would be silently ignored",
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "derived from the thread's context window and delivered through `--settings` (whose flagSettings source outranks the subprocess environment), so a value here would be silently ignored",

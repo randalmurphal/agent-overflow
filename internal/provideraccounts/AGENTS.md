@@ -70,7 +70,12 @@ temporary home forks nothing and stays the right call.
 Never point a canonical-home run at `CLAUDE_CONFIG_DIR`, not even at the
 default path. Claude keys "is this the default home" off the variable being
 *absent*, not off its value, and a non-default home hashes into a different
-macOS Keychain service.
+macOS Keychain service. Claude ≥2.1.220 additionally honors
+`CLAUDE_SECURESTORAGE_CONFIG_DIR`, which overrides `CLAUDE_CONFIG_DIR` for
+secure-storage naming alone — an inherited value would make a
+temporary-home probe write its rotated single-use token into the canonical
+account's Keychain item, so it is reserved and cleared everywhere
+`CLAUDE_CONFIG_DIR` is (`provider.ReservedEnvNames`).
 
 Because a rotation legitimately changes the credential bytes, the guard that
 the canonical home still belongs to the selected account is the identity the
@@ -107,11 +112,39 @@ announced through the app's `auditAccountEvent` — durable at
   failed login or adoption without deleting a slot it did not create.
 - `ephemeral_home.go` — short-lived homes for native login and inactive-account
   probes.
+- `ephemeral_registry.go` — the crash net under ephemeral Claude homes.
+  Every such home is recorded (one file per entry under
+  `<claudeHome>/agent-overflow-ephemerals/`) BEFORE any credential can
+  exist in it and unrecorded only by a fully successful cleanup; the
+  boot sweep (`SweepEphemeralClaudeCredentials`, wired in
+  `app_startup.go` after the orphan-slot prune) recovers what a crash
+  left behind — a probe can rotate the single-use chain and die before
+  the read-back, leaving the only live copy in a hash-named Keychain
+  item nothing references. Adoption restores those bytes into the
+  owning slot only when the slot still exists and is dead (missing or
+  husk); a healthy slot is never overwritten, a husk orphan is never
+  adopted, entries younger than an hour are skipped (another live
+  instance may own them), and the sweep refuses any recorded path that
+  is not provably an ephemeral temp home.
 - `claude_keychain.go` — the `claudeKeychain` seam: every `security(1)`
   invocation in the codebase lives here (pinned by
   `TestNoSecurityCallsOutsideTheKeychainSeam`). Holds the production
   backend matching Claude Code's native service naming and the
   file-backed stand-in used by test binaries and the agent harness.
+  The production backend mirrors Claude Code's own
+  fallbackStorage(keychain, plaintext), verified against the 2.1.220
+  binary: the CLI migrates a login to `<configHome>/.credentials.json`
+  and DELETES the Keychain item on any non-timeout Keychain-write
+  failure (one locked keychain during an SSH-session refresh is
+  enough), so read/present fall back to the file when the item is
+  definitively absent (exit 44 — every other `security(1)` failure is
+  an error, never absence), write deletes the file only when it
+  re-created the item (CC's first-migration rule; an already-present
+  item leaves the file for container sharing, CC issue #1414), and
+  remove covers both stores. Naming mirrors CC exactly too: username
+  sanitized to `claude-code-user` when it fails CC's
+  `[a-zA-Z0-9._-]+` rule, service hash input NFC-normalized and not
+  path-cleaned.
 - `credentials_testhelpers.go` — `WriteNativeCredentialForTest`, the one
   blessed way for fixtures to seed the canonical native credential;
   inert outside test binaries.
@@ -136,3 +169,14 @@ The stand-in stores each credential at `<configHome>/.credentials.json`
 mock provider binaries (subprocesses) that write the credential file are
 visible through the seam, and fixtures seed the canonical store via
 `WriteNativeCredentialForTest` to stay ignorant of the layout entirely.
+
+The security backend itself is tested through `installFakeSecurity`
+(claude_keychain_test.go): PATH pinned to a directory holding only a
+stub `security` script, so the real binary is unreachable. That is the
+one sanctioned way to construct `securityClaudeKeychain` in test code —
+and it is structurally enforced, not just convention: every method
+routes through `securityCommand`, which inside a test binary refuses to
+execute a `security` resolved from a system path
+(`TestSecurityBackendRefusesSystemSecurityInTestBinaries`). A future
+test that forgets the stub fails loudly instead of reaching the
+developer's login keychain.

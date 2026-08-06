@@ -108,6 +108,7 @@ func (a *App) refreshProviderAccountUsage(
 		ephemeral, err = a.providerCredentials.NewEphemeralHomeWithCredential(
 			providerName,
 			credential.Data,
+			accountID,
 		)
 		if err != nil {
 			return err

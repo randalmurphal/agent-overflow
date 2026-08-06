@@ -274,6 +274,28 @@ func (a *App) initStores() (string, *store.Store, error) {
 			}
 		}
 	}
+	// After the prune (so a deleted account's orphan is discarded, not
+	// adopted into a slot the prune just removed), recover anything a
+	// crashed ephemeral Claude home left behind — its Keychain item or
+	// credential file can hold the only live copy of a rotated
+	// single-use chain. Best-effort: an entry the sweep cannot resolve
+	// safely is kept for the next boot, never guessed at, so errors are
+	// announced rather than fatal.
+	sweepResults, sweepErr := a.providerCredentials.SweepEphemeralClaudeCredentials(time.Now())
+	for _, result := range sweepResults {
+		if result.Action == "skipped" {
+			continue
+		}
+		a.auditAccountEvent(
+			"ephemeral claude sweep: %s crash-orphaned home %s (account %q)",
+			result.Action,
+			result.ConfigHome,
+			result.AccountID,
+		)
+	}
+	if sweepErr != nil {
+		a.auditAccountEvent("ephemeral claude sweep errors: %v", sweepErr)
+	}
 	a.hydratePersistedAccountRateLimits()
 	// Seed the git Core's GitLab self-hosted host snapshot from the
 	// persisted settings before any Status / DetectForge call sees a

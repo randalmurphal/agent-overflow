@@ -120,7 +120,7 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		Args:     buildProbeArgs(),
 		Dir:      cfg.WorkDir,
 		Env:      cfg.Env,
-		UnsetEnv: []string{"CLAUDE_CONFIG_DIR"},
+		UnsetEnv: []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"},
 	})
 	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("claude: probe spawn: %w", err)

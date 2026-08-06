@@ -10,9 +10,12 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/text/unicode/norm"
 
 	"agent-overflow/internal/atomicfile"
 )
@@ -40,9 +43,12 @@ const claudeCredentialFileName = ".credentials.json"
 // NewCredentials therefore installs fileClaudeKeychain whenever the
 // process is a test binary (testing.Testing()); the harness boot
 // selects it explicitly via NewCredentialsWithFileKeychain. Never
-// construct securityClaudeKeychain in test code, and never add a code
-// path that shells out to security(1) without going through this
-// interface (pinned by TestNoSecurityCallsOutsideTheKeychainSeam).
+// construct securityClaudeKeychain in test code — the one sanctioned
+// exception is claude_keychain_test.go's installFakeSecurity, which
+// pins PATH to a directory holding only a stub `security` so the real
+// binary is unreachable — and never add a code path that shells out to
+// security(1) without going through this interface (pinned by
+// TestNoSecurityCallsOutsideTheKeychainSeam).
 type claudeKeychain interface {
 	read(configHome string, active bool) ([]byte, error)
 	write(configHome string, active bool, data []byte) error
@@ -86,17 +92,67 @@ const securityInteractiveLineLimit = 4032
 // securityClaudeKeychain is the production backend: the user's login
 // keychain via the security(1) CLI, using Claude Code's native service
 // naming so the active credential IS Claude Code's own login item.
+//
+// It composes fileClaudeKeychain as its FALLBACK, mirroring Claude
+// Code's own fallbackStorage(keychain, plaintext) (verified against the
+// 2.1.220 binary): the CLI reads the Keychain first and falls back to
+// <configHome>/.credentials.json, and a non-transient Keychain-write
+// failure (anything but a security(1) timeout) migrates the login to
+// that file AND deletes the Keychain item. A darwin login can therefore
+// be legitimately file-backed with no Keychain item at all — one locked
+// keychain during an SSH-session token refresh is enough — so a
+// Keychain-only read here would report a healthy login as missing.
 type securityClaudeKeychain struct{}
 
-func (securityClaudeKeychain) read(configHome string, active bool) ([]byte, error) {
-	service, username, err := claudeKeychainIdentity(configHome, active)
-	if err != nil {
-		return nil, err
+// securityCommand builds every security(1) invocation this backend
+// runs. Inside a test binary it refuses to resolve a system-installed
+// security at all: the seam's testing.Testing() guard in
+// defaultClaudeKeychain covers every fixture-built Credentials, but a
+// test constructing securityClaudeKeychain directly (the
+// installFakeSecurity pattern) is one forgotten PATH pin away from the
+// developer's real login keychain (incident 2026-08-01). This makes
+// that mistake fail loudly instead of executing.
+func securityCommand(args ...string) (*exec.Cmd, error) {
+	if testing.Testing() {
+		resolved, err := exec.LookPath("security")
+		if err != nil {
+			return nil, fmt.Errorf("provideraccounts: resolve security(1) in test binary: %w", err)
+		}
+		for _, prefix := range []string{"/usr/", "/bin/", "/sbin/", "/System/", "/Library/", "/opt/"} {
+			if strings.HasPrefix(resolved, prefix) {
+				return nil, fmt.Errorf(
+					"provideraccounts: test binary refused system security(1) at %s — stub it with installFakeSecurity first",
+					resolved,
+				)
+			}
+		}
 	}
-	cmd := exec.Command("security", "find-generic-password", "-a", username, "-w", "-s", service)
+	return exec.Command("security", args...), nil
+}
+
+func (securityClaudeKeychain) read(configHome string, active bool) ([]byte, error) {
+	service, username := claudeKeychainIdentity(configHome, active)
+	cmd, cmdErr := securityCommand("find-generic-password", "-a", username, "-w", "-s", service)
+	if cmdErr != nil {
+		return nil, cmdErr
+	}
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, ErrCredentialMissing
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 44 {
+			// Exit 44 ("no such item") is the one real answer of
+			// "absent" — the credential may have migrated to the file.
+			return fileClaudeKeychain{}.read(configHome, active)
+		}
+		// Any other failure — locked keychain, spawn failure — says
+		// nothing about absence and must not collapse into it: a caller
+		// like ActivateWithSnapshot treats "missing" as "nothing to
+		// preserve", and a transient failure read as missing is how a
+		// mid-switch rotation gets destroyed. (Claude Code's own read
+		// additionally falls through to the file on exit 36 / locked;
+		// we deliberately surface the error instead, because our
+		// callers act on the answer rather than serving a session.)
+		return nil, fmt.Errorf("provideraccounts: read Claude Keychain credential: %v", err)
 	}
 	// security -w appends a trailing newline to the stored value.
 	data := bytes.TrimSpace(output)
@@ -109,23 +165,23 @@ func (securityClaudeKeychain) read(configHome string, active bool) ([]byte, erro
 	return data, nil
 }
 
-func (securityClaudeKeychain) present(configHome string, active bool) (bool, error) {
-	service, username, err := claudeKeychainIdentity(configHome, active)
-	if err != nil {
-		return false, err
-	}
+// itemPresent answers whether the Keychain item itself exists, with no
+// file fallback. Only exit 44 ("no such item") is a real answer of
+// "absent". Every other failure — locked keychain, a spawn failure
+// under load — is an error, NOT absence: account listings map a failed
+// presence check to "still usable", and collapsing errors into false
+// here painted saved accounts with a spurious "Sign in again" while the
+// credential sat intact in the Keychain.
+func (securityClaudeKeychain) itemPresent(service, username string) (bool, error) {
 	// No -w: an attribute-only lookup never returns the secret, so the
-	// probe costs a subprocess but not a credential read. Only exit 44
-	// ("no such item") is a real answer of "absent". Every other failure
-	// — locked keychain, a spawn failure under load — is an error, NOT
-	// absence: account listings map a failed presence check to "still
-	// usable", and collapsing errors into false here painted saved
-	// accounts with a spurious "Sign in again" while the credential sat
-	// intact in the Keychain.
-	cmd := exec.Command("security", "find-generic-password", "-a", username, "-s", service)
+	// probe costs a subprocess but not a credential read.
+	cmd, cmdErr := securityCommand("find-generic-password", "-a", username, "-s", service)
+	if cmdErr != nil {
+		return false, cmdErr
+	}
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	err = cmd.Run()
+	err := cmd.Run()
 	if err == nil {
 		return true, nil
 	}
@@ -136,14 +192,29 @@ func (securityClaudeKeychain) present(configHome string, active bool) (bool, err
 	return false, fmt.Errorf("provideraccounts: query Claude Keychain credential: %v", err)
 }
 
-func (securityClaudeKeychain) write(configHome string, active bool, data []byte) error {
+func (s securityClaudeKeychain) present(configHome string, active bool) (bool, error) {
+	service, username := claudeKeychainIdentity(configHome, active)
+	itemPresent, err := s.itemPresent(service, username)
+	if err != nil || itemPresent {
+		return itemPresent, err
+	}
+	// Item definitively absent — the login may have migrated to the
+	// credential file (see the type comment).
+	return fileClaudeKeychain{}.present(configHome, active)
+}
+
+func (s securityClaudeKeychain) write(configHome string, active bool, data []byte) error {
 	if err := validateClaudeKeychainWrite(data); err != nil {
 		return err
 	}
-	service, username, err := claudeKeychainIdentity(configHome, active)
-	if err != nil {
-		return err
-	}
+	service, username := claudeKeychainIdentity(configHome, active)
+	// Claude Code deletes the credential file on the FIRST successful
+	// Keychain write only (its issue #1414: when the Keychain already
+	// held data, the file may be a copy deliberately shared with a
+	// container and is left alone). Mirror that: record whether the
+	// item existed before this write; an indeterminate answer skips the
+	// cleanup rather than deleting a file whose role is unknown.
+	itemExisted, presenceErr := s.itemPresent(service, username)
 	hexValue := hex.EncodeToString(data)
 	command := fmt.Sprintf(
 		"add-generic-password -U -a %s -s %s -X %s\n",
@@ -152,8 +223,12 @@ func (securityClaudeKeychain) write(configHome string, active bool, data []byte)
 		strconv.Quote(hexValue),
 	)
 	var cmd *exec.Cmd
+	var cmdErr error
 	if len(command) <= securityInteractiveLineLimit {
-		cmd = exec.Command("security", "-i")
+		cmd, cmdErr = securityCommand("-i")
+		if cmdErr != nil {
+			return cmdErr
+		}
 		cmd.Stdin = strings.NewReader(command)
 	} else {
 		// Matches Claude Code's native fallback for Keychain payloads
@@ -164,31 +239,47 @@ func (securityClaudeKeychain) write(configHome string, active bool, data []byte)
 		// ACL-gated item it lands in. Real Claude credentials (~1-2KB)
 		// stay on the -i path; see the review note in AGENTS.md before
 		// relying on this branch for anything bigger.
-		cmd = exec.Command(
-			"security", "add-generic-password", "-U",
+		cmd, cmdErr = securityCommand(
+			"add-generic-password", "-U",
 			"-a", username, "-s", service, "-X", hexValue,
 		)
+		if cmdErr != nil {
+			return cmdErr
+		}
 	}
 	if err := cmd.Run(); err != nil {
 		return errors.New("provideraccounts: update Claude Keychain credential")
+	}
+	if presenceErr == nil && !itemExisted {
+		// Best-effort, like Claude Code's own secondary.delete(): the
+		// Keychain now holds the freshest bytes, so a leftover file is
+		// a stale duplicate that would resurface as a dead login if the
+		// item is ever deleted. The write itself already succeeded.
+		_ = fileClaudeKeychain{}.remove(configHome, active)
 	}
 	return nil
 }
 
 func (securityClaudeKeychain) remove(configHome string, active bool) error {
-	service, username, err := claudeKeychainIdentity(configHome, active)
-	if err != nil {
-		return err
+	service, username := claudeKeychainIdentity(configHome, active)
+	cmd, cmdErr := securityCommand("delete-generic-password", "-a", username, "-s", service)
+	if cmdErr != nil {
+		return cmdErr
 	}
-	cmd := exec.Command("security", "delete-generic-password", "-a", username, "-s", service)
+	var itemErr error
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 44 {
-			return nil
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 44 {
+			itemErr = errors.New("provideraccounts: remove Claude Keychain credential")
 		}
-		return errors.New("provideraccounts: remove Claude Keychain credential")
 	}
-	return nil
+	// A file-backed login (see the type comment) keeps its credential
+	// in <configHome>/.credentials.json — removal must cover both
+	// stores or a live token chain survives the account's deletion.
+	if fileErr := (fileClaudeKeychain{}).remove(configHome, active); fileErr != nil && itemErr == nil {
+		itemErr = fileErr
+	}
+	return itemErr
 }
 
 // fileClaudeKeychain is the test/harness stand-in: each credential
@@ -250,26 +341,38 @@ func (f fileClaudeKeychain) remove(configHome string, active bool) error {
 	return nil
 }
 
-// claudeKeychainIdentity mirrors Claude Code's own Keychain naming: the
-// canonical home (CLAUDE_CONFIG_DIR absent) uses the plain native
-// service, every other config home hashes into a scoped service. The
-// active flag — not path comparison — selects the plain name because
-// Claude keys "is this the default home" off the variable being absent,
-// not off its value (see AGENTS.md "Where a refresh is allowed to
-// happen").
-func claudeKeychainIdentity(configHome string, active bool) (string, string, error) {
-	username := strings.TrimSpace(os.Getenv("USER"))
+// claudeKeychainUsernamePattern is Claude Code's Keychain account-name
+// validation (2.1.220): a derived username failing it is replaced with
+// the literal "claude-code-user", never used raw. Mirroring the exact
+// rule matters — a divergent account name means CC and AO each read and
+// write their own item under the same service, silently forking the
+// credential.
+var claudeKeychainUsernamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+// claudeKeychainIdentity mirrors Claude Code's own Keychain naming
+// (verified against the 2.1.220 binary): the canonical home
+// (CLAUDE_CONFIG_DIR absent) uses the plain native service, every other
+// config home hashes into a scoped service. The active flag — not path
+// comparison — selects the plain name because Claude keys "is this the
+// default home" off the variable being absent, not off its value (see
+// AGENTS.md "Where a refresh is allowed to happen"). The hash input is
+// NFC-normalized exactly as CC normalizes it, and deliberately NOT
+// path-cleaned — CC hashes the config-dir string as given, and the
+// probe CLI must land its rotation in the same service AO reads back.
+func claudeKeychainIdentity(configHome string, active bool) (string, string) {
+	username := os.Getenv("USER")
 	if username == "" {
-		current, err := user.Current()
-		if err != nil {
-			return "", "", fmt.Errorf("provideraccounts: resolve Keychain user: %w", err)
+		if current, err := user.Current(); err == nil {
+			username = current.Username
 		}
-		username = current.Username
+	}
+	if !claudeKeychainUsernamePattern.MatchString(username) {
+		username = "claude-code-user"
 	}
 	service := "Claude Code-credentials"
 	if !active {
-		hash := sha256.Sum256([]byte(filepath.Clean(configHome)))
+		hash := sha256.Sum256([]byte(norm.NFC.String(configHome)))
 		service += "-" + hex.EncodeToString(hash[:4])
 	}
-	return service, username, nil
+	return service, username
 }

@@ -13,19 +13,13 @@ import (
 func TestClaudeKeychainIdentityMatchesConfigScopedNativeService(t *testing.T) {
 	t.Setenv("USER", "test-user")
 	home := filepath.Join(t.TempDir(), ".claude", accountDirectoryName, "account-one")
-	service, username, err := claudeKeychainIdentity(home, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256([]byte(filepath.Clean(home)))
+	service, username := claudeKeychainIdentity(home, false)
+	sum := sha256.Sum256([]byte(home))
 	wantService := "Claude Code-credentials-" + hex.EncodeToString(sum[:])[:8]
 	if service != wantService || username != "test-user" {
 		t.Fatalf("identity = (%q, %q), want (%q, test-user)", service, username, wantService)
 	}
-	activeService, _, err := claudeKeychainIdentity(home, true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	activeService, _ := claudeKeychainIdentity(home, true)
 	if activeService != "Claude Code-credentials" {
 		t.Fatalf("active service = %q", activeService)
 	}
@@ -92,7 +86,7 @@ func TestEphemeralHomeSeedsOnlySavedCredentialAndCleansUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	home, err := credentials.NewEphemeralHomeWithCredential("codex", snapshot)
+	home, err := credentials.NewEphemeralHomeWithCredential("codex", snapshot, "codex-account")
 	if err != nil {
 		t.Fatal(err)
 	}

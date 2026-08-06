@@ -42,7 +42,7 @@ func Login(ctx context.Context, cfg LoginConfig) error {
 		env["BROWSER"] = cfg.BrowserExecutable
 		env[externalurl.BrowserHelperEnvironment] = externalurl.BrowserHelperValue
 	}
-	cmd.Env = provider.BuildEnvironment(env, "CLAUDE_CONFIG_DIR")
+	cmd.Env = provider.BuildEnvironment(env, "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR")
 	if err := cmd.Run(); err != nil {
 		if loginCtx.Err() != nil {
 			return fmt.Errorf("claude: login: %w", loginCtx.Err())

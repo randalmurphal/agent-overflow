@@ -19,6 +19,13 @@ import "strings"
 //	                      claude.ProbeAccount (probe.go), and the MCP status
 //	                      fetcher (mcpstatus.go); set to a temporary home by
 //	                      claude.Login and the inactive-account probes.
+//	CLAUDE_SECURESTORAGE_CONFIG_DIR
+//	                    — cleared everywhere CLAUDE_CONFIG_DIR is. Claude
+//	                      ≥2.1.220 keys its secure-storage (Keychain service)
+//	                      naming off this variable when present, overriding
+//	                      CLAUDE_CONFIG_DIR — an inherited value would make a
+//	                      temporary-home probe write its rotated single-use
+//	                      token into the CANONICAL account's Keychain item.
 //	CLAUDE_CODE_ENTRYPOINT
 //	                    — pinned to "agent-overflow" by
 //	                      withClaudeCodeEntrypoint (session.go).
@@ -50,6 +57,7 @@ func ReservedEnvNames(providerName string) []string {
 	case string(Claude), string(ClaudeTUI):
 		return append(shared,
 			"CLAUDE_CONFIG_DIR",
+			"CLAUDE_SECURESTORAGE_CONFIG_DIR",
 			"CLAUDE_CODE_ENTRYPOINT",
 			"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
 			"CLAUDE_CODE_AUTO_COMPACT_WINDOW",
