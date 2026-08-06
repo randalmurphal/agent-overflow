@@ -70,6 +70,7 @@ interface AgentParentInput {
   receiverThreadIds?: string[];
   newAgentNickname?: string;
   newAgentRole?: string;
+  run_in_background?: boolean;
 }
 
 interface AgentParentOverrides {
@@ -143,11 +144,14 @@ describe('<SubagentGroup>', () => {
   });
 
   it('renders the title as `<agent_type> (<Model>)`, description, and initializing latest-action row', () => {
+    // run_in_background:false is launch-time foreground proof — without
+    // it a childless running card withholds the placeholder (see the
+    // foreground-proof test below).
     const group = mkGroup({
       parentId: 'p1',
       parentItem: mkAgentParent('p1', {
         metaFields: { subagent_model: 'claude-opus-4-7' },
-        input: { description: 'Find foo', subagent_type: 'Explore' },
+        input: { description: 'Find foo', subagent_type: 'Explore', run_in_background: false },
       }),
       children: [],
       descendantCount: 0,
@@ -383,7 +387,7 @@ describe('<SubagentGroup>', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('uses latestChildSummary for the stable latest-action row, falling back to initializing copy', () => {
+  it('uses latestChildSummary for the stable latest-action row', () => {
     const withLatest = mkGroup({
       parentId: 'p',
       parentItem: mkAgentParent('p', {
@@ -393,22 +397,74 @@ describe('<SubagentGroup>', () => {
       descendantCount: 1,
       latestChildSummary: 'Bash: pwd',
     });
-    const { getByTestId, unmount } = render(SubagentGroupTestHarness, { props: { group: withLatest } });
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group: withLatest } });
     expect(getByTestId('subagent-group-preview').textContent?.trim()).toBe('└ Bash: pwd');
-    unmount();
+  });
 
-    const noLatest = mkGroup({
-      parentId: 'p',
-      parentItem: mkAgentParent('p', {
+  it('withholds the latest-action row until the launch is proven foreground', () => {
+    // A flag-less Agent launch can still be flipped to a backgrounded
+    // leaf by the CLI's async ack (is_background arrives only on the
+    // tool_result, claude-wire.md §E5), and that flip must stay
+    // height-neutral — so the "Initializing..." placeholder renders
+    // only once foreground is proven, never in the unclassified window.
+    const unknown = mkGroup({
+      parentId: 'p-unknown',
+      parentItem: mkAgentParent('p-unknown', {
         input: { description: 'Just launched', subagent_type: 'Explore' },
       }),
       children: [],
       descendantCount: 0,
       latestChildSummary: '',
     });
-    const second = render(SubagentGroupTestHarness, { props: { group: noLatest } });
-    expect(second.getByTestId('subagent-group-description').textContent?.trim()).toBe('Just launched');
+    const first = render(SubagentGroupTestHarness, { props: { group: unknown } });
+    expect(first.getByTestId('subagent-group-description').textContent?.trim()).toBe('Just launched');
+    expect(first.queryByTestId('subagent-group-preview')).toBeNull();
+    first.unmount();
+
+    // Descendants prove foreground even before any child produces text
+    // (e.g. a history anchor carrying only the decorated count).
+    const withDescendants = mkGroup({
+      parentId: 'p-desc',
+      parentItem: mkAgentParent('p-desc', {
+        input: { description: 'Working', subagent_type: 'Explore' },
+      }),
+      children: [],
+      descendantCount: 2,
+      latestChildSummary: '',
+    });
+    const second = render(SubagentGroupTestHarness, { props: { group: withDescendants } });
     expect(second.getByTestId('subagent-group-preview').textContent?.trim()).toBe('└ Initializing...');
+    second.unmount();
+
+    // An explicit run_in_background:false in the tool input is
+    // launch-time proof — the placeholder shows immediately.
+    const explicitForeground = mkGroup({
+      parentId: 'p-fg',
+      parentItem: mkAgentParent('p-fg', {
+        input: { description: 'Sync agent', subagent_type: 'Explore', run_in_background: false },
+      }),
+      children: [],
+      descendantCount: 0,
+      latestChildSummary: '',
+    });
+    const third = render(SubagentGroupTestHarness, { props: { group: explicitForeground } });
+    expect(third.getByTestId('subagent-group-preview').textContent?.trim()).toBe('└ Initializing...');
+    third.unmount();
+
+    // A settled card with no child text has nothing to say — the
+    // placeholder must not stick to finished agents forever.
+    const settled = mkGroup({
+      parentId: 'p-settled',
+      parentItem: mkAgentParent('p-settled', {
+        status: 'completed',
+        input: { description: 'Done quietly', subagent_type: 'Explore' },
+      }),
+      children: [],
+      descendantCount: 2,
+      latestChildSummary: '',
+    });
+    const fourth = render(SubagentGroupTestHarness, { props: { group: settled } });
+    expect(fourth.queryByTestId('subagent-group-preview')).toBeNull();
   });
 
   it('renders nested subagent groups recursively when expanded', async () => {

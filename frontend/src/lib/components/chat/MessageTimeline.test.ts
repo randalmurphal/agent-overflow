@@ -877,10 +877,10 @@ describe('<MessageTimeline>', () => {
     const { getAllByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
 
     expect(getAllByTestId('subagent-group')).toHaveLength(2);
-    expect(getAllByTestId('subagent-group-preview').map((node) => node.textContent?.trim())).toEqual([
-      '└ Initializing...',
-      '└ Initializing...',
-    ]);
+    // Flag-less launches with no child activity are unclassified — the
+    // CLI's async ack may yet flip them to backgrounded leaves — so the
+    // cards render their single header line with no latest-action row.
+    expect(queryByTestId('subagent-group-preview')).toBeNull();
   });
 
   describe('windowed history', () => {

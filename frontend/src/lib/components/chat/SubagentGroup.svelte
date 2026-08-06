@@ -131,18 +131,12 @@
   let parentToolName = $derived((parent.toolName ?? '').trim());
 
   // Title-cased label, model affix, and description — see
-  // utils/claudeSubagentLabel.ts for the resolution rules. The
-  // latest-action row below is always present and swaps from
-  // "Initializing..." once child work lands.
+  // utils/claudeSubagentLabel.ts for the resolution rules.
   let agentTitle = $derived(deriveClaudeSubagentLabel(inputObject, parentToolName));
   let modelLabel = $derived(
     deriveClaudeSubagentModelLabel(inputObject, parentMeta, parentToolName),
   );
   let inputDescription = $derived(deriveClaudeSubagentDescription(inputObject));
-
-  let previewText = $derived.by<string>(() => {
-    return group.latestChildSummary || 'Initializing...';
-  });
 
   // ---- Status visualization (matches GenericToolCallRow) -----------
 
@@ -153,6 +147,29 @@
   // `isBackgroundedLaunch` derivation existed only to pick between
   // the two unused strings, so it goes away with them.
   let isRunning = $derived(parent.status === 'running' || parent.status === 'streaming');
+
+  // The latest-action preview row is conditional because this card can
+  // still turn out to be a backgrounded launch: Claude's async-default
+  // agents carry no `run_in_background` in their tool input, and
+  // `is_background` lands only with the CLI's ack tool_result
+  // (claude-wire.md §E5) — at which point the grouping flips this whole
+  // card into an AgentRow leaf. The timeline physics spring growth, not
+  // shrink, so the "Initializing..." placeholder waits for proof the
+  // card will stay foreground: a descendant exists (loaded, evicted
+  // fold, or backend decoration — descendantCount folds in all three)
+  // or the input explicitly declined backgrounding. A real child
+  // summary needs no gate — child activity is itself that proof.
+  // Before proof, the header renders one line, matching the leaf's
+  // height so a flip is height-neutral; after settle with no child
+  // text there is nothing to say, so the placeholder never sticks to
+  // finished or failed cards.
+  let foregroundConfirmed = $derived(
+    group.descendantCount > 0 || inputObject?.run_in_background === false,
+  );
+  let previewText = $derived.by<string>(() => {
+    if (group.latestChildSummary) return group.latestChildSummary;
+    return foregroundConfirmed && isRunning ? 'Initializing...' : '';
+  });
 
   // Shared 1Hz clock (useRunningElapsed.svelte.ts) instead of a private
   // per-row interval: N running subagent cards tick one interval and one
@@ -231,10 +248,12 @@
             </span>
           {/if}
         </span>
-        <span class="mt-0.5 block min-w-0 truncate text-[0.6875rem] text-fg-hint/85" data-testid="subagent-group-preview">
-          <span aria-hidden="true">└</span>
-          {previewText}
-        </span>
+        {#if previewText}
+          <span class="mt-0.5 block min-w-0 truncate text-[0.6875rem] text-fg-hint/85" data-testid="subagent-group-preview">
+            <span aria-hidden="true">└</span>
+            {previewText}
+          </span>
+        {/if}
       </span>
       {/snippet}
       {#snippet actions()}
