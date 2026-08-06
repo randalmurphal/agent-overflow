@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
@@ -79,17 +80,18 @@ func (a *App) probeCodexRateLimits(ctx context.Context) error {
 }
 
 // startCodexRateLimitProbeLoop re-probes Codex limits every
-// rateLimitProbeInterval while at least one Codex session is alive. Startup is
-// intentionally skipped here because probeStartupAccountInfo already hydrates
-// Codex account info and rate-limit data once at boot.
+// rateLimitProbeInterval, and only when a Codex turn completed since the
+// previous poll — each Codex probe spawns an app-server subprocess, so an
+// idle app shouldn't churn processes any more than it should burn Claude
+// usage requests. Startup is intentionally skipped here because
+// probeStartupAccountInfo already hydrates Codex account info and
+// rate-limit data once at boot.
 func (a *App) startCodexRateLimitProbeLoop() {
 	a.startRateLimitProbeLoop(rateLimitProbeLoop{
 		probeImmediately: false,
-		hasActiveSession: a.hasActiveCodexSession,
-		probe:            a.codexUsageGate().Request,
+		turnCompletedSince: func(mark time.Time) bool {
+			return a.providerTurnCompletedSince(string(provider.Codex), mark)
+		},
+		probe: a.codexUsageGate().Request,
 	})
-}
-
-func (a *App) hasActiveCodexSession() bool {
-	return a.sessionManager().hasProvider(string(provider.Codex))
 }

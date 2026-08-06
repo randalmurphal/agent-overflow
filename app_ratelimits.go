@@ -28,8 +28,15 @@ const rateLimitResetJitterTolerance = time.Minute
 // shutdown still aborts an in-flight HTTP call mid-request).
 type rateLimitProbeLoop struct {
 	probeImmediately bool
-	hasActiveSession func() bool
-	probe            func()
+	// turnCompletedSince reports whether the provider finished a turn after
+	// mark. The ticker polls only then: quota only moves when turns run, so
+	// an idle app — however many threads it has open — costs zero requests,
+	// and a burst of parallel sessions still resolves to one poll per tick.
+	turnCompletedSince func(mark time.Time) bool
+	probe              func()
+	// interval overrides rateLimitProbeInterval; zero means production
+	// cadence. Test seam — the ticker is otherwise untestable in bounded time.
+	interval time.Duration
 }
 
 func (a *App) rememberRateLimitsEvent(name string, data any) {
@@ -257,29 +264,66 @@ func (a *App) hydratePersistedAccountRateLimits() {
 
 // startRateLimitProbeLoop runs the shared app-level probe cadence for
 // providers that need explicit account-limit refreshes. The probe itself stays
-// provider-specific; this helper only owns startup, ticker, active-session
+// provider-specific; this helper only owns startup, ticker, turn-activity
 // gating, and shutdown semantics. The loop exits when appCtx is cancelled
 // (Shutdown step 1b) so an in-flight HTTP probe aborts immediately rather
 // than running to completion past the drain barrier.
+//
+// The ticker is the ONLY automatic poll: one request per interval while turns
+// are completing, zero while idle. Turn completion itself records activity
+// instead of probing (sessionEventHandler) — per-turn probing at the gate's
+// floor is what earned server 429s on the Claude usage endpoint, whose
+// throttle is shared by every machine logged into the same account.
 func (a *App) startRateLimitProbeLoop(loop rateLimitProbeLoop) {
 	ctx := a.lifeCtx()
+	interval := loop.interval
+	if interval <= 0 {
+		interval = rateLimitProbeInterval
+	}
 	go func() {
 		if loop.probeImmediately {
 			loop.probe()
 		}
 
-		ticker := time.NewTicker(rateLimitProbeInterval)
+		// lastPoll marks the moment each poll was decided, not when it
+		// finished: a turn completing while a probe is in flight lands after
+		// the mark and earns the next tick's poll.
+		var lastPoll time.Time
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if !loop.hasActiveSession() {
+				if !loop.turnCompletedSince(lastPoll) {
 					continue
 				}
+				lastPoll = time.Now()
 				loop.probe()
 			}
 		}
 	}()
+}
+
+// noteProviderTurnActivity records that a turn just completed for the
+// provider. Called from the session event chokepoint; the periodic poll reads
+// it through providerTurnCompletedSince.
+func (a *App) noteProviderTurnActivity(providerName string) {
+	a.turnActivityMu.Lock()
+	if a.turnActivityByProvider == nil {
+		a.turnActivityByProvider = make(map[string]time.Time)
+	}
+	a.turnActivityByProvider[providerName] = time.Now()
+	a.turnActivityMu.Unlock()
+}
+
+// providerTurnCompletedSince reports whether the provider completed a turn
+// after mark. A zero mark means "ever" — a boot with no turns yet polls
+// nothing.
+func (a *App) providerTurnCompletedSince(providerName string, mark time.Time) bool {
+	a.turnActivityMu.Lock()
+	last, ok := a.turnActivityByProvider[providerName]
+	a.turnActivityMu.Unlock()
+	return ok && last.After(mark)
 }

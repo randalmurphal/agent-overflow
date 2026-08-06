@@ -274,16 +274,17 @@ func (a *App) rateLimitProbeClient() *http.Client {
 	return rateLimitProbeHTTPClient
 }
 
-// startClaudeRateLimitProbeLoop fires an initial probe at startup,
-// then re-probes every `rateLimitProbeInterval` while at least
-// one Claude session is alive.
+// startClaudeRateLimitProbeLoop starts the ONE automatic usage poll:
+// every `rateLimitProbeInterval`, and only when a Claude turn completed
+// since the previous poll (sessionEventHandler records the activity
+// mark). An idle app — open threads included, since Claude processes
+// stay alive between turns — sends nothing. The startup account probe
+// (app_account_probe.go) covers the boot-time read.
 //
-// Three trigger points feed into the same probe:
-//  1. Startup (this function) — once at app boot.
-//  2. Periodic — every 2 mins while sessions exist.
-//  3. Turn complete — fired from sessionEventHandler for Claude
-//     sessions so an active user sees the rings refresh after each
-//     model response.
+// The usage endpoint's 429 throttle is per-bearer and therefore SHARED
+// by every machine logged into the same account; this loop's cadence is
+// each machine's whole automatic budget, so any new automatic trigger
+// must route through this loop's activity mark, never probe directly.
 //
 // Stop semantics: the loop's `select` arms on `appCtx.Done()` so
 // Shutdown step 1b's `appCancel()` breaks it out immediately, and the
@@ -295,15 +296,9 @@ func (a *App) startClaudeRateLimitProbeLoop() {
 		// Startup account probing invokes the first usage read after adopting
 		// an existing native login, so the snapshot is account-scoped.
 		probeImmediately: false,
-		hasActiveSession: a.hasActiveClaudeSession,
-		probe:            a.claudeUsageGate().Request,
+		turnCompletedSince: func(mark time.Time) bool {
+			return a.providerTurnCompletedSince(string(provider.Claude), mark)
+		},
+		probe: a.claudeUsageGate().Request,
 	})
-}
-
-// hasActiveClaudeSession reports whether at least one Claude session
-// is registered. The periodic probe loop gates on this so an idle app
-// doesn't burn probes against the Messages API. Snapshot under the
-// session lock so a concurrent start/stop can't race the iteration.
-func (a *App) hasActiveClaudeSession() bool {
-	return a.sessionManager().hasProvider(string(provider.Claude))
 }

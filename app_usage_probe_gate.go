@@ -7,10 +7,10 @@ import (
 )
 
 // usageProbeMinInterval is the floor between two automatic usage probes for
-// one provider. Turn completion is the chattiest trigger — modern Claude CLIs
-// emit several EventTurnComplete per logical turn (soft round closes at
-// intermediate message boundaries), and ungated each one issued its own
-// request against the usage endpoint; bursts like that are what earn a 429.
+// one provider. The automatic triggers left are sparse — the startup account
+// probe and the activity-gated 2-minute poll loop (turn completion only marks
+// activity; see startRateLimitProbeLoop) — so this floor is a backstop
+// against those overlapping, not a rate limiter in its own right.
 const usageProbeMinInterval = 30 * time.Second
 
 // usageProbeGate bounds one provider's automatic usage-probe traffic.

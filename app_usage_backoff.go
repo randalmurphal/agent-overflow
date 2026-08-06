@@ -8,9 +8,17 @@ import (
 	"agent-overflow/internal/provider/claude"
 )
 
-// defaultUsageProbeBackoff applies after a 429 whose Retry-After header was
-// absent or unusable.
-const defaultUsageProbeBackoff = time.Minute
+// initialUsageProbeBackoff applies after the FIRST 429 whose Retry-After
+// header was absent or unusable; each consecutive headerless 429 doubles it up
+// to maxUsageProbeBackoff. The observed throttle window on Claude's usage
+// endpoint is about an hour, so a short fixed default (this was once 1 minute)
+// had the app retrying straight back into the active window — every attempt
+// re-earning the throttle, which reads as "rate limits never update anymore".
+const initialUsageProbeBackoff = 10 * time.Minute
+
+// maxUsageProbeBackoff caps the headerless-429 escalation at the observed
+// throttle window.
+const maxUsageProbeBackoff = time.Hour
 
 // usageBackoffLedger scopes server-imposed usage-endpoint backoffs (429) to
 // the account that earned them. The throttle is per-bearer: one account being
@@ -29,6 +37,10 @@ type usageBackoffLedger struct {
 	// now is a test seam; nil means the wall clock.
 	now   func() time.Time
 	until map[usageBackoffKey]time.Time
+	// headerlessStrikes counts consecutive 429s that carried no usable
+	// Retry-After, per account, driving the exponential default backoff.
+	// Cleared by a success or by a 429 that does name its window.
+	headerlessStrikes map[usageBackoffKey]int
 }
 
 type usageBackoffKey struct {
@@ -53,15 +65,18 @@ func (l *usageBackoffLedger) Remaining(providerName, accountID string) time.Dura
 
 // Note records one probe outcome for the account. A 429 — a
 // claude.RateLimitedError anywhere in the chain — starts a backoff honoring
-// the server's Retry-After. A successful probe clears any leftover hold,
-// because it proves the throttle lifted. Other errors change nothing: a 401 or
-// a transport failure says nothing about the throttle either way.
+// the server's Retry-After, or the escalating headerless default when the
+// server named no window. A successful probe clears any leftover hold and the
+// strike count, because it proves the throttle lifted. Other errors change
+// nothing: a 401 or a transport failure says nothing about the throttle
+// either way.
 func (l *usageBackoffLedger) Note(providerName, accountID string, err error) {
 	key := usageBackoffKey{providerName, accountID}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err == nil {
 		delete(l.until, key)
+		delete(l.headerlessStrikes, key)
 		return
 	}
 	var limited *claude.RateLimitedError
@@ -69,8 +84,20 @@ func (l *usageBackoffLedger) Note(providerName, accountID string, err error) {
 		return
 	}
 	retry := limited.RetryAfter
-	if retry <= 0 {
-		retry = defaultUsageProbeBackoff
+	if retry > 0 {
+		// The server named its window; the guesswork counter resets with it.
+		delete(l.headerlessStrikes, key)
+	} else {
+		if l.headerlessStrikes == nil {
+			l.headerlessStrikes = make(map[usageBackoffKey]int)
+		}
+		l.headerlessStrikes[key]++
+		retry = maxUsageProbeBackoff
+		// Bound the shift, not just the product — a runaway strike count
+		// would overflow the Duration before min() could cap it.
+		if doublings := l.headerlessStrikes[key] - 1; doublings < 3 {
+			retry = min(initialUsageProbeBackoff<<doublings, maxUsageProbeBackoff)
+		}
 	}
 	if l.until == nil {
 		l.until = make(map[usageBackoffKey]time.Time)

@@ -489,6 +489,11 @@ type App struct {
 	// (app_usage_backoff.go); the refresh paths consult it before sending
 	// anything. Zero value ready.
 	usageBackoff usageBackoffLedger
+	// turnActivityByProvider records the last turn completion per provider
+	// (app_ratelimits.go). The periodic rate-limit poll reads it so an idle
+	// app — open threads, no turns — sends zero usage-endpoint requests.
+	turnActivityMu         sync.Mutex
+	turnActivityByProvider map[string]time.Time
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn        func(string) error
 	stopSessionFn         func(string) error

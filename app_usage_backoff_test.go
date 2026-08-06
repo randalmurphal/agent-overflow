@@ -43,15 +43,55 @@ func TestUsageBackoffLedgerScopesA429ToItsAccount(t *testing.T) {
 	}
 }
 
-// A 429 without a usable Retry-After falls back to the default backoff.
-func TestUsageBackoffLedgerDefaultsWithoutRetryAfter(t *testing.T) {
+// A 429 without a usable Retry-After starts the escalating default: the
+// observed server window is ~1h, so consecutive headerless 429s double the
+// hold (10m → 20m → 40m → 1h cap) instead of retrying straight back into the
+// active window. A 429 that DOES name its window, or a success, resets the
+// escalation.
+func TestUsageBackoffLedgerEscalatesWithoutRetryAfter(t *testing.T) {
 	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 	ledger := newBackoffLedgerForTest(&now)
+	key := string(provider.Claude)
 
-	ledger.Note(string(provider.Claude), "selected", &claude.RateLimitedError{})
+	wantHolds := []time.Duration{
+		initialUsageProbeBackoff,
+		2 * initialUsageProbeBackoff,
+		4 * initialUsageProbeBackoff,
+		maxUsageProbeBackoff,
+		maxUsageProbeBackoff,
+	}
+	for i, want := range wantHolds {
+		ledger.Note(key, "selected", &claude.RateLimitedError{})
+		if got := ledger.Remaining(key, "selected"); got != want {
+			t.Fatalf("Remaining after headerless 429 #%d = %v, want %v", i+1, got, want)
+		}
+		now = now.Add(want)
+	}
 
-	if got := ledger.Remaining(string(provider.Claude), "selected"); got != defaultUsageProbeBackoff {
-		t.Fatalf("Remaining = %v, want the %v default", got, defaultUsageProbeBackoff)
+	// The escalation is per account: a first headerless 429 elsewhere starts
+	// at the initial hold.
+	ledger.Note(key, "other", &claude.RateLimitedError{})
+	if got := ledger.Remaining(key, "other"); got != initialUsageProbeBackoff {
+		t.Fatalf("Remaining(other) = %v, want %v", got, initialUsageProbeBackoff)
+	}
+
+	// A server-named window replaces the guesswork and resets the strikes...
+	ledger.Note(key, "selected", &claude.RateLimitedError{RetryAfter: 45 * time.Second})
+	if got := ledger.Remaining(key, "selected"); got != 45*time.Second {
+		t.Fatalf("Remaining after Retry-After 429 = %v, want 45s", got)
+	}
+	now = now.Add(45 * time.Second)
+	ledger.Note(key, "selected", &claude.RateLimitedError{})
+	if got := ledger.Remaining(key, "selected"); got != initialUsageProbeBackoff {
+		t.Fatalf("Remaining after reset-then-headerless = %v, want %v", got, initialUsageProbeBackoff)
+	}
+	now = now.Add(initialUsageProbeBackoff)
+
+	// ...and so does a success.
+	ledger.Note(key, "selected", nil)
+	ledger.Note(key, "selected", &claude.RateLimitedError{})
+	if got := ledger.Remaining(key, "selected"); got != initialUsageProbeBackoff {
+		t.Fatalf("Remaining after success-then-headerless = %v, want %v", got, initialUsageProbeBackoff)
 	}
 }
 

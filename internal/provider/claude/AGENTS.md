@@ -149,8 +149,11 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   endpoint. Reads a bounded, regular native credential file, preserves every
   dynamically returned limit bucket, and falls back to
   `anthropic-ratelimit-unified-*` headers for older servers. Triggered from
-  `app_claude_ratelimits.go` (startup, periodic, turn-complete);
-  emits go through the standard `provider:usage` channel.
+  `app_claude_ratelimits.go` (startup, plus a 2-minute poll that runs only
+  when a turn completed since the last poll — the endpoint's 429 throttle
+  is per-bearer and shared across machines, so turn completion marks
+  activity rather than probing); emits go through the standard
+  `provider:usage` channel.
 - `mcpstatus.go` — ephemeral MCP status fetcher (`MCPStatusFetcher`,
   driven by `claude mcp list`) plus the `system/init` → unified status
   projectors (`MCPStatusFromRaw`, `MCPStatusFromListLine`) consumed by

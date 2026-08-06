@@ -9,34 +9,6 @@ import (
 	"agent-overflow/internal/settings"
 )
 
-func TestHasActiveCodexSession(t *testing.T) {
-	tests := []struct {
-		name     string
-		sessions map[string]session
-		want     bool
-	}{
-		{name: "empty", sessions: nil, want: false},
-		{name: "claude only", sessions: map[string]session{"t1": {provider: string(provider.Claude), token: "tok"}}, want: false},
-		{name: "codex only", sessions: map[string]session{"t1": {provider: string(provider.Codex), token: "tok"}}, want: true},
-		{name: "mixed", sessions: map[string]session{
-			"t1": {provider: string(provider.Claude), token: "tok-cl"},
-			"t2": {provider: string(provider.Codex), token: "tok-c"},
-		}, want: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			app := newTestAppWithStore(t)
-			for threadID, sess := range tt.sessions {
-				app.sessions[threadID] = sess
-			}
-			if got := app.hasActiveCodexSession(); got != tt.want {
-				t.Fatalf("hasActiveCodexSession() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestProbeCodexRateLimits_EmitsRateLimitsWithoutAccount(t *testing.T) {
 	resetCodexProbeCacheForTest()
 

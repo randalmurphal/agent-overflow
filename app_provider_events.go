@@ -93,21 +93,14 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		}
 
 		if evt.Kind == provider.EventTurnComplete {
-			// Rate-limit refresh on turn completion: piggy-back on the
-			// event the user already triggered so the rings reflect the
-			// cost of the turn that just finished. Routed through the
-			// usage gate because one logical turn emits several
-			// EventTurnComplete (soft round closes at intermediate
-			// message boundaries plus the result envelope) — the gate
-			// coalesces the burst into one probe plus one trailing
-			// probe. Fires in a goroutine so the probe doesn't block
-			// downstream event handlers.
-			switch providerType {
-			case string(provider.Claude):
-				go a.claudeUsageGate().Request()
-			case string(provider.Codex):
-				go a.codexUsageGate().Request()
-			}
+			// Turn completion marks activity; it deliberately does NOT
+			// probe. The 2-minute poll loop (startRateLimitProbeLoop)
+			// reads this mark and issues at most one usage request per
+			// interval no matter how many sessions are completing turns —
+			// per-turn probing multiplied across parallel sessions and
+			// machines sharing one account is what earned server 429s on
+			// the usage endpoint.
+			a.noteProviderTurnActivity(providerType)
 		}
 
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" {

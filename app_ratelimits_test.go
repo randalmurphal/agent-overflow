@@ -193,7 +193,6 @@ func TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	probeFired := make(chan struct{}, 4)
-	hasActive := func() bool { return true }
 	probe := func() {
 		select {
 		case probeFired <- struct{}{}:
@@ -202,9 +201,9 @@ func TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel(t *testing.T) {
 	}
 
 	app.startRateLimitProbeLoop(rateLimitProbeLoop{
-		probeImmediately: true,
-		hasActiveSession: hasActive,
-		probe:            probe,
+		probeImmediately:   true,
+		turnCompletedSince: func(time.Time) bool { return true },
+		probe:              probe,
 	})
 
 	// Wait for the startup probe so we know the goroutine reached the
@@ -229,31 +228,27 @@ func TestStartRateLimitProbeLoop_ExitsOnAppCtxCancel(t *testing.T) {
 	}
 }
 
-// TestSessionEventHandlerTurnCompleteFiresProviderRateLimitProbe verifies
-// the turn-complete trigger dispatches to the matching provider probe. The
-// test injects a fake Claude HTTP server and a fake Codex app-server binary;
-// the goroutines launched from sessionEventHandler have their own cadence so
-// we await up to 1s for each provider signal.
-func TestSessionEventHandlerTurnCompleteFiresProviderRateLimitProbe(t *testing.T) {
+// TestSessionEventHandlerTurnCompleteRecordsActivityWithoutProbing pins the
+// turn-complete contract after the per-turn-probe removal: a completing turn
+// records the provider's activity mark for the periodic poll and sends
+// NOTHING itself. Per-turn probing multiplied across parallel sessions (and
+// machines sharing one account bearer) is what earned server 429s on the
+// usage endpoint; a regression that probes from the event chokepoint again
+// would reintroduce it.
+func TestSessionEventHandlerTurnCompleteRecordsActivityWithoutProbing(t *testing.T) {
 	hits := atomic.Int32{}
-	hitCh := make(chan struct{}, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
-		w.Header().Set("Anthropic-Ratelimit-Unified-5h-Utilization", "0.10")
-		w.Header().Set("Anthropic-Ratelimit-Unified-5h-Reset", "1778479200")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{}`))
-		select {
-		case hitCh <- struct{}{}:
-		default:
-		}
 	}))
 	defer srv.Close()
 	srvURL, _ := url.Parse(srv.URL)
 
 	app := newTestAppWithStore(t)
-	// Seed the canonical credential AFTER the fixture's HOME detach so the
-	// Claude probe finds it under the home this test controls.
+	// Seed the canonical credential AFTER the fixture's HOME detach so a
+	// probe, if one incorrectly fired, would reach the fake server rather
+	// than dying on a missing credential.
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
@@ -268,49 +263,8 @@ func TestSessionEventHandlerTurnCompleteFiresProviderRateLimitProbe(t *testing.T
 	app.rateLimitProbeClientOverride = &http.Client{
 		Transport: redirectRoundTripper{target: srvURL, inner: http.DefaultTransport},
 	}
-	codexBinary := writeCodexProbeMockBinary(t,
-		`{"rateLimits":{"limitId":"codex","primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":1775803864},"secondary":{"usedPercent":60,"windowDurationMins":10080,"resetsAt":1776372636}}}`)
-	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": codexBinary}); err != nil {
-		t.Fatalf("update settings: %v", err)
-	}
 
-	codexUsageCh := make(chan struct{}, 1)
-	app.testEmitHook = func(name string, data any) {
-		if name != "provider:usage" {
-			return
-		}
-		evt, ok := data.(provider.UsageEvent)
-		if !ok || evt.RateLimits == nil || evt.RateLimits.Provider != string(provider.Codex) {
-			return
-		}
-		select {
-		case codexUsageCh <- struct{}{}:
-		default:
-		}
-	}
-
-	// Codex turn-complete: should trigger the Codex probe, not the
-	// Claude HTTP probe.
-	codexHandler := app.sessionEventHandler("thread-codex", "tok-codex", string(provider.Codex))
-	codexHandler(provider.ProviderEvent{
-		Kind:      provider.EventTurnComplete,
-		ThreadID:  "thread-codex",
-		Timestamp: time.Now(),
-	})
-
-	select {
-	case <-codexUsageCh:
-	case <-time.After(1 * time.Second):
-		t.Fatalf("Codex turn-complete did not emit a rate-limit snapshot")
-	}
-	// Give any incorrectly-fired Claude goroutine a moment to make an
-	// HTTP call.
-	time.Sleep(50 * time.Millisecond)
-	if hits.Load() != 0 {
-		t.Fatalf("Codex turn-complete fired the Claude probe (hits=%d)", hits.Load())
-	}
-
-	// Claude turn-complete: should trigger the Claude probe.
+	mark := time.Now().Add(-time.Millisecond)
 	claudeHandler := app.sessionEventHandler("thread-claude", "tok-claude", string(provider.Claude))
 	claudeHandler(provider.ProviderEvent{
 		Kind:      provider.EventTurnComplete,
@@ -318,13 +272,67 @@ func TestSessionEventHandlerTurnCompleteFiresProviderRateLimitProbe(t *testing.T
 		Timestamp: time.Now(),
 	})
 
-	select {
-	case <-hitCh:
-		// Got the expected hit.
-	case <-time.After(1 * time.Second):
-		t.Fatalf("Claude turn-complete did not fire the probe within 1s (hits=%d)", hits.Load())
+	if !app.providerTurnCompletedSince(string(provider.Claude), mark) {
+		t.Fatalf("Claude turn-complete did not record turn activity")
 	}
-	if hits.Load() != 1 {
-		t.Errorf("hits = %d, want 1", hits.Load())
+	if app.providerTurnCompletedSince(string(provider.Codex), mark) {
+		t.Fatalf("Claude turn-complete recorded Codex activity")
+	}
+	// Give any incorrectly-fired probe goroutine a moment to make an HTTP
+	// call before asserting silence.
+	time.Sleep(50 * time.Millisecond)
+	if hits.Load() != 0 {
+		t.Fatalf("turn-complete sent %d usage request(s), want 0 — polling belongs to the ticker", hits.Load())
+	}
+}
+
+// TestStartRateLimitProbeLoop_PollsOnlyAfterTurnActivity drives the loop with
+// a short interval and pins the polling economics: an idle loop never polls,
+// one activity mark earns exactly one poll, and the next poll requires fresh
+// activity.
+func TestStartRateLimitProbeLoop_PollsOnlyAfterTurnActivity(t *testing.T) {
+	app := newTestAppWithStore(t)
+	const testProvider = "test-provider"
+
+	probes := atomic.Int32{}
+	probed := make(chan struct{}, 16)
+	app.startRateLimitProbeLoop(rateLimitProbeLoop{
+		interval: 5 * time.Millisecond,
+		turnCompletedSince: func(mark time.Time) bool {
+			return app.providerTurnCompletedSince(testProvider, mark)
+		},
+		probe: func() {
+			probes.Add(1)
+			select {
+			case probed <- struct{}{}:
+			default:
+			}
+		},
+	})
+
+	// Idle boot: ticks pass, nothing polls.
+	time.Sleep(40 * time.Millisecond)
+	if got := probes.Load(); got != 0 {
+		t.Fatalf("probes before any turn activity = %d, want 0", got)
+	}
+
+	// One completed turn earns exactly one poll.
+	app.noteProviderTurnActivity(testProvider)
+	select {
+	case <-probed:
+	case <-time.After(time.Second):
+		t.Fatal("no poll after turn activity")
+	}
+	time.Sleep(40 * time.Millisecond)
+	if got := probes.Load(); got != 1 {
+		t.Fatalf("probes after one turn = %d, want 1 — the mark must advance past consumed activity", got)
+	}
+
+	// Fresh activity earns the next poll.
+	app.noteProviderTurnActivity(testProvider)
+	select {
+	case <-probed:
+	case <-time.After(time.Second):
+		t.Fatal("no poll after fresh turn activity")
 	}
 }

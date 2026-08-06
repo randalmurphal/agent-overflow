@@ -10,49 +10,37 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 )
 
-// TestHasActiveClaudeSession_Empty returns false when no sessions are
-// registered. Locks the contract for the probe loop's idle-skip gate.
-func TestHasActiveClaudeSession_Empty(t *testing.T) {
+// TestProviderTurnActivity locks the contract the periodic usage poll gates
+// on: no activity ever recorded polls nothing (an app with open-but-idle
+// threads must cost zero usage requests), activity is scoped per provider,
+// and a mark taken after the last activity reads as "no new turns".
+func TestProviderTurnActivity(t *testing.T) {
 	app := newTestAppWithStore(t)
-	if app.hasActiveClaudeSession() {
-		t.Errorf("expected false on empty session map")
-	}
-}
 
-// TestHasActiveClaudeSession_ClaudeOnly returns true with one Claude
-// session.
-func TestHasActiveClaudeSession_ClaudeOnly(t *testing.T) {
-	app := newTestAppWithStore(t)
-	app.sessions["t1"] = session{provider: string(provider.Claude), token: "tok"}
-	if !app.hasActiveClaudeSession() {
-		t.Errorf("expected true with one claude session")
+	if app.providerTurnCompletedSince(string(provider.Claude), time.Time{}) {
+		t.Fatalf("expected no activity before any turn completed")
 	}
-}
 
-// TestHasActiveClaudeSession_CodexOnly returns false when only Codex
-// sessions exist — the probe targets Anthropic, so Codex-only setups
-// shouldn't fire it.
-func TestHasActiveClaudeSession_CodexOnly(t *testing.T) {
-	app := newTestAppWithStore(t)
-	app.sessions["t1"] = session{provider: string(provider.Codex), token: "tok"}
-	if app.hasActiveClaudeSession() {
-		t.Errorf("expected false with only codex sessions")
+	before := time.Now().Add(-time.Millisecond)
+	app.noteProviderTurnActivity(string(provider.Claude))
+
+	if !app.providerTurnCompletedSince(string(provider.Claude), time.Time{}) {
+		t.Fatalf("expected activity after a Claude turn completed (zero mark)")
 	}
-}
-
-// TestHasActiveClaudeSession_Mixed returns true when at least one
-// Claude session exists alongside other providers.
-func TestHasActiveClaudeSession_Mixed(t *testing.T) {
-	app := newTestAppWithStore(t)
-	app.sessions["t1"] = session{provider: string(provider.Codex), token: "tok-c"}
-	app.sessions["t2"] = session{provider: string(provider.Claude), token: "tok-cl"}
-	if !app.hasActiveClaudeSession() {
-		t.Errorf("expected true with mixed providers including claude")
+	if !app.providerTurnCompletedSince(string(provider.Claude), before) {
+		t.Fatalf("expected activity after a mark predating the turn")
+	}
+	if app.providerTurnCompletedSince(string(provider.Codex), time.Time{}) {
+		t.Fatalf("Claude activity must not read as Codex activity")
+	}
+	if app.providerTurnCompletedSince(string(provider.Claude), time.Now()) {
+		t.Fatalf("a mark after the last turn must read as idle")
 	}
 }
 
