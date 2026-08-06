@@ -31,7 +31,7 @@ require (
 	github.com/tree-sitter/tree-sitter-python v0.25.0
 	github.com/tree-sitter/tree-sitter-rust v0.24.2
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2
-	github.com/wailsapp/wails/v3 v3.0.0-alpha2.112
+	github.com/wailsapp/wails/v3 v3.0.0-beta.4
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0
@@ -139,6 +139,7 @@ require (
 	github.com/konoui/go-qsort v0.1.0 // indirect
 	github.com/konoui/lipo v0.10.0 // indirect
 	github.com/leaanthony/clir v1.7.0 // indirect
+	github.com/leaanthony/dmg v0.0.0-20260731074841-5c28840cf819 // indirect
 	github.com/leaanthony/winicon v1.0.0 // indirect
 	github.com/lithammer/fuzzysearch v1.1.8 // indirect
 	github.com/lmittmann/tint v1.1.3 // indirect
@@ -178,7 +179,6 @@ require (
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/wailsapp/task/v3 v3.40.1-patched3 // indirect
-	github.com/wailsapp/wails/webview2 v1.0.27 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.7.16 // indirect
@@ -209,18 +209,35 @@ require (
 
 tool github.com/wailsapp/wails/v3/cmd/wails3
 
-// Fork pin: branch ao-webview2-memory-trim (on top of
-// ao-webview2-dpi-hardening) — WebView2 mixed-DPI GPU-crash prevention +
-// ProcessFailed recovery on top of the v3.0.0-alpha2.112 tag, plus
-// WebviewWindow.SuspendWebview/ResumeWebview (minimised-window memory
-// trim, consumed by cmd/agent-overflow-windows/webviewtrim.go) and the
-// Linux notification dismiss-vs-click fix (dismissal no longer
-// synthesizes DefaultActionIdentifier; upstream candidate branch
-// fix/linux-notification-dismiss-vs-click, PR pending user approval).
-// The webview2 module is replaced alongside because the suspend API's
-// COM bindings live there; both pins must reference the same fork
-// commit. Drop the DPI hunks once wails #5732 / #5733 land upstream;
-// the suspend API and notification fix are upstream-PR candidates.
-replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-alpha2.112.0.20260803192222-4a80cd101f96
-
-replace github.com/wailsapp/wails/webview2 => github.com/randalmurphal/wails/webview2 v1.0.28-0.20260803192222-4a80cd101f96
+// Fork pin: branch ao-beta-memory-trim, four patches on top of the
+// upstream v3.0.0-beta.4 tag. Only ONE replace is needed now: upstream
+// folded the separate wails/webview2 module into v3/internal/webview2
+// (#5711, alpha2.114), so the second pin that used to carry the suspend
+// API's COM bindings is gone.
+//
+// What remains in the fork, and what retires each patch:
+//
+//  1. WebView2 ProcessFailed recovery (rebuild the controller on browser
+//     process exit; re-navigate on renderer exit) and 4. escalation of a
+//     repeatedly-unresponsive renderer to that same rebuild. Both are
+//     blocked on wails #5733, which is still OPEN — upstream already
+//     exposes edge.Chromium.ProcessFailedCallback but nothing in
+//     pkg/application consumes it. Upstream-PR candidate.
+//
+//  2. WebviewWindow.SuspendWebview/ResumeWebview (minimised-window memory
+//     trim, consumed by cmd/agent-overflow-windows/webviewtrim.go).
+//     Unresolved before this can be dropped or upstreamed: beta.4's #5742
+//     already hides the WebView2 controller on minimise, so the marginal
+//     saving of a real TrySuspend is unmeasured; and as new public API it
+//     needs a WEP, not a plain PR. Measure on real hardware first.
+//
+//  3. Linux notification dismiss-vs-click (dismissal no longer synthesizes
+//     DefaultActionIdentifier). Still present verbatim in beta.4. Ready to
+//     upstream as-is from branch fix/linux-notification-dismiss-vs-click;
+//     PR pending user approval.
+//
+// Dropped at the beta.4 rebase — both landed upstream: the mixed-DPI
+// monitor-scale-detection re-enable (#5732 -> PR #5734) and the host
+// rasterization-scale stand-down (PR #5761, which generalised it to
+// visual hosting). Do not re-add them.
+replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260806200522-fd752498afa2
