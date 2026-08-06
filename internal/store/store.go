@@ -78,7 +78,7 @@ func openReadPool(db *sql.DB, dbPath string) (*sql.DB, error) {
 		return nil, nil
 	}
 	// _pragma values apply per connection (verified against
-	// modernc.org/sqlite v1.48.2). journal_mode is a property of the
+	// modernc.org/sqlite v1.56.0). journal_mode is a property of the
 	// database file, so read connections inherit WAL. The path is
 	// %-escaped for SQLite URI parsing: '%', '?', and '#' are the only
 	// characters that can cut the path short or corrupt the query
