@@ -30,6 +30,13 @@ export const SECONDARY_BUTTON_CLASS =
   'disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors ' +
   'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';
 
+// Explanatory prose under a section title. SettingsHeader renders its
+// `description` with it; sections whose explanation needs inline markup
+// (a <code> span) render the same voice through the header's `details`
+// snippet, so one class defines what "section prose" looks like.
+export const SECTION_PROSE_CLASS =
+  'max-w-2xl text-[0.71875rem] leading-snug text-fg-muted';
+
 export const GHOST_BUTTON_CLASS =
   'rounded-[var(--radius-field)] px-2 py-1 text-[0.71875rem] text-fg-hint ' +
   'hover:text-fg-muted hover:bg-surface-2/40 cursor-pointer transition-colors ' +

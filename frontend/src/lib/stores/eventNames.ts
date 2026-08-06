@@ -14,9 +14,10 @@ export const DESIGN_RELOAD_MAIN_EVENT = 'ao-design:reload-main';
 export const DESIGN_OPTIONS_UPDATE_EVENT = 'ao-design:options-update';
 
 // Cross-component messaging (sidebar → drawer → composer, picker chord
-// → picker components, settings launcher, etc.).
+// → picker components, etc.). These exist only where the target is a
+// component the dispatcher holds no reference to — anything whose state
+// lives in a store is reached by calling the store.
 export const PICKER_TOGGLE_INPUT_EVENT = 'agent-overflow:picker-toggle-input';
 export const RENAME_THREAD_EVENT = 'agent-overflow:rename-thread';
 export const OPEN_SHIP_CHANGES_EVENT = 'agent-overflow:open-ship-changes';
-export const OPEN_SETTINGS_EVENT = 'agent-overflow:open-settings';
 export const REVEAL_PANE_EVENT = 'agent-overflow:reveal-pane';

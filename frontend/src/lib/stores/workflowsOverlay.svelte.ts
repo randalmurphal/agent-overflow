@@ -113,7 +113,28 @@ export function getWorkflowsOverlayRunId(): string {
   return top.level === 'run' ? top.itemId : '';
 }
 
+/**
+ * Closes the OTHER full-height layer over the pane strip — settings. Both are
+ * siblings of PaneHost with their own focus trap, and two of them up at once
+ * has no coherent Esc, so opening this one closes that one.
+ *
+ * Injected rather than imported to keep the import one-way: the settings store
+ * imports this module (for `closeWorkflowsOverlay`) and arms this hook at its
+ * own module init, so the wiring is deterministic at load time rather than
+ * dependent on anything being registered first. It lands on the store rather
+ * than on the `workflows.toggle` command because `openWorkflowsOverlay` is the
+ * ONE writer of `open = true`: the chord, the sidebar chip and the
+ * OS-notification deep link all funnel through it, so no entry point can forget
+ * the exclusion.
+ */
+let closeSettingsSurface: () => void = () => {};
+
+export function setWorkflowsOverlayExclusion(closeSettings: () => void): void {
+  closeSettingsSurface = closeSettings;
+}
+
 export function openWorkflowsOverlay(): void {
+  closeSettingsSurface();
   open = true;
 }
 
@@ -264,6 +285,9 @@ export function syncWorkflowsOverlayFromAppStorage(): void {
   sweepIndex = parsed.sweepIndex;
 }
 
+// `closeSettingsSurface` is deliberately NOT reset here: it is structural
+// wiring armed once by the settings store's module init, not per-test state,
+// and clearing it would silently disarm the exclusion for every later test.
 export function resetWorkflowsOverlayForTest(): void {
   const fresh = defaults();
   open = false;

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack, type Snippet } from 'svelte';
+  import { untrack } from 'svelte';
   import ChatView from '../chat/ChatView.svelte';
   import CompanionPane from './CompanionPane.svelte';
   import {
@@ -15,15 +15,9 @@
   import { measurePane } from './measurePane';
   import { createPaneThreadDrag } from './usePaneThreadDrag.svelte';
 
-  interface Props {
-    children?: Snippet;
-    globalSurface?: Snippet;
-  }
-
   const PANE_SELECTOR = '[data-pane-id]';
   type PaneRevealAlignment = 'start' | 'end';
 
-  let { globalSurface }: Props = $props();
   let layoutItems = $derived(getPaneLayoutItems());
   let minPaneWidth = $derived(getMinPaneWidth());
   let focusedPaneId = $derived(getFocusedPaneId());
@@ -115,8 +109,8 @@
 
     // A structural change can move the pane an active reveal is targeting
     // even when the old numeric destination remains legal. Re-resolve from
-    // the target pane's current offset; if it disappeared (close/global
-    // surface), stop the glide rather than writing stale geometry back.
+    // the target pane's current offset; if it disappeared (pane closed), stop
+    // the glide rather than writing stale geometry back.
     if (glideTargetLeft !== null) {
       const targetPane = glideTargetPaneId ? paneElementById(glideTargetPaneId) : null;
       if (!targetPane || glideTargetAlignment === null) {
@@ -190,20 +184,18 @@
     };
   });
 
-  // Pane add/remove/reorder and global-surface transitions all change the
-  // scrollable strip without resizing the host itself, so they share the
-  // immediate horizontal geometry reconciliation below. An order change can
-  // additionally leave an inactive timeline's virtualizer out of sync while
-  // its <section> moves via insertBefore; wait for that layout to settle, then
-  // ask every mounted timeline to reconcile. The transcript did not change.
-  const paneStructureKey = $derived(
-    `${globalSurface ? 'global' : 'panes'}:${layoutItems.map((item) => item.paneId).join('|')}`,
-  );
-  // Last surface mode seen by the structure effect, for detecting the strip
-  // (re)appearing: first mount after layout restore, or a global surface
-  // (settings) closing. Both paint at scrollLeft 0 no matter which pane
-  // holds logical focus, so the effect snaps the focused pane into view.
-  let lastSurfaceMode: 'global' | 'panes' | null = null;
+  // Pane add/remove/reorder changes the scrollable strip without resizing the
+  // host itself, so they share the immediate horizontal geometry
+  // reconciliation below. An order change can additionally leave an inactive
+  // timeline's virtualizer out of sync while its <section> moves via
+  // insertBefore; wait for that layout to settle, then ask every mounted
+  // timeline to reconcile. The transcript did not change.
+  const paneStructureKey = $derived(layoutItems.map((item) => item.paneId).join('|'));
+  // The structure effect's FIRST run is the strip's first paint after layout
+  // restore: it paints at scrollLeft 0 no matter which pane holds logical
+  // focus, so that run snaps the focused pane into view. Every later run is an
+  // ordinary structural change and must leave the position alone.
+  let stripFirstPaint = true;
 
   function reconcilePaneHostLayout(): void {
     for (const item of layoutItems) {
@@ -215,9 +207,8 @@
 
   $effect(() => {
     paneStructureKey; // dep
-    const surfaceMode = globalSurface ? 'global' : 'panes';
-    const stripAppeared = surfaceMode === 'panes' && lastSurfaceMode !== 'panes';
-    lastSurfaceMode = surfaceMode;
+    const stripAppeared = stripFirstPaint;
+    stripFirstPaint = false;
     // Svelte has flushed the keyed pane sections before this effect runs.
     // Force current scroll geometry now so WebKit cannot paint a frame at an
     // offset beyond the shrunken strip; timeline reconciliation still waits
@@ -231,7 +222,7 @@
       return () => clearTimeout(handle);
     }
 
-    // The strip just (re)appeared at scrollLeft 0. Bring the focused pane
+    // The strip just appeared at scrollLeft 0. Bring the focused pane
     // into view instantly: there is no prior position worth gliding from,
     // and DOM focus restoration never scrolls (composer initial focus and
     // paneComposerFocus are preventScroll'd), so nothing else reveals it.
@@ -258,9 +249,9 @@
   // neighbor's unmount. By rAF time Svelte has flushed and layout is
   // current. Same-frame requests coalesce to the latest target; `instant`
   // skips the glide and writes the aligned offset directly — used when the
-  // strip (re)appears and the current position is not one the user ever
+  // strip first paints and the current position is not one the user ever
   // saw. Instant wins the frame regardless of request order: a reveal
-  // landing in the strip-appearance frame still starts from that unseen
+  // landing in the first-paint frame still starts from that unseen
   // position, so gliding it would animate from nowhere.
   let pendingScrollPaneId: string | null = null;
   let pendingScrollInstant = false;
@@ -371,7 +362,7 @@
   }
 
   // Instant counterpart of scrollPaneIntoView: any in-flight glide predates
-  // the strip's reappearance and is stale, so cancel it before measuring.
+  // the strip's first paint and is stale, so cancel it before measuring.
   function snapPaneIntoView(paneEl: HTMLElement): void {
     const el = hostEl;
     if (!el) return;
@@ -434,11 +425,7 @@
   ondragleave={drag.onHostDragLeave}
   ondragend={drag.onPaneDragEnd}
 >
-  {#if globalSurface}
-    <section class="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="global-pane-surface">
-      {@render globalSurface()}
-    </section>
-  {:else if layoutItems.length === 0}
+  {#if layoutItems.length === 0}
     <section
       class="chat-surface-ground flex h-full min-w-full flex-1 items-center justify-center px-8"
       data-testid="pane-host-empty"

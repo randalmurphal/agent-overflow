@@ -182,36 +182,36 @@
   });
 </script>
 
-<div class="flex flex-col gap-8">
+<!-- Declared out here, and passed only in local mode: an `{#if}` INSIDE the
+     snippet would still render the header's empty prose paragraph. -->
+{#snippet connectUsage()}
+  These endpoints power
+  <code class="font-mono text-[0.6875rem]">agent-overflow --connect ws://host:port?token=&lt;value&gt;</code>;
+  the desktop binary opens a window attached to the remote backend instead of
+  booting a local one.
+{/snippet}
+
+<div class="flex flex-col gap-6">
   <section>
     <SettingsHeader
-      eyebrow="Remote endpoints"
       title="Saved --connect targets"
       description={clientMode
         ? "Remote endpoints can only be edited from your local install. This window is attached to a remote backend, so changes here would update the remote machine's settings instead of yours."
         : 'Store the URL + token for a remote agent-overflow backend so you can launch the desktop app against it without retyping. Tokens are stored in plaintext alongside the rest of settings.'}
+      details={clientMode ? undefined : connectUsage}
     />
 
     {#if !clientMode}
-      <p class="mt-1 max-w-2xl text-[0.71875rem] leading-relaxed text-fg-hint">
-        These endpoints power
-        <code class="font-mono text-[0.6875rem]">agent-overflow --connect ws://host:port?token=&lt;value&gt;</code>;
-        the desktop binary opens a window attached to the remote backend instead
-        of booting a local one.
-      </p>
-    {/if}
-
-    {#if !clientMode}
       {#if loading}
-        <p class="mt-4 text-[0.75rem] text-fg-muted">Loading…</p>
+        <p class="text-[0.75rem] text-fg-muted">Loading…</p>
       {:else if endpoints.length === 0 && editingId === null}
-        <p class="mt-4 text-[0.75rem] text-fg-muted">No remote endpoints saved.</p>
+        <p class="text-[0.75rem] text-fg-muted">No remote endpoints saved.</p>
       {/if}
     {/if}
 
     {#if !clientMode && !loading && endpoints.length > 0}
       <ul
-        class="mt-4 divide-y divide-border-subtle/60 overflow-hidden rounded-[var(--radius-control)] border border-border-subtle"
+        class="divide-y divide-border-subtle/60 overflow-hidden rounded-[var(--radius-control)] border border-border-subtle"
         data-testid="remote-endpoints-list"
       >
         {#each endpoints as endpoint (endpoint.id)}
@@ -226,7 +226,7 @@
     {/if}
 
     {#if !clientMode}
-      <div class="mt-4">
+      <div class="mt-2.5">
         {#if editingId === null}
           <button type="button" onclick={startNew} class={SECONDARY_BUTTON_CLASS}>
             Add remote endpoint

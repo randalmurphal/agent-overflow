@@ -91,16 +91,13 @@
     'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40 transition-colors';
 </script>
 
-<div class="flex flex-col gap-6">
-  <section>
-    <SettingsHeader
-      eyebrow="Archive"
-      title="Archived Threads"
-      description="Archived threads are hidden from the sidebar. Unarchive to bring one back, or delete to remove it permanently."
-    />
-  </section>
+<section data-testid="settings-archived-threads">
+  <SettingsHeader
+    title="Archived Threads"
+    description="Hidden from the sidebar. Unarchive to bring one back, or delete to remove it permanently."
+  />
 
-  <section class="flex flex-col gap-1">
+  <div class="flex flex-col gap-1">
     {#if loading}
       <p class="text-[0.8125rem] text-fg-subtle">Loading...</p>
     {:else if loadError}
@@ -147,8 +144,8 @@
         {/each}
       </div>
     {/if}
-  </section>
-</div>
+  </div>
+</section>
 
 <ConfirmDialog
   open={deleteTarget !== null}

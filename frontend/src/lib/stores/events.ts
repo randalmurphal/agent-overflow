@@ -164,7 +164,6 @@ export {
   PICKER_TOGGLE_INPUT_EVENT,
   RENAME_THREAD_EVENT,
   OPEN_SHIP_CHANGES_EVENT,
-  OPEN_SETTINGS_EVENT,
 } from './eventNames';
 
 // wailsEventOn is defined in ./wailsEvents (a leaf module) and re-exported here

@@ -75,6 +75,13 @@ async function openShipChangesDrawer(rendered: DrawerRendered) {
   const shipItem = await rendered.findByRole('menuitem', { name: /Ship Changes/i });
   await fireEvent.click(shipItem);
   await flush(10);
+  // The drawer is a lazy import; its first-ever load in a suite run pays the
+  // on-demand transform, which can exceed waitFor's default 1s under full
+  // suite load. Waiting here (rather than in each test) keeps the budget in
+  // one place.
+  await waitFor(() => {
+    expect(rendered.getByTestId('ship-changes-drawer')).toBeInTheDocument();
+  }, { timeout: 5000 });
 }
 
 describe('App integration — ship changes drawer', () => {
@@ -85,9 +92,6 @@ describe('App integration — ship changes drawer', () => {
   it('opens the Ship Changes drawer from the git actions menu', async () => {
     const rendered = await mountWithThread();
     await openShipChangesDrawer(rendered);
-    await waitFor(() => {
-      expect(rendered.getByTestId('ship-changes-drawer')).toBeInTheDocument();
-    });
     // Initial stage for "dirty tree" is the commit step. The drawer is a
     // lazy mount, so its stage resolution lands a beat after the drawer.
     await waitFor(() => {

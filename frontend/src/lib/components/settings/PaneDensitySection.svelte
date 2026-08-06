@@ -34,12 +34,11 @@
 
 <section data-testid="settings-pane-density">
   <SettingsHeader
-    eyebrow="Workspace"
     title="Pane Density"
     description="Choose the minimum width each workspace pane keeps before horizontal scrolling starts."
   />
   <div
-    class="mt-4 grid gap-2"
+    class="grid gap-2"
     role="radiogroup"
     aria-label="Pane Density"
     data-testid="pane-density-radiogroup"

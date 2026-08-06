@@ -106,151 +106,16 @@ describe('<GeneralSettings> — Pane density', () => {
   });
 });
 
-describe('<GeneralSettings> — Retention', () => {
+describe('<GeneralSettings> — sections that moved to Git / Storage', () => {
   beforeEach(async () => {
     await seed();
   });
 
-  it('renders the retention input with the default value', async () => {
-    const { getByTestId } = render(GeneralSettings);
-    expect(getByTestId('settings-retention')).toBeTruthy();
-    const input = getByTestId('settings-retention-days') as HTMLInputElement;
-    expect(input.value).toBe('30');
-  });
-
-  it('shows the disabled-cleanup hint when retention days is 0', async () => {
-    await seed({ retention: { days: 0 } });
-    const { getByText } = render(GeneralSettings);
-    expect(
-      getByText(/automatic cleanup is disabled/i),
-    ).toBeTruthy();
-  });
-
-  it('dispatches retention patch on blur with parsed integer', async () => {
-    const { getByTestId } = render(GeneralSettings);
-    const input = getByTestId('settings-retention-days') as HTMLInputElement;
-    input.value = '7';
-    await fireEvent.blur(input);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ retention: { days: 7 } });
-  });
-
-  it('coerces non-numeric input to 0 (disabled)', async () => {
-    const { getByTestId } = render(GeneralSettings);
-    const input = getByTestId('settings-retention-days') as HTMLInputElement;
-    input.value = 'banana';
-    await fireEvent.blur(input);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ retention: { days: 0 } });
-  });
-
-  it('coerces negative input to 0 (disabled)', async () => {
-    const { getByTestId } = render(GeneralSettings);
-    const input = getByTestId('settings-retention-days') as HTMLInputElement;
-    input.value = '-5';
-    await fireEvent.blur(input);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ retention: { days: 0 } });
-  });
-});
-
-describe('<GeneralSettings> — Self-hosted GitLab hosts', () => {
-  beforeEach(async () => {
-    await seed();
-  });
-
-  it('renders the section with the empty state by default', async () => {
-    const { getByTestId } = render(GeneralSettings);
-    expect(getByTestId('settings-gitlab-hosts')).toBeTruthy();
-    expect(getByTestId('settings-gitlab-hosts-empty')).toBeTruthy();
-  });
-
-  it('adds a valid host through the Add button', async () => {
-    const { getByTestId } = render(GeneralSettings);
-    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
-    const add = getByTestId('settings-gitlab-host-add') as HTMLButtonElement;
-    input.value = 'gitlab.mycompany.com';
-    await fireEvent.input(input);
-    await fireEvent.click(add);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({
-      gitlabSelfHostedHosts: ['gitlab.mycompany.com'],
-    });
-  });
-
-  it('lowercases and trims a host before saving', async () => {
-    const { getByTestId } = render(GeneralSettings);
-    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
-    const add = getByTestId('settings-gitlab-host-add') as HTMLButtonElement;
-    input.value = '  Gitlab.Example.Test  ';
-    await fireEvent.input(input);
-    await fireEvent.click(add);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock!.mock.calls[0][0]).toEqual({
-      gitlabSelfHostedHosts: ['gitlab.example.test'],
-    });
-  });
-
-  it('removes a host when its Remove button is clicked', async () => {
-    await seed({ gitlabSelfHostedHosts: ['gitlab.example.test', 'gl.other.test'] });
-    const { getByTestId } = render(GeneralSettings);
-    const remove = getByTestId('settings-gitlab-host-remove-gitlab.example.test') as HTMLButtonElement;
-    await fireEvent.click(remove);
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock!.mock.calls[0][0]).toEqual({
-      gitlabSelfHostedHosts: ['gl.other.test'],
-    });
-  });
-
-  it('rejects scheme-prefixed input with an inline error', async () => {
-    const { getByTestId, queryByTestId } = render(GeneralSettings);
-    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
-    input.value = 'https://gitlab.example.test';
-    await fireEvent.input(input);
-
-    expect(queryByTestId('settings-gitlab-host-error')).toBeTruthy();
-    const add = getByTestId('settings-gitlab-host-add') as HTMLButtonElement;
-    expect(add.disabled).toBe(true);
-  });
-
-  it('rejects a duplicate host with an inline error', async () => {
-    await seed({ gitlabSelfHostedHosts: ['gitlab.example.test'] });
-    const { getByTestId, queryByTestId } = render(GeneralSettings);
-    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
-    input.value = 'gitlab.example.test';
-    await fireEvent.input(input);
-
-    expect(queryByTestId('settings-gitlab-host-error')).toBeTruthy();
-    const add = getByTestId('settings-gitlab-host-add') as HTMLButtonElement;
-    expect(add.disabled).toBe(true);
-  });
-
-  it('rejects github.com / gitlab.com as redundant', async () => {
-    const { getByTestId, queryByTestId } = render(GeneralSettings);
-    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
-    input.value = 'gitlab.com';
-    await fireEvent.input(input);
-
-    expect(queryByTestId('settings-gitlab-host-error')).toBeTruthy();
-  });
-
-  it('rejects single-label hostnames', async () => {
-    const { getByTestId, queryByTestId } = render(GeneralSettings);
-    const input = getByTestId('settings-gitlab-host-input') as HTMLInputElement;
-    input.value = 'localhost';
-    await fireEvent.input(input);
-
-    expect(queryByTestId('settings-gitlab-host-error')).toBeTruthy();
+  it('no longer renders repository sync, GitLab hosts, or retention', async () => {
+    const { queryByTestId } = render(GeneralSettings);
+    expect(queryByTestId('settings-git-sync')).toBeNull();
+    expect(queryByTestId('settings-gitlab-hosts')).toBeNull();
+    expect(queryByTestId('settings-retention')).toBeNull();
   });
 });
 
@@ -354,37 +219,5 @@ describe('<GeneralSettings> — Font selectors', () => {
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
     expect(mock!.mock.calls[0][0]).toEqual({ monoFont: 'system' });
-  });
-});
-
-describe('<GeneralSettings> — Repository sync section', () => {
-  it('renders the background fetch toggle on by default', async () => {
-    await seed();
-    const { getByTestId, getByLabelText } = render(GeneralSettings);
-    expect(getByTestId('settings-git-sync')).toBeTruthy();
-    const toggle = getByLabelText('Toggle Background Git Fetch') as HTMLElement;
-    expect(toggle.getAttribute('aria-checked')).toBe('true');
-  });
-
-  it('dispatches backgroundGitFetch:false when switched off', async () => {
-    await seed();
-    const { getByLabelText } = render(GeneralSettings);
-    await fireEvent.click(getByLabelText('Toggle Background Git Fetch'));
-
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ backgroundGitFetch: false });
-  });
-
-  it('dispatches backgroundGitFetch:true when switched back on', async () => {
-    await seed({ backgroundGitFetch: false });
-    const { getByLabelText } = render(GeneralSettings);
-    const toggle = getByLabelText('Toggle Background Git Fetch') as HTMLElement;
-    expect(toggle.getAttribute('aria-checked')).toBe('false');
-
-    await fireEvent.click(toggle);
-    const mock = getBindingMock('UpdateSettings');
-    expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ backgroundGitFetch: true });
   });
 });

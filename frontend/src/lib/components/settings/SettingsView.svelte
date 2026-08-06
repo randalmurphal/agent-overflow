@@ -7,7 +7,8 @@
   import RemoteEndpointsSection from './RemoteEndpointsSection.svelte';
   import WSLSection from './WSLSection.svelte';
   import ProviderSettings from './ProviderSettings.svelte';
-  import ArchivedThreads from './ArchivedThreads.svelte';
+  import GitSettings from './GitSettings.svelte';
+  import StorageSettings from './StorageSettings.svelte';
   import DiscussionsSettings from './DiscussionsSettings.svelte';
   import EditorSection from './EditorSection.svelte';
   import ProjectsSettings from './ProjectsSettings.svelte';
@@ -15,7 +16,11 @@
   import ObservabilitySettings from './ObservabilitySettings.svelte';
   import UpdatesSettings from './UpdatesSettings.svelte';
   import UpdateBadge from '../shared/UpdateBadge.svelte';
-  import { SETTINGS_SECTIONS, type SettingsSection } from './sections';
+  import {
+    SETTINGS_SECTION_GROUPS,
+    SETTINGS_SECTION_IDS,
+    type SettingsSection,
+  } from './sections';
   import { Version } from '../../stores/bindings';
   import { hasPendingUpdate } from '../../stores/updates.svelte';
 
@@ -30,23 +35,12 @@
       });
   });
 
-  type ContextSettingsTarget = {
-    threadId?: string;
-    provider: string;
-    model: string;
-    contextWindow?: number;
-    autoCompactStandardPercent?: number;
-    autoCompactExtendedPercent?: number;
-  } | null;
-
   let {
     onClose,
     initialSection = 'general',
-    contextTarget = null,
   }: {
     onClose: () => void;
     initialSection?: SettingsSection;
-    contextTarget?: ContextSettingsTarget;
   } = $props();
 
   let activeSection: SettingsSection = $state('general');
@@ -56,7 +50,7 @@
   });
 
   function handleTabKeydown(e: KeyboardEvent) {
-    const ids = SETTINGS_SECTIONS.map((s) => s.id);
+    const ids = SETTINGS_SECTION_IDS;
     const idx = ids.indexOf(activeSection);
     if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
       e.preventDefault();
@@ -88,7 +82,7 @@
 <div class="flex h-full flex-col bg-transparent">
   <header class="flex items-center gap-2 border-b border-border-subtle px-5 py-3 shrink-0">
     <div>
-      <MicroLabel as="p" class="tracking-[0.18em]">Preferences</MicroLabel>
+      <MicroLabel as="p">Preferences</MicroLabel>
       <h2 class="mt-1 text-sm font-semibold text-fg">Settings</h2>
     </div>
     <button
@@ -101,30 +95,42 @@
   </header>
 
   <div class="flex flex-1 min-h-0">
+    <!--
+      A `tablist` only admits `tab` children, so each cluster wraps in a
+      `presentation` div (which drops out of the a11y tree, leaving the tabs as
+      direct children) and the group micro-label is decorative: folding it into
+      a tab's accessible name would rename every tab.
+    -->
     <div
-      class="w-56 shrink-0 border-r border-border-subtle px-3 pt-5 pb-4 flex flex-col gap-0.5"
+      class="w-56 shrink-0 border-r border-border-subtle px-3 pt-4 pb-4 flex flex-col gap-3 overflow-y-auto"
       role="tablist"
       aria-label="Settings Sections"
+      aria-orientation="vertical"
     >
-      {#each SETTINGS_SECTIONS as section}
-        <button
-          id="settings-tab-{section.id}"
-          onclick={() => activeSection = section.id}
-          onkeydown={handleTabKeydown}
-          role="tab"
-          aria-selected={activeSection === section.id}
-          aria-controls="settings-panel-{section.id}"
-          tabindex={activeSection === section.id ? 0 : -1}
-          class="w-full rounded-[var(--radius-field)] text-left px-3 py-1.5 text-[0.8125rem] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40
-            {activeSection === section.id
-              ? 'bg-accent/10 text-fg font-medium'
-              : 'text-fg-muted hover:text-fg hover:bg-surface-2/30'}"
-        >
-          {section.label}
-          {#if section.id === 'updates' && hasPendingUpdate()}
-            <UpdateBadge />
-          {/if}
-        </button>
+      {#each SETTINGS_SECTION_GROUPS as group (group.label)}
+        <div role="presentation" class="flex flex-col gap-0.5">
+          <MicroLabel as="p" class="px-3 pb-1" decorative>{group.label}</MicroLabel>
+          {#each group.sections as section (section.id)}
+            <button
+              id="settings-tab-{section.id}"
+              onclick={() => (activeSection = section.id)}
+              onkeydown={handleTabKeydown}
+              role="tab"
+              aria-selected={activeSection === section.id}
+              aria-controls="settings-panel-{section.id}"
+              tabindex={activeSection === section.id ? 0 : -1}
+              class="w-full rounded-[var(--radius-field)] text-left px-3 py-1 text-[0.8125rem] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40
+                {activeSection === section.id
+                  ? 'bg-accent/10 text-fg font-medium'
+                  : 'text-fg-muted hover:text-fg hover:bg-surface-2/30'}"
+            >
+              {section.label}
+              {#if section.id === 'updates' && hasPendingUpdate()}
+                <UpdateBadge />
+              {/if}
+            </button>
+          {/each}
+        </div>
       {/each}
     </div>
 
@@ -137,16 +143,21 @@
       <div class="mx-auto max-w-3xl">
         {#if activeSection === 'general'}
           <GeneralSettings />
+        {:else if activeSection === 'keybindings'}
+          <KeybindingsSettings />
         {:else if activeSection === 'updates'}
           <UpdatesSettings />
         {:else if activeSection === 'providers'}
-          <ProviderSettings contextTarget={contextTarget} />
-        {:else if activeSection === 'editor'}
-          <EditorSection />
+          <ProviderSettings />
+        {:else if activeSection === 'discussions'}
+          <DiscussionsSettings />
         {:else if activeSection === 'projects'}
           <ProjectsSettings />
+        {:else if activeSection === 'git'}
+          <GitSettings />
+        {:else if activeSection === 'editor'}
+          <EditorSection />
         {:else if activeSection === 'network'}
-          <NetworkSection />
           <!--
             WSLSection self-hides on non-WSL hosts and in --connect
             mode, so the "extra" composition under Network is a no-op
@@ -155,20 +166,15 @@
             across platforms — adding a tab that's empty on most hosts
             would clutter the UX without buying anything.
           -->
-          <div class="mt-10">
+          <div class="flex flex-col gap-6">
+            <NetworkSection />
             <WSLSection />
-          </div>
-          <div class="mt-10">
             <RemoteEndpointsSection />
           </div>
-        {:else if activeSection === 'discussions'}
-          <DiscussionsSettings />
-        {:else if activeSection === 'keybindings'}
-          <KeybindingsSettings />
         {:else if activeSection === 'observability'}
           <ObservabilitySettings />
-        {:else if activeSection === 'archived'}
-          <ArchivedThreads />
+        {:else if activeSection === 'storage'}
+          <StorageSettings />
         {/if}
       </div>
     </div>

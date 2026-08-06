@@ -1,6 +1,6 @@
-// Three near-identical open/close stores — palette, cheatSheet,
-// messageSearch — share a single test file because the shape is
-// identical and duplicating one test file per store is just noise.
+// Four near-identical open/close stores — palette, cheatSheet,
+// messageSearch, accountSwitcher — share a single test file because the shape
+// is identical and duplicating one test file per store is just noise.
 
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
@@ -21,6 +21,12 @@ import {
   openPalette,
   togglePalette,
 } from './palette.svelte';
+import {
+  closeAccountSwitcher,
+  isAccountSwitcherOpen,
+  openAccountSwitcher,
+  toggleAccountSwitcher,
+} from './accountSwitcher.svelte';
 
 describe.each([
   {
@@ -43,6 +49,13 @@ describe.each([
     open: openPalette,
     close: closePalette,
     toggle: togglePalette,
+  },
+  {
+    name: 'accountSwitcher',
+    isOpen: isAccountSwitcherOpen,
+    open: openAccountSwitcher,
+    close: closeAccountSwitcher,
+    toggle: toggleAccountSwitcher,
   },
 ])('$name store', ({ isOpen, open, close, toggle }) => {
   beforeEach(() => {

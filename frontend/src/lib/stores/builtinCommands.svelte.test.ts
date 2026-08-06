@@ -1,7 +1,7 @@
 // Focused tests for makeCommandContext — keeps palette / keybindings gates
 // honest about the live pane / terminal-focus state.
 
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { tick } from 'svelte';
 import { createThreadPane } from './thread.svelte';
 import {
@@ -40,6 +40,8 @@ import {
   isThreadPickerOpen,
   openThreadPicker,
 } from './threadPicker.svelte';
+import { closeAccountSwitcher, isAccountSwitcherOpen } from './accountSwitcher.svelte';
+import { setViewOnlySessionFromBootstrap } from '../transport/runMode';
 import {
   notifyTerminalFocus,
   resetTerminalFocusForTest,
@@ -53,6 +55,16 @@ import {
   resetThreadActionConfirmationsForTest,
 } from './threadActionConfirmations.svelte';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
+import {
+  isWorkflowsOverlayOpen,
+  resetWorkflowsOverlayForTest,
+} from './workflowsOverlay.svelte';
+import {
+  getSettingsSection,
+  isSettingsOpen,
+  openSettingsOverlay,
+  resetSettingsOverlayForTest,
+} from './settingsOverlay.svelte';
 import { openTerminalThread } from './threadCreation.svelte';
 import type { Project, Thread } from '../types/models';
 import type { TerminalSessionSummary } from '../types/terminal';
@@ -484,10 +496,15 @@ describe('thread.interrupt command', () => {
 // These tests lock in that the command opens / closes the MessageSearch store
 // and that the close variant is gated on `messageSearchOpen`.
 
-function registerFixtureCommands(pane: ReturnType<typeof createThreadPane>): void {
-  void pane;
-  registerBuiltinCommands({
-    openSettings: () => {},
+type BuiltinHooks = Parameters<typeof registerBuiltinCommands>[0];
+
+/**
+ * Every hook stubbed to a no-op, with per-test overrides on top. One factory
+ * so adding a hook to BuiltinCommandHooks touches this file once instead of
+ * once per registration site.
+ */
+function makeBuiltinHooks(overrides: Partial<BuiltinHooks> = {}): BuiltinHooks {
+  return {
     openThreadForm: () => {},
     openDesignThreadForm: () => {},
     openDesignThreadFormInNewPane: () => {},
@@ -497,7 +514,13 @@ function registerFixtureCommands(pane: ReturnType<typeof createThreadPane>): voi
     requestDiscussion: () => {},
     focusThreadSearch: () => {},
     requestThreadJump: () => {},
-  });
+    ...overrides,
+  };
+}
+
+function registerFixtureCommands(pane: ReturnType<typeof createThreadPane>): void {
+  void pane;
+  registerBuiltinCommands(makeBuiltinHooks());
 }
 
 describe('thread archive/delete command safety', () => {
@@ -917,6 +940,56 @@ describe('thread.search command', () => {
   });
 });
 
+// --- provider.switchAccount wiring ---
+//
+// mod+shift+u toggles the account-switcher picker. Unlike thread.search there
+// is no `.close` twin — Modal's own Escape closes it — so the single command
+// has to toggle. Its `when` is the view-only gate: every provider-account RPC
+// is LocalOnly on the transport, so the command must be DISABLED in a
+// view-only session rather than opening a picker that can't act.
+
+describe('provider.switchAccount command', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    closeAccountSwitcher();
+    setViewOnlySessionFromBootstrap(false);
+  });
+
+  afterEach(() => {
+    closeAccountSwitcher();
+    setViewOnlySessionFromBootstrap(false);
+  });
+
+  it('toggles the picker open and closed on repeated runs', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+
+    expect(isAccountSwitcherOpen()).toBe(false);
+    expect(runCommand('provider.switchAccount', ctx)).toBe(true);
+    expect(isAccountSwitcherOpen()).toBe(true);
+    expect(runCommand('provider.switchAccount', ctx)).toBe(true);
+    expect(isAccountSwitcherOpen()).toBe(false);
+  });
+
+  it('stays reachable from an editable target, like the composer pickers', () => {
+    registerFixtureCommands(readyPane());
+    expect(getCommand('provider.switchAccount')?.editableReachable).toBe(true);
+  });
+
+  it('is disabled — and refuses to run — in a view-only session', () => {
+    const pane = readyPane();
+    registerFixtureCommands(pane);
+    setViewOnlySessionFromBootstrap(true);
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+
+    expect(ctx.flags.viewOnlySession).toBe(true);
+    expect(isCommandEnabled('provider.switchAccount', ctx)).toBe(false);
+    expect(runCommand('provider.switchAccount', ctx)).toBe(false);
+    expect(isAccountSwitcherOpen()).toBe(false);
+  });
+});
+
 // --- mode.cycle wiring ---
 //
 // Shift+Tab toggles the active chat thread between chat and plan modes
@@ -1009,20 +1082,11 @@ describe('git.ship command', () => {
   it('passes the command target pane id to the ship-changes hook', () => {
     const pane = readyPane();
     const openedForPaneIds: string[] = [];
-    registerBuiltinCommands({
-      openSettings: () => {},
-      openThreadForm: () => {},
-      openDesignThreadForm: () => {},
-      openDesignThreadFormInNewPane: () => {},
-      openThreadFromPR: () => {},
+    registerBuiltinCommands(makeBuiltinHooks({
       openShipChanges: (paneId) => {
         openedForPaneIds.push(paneId);
       },
-      requestRename: () => {},
-      requestDiscussion: () => {},
-      focusThreadSearch: () => {},
-      requestThreadJump: () => {},
-    });
+    }));
 
     runCommand('git.ship', makeCommandContext(pane, {}));
 
@@ -1043,20 +1107,11 @@ describe('git commit/PR command safety', () => {
       action: 'commit',
       commitSha: 'abc1234',
     }));
-    registerBuiltinCommands({
-      openSettings: () => {},
-      openThreadForm: () => {},
-      openDesignThreadForm: () => {},
-      openDesignThreadFormInNewPane: () => {},
-      openThreadFromPR: () => {},
+    registerBuiltinCommands(makeBuiltinHooks({
       openShipChanges: (paneId) => {
         openedForPaneIds.push(paneId);
       },
-      requestRename: () => {},
-      requestDiscussion: () => {},
-      focusThreadSearch: () => {},
-      requestThreadJump: () => {},
-    });
+    }));
 
     try {
       runCommand('git.commit', makeCommandContext(pane, {}));
@@ -1077,20 +1132,11 @@ describe('git commit/PR command safety', () => {
       action: 'pr',
       prUrl: 'https://example.test/pr/1',
     }));
-    registerBuiltinCommands({
-      openSettings: () => {},
-      openThreadForm: () => {},
-      openDesignThreadForm: () => {},
-      openDesignThreadFormInNewPane: () => {},
-      openThreadFromPR: () => {},
+    registerBuiltinCommands(makeBuiltinHooks({
       openShipChanges: (paneId) => {
         openedForPaneIds.push(paneId);
       },
-      requestRename: () => {},
-      requestDiscussion: () => {},
-      focusThreadSearch: () => {},
-      requestThreadJump: () => {},
-    });
+    }));
 
     try {
       runCommand('git.openPR', makeCommandContext(pane, {}));
@@ -1119,20 +1165,11 @@ describe('sidebar.focus-search command', () => {
   it('is registered and calls the focusThreadSearch hook', () => {
     let focusCount = 0;
     const pane = readyPane();
-    registerBuiltinCommands({
-      openSettings: () => {},
-      openThreadForm: () => {},
-      openDesignThreadForm: () => {},
-      openDesignThreadFormInNewPane: () => {},
-      openThreadFromPR: () => {},
-      openShipChanges: () => {},
-      requestRename: () => {},
-      requestDiscussion: () => {},
+    registerBuiltinCommands(makeBuiltinHooks({
       focusThreadSearch: () => {
         focusCount += 1;
       },
-      requestThreadJump: () => {},
-    });
+    }));
     expect(getCommand('sidebar.focus-search')).toBeDefined();
     const ctx = makeCommandContext(pane, {}) as CommandContext;
     runCommand('sidebar.focus-search', ctx);
@@ -1643,20 +1680,8 @@ describe('pane navigation into a terminal pane', () => {
 // than act on rows nobody can see.
 
 describe('sidebar.toggle command', () => {
-  function register(hooks: Partial<Parameters<typeof registerBuiltinCommands>[0]> = {}): void {
-    registerBuiltinCommands({
-      openSettings: () => {},
-      openThreadForm: () => {},
-      openDesignThreadForm: () => {},
-      openDesignThreadFormInNewPane: () => {},
-      openThreadFromPR: () => {},
-      openShipChanges: () => {},
-      requestRename: () => {},
-      requestDiscussion: () => {},
-      focusThreadSearch: () => {},
-      requestThreadJump: () => {},
-      ...hooks,
-    } as Parameters<typeof registerBuiltinCommands>[0]);
+  function register(hooks: Partial<BuiltinHooks> = {}): void {
+    registerBuiltinCommands(makeBuiltinHooks(hooks));
   }
 
   beforeEach(() => {
@@ -1741,5 +1766,67 @@ describe('sidebar.toggle command', () => {
     expect(
       (makeCommandContext(null, {}) as CommandContext).flags.sidebarCursorActive,
     ).toBe(true);
+  });
+});
+
+// --- settings.open / settings.close wiring ---
+//
+// Settings moved from a PaneHost globalSurface to a layered overlay, which is
+// what gave it an Esc close at all. The chord is `esc` gated on `settingsOpen`
+// (internal/keybindings Defaults), so the gate and the editable-target opt-in
+// are the two properties that decide whether Esc actually works.
+
+describe('settings commands', () => {
+  beforeEach(() => {
+    clearCommandRegistry();
+    resetWorkflowsOverlayForTest();
+    resetSettingsOverlayForTest();
+    registerBuiltinCommands(makeBuiltinHooks());
+  });
+
+  it('opens the settings overlay on its General tab', () => {
+    expect(runCommand('settings.open', makeCommandContext(null, {}) as CommandContext)).toBe(true);
+    expect(isSettingsOpen()).toBe(true);
+    expect(getSettingsSection()).toBe('general');
+  });
+
+  // `settingsOpen` is DERIVED in makeCommandContext, not supplied by the
+  // caller: `settings.close` is gated on it, so a builder that forgot to pass
+  // it would leave Esc silently inert on an open surface.
+  it('derives settingsOpen from the store and gates settings.close on it', () => {
+    const closedCtx = makeCommandContext(null, {}) as CommandContext;
+    expect(closedCtx.flags.settingsOpen).toBe(false);
+    expect(isCommandEnabled('settings.close', closedCtx)).toBe(false);
+    expect(runCommand('settings.close', closedCtx)).toBe(false);
+
+    openSettingsOverlay('general');
+    const openCtx = makeCommandContext(null, {}) as CommandContext;
+    expect(openCtx.flags.settingsOpen).toBe(true);
+    expect(isCommandEnabled('settings.close', openCtx)).toBe(true);
+
+    expect(runCommand('settings.close', openCtx)).toBe(true);
+    expect(isSettingsOpen()).toBe(false);
+  });
+
+  // Settings is mostly text fields; App.svelte only dispatches editable-target
+  // chords for editableReachable commands, so without the flag Esc would be
+  // inert from inside every input on the surface.
+  it('keeps settings.close reachable from a focused text field', () => {
+    expect(getCommand('settings.close')?.editableReachable).toBe(true);
+  });
+
+  // Both surfaces are full-height layers over the pane strip with their own
+  // focus trap, so opening either closes the other. Both directions live in
+  // the stores now: `openSettingsOverlay` calls `closeWorkflowsOverlay`, and
+  // the settings store arms the reverse hook at module init.
+  it('is mutually exclusive with the workflows overlay, both directions', () => {
+    openSettingsOverlay('general');
+    runCommand('workflows.toggle', makeCommandContext(null, {}) as CommandContext);
+    expect(isWorkflowsOverlayOpen()).toBe(true);
+    expect(isSettingsOpen()).toBe(false);
+
+    runCommand('settings.open', makeCommandContext(null, {}) as CommandContext);
+    expect(isSettingsOpen()).toBe(true);
+    expect(isWorkflowsOverlayOpen()).toBe(false);
   });
 });

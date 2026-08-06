@@ -34,8 +34,19 @@
   {#await promise then { default: Overlay }}
     <Overlay {...props} />
   {:catch err}
-    <div class="px-3 py-2 text-xs text-error" data-testid="lazy-overlay-load-error">
-      Failed to load: {err instanceof Error ? err.message : String(err)}
+    <!-- The overlay never loaded, so nothing renders its frame. This branch
+         mounts wherever the LazyOverlay sits — beside PaneHost, as a flex
+         sibling of the pane strip — so it has to place itself: a fixed,
+         centred panel rather than an inline div that would squeeze the
+         panes sideways. -->
+    <div class="pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-6">
+      <div
+        class="pointer-events-auto max-w-md rounded-[var(--radius-card)] border border-error/40 bg-surface-1 px-4 py-3 text-xs text-error shadow-lg"
+        role="alert"
+        data-testid="lazy-overlay-load-error"
+      >
+        Failed to load: {err instanceof Error ? err.message : String(err)}
+      </div>
     </div>
   {/await}
 {/if}

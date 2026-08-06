@@ -16,10 +16,9 @@ import type {
   UserInputEvent,
 } from '../types/events';
 import { clearProviderAccount, setProviderAccount } from './accountInfo.svelte';
-import { asProviderID, type ProviderID } from '../types/providers';
-import { ListProviderAccounts } from './bindings';
-import type { ManagedProviderAccount } from './bindings';
+import { asProviderID } from '../types/providers';
 import { invalidateProviderModels, refreshProviderModels } from './providerModels.svelte';
+import { loadProviderAccounts } from './providerAccounts.svelte';
 import { iterPanes } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo.svelte';
@@ -269,23 +268,14 @@ export function applyProviderStatus(evt: ProviderStatusEvent): void {
 // first-connect race GetRateLimitsSnapshots closes for the rings' data, closed
 // here for the account identity those rings are keyed by. setProviderAccount's
 // generation guard keeps a concurrent live event ahead of this snapshot.
+//
+// The pull itself is providerAccounts', not ours: that store is the one place
+// that projects a listing (selection AND per-account quotas) and it warms its
+// own cache doing so, so a second projection here would be a copy that drifts.
+// It reports its own failures as a toast rather than rejecting, so the callers'
+// catch blocks are belt-and-braces.
 export async function hydrateProviderAccounts(): Promise<void> {
-  const accounts = await ListProviderAccounts();
-  const activeByProvider = new Map<ProviderID, ManagedProviderAccount>();
-  for (const account of accounts) {
-    const provider = asProviderID(account.provider);
-    if (provider && account.active) activeByProvider.set(provider, account);
-  }
-  // Only the managed-account providers: claude-tui shares claude's login and
-  // never has rows of its own, so clearing it here would be meaningless.
-  for (const provider of ['claude', 'codex'] as const) {
-    const active = activeByProvider.get(provider);
-    if (active) {
-      setProviderAccount(provider, active, active.id, active.generation);
-    } else {
-      clearProviderAccount(provider);
-    }
-  }
+  await loadProviderAccounts();
 }
 
 export function applyProviderAccount(evt: ProviderAccountEvent): void {

@@ -40,7 +40,6 @@
 
 <div class="space-y-6">
   <SettingsHeader
-    eyebrow="Preferences"
     title="Projects"
     description="Per-project configuration. Settings here apply to every thread and workflow run in the selected project."
   />

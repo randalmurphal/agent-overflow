@@ -47,7 +47,6 @@
 
 <div class="flex flex-col gap-6">
   <SettingsHeader
-    eyebrow="Software"
     title="Updates"
     description="Check for and install new versions of Agent Overflow. Nothing is downloaded or installed without your confirmation."
   />

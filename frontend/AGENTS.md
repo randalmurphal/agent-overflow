@@ -36,8 +36,11 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
   positioning, focus-trap, or keyboard behavior.
 - `src/lib/components/workflows/` — the workflows overlay. See "Workflows
   Overlay" below before touching it.
-- `src/lib/components/{design,discussion,git,palette,settings,terminal,usage,shared}/` —
-  per-feature component groups.
+- `src/lib/components/{accounts,design,discussion,git,palette,settings,terminal,usage,shared}/` —
+  per-feature component groups. `accounts/` is the account-switcher picker;
+  it and Settings → Providers both drive
+  `stores/providerAccounts.svelte.ts` — the one load / login / switch /
+  refresh / remove path — so neither surface owns account logic of its own.
 - `src/lib/types/` — shared TypeScript types.
 - `src/lib/utils/` — pure helpers.
 - `src/lib/transport/` — WebSocket client + `@wailsio/runtime` shim.
@@ -73,12 +76,32 @@ Spec: [`docs/specs/workflows-system-ui/UI-SPEC.md`](../docs/specs/workflows-syst
 (§12 maps every section to the file that implements it).
 
 The overlay is a **sibling of `<PaneHost>`** in `App.svelte`, mounted through
-`LazyOverlay`. It is never a pane kind and never a `globalSurface`: the pane
-tree stays mounted underneath, so opening and closing rebuild nothing. Opening
-a thread is the only action that leaves the overlay, and it closes it.
+`LazyOverlay`. It is never a pane kind and never a surface that replaces the
+pane strip: the pane tree stays mounted underneath, so opening and closing
+rebuild nothing. Opening a thread is the only action that leaves the overlay,
+and it closes it.
+
+Settings mounts the same way, through the same frame primitive
+(`primitives/OverlayShell.svelte` — scrim, card, focus trap; Esc is
+keybinding-driven, never handled inside the shell). The two are mutually
+exclusive, and both directions live in the stores: `openSettingsOverlay`
+calls `closeWorkflowsOverlay`, and `openWorkflowsOverlay` — the one writer
+of the workflows store's `open` — runs a closer that
+`stores/settingsOverlay.svelte.ts` arms at MODULE INIT via
+`setWorkflowsOverlayExclusion`. Importing the settings store is the whole
+wiring; nothing has to be registered in a particular order, and no test
+reset disarms it. That closer is also the one settings-close path (X
+button, scrim, `settings.close`, workflows opening), so its
+blur-before-unmount — settings fields commit on blur — cannot be
+bypassed; it early-returns when settings is already closed so a workflows
+open never steals focus from elsewhere.
 
 State ownership:
 
+- `stores/settingsOverlay.svelte.ts` — settings open state and last-used
+  section. Deep links (`ContextWindowMeter`, `/config`, the account
+  switcher) call `openSettingsOverlay` directly rather than routing a
+  window event through App.
 - `stores/workflowsOverlay.svelte.ts` — navigation only (stack, project
   filter, sweep cursor, armed confirm, open dialog). Persisted through
   `appStorage`, so it survives a restart; `open` deliberately is not.
@@ -188,7 +211,8 @@ stable `<pre>` with Idiomorph so selection survives streaming updates.
 - Do NOT statically import conditional feature surfaces from eager code.
   Settings, review/plan/design companion panels, discussion mode, the
   terminal surfaces, and the git/usage overlays all mount lazily
-  (`{#await import(...)}` at replace-surface branches;
+  (`{#await import(...)}` at replace-surface branches such as a pane
+  body;
   `primitives/LazyOverlay.svelte` for modals/drawers with exit
   transitions) so their chunks stay out of the startup graph. One static
   import from an eagerly-loaded module silently drags the whole feature

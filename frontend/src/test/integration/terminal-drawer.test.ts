@@ -77,6 +77,16 @@ function pressModJOn(target: EventTarget) {
   );
 }
 
+// The drawer is a lazy import; its first-ever load in a suite run pays the
+// on-demand transform, which can exceed waitFor's default 1s under full suite
+// load. Every "the drawer opened" assertion goes through here so the budget
+// lives in one place.
+async function waitForTerminalDrawer(rendered: { getByTestId: (id: string) => HTMLElement }) {
+  await waitFor(() => {
+    expect(rendered.getByTestId('terminal-drawer')).toBeInTheDocument();
+  }, { timeout: 5000 });
+}
+
 async function mountWithActiveThread(thread: Thread = makeThread({ title: 'Terminal Thread' })) {
   installAppDefaults();
   setBindingMock('ListThreads', async () => [thread]);
@@ -117,9 +127,7 @@ describe('App integration — terminal drawer', () => {
     expect(rendered.queryByTestId('terminal-drawer')).toBeNull();
     pressModJ();
     await flush(10);
-    await waitFor(() => {
-      expect(rendered.getByTestId('terminal-drawer')).toBeInTheDocument();
-    });
+    await waitForTerminalDrawer(rendered);
   });
 
   it('Mod+J closes the drawer when focus sits in a terminal-style textarea', async () => {
@@ -134,9 +142,7 @@ describe('App integration — terminal drawer', () => {
     const rendered = await mountWithActiveThread();
     pressModJ();
     await flush(10);
-    await waitFor(() => {
-      expect(rendered.getByTestId('terminal-drawer')).toBeInTheDocument();
-    });
+    await waitForTerminalDrawer(rendered);
 
     const textarea = document.createElement('textarea');
     document.body.appendChild(textarea);
@@ -175,9 +181,7 @@ describe('App integration — terminal drawer', () => {
 
     pressModJ();
     await flush(10);
-    await waitFor(() => {
-      expect(rendered.getByTestId('terminal-drawer')).toBeInTheDocument();
-    });
+    await waitForTerminalDrawer(rendered);
 
     // Mirror the live xterm grabbing DOM focus: TerminalBody bumps the focus
     // registry on focusin, and that focusin bubbles to ChatView's
@@ -284,9 +288,7 @@ describe('App integration — terminal drawer', () => {
     pressModJ();
     await flush(10);
 
-    await waitFor(() => {
-      expect(rendered.getByTestId('terminal-drawer')).toBeInTheDocument();
-    });
+    await waitForTerminalDrawer(rendered);
     await fireEvent.click(rendered.getByTestId('terminal-collapse'));
     await flush();
     expect(rendered.queryByTestId('terminal-drawer')).toBeNull();
@@ -312,9 +314,7 @@ describe('App integration — terminal drawer', () => {
 
     pressModJ();
 
-    await waitFor(() => {
-      expect(rendered.getByTestId('terminal-drawer')).toBeInTheDocument();
-    });
+    await waitForTerminalDrawer(rendered);
     // The chain crosses the lazy import, async OpenTerminal/replay, and two
     // rAFs before xterm's focusin bumps the registry. waitFor polls on real
     // timers so those macrotasks resolve.

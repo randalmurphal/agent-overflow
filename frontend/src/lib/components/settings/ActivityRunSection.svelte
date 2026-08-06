@@ -38,12 +38,11 @@
 
 <section data-testid="settings-activity-runs">
   <SettingsHeader
-    eyebrow="Chat"
     title="Activity Runs"
     description="Consecutive tool calls and thinking are grouped into one run so a long stretch of activity can't push the conversation off screen."
   />
   <div
-    class="mt-4 grid gap-2"
+    class="grid gap-2"
     role="radiogroup"
     aria-label="Activity Run Default"
     data-testid="activity-run-radiogroup"

@@ -58,12 +58,11 @@
 
 <section data-testid="settings-gitlab-hosts">
   <SettingsHeader
-    eyebrow="Git Forges"
     title="Self-hosted GitLab Hosts"
-    description="Hostnames that should be treated as GitLab when classifying a repo's origin remote. Enables Create MR, MR labels, and the `glab` CLI for self-hosted instances. gitlab.com and github.com are recognised automatically."
+    description="Treated as GitLab when classifying a repo's origin remote, enabling Create MR, MR labels, and the `glab` CLI. gitlab.com and github.com are automatic."
   />
 
-  <div class="mt-4 flex flex-col gap-3">
+  <div class="flex flex-col gap-3">
     <div class="flex items-start gap-2">
       <div class="flex-1">
         <label for="gitlab-host-input" class="sr-only">Self-hosted GitLab hostname</label>

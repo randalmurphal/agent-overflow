@@ -16,6 +16,7 @@ import { closeCheatSheet, isCheatSheetOpen, openCheatSheet } from './cheatSheet.
 import { closeMessageSearch, isMessageSearchOpen, openMessageSearch } from './messageSearch.svelte';
 import { closePalette, isPaletteOpen, openPalette } from './palette.svelte';
 import { closeThreadPicker, isThreadPickerOpen, openThreadPicker } from './threadPicker.svelte';
+import { toggleAccountSwitcher } from './accountSwitcher.svelte';
 import { addToast } from './toast.svelte';
 import { getActiveTurn, isSendInFlight } from './threadStatuses.svelte';
 import {
@@ -88,9 +89,14 @@ import {
   getWorkflowsOverlayTop,
   isWorkflowsOverlayOpen,
 } from './workflowsOverlay.svelte';
+import {
+  closeSettingsOverlay,
+  isSettingsOpen,
+  openSettingsOverlay,
+} from './settingsOverlay.svelte';
+import { isViewOnlySession } from '../transport/runMode';
 
 export interface BuiltinCommandHooks {
-  openSettings: () => void;
   openThreadForm: () => void;
   // Opens the new-thread form in a new pane (renamed to disambiguate
   // from panes.svelte#openThreadInNewPane, which opens an existing
@@ -196,7 +202,6 @@ function switchTerminalTab(ctx: CommandContext, direction: 1 | -1): void {
 
 export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   const {
-    openSettings,
     openThreadForm,
     openThreadFormInNewPane,
     openDesignThreadForm,
@@ -212,7 +217,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'palette.open',
     label: 'Command Palette: Open',
-    description: 'Open the command palette. Pressing the same chord while open closes it.',
+    description: 'Open the command palette.',
     icon: '⌘',
     editableReachable: true,
     run: (ctx) => {
@@ -232,7 +237,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'help.keybindings',
     label: 'Help: Show Keyboard Shortcuts',
-    description: 'Open the cheat sheet of every command and its current binding. Pressing the same chord while open closes it.',
+    description: 'Open the cheat sheet of every command and its current binding.',
     icon: '?',
     editableReachable: true,
     run: () => {
@@ -706,7 +711,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'search.messages',
     label: 'Search: Messages',
-    description: 'Full-text search across every thread title and message. Pressing the same chord while open closes it.',
+    description: 'Full-text search across every thread title and message.',
     icon: '⌕',
     // Reachable from the composer: you fire this while typing a message, so the
     // chord must survive textarea focus (the sibling sidebar.focus-search above
@@ -722,7 +727,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'search.in-thread',
     label: 'Find in Thread',
-    description: 'Search the messages in the current thread. Pressing the same chord while open closes it.',
+    description: 'Search the messages in the current thread.',
     icon: '⌕',
     // Reachable while the composer textarea is focused, like search.messages.
     editableReachable: true,
@@ -749,7 +754,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'thread.search',
     label: 'Thread: Open Picker',
-    description: 'Fuzzy-search threads across every project by title. Pressing the same chord while open closes it.',
+    description: 'Fuzzy-search threads across every project by title.',
     icon: '⌖',
     run: (ctx) => {
       if (isThreadPickerOpen()) closeThreadPicker();
@@ -764,11 +769,48 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     run: () => closeThreadPicker(),
   });
 
+  // Provider accounts: switching one and reading its remaining quota is the
+  // one settings trip that recurs, so it gets a chord of its own. The picker
+  // and Settings → Providers share stores/providerAccounts.svelte.ts, so this
+  // is a second surface over the same state, not a second implementation.
+  //
+  // Every provider-account RPC is LocalOnly on the transport
+  // (internal/transport/internalmethods.go LocalOnlyMethods), so a view-only
+  // remote session cannot run any of them. The `when` gate disables the
+  // command there — it drops out of the palette and its chord falls through to
+  // whatever else is bound — rather than opening a picker whose every action
+  // would fail.
+  registerCommand({
+    id: 'provider.switchAccount',
+    label: 'Provider: Switch Account',
+    description:
+      'Pick a saved Claude or Codex account and switch to it, with each account’s last-known limits.',
+    icon: '⇄',
+    when: '!viewOnlySession',
+    // Matches the composer picker toggles: you reach for an account switch
+    // mid-sentence, so the chord has to survive composer focus.
+    editableReachable: true,
+    run: () => toggleAccountSwitcher(),
+  });
+
   registerCommand({
     id: 'settings.open',
     label: 'Settings: Open',
     icon: '⚙',
-    run: () => openSettings(),
+    run: () => openSettingsOverlay('general'),
+  });
+
+  registerCommand({
+    id: 'settings.close',
+    label: 'Settings: Close',
+    icon: '✕',
+    when: 'settingsOpen',
+    // Settings is mostly text fields, and App.svelte only dispatches
+    // editable-target chords for editableReachable commands — without this,
+    // Esc would be inert from inside every input on the surface. The store's
+    // closer blurs before unmounting so the field still commits.
+    editableReachable: true,
+    run: () => closeSettingsOverlay(),
   });
 
   registerCommand({
@@ -1105,11 +1147,18 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // chosen by a selection nobody can see.
     sidebarCursorActive: getSidebarCursorThreadId() !== null && !isSidebarCollapsed(),
     anyPickerOpen: false,
-    // Overlay scoping for the §8 chords. Derived here rather than passed in by
-    // App.svelte so every context builder — palette, per-keypress dispatch,
-    // tests — sees the same answer as the overlay itself.
+    // Both full-height overlays scope their chords off these. Derived here
+    // rather than passed in by App.svelte so every context builder — palette,
+    // per-keypress dispatch, tests — sees the same answer as the overlay
+    // itself, and no caller can forget to supply one (`settings.close` gates
+    // on `settingsOpen`, so a missing flag would silently make Esc inert).
+    settingsOpen: isSettingsOpen(),
     workflowsOverlayOpen: isWorkflowsOverlayOpen(),
     workflowsRunDetail: isWorkflowsOverlayOpen() && getWorkflowsOverlayTop().level === 'run',
+    // Derived here, not passed in, for the same reason as the overlay flags:
+    // the palette, per-keypress dispatch and tests must all see one answer for
+    // "may this session run local-only work".
+    viewOnlySession: isViewOnlySession(),
     ...extra,
   };
   return {

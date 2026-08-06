@@ -137,7 +137,6 @@
 
 <div class="flex flex-col gap-6">
   <SettingsHeader
-    eyebrow="Shortcuts"
     title="Keybindings"
     description="Customize keyboard shortcuts. Click a chord to re-bind; press the desired key combination or Escape to cancel. Shortcuts use mod as ⌘ on macOS and Ctrl elsewhere."
   />

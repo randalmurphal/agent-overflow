@@ -1,6 +1,6 @@
 import { cleanup, render, waitFor } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/svelte';
-import { createRawSnippet, tick } from 'svelte';
+import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../chat/ChatView.svelte', async () => ({
@@ -796,51 +796,10 @@ describe('PaneHost', () => {
     expect(geometry.scrollLeft()).toBe(800);
   });
 
-  it('clamps when a global surface replaces an overflowing pane strip', async () => {
-    registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
-    registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
-    setPaneLayoutItemsForTest([
-      { id: 'left', paneId: 'left', kind: 'thread', widthPx: 800 },
-      { id: 'right', paneId: 'right', kind: 'thread', widthPx: 800 },
-    ]);
-    const globalSurface = createRawSnippet(() => ({
-      render: () => '<div data-testid="test-global-surface">Settings</div>',
-    }));
-    const pump = installFramePump();
-    const rendered = render(PaneHost, { globalSurface: undefined });
-    const host = rendered.getByTestId('pane-host');
-    const geometry = stubMutableStripGeometry(host, {
-      clientWidth: 1000,
-      scrollWidth: () => host.querySelector('[data-testid="global-pane-surface"]') ? 1000 : 1600,
-      scrollLeft: 0,
-    });
-    const right = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
-    if (!right) throw new Error('expected right pane');
-    stubPaneOffsets(right, 800, 800);
-    // Drain the mount-frame snap request first (see the chained-reveals test).
-    pump.frame();
-
-    await fireEvent.pointerDown(right);
-    pump.frame();
-    pump.frame();
-    expect(geometry.scrollLeft()).toBeGreaterThan(0);
-    expect(geometry.scrollLeft()).toBeLessThan(600);
-
-    await rendered.rerender({ globalSurface });
-
-    expect(rendered.getByTestId('test-global-surface')).toBeInTheDocument();
-    expect(geometry.scrollLeft()).toBe(0);
-    const writesAfterClamp = geometry.scrollLeftWrites();
-    pump.pumpUntilIdle();
-    expect(geometry.scrollLeft()).toBe(0);
-    expect(geometry.scrollLeftWrites()).toBe(writesAfterClamp);
-  });
-
-  // The strip (re)appears at scrollLeft 0 — first mount after layout
-  // restore, and a global surface (settings) closing — regardless of which
-  // pane holds logical focus. Both must align the focused pane instantly:
-  // there is no prior position worth gliding from, and DOM focus
-  // restoration is preventScroll'd, so nothing else brings it into view.
+  // The strip first paints at scrollLeft 0 after layout restore, regardless of
+  // which pane holds logical focus. That first paint must align the focused
+  // pane instantly: there is no prior position worth gliding from, and DOM
+  // focus restoration is preventScroll'd, so nothing else brings it into view.
   it('snaps the focused pane into view instantly on first mount', async () => {
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
@@ -867,7 +826,10 @@ describe('PaneHost', () => {
     expect(scrollLeftOf()).toBe(800);
   });
 
-  it('does not snap on global-surface open and re-snaps the focused pane on close', async () => {
+  // Structural churn AFTER the first paint is not a reappearance: adding or
+  // removing panes reconciles geometry but must never re-snap the strip to
+  // the focused pane, which would yank the view out from under the user.
+  it('does not re-snap the focused pane on a later structural change', async () => {
     registerPaneForTest('left', createThreadPane({ paneId: 'left' }));
     registerPaneForTest('right', createThreadPane({ paneId: 'right' }));
     setPaneLayoutItemsForTest([
@@ -875,40 +837,29 @@ describe('PaneHost', () => {
       { id: 'right', paneId: 'right', kind: 'thread', widthPx: 600 },
     ]);
     focusPane('right');
-    const globalSurface = createRawSnippet(() => ({
-      render: () => '<div data-testid="test-global-surface">Settings</div>',
-    }));
 
     const pump = installFramePump();
     const rendered = render(PaneHost);
     const host = rendered.getByTestId('pane-host');
     const geometry = stubMutableStripGeometry(host, {
       clientWidth: 400,
-      scrollWidth: () => host.querySelector('[data-testid="global-pane-surface"]') ? 400 : 1200,
+      scrollWidth: () => getPaneLayoutItems().length * 600,
       scrollLeft: 0,
     });
-    // Pane sections are recreated on each panes-mode entry, so offsets are
-    // re-stubbed on the fresh element after every reappearance.
-    const stubRightOffsets = () => {
-      const right = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
-      if (!right) throw new Error('expected right pane');
-      stubPaneOffsets(right, 600, 600);
-    };
-    stubRightOffsets();
+    const right = rendered.container.querySelector<HTMLElement>('[data-pane-id="right"]');
+    if (!right) throw new Error('expected right pane');
+    stubPaneOffsets(right, 600, 600);
+
     pump.frame();
     expect(geometry.scrollLeft()).toBe(800);
 
-    // Opening the surface clamps to the shrunken strip and must NOT snap.
-    await rendered.rerender({ globalSurface });
-    expect(geometry.scrollLeft()).toBe(0);
+    // Scroll away, then append a pane. The focused pane is off-screen at the
+    // new position; the structure effect must leave it there.
+    geometry.setScrollLeft(0);
+    addPaneLayoutItem({ id: 'after', paneId: 'after', kind: 'thread', widthPx: 600 });
+    await tick();
     pump.pumpUntilIdle();
     expect(geometry.scrollLeft()).toBe(0);
-
-    // Closing it is a strip reappearance: snap the focused pane back in.
-    await rendered.rerender({ globalSurface: undefined });
-    stubRightOffsets();
-    pump.frame();
-    expect(geometry.scrollLeft()).toBe(800);
   });
 
   it('a reveal landing in the snap frame stays instant and takes the latest target', async () => {

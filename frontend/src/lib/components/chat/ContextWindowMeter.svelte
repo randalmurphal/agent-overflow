@@ -2,7 +2,7 @@
   import type { ContextWindow } from '../../types/events';
   import type { Thread } from '../../types/models';
   import { formatTokens } from '../../utils/format';
-  import { OPEN_SETTINGS_EVENT } from '../../stores/events';
+  import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
   import SlidersHorizontal from 'lucide-svelte/icons/sliders-horizontal';
   import Icon from '../primitives/Icon.svelte';
   import { useHoverPopover } from './hoverPopover.svelte';
@@ -59,20 +59,7 @@
   );
 
   function openContextSettings(): void {
-    if (!thread) return;
-    window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT, {
-      detail: {
-        section: 'providers',
-        contextTarget: {
-          threadId: thread.id,
-          provider: thread.provider,
-          model: thread.model,
-          contextWindow: thread.contextWindow,
-          autoCompactStandardPercent: thread.autoCompactStandardPercent ?? 0,
-          autoCompactExtendedPercent: thread.autoCompactExtendedPercent ?? 0,
-        },
-      },
-    }));
+    openSettingsOverlay('providers');
     popover.show = false;
   }
 </script>

@@ -176,6 +176,11 @@ var Defaults = []Keybinding{
 	// command palette.
 	{Key: "mod+f", Command: "search.in-thread", When: "hasActiveThread && !terminalFocus", DefaultID: "search.in-thread"},
 	{Key: "mod+,", Command: "settings.open", DefaultID: "settings.open"},
+	// Esc closes the settings overlay. Position relative to thread.interrupt
+	// below is not load-bearing: the two `when` expressions are mutually
+	// exclusive (an open settings surface sets anyModalOpen, which
+	// thread.interrupt negates), so at most one of them ever matches a press.
+	{Key: "esc", Command: "settings.close", When: "settingsOpen", DefaultID: "settings.close"},
 	{Key: "esc", Command: "thread.interrupt", When: "hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen", DefaultID: "thread.interrupt"},
 	{Key: "mod+1", Command: "thread.jump.1", DefaultID: "thread.jump.1"},
 	{Key: "mod+2", Command: "thread.jump.2", DefaultID: "thread.jump.2"},
@@ -195,6 +200,10 @@ var Defaults = []Keybinding{
 	// every project's threads. Like mod+shift+f this traps focus +
 	// closes on Esc so no `!terminalFocus` guard is needed.
 	{Key: "mod+p", Command: "thread.search", DefaultID: "thread.search"},
+	// The account switcher is the same shape: a focus-trapping modal
+	// that closes on Esc, so it needs no `!terminalFocus` guard either.
+	// U = usage/accounts; mod+shift+a is taken by composer.picker.access.
+	{Key: "mod+shift+u", Command: "provider.switchAccount", DefaultID: "provider.switchAccount"},
 	// Composer toolbar pickers. Each chord opens the menu; pressing
 	// the same chord while the menu is open closes it (toggle).
 	{Key: "mod+shift+m", Command: "composer.picker.model", When: "hasActiveThread && !anyModalOpen", DefaultID: "composer.picker.model"},

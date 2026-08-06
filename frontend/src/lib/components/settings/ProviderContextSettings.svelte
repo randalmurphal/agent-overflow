@@ -58,7 +58,7 @@
     </span>
   </div>
 
-  <div class="mt-4 flex flex-col gap-4">
+  <div class="mt-2.5 flex flex-col gap-4">
     <div>
       <div class="flex items-baseline justify-between gap-3">
         <p class="text-[0.8125rem] font-medium text-fg">Standard window</p>

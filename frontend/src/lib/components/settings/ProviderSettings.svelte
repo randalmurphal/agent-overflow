@@ -37,16 +37,6 @@
   import SettingsHeader from './SettingsHeader.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
 
-  // contextTarget previously plumbed a per-thread compact override into
-  // the settings page when the chat-meter "Configure context" button
-  // was clicked. The new design treats compact thresholds as
-  // per-provider settings (no per-thread mode in this UI), so the prop
-  // is intentionally ignored — kept on the Wails dispatch surface so
-  // the meter button can still navigate to the providers tab without
-  // breaking older clients.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  let { contextTarget: _ = null }: { contextTarget?: unknown } = $props();
-
   const PROVIDERS: ProviderDefinition[] = PROVIDER_SETTINGS_ORDER.map(
     (provider) => getProviderDefinition(provider),
   );
@@ -137,7 +127,7 @@
   ];
 </script>
 
-<div class="flex flex-col gap-10">
+<div class="flex flex-col gap-6">
   {#each PROVIDERS as provider (provider.id)}
     {@const status = getStatus(provider.id)}
     {@const models = getProviderModels(provider.id)}
@@ -145,39 +135,31 @@
       class="rounded-[var(--radius-card)] border border-border-subtle bg-surface-1/30 p-5"
       data-testid="settings-provider-{provider.id}"
     >
-      <header class="flex flex-wrap items-start justify-between gap-3">
-        <div class="min-w-0">
+      <SettingsHeader
+        title={provider.label}
+        description={status?.message ||
+          `Configure ${provider.label} availability for thread creation, sessions, and context budgets.`}
+      >
+        {#snippet badge()}
           <span
-            class="text-[0.65625rem] font-medium uppercase tracking-[0.16em] text-fg-hint"
+            class="inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-0 px-2.5 py-0.5 text-[0.6875rem] text-fg-muted"
+            data-testid="settings-provider-status-pill"
+            data-status={status?.status ?? 'checking'}
           >
-            Provider
+            <span
+              class="h-1.5 w-1.5 rounded-full {statusDotColor(status?.status ?? 'unknown')}"
+              aria-hidden="true"
+            ></span>
+            {status?.status ?? 'checking'}
+            {#if status?.version}
+              <span class="text-fg-hint">·</span>
+              <span class="font-mono text-[0.65625rem] text-fg-muted">{status.version}</span>
+            {/if}
           </span>
-          <h3 class="mt-1 text-[1rem] font-semibold text-fg leading-tight">
-            {provider.label}
-          </h3>
-          <p class="mt-1 max-w-xl text-[0.75rem] leading-relaxed text-fg-muted">
-            {status?.message ||
-              `Configure ${provider.label} availability for thread creation, sessions, and context budgets.`}
-          </p>
-        </div>
-        <span
-          class="inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-0 px-2.5 py-0.5 text-[0.6875rem] text-fg-muted"
-          data-testid="settings-provider-status-pill"
-          data-status={status?.status ?? 'checking'}
-        >
-          <span
-            class="h-1.5 w-1.5 rounded-full {statusDotColor(status?.status ?? 'unknown')}"
-            aria-hidden="true"
-          ></span>
-          {status?.status ?? 'checking'}
-          {#if status?.version}
-            <span class="text-fg-hint">·</span>
-            <span class="font-mono text-[0.65625rem] text-fg-muted">{status.version}</span>
-          {/if}
-        </span>
-      </header>
+        {/snippet}
+      </SettingsHeader>
 
-      <div class="mt-4 flex flex-col gap-1">
+      <div class="flex flex-col gap-1">
         <SettingsField
           label="Enabled"
           hint="Allow new threads to use this provider."
@@ -217,7 +199,7 @@
 
       <ProviderCustomEnvSection {provider} />
 
-      <ProviderAccountsSettings provider={provider.id} providerLabel={provider.label} />
+      <ProviderAccountsSettings provider={provider.id} />
 
       <div class="mt-5">
         <ProviderContextSettings provider={provider.id} />
@@ -227,12 +209,11 @@
 
   <section data-testid="settings-text-generation">
     <SettingsHeader
-      eyebrow="Text generation"
       title="Commit and PR Message CLI"
       description="Which CLI writes commit messages, PR bodies, and generated thread titles. Independent of the chat provider so Claude users can still spend Codex cycles on short text."
     />
 
-    <div class="mt-4 flex flex-col gap-1">
+    <div class="flex flex-col gap-1">
       <SettingsField
         label="Provider"
         hint="CLI that generates non-chat text."

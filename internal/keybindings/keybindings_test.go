@@ -55,17 +55,18 @@ func TestGetReturnsDefaultsWhenNoFile(t *testing.T) {
 
 // TestDefaultsIncludeNewHelpSearchAndInterruptBindings pins the
 // chord assignments for features that ship visible UI (cheat sheet,
-// message search, thread picker, working-indicator interrupt) so a
-// refactor can't silently drop them. Users who rebind can override;
-// but users who never open Settings should still discover these
-// features by muscle memory.
+// message search, thread picker, account switcher, working-indicator
+// interrupt) so a refactor can't silently drop them. Users who rebind
+// can override; but users who never open Settings should still
+// discover these features by muscle memory.
 func TestDefaultsIncludeNewHelpSearchAndInterruptBindings(t *testing.T) {
 	want := map[string]string{
-		"help.keybindings": "mod+shift+/",
-		"search.messages":  "mod+shift+f",
-		"search.in-thread": "mod+f",
-		"thread.search":    "mod+p",
-		"thread.interrupt": "esc",
+		"help.keybindings":       "mod+shift+/",
+		"search.messages":        "mod+shift+f",
+		"search.in-thread":       "mod+f",
+		"thread.search":          "mod+p",
+		"provider.switchAccount": "mod+shift+u",
+		"thread.interrupt":       "esc",
 	}
 	got := make(map[string]string)
 	for _, b := range Defaults {
@@ -75,6 +76,70 @@ func TestDefaultsIncludeNewHelpSearchAndInterruptBindings(t *testing.T) {
 		if got[cmd] != key {
 			t.Errorf("Defaults: %s = %q, want %q", cmd, got[cmd], key)
 		}
+	}
+}
+
+// TestAccountSwitcherDefaultIsContextFree pins that the account-switcher
+// chord ships with no `when` gate: switching provider accounts is reachable
+// from anywhere, including with no thread open. Only the frontend's
+// editable-target rules and the command's own view-only gate narrow it.
+func TestAccountSwitcherDefaultIsContextFree(t *testing.T) {
+	var matches []Keybinding
+	for _, b := range Defaults {
+		if b.Command == "provider.switchAccount" {
+			matches = append(matches, b)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("want exactly one provider.switchAccount binding, got %d: %+v", len(matches), matches)
+	}
+	if matches[0].When != "" {
+		t.Errorf("provider.switchAccount When = %q, want empty", matches[0].When)
+	}
+}
+
+// TestSettingsDefaultBindings pins the settings pair. The Esc row's `when`
+// must stay `settingsOpen` and must stay mutually exclusive with
+// thread.interrupt's `!anyModalOpen` arm — if either drifts, one Esc press
+// could match both rows and the winner would depend on Defaults ordering
+// (the frontend dispatches the resolved list in reverse).
+func TestSettingsDefaultBindings(t *testing.T) {
+	only := func(command string) Keybinding {
+		t.Helper()
+		var matches []Keybinding
+		for _, b := range Defaults {
+			if b.Command == command {
+				matches = append(matches, b)
+			}
+		}
+		if len(matches) != 1 {
+			t.Fatalf("want exactly one %q binding, got %d: %+v", command, len(matches), matches)
+		}
+		return matches[0]
+	}
+
+	open := only("settings.open")
+	if open.Key != "mod+," || open.When != "" {
+		t.Errorf("settings.open = {Key:%q When:%q}, want {mod+, \"\"}", open.Key, open.When)
+	}
+
+	closeBinding := only("settings.close")
+	if closeBinding.Key != "esc" {
+		t.Errorf("settings.close Key = %q, want %q", closeBinding.Key, "esc")
+	}
+	if closeBinding.When != "settingsOpen" {
+		t.Errorf("settings.close When = %q, want %q", closeBinding.When, "settingsOpen")
+	}
+	if closeBinding.DefaultID != "settings.close" {
+		t.Errorf("settings.close DefaultID = %q, want %q", closeBinding.DefaultID, "settings.close")
+	}
+
+	interrupt := only("thread.interrupt")
+	if !strings.Contains(interrupt.When, "!anyModalOpen") {
+		t.Errorf(
+			"thread.interrupt When = %q, want it to exclude modal surfaces so esc cannot match it and settings.close at once",
+			interrupt.When,
+		)
 	}
 }
 

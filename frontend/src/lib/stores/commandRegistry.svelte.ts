@@ -55,10 +55,19 @@ export interface CommandFlags {
    * composer toolbar menu, etc.) is open. Gates the mod+/ in-picker
    * input toggle. */
   anyPickerOpen: boolean;
+  /** True while the settings overlay is mounted over the pane strip. */
+  settingsOpen: boolean;
   /** True while the workflows overlay is mounted over the pane strip. */
   workflowsOverlayOpen: boolean;
   /** True while the workflows overlay is showing a run detail level. */
   workflowsRunDetail: boolean;
+  /**
+   * True in a view-only remote session (`isViewOnlySession`). Commands whose
+   * RPCs are LocalOnly on the transport gate on `!viewOnlySession` so they are
+   * *disabled* there — absent from the palette, chord falling through — rather
+   * than opening a surface whose every action would fail.
+   */
+  viewOnlySession: boolean;
   /** Extra identifiers callers want to expose to `when` expressions. */
   [key: string]: boolean;
 }

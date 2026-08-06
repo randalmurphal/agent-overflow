@@ -1,4 +1,7 @@
 <script lang="ts">
+  // Last-known quota bars for one saved account. Lives in shared/ because it
+  // has two feature homes: the Settings → Providers account cards and the
+  // account-switcher picker.
   import { rateLimitDisplayName } from '../../stores/rateLimitsInfo.svelte';
   import type { RateLimitEntry } from '../../types/events';
   import { formatResetCountdown } from '../../utils/format';

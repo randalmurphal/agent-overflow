@@ -6,18 +6,12 @@
   import SettingsHeader from './SettingsHeader.svelte';
   import PaneDensitySection from './PaneDensitySection.svelte';
   import ActivityRunSection from './ActivityRunSection.svelte';
-  import GitLabHostsSection from './GitLabHostsSection.svelte';
   import { INPUT_CLASS, SELECT_CLASS } from './styles';
 
   // Mirrors internal/settings.{Min,Max}FontSize and DefaultSettings.FontSize.
   const MIN_FONT_SIZE = 10;
   const MAX_FONT_SIZE = 20;
   const DEFAULT_FONT_SIZE = 13;
-
-  // Mirrors internal/settings.MaxRetentionDays. Hard-capped on the Go
-  // side as well; bounding the input here keeps the UI honest and stops
-  // a typo from triggering the load-time clamp.
-  const MAX_RETENTION_DAYS = 36500;
 
   let settings = $derived(getSettings());
 
@@ -27,14 +21,10 @@
   ];
 </script>
 
-<div class="flex flex-col gap-10">
+<div class="flex flex-col gap-6">
   <section>
-    <SettingsHeader
-      eyebrow="Appearance"
-      title="Theme and Display"
-      description="Choose how Agent Overflow should look across chat, settings, and git views."
-    />
-    <div class="mt-4 flex flex-col gap-1">
+    <SettingsHeader title="Theme and Display" />
+    <div class="flex flex-col gap-1">
       <SettingsField
         label="Theme"
         hint="Choose your preferred color scheme."
@@ -143,12 +133,8 @@
   </section>
 
   <section>
-    <SettingsHeader
-      eyebrow="Behavior"
-      title="Live Updates"
-      description="Tune how provider output is rendered."
-    />
-    <div class="mt-4 flex flex-col gap-1">
+    <SettingsHeader title="Live Updates" description="Tune how provider output is rendered." />
+    <div class="flex flex-col gap-1">
       <SettingsField
         label="Diff word wrap"
         hint="Wrap long lines in diff views."
@@ -201,11 +187,10 @@
 
   <section data-testid="settings-thread-defaults">
     <SettingsHeader
-      eyebrow="Thread defaults"
       title="Workspace Seeds"
-      description="New threads start in chat mode. Provider, model, effort, permissions, and context are remembered from the composer controls."
+      description="New threads start in chat mode. Provider, model, effort, permissions, and context come from the composer controls."
     />
-    <div class="mt-4 flex flex-col gap-1">
+    <div class="flex flex-col gap-1">
       <SettingsField
         label="Default environment"
         hint="Workspace mode seeded on new draft threads."
@@ -251,11 +236,10 @@
 
   <section>
     <SettingsHeader
-      eyebrow="Confirmations"
       title="Safety Checks"
-      description="Choose which destructive sidebar actions should stop for confirmation."
+      description="Which destructive sidebar actions stop for confirmation."
     />
-    <div class="mt-4 flex flex-col gap-1">
+    <div class="flex flex-col gap-1">
       <SettingsField
         label="Confirm before archive"
         hint="Show a confirmation dialog when archiving threads."
@@ -275,65 +259,6 @@
           checked={settings.confirmDelete}
           ariaLabel="Toggle Delete Confirmation"
           onToggle={(value) => updateSetting('confirmDelete', value)}
-        />
-      </SettingsField>
-    </div>
-  </section>
-
-  <section data-testid="settings-git-sync">
-    <SettingsHeader
-      eyebrow="Git"
-      title="Repository Sync"
-      description="How Agent Overflow keeps each project's view of its remote up to date."
-    />
-    <div class="mt-4 flex flex-col gap-1">
-      <SettingsField
-        label="Fetch remotes in the background"
-        hint={settings.backgroundGitFetch
-          ? 'Runs `git fetch origin` for each project every few minutes so ahead/behind counts stay accurate. Never prunes, and never asks for credentials — a remote that needs them is skipped.'
-          : 'Ahead/behind counts will only update when you fetch, pull, or sync a branch yourself.'}
-      >
-        <ToggleSwitch
-          checked={settings.backgroundGitFetch}
-          ariaLabel="Toggle Background Git Fetch"
-          onToggle={(value) => updateSetting('backgroundGitFetch', value)}
-        />
-      </SettingsField>
-    </div>
-  </section>
-
-  <GitLabHostsSection />
-
-  <section data-testid="settings-retention">
-    <SettingsHeader
-      eyebrow="Storage"
-      title="Automatic Cleanup"
-      description="Old threads, dated provider-event logs, and bug-report bookmarks are removed in the background once they pass the retention window."
-    />
-    <div class="mt-4 flex flex-col gap-1">
-      <SettingsField
-        label="Retention (days)"
-        hint={settings.retention.days === 0
-          ? 'Automatic cleanup is disabled. Nothing will be removed automatically.'
-          : 'Threads (with their attachments, design workdirs, and replay logs), provider-event logs, and bug-report bookmarks older than this are cleaned up automatically. Set to 0 to disable.'}
-        htmlFor="retention-days"
-      >
-        <input
-          id="retention-days"
-          data-testid="settings-retention-days"
-          type="number"
-          min="0"
-          max={MAX_RETENTION_DAYS}
-          step="1"
-          value={settings.retention.days}
-          onblur={(e) => {
-            const raw = (e.target as HTMLInputElement).value;
-            const parsed = parseInt(raw, 10);
-            let next = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-            if (next > MAX_RETENTION_DAYS) next = MAX_RETENTION_DAYS;
-            void updateSetting('retention', { days: next });
-          }}
-          class="{INPUT_CLASS} max-w-[6rem]"
         />
       </SettingsField>
     </div>

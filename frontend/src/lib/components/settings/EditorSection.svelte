@@ -94,29 +94,26 @@
 {#if clientMode}
   <section data-testid="editor-section-clientmode">
     <SettingsHeader
-      eyebrow="Open-in-editor"
       title="Editor"
       description="Editor preferences are local to your install. This window is attached to a remote backend, so changes here would update the remote machine's catalog, not yours. Edit your editor preference from your local install."
     />
   </section>
 {:else}
   <section>
-    <SettingsHeader
-      eyebrow="Open-in-editor"
-      title="Editor"
-    />
-    <p class="mt-1 max-w-2xl text-[0.75rem] leading-relaxed text-fg-muted">
-      Choose which editor opens when you click a file path in the chat.
-      "Auto" follows the catalog priority order (VS Code, Cursor, Zed, …)
-      with <code class="font-mono text-[0.6875rem]">$EDITOR</code> /
-      <code class="font-mono text-[0.6875rem]">$VISUAL</code> as the final
-      fallback. Editors that aren't installed are listed for reference but
-      can't be selected.
-    </p>
+    <SettingsHeader title="Editor">
+      {#snippet details()}
+        Choose which editor opens when you click a file path in the chat.
+        "Auto" follows the catalog priority order (VS Code, Cursor, Zed, …)
+        with <code class="font-mono text-[0.6875rem]">$EDITOR</code> /
+        <code class="font-mono text-[0.6875rem]">$VISUAL</code> as the final
+        fallback. Editors that aren't installed are listed for reference but
+        can't be selected.
+      {/snippet}
+    </SettingsHeader>
 
     {#if loading}
       <p
-        class="mt-4 text-[0.75rem] text-fg-subtle"
+        class="text-[0.75rem] text-fg-subtle"
         role="status"
         aria-live="polite"
       >
@@ -124,7 +121,7 @@
       </p>
     {:else}
       <fieldset
-        class="mt-4 flex flex-col gap-0.5"
+        class="flex flex-col gap-0.5"
         role="radiogroup"
         aria-label="Preferred editor"
         data-testid="editor-section-radiogroup"

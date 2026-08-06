@@ -1,25 +1,24 @@
 <script lang="ts">
   // The workflows overlay frame (UI-SPEC §2.1). Mounted in App.svelte as a
   // SIBLING of <PaneHost>, layered above it — never passed into PaneHost,
-  // never a globalSurface, never a pane kind. The pane tree stays mounted and
-  // untouched underneath, so closing is a pure unmount of this layer: zero
-  // pane rebuild, zero virtualizer resync.
+  // never a pane kind. The pane tree stays mounted and untouched underneath,
+  // so closing is a pure unmount of this layer: zero pane rebuild, zero
+  // virtualizer resync.
   //
   // Two levels plus a terminal one — home › run detail, and all-clear. The
   // stack, project filter and sweep cursor live in the store so they survive
   // close/reopen and restart.
 
   import { onDestroy } from 'svelte';
-  import { fade } from 'svelte/transition';
   import ChevronLeft from 'lucide-svelte/icons/chevron-left';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
+  import OverlayShell from '../primitives/OverlayShell.svelte';
   import WorkflowsHome from './WorkflowsHome.svelte';
   import WorkflowRunDetail from './WorkflowRunDetail.svelte';
   import WorkflowAllClear from './WorkflowAllClear.svelte';
   import WorkflowIntakeDialog from './WorkflowIntakeDialog.svelte';
   import WorkflowDiscardDialog from './WorkflowDiscardDialog.svelte';
-  import { focusTrap } from '../../utils/focusTrap';
   import { getProjects } from '../../stores/projects.svelte';
   import {
     clearWorkflowReceipts,
@@ -79,68 +78,55 @@
   });
 
   onDestroy(endSession);
-
-  function handleScrimClick(event: MouseEvent): void {
-    if (event.target === event.currentTarget) closeWorkflowsOverlay();
-  }
 </script>
 
-{#if open}
-  <!--
-    Esc is bound globally (`workflows.escape`, §8) with the precedence the
-    stack needs, so this scrim deliberately carries no key handler of its own —
-    a local one would consume the same press twice.
-  -->
-  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-  <div
-    class="fixed inset-0 z-40 flex items-stretch justify-center bg-black/45 p-4 backdrop-blur-sm md:p-8"
-    data-testid="workflows-overlay-scrim"
-    onclick={handleScrimClick}
-    transition:fade={{ duration: 120 }}
-  >
-    <div
-      use:focusTrap={{ active: open }}
-      class="flex h-full w-full max-w-5xl flex-col overflow-hidden rounded-[var(--radius-card)] border border-border-subtle bg-surface-1 shadow-modal"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Workflows"
-      data-testid="workflows-overlay"
-    >
-      <header class="flex shrink-0 items-center gap-2 border-b border-border-subtle px-4 py-3">
-        {#if top.level === 'home'}
-          <h2 class="text-sm font-semibold text-fg">Workflows</h2>
-        {:else}
-          <IconButton
-            size="sm"
-            label="Back (esc)"
-            testId="workflows-back"
-            onClick={() => { if (!popWorkflowsOverlay()) closeWorkflowsOverlay(); }}
-          >
-            <Icon icon={ChevronLeft} size={14} strokeWidth={2} />
-          </IconButton>
-          <nav class="min-w-0 flex-1 truncate text-sm text-fg-muted" data-testid="workflows-breadcrumb">
-            Workflows<span class="px-1.5 text-fg-subtle">›</span>
-            <span class="text-fg">{top.level === 'all-clear' ? 'All clear' : (run?.goal || 'Run')}</span>
-          </nav>
-        {/if}
-      </header>
+<!--
+  Esc is bound globally (`workflows.escape`, §8) with the precedence the stack
+  needs, so the shell deliberately carries no key handler of its own — a local
+  one would consume the same press twice.
+-->
+<OverlayShell
+  {open}
+  ariaLabel="Workflows"
+  onScrimClick={closeWorkflowsOverlay}
+  scrimTestId="workflows-overlay-scrim"
+  testId="workflows-overlay"
+>
+  <header class="flex shrink-0 items-center gap-2 border-b border-border-subtle px-4 py-3">
+    {#if top.level === 'home'}
+      <h2 class="text-sm font-semibold text-fg">Workflows</h2>
+    {:else}
+      <IconButton
+        size="sm"
+        label="Back (esc)"
+        testId="workflows-back"
+        onClick={() => { if (!popWorkflowsOverlay()) closeWorkflowsOverlay(); }}
+      >
+        <Icon icon={ChevronLeft} size={14} strokeWidth={2} />
+      </IconButton>
+      <nav class="min-w-0 flex-1 truncate text-sm text-fg-muted" data-testid="workflows-breadcrumb">
+        Workflows<span class="px-1.5 text-fg-subtle">›</span>
+        <span class="text-fg">{top.level === 'all-clear' ? 'All clear' : (run?.goal || 'Run')}</span>
+      </nav>
+    {/if}
+  </header>
 
-      <div class="min-h-0 flex-1 overflow-y-auto">
-        {#if getWorkflowLoadError() && !isWorkflowOverlayLoaded()}
-          <p class="px-4 py-6 text-xs text-error" data-testid="workflows-load-error">{getWorkflowLoadError()}</p>
-        {:else if !isWorkflowOverlayLoaded() && isWorkflowLoading()}
-          <p class="px-4 py-6 text-xs text-fg-muted">Loading workflows…</p>
-        {:else if top.level === 'home'}
-          <WorkflowsHome />
-        {:else if top.level === 'run'}
-          <WorkflowRunDetail itemId={runId} />
-        {:else}
-          <WorkflowAllClear />
-        {/if}
-      </div>
-    </div>
+  <div class="min-h-0 flex-1 overflow-y-auto">
+    {#if getWorkflowLoadError() && !isWorkflowOverlayLoaded()}
+      <p class="px-4 py-6 text-xs text-error" data-testid="workflows-load-error">{getWorkflowLoadError()}</p>
+    {:else if !isWorkflowOverlayLoaded() && isWorkflowLoading()}
+      <p class="px-4 py-6 text-xs text-fg-muted">Loading workflows…</p>
+    {:else if top.level === 'home'}
+      <WorkflowsHome />
+    {:else if top.level === 'run'}
+      <WorkflowRunDetail itemId={runId} />
+    {:else}
+      <WorkflowAllClear />
+    {/if}
   </div>
+</OverlayShell>
 
+{#if open}
   <WorkflowIntakeDialog
     open={dialog === 'intake'}
     onClose={() => setWorkflowsOverlayDialog(null)}

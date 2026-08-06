@@ -10,8 +10,19 @@ import {
 } from "../../../test/mocks/bindings-app";
 import type { Settings } from "../../types/settings";
 import { makeSettings } from "../../../test/helpers/settings";
+import { resetForTest as resetProviderAccounts } from "../../stores/providerAccounts.svelte";
+import { resetForTest as resetAccountInfo } from "../../stores/accountInfo.svelte";
+import { resetForTest as resetRateLimits } from "../../stores/rateLimitsInfo.svelte";
 
 const BASE_SETTINGS: Settings = makeSettings();
+
+// The account listing lives in a module-global store, not in the component, so
+// without this every test inherits the previous one's accounts.
+beforeEach(() => {
+  resetProviderAccounts();
+  resetAccountInfo();
+  resetRateLimits();
+});
 
 async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
   const merged: Settings = { ...BASE_SETTINGS, ...overrides };

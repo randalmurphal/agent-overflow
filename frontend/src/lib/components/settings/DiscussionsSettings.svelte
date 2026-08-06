@@ -85,7 +85,6 @@
 
 <div class="flex flex-col gap-6">
   <SettingsHeader
-    eyebrow="Discussions"
     title="Manage Discussion Definitions"
     description="Configure multi-participant deliberations. Global definitions are available everywhere; project-scoped definitions take precedence for threads inside their project path."
   />

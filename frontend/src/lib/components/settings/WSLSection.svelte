@@ -114,8 +114,8 @@
   <!-- Hidden in --connect mode entirely; nothing to render. -->
 {:else if loading}
   <section data-testid="wsl-section-loading">
-    <SettingsHeader eyebrow="Windows host" title="WSL Distro" />
-    <p class="mt-3 text-[0.75rem] text-fg-hint" role="status" aria-live="polite">
+    <SettingsHeader title="WSL Distro" />
+    <p class="text-[0.75rem] text-fg-hint" role="status" aria-live="polite">
       Detecting WSL…
     </p>
   </section>
@@ -124,14 +124,13 @@
 {:else}
   <section data-testid="wsl-section">
     <SettingsHeader
-      eyebrow="Windows host"
       title="WSL Distro"
       description="Pick which WSL distribution the launcher boots into the next time you open Agent Overflow. The change takes effect on next launch — this session keeps running in its current distro until you close and reopen the app."
     />
 
     {#if distros.length === 0}
       <p
-        class="mt-4 text-[0.75rem] text-fg-hint"
+        class="text-[0.75rem] text-fg-hint"
         data-testid="wsl-section-no-distros"
       >
         No WSL distros reported by
@@ -142,7 +141,7 @@
       </p>
     {:else}
       <fieldset
-        class="mt-4 flex flex-col gap-0.5"
+        class="flex flex-col gap-0.5"
         role="radiogroup"
         aria-label="Preferred WSL distro"
         data-testid="wsl-section-radiogroup"

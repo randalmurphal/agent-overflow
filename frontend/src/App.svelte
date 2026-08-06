@@ -3,7 +3,6 @@
   import { documentHidden } from './lib/utils/pageVisibility';
   import { ensureMainPane, getFocusedPaneOrNull, getPane, iterPanes, openThreadFromNavigation, resetPaneRegistry } from './lib/stores/panes.svelte';
   import {
-    OPEN_SETTINGS_EVENT,
     OPEN_SHIP_CHANGES_EVENT,
     RENAME_THREAD_EVENT,
     setupEventListeners,
@@ -19,7 +18,16 @@
   import { flushAppStorage, hydrateAppStorage } from './lib/stores/appStorage';
   import { loadSettings, getSettings } from './lib/stores/settings.svelte';
   import { syncSidebarFromAppStorage, syncSidebarFromSettings } from './lib/stores/sidebar.svelte';
-  import { syncWorkflowsOverlayFromAppStorage, isWorkflowsOverlayOpen } from './lib/stores/workflowsOverlay.svelte';
+  import {
+    isWorkflowsOverlayOpen,
+    syncWorkflowsOverlayFromAppStorage,
+  } from './lib/stores/workflowsOverlay.svelte';
+  import {
+    closeSettingsOverlay,
+    getSettingsSection,
+    isSettingsOpen,
+    openSettingsOverlay,
+  } from './lib/stores/settingsOverlay.svelte';
   import { hydrateWorkflowAttention } from './lib/stores/workflowRuns.svelte';
   import { syncSidebarLayoutFromAppStorage } from './lib/stores/sidebarLayout.svelte';
   import { syncUsagePeriodFromSettings } from './lib/stores/usagePeriod.svelte';
@@ -45,6 +53,7 @@
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
   import { closeMessageSearch, getMessageSearchMode, getMessageSearchTargetPaneId, isMessageSearchOpen } from './lib/stores/messageSearch.svelte';
   import { closeThreadPicker, getThreadPickerTargetPaneId, isThreadPickerOpen } from './lib/stores/threadPicker.svelte';
+  import { closeAccountSwitcher, isAccountSwitcherOpen } from './lib/stores/accountSwitcher.svelte';
   import { isAnyComposerPickerOpen } from './lib/stores/composerPickerRegistry.svelte';
   import {
     dispatchKey,
@@ -69,20 +78,7 @@
   import { addToast } from './lib/stores/toast.svelte';
   import { userFacingError } from './lib/utils/userFacingError';
   import { initUpdates } from './lib/stores/updates.svelte';
-  import type { SettingsSection } from './lib/components/settings/sections';
 
-  type SettingsContextTarget = {
-    threadId?: string;
-    provider: string;
-    model: string;
-    contextWindow?: number;
-    autoCompactStandardPercent?: number;
-    autoCompactExtendedPercent?: number;
-  } | null;
-
-  let showSettings = $state(false);
-  let settingsSection = $state<SettingsSection>('general');
-  let settingsContextTarget = $state<SettingsContextTarget>(null);
   let discussionStartFor = $state<Thread | null>(null);
   let searchFocuser = $state<(() => void) | null>(null);
   let openFromPR = $state<(() => void) | null>(null);
@@ -112,18 +108,13 @@
     discussionStartFor = null;
   }
 
-  function openSettings(section: SettingsSection = settingsSection, contextTarget: SettingsContextTarget = null): void {
-    settingsSection = section;
-    settingsContextTarget = contextTarget;
-    showSettings = true;
-  }
-
   function makeAppCommandContext(targetPane = getFocusedPaneOrNull()) {
     const pickerOpen =
       isPaletteOpen() ||
       isCheatSheetOpen() ||
       isMessageSearchOpen() ||
       isThreadPickerOpen() ||
+      isAccountSwitcherOpen() ||
       isAnyComposerPickerOpen();
     return makeCommandContext(targetPane, {
       paletteOpen: isPaletteOpen(),
@@ -133,10 +124,11 @@
       anyPickerOpen: pickerOpen,
       anyModalOpen:
         discussionStartFor !== null ||
-        showSettings ||
+        isSettingsOpen() ||
         isCheatSheetOpen() ||
         isMessageSearchOpen() ||
-        isThreadPickerOpen(),
+        isThreadPickerOpen() ||
+        isAccountSwitcherOpen(),
     });
   }
 
@@ -344,7 +336,6 @@
     // so commands see the live pane state each time they run.
     clearCommandRegistry();
     registerBuiltinCommands({
-      openSettings: () => openSettings('general'),
       openThreadForm: () => requestNewThread(false),
       openThreadFormInNewPane: () => requestNewThread(true),
       openDesignThreadForm: () => requestNewThread(false, 'design'),
@@ -389,14 +380,6 @@
       // smoother's per-tick cap. See ThreadPane.snapSmoothersToReceived.
       for (const pane of iterPanes()) pane.snapSmoothersToReceived();
     };
-    const handleOpenSettings = (event: Event) => {
-      const detail = (event as CustomEvent).detail as {
-        section?: SettingsSection;
-        contextTarget?: NonNullable<SettingsContextTarget>;
-      } | undefined;
-      openSettings(detail?.section ?? 'general', detail?.contextTarget ?? null);
-    };
-    window.addEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);
     window.addEventListener('keydown', handleGlobalKeydown);
     window.addEventListener('pagehide', flushPaneLayout);
     window.addEventListener('beforeunload', flushPaneLayout);
@@ -413,7 +396,6 @@
       cleanupUpdates();
       cleanupExternalLinks();
       cleanupZoomKeys();
-      window.removeEventListener(OPEN_SETTINGS_EVENT, handleOpenSettings);
       window.removeEventListener('pagehide', flushPaneLayout);
       window.removeEventListener('beforeunload', flushPaneLayout);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -428,41 +410,34 @@
   });
 </script>
 
-{#snippet settingsSurface()}
-  <!-- Lazy: the settings surface only exists while open, so its chunk
-       stays out of the eager startup graph. -->
-  {#await import('./lib/components/settings/SettingsView.svelte')}
-    <div class="flex h-full items-center justify-center text-xs text-fg-muted">Loading settings...</div>
-  {:then { default: SettingsView }}
-    <SettingsView
-      initialSection={settingsSection}
-      contextTarget={settingsContextTarget}
-      onClose={() => showSettings = false}
-    />
-  {:catch err}
-    <div class="flex h-full items-center justify-center text-xs text-error" data-testid="settings-load-error">
-      Failed to load settings: {err instanceof Error ? err.message : String(err)}
-    </div>
-  {/await}
-{/snippet}
-
 <main class="app-shell relative h-screen w-screen overflow-hidden text-text-primary flex flex-col">
   <TransportStatusBanner />
   <div bind:this={appContentEl} class="relative flex flex-1 min-h-0 w-full">
     <Sidebar
       pane={sidebarPane}
-      onOpenSettings={() => openSettings('general')}
+      onOpenSettings={() => openSettingsOverlay('general')}
       registerFocusSearch={(focus) => (searchFocuser = focus)}
       registerOpenFromPR={(cb) => (openFromPR = cb)}
     />
     {#if appReady}
-      <PaneHost globalSurface={showSettings ? settingsSurface : undefined} />
+      <PaneHost />
     {/if}
     <!--
-      The workflows overlay (UI-SPEC §2.1) is a SIBLING of PaneHost, layered
-      over it — never a globalSurface and never a pane kind. The pane tree
-      stays mounted underneath, so opening and closing rebuild nothing.
+      Settings and the workflows overlay (UI-SPEC §2.1) are SIBLINGS of
+      PaneHost, layered over it — never a pane kind, never a surface that
+      replaces the strip. The pane tree stays mounted underneath, so opening
+      and closing rebuild nothing. Both load lazily so their chunks stay out
+      of the eager startup graph.
     -->
+    <LazyOverlay
+      load={() => import('./lib/components/settings/SettingsOverlay.svelte')}
+      active={isSettingsOpen()}
+      props={{
+        open: isSettingsOpen(),
+        initialSection: getSettingsSection(),
+        onClose: closeSettingsOverlay,
+      }}
+    />
     <LazyOverlay
       load={() => import('./lib/components/workflows/WorkflowsOverlay.svelte')}
       active={isWorkflowsOverlayOpen()}
@@ -480,6 +455,16 @@
 <KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
 <MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} mode={getMessageSearchMode()} onClose={closeMessageSearch} />
 <UnifiedThreadPicker open={isThreadPickerOpen()} pane={threadPickerPane} onClose={closeThreadPicker} />
+<!--
+  Account switcher loads lazily: it is a rarely-mounted picker that pulls in the
+  provider-account store and the quota bars, none of which belong in the eager
+  startup graph.
+-->
+<LazyOverlay
+  load={() => import('./lib/components/accounts/AccountSwitcher.svelte')}
+  active={isAccountSwitcherOpen()}
+  props={{ open: isAccountSwitcherOpen(), onClose: closeAccountSwitcher }}
+/>
 <Toast />
 <DiagramInteractionHost />
 <ExternalLinkContextHost />

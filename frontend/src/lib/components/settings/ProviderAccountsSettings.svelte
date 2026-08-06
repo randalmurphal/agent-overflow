@@ -1,120 +1,52 @@
 <script lang="ts">
+  // Per-provider Accounts block inside Settings → Providers. The account
+  // logic itself lives in stores/providerAccounts.svelte.ts — shared with the
+  // account-switcher picker, so a switch made in either surface is the same
+  // state change. This component owns only the settings-side chrome: the
+  // "log in to another account" button, the cards, and the removal confirm.
+
   import { onMount } from 'svelte';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import Trash2 from 'lucide-svelte/icons/trash-2';
   import Icon from '../primitives/Icon.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
-  import ProviderAccountLimits from './ProviderAccountLimits.svelte';
-  import {
-    ListProviderAccounts,
-    LoginProviderAccount,
-    RemoveProviderAccount,
-    RefreshProviderAccountUsage,
-    SwitchProviderAccount,
-  } from '../../stores/bindings';
+  import ProviderAccountLimits from '../shared/ProviderAccountLimits.svelte';
   import type { ManagedProviderAccount } from '../../stores/bindings';
   import {
-    clearProviderAccount,
-    setProviderAccount,
-  } from '../../stores/accountInfo.svelte';
-  import {
-    clearProviderRateLimits,
-    getProviderRateLimits,
-    setProviderRateLimits,
-  } from '../../stores/rateLimitsInfo.svelte';
-  import { addToast } from '../../stores/toast.svelte';
+    getProviderAccountActions,
+    getProviderAccountsFor,
+    isProviderAccountsLoading,
+    isProviderCredentialOpInFlight,
+    loadProviderAccounts,
+    loginProviderAccount,
+    providerAccountActionLabel,
+    providerAccountName,
+    providerLabel as resolveProviderLabel,
+    refreshProviderAccountUsage,
+    removeProviderAccount,
+    switchProviderAccount,
+  } from '../../stores/providerAccounts.svelte';
+  import { getProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
   import type { ProviderID } from '../../types/providers';
-  import { userFacingError } from '../../utils/userFacingError';
   import { PRIMARY_BUTTON_CLASS, GHOST_BUTTON_CLASS } from './styles';
 
-  let {
-    provider,
-    providerLabel,
-  }: {
-    provider: ProviderID;
-    providerLabel: string;
-  } = $props();
+  let { provider }: { provider: ProviderID } = $props();
 
-  let accounts = $state<ManagedProviderAccount[]>([]);
-  let loading = $state(true);
-  let loggingIn = $state(false);
-  let switchingID = $state('');
-  let refreshingID = $state('');
-  let removingID = $state('');
+  let providerLabel = $derived(resolveProviderLabel(provider));
+  let accounts = $derived(getProviderAccountsFor(provider));
+  let loading = $derived(isProviderAccountsLoading());
+  let actions = $derived(getProviderAccountActions(provider));
+  // One answer for "is a credential op running", shared with the store's own
+  // refusal, so a disabled button and a rejected call can never disagree.
+  let credentialOpInFlight = $derived(isProviderCredentialOpInFlight(provider));
   let pendingRemoval = $state<ManagedProviderAccount | null>(null);
 
   onMount(() => {
-    void loadAccounts();
+    void loadProviderAccounts();
   });
 
-  async function loadAccounts(): Promise<void> {
-    try {
-      const all = await ListProviderAccounts();
-      accounts = all.filter((account) => account.provider === provider);
-      let foundActive = false;
-      for (const account of accounts) {
-        if (account.rateLimits) setProviderRateLimits(account.rateLimits);
-        if (account.active) {
-          foundActive = true;
-          setProviderAccount(provider, account, account.id, account.generation);
-        }
-      }
-      if (!foundActive) clearProviderAccount(provider);
-    } catch (error) {
-      console.error(`Failed to load ${providerLabel} accounts:`, error);
-      addToast('error', `Failed to load ${providerLabel} accounts.`);
-    } finally {
-      loading = false;
-    }
-  }
-
-  async function login(): Promise<void> {
-    loggingIn = true;
-    try {
-      await LoginProviderAccount(provider);
-      await loadAccounts();
-      addToast('success', `${providerLabel} account connected.`);
-    } catch (error) {
-      console.error(`${providerLabel} login failed:`, error);
-      addToast('error', userFacingError(error, `${providerLabel} login failed.`));
-    } finally {
-      loggingIn = false;
-    }
-  }
-
-  async function switchAccount(account: ManagedProviderAccount): Promise<void> {
-    if (account.active || switchingID) return;
-    switchingID = account.id;
-    try {
-      await SwitchProviderAccount(provider, account.id);
-      await loadAccounts();
-      addToast('success', `Switched ${providerLabel} account.`);
-    } catch (error) {
-      console.error(`${providerLabel} account switch failed:`, error);
-      addToast(
-        'error',
-        `${providerLabel} account did not switch. ${userFacingError(error, 'Try again.')}`,
-      );
-    } finally {
-      switchingID = '';
-    }
-  }
-
-  async function refreshUsage(account: ManagedProviderAccount): Promise<void> {
-    refreshingID = account.id;
-    try {
-      await RefreshProviderAccountUsage(provider, account.id);
-      await loadAccounts();
-    } catch (error) {
-      console.error(`${providerLabel} usage refresh failed:`, error);
-      addToast('error', userFacingError(error, `Failed to refresh ${providerLabel} usage.`));
-    } finally {
-      refreshingID = '';
-    }
-  }
-
   function requestRemoval(account: ManagedProviderAccount): void {
-    if (removingID) return;
+    if (credentialOpInFlight) return;
     pendingRemoval = account;
   }
 
@@ -122,69 +54,25 @@
     const account = pendingRemoval;
     if (!account) return;
     pendingRemoval = null;
-    removingID = account.id;
-    try {
-      await RemoveProviderAccount(provider, account.id);
-      clearProviderRateLimits(provider, account.id);
-      projectRemovedAccount(account);
-      await loadAccounts();
-      addToast('success', `${providerLabel} account removed.`);
-    } catch (error) {
-      console.error(`${providerLabel} account removal failed:`, error);
-      addToast(
-        'error',
-        `${providerLabel} account was not removed. ${userFacingError(error, 'Try again.')}`,
-      );
-    } finally {
-      removingID = '';
-    }
-  }
-
-  function projectRemovedAccount(account: ManagedProviderAccount): void {
-    const removedIndex = accounts.findIndex((candidate) => candidate.id === account.id);
-    const remaining = accounts.filter((candidate) => candidate.id !== account.id);
-    if (!account.active || remaining.length === 0) {
-      accounts = remaining;
-      if (account.active) clearProviderAccount(provider);
-      return;
-    }
-
-    const nextIndex = removedIndex >= remaining.length ? 0 : Math.max(0, removedIndex);
-    const replacementID = remaining[nextIndex].id;
-    accounts = remaining.map((candidate) => ({
-      ...candidate,
-      active: candidate.id === replacementID,
-    }));
-    const replacement = accounts[nextIndex];
-    setProviderAccount(provider, replacement, replacement.id, replacement.generation);
+    await removeProviderAccount(provider, account);
   }
 
   function removalDescription(account: ManagedProviderAccount): string {
     if (!account.active) {
-      return `Remove ${accountName(account)} from saved accounts? You’ll need to log in again to use it.`;
+      return `Remove ${providerAccountName(account)} from saved accounts? You’ll need to log in again to use it.`;
     }
     if (accounts.length === 1) {
-      return `Remove ${accountName(account)} and sign out of ${providerLabel}? You’ll need to log in again to use it.`;
+      return `Remove ${providerAccountName(account)} and sign out of ${providerLabel}? You’ll need to log in again to use it.`;
     }
-    return `Remove ${accountName(account)}? The next saved ${providerLabel} account will become active.`;
-  }
-
-  function accountName(account: ManagedProviderAccount): string {
-    return account.displayName || account.email || account.subscriptionType || 'Saved account';
+    return `Remove ${providerAccountName(account)}? The next saved ${providerLabel} account will become active.`;
   }
 
   // A saved account whose credential is gone cannot be selected. Logging in
   // resolves back to this same account by email, so it keeps its usage
   // history rather than becoming a second card.
   function cardAction(account: ManagedProviderAccount): () => void {
-    if (account.needsLogin) return () => void login();
-    return () => void switchAccount(account);
-  }
-
-  function cardActionLabel(account: ManagedProviderAccount): string {
-    if (account.needsLogin) return `Sign in again to ${accountName(account)}`;
-    if (account.active) return `${accountName(account)} is active`;
-    return `Switch to ${accountName(account)}`;
+    if (account.needsLogin) return () => void loginProviderAccount(provider);
+    return () => void switchProviderAccount(provider, account);
   }
 </script>
 
@@ -199,10 +87,10 @@
     <button
       type="button"
       class={PRIMARY_BUTTON_CLASS}
-      disabled={loggingIn}
-      onclick={() => void login()}
+      disabled={credentialOpInFlight}
+      onclick={() => void loginProviderAccount(provider)}
     >
-      {loggingIn ? 'Waiting for login…' : 'Log in to another account'}
+      {actions.loggingIn ? 'Waiting for login…' : 'Log in to another account'}
     </button>
   </div>
 
@@ -228,11 +116,9 @@
             <button
               type="button"
               class="min-w-0 flex-1 cursor-pointer text-left disabled:cursor-default"
-              disabled={(account.active && !account.needsLogin)
-                || !!switchingID
-                || (account.needsLogin && loggingIn)}
+              disabled={(account.active && !account.needsLogin) || credentialOpInFlight}
               onclick={cardAction(account)}
-              aria-label={cardActionLabel(account)}
+              aria-label={providerAccountActionLabel(account)}
             >
               <span class="flex items-center gap-2">
                 <span
@@ -248,7 +134,7 @@
                     ? 'text-fg-muted'
                     : 'text-fg'}"
                 >
-                  {accountName(account)}
+                  {providerAccountName(account)}
                 </span>
                 {#if account.needsLogin}
                   <span class="rounded-full bg-warning/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-warning">
@@ -276,27 +162,27 @@
               <button
                 type="button"
                 class={GHOST_BUTTON_CLASS}
-                disabled={account.needsLogin || !!refreshingID || !!removingID}
-                onclick={() => void refreshUsage(account)}
+                disabled={account.needsLogin || !!actions.refreshingID || credentialOpInFlight}
+                onclick={() => void refreshProviderAccountUsage(provider, account)}
                 title={account.needsLogin
                   ? 'Sign in again to refresh usage limits'
                   : 'Refresh usage limits'}
-                aria-label={`Refresh usage for ${accountName(account)}`}
+                aria-label={`Refresh usage for ${providerAccountName(account)}`}
               >
                 <Icon
                   icon={RefreshCw}
                   size={12}
                   strokeWidth={1.75}
-                  class={refreshingID === account.id ? 'animate-spin' : ''}
+                  class={actions.refreshingID === account.id ? 'animate-spin' : ''}
                 />
               </button>
               <button
                 type="button"
                 class="{GHOST_BUTTON_CLASS} hover:text-error"
-                disabled={!!removingID || !!switchingID}
+                disabled={credentialOpInFlight}
                 onclick={() => requestRemoval(account)}
                 title="Remove saved account"
-                aria-label={`Remove ${accountName(account)}`}
+                aria-label={`Remove ${providerAccountName(account)}`}
               >
                 <Icon icon={Trash2} size={12} strokeWidth={1.75} />
               </button>

@@ -52,10 +52,12 @@ plain ("Runs", "History", "Needs you"); the surface is always called
 ### 2.1 Frame + lifecycle
 
 - Rendered in `App.svelte` as a **sibling of `<PaneHost>`**, layered above it
-  — never passed into PaneHost, never a `globalSurface`, never a pane kind.
-  **The pane tree stays mounted and untouched while the overlay is open**
-  (explicitly not the settings pattern); closing is a pure unmount of the
-  overlay layer — zero pane rebuild, zero virtualizer resync.
+  — never passed into PaneHost, never a pane kind.
+  **The pane tree stays mounted and untouched while the overlay is open**;
+  closing is a pure unmount of the overlay layer — zero pane rebuild, zero
+  virtualizer resync. Settings has since been converted to the same pattern
+  and shares the frame (`primitives/OverlayShell.svelte`); the two overlays
+  are mutually exclusive, so at most one focus trap is ever up.
 - **Entry points**: the workflows footer button (§6), OS notifications (§9),
   and the command palette. All open the one overlay; deep links retarget its
   stack.
@@ -413,7 +415,7 @@ As shipped. Paths under `frontend/src/lib/` unless noted.
 
 | Concern | Where |
 |---|---|
-| Overlay frame (§2.1) | `components/workflows/WorkflowsOverlay.svelte`, mounted in `App.svelte` through `primitives/LazyOverlay.svelte` as a sibling of `<PaneHost>` (never a `globalSurface`, never a pane kind) |
+| Overlay frame (§2.1) | `components/workflows/WorkflowsOverlay.svelte`, mounted in `App.svelte` through `primitives/LazyOverlay.svelte` as a sibling of `<PaneHost>` (never a pane kind), framed by `primitives/OverlayShell.svelte` |
 | Navigation (§2.2) | `stores/workflowsOverlay.svelte.ts` — stack, project filter, sweep cursor, armed confirm, dialog; restart persistence via `stores/appStorage.ts` |
 | Data cache | `stores/workflowRuns.svelte.ts` (runs, catalogs, automations, costs, per-run detail with eviction, session receipts) + the pure projections in `stores/workflowData.ts` |
 | Events / RPC | `stores/eventsWorkflow.ts` via `events.ts`; `stores/bindings.ts`; typed `workflow:*` channel |

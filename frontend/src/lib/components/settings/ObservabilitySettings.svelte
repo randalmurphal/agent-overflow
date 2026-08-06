@@ -22,23 +22,25 @@
   }
 </script>
 
-<div class="flex flex-col gap-10">
+<div class="flex flex-col gap-6">
   <section>
     <SettingsHeader
-      eyebrow="Tracing"
       title="OpenTelemetry OTLP"
       description="When enabled, Agent Overflow exports spans and metrics to an OTLP-compatible collector (Jaeger, Honeycomb, Tempo, etc). Traces capture turn lifecycle, provider I/O, and SQLite writes so you can see where time is being spent."
     />
 
+    <!-- mb, not mt: the header owns the gap above, so the callout owns the
+         gap to the fields it displaces — which then need no margin of their
+         own whether or not the callout is showing. -->
     {#if tracingRequiresRestart}
-      <div class="mt-3">
+      <div class="mb-2.5">
         <SettingsCallout tone="warn">
           Tracing changes take effect on next app restart.
         </SettingsCallout>
       </div>
     {/if}
 
-    <div class="mt-4 flex flex-col gap-1">
+    <div class="flex flex-col gap-1">
       <SettingsField
         label="Enable tracing"
         hint="Turn on OTLP trace + metric export."
@@ -71,12 +73,11 @@
 
   <section>
     <SettingsHeader
-      eyebrow="Replay log"
       title="Per-thread event recorder"
       description="Writes every provider event for each thread to ~/.agent-overflow/replay/<threadId>.jsonl. Useful for reproducing a bad turn after the fact. Files rotate at 100 MB; up to three backups are kept."
     />
 
-    <div class="mt-4 flex flex-col gap-1">
+    <div class="flex flex-col gap-1">
       <SettingsField
         label="Enable event replay log"
         hint="Takes effect immediately — no restart needed."

@@ -15,7 +15,7 @@ import { CompactCodexThread, StartCodexReview } from '../../stores/bindings';
 import { makeCommandContext } from '../../stores/builtinCommands.svelte';
 import { runCommand } from '../../stores/commandRegistry.svelte';
 import { openComposerPicker } from '../../stores/composerPickerRegistry.svelte';
-import { OPEN_SETTINGS_EVENT } from '../../stores/eventNames';
+import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
 import { getProviderModels } from '../../stores/providerModels.svelte';
 import { getSettings } from '../../stores/settings.svelte';
 import { renameThreadTitle, startPaneTitleRename } from '../../stores/paneTitleRename';
@@ -131,7 +131,7 @@ async function runFast(pane: ThreadPane): Promise<CommandActionResult> {
 }
 
 function runConfig(): CommandActionResult {
-  window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT, { detail: {} }));
+  openSettingsOverlay('general');
   return DONE;
 }
 
