@@ -9,6 +9,7 @@
     keepExpandedPayloadFresh,
   } from '../../utils/payloadExpansion.svelte';
   import AnsiText from './AnsiText.svelte';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { useLeasedPayloadExpansion } from './useLeasedPayloadExpansion.svelte';
 
@@ -69,45 +70,58 @@
   const canExpand = $derived(Boolean(payloadId) && (previewIsLarge || expansion.expanded));
   const displayPreview = $derived(truncateForPreview(preview, MAX_INLINE_BYTES));
 
+  // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
+  // the toggle's `aria-controls` and the body's `id` must be one string.
+  // Undefined without a payload — there is no toggle then, so nothing
+  // controls the body. The body is always-mounted (the preview is its
+  // collapsed state), which an enclosing activity run's height cap accounts
+  // for through the measured collapsed baseline (utils/activityRunClip.ts).
+  const bodyDomId = $derived(
+    payloadId ? chatRowDomId(pane, 'lazy-content', payloadId) : undefined,
+  );
+
   async function toggle() {
     if (!payloadId) return;
     await expansion.toggle();
   }
 </script>
 
-{#if expansion.expanded}
-  {#if expansion.loading}
-    <p class="text-xs text-text-secondary animate-pulse" role="status" aria-live="polite" data-testid="lazy-content-loading">
-      Loading…
-    </p>
-  {:else if expansion.error}
-    <p class="text-xs text-error" role="alert" data-testid="lazy-content-error">
-      Failed to load: {expansion.error}
-    </p>
-  {:else}
-    <div data-testid={expansion.fullData !== null ? 'lazy-content-full' : 'lazy-content-preview'}>
-      <AnsiText source={expansion.displayData ?? ''} class="whitespace-pre-wrap break-words text-xs text-text-secondary" />
-    </div>
-    {#if expansion.hasMore}
-      <button
-        type="button"
-        onclick={(event) => preservePaneScrollAnchor(pane, event, () => expansion.showFull())}
-        class="mt-2 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-        data-testid="lazy-content-show-full"
-      >
-        Show more output ({formatPayloadSize(expansion.totalSize)}) ↓
-      </button>
+<div id={bodyDomId}>
+  {#if expansion.expanded}
+    {#if expansion.loading}
+      <p class="text-xs text-text-secondary animate-pulse" role="status" aria-live="polite" data-testid="lazy-content-loading">
+        Loading…
+      </p>
+    {:else if expansion.error}
+      <p class="text-xs text-error" role="alert" data-testid="lazy-content-error">
+        Failed to load: {expansion.error}
+      </p>
+    {:else}
+      <div data-testid={expansion.fullData !== null ? 'lazy-content-full' : 'lazy-content-preview'}>
+        <AnsiText source={expansion.displayData ?? ''} class="whitespace-pre-wrap break-words text-xs text-text-secondary" />
+      </div>
+      {#if expansion.hasMore}
+        <button
+          type="button"
+          onclick={(event) => preservePaneScrollAnchor(pane, event, () => expansion.showFull())}
+          class="mt-2 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+          data-testid="lazy-content-show-full"
+        >
+          Show more output ({formatPayloadSize(expansion.totalSize)}) ↓
+        </button>
+      {/if}
     {/if}
+  {:else}
+    <p class="text-xs text-text-secondary" data-testid="lazy-content-preview">{displayPreview}</p>
   {/if}
-{:else}
-  <p class="text-xs text-text-secondary" data-testid="lazy-content-preview">{displayPreview}</p>
-{/if}
+</div>
 
 {#if canExpand}
   <button
     type="button"
     onclick={(event) => preservePaneScrollAnchor(pane, event, toggle)}
     aria-expanded={expansion.expanded}
+    aria-controls={bodyDomId}
     data-testid="lazy-content-toggle"
     class="mt-1 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
   >

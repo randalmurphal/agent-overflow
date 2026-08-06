@@ -6,8 +6,9 @@ import {
   ACTIVITY_RUN_CAP_ROWS,
   ACTIVITY_RUN_ROW_REM,
   activityRunClipMaxHeight,
-  activityRunExpandedBodies,
+  activityRunDisclosureBodies,
   activityRunExpandedHeight,
+  activityRunRecordCollapsedHeights,
   activityRunRowViewportTop,
   activityRunScrollTopHoldingRow,
   activityRunShouldMountEarlier,
@@ -122,17 +123,31 @@ describe('activityRunClipMaxHeight', () => {
   });
 });
 
-describe('activityRunExpandedBodies', () => {
+describe('activityRunDisclosureBodies', () => {
   it('finds the body an expanded disclosure points at', () => {
     const clip = clipWith(`${disclosure('body-1', true)}<div id="body-1"></div>`);
 
-    expect(activityRunExpandedBodies(clip).map((b) => b.id)).toEqual(['body-1']);
+    expect(activityRunDisclosureBodies(clip).expanded.map((b) => b.id)).toEqual(['body-1']);
   });
 
-  it('ignores a collapsed disclosure', () => {
+  it('classifies a collapsed disclosure body as collapsed, not expanded', () => {
+    // The always-mounted kind: its collapsed height is the baseline the cap
+    // subtracts once the reader expands it.
     const clip = clipWith(`${disclosure('body-1', false)}<div id="body-1"></div>`);
 
-    expect(activityRunExpandedBodies(clip)).toEqual([]);
+    const bodies = activityRunDisclosureBodies(clip);
+    expect(bodies.expanded).toEqual([]);
+    expect(bodies.collapsed.map((b) => b.id)).toEqual(['body-1']);
+  });
+
+  it('ignores an aria-controls trigger without a disclosure state', () => {
+    // A combobox or menu trigger also carries aria-controls; without a
+    // true/false aria-expanded it is not a disclosure over a body.
+    const clip = clipWith('<button aria-controls="body-1"></button><div id="body-1"></div>');
+
+    const bodies = activityRunDisclosureBodies(clip);
+    expect(bodies.expanded).toEqual([]);
+    expect(bodies.collapsed).toEqual([]);
   });
 
   it('ignores a body outside this run', () => {
@@ -143,14 +158,16 @@ describe('activityRunExpandedBodies', () => {
     document.body.appendChild(outside);
     const clip = clipWith(disclosure('body-elsewhere', true));
 
-    expect(activityRunExpandedBodies(clip)).toEqual([]);
+    expect(activityRunDisclosureBodies(clip).expanded).toEqual([]);
     outside.remove();
   });
 
   it('ignores a stale pointer at an unmounted body', () => {
     const clip = clipWith(disclosure('body-gone', true));
 
-    expect(activityRunExpandedBodies(clip)).toEqual([]);
+    const bodies = activityRunDisclosureBodies(clip);
+    expect(bodies.expanded).toEqual([]);
+    expect(bodies.collapsed).toEqual([]);
   });
 
   it('counts a body once when two disclosures point at it', () => {
@@ -158,7 +175,19 @@ describe('activityRunExpandedBodies', () => {
       `${disclosure('body-1', true)}${disclosure('body-1', true)}<div id="body-1"></div>`,
     );
 
-    expect(activityRunExpandedBodies(clip).map((b) => b.id)).toEqual(['body-1']);
+    expect(activityRunDisclosureBodies(clip).expanded.map((b) => b.id)).toEqual(['body-1']);
+  });
+
+  it('reads a body as expanded when any of its triggers says so', () => {
+    // Transient double-trigger states resolve to the answer the reader acted
+    // on; a body cannot be both, and expanded is the one that costs height.
+    const clip = clipWith(
+      `${disclosure('body-1', false)}${disclosure('body-1', true)}<div id="body-1"></div>`,
+    );
+
+    const bodies = activityRunDisclosureBodies(clip);
+    expect(bodies.expanded.map((b) => b.id)).toEqual(['body-1']);
+    expect(bodies.collapsed).toEqual([]);
   });
 
   it('drops a body nested inside another expanded body', () => {
@@ -173,12 +202,14 @@ describe('activityRunExpandedBodies', () => {
       </div>
     `);
 
-    expect(activityRunExpandedBodies(clip).map((b) => b.id)).toEqual(['card']);
+    expect(activityRunDisclosureBodies(clip).expanded.map((b) => b.id)).toEqual(['card']);
   });
 });
 
 describe('activityRunExpandedHeight', () => {
-  it('sums the bodies, because each one lifts the cap by its own height', () => {
+  it('sums whole heights for mount-on-expand bodies', () => {
+    // Nothing was on screen while collapsed, so the whole height is what
+    // expansion added.
     const first = stampHeight(document.createElement('div'), 120);
     const second = stampHeight(document.createElement('div'), 80);
 
@@ -187,5 +218,39 @@ describe('activityRunExpandedHeight', () => {
 
   it('is zero with nothing expanded', () => {
     expect(activityRunExpandedHeight([])).toBe(0);
+  });
+
+  it('subtracts the height a body already had while collapsed', () => {
+    // The always-mounted kind: its preview was on screen inside the base
+    // cap's budget before the reader expanded it, so only the growth lifts
+    // the cap.
+    const body = stampHeight(document.createElement('div'), 60);
+    activityRunRecordCollapsedHeights([body]);
+    stampHeight(body, 200);
+
+    expect(activityRunExpandedHeight([body])).toBe(140);
+  });
+
+  it('never contributes negatively', () => {
+    // An expanded body can measure SHORTER than its recorded collapsed
+    // height for a frame (content swapped before layout settles); the cap
+    // must not shrink below its base for it.
+    const body = stampHeight(document.createElement('div'), 60);
+    activityRunRecordCollapsedHeights([body]);
+    stampHeight(body, 40);
+
+    expect(activityRunExpandedHeight([body])).toBe(0);
+  });
+
+  it('re-records a collapsed preview that grew before expansion', () => {
+    // A reasoning tail fills its clamp while collapsed; only the latest
+    // collapsed height is what expansion replaces.
+    const body = stampHeight(document.createElement('div'), 20);
+    activityRunRecordCollapsedHeights([body]);
+    stampHeight(body, 58);
+    activityRunRecordCollapsedHeights([body]);
+    stampHeight(body, 200);
+
+    expect(activityRunExpandedHeight([body])).toBe(142);
   });
 });

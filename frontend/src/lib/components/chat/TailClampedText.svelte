@@ -35,6 +35,7 @@
   // window are all dropped (plain `block`; full text flows to full height).
   import { untrack } from 'svelte';
   import {
+    TAIL_CLAMP_LINES,
     TAIL_WINDOW_CAP_CHARS,
     TAIL_WINDOW_KEEP_LINES,
     TAIL_WINDOW_MEASURE_RETRY_CHARS,
@@ -133,10 +134,16 @@
   });
 </script>
 
+<!-- data-collapsed-lines tells an enclosing activity run's height cap that
+     this body occupies up to that many lines while collapsed — expanding it
+     adds only the height beyond the clamp (utils/activityRunClip.ts). Present
+     in both states: the cap reads it while the row is EXPANDED, including a
+     row that remounts already-expanded and never renders its clamp. -->
 <span
   bind:this={el}
   {id}
   data-testid={testId}
+  data-collapsed-lines={TAIL_CLAMP_LINES}
   class={[
     'flex-1 min-w-0 text-[0.75rem] text-fg-muted/70 italic whitespace-pre-wrap leading-relaxed',
     expanded ? 'block' : 'flex flex-col justify-end max-h-[3lh] overflow-hidden',

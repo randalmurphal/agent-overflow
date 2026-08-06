@@ -23,6 +23,18 @@
 // Everything above a cut is guaranteed invisible: the clamp shows the
 // bottom 3 lines and every cut keeps comfortably more than that.
 
+/**
+ * Rendered lines the collapsed clamp shows. The clamp itself is the literal
+ * `max-h-[3lh]` class in TailClampedText.svelte — Tailwind only generates
+ * classes it can scan as literals, so the two cannot share this token.
+ * The browser suite pins them together (tailClampedText.browser.test.ts).
+ *
+ * Also declared on the body as `data-collapsed-lines`, which is how an
+ * activity run's height cap knows the clamp's height was already on screen
+ * before the row expanded (utils/activityRunClip.ts).
+ */
+export const TAIL_CLAMP_LINES = 3;
+
 /** Kept-window size that triggers a cut. ~50–60 rendered lines. */
 export const TAIL_WINDOW_CAP_CHARS = 8192;
 
@@ -35,11 +47,11 @@ export const TAIL_WINDOW_CAP_CHARS = 8192;
 export const TAIL_WINDOW_MIN_KEEP_CHARS = 2048;
 
 /**
- * Rendered lines a measured cut keeps. 4× the 3-line clamp, so the
- * window survives the pane widening (fewer, longer lines) without
- * dropping below the visible count before the next cut re-anchors.
+ * Rendered lines a measured cut keeps. 4× the clamp, so the window
+ * survives the pane widening (fewer, longer lines) without dropping
+ * below the visible count before the next cut re-anchors.
  */
-export const TAIL_WINDOW_KEEP_LINES = 12;
+export const TAIL_WINDOW_KEEP_LINES = TAIL_CLAMP_LINES * 4;
 
 /**
  * After a failed measurement (no geometry — e.g. happy-dom, or a

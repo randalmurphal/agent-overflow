@@ -57,6 +57,33 @@ describe('<LazyContentBlock>', () => {
     expect(queryByTestId('lazy-content-toggle')).toBeNull();
   });
 
+  it('links the toggle to the body it reveals (aria-controls)', async () => {
+    // The disclosure contract (utils/activityRunClip.ts): an enclosing
+    // activity run finds expandable bodies through `aria-expanded` +
+    // `aria-controls`, so a toggle without the link would silently opt this
+    // body out of the run's height cap. The body wraps BOTH states — the
+    // preview is its collapsed baseline.
+    setBindingMock('GetPayloadPreview', async () => ({
+      data: 'PREVIEW BODY',
+      totalSize: 12,
+      isComplete: true,
+    }));
+    const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
+    const { container, findByTestId, getByTestId } = render(LazyContentBlock, {
+      props: { threadId: 'thread-1', payloadId: 'p1', preview },
+    });
+
+    const toggle = getByTestId('lazy-content-toggle');
+    const controls = toggle.getAttribute('aria-controls');
+    expect(controls).toBeTruthy();
+    const body = container.querySelector(`[id="${controls}"]`);
+    expect(body).not.toBeNull();
+    expect(body!.contains(getByTestId('lazy-content-preview'))).toBe(true);
+
+    await fireEvent.click(toggle);
+    expect(body!.contains(await findByTestId('lazy-content-preview'))).toBe(true);
+  });
+
   it('uses the custom label for the expand button', () => {
     const preview = 'a'.repeat(MAX_INLINE_BYTES + 1);
     const { getByTestId } = render(LazyContentBlock, {

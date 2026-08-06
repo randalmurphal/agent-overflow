@@ -173,6 +173,113 @@ describe('activity run clip — the cap', () => {
     stop();
   });
 
+  it('lifts by only the growth of a body that was on screen while collapsed', async () => {
+    // The always-mounted kind (a command result's output pane): its collapsed
+    // preview was already inside the base cap's budget, so expansion lifts
+    // the cap by what it ADDED, not by the body's whole height.
+    const { clip, content } = mountColumn();
+    rows(content, 40);
+    const trigger = document.createElement('button');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-controls', 'body-1');
+    const body = document.createElement('div');
+    body.id = 'body-1';
+    body.style.cssText = 'height: 58px;';
+    content.append(trigger, body);
+
+    let reported = -1;
+    const stop = observeActivityRunExpansion(clip, (px) => {
+      reported = px;
+    });
+    // Collapsed contributes nothing — the preview is activity, not expansion.
+    expect(reported).toBe(0);
+
+    trigger.setAttribute('aria-expanded', 'true');
+    body.style.height = '220px';
+    await Promise.resolve();
+
+    expect(reported).toBe(220 - 58);
+    stop();
+  });
+
+  it('subtracts a declared line clamp from a body mounted already expanded', () => {
+    // A reasoning row remounting already-expanded from its lease never
+    // renders its collapsed clamp, so there is nothing to measure — the
+    // body's `data-collapsed-lines` declaration carries the baseline.
+    const { clip, content } = mountColumn();
+    rows(content, 40);
+    const trigger = document.createElement('button');
+    trigger.setAttribute('aria-expanded', 'true');
+    trigger.setAttribute('aria-controls', 'body-1');
+    const body = document.createElement('div');
+    body.id = 'body-1';
+    body.setAttribute('data-collapsed-lines', '3');
+    body.style.cssText = 'height: 220px; line-height: 20px;';
+    content.append(trigger, body);
+
+    let reported = -1;
+    const stop = observeActivityRunExpansion(clip, (px) => {
+      reported = px;
+    });
+
+    expect(reported).toBe(220 - 3 * 20);
+    stop();
+  });
+
+  it('reports zero for an expanded body no taller than its declared clamp', () => {
+    // The reported defect: expanding a think block whose full text already
+    // fit under the 3-line clamp added no height to the row, yet grew the
+    // run by three lines of cap.
+    const { clip, content } = mountColumn();
+    rows(content, 40);
+    const trigger = document.createElement('button');
+    trigger.setAttribute('aria-expanded', 'true');
+    trigger.setAttribute('aria-controls', 'body-1');
+    const body = document.createElement('div');
+    body.id = 'body-1';
+    body.setAttribute('data-collapsed-lines', '3');
+    body.style.cssText = 'height: 40px; line-height: 20px;';
+    content.append(trigger, body);
+
+    let reported = -1;
+    const stop = observeActivityRunExpansion(clip, (px) => {
+      reported = px;
+    });
+
+    expect(reported).toBe(0);
+    stop();
+  });
+
+  it('prefers the declared clamp over a measurement that went stale', async () => {
+    // Expanded mid-clamp-fill: the last collapsed measurement froze at two
+    // lines, then the text kept streaming while expanded. Collapsing NOW
+    // would show the full clamp, so the declared baseline is the truth and
+    // the frozen measurement must not inflate the lift by the difference.
+    const { clip, content } = mountColumn();
+    rows(content, 40);
+    const trigger = document.createElement('button');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-controls', 'body-1');
+    const body = document.createElement('div');
+    body.id = 'body-1';
+    body.setAttribute('data-collapsed-lines', '3');
+    body.style.cssText = 'height: 40px; line-height: 20px;';
+    content.append(trigger, body);
+
+    let reported = -1;
+    const stop = observeActivityRunExpansion(clip, (px) => {
+      reported = px;
+    });
+    expect(reported).toBe(0); // measured at 40 while collapsed
+
+    trigger.setAttribute('aria-expanded', 'true');
+    body.style.height = '220px';
+    await Promise.resolve();
+
+    expect(reported).toBe(220 - 3 * 20);
+    stop();
+  });
+
   it('gives the height back when the body collapses', async () => {
     const { clip, content } = mountColumn();
     rows(content, 40);

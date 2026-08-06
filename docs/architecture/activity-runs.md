@@ -542,6 +542,27 @@ run's open diff cannot lift another's cap, and a nested body inside an
 expanded ancestor is dropped because the ancestor's height already includes
 it.
 
+"What expansion added" is the body's height **minus its collapsed
+baseline**, because two body kinds exist. Mount-on-expand bodies (tool
+payloads, subagent cards) are absent while collapsed — baseline zero, whole
+height counts. Always-mounted bodies (the tail-clamped reasoning rows, a
+command result's output pane) show a clamped preview while collapsed; that
+preview is activity already inside the base cap's budget, and counting the
+whole expanded height grew the run by the preview's height on top of what
+the reader's expansion actually revealed — visibly, expanding a short think
+block added no height to the row while the run grew by three lines. The
+baseline comes from `data-collapsed-lines` when the body declares a fixed
+line clamp (exact at any moment: `min(height, N lines)` is what collapsing
+would show, so it cannot go stale while an expanded body keeps streaming),
+else from the height last measured while the body's disclosure was
+collapsed (the content-dependent previews — recorded per body *element* in
+a module-level WeakMap, because the run recreates its observers on every
+mounted-set change and the baseline must survive that for a body that can
+no longer be re-measured). Collapsed bodies are resize-observed too: their
+current size is tomorrow's baseline, and for a body whose trigger remounts
+on toggle (a command result swapping its load control) the content swap's
+resize is the only signal the toggle emits.
+
 ### Scrollbar width — hard constraint
 
 The clip's scrollbar consumes **zero layout width in every state**. It

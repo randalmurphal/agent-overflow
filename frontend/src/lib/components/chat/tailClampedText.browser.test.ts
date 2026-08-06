@@ -132,6 +132,22 @@ describe('TailClampedText tail-pin', () => {
     expect(tailOverflowPx(body)).toBeLessThanOrEqual(1);
   });
 
+  it('declares the clamp it renders, so the activity-run cap can subtract it', async () => {
+    const { body } = mountBody(LONG, 600);
+    await tick();
+    await raf();
+
+    // utils/activityRunClip.ts reads `data-collapsed-lines × line-height` as
+    // this body's collapsed baseline. The attribute (TAIL_CLAMP_LINES) and
+    // the literal `max-h-[3lh]` class cannot share a token — Tailwind only
+    // generates classes it can scan — so this pins them to the same number:
+    // a clamped body's rendered height must equal the height it declares.
+    const declared = Number(body.dataset.collapsedLines);
+    expect(declared).toBeGreaterThan(0);
+    const lh = parseFloat(getComputedStyle(body).lineHeight);
+    expect(Math.abs(body.clientHeight - declared * lh)).toBeLessThanOrEqual(1);
+  });
+
   it('shows short content in full without clamping', async () => {
     const { body } = mountBody('line one\nline two', 600);
     await tick();
