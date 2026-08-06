@@ -20,39 +20,22 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { chromium, webkit, type BrowserType } from '@playwright/test';
-import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
-
-const OUT_DIR = process.env.BOUNDARY_PROBE_OUT ?? path.resolve(import.meta.dirname, '..', 'test-results');
-
-function line(obj: unknown): string {
-  return JSON.stringify(obj);
-}
-
-function toolPair(turnVar: string, n: number, output: string): string[] {
-  return [
-    line({
-      type: 'assistant',
-      message: {
-        id: `msg-tool-${turnVar}-${n}`,
-        role: 'assistant',
-        content: [
-          { type: 'tool_use', id: `tu-${turnVar}-${n}`, name: 'Bash', input: { command: `echo step-${n}` } },
-        ],
-      },
-    }),
-    line({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: `tu-${turnVar}-${n}`, content: output }],
-      },
-    }),
-  ];
-}
-
-function streamEvent(event: string, data: Record<string, unknown>): string {
-  return line({ type: 'stream_event', event, data: { type: event, ...data } });
-}
+import { test, expect, type HarnessMockEvent } from './fixtures.js';
+import {
+  OUT_DIR,
+  collectRevealProbe,
+  line,
+  openProbeThread,
+  seedProbeThread,
+  streamEvent,
+  summarizeGaps,
+  summarizeReleases,
+  summarizeWriteTrace,
+  toolPair,
+  type ProbeFrame,
+  type ProbeHarness,
+  type TraceRecord,
+} from './probe-wire.js';
 
 // ~500 chars per burst chunk; 8 chunks ≈ 4KB of late summary.
 function burstChunk(n: number): string {
@@ -175,63 +158,21 @@ function buildScenario(): Record<string, unknown> {
   };
 }
 
-interface TraceRecord {
-  seq: number;
-  at: number;
-  label: string;
-  data: Record<string, unknown> | null;
-}
-
-interface FrameSample {
-  t: number;
-  gap: number;
-  tick: number;
-  rows: number;
-}
-
 async function runProbe(
   browserType: BrowserType,
   engine: string,
-  harness: {
-    rpc<T = unknown>(method: string, ...args: unknown[]): Promise<T>;
-    waitForEvent<T = unknown>(channel: string, match?: (data: T) => boolean): Promise<T>;
-    url: string;
-  },
-): Promise<{ records: TraceRecord[]; samples: FrameSample[] }> {
+  harness: ProbeHarness,
+): Promise<{ records: TraceRecord[]; samples: ProbeFrame[] }> {
   await harness.rpc('HarnessSetScenario', { scenario: buildScenario() });
-  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-    projects: [
-      {
-        name: `reveal-probe-${engine}`,
-        repo: {},
-        threads: [
-          {
-            title: `Reveal probe ${engine}`,
-            turns: Array.from({ length: 8 }, (_, i) => ({
-              userText: `history question ${i}`,
-              items: [
-                {
-                  kind: 'assistant_text',
-                  summary:
-                    `History answer ${i}. ` +
-                    'This paragraph pads the transcript so the pane scrolls well past one viewport. '.repeat(6),
-                },
-              ],
-            })),
-          },
-        ],
-      },
-    ],
+  const threadId = await seedProbeThread(harness, {
+    project: `reveal-probe-${engine}`,
+    thread: `Reveal probe ${engine}`,
   });
-  const threadId = seed.projects[0].threadIds[0];
 
   const browser = await browserType.launch();
   try {
     const page = await browser.newPage({ viewport: { width: 960, height: 1200 } });
-    await page.goto(harness.url);
-    await page.getByText(`Reveal probe ${engine}`).click();
-    await expect(page.getByText('history question 7')).toBeVisible();
-    await page.waitForTimeout(1500);
+    await openProbeThread(page, harness.url, `Reveal probe ${engine}`);
 
     // Per-frame sampler: ticker text length (observed reveal rate), row
     // count (release burst timing), rAF gap (jank). Reading textContent
@@ -273,29 +214,13 @@ async function runProbe(
     // watch the post-wire reveal, so this wait is generous.
     await page.waitForTimeout(4000);
 
-    const collected = await page.evaluate(() => {
-      const w = window as unknown as {
-        __revealProbe?: { samples: unknown[]; stop: boolean };
-        __agentOverflowUiTrace?: { records(): unknown[] };
-      };
-      if (w.__revealProbe) w.__revealProbe.stop = true;
-      return {
-        samples: w.__revealProbe?.samples ?? null,
-        records: w.__agentOverflowUiTrace ? w.__agentOverflowUiTrace.records() : null,
-      };
-    });
-    if (!collected.records) throw new Error('UI trace API missing — was the harness built with UI_TRACE=1?');
-    if (!collected.samples) throw new Error('frame sampler missing');
-    return {
-      records: collected.records as TraceRecord[],
-      samples: collected.samples as FrameSample[],
-    };
+    return await collectRevealProbe<ProbeFrame>(page);
   } finally {
     await browser.close();
   }
 }
 
-function summarize(records: TraceRecord[], samples: FrameSample[]): Record<string, unknown> {
+function summarize(records: TraceRecord[], samples: ProbeFrame[]): Record<string, unknown> {
   // Observed ticker reveal rate over 250ms windows (chars/sec), from the
   // sampled rendered length. Window swaps (TailClampedText advancing its
   // cut) make the length DROP — count those separately and rate only the
@@ -325,58 +250,19 @@ function summarize(records: TraceRecord[], samples: FrameSample[]): Record<strin
   }
   const maxCps = rates.reduce((m, r) => Math.max(m, r.cps), 0);
 
-  // Row-count releases: how many rows mounted between adjacent samples.
-  const releases: { t: number; from: number; to: number; rafGapMs: number }[] = [];
-  for (let i = 1; i < samples.length; i++) {
-    if (samples[i].rows > samples[i - 1].rows) {
-      releases.push({
-        t: Math.round(samples[i].t),
-        from: samples[i - 1].rows,
-        to: samples[i].rows,
-        rafGapMs: samples[i].gap,
-      });
-    }
-  }
-
-  // rAF gap stats over the streaming portion (first tick sample onward).
-  const firstTickAt = samples.find((s) => s.tick >= 0)?.t ?? 0;
-  const gaps = samples.filter((s) => s.t >= firstTickAt).map((s) => s.gap);
-  gaps.sort((a, b) => a - b);
-  const gapP99 = gaps.length > 0 ? gaps[Math.floor(gaps.length * 0.99)] : 0;
-  const gapMax = gaps.length > 0 ? gaps[gaps.length - 1] : 0;
-  const gapsOver25 = gaps.filter((g) => g > 25).length;
-  const gapsOver50 = gaps.filter((g) => g > 50).length;
-
-  const writesByCaller = new Map<string, { count: number; maxJump: number }>();
-  const chases: unknown[] = [];
-  for (const r of records) {
-    const d = (r.data ?? {}) as Record<string, unknown>;
-    if (r.label === 'scroll.write') {
-      const caller = String(d.caller ?? 'unknown');
-      const before = Number(d.beforeTop ?? Number.NaN);
-      const after = Number(d.afterTop ?? Number.NaN);
-      const jump = Number.isFinite(before) && Number.isFinite(after) ? Math.abs(after - before) : 0;
-      const entry = writesByCaller.get(caller) ?? { count: 0, maxJump: 0 };
-      entry.count += 1;
-      entry.maxJump = Math.max(entry.maxJump, jump);
-      writesByCaller.set(caller, entry);
-    } else if (r.label === 'scroll.spring.chase') {
-      chases.push(d);
-    }
-  }
+  const gaps = summarizeGaps(samples);
 
   return {
     sampleCount: samples.length,
     tickerRates: rates,
     tickerMaxCps: maxCps,
     tickerWindowCuts: cuts,
-    releases,
-    rafGapP99: gapP99,
-    rafGapMax: gapMax,
-    rafGapsOver25: gapsOver25,
-    rafGapsOver50: gapsOver50,
-    writesByCaller: Object.fromEntries(writesByCaller),
-    chases,
+    releases: summarizeReleases(samples),
+    rafGapP99: gaps.p99,
+    rafGapMax: gaps.max,
+    rafGapsOver25: gaps.over25,
+    rafGapsOver50: gaps.over50,
+    ...summarizeWriteTrace(records),
   };
 }
 

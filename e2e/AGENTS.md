@@ -108,14 +108,19 @@ headless, isolated data dir, mocked providers. Full harness guide:
 - `tests/notifications.spec.ts` — OS-notification pipe: `HarnessNotify`'s
   typed degraded send error, cold activation through transport replay and
   the pre-hydration queue, and the `none`-target no-op log.
-- `tests/boundary-probe.spec.ts` and `tests/reveal-drain-probe.spec.ts` —
+- `tests/boundary-probe.spec.ts`, `tests/reveal-drain-probe.spec.ts`, and
+  `tests/reveal-slide-probe.spec.ts` —
   opt-in **instruments**, not assertions: they drive a real turn and dump
   per-frame samples (rAF gaps, reveal rate, mounted row count, scroll
-  trace) next to the test results for offline analysis. Both sit behind
-  the shared `BOUNDARY_PROBE` env gate and `test.skip` themselves in
-  `make e2e`; they also want a WebKit browser
+  trace; the slide probe adds think-clamp geometry through the line-slide
+  FLIP — box growth, layout re-pack, and the animated advance — for its
+  incident-exact and paced control
+  wire shapes) next to the test results for offline analysis. All sit
+  behind the shared `BOUNDARY_PROBE` env gate and `test.skip` themselves
+  in `make e2e`; they also want a WebKit browser
   (`pnpm exec playwright install webkit`) and a `UI_TRACE=1` harness
-  build. Run one with
+  build. All three share their wire shapes, seed/collect driver, and
+  trace folds in `tests/probe-wire.ts`. Run one with
   `BOUNDARY_PROBE=1 pnpm exec playwright test <name>`.
 
 ## Running

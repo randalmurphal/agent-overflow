@@ -17,39 +17,17 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { chromium, webkit, type BrowserType } from '@playwright/test';
-import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
-
-const OUT_DIR = process.env.BOUNDARY_PROBE_OUT ?? path.resolve(import.meta.dirname, '..', 'test-results');
-
-function line(obj: unknown): string {
-  return JSON.stringify(obj);
-}
-
-function toolPair(turnVar: string, n: number, output: string): string[] {
-  return [
-    line({
-      type: 'assistant',
-      message: {
-        id: `msg-tool-${turnVar}-${n}`,
-        role: 'assistant',
-        content: [
-          { type: 'tool_use', id: `tu-${turnVar}-${n}`, name: 'Bash', input: { command: `echo step-${n}` } },
-        ],
-      },
-    }),
-    line({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: `tu-${turnVar}-${n}`, content: output }],
-      },
-    }),
-  ];
-}
-
-function streamEvent(event: string, data: Record<string, unknown>): string {
-  return line({ type: 'stream_event', event, data: { type: event, ...data } });
-}
+import { test, expect, type HarnessMockEvent } from './fixtures.js';
+import {
+  OUT_DIR,
+  line,
+  openProbeThread,
+  seedProbeThread,
+  streamEvent,
+  toolPair,
+  type ProbeHarness,
+  type TraceRecord,
+} from './probe-wire.js';
 
 function buildScenario(): Record<string, unknown> {
   const T = '${TURN}';
@@ -180,58 +158,21 @@ function buildScenario(): Record<string, unknown> {
   };
 }
 
-interface TraceRecord {
-  seq: number;
-  at: number;
-  label: string;
-  data: Record<string, unknown> | null;
-}
-
 async function runProbe(
   browserType: BrowserType,
   engine: string,
-  harness: {
-    rpc<T = unknown>(method: string, ...args: unknown[]): Promise<T>;
-    waitForEvent<T = unknown>(channel: string, match?: (data: T) => boolean): Promise<T>;
-    url: string;
-  },
+  harness: ProbeHarness,
 ): Promise<TraceRecord[]> {
   await harness.rpc('HarnessSetScenario', { scenario: buildScenario() });
-  // Enough seeded history that the pane genuinely scrolls.
-  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
-    projects: [
-      {
-        name: `probe-${engine}`,
-        repo: {},
-        threads: [
-          {
-            title: `Boundary probe ${engine}`,
-            turns: Array.from({ length: 8 }, (_, i) => ({
-              userText: `history question ${i}`,
-              items: [
-                {
-                  kind: 'assistant_text',
-                  summary:
-                    `History answer ${i}. ` +
-                    'This paragraph pads the transcript so the pane scrolls well past one viewport. '.repeat(6),
-                },
-              ],
-            })),
-          },
-        ],
-      },
-    ],
+  const threadId = await seedProbeThread(harness, {
+    project: `probe-${engine}`,
+    thread: `Boundary probe ${engine}`,
   });
-  const threadId = seed.projects[0].threadIds[0];
 
   const browser = await browserType.launch();
   try {
     const page = await browser.newPage({ viewport: { width: 960, height: 1200 } });
-    await page.goto(harness.url);
-    await page.getByText(`Boundary probe ${engine}`).click();
-    await expect(page.getByText('history question 7')).toBeVisible();
-    // Let the thread-switch restore settle (warm gate) before streaming.
-    await page.waitForTimeout(1500);
+    await openProbeThread(page, harness.url, `Boundary probe ${engine}`);
 
     await harness.rpc('StartSession', threadId);
     await harness.waitForEvent<HarnessMockEvent>(
